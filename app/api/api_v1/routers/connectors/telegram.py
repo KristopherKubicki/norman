@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, Request
-from app.core.connectors.telegram_connector import TelegramConnector
+from app.connectors.telegram_connector import TelegramConnector
 from app.core.config import get_settings, Settings
 
 router = APIRouter()

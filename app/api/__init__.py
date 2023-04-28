@@ -1,21 +1,19 @@
-from typing import List
-from fastapi import FastAPI
-from .actions import router as actions_router
-from .bots import router as bots_router
-from .channels import router as channels_router
-from .filters import router as filters_router
-from .connectors import router as connectors_router
+from fastapi import APIRouter, FastAPI
+from .api_v1.routers import (
+    actions_router,
+    bots_router,
+    channels_router,
+    filters_router,
+    connectors_router,
+)
 
-ROUTER_MODULES = [
-    ("actions", actions_router),
-    ("bots", bots_router),
-    ("channels", channels_router),
-    ("filters", filters_router),
-    ("connectors", connectors_router),
-]
+router = APIRouter()
 
-def init_routers(app: FastAPI, routers: List[str]):
-    for route_prefix, router in ROUTER_MODULES:
-        if route_prefix in routers:
-            app.include_router(router, prefix=f"/api/{route_prefix}")
+router.include_router(actions_router, prefix="/v1/actions")
+router.include_router(bots_router, prefix="/v1/bots")
+router.include_router(channels_router, prefix="/v1/channels")
+router.include_router(filters_router, prefix="/v1/filters")
+router.include_router(connectors_router, prefix="/v1/connectors")
 
+def init_routers(app: FastAPI):
+    app.include_router(router, prefix="/api")

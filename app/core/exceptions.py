@@ -19,7 +19,7 @@ class ChannelError(NormanError):
     pass
 
 
-class ChannelFilterError(NormanError):
+class FilterError(NormanError):
     """
     Raised when there's an issue with a channel filter or filter-related operation.
     """

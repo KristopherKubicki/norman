@@ -36,3 +36,6 @@ alembic/versions/
 
 # logs
 logs/
+
+# config file
+config.yaml

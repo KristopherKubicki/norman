@@ -4,8 +4,8 @@ from sqlalchemy.sql import func
 
 Base = declarative_base()
 
-class ChannelFilter(Base):
-    __tablename__ = "channel_filters"
+class Filter(Base):
+    __tablename__ = "filters"
     id = Column(Integer, primary_key=True)
     channel_id = Column(Integer, ForeignKey("channels.id"))
     regex = Column(String, nullable=False)

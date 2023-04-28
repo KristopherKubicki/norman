@@ -1,5 +1,5 @@
 import pytest
-from app.schemas import ChannelFilterCreate
+from app.schemas import FilterCreate
 from app.crud import filters
 from app.core.database import get_db
 from fastapi import HTTPException
@@ -17,7 +17,7 @@ test_filter_data = {
 
 def test_create_filter():
     db = next(get_db())
-    filter_create = ChannelFilterCreate(**test_filter_data)
+    filter_create = FilterCreate(**test_filter_data)
     created_filter = filters.create(db=db, filter_create=filter_create)
     assert created_filter.name == test_filter_data["name"]
     assert created_filter.regex == test_filter_data["regex"]
@@ -39,7 +39,7 @@ def test_update_filter():
         "name": "Updated Test Filter",
         "regex": r"\bupdated\b",
     }
-    filter_update = ChannelFilterCreate(**updated_data)
+    filter_update = FilterCreate(**updated_data)
     updated_filter = filters.update(db=db, filter_id=filter_id, filter_update=filter_update)
     assert updated_filter.name == updated_data["name"]
     assert updated_filter.regex == updated_data["regex"]

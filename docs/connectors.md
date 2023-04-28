@@ -12,6 +12,7 @@ The following connectors are soon to be supported:
 4. **Microsoft Teams**
 5. **Google Chat**
 6. **Telegram**
+7. **Webhook**
 
 ## Usage
 
@@ -44,5 +45,6 @@ For more detailed information on each connector, please refer to the platform-sp
 - [Microsoft Teams Connector](./connectors/teams.md)
 - [Google Chat Connector](./connectors/googlechat.md)
 - [Telegram Connector](./connectors/telegram.md)
+- [Webhook Connector](./connectors/webhook.md)
 
 Remember to follow the platform-specific guidelines and best practices when creating bots or apps for each service.

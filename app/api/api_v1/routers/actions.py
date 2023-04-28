@@ -1,19 +1,52 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+from app import crud, schemas
+from app.api.deps import get_db
 
 router = APIRouter()
 
-@router.post("/actions/")
-async def create_action(action: ActionCreate):
-    pass
+@router.post("/", response_model=schemas.Action)
+def create_action(
+    *,
+    db: Session = Depends(get_db),
+    action_in: schemas.ActionCreate
+):
+    action = crud.action.create(db, obj_in=action_in)
+    return action
 
-@router.get("/actions/{action_id}")
-async def get_action(action_id: int):
-    pass
+@router.get("/{action_id}", response_model=schemas.Action)
+def read_action(
+    *,
+    db: Session = Depends(get_db),
+    action_id: int
+):
+    action = crud.action.get(db, id=action_id)
+    if not action:
+        raise HTTPException(status_code=404, detail="Action not found")
+    return action
 
-@router.put("/actions/{action_id}")
-async def update_action(action_id: int, action: ActionUpdate):
-    pass
+@router.put("/{action_id}", response_model=schemas.Action)
+def update_action(
+    *,
+    db: Session = Depends(get_db),
+    action_id: int,
+    action_in: schemas.ActionUpdate
+):
+    action = crud.action.get(db, id=action_id)
+    if not action:
+        raise HTTPException(status_code=404, detail="Action not found")
+    action = crud.action.update(db, db_obj=action, obj_in=action_in)
+    return action
 
-@router.delete("/actions/{action_id}")
-async def delete_action(action_id: int):
-    pass
+@router.delete("/{action_id}", response_model=schemas.Action)
+def delete_action(
+    *,
+    db: Session = Depends(get_db),
+    action_id: int
+):
+    action = crud.action.get(db, id=action_id)
+    if not action:
+        raise HTTPException(status_code=404, detail="Action not found")
+    action = crud.action.remove(db, id=action_id)
+    return action
+

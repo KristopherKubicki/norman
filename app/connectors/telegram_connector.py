@@ -1,6 +1,6 @@
 import requests
 from typing import Any, Dict, Optional
-from app.core.connectors.base_connector import BaseConnector
+from .base_connector import BaseConnector
 
 class TelegramConnector(BaseConnector):
     def __init__(self, token: str, chat_id: str):
@@ -26,12 +26,17 @@ class TelegramConnector(BaseConnector):
 
         return self._send_request(data)
 
+    async def listen_and_process(self):
+        # Code to listen for incoming messages from Microsoft Teams
+        # and call process_incoming for each message
+        pass
+
     def process_incoming(self, payload: Dict[str, Any]) -> Dict[str, str]:
         message = payload.get("message", {})
         text = message.get("text", "")
         return {"text": text, "channel": "Telegram"}
 
-   def set_webhook(self, webhook_url: str) -> bool:
+    def set_webhook(self, webhook_url: str) -> bool:
         url = f"https://api.telegram.org/bot{self.token}/setWebhook"
         try:
             response = requests.post(url, json={"url": webhook_url})

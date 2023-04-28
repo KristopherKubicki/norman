@@ -1,5 +1,5 @@
 import socket
-from base_connector import BaseConnector
+from .base_connector import BaseConnector
 
 
 class IRCConnector(BaseConnector):
