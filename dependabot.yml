@@ -1,0 +1,14 @@
+version: 2
+updates:
+  - package-ecosystem: "python"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 10
+    reviewers:
+      - "KristopherKubicki"
+    assignees:
+      - "KristopherKubicki"
+    commit-message:
+      prefix: "chore"
+      include: "scope"

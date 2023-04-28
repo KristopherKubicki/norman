@@ -1,0 +1,38 @@
+# .gitignore
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyc
+.Python
+env/
+venv/
+*.log
+
+# Alembic
+alembic/versions/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# VSCode
+.vscode/
+
+# PyCharm
+.idea/
+
+# MacOS
+.DS_Store
+
+# Environment variables
+.env
+
+# old files
+*.old
+*.dead
+*.ignore
+
+# logs
+logs/
