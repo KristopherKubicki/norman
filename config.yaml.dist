@@ -1,0 +1,28 @@
+secret_key: "super_secret_key_change_me"
+app_name: "norman"
+debug: true
+api_version: "v1"
+api_prefix: "/api"
+
+# Connectors
+telegram_token: "your_telegram_token"
+telegram_chat_id: "your_telegram_chat_id"
+slack_token: "your_slack_token"
+slack_channel_id: "your_slack_channel_id"
+google_chat_service_account_key_path: "your_google_chat_service_account_key_path"
+google_chat_space: "your_google_chat_space"
+discord_token: "your_discord_token"
+discord_channel_id: "your_discord_channel_id"
+teams_app_id: "your_teams_app_id"
+teams_app_password: "your_teams_app_password"
+teams_tenant_id: "your_teams_tenant_id"
+teams_bot_endpoint: "your_teams_bot_endpoint"
+webhook_secret: "your_webhook_secret"
+
+# Database
+database_url: "sqlite:///./db/norman.db"
+
+# Server
+host: "0.0.0.0"
+port: 8000
+
