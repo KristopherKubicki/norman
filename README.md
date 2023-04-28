@@ -29,7 +29,7 @@ Norman is an open-source chatbot that leverages OpenAI's GPT models to assist an
   - `crud`: CRUD operations for database models
   - `db`: Database models and utilities
   - `schemas`: Pydantic schemas for API validation
-- `connectors`: Channel connectors (e.g., IRC, Slack)
+  - `connectors`: Channel connectors (e.g., IRC, Slack)
 - `tests`: Unit tests and integration tests
 - `alembic`: Alembic migration scripts and configuration
 
