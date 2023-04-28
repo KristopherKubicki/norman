@@ -2,7 +2,14 @@
 
 Norman is an open-source chatbot that leverages OpenAI's GPT models to assist and automate communication on various chat platforms like Slack and IRC. The project is built with FastAPI, SQLite, and SQLAlchemy, and is designed to be easily extensible with additional connectors.
 
-## Part 1: Overview
+## Table of Contents
+
+- [Features](#features)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Contributing](#contributing)
+- [License](#license)
 
 ### Features
 
@@ -32,6 +39,7 @@ Norman is an open-source chatbot that leverages OpenAI's GPT models to assist an
 
 - Python 3.8 or higher
 - pip
+- SQLite
 - virtualenv (optional)
 
 ### Installation
@@ -62,46 +70,41 @@ cp config.yaml.dist config.yaml
 
 6. Run the application:
 ```
-uvicorn app.main:app --reload
+python main.py
 ````
 
 7. Open the API documentation in your browser: [http://localhost:8000/docs](http://localhost:8000/docs)
 
 For more information, refer to the [documentation](docs/) and the [contributing guidelines](CONTRIBUTING.md).
 
+## Usage
 
-Usage
-This section can provide a brief overview of how to interact with Norman, including:
+For detailed information on how to use Norman, please refer to the [Usage](./docs/usage.md) section in the documentation.
 
-How to create and configure chatbots using the Web UI
-How to set up channel filters and actions
-Examples of common use-cases and automations
-Deployment
-Provide instructions on how to deploy Norman in different environments, such as:
+## Deployment
 
-Deploying with Docker
-Deploying on a cloud provider (e.g., AWS, GCP, Azure)
-Deploying with a reverse proxy (e.g., Nginx)
-Extending Norman
-Describe how users can extend Norman by:
+Norman can be deployed on various platforms, such as on a local server or a cloud provider. For detailed deployment instructions, please refer to our [Deployment](docs/deployment.md) guide.
 
-Adding custom connectors for other chat platforms
-Implementing custom actions or integrations
-Contributing
-Invite users to contribute to the project by:
+## Architecture
 
-Reporting bugs and requesting features via GitHub issues
-Submitting pull requests with bug fixes or new features
-Helping with documentation, tests, or translations
-Community
-Provide information about the project's community, such as:
+The architecture of Norman is designed to be modular and scalable. We have a detailed explanation of our architectural principles in our [Architecture](docs/architecture.md) document, complete with a simple diagram to help you understand the structure.
 
-Links to forums, mailing lists, or chat rooms
-Social media accounts or hashtags
-Upcoming events or meetups
-Remember to update the relevant files in the repository to provide more detailed information on the topics mentioned above. The README.md file should serve as an entry point to help users quickly understand and use the project.
+## Extending Norman
+
+Norman is built to be extensible, allowing you to add new connectors, actions, and filters as needed. To learn more about extending Norman, refer to our [Extending Norman](docs/extending.md) guide.
+
+## Philosophy
+
+We created Norman to provide an open, self-hosted, and open-source solution for accessing large language models like GPT-4. We hope others can build upon and extend Norman to incorporate additional chat technologies and channels. Our philosophy centers on continuous improvement, utilizing automation, and striving for excellence in our project. Learn more about our philosophy in our [Philosophy](docs/philosophy.md) document.
+
+## Contributing
+
+We welcome contributions from the community! If you're interested in helping us improve Norman, please refer to our [Contributing](docs/contributing.md) guide.
+
+## Community
+
+Norman is more than just a software project; it's a community of developers and users working together to create something special. To learn more about our community and how to get involved, check out our [Community](docs/community.md) page.
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE.md](LICENSE.md) file for details.
-
+Norman is licensed under the MIT License. For more information, see the [LICENSE.md](LICENSE.md) file.
