@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 from pydantic import BaseModel
 
 class BotBase(BaseModel):
@@ -6,8 +6,9 @@ class BotBase(BaseModel):
     gpt_model: str
     session_id: str
 
-class BotCreate(BotBase):
-    pass
+class BotCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
 
 class BotUpdate(BotBase):
     pass

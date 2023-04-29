@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block extra_css %}
+<!-- Add any extra CSS required for this template here -->
+{% endblock %}
+
+{% block content %}
+<h1>Messages Log</h1>
+
+<div class="search-container">
+  <input type="text" placeholder="Search messages..." class="search-input">
+</div>
+
+<div class="messages-log-container">
+  <!-- Messages will be dynamically added here -->
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/messages_log.js') }}"></script>
+{% endblock %}
+

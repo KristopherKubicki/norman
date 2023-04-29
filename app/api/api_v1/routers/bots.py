@@ -1,6 +1,8 @@
 from typing import List
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
 from app.schemas import BotCreate, BotUpdate, Bot
+from app.api.deps import get_db
 
 router = APIRouter()
 
@@ -26,8 +28,18 @@ async def update_bot(bot_id: int, bot: BotUpdate):
     # Logic to update an existing bot
     pass
 
-@router.delete("/bots/{bot_id}")
-async def delete_bot(bot_id: int):
-    # Logic to delete a bot
-    pass
+@router.delete("/bots/{bot_id}", response_model=Bot)
+async def delete_bot(bot_id: int, db: Session = Depends(get_db)):
+    bot = crud.delete_bot(db=db, bot_id=bot_id)
+    if bot is None:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    return bot
+
+
+@router.put("/bots/{bot_id}", response_model=Bot)
+async def update_bot(bot_id: int, bot_data: BotUpdate, db: Session = Depends(get_db)):
+    bot = crud.update_bot(db=db, bot_id=bot_id, bot_data=bot_data)
+    if bot is None:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    return bot
 

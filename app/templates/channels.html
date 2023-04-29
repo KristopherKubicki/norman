@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/channels.js') }}"></script>
+{% endblock %}
+
+{% block content %}
+<div class="container">
+  <h1>Channels</h1>
+  <ul class="channels-list">
+    <!-- Add a list item for each channel -->
+    <li data-channel-id="1">Channel 1</li>
+    <li data-channel-id="2">Channel 2</li>
+  </ul>
+
+  <div class="message-log">
+    <!-- Add a div for each message -->
+    <div class="message">
+      <div class="message-info">
+        <span class="message-sender">Sender</span>
+        <span class="message-timestamp">Timestamp</span>
+      </div>
+      <div class="message-content">Message content</div>
+    </div>
+  </div>
+
+  <form class="message-form">
+    <textarea name="message" placeholder="Type your message"></textarea>
+    <button type="submit">Send</button>
+  </form>
+</div>
+{% endblock %}
+

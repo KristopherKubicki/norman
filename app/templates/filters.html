@@ -1,6 +1,31 @@
-{% extends 'base.html' %}
+{% extends "base.html" %}
+
+{% block extra_css %}
+<!-- Add any extra CSS required for this template here -->
+{% endblock %}
 
 {% block content %}
-    <h2>Filters</h2>
-    <p>Here you can manage your filters.</p>
+<h1>Filters</h1>
+
+<div class="search-container">
+  <input type="text" placeholder="Search filters..." class="search-input">
+</div>
+
+<form id="add-filter-form">
+  <label for="filter-name">Filter Name:</label>
+  <input type="text" id="filter-name" required />
+  <label for="filter-description">Description:</label>
+  <input type="text" id="filter-description" />
+  <button type="submit">Add Filter</button>
+</form>
+
+<div class="filters-container">
+  <!-- Filters will be dynamically added here -->
+</div>
 {% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/filters.js') }}"></script>
+{% endblock %}
+
+

@@ -1,22 +1,28 @@
-import os
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
+from starlette.staticfiles import StaticFiles
+import os
 
-app_routes = APIRouter()
+from .views import home, connectors, filters, channels
 
 current_dir = os.path.dirname(os.path.realpath(__file__))
+app_routes = APIRouter()
 
-# Serve static files (CSS, JavaScript, images, etc.)
-app_routes.mount("/static", StaticFiles(directory=os.path.join(current_dir, "static")), name="static")
+@app_routes.get("/")
+async def home_page(request: Request):
+    return await home(request)
 
-# Jinja2 templates instance
-templates = Jinja2Templates(directory=os.path.join(current_dir, "templates"))
+@app_routes.get("/index.html")
+async def index_page(request: Request):
+    return await home(request)
 
-# Root endpoint to render the index.html template
-@app_routes.get("/", response_class=HTMLResponse)
-async def read_root(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+@app_routes.get("/connectors.html")
+async def connectors_page(request: Request):
+    return await connectors(request)
 
+@app_routes.get("/filters.html")
+async def filters_page(request: Request):
+    return await filters(request)
 
+@app_routes.get("/channels.html")
+async def channels_page(request: Request):
+    return await channels(request)

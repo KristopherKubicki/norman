@@ -1,7 +1,7 @@
 import pytest
 from app.schemas import FilterCreate
 from app.crud import filters
-from app.core.database import get_db
+from app.api.deps import get_db
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 

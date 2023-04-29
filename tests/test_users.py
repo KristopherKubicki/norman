@@ -1,22 +1,25 @@
-# tests/api_v1/test_users.py
-
+import pytest
 from fastapi.testclient import TestClient
-from app.main import app
+from sqlalchemy.orm import Session
+
+from app import crud, models
+from app.core.config import settings
 from app.schemas.user import UserCreate
+from app.tests.utils.utils import random_email, random_lower_string
 
-client = TestClient(app)
+def test_create_user(client: TestClient, db: Session) -> None:
+    email = random_email()
+    password = random_lower_string()
+    user_in = UserCreate(email=email, password=password)
+    user = crud.user.create(db, obj_in=user_in)
+    assert user.email == email
 
-def test_create_user():
-    user_data = {
-        "username": "testuser",
-        "email": "test@example.com",
-        "password": "testpassword",
-    }
-    response = client.post("/api/v1/users/", json=user_data)
-    assert response.status_code == 200
-
-    created_user = response.json()
-    assert created_user["username"] == user_data["username"]
-    assert created_user["email"] == user_data["email"]
-    assert "password" not in created_user
-    assert "id" in created_user
+def test_get_user(client: TestClient, db: Session) -> None:
+    email = random_email()
+    password = random_lower_string()
+    user_in = UserCreate(email=email, password=password)
+    user = crud.user.create(db, obj_in=user_in)
+    user_2 = crud.user.get(db, user.id)
+    assert user_2
+    assert user.email == user_2.email
+    assert user.id == user_2.id

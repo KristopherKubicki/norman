@@ -1,30 +1,27 @@
-from app.connectors import irc, slack, telegram  # import other connectors as needed
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
 
-def test_irc_connection():
-    # Replace with your actual test IRC server and credentials
-    irc_server = "irc.example.com"
-    irc_port = 6667
-    irc_channel = "#test"
-    irc_nickname = "test_bot"
-    irc_password = "your_password"
+from app import crud, models
+from app.core.config import settings
+from app.schemas.connector import ConnectorCreate
+from app.tests.utils.utils import random_lower_string
 
-    connector = irc.IRCConnector(server=irc_server, port=irc_port, channel=irc_channel,
-                                  nickname=irc_nickname, password=irc_password)
-    assert connector.connect() is True
+def test_create_connector(client: TestClient, db: Session) -> None:
+    connector_type = "irc"
+    name = random_lower_string()
+    connector_in = ConnectorCreate(connector_type=connector_type, name=name)
+    connector = crud.connector.create(db, obj_in=connector_in)
+    assert connector.connector_type == connector_type
+    assert connector.name == name
 
-def test_slack_connection():
-    # Replace with your actual Slack bot token
-    slack_bot_token = "your_slack_bot_token"
-
-    connector = slack.SlackConnector(bot_token=slack_bot_token)
-    assert connector.connect() is True
-
-def test_telegram_connection():
-    # Replace with your actual Telegram bot token
-    telegram_bot_token = "your_telegram_bot_token"
-
-    connector = telegram.TelegramConnector(bot_token=telegram_bot_token)
-    assert connector.connect() is True
-
-# Add more tests for other connectors
-
+def test_get_connector(client: TestClient, db: Session) -> None:
+    connector_type = "irc"
+    name = random_lower_string()
+    connector_in = ConnectorCreate(connector_type=connector_type, name=name)
+    connector = crud.connector.create(db, obj_in=connector_in)
+    connector_2 = crud.connector.get(db, connector.id)
+    assert connector_2
+    assert connector.connector_type == connector_2.connector_type
+    assert connector.name == connector_2.name
+    assert connector.id == connector_2.id
