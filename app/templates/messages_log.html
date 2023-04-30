@@ -4,17 +4,40 @@
 <!-- Add any extra CSS required for this template here -->
 {% endblock %}
 
+
+
 {% block content %}
-<h1>Messages Log</h1>
+<div class="container">
+    <h1 class="mt-4">Messages Log</h1>
+    <div class="search-container">
+      <input type="text" placeholder="Search messages..." class="search-input">
+    </div>
+     TODO: add a list of channels to send to as a dropdown, autocomplete
 
-<div class="search-container">
-  <input type="text" placeholder="Search messages..." class="search-input">
-</div>
+    <div class="card mt-4">
+        <div class="card-body messages-log" id="messages-log">
+            <!-- Messages will be displayed here -->
+        </div>
+    </div>
+    <div class="row mt-4">
+        <div class="col">
+            <label for="channelSelect" class="form-label">Channel</label>
+            <select class="form-select" id="channelSelect">
+                <!-- List channels here -->
+            </select>
+        </div>
+        <div class="col">
+            <label for="messageInput" class="form-label">Message</label>
+            <input type="text" class="form-control" id="messageInput" placeholder="Type your message...">
+        </div>
+    </div>
+    <div class="d-grid gap-2 mt-4">
+        <button class="btn btn-primary" id="sendButton" type="button">Send</button>
+    </div>
 
-<div class="messages-log-container">
-  <!-- Messages will be dynamically added here -->
 </div>
 {% endblock %}
+
 
 {% block extra_js %}
 <script src="{{ url_for('static', filename='js/messages_log.js') }}"></script>

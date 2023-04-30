@@ -3,6 +3,9 @@ from .base_connector import BaseConnector
 
 class GoogleChatConnector(BaseConnector):
 
+    id = 'google_chat'
+    name = 'Google Chat'
+
     def __init__(self, service_account_key_path: str, space: str):
         self.service_account_key_path = service_account_key_path
         self.space = space

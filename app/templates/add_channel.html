@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <h1>Add a new channel</h1>
+  <form action="/channels/create" method="post">
+    <label for="name">Channel Name:</label>
+    <input type="text" id="name" name="name" required>
+    <br>
+    <label for="connector">Connector:</label>
+    <input type="text" id="connector" name="connector" required>
+    <br>
+    <label for="details">Details:</label>
+    <input type="text" id="details" name="details">
+    <br>
+    <input type="submit" value="Create Channel">
+  </form>
+{% endblock %}

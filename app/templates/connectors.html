@@ -1,6 +1,59 @@
-{% extends 'base.html' %}
+{% extends "base.html" %}
 
 {% block content %}
-    <h2>Connectors</h2>
-    <p>Here you can manage your connectors.</p>
+    <div id="messageDisplay" class="message-display"></div>
+
+
+    <h1>Connectors</h1>
+    Here you can configure your connectors<br/>
+    <div class="connectors">
+        {% for connector in connectors %}
+            <div class="connector">
+                <h2>{{ connector.name }}</h2>
+                <div class="status">
+                    <span>Status: {{ connector.status }}</span>
+                    <button class="test-connector" data-connector-id="{{ connector.id }}">Test</button>
+                </div>
+                <div class="settings">
+                    <form method="post" action="/update_connector_settings/{{ connector.id }}">
+                        {% for field in connector.fields %}
+                            {% if field.name != 'password' %}
+                                <label>{{ field.label }}</label>
+                                <input type="{{ field.type }}" name="{{ field.name }}" value="{{ field.value }}" {% if field.readonly %}readonly{% endif %}>
+                            {% endif %}
+                        {% endfor %}
+                        <button type="submit">Save</button>
+                    </form>
+                </div>
+                <div class="stats">
+                    <p>Last message sent: {{ connector.last_message_sent }}</p>
+                </div>
+                <div class="enable-disable">
+                    <label>Enable:</label>
+                    <input type="checkbox" name="enable_connector" {% if connector.enabled %}checked{% endif %}>
+                </div>
+            </div>
+        {% endfor %}
+    </div>
+
+    <div class="input-container">
+        <input id="messageInput" type="text" placeholder="Test connectivity">
+        <button id="sendButton">Test</button>
+    </div>
+    <div class="connector-select-container">
+        <label for="connectorSelect">Connector:</label>
+        <select id="connectorSelect">
+            <option value="webhook">Webhook</option>
+            <option value="irc">IRC</option>
+            <option value="slack">Slack</option>
+            <option value="teams">Microsoft Teams</option>
+            <option value="discord">Discord</option>
+            <option value="google_chat">Google Chat</option>
+            <option value="telegram">Telegram</option>
+        </select>
+    </div>
+
+
+    <script src="/static/js/script.js"></script>
 {% endblock %}
+

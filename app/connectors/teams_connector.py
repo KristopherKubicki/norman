@@ -2,6 +2,10 @@ import asyncio
 from .base_connector import BaseConnector
 
 class TeamsConnector(BaseConnector):
+ 
+    id = 'teams'
+    name = 'Teams'
+
     def __init__(self, app_id, app_password, tenant_id, bot_endpoint):
         self.app_id = app_id
         self.app_password = app_password

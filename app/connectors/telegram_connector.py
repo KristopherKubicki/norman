@@ -3,6 +3,10 @@ from typing import Any, Dict, Optional
 from .base_connector import BaseConnector
 
 class TelegramConnector(BaseConnector):
+
+    id = 'telegram'
+    name = 'Telegram'
+
     def __init__(self, token: str, chat_id: str):
         self.token = token
         self.chat_id = chat_id

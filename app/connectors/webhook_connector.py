@@ -4,8 +4,12 @@ from typing import Dict
 from pydantic import BaseModel
 
 class WebhookConnector:
+    name = 'Webhook'
+    id = 'webhook'
+
     def __init__(self, webhook_url: str):
         self.webhook_url = webhook_url
+        self.enabled = True
 
     async def process_incoming(self, data: Dict[str, str]) -> str:
         response = await self.send_to_webhook(data)

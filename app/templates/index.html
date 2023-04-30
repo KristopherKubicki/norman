@@ -2,22 +2,16 @@
 
 {% block content %}
     <div id="messageDisplay" class="message-display"></div>
-    <div class="input-container">
-        <input id="messageInput" type="text" placeholder="Type your message here...">
-        <button id="sendButton">Send</button>
-    </div>
-    <div class="connector-select-container">
-        <label for="connectorSelect">Connector:</label>
-        <select id="connectorSelect">
-            <option value="webhook">Webhook</option>
-            <option value="irc">IRC</option>
-            <option value="slack">Slack</option>
-            <option value="teams">Microsoft Teams</option>
-            <option value="discord">Discord</option>
-            <option value="google_chat">Google Chat</option>
-            <option value="telegram">Telegram</option>
-        </select>
-    </div>
+
+
+    <br/>
+    <h2>Welcome to Norman! </h2>
+
+    <br/>
+
+    Here you can view your current Connectors, Setup some Channels, Initialize a Bot, Configure your Filters or check out your Messages and responses. 
+
+
     <script src="/static/js/script.js"></script>
 {% endblock %}
 

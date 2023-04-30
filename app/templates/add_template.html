@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <h1>Add a new filter</h1>
+  <form action="/filters/create" method="post">
+    <label for="regex">Regex:</label>
+    <input type="text" id="regex" name="regex" required>
+    <br>
+    <input type="submit" value="Create Filter">
+  </form>
+{% endblock %}

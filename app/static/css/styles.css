@@ -65,3 +65,21 @@ footer {
     text-align: center;
 }
 
+
+.messages-log {
+    height: 500px;
+    overflow-y: scroll;
+    border: 1px solid #dee2e6;
+    padding: 1rem;
+    white-space: pre-wrap;
+}
+
+.messages-log .message {
+    margin-bottom: 1rem;
+}
+
+.messages-log .message:nth-child(odd) {
+    background-color: #f8f9fa;
+    padding: 0.5rem;
+}
+

@@ -3,11 +3,16 @@ from .base_connector import BaseConnector
 
 
 class IRCConnector(BaseConnector):
+
+    name = 'IRC'
+    id = 'irc'
+
     def __init__(self, config):
         super().__init__(config)
         self.socket = None
 
     def connect(self):
+        # TODO: update all these configs
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.connect((self.config["server"], self.config["port"]))
         self.socket.send(f"NICK {self.config['nickname']}\r\n".encode("utf-8"))

@@ -1,10 +1,15 @@
+# tests/conftest.py
 import pytest
-from starlette.testclient import TestClient
-
+from fastapi.testclient import TestClient
 from app.main import app
+from app.connectors import init_connectors
+from app.core.test_settings import TestSettings
 
+test_settings = TestSettings()
 
 @pytest.fixture(scope="module")
-def test_app():
-    client = TestClient(app)
-    yield client  # provide the test client for tests
+def test_client():
+    init_connectors(app, test_settings)
+    with TestClient(app) as client:
+        yield client
+

@@ -1,33 +1,27 @@
 {% extends "base.html" %}
 
-{% block extra_js %}
-<script src="{{ url_for('static', filename='js/channels.js') }}"></script>
-{% endblock %}
-
 {% block content %}
-<div class="container">
-  <h1>Channels</h1>
-  <ul class="channels-list">
-    <!-- Add a list item for each channel -->
-    <li data-channel-id="1">Channel 1</li>
-    <li data-channel-id="2">Channel 2</li>
-  </ul>
+    <div id="messageDisplay" class="message-display"></div>
 
-  <div class="message-log">
-    <!-- Add a div for each message -->
-    <div class="message">
-      <div class="message-info">
-        <span class="message-sender">Sender</span>
-        <span class="message-timestamp">Timestamp</span>
-      </div>
-      <div class="message-content">Message content</div>
+    Here are a list of all known channels.  Searchable, autocomplete.  Should display a list of notifications on the top, messages 
+
+    Send Test Message:
+    <div class="input-container">
+        <input id="messageInput" type="text" placeholder="Type your message here...">
+        <button id="sendButton">Send</button>
     </div>
-  </div>
-
-  <form class="message-form">
-    <textarea name="message" placeholder="Type your message"></textarea>
-    <button type="submit">Send</button>
-  </form>
-</div>
+    <div class="connector-select-container">
+        <label for="connectorSelect">Connector:</label>
+        <select id="connectorSelect">
+            <option value="webhook">Webhook</option>
+            <option value="irc">IRC</option>
+            <option value="slack">Slack</option>
+            <option value="teams">Microsoft Teams</option>
+            <option value="discord">Discord</option>
+            <option value="google_chat">Google Chat</option>
+            <option value="telegram">Telegram</option>
+        </select>
+    </div>
+    <script src="/static/js/script.js"></script>
 {% endblock %}
 

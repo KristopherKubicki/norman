@@ -1,3 +1,4 @@
+# app/connectors/__init__.py
 
 from fastapi import FastAPI
 from app.core.config import Settings
@@ -11,6 +12,7 @@ from .teams_connector import TeamsConnector
 from .telegram_connector import TelegramConnector
 from .webhook_connector import WebhookConnector
 
+from .connector_utils import get_connector
 
 def init_connectors(app: FastAPI, settings: Settings):
     app.state.telegram_connector = TelegramConnector(token=settings.telegram_token, chat_id=settings.telegram_chat_id)

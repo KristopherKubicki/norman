@@ -11,3 +11,6 @@ pydantic==1.8.2
 httpx==0.23.0
 aiofiles
 slack_sdk
+pyyaml
+requests
+jinja2==3.0.3

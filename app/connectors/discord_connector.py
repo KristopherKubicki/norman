@@ -3,6 +3,9 @@ from .base_connector import BaseConnector
 
 class DiscordConnector(BaseConnector):
 
+    id = 'discord'
+    name = 'Discord'
+
     def __init__(self, token: str, channel_id: str):
         self.token = token
         self.channel_id = channel_id
