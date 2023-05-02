@@ -83,3 +83,26 @@ footer {
     padding: 0.5rem;
 }
 
+
+ .main-container {
+    display: flex;
+  }
+
+  .bots-container {
+    width: 25%;
+    overflow-y: auto;
+  }
+
+  .main-chat-container {
+    width: 75%;
+    border-left: 1px solid #ccc;
+  }
+
+  .messages-container {
+    overflow-y: auto;
+    height: calc(100vh - 150px);
+  }
+
+  .bot-item {
+    cursor: pointer;
+  }

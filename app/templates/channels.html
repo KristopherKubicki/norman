@@ -1,27 +1,36 @@
+
 {% extends "base.html" %}
 
 {% block content %}
-    <div id="messageDisplay" class="message-display"></div>
+    <h1>Channels</h1>
 
-    Here are a list of all known channels.  Searchable, autocomplete.  Should display a list of notifications on the top, messages 
-
-    Send Test Message:
-    <div class="input-container">
-        <input id="messageInput" type="text" placeholder="Type your message here...">
-        <button id="sendButton">Send</button>
+    <div class="search-container">
+        <input type="text" id="channelSearch" placeholder="Search channels...">
     </div>
-    <div class="connector-select-container">
-        <label for="connectorSelect">Connector:</label>
-        <select id="connectorSelect">
+
+    <h2>Add a Channel</h2>
+    <div class="add-channel-container">
+        <input type="text" id="channelName" placeholder="Channel name">
+        <div class="connector-select-container">
+            <label for="connectorSelect">Connector:</label>
+            <select id="connectorSelect">
             <option value="webhook">Webhook</option>
             <option value="irc">IRC</option>
             <option value="slack">Slack</option>
             <option value="teams">Microsoft Teams</option>
             <option value="discord">Discord</option>
             <option value="google_chat">Google Chat</option>
-            <option value="telegram">Telegram</option>
-        </select>
+            <option value="telegram">Telegram</option
+            </select>
+        </div>
+        <button id="addChannelBtn">Add Channel</button>
     </div>
+
+    <div class="channels-list">
+        <!-- Display the list of channels here -->
+    </div>
+
     <script src="/static/js/script.js"></script>
 {% endblock %}
+
 

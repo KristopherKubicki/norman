@@ -1,24 +1,69 @@
 document.addEventListener('DOMContentLoaded', () => {
   // Fetch bots and render them in the bots container
   fetchBotsAndRender();
+
+  // Add event listener for the add-bot-form
+  const addBotForm = document.getElementById("add-bot-form");
+  if (addBotForm) {
+    addBotForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+  
+      const nameInput = document.getElementById("bot-name");
+      const descriptionInput = document.getElementById("bot-description");
+  
+      const name = nameInput.value.trim();
+      const description = descriptionInput.value.trim();
+  
+      if (!name) {
+        alert("Please enter a bot name.");
+        return;
+      }
+  
+      const bot = await addBot(name, description);
+      const botElement = createBotElement(bot);
+      const botsContainer = document.querySelector('.bots-container');
+      botsContainer.appendChild(botElement);
+  
+      nameInput.value = "";
+      descriptionInput.value = "";
+    });
+  }
+
 });
 
-function fetchBotsAndRender() {
-  // Replace this with the actual API call to fetch bots
-  const fakeBots = [
-    { id: 1, name: 'Bot 1', lastTriggered: '2023-01-01 10:00:00' },
-    { id: 2, name: 'Bot 2', lastTriggered: '2023-01-01 10:05:00' },
-  ];
+async function fetchBotsAndRender() {
+  const response = await fetch("/api/bots");
+  const bots = await response.json();
 
   const botsContainer = document.querySelector('.bots-container');
   botsContainer.innerHTML = '';
 
-  for (const bot of fakeBots) {
+  for (const bot of bots) {
     const botElement = createBotElement(bot);
     botsContainer.appendChild(botElement);
   }
 }
 
+function createBotElement(bot) {
+  const botElement = document.createElement('div');
+  botElement.classList.add('bot');
+
+  const nameElement = document.createElement('p');
+  nameElement.textContent = bot.name;
+  botElement.appendChild(nameElement);
+
+  const descriptionElement = document.createElement("p");
+  descriptionElement.textContent = `Description: ${bot.description}`;
+  botElement.appendChild(descriptionElement);
+
+  botElement.addEventListener("click", () => {
+    window.location.href = `/bot_detail/${bot.id}`;
+  });
+
+  return botElement;
+}
+
+/*
 function createBotElement(bot) {
   const botElement = document.createElement('div');
   botElement.classList.add('bot');
@@ -61,6 +106,7 @@ function createBotElement(bot) {
 
   return botElement;
 }
+*/
 
 
 // Add this function to the file
@@ -75,30 +121,6 @@ async function addBot(name, description) {
   const bot = await response.json();
   return bot;
 }
-
-// Add this code inside the main function
-const addBotForm = document.getElementById("add-bot-form");
-addBotForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-
-  const nameInput = document.getElementById("bot-name");
-  const descriptionInput = document.getElementById("bot-description");
-
-  const name = nameInput.value.trim();
-  const description = descriptionInput.value.trim();
-
-  if (!name) {
-    alert("Please enter a bot name.");
-    return;
-  }
-
-  const bot = await addBot(name, description);
-  const botElement = createBotElement(bot);
-  botsContainer.appendChild(botElement);
-
-  nameInput.value = "";
-  descriptionInput.value = "";
-});
 
 async function deleteBot(botId) {
   const response = await fetch(`/api/v1/bots/${botId}`, {
