@@ -35,7 +35,7 @@ Norman is an open-source chatbot that leverages OpenAI's GPT models to assist an
 - `tests`: Unit tests and integration tests
 - `alembic`: Alembic migration scripts and configuration
 
-## Part 2: Getting Started
+## Getting Started
 
 ### Prerequisites
 
@@ -70,12 +70,22 @@ cp config.yaml.dist config.yaml
 
 5. Edit `config.yaml` to configure the application, connectors, and API keys.
 
-6. Run the application:
+6. Run the `generate_key.sh` script to set a secret key for your application:
+
+```
+chmod +x generate_key.sh
+./generate_key.sh
+```
+
+You can also just edit config.yaml instead and make up your own key. 
+
+
+7. Run the application:
 ```
 python main.py
 ````
 
-7. Open the API documentation in your browser: [http://localhost:8000/docs](http://localhost:8000/docs)
+8. Open the API documentation in your browser: [http://localhost:8000/docs](http://localhost:8000/docs)
 
 For more information, refer to the [documentation](docs/) and the [contributing guidelines](CONTRIBUTING.md).
 

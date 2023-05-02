@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block extra_css %}
+<!-- Add any extra CSS required for this template here -->
+{% endblock %}
+
+{% block content %}
+<h1>Bot Details</h1>
+
+<form id="edit-bot-form">
+  <label for="bot-name">Bot Name:</label>
+  <input type="text" id="bot-name" value="{{ bot.name }}" required />
+  
+  <label for="bot-description">Description:</label>
+  <input type="text" id="bot-description" value="{{ bot.description }}" />
+  
+  <label for="bot-model">GPT Model:</label>
+  <input type="text" id="bot-model" value="{{ bot.model }}" />
+  
+  <label for="bot-enabled">Enabled:</label>
+  <input type="checkbox" id="bot-enabled" {% if bot.enabled %}checked{% endif %} />
+  
+  <button type="submit">Save Changes</button>
+</form>
+
+<a href="{{ url_for('bots') }}">Back to Bots</a>
+{% endblock %}
+
+{% block extra_js %}
+<!-- Add any extra JavaScript required for this template here -->
+{% endblock %}
+

@@ -33,7 +33,10 @@ class Settings(BaseSettings):
 
     @validator("secret_key", pre=True)
     def validate_secret_key(cls, v):
-        assert v != "super_secret_key_change_me", "You must set a proper secret key"
+        assert v != "super_secret_key_change_me", (
+        "You must set a proper secret key. Please refer to the "
+        "#installation section in the README.md for instructions."
+                )
         return v
 
     class Config:
