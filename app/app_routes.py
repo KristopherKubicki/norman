@@ -1,18 +1,26 @@
 from fastapi import APIRouter, Body, Depends, Request
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.responses import RedirectResponse
+from fastapi import Depends
+
 from starlette.staticfiles import StaticFiles
-from starlette.responses import FileResponse
+from starlette.responses import FileResponse, HTMLResponse
 from starlette.responses import RedirectResponse
 
+from app.schemas import Token
+from app.crud.user import authenticate_user
 from app.models.interaction import Interaction
 from app.models.channel_filter import Filter
 from app.connectors import get_connector
 
+from datetime import timedelta
 import os
 
 from .views import home, connectors, filters, channels, process_message, bots, messages
 
 current_dir = os.path.dirname(os.path.realpath(__file__))
 app_routes = APIRouter()
+
 
 @app_routes.get("/favicon.ico")
 async def favicon():
@@ -46,6 +54,7 @@ async def bots_page(request: Request):
 async def messages_page(request: Request):
     return await messages(request)
 
+'''
 @app_routes.post("/bots/create")
 async def create_bot(request: Request):
     if request.method == "POST":
@@ -82,6 +91,7 @@ async def create_filter(request: Request):
 @app_routes.post("/api/process_message")
 async def process_message_endpoint(request: Request):
     return await process_message(request)
+'''
 
 
 # TODO: this doesn't seem like it goes here.  
@@ -106,3 +116,37 @@ async def process_webhook(request: Request, payload: dict = Body(...)):
                 connector = get_connector(lfilter.reply_channel.connector)
                 await connector.send_message(lfilter.reply_channel, filter.reply)
 
+@app_routes.post("/token", response_model=Token)
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    user = authenticate_user(form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token = create_access_token(data={"sub": user.email})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
+
+
+@app_routes.post("/login", response_class=HTMLResponse)
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    user = await authenticate_user(form_data.username, form_data.password)
+    if user is None:
+        raise HTTPException(status_code=400, detail="Incorrect email or password")
+
+    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.email}, expires_delta=access_token_expires
+    )
+
+    response = RedirectResponse(url="/", status_code=303)
+    response.set_cookie(
+        key="access_token",
+        value=f"Bearer {access_token}",
+        httponly=True,
+        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    )
+    return response

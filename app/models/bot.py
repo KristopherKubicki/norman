@@ -5,6 +5,8 @@ from .base import Base
 class Bot(Base):
     __tablename__ = "bots"
     id = Column(Integer, primary_key=True)
+    name = Column(String, nullable=False)
+    description = Column(String, nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"))
     gpt_model = Column(String, nullable=False)
     created_at = Column(DateTime, default=func.now())

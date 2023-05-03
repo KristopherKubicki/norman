@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from . import models
+from app import models, schemas
 
 def get_bot_by_id(db: Session, bot_id: int):
     return db.query(models.Bot).filter(models.Bot.id == bot_id).first()

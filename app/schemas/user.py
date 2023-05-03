@@ -1,6 +1,6 @@
 # app/schemas/user.py
 
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 from typing import Optional
 
 
@@ -20,6 +20,13 @@ class UserUpdate(UserBase):
 
 class User(UserBase):
     id: int
+
+    class Config:
+        orm_mode = True
+
+class UserAuthenticate(BaseModel):
+    email: EmailStr
+    password: str
 
     class Config:
         orm_mode = True

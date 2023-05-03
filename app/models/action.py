@@ -6,7 +6,7 @@ from .base import Base
 class Action(Base):
     __tablename__ = "actions"
     id = Column(Integer, primary_key=True)
-    channel_filter_id = Column(Integer, ForeignKey("channel_filters.id"))
+    channel_filter_id = Column(Integer, ForeignKey("filters.id"))
     prompt = Column(Text, nullable=False)
     reply_to = Column(Integer, ForeignKey("channels.id"))
     execution_order = Column(Integer, nullable=False)

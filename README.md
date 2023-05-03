@@ -79,8 +79,13 @@ chmod +x generate_key.sh
 
 You can also just edit config.yaml instead and make up your own key. 
 
+7. Create the database using Alembic:
+```
+alembic revision --autogenerate -m "Initial migration"
+alembic upgrade head
+```
 
-7. Run the application:
+8. Run the application:
 ```
 python main.py
 ````
