@@ -29,6 +29,9 @@ async def messages(request: Request):
 async def bots(request: Request):
     return templates.TemplateResponse("bots.html", {"request": request})
 
+async def login(request: Request):
+    return templates.TemplateResponse("login.html", {"request": request})
+
 
 async def process_message(request: Request):
     data = await request.json()

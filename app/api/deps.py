@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
@@ -7,14 +8,18 @@ from app.models import User
 from app.crud.user import get_user_by_email
 
 # Replace "your_token_url" with the actual token URL for your application
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="your_token_url")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token")
 
+@contextmanager
 def get_db():
+    db = SessionLocal()
     try:
-        db = SessionLocal()
         yield db
     finally:
         db.close()
+
+async def get_async_db():
+    return get_db().__enter__()
 
 async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
     # Replace this function with the one you use to decode and verify the token

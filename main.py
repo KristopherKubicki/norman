@@ -3,6 +3,7 @@ import uvicorn
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+from app.initial_setup import create_initial_admin_user
 from app.connectors import init_connectors
 from app.api import init_routers
 from app.app_routes import app_routes
@@ -10,6 +11,11 @@ from app.core.config import settings
 from app.auth_middleware import auth_middleware
 
 app = FastAPI()
+
+# Create the initial user
+@app.on_event("startup")
+async def startup_event():
+    create_initial_admin_user()
 
 # add authentication
 app.middleware("http")(auth_middleware)

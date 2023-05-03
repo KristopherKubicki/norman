@@ -7,16 +7,21 @@ from starlette.staticfiles import StaticFiles
 from starlette.responses import FileResponse, HTMLResponse
 from starlette.responses import RedirectResponse
 
+from sqlalchemy.orm import Session
+
 from app.schemas import Token
+from app.schemas.user import UserAuthenticate
+from app.core.config import settings
 from app.crud.user import authenticate_user
 from app.models.interaction import Interaction
 from app.models.channel_filter import Filter
 from app.connectors import get_connector
+from app.api.deps import get_async_db
 
 from datetime import timedelta
 import os
 
-from .views import home, connectors, filters, channels, process_message, bots, messages
+from .views import home, connectors, filters, channels, process_message, bots, messages, login
 
 current_dir = os.path.dirname(os.path.realpath(__file__))
 app_routes = APIRouter()
@@ -117,8 +122,10 @@ async def process_webhook(request: Request, payload: dict = Body(...)):
                 await connector.send_message(lfilter.reply_channel, filter.reply)
 
 @app_routes.post("/token", response_model=Token)
-async def login(form_data: OAuth2PasswordRequestForm = Depends()):
-    user = authenticate_user(form_data.username, form_data.password)
+async def token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_async_db)):
+    user_auth = UserAuthenticate(email=form_data.username, password=form_data.password)
+    user = await authenticate_user(db, user_auth)
+
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -128,16 +135,24 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     access_token = create_access_token(data={"sub": user.email})
     return {"access_token": access_token, "token_type": "bearer"}
 
+@app_routes.get("/login.html")
+async def login_page(request: Request):
+    return await login(request)
 
-
+#@app_routes.post("/login", response_class=HTMLResponse)
+#async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
+#    user = await authenticate_user(form_data.username, form_data.password)
 
 @app_routes.post("/login", response_class=HTMLResponse)
-async def login(form_data: OAuth2PasswordRequestForm = Depends()):
-    user = await authenticate_user(form_data.username, form_data.password)
+async def login_post(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_async_db)):
+
+    user = UserAuthenticate(email=form_data.username, password=form_data.password)
+    #user = await authenticate_user(db, user_auth)
+
     if user is None:
         raise HTTPException(status_code=400, detail="Incorrect email or password")
 
-    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
     access_token = create_access_token(
         data={"sub": user.email}, expires_delta=access_token_expires
     )
@@ -150,3 +165,4 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
         max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
     )
     return response
+

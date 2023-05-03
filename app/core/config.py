@@ -9,6 +9,10 @@ class Settings(BaseSettings):
     api_version: str
     api_prefix: str
 
+    # initial admin
+    initial_admin_email: str = "admin@example.com"
+    initial_admin_password: str = "password123"
+
     # Connectors
     telegram_token: str
     telegram_chat_id: str
@@ -24,6 +28,8 @@ class Settings(BaseSettings):
     teams_bot_endpoint: str
     webhook_secret: str
 
+    access_token_expire_minutes: int
+
     # Database
     database_url: str
 
@@ -36,6 +42,20 @@ class Settings(BaseSettings):
         assert v != "super_secret_key_change_me", (
         "You must set a proper secret key. Please refer to the "
         "#installation section in the README.md for instructions."
+                )
+        return v
+
+    @validator("initial_admin_password", pre=True)
+    def validate_secret_admin(cls, v):
+        assert v != "change_me_too", (
+        "You must set an admin password in the config.yaml!"
+                )
+        return v
+
+    @validator("initial_admin_email", pre=True)
+    def validate_secret_email(cls, v):
+        assert v != "admin@example.com", (
+        "You must set an admin email in the config.yaml!"
                 )
         return v
 

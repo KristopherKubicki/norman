@@ -1,4 +1,6 @@
 secret_key: "super_secret_key_change_me"
+initial_admin_password: "change_me_too"
+initial_admin_email: "admin@example.com"
 app_name: "norman"
 debug: true
 api_version: "v1"
@@ -26,3 +28,6 @@ database_url: "sqlite:///./db/norman.db"
 host: "0.0.0.0"
 port: 8000
 
+
+# how long before a session should close from the web ui
+access_token_expire_minutes: 30
