@@ -8,6 +8,6 @@ class Bot(Base):
     name = Column(String, nullable=False)
     description = Column(String, nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"))
-    gpt_model = Column(String, nullable=False)
+    gpt_model = Column(String, nullable=False, default="gpt4")
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, onupdate=func.now())

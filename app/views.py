@@ -1,5 +1,12 @@
 from fastapi import Request
 from fastapi.templating import Jinja2Templates
+from typing import List
+from fastapi import Depends
+from sqlalchemy.orm import Session
+
+from app.models.bot import Bot as BotModel
+from app.schemas.bot import Bot
+from app.api.deps import get_db
 
 from app.connectors.connector_utils import get_connector, get_connectors_data
 
@@ -35,6 +42,9 @@ async def login(request: Request):
 async def logout(request: Request):
     return templates.TemplateResponse("logout.html", {"request": request})
 
+async def get_bots(db):
+    # TODO: restrict by user
+    return db.query(BotModel).all()
 
 async def process_message(request: Request):
     data = await request.json()

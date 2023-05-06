@@ -30,5 +30,5 @@ port: 8000
 
 
 # how long before a session should close from the web ui
-access_token_expire_minutes: 30
+access_token_expire_minutes: 1440
 algorithm: HS256

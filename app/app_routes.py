@@ -1,18 +1,21 @@
-from fastapi import APIRouter, Body, Depends, Request
+from typing import List
+from fastapi import APIRouter, Body, Depends, Request, HTTPException
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import RedirectResponse
 
 from starlette.staticfiles import StaticFiles
-from starlette.responses import FileResponse, HTMLResponse, Response
+from starlette.responses import FileResponse, HTMLResponse, Response, JSONResponse
 from starlette.responses import RedirectResponse
 
 from sqlalchemy.orm import Session
 
 from app.schemas import Token
 from app.schemas.user import UserAuthenticate
+from app.schemas.bot import Bot, BotCreate, BotOut
 from app.core.config import settings
 from app.core.security import create_access_token
 from app.crud.user import authenticate_user
+from app.crud.bot import create_bot, delete_bot
 from app.models.interaction import Interaction
 from app.models.channel_filter import Filter
 from app.connectors import get_connector
@@ -21,7 +24,7 @@ from app.api.deps import get_async_db
 from datetime import timedelta
 import os
 
-from .views import home, connectors, filters, channels, process_message, bots, messages, login, logout
+from .views import home, connectors, filters, channels, process_message, bots, messages, login, logout, get_bots
 
 current_dir = os.path.dirname(os.path.realpath(__file__))
 app_routes = APIRouter()
@@ -35,46 +38,64 @@ async def favicon():
     return FileResponse(os.path.join(current_dir, "static/favicon.ico"))
 
 @app_routes.get("/")
-async def home_page(request: Request):
-    print(" HOME PAGE")
+async def home_endpoint(request: Request):
     return await home(request)
 
 @app_routes.get("/index.html")
-async def index_page(request: Request):
+async def index_endpoint(request: Request):
     return await home(request)
 
 @app_routes.get("/connectors.html")
-async def connectors_page(request: Request):
+async def connectors_endpoint(request: Request):
     return await connectors(request)
 
 @app_routes.get("/filters.html")
-async def filters_page(request: Request):
+async def filters_endpoint(request: Request):
     return await filters(request)
 
 @app_routes.get("/channels.html")
-async def channels_page(request: Request):
+async def channels_endpoint(request: Request):
     return await channels(request)
 
 @app_routes.get("/bots.html")
-async def bots_page(request: Request):
+async def bots_endpoint(request: Request):
     return await bots(request)
 
 @app_routes.get("/messages_log.html")
-async def messages_page(request: Request):
+async def messages_endpoint(request: Request):
     return await messages(request)
 
+@app_routes.post("/api/bots/create")
+async def create_bot_endpoint(request: Request, db: Session = Depends(get_async_db)):
+    form_data = await request.json()
+    bot = BotCreate
+    bot.name = form_data["name"]
+    bot.description = form_data["description"]
+    # Add logic to create bot in the database
+    bot = create_bot(db=db, bot_create=bot)
+    return JSONResponse(content={"id": bot.id, "name": bot.name, "description": bot.description})
+
+@app_routes.get("/api/bots", response_model=List[BotOut])
+async def get_bots_endpoint(request: Request, db: Session = Depends(get_async_db)):
+    try:
+        bots = await get_bots(db)
+        bot_outs = [BotOut.from_orm(bot) for bot in bots]  # Convert the list of Bot objects to a list of BotOut instances
+        bot_dicts = [bot_out.dict() for bot_out in bot_outs]  # Convert the list of BotOut instances to a list of dictionaries
+        return JSONResponse(content=bot_dicts)  # Return the list of dictionaries as a JSONResponse
+    except Exception as e:
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail="An error occurred while fetching bots")
+
+@app_routes.delete("/api/bots/delete/{bot_id}")
+async def delete_bot_endpoint(bot_id: int, db: Session = Depends(get_async_db)):
+    success = await delete_bot(db=db, bot_id=bot_id)
+    if success:
+        return {"status": "success", "message": "Bot deleted successfully"}
+    else:
+        return {"status": "error", "message": "Failed to delete bot"}
+
+
 '''
-@app_routes.post("/bots/create")
-async def create_bot(request: Request):
-    if request.method == "POST":
-        form_data = await request.form()
-        name = form_data["name"]
-        description = form_data["description"]
-        # Add logic to create bot in the database
-        return RedirectResponse(url="/", status_code=303)
-    return templates.TemplateResponse("add_bot.html", {"request": request})
-
-
 @app_routes.post("/channels/create")
 async def create_channel(request: Request):
     if request.method == "POST":
@@ -140,11 +161,11 @@ async def token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
     return {"access_token": access_token, "token_type": "bearer"}
 
 @app_routes.get("/login.html")
-async def login_page(request: Request):
+async def login_endpoint(request: Request):
     return await login(request)
 
 @app_routes.get("/logout", response_class=HTMLResponse)
-async def logout_page(request: Request, response: Response = Depends(clear_access_token_cookie)):
+async def logout_endpoint(request: Request, response: Response = Depends(clear_access_token_cookie)):
     return await logout(request)
 
 #@app_routes.post("/login", response_class=HTMLResponse)
@@ -155,7 +176,6 @@ async def logout_page(request: Request, response: Response = Depends(clear_acces
 async def login_post(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_async_db)):
 
     user = UserAuthenticate(email=form_data.username, password=form_data.password)
-    #user = await authenticate_user(db, user_auth)
 
     if user is None:
         raise HTTPException(status_code=400, detail="Incorrect email or password")

@@ -4,7 +4,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Add event listener for the add-bot-form
   const addBotForm = document.getElementById("add-bot-form");
+  console.log('loaded');
   if (addBotForm) {
+    console.log('loaded1');
     addBotForm.addEventListener("submit", async (event) => {
       event.preventDefault();
   
@@ -13,13 +15,14 @@ document.addEventListener('DOMContentLoaded', () => {
   
       const name = nameInput.value.trim();
       const description = descriptionInput.value.trim();
+	    console.log("test1", name, description);
   
       if (!name) {
         alert("Please enter a bot name.");
         return;
       }
   
-      const bot = await addBot(name, description);
+      const bot = await addBot(name, description, "gpt4");
       const botElement = createBotElement(bot);
       const botsContainer = document.querySelector('.bots-container');
       botsContainer.appendChild(botElement);
@@ -44,26 +47,6 @@ async function fetchBotsAndRender() {
   }
 }
 
-function createBotElement(bot) {
-  const botElement = document.createElement('div');
-  botElement.classList.add('bot');
-
-  const nameElement = document.createElement('p');
-  nameElement.textContent = bot.name;
-  botElement.appendChild(nameElement);
-
-  const descriptionElement = document.createElement("p");
-  descriptionElement.textContent = `Description: ${bot.description}`;
-  botElement.appendChild(descriptionElement);
-
-  botElement.addEventListener("click", () => {
-    window.location.href = `/bot_detail/${bot.id}`;
-  });
-
-  return botElement;
-}
-
-/*
 function createBotElement(bot) {
   const botElement = document.createElement('div');
   botElement.classList.add('bot');
@@ -106,24 +89,22 @@ function createBotElement(bot) {
 
   return botElement;
 }
-*/
 
 
-// Add this function to the file
-async function addBot(name, description) {
-  const response = await fetch("/api/v1/bots", {
+async function addBot(name, description, model) {
+  const response = await fetch("/api/bots/create", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ name, description }),
+    body: JSON.stringify({ name, description, model }),
   });
   const bot = await response.json();
   return bot;
 }
 
 async function deleteBot(botId) {
-  const response = await fetch(`/api/v1/bots/${botId}`, {
+  const response = await fetch(`/api/bots/${botId}`, {
     method: "DELETE",
   });
   const bot = await response.json();
@@ -132,7 +113,7 @@ async function deleteBot(botId) {
 
 
 async function updateBot(botId, botData) {
-  const response = await fetch(`/api/v1/bots/${botId}`, {
+  const response = await fetch(`/api/bots/${botId}`, {
     method: "PUT",
     headers: {
       "Content-Type": "application/json",
