@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     webhook_secret: str
 
     access_token_expire_minutes: int
+    algorithm: str = "HS256"
 
     # Database
     database_url: str

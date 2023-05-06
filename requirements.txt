@@ -17,3 +17,4 @@ jinja2==3.0.3
 python-multipart
 passlib
 email-validator
+pyjwt

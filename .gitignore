@@ -42,3 +42,6 @@ config.yaml
 
 
 *.sw[op]
+
+# ignore user databases
+db/*.db

@@ -32,6 +32,9 @@ async def bots(request: Request):
 async def login(request: Request):
     return templates.TemplateResponse("login.html", {"request": request})
 
+async def logout(request: Request):
+    return templates.TemplateResponse("logout.html", {"request": request})
+
 
 async def process_message(request: Request):
     data = await request.json()

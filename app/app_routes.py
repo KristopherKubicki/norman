@@ -1,10 +1,9 @@
 from fastapi import APIRouter, Body, Depends, Request
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import RedirectResponse
-from fastapi import Depends
 
 from starlette.staticfiles import StaticFiles
-from starlette.responses import FileResponse, HTMLResponse
+from starlette.responses import FileResponse, HTMLResponse, Response
 from starlette.responses import RedirectResponse
 
 from sqlalchemy.orm import Session
@@ -12,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.schemas import Token
 from app.schemas.user import UserAuthenticate
 from app.core.config import settings
+from app.core.security import create_access_token
 from app.crud.user import authenticate_user
 from app.models.interaction import Interaction
 from app.models.channel_filter import Filter
@@ -21,11 +21,14 @@ from app.api.deps import get_async_db
 from datetime import timedelta
 import os
 
-from .views import home, connectors, filters, channels, process_message, bots, messages, login
+from .views import home, connectors, filters, channels, process_message, bots, messages, login, logout
 
 current_dir = os.path.dirname(os.path.realpath(__file__))
 app_routes = APIRouter()
 
+def clear_access_token_cookie(response: Response):
+    response.delete_cookie("access_token")
+    return response
 
 @app_routes.get("/favicon.ico")
 async def favicon():
@@ -33,6 +36,7 @@ async def favicon():
 
 @app_routes.get("/")
 async def home_page(request: Request):
+    print(" HOME PAGE")
     return await home(request)
 
 @app_routes.get("/index.html")
@@ -139,6 +143,10 @@ async def token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
 async def login_page(request: Request):
     return await login(request)
 
+@app_routes.get("/logout", response_class=HTMLResponse)
+async def logout_page(request: Request, response: Response = Depends(clear_access_token_cookie)):
+    return await logout(request)
+
 #@app_routes.post("/login", response_class=HTMLResponse)
 #async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
 #    user = await authenticate_user(form_data.username, form_data.password)
@@ -162,7 +170,7 @@ async def login_post(request: Request, form_data: OAuth2PasswordRequestForm = De
         key="access_token",
         value=f"Bearer {access_token}",
         httponly=True,
-        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        max_age=settings.access_token_expire_minutes * 60,
     )
     return response
 

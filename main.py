@@ -1,6 +1,8 @@
 import os
 import uvicorn
 
+from alembic import command
+from alembic.config import Config
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from app.initial_setup import create_initial_admin_user
@@ -10,11 +12,17 @@ from app.app_routes import app_routes
 from app.core.config import settings
 from app.auth_middleware import auth_middleware
 
+def run_alembic_migrations():
+    alembic_cfg = Config("alembic.ini")
+    alembic_cfg.set_main_option("sqlalchemy.url", settings.database_url)
+    command.upgrade(alembic_cfg, "head")
+
 app = FastAPI()
 
 # Create the initial user
 @app.on_event("startup")
 async def startup_event():
+    run_alembic_migrations()
     create_initial_admin_user()
 
 # add authentication
