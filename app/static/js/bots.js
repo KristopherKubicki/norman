@@ -4,9 +4,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Add event listener for the add-bot-form
   const addBotForm = document.getElementById("add-bot-form");
-  console.log('loaded');
   if (addBotForm) {
-    console.log('loaded1');
     addBotForm.addEventListener("submit", async (event) => {
       event.preventDefault();
   
@@ -33,6 +31,26 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
 });
+
+function selectBot(bot) {
+  const selectedBotNameElement = document.getElementById('selected-bot-name');
+  selectedBotNameElement.innerText = bot.name;
+  selectedBotNameElement.dataset.botId = bot.id; // Set the bot_id as a data attribute
+}
+
+document.getElementById('send-message').addEventListener('click', async () => {
+  const selectedBotNameElement = document.getElementById('selected-bot-name');
+  const inputMessageElement = document.getElementById('input-message');
+  const content = inputMessageElement.value;
+
+  if (selectedBotNameElement.innerText !== 'None' && content.trim()) {
+    const bot_id = selectedBotNameElement.dataset.botId; // Get the bot_id from the selected bot
+    await sendMessage(bot_id, content);
+    inputMessageElement.value = '';
+    fetchMessagesAndRender(bot_id);
+  }
+});
+
 
 async function fetchBotsAndRender() {
   const response = await fetch("/api/bots");
@@ -87,6 +105,15 @@ function createBotElement(bot) {
   botElement.appendChild(descriptionElement);
   botElement.appendChild(deleteButton);
 
+  // Add click event listener to fetch and display messages
+  botElement.addEventListener('click', () => {
+    const selectedBotNameElement = document.getElementById('selected-bot-name');
+    selectedBotNameElement.innerText = bot.name;
+    selectedBotNameElement.setAttribute('data-bot-id', bot.id);
+    fetchMessagesAndRender(bot.id);
+  });
+
+
   return botElement;
 }
 
@@ -122,4 +149,49 @@ async function updateBot(botId, botData) {
   });
   const bot = await response.json();
   return bot;
+}
+
+
+async function fetchMessagesAndRender(bot_id) {
+  const response = await fetch(`/api/bots/${bot_id}/messages`);
+  const messages = await response.json();
+
+  console.log('Messages:', messages); // Add this line to debug
+
+  const messagesContainer = document.querySelector('.messages-container');
+  messagesContainer.innerHTML = '';
+
+  for (const message of messages) {
+    const messageElement = createMessageElement(message);
+    messagesContainer.appendChild(messageElement);
+  }
+}
+
+async function sendMessage(bot_id, content) {
+  const response = await fetch(`/api/bots/${bot_id}/messages`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ content }),
+  });
+  const message = await response.json();
+  return message;
+}
+
+function createMessageElement(message) {
+  const messageElement = document.createElement('div');
+  messageElement.className = 'message';
+
+  const contentElement = document.createElement('p');
+  contentElement.className = 'message-content';
+  contentElement.innerText = message.text; // Changed from 'content' to 'text'
+  messageElement.appendChild(contentElement);
+
+  const timestampElement = document.createElement('p');
+  timestampElement.className = 'message-timestamp';
+  timestampElement.innerText = message.created_at; // Changed from 'timestamp' to 'created_at'
+  messageElement.appendChild(timestampElement);
+
+  return messageElement;
 }

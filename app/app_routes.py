@@ -12,10 +12,12 @@ from sqlalchemy.orm import Session
 from app.schemas import Token
 from app.schemas.user import UserAuthenticate
 from app.schemas.bot import Bot, BotCreate, BotOut
+from app.schemas.message import Message
 from app.core.config import settings
 from app.core.security import create_access_token
 from app.crud.user import authenticate_user
 from app.crud.bot import create_bot, delete_bot
+from app.crud.message import create_message, get_messages_by_bot_id, delete_message
 from app.models.interaction import Interaction
 from app.models.channel_filter import Filter
 from app.connectors import get_connector
@@ -86,13 +88,50 @@ async def get_bots_endpoint(request: Request, db: Session = Depends(get_async_db
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail="An error occurred while fetching bots")
 
-@app_routes.delete("/api/bots/delete/{bot_id}")
+@app_routes.delete("/api/bots/{bot_id}")
 async def delete_bot_endpoint(bot_id: int, db: Session = Depends(get_async_db)):
-    success = await delete_bot(db=db, bot_id=bot_id)
+    success = delete_bot(db=db, bot_id=bot_id)
     if success:
         return {"status": "success", "message": "Bot deleted successfully"}
     else:
         return {"status": "error", "message": "Failed to delete bot"}
+
+@app_routes.post("/api/bots/{bot_id}/messages")
+async def create_message_endpoint(bot_id: int, request: Request, db: Session = Depends(get_async_db)):
+    try:
+        ljson = await request.json()
+        message = create_message(db=db, bot_id=bot_id, text=ljson.get('content'))
+        return {"status": "success", "message": "Message created successfully", "data": message}
+    except Exception as e:
+        print("Error:", e)
+        return {"status": "error", "message": "Failed to create message"}
+
+
+@app_routes.get("/api/bots/{bot_id}/messages", response_model=List[Message])
+async def get_messages_endpoint(bot_id: int, db: Session = Depends(get_async_db)):
+    # TODO: support pagination
+    try:
+        messages = get_messages_by_bot_id(db=db, bot_id=bot_id)
+        return [Message.from_orm(message).dict() for message in messages]
+    except Exception as e:
+        print("Error:", e)
+        raise HTTPException(status_code=500, detail="Failed to fetch messages")
+
+
+'''
+@app_routes.delete("/api/messages/{message_id}")
+async def delete_message_endpoint(message_id: int, db: Session = Depends(get_async_db)):
+    try:
+        success = await delete_message(db=db, message_id=message_id)
+        if success:
+            return {"status": "success", "message": "Message deleted successfully"}
+        else:
+            return {"status": "error", "message": "Failed to delete message"}
+    except Exception as e:
+        print("Error:", e)
+        return {"status": "error", "message": "Failed to delete message"}
+'''
+
 
 
 '''
