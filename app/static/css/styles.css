@@ -96,11 +96,15 @@ footer {
   .main-chat-container {
     width: 75%;
     border-left: 1px solid #ccc;
+    max-height: 80vh;
+    overflow: hidden;
   }
 
   .messages-container {
     overflow-y: auto;
-    height: calc(100vh - 150px);
+    height: calc(90vh - 150px);
+    max-height: 70vh;
+    overflow-y: auto;
   }
 
   .bot-item {

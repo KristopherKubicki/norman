@@ -7,24 +7,23 @@ document.addEventListener('DOMContentLoaded', () => {
   if (addBotForm) {
     addBotForm.addEventListener("submit", async (event) => {
       event.preventDefault();
-  
+
       const nameInput = document.getElementById("bot-name");
       const descriptionInput = document.getElementById("bot-description");
-  
+
       const name = nameInput.value.trim();
       const description = descriptionInput.value.trim();
-	    console.log("test1", name, description);
-  
+
       if (!name) {
         alert("Please enter a bot name.");
         return;
       }
-  
+
       const bot = await addBot(name, description, "gpt4");
       const botElement = createBotElement(bot);
       const botsContainer = document.querySelector('.bots-container');
       botsContainer.appendChild(botElement);
-  
+
       nameInput.value = "";
       descriptionInput.value = "";
     });
@@ -38,19 +37,26 @@ function selectBot(bot) {
   selectedBotNameElement.dataset.botId = bot.id; // Set the bot_id as a data attribute
 }
 
-document.getElementById('send-message').addEventListener('click', async () => {
-  const selectedBotNameElement = document.getElementById('selected-bot-name');
-  const inputMessageElement = document.getElementById('input-message');
-  const content = inputMessageElement.value;
+sendButton.addEventListener("click", async (event) => {
+  event.preventDefault();
 
-  if (selectedBotNameElement.innerText !== 'None' && content.trim()) {
+  // Disable the button
+  sendButton.disabled = true;
+
+  const selectedBotNameElement = document.getElementById('selected-bot-name');
+  const content = textarea.value.trim();
+
+  if (selectedBotNameElement.innerText !== 'None' && content) {
     const bot_id = selectedBotNameElement.dataset.botId; // Get the bot_id from the selected bot
     await sendMessage(bot_id, content);
-    inputMessageElement.value = '';
+    textarea.value = '';
+    textarea.style.height = "auto";
     fetchMessagesAndRender(bot_id);
   }
-});
 
+  // Re-enable the button
+  sendButton.disabled = false;
+});
 
 async function fetchBotsAndRender() {
   const response = await fetch("/api/bots");

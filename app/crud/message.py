@@ -1,9 +1,10 @@
 from sqlalchemy.orm import Session
+from sqlalchemy import desc
 from app.models import Message
 from typing import List
 
-def create_message(db: Session, bot_id: int, text: str) -> Message:
-    db_message = Message(bot_id=bot_id, text=text)
+def create_message(db: Session, bot_id: int, text: str, source: str) -> Message:
+    db_message = Message(bot_id=bot_id, text=text, source=source)
     db.add(db_message)
     db.commit()
     db.refresh(db_message)
@@ -29,4 +30,18 @@ def update_message(db: Session, message_id: int, content: str) -> Message:
         db.refresh(message)
         return message
     return None
+
+
+def get_last_messages_by_bot_id(db: Session, bot_id: int, limit: int = 10):
+    return (
+        db.query(Message)
+        .filter(Message.bot_id == bot_id)
+        .order_by(desc(Message.created_at))
+        .limit(limit)
+        .all()
+    )
+
+def delete_messages_by_bot_id(db: Session, bot_id: int):
+    db.query(Message).filter(Message.bot_id == bot_id).delete(synchronize_session='fetch')
+    db.commit()
 

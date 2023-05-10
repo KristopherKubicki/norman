@@ -30,12 +30,31 @@
       <!-- Messages will be dynamically added here -->
     </div>
     <div class="input-message-container">
-  <input type="text" id="input-message" placeholder="Type your message..." />
+  <textarea id="input-message" rows="1" placeholder="Type your message..." style="resize: none; overflow: hidden;"></textarea>
+
   <button id="send-message">Send</button>
 </div>
 
   </div>
 </div>
+
+<script>
+
+
+	 var textarea = document.getElementById('input-message');
+var sendButton = document.getElementById("send-message");
+    textarea.oninput = function() {
+        var lines = textarea.value.split('\n');
+        for (var i = 0; i < lines.length; i++) {
+            if (lines[i] === "" && lines[i+1] === "") {
+                textarea.value = lines.slice(0, i+1).join('\n');
+		    sendButton.click();
+            }
+        }
+    };
+
+</script>
+
 <script src="/static/js/bots.js"></script>
 {% endblock %}
 

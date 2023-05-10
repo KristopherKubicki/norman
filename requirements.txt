@@ -18,3 +18,4 @@ python-multipart
 passlib
 email-validator
 pyjwt
+openai

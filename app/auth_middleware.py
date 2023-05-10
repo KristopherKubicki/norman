@@ -23,7 +23,6 @@ async def auth_middleware(request: Request, call_next):
             token = await oauth2_scheme(request)
             current_user = await get_current_user(token)
         except HTTPException as e:
-            print("Response", e)
             if e.status_code == 401:
                 #return Response(content="Unauthorized", status_code=401)
                 return RedirectResponse(url="/login.html", content="Unauthorized", status_code=401)

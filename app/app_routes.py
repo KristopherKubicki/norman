@@ -13,11 +13,14 @@ from app.schemas import Token
 from app.schemas.user import UserAuthenticate
 from app.schemas.bot import Bot, BotCreate, BotOut
 from app.schemas.message import Message
+from app.schemas.interaction import InteractionCreate
 from app.core.config import settings
 from app.core.security import create_access_token
 from app.crud.user import authenticate_user
 from app.crud.bot import create_bot, delete_bot
-from app.crud.message import create_message, get_messages_by_bot_id, delete_message
+from app.crud.message import create_message, get_messages_by_bot_id, delete_message, get_last_messages_by_bot_id, delete_messages_by_bot_id
+from app.crud.interaction import create_interaction
+from app.handlers.openai_handler import create_chat_interaction
 from app.models.interaction import Interaction
 from app.models.channel_filter import Filter
 from app.connectors import get_connector
@@ -90,22 +93,13 @@ async def get_bots_endpoint(request: Request, db: Session = Depends(get_async_db
 
 @app_routes.delete("/api/bots/{bot_id}")
 async def delete_bot_endpoint(bot_id: int, db: Session = Depends(get_async_db)):
+    success = delete_messages_by_bot_id(db=db, bot_id=bot_id)
+
     success = delete_bot(db=db, bot_id=bot_id)
     if success:
         return {"status": "success", "message": "Bot deleted successfully"}
     else:
         return {"status": "error", "message": "Failed to delete bot"}
-
-@app_routes.post("/api/bots/{bot_id}/messages")
-async def create_message_endpoint(bot_id: int, request: Request, db: Session = Depends(get_async_db)):
-    try:
-        ljson = await request.json()
-        message = create_message(db=db, bot_id=bot_id, text=ljson.get('content'))
-        return {"status": "success", "message": "Message created successfully", "data": message}
-    except Exception as e:
-        print("Error:", e)
-        return {"status": "error", "message": "Failed to create message"}
-
 
 @app_routes.get("/api/bots/{bot_id}/messages", response_model=List[Message])
 async def get_messages_endpoint(bot_id: int, db: Session = Depends(get_async_db)):
@@ -116,6 +110,52 @@ async def get_messages_endpoint(bot_id: int, db: Session = Depends(get_async_db)
     except Exception as e:
         print("Error:", e)
         raise HTTPException(status_code=500, detail="Failed to fetch messages")
+
+@app_routes.post("/api/bots/{bot_id}/messages")
+async def create_message_endpoint(bot_id: int, request: Request, db: Session = Depends(get_async_db)):
+    try:
+        ljson = await request.json()
+        message = create_message(db=db, bot_id=bot_id, text=ljson.get('content'), source='user')
+        # Create a chat interaction with OpenAI
+
+        # get the last messages for this bot, so it can generate a response based on history
+        last_messages = get_last_messages_by_bot_id(db=db, bot_id=bot_id, limit=10)
+        # Create the messages array to be sent to the OpenAI API
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant."}  # TODO: read this from the bot config
+        ]
+
+        for msg in last_messages:
+            messages.append({"role": "user", "content": msg.text})
+        messages.append({"role": "user", "content": message.text})
+        interaction_response = await create_chat_interaction(
+            #model="gpt-3.5-turbo",
+            model="gpt-4",
+            messages=messages
+        )
+
+        print("interaction:", interaction_response)
+
+        # Create an interaction schema
+        interaction_in = InteractionCreate(
+            bot_id=bot_id,
+            message_id=message.id,
+            input_data=message.text,
+            gpt_model=interaction_response['model'],
+            output_data=interaction_response['choices'][0]['message']['content'],
+            tokens_in=interaction_response['usage']['total_tokens'],
+            tokens_out=interaction_response['usage']['total_tokens'], # FIX
+            status_code=200,
+            headers='', # TODO
+        )
+
+        # Create a new interaction in the database
+        interaction = create_interaction(db=db, interaction=interaction_in)
+        message = create_message(db=db, bot_id=bot_id, text=interaction_response['choices'][0]['message']['content'], source='bot')
+        return {"status": "success", "message": "Message and interaction created successfully", "data": {"message": message, "interaction": interaction}}
+    except Exception as e:
+        print("Error:", e)
+        return {"status": "error", "message": "Failed to create message and interaction"}
 
 
 '''

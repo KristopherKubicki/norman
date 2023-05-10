@@ -21,6 +21,8 @@ teams_tenant_id: "your_teams_tenant_id"
 teams_bot_endpoint: "your_teams_bot_endpoint"
 webhook_secret: "your_webhook_secret"
 
+openai_api_key: 
+
 # Database
 database_url: "sqlite:///./db/norman.db"
 

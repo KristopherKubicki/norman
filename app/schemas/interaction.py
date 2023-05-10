@@ -4,9 +4,10 @@ from datetime import datetime
 
 class InteractionBase(BaseModel):
     bot_id: int
-    input_text: str
-    output_text: str
+    input_data: str
+    output_data: str
     tokens_in: int
+    gpt_model: str
     tokens_out: int
     status_code: int
     headers: str
