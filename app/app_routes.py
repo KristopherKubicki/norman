@@ -17,7 +17,7 @@ from app.schemas.interaction import InteractionCreate
 from app.core.config import settings
 from app.core.security import create_access_token
 from app.crud.user import authenticate_user
-from app.crud.bot import create_bot, delete_bot
+from app.crud.bot import create_bot, delete_bot, get_bot_by_id
 from app.crud.message import create_message, get_messages_by_bot_id, delete_message, get_last_messages_by_bot_id, delete_messages_by_bot_id
 from app.crud.interaction import create_interaction
 from app.handlers.openai_handler import create_chat_interaction
@@ -116,22 +116,27 @@ async def create_message_endpoint(bot_id: int, request: Request, db: Session = D
     try:
         ljson = await request.json()
         message = create_message(db=db, bot_id=bot_id, text=ljson.get('content'), source='user')
-        # Create a chat interaction with OpenAI
+
 
         # get the last messages for this bot, so it can generate a response based on history
-        last_messages = get_last_messages_by_bot_id(db=db, bot_id=bot_id, limit=10)
-        # Create the messages array to be sent to the OpenAI API
-        messages = [
-            {"role": "system", "content": "You are a helpful assistant."}  # TODO: read this from the bot config
-        ]
+        # TODO: allow the limit to be set as a parameter
+        last_messages = get_last_messages_by_bot_id(db=db, bot_id=bot_id, limit=10) # should always be at least 1
 
-        for msg in last_messages:
-            messages.append({"role": "user", "content": msg.text})
-        messages.append({"role": "user", "content": message.text})
+        bot = get_bot_by_id(db=db, bot_id=bot_id)
+
+        # Create a chat interaction with OpenAI
+        # Create the messages array to be sent to the OpenAI API
+        # TODO: count the tokens, and don't exceed the bot.default_prompt_tokens
+        messages = [
+            {"role": "system", "content": bot.system_prompt} 
+        ]
+        for msg in reversed(last_messages):
+            messages.append({"role": msg.source, "content": msg.text})
+
         interaction_response = await create_chat_interaction(
-            #model="gpt-3.5-turbo",
-            model="gpt-4",
-            messages=messages
+            model=bot.gpt_model,
+            messages=messages,
+            max_tokens=bot.default_response_tokens
         )
 
         print("interaction:", interaction_response)
@@ -143,15 +148,15 @@ async def create_message_endpoint(bot_id: int, request: Request, db: Session = D
             input_data=message.text,
             gpt_model=interaction_response['model'],
             output_data=interaction_response['choices'][0]['message']['content'],
-            tokens_in=interaction_response['usage']['total_tokens'],
-            tokens_out=interaction_response['usage']['total_tokens'], # FIX
+            tokens_in=interaction_response['usage']['prompt_tokens'],
+            tokens_out=interaction_response['usage']['completion_tokens'], # FIX
             status_code=200,
             headers='', # TODO
         )
 
         # Create a new interaction in the database
         interaction = create_interaction(db=db, interaction=interaction_in)
-        message = create_message(db=db, bot_id=bot_id, text=interaction_response['choices'][0]['message']['content'], source='bot')
+        message = create_message(db=db, bot_id=bot_id, text=interaction_response['choices'][0]['message']['content'], source='assistant')
         return {"status": "success", "message": "Message and interaction created successfully", "data": {"message": message, "interaction": interaction}}
     except Exception as e:
         print("Error:", e)

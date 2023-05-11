@@ -19,3 +19,4 @@ passlib
 email-validator
 pyjwt
 openai
+tiktoken

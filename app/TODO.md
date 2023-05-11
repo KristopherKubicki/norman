@@ -6,17 +6,17 @@ This document outlines the remaining tasks to complete and improve the Norman pr
 
 - [ ] Add additional exception classes in `app/core/exceptions.py` to handle specific error scenarios.
 - [ ] Improve logging configuration and log messages in `app/core/logging.py`.
-- [ ] Review and optimize the configuration loading in `app/core/config.py`.
+- [x] Review and optimize the configuration loading in `app/core/config.py`.
 
 ## Database
 
 - [ ] Optimize database connection handling and connection pooling in `app/db/base.py`.
-- [ ] Improve the database models in `app/db/models`.
-- [ ] Implement any necessary database migrations.
+- [x] Improve the database models in `app/db/models`.
+- [x] Implement any necessary database migrations.
 
 ## CRUD
 
-- [ ] Optimize CRUD operations in `app/crud`.
+- [x] Optimize CRUD operations in `app/crud`.
 - [ ] Review and improve error handling and validation for CRUD operations.
 
 ## Routers

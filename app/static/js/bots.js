@@ -1,3 +1,4 @@
+
 document.addEventListener('DOMContentLoaded', () => {
   // Fetch bots and render them in the bots container
   fetchBotsAndRender();
@@ -162,12 +163,11 @@ async function fetchMessagesAndRender(bot_id) {
   const response = await fetch(`/api/bots/${bot_id}/messages`);
   const messages = await response.json();
 
-  console.log('Messages:', messages); // Add this line to debug
-
   const messagesContainer = document.querySelector('.messages-container');
   messagesContainer.innerHTML = '';
 
   for (const message of messages) {
+    ///const messageHTML = marked(message.text);
     const messageElement = createMessageElement(message);
     messagesContainer.appendChild(messageElement);
   }
