@@ -58,4 +58,23 @@ async def create_chat_interaction(messages: List[Dict[str, str]], max_tokens: in
 
     except Exception as e:
         print(f"Failed to create chat interaction: {e}")
+        # create a fake interaction if we forget to include the handle Key
+        '''
+        Failed to create chat interaction: No API key provided. You can set your API key in code using 'openai.api_key = <API-KEY>', or you can set the environment variable OPENAI_API_KEY=<API-KEY>). If your API key is stored in a file, you can point the openai module at it with 'openai.api_key_path = <PATH>'. You can generate API keys in the OpenAI web interface. See https://platform.openai.com/account/api-keys for details.
+        '''
+        if openai.api_key is None:
+            response = {}
+            response['model'] = "norman"
+            response['choices'] = []
+            lmsg = {}
+            lmsg['message'] = {}
+            # todo: tell the user to set the config file
+            lmsg['message']['content'] = 'Please add your OpenAI api key in the config.yaml under openai_api_key, and restart the program'
+            response['error'] = True
+            response['usage'] = {}
+            response['usage']['prompt_tokens'] = 0
+            response['usage']['completion_tokens'] = 0
+            response['choices'].append(lmsg)
+            return response
+
         return None

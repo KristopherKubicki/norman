@@ -139,8 +139,6 @@ async def create_message_endpoint(bot_id: int, request: Request, db: Session = D
             max_tokens=bot.default_response_tokens
         )
 
-        print("interaction:", interaction_response)
-
         # Create an interaction schema
         interaction_in = InteractionCreate(
             bot_id=bot_id,
