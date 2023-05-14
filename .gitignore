@@ -12,7 +12,8 @@ venv/
 *.log
 
 # Alembic
-alembic/versions/
+#  all alembic migrations are live now
+#alembic/versions/
 
 # Jupyter Notebook
 .ipynb_checkpoints/

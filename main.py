@@ -24,6 +24,8 @@ app = FastAPI()
 # Create the initial user
 @app.on_event("startup")
 async def startup_event():
+    if not os.path.exists("db"):
+        os.makedirs("db", exist_ok=True)
     run_alembic_migrations()
     create_initial_admin_user()
 

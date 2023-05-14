@@ -79,18 +79,12 @@ chmod +x generate_key.sh
 
 You can also just edit config.yaml instead and make up your own key. 
 
-7. Create the database using Alembic:
-```
-alembic revision --autogenerate -m "Initial migration"
-alembic upgrade head
-```
-
 8. Run the application:
 ```
 python main.py
 ````
 
-8. Open the API documentation in your browser: [http://localhost:8000/docs](http://localhost:8000/docs)
+9. Open the API documentation in your browser: [http://localhost:8000/docs](http://localhost:8000/docs)
 
 For more information, refer to the [documentation](docs/) and the [contributing guidelines](CONTRIBUTING.md).
 
