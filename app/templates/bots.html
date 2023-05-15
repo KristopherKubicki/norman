@@ -30,9 +30,10 @@
       <!-- Messages will be dynamically added here -->
     </div>
     <div class="input-message-container">
-  <textarea id="input-message" rows="1" placeholder="Type your message..." style="resize: none; overflow: hidden;"></textarea>
+  <textarea id="input-message" rows="1" placeholder="Pick a bot..." disabled></textarea>
 
-  <button id="send-message">Send</button>
+  <button id="send-message" disabled>Send</button>
+  <div id="spinner" class="spinner" style="display: none;"></div>
 </div>
 
   </div>
@@ -41,7 +42,19 @@
 <script>
 
 
-	 var textarea = document.getElementById('input-message');
+var textarea = document.getElementById('input-message');
+
+textarea.addEventListener('input', () => {
+  // Temporarily set the height to 'auto' so the scrollHeight property will give us the full height of the content
+  textarea.style.height = 'auto';
+
+  // Now set the height to the content's full height (but not more than max-height)
+  // The 'Math.min' part is not necessary if you don't have a max-height
+  textarea.style.height = Math.min(textarea.scrollHeight, 300) + 'px';
+});
+textarea.dispatchEvent(new Event('input'));
+
+
 var sendButton = document.getElementById("send-message");
     textarea.oninput = function() {
         var lines = textarea.value.split('\n');
@@ -53,10 +66,11 @@ var sendButton = document.getElementById("send-message");
         }
     };
 
+
 </script>
 
-<script src="/static/js/marked.min.js"></script>
-<script src="/static/js/bots.js"></script>
+<script src="/static/js/marked.min.js" defer></script>
+<script src="/static/js/bots.js" defer></script>
 {% endblock %}
 
 

@@ -18,6 +18,7 @@ class MessageInDBBase(MessageBase):
     id: int
     bot_id: int
     created_at: datetime
+    source: str
 
     class Config:
         orm_mode = True

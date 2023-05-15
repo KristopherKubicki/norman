@@ -2,6 +2,7 @@
 from typing import Any, Dict, Optional
 from pydantic import BaseSettings, validator
 
+# should this move to schemas?
 class Settings(BaseSettings):
     secret_key: str
     app_name: str
@@ -31,6 +32,8 @@ class Settings(BaseSettings):
 
     access_token_expire_minutes: int
     algorithm: str = "HS256"
+    encryption_key: str
+    encryption_salt: str
 
     # Database
     database_url: str

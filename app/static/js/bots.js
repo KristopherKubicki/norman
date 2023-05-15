@@ -32,20 +32,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
 });
 
-function selectBot(bot) {
-  const selectedBotNameElement = document.getElementById('selected-bot-name');
-  selectedBotNameElement.innerText = bot.name;
-  selectedBotNameElement.dataset.botId = bot.id; // Set the bot_id as a data attribute
-}
 
 sendButton.addEventListener("click", async (event) => {
   event.preventDefault();
 
   // Disable the button
   sendButton.disabled = true;
+ 
+  // reset the enter dialog
+const textarea = document.querySelector('textarea');
+    textarea.style.height = 'auto';
 
+const spinner = document.getElementById('spinner');
   const selectedBotNameElement = document.getElementById('selected-bot-name');
   const content = textarea.value.trim();
+
+	spinner.style.display = 'inline-block';
 
   if (selectedBotNameElement.innerText !== 'None' && content) {
     const bot_id = selectedBotNameElement.dataset.botId; // Get the bot_id from the selected bot
@@ -57,6 +59,8 @@ sendButton.addEventListener("click", async (event) => {
 
   // Re-enable the button
   sendButton.disabled = false;
+ spinner.style.display = 'none';
+
 });
 
 async function fetchBotsAndRender() {
@@ -118,6 +122,9 @@ function createBotElement(bot) {
     selectedBotNameElement.innerText = bot.name;
     selectedBotNameElement.setAttribute('data-bot-id', bot.id);
     fetchMessagesAndRender(bot.id);
+  document.getElementById('send-message').removeAttribute('disabled');
+  document.getElementById('input-message').removeAttribute('disabled');
+  document.getElementById('input-message').placeholder = 'Enter your message...'
   });
 
 
@@ -167,10 +174,12 @@ async function fetchMessagesAndRender(bot_id) {
   messagesContainer.innerHTML = '';
 
   for (const message of messages) {
-    ///const messageHTML = marked(message.text);
     const messageElement = createMessageElement(message);
     messagesContainer.appendChild(messageElement);
   }
+	messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+
 }
 
 async function sendMessage(bot_id, content) {
@@ -185,19 +194,34 @@ async function sendMessage(bot_id, content) {
   return message;
 }
 
+
 function createMessageElement(message) {
   const messageElement = document.createElement('div');
-  messageElement.className = 'message';
+  messageElement.className = 'message ' + message.source;
+  marked.setOptions({ mangle: false, headerIds: false });
 
   const contentElement = document.createElement('p');
   contentElement.className = 'message-content';
-  contentElement.innerText = message.text; // Changed from 'content' to 'text'
+  const messageWithTabsAndNewlinesReplaced = message.text.replace(/\t/g, "&nbsp;&nbsp;&nbsp;&nbsp;").replace(/\n/g, "<br/>");
+  const messageHTML = marked.marked(messageWithTabsAndNewlinesReplaced);
+  contentElement.innerHTML = messageHTML;
   messageElement.appendChild(contentElement);
 
   const timestampElement = document.createElement('p');
   timestampElement.className = 'message-timestamp';
   timestampElement.innerText = message.created_at; // Changed from 'timestamp' to 'created_at'
+
+  const copyButton = document.createElement('button');
+  copyButton.className = 'copy-button';
+  copyButton.textContent = 'Copy';
+  copyButton.addEventListener('click', function() {
+    navigator.clipboard.writeText(message.text);
+  });
+
   messageElement.appendChild(timestampElement);
+  messageElement.appendChild(copyButton);
+  messageElement.appendChild(document.createElement('hr'));
 
   return messageElement;
 }
+

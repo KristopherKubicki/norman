@@ -1,10 +1,10 @@
-from typing import List
+from typing import List, Dict, Any
 from pydantic import BaseModel
 
 class ConnectorBase(BaseModel):
-    name: str
-    type: str
-    config: dict
+    description: str
+    config: Dict[str, Any]
+    connector_type: str
 
 class ConnectorCreate(ConnectorBase):
     pass

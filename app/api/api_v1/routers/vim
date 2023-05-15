@@ -1,0 +1,41 @@
+from fastapi import APIRouter, HTTPException
+from typing import List
+from app import crud, models, schemas
+
+router = APIRouter()
+
+@router.post("/", response_model=schemas.Connector)
+def create_connector(connector: schemas.ConnectorCreate):
+    # You'd use the cryptography library to encrypt the config details here before storing them in the database.
+    encrypted_config = encrypt_config(connector.config)
+    connector_in_db = crud.connector.create_with_encrypted_config(connector, encrypted_config)
+    return connector_in_db
+
+@router.get("/{connector_id}", response_model=schemas.Connector)
+def read_connector(connector_id: int):
+    connector_in_db = crud.connector.get(connector_id)
+    if connector_in_db is None:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    # You'd use the cryptography library to decrypt the config details here before returning them.
+    decrypted_config = decrypt_config(connector_in_db.config)
+    connector_in_db.config = decrypted_config
+    return connector_in_db
+
+@router.put("/{connector_id}", response_model=schemas.Connector)
+def update_connector(connector_id: int, connector: schemas.ConnectorUpdate):
+    connector_in_db = crud.connector.get(connector_id)
+    if connector_in_db is None:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    # You'd use the cryptography library to encrypt the config details here before storing them in the database.
+    encrypted_config = encrypt_config(connector.config)
+    connector_in_db = crud.connector.update_with_encrypted_config(connector_in_db, connector, encrypted_config)
+    return connector_in_db
+
+@router.delete("/{connector_id}", response_model=schemas.Connector)
+def delete_connector(connector_id: int):
+    connector_in_db = crud.connector.get(connector_id)
+    if connector_in_db is None:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    crud.connector.remove(connector_id)
+    return connector_in_db
+
