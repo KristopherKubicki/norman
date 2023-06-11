@@ -1,0 +1,14 @@
+version: "2"
+services:
+  norman:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: norman
+    restart: unless-stopped
+    volumes:
+      - ./config.yaml:/app/config.yaml
+
+    ports:
+      - 8000:8000
+  
