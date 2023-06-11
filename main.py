@@ -17,7 +17,7 @@ def run_alembic_migrations():
         os.makedirs("alembic/versions", exist_ok=True)
     alembic_cfg = Config("alembic.ini")
     alembic_cfg.set_main_option("sqlalchemy.url", settings.database_url)
-    command.upgrade(alembic_cfg, "head")
+    command.upgrade(alembic_cfg, "heads")
 
 app = FastAPI()
 
