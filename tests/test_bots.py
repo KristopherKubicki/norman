@@ -7,7 +7,7 @@ from app.core.config import settings
 from app.schemas.bot import BotCreate
 from app.tests.utils.utils import random_lower_string
 
-def test_create_bot(client: TestClient, db: Session) -> None:
+def test_create_bot(test_app: TestClient, db: Session) -> None:
     gpt_model = "gpt-4"
     name = random_lower_string()
     bot_in = BotCreate(gpt_model=gpt_model, name=name)
@@ -15,7 +15,7 @@ def test_create_bot(client: TestClient, db: Session) -> None:
     assert bot.gpt_model == gpt_model
     assert bot.name == name
 
-def test_get_bot(client: TestClient, db: Session) -> None:
+def test_get_bot(test_app: TestClient, db: Session) -> None:
     gpt_model = "gpt-4"
     name = random_lower_string()
     bot_in = BotCreate(gpt_model=gpt_model, name=name)

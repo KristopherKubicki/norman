@@ -8,7 +8,7 @@ from app.core.test_settings import TestSettings
 test_settings = TestSettings()
 
 @pytest.fixture(scope="module")
-def test_client():
+def test_app():
     init_connectors(app, test_settings)
     with TestClient(app) as client:
         yield client

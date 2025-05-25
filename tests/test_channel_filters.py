@@ -7,7 +7,7 @@ from app.core.config import settings
 from app.schemas.channel_filter import FilterCreate
 from app.tests.utils.utils import random_lower_string
 
-def test_create_channel_filter(client: TestClient, db: Session) -> None:
+def test_create_channel_filter(test_app: TestClient, db: Session) -> None:
     regex = r"helpdesk"
     description = random_lower_string()
     channel_filter_in = FilterCreate(regex=regex, description=description)
@@ -15,7 +15,7 @@ def test_create_channel_filter(client: TestClient, db: Session) -> None:
     assert channel_filter.regex == regex
     assert channel_filter.description == description
 
-def test_get_channel_filter(client: TestClient, db: Session) -> None:
+def test_get_channel_filter(test_app: TestClient, db: Session) -> None:
     regex = r"helpdesk"
     description = random_lower_string()
     channel_filter_in = FilterCreate(regex=regex, description=description)

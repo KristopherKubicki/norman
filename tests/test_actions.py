@@ -7,7 +7,7 @@ from app.core.config import settings
 from app.schemas.action import ActionCreate
 from app.tests.utils.utils import random_lower_string
 
-def test_create_action(client: TestClient, db: Session) -> None:
+def test_create_action(test_app: TestClient, db: Session) -> None:
     prompt = random_lower_string()
     execution_order = 1
     action_in = ActionCreate(prompt=prompt, execution_order=execution_order)
@@ -15,7 +15,7 @@ def test_create_action(client: TestClient, db: Session) -> None:
     assert action.prompt == prompt
     assert action.execution_order == execution_order
 
-def test_get_action(client: TestClient, db: Session) -> None:
+def test_get_action(test_app: TestClient, db: Session) -> None:
     prompt = random_lower_string()
     execution_order = 1
     action_in = ActionCreate(prompt=prompt, execution_order=execution_order)

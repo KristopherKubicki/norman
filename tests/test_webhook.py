@@ -18,7 +18,7 @@ from app.endpoints import (
 )
 
 
-def test_webhook_process(test_client):
+def test_webhook_process(test_app):
     # Create a bot
     bot = BotCreate(name="TestBot")
     created_bot = create_bot(bot)
