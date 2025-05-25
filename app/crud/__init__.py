@@ -4,3 +4,5 @@ from .bot import (
     delete_bot,
     update_bot,
 )
+
+from . import bot, connector
