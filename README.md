@@ -70,7 +70,8 @@ cp config.yaml.dist config.yaml
 
 5. Edit `config.yaml` to configure the application, connectors, and API keys.
 
-6. Run the `generate_key.sh` script to set a secret key for your application:
+6. Run the `generate_key.sh` script to set a secret key, along with the
+   `encryption_key` and `encryption_salt` values for your application:
 
 ```
 chmod +x generate_key.sh
