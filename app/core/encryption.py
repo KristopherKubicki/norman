@@ -8,8 +8,8 @@ from app.core.config import get_settings
 class EncryptionManager:
     def __init__(self):
         settings = get_settings()
-        key = settings.ENCRYPTION_KEY
-        salt = settings.ENCRYPTION_SALT
+        key = settings.encryption_key
+        salt = settings.encryption_salt
         if key is None or salt is None:
             raise ValueError('No encryption key or salt provided in config.')
         self.key = key.encode()
