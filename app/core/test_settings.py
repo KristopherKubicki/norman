@@ -3,5 +3,5 @@ from .config import Settings
 
 
 class TestSettings(Settings):
-    DATABASE_URL: str = "sqlite:///./db/test.db"
+    database_url: str = "sqlite:///./db/test.db"
 
