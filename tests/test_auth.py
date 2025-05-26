@@ -4,16 +4,16 @@ import pytest
 from app.schemas import Token
 
 
-def test_authenticate_user(test_client):
+def test_authenticate_user(test_app):
     # Test invalid email or password
-    response = test_client.post(
+    response = test_app.post(
         "/token",
         data={"username": "invalid@example.com", "password": "invalid_password"},
     )
     assert response.status_code == 400
 
     # Test successful authentication
-    response = test_client.post(
+    response = test_app.post(
         "/token",
         data={"username": "test@example.com", "password": "test_password"},
     )
@@ -23,19 +23,19 @@ def test_authenticate_user(test_client):
     assert token["token_type"] == "bearer"
 
 
-def test_protected_route(test_client):
+def test_protected_route(test_app):
     # Test access without a token
-    response = test_client.get("/some_protected_route")
+    response = test_app.get("/some_protected_route")
     assert response.status_code == 401
 
     # Test access with a valid token
-    response = test_client.post(
+    response = test_app.post(
         "/token",
         data={"username": "test@example.com", "password": "test_password"},
     )
     token = response.json()["access_token"]
 
-    response = test_client.get(
+    response = test_app.get(
         "/some_protected_route", headers={"Authorization": f"Bearer {token}"}
     )
     assert response.status_code == 200

@@ -1,5 +1,5 @@
 # test/test_settings.py
-from .config import Settings
+from app.core.config import Settings
 
 
 class TestSettings(Settings):

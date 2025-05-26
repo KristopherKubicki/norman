@@ -7,14 +7,14 @@ from app.core.config import settings
 from app.schemas.user import UserCreate
 from app.tests.utils.utils import random_email, random_lower_string
 
-def test_create_user(client: TestClient, db: Session) -> None:
+def test_create_user(test_app: TestClient, db: Session) -> None:
     email = random_email()
     password = random_lower_string()
     user_in = UserCreate(email=email, password=password)
     user = crud.user.create(db, obj_in=user_in)
     assert user.email == email
 
-def test_get_user(client: TestClient, db: Session) -> None:
+def test_get_user(test_app: TestClient, db: Session) -> None:
     email = random_email()
     password = random_lower_string()
     user_in = UserCreate(email=email, password=password)
