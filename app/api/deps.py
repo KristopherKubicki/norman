@@ -19,7 +19,11 @@ def get_db():
         db.close()
 
 async def get_async_db():
-    return get_db().__enter__()
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 async def get_current_user(token: str = Depends(oauth2_scheme)):
 
@@ -30,9 +34,9 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
             detail="Could not validate credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    with get_db() as db:
+    async for db in get_async_db():
         user = get_user_by_email(db, email=email)
         if user is None:
             raise HTTPException(status_code=404, detail="User not found")
-    return user
+        return user
 
