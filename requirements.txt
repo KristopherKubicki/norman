@@ -13,7 +13,7 @@ aiofiles
 slack_sdk
 pyyaml
 requests
-jinja2==3.1.3
+jinja2==3.1.6
 python-multipart
 passlib
 email-validator
