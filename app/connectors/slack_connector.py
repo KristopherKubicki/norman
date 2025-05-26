@@ -20,12 +20,39 @@ class SlackConnector(BaseConnector):
         pass  # No need for a separate disconnect method, as WebClient will handle it.
 
     def listen_and_process(self):
-        # Implement the method to listen for incoming messages and process them
-        pass
+        """Poll for messages in the configured channel and process them.
+
+        Returns a list of processed messages. Any SlackApiError raised while
+        retrieving or processing messages is caught and logged to stdout.
+        """
+        try:
+            messages = self.receive_message()
+        except SlackApiError as e:
+            print(f"Error receiving messages: {e}")
+            return []
+
+        results = []
+        for message in messages:
+            try:
+                processed = self.process_incoming(message)
+                if processed:
+                    results.append(processed)
+            except Exception as e:  # pylint: disable=broad-except
+                print(f"Error processing message: {e}")
+        return results
 
     def process_incoming(self, payload: dict):
-        # Implement the method to process an incoming payload
-        pass
+        """Extract the useful fields from a Slack event payload."""
+        if not isinstance(payload, dict):
+            print("Invalid payload type")
+            return {}
+
+        return {
+            "text": payload.get("text", ""),
+            "user": payload.get("user"),
+            "channel": payload.get("channel", self.channel_id),
+            "ts": payload.get("ts"),
+        }
 
     def send_message(self, channel, message):
         try:
@@ -35,7 +62,15 @@ class SlackConnector(BaseConnector):
             print(f"Error sending message: {e}")
 
     def receive_message(self):
-        pass  # This method is not applicable in this context, as the Slack API is not based on a continuous stream.
+        """Retrieve the most recent message from the Slack channel."""
+        try:
+            response = self.client.conversations_history(
+                channel=self.channel_id, limit=1
+            )
+            return response.get("messages", [])
+        except SlackApiError as e:
+            print(f"Error receiving message: {e}")
+            return []
 
     def is_connected(self):
         try:
