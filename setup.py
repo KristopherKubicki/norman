@@ -26,7 +26,7 @@ setup(
     },
     entry_points={
         "console_scripts": [
-            "norman = norman.app:main",
+            "norman = main:main",
         ],
     },
 )

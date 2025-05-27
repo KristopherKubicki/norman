@@ -45,6 +45,11 @@ app.mount("/static", StaticFiles(directory=os.path.join(current_dir, "app/static
 # Include app_routes
 app.include_router(app_routes)
 
-if __name__ == "__main__":
+def main() -> None:
+    """Run the FastAPI application using Uvicorn."""
     uvicorn.run(app, host=settings.host, port=settings.port, debug=settings.debug)
+
+
+if __name__ == "__main__":
+    main()
 
