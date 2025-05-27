@@ -6,7 +6,8 @@ class DiscordConnector(BaseConnector):
     id = 'discord'
     name = 'Discord'
 
-    def __init__(self, token: str, channel_id: str):
+    def __init__(self, token: str, channel_id: str, config=None):
+        super().__init__(config)
         self.token = token
         self.channel_id = channel_id
 

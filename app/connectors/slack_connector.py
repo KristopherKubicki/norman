@@ -8,7 +8,8 @@ class SlackConnector(BaseConnector):
     id = 'slack'
     name = 'Slack'
 
-    def __init__(self, token: str, channel_id: str):
+    def __init__(self, token: str, channel_id: str, config=None):
+        super().__init__(config)
         self.token = token
         self.channel_id = channel_id
         self.client = WebClient(token=self.token)
