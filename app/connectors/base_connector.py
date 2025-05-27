@@ -3,6 +3,15 @@ from abc import ABC, abstractmethod
 
 
 class BaseConnector(ABC):
+
+    def __init__(self, config=None):
+        """Initialize the connector with optional configuration.
+
+        Args:
+            config (dict | None): Optional configuration dictionary.  If not
+                provided, an empty dict is used.
+        """
+        self.config = config or {}
     @abstractmethod
     async def send_message(self, message):
         """Send a message using the connector.

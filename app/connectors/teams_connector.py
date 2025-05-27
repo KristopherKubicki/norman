@@ -6,7 +6,8 @@ class TeamsConnector(BaseConnector):
     id = 'teams'
     name = 'Teams'
 
-    def __init__(self, app_id, app_password, tenant_id, bot_endpoint):
+    def __init__(self, app_id, app_password, tenant_id, bot_endpoint, config=None):
+        super().__init__(config)
         self.app_id = app_id
         self.app_password = app_password
         self.tenant_id = tenant_id

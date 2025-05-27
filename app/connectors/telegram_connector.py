@@ -7,7 +7,8 @@ class TelegramConnector(BaseConnector):
     id = 'telegram'
     name = 'Telegram'
 
-    def __init__(self, token: str, chat_id: str):
+    def __init__(self, token: str, chat_id: str, config=None):
+        super().__init__(config)
         self.token = token
         self.chat_id = chat_id
 
