@@ -38,3 +38,23 @@ class BotError(NormanError):
     Raised when there's an issue with a bot or bot-related operation.
     """
     pass
+
+
+class DatabaseError(NormanError):
+    """Raised when a database operation fails."""
+    pass
+
+
+class APIError(NormanError):
+    """Raised when an unexpected API error occurs."""
+    pass
+
+
+class AuthenticationError(NormanError):
+    """Raised when authentication fails."""
+    pass
+
+
+class AuthorizationError(NormanError):
+    """Raised when a user is not authorized to perform an action."""
+    pass
