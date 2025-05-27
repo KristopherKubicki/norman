@@ -5,4 +5,4 @@ from .bot import (
     update_bot,
 )
 
-from . import bot, connector
+from . import bot, connector, channel
