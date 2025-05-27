@@ -6,7 +6,7 @@ from app.connectors import init_connectors
 from app.core.test_settings import TestSettings
 from app.api.deps import get_db
 
-test_settings = TestSettings()
+test_settings = TestSettings
 
 @pytest.fixture(scope="module")
 def test_app():
