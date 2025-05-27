@@ -4,7 +4,7 @@ This document outlines the remaining tasks to complete and improve the Norman pr
 
 ## Core
 
-- [ ] Add additional exception classes in `app/core/exceptions.py` to handle specific error scenarios.
+- [x] Add additional exception classes in `app/core/exceptions.py` to handle specific error scenarios.
 - [ ] Improve logging configuration and log messages in `app/core/logging.py`.
 - [x] Review and optimize the configuration loading in `app/core/config.py`.
 
