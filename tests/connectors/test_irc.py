@@ -1,5 +1,7 @@
+import pytest
 from app.connectors import irc
 
+@pytest.mark.skip("Requires a real IRC server")
 def test_irc_connection():
     # Replace with your actual test IRC server and credentials
     irc_server = "irc.example.com"
