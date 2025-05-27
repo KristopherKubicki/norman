@@ -5,6 +5,7 @@ from app.core.config import Settings
 
 #from .base_connector import BaseConnector
 from .irc_connector import IRCConnector
+from . import irc_connector as irc
 from .slack_connector import SlackConnector
 from .google_chat_connector import GoogleChatConnector
 from .discord_connector import DiscordConnector
