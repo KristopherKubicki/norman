@@ -249,7 +249,8 @@ async def login_endpoint(request: Request):
     return await login(request)
 
 @app_routes.get("/logout", response_class=HTMLResponse)
-async def logout_endpoint(request: Request, response: Response = Depends(clear_access_token_cookie)):
+async def logout_endpoint(request: Request, response: Response):
+    clear_access_token_cookie(response)
     return await logout(request)
 
 #@app_routes.post("/login", response_class=HTMLResponse)

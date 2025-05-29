@@ -6,3 +6,4 @@ from .bot import (
 )
 
 from . import bot, connector, channel
+from . import filters, channel_filter

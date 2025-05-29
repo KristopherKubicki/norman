@@ -1,29 +1,33 @@
+from typing import Optional
 from sqlalchemy.orm import Session
-from . import models
 
-def get_channel_filter_by_id(db: Session, channel_filter_id: int):
-    return db.query(models.Filter).filter(models.Filter.id == channel_filter_id).first()
+from app import models
+from app.schemas.filter import FilterCreate, FilterUpdate
 
-def create_filter(db: Session, filter_data: schemas.FilterCreate):
-    filter_ = models.Filter(**filter_data.dict())
+def get(db: Session, filter_id: int) -> Optional[models.Filter]:
+    return db.query(models.Filter).filter(models.Filter.id == filter_id).first()
+
+def create(db: Session, obj_in: FilterCreate) -> models.Filter:
+    filter_ = models.Filter(**obj_in.dict())
     db.add(filter_)
     db.commit()
     db.refresh(filter_)
     return filter_
 
-def delete_filter(db: Session, filter_id: int):
-    filter_ = db.query(models.Filter).filter(models.Filter.id == filter_id).first()
+def delete(db: Session, filter_id: int) -> Optional[models.Filter]:
+    filter_ = get(db, filter_id)
     if filter_ is not None:
         db.delete(filter_)
         db.commit()
+    return filter_
 
-def update_filter(db: Session, filter_id: int, filter_data: schemas.FilterUpdate):
-    filter_ = db.query(models.Filter).filter(models.Filter.id == filter_id).first()
+def update(db: Session, filter_id: int, obj_in: FilterUpdate) -> Optional[models.Filter]:
+    filter_ = get(db, filter_id)
     if filter_ is None:
         return None
-    for key, value in filter_data.dict().items():
-        if value is not None:
-            setattr(filter_, key, value)
+    for key, value in obj_in.dict(exclude_unset=True).items():
+        setattr(filter_, key, value)
     db.commit()
+    db.refresh(filter_)
     return filter_
 

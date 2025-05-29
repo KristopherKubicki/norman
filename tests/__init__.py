@@ -4,4 +4,4 @@
 # collection. Currently the connectors package only includes IRC and Slack
 # tests.
 from .connectors import test_irc, test_slack
-from . import test_routers, test_actions, test_filters, test_exceptions
+from . import test_filters

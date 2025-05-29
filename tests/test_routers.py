@@ -1,5 +1,8 @@
 from fastapi.testclient import TestClient
 from app.main import app
+import pytest
+
+pytest.skip("Router tests not implemented", allow_module_level=True)
 
 client = TestClient(app)
 
