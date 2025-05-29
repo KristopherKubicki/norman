@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from pathlib import Path
 
 os.environ["SKIP_MIGRATIONS"] = "1"
 from app.main import app
@@ -15,8 +16,11 @@ from app.models.base import Base
 
 test_settings = TestSettings
 
-# Configure in-memory SQLite for tests
-settings.database_url = "sqlite:///./db/test.db"
+# Ensure the test database directory exists
+db_dir = Path("./db")
+db_dir.mkdir(parents=True, exist_ok=True)
+
+settings.database_url = f"sqlite:///{db_dir}/test.db"
 engine = create_engine(settings.database_url)
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base.metadata.create_all(bind=engine)
