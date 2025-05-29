@@ -1,5 +1,8 @@
 # app/core/test_settings.py
-from .config import Settings, load_config
+from app.core.config import Settings, load_config
+
+__all__ = ["TestSettings"]
+__test__ = False
 
 
 class TestSettings(Settings):
