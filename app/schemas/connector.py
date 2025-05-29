@@ -2,7 +2,7 @@ from typing import List, Dict, Any
 from pydantic import BaseModel
 
 class ConnectorBase(BaseModel):
-    description: str
+    name: str
     config: Dict[str, Any]
     connector_type: str
 
