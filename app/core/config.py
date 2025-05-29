@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     teams_tenant_id: str
     teams_bot_endpoint: str
     webhook_secret: str
+    webhook_webhook_url: str
     openai_api_key: Optional[str]
 
     access_token_expire_minutes: int

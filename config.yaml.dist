@@ -20,6 +20,7 @@ teams_app_password: "your_teams_app_password"
 teams_tenant_id: "your_teams_tenant_id"
 teams_bot_endpoint: "your_teams_bot_endpoint"
 webhook_secret: "your_webhook_secret"
+webhook_webhook_url: "https://example.com/webhook"
 
 openai_api_key: 
 
