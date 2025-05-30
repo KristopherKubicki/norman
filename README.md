@@ -1,5 +1,7 @@
 # Norman
 
+[![Codecov](https://codecov.io/gh/KristopherKubicki/norman/branch/main/graph/badge.svg)](https://codecov.io/gh/KristopherKubicki/norman)
+
 Norman is an open-source chatbot that leverages OpenAI's GPT models to assist and automate communication on various chat platforms like Slack and IRC. The project is built with FastAPI, SQLite, and SQLAlchemy, and is designed to be easily extensible with additional connectors.
 
 ![krstopher_abstract_readme_header_graphic_for_a_chatbot_software_a578ebda-8121-4195-ba94-7c5128049da3 (1)](https://user-images.githubusercontent.com/478212/235266088-7f69c1bd-e3db-4b80-b8ff-64c5785f55b7.png)
