@@ -29,5 +29,13 @@ jobs:
       - name: Run pylint
         run: pylint --rcfile=.pylintrc $(git ls-files '*.py') || true
 
-      - name: Run tests
-        run: pytest -vv
+      - name: Run tests with coverage
+        run: |
+          coverage run -m pytest -vv
+          coverage xml
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        with:
+          files: coverage.xml
+          fail_ci_if_error: true

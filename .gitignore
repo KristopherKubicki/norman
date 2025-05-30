@@ -46,3 +46,4 @@ config.yaml
 
 # ignore user databases
 db/*.db
+coverage.xml
