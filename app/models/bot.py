@@ -6,7 +6,7 @@ class Bot(Base):
     __tablename__ = "bots"
     id = Column(Integer, primary_key=True)
     name = Column(String, nullable=False)
-    description = Column(String, nullable=False)
+    description = Column(String, nullable=True)
     user_id = Column(Integer, ForeignKey("users.id"))
     gpt_model = Column(String, nullable=False, default="gpt-4")
     system_prompt = Column(String, nullable=False, default="You are a helpful assistant.")
