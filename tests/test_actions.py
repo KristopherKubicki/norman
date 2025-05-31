@@ -2,13 +2,9 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app import crud, models
-from app.core.config import settings
+from app.crud import action as action_crud
 from app.schemas.action import ActionCreate, ActionUpdate
 from app.tests.utils.utils import random_lower_string
-import pytest
-
-pytest.skip("Action tests not implemented", allow_module_level=True)
 
 def test_create_action(test_app: TestClient, db: Session) -> None:
     prompt = random_lower_string()
@@ -19,7 +15,7 @@ def test_create_action(test_app: TestClient, db: Session) -> None:
         reply_channel_id=1,
         execution_order=execution_order,
     )
-    action = crud.action.create(db, obj_in=action_in)
+    action = action_crud.create(db, obj_in=action_in)
     assert action.prompt == prompt
     assert action.execution_order == execution_order
 
@@ -32,8 +28,8 @@ def test_get_action(test_app: TestClient, db: Session) -> None:
         reply_channel_id=1,
         execution_order=execution_order,
     )
-    action = crud.action.create(db, obj_in=action_in)
-    action_2 = crud.action.get(db, action.id)
+    action = action_crud.create(db, obj_in=action_in)
+    action_2 = action_crud.get(db, action.id)
     assert action_2
     assert action.prompt == action_2.prompt
     assert action.execution_order == action_2.execution_order
@@ -48,7 +44,7 @@ def test_update_action(test_app: TestClient, db: Session) -> None:
         reply_channel_id=1,
         execution_order=1,
     )
-    action = crud.action.create(db, obj_in=action_in)
+    action = action_crud.create(db, obj_in=action_in)
     new_prompt = random_lower_string()
     action_up = ActionUpdate(
         channel_filter_id=1,
@@ -56,7 +52,7 @@ def test_update_action(test_app: TestClient, db: Session) -> None:
         reply_channel_id=1,
         execution_order=2,
     )
-    updated = crud.action.update(db, db_obj=action, obj_in=action_up)
+    updated = action_crud.update(db, db_obj=action, obj_in=action_up)
     assert updated.prompt == new_prompt
     assert updated.execution_order == 2
 
@@ -68,7 +64,7 @@ def test_remove_action(test_app: TestClient, db: Session) -> None:
         reply_channel_id=1,
         execution_order=1,
     )
-    action = crud.action.create(db, obj_in=action_in)
-    removed = crud.action.remove(db, action.id)
+    action = action_crud.create(db, obj_in=action_in)
+    removed = action_crud.remove(db, action.id)
     assert removed.id == action.id
-    assert crud.action.get(db, action.id) is None
+    assert action_crud.get(db, action.id) is None
