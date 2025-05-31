@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     whatsapp_auth_token: str
     whatsapp_from_number: str
     whatsapp_to_number: str
+    signal_service_url: str
+    signal_phone_number: str
     matrix_homeserver: str
     matrix_user_id: str
     matrix_access_token: str
