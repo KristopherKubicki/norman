@@ -69,6 +69,8 @@ from .cap_connector import CAPConnector
 from .google_business_rcs_connector import GoogleBusinessRCSConnector
 from .apple_messages_business_connector import AppleMessagesBusinessConnector
 from .intercom_connector import IntercomConnector
+from .snmp_connector import SNMPConnector
+from .tox_connector import ToxConnector
 
 from .aws_iot_core_connector import AWSIoTCoreConnector
 from .aws_eventbridge_connector import AWSEventBridgeConnector
@@ -134,6 +136,8 @@ connector_classes: Dict[str, type] = {
     "google_business_rcs": GoogleBusinessRCSConnector,
     "apple_messages_business": AppleMessagesBusinessConnector,
     "intercom": IntercomConnector,
+    "snmp": SNMPConnector,
+    "tox": ToxConnector,
 }
 
 

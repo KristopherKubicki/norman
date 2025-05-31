@@ -60,6 +60,8 @@ The following connectors are soon to be supported:
 51. [Google Business Messages / RCS](./connectors/google_business_rcs.md)
 52. [Apple Messages for Business](./connectors/apple_messages_business.md)
 53. [Intercom](./connectors/intercom.md)
+54. [SNMP](./connectors/snmp.md)
+55. [Tox](./connectors/tox.md)
 
 
 ## Usage
@@ -118,5 +120,7 @@ For more detailed information on each connector, please refer to the platform-sp
 - [Google Business Messages / RCS Connector](./connectors/google_business_rcs.md)
 - [Apple Messages for Business Connector](./connectors/apple_messages_business.md)
 - [Intercom Connector](./connectors/intercom.md)
+- [SNMP Connector](./connectors/snmp.md)
+- [Tox Connector](./connectors/tox.md)
 
 Remember to follow the platform-specific guidelines and best practices when creating bots or apps for each service.
