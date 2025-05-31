@@ -114,6 +114,11 @@ class Settings(BaseSettings):
     jira_service_desk_email: str
     jira_service_desk_api_token: str
     jira_service_desk_project_key: str
+    tap_snpp_host: str
+    tap_snpp_port: int
+    tap_snpp_password: str
+    acars_host: str
+    acars_port: int
     openai_api_key: Optional[str]
 
     access_token_expire_minutes: int

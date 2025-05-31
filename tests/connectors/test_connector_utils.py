@@ -213,6 +213,20 @@ def test_get_connector_returns_jira_service_desk(monkeypatch):
     assert isinstance(connector, JiraServiceDeskConnector)
 
 
+def test_get_connector_returns_tap_snpp(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('tap_snpp')
+    from app.connectors.tap_snpp_connector import TAPSNPPConnector
+    assert isinstance(connector, TAPSNPPConnector)
+
+
+def test_get_connector_returns_acars(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('acars')
+    from app.connectors.acars_connector import ACARSConnector
+    assert isinstance(connector, ACARSConnector)
+
+
 def test_get_connectors_data_missing_config(monkeypatch):
     monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
     data = get_connectors_data()

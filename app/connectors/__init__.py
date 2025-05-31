@@ -42,6 +42,8 @@ from .ifttt_connector import IFTTTConnector
 from .salesforce_connector import SalesforceConnector
 from .github_connector import GitHubConnector
 from .jira_service_desk_connector import JiraServiceDeskConnector
+from .tap_snpp_connector import TAPSNPPConnector
+from .acars_connector import ACARSConnector
 
 from .connector_utils import get_connector
 
@@ -199,4 +201,13 @@ def init_connectors(app: FastAPI, settings: Settings):
         email=settings.jira_service_desk_email,
         api_token=settings.jira_service_desk_api_token,
         project_key=settings.jira_service_desk_project_key,
+    )
+    app.state.tap_snpp_connector = TAPSNPPConnector(
+        host=settings.tap_snpp_host,
+        port=settings.tap_snpp_port,
+        password=settings.tap_snpp_password,
+    )
+    app.state.acars_connector = ACARSConnector(
+        host=settings.acars_host,
+        port=settings.acars_port,
     )
