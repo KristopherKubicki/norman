@@ -6,6 +6,8 @@ from sqlalchemy import pool
 from alembic import context
 
 from app.models.base import Base
+# Ensure all models are imported so Alembic's autogeneration can detect them
+from app.models import connectors  # noqa: F401
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
