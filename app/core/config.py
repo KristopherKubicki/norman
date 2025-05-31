@@ -136,6 +136,15 @@ class Settings(BaseSettings):
     redis_host: str
     redis_port: int
     redis_channel: str
+    kafka_bootstrap_servers: str
+    kafka_topic: str
+    nats_servers: str
+    nats_subject: str
+    pagerduty_routing_key: str
+    line_channel_access_token: str
+    line_user_id: str
+    viber_auth_token: str
+    viber_receiver: str
     openai_api_key: Optional[str]
 
     access_token_expire_minutes: int

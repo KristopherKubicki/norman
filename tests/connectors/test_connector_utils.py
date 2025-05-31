@@ -43,6 +43,11 @@ from app.connectors.google_pubsub_connector import GooglePubSubConnector
 from app.connectors.azure_eventgrid_connector import AzureEventGridConnector
 from app.connectors.imessage_connector import IMessageConnector
 from app.connectors.rfc5425_connector import RFC5425Connector
+from app.connectors.kafka_connector import KafkaConnector
+from app.connectors.nats_connector import NATSConnector
+from app.connectors.pagerduty_connector import PagerDutyConnector
+from app.connectors.line_connector import LineConnector
+from app.connectors.viber_connector import ViberConnector
 from app.core.test_settings import TestSettings
 
 
@@ -281,3 +286,33 @@ def test_get_connector_returns_redis_pubsub(monkeypatch):
     connector = get_connector('redis_pubsub')
     from app.connectors.redis_pubsub_connector import RedisPubSubConnector
     assert isinstance(connector, RedisPubSubConnector)
+
+
+def test_get_connector_returns_kafka(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('kafka')
+    assert isinstance(connector, KafkaConnector)
+
+
+def test_get_connector_returns_nats(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('nats')
+    assert isinstance(connector, NATSConnector)
+
+
+def test_get_connector_returns_pagerduty(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('pagerduty')
+    assert isinstance(connector, PagerDutyConnector)
+
+
+def test_get_connector_returns_line(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('line')
+    assert isinstance(connector, LineConnector)
+
+
+def test_get_connector_returns_viber(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('viber')
+    assert isinstance(connector, ViberConnector)

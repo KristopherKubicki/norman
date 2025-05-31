@@ -48,6 +48,11 @@ The following connectors are soon to be supported:
 39. [RFC 5425](./connectors/rfc5425.md)
 40. [AMQP](./connectors/amqp.md)
 41. [Redis Pub/Sub](./connectors/redis_pubsub.md)
+42. [Kafka](./connectors/kafka.md)
+43. [NATS](./connectors/nats.md)
+44. [PagerDuty Events v2](./connectors/pagerduty.md)
+45. [LINE Messaging](./connectors/line.md)
+46. [Viber Bots](./connectors/viber.md)
 
 
 ## Usage
