@@ -149,6 +149,12 @@ apple_business_access_token: "your_apple_business_access_token"
 apple_business_sender_id: "your_apple_business_sender_id"
 intercom_access_token: "your_intercom_access_token"
 intercom_app_id: "your_intercom_app_id"
+snmp_host: "your_snmp_host"
+snmp_port: 162
+snmp_community: "public"
+tox_bootstrap_host: "your_tox_bootstrap_host"
+tox_bootstrap_port: 33445
+tox_friend_id: "your_tox_friend_id"
 
 openai_api_key:
 

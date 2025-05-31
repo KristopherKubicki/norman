@@ -59,6 +59,8 @@ from .cap_connector import CAPConnector
 from .google_business_rcs_connector import GoogleBusinessRCSConnector
 from .apple_messages_business_connector import AppleMessagesBusinessConnector
 from .intercom_connector import IntercomConnector
+from .snmp_connector import SNMPConnector
+from .tox_connector import ToxConnector
 
 from .aws_iot_core_connector import AWSIoTCoreConnector
 from .aws_eventbridge_connector import AWSEventBridgeConnector
@@ -306,3 +308,14 @@ def init_connectors(app: FastAPI, settings: Settings):
         access_token=settings.intercom_access_token,
         app_id=settings.intercom_app_id,
     )
+    app.state.snmp_connector = SNMPConnector(
+        host=settings.snmp_host,
+        port=settings.snmp_port,
+        community=settings.snmp_community,
+    )
+    app.state.tox_connector = ToxConnector(
+        bootstrap_host=settings.tox_bootstrap_host,
+        bootstrap_port=settings.tox_bootstrap_port,
+        friend_id=settings.tox_friend_id,
+    )
+

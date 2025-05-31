@@ -157,6 +157,12 @@ class Settings(BaseSettings):
     apple_business_sender_id: str
     intercom_access_token: str
     intercom_app_id: str
+    snmp_host: str
+    snmp_port: int
+    snmp_community: str
+    tox_bootstrap_host: str
+    tox_bootstrap_port: int
+    tox_friend_id: str
     openai_api_key: Optional[str]
 
     access_token_expire_minutes: int
