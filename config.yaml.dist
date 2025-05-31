@@ -128,6 +128,15 @@ amqp_queue: "your_amqp_queue"
 redis_host: "your_redis_host"
 redis_port: 6379
 redis_channel: "your_redis_channel"
+kafka_bootstrap_servers: "your_kafka_bootstrap_servers"
+kafka_topic: "your_kafka_topic"
+nats_servers: "your_nats_servers"
+nats_subject: "your_nats_subject"
+pagerduty_routing_key: "your_pagerduty_routing_key"
+line_channel_access_token: "your_line_channel_access_token"
+line_user_id: "your_line_user_id"
+viber_auth_token: "your_viber_auth_token"
+viber_receiver: "your_viber_receiver"
 
 openai_api_key:
 

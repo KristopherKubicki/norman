@@ -47,6 +47,11 @@ from .acars_connector import ACARSConnector
 from .rfc5425_connector import RFC5425Connector
 from .amqp_connector import AMQPConnector
 from .redis_pubsub_connector import RedisPubSubConnector
+from .kafka_connector import KafkaConnector
+from .nats_connector import NATSConnector
+from .pagerduty_connector import PagerDutyConnector
+from .line_connector import LineConnector
+from .viber_connector import ViberConnector
 
 from .aws_iot_core_connector import AWSIoTCoreConnector
 from .aws_eventbridge_connector import AWSEventBridgeConnector
@@ -248,4 +253,23 @@ def init_connectors(app: FastAPI, settings: Settings):
         host=settings.redis_host,
         port=settings.redis_port,
         channel=settings.redis_channel,
+    )
+    app.state.kafka_connector = KafkaConnector(
+        bootstrap_servers=settings.kafka_bootstrap_servers,
+        topic=settings.kafka_topic,
+    )
+    app.state.nats_connector = NATSConnector(
+        servers=settings.nats_servers,
+        subject=settings.nats_subject,
+    )
+    app.state.pagerduty_connector = PagerDutyConnector(
+        routing_key=settings.pagerduty_routing_key,
+    )
+    app.state.line_connector = LineConnector(
+        channel_access_token=settings.line_channel_access_token,
+        user_id=settings.line_user_id,
+    )
+    app.state.viber_connector = ViberConnector(
+        auth_token=settings.viber_auth_token,
+        receiver=settings.viber_receiver,
     )

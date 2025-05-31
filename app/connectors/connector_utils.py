@@ -57,6 +57,11 @@ from .acars_connector import ACARSConnector
 from .rfc5425_connector import RFC5425Connector
 from .amqp_connector import AMQPConnector
 from .redis_pubsub_connector import RedisPubSubConnector
+from .kafka_connector import KafkaConnector
+from .nats_connector import NATSConnector
+from .pagerduty_connector import PagerDutyConnector
+from .line_connector import LineConnector
+from .viber_connector import ViberConnector
 
 from .aws_iot_core_connector import AWSIoTCoreConnector
 from .aws_eventbridge_connector import AWSEventBridgeConnector
@@ -110,6 +115,11 @@ connector_classes: Dict[str, type] = {
     "rfc5425": RFC5425Connector,
     "amqp": AMQPConnector,
     "redis_pubsub": RedisPubSubConnector,
+    "kafka": KafkaConnector,
+    "nats": NATSConnector,
+    "pagerduty": PagerDutyConnector,
+    "line": LineConnector,
+    "viber": ViberConnector,
 }
 
 
