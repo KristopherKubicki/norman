@@ -119,6 +119,8 @@ class Settings(BaseSettings):
     tap_snpp_password: str
     acars_host: str
     acars_port: int
+    rfc5425_host: str
+    rfc5425_port: int
     openai_api_key: Optional[str]
 
     access_token_expire_minutes: int

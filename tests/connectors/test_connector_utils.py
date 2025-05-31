@@ -38,6 +38,7 @@ from app.connectors.reddit_chat_connector import RedditChatConnector
 from app.connectors.instagram_dm_connector import InstagramDMConnector
 from app.connectors.twitter_connector import TwitterConnector
 from app.connectors.imessage_connector import IMessageConnector
+from app.connectors.rfc5425_connector import RFC5425Connector
 from app.core.test_settings import TestSettings
 
 
@@ -225,6 +226,12 @@ def test_get_connector_returns_acars(monkeypatch):
     connector = get_connector('acars')
     from app.connectors.acars_connector import ACARSConnector
     assert isinstance(connector, ACARSConnector)
+
+
+def test_get_connector_returns_rfc5425(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('rfc5425')
+    assert isinstance(connector, RFC5425Connector)
 
 
 def test_get_connectors_data_missing_config(monkeypatch):

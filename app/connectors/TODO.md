@@ -17,3 +17,4 @@ This file tracks connectors that we would like to implement in the future.
 - [x] Mattermost
 - [x] WeChat
 - [x] Reddit Chat
+- [x] RFC 5425 Syslog

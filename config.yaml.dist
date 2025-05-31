@@ -111,6 +111,8 @@ tap_snpp_port: 444
 tap_snpp_password: "your_tap_snpp_password"
 acars_host: "your_acars_host"
 acars_port: 429
+rfc5425_host: "your_rfc5425_host"
+rfc5425_port: 6514
 
 openai_api_key:
 

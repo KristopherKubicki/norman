@@ -44,6 +44,7 @@ from .github_connector import GitHubConnector
 from .jira_service_desk_connector import JiraServiceDeskConnector
 from .tap_snpp_connector import TAPSNPPConnector
 from .acars_connector import ACARSConnector
+from .rfc5425_connector import RFC5425Connector
 
 from .connector_utils import get_connector
 
@@ -210,4 +211,8 @@ def init_connectors(app: FastAPI, settings: Settings):
     app.state.acars_connector = ACARSConnector(
         host=settings.acars_host,
         port=settings.acars_port,
+    )
+    app.state.rfc5425_connector = RFC5425Connector(
+        host=settings.rfc5425_host,
+        port=settings.rfc5425_port,
     )
