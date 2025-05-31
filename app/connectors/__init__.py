@@ -32,6 +32,9 @@ from .rocketchat_connector import RocketChatConnector
 from .mattermost_connector import MattermostConnector
 from .wechat_connector import WeChatConnector
 from .reddit_chat_connector import RedditChatConnector
+from .instagram_dm_connector import InstagramDMConnector
+from .twitter_connector import TwitterConnector
+from .imessage_connector import IMessageConnector
 
 from .connector_utils import get_connector
 
@@ -144,4 +147,18 @@ def init_connectors(app: FastAPI, settings: Settings):
         username=settings.reddit_username,
         password=settings.reddit_password,
         user_agent=settings.reddit_user_agent,
+    )
+    app.state.instagram_dm_connector = InstagramDMConnector(
+        access_token=settings.instagram_access_token,
+        user_id=settings.instagram_user_id,
+    )
+    app.state.twitter_connector = TwitterConnector(
+        api_key=settings.twitter_api_key,
+        api_secret=settings.twitter_api_secret,
+        access_token=settings.twitter_access_token,
+        access_token_secret=settings.twitter_access_token_secret,
+    )
+    app.state.imessage_connector = IMessageConnector(
+        service_url=settings.imessage_service_url,
+        phone_number=settings.imessage_phone_number,
     )

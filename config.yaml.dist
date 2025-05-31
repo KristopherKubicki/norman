@@ -81,6 +81,14 @@ reddit_client_secret: "your_reddit_client_secret"
 reddit_username: "your_reddit_username"
 reddit_password: "your_reddit_password"
 reddit_user_agent: "your_reddit_user_agent"
+instagram_access_token: "your_instagram_access_token"
+instagram_user_id: "your_instagram_user_id"
+twitter_api_key: "your_twitter_api_key"
+twitter_api_secret: "your_twitter_api_secret"
+twitter_access_token: "your_twitter_access_token"
+twitter_access_token_secret: "your_twitter_access_token_secret"
+imessage_service_url: "your_imessage_service_url"
+imessage_phone_number: "your_imessage_phone_number"
 
 openai_api_key:
 

@@ -35,6 +35,9 @@ from app.connectors.rocketchat_connector import RocketChatConnector
 from app.connectors.mattermost_connector import MattermostConnector
 from app.connectors.wechat_connector import WeChatConnector
 from app.connectors.reddit_chat_connector import RedditChatConnector
+from app.connectors.instagram_dm_connector import InstagramDMConnector
+from app.connectors.twitter_connector import TwitterConnector
+from app.connectors.imessage_connector import IMessageConnector
 from app.core.test_settings import TestSettings
 
 
@@ -141,6 +144,24 @@ def test_get_connector_returns_reddit_chat(monkeypatch):
     monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
     connector = get_connector('reddit_chat')
     assert isinstance(connector, RedditChatConnector)
+
+
+def test_get_connector_returns_instagram_dm(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('instagram_dm')
+    assert isinstance(connector, InstagramDMConnector)
+
+
+def test_get_connector_returns_twitter(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('twitter')
+    assert isinstance(connector, TwitterConnector)
+
+
+def test_get_connector_returns_imessage(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('imessage')
+    assert isinstance(connector, IMessageConnector)
 
 
 def test_get_connectors_data_missing_config(monkeypatch):

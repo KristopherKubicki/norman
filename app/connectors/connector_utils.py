@@ -42,6 +42,9 @@ from .rocketchat_connector import RocketChatConnector
 from .mattermost_connector import MattermostConnector
 from .wechat_connector import WeChatConnector
 from .reddit_chat_connector import RedditChatConnector
+from .instagram_dm_connector import InstagramDMConnector
+from .twitter_connector import TwitterConnector
+from .imessage_connector import IMessageConnector
 
 # Registry of available connectors keyed by their identifier.
 connector_classes: Dict[str, type] = {
@@ -72,6 +75,9 @@ connector_classes: Dict[str, type] = {
     "mattermost": MattermostConnector,
     "wechat": WeChatConnector,
     "reddit_chat": RedditChatConnector,
+    "instagram_dm": InstagramDMConnector,
+    "twitter": TwitterConnector,
+    "imessage": IMessageConnector,
 }
 
 

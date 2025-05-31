@@ -32,6 +32,10 @@ The following connectors are soon to be supported:
 23. [Mattermost](./connectors/mattermost.md)
 24. [WeChat](./connectors/wechat.md)
 25. [Reddit Chat](./connectors/reddit_chat.md)
+26. [Signal](./connectors/signal.md)
+27. [Instagram DM](./connectors/instagram_dm.md)
+28. [X.com (Twitter)](./connectors/twitter.md)
+29. [Apple RCS/iMessage](./connectors/imessage.md)
 
 
 ## Usage
