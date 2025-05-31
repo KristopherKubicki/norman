@@ -12,6 +12,7 @@ from .discord_connector import DiscordConnector
 from .teams_connector import TeamsConnector
 from .telegram_connector import TelegramConnector
 from .webhook_connector import WebhookConnector
+from .rest_callback_connector import RESTCallbackConnector
 from .whatsapp_connector import WhatsAppConnector
 from .matrix_connector import MatrixConnector
 from .signal_connector import SignalConnector
@@ -47,4 +48,7 @@ def init_connectors(app: FastAPI, settings: Settings):
         channel=settings.twitch_channel,
         server=settings.twitch_server,
         port=settings.twitch_port,
+    )
+    app.state.rest_callback_connector = RESTCallbackConnector(
+        callback_url=settings.rest_callback_url
     )

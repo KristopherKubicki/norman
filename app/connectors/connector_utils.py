@@ -22,6 +22,7 @@ from .slack_connector import SlackConnector
 from .teams_connector import TeamsConnector
 from .telegram_connector import TelegramConnector
 from .webhook_connector import WebhookConnector
+from .rest_callback_connector import RESTCallbackConnector
 from .whatsapp_connector import WhatsAppConnector
 from .matrix_connector import MatrixConnector
 from .signal_connector import SignalConnector
@@ -36,6 +37,7 @@ connector_classes: Dict[str, type] = {
     "teams": TeamsConnector,
     "telegram": TelegramConnector,
     "webhook": WebhookConnector,
+    "rest_callback": RESTCallbackConnector,
     "whatsapp": WhatsAppConnector,
     "matrix": MatrixConnector,
     "signal": SignalConnector,
