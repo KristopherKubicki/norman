@@ -1,28 +1,51 @@
+"""Simple connector that forwards messages to an HTTP webhook."""
+
 import httpx
 from fastapi import HTTPException
-from typing import Dict
+from typing import Any, Dict, Optional
 from pydantic import BaseModel
 
-class WebhookConnector:
-    name = 'Webhook'
-    id = 'webhook'
+from .base_connector import BaseConnector
 
-    def __init__(self, webhook_url: str):
+
+class WebhookConnector(BaseConnector):
+    """Connector for sending messages to an HTTP webhook."""
+
+    name = "Webhook"
+    id = "webhook"
+
+    def __init__(self, webhook_url: str, config: Optional[dict] = None) -> None:
+        super().__init__(config)
         self.webhook_url = webhook_url
         self.enabled = True
 
-    async def process_incoming(self, data: Dict[str, str]) -> str:
-        response = await self.send_to_webhook(data)
-        return response
+    async def connect(self) -> None:  # pragma: no cover - no connection needed
+        """Webhook connectors do not maintain persistent connections."""
 
-    async def send_to_webhook(self, data: Dict[str, str]) -> str:
+    async def disconnect(self) -> None:  # pragma: no cover - no connection needed
+        """Webhook connectors do not maintain persistent connections."""
+
+    async def send_message(self, data: Dict[str, Any]) -> Optional[str]:
+        """Send ``data`` to the configured webhook URL."""
+
         async with httpx.AsyncClient() as client:
             try:
                 response = await client.post(self.webhook_url, json=data)
                 response.raise_for_status()
                 return response.text
-            except httpx.HTTPError as exc:
-                raise HTTPException(status_code=400, detail=f"Error sending message to webhook: {exc}")
+            except httpx.HTTPError as exc:  # pragma: no cover - network
+                print(f"Error sending message to webhook: {exc}")
+                return None
+
+    async def listen_and_process(self) -> None:  # pragma: no cover - no incoming
+        """Webhook connectors do not listen for inbound messages."""
+        return None
+
+    async def process_incoming(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Forward ``data`` to the webhook and return it."""
+
+        await self.send_message(data)
+        return data
 
 class IncomingMessage(BaseModel):
     channel: str
