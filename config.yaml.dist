@@ -100,6 +100,12 @@ ifttt_webhook_url: "your_ifttt_webhook_url"
 salesforce_instance_url: "your_salesforce_instance_url"
 salesforce_access_token: "your_salesforce_access_token"
 salesforce_endpoint: "your_salesforce_endpoint"
+github_token: "your_github_token"
+github_repo: "your_username/your_repo"
+jira_service_desk_url: "https://your-domain.atlassian.net"
+jira_service_desk_email: "your_email@example.com"
+jira_service_desk_api_token: "your_jira_api_token"
+jira_service_desk_project_key: "PROJ"
 
 openai_api_key:
 
