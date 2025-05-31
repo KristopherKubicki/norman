@@ -1,4 +1,8 @@
-import asyncio
+"""Connector for sending messages to Microsoft Teams via a bot endpoint."""
+
+import httpx
+from typing import Any, Dict, Optional
+
 from .base_connector import BaseConnector
 
 class TeamsConnector(BaseConnector):
@@ -13,17 +17,23 @@ class TeamsConnector(BaseConnector):
         self.tenant_id = tenant_id
         self.bot_endpoint = bot_endpoint
 
-    async def send_message(self, message):
-        # Code to send a message using Microsoft Teams API
-        pass
+    async def send_message(self, message: str) -> Optional[str]:
+        """POST ``message`` to the configured bot endpoint."""
+        headers = {"Authorization": f"Bearer {self.app_password}"}
+        async with httpx.AsyncClient() as client:
+            try:
+                resp = await client.post(self.bot_endpoint, json={"text": message}, headers=headers)
+                resp.raise_for_status()
+                return resp.text
+            except httpx.HTTPError as exc:  # pragma: no cover - network
+                print(f"Error sending Teams message: {exc}")
+                return None
 
-    async def listen_and_process(self):
-        # Code to listen for incoming messages from Microsoft Teams
-        # and call process_incoming for each message
-        pass
+    async def listen_and_process(self) -> None:
+        """Listening for Teams messages is not implemented."""
+        return None
 
-    async def process_incoming(self, message):
-        # Code to process the incoming message, including applying filters
-        # and calling the appropriate action(s)
-        pass
+    async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the raw ``message`` payload."""
+        return message
 
