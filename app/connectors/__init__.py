@@ -44,6 +44,10 @@ from .github_connector import GitHubConnector
 from .jira_service_desk_connector import JiraServiceDeskConnector
 from .tap_snpp_connector import TAPSNPPConnector
 from .acars_connector import ACARSConnector
+from .aws_iot_core_connector import AWSIoTCoreConnector
+from .eventbridge_connector import EventBridgeConnector
+from .google_pubsub_connector import GooglePubSubConnector
+from .azure_event_grid_connector import AzureEventGridConnector
 
 from .connector_utils import get_connector
 
@@ -210,4 +214,28 @@ def init_connectors(app: FastAPI, settings: Settings):
     app.state.acars_connector = ACARSConnector(
         host=settings.acars_host,
         port=settings.acars_port,
+    )
+    app.state.aws_iot_core_connector = AWSIoTCoreConnector(
+        topic=settings.aws_iot_core_topic,
+        region_name=settings.aws_region,
+        endpoint=settings.aws_iot_core_endpoint,
+        access_key=settings.aws_access_key,
+        secret_key=settings.aws_secret_key,
+        session_token=settings.aws_session_token,
+    )
+    app.state.eventbridge_connector = EventBridgeConnector(
+        event_bus_name=settings.eventbridge_event_bus_name,
+        source=settings.eventbridge_source,
+        region_name=settings.aws_region,
+        access_key=settings.aws_access_key,
+        secret_key=settings.aws_secret_key,
+        session_token=settings.aws_session_token,
+    )
+    app.state.google_pubsub_connector = GooglePubSubConnector(
+        project_id=settings.google_pubsub_project_id,
+        topic_id=settings.google_pubsub_topic_id,
+    )
+    app.state.azure_event_grid_connector = AzureEventGridConnector(
+        endpoint=settings.azure_event_grid_endpoint,
+        access_key=settings.azure_event_grid_access_key,
     )

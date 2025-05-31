@@ -45,6 +45,10 @@ The following connectors are soon to be supported:
 36. [Jira Service Desk](./connectors/jira_service_desk.md)
 37. [TAP/SNPP](./connectors/tap_snpp.md)
 38. [ACARS](./connectors/acars.md)
+39. [AWS IoT Core](./connectors/aws_iot_core.md)
+40. [AWS EventBridge](./connectors/eventbridge.md)
+41. [Google Pub/Sub](./connectors/google_pubsub.md)
+42. [Azure Event Grid](./connectors/azure_event_grid.md)
 
 
 ## Usage
@@ -93,5 +97,9 @@ For more detailed information on each connector, please refer to the platform-sp
 - [Jira Service Desk Connector](./connectors/jira_service_desk.md)
 - [TAP/SNPP Connector](./connectors/tap_snpp.md)
 - [ACARS Connector](./connectors/acars.md)
+- [AWS IoT Core Connector](./connectors/aws_iot_core.md)
+- [AWS EventBridge Connector](./connectors/eventbridge.md)
+- [Google Pub/Sub Connector](./connectors/google_pubsub.md)
+- [Azure Event Grid Connector](./connectors/azure_event_grid.md)
 
 Remember to follow the platform-specific guidelines and best practices when creating bots or apps for each service.

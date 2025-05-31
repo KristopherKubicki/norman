@@ -227,6 +227,34 @@ def test_get_connector_returns_acars(monkeypatch):
     assert isinstance(connector, ACARSConnector)
 
 
+def test_get_connector_returns_aws_iot_core(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('aws_iot_core')
+    from app.connectors.aws_iot_core_connector import AWSIoTCoreConnector
+    assert isinstance(connector, AWSIoTCoreConnector)
+
+
+def test_get_connector_returns_eventbridge(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('eventbridge')
+    from app.connectors.eventbridge_connector import EventBridgeConnector
+    assert isinstance(connector, EventBridgeConnector)
+
+
+def test_get_connector_returns_google_pubsub(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('google_pubsub')
+    from app.connectors.google_pubsub_connector import GooglePubSubConnector
+    assert isinstance(connector, GooglePubSubConnector)
+
+
+def test_get_connector_returns_azure_event_grid(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('azure_event_grid')
+    from app.connectors.azure_event_grid_connector import AzureEventGridConnector
+    assert isinstance(connector, AzureEventGridConnector)
+
+
 def test_get_connectors_data_missing_config(monkeypatch):
     monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
     data = get_connectors_data()

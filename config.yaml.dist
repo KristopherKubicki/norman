@@ -112,6 +112,24 @@ tap_snpp_password: "your_tap_snpp_password"
 acars_host: "your_acars_host"
 acars_port: 429
 
+# AWS IoT Core / EventBridge
+aws_region: "us-east-1"
+aws_iot_core_endpoint: "your_iot_endpoint"
+aws_iot_core_topic: "your_iot_topic"
+aws_access_key: "your_aws_access_key"
+aws_secret_key: "your_aws_secret_key"
+aws_session_token: "your_aws_session_token"
+eventbridge_event_bus_name: "default"
+eventbridge_source: "norman"
+
+# Google Pub/Sub
+google_pubsub_project_id: "your_gcp_project"
+google_pubsub_topic_id: "your_pubsub_topic"
+
+# Azure Event Grid
+azure_event_grid_endpoint: "https://your-eventgrid-endpoint"
+azure_event_grid_access_key: "your_event_grid_key"
+
 openai_api_key:
 
 # Database

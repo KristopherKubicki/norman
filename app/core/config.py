@@ -119,6 +119,18 @@ class Settings(BaseSettings):
     tap_snpp_password: str
     acars_host: str
     acars_port: int
+    aws_region: str
+    aws_iot_core_endpoint: str
+    aws_iot_core_topic: str
+    aws_access_key: str
+    aws_secret_key: str
+    aws_session_token: str
+    eventbridge_event_bus_name: str
+    eventbridge_source: str
+    google_pubsub_project_id: str
+    google_pubsub_topic_id: str
+    azure_event_grid_endpoint: str
+    azure_event_grid_access_key: str
     openai_api_key: Optional[str]
 
     access_token_expire_minutes: int

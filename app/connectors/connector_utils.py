@@ -54,6 +54,10 @@ from .github_connector import GitHubConnector
 from .jira_service_desk_connector import JiraServiceDeskConnector
 from .tap_snpp_connector import TAPSNPPConnector
 from .acars_connector import ACARSConnector
+from .aws_iot_core_connector import AWSIoTCoreConnector
+from .eventbridge_connector import EventBridgeConnector
+from .google_pubsub_connector import GooglePubSubConnector
+from .azure_event_grid_connector import AzureEventGridConnector
 
 # Registry of available connectors keyed by their identifier.
 connector_classes: Dict[str, type] = {
@@ -96,6 +100,10 @@ connector_classes: Dict[str, type] = {
     "jira_service_desk": JiraServiceDeskConnector,
     "tap_snpp": TAPSNPPConnector,
     "acars": ACARSConnector,
+    "aws_iot_core": AWSIoTCoreConnector,
+    "eventbridge": EventBridgeConnector,
+    "google_pubsub": GooglePubSubConnector,
+    "azure_event_grid": AzureEventGridConnector,
 }
 
 
