@@ -97,6 +97,12 @@ class Settings(BaseSettings):
     twitter_access_token_secret: str
     imessage_service_url: str
     imessage_phone_number: str
+    aprs_host: str
+    aprs_port: int
+    aprs_callsign: str
+    aprs_passcode: str
+    ax25_port: str
+    ax25_callsign: str
     openai_api_key: Optional[str]
 
     access_token_expire_minutes: int

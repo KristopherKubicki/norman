@@ -35,6 +35,8 @@ from .reddit_chat_connector import RedditChatConnector
 from .instagram_dm_connector import InstagramDMConnector
 from .twitter_connector import TwitterConnector
 from .imessage_connector import IMessageConnector
+from .aprs_connector import APRSConnector
+from .ax25_connector import AX25Connector
 
 from .connector_utils import get_connector
 
@@ -161,4 +163,14 @@ def init_connectors(app: FastAPI, settings: Settings):
     app.state.imessage_connector = IMessageConnector(
         service_url=settings.imessage_service_url,
         phone_number=settings.imessage_phone_number,
+    )
+    app.state.aprs_connector = APRSConnector(
+        host=settings.aprs_host,
+        port=settings.aprs_port,
+        callsign=settings.aprs_callsign,
+        passcode=settings.aprs_passcode,
+    )
+    app.state.ax25_connector = AX25Connector(
+        port=settings.ax25_port,
+        callsign=settings.ax25_callsign,
     )

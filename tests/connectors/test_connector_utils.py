@@ -164,6 +164,20 @@ def test_get_connector_returns_imessage(monkeypatch):
     assert isinstance(connector, IMessageConnector)
 
 
+def test_get_connector_returns_aprs(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('aprs')
+    from app.connectors.aprs_connector import APRSConnector
+    assert isinstance(connector, APRSConnector)
+
+
+def test_get_connector_returns_ax25(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('ax25')
+    from app.connectors.ax25_connector import AX25Connector
+    assert isinstance(connector, AX25Connector)
+
+
 def test_get_connectors_data_missing_config(monkeypatch):
     monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
     data = get_connectors_data()
