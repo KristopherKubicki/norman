@@ -44,6 +44,12 @@ class Settings(BaseSettings):
     twitch_server: str
     twitch_port: int
     rest_callback_url: str
+    smtp_host: str
+    smtp_port: int
+    smtp_username: str
+    smtp_password: str
+    smtp_from_address: str
+    smtp_to_address: str
     openai_api_key: Optional[str]
 
     access_token_expire_minutes: int

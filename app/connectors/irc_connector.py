@@ -1,4 +1,7 @@
 import socket
+import ssl
+from typing import List, Optional
+
 from .base_connector import BaseConnector
 
 
@@ -7,29 +10,60 @@ class IRCConnector(BaseConnector):
     name = 'IRC'
     id = 'irc'
 
-    def __init__(self, config):
+    def __init__(
+        self,
+        server: str,
+        port: int = 6667,
+        nickname: str = "norman",
+        username: Optional[str] = None,
+        realname: Optional[str] = None,
+        password: Optional[str] = None,
+        channels: Optional[List[str]] = None,
+        use_ssl: bool = False,
+        config: Optional[dict] = None,
+    ):
         super().__init__(config)
-        self.socket = None
+        self.server = server
+        self.port = port
+        self.nickname = nickname
+        self.username = username or nickname
+        self.realname = realname or nickname
+        self.password = password
+        self.channels = channels or []
+        self.use_ssl = use_ssl
+        self.socket: Optional[socket.socket] = None
 
     def connect(self):
-        # TODO: update all these configs
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.socket.connect((self.config["server"], self.config["port"]))
-        self.socket.send(f"NICK {self.config['nickname']}\r\n".encode("utf-8"))
-        self.socket.send(f"USER {self.config['username']} 0 * :{self.config['realname']}\r\n".encode("utf-8"))
+        self.socket = socket.create_connection((self.server, self.port))
+        if self.use_ssl:
+            context = ssl.create_default_context()
+            self.socket = context.wrap_socket(self.socket, server_hostname=self.server)
+        if self.password:
+            self.socket.sendall(f"PASS {self.password}\r\n".encode("utf-8"))
+        self.socket.sendall(f"NICK {self.nickname}\r\n".encode("utf-8"))
+        self.socket.sendall(
+            f"USER {self.username} 0 * :{self.realname}\r\n".encode("utf-8")
+        )
+        for channel in self.channels:
+            self.socket.sendall(f"JOIN {channel}\r\n".encode("utf-8"))
 
     def disconnect(self):
-        self.socket.send(b"QUIT\r\n")
-        self.socket.close()
+        if self.socket:
+            try:
+                self.socket.sendall(b"QUIT\r\n")
+            finally:
+                self.socket.close()
+                self.socket = None
 
     def send_message(self, channel, message):
-        self.socket.send(f"PRIVMSG {channel} :{message}\r\n".encode("utf-8"))
+        if self.socket:
+            self.socket.sendall(f"PRIVMSG {channel} :{message}\r\n".encode("utf-8"))
 
     def receive_message(self):
         while True:
             data = self.socket.recv(1024).decode("utf-8")
             if data.startswith("PING"):
-                self.socket.send(f"PONG {data.split()[1]}\r\n".encode("utf-8"))
+                self.socket.sendall(f"PONG {data.split()[1]}\r\n".encode("utf-8"))
             else:
                 return data
 
