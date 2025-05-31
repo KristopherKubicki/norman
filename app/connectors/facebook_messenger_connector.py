@@ -1,3 +1,8 @@
+"""Simple Facebook Messenger connector using the Graph API."""
+
+import httpx
+from typing import Any, Dict, Optional
+
 from .base_connector import BaseConnector
 
 
@@ -7,19 +12,28 @@ class FacebookMessengerConnector(BaseConnector):
     id = "facebook_messenger"
     name = "Facebook Messenger"
 
-    def __init__(self, page_token: str, verify_token: str, config=None):
+    def __init__(self, page_token: str, verify_token: str, config: Optional[dict] = None) -> None:
         super().__init__(config)
         self.page_token = page_token
         self.verify_token = verify_token
+        self.api_url = "https://graph.facebook.com/v17.0/me/messages"
 
-    async def send_message(self, message):
-        # Placeholder for sending a message via Facebook Messenger
-        pass
+    async def send_message(self, message: Dict[str, Any]) -> Optional[str]:
+        """Send ``message`` payload using the Graph API."""
+        params = {"access_token": self.page_token}
+        async with httpx.AsyncClient() as client:
+            try:
+                resp = await client.post(self.api_url, params=params, json=message)
+                resp.raise_for_status()
+                return resp.text
+            except httpx.HTTPError as exc:  # pragma: no cover - network
+                print(f"Error sending Facebook message: {exc}")
+                return None
 
     async def listen_and_process(self):
-        # Placeholder for listening to Facebook Messenger messages
-        pass
+        """Listening for Messenger messages is not implemented."""
+        return None
 
     async def process_incoming(self, message):
-        # Placeholder for processing inbound Facebook Messenger messages
-        pass
+        """Return the incoming ``message`` payload."""
+        return message
