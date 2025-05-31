@@ -4,7 +4,7 @@ import types
 
 import pytest
 
-from app.core.test_settings import TestSettings
+from app.core.test_settings import test_settings
 
 
 def load_encryption_module(monkeypatch):
@@ -60,7 +60,7 @@ def load_encryption_module(monkeypatch):
 
 def test_encrypt_decrypt_round_trip(monkeypatch):
     enc = load_encryption_module(monkeypatch)
-    monkeypatch.setattr(enc, "get_settings", lambda: TestSettings)
+    monkeypatch.setattr(enc, "get_settings", lambda: test_settings)
     manager = enc.EncryptionManager()
     plaintext = "secret message"
     encrypted = manager.encrypt(plaintext)

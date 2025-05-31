@@ -22,10 +22,10 @@ if 'slack_sdk' not in sys.modules:
     sys.modules['slack_sdk.errors'] = errors_mod
 
 from app.api.api_v1.routers.connectors.slack import get_slack_connector
-from app.core.test_settings import TestSettings
+from app.core.test_settings import test_settings
 
 
 def test_get_slack_connector_uses_settings():
-    connector = get_slack_connector(TestSettings)
-    assert connector.token == TestSettings.slack_token
-    assert connector.channel_id == TestSettings.slack_channel_id
+    connector = get_slack_connector(test_settings)
+    assert connector.token == test_settings.slack_token
+    assert connector.channel_id == test_settings.slack_channel_id
