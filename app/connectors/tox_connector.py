@@ -1,6 +1,6 @@
 """Placeholder connector for the Tox peer-to-peer network."""
 
-from typing import Any, Optional
+from typing import Any, Optional, List
 
 from .base_connector import BaseConnector
 
@@ -22,14 +22,16 @@ class ToxConnector(BaseConnector):
         self.bootstrap_host = bootstrap_host
         self.bootstrap_port = bootstrap_port
         self.friend_id = friend_id
+        self.sent_messages: List[Any] = []
 
-    async def send_message(self, message: Any) -> None:
-        # Placeholder for sending a message via Tox
-        pass
+    async def send_message(self, message: Any) -> str:
+        """Record ``message`` locally and return a confirmation string."""
+        self.sent_messages.append(message)
+        return "sent"
 
     async def listen_and_process(self) -> None:
-        # Placeholder for listening for messages
-        pass
+        """Listening for Tox messages is not implemented."""
+        return None
 
     async def process_incoming(self, message: Any) -> Any:
         # Placeholder for processing inbound messages

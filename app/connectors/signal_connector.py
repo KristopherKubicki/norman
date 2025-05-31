@@ -1,3 +1,8 @@
+"""Connector for sending messages via a Signal service."""
+
+import httpx
+from typing import Any, Dict, Optional
+
 from .base_connector import BaseConnector
 
 
@@ -7,21 +12,26 @@ class SignalConnector(BaseConnector):
     id = 'signal'
     name = 'Signal'
 
-    def __init__(self, service_url: str, phone_number: str, config=None):
+    def __init__(self, service_url: str, phone_number: str, config: Optional[dict] = None) -> None:
         super().__init__(config)
         self.service_url = service_url
         self.phone_number = phone_number
 
-    async def send_message(self, message):
-        # Code to send a message using Signal service
-        pass
+    async def send_message(self, message: str) -> Optional[str]:
+        payload = {"recipient": self.phone_number, "message": message}
+        async with httpx.AsyncClient() as client:
+            try:
+                resp = await client.post(self.service_url, json=payload)
+                resp.raise_for_status()
+                return resp.text
+            except httpx.HTTPError as exc:  # pragma: no cover - network
+                print(f"Error sending Signal message: {exc}")
+                return None
 
     async def listen_and_process(self):
-        # Code to listen for incoming messages from Signal
-        # and call process_incoming for each message
-        pass
+        """Listening for Signal messages is not implemented."""
+        return None
 
     async def process_incoming(self, message):
-        # Code to process the incoming message, including applying filters
-        # and calling the appropriate action(s)
-        pass
+        """Return the incoming ``message`` payload."""
+        return message
