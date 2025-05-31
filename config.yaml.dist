@@ -37,6 +37,12 @@ twitch_channel: "your_twitch_channel"
 twitch_server: "irc.chat.twitch.tv"
 twitch_port: 6667
 rest_callback_url: "your_rest_callback_url"
+smtp_host: "your_smtp_host"
+smtp_port: 587
+smtp_username: "your_smtp_username"
+smtp_password: "your_smtp_password"
+smtp_from_address: "your_from@example.com"
+smtp_to_address: "your_to@example.com"
 
 openai_api_key:
 
