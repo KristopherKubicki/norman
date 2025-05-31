@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Any, Optional
 
 try:
     import ax25
@@ -24,15 +24,20 @@ class AX25Connector(BaseConnector):
         self.port = port
         self.callsign = callsign
         self.handle = None
+        self.sent_messages: list[str] = []
 
-    async def send_message(self, message: str) -> None:
-        # Placeholder for sending a message via AX.25
-        pass
+    async def send_message(self, message: str) -> str:
+        """Record ``message`` locally and return a confirmation string."""
+
+        self.sent_messages.append(message)
+        return "sent"
 
     async def listen_and_process(self) -> None:
-        # Placeholder for listening for AX.25 messages
-        pass
+        """Listening for AX.25 messages is not implemented."""
 
-    async def process_incoming(self, message):
-        # Placeholder for processing inbound AX.25 messages
-        pass
+        return None
+
+    async def process_incoming(self, message: Any) -> Any:
+        """Return the incoming ``message`` payload."""
+
+        return message

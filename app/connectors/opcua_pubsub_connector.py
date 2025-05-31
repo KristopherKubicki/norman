@@ -14,14 +14,18 @@ class OPCUAPubSubConnector(BaseConnector):
     def __init__(self, endpoint: str, config: Optional[dict] = None) -> None:
         super().__init__(config)
         self.endpoint = endpoint
+        self.sent_messages: list[Any] = []
 
-    async def send_message(self, message: Any) -> None:
-        # Placeholder for publishing a message via OPC UA PubSub
-        pass
+    async def send_message(self, message: Any) -> str:
+        """Record ``message`` locally and return a confirmation string."""
+
+        self.sent_messages.append(message)
+        return "sent"
 
     async def listen_and_process(self) -> None:
-        # Placeholder for subscribing to OPC UA messages
-        pass
+        """Listening for OPC UA messages is not implemented."""
+
+        return None
 
     async def process_incoming(self, message: Any) -> Any:
         # Placeholder for processing inbound OPC UA messages
