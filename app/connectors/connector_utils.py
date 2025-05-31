@@ -24,6 +24,7 @@ from .telegram_connector import TelegramConnector
 from .webhook_connector import WebhookConnector
 from .whatsapp_connector import WhatsAppConnector
 from .matrix_connector import MatrixConnector
+from .xmpp_connector import XMPPConnector
 
 # Registry of available connectors keyed by their identifier.
 connector_classes: Dict[str, type] = {
@@ -36,6 +37,7 @@ connector_classes: Dict[str, type] = {
     "webhook": WebhookConnector,
     "whatsapp": WhatsAppConnector,
     "matrix": MatrixConnector,
+    "xmpp": XMPPConnector,
 }
 
 

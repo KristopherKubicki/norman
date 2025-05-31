@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     matrix_user_id: str
     matrix_access_token: str
     matrix_room_id: str
+    xmpp_jid: str
+    xmpp_password: str
+    xmpp_server: str
+    xmpp_port: int
+    xmpp_room: str
     openai_api_key: Optional[str]
 
     access_token_expire_minutes: int

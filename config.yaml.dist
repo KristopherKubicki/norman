@@ -28,6 +28,11 @@ matrix_homeserver: "your_matrix_homeserver"
 matrix_user_id: "your_matrix_user_id"
 matrix_access_token: "your_matrix_access_token"
 matrix_room_id: "your_matrix_room_id"
+xmpp_jid: "your_xmpp_jid"
+xmpp_password: "your_xmpp_password"
+xmpp_server: "your_xmpp_server"
+xmpp_port: 5222
+xmpp_room: "your_xmpp_room"
 
 openai_api_key:
 
