@@ -15,6 +15,7 @@ from .webhook_connector import WebhookConnector
 from .whatsapp_connector import WhatsAppConnector
 from .matrix_connector import MatrixConnector
 from .signal_connector import SignalConnector
+from .twitch_connector import TwitchConnector
 
 from .connector_utils import get_connector
 
@@ -39,4 +40,11 @@ def init_connectors(app: FastAPI, settings: Settings):
         user_id=settings.matrix_user_id,
         access_token=settings.matrix_access_token,
         room_id=settings.matrix_room_id,
+    )
+    app.state.twitch_connector = TwitchConnector(
+        token=settings.twitch_token,
+        nickname=settings.twitch_nickname,
+        channel=settings.twitch_channel,
+        server=settings.twitch_server,
+        port=settings.twitch_port,
     )
