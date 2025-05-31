@@ -14,6 +14,7 @@ from .telegram_connector import TelegramConnector
 from .webhook_connector import WebhookConnector
 from .whatsapp_connector import WhatsAppConnector
 from .matrix_connector import MatrixConnector
+from .mqtt_connector import MQTTConnector
 
 from .connector_utils import get_connector
 
@@ -34,4 +35,8 @@ def init_connectors(app: FastAPI, settings: Settings):
         user_id=settings.matrix_user_id,
         access_token=settings.matrix_access_token,
         room_id=settings.matrix_room_id,
+    )
+    app.state.mqtt_connector = MQTTConnector(
+        broker_url=settings.mqtt_broker_url,
+        topic=settings.mqtt_topic,
     )

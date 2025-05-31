@@ -28,6 +28,8 @@ matrix_homeserver: "your_matrix_homeserver"
 matrix_user_id: "your_matrix_user_id"
 matrix_access_token: "your_matrix_access_token"
 matrix_room_id: "your_matrix_room_id"
+mqtt_broker_url: "your_mqtt_broker_url"
+mqtt_topic: "your_mqtt_topic"
 
 openai_api_key:
 
