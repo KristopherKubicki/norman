@@ -18,6 +18,7 @@ if 'slack_sdk' not in sys.modules:
 
 from app.connectors.connector_utils import get_connector, get_connectors_data
 from app.connectors.slack_connector import SlackConnector
+from app.connectors.steam_connector import SteamConnector
 from app.core.test_settings import TestSettings
 
 
@@ -25,6 +26,12 @@ def test_get_connector_returns_slack(monkeypatch):
     monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
     connector = get_connector('slack')
     assert isinstance(connector, SlackConnector)
+
+
+def test_get_connector_returns_steam(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('steam')
+    assert isinstance(connector, SteamConnector)
 
 
 def test_get_connectors_data_missing_config(monkeypatch):

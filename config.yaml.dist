@@ -28,6 +28,8 @@ matrix_homeserver: "your_matrix_homeserver"
 matrix_user_id: "your_matrix_user_id"
 matrix_access_token: "your_matrix_access_token"
 matrix_room_id: "your_matrix_room_id"
+steam_api_key: "your_steam_api_key"
+steam_chat_id: "your_steam_chat_id"
 
 openai_api_key:
 
