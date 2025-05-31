@@ -73,10 +73,7 @@ async def messages_endpoint(request: Request):
 @app_routes.post("/api/bots/create")
 async def create_bot_endpoint(request: Request, db: Session = Depends(get_async_db)):
     form_data = await request.json()
-    bot = BotCreate
-    bot.name = form_data["name"]
-    bot.description = form_data["description"]
-    # Add logic to create bot in the database
+    bot = BotCreate(**form_data)
     bot = create_bot(db=db, bot_create=bot)
     return JSONResponse(content={"id": bot.id, "name": bot.name, "description": bot.description})
 
