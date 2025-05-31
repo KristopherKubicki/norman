@@ -137,6 +137,12 @@ line_channel_access_token: "your_line_channel_access_token"
 line_user_id: "your_line_user_id"
 viber_auth_token: "your_viber_auth_token"
 viber_receiver: "your_viber_receiver"
+coap_oscore_host: "your_coap_oscore_host"
+coap_oscore_port: 5684
+opcua_pubsub_endpoint: "your_opcua_pubsub_endpoint"
+ais_host: "your_ais_host"
+ais_port: 12345
+cap_endpoint: "your_cap_endpoint"
 
 openai_api_key:
 

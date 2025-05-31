@@ -52,6 +52,10 @@ from .nats_connector import NATSConnector
 from .pagerduty_connector import PagerDutyConnector
 from .line_connector import LineConnector
 from .viber_connector import ViberConnector
+from .coap_oscore_connector import CoAPOSCOREConnector
+from .opcua_pubsub_connector import OPCUAPubSubConnector
+from .ais_safety_text_connector import AISSafetyTextConnector
+from .cap_connector import CAPConnector
 
 from .aws_iot_core_connector import AWSIoTCoreConnector
 from .aws_eventbridge_connector import AWSEventBridgeConnector
@@ -272,4 +276,18 @@ def init_connectors(app: FastAPI, settings: Settings):
     app.state.viber_connector = ViberConnector(
         auth_token=settings.viber_auth_token,
         receiver=settings.viber_receiver,
+    )
+    app.state.coap_oscore_connector = CoAPOSCOREConnector(
+        host=settings.coap_oscore_host,
+        port=settings.coap_oscore_port,
+    )
+    app.state.opcua_pubsub_connector = OPCUAPubSubConnector(
+        endpoint=settings.opcua_pubsub_endpoint,
+    )
+    app.state.ais_safety_text_connector = AISSafetyTextConnector(
+        host=settings.ais_host,
+        port=settings.ais_port,
+    )
+    app.state.cap_connector = CAPConnector(
+        endpoint=settings.cap_endpoint,
     )

@@ -62,6 +62,10 @@ from .nats_connector import NATSConnector
 from .pagerduty_connector import PagerDutyConnector
 from .line_connector import LineConnector
 from .viber_connector import ViberConnector
+from .coap_oscore_connector import CoAPOSCOREConnector
+from .opcua_pubsub_connector import OPCUAPubSubConnector
+from .ais_safety_text_connector import AISSafetyTextConnector
+from .cap_connector import CAPConnector
 
 from .aws_iot_core_connector import AWSIoTCoreConnector
 from .aws_eventbridge_connector import AWSEventBridgeConnector
@@ -120,6 +124,10 @@ connector_classes: Dict[str, type] = {
     "pagerduty": PagerDutyConnector,
     "line": LineConnector,
     "viber": ViberConnector,
+    "coap_oscore": CoAPOSCOREConnector,
+    "opcua_pubsub": OPCUAPubSubConnector,
+    "ais_safety_text": AISSafetyTextConnector,
+    "cap": CAPConnector,
 }
 
 

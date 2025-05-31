@@ -48,6 +48,10 @@ from app.connectors.nats_connector import NATSConnector
 from app.connectors.pagerduty_connector import PagerDutyConnector
 from app.connectors.line_connector import LineConnector
 from app.connectors.viber_connector import ViberConnector
+from app.connectors.coap_oscore_connector import CoAPOSCOREConnector
+from app.connectors.opcua_pubsub_connector import OPCUAPubSubConnector
+from app.connectors.ais_safety_text_connector import AISSafetyTextConnector
+from app.connectors.cap_connector import CAPConnector
 from app.core.test_settings import TestSettings
 
 
@@ -316,3 +320,27 @@ def test_get_connector_returns_viber(monkeypatch):
     monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
     connector = get_connector('viber')
     assert isinstance(connector, ViberConnector)
+
+
+def test_get_connector_returns_coap_oscore(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('coap_oscore')
+    assert isinstance(connector, CoAPOSCOREConnector)
+
+
+def test_get_connector_returns_opcua_pubsub(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('opcua_pubsub')
+    assert isinstance(connector, OPCUAPubSubConnector)
+
+
+def test_get_connector_returns_ais_safety_text(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('ais_safety_text')
+    assert isinstance(connector, AISSafetyTextConnector)
+
+
+def test_get_connector_returns_cap(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('cap')
+    assert isinstance(connector, CAPConnector)

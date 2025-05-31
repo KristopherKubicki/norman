@@ -53,6 +53,10 @@ The following connectors are soon to be supported:
 44. [PagerDuty Events v2](./connectors/pagerduty.md)
 45. [LINE Messaging](./connectors/line.md)
 46. [Viber Bots](./connectors/viber.md)
+47. [CoAP + OSCORE](./connectors/coap_oscore.md)
+48. [OPC UA PubSub](./connectors/opcua_pubsub.md)
+49. [AIS Safety-Related Text](./connectors/ais_safety_text.md)
+50. [Common Alerting Protocol](./connectors/cap.md)
 
 
 ## Usage
@@ -104,5 +108,9 @@ For more detailed information on each connector, please refer to the platform-sp
 - [RFC 5425 Connector](./connectors/rfc5425.md)
 - [AMQP Connector](./connectors/amqp.md)
 - [Redis Pub/Sub Connector](./connectors/redis_pubsub.md)
+- [CoAP + OSCORE Connector](./connectors/coap_oscore.md)
+- [OPC UA PubSub Connector](./connectors/opcua_pubsub.md)
+- [AIS Safety-Related Text Connector](./connectors/ais_safety_text.md)
+- [Common Alerting Protocol Connector](./connectors/cap.md)
 
 Remember to follow the platform-specific guidelines and best practices when creating bots or apps for each service.
