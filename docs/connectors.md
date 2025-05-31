@@ -16,6 +16,7 @@ The following connectors are soon to be supported:
 7. [Webhook](./connectors/webhook.md)
 8. [Matrix](./connectors/matrix.md)
 9. [WhatsApp](./connectors/whatsapp.md)
+10. [Steam Chat](./connectors/steam.md)
 
 
 ## Usage
@@ -54,5 +55,6 @@ For more detailed information on each connector, please refer to the platform-sp
 - [Signal Connector](./connectors/signal.md)
 - [Matrix Connector](./connectors/matrix.md)
 - [WhatsApp Connector](./connectors/whatsapp.md)
+- [Steam Chat Connector](./connectors/steam.md)
 
 Remember to follow the platform-specific guidelines and best practices when creating bots or apps for each service.
