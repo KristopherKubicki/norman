@@ -1,5 +1,3 @@
-Here's a draft for the `docs/deployment.md` file. You can modify and expand it based on your project requirements and deployment preferences.
-
 # Deployment
 
 This document outlines the steps to deploy Norman on a server or cloud provider. The guide covers installation, configuration, and basic maintenance tasks.

@@ -1,5 +1,3 @@
-Here's a draft for the `docs/extending.md` file. You can modify and expand it based on your project requirements and customization preferences.
-
 # Extending Norman
 
 This document provides an overview of how to extend and customize Norman. It covers creating new connectors, adding custom actions, and modifying the core functionality.
