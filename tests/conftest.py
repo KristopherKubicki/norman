@@ -13,12 +13,17 @@ from app.core.test_settings import TestSettings
 from app.core.config import settings
 from app.api.deps import get_db
 from app.models.base import Base
+import importlib
+importlib.import_module("app.models")  # ensure models are registered
 
 test_settings = TestSettings
 
 # Ensure the test database directory exists
 db_dir = Path("./db")
 db_dir.mkdir(parents=True, exist_ok=True)
+db_file = db_dir / "test.db"
+if db_file.exists():
+    db_file.unlink()
 
 settings.database_url = f"sqlite:///{db_dir}/test.db"
 engine = create_engine(settings.database_url)
