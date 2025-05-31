@@ -16,6 +16,7 @@ The following connectors are soon to be supported:
 7. [Webhook](./connectors/webhook.md)
 8. [Matrix](./connectors/matrix.md)
 9. [WhatsApp](./connectors/whatsapp.md)
+10. [Twitch](./connectors/twitch.md)
 
 
 ## Usage
@@ -49,10 +50,9 @@ For more detailed information on each connector, please refer to the platform-sp
 - [Microsoft Teams Connector](./connectors/teams.md)
 - [Google Chat Connector](./connectors/googlechat.md)
 - [Telegram Connector](./connectors/telegram.md)
-- [Matrix Connector](#)
-- [WhatsApp Connector](#)
 - [Signal Connector](./connectors/signal.md)
 - [Matrix Connector](./connectors/matrix.md)
 - [WhatsApp Connector](./connectors/whatsapp.md)
+- [Twitch Connector](./connectors/twitch.md)
 
 Remember to follow the platform-specific guidelines and best practices when creating bots or apps for each service.
