@@ -267,3 +267,17 @@ def test_get_connector_returns_azure_eventgrid(monkeypatch):
     monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
     connector = get_connector('azure_eventgrid')
     assert isinstance(connector, AzureEventGridConnector)
+
+
+def test_get_connector_returns_amqp(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('amqp')
+    from app.connectors.amqp_connector import AMQPConnector
+    assert isinstance(connector, AMQPConnector)
+
+
+def test_get_connector_returns_redis_pubsub(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('redis_pubsub')
+    from app.connectors.redis_pubsub_connector import RedisPubSubConnector
+    assert isinstance(connector, RedisPubSubConnector)

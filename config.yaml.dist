@@ -123,6 +123,11 @@ azure_eventgrid_key: "your_azure_eventgrid_key"
 google_pubsub_project_id: "your_google_pubsub_project_id"
 google_pubsub_topic_id: "your_google_pubsub_topic_id"
 google_pubsub_credentials_path: "your_google_pubsub_credentials_path"
+amqp_url: "your_amqp_url"
+amqp_queue: "your_amqp_queue"
+redis_host: "your_redis_host"
+redis_port: 6379
+redis_channel: "your_redis_channel"
 
 openai_api_key:
 

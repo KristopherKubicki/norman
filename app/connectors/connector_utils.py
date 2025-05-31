@@ -55,6 +55,8 @@ from .jira_service_desk_connector import JiraServiceDeskConnector
 from .tap_snpp_connector import TAPSNPPConnector
 from .acars_connector import ACARSConnector
 from .rfc5425_connector import RFC5425Connector
+from .amqp_connector import AMQPConnector
+from .redis_pubsub_connector import RedisPubSubConnector
 
 from .aws_iot_core_connector import AWSIoTCoreConnector
 from .aws_eventbridge_connector import AWSEventBridgeConnector
@@ -106,6 +108,8 @@ connector_classes: Dict[str, type] = {
     "google_pubsub": GooglePubSubConnector,
     "azure_eventgrid": AzureEventGridConnector,
     "rfc5425": RFC5425Connector,
+    "amqp": AMQPConnector,
+    "redis_pubsub": RedisPubSubConnector,
 }
 
 
