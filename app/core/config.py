@@ -151,6 +151,10 @@ class Settings(BaseSettings):
     ais_host: str
     ais_port: int
     cap_endpoint: str
+    snmp_host: str
+    snmp_port: int
+    snmp_community: str
+    snmp_oid: str
     openai_api_key: Optional[str]
 
     access_token_expire_minutes: int
