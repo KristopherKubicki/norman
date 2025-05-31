@@ -23,22 +23,18 @@ To configure the Microsoft Teams connector, follow these steps:
 Add the following configuration to your `config.yaml` file:
 
 ```yaml
-connectors:
-  - type: "msteams"
-    client_id: "your-client-id"
-    client_secret: "your-client-secret"
-    tenant_id: "your-tenant-id"
-    channels:
-      - "your-microsoft-teams-channel"
+teams_app_id: "your_teams_app_id"
+teams_app_password: "your_teams_app_password"
+teams_tenant_id: "your_teams_tenant_id"
+teams_bot_endpoint: "your_teams_bot_endpoint"
 ```
 
-Replace the values with the appropriate information for your Microsoft Teams workspace and channels. The fields in the configuration are:
+Replace the values with the appropriate information for your Microsoft Teams setup. The fields in the configuration are:
 
-- `type`: The type of the connector, in this case, `"msteams"`.
-- `client_id`: Your App Registration's Application (client) ID.
-- `client_secret`: Your App Registration's Client secret.
-- `tenant_id`: Your App Registration's Directory (tenant) ID.
-- `channels`: A list of Microsoft Teams channels you want to join.
+- `teams_app_id`: Your App Registration's Application (client) ID.
+- `teams_app_password`: Your App Registration's Client secret.
+- `teams_tenant_id`: Your App Registration's Directory (tenant) ID.
+- `teams_bot_endpoint`: The publicly reachable endpoint for your bot.
 
 ## Usage
 
