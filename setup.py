@@ -24,6 +24,7 @@ setup(
             "pytest-asyncio",
         ]
     },
+    python_requires=">=3.8, <3.12",
     entry_points={
         "console_scripts": [
             "norman = main:main",
