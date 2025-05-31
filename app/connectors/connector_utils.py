@@ -32,6 +32,16 @@ from .smtp_connector import SMTPConnector
 from .mqtt_connector import MQTTConnector
 from .mastodon_connector import MastodonConnector
 from .sms_connector import SMSConnector
+from .steam_chat_connector import SteamChatConnector
+from .xmpp_connector import XMPPConnector
+from .bluesky_connector import BlueskyConnector
+from .facebook_messenger_connector import FacebookMessengerConnector
+from .linkedin_connector import LinkedInConnector
+from .skype_connector import SkypeConnector
+from .rocketchat_connector import RocketChatConnector
+from .mattermost_connector import MattermostConnector
+from .wechat_connector import WeChatConnector
+from .reddit_chat_connector import RedditChatConnector
 
 # Registry of available connectors keyed by their identifier.
 connector_classes: Dict[str, type] = {
@@ -52,6 +62,16 @@ connector_classes: Dict[str, type] = {
     "mqtt": MQTTConnector,
     "mastodon": MastodonConnector,
     "sms": SMSConnector,
+    "steam_chat": SteamChatConnector,
+    "xmpp": XMPPConnector,
+    "bluesky": BlueskyConnector,
+    "facebook_messenger": FacebookMessengerConnector,
+    "linkedin": LinkedInConnector,
+    "skype": SkypeConnector,
+    "rocketchat": RocketChatConnector,
+    "mattermost": MattermostConnector,
+    "wechat": WeChatConnector,
+    "reddit_chat": RedditChatConnector,
 }
 
 

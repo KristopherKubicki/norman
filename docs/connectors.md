@@ -22,6 +22,16 @@ The following connectors are soon to be supported:
 13. [SMTP](./connectors/smtp.md)
 14. [MQTT](./connectors/mqtt.md)
 15. [Mastodon](./connectors/mastodon.md)
+16. [Steam Chat](./connectors/steam_chat.md)
+17. [XMPP](./connectors/xmpp.md)
+18. [Bluesky](./connectors/bluesky.md)
+19. [Facebook Messenger](./connectors/facebook_messenger.md)
+20. [LinkedIn](./connectors/linkedin.md)
+21. [Skype](./connectors/skype.md)
+22. [Rocket.Chat](./connectors/rocketchat.md)
+23. [Mattermost](./connectors/mattermost.md)
+24. [WeChat](./connectors/wechat.md)
+25. [Reddit Chat](./connectors/reddit_chat.md)
 
 
 ## Usage
