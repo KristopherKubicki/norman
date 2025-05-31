@@ -28,6 +28,9 @@ matrix_homeserver: "your_matrix_homeserver"
 matrix_user_id: "your_matrix_user_id"
 matrix_access_token: "your_matrix_access_token"
 matrix_room_id: "your_matrix_room_id"
+twitch_token: "your_twitch_token"
+twitch_nickname: "your_twitch_nickname"
+twitch_channel: "your_twitch_channel"
 
 openai_api_key:
 

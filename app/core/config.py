@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     matrix_user_id: str
     matrix_access_token: str
     matrix_room_id: str
+    twitch_token: str
+    twitch_nickname: str
+    twitch_channel: str
     openai_api_key: Optional[str]
 
     access_token_expire_minutes: int

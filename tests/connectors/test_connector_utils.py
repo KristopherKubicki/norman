@@ -18,6 +18,7 @@ if 'slack_sdk' not in sys.modules:
 
 from app.connectors.connector_utils import get_connector, get_connectors_data
 from app.connectors.slack_connector import SlackConnector
+from app.connectors.twitch_connector import TwitchConnector
 from app.core.test_settings import TestSettings
 
 
@@ -27,9 +28,17 @@ def test_get_connector_returns_slack(monkeypatch):
     assert isinstance(connector, SlackConnector)
 
 
+def test_get_connector_returns_twitch(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('twitch')
+    assert isinstance(connector, TwitchConnector)
+
+
 def test_get_connectors_data_missing_config(monkeypatch):
     monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
     data = get_connectors_data()
     assert all(item['status'] == 'missing_config' for item in data)
     slack_data = next(item for item in data if item['id'] == 'slack')
     assert slack_data['status'] == 'missing_config'
+    twitch_data = next(item for item in data if item['id'] == 'twitch')
+    assert twitch_data['status'] == 'missing_config'
