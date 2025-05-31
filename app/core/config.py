@@ -151,6 +151,12 @@ class Settings(BaseSettings):
     ais_host: str
     ais_port: int
     cap_endpoint: str
+    google_business_access_token: str
+    google_business_phone_number: str
+    apple_business_access_token: str
+    apple_business_sender_id: str
+    intercom_access_token: str
+    intercom_app_id: str
     openai_api_key: Optional[str]
 
     access_token_expire_minutes: int

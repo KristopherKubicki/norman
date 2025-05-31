@@ -57,6 +57,9 @@ The following connectors are soon to be supported:
 48. [OPC UA PubSub](./connectors/opcua_pubsub.md)
 49. [AIS Safety-Related Text](./connectors/ais_safety_text.md)
 50. [Common Alerting Protocol](./connectors/cap.md)
+51. [Google Business Messages / RCS](./connectors/google_business_rcs.md)
+52. [Apple Messages for Business](./connectors/apple_messages_business.md)
+53. [Intercom](./connectors/intercom.md)
 
 
 ## Usage
@@ -112,5 +115,8 @@ For more detailed information on each connector, please refer to the platform-sp
 - [OPC UA PubSub Connector](./connectors/opcua_pubsub.md)
 - [AIS Safety-Related Text Connector](./connectors/ais_safety_text.md)
 - [Common Alerting Protocol Connector](./connectors/cap.md)
+- [Google Business Messages / RCS Connector](./connectors/google_business_rcs.md)
+- [Apple Messages for Business Connector](./connectors/apple_messages_business.md)
+- [Intercom Connector](./connectors/intercom.md)
 
 Remember to follow the platform-specific guidelines and best practices when creating bots or apps for each service.
