@@ -37,6 +37,20 @@ class WebhookConnector(BaseConnector):
                 print(f"Error sending message to webhook: {exc}")
                 return None
 
+    async def send_to_webhook(self, data: Dict[str, Any]) -> str:
+        """Send ``data`` to the webhook and raise on error.
+
+        This method wraps :meth:`send_message` but raises a
+        :class:`~fastapi.HTTPException` if sending fails.  The extra
+        error handling is useful for API routes that want to surface a
+        failure as an HTTP error.
+        """
+
+        result = await self.send_message(data)
+        if result is None:
+            raise HTTPException(status_code=500, detail="Failed to send to webhook")
+        return result
+
     async def listen_and_process(self) -> None:  # pragma: no cover - no incoming
         """Webhook connectors do not listen for inbound messages."""
         return None
