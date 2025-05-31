@@ -37,6 +37,10 @@ from app.connectors.wechat_connector import WeChatConnector
 from app.connectors.reddit_chat_connector import RedditChatConnector
 from app.connectors.instagram_dm_connector import InstagramDMConnector
 from app.connectors.twitter_connector import TwitterConnector
+from app.connectors.aws_iot_core_connector import AWSIoTCoreConnector
+from app.connectors.aws_eventbridge_connector import AWSEventBridgeConnector
+from app.connectors.google_pubsub_connector import GooglePubSubConnector
+from app.connectors.azure_eventgrid_connector import AzureEventGridConnector
 from app.connectors.imessage_connector import IMessageConnector
 from app.connectors.rfc5425_connector import RFC5425Connector
 from app.core.test_settings import TestSettings
@@ -240,3 +244,26 @@ def test_get_connectors_data_missing_config(monkeypatch):
     assert all(item['status'] == 'missing_config' for item in data)
     slack_data = next(item for item in data if item['id'] == 'slack')
     assert slack_data['status'] == 'missing_config'
+
+def test_get_connector_returns_aws_iot_core(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('aws_iot_core')
+    assert isinstance(connector, AWSIoTCoreConnector)
+
+
+def test_get_connector_returns_aws_eventbridge(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('aws_eventbridge')
+    assert isinstance(connector, AWSEventBridgeConnector)
+
+
+def test_get_connector_returns_google_pubsub(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('google_pubsub')
+    assert isinstance(connector, GooglePubSubConnector)
+
+
+def test_get_connector_returns_azure_eventgrid(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('azure_eventgrid')
+    assert isinstance(connector, AzureEventGridConnector)

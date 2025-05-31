@@ -46,6 +46,10 @@ from .tap_snpp_connector import TAPSNPPConnector
 from .acars_connector import ACARSConnector
 from .rfc5425_connector import RFC5425Connector
 
+from .aws_iot_core_connector import AWSIoTCoreConnector
+from .aws_eventbridge_connector import AWSEventBridgeConnector
+from .google_pubsub_connector import GooglePubSubConnector
+from .azure_eventgrid_connector import AzureEventGridConnector
 from .connector_utils import get_connector
 
 def init_connectors(app: FastAPI, settings: Settings):
@@ -215,4 +219,22 @@ def init_connectors(app: FastAPI, settings: Settings):
     app.state.rfc5425_connector = RFC5425Connector(
         host=settings.rfc5425_host,
         port=settings.rfc5425_port,
+    )
+    app.state.aws_iot_core_connector = AWSIoTCoreConnector(
+        region=settings.aws_iot_core_region,
+        topic=settings.aws_iot_core_topic,
+        endpoint=settings.aws_iot_core_endpoint,
+    )
+    app.state.aws_eventbridge_connector = AWSEventBridgeConnector(
+        region=settings.aws_eventbridge_region,
+        event_bus_name=settings.aws_eventbridge_event_bus_name,
+    )
+    app.state.google_pubsub_connector = GooglePubSubConnector(
+        project_id=settings.google_pubsub_project_id,
+        topic_id=settings.google_pubsub_topic_id,
+        credentials_path=settings.google_pubsub_credentials_path,
+    )
+    app.state.azure_eventgrid_connector = AzureEventGridConnector(
+        endpoint=settings.azure_eventgrid_endpoint,
+        key=settings.azure_eventgrid_key,
     )

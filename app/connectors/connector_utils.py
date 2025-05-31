@@ -56,6 +56,10 @@ from .tap_snpp_connector import TAPSNPPConnector
 from .acars_connector import ACARSConnector
 from .rfc5425_connector import RFC5425Connector
 
+from .aws_iot_core_connector import AWSIoTCoreConnector
+from .aws_eventbridge_connector import AWSEventBridgeConnector
+from .google_pubsub_connector import GooglePubSubConnector
+from .azure_eventgrid_connector import AzureEventGridConnector
 # Registry of available connectors keyed by their identifier.
 connector_classes: Dict[str, type] = {
     "discord": DiscordConnector,
@@ -97,6 +101,10 @@ connector_classes: Dict[str, type] = {
     "jira_service_desk": JiraServiceDeskConnector,
     "tap_snpp": TAPSNPPConnector,
     "acars": ACARSConnector,
+    "aws_iot_core": AWSIoTCoreConnector,
+    "aws_eventbridge": AWSEventBridgeConnector,
+    "google_pubsub": GooglePubSubConnector,
+    "azure_eventgrid": AzureEventGridConnector,
     "rfc5425": RFC5425Connector,
 }
 

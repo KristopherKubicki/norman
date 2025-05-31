@@ -121,6 +121,16 @@ class Settings(BaseSettings):
     acars_port: int
     rfc5425_host: str
     rfc5425_port: int
+    aws_eventbridge_region: str
+    aws_eventbridge_event_bus_name: str
+    aws_iot_core_region: str
+    aws_iot_core_topic: str
+    aws_iot_core_endpoint: str
+    azure_eventgrid_endpoint: str
+    azure_eventgrid_key: str
+    google_pubsub_project_id: str
+    google_pubsub_topic_id: str
+    google_pubsub_credentials_path: str
     openai_api_key: Optional[str]
 
     access_token_expire_minutes: int
