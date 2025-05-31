@@ -28,6 +28,14 @@ class Settings(BaseSettings):
     teams_tenant_id: str
     teams_bot_endpoint: str
     webhook_secret: str
+    whatsapp_account_sid: str
+    whatsapp_auth_token: str
+    whatsapp_from_number: str
+    whatsapp_to_number: str
+    matrix_homeserver: str
+    matrix_user_id: str
+    matrix_access_token: str
+    matrix_room_id: str
     openai_api_key: Optional[str]
 
     access_token_expire_minutes: int

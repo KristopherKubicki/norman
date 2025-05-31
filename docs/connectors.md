@@ -13,6 +13,8 @@ The following connectors are soon to be supported:
 5. **Google Chat**
 6. **Telegram**
 7. **Webhook**
+8. **Matrix**
+9. **WhatsApp**
 
 ## Usage
 
@@ -46,5 +48,7 @@ For more detailed information on each connector, please refer to the platform-sp
 - [Google Chat Connector](./connectors/googlechat.md)
 - [Telegram Connector](./connectors/telegram.md)
 - [Webhook Connector](./connectors/webhook.md)
+- [Matrix Connector](#)
+- [WhatsApp Connector](#)
 
 Remember to follow the platform-specific guidelines and best practices when creating bots or apps for each service.
