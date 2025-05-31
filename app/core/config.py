@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     matrix_user_id: str
     matrix_access_token: str
     matrix_room_id: str
+    mastodon_api_base_url: str
+    mastodon_access_token: str
     openai_api_key: Optional[str]
 
     access_token_expire_minutes: int

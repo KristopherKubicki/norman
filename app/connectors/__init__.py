@@ -14,6 +14,7 @@ from .telegram_connector import TelegramConnector
 from .webhook_connector import WebhookConnector
 from .whatsapp_connector import WhatsAppConnector
 from .matrix_connector import MatrixConnector
+from .mastodon_connector import MastodonConnector
 
 from .connector_utils import get_connector
 
@@ -34,4 +35,8 @@ def init_connectors(app: FastAPI, settings: Settings):
         user_id=settings.matrix_user_id,
         access_token=settings.matrix_access_token,
         room_id=settings.matrix_room_id,
+    )
+    app.state.mastodon_connector = MastodonConnector(
+        api_base_url=settings.mastodon_api_base_url,
+        access_token=settings.mastodon_access_token,
     )
