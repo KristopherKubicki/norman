@@ -8,5 +8,10 @@ def create_initial_admin_user():
 
     db = SessionLocal()
     if not is_admin_user_exists(db):
-        create_admin_user(db, settings.initial_admin_email, settings.initial_admin_password)
+        create_admin_user(
+            db,
+            settings.initial_admin_email,
+            settings.initial_admin_password,
+            settings.initial_admin_username,
+        )
     db.close()

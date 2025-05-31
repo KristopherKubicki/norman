@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     # initial admin
     initial_admin_email: str = "admin@example.com"
     initial_admin_password: str = "password123"
+    initial_admin_username: str = "admin"
 
     # Connectors
     telegram_token: str
@@ -89,6 +90,17 @@ class Settings(BaseSettings):
             return v
         assert v != "admin@example.com", (
             "You must set an admin email in the config.yaml!"
+        )
+        return v
+
+    @validator("initial_admin_username", pre=True)
+    def validate_admin_username(cls, v):
+        """Validate admin username unless running under pytest."""
+        import sys
+        if "pytest" in sys.modules:
+            return v
+        assert v != "admin", (
+            "You must set an admin username in the config.yaml!"
         )
         return v
 

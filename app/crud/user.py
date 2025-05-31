@@ -41,9 +41,15 @@ def is_admin_user_exists(db: Session) -> bool:
     admin_user = db.query(models.User).filter(models.User.is_superuser == True).first()
     return admin_user is not None
 
-def create_admin_user(db: Session, email: str, password: str):
+def create_admin_user(db: Session, email: str, password: str, username: str) -> models.User:
+    """Create the initial administrator user."""
     hashed_password = get_password_hash(password)
-    user = models.User(email=email, password=hashed_password, is_superuser=True, username='admin') # todo: add to config
+    user = models.User(
+        email=email,
+        password=hashed_password,
+        is_superuser=True,
+        username=username,
+    )
     db.add(user)
     db.commit()
     db.refresh(user)
