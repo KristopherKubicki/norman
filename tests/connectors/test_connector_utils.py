@@ -25,6 +25,16 @@ from app.connectors.smtp_connector import SMTPConnector
 from app.connectors.mqtt_connector import MQTTConnector
 from app.connectors.mastodon_connector import MastodonConnector
 from app.connectors.sms_connector import SMSConnector
+from app.connectors.steam_chat_connector import SteamChatConnector
+from app.connectors.xmpp_connector import XMPPConnector
+from app.connectors.bluesky_connector import BlueskyConnector
+from app.connectors.facebook_messenger_connector import FacebookMessengerConnector
+from app.connectors.linkedin_connector import LinkedInConnector
+from app.connectors.skype_connector import SkypeConnector
+from app.connectors.rocketchat_connector import RocketChatConnector
+from app.connectors.mattermost_connector import MattermostConnector
+from app.connectors.wechat_connector import WeChatConnector
+from app.connectors.reddit_chat_connector import RedditChatConnector
 from app.core.test_settings import TestSettings
 
 
@@ -71,6 +81,66 @@ def test_get_connector_returns_sms(monkeypatch):
     monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
     connector = get_connector('sms')
     assert isinstance(connector, SMSConnector)
+
+
+def test_get_connector_returns_steam_chat(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('steam_chat')
+    assert isinstance(connector, SteamChatConnector)
+
+
+def test_get_connector_returns_xmpp(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('xmpp')
+    assert isinstance(connector, XMPPConnector)
+
+
+def test_get_connector_returns_bluesky(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('bluesky')
+    assert isinstance(connector, BlueskyConnector)
+
+
+def test_get_connector_returns_facebook_messenger(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('facebook_messenger')
+    assert isinstance(connector, FacebookMessengerConnector)
+
+
+def test_get_connector_returns_linkedin(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('linkedin')
+    assert isinstance(connector, LinkedInConnector)
+
+
+def test_get_connector_returns_skype(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('skype')
+    assert isinstance(connector, SkypeConnector)
+
+
+def test_get_connector_returns_rocketchat(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('rocketchat')
+    assert isinstance(connector, RocketChatConnector)
+
+
+def test_get_connector_returns_mattermost(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('mattermost')
+    assert isinstance(connector, MattermostConnector)
+
+
+def test_get_connector_returns_wechat(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('wechat')
+    assert isinstance(connector, WeChatConnector)
+
+
+def test_get_connector_returns_reddit_chat(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('reddit_chat')
+    assert isinstance(connector, RedditChatConnector)
 
 
 def test_get_connectors_data_missing_config(monkeypatch):

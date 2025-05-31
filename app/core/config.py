@@ -64,6 +64,31 @@ class Settings(BaseSettings):
     mqtt_password: str
     mastodon_base_url: str
     mastodon_access_token: str
+    steam_chat_token: str
+    steam_chat_id: str
+    xmpp_jid: str
+    xmpp_password: str
+    xmpp_server: str
+    bluesky_handle: str
+    bluesky_app_password: str
+    facebook_page_token: str
+    facebook_verify_token: str
+    linkedin_access_token: str
+    skype_app_id: str
+    skype_app_password: str
+    rocketchat_url: str
+    rocketchat_token: str
+    rocketchat_user_id: str
+    mattermost_url: str
+    mattermost_token: str
+    mattermost_channel_id: str
+    wechat_app_id: str
+    wechat_app_secret: str
+    reddit_client_id: str
+    reddit_client_secret: str
+    reddit_username: str
+    reddit_password: str
+    reddit_user_agent: str
     openai_api_key: Optional[str]
 
     access_token_expire_minutes: int

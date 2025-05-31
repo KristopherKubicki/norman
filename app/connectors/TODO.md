@@ -3,17 +3,17 @@
 This file tracks connectors that we would like to implement in the future.
 
  - [x] MQTT
-- [ ] Steam Chat
+- [x] Steam Chat
 - [x] Twitch Chat
-- [ ] XMPP
-- [ ] Bluesky
+- [x] XMPP
+- [x] Bluesky
  - [x] Mastodon
 - [x] SMTP
 - [x] SMS (e.g., Twilio)
-- [ ] Facebook Messenger
-- [ ] LinkedIn Messaging
-- [ ] Skype
-- [ ] Rocket.Chat
-- [ ] Mattermost
-- [ ] WeChat
-- [ ] Reddit Chat
+- [x] Facebook Messenger
+- [x] LinkedIn Messaging
+- [x] Skype
+- [x] Rocket.Chat
+- [x] Mattermost
+- [x] WeChat
+- [x] Reddit Chat

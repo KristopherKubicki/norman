@@ -22,6 +22,16 @@ from .smtp_connector import SMTPConnector
 from .mqtt_connector import MQTTConnector
 from .mastodon_connector import MastodonConnector
 from .sms_connector import SMSConnector
+from .steam_chat_connector import SteamChatConnector
+from .xmpp_connector import XMPPConnector
+from .bluesky_connector import BlueskyConnector
+from .facebook_messenger_connector import FacebookMessengerConnector
+from .linkedin_connector import LinkedInConnector
+from .skype_connector import SkypeConnector
+from .rocketchat_connector import RocketChatConnector
+from .mattermost_connector import MattermostConnector
+from .wechat_connector import WeChatConnector
+from .reddit_chat_connector import RedditChatConnector
 
 from .connector_utils import get_connector
 
@@ -88,4 +98,50 @@ def init_connectors(app: FastAPI, settings: Settings):
         password=settings.smtp_password,
         from_address=settings.smtp_from_address,
         to_address=settings.smtp_to_address,
+    )
+
+    app.state.steam_chat_connector = SteamChatConnector(
+        token=settings.steam_chat_token,
+        chat_id=settings.steam_chat_id,
+    )
+    app.state.xmpp_connector = XMPPConnector(
+        jid=settings.xmpp_jid,
+        password=settings.xmpp_password,
+        server=settings.xmpp_server,
+    )
+    app.state.bluesky_connector = BlueskyConnector(
+        handle=settings.bluesky_handle,
+        app_password=settings.bluesky_app_password,
+    )
+    app.state.facebook_messenger_connector = FacebookMessengerConnector(
+        page_token=settings.facebook_page_token,
+        verify_token=settings.facebook_verify_token,
+    )
+    app.state.linkedin_connector = LinkedInConnector(
+        access_token=settings.linkedin_access_token,
+    )
+    app.state.skype_connector = SkypeConnector(
+        app_id=settings.skype_app_id,
+        app_password=settings.skype_app_password,
+    )
+    app.state.rocketchat_connector = RocketChatConnector(
+        url=settings.rocketchat_url,
+        token=settings.rocketchat_token,
+        user_id=settings.rocketchat_user_id,
+    )
+    app.state.mattermost_connector = MattermostConnector(
+        url=settings.mattermost_url,
+        token=settings.mattermost_token,
+        channel_id=settings.mattermost_channel_id,
+    )
+    app.state.wechat_connector = WeChatConnector(
+        app_id=settings.wechat_app_id,
+        app_secret=settings.wechat_app_secret,
+    )
+    app.state.reddit_chat_connector = RedditChatConnector(
+        client_id=settings.reddit_client_id,
+        client_secret=settings.reddit_client_secret,
+        username=settings.reddit_username,
+        password=settings.reddit_password,
+        user_agent=settings.reddit_user_agent,
     )
