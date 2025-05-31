@@ -45,6 +45,13 @@ smtp_username: "your_smtp_username"
 smtp_password: "your_smtp_password"
 smtp_from_address: "your_from@example.com"
 smtp_to_address: "your_to@example.com"
+mqtt_host: "your_mqtt_host"
+mqtt_port: 1883
+mqtt_topic: "your_mqtt_topic"
+mqtt_username: "your_mqtt_username"
+mqtt_password: "your_mqtt_password"
+mastodon_base_url: "https://mastodon.example.com"
+mastodon_access_token: "your_mastodon_token"
 
 openai_api_key:
 

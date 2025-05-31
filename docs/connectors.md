@@ -19,7 +19,9 @@ The following connectors are soon to be supported:
 10. [Twitch](./connectors/twitch.md)
 11. [REST Callback](./connectors/rest_callback.md)
 12. [MCP](./connectors/mcp.md)
-12. [SMTP](./connectors/smtp.md)
+13. [SMTP](./connectors/smtp.md)
+14. [MQTT](./connectors/mqtt.md)
+15. [Mastodon](./connectors/mastodon.md)
 
 
 ## Usage
@@ -59,5 +61,7 @@ For more detailed information on each connector, please refer to the platform-sp
 - [Twitch Connector](./connectors/twitch.md)
 - [REST Callback Connector](./connectors/rest_callback.md)
 - [MCP Connector](./connectors/mcp.md)
+- [MQTT Connector](./connectors/mqtt.md)
+- [Mastodon Connector](./connectors/mastodon.md)
 
 Remember to follow the platform-specific guidelines and best practices when creating bots or apps for each service.

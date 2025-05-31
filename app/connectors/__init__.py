@@ -19,6 +19,8 @@ from .signal_connector import SignalConnector
 from .twitch_connector import TwitchConnector
 from .mcp_connector import MCPConnector
 from .smtp_connector import SMTPConnector
+from .mqtt_connector import MQTTConnector
+from .mastodon_connector import MastodonConnector
 
 from .connector_utils import get_connector
 
@@ -53,6 +55,19 @@ def init_connectors(app: FastAPI, settings: Settings):
     )
     app.state.rest_callback_connector = RESTCallbackConnector(
         callback_url=settings.rest_callback_url
+    )
+
+    app.state.mqtt_connector = MQTTConnector(
+        host=settings.mqtt_host,
+        port=settings.mqtt_port,
+        topic=settings.mqtt_topic,
+        username=settings.mqtt_username,
+        password=settings.mqtt_password,
+    )
+
+    app.state.mastodon_connector = MastodonConnector(
+        base_url=settings.mastodon_base_url,
+        access_token=settings.mastodon_access_token,
     )
 
     app.state.mcp_connector = MCPConnector(

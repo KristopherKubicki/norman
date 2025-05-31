@@ -29,6 +29,8 @@ from .signal_connector import SignalConnector
 from .twitch_connector import TwitchConnector
 from .mcp_connector import MCPConnector
 from .smtp_connector import SMTPConnector
+from .mqtt_connector import MQTTConnector
+from .mastodon_connector import MastodonConnector
 
 # Registry of available connectors keyed by their identifier.
 connector_classes: Dict[str, type] = {
@@ -46,6 +48,8 @@ connector_classes: Dict[str, type] = {
     "twitch": TwitchConnector,
     "mcp": MCPConnector,
     "smtp": SMTPConnector,
+    "mqtt": MQTTConnector,
+    "mastodon": MastodonConnector,
 }
 
 

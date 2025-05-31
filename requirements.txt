@@ -20,3 +20,4 @@ email-validator
 pyjwt
 openai
 tiktoken
+paho-mqtt
