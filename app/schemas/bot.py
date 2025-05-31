@@ -3,7 +3,6 @@ from pydantic import BaseModel
 
 class BotBase(BaseModel):
     name: str
-    session_id: str
     gpt_model: str
 
 class BotCreate(BaseModel):

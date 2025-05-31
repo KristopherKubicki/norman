@@ -5,7 +5,14 @@ def get_bot_by_id(db: Session, bot_id: int):
     return db.query(models.Bot).filter(models.Bot.id == bot_id).first()
 
 def create_bot(db: Session, bot_create: schemas.BotCreate):
-    bot = models.Bot(name=bot_create.name, description=bot_create.description)
+    """Create and persist a new :class:`~app.models.bot.Bot`."""
+
+    description = bot_create.description or ""
+    bot = models.Bot(
+        name=bot_create.name,
+        description=description,
+        gpt_model=bot_create.gpt_model,
+    )
     db.add(bot)
     db.commit()
     db.refresh(bot)
