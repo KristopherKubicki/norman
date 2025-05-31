@@ -20,8 +20,20 @@ teams_app_password: "your_teams_app_password"
 teams_tenant_id: "your_teams_tenant_id"
 teams_bot_endpoint: "your_teams_bot_endpoint"
 webhook_secret: "your_webhook_secret"
+whatsapp_account_sid: "your_whatsapp_account_sid"
+whatsapp_auth_token: "your_whatsapp_auth_token"
+whatsapp_from_number: "your_whatsapp_from_number"
+whatsapp_to_number: "your_whatsapp_to_number"
+twilio_account_sid: "your_twilio_account_sid"
+twilio_auth_token: "your_twilio_auth_token"
+twilio_from_number: "your_twilio_from_number"
+twilio_to_number: "your_twilio_to_number"
+matrix_homeserver: "your_matrix_homeserver"
+matrix_user_id: "your_matrix_user_id"
+matrix_access_token: "your_matrix_access_token"
+matrix_room_id: "your_matrix_room_id"
 
-openai_api_key: 
+openai_api_key:
 
 # Database
 database_url: "sqlite:///./db/norman.db"
