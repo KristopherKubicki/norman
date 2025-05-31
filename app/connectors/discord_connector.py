@@ -5,10 +5,11 @@ from typing import Any, Dict, Optional
 
 from .base_connector import BaseConnector
 
+
 class DiscordConnector(BaseConnector):
 
-    id = 'discord'
-    name = 'Discord'
+    id = "discord"
+    name = "Discord"
 
     def __init__(self, token: str, channel_id: str, config=None):
         super().__init__(config)
@@ -21,7 +22,9 @@ class DiscordConnector(BaseConnector):
         headers = {"Authorization": f"Bot {self.token}"}
         async with httpx.AsyncClient() as client:
             try:
-                resp = await client.post(url, json={"content": message}, headers=headers)
+                resp = await client.post(
+                    url, json={"content": message}, headers=headers
+                )
                 resp.raise_for_status()
                 return resp.text
             except httpx.HTTPError as exc:  # pragma: no cover - network
@@ -36,3 +39,13 @@ class DiscordConnector(BaseConnector):
         """Return the raw ``message`` payload."""
         return message
 
+    def is_connected(self) -> bool:
+        """Return ``True`` if the API token appears valid."""
+        url = "https://discord.com/api/v9/users/@me"
+        headers = {"Authorization": f"Bot {self.token}"}
+        try:
+            resp = httpx.get(url, headers=headers)
+            resp.raise_for_status()
+            return True
+        except httpx.HTTPError:
+            return False
