@@ -145,6 +145,12 @@ class Settings(BaseSettings):
     line_user_id: str
     viber_auth_token: str
     viber_receiver: str
+    coap_oscore_host: str
+    coap_oscore_port: int
+    opcua_pubsub_endpoint: str
+    ais_host: str
+    ais_port: int
+    cap_endpoint: str
     openai_api_key: Optional[str]
 
     access_token_expire_minutes: int
