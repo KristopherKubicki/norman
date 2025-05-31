@@ -131,6 +131,11 @@ class Settings(BaseSettings):
     google_pubsub_project_id: str
     google_pubsub_topic_id: str
     google_pubsub_credentials_path: str
+    amqp_url: str
+    amqp_queue: str
+    redis_host: str
+    redis_port: int
+    redis_channel: str
     openai_api_key: Optional[str]
 
     access_token_expire_minutes: int

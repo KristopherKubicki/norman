@@ -45,6 +45,8 @@ from .jira_service_desk_connector import JiraServiceDeskConnector
 from .tap_snpp_connector import TAPSNPPConnector
 from .acars_connector import ACARSConnector
 from .rfc5425_connector import RFC5425Connector
+from .amqp_connector import AMQPConnector
+from .redis_pubsub_connector import RedisPubSubConnector
 
 from .aws_iot_core_connector import AWSIoTCoreConnector
 from .aws_eventbridge_connector import AWSEventBridgeConnector
@@ -237,4 +239,13 @@ def init_connectors(app: FastAPI, settings: Settings):
     app.state.azure_eventgrid_connector = AzureEventGridConnector(
         endpoint=settings.azure_eventgrid_endpoint,
         key=settings.azure_eventgrid_key,
+    )
+    app.state.amqp_connector = AMQPConnector(
+        url=settings.amqp_url,
+        queue=settings.amqp_queue,
+    )
+    app.state.redis_pubsub_connector = RedisPubSubConnector(
+        host=settings.redis_host,
+        port=settings.redis_port,
+        channel=settings.redis_channel,
     )
