@@ -66,7 +66,7 @@ For other connectors, consult the platform-specific documentation for informatio
 
 ### Extending Norman with New Connectors
 
-You can extend Norman with new connectors by creating a new class that inherits from `BaseConnector`. This class should implement the required methods to send and receive messages on the target platform. Then, add the new connector class to the `CONNECTOR_CLASSES` dictionary in `app/connectors/__init__.py` so that it can be used in the application.
+You can extend Norman with new connectors by creating a new class that inherits from `BaseConnector`. Implement `send_message` and optionally `connect` and `disconnect` for any setup or teardown logic. Messages can be queued with `queue_message` and will be dispatched while `run()` is active. Finally, add the new connector class to the `CONNECTOR_CLASSES` dictionary in `app/connectors/__init__.py` so that it can be used in the application.
 
 ## More Information
 
