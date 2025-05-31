@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     smtp_password: str
     smtp_from_address: str
     smtp_to_address: str
+    mqtt_host: str
+    mqtt_port: int = 1883
+    mqtt_topic: str
+    mqtt_username: str
+    mqtt_password: str
+    mastodon_base_url: str
+    mastodon_access_token: str
     openai_api_key: Optional[str]
 
     access_token_expire_minutes: int
