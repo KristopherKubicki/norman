@@ -14,6 +14,7 @@ from .telegram_connector import TelegramConnector
 from .webhook_connector import WebhookConnector
 from .whatsapp_connector import WhatsAppConnector
 from .matrix_connector import MatrixConnector
+from .signal_connector import SignalConnector
 
 from .connector_utils import get_connector
 
@@ -28,6 +29,10 @@ def init_connectors(app: FastAPI, settings: Settings):
         auth_token=settings.whatsapp_auth_token,
         from_number=settings.whatsapp_from_number,
         to_number=settings.whatsapp_to_number,
+    )
+    app.state.signal_connector = SignalConnector(
+        service_url=settings.signal_service_url,
+        phone_number=settings.signal_phone_number,
     )
     app.state.matrix_connector = MatrixConnector(
         homeserver=settings.matrix_homeserver,
