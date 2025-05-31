@@ -1,5 +1,14 @@
 # tests/conftest.py
 import os
+import sys
+from pydantic import typing as _pydantic_typing
+
+if sys.version_info >= (3, 12):
+    def _evaluate_forwardref(type_, globalns, localns):
+        return type_._evaluate(globalns, localns, None, recursive_guard=set())
+
+    _pydantic_typing.evaluate_forwardref = _evaluate_forwardref
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -23,6 +32,13 @@ settings.database_url = f"sqlite:///{db_dir}/test.db"
 engine = create_engine(settings.database_url)
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base.metadata.create_all(bind=engine)
+
+# Override the application's SessionLocal to ensure the API uses the test database
+from app.db import session as db_session
+db_session.SessionLocal = TestingSessionLocal
+db_session.engine = engine
+import app.api.deps as api_deps
+api_deps.SessionLocal = TestingSessionLocal
 
 
 @pytest.fixture(scope="module")
