@@ -28,6 +28,7 @@ from app.api.deps import get_async_db
 
 from datetime import timedelta
 import os
+import traceback
 
 from .views import home, connectors, filters, channels, process_message, bots, messages, login, logout, get_bots
 
