@@ -1,29 +1,24 @@
-import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from app import crud, models
-from app.core.config import settings
+from app.crud import bot as crud_bot
 from app.schemas.bot import BotCreate
 from app.tests.utils.utils import random_lower_string
-import pytest
-
-pytest.skip("Bot tests not implemented", allow_module_level=True)
 
 def test_create_bot(test_app: TestClient, db: Session) -> None:
     gpt_model = "gpt-4"
     name = random_lower_string()
-    bot_in = BotCreate(gpt_model=gpt_model, name=name)
-    bot = crud.bot.create(db, obj_in=bot_in)
+    bot_in = BotCreate(gpt_model=gpt_model, name=name, description="d")
+    bot = crud_bot.create_bot(db, bot_in)
     assert bot.gpt_model == gpt_model
     assert bot.name == name
 
 def test_get_bot(test_app: TestClient, db: Session) -> None:
     gpt_model = "gpt-4"
     name = random_lower_string()
-    bot_in = BotCreate(gpt_model=gpt_model, name=name)
-    bot = crud.bot.create(db, obj_in=bot_in)
-    bot_2 = crud.bot.get(db, bot.id)
+    bot_in = BotCreate(gpt_model=gpt_model, name=name, description="d")
+    bot = crud_bot.create_bot(db, bot_in)
+    bot_2 = crud_bot.get_bot_by_id(db, bot.id)
     assert bot_2
     assert bot.gpt_model == bot_2.gpt_model
     assert bot.name == bot_2.name

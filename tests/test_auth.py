@@ -1,48 +1,21 @@
 # tests/test_auth.py
-import pytest
-
+from app.crud.user import create_user, authenticate_user
 from app.schemas import Token
-
-pytest.skip("Auth tests not implemented", allow_module_level=True)
-
-
-def test_authenticate_user(test_app):
-    # Test invalid email or password
-    response = test_app.post(
-        "/token",
-        data={"username": "invalid@example.com", "password": "invalid_password"},
-    )
-    assert response.status_code == 400
-
-    # Test successful authentication
-    response = test_app.post(
-        "/token",
-        data={"username": "test@example.com", "password": "test_password"},
-    )
-    assert response.status_code == 200
-    token = response.json()
-    assert "access_token" in token
-    assert token["token_type"] == "bearer"
+from app.schemas.user import UserCreate, UserAuthenticate
+from app.tests.utils.utils import random_email, random_lower_string
+from app.core.security import create_access_token
 
 
-def test_protected_route(test_app):
-    # Test access without a token
-    response = test_app.get("/some_protected_route")
-    assert response.status_code == 401
+def test_authenticate_user(db):
+    email = random_email()
+    password = random_lower_string()
+    create_user(db, UserCreate(username=random_lower_string(), email=email, password=password))
 
-    # Test access with a valid token
-    response = test_app.post(
-        "/token",
-        data={"username": "test@example.com", "password": "test_password"},
-    )
-    token = response.json()["access_token"]
+    user = authenticate_user(db, UserAuthenticate(email=email, password=password))
+    assert user is not None
 
-    response = test_app.get(
-        "/some_protected_route", headers={"Authorization": f"Bearer {token}"}
-    )
-    assert response.status_code == 200
-    assert response.json() == {
-        "message": "You have access to this protected route!",
-        "user_email": "test@example.com",
-    }
+    bad = authenticate_user(db, UserAuthenticate(email=email, password="wrong"))
+    assert bad is None
+
+
 
