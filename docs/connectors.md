@@ -57,6 +57,7 @@ The following connectors are soon to be supported:
 48. [OPC UA PubSub](./connectors/opcua_pubsub.md)
 49. [AIS Safety-Related Text](./connectors/ais_safety_text.md)
 50. [Common Alerting Protocol](./connectors/cap.md)
+51. [Tox](./connectors/tox.md)
 
 
 ## Usage
@@ -112,5 +113,6 @@ For more detailed information on each connector, please refer to the platform-sp
 - [OPC UA PubSub Connector](./connectors/opcua_pubsub.md)
 - [AIS Safety-Related Text Connector](./connectors/ais_safety_text.md)
 - [Common Alerting Protocol Connector](./connectors/cap.md)
+- [Tox Connector](./connectors/tox.md)
 
 Remember to follow the platform-specific guidelines and best practices when creating bots or apps for each service.

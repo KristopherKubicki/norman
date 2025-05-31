@@ -344,3 +344,10 @@ def test_get_connector_returns_cap(monkeypatch):
     monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
     connector = get_connector('cap')
     assert isinstance(connector, CAPConnector)
+
+
+def test_get_connector_returns_tox(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('tox')
+    from app.connectors.tox_connector import ToxConnector
+    assert isinstance(connector, ToxConnector)

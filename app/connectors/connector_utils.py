@@ -66,6 +66,7 @@ from .coap_oscore_connector import CoAPOSCOREConnector
 from .opcua_pubsub_connector import OPCUAPubSubConnector
 from .ais_safety_text_connector import AISSafetyTextConnector
 from .cap_connector import CAPConnector
+from .tox_connector import ToxConnector
 
 from .aws_iot_core_connector import AWSIoTCoreConnector
 from .aws_eventbridge_connector import AWSEventBridgeConnector
@@ -128,6 +129,7 @@ connector_classes: Dict[str, type] = {
     "opcua_pubsub": OPCUAPubSubConnector,
     "ais_safety_text": AISSafetyTextConnector,
     "cap": CAPConnector,
+    "tox": ToxConnector,
 }
 
 

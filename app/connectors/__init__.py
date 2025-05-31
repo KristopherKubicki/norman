@@ -56,6 +56,7 @@ from .coap_oscore_connector import CoAPOSCOREConnector
 from .opcua_pubsub_connector import OPCUAPubSubConnector
 from .ais_safety_text_connector import AISSafetyTextConnector
 from .cap_connector import CAPConnector
+from .tox_connector import ToxConnector
 
 from .aws_iot_core_connector import AWSIoTCoreConnector
 from .aws_eventbridge_connector import AWSEventBridgeConnector
@@ -290,4 +291,8 @@ def init_connectors(app: FastAPI, settings: Settings):
     )
     app.state.cap_connector = CAPConnector(
         endpoint=settings.cap_endpoint,
+    )
+    app.state.tox_connector = ToxConnector(
+        tox_id=settings.tox_tox_id,
+        friend_id=settings.tox_friend_id,
     )

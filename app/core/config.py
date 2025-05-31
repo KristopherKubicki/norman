@@ -66,6 +66,8 @@ class Settings(BaseSettings):
     mastodon_access_token: str
     steam_chat_token: str
     steam_chat_id: str
+    tox_tox_id: str
+    tox_friend_id: str
     xmpp_jid: str
     xmpp_password: str
     xmpp_server: str
