@@ -15,6 +15,7 @@ The following connectors are soon to be supported:
 7. **Webhook**
 8. **Matrix**
 9. **WhatsApp**
+10. **BlueSky**
 
 ## Usage
 
@@ -50,5 +51,6 @@ For more detailed information on each connector, please refer to the platform-sp
 - [Webhook Connector](./connectors/webhook.md)
 - [Matrix Connector](#)
 - [WhatsApp Connector](#)
+- [BlueSky Connector](./connectors/bluesky.md)
 
 Remember to follow the platform-specific guidelines and best practices when creating bots or apps for each service.
