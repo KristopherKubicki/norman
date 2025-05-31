@@ -1,4 +1,8 @@
-import asyncio
+"""Simple Discord connector using the HTTP API."""
+
+import httpx
+from typing import Any, Dict, Optional
+
 from .base_connector import BaseConnector
 
 class DiscordConnector(BaseConnector):
@@ -11,17 +15,24 @@ class DiscordConnector(BaseConnector):
         self.token = token
         self.channel_id = channel_id
 
-    async def send_message(self, message):
-        # Code to send a message using Discord API
-        pass
+    async def send_message(self, message: str) -> Optional[str]:
+        """Send ``message`` to the configured Discord channel."""
+        url = f"https://discord.com/api/v9/channels/{self.channel_id}/messages"
+        headers = {"Authorization": f"Bot {self.token}"}
+        async with httpx.AsyncClient() as client:
+            try:
+                resp = await client.post(url, json={"content": message}, headers=headers)
+                resp.raise_for_status()
+                return resp.text
+            except httpx.HTTPError as exc:  # pragma: no cover - network
+                print(f"Error sending Discord message: {exc}")
+                return None
 
-    async def listen_and_process(self):
-        # Code to listen for incoming messages from Discord
-        # and call process_incoming for each message
-        pass
+    async def listen_and_process(self) -> None:
+        """Listening for Discord messages is not implemented."""
+        return None
 
-    async def process_incoming(self, message):
-        # Code to process the incoming message, including applying filters
-        # and calling the appropriate action(s)
-        pass
+    async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the raw ``message`` payload."""
+        return message
 

@@ -31,10 +31,9 @@ class TelegramConnector(BaseConnector):
 
         return self._send_request(data)
 
-    async def listen_and_process(self):
-        # Code to listen for incoming messages from Microsoft Teams
-        # and call process_incoming for each message
-        pass
+    async def listen_and_process(self) -> None:
+        """Listening for Telegram updates is not implemented."""
+        return None
 
     def process_incoming(self, payload: Dict[str, Any]) -> Dict[str, str]:
         message = payload.get("message", {})
