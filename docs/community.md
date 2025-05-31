@@ -1,7 +1,3 @@
-Sure! Here's a `community.md` file for your `docs` directory:
-
----
-
 # Community
 
 Welcome to the Norman community! We're glad to have you here. This document provides information about how you can get involved, interact with others, and contribute to the project.
