@@ -102,38 +102,52 @@ async def delete_bot_endpoint(bot_id: int, db: Session = Depends(get_async_db)):
         return {"status": "error", "message": "Failed to delete bot"}
 
 @app_routes.get("/api/bots/{bot_id}/messages", response_model=List[Message])
-async def get_messages_endpoint(bot_id: int, db: Session = Depends(get_async_db)):
-    # TODO: support pagination
+async def get_messages_endpoint(
+    bot_id: int,
+    limit: int = 100,
+    offset: int = 0,
+    db: Session = Depends(get_async_db),
+):
+    """Return messages for a bot with optional pagination."""
     try:
-        messages = get_messages_by_bot_id(db=db, bot_id=bot_id)
-        for m in messages:
-            lt = Message.from_orm(m).dict()
+        messages = get_messages_by_bot_id(db=db, bot_id=bot_id, limit=limit, offset=offset)
         return [Message.from_orm(message).dict() for message in messages]
     except Exception as e:
         print("Error:", e)
         raise HTTPException(status_code=500, detail="Failed to fetch messages")
 
 @app_routes.post("/api/bots/{bot_id}/messages")
-async def create_message_endpoint(bot_id: int, request: Request, db: Session = Depends(get_async_db)):
+async def create_message_endpoint(
+    bot_id: int,
+    request: Request,
+    history_limit: int = 10,
+    db: Session = Depends(get_async_db),
+):
     try:
         ljson = await request.json()
         message = create_message(db=db, bot_id=bot_id, text=ljson.get('content'), source='user')
 
 
         # get the last messages for this bot, so it can generate a response based on history
-        # TODO: allow the limit to be set as a parameter
-        last_messages = get_last_messages_by_bot_id(db=db, bot_id=bot_id, limit=10) # should always be at least 1
+        last_messages = get_last_messages_by_bot_id(db=db, bot_id=bot_id, limit=history_limit)
 
         bot = get_bot_by_id(db=db, bot_id=bot_id)
 
         # Create a chat interaction with OpenAI
         # Create the messages array to be sent to the OpenAI API
-        # TODO: count the tokens, and don't exceed the bot.default_prompt_tokens
         messages = [
-            {"role": "system", "content": bot.system_prompt} 
+            {"role": "system", "content": bot.system_prompt}
         ]
         for msg in reversed(last_messages):
             messages.append({"role": msg.source, "content": msg.text})
+
+        # count the tokens and ensure we do not exceed the bot.default_prompt_tokens
+        def token_count(msgs):
+            return sum(len(m["content"].split()) for m in msgs)
+
+        while token_count(messages) > bot.default_prompt_tokens and len(messages) > 1:
+            # remove the oldest user/assistant message
+            messages.pop(1)
 
         interaction_response = await create_chat_interaction(
             model=bot.gpt_model,
@@ -151,7 +165,7 @@ async def create_message_endpoint(bot_id: int, request: Request, db: Session = D
             tokens_in=interaction_response['usage']['prompt_tokens'],
             tokens_out=interaction_response['usage']['completion_tokens'], # FIX
             status_code=200,
-            headers='', # TODO
+            headers=str(interaction_response.get('headers', {})),
         )
 
         # Create a new interaction in the database
