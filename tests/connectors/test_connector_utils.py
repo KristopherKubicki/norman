@@ -19,6 +19,7 @@ if 'slack_sdk' not in sys.modules:
 from app.connectors.connector_utils import get_connector, get_connectors_data
 from app.connectors.slack_connector import SlackConnector
 from app.connectors.signal_connector import SignalConnector
+from app.connectors.mqtt_connector import MQTTConnector
 from app.core.test_settings import TestSettings
 
 
@@ -32,6 +33,12 @@ def test_get_connector_returns_signal(monkeypatch):
     monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
     connector = get_connector('signal')
     assert isinstance(connector, SignalConnector)
+
+
+def test_get_connector_returns_mqtt(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('mqtt')
+    assert isinstance(connector, MQTTConnector)
 
 
 def test_get_connectors_data_missing_config(monkeypatch):
