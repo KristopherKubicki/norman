@@ -1,3 +1,5 @@
+from typing import Any
+
 from .base_connector import BaseConnector
 
 
@@ -12,15 +14,20 @@ class XMPPConnector(BaseConnector):
         self.jid = jid
         self.password = password
         self.server = server
+        self.sent_messages: list[Any] = []
 
-    async def send_message(self, message):
-        # Placeholder for sending a message via XMPP
-        pass
+    async def send_message(self, message: Any) -> str:
+        """Record ``message`` locally and return a confirmation string."""
 
-    async def listen_and_process(self):
-        # Placeholder for listening to XMPP messages
-        pass
+        self.sent_messages.append(message)
+        return "sent"
 
-    async def process_incoming(self, message):
-        # Placeholder for processing inbound XMPP messages
-        pass
+    async def listen_and_process(self) -> None:
+        """Listening to XMPP messages is not implemented."""
+
+        return None
+
+    async def process_incoming(self, message: Any) -> Any:
+        """Return the incoming ``message`` payload."""
+
+        return message

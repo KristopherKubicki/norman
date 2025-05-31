@@ -15,15 +15,20 @@ class AISSafetyTextConnector(BaseConnector):
         super().__init__(config)
         self.host = host
         self.port = port
+        self.sent_messages: list[str] = []
 
-    async def send_message(self, message: str) -> None:
-        # Placeholder for sending an AIS safety-related text message
-        pass
+    async def send_message(self, message: str) -> str:
+        """Record ``message`` locally and return a confirmation string."""
+
+        self.sent_messages.append(message)
+        return "sent"
 
     async def listen_and_process(self) -> None:
-        # Placeholder for listening for AIS messages
-        pass
+        """Listening for AIS messages is not implemented."""
+
+        return None
 
     async def process_incoming(self, message: Any) -> Any:
-        # Placeholder for processing inbound AIS messages
+        """Return the incoming ``message`` payload."""
+
         return message

@@ -15,14 +15,18 @@ class CoAPOSCOREConnector(BaseConnector):
         super().__init__(config)
         self.host = host
         self.port = port
+        self.sent_messages: list[Any] = []
 
-    async def send_message(self, message: Any) -> None:
-        # Placeholder for sending a CoAP message with OSCORE protection
-        pass
+    async def send_message(self, message: Any) -> str:
+        """Record ``message`` locally and return a confirmation string."""
+
+        self.sent_messages.append(message)
+        return "sent"
 
     async def listen_and_process(self) -> None:
-        # Placeholder for listening for CoAP messages
-        pass
+        """Listening for CoAP messages is not implemented."""
+
+        return None
 
     async def process_incoming(self, message: Any) -> Any:
         # Placeholder for processing inbound CoAP messages
