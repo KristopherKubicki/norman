@@ -37,6 +37,9 @@ from .twitter_connector import TwitterConnector
 from .imessage_connector import IMessageConnector
 from .aprs_connector import APRSConnector
 from .ax25_connector import AX25Connector
+from .zapier_connector import ZapierConnector
+from .ifttt_connector import IFTTTConnector
+from .salesforce_connector import SalesforceConnector
 
 from .connector_utils import get_connector
 
@@ -173,4 +176,15 @@ def init_connectors(app: FastAPI, settings: Settings):
     app.state.ax25_connector = AX25Connector(
         port=settings.ax25_port,
         callsign=settings.ax25_callsign,
+    )
+    app.state.zapier_connector = ZapierConnector(
+        webhook_url=settings.zapier_webhook_url,
+    )
+    app.state.ifttt_connector = IFTTTConnector(
+        webhook_url=settings.ifttt_webhook_url,
+    )
+    app.state.salesforce_connector = SalesforceConnector(
+        instance_url=settings.salesforce_instance_url,
+        access_token=settings.salesforce_access_token,
+        endpoint=settings.salesforce_endpoint,
     )

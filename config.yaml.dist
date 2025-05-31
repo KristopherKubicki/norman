@@ -95,6 +95,11 @@ aprs_callsign: "your_aprs_callsign"
 aprs_passcode: "your_aprs_passcode"
 ax25_port: "your_ax25_port"
 ax25_callsign: "your_ax25_callsign"
+zapier_webhook_url: "your_zapier_webhook_url"
+ifttt_webhook_url: "your_ifttt_webhook_url"
+salesforce_instance_url: "your_salesforce_instance_url"
+salesforce_access_token: "your_salesforce_access_token"
+salesforce_endpoint: "your_salesforce_endpoint"
 
 openai_api_key:
 

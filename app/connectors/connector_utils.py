@@ -47,6 +47,9 @@ from .twitter_connector import TwitterConnector
 from .imessage_connector import IMessageConnector
 from .aprs_connector import APRSConnector
 from .ax25_connector import AX25Connector
+from .zapier_connector import ZapierConnector
+from .ifttt_connector import IFTTTConnector
+from .salesforce_connector import SalesforceConnector
 
 # Registry of available connectors keyed by their identifier.
 connector_classes: Dict[str, type] = {
@@ -82,6 +85,9 @@ connector_classes: Dict[str, type] = {
     "imessage": IMessageConnector,
     "aprs": APRSConnector,
     "ax25": AX25Connector,
+    "zapier": ZapierConnector,
+    "ifttt": IFTTTConnector,
+    "salesforce": SalesforceConnector,
 }
 
 

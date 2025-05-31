@@ -38,6 +38,9 @@ The following connectors are soon to be supported:
 29. [Apple RCS/iMessage](./connectors/imessage.md)
 30. [APRS](./connectors/aprs.md)
 31. [AX.25](./connectors/ax25.md)
+32. [Zapier](./connectors/zapier.md)
+33. [IFTTT](./connectors/ifttt.md)
+34. [Salesforce](./connectors/salesforce.md)
 
 
 ## Usage
@@ -79,5 +82,8 @@ For more detailed information on each connector, please refer to the platform-sp
 - [MCP Connector](./connectors/mcp.md)
 - [MQTT Connector](./connectors/mqtt.md)
 - [Mastodon Connector](./connectors/mastodon.md)
+- [Zapier Connector](./connectors/zapier.md)
+- [IFTTT Connector](./connectors/ifttt.md)
+- [Salesforce Connector](./connectors/salesforce.md)
 
 Remember to follow the platform-specific guidelines and best practices when creating bots or apps for each service.
