@@ -6,6 +6,7 @@ Connectors are the way Norman interacts with different chat platforms. They hand
 
 The following connectors are soon to be supported:
 
+
 1. **IRC**
 2. **Slack**
 3. **Discord**
@@ -16,6 +17,17 @@ The following connectors are soon to be supported:
 8. **Matrix**
 9. **WhatsApp**
 10. **SMTP Email**
+
+1. [IRC](./connectors/irc.md)
+2. [Slack](./connectors/slack.md)
+3. [Discord](./connectors/discord.md)
+4. [Microsoft Teams](./connectors/teams.md)
+5. [Google Chat](./connectors/googlechat.md)
+6. [Telegram](./connectors/telegram.md)
+7. [Webhook](./connectors/webhook.md)
+8. [Matrix](./connectors/matrix.md)
+9. [WhatsApp](./connectors/whatsapp.md)
+
 
 ## Usage
 
@@ -52,5 +64,7 @@ For more detailed information on each connector, please refer to the platform-sp
 - [Matrix Connector](#)
 - [WhatsApp Connector](#)
 - [SMTP Email Connector](./connectors/email.md)
+- [Matrix Connector](./connectors/matrix.md)
+- [WhatsApp Connector](./connectors/whatsapp.md)
 
 Remember to follow the platform-specific guidelines and best practices when creating bots or apps for each service.

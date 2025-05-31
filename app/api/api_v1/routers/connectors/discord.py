@@ -5,7 +5,10 @@ from app.core.config import get_settings, Settings
 router = APIRouter()
 
 def get_discord_connector(settings: Settings = Depends(get_settings)) -> DiscordConnector:
-    return DiscordConnector(token=settings.discord_token)
+    return DiscordConnector(
+        token=settings.discord_token,
+        channel_id=settings.discord_channel_id,
+    )
 
 @router.post("/webhooks/discord")
 async def process_discord_update(request: Request, discord_connector: DiscordConnector = Depends(get_discord_connector)):
