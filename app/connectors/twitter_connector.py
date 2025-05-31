@@ -7,21 +7,30 @@ class TwitterConnector(BaseConnector):
     id = "twitter"
     name = "X.com (Twitter)"
 
-    def __init__(self, api_key: str, api_secret: str, access_token: str, access_token_secret: str, config=None):
+    def __init__(
+        self,
+        api_key: str,
+        api_secret: str,
+        access_token: str,
+        access_token_secret: str,
+        config=None,
+    ):
         super().__init__(config)
         self.api_key = api_key
         self.api_secret = api_secret
         self.access_token = access_token
         self.access_token_secret = access_token_secret
+        self.sent_messages = []
 
-    async def send_message(self, message):
-        # Placeholder for sending a message via X.com/Twitter
-        pass
+    async def send_message(self, message) -> str:
+        """Record ``message`` locally and return a confirmation string."""
+        self.sent_messages.append(message)
+        return "sent"
 
     async def listen_and_process(self):
-        # Placeholder for listening to X.com/Twitter messages
-        pass
+        """Listening to X.com/Twitter messages is not implemented."""
+        return None
 
     async def process_incoming(self, message):
-        # Placeholder for processing inbound X.com/Twitter messages
-        pass
+        """Return the incoming ``message`` payload."""
+        return message

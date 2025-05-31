@@ -11,15 +11,17 @@ class WeChatConnector(BaseConnector):
         super().__init__(config)
         self.app_id = app_id
         self.app_secret = app_secret
+        self.sent_messages = []
 
-    async def send_message(self, message):
-        # Placeholder for sending a WeChat message
-        pass
+    async def send_message(self, message) -> str:
+        """Store ``message`` locally and return a confirmation string."""
+        self.sent_messages.append(message)
+        return "sent"
 
     async def listen_and_process(self):
-        # Placeholder for listening to WeChat messages
-        pass
+        """Listening for WeChat messages is not implemented."""
+        return None
 
     async def process_incoming(self, message):
-        # Placeholder for processing inbound WeChat messages
-        pass
+        """Return the incoming ``message`` payload."""
+        return message

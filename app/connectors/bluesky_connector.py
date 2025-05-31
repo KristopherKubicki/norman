@@ -11,15 +11,17 @@ class BlueskyConnector(BaseConnector):
         super().__init__(config)
         self.handle = handle
         self.app_password = app_password
+        self.sent_messages = []
 
-    async def send_message(self, message):
-        # Placeholder for sending a post to Bluesky
-        pass
+    async def send_message(self, message) -> str:
+        """Record ``message`` locally and return a confirmation string."""
+        self.sent_messages.append(message)
+        return "sent"
 
     async def listen_and_process(self):
-        # Listening not implemented for Bluesky yet
-        pass
+        """Listening not implemented for Bluesky yet."""
+        return None
 
     async def process_incoming(self, message):
-        # Placeholder for processing inbound Bluesky messages
-        pass
+        """Return the incoming ``message`` payload."""
+        return message

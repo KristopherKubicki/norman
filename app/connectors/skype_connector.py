@@ -11,15 +11,17 @@ class SkypeConnector(BaseConnector):
         super().__init__(config)
         self.app_id = app_id
         self.app_password = app_password
+        self.sent_messages = []
 
-    async def send_message(self, message):
-        # Placeholder for sending a Skype message
-        pass
+    async def send_message(self, message) -> str:
+        """Record ``message`` locally and return a confirmation string."""
+        self.sent_messages.append(message)
+        return "sent"
 
     async def listen_and_process(self):
-        # Placeholder for listening to Skype messages
-        pass
+        """Listening for Skype messages is not implemented."""
+        return None
 
     async def process_incoming(self, message):
-        # Placeholder for processing inbound Skype messages
-        pass
+        """Return the incoming ``message`` payload."""
+        return message
