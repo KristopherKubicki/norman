@@ -1,7 +1,9 @@
-
 import openai
 from typing import Tuple, List, Dict
 from app.core.config import settings
+from app.core.logging import setup_logger
+
+logger = setup_logger(__name__)
 
 openai.api_key = settings.openai_api_key
 
@@ -63,13 +65,13 @@ async def create_chat_interaction(messages: List[Dict[str, str]], max_tokens: in
         Failed to create chat interaction: No API key provided. You can set your API key in code using 'openai.api_key = <API-KEY>', or you can set the environment variable OPENAI_API_KEY=<API-KEY>). If your API key is stored in a file, you can point the openai module at it with 'openai.api_key_path = <PATH>'. You can generate API keys in the OpenAI web interface. See https://platform.openai.com/account/api-keys for details.
         '''
         if openai.api_key is None:
+            logger.warning("OpenAI API key not configured. Set 'openai_api_key' in config.yaml and restart Norman.")
             response = {}
             response['model'] = "norman"
             response['choices'] = []
             lmsg = {}
             lmsg['message'] = {}
-            # todo: tell the user to set the config file
-            lmsg['message']['content'] = 'Please add your OpenAI api key in the config.yaml under openai_api_key, and restart the program'
+            lmsg['message']['content'] = 'Please add your OpenAI API key in config.yaml under openai_api_key and restart the program.'
             response['error'] = True
             response['usage'] = {}
             response['usage']['prompt_tokens'] = 0
