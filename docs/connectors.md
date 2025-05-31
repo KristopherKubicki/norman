@@ -45,6 +45,7 @@ The following connectors are soon to be supported:
 36. [Jira Service Desk](./connectors/jira_service_desk.md)
 37. [TAP/SNPP](./connectors/tap_snpp.md)
 38. [ACARS](./connectors/acars.md)
+39. [RFC 5425](./connectors/rfc5425.md)
 
 
 ## Usage
@@ -93,5 +94,6 @@ For more detailed information on each connector, please refer to the platform-sp
 - [Jira Service Desk Connector](./connectors/jira_service_desk.md)
 - [TAP/SNPP Connector](./connectors/tap_snpp.md)
 - [ACARS Connector](./connectors/acars.md)
+- [RFC 5425 Connector](./connectors/rfc5425.md)
 
 Remember to follow the platform-specific guidelines and best practices when creating bots or apps for each service.
