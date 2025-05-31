@@ -106,6 +106,11 @@ jira_service_desk_url: "https://your-domain.atlassian.net"
 jira_service_desk_email: "your_email@example.com"
 jira_service_desk_api_token: "your_jira_api_token"
 jira_service_desk_project_key: "PROJ"
+tap_snpp_host: "your_tap_snpp_host"
+tap_snpp_port: 444
+tap_snpp_password: "your_tap_snpp_password"
+acars_host: "your_acars_host"
+acars_port: 429
 
 openai_api_key:
 
