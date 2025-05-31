@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     rest_callback_url: str
     mcp_api_url: str
     mcp_api_key: str
+    smtp_host: str
+    smtp_port: int
+    smtp_username: str
+    smtp_password: str
+    smtp_from_address: str
+    smtp_to_address: str
     openai_api_key: Optional[str]
 
     access_token_expire_minutes: int

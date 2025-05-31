@@ -21,6 +21,7 @@ from app.connectors.slack_connector import SlackConnector
 from app.connectors.signal_connector import SignalConnector
 from app.connectors.rest_callback_connector import RESTCallbackConnector
 from app.connectors.mcp_connector import MCPConnector
+from app.connectors.smtp_connector import SMTPConnector
 from app.core.test_settings import TestSettings
 
 
@@ -41,11 +42,14 @@ def test_get_connector_returns_rest_callback(monkeypatch):
     connector = get_connector('rest_callback')
     assert isinstance(connector, RESTCallbackConnector)
 
-
 def test_get_connector_returns_mcp(monkeypatch):
     monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
     connector = get_connector('mcp')
     assert isinstance(connector, MCPConnector)
+def test_get_connector_returns_smtp(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('smtp')
+    assert isinstance(connector, SMTPConnector)
 
 
 def test_get_connectors_data_missing_config(monkeypatch):

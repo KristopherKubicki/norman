@@ -19,6 +19,7 @@ The following connectors are soon to be supported:
 10. [Twitch](./connectors/twitch.md)
 11. [REST Callback](./connectors/rest_callback.md)
 12. [MCP](./connectors/mcp.md)
+12. [SMTP](./connectors/smtp.md)
 
 
 ## Usage

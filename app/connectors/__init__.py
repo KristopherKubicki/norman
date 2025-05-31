@@ -18,6 +18,7 @@ from .matrix_connector import MatrixConnector
 from .signal_connector import SignalConnector
 from .twitch_connector import TwitchConnector
 from .mcp_connector import MCPConnector
+from .smtp_connector import SMTPConnector
 
 from .connector_utils import get_connector
 
@@ -53,7 +54,16 @@ def init_connectors(app: FastAPI, settings: Settings):
     app.state.rest_callback_connector = RESTCallbackConnector(
         callback_url=settings.rest_callback_url
     )
+
     app.state.mcp_connector = MCPConnector(
         api_url=settings.mcp_api_url,
         api_key=settings.mcp_api_key,
+    )
+    app.state.smtp_connector = SMTPConnector(
+        host=settings.smtp_host,
+        port=settings.smtp_port,
+        username=settings.smtp_username,
+        password=settings.smtp_password,
+        from_address=settings.smtp_from_address,
+        to_address=settings.smtp_to_address,
     )

@@ -39,6 +39,12 @@ twitch_port: 6667
 rest_callback_url: "your_rest_callback_url"
 mcp_api_url: "your_mcp_api_url"
 mcp_api_key: "your_mcp_api_key"
+smtp_host: "your_smtp_host"
+smtp_port: 587
+smtp_username: "your_smtp_username"
+smtp_password: "your_smtp_password"
+smtp_from_address: "your_from@example.com"
+smtp_to_address: "your_to@example.com"
 
 openai_api_key:
 
