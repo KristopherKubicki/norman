@@ -5,7 +5,12 @@ from app.core.config import get_settings, Settings
 router = APIRouter()
 
 def get_teams_connector(settings: Settings = Depends(get_settings)) -> TeamsConnector:
-    return TeamsConnector(client_id=settings.teams_client_id, client_secret=settings.teams_client_secret, tenant_id=settings.teams_tenant_id)
+    return TeamsConnector(
+        app_id=settings.teams_app_id,
+        app_password=settings.teams_app_password,
+        tenant_id=settings.teams_tenant_id,
+        bot_endpoint=settings.teams_bot_endpoint,
+    )
 
 @router.post("/webhooks/teams")
 async def process_teams_update(request: Request, teams_connector: TeamsConnector = Depends(get_teams_connector)):
