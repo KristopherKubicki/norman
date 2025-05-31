@@ -11,15 +11,17 @@ class InstagramDMConnector(BaseConnector):
         super().__init__(config)
         self.access_token = access_token
         self.user_id = user_id
+        self.sent_messages = []
 
-    async def send_message(self, message):
-        # Placeholder for sending a message via Instagram DM
-        pass
+    async def send_message(self, message) -> str:
+        """Record ``message`` locally and return a confirmation string."""
+        self.sent_messages.append(message)
+        return "sent"
 
     async def listen_and_process(self):
-        # Placeholder for listening for Instagram DM messages
-        pass
+        """Listening for Instagram DM messages is not implemented."""
+        return None
 
     async def process_incoming(self, message):
-        # Placeholder for processing inbound Instagram DM messages
-        pass
+        """Return the incoming ``message`` payload."""
+        return message

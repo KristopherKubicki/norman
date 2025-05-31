@@ -7,22 +7,32 @@ class RedditChatConnector(BaseConnector):
     id = "reddit_chat"
     name = "Reddit Chat"
 
-    def __init__(self, client_id: str, client_secret: str, username: str, password: str, user_agent: str, config=None):
+    def __init__(
+        self,
+        client_id: str,
+        client_secret: str,
+        username: str,
+        password: str,
+        user_agent: str,
+        config=None,
+    ):
         super().__init__(config)
         self.client_id = client_id
         self.client_secret = client_secret
         self.username = username
         self.password = password
         self.user_agent = user_agent
+        self.sent_messages = []
 
-    async def send_message(self, message):
-        # Placeholder for sending a Reddit Chat message
-        pass
+    async def send_message(self, message) -> str:
+        """Record ``message`` locally and return a confirmation string."""
+        self.sent_messages.append(message)
+        return "sent"
 
     async def listen_and_process(self):
-        # Placeholder for listening to Reddit Chat messages
-        pass
+        """Listening to Reddit Chat messages is not implemented."""
+        return None
 
     async def process_incoming(self, message):
-        # Placeholder for processing inbound Reddit Chat messages
-        pass
+        """Return the incoming ``message`` payload."""
+        return message

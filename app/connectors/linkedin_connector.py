@@ -10,15 +10,17 @@ class LinkedInConnector(BaseConnector):
     def __init__(self, access_token: str, config=None):
         super().__init__(config)
         self.access_token = access_token
+        self.sent_messages = []
 
-    async def send_message(self, message):
-        # Placeholder for sending a LinkedIn message
-        pass
+    async def send_message(self, message) -> str:
+        """Record ``message`` locally and return a confirmation string."""
+        self.sent_messages.append(message)
+        return "sent"
 
     async def listen_and_process(self):
-        # Placeholder for listening to LinkedIn messages
-        pass
+        """Listening for LinkedIn messages is not implemented."""
+        return None
 
     async def process_incoming(self, message):
-        # Placeholder for processing inbound LinkedIn messages
-        pass
+        """Return the incoming ``message`` payload."""
+        return message
