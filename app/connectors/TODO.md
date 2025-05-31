@@ -9,7 +9,7 @@ This file tracks connectors that we would like to implement in the future.
 - [ ] Bluesky
  - [x] Mastodon
 - [x] SMTP
-- [ ] SMS (e.g., Twilio)
+- [x] SMS (e.g., Twilio)
 - [ ] Facebook Messenger
 - [ ] LinkedIn Messaging
 - [ ] Skype

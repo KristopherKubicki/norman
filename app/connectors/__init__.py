@@ -21,6 +21,7 @@ from .mcp_connector import MCPConnector
 from .smtp_connector import SMTPConnector
 from .mqtt_connector import MQTTConnector
 from .mastodon_connector import MastodonConnector
+from .sms_connector import SMSConnector
 
 from .connector_utils import get_connector
 
@@ -35,6 +36,12 @@ def init_connectors(app: FastAPI, settings: Settings):
         auth_token=settings.whatsapp_auth_token,
         from_number=settings.whatsapp_from_number,
         to_number=settings.whatsapp_to_number,
+    )
+    app.state.sms_connector = SMSConnector(
+        account_sid=settings.sms_account_sid,
+        auth_token=settings.sms_auth_token,
+        from_number=settings.sms_from_number,
+        to_number=settings.sms_to_number,
     )
     app.state.signal_connector = SignalConnector(
         service_url=settings.signal_service_url,
