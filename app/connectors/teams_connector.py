@@ -5,10 +5,11 @@ from typing import Any, Dict, Optional
 
 from .base_connector import BaseConnector
 
+
 class TeamsConnector(BaseConnector):
- 
-    id = 'teams'
-    name = 'Teams'
+
+    id = "teams"
+    name = "Teams"
 
     def __init__(self, app_id, app_password, tenant_id, bot_endpoint, config=None):
         super().__init__(config)
@@ -22,7 +23,9 @@ class TeamsConnector(BaseConnector):
         headers = {"Authorization": f"Bearer {self.app_password}"}
         async with httpx.AsyncClient() as client:
             try:
-                resp = await client.post(self.bot_endpoint, json={"text": message}, headers=headers)
+                resp = await client.post(
+                    self.bot_endpoint, json={"text": message}, headers=headers
+                )
                 resp.raise_for_status()
                 return resp.text
             except httpx.HTTPError as exc:  # pragma: no cover - network
@@ -37,3 +40,12 @@ class TeamsConnector(BaseConnector):
         """Return the raw ``message`` payload."""
         return message
 
+    def is_connected(self) -> bool:
+        """Return ``True`` if the bot endpoint is reachable."""
+        headers = {"Authorization": f"Bearer {self.app_password}"}
+        try:
+            resp = httpx.get(self.bot_endpoint, headers=headers)
+            resp.raise_for_status()
+            return True
+        except httpx.HTTPError:
+            return False

@@ -2,10 +2,11 @@ import requests
 from typing import Any, Dict, Optional
 from .base_connector import BaseConnector
 
+
 class TelegramConnector(BaseConnector):
 
-    id = 'telegram'
-    name = 'Telegram'
+    id = "telegram"
+    name = "Telegram"
 
     def __init__(self, token: str, chat_id: str, config=None):
         super().__init__(config)
@@ -24,10 +25,7 @@ class TelegramConnector(BaseConnector):
         return response.text
 
     def send_message(self, text: str) -> Optional[str]:
-        data = {
-            "chat_id": self.chat_id,
-            "text": text
-        }
+        data = {"chat_id": self.chat_id, "text": text}
 
         return self._send_request(data)
 
@@ -51,3 +49,13 @@ class TelegramConnector(BaseConnector):
 
         return True
 
+    def is_connected(self) -> bool:
+        """Return ``True`` if the bot token is valid."""
+        url = f"https://api.telegram.org/bot{self.token}/getMe"
+        try:
+            response = requests.get(url)
+            response.raise_for_status()
+            data = response.json()
+            return bool(data.get("ok"))
+        except requests.exceptions.RequestException:
+            return False
