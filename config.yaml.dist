@@ -113,6 +113,16 @@ acars_host: "your_acars_host"
 acars_port: 429
 rfc5425_host: "your_rfc5425_host"
 rfc5425_port: 6514
+aws_eventbridge_region: "your_aws_eventbridge_region"
+aws_eventbridge_event_bus_name: "your_aws_eventbridge_event_bus_name"
+aws_iot_core_region: "your_aws_iot_core_region"
+aws_iot_core_topic: "your_aws_iot_core_topic"
+aws_iot_core_endpoint: "your_aws_iot_core_endpoint"
+azure_eventgrid_endpoint: "your_azure_eventgrid_endpoint"
+azure_eventgrid_key: "your_azure_eventgrid_key"
+google_pubsub_project_id: "your_google_pubsub_project_id"
+google_pubsub_topic_id: "your_google_pubsub_topic_id"
+google_pubsub_credentials_path: "your_google_pubsub_credentials_path"
 
 openai_api_key:
 
