@@ -9,12 +9,11 @@ from pathlib import Path
 os.environ["SKIP_MIGRATIONS"] = "1"
 from app.main import app
 from app.connectors import init_connectors
-from app.core.test_settings import TestSettings
+from app.core.test_settings import test_settings
 from app.core.config import settings
 from app.api.deps import get_db
 from app.db.base import Base
 
-test_settings = TestSettings
 
 # Ensure the test database directory exists
 db_dir = Path("./db")
