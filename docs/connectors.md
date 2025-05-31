@@ -18,6 +18,7 @@ The following connectors are soon to be supported:
 9. [WhatsApp](./connectors/whatsapp.md)
 10. [Twitch](./connectors/twitch.md)
 11. [REST Callback](./connectors/rest_callback.md)
+12. [SMTP](./connectors/smtp.md)
 
 
 ## Usage
