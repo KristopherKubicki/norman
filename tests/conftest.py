@@ -12,7 +12,7 @@ from app.connectors import init_connectors
 from app.core.test_settings import TestSettings
 from app.core.config import settings
 from app.api.deps import get_db
-from app.models.base import Base
+from app.db.base import Base
 
 test_settings = TestSettings
 

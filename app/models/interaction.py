@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, Text, DateTime, ForeignKey, String
 from sqlalchemy.sql import func
-from .base import Base
+from app.db.base import Base
 
 class Interaction(Base):
     __tablename__ = "interactions"
