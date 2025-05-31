@@ -31,6 +31,7 @@ from .mcp_connector import MCPConnector
 from .smtp_connector import SMTPConnector
 from .mqtt_connector import MQTTConnector
 from .mastodon_connector import MastodonConnector
+from .sms_connector import SMSConnector
 
 # Registry of available connectors keyed by their identifier.
 connector_classes: Dict[str, type] = {
@@ -50,6 +51,7 @@ connector_classes: Dict[str, type] = {
     "smtp": SMTPConnector,
     "mqtt": MQTTConnector,
     "mastodon": MastodonConnector,
+    "sms": SMSConnector,
 }
 
 

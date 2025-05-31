@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     whatsapp_auth_token: str
     whatsapp_from_number: str
     whatsapp_to_number: str
+    sms_account_sid: str
+    sms_auth_token: str
+    sms_from_number: str
+    sms_to_number: str
     signal_service_url: str
     signal_phone_number: str
     matrix_homeserver: str
