@@ -36,6 +36,8 @@ The following connectors are soon to be supported:
 27. [Instagram DM](./connectors/instagram_dm.md)
 28. [X.com (Twitter)](./connectors/twitter.md)
 29. [Apple RCS/iMessage](./connectors/imessage.md)
+30. [APRS](./connectors/aprs.md)
+31. [AX.25](./connectors/ax25.md)
 
 
 ## Usage

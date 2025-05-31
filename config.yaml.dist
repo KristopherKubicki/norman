@@ -89,6 +89,12 @@ twitter_access_token: "your_twitter_access_token"
 twitter_access_token_secret: "your_twitter_access_token_secret"
 imessage_service_url: "your_imessage_service_url"
 imessage_phone_number: "your_imessage_phone_number"
+aprs_host: "your_aprs_host"
+aprs_port: 14580
+aprs_callsign: "your_aprs_callsign"
+aprs_passcode: "your_aprs_passcode"
+ax25_port: "your_ax25_port"
+ax25_callsign: "your_ax25_callsign"
 
 openai_api_key:
 

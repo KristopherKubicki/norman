@@ -45,6 +45,8 @@ from .reddit_chat_connector import RedditChatConnector
 from .instagram_dm_connector import InstagramDMConnector
 from .twitter_connector import TwitterConnector
 from .imessage_connector import IMessageConnector
+from .aprs_connector import APRSConnector
+from .ax25_connector import AX25Connector
 
 # Registry of available connectors keyed by their identifier.
 connector_classes: Dict[str, type] = {
@@ -78,6 +80,8 @@ connector_classes: Dict[str, type] = {
     "instagram_dm": InstagramDMConnector,
     "twitter": TwitterConnector,
     "imessage": IMessageConnector,
+    "aprs": APRSConnector,
+    "ax25": AX25Connector,
 }
 
 
