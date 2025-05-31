@@ -199,6 +199,20 @@ def test_get_connector_returns_salesforce(monkeypatch):
     assert isinstance(connector, SalesforceConnector)
 
 
+def test_get_connector_returns_github(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('github')
+    from app.connectors.github_connector import GitHubConnector
+    assert isinstance(connector, GitHubConnector)
+
+
+def test_get_connector_returns_jira_service_desk(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('jira_service_desk')
+    from app.connectors.jira_service_desk_connector import JiraServiceDeskConnector
+    assert isinstance(connector, JiraServiceDeskConnector)
+
+
 def test_get_connectors_data_missing_config(monkeypatch):
     monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
     data = get_connectors_data()

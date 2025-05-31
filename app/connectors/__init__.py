@@ -40,6 +40,8 @@ from .ax25_connector import AX25Connector
 from .zapier_connector import ZapierConnector
 from .ifttt_connector import IFTTTConnector
 from .salesforce_connector import SalesforceConnector
+from .github_connector import GitHubConnector
+from .jira_service_desk_connector import JiraServiceDeskConnector
 
 from .connector_utils import get_connector
 
@@ -187,4 +189,14 @@ def init_connectors(app: FastAPI, settings: Settings):
         instance_url=settings.salesforce_instance_url,
         access_token=settings.salesforce_access_token,
         endpoint=settings.salesforce_endpoint,
+    )
+    app.state.github_connector = GitHubConnector(
+        token=settings.github_token,
+        repo=settings.github_repo,
+    )
+    app.state.jira_service_desk_connector = JiraServiceDeskConnector(
+        url=settings.jira_service_desk_url,
+        email=settings.jira_service_desk_email,
+        api_token=settings.jira_service_desk_api_token,
+        project_key=settings.jira_service_desk_project_key,
     )

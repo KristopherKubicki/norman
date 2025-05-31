@@ -108,6 +108,12 @@ class Settings(BaseSettings):
     salesforce_instance_url: str
     salesforce_access_token: str
     salesforce_endpoint: str
+    github_token: str
+    github_repo: str
+    jira_service_desk_url: str
+    jira_service_desk_email: str
+    jira_service_desk_api_token: str
+    jira_service_desk_project_key: str
     openai_api_key: Optional[str]
 
     access_token_expire_minutes: int

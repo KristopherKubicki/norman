@@ -41,6 +41,8 @@ The following connectors are soon to be supported:
 32. [Zapier](./connectors/zapier.md)
 33. [IFTTT](./connectors/ifttt.md)
 34. [Salesforce](./connectors/salesforce.md)
+35. [GitHub](./connectors/github.md)
+36. [Jira Service Desk](./connectors/jira_service_desk.md)
 
 
 ## Usage
@@ -85,5 +87,7 @@ For more detailed information on each connector, please refer to the platform-sp
 - [Zapier Connector](./connectors/zapier.md)
 - [IFTTT Connector](./connectors/ifttt.md)
 - [Salesforce Connector](./connectors/salesforce.md)
+- [GitHub Connector](./connectors/github.md)
+- [Jira Service Desk Connector](./connectors/jira_service_desk.md)
 
 Remember to follow the platform-specific guidelines and best practices when creating bots or apps for each service.
