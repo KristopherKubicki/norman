@@ -12,6 +12,7 @@ from .discord_connector import DiscordConnector
 from .teams_connector import TeamsConnector
 from .telegram_connector import TelegramConnector
 from .webhook_connector import WebhookConnector
+from .rest_callback_connector import RestCallbackConnector
 from .whatsapp_connector import WhatsAppConnector
 from .matrix_connector import MatrixConnector
 from .signal_connector import SignalConnector
@@ -39,4 +40,8 @@ def init_connectors(app: FastAPI, settings: Settings):
         user_id=settings.matrix_user_id,
         access_token=settings.matrix_access_token,
         room_id=settings.matrix_room_id,
+    )
+    app.state.rest_callback_connector = RestCallbackConnector(
+        inbound_url=settings.rest_callback_inbound_url,
+        outbound_url=settings.rest_callback_outbound_url,
     )

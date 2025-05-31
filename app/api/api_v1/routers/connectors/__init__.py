@@ -5,6 +5,7 @@ from .teams import router as teams_router
 from .google_chat import router as google_chat_router
 from .discord import router as discord_router
 from .webhook import router as webhook_router
+from .rest_callback import router as rest_callback_router
 
 router = APIRouter()
 
@@ -14,4 +15,5 @@ router.include_router(teams_router, prefix="/microsoft_teams", tags=["Microsoft 
 router.include_router(google_chat_router, prefix="/google_chat", tags=["Google Chat"])
 router.include_router(discord_router, prefix="/discord", tags=["Discord"])
 router.include_router(webhook_router, prefix="/webhook", tags=["Webhook"])
+router.include_router(rest_callback_router, prefix="/rest_callback", tags=["REST Callback"])
 

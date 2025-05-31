@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     matrix_user_id: str
     matrix_access_token: str
     matrix_room_id: str
+    rest_callback_inbound_url: str
+    rest_callback_outbound_url: str
     openai_api_key: Optional[str]
 
     access_token_expire_minutes: int

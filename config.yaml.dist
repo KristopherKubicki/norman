@@ -30,6 +30,8 @@ matrix_homeserver: "your_matrix_homeserver"
 matrix_user_id: "your_matrix_user_id"
 matrix_access_token: "your_matrix_access_token"
 matrix_room_id: "your_matrix_room_id"
+rest_callback_inbound_url: "your_rest_callback_inbound_url"
+rest_callback_outbound_url: "your_rest_callback_outbound_url"
 
 openai_api_key:
 

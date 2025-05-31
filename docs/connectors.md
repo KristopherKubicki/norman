@@ -16,6 +16,7 @@ The following connectors are soon to be supported:
 7. [Webhook](./connectors/webhook.md)
 8. [Matrix](./connectors/matrix.md)
 9. [WhatsApp](./connectors/whatsapp.md)
+10. [REST Callback](./connectors/restcallback.md)
 
 
 ## Usage
