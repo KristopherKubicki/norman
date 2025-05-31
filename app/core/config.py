@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     twitch_server: str
     twitch_port: int
     rest_callback_url: str
+    mcp_api_url: str
+    mcp_api_key: str
     openai_api_key: Optional[str]
 
     access_token_expire_minutes: int

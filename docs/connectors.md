@@ -18,6 +18,7 @@ The following connectors are soon to be supported:
 9. [WhatsApp](./connectors/whatsapp.md)
 10. [Twitch](./connectors/twitch.md)
 11. [REST Callback](./connectors/rest_callback.md)
+12. [MCP](./connectors/mcp.md)
 
 
 ## Usage
@@ -55,5 +56,7 @@ For more detailed information on each connector, please refer to the platform-sp
 - [Matrix Connector](./connectors/matrix.md)
 - [WhatsApp Connector](./connectors/whatsapp.md)
 - [Twitch Connector](./connectors/twitch.md)
+- [REST Callback Connector](./connectors/rest_callback.md)
+- [MCP Connector](./connectors/mcp.md)
 
 Remember to follow the platform-specific guidelines and best practices when creating bots or apps for each service.
