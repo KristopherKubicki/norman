@@ -28,6 +28,12 @@ matrix_homeserver: "your_matrix_homeserver"
 matrix_user_id: "your_matrix_user_id"
 matrix_access_token: "your_matrix_access_token"
 matrix_room_id: "your_matrix_room_id"
+smtp_host: "your_smtp_host"
+smtp_port: 587
+smtp_username: "your_smtp_username"
+smtp_password: "your_smtp_password"
+smtp_from_addr: "your_from_email"
+smtp_to_addr: "your_to_email"
 
 openai_api_key:
 

@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     matrix_user_id: str
     matrix_access_token: str
     matrix_room_id: str
+    smtp_host: str
+    smtp_port: int
+    smtp_username: str
+    smtp_password: str
+    smtp_from_addr: str
+    smtp_to_addr: str
     openai_api_key: Optional[str]
 
     access_token_expire_minutes: int
