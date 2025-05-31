@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, ForeignKey, DateTime
 from sqlalchemy.sql import func
 from sqlalchemy.sql.schema import FetchedValue
-from .base import Base
+from app.db.base import Base
 
 
 class Message(Base):
