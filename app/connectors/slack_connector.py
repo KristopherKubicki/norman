@@ -55,9 +55,9 @@ class SlackConnector(BaseConnector):
             "ts": payload.get("ts"),
         }
 
-    def send_message(self, channel, message):
+    def send_message(self, message):
         try:
-            response = self.client.chat_postMessage(channel=channel, text=message)
+            response = self.client.chat_postMessage(channel=self.channel_id, text=message)
             return response
         except SlackApiError as e:
             print(f"Error sending message: {e}")

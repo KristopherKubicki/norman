@@ -239,7 +239,7 @@ async def process_webhook(request: Request, payload: dict = Body(...)):
             # If the filter has a reply, send the reply to the specified channel
             if lfilter.reply:
                 connector = get_connector(lfilter.reply_channel.connector)
-                await connector.send_message(lfilter.reply_channel, filter.reply)
+                await connector.send_message(filter.reply)
 
 @app_routes.post("/token", response_model=Token)
 async def token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_async_db)):
