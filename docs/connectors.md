@@ -43,6 +43,8 @@ The following connectors are soon to be supported:
 34. [Salesforce](./connectors/salesforce.md)
 35. [GitHub](./connectors/github.md)
 36. [Jira Service Desk](./connectors/jira_service_desk.md)
+37. [TAP/SNPP](./connectors/tap_snpp.md)
+38. [ACARS](./connectors/acars.md)
 
 
 ## Usage
@@ -89,5 +91,7 @@ For more detailed information on each connector, please refer to the platform-sp
 - [Salesforce Connector](./connectors/salesforce.md)
 - [GitHub Connector](./connectors/github.md)
 - [Jira Service Desk Connector](./connectors/jira_service_desk.md)
+- [TAP/SNPP Connector](./connectors/tap_snpp.md)
+- [ACARS Connector](./connectors/acars.md)
 
 Remember to follow the platform-specific guidelines and best practices when creating bots or apps for each service.
