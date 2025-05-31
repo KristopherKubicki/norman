@@ -52,7 +52,7 @@ def test_connect(monkeypatch):
 def test_send_and_receive(monkeypatch):
     connector, sock = make_connector(monkeypatch)
     connector.connect()
-    connector.send_message("#chan", "hi")
+    connector.send_message("hi")
     assert sock.sent[-1] == b"PRIVMSG #chan :hi\r\n"
     message = connector.receive_message()
     assert message == ":u!u@h PRIVMSG #chan :hello\r\n"

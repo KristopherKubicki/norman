@@ -56,9 +56,12 @@ class IRCConnector(BaseConnector):
                 self.socket.close()
                 self.socket = None
 
-    def send_message(self, channel, message):
-        if self.socket:
-            self.socket.sendall(f"PRIVMSG {channel} :{message}\r\n".encode("utf-8"))
+    def send_message(self, message):
+        if self.socket and self.channels:
+            channel = self.channels[0]
+            self.socket.sendall(
+                f"PRIVMSG {channel} :{message}\r\n".encode("utf-8")
+            )
 
     def receive_message(self):
         while True:
