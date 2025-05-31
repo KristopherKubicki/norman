@@ -70,3 +70,15 @@ class IRCConnector(BaseConnector):
 
     def is_connected(self):
         return self.socket is not None and self.socket.getpeername() is not None
+
+    async def listen_and_process(self) -> None:
+        """Listen for a single IRC message and process it."""
+        if not self.socket:
+            return None
+        msg = self.receive_message()
+        if msg:
+            await self.process_incoming(msg)
+
+    async def process_incoming(self, message):
+        """Return the raw ``message`` payload."""
+        return message
