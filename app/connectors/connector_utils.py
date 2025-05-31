@@ -66,6 +66,9 @@ from .coap_oscore_connector import CoAPOSCOREConnector
 from .opcua_pubsub_connector import OPCUAPubSubConnector
 from .ais_safety_text_connector import AISSafetyTextConnector
 from .cap_connector import CAPConnector
+from .google_business_rcs_connector import GoogleBusinessRCSConnector
+from .apple_messages_business_connector import AppleMessagesBusinessConnector
+from .intercom_connector import IntercomConnector
 
 from .aws_iot_core_connector import AWSIoTCoreConnector
 from .aws_eventbridge_connector import AWSEventBridgeConnector
@@ -128,6 +131,9 @@ connector_classes: Dict[str, type] = {
     "opcua_pubsub": OPCUAPubSubConnector,
     "ais_safety_text": AISSafetyTextConnector,
     "cap": CAPConnector,
+    "google_business_rcs": GoogleBusinessRCSConnector,
+    "apple_messages_business": AppleMessagesBusinessConnector,
+    "intercom": IntercomConnector,
 }
 
 

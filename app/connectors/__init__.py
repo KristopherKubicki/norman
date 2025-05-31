@@ -56,6 +56,9 @@ from .coap_oscore_connector import CoAPOSCOREConnector
 from .opcua_pubsub_connector import OPCUAPubSubConnector
 from .ais_safety_text_connector import AISSafetyTextConnector
 from .cap_connector import CAPConnector
+from .google_business_rcs_connector import GoogleBusinessRCSConnector
+from .apple_messages_business_connector import AppleMessagesBusinessConnector
+from .intercom_connector import IntercomConnector
 
 from .aws_iot_core_connector import AWSIoTCoreConnector
 from .aws_eventbridge_connector import AWSEventBridgeConnector
@@ -290,4 +293,16 @@ def init_connectors(app: FastAPI, settings: Settings):
     )
     app.state.cap_connector = CAPConnector(
         endpoint=settings.cap_endpoint,
+    )
+    app.state.google_business_rcs_connector = GoogleBusinessRCSConnector(
+        access_token=settings.google_business_access_token,
+        phone_number=settings.google_business_phone_number,
+    )
+    app.state.apple_messages_business_connector = AppleMessagesBusinessConnector(
+        access_token=settings.apple_business_access_token,
+        sender_id=settings.apple_business_sender_id,
+    )
+    app.state.intercom_connector = IntercomConnector(
+        access_token=settings.intercom_access_token,
+        app_id=settings.intercom_app_id,
     )
