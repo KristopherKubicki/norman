@@ -89,6 +89,14 @@ class Settings(BaseSettings):
     reddit_username: str
     reddit_password: str
     reddit_user_agent: str
+    instagram_access_token: str
+    instagram_user_id: str
+    twitter_api_key: str
+    twitter_api_secret: str
+    twitter_access_token: str
+    twitter_access_token_secret: str
+    imessage_service_url: str
+    imessage_phone_number: str
     openai_api_key: Optional[str]
 
     access_token_expire_minutes: int
