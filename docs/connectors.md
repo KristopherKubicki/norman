@@ -17,6 +17,7 @@ The following connectors are soon to be supported:
 8. [Matrix](./connectors/matrix.md)
 9. [WhatsApp](./connectors/whatsapp.md)
 10. [Twitch](./connectors/twitch.md)
+11. [REST Callback](./connectors/rest_callback.md)
 
 
 ## Usage
