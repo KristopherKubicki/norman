@@ -27,6 +27,7 @@ from .whatsapp_connector import WhatsAppConnector
 from .matrix_connector import MatrixConnector
 from .signal_connector import SignalConnector
 from .twitch_connector import TwitchConnector
+from .mcp_connector import MCPConnector
 from .smtp_connector import SMTPConnector
 
 # Registry of available connectors keyed by their identifier.
@@ -43,6 +44,7 @@ connector_classes: Dict[str, type] = {
     "matrix": MatrixConnector,
     "signal": SignalConnector,
     "twitch": TwitchConnector,
+    "mcp": MCPConnector,
     "smtp": SMTPConnector,
 }
 

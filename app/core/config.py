@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     twitch_server: str
     twitch_port: int
     rest_callback_url: str
+    mcp_api_url: str
+    mcp_api_key: str
     smtp_host: str
     smtp_port: int
     smtp_username: str
