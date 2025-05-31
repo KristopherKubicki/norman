@@ -1,58 +1,44 @@
 # tests/test_webhook.py
-import pytest
+"""Tests for the simple webhook connector."""
 
-pytest.skip("Webhook tests placeholder", allow_module_level=True)
+import asyncio
 
-# Replace with your actual schema and endpoint imports
-from app.schemas import (
-    BotCreate,
-    ChannelCreate,
-    FilterCreate,
-    IncomingWebhookMessage,
-    OutgoingWebhookMessage,
-)
-from app.endpoints import (
-    create_bot,
-    create_channel,
-    create_filter,
-    process_incoming_webhook,
-    send_outgoing_webhook,
+import httpx
+from app.connectors.webhook_connector import (
+    WebhookConnector,
+    IncomingMessage,
+    process_webhook_message,
 )
 
 
-def test_webhook_process(test_app):
-    # Create a bot
-    bot = BotCreate(name="TestBot")
-    created_bot = create_bot(bot)
+class DummyResponse:
+    def __init__(self, text: str = "ok", status: int = 200):
+        self.text = text
+        self.status_code = status
 
-    # Create a channel
-    channel = ChannelCreate(name="TestChannel", connector="webhook", bot_id=created_bot.id)
-    created_channel = create_channel(channel)
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError("error", request=None, response=None)
 
-    # Create a filter with regex pattern
-    filter = FilterCreate(
-        pattern=r"Hello, (.+)",
-        bot_id=created_bot.id,
-        channel_id=created_channel.id,
-    )
-    created_filter = create_filter(filter)
 
-    # Process an incoming webhook message
-    incoming_message = IncomingWebhookMessage(
-        text="Hello, World!",
-        channel_id=created_channel.id,
-    )
-    matched_filter, extracted_data = process_incoming_webhook(incoming_message)
+class DummyClient:
+    def __init__(self, response: DummyResponse):
+        self.response = response
 
-    assert matched_filter == created_filter
-    assert extracted_data == {"1": "World"}
+    async def __aenter__(self):
+        return self
 
-    # Send an outgoing webhook message
-    outgoing_message = OutgoingWebhookMessage(
-        text=f"Hi {extracted_data['1']}! Your message was processed.",
-        channel_id=created_channel.id,
-    )
-    sent_message = send_outgoing_webhook(outgoing_message)
+    async def __aexit__(self, exc_type, exc, tb):
+        pass
 
-    assert sent_message.text == "Hi World! Your message was processed."
+    async def post(self, url, json=None):
+        return self.response
+
+
+def test_process_webhook_message(monkeypatch) -> None:
+    resp = DummyResponse("sent")
+    monkeypatch.setattr(httpx, "AsyncClient", lambda: DummyClient(resp))
+    msg = IncomingMessage(channel="c1", message="hi", user="u1")
+    result = asyncio.get_event_loop().run_until_complete(process_webhook_message(msg))
+    assert result == "sent"
 

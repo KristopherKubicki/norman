@@ -1,25 +1,25 @@
-from fastapi.testclient import TestClient
-from app.main import app
-import pytest
+"""Exercise router helpers via CRUD operations."""
 
-pytest.skip("Router tests not implemented", allow_module_level=True)
+from sqlalchemy.orm import Session
 
-client = TestClient(app)
+from app import crud
+from app.schemas.channel import ChannelCreate
+from app.tests.utils.utils import random_lower_string
 
-def test_create_channel():
-    response = client.post("/channels/", json={"name": "test_channel", "connector": "irc", "details": {}})
-    assert response.status_code == 201
-    assert response.json()["name"] == "test_channel"
-    assert response.json()["connector"] == "irc"
-    assert "id" in response.json()
 
-def test_get_channel():
-    channel_id = 1  # Use an existing channel's ID
-    response = client.get(f"/channels/{channel_id}")
-    assert response.status_code == 200
-    assert response.json()["id"] == channel_id
-    assert response.json()["name"] == "test_channel"
-    assert response.json()["connector"] == "irc"
+def test_channel_router_crud(db: Session) -> None:
+    name = random_lower_string()
+    channel = crud.channel.create(db, obj_in=ChannelCreate(name=name, connector_id=1))
+    assert channel.name == name
 
-# Add more tests for other routers and endpoints
+    channel = crud.channel.get(db, channel.id)
+    assert channel
 
+    channel = crud.channel.update(db, db_obj=channel, obj_in=ChannelCreate(name="updated", connector_id=1))
+    assert channel.name == "updated"
+
+    listing = crud.channel.get_multi(db)
+    assert any(ch.id == channel.id for ch in listing)
+
+    removed = crud.channel.remove(db, channel.id)
+    assert removed.id == channel.id

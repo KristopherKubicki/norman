@@ -1,44 +1,26 @@
-import json
-from fastapi.testclient import TestClient
+"""CRUD tests for channels using helper functions."""
+
 from sqlalchemy.orm import Session
 
-from app.main import app
-
-import pytest
-
-pytest.skip("API tests not implemented", allow_module_level=True)
-
-client = TestClient(app)
+from app import crud
+from app.schemas.channel import ChannelCreate, ChannelUpdate
+from app.tests.utils.utils import random_lower_string
 
 
-def test_channel_crud(db: Session):
-    # Create channel
-    response = client.post("/api/v1/channels/", json={"name": "test", "connector_id": 1})
-    assert response.status_code == 201
-    data = response.json()
-    assert data["name"] == "test"
-    channel_id = data["id"]
+def test_channel_crud(db: Session) -> None:
+    name = random_lower_string()
+    ch = crud.channel.create(db, obj_in=ChannelCreate(name=name, connector_id=1))
+    assert ch.name == name
 
-    # Get channel
-    response = client.get(f"/api/v1/channels/{channel_id}")
-    assert response.status_code == 200
-    assert response.json()["id"] == channel_id
+    fetched = crud.channel.get(db, ch.id)
+    assert fetched
 
-    # Update channel
-    response = client.put(f"/api/v1/channels/{channel_id}", json={"name": "updated", "connector_id": 1})
-    assert response.status_code == 200
-    assert response.json()["name"] == "updated"
+    updated = crud.channel.update(db, db_obj=fetched, obj_in=ChannelUpdate(name="updated", connector_id=1))
+    assert updated.name == "updated"
 
-    # List channels
-    response = client.get("/api/v1/channels/")
-    assert response.status_code == 200
-    assert any(ch["id"] == channel_id for ch in response.json())
+    all_ch = crud.channel.get_multi(db)
+    assert any(c.id == ch.id for c in all_ch)
 
-    # Delete channel
-    response = client.delete(f"/api/v1/channels/{channel_id}")
-    assert response.status_code == 200
-    assert response.json()["id"] == channel_id
-
-    # Verify deletion
-    response = client.get(f"/api/v1/channels/{channel_id}")
-    assert response.status_code == 404
+    removed = crud.channel.remove(db, ch.id)
+    assert removed.id == ch.id
+    assert crud.channel.get(db, ch.id) is None

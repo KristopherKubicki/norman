@@ -1,48 +1,33 @@
 # tests/test_auth.py
-import pytest
+"""Authentication flow tests."""
 
-from app.schemas import Token
+from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
 
-pytest.skip("Auth tests not implemented", allow_module_level=True)
-
-
-def test_authenticate_user(test_app):
-    # Test invalid email or password
-    response = test_app.post(
-        "/token",
-        data={"username": "invalid@example.com", "password": "invalid_password"},
-    )
-    assert response.status_code == 400
-
-    # Test successful authentication
-    response = test_app.post(
-        "/token",
-        data={"username": "test@example.com", "password": "test_password"},
-    )
-    assert response.status_code == 200
-    token = response.json()
-    assert "access_token" in token
-    assert token["token_type"] == "bearer"
+from app import crud
+from app.core.security import create_access_token
+from app.schemas.user import UserCreate, UserAuthenticate
+from app.tests.utils.utils import random_email, random_lower_string
 
 
-def test_protected_route(test_app):
-    # Test access without a token
-    response = test_app.get("/some_protected_route")
-    assert response.status_code == 401
+def test_authenticate_user(test_app: TestClient, db: Session) -> None:
+    email = random_email()
+    password = random_lower_string()
+    user_in = UserCreate(username=random_lower_string(), email=email, password=password)
+    crud.user.create_user(db, user=user_in)
 
-    # Test access with a valid token
-    response = test_app.post(
-        "/token",
-        data={"username": "test@example.com", "password": "test_password"},
-    )
-    token = response.json()["access_token"]
+    assert crud.user.authenticate_user(db, UserAuthenticate(email=email, password="wrong")) is None
 
-    response = test_app.get(
-        "/some_protected_route", headers={"Authorization": f"Bearer {token}"}
-    )
-    assert response.status_code == 200
-    assert response.json() == {
-        "message": "You have access to this protected route!",
-        "user_email": "test@example.com",
-    }
+    user = crud.user.authenticate_user(db, UserAuthenticate(email=email, password=password))
+    assert user is not None
+
+
+def test_protected_route(test_app: TestClient, db: Session) -> None:
+    email = random_email()
+    password = random_lower_string()
+    user_in = UserCreate(username=random_lower_string(), email=email, password=password)
+    crud.user.create_user(db, user=user_in)
+
+    response = test_app.get("/bots.html", follow_redirects=False)
+    assert response.status_code == 303
 
