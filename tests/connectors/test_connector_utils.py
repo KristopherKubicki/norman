@@ -178,6 +178,27 @@ def test_get_connector_returns_ax25(monkeypatch):
     assert isinstance(connector, AX25Connector)
 
 
+def test_get_connector_returns_zapier(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('zapier')
+    from app.connectors.zapier_connector import ZapierConnector
+    assert isinstance(connector, ZapierConnector)
+
+
+def test_get_connector_returns_ifttt(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('ifttt')
+    from app.connectors.ifttt_connector import IFTTTConnector
+    assert isinstance(connector, IFTTTConnector)
+
+
+def test_get_connector_returns_salesforce(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
+    connector = get_connector('salesforce')
+    from app.connectors.salesforce_connector import SalesforceConnector
+    assert isinstance(connector, SalesforceConnector)
+
+
 def test_get_connectors_data_missing_config(monkeypatch):
     monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: TestSettings)
     data = get_connectors_data()

@@ -103,6 +103,11 @@ class Settings(BaseSettings):
     aprs_passcode: str
     ax25_port: str
     ax25_callsign: str
+    zapier_webhook_url: str
+    ifttt_webhook_url: str
+    salesforce_instance_url: str
+    salesforce_access_token: str
+    salesforce_endpoint: str
     openai_api_key: Optional[str]
 
     access_token_expire_minutes: int
