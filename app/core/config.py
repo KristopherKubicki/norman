@@ -250,8 +250,20 @@ def load_config():
     # If the config.yaml file exists, merge its contents with the dist config
     if os.path.exists("config.yaml"):
         with open("config.yaml", "r") as custom_file:
-            custom_config = yaml.safe_load(custom_file)
+            custom_config = yaml.safe_load(custom_file) or {}
             config.update(custom_config)
+
+    # Environment variables should override YAML configuration
+    for field in Settings.__fields__.values():
+        env_value = os.getenv(field.name.upper())
+        if env_value is not None:
+            # Cast the value to the appropriate type
+            if field.type_ is bool:
+                config[field.name] = env_value.lower() in {"1", "true", "yes"}
+            elif field.type_ is int:
+                config[field.name] = int(env_value)
+            else:
+                config[field.name] = env_value
 
     return config
 

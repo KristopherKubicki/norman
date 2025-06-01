@@ -75,7 +75,11 @@ cp config.yaml.dist config.yaml
 
 5. Edit `config.yaml` to configure the application, connectors, and API keys.
 
-6. Run the `generate_key.sh` script to set a secret key, along with the
+6. *(Recommended)* Create a `.env` file and place sensitive values there. Any
+   environment variables defined will override the settings from `config.yaml`,
+   keeping secrets out of source control.
+
+7. Run the `generate_key.sh` script to set a secret key, along with the
    `encryption_key` and `encryption_salt` values for your application:
 
 ```

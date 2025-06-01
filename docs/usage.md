@@ -67,15 +67,19 @@ slack_token: "xoxb-your-slack-token"
 slack_channel_id: "C01234567"
 ```
 
-2. Set your `openai_api_key` in the same file and run the key generator:
+2. Set your `openai_api_key` in the same file or provide it via an environment
+   variable. Values in the environment (or a `.env` file) take precedence over
+   `config.yaml`.
+
+3. Run the key generator:
 
 ```bash
 chmod +x generate_key.sh
 ./generate_key.sh
 ```
 
-3. Start Norman with `python main.py` and open `http://localhost:8000` in your browser.
-4. Log in with the admin credentials from `config.yaml`, create a chatbot and select the Slack connector. Messages posted in the configured channel will be processed by the bot.
+4. Start Norman with `python main.py` and open `http://localhost:8000` in your browser.
+5. Log in with the admin credentials from `config.yaml`, create a chatbot and select the Slack connector. Messages posted in the configured channel will be processed by the bot.
 
 ## API Examples
 
