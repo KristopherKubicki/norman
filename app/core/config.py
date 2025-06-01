@@ -171,6 +171,8 @@ class Settings(BaseSettings):
     zulip_stream: str
     zulip_topic: str
     openai_api_key: Optional[str]
+    openai_default_model: str = "gpt-3.5-turbo"
+    openai_max_tokens: int = 150
     google_client_id: str = ""
     google_client_secret: str = ""
     microsoft_client_id: str = ""

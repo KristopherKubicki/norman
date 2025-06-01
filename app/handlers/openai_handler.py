@@ -7,32 +7,15 @@ logger = setup_logger(__name__)
 
 openai.api_key = settings.openai_api_key
 
-'''
-# TODO: all users to specify token length, number of tokens, etc. 
-async def get_bot_response(prompt: str, model: str = 'gpt-3.5-turbo') -> Tuple[str, int]:
-    try:
-        completions = openai.Completion.create(
-            engine=model,
-            prompt=prompt,
-            max_tokens=150,
-            n=1,
-            stop=None,
-            temperature=0.7,
-        )
-
-        choice = completions.choices[0]
-        response_text = choice.text.strip()
-        tokens_used = choice.usage['total_tokens']
-
-        return response_text, tokens_used
-
-    except Exception as e:
-        print(f"Error in OpenAI handler: {e}")
-        return None, 0
-'''
+DEFAULT_MODEL = settings.openai_default_model
+DEFAULT_MAX_TOKENS = settings.openai_max_tokens
 
 
-async def create_chat_interaction(messages: List[Dict[str, str]], max_tokens: int=150, model: str = 'gpt-3.5-turbo') -> Dict[str, str]:
+async def create_chat_interaction(
+    messages: List[Dict[str, str]],
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+    model: str = DEFAULT_MODEL,
+) -> Dict[str, str]:
     """
     Function to create a new chat interaction with OpenAI API.
 

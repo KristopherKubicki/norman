@@ -164,6 +164,8 @@ zulip_stream: "your_zulip_stream"
 zulip_topic: "your_zulip_topic"
 
 openai_api_key:
+openai_default_model: "gpt-3.5-turbo"
+openai_max_tokens: 150
 google_client_id: "your_google_client_id"
 google_client_secret: "your_google_client_secret"
 microsoft_client_id: "your_microsoft_client_id"

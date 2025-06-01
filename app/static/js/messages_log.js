@@ -1,6 +1,7 @@
 document.addEventListener('DOMContentLoaded', () => {
   // Fetch messages and render them in the messages container
   fetchMessagesAndRender();
+  populateChannelSelect();
 });
 
 function fetchMessagesAndRender() {
@@ -33,5 +34,25 @@ function createMessageElement(message) {
   messageElement.appendChild(timestampElement);
 
   return messageElement;
+}
+
+async function populateChannelSelect() {
+  try {
+    const resp = await fetch('/api/v1/channels/');
+    if (!resp.ok) {
+      return;
+    }
+    const channels = await resp.json();
+    const select = document.getElementById('channelSelect');
+    select.innerHTML = '';
+    for (const channel of channels) {
+      const opt = document.createElement('option');
+      opt.value = channel.id;
+      opt.textContent = channel.name;
+      select.appendChild(opt);
+    }
+  } catch (e) {
+    console.error('Failed to load channels', e);
+  }
 }
 
