@@ -344,3 +344,10 @@ def test_get_connector_returns_cap(monkeypatch):
     monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: test_settings)
     connector = get_connector('cap')
     assert isinstance(connector, CAPConnector)
+
+
+def test_get_connector_returns_zulip(monkeypatch):
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: test_settings)
+    connector = get_connector('zulip')
+    from app.connectors.zulip_connector import ZulipConnector
+    assert isinstance(connector, ZulipConnector)
