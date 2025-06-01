@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, List
 from sqlalchemy.orm import Session
 
 from app.models.channel_filter import Filter as FilterModel
@@ -15,6 +15,11 @@ def create(db: Session, filter_create: FilterCreate) -> FilterModel:
 
 def get(db: Session, filter_id: int) -> Optional[FilterModel]:
     return db.query(FilterModel).filter(FilterModel.id == filter_id).first()
+
+
+def get_multi(db: Session, skip: int = 0, limit: int = 100) -> List[FilterModel]:
+    """Return multiple filters."""
+    return db.query(FilterModel).offset(skip).limit(limit).all()
 
 
 def update(db: Session, filter_id: int, filter_update: FilterUpdate) -> Optional[FilterModel]:
@@ -34,3 +39,8 @@ def delete(db: Session, filter_id: int) -> Optional[FilterModel]:
         db.delete(db_obj)
         db.commit()
     return db_obj
+
+
+def remove(db: Session, filter_id: int) -> Optional[FilterModel]:
+    """Alias for delete to maintain API consistency."""
+    return delete(db, filter_id)

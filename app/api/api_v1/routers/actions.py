@@ -20,7 +20,7 @@ def read_action(
     db: Session = Depends(get_db),
     action_id: int
 ):
-    action = crud.action.get(db, id=action_id)
+    action = crud.action.get(db, action_id)
     if not action:
         raise HTTPException(status_code=404, detail="Action not found")
     return action
@@ -32,7 +32,7 @@ def update_action(
     action_id: int,
     action_in: schemas.ActionUpdate
 ):
-    action = crud.action.get(db, id=action_id)
+    action = crud.action.get(db, action_id)
     if not action:
         raise HTTPException(status_code=404, detail="Action not found")
     action = crud.action.update(db, db_obj=action, obj_in=action_in)
@@ -44,9 +44,9 @@ def delete_action(
     db: Session = Depends(get_db),
     action_id: int
 ):
-    action = crud.action.get(db, id=action_id)
+    action = crud.action.get(db, action_id)
     if not action:
         raise HTTPException(status_code=404, detail="Action not found")
-    action = crud.action.remove(db, id=action_id)
+    action = crud.action.remove(db, action_id)
     return action
 

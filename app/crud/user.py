@@ -3,7 +3,7 @@
 from sqlalchemy.orm import Session
 from app import models
 from app.models.user import User
-from app.schemas.user import UserCreate, UserAuthenticate
+from app.schemas.user import UserCreate, UserUpdate, UserAuthenticate
 from app.core.security import get_password_hash, verify_password
 
 
@@ -51,6 +51,37 @@ def create_admin_user(db: Session, email: str, password: str, username: str) -> 
         username=username,
     )
     db.add(user)
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def get_users(db: Session, skip: int = 0, limit: int = 100):
+    """Return multiple users with optional pagination."""
+    return db.query(User).offset(skip).limit(limit).all()
+
+
+def delete_user(db: Session, user_id: int):
+    """Delete a user by ID and return the deleted instance."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        return None
+    db.delete(user)
+    db.commit()
+    return user
+
+
+def update_user(db: Session, user_id: int, user_data: UserUpdate):
+    """Update an existing user."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if user is None:
+        return None
+
+    update_data = user_data.dict(exclude_unset=True)
+    if "password" in update_data:
+        user.password = get_password_hash(update_data.pop("password"))
+    for field, value in update_data.items():
+        setattr(user, field, value)
     db.commit()
     db.refresh(user)
     return user
