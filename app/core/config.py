@@ -280,6 +280,17 @@ def load_config():
 
     return config
 
+
+def load_connector_instances():
+    """Return all connectors stored in the database."""
+    from app.db.session import SessionLocal
+    from app import crud
+
+    db = SessionLocal()
+    connectors = crud.connector.get_multi(db)
+    db.close()
+    return connectors
+
 config_data = load_config()
 settings = Settings(**config_data)
 

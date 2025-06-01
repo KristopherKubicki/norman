@@ -29,7 +29,7 @@ db_dir = Path("./db")
 db_dir.mkdir(parents=True, exist_ok=True)
 
 settings.database_url = f"sqlite:///{db_dir}/test.db"
-engine = create_engine(settings.database_url)
+engine = create_engine(settings.database_url, connect_args={"check_same_thread": False})
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base.metadata.create_all(bind=engine)
 

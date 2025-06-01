@@ -247,12 +247,13 @@ def test_get_connector_returns_rfc5425(monkeypatch):
     assert isinstance(connector, RFC5425Connector)
 
 
-def test_get_connectors_data_missing_config(monkeypatch):
+def test_get_connectors_data_empty(monkeypatch, db):
     monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: test_settings)
+    from app import crud
+    db.query(crud.connector.ConnectorModel).delete()
+    db.commit()
     data = get_connectors_data()
-    assert all(item['status'] == 'missing_config' for item in data)
-    slack_data = next(item for item in data if item['id'] == 'slack')
-    assert slack_data['status'] == 'missing_config'
+    assert data == []
 
 def test_get_connector_returns_aws_iot_core(monkeypatch):
     monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: test_settings)
@@ -353,22 +354,22 @@ def test_get_connector_returns_zulip(monkeypatch):
     assert isinstance(connector, ZulipConnector)
 
 
-def test_get_configured_connectors_none(monkeypatch):
+def test_get_configured_connectors_none(monkeypatch, db):
     monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: test_settings)
     from app.connectors.connector_utils import get_configured_connectors
+    from app import crud
+    db.query(crud.connector.ConnectorModel).delete()
+    db.commit()
     assert get_configured_connectors() == {}
 
 
-def test_get_configured_connectors_with_slack(monkeypatch):
-    from app.core.config import load_config, Settings
+def test_get_configured_connectors_with_slack(monkeypatch, db):
     from app.connectors.connector_utils import get_configured_connectors
+    from app.schemas.connector import ConnectorCreate
+    from app import crud
 
-    config = load_config()
-    config['slack_token'] = 'x'
-    config['slack_channel_id'] = 'C1'
-    settings = Settings(**config)
-
-    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: settings)
+    conn = crud.connector.create(db, ConnectorCreate(name="s1", connector_type="slack", config={"token": "x", "channel_id": "C1"}))
+    monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: test_settings)
     connectors = get_configured_connectors()
-    assert 'slack' in connectors
-    assert isinstance(connectors['slack'], SlackConnector)
+    assert conn.id in connectors
+    assert isinstance(connectors[conn.id], SlackConnector)

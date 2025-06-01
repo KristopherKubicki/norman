@@ -10,9 +10,9 @@ return real metadata about each connector.
 """
 
 import inspect
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
-from app.core.config import get_settings, Settings
+from app.core.config import get_settings
 
 from .base_connector import BaseConnector
 from .discord_connector import DiscordConnector
@@ -147,91 +147,79 @@ connector_classes: Dict[str, type] = {
 }
 
 
-def get_connector(connector_name: str) -> BaseConnector:
-    """Return an instantiated connector configured from settings."""
+def get_connector(connector_name: str, config: Optional[Dict[str, Any]] = None) -> BaseConnector:
+    """Return an instantiated connector.
+
+    If ``config`` is provided, it is passed directly to the connector
+    constructor.  Otherwise configuration values are read from
+    :class:`~app.core.config.Settings` for backward compatibility.
+    """
 
     if connector_name not in connector_classes:
         raise ValueError(f"Invalid connector name: {connector_name}")
 
     connector_class = connector_classes[connector_name]
 
-    settings = get_settings()
-    signature = inspect.signature(connector_class.__init__)
-    kwargs: Dict[str, Any] = {}
-    for param in signature.parameters.values():
-        if param.name == "self":
-            continue
-        setting_name = f"{connector_name}_{param.name}"
-        kwargs[param.name] = getattr(settings, setting_name, None)
+    if config is None:
+        settings = get_settings()
+        signature = inspect.signature(connector_class.__init__)
+        kwargs: Dict[str, Any] = {}
+        for param in signature.parameters.values():
+            if param.name == "self":
+                continue
+            setting_name = f"{connector_name}_{param.name}"
+            kwargs[param.name] = getattr(settings, setting_name, None)
+    else:
+        kwargs = config
 
     return connector_class(**kwargs)
 
 
 def get_connectors_data() -> List[Dict[str, Any]]:
-    """Return metadata about all available connectors.
+    """Return metadata about all connector instances stored in the database."""
 
-    The configuration values are inspected to determine whether each connector
-    is enabled.  No network calls are made, so the ``status`` field simply
-    reflects whether the connector has been configured.
-    """
+    from app.core.config import load_connector_instances
 
-    settings = get_settings()
+    connectors = load_connector_instances()
     connectors_data: List[Dict[str, Any]] = []
 
-    for name, connector_cls in connector_classes.items():
-        signature = inspect.signature(connector_cls.__init__)
-        fields = [p.name for p in signature.parameters.values() if p.name != "self"]
+    for connector in connectors:
+        connector_cls = connector_classes.get(connector.connector_type)
+        if connector_cls:
+            signature = inspect.signature(connector_cls.__init__)
+            fields = [p.name for p in signature.parameters.values() if p.name != "self"]
+        else:
+            fields = []
 
-        configured = True
-        for field in fields:
-            setting_name = f"{name}_{field}"
-            value = getattr(settings, setting_name, None)
-            if value in (None, "", f"your_{setting_name}"):
-                configured = False
         connectors_data.append(
             {
-                "id": connector_cls.id,
-                "name": connector_cls.name,
-                "status": "configured" if configured else "missing_config",
+                "id": connector.id,
+                "name": connector.name,
+                "status": "configured",
                 "fields": fields,
-                "last_message_sent": None,
-                "enabled": configured,
+                "last_message_sent": connector.last_message_sent,
+                "enabled": True,
             }
         )
 
     return connectors_data
 
 
-def _is_configured(name: str, settings: Settings) -> bool:
-    """Return ``True`` if the connector ``name`` is fully configured."""
-
-    if name not in connector_classes:
-        raise ValueError(f"Invalid connector name: {name}")
-
-    connector_cls = connector_classes[name]
-    signature = inspect.signature(connector_cls.__init__)
-    for param in signature.parameters.values():
-        if param.name == "self":
-            continue
-        if param.default is not inspect._empty and param.default is None:
-            # optional parameter
-            continue
-        setting_name = f"{name}_{param.name}"
-        value = getattr(settings, setting_name, None)
-        if value in (None, "") or str(value).startswith("your_"):
-            return False
-    return True
 
 
-def get_configured_connectors() -> Dict[str, BaseConnector]:
-    """Return a mapping of configured connector instances keyed by name."""
+def get_configured_connectors() -> Dict[int, BaseConnector]:
+    """Return a mapping of configured connector instances keyed by ID."""
 
-    settings = get_settings()
-    configured: Dict[str, BaseConnector] = {}
+    from app.core.config import load_connector_instances
 
-    for name in connector_classes:
-        if _is_configured(name, settings):
-            configured[name] = get_connector(name)
+    connectors = load_connector_instances()
+    configured: Dict[int, BaseConnector] = {}
+
+    for connector in connectors:
+        try:
+            configured[connector.id] = get_connector(connector.connector_type, connector.config)
+        except Exception:  # pylint: disable=broad-except
+            configured[connector.id] = None
 
     return configured
 

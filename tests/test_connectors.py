@@ -24,3 +24,16 @@ def test_get_connector(test_app: TestClient, db: Session) -> None:
     assert connector.connector_type == connector_2.connector_type
     assert connector.name == connector_2.name
     assert connector.id == connector_2.id
+
+
+def test_api_create_and_get_connector(test_app: TestClient) -> None:
+    payload = {"connector_type": "irc", "name": "irc1", "config": {}}
+    resp = test_app.post("/api/v1/connectors/connectors/", json=payload)
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["name"] == "irc1"
+    connector_id = data["id"]
+
+    resp = test_app.get(f"/api/v1/connectors/connectors/{connector_id}")
+    assert resp.status_code == 200
+    assert resp.json()["id"] == connector_id
