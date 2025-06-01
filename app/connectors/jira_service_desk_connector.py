@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import requests
 from typing import Any, Dict, Optional
@@ -48,9 +49,38 @@ class JiraServiceDeskConnector(BaseConnector):
             print(f"Error communicating with Jira Service Desk: {exc}")
             return None
 
+    def _fetch_issues(self) -> list[dict]:
+        """Return recently created issues for the configured project."""
+
+        jql = f"project={self.project_key} ORDER BY created DESC"
+        url = f"{self.url}/rest/api/3/search"
+        params = {"jql": jql, "maxResults": 10}
+        response = requests.get(url, params=params, headers=self._headers())
+        response.raise_for_status()
+        return response.json().get("issues", [])
+
     async def listen_and_process(self) -> None:
-        """This connector does not listen for inbound messages."""
-        return None
+        """Poll Jira for new issues and process them."""
+
+        last_seen: Optional[str] = None
+        while True:
+            try:
+                issues = self._fetch_issues()
+            except requests.RequestException as exc:  # pragma: no cover - network
+                print(f"Error fetching Jira issues: {exc}")
+                await asyncio.sleep(30)
+                continue
+
+            for issue in reversed(issues):
+                key = issue.get("id")
+                if last_seen is not None and key <= last_seen:
+                    continue
+                last_seen = key
+                result = self.process_incoming(issue)
+                if asyncio.iscoroutine(result):
+                    await result
+
+            await asyncio.sleep(30)
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
         self.send_message(message)

@@ -1,3 +1,4 @@
+import asyncio
 import httpx
 from typing import Any, Dict, Optional
 
@@ -26,10 +27,32 @@ class RESTCallbackConnector(BaseConnector):
                 return None
 
     async def listen_and_process(self) -> None:
-        """This connector does not support incoming messages."""
-        raise NotImplementedError(
-            "RESTCallbackConnector cannot listen for incoming messages"
-        )
+        """Continuously poll for messages from the callback URL."""
+
+        last: Optional[str] = None
+        async with httpx.AsyncClient() as client:
+            while True:
+                try:
+                    resp = await client.get(
+                        self.callback_url,
+                        params={"since": last} if last else None,
+                    )
+                    resp.raise_for_status()
+                    messages = resp.json() if resp.content else []
+                except httpx.HTTPError as exc:
+                    print(f"Error polling {self.callback_url}: {exc}")
+                    await asyncio.sleep(30)
+                    continue
+
+                if isinstance(messages, dict):
+                    messages = [messages]
+                for msg in messages:
+                    last = msg.get("id", last)
+                    result = self.process_incoming(msg)
+                    if asyncio.iscoroutine(result):
+                        await result
+
+                await asyncio.sleep(30)
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
         """Forward an incoming message to the callback URL."""

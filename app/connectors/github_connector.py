@@ -1,3 +1,4 @@
+import asyncio
 import requests
 from typing import Any, Dict, Optional
 
@@ -39,9 +40,36 @@ class GitHubConnector(BaseConnector):
             print(f"Error communicating with GitHub: {exc}")
             return None
 
+    def _fetch_events(self) -> list[dict]:
+        """Return recent issue events for the configured repository."""
+
+        url = f"{self.api_url}/repos/{self.repo}/issues/events"
+        response = requests.get(url, headers=self._headers())
+        response.raise_for_status()
+        return response.json()
+
     async def listen_and_process(self) -> None:
-        """GitHub connector does not listen for inbound messages."""
-        return None
+        """Poll GitHub events and process them when new ones appear."""
+
+        last_seen: Optional[int] = None
+        while True:
+            try:
+                events = self._fetch_events()
+            except requests.RequestException as exc:  # pragma: no cover - network
+                print(f"Error fetching GitHub events: {exc}")
+                await asyncio.sleep(30)
+                continue
+
+            for event in reversed(events):
+                event_id = int(event.get("id", 0))
+                if last_seen is not None and event_id <= last_seen:
+                    continue
+                last_seen = event_id
+                result = self.process_incoming(event)
+                if asyncio.iscoroutine(result):
+                    await result
+
+            await asyncio.sleep(30)
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
         self.send_message(message)

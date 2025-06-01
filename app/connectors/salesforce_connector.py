@@ -1,3 +1,4 @@
+import asyncio
 import requests
 from typing import Any, Dict, Optional
 
@@ -39,8 +40,27 @@ class SalesforceConnector(BaseConnector):
             return None
 
     async def listen_and_process(self) -> None:
-        """Salesforce connector does not support inbound messages."""
-        return None
+        """Poll Salesforce for changes if the Streaming API is available."""
+
+        last_id: Optional[str] = None
+        url = f"{self.instance_url}/services/data/v57.0/sobjects/{self.endpoint}"
+        while True:
+            try:
+                resp = requests.get(url, headers=self._headers(), params={"_lastid": last_id} if last_id else None)
+                resp.raise_for_status()
+                data = resp.json().get("records", [])
+            except requests.RequestException as exc:  # pragma: no cover - network
+                print(f"Error fetching Salesforce records: {exc}")
+                await asyncio.sleep(30)
+                continue
+
+            for record in data:
+                last_id = record.get("Id")
+                result = self.process_incoming(record)
+                if asyncio.iscoroutine(result):
+                    await result
+
+            await asyncio.sleep(30)
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
         self.send_message(message)
