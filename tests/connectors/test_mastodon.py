@@ -23,3 +23,21 @@ def test_send_message_error(monkeypatch):
     monkeypatch.setattr(requests, "post", fake_post)
     connector = MastodonConnector("http://host", "TOKEN")
     assert connector.send_message("hi") is None
+
+
+def test_is_connected_success(monkeypatch):
+    def fake_get(url, headers=None):
+        return DummyResponse()
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    connector = MastodonConnector("http://host", "TOKEN")
+    assert connector.is_connected()
+
+
+def test_is_connected_error(monkeypatch):
+    def fake_get(url, headers=None):
+        raise requests.RequestException("boom")
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    connector = MastodonConnector("http://host", "TOKEN")
+    assert not connector.is_connected()

@@ -38,3 +38,15 @@ class RocketChatConnector(BaseConnector):
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
         """Return the raw ``message`` payload."""
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the API token appears valid."""
+
+        api_url = f"{self.url}/api/v1/me"
+        headers = {"X-Auth-Token": self.token, "X-User-Id": self.user_id}
+        try:
+            resp = httpx.get(api_url, headers=headers)
+            resp.raise_for_status()
+            return True
+        except httpx.HTTPError:
+            return False

@@ -38,3 +38,15 @@ class MatrixConnector(BaseConnector):
     async def process_incoming(self, message):
         """Return the incoming ``message`` payload."""
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the access token is valid."""
+
+        url = f"{self.homeserver}/_matrix/client/v3/account/whoami"
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+        try:
+            resp = httpx.get(url, headers=headers)
+            resp.raise_for_status()
+            return True
+        except httpx.HTTPError:
+            return False

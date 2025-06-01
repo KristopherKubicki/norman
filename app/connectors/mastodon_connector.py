@@ -52,3 +52,14 @@ class MastodonConnector(BaseConnector):
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the access token is valid."""
+
+        url = f"{self.base_url}/api/v1/accounts/verify_credentials"
+        try:
+            resp = requests.get(url, headers=self._headers())
+            resp.raise_for_status()
+            return True
+        except requests.RequestException:
+            return False
