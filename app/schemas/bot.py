@@ -3,13 +3,14 @@ from pydantic import BaseModel
 
 class BotBase(BaseModel):
     name: str
-    session_id: str
+    session_id: Optional[str] = None
     gpt_model: str
 
 class BotCreate(BaseModel):
     name: str
     description: Optional[str] = None
     gpt_model: str
+    session_id: Optional[str] = None
 
 class BotOut(BaseModel):
     id: int
@@ -26,3 +27,4 @@ class Bot(BotBase):
 
     class Config:
         orm_mode = True
+

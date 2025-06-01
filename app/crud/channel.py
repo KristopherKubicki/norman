@@ -20,7 +20,7 @@ def get_multi(db: Session, skip: int = 0, limit: int = 100) -> List[ChannelModel
 
 def create(db: Session, obj_in: ChannelCreate) -> ChannelModel:
     """Create a new channel."""
-    db_obj = ChannelModel(name=obj_in.name)
+    db_obj = ChannelModel(name=obj_in.name, connector_id=obj_in.connector_id)
     db.add(db_obj)
     db.commit()
     db.refresh(db_obj)
@@ -43,3 +43,4 @@ def remove(db: Session, channel_id: int) -> Optional[ChannelModel]:
         db.delete(obj)
         db.commit()
     return obj
+
