@@ -72,3 +72,8 @@ class BaseConnector(ABC):
             if asyncio.iscoroutine(disconnect_result):
                 await disconnect_result
 
+    def is_connected(self) -> bool:  # pragma: no cover - default implementation
+        """Return ``True`` if the connector appears to be healthy."""
+
+        return True
+
