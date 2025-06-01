@@ -8,15 +8,23 @@
 <h1>Filters</h1>
 
 <div class="search-container">
-  <input type="text" placeholder="Search filters..." class="search-input">
+  <input type="text" placeholder="Search filters..." class="form-control search-input">
 </div>
 
-<form id="add-filter-form">
-  <label for="filter-name">Filter Name:</label>
-  <input type="text" id="filter-name" required />
-  <label for="filter-description">Description:</label>
-  <input type="text" id="filter-description" />
-  <button type="submit">Add Filter</button>
+<form id="add-filter-form" class="card card-body mb-4">
+  <div class="row g-2 align-items-end">
+    <div class="col-sm">
+      <label for="filter-name" class="form-label">Filter Name</label>
+      <input type="text" id="filter-name" class="form-control" required />
+    </div>
+    <div class="col-sm">
+      <label for="filter-description" class="form-label">Description</label>
+      <input type="text" id="filter-description" class="form-control" />
+    </div>
+    <div class="col-auto">
+      <button type="submit" class="btn btn-primary">Add Filter</button>
+    </div>
+  </div>
 </form>
 
 <div class="filters-container">
