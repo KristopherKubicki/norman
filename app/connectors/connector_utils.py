@@ -12,7 +12,7 @@ return real metadata about each connector.
 import inspect
 from typing import Any, Dict, List
 
-from app.core.config import get_settings
+from app.core.config import get_settings, Settings
 
 from .base_connector import BaseConnector
 from .discord_connector import DiscordConnector
@@ -198,4 +198,38 @@ def get_connectors_data() -> List[Dict[str, Any]]:
         )
 
     return connectors_data
+
+
+def _is_configured(name: str, settings: Settings) -> bool:
+    """Return ``True`` if the connector ``name`` is fully configured."""
+
+    if name not in connector_classes:
+        raise ValueError(f"Invalid connector name: {name}")
+
+    connector_cls = connector_classes[name]
+    signature = inspect.signature(connector_cls.__init__)
+    for param in signature.parameters.values():
+        if param.name == "self":
+            continue
+        if param.default is not inspect._empty and param.default is None:
+            # optional parameter
+            continue
+        setting_name = f"{name}_{param.name}"
+        value = getattr(settings, setting_name, None)
+        if value in (None, "") or str(value).startswith("your_"):
+            return False
+    return True
+
+
+def get_configured_connectors() -> Dict[str, BaseConnector]:
+    """Return a mapping of configured connector instances keyed by name."""
+
+    settings = get_settings()
+    configured: Dict[str, BaseConnector] = {}
+
+    for name in connector_classes:
+        if _is_configured(name, settings):
+            configured[name] = get_connector(name)
+
+    return configured
 
