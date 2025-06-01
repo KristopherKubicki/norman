@@ -12,9 +12,13 @@ Add the webhook URL to your `config.yaml` file:
 
 ```yaml
 webhook_secret: "https://your-webhook-url.example.com/"
+webhook_auth_token: "your_webhook_auth_token"
 ```
 
 `webhook_secret` should contain the full URL of the endpoint that will receive the messages.
+`webhook_auth_token` is optional but recommended. When set, requests to the
+`/api/v1/connectors/webhook/webhooks/webhook` endpoint must include this token in
+the `X-Webhook-Token` header.
 
 ## Usage
 

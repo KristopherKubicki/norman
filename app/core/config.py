@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     teams_tenant_id: str
     teams_bot_endpoint: str
     webhook_secret: str
+    webhook_auth_token: str = ""
     whatsapp_account_sid: str
     whatsapp_auth_token: str
     whatsapp_from_number: str

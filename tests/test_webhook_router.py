@@ -20,7 +20,25 @@ def test_process_webhook_update(monkeypatch, test_app: TestClient):
 
     monkeypatch.setattr(webhook_router, "WebhookConnector", DummyConnector)
     resp = test_app.post(
-        "/api/v1/connectors/webhook/webhooks/webhook", json={"text": "hi"}
+        "/api/v1/connectors/webhook/webhooks/webhook",
+        json={"text": "hi"},
+        headers={"X-Webhook-Token": test_settings.webhook_auth_token},
     )
     assert resp.status_code == 200
     assert received["payload"] == {"text": "hi"}
+
+
+def test_process_webhook_update_invalid_token(monkeypatch, test_app: TestClient):
+    class DummyConnector:
+        def __init__(self, webhook_url: str):
+            self.webhook_url = webhook_url
+        def process_incoming(self, payload):
+            return "ok"
+
+    monkeypatch.setattr(webhook_router, "WebhookConnector", DummyConnector)
+    resp = test_app.post(
+        "/api/v1/connectors/webhook/webhooks/webhook",
+        json={"text": "hi"},
+        headers={"X-Webhook-Token": "bad"},
+    )
+    assert resp.status_code == 401
