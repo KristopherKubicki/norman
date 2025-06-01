@@ -96,7 +96,8 @@ For more information, refer to the [documentation](docs/) and the [contributing 
 
 ## Usage
 
-For detailed information on how to use Norman, please refer to the [Usage](./docs/usage.md) section in the documentation.
+For detailed information on how to use Norman, see the [Usage](./docs/usage.md) guide.
+Practical walkthroughs and API calls can be found in the [Examples](./docs/examples.md) document.
 
 ## Deployment
 
