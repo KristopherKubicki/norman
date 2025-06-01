@@ -1,4 +1,5 @@
 from typing import Optional
+import asyncio
 
 try:
     import redis
@@ -40,8 +41,34 @@ class RedisPubSubConnector(BaseConnector):
         self._client.publish(self.channel, message)
 
     async def listen_and_process(self) -> None:
-        """Listening not implemented."""
-        return None
+        """Listen for published messages and process them."""
+
+        if not redis:
+            raise RuntimeError("redis-py not installed")
+
+        if not self._client:
+            self.connect()
+
+        assert self._client is not None
+        pubsub = self._client.pubsub()
+        pubsub.subscribe(self.channel)
+
+        loop = asyncio.get_running_loop()
+        try:
+            while True:
+                message = await loop.run_in_executor(
+                    None,
+                    lambda: pubsub.get_message(
+                        ignore_subscribe_messages=True, timeout=1
+                    ),
+                )
+                if message and message.get("type") == "message":
+                    data = message.get("data")
+                    if isinstance(data, bytes):
+                        data = data.decode("utf-8", errors="replace")
+                    await self.process_incoming(data)
+        finally:
+            pubsub.close()
 
     async def process_incoming(self, message: str) -> str:
         return message
