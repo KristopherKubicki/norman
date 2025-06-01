@@ -15,6 +15,7 @@ This file tracks connectors that we would like to implement in the future.
 - [x] Skype
 - [x] Rocket.Chat
 - [x] Mattermost
+- [x] Gitter
 - [x] WeChat
 - [x] Reddit Chat
 - [x] RFC 5425 Syslog

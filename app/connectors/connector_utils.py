@@ -51,6 +51,7 @@ from .zapier_connector import ZapierConnector
 from .ifttt_connector import IFTTTConnector
 from .salesforce_connector import SalesforceConnector
 from .github_connector import GitHubConnector
+from .gitter_connector import GitterConnector
 from .jira_service_desk_connector import JiraServiceDeskConnector
 from .tap_snpp_connector import TAPSNPPConnector
 from .acars_connector import ACARSConnector
@@ -115,6 +116,7 @@ connector_classes: Dict[str, type] = {
     "ifttt": IFTTTConnector,
     "salesforce": SalesforceConnector,
     "github": GitHubConnector,
+    "gitter": GitterConnector,
     "jira_service_desk": JiraServiceDeskConnector,
     "tap_snpp": TAPSNPPConnector,
     "acars": ACARSConnector,
