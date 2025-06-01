@@ -4,14 +4,14 @@ This page walks through a small end‑to‑end example and shows how to interact
 
 ## Slack Bot Quick Start
 
-1. Copy `config.yaml.dist` to `config.yaml` and edit the Slack section:
+1. Run Norman once to generate `config.yaml` and edit the Slack section:
 
 ```yaml
 slack_token: "xoxb-your-slack-token"
 slack_channel_id: "C01234567"
 ```
 
-2. Set your `openai_api_key` in `config.yaml` and generate the application secret:
+2. Set your `openai_api_key` in `config.yaml` and optionally regenerate the secrets:
 
 ```bash
 chmod +x generate_key.sh
