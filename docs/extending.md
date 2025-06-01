@@ -16,6 +16,9 @@ Norman supports various chat platforms through connectors. To create a new conne
 1. Create a new Python file in the `app/connectors` directory with a descriptive name, e.g., `custom_connector.py`.
 
 2. Inherit from the `BaseConnector` class and implement the required methods.  At a minimum you should provide `send_message` as well as optional `connect` and `disconnect` hooks.  You can also override `listen_and_process` and `process_incoming` to handle incoming data.
+   The base class includes a default `is_connected` method that simply returns
+   `True`.  Override this if your connector can perform a meaningful health
+   check.
 
 3. Register your new connector in `app/connectors/connector_utils.py` by adding
    it to the `connector_classes` dictionary.

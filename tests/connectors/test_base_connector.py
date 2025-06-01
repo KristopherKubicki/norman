@@ -24,3 +24,8 @@ def test_queue_and_dispatcher():
     with contextlib.suppress(asyncio.CancelledError):
         loop.run_until_complete(task)
     assert connector.sent == ["hi"]
+
+
+def test_default_is_connected():
+    connector = DummyConnector()
+    assert connector.is_connected()
