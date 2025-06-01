@@ -48,7 +48,13 @@ app.include_router(app_routes)
 
 def main() -> None:
     """Run the FastAPI application using Uvicorn."""
-    uvicorn.run(app, host=settings.host, port=settings.port, debug=settings.debug)
+    uvicorn.run(
+        app,
+        host=settings.host,
+        port=settings.port,
+        reload=settings.debug,
+        log_level="debug" if settings.debug else "info",
+    )
 
 
 if __name__ == "__main__":
