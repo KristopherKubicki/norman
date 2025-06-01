@@ -21,3 +21,4 @@ pyjwt
 openai
 tiktoken
 paho-mqtt
+pika
