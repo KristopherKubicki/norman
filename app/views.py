@@ -18,29 +18,29 @@ logger = setup_logger(__name__)
 templates = Jinja2Templates(directory="app/templates")
 
 async def home(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(request, "index.html", {"request": request})
 
 async def connectors(request: Request):
     connectors_data = get_connectors_data()
-    return templates.TemplateResponse("connectors.html", {"request": request, "connectors": connectors_data})
+    return templates.TemplateResponse(request, "connectors.html", {"request": request, "connectors": connectors_data})
 
 async def filters(request: Request):
-    return templates.TemplateResponse("filters.html", {"request": request})
+    return templates.TemplateResponse(request, "filters.html", {"request": request})
 
 async def channels(request: Request):
-    return templates.TemplateResponse("channels.html", {"request": request})
+    return templates.TemplateResponse(request, "channels.html", {"request": request})
 
 async def messages(request: Request):
-    return templates.TemplateResponse("messages_log.html", {"request": request})
+    return templates.TemplateResponse(request, "messages_log.html", {"request": request})
 
 async def bots(request: Request):
-    return templates.TemplateResponse("bots.html", {"request": request})
+    return templates.TemplateResponse(request, "bots.html", {"request": request})
 
 async def login(request: Request):
-    return templates.TemplateResponse("login.html", {"request": request})
+    return templates.TemplateResponse(request, "login.html", {"request": request})
 
 async def logout(request: Request):
-    return templates.TemplateResponse("logout.html", {"request": request})
+    return templates.TemplateResponse(request, "logout.html", {"request": request})
 
 async def get_bots(db: Session, current_user=Depends(get_current_user)):
     """Return bots owned by the current authenticated user."""
@@ -58,4 +58,4 @@ async def process_message(request: Request):
     response = await connector.process_message(message)
 
     # Return the response to the frontend, which can be used to update the messages log.
-    return templates.TemplateResponse("process_message.html", {"request": request, "response": response})
+    return templates.TemplateResponse(request, "process_message.html", {"request": request, "response": response})
