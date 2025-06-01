@@ -1,7 +1,6 @@
 from typing import List
 from fastapi import APIRouter, Body, Depends, Request, HTTPException
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from fastapi.responses import RedirectResponse
 
 from starlette.staticfiles import StaticFiles
 from starlette.responses import FileResponse, HTMLResponse, Response, JSONResponse
@@ -10,13 +9,14 @@ from starlette.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.schemas import Token
-from app.schemas.user import UserAuthenticate
+from app.schemas.user import UserAuthenticate, UserCreate
 from app.schemas.bot import Bot, BotCreate, BotOut
 from app.schemas.message import Message
 from app.schemas.interaction import InteractionCreate
 from app.core.config import settings
 from app.core.security import create_access_token
 from app.crud.user import authenticate_user
+from app.crud.user import get_user_by_email, create_user
 from app.crud.bot import create_bot, delete_bot, get_bot_by_id
 from app.crud.message import create_message, get_messages_by_bot_id, delete_message, get_last_messages_by_bot_id, delete_messages_by_bot_id
 from app.crud.interaction import create_interaction
@@ -28,6 +28,10 @@ from app.api.deps import get_async_db
 
 from datetime import timedelta
 import os
+import uuid
+import requests
+import jwt
+from urllib.parse import urlencode
 
 from .views import home, connectors, filters, channels, process_message, bots, messages, login, logout, get_bots
 
@@ -289,4 +293,114 @@ async def login_post(request: Request, form_data: OAuth2PasswordRequestForm = De
         max_age=settings.access_token_expire_minutes * 60,
     )
     return response
+
+
+def _random_password() -> str:
+    """Generate a random password for new SSO users."""
+    return uuid.uuid4().hex
+
+
+def _set_login_cookie(user_email: str) -> Response:
+    access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
+    access_token = create_access_token(
+        data={"sub": user_email}, expires_delta=access_token_expires
+    )
+    response = RedirectResponse(url="/", status_code=303)
+    response.set_cookie(
+        key="access_token",
+        value=f"Bearer {access_token}",
+        httponly=True,
+        max_age=settings.access_token_expire_minutes * 60,
+    )
+    return response
+
+
+def _get_redirect_uri(request: Request, provider: str) -> str:
+    return str(request.url_for(f"{provider}_callback"))
+
+
+@app_routes.get("/auth/google/login")
+async def google_login(request: Request):
+    params = {
+        "client_id": settings.google_client_id,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "redirect_uri": _get_redirect_uri(request, "google"),
+        "access_type": "online",
+        "prompt": "select_account",
+    }
+    url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
+    return RedirectResponse(url)
+
+
+@app_routes.get("/auth/google/callback")
+async def google_callback(request: Request, db: Session = Depends(get_async_db)):
+    code = request.query_params.get("code")
+    if not code:
+        raise HTTPException(status_code=400, detail="Code not provided")
+    data = {
+        "code": code,
+        "client_id": settings.google_client_id,
+        "client_secret": settings.google_client_secret,
+        "redirect_uri": _get_redirect_uri(request, "google"),
+        "grant_type": "authorization_code",
+    }
+    resp = requests.post("https://oauth2.googleapis.com/token", data=data)
+    resp.raise_for_status()
+    token_info = resp.json()
+    id_token = token_info.get("id_token")
+    if not id_token:
+        raise HTTPException(status_code=400, detail="Missing id_token")
+    user_info = jwt.decode(id_token, options={"verify_signature": False})
+    email = user_info.get("email")
+    username = user_info.get("name") or email
+    if not email:
+        raise HTTPException(status_code=400, detail="Email not available")
+    user = get_user_by_email(db, email=email)
+    if not user:
+        user = create_user(db, UserCreate(email=email, username=username, password=_random_password()))
+    return _set_login_cookie(user.email)
+
+
+@app_routes.get("/auth/microsoft/login")
+async def microsoft_login(request: Request):
+    params = {
+        "client_id": settings.microsoft_client_id,
+        "response_type": "code",
+        "scope": "https://graph.microsoft.com/user.read openid email profile",
+        "redirect_uri": _get_redirect_uri(request, "microsoft"),
+        "response_mode": "query",
+    }
+    url = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize?" + urlencode(params)
+    return RedirectResponse(url)
+
+
+@app_routes.get("/auth/microsoft/callback")
+async def microsoft_callback(request: Request, db: Session = Depends(get_async_db)):
+    code = request.query_params.get("code")
+    if not code:
+        raise HTTPException(status_code=400, detail="Code not provided")
+    data = {
+        "client_id": settings.microsoft_client_id,
+        "client_secret": settings.microsoft_client_secret,
+        "code": code,
+        "redirect_uri": _get_redirect_uri(request, "microsoft"),
+        "grant_type": "authorization_code",
+        "scope": "https://graph.microsoft.com/user.read openid email profile",
+    }
+    resp = requests.post("https://login.microsoftonline.com/common/oauth2/v2.0/token", data=data)
+    resp.raise_for_status()
+    token_info = resp.json()
+    id_token = token_info.get("id_token")
+    if not id_token:
+        raise HTTPException(status_code=400, detail="Missing id_token")
+    user_info = jwt.decode(id_token, options={"verify_signature": False})
+    email = user_info.get("email") or user_info.get("preferred_username")
+    username = user_info.get("name") or email
+    if not email:
+        raise HTTPException(status_code=400, detail="Email not available")
+    user = get_user_by_email(db, email=email)
+    if not user:
+        user = create_user(db, UserCreate(email=email, username=username, password=_random_password()))
+    return _set_login_cookie(user.email)
 
