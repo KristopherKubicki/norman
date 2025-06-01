@@ -15,6 +15,7 @@ Norman is an open-source chatbot that leverages OpenAI's GPT models to assist an
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Usage](#usage)
+- [Testing](#testing)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -93,6 +94,22 @@ For more information, refer to the [documentation](docs/) and the [contributing 
 
 For detailed information on how to use Norman, see the [Usage](./docs/usage.md) guide.
 Practical walkthroughs and API calls can be found in the [Examples](./docs/examples.md) document.
+
+## Testing
+
+Automated tests are powered by `pytest`. The development dependencies are listed
+in `requirements-dev.txt`.
+
+```bash
+pip install -r requirements-dev.txt
+pytest -vv
+```
+
+For a test coverage report you can additionally run:
+
+```bash
+pytest --cov=./ -vv
+```
 
 ## Deployment
 
