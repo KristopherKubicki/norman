@@ -4,14 +4,14 @@ Connectors are the way Norman interacts with different chat platforms. They hand
 
 ## Available Connectors
 
-The following connectors are soon to be supported:
+The following connectors are currently supported:
 
 
 1. [IRC](./connectors/irc.md)
 2. [Slack](./connectors/slack.md)
 3. [Discord](./connectors/discord.md)
 4. [Microsoft Teams](./connectors/teams.md)
-5. [Google Chat](./connectors/googlechat.md)
+5. [Google Chat](./connectors/google_chat.md)
 6. [Telegram](./connectors/telegram.md)
 7. [Webhook](./connectors/webhook.md)
 8. [Matrix](./connectors/matrix.md)
@@ -100,7 +100,7 @@ For more detailed information on each connector, please refer to the platform-sp
 - [Slack Connector](./connectors/slack.md)
 - [Discord Connector](./connectors/discord.md)
 - [Microsoft Teams Connector](./connectors/teams.md)
-- [Google Chat Connector](./connectors/googlechat.md)
+- [Google Chat Connector](./connectors/google_chat.md)
 - [Telegram Connector](./connectors/telegram.md)
 - [Signal Connector](./connectors/signal.md)
 - [Matrix Connector](./connectors/matrix.md)
