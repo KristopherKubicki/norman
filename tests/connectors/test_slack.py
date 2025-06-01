@@ -1,6 +1,7 @@
 import sys
 import types
 import pytest
+import asyncio
 
 # Provide a minimal slack_sdk stub if the real package isn't installed
 if "slack_sdk" not in sys.modules:
@@ -64,7 +65,9 @@ def test_receive_message_error():
 def test_listen_and_process():
     connector = SlackConnector(token="x", channel_id="C1")
     connector.receive_message = lambda: [{"text": "hi", "user": "U1", "channel": "C1"}]
-    results = connector.listen_and_process()
+    results = asyncio.get_event_loop().run_until_complete(
+        connector.listen_and_process()
+    )
     assert results == [{"text": "hi", "user": "U1", "channel": "C1", "ts": None}]
 
 
@@ -75,7 +78,10 @@ def test_listen_and_process_error():
         raise SlackApiError("error", {})
 
     connector.receive_message = raise_error
-    assert connector.listen_and_process() == []
+    result = asyncio.get_event_loop().run_until_complete(
+        connector.listen_and_process()
+    )
+    assert result == []
 
 
 def test_is_connected_success():

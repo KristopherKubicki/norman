@@ -1,3 +1,4 @@
+import asyncio
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 from .base_connector import BaseConnector
@@ -20,26 +21,26 @@ class SlackConnector(BaseConnector):
     def disconnect(self):
         pass  # No need for a separate disconnect method, as WebClient will handle it.
 
-    def listen_and_process(self):
-        """Poll for messages in the configured channel and process them.
+    async def listen_and_process(self):
+        """Poll for messages asynchronously and process them."""
 
-        Returns a list of processed messages. Any SlackApiError raised while
-        retrieving or processing messages is caught and logged to stdout.
-        """
         try:
-            messages = self.receive_message()
-        except SlackApiError as e:
-            print(f"Error receiving messages: {e}")
+            loop = asyncio.get_running_loop()
+            messages = await loop.run_in_executor(None, self.receive_message)
+        except SlackApiError as exc:
+            print(f"Error receiving messages: {exc}")
             return []
 
         results = []
         for message in messages:
             try:
                 processed = self.process_incoming(message)
+                if asyncio.iscoroutine(processed):
+                    processed = await processed
                 if processed:
                     results.append(processed)
-            except Exception as e:  # pylint: disable=broad-except
-                print(f"Error processing message: {e}")
+            except Exception as exc:  # pylint: disable=broad-except
+                print(f"Error processing message: {exc}")
         return results
 
     def process_incoming(self, payload: dict):
