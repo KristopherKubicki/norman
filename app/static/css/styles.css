@@ -22,47 +22,9 @@ p {
     margin-bottom: 20px;
 }
 
-.container {
-    width: 80%;
-    margin: auto;
-    overflow: hidden;
-}
-
-/* Header */
-header {
-    background: #f4f4f4;
-    padding: 20px;
-}
-
-header h1 {
-    float: left;
-}
-
-header nav {
-    float: right;
-    margin-top: 10px;
-}
-
-header nav ul {
-    list-style: none;
-    padding: 0;
-}
-
-header nav ul li {
-    display: inline;
-    margin-left: 10px;
-}
-
 /* Main content */
 main {
     padding: 20px;
-}
-
-/* Footer */
-footer {
-    background: #f4f4f4;
-    padding: 20px;
-    text-align: center;
 }
 
 
