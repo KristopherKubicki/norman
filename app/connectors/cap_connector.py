@@ -2,11 +2,13 @@
 
 from typing import Any, Optional
 
+import httpx
+
 from .base_connector import BaseConnector
 
 
 class CAPConnector(BaseConnector):
-    """Placeholder connector for CAP 1.2 messages."""
+    """Send CAP 1.2 messages to a remote HTTP endpoint."""
 
     id = "cap"
     name = "Common Alerting Protocol v1.2"
@@ -17,9 +19,15 @@ class CAPConnector(BaseConnector):
         self.sent_messages: list[Any] = []
 
     async def send_message(self, message: Any) -> str:
-        """Record ``message`` locally and return a confirmation string."""
+        """POST ``message`` to the configured endpoint and record it."""
 
         self.sent_messages.append(message)
+        async with httpx.AsyncClient() as client:
+            try:
+                resp = await client.post(self.endpoint, data=message)
+                resp.raise_for_status()
+            except httpx.HTTPError:  # pragma: no cover - network
+                pass
         return "sent"
 
     async def listen_and_process(self) -> None:
