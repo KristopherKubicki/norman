@@ -53,15 +53,8 @@ Before deploying Norman, ensure that your server meets the following requirement
 
 ## Configuration
 
-1. Copy the `config.yaml.dist` file to `config.yaml`:
-
-   ```
-   cp config.yaml.dist config.yaml
-   ```
-
-2. Open `config.yaml` in a text editor and configure the required settings, such as the database connection string and API keys.
-
-3. Save and close the `config.yaml` file.
+1. Run Norman once to automatically create `config.yaml` with secure defaults.
+   Edit this file to configure the required settings, such as the database connection string and API keys.
 
 ## Running the Application
 

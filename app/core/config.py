@@ -240,9 +240,33 @@ class Settings(BaseSettings):
         env_file_encoding = "utf-8"
 
 import os
+import shutil
+import secrets
 import yaml
 
+
+def ensure_user_config():
+    """Create config.yaml with random credentials on first run."""
+    if not os.path.exists("config.yaml"):
+        shutil.copyfile("config.yaml.dist", "config.yaml")
+        with open("config.yaml", "r") as f:
+            cfg = yaml.safe_load(f)
+        cfg["secret_key"] = secrets.token_urlsafe(32)
+        cfg["initial_admin_password"] = secrets.token_urlsafe(12)
+        cfg["initial_admin_email"] = f"admin+{secrets.token_hex(4)}@example.com"
+        cfg["initial_admin_username"] = f"admin_{secrets.token_hex(4)}"
+        cfg["encryption_key"] = secrets.token_urlsafe(32)
+        cfg["encryption_salt"] = secrets.token_urlsafe(16)
+        with open("config.yaml", "w") as f:
+            yaml.safe_dump(cfg, f)
+        print("Generated config.yaml with admin credentials:")
+        print(f"  username: {cfg['initial_admin_username']}")
+        print(f"  email: {cfg['initial_admin_email']}")
+        print(f"  password: {cfg['initial_admin_password']}")
+        print("Edit config.yaml to customize settings, including your OpenAI API key.")
+
 def load_config():
+    ensure_user_config()
     # Read the config from the dist file
     with open("config.yaml.dist", "r") as dist_file:
         config = yaml.safe_load(dist_file)

@@ -68,29 +68,24 @@ source env/bin/activate
 pip install -r requirements.txt
 ```
 
-4. Create a `config.yaml` based on the provided `config.yaml.dist`:
-```
-cp config.yaml.dist config.yaml
-```
+4. Run Norman once to automatically generate `config.yaml` with secure defaults.
+   Afterwards edit this file to configure connectors and add your OpenAI API key.
 
-5. Edit `config.yaml` to configure the application, connectors, and API keys.
-
-6. Run the `generate_key.sh` script to set a secret key, along with the
-   `encryption_key` and `encryption_salt` values for your application:
+5. (Optional) Regenerate the secrets in `config.yaml` using the provided script:
 
 ```
 chmod +x generate_key.sh
 ./generate_key.sh
 ```
 
-You can also just edit config.yaml instead and make up your own key. You'll also have to set your OpenAI key in the config.yaml file under the key "openai_api_key" 
+You can also edit `config.yaml` manually to provide your own values. Be sure to add your OpenAI key under `openai_api_key`.
 
-8. Run the application:
+6. Run the application:
 ```
 python main.py
 ````
 
-9. Open the API documentation in your browser: [http://localhost:8000/docs](http://localhost:8000/docs)
+7. Open the API documentation in your browser: [http://localhost:8000/docs](http://localhost:8000/docs)
 
 For more information, refer to the [documentation](docs/) and the [contributing guidelines](CONTRIBUTING.md).
 

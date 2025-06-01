@@ -60,14 +60,14 @@ Remember to expand on these sections and provide more detailed information based
 
 This example demonstrates how to connect Norman to Slack and create a simple bot.
 
-1. Copy `config.yaml.dist` to `config.yaml` and edit the Slack section:
+1. Run Norman once to generate `config.yaml` and edit the Slack section:
 
 ```yaml
 slack_token: "xoxb-your-slack-token"
 slack_channel_id: "C01234567"
 ```
 
-2. Set your `openai_api_key` in the same file and run the key generator:
+2. Set your `openai_api_key` in the same file and optionally regenerate the secrets:
 
 ```bash
 chmod +x generate_key.sh
