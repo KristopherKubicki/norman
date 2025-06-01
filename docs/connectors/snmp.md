@@ -1,6 +1,6 @@
 # SNMP Connector
 
-The SNMP connector emits simple SNMP traps to a management system.
+The SNMP connector emits and receives SNMP traps to integrate with management systems.
 
 ## Requirements
 - An SNMP manager reachable from Norman
@@ -15,4 +15,4 @@ snmp_community: "public"
 ```
 
 ## Usage
-This implementation sends a basic trap with the message text as payload. Listening for traps is not implemented.
+This implementation sends a basic trap with the message text as payload and can listen for inbound traps to process them.

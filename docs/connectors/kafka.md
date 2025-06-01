@@ -1,6 +1,6 @@
 # Kafka Connector
 
-The Kafka connector publishes messages to a Kafka or Redpanda cluster using the `confluent-kafka` library.
+The Kafka connector publishes and consumes messages using the `confluent-kafka` library.
 
 ## Requirements
 
@@ -18,4 +18,4 @@ kafka_topic: "norman"
 
 ## Usage
 
-This connector currently only supports publishing messages to the configured topic.
+The connector publishes messages to the configured topic and also listens on the same topic to process incoming messages.

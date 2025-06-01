@@ -1,6 +1,7 @@
 """Connector for sending SNMP traps."""
 
 import socket
+import asyncio
 from typing import Optional
 
 from .base_connector import BaseConnector
@@ -21,6 +22,7 @@ class SNMPConnector(BaseConnector):
 
     def connect(self) -> None:
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._sock.bind(("", 0))
 
     def disconnect(self) -> None:
         if self._sock:
@@ -40,8 +42,22 @@ class SNMPConnector(BaseConnector):
             return None
 
     async def listen_and_process(self) -> None:
-        """Listening for traps is not implemented."""
-        return None
+        """Listen for inbound traps and process them indefinitely."""
+
+        if not self._sock:
+            self.connect()
+        assert self._sock is not None
+        self._sock.setblocking(False)
+        while True:  # pragma: no cover - run forever
+            try:
+                data, _ = self._sock.recvfrom(4096)
+            except BlockingIOError:
+                await asyncio.sleep(0.1)
+                continue
+            message = data.decode("utf-8", "ignore")
+            result = self.process_incoming(message)
+            if asyncio.iscoroutine(result):
+                await result
 
     async def process_incoming(self, message: str) -> str:
         return message
