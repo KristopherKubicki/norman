@@ -69,6 +69,7 @@ The following connectors are currently supported:
 60. [Google Pub/Sub](./connectors/google_pubsub.md)
 61. [Azure Event Grid](./connectors/azure_eventgrid.md)
 62. [SMS](./connectors/sms.md)
+63. [Broadcast](./connectors/broadcast.md)
 
 
 ## Usage
@@ -135,5 +136,6 @@ For more detailed information on each connector, please refer to the platform-sp
 - [Google Pub/Sub Connector](./connectors/google_pubsub.md)
 - [Azure Event Grid Connector](./connectors/azure_eventgrid.md)
 - [SMS Connector](./connectors/sms.md)
+- [Broadcast Connector](./connectors/broadcast.md)
 
 Remember to follow the platform-specific guidelines and best practices when creating bots or apps for each service.

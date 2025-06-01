@@ -170,6 +170,7 @@ class Settings(BaseSettings):
     zulip_site_url: str
     zulip_stream: str
     zulip_topic: str
+    broadcast_connectors: str = ""
     openai_api_key: Optional[str]
     openai_default_model: str = "gpt-3.5-turbo"
     openai_max_tokens: int = 150
