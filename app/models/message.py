@@ -1,11 +1,10 @@
 from sqlalchemy import Column, Integer, String, ForeignKey, DateTime
 from sqlalchemy.sql import func
-from sqlalchemy.sql.schema import FetchedValue
 from app.db.base import Base
 
 
 class Message(Base):
-    __tablename__ = "message"
+    __tablename__ = "messages"
 
     id = Column(Integer, primary_key=True, index=True)
     text = Column(String, nullable=False)
