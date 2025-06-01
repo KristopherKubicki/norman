@@ -25,9 +25,11 @@ class RESTCallbackConnector(BaseConnector):
                 print(f"Error sending message to {self.callback_url}: {exc}")
                 return None
 
-    async def listen_and_process(self):
+    async def listen_and_process(self) -> None:
         """This connector does not support incoming messages."""
-        pass
+        raise NotImplementedError(
+            "RESTCallbackConnector cannot listen for incoming messages"
+        )
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
         """Forward an incoming message to the callback URL."""

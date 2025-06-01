@@ -1,6 +1,7 @@
 from typing import Any, Dict, Optional
 
 import requests
+import httpx
 
 from .base_connector import BaseConnector
 
@@ -30,8 +31,24 @@ class MastodonConnector(BaseConnector):
             return None
 
     async def listen_and_process(self) -> None:
-        """Streaming not implemented."""
-        pass
+        """Listen to the public streaming API and process events."""
+
+        stream_url = f"{self.base_url}/api/v1/streaming"
+        params = {"stream": "public"}
+
+        async with httpx.AsyncClient(timeout=None) as client:
+            try:
+                async with client.stream(
+                    "GET", stream_url, headers=self._headers(), params=params
+                ) as resp:
+                    resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        line = line.strip()
+                        if not line or line.startswith(":"):
+                            continue
+                        await self.process_incoming({"event": line})
+            except httpx.HTTPError as exc:  # pragma: no cover - network
+                print(f"Error listening to Mastodon stream: {exc}")
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
         return message
