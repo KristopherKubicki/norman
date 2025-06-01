@@ -27,9 +27,13 @@ class NATSConnector(BaseConnector):
         if not nats:
             raise RuntimeError("nats-py not installed")
         self._nc = await nats.connect(servers=self.servers)
+        self._sid = None
 
     async def disconnect(self) -> None:
         if self._nc:
+            if self._sid is not None:
+                await self._nc.unsubscribe(self._sid)
+                self._sid = None
             await self._nc.drain()
             await self._nc.close()
             self._nc = None
@@ -44,8 +48,23 @@ class NATSConnector(BaseConnector):
         return "ok"
 
     async def listen_and_process(self) -> None:
-        """Listening for messages is not implemented."""
-        return None
+        """Subscribe to ``subject`` and process incoming messages indefinitely."""
+
+        if not nats:
+            raise RuntimeError("nats-py not installed")
+        if not self._nc:
+            await self.connect()
+
+        async def _callback(msg):
+            payload = msg.data.decode()
+            result = self.process_incoming(payload)
+            if asyncio.iscoroutine(result):
+                await result
+
+        assert self._nc is not None
+        self._sid = await self._nc.subscribe(self.subject, cb=_callback)
+        while True:  # pragma: no cover - run forever
+            await asyncio.sleep(3600)
 
     async def process_incoming(self, message: str) -> str:
         return message

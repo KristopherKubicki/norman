@@ -1,6 +1,6 @@
 # NATS Connector
 
-The NATS connector sends messages over NATS or JetStream using the `nats-py` library.
+The NATS connector sends and receives messages over NATS or JetStream using the `nats-py` library.
 
 ## Requirements
 
@@ -18,4 +18,4 @@ nats_subject: "norman"
 
 ## Usage
 
-The connector currently publishes messages to the specified subject. Listening for messages is not implemented.
+The connector publishes messages to the configured subject and can also subscribe to that subject to process incoming messages.
