@@ -1,4 +1,5 @@
 from typing import Optional
+from typing import List
 from sqlalchemy.orm import Session
 
 from app import models
@@ -30,4 +31,13 @@ def update(db: Session, filter_id: int, obj_in: FilterUpdate) -> Optional[models
     db.commit()
     db.refresh(filter_)
     return filter_
+
+
+def get_filters_for_channel(db: Session, channel_id: int) -> List[models.Filter]:
+    """Return all filters associated with ``channel_id``."""
+    return (
+        db.query(models.Filter)
+        .filter(models.Filter.channel_id == channel_id)
+        .all()
+    )
 

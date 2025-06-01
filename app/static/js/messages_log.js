@@ -1,6 +1,7 @@
 document.addEventListener('DOMContentLoaded', () => {
   // Fetch messages and render them in the messages container
   fetchMessagesAndRender();
+  populateChannels();
 });
 
 function fetchMessagesAndRender() {
@@ -10,12 +11,32 @@ function fetchMessagesAndRender() {
     { id: 2, content: 'Message 2', timestamp: '2023-01-01 10:05:00' },
   ];
 
-  const messagesContainer = document.querySelector('.messages-container');
+  const messagesContainer = document.getElementById('messages-log');
   messagesContainer.innerHTML = '';
 
   for (const message of fakeMessages) {
     const messageElement = createMessageElement(message);
     messagesContainer.appendChild(messageElement);
+  }
+}
+
+async function populateChannels() {
+  try {
+    const resp = await fetch('/api/v1/channels/');
+    if (!resp.ok) {
+      throw new Error('Failed to fetch channels');
+    }
+    const channels = await resp.json();
+    const select = document.getElementById('channelSelect');
+    select.innerHTML = '';
+    for (const channel of channels) {
+      const option = document.createElement('option');
+      option.value = channel.id;
+      option.textContent = channel.name;
+      select.appendChild(option);
+    }
+  } catch (err) {
+    console.error('Error loading channels', err);
   }
 }
 

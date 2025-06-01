@@ -7,32 +7,51 @@ logger = setup_logger(__name__)
 
 openai.api_key = settings.openai_api_key
 
-'''
-# TODO: all users to specify token length, number of tokens, etc. 
-async def get_bot_response(prompt: str, model: str = 'gpt-3.5-turbo') -> Tuple[str, int]:
+
+async def get_bot_response(
+    prompt: str,
+    *,
+    model: str = "gpt-3.5-turbo",
+    max_tokens: int = 150,
+    n: int = 1,
+    stop: List[str] | None = None,
+    temperature: float = 0.7,
+) -> Tuple[str | None, int]:
+    """Return a completion for ``prompt`` using OpenAI's completion API.
+
+    This helper exposes common parameters so callers can control the length of
+    the generated text and other generation options.
+    """
+
     try:
         completions = openai.Completion.create(
             engine=model,
             prompt=prompt,
-            max_tokens=150,
-            n=1,
-            stop=None,
-            temperature=0.7,
+            max_tokens=max_tokens,
+            n=n,
+            stop=stop,
+            temperature=temperature,
         )
 
         choice = completions.choices[0]
         response_text = choice.text.strip()
-        tokens_used = choice.usage['total_tokens']
-
+        tokens_used = completions.usage.get("total_tokens", 0)
         return response_text, tokens_used
 
-    except Exception as e:
-        print(f"Error in OpenAI handler: {e}")
+    except Exception as e:  # pragma: no cover - network issues
+        logger.error("Error in OpenAI handler: %s", e)
         return None, 0
-'''
 
 
-async def create_chat_interaction(messages: List[Dict[str, str]], max_tokens: int=150, model: str = 'gpt-3.5-turbo') -> Dict[str, str]:
+async def create_chat_interaction(
+    messages: List[Dict[str, str]],
+    *,
+    max_tokens: int = 150,
+    model: str = "gpt-3.5-turbo",
+    n: int = 1,
+    stop: List[str] | None = None,
+    temperature: float = 0.7,
+) -> Dict[str, str]:
     """
     Function to create a new chat interaction with OpenAI API.
 
@@ -53,7 +72,10 @@ async def create_chat_interaction(messages: List[Dict[str, str]], max_tokens: in
         response = openai.ChatCompletion.create(
             model=model,
             messages=messages,
-            max_tokens=max_tokens
+            max_tokens=max_tokens,
+            n=n,
+            stop=stop,
+            temperature=temperature,
         )
 
         return response
