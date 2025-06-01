@@ -1,6 +1,6 @@
 """Connector for publishing messages using OPC UA PubSub."""
 
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 import asyncio
 from asyncio import DatagramTransport
@@ -17,7 +17,7 @@ class OPCUAPubSubConnector(BaseConnector):
     def __init__(self, endpoint: str, config: Optional[dict] = None) -> None:
         super().__init__(config)
         self.endpoint = endpoint
-        self.sent_messages: list[Any] = []
+        self.sent_messages: List[Any] = []
         self._transport: Optional[DatagramTransport] = None
 
     async def connect(self) -> None:

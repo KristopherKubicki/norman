@@ -1,6 +1,6 @@
 """Connector for sending alerts using the Common Alerting Protocol (CAP v1.2)."""
 
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 import httpx
 
@@ -16,7 +16,7 @@ class CAPConnector(BaseConnector):
     def __init__(self, endpoint: str, config: Optional[dict] = None) -> None:
         super().__init__(config)
         self.endpoint = endpoint
-        self.sent_messages: list[Any] = []
+        self.sent_messages: List[Any] = []
 
     async def send_message(self, message: Any) -> str:
         """POST ``message`` to the configured endpoint and record it."""

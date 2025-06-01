@@ -1,7 +1,7 @@
 """Connector for AIS safety-related text messages (VDM 6/12)."""
 
 import asyncio
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from asyncio import DatagramTransport
 
@@ -18,7 +18,7 @@ class AISSafetyTextConnector(BaseConnector):
         super().__init__(config)
         self.host = host
         self.port = port
-        self.sent_messages: list[str] = []
+        self.sent_messages: List[str] = []
         self._transport: Optional[DatagramTransport] = None
 
     async def connect(self) -> None:

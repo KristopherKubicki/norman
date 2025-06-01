@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, List
 
 from .base_connector import BaseConnector
 
@@ -14,7 +14,7 @@ class XMPPConnector(BaseConnector):
         self.jid = jid
         self.password = password
         self.server = server
-        self.sent_messages: list[Any] = []
+        self.sent_messages: List[Any] = []
 
     async def send_message(self, message: Any) -> str:
         """Record ``message`` locally and return a confirmation string."""
