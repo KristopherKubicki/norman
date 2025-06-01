@@ -110,6 +110,8 @@ class Settings(BaseSettings):
     salesforce_endpoint: str
     github_token: str
     github_repo: str
+    gitter_token: str
+    gitter_room_id: str
     jira_service_desk_url: str
     jira_service_desk_email: str
     jira_service_desk_api_token: str
