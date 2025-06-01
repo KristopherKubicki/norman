@@ -62,6 +62,7 @@ The following connectors are soon to be supported:
 53. [Intercom](./connectors/intercom.md)
 54. [SNMP](./connectors/snmp.md)
 55. [Tox](./connectors/tox.md)
+56. [Zulip](./connectors/zulip.md)
 
 
 ## Usage
@@ -122,5 +123,6 @@ For more detailed information on each connector, please refer to the platform-sp
 - [Intercom Connector](./connectors/intercom.md)
 - [SNMP Connector](./connectors/snmp.md)
 - [Tox Connector](./connectors/tox.md)
+- [Zulip Connector](./connectors/zulip.md)
 
 Remember to follow the platform-specific guidelines and best practices when creating bots or apps for each service.

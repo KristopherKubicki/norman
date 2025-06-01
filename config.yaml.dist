@@ -155,6 +155,11 @@ snmp_community: "public"
 tox_bootstrap_host: "your_tox_bootstrap_host"
 tox_bootstrap_port: 33445
 tox_friend_id: "your_tox_friend_id"
+zulip_email: "your_zulip_email"
+zulip_api_key: "your_zulip_api_key"
+zulip_site_url: "https://zulip.example.com"
+zulip_stream: "your_zulip_stream"
+zulip_topic: "your_zulip_topic"
 
 openai_api_key:
 

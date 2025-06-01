@@ -163,6 +163,11 @@ class Settings(BaseSettings):
     tox_bootstrap_host: str
     tox_bootstrap_port: int
     tox_friend_id: str
+    zulip_email: str
+    zulip_api_key: str
+    zulip_site_url: str
+    zulip_stream: str
+    zulip_topic: str
     openai_api_key: Optional[str]
 
     access_token_expire_minutes: int
