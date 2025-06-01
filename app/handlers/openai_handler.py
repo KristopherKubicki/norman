@@ -33,7 +33,7 @@ async def create_chat_interaction(
     """
 
     try:
-        response = openai.ChatCompletion.create(
+        response = await openai.ChatCompletion.acreate(
             model=model,
             messages=messages,
             max_tokens=max_tokens

@@ -176,53 +176,7 @@ async def create_message_endpoint(
     except Exception as e:
         print("Error:", e)
         return {"status": "error", "message": "Failed to create message and interaction"}
-
-
-'''
-@app_routes.delete("/api/messages/{message_id}")
-async def delete_message_endpoint(message_id: int, db: Session = Depends(get_async_db)):
-    try:
-        success = await delete_message(db=db, message_id=message_id)
-        if success:
-            return {"status": "success", "message": "Message deleted successfully"}
-        else:
-            return {"status": "error", "message": "Failed to delete message"}
-    except Exception as e:
-        print("Error:", e)
-        return {"status": "error", "message": "Failed to delete message"}
-'''
-
-
-
-'''
-@app_routes.post("/channels/create")
-async def create_channel(request: Request):
-    if request.method == "POST":
-        form_data = await request.form()
-        name = form_data["name"]
-        connector = form_data["connector"]
-        details = form_data["details"]
-        # Add logic to create channel in the database
-        return RedirectResponse(url="/", status_code=303)
-    return templates.TemplateResponse("add_channel.html", {"request": request})
-
-
-@app_routes.post("/filters/create")
-async def create_filter(request: Request):
-    if request.method == "POST":
-        form_data = await request.form()
-        regex = form_data["regex"]
-        # Add logic to create filter in the database
-        return RedirectResponse(url="/", status_code=303)
-    return templates.TemplateResponse("add_filter.html", {"request": request})
-
-
-@app_routes.post("/api/process_message")
-async def process_message_endpoint(request: Request):
-    return await process_message(request)
-'''
-
-
+# Experimental endpoints removed. Retrieve from version control if needed.
 # TODO: this doesn't seem like it goes here.  
 @app_routes.post("/webhook")
 async def process_webhook(request: Request, payload: dict = Body(...)):
