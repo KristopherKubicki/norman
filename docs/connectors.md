@@ -63,6 +63,11 @@ The following connectors are soon to be supported:
 54. [SNMP](./connectors/snmp.md)
 55. [Tox](./connectors/tox.md)
 56. [Zulip](./connectors/zulip.md)
+57. [AWS IoT Core](./connectors/aws_iot_core.md)
+58. [AWS EventBridge](./connectors/aws_eventbridge.md)
+59. [Google Pub/Sub](./connectors/google_pubsub.md)
+60. [Azure Event Grid](./connectors/azure_eventgrid.md)
+61. [SMS](./connectors/sms.md)
 
 
 ## Usage
@@ -124,5 +129,10 @@ For more detailed information on each connector, please refer to the platform-sp
 - [SNMP Connector](./connectors/snmp.md)
 - [Tox Connector](./connectors/tox.md)
 - [Zulip Connector](./connectors/zulip.md)
+- [AWS IoT Core Connector](./connectors/aws_iot_core.md)
+- [AWS EventBridge Connector](./connectors/aws_eventbridge.md)
+- [Google Pub/Sub Connector](./connectors/google_pubsub.md)
+- [Azure Event Grid Connector](./connectors/azure_eventgrid.md)
+- [SMS Connector](./connectors/sms.md)
 
 Remember to follow the platform-specific guidelines and best practices when creating bots or apps for each service.
