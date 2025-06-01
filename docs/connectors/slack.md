@@ -37,6 +37,9 @@ Replace the values with the appropriate information for your Slack workspace and
 
 Once you have configured the Slack connector, Norman will connect to the specified Slack workspace and channels, and start listening for incoming messages. When a message is received, Norman will process it according to the configured channel filters and actions, and send a response back to the Slack channel.
 
+The connector polls Slack asynchronously so it can be used together with other
+connectors running on the same event loop.
+
 ## Troubleshooting
 
 If you encounter issues when using the Slack connector, please check the following:

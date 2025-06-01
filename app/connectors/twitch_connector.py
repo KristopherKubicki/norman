@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import socket
 from typing import Optional
 
@@ -61,13 +62,15 @@ class TwitchConnector(BaseConnector):
             return ""
         return data
 
-    def listen_and_process(self):
+    async def listen_and_process(self):
         if not self.socket:
             self.connect()
         messages = []
-        data = self.receive_message()
+        data = await asyncio.to_thread(self.receive_message)
         if data:
             processed = self.process_incoming({"raw": data})
+            if asyncio.iscoroutine(processed):
+                processed = await processed
             if processed:
                 messages.append(processed)
         return messages
