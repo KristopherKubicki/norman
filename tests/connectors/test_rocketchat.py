@@ -60,3 +60,27 @@ def test_process_incoming():
         connector.process_incoming(payload)
     )
     assert result == payload
+
+
+class DummyGetResponse:
+    def __init__(self, status=200):
+        self.status_code = status
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError("error", request=None, response=None)
+
+
+def test_is_connected_success(monkeypatch):
+    monkeypatch.setattr(httpx, "get", lambda url, headers=None: DummyGetResponse())
+    connector = RocketChatConnector("http://host", "TOKEN", "UID")
+    assert connector.is_connected()
+
+
+def test_is_connected_error(monkeypatch):
+    def raise_err(url, headers=None):
+        raise httpx.HTTPError("boom")
+
+    monkeypatch.setattr(httpx, "get", raise_err)
+    connector = RocketChatConnector("http://host", "TOKEN", "UID")
+    assert not connector.is_connected()
