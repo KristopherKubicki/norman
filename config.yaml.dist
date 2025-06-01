@@ -162,6 +162,10 @@ zulip_stream: "your_zulip_stream"
 zulip_topic: "your_zulip_topic"
 
 openai_api_key:
+google_client_id: "your_google_client_id"
+google_client_secret: "your_google_client_secret"
+microsoft_client_id: "your_microsoft_client_id"
+microsoft_client_secret: "your_microsoft_client_secret"
 
 # Database
 database_url: "sqlite:///./db/norman.db"

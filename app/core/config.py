@@ -169,6 +169,10 @@ class Settings(BaseSettings):
     zulip_stream: str
     zulip_topic: str
     openai_api_key: Optional[str]
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    microsoft_client_id: str = ""
+    microsoft_client_secret: str = ""
 
     access_token_expire_minutes: int
     algorithm: str = "HS256"
