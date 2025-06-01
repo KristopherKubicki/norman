@@ -2,11 +2,12 @@
 
 /* General styles */
 body {
-    font-family: Arial, sans-serif;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
     margin: 0;
     padding: 0;
-    color: #333;
+    color: #212529;
     line-height: 1.6;
+    background-color: #f8f9fa;
 }
 
 a {
@@ -25,6 +26,8 @@ p {
 /* Main content */
 main {
     padding: 20px;
+    max-width: 1200px;
+    margin: 0 auto;
 }
 
 
@@ -80,6 +83,18 @@ textarea {
   min-height: 50px; /* or any other minimum height you want */
   resize: none; /* prevent manual resize */
   overflow: hidden; /* prevent scrollbar */
+}
+
+.search-container {
+  margin-bottom: 1rem;
+}
+
+.search-input {
+  width: 100%;
+  max-width: 300px;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #ced4da;
+  border-radius: 0.25rem;
 }
 
 

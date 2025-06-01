@@ -8,15 +8,23 @@
 <h1>Bots</h1>
 
 <div class="search-container">
-  <input type="text" placeholder="Search bots..." class="search-input">
+  <input type="text" placeholder="Search bots..." class="form-control search-input">
 </div>
 
-<form id="add-bot-form">
-  <label for="bot-name">Bot Name:</label>
-  <input type="text" id="bot-name" required />
-  <label for="bot-description">Description:</label>
-  <input type="text" id="bot-description" />
-  <button type="submit">Add Bot</button>
+<form id="add-bot-form" class="card card-body mb-4">
+  <div class="row g-2 align-items-end">
+    <div class="col-sm">
+      <label for="bot-name" class="form-label">Bot Name</label>
+      <input type="text" id="bot-name" class="form-control" required />
+    </div>
+    <div class="col-sm">
+      <label for="bot-description" class="form-label">Description</label>
+      <input type="text" id="bot-description" class="form-control" />
+    </div>
+    <div class="col-auto">
+      <button type="submit" class="btn btn-primary">Add Bot</button>
+    </div>
+  </div>
 </form>
 
 <div class="main-container">

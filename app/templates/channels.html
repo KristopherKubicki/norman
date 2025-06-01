@@ -5,25 +5,33 @@
     <h1>Channels</h1>
 
     <div class="search-container">
-        <input type="text" id="channelSearch" placeholder="Search channels...">
+        <input class="form-control search-input" type="text" id="channelSearch" placeholder="Search channels...">
     </div>
 
-    <h2>Add a Channel</h2>
-    <div class="add-channel-container">
-        <input type="text" id="channelName" placeholder="Channel name">
-        <div class="connector-select-container">
-            <label for="connectorSelect">Connector:</label>
-            <select id="connectorSelect">
-            <option value="webhook">Webhook</option>
-            <option value="irc">IRC</option>
-            <option value="slack">Slack</option>
-            <option value="teams">Microsoft Teams</option>
-            <option value="discord">Discord</option>
-            <option value="google_chat">Google Chat</option>
-            <option value="telegram">Telegram</option
-            </select>
+    <div class="card mb-4">
+        <div class="card-body">
+            <h2 class="h5">Add a Channel</h2>
+            <form id="add-channel-form" class="row g-2 align-items-end">
+                <div class="col-sm">
+                    <input type="text" id="channelName" class="form-control" placeholder="Channel name">
+                </div>
+                <div class="col-sm">
+                    <label for="connectorSelect" class="form-label">Connector</label>
+                    <select class="form-select" id="connectorSelect">
+                        <option value="webhook">Webhook</option>
+                        <option value="irc">IRC</option>
+                        <option value="slack">Slack</option>
+                        <option value="teams">Microsoft Teams</option>
+                        <option value="discord">Discord</option>
+                        <option value="google_chat">Google Chat</option>
+                        <option value="telegram">Telegram</option>
+                    </select>
+                </div>
+                <div class="col-auto">
+                    <button id="addChannelBtn" class="btn btn-primary">Add Channel</button>
+                </div>
+            </form>
         </div>
-        <button id="addChannelBtn">Add Channel</button>
     </div>
 
     <div class="channels-list">

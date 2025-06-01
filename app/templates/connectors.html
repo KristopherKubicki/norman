@@ -8,29 +8,28 @@
     Here you can configure your connectors<br/>
     <div class="connectors">
         {% for connector in connectors %}
-            <div class="connector">
-                <h2>{{ connector.name }}</h2>
-                <div class="status">
-                    <span>Status: {{ connector.status }}</span>
-                    <button class="test-connector" data-connector-id="{{ connector.id }}">Test</button>
+            <div class="card mb-4 connector">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h2 class="h5 mb-0">{{ connector.name }}</h2>
+                    <button class="btn btn-sm btn-outline-secondary test-connector" data-connector-id="{{ connector.id }}">Test</button>
                 </div>
-                <div class="settings">
+                <div class="card-body">
                     <form method="post" action="/update_connector_settings/{{ connector.id }}">
                         {% for field in connector.fields %}
                             {% if field.name != 'password' %}
-                                <label>{{ field.label }}</label>
-                                <input type="{{ field.type }}" name="{{ field.name }}" value="{{ field.value }}" {% if field.readonly %}readonly{% endif %}>
+                                <div class="mb-3">
+                                    <label class="form-label">{{ field.label }}</label>
+                                    <input class="form-control" type="{{ field.type }}" name="{{ field.name }}" value="{{ field.value }}" {% if field.readonly %}readonly{% endif %}>
+                                </div>
                             {% endif %}
                         {% endfor %}
-                        <button type="submit">Save</button>
+                        <button class="btn btn-primary" type="submit">Save</button>
                     </form>
-                </div>
-                <div class="stats">
-                    <p>Last message sent: {{ connector.last_message_sent }}</p>
-                </div>
-                <div class="enable-disable">
-                    <label>Enable:</label>
-                    <input type="checkbox" name="enable_connector" {% if connector.enabled %}checked{% endif %}>
+                    <p class="mt-3 mb-0 text-muted">Last message sent: {{ connector.last_message_sent }}</p>
+                    <div class="form-check mt-2">
+                        <input class="form-check-input" type="checkbox" name="enable_connector" {% if connector.enabled %}checked{% endif %}>
+                        <label class="form-check-label">Enable</label>
+                    </div>
                 </div>
             </div>
         {% endfor %}
