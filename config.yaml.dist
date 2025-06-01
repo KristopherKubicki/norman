@@ -162,6 +162,7 @@ zulip_api_key: "your_zulip_api_key"
 zulip_site_url: "https://zulip.example.com"
 zulip_stream: "your_zulip_stream"
 zulip_topic: "your_zulip_topic"
+broadcast_connectors: ""
 
 openai_api_key:
 openai_default_model: "gpt-3.5-turbo"

@@ -73,6 +73,7 @@ from .intercom_connector import IntercomConnector
 from .snmp_connector import SNMPConnector
 from .tox_connector import ToxConnector
 from .zulip_connector import ZulipConnector
+from .broadcast_connector import BroadcastConnector
 
 from .aws_iot_core_connector import AWSIoTCoreConnector
 from .aws_eventbridge_connector import AWSEventBridgeConnector
@@ -142,6 +143,7 @@ connector_classes: Dict[str, type] = {
     "snmp": SNMPConnector,
     "tox": ToxConnector,
     "zulip": ZulipConnector,
+    "broadcast": BroadcastConnector,
 }
 
 
