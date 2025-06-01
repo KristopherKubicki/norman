@@ -29,3 +29,5 @@ Replace the values with your actual credentials and the channel name (without th
 
 Once configured, Norman will connect to the specified Twitch chat channel and can
 send and receive messages just like any other connector.
+The connector's polling of Twitch chat is asynchronous so that it integrates
+with other connectors without blocking.
