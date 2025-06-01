@@ -8,6 +8,8 @@ This document provides an overview of how to interact with Norman, including cre
 - [Configuring a Chatbot](#configuring-a-chatbot)
 - [Channel Filters and Actions](#channel-filters-and-actions)
 - [Examples](#examples)
+- [Slack Quick Start](#slack-bot-quick-start)
+- [API Examples](#api-examples)
 
 ## Creating a Chatbot
 
@@ -53,3 +55,50 @@ Here are some example use-cases for Norman:
 3. **Automated Code Review:** Create a channel filter that detects when users submit pull requests. Norman can then analyze the code, provide suggestions or corrections, and post a review comment on the pull request.
 
 Remember to expand on these sections and provide more detailed information based on your project's specific features and requirements.
+
+## Slack Bot Quick Start
+
+This example demonstrates how to connect Norman to Slack and create a simple bot.
+
+1. Copy `config.yaml.dist` to `config.yaml` and edit the Slack section:
+
+```yaml
+slack_token: "xoxb-your-slack-token"
+slack_channel_id: "C01234567"
+```
+
+2. Set your `openai_api_key` in the same file and run the key generator:
+
+```bash
+chmod +x generate_key.sh
+./generate_key.sh
+```
+
+3. Start Norman with `python main.py` and open `http://localhost:8000` in your browser.
+4. Log in with the admin credentials from `config.yaml`, create a chatbot and select the Slack connector. Messages posted in the configured channel will be processed by the bot.
+
+## API Examples
+
+You can also interact with Norman programmatically. The API is available under `/api/v1`. The following `curl` commands illustrate common operations:
+
+Create a bot:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/bots/ \
+  -H "Content-Type: application/json" \
+  -d '{"name": "demo", "description": "example bot", "gpt_model": "gpt-4"}'
+```
+
+List existing bots:
+
+```bash
+curl http://localhost:8000/api/v1/bots/
+```
+
+Delete a bot:
+
+```bash
+curl -X DELETE http://localhost:8000/api/v1/bots/1
+```
+
+Authentication headers may be required depending on your configuration.
