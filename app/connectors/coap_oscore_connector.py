@@ -1,6 +1,6 @@
 """Connector for sending messages over CoAP secured with OSCORE."""
 
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from .base_connector import BaseConnector
 
@@ -15,7 +15,7 @@ class CoAPOSCOREConnector(BaseConnector):
         super().__init__(config)
         self.host = host
         self.port = port
-        self.sent_messages: list[Any] = []
+        self.sent_messages: List[Any] = []
 
     async def send_message(self, message: Any) -> str:
         """Record ``message`` locally and return a confirmation string."""

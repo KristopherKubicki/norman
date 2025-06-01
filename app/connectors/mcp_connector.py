@@ -1,5 +1,6 @@
 """Connector for sending events to a generic MCP HTTP service."""
 
+import asyncio
 import httpx
 from typing import Any, Dict, Optional
 
@@ -32,8 +33,31 @@ class MCPConnector(BaseConnector):
                 return None
 
     async def listen_and_process(self) -> None:
-        """This connector does not actively listen for events."""
-        return None
+        """Poll the MCP service for inbound events."""
+
+        last: Optional[str] = None
+        async with httpx.AsyncClient() as client:
+            while True:
+                try:
+                    resp = await client.get(
+                        self.api_url, headers={"Authorization": f"Bearer {self.api_key}"}, params={"since": last} if last else None
+                    )
+                    resp.raise_for_status()
+                    messages = resp.json() if resp.content else []
+                except httpx.HTTPError as exc:
+                    print(f"Error fetching MCP events: {exc}")
+                    await asyncio.sleep(30)
+                    continue
+
+                if isinstance(messages, dict):
+                    messages = [messages]
+                for msg in messages:
+                    last = msg.get("id", last)
+                    result = self.process_incoming(msg)
+                    if asyncio.iscoroutine(result):
+                        await result
+
+                await asyncio.sleep(30)
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
         await self.send_message(message)

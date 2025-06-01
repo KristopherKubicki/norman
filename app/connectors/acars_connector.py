@@ -1,7 +1,7 @@
 """ACARS connector using basic UDP sockets."""
 
 import asyncio
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from .base_connector import BaseConnector
 
@@ -16,7 +16,7 @@ class ACARSConnector(BaseConnector):
         super().__init__(config)
         self.host = host
         self.port = port
-        self.sent_messages: list[str] = []
+        self.sent_messages: List[str] = []
         self._transport: Optional[asyncio.DatagramTransport] = None
 
     async def connect(self) -> None:

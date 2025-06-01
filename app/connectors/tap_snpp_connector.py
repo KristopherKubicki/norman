@@ -1,4 +1,4 @@
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from .base_connector import BaseConnector
 
@@ -14,7 +14,7 @@ class TAPSNPPConnector(BaseConnector):
         self.host = host
         self.port = port
         self.password = password
-        self.sent_messages: list[str] = []
+        self.sent_messages: List[str] = []
 
     async def send_message(self, message: str) -> str:
         """Record ``message`` locally and return a confirmation string."""

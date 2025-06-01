@@ -1,4 +1,4 @@
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 try:
     import ax25
@@ -24,7 +24,7 @@ class AX25Connector(BaseConnector):
         self.port = port
         self.callsign = callsign
         self.handle = None
-        self.sent_messages: list[str] = []
+        self.sent_messages: List[str] = []
 
     async def send_message(self, message: str) -> str:
         """Record ``message`` locally and return a confirmation string."""
