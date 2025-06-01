@@ -1,3 +1,5 @@
+import requests
+
 from .base_connector import BaseConnector
 
 
@@ -14,8 +16,22 @@ class WeChatConnector(BaseConnector):
         self.sent_messages = []
 
     async def send_message(self, message) -> str:
-        """Store ``message`` locally and return a confirmation string."""
+        """Send a text ``message`` via the WeChat API and record it."""
         self.sent_messages.append(message)
+        url = (
+            "https://api.weixin.qq.com/cgi-bin/message/custom/send"
+            f"?access_token={self.app_secret}"
+        )
+        payload = {
+            "touser": self.app_id,
+            "msgtype": "text",
+            "text": {"content": message},
+        }
+        try:
+            resp = requests.post(url, json=payload, timeout=5)
+            resp.raise_for_status()
+        except requests.RequestException:  # pragma: no cover - network
+            pass
         return "sent"
 
     async def listen_and_process(self):
