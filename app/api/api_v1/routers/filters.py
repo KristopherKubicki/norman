@@ -33,7 +33,7 @@ def update_filter(
     filter_id: int,
     filter_in: schemas.FilterUpdate
 ) -> Any:
-    filter = crud.filter.get(db, id=filter_id)
+    filter = crud.filter.get(db, filter_id)
     if not filter:
         raise HTTPException(status_code=404, detail="Filter not found")
     filter = crud.filter.update(db, db_obj=filter, obj_in=filter_in)
@@ -45,9 +45,9 @@ def delete_filter(
     db: Session = Depends(deps.get_db),
     filter_id: int
 ) -> Any:
-    filter = crud.filter.get(db, id=filter_id)
+    filter = crud.filter.get(db, filter_id)
     if not filter:
         raise HTTPException(status_code=404, detail="Filter not found")
-    filter = crud.filter.remove(db, id=filter_id)
+    filter = crud.filter.remove(db, filter_id)
     return filter
 
