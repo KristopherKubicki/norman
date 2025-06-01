@@ -1,6 +1,6 @@
 from typing import List
-from fastapi import APIRouter, Body, Depends, Request, HTTPException
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi import APIRouter, Depends, Request, HTTPException
+from fastapi.security import OAuth2PasswordRequestForm
 
 from starlette.staticfiles import StaticFiles
 from starlette.responses import FileResponse, HTMLResponse, Response, JSONResponse
@@ -21,9 +21,6 @@ from app.crud.bot import create_bot, delete_bot, get_bot_by_id
 from app.crud.message import create_message, get_messages_by_bot_id, delete_message, get_last_messages_by_bot_id, delete_messages_by_bot_id
 from app.crud.interaction import create_interaction
 from app.handlers.openai_handler import create_chat_interaction
-from app.models.interaction import Interaction
-from app.models.channel_filter import Filter
-from app.connectors import get_connector
 from app.api.deps import get_async_db
 
 from datetime import timedelta
@@ -176,28 +173,6 @@ async def create_message_endpoint(
     except Exception as e:
         print("Error:", e)
         return {"status": "error", "message": "Failed to create message and interaction"}
-# Experimental endpoints removed. Retrieve from version control if needed.
-# TODO: this doesn't seem like it goes here.  
-@app_routes.post("/webhook")
-async def process_webhook(request: Request, payload: dict = Body(...)):
-    # Process the payload received from the webhook
-    # Assuming the payload has a 'channel' key with the channel identifier
-    channel_id = payload["channel"]
-    # Fetch the filters for the given channel from the database
-    filters = await ChannelFilter.get_filters_for_channel(channel_id)
-
-    # Loop through the filters and check if any of them match the payload
-    for lfilter in filters:
-        match = lfilter.matches(payload)
-        if match:
-            # Create an interaction entry in the database
-            interaction = Interaction(channel_id=channel_id, filter_id=lfilter.id, payload=payload)
-            await interaction.save()
-
-            # If the filter has a reply, send the reply to the specified channel
-            if lfilter.reply:
-                connector = get_connector(lfilter.reply_channel.connector)
-                await connector.send_message(lfilter.reply)
 
 @app_routes.post("/token", response_model=Token)
 async def token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_async_db)):
