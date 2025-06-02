@@ -20,10 +20,13 @@ def get_messages_by_bot_id(
     *,
     limit: Optional[int] = None,
     offset: Optional[int] = None,
+    cursor: Optional[int] = None,
 ) -> List[Message]:
     """Return messages for a bot with optional pagination."""
 
     query = db.query(Message).filter(Message.bot_id == bot_id).order_by(Message.created_at)
+    if cursor is not None:
+        query = query.filter(Message.id > cursor)
     if offset is not None:
         query = query.offset(offset)
     if limit is not None:

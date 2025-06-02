@@ -109,11 +109,13 @@ async def get_messages_endpoint(
     bot_id: int,
     limit: int = 100,
     offset: int = 0,
+    cursor: int | None = None,
     db: Session = Depends(get_async_db),
 ):
     """Return messages for a bot with optional pagination."""
     try:
-        messages = get_messages_by_bot_id(db=db, bot_id=bot_id, limit=limit, offset=offset)
+        cursor_int = cursor
+        messages = get_messages_by_bot_id(db=db, bot_id=bot_id, limit=limit, offset=offset, cursor=cursor_int)
         return [Message.from_orm(message).dict() for message in messages]
     except Exception as e:
         print("Error:", e)
