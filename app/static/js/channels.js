@@ -1,36 +1,11 @@
 // Add a listener for DOMContentLoaded to make sure the page is fully loaded before running the script
-document.addEventListener("DOMContentLoaded", function () {
-  // Fetch channels and messages from the API
-  fetchChannels();
-  fetchMessages();
-
-  // Add event listeners for channel list items and message form
-  setupChannelList();
-  setupMessageForm();
+document.addEventListener('DOMContentLoaded', () => {
+  fetchChannelsAndRender();
 });
 
-function fetchChannels() {
-  // Fetch the channels from the API and update the UI
-  // ...
-}
-
-function fetchMessages() {
-  // Fetch the messages for the selected channel from the API and update the UI
-  // ...
-}
-
-function setupChannelList() {
-  // Add click event listeners to the channel list items to load messages for the selected channel
-  // ...
-}
-
-function setupMessageForm() {
-  // Add a submit event listener to the message form to send messages through the API
-  // ...
-}
 
 async function fetchChannelsAndRender() {
-  const response = await fetch('/api/v1/channels');
+  const response = await fetch('/api/v1/channels/');
   const channels = await response.json();
 
   const channelsContainer = document.querySelector('.channels-container');
@@ -44,13 +19,13 @@ async function fetchChannelsAndRender() {
 
 
 async function getChannels() {
-  const response = await fetch("/api/v1/channels");
+  const response = await fetch('/api/v1/channels/');
   const channels = await response.json();
   return channels;
 }
 
 async function createChannel(data) {
-  const response = await fetch("/api/v1/channels", {
+  const response = await fetch('/api/v1/channels/', {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -83,22 +58,22 @@ function createChannelElement(channel) {
   const channelElement = document.createElement("div");
   channelElement.classList.add("channel");
 
-  const nameElement = document.createElement("p");
+  const nameElement = document.createElement('p');
   nameElement.textContent = `Name: ${channel.name}`;
 
-  const descriptionElement = document.createElement("p");
-  descriptionElement.textContent = `Description: ${channel.description}`;
+  const connectorElement = document.createElement('p');
+  connectorElement.textContent = `Connector ID: ${channel.connector_id}`;
 
   const editButton = document.createElement("button");
   editButton.textContent = "Edit";
   editButton.addEventListener("click", async () => {
-    const newName = prompt("Enter the new channel name:", channel.name);
-    const newDescription = prompt("Enter the new channel description:", channel.description);
+    const newName = prompt('Enter the new channel name:', channel.name);
+    const newConnector = prompt('Connector ID:', channel.connector_id);
 
-    if (newName && newDescription) {
-      const updatedChannel = await updateChannel(channel.id, { name: newName, description: newDescription });
+    if (newName && newConnector) {
+      const updatedChannel = await updateChannel(channel.id, { name: newName, connector_id: parseInt(newConnector, 10) });
       nameElement.textContent = `Name: ${updatedChannel.name}`;
-      descriptionElement.textContent = `Description: ${updatedChannel.description}`;
+      connectorElement.textContent = `Connector ID: ${updatedChannel.connector_id}`;
     }
   });
 
@@ -110,29 +85,28 @@ function createChannelElement(channel) {
   });
 
   channelElement.appendChild(nameElement);
-  channelElement.appendChild(descriptionElement);
+  channelElement.appendChild(connectorElement);
   channelElement.appendChild(editButton);
   channelElement.appendChild(deleteButton);
 
   return channelElement;
 }
 
-document.getElementById("add-channel-form").addEventListener("submit", async (event) => {
+document.getElementById('add-channel-form').addEventListener('submit', async (event) => {
   event.preventDefault();
 
-  const nameInput = document.getElementById("channel-name");
-  const descriptionInput = document.getElementById("channel-description");
+  const nameInput = document.getElementById('channel-name');
+  const connectorInput = document.getElementById('channel-connector');
 
   const channelData = {
     name: nameInput.value,
-    description: descriptionInput.value,
+    connector_id: parseInt(connectorInput.value, 10),
   };
 
   const newChannel = await createChannel(channelData);
-  document.querySelector(".channels-container").appendChild(createChannelElement(newChannel));
+  document.querySelector('.channels-container').appendChild(createChannelElement(newChannel));
 
-  nameInput.value = "";
-  descriptionInput.value = "";
+  nameInput.value = '';
 });
 
 (async () => {

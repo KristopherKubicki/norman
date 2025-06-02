@@ -13,7 +13,7 @@ router = APIRouter()
 
 # Your endpoints and handlers go here
 
-@router.post("/channels/", response_model=Channel, status_code=status.HTTP_201_CREATED)
+@router.post("/", response_model=Channel, status_code=status.HTTP_201_CREATED)
 async def create_channel(
     channel: ChannelCreate, db: Session = Depends(get_db)
 ):
@@ -23,12 +23,12 @@ async def create_channel(
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-@router.get("/channels/", response_model=List[Channel])
+@router.get("/", response_model=List[Channel])
 async def get_channels(db: Session = Depends(get_db)):
     """Return all channels."""
     return crud.channel.get_multi(db)
 
-@router.get("/channels/{channel_id}", response_model=Channel)
+@router.get("/{channel_id}", response_model=Channel)
 async def get_channel(channel_id: int, db: Session = Depends(get_db)):
     """Return a channel by ID."""
     channel = crud.channel.get(db, channel_id)
@@ -36,7 +36,7 @@ async def get_channel(channel_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Channel not found")
     return channel
 
-@router.put("/channels/{channel_id}", response_model=Channel)
+@router.put("/{channel_id}", response_model=Channel)
 async def update_channel(
     channel_id: int, channel: ChannelUpdate, db: Session = Depends(get_db)
 ):
@@ -46,7 +46,7 @@ async def update_channel(
         raise HTTPException(status_code=404, detail="Channel not found")
     return crud.channel.update(db, db_obj=db_channel, obj_in=channel)
 
-@router.delete("/channels/{channel_id}", response_model=Channel)
+@router.delete("/{channel_id}", response_model=Channel)
 async def delete_channel(channel_id: int, db: Session = Depends(get_db)):
     """Delete a channel."""
     channel = crud.channel.remove(db, channel_id)
