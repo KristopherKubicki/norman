@@ -17,7 +17,7 @@
 
 ## Medium Priority
 
-- [ ] Improve logging and exception handling
+ - [x] Improve logging and exception handling
  - [x] Add more unit tests and integration tests
 - [ ] Implement support for additional GPT models
 - [ ] Write documentation for the project

@@ -24,6 +24,8 @@ from app.crud import connector as connector_crud
 from app.crud.message import create_message, get_messages_by_bot_id, delete_message, get_last_messages_by_bot_id, delete_messages_by_bot_id
 from app.crud.interaction import create_interaction
 from app.handlers.openai_handler import create_chat_interaction
+from app.core.exceptions import APIError
+from app.core.logging import setup_logger
 from app.api.deps import get_async_db
 
 from datetime import timedelta
@@ -40,6 +42,7 @@ from app.schemas.connector import ConnectorCreate, ConnectorUpdate, Connector
 
 current_dir = os.path.dirname(os.path.realpath(__file__))
 app_routes = APIRouter()
+logger = setup_logger(__name__)
 
 
 @app_routes.get("/health")
@@ -128,8 +131,8 @@ async def get_messages_endpoint(
         cursor_int = cursor
         messages = get_messages_by_bot_id(db=db, bot_id=bot_id, limit=limit, offset=offset, cursor=cursor_int)
         return [Message.from_orm(message).dict() for message in messages]
-    except Exception as e:
-        print("Error:", e)
+    except Exception:
+        logger.exception("Failed to fetch messages")
         raise HTTPException(status_code=500, detail="Failed to fetch messages")
 
 @app_routes.post("/api/bots/{bot_id}/messages")
@@ -169,11 +172,15 @@ async def create_message_endpoint(
             # remove the oldest user/assistant message
             messages.pop(1)
 
-        interaction_response = await create_chat_interaction(
-            model=bot.gpt_model,
-            messages=messages,
-            max_tokens=bot.default_response_tokens
-        )
+        try:
+            interaction_response = await create_chat_interaction(
+                model=bot.gpt_model,
+                messages=messages,
+                max_tokens=bot.default_response_tokens,
+            )
+        except APIError as exc:
+            logger.error("OpenAI interaction failed: %s", exc)
+            return {"status": "error", "message": str(exc)}
 
         assistant_text = interaction_response['choices'][0]['message']['content']
         assistant_text, hook_ctx = await run_post_hooks(assistant_text, hook_ctx)
@@ -196,7 +203,7 @@ async def create_message_endpoint(
         message = create_message(db=db, bot_id=bot_id, text=assistant_text, source='assistant')
         return {"status": "success", "message": "Message and interaction created successfully", "data": {"message": message, "interaction": interaction}}
     except Exception as e:
-        print("Error:", e)
+        logger.exception("Failed to create message and interaction")
         return {"status": "error", "message": "Failed to create message and interaction"}
 
 
