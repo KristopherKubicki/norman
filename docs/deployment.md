@@ -15,7 +15,7 @@ This document outlines the steps to deploy Norman on a server or cloud provider.
 
 Before deploying Norman, ensure that your server meets the following requirements:
 
-- Python 3.8 or higher
+- Python 3.8 or 3.9
 - SQLite (or another supported database system)
 - A compatible operating system, such as Ubuntu, Debian, or CentOS
 
