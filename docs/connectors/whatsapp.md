@@ -30,6 +30,10 @@ The fields are:
 
 After configuration, Norman can send messages via Twilio to WhatsApp and process incoming messages.
 
+The connector also checks the Twilio Account API at startup to verify your
+credentials. If the credentials are invalid, the connector will appear as
+"down" in the connectors status list.
+
 ## Troubleshooting
 
 1. Confirm the Twilio credentials are correct.
