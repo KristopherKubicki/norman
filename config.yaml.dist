@@ -175,6 +175,8 @@ microsoft_client_secret: "your_microsoft_client_secret"
 
 # Database
 database_url: "sqlite:///./db/norman.db"
+database_pool_size: 5
+database_max_overflow: 10
 
 # Server
 host: "0.0.0.0"
