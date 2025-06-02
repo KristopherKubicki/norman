@@ -24,7 +24,7 @@ This document outlines the remaining tasks to complete and improve the test suit
 
 ## Utils and Core
 
-- [ ] Write tests for utility functions in `app/core/utils.py`.
+ - [x] Write tests for utility functions in `app/core/utils.py`.
 - [x] Write tests for the logging system in `app/core/logging.py`.
 - [x] Write tests for the configuration system in `app/core/config.py`.
 

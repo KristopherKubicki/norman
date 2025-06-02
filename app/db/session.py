@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import QueuePool
 
@@ -10,9 +10,13 @@ engine = create_engine(
     pool_size=settings.database_pool_size,
     max_overflow=settings.database_max_overflow,
     pool_pre_ping=True,
-    # TODO: explore enabling WAL mode or other SQLite optimizations
     connect_args={"check_same_thread": False}
     if settings.database_url.startswith("sqlite")
     else {},
 )
+
+# Enable WAL mode when using SQLite for better concurrency
+if settings.database_url.startswith("sqlite"):
+    with engine.begin() as conn:
+        conn.execute(text("PRAGMA journal_mode=WAL"))
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
