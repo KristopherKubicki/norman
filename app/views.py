@@ -19,23 +19,47 @@ logger = setup_logger(__name__)
 templates = Jinja2Templates(directory="app/templates")
 
 async def home(request: Request):
-    return templates.TemplateResponse(request, "index.html", {"request": request})
+    return templates.TemplateResponse(
+        request,
+        "index.html",
+        {"request": request, "active_page": "home"},
+    )
 
 async def connectors(request: Request):
     connectors_data = get_connectors_data()
-    return templates.TemplateResponse(request, "connectors.html", {"request": request, "connectors": connectors_data})
+    return templates.TemplateResponse(
+        request,
+        "connectors.html",
+        {"request": request, "connectors": connectors_data, "active_page": "connectors"},
+    )
 
 async def filters(request: Request):
-    return templates.TemplateResponse(request, "filters.html", {"request": request})
+    return templates.TemplateResponse(
+        request,
+        "filters.html",
+        {"request": request, "active_page": "filters"},
+    )
 
 async def channels(request: Request):
-    return templates.TemplateResponse(request, "channels.html", {"request": request})
+    return templates.TemplateResponse(
+        request,
+        "channels.html",
+        {"request": request, "active_page": "channels"},
+    )
 
 async def messages(request: Request):
-    return templates.TemplateResponse(request, "messages_log.html", {"request": request})
+    return templates.TemplateResponse(
+        request,
+        "messages_log.html",
+        {"request": request, "active_page": "messages"},
+    )
 
 async def bots(request: Request):
-    return templates.TemplateResponse(request, "bots.html", {"request": request})
+    return templates.TemplateResponse(
+        request,
+        "bots.html",
+        {"request": request, "active_page": "bots"},
+    )
 
 async def login(request: Request):
     return templates.TemplateResponse(request, "login.html", {"request": request})
