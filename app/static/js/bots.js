@@ -1,7 +1,30 @@
 
+let selectedBotId = null;
+const sendButton = document.getElementById('send-message');
+
 document.addEventListener('DOMContentLoaded', () => {
   // Fetch bots and render them in the bots container
   fetchBotsAndRender();
+
+  // Set up handler for saving edits
+  const saveBtn = document.getElementById('save-bot-changes');
+  if (saveBtn) {
+    saveBtn.addEventListener('click', async () => {
+      if (!selectedBotId) return;
+      const data = {
+        name: document.getElementById('edit-bot-name').value.trim(),
+        description: document.getElementById('edit-bot-description').value.trim(),
+        gpt_model: document.getElementById('edit-bot-model').value.trim(),
+        enabled: document.getElementById('edit-bot-enabled').checked
+      };
+      const updated = await updateBot(selectedBotId, data);
+      if (updated) {
+        fetchBotsAndRender();
+        const modal = bootstrap.Modal.getInstance(document.getElementById('editBotModal'));
+        modal.hide();
+      }
+    });
+  }
 
   // Add event listener for the add-bot-form
   const addBotForm = document.getElementById("add-bot-form");
@@ -77,54 +100,41 @@ async function fetchBotsAndRender() {
 }
 
 function createBotElement(bot) {
-  const botElement = document.createElement('div');
-  botElement.classList.add('bot');
+  const botElement = document.createElement('a');
+  botElement.classList.add('list-group-item', 'list-group-item-action', 'bot-item');
+  botElement.dataset.botId = bot.id;
+  botElement.textContent = bot.name;
 
-  const nameElement = document.createElement('p');
-  nameElement.textContent = bot.name;
-  botElement.appendChild(nameElement);
-
-  const descriptionElement = document.createElement("p");
-  descriptionElement.textContent = `Description: ${bot.description}`;
-
-  const editButton = document.createElement("button");
-  editButton.textContent = "Edit";
-  editButton.addEventListener("click", async () => {
-    const newName = prompt("Enter the new bot name:", bot.name);
-    const newDescription = prompt("Enter the new bot description:", bot.description);
-
-    if (newName && newDescription) {
-      const updatedBot = await updateBot(bot.id, { name: newName, description: newDescription });
-      nameElement.textContent = `Name: ${updatedBot.name}`;
-      descriptionElement.textContent = `Description: ${updatedBot.description}`;
-    }
+  const editButton = document.createElement('button');
+  editButton.className = 'btn btn-sm btn-secondary float-end ms-2';
+  editButton.textContent = 'Edit';
+  editButton.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openEditModal(bot);
   });
 
-  const deleteButton = document.createElement("button");
-  deleteButton.textContent = "Delete";
-  deleteButton.addEventListener("click", async () => {
+  const deleteButton = document.createElement('button');
+  deleteButton.className = 'btn btn-sm btn-danger float-end';
+  deleteButton.textContent = 'Delete';
+  deleteButton.addEventListener('click', async (e) => {
+    e.stopPropagation();
     await deleteBot(bot.id);
     botElement.remove();
   });
 
-  const lastTriggeredElement = document.createElement('p');
-  lastTriggeredElement.classList.add('last-triggered');
-  lastTriggeredElement.textContent = `Last triggered: ${bot.lastTriggered}`;
-
-  botElement.appendChild(lastTriggeredElement);
-  botElement.appendChild(nameElement);
-  botElement.appendChild(descriptionElement);
   botElement.appendChild(deleteButton);
+  botElement.appendChild(editButton);
 
   // Add click event listener to fetch and display messages
   botElement.addEventListener('click', () => {
     const selectedBotNameElement = document.getElementById('selected-bot-name');
+    selectedBotId = bot.id;
     selectedBotNameElement.innerText = bot.name;
     selectedBotNameElement.setAttribute('data-bot-id', bot.id);
     fetchMessagesAndRender(bot.id);
-  document.getElementById('send-message').removeAttribute('disabled');
-  document.getElementById('input-message').removeAttribute('disabled');
-  document.getElementById('input-message').placeholder = 'Enter your message...'
+    document.getElementById('send-message').removeAttribute('disabled');
+    document.getElementById('input-message').removeAttribute('disabled');
+    document.getElementById('input-message').placeholder = 'Enter your message...';
   });
 
 
@@ -223,5 +233,16 @@ function createMessageElement(message) {
   messageElement.appendChild(document.createElement('hr'));
 
   return messageElement;
+}
+
+function openEditModal(bot) {
+  selectedBotId = bot.id;
+  document.getElementById('edit-bot-name').value = bot.name;
+  document.getElementById('edit-bot-description').value = bot.description || '';
+  document.getElementById('edit-bot-model').value = bot.gpt_model || '';
+  document.getElementById('edit-bot-enabled').checked = bot.enabled;
+  const modalEl = document.getElementById('editBotModal');
+  const modal = new bootstrap.Modal(modalEl);
+  modal.show();
 }
 

@@ -7,34 +7,28 @@
 
 
 {% block content %}
-<div class="container">
-    <h1 class="mt-4">Messages Log</h1>
-    <div class="search-container">
+<h1 class="mt-4">Messages Log</h1>
+<div class="row">
+  <div class="col-md-3">
+    <div class="channels-container list-group">
+      <!-- Channels will be dynamically added here -->
+    </div>
+  </div>
+
+  <div class="col-md-9 d-flex flex-column">
+    <div class="search-container mb-2">
       <input type="text" placeholder="Search messages..." class="form-control search-input">
     </div>
-    <!-- Channel selection will be populated dynamically -->
-
-    <div class="card mt-4">
-        <div class="card-body messages-log" id="messages-log">
-            <!-- Messages will be displayed here -->
-        </div>
+    <div class="card flex-grow-1">
+      <div class="card-body messages-log" id="messages-log">
+        <!-- Messages will be displayed here -->
+      </div>
     </div>
-    <div class="row mt-4">
-        <div class="col">
-            <label for="channelSelect" class="form-label">Channel</label>
-            <select class="form-select" id="channelSelect">
-                <!-- List channels here -->
-            </select>
-        </div>
-        <div class="col">
-            <label for="messageInput" class="form-label">Message</label>
-            <input type="text" class="form-control" id="messageInput" placeholder="Type your message...">
-        </div>
+    <div class="input-group mt-2">
+      <input type="text" class="form-control" id="messageInput" placeholder="Type your message...">
+      <button class="btn btn-primary" id="sendButton" type="button">Send</button>
     </div>
-    <div class="d-grid gap-2 mt-4">
-        <button class="btn btn-primary" id="sendButton" type="button">Send</button>
-    </div>
-
+  </div>
 </div>
 <script src="/static/js/script.js"></script>
 {% endblock %}

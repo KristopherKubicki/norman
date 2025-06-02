@@ -21,16 +21,16 @@
 - [ ] Add more unit tests and integration tests
 - [ ] Implement support for additional GPT models
 - [ ] Write documentation for the project
-- [ ] Redesign the bots.html page to be similar to the OpenAI chat window
+- [x] Redesign the bots.html page to be similar to the OpenAI chat window
       - Bots should be listed on the left side of the screen
       - The main chat window should be in the middle of the screen
       - Clicking on a bot should replace the messages in the main window with the messages from that bot's Interactions
-- [ ] Create a bot_detail.html page for editing details about the bot session, including:
+- [x] Create a bot_detail.html page for editing details about the bot session, including:
       - GPT model
       - Name
       - Description
       - Enabled status
-- [ ] Update the message_log.html page to fit the new design
+- [x] Update the message_log.html page to fit the new design
       - Channels should be listed on the left side of the screen instead of bots
       - Clicking on a channel should replace the messages in the main window with the messages from that channel's Interactions
 
