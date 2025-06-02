@@ -184,6 +184,7 @@ class Settings(BaseSettings):
     broadcast_connectors: str = ""
     openai_api_key: Optional[str]
     openai_default_model: str = "gpt-4.1-mini"
+    openai_available_models: List[str] = ["gpt-4.1-mini", "o3"]
     openai_max_tokens: int = 150
     google_client_id: str = ""
     google_client_secret: str = ""

@@ -15,7 +15,7 @@ def test_delete_bot_invalid_id_returns_none(db: Session) -> None:
 
 
 def test_update_bot_invalid_id_returns_none(db: Session) -> None:
-    update = BotUpdate(name="foo", gpt_model="model")
+    update = BotUpdate(name="foo", gpt_model="gpt-4.1-mini")
     assert crud.update_bot(db, 9999, update) is None
 
 

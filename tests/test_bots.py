@@ -4,10 +4,11 @@ from sqlalchemy.orm import Session
 
 from app import crud
 from app.schemas.bot import BotCreate
+from app.core.config import settings
 from app.tests.utils.utils import random_lower_string
 
 def test_create_bot(test_app: TestClient, db: Session) -> None:
-    gpt_model = "test-model"
+    gpt_model = settings.openai_default_model
     name = random_lower_string()
     session_id = "session123"
     bot_in = BotCreate(
@@ -19,7 +20,7 @@ def test_create_bot(test_app: TestClient, db: Session) -> None:
     assert bot.session_id == session_id
 
 def test_get_bot(test_app: TestClient, db: Session) -> None:
-    gpt_model = "test-model"
+    gpt_model = settings.openai_default_model
     name = random_lower_string()
     session_id = "session123"
     bot_in = BotCreate(

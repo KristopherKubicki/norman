@@ -1,11 +1,18 @@
-from typing import List, Optional
-from pydantic import BaseModel, constr
+from typing import Optional
+from pydantic import BaseModel, constr, validator
+from app.core.config import settings
 
 
 class BotBase(BaseModel):
     name: constr(strip_whitespace=True, min_length=1)
     gpt_model: constr(strip_whitespace=True, min_length=1)
     session_id: Optional[str] = None
+
+    @validator("gpt_model")
+    def validate_gpt_model(cls, v: str) -> str:
+        if v not in settings.openai_available_models:
+            raise ValueError(f"Invalid GPT model: {v}")
+        return v
 
 
 class BotCreate(BotBase):
