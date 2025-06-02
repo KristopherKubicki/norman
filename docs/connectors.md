@@ -72,6 +72,7 @@ The following connectors are currently supported:
 63. [Broadcast](./connectors/broadcast.md)
 64. [X.com](./connectors/xcom.md)
 65. [Zoom](./connectors/zoom.md)
+66. [DingTalk](./connectors/dingtalk.md)
 
 
 ## Usage
@@ -140,5 +141,6 @@ For more detailed information on each connector, please refer to the platform-sp
 - [SMS Connector](./connectors/sms.md)
 - [Broadcast Connector](./connectors/broadcast.md)
 - [Zoom Connector](./connectors/zoom.md)
+- [DingTalk Connector](./connectors/dingtalk.md)
 
 Remember to follow the platform-specific guidelines and best practices when creating bots or apps for each service.
