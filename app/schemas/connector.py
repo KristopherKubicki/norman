@@ -1,4 +1,4 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, constr, Field
 
 
@@ -12,8 +12,12 @@ class ConnectorCreate(ConnectorBase):
     pass
 
 
-class ConnectorUpdate(ConnectorBase):
-    pass
+class ConnectorUpdate(BaseModel):
+    """Model for updating an existing connector."""
+
+    name: Optional[constr(strip_whitespace=True, min_length=1)] = None
+    config: Optional[Dict[str, Any]] = None
+    connector_type: Optional[constr(strip_whitespace=True, min_length=1)] = None
 
 
 class Connector(ConnectorBase):

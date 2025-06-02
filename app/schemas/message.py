@@ -10,8 +10,10 @@ class MessageCreate(MessageBase):
     pass
 
 
-class MessageUpdate(MessageBase):
-    pass
+class MessageUpdate(BaseModel):
+    """Model for updating a message."""
+
+    text: Optional[str] = None
 
 
 class MessageInDBBase(MessageBase):

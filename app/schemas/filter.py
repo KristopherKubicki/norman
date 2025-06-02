@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 from pydantic import BaseModel, constr, conint, validator
 import re
 
@@ -21,8 +21,12 @@ class FilterCreate(FilterBase):
     pass
 
 
-class FilterUpdate(FilterBase):
-    pass
+class FilterUpdate(BaseModel):
+    """Model for updating a filter."""
+
+    channel_id: Optional[conint(gt=0)] = None
+    regex: Optional[constr(strip_whitespace=True, min_length=1)] = None
+    description: Optional[str] = None
 
 
 class Filter(FilterBase):

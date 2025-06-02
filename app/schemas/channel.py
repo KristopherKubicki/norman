@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 from pydantic import BaseModel, constr, conint
 
 
@@ -11,8 +11,11 @@ class ChannelCreate(ChannelBase):
     pass
 
 
-class ChannelUpdate(ChannelBase):
-    pass
+class ChannelUpdate(BaseModel):
+    """Model for updating an existing channel."""
+
+    name: Optional[constr(strip_whitespace=True, min_length=1)] = None
+    connector_id: Optional[conint(gt=0)] = None
 
 
 class Channel(ChannelBase):
