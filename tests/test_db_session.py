@@ -45,6 +45,18 @@ def test_sqlite_wal_enabled():
         assert mode == "wal"
 
 
+def test_sqlite_synchronous_normal():
+    spec = importlib.util.spec_from_file_location(
+        "temp_db_session", os.path.join("app", "db", "session.py")
+    )
+    db_session = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(db_session)
+    if settings.database_url.startswith("sqlite"):
+        with db_session.engine.connect() as conn:
+            synchronous = conn.execute(db_session.text("PRAGMA synchronous")).scalar()
+        assert synchronous == 1
+
+
 def test_session_connection_cleanup():
     spec = importlib.util.spec_from_file_location(
         "temp_db_session", os.path.join("app", "db", "session.py")
