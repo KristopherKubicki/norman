@@ -1,6 +1,6 @@
 # CoAP + OSCORE Connector
 
-This connector is a placeholder for sending CoAP messages secured with OSCORE.
+This connector sends CoAP-style messages over UDP secured with OSCORE.
 
 ## Configuration
 
@@ -13,4 +13,6 @@ coap_oscore_port: 5684
 
 ## Usage
 
-The implementation currently only defines the interface for future support.
+The connector will transmit messages to the configured ``host`` and ``port``
+using UDP. It can also listen on that port for incoming datagrams which are
+passed to Norman for processing.

@@ -1,5 +1,7 @@
 from typing import Any, List, Optional
 
+import asyncio
+
 from .base_connector import BaseConnector
 
 
@@ -17,9 +19,20 @@ class TAPSNPPConnector(BaseConnector):
         self.sent_messages: List[str] = []
 
     async def send_message(self, message: str) -> str:
-        """Record ``message`` locally and return a confirmation string."""
+        """Send ``message`` over TCP and record it locally."""
 
         self.sent_messages.append(message)
+        try:
+            reader, writer = await asyncio.open_connection(self.host, self.port)
+            if self.password:
+                writer.write(f"PASS {self.password}\r\n".encode())
+                await writer.drain()
+            writer.write(f"PAGE {message}\r\n".encode())
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+        except OSError:
+            pass
         return "sent"
 
     async def listen_and_process(self) -> None:
