@@ -1,13 +1,14 @@
 # Connector TODO
 
 This file tracks connectors that we would like to implement in the future.
+All of the connectors listed below have now been implemented.
 
- - [x] MQTT
+- [x] MQTT
 - [x] Steam Chat
 - [x] Twitch Chat
 - [x] XMPP
 - [x] Bluesky
- - [x] Mastodon
+- [x] Mastodon
 - [x] SMTP
 - [x] SMS (e.g., Twilio)
 - [x] Facebook Messenger

@@ -9,12 +9,12 @@ This document outlines the remaining tasks to complete and improve the test suit
 
 ## Connectors
 
-- [ ] Write tests for the `irc_connector` in `tests/connectors/test_irc.py`.
-- [ ] Write tests for the `slack_connector` in `tests/connectors/test_slack.py`.
-- [ ] Write tests for the `teams_connector` in `tests/connectors/test_teams.py`.
-- [ ] Write tests for the `discord_connector` in `tests/connectors/test_discord.py`.
-- [ ] Write tests for the `google_chat_connector` in `tests/connectors/test_google_chat.py`.
-- [ ] Write tests for the `telegram_connector` in `tests/connectors/test_telegram.py`.
+- [x] Write tests for the `irc_connector` in `tests/connectors/test_irc.py`.
+- [x] Write tests for the `slack_connector` in `tests/connectors/test_slack.py`.
+- [x] Write tests for the `teams_connector` in `tests/connectors/test_teams.py`.
+- [x] Write tests for the `discord_connector` in `tests/connectors/test_discord.py`.
+- [x] Write tests for the `google_chat_connector` in `tests/connectors/test_google_chat.py`.
+- [x] Write tests for the `telegram_connector` in `tests/connectors/test_telegram.py`.
 
 ## Routers
 
@@ -25,8 +25,8 @@ This document outlines the remaining tasks to complete and improve the test suit
 ## Utils and Core
 
 - [ ] Write tests for utility functions in `app/core/utils.py`.
-- [ ] Write tests for the logging system in `app/core/logging.py`.
-- [ ] Write tests for the configuration system in `app/core/config.py`.
+- [x] Write tests for the logging system in `app/core/logging.py`.
+- [x] Write tests for the configuration system in `app/core/config.py`.
 
 ## Integration and End-to-End Tests
 
