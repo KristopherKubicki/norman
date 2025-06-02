@@ -13,11 +13,11 @@
             <h2 class="h5">Add a Channel</h2>
             <form id="add-channel-form" class="row g-2 align-items-end">
                 <div class="col-sm">
-                    <input type="text" id="channelName" class="form-control" placeholder="Channel name">
+                    <input type="text" id="channel-name" class="form-control" placeholder="Channel name" required>
                 </div>
                 <div class="col-sm">
-                    <label for="connectorSelect" class="form-label">Connector</label>
-                    <select class="form-select" id="connectorSelect">
+                    <label for="channel-connector" class="form-label">Connector</label>
+                    <select class="form-select" id="channel-connector">
                         <option value="webhook">Webhook</option>
                         <option value="irc">IRC</option>
                         <option value="slack">Slack</option>
@@ -34,11 +34,11 @@
         </div>
     </div>
 
-    <div class="channels-list">
-        <!-- Display the list of channels here -->
+    <div class="channels-container">
+        <!-- Channels will be listed here -->
     </div>
 
-    <script src="/static/js/script.js"></script>
+    <script src="{{ url_for('static', filename='js/channels.js') }}" defer></script>
 {% endblock %}
 
 

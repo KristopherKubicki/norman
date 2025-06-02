@@ -1,19 +1,26 @@
 document.addEventListener('DOMContentLoaded', () => {
-  // Fetch filters and render them in the filters container
+  loadChannels();
   fetchFiltersAndRender();
 });
 
-function fetchFiltersAndRender() {
-  // Replace this with the actual API call to fetch filters
-  const fakeFilters = [
-    { id: 1, name: 'Filter 1', description: 'Filter 1 description' },
-    { id: 2, name: 'Filter 2', description: 'Filter 2 description' },
-  ];
+async function loadChannels() {
+  const resp = await fetch('/api/v1/channels');
+  const channels = await resp.json();
+  const select = document.getElementById('filter-channel');
+  select.innerHTML = '';
+  channels.forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = c.id;
+    opt.textContent = c.name;
+    select.appendChild(opt);
+  });
+}
 
+async function fetchFiltersAndRender() {
+  const filters = await getFilters();
   const filtersContainer = document.querySelector('.filters-container');
   filtersContainer.innerHTML = '';
-
-  for (const filter of fakeFilters) {
+  for (const filter of filters) {
     const filterElement = createFilterElement(filter);
     filtersContainer.appendChild(filterElement);
   }
@@ -23,15 +30,42 @@ function createFilterElement(filter) {
   const filterElement = document.createElement('div');
   filterElement.classList.add('filter');
 
-  const nameElement = document.createElement('p');
-  nameElement.textContent = filter.name;
-  filterElement.appendChild(nameElement);
+  const info = document.createElement('p');
+  info.textContent = `Channel: ${filter.channel_id} | Regex: ${filter.regex}`;
+  filterElement.appendChild(info);
 
-  const descriptionElement = document.createElement('p');
-  descriptionElement.classList.add('description');
-  descriptionElement.textContent = filter.description;
-  filterElement.appendChild(descriptionElement);
+  if (filter.description) {
+    const desc = document.createElement('p');
+    desc.classList.add('description');
+    desc.textContent = filter.description;
+    filterElement.appendChild(desc);
+  }
 
+  const editButton = document.createElement('button');
+  editButton.textContent = 'Edit';
+  editButton.addEventListener('click', async () => {
+    const newRegex = prompt('Regex', filter.regex);
+    const newDesc = prompt('Description', filter.description || '');
+    if (newRegex) {
+      const updated = await updateFilter(filter.id, {
+        channel_id: filter.channel_id,
+        regex: newRegex,
+        description: newDesc,
+      });
+      info.textContent = `Channel: ${updated.channel_id} | Regex: ${updated.regex}`;
+      desc && (desc.textContent = updated.description);
+    }
+  });
+
+  const deleteButton = document.createElement('button');
+  deleteButton.textContent = 'Delete';
+  deleteButton.addEventListener('click', async () => {
+    await deleteFilter(filter.id);
+    filterElement.remove();
+  });
+
+  filterElement.appendChild(editButton);
+  filterElement.appendChild(deleteButton);
   return filterElement;
 }
 
@@ -62,71 +96,32 @@ async function deleteFilter(filterId) {
 
 async function updateFilter(filterId, filterData) {
   const response = await fetch(`/api/v1/filters/${filterId}`, {
-    method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
-    },
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(filterData),
-
- });
+  });
   const filter = await response.json();
   return filter;
 }
 
-function createFilterElement(filter) {
-  const filterElement = document.createElement("div");
-  filterElement.classList.add("filter");
-
-  const nameElement = document.createElement("p");
-  nameElement.textContent = `Name: ${filter.name}`;
-
-  const descriptionElement = document.createElement("p");
-  descriptionElement.textContent = `Description: ${filter.description}`;
-
-  const editButton = document.createElement("button");
-  editButton.textContent = "Edit";
-  editButton.addEventListener("click", async () => {
-    const newName = prompt("Enter the new filter name:", filter.name);
-    const newDescription = prompt("Enter the new filter description:", filter.description);
-
-    if (newName && newDescription) {
-      const updatedFilter = await updateFilter(filter.id, { name: newName, description: newDescription });
-      nameElement.textContent = `Name: ${updatedFilter.name}`;
-      descriptionElement.textContent = `Description: ${updatedFilter.description}`;
-    }
-  });
-
-  const deleteButton = document.createElement("button");
-  deleteButton.textContent = "Delete";
-  deleteButton.addEventListener("click", async () => {
-    await deleteFilter(filter.id);
-    filterElement.remove();
-  });
-
-  filterElement.appendChild(nameElement);
-  filterElement.appendChild(descriptionElement);
-  filterElement.appendChild(editButton);
-  filterElement.appendChild(deleteButton);
-
-  return filterElement;
-}
-
-document.getElementById("add-filter-form").addEventListener("submit", async (event) => {
+document.getElementById('add-filter-form').addEventListener('submit', async (event) => {
   event.preventDefault();
 
-  const nameInput = document.getElementById("filter-name");
-  const descriptionInput = document.getElementById("filter-description");
+  const channelSelect = document.getElementById('filter-channel');
+  const regexInput = document.getElementById('filter-regex');
+  const descriptionInput = document.getElementById('filter-description');
 
   const filterData = {
-    name: nameInput.value,
+    channel_id: parseInt(channelSelect.value, 10),
+    regex: regexInput.value,
     description: descriptionInput.value,
   };
 
   const newFilter = await createFilter(filterData);
-  document.querySelector(".filters-container").appendChild(createFilterElement(newFilter));
+  document.querySelector('.filters-container').appendChild(createFilterElement(newFilter));
 
-  nameInput.value = "";
-  descriptionInput.value = "";
+  regexInput.value = '';
+  descriptionInput.value = '';
 });
 
 (async () => {

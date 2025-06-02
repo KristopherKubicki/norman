@@ -14,8 +14,12 @@
 <form id="add-filter-form" class="card card-body mb-4">
   <div class="row g-2 align-items-end">
     <div class="col-sm">
-      <label for="filter-name" class="form-label">Filter Name</label>
-      <input type="text" id="filter-name" class="form-control" required />
+      <label for="filter-channel" class="form-label">Channel</label>
+      <select id="filter-channel" class="form-select"></select>
+    </div>
+    <div class="col-sm">
+      <label for="filter-regex" class="form-label">Regex</label>
+      <input type="text" id="filter-regex" class="form-control" required />
     </div>
     <div class="col-sm">
       <label for="filter-description" class="form-label">Description</label>
@@ -30,10 +34,7 @@
 <div class="filters-container">
   <!-- Filters will be dynamically added here -->
 </div>
-{% endblock %}
-
-{% block extra_js %}
-<script src="{{ url_for('static', filename='js/filters.js') }}"></script>
+<script src="{{ url_for('static', filename='js/filters.js') }}" defer></script>
 {% endblock %}
 
 
