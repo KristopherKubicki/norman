@@ -40,6 +40,12 @@ from app.schemas.connector import ConnectorCreate, ConnectorUpdate, Connector
 current_dir = os.path.dirname(os.path.realpath(__file__))
 app_routes = APIRouter()
 
+
+@app_routes.get("/health")
+async def health() -> dict[str, str]:
+    """Simple health check endpoint."""
+    return {"status": "ok"}
+
 def clear_access_token_cookie(response: Response):
     response.delete_cookie("access_token")
     return response

@@ -93,6 +93,9 @@ If `brotli_asgi` is installed and supported by your Uvicorn version,
 replace `gzip` with `brotli` for improved compression.
 
 7. Open the API documentation in your browser: [http://localhost:8000/docs](http://localhost:8000/docs)
+   A basic health check endpoint is available at [http://localhost:8000/health](http://localhost:8000/health)
+
+Norman emits structured JSON logs that include the timestamp, module and request ID. Sensitive data such as API keys are automatically redacted so these logs can be safely forwarded to monitoring systems.
 
 For more information, refer to the [documentation](docs/) and the [contributing guidelines](CONTRIBUTING.md).
 

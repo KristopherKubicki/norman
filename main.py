@@ -20,6 +20,7 @@ from app.api import init_routers
 from app.app_routes import app_routes
 from app.core.config import settings
 from app.auth_middleware import auth_middleware
+from app.core.logging import request_context_middleware
 
 def run_alembic_migrations():
     if not os.path.exists("alembic/versions"):
@@ -34,6 +35,8 @@ if _brotli and BrotliMiddleware:
     app.add_middleware(BrotliMiddleware)
 else:
     app.add_middleware(GZipMiddleware, minimum_size=500)
+
+app.middleware("http")(request_context_middleware)
 
 @app.middleware("http")
 async def cache_control_middleware(request: Request, call_next):
