@@ -2,7 +2,9 @@ from typing import List
 from pydantic import BaseModel
 from datetime import datetime
 
+
 class InteractionBase(BaseModel):
+    message_id: int
     bot_id: int
     input_data: str
     output_data: str
@@ -12,11 +14,14 @@ class InteractionBase(BaseModel):
     status_code: int
     headers: str
 
+
 class InteractionCreate(InteractionBase):
     pass
 
+
 class InteractionUpdate(InteractionBase):
     pass
+
 
 class Interaction(InteractionBase):
     id: int
