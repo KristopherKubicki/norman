@@ -1,4 +1,4 @@
-from typing import Any, List
+from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -8,43 +8,43 @@ from app.api import deps
 
 router = APIRouter()
 
-@router.get("/", response_model=List[schemas.Filter])
+@router.get("/", response_model=List[schemas.Filter])  # type: ignore[misc]
 def read_filters(
     db: Session = Depends(deps.get_db),
     skip: int = 0,
     limit: int = 100,
-) -> Any:
+) -> List[schemas.Filter]:
     filters = crud.filters.get_multi(db, skip=skip, limit=limit)
     return filters
 
-@router.post("/", response_model=schemas.Filter)
+@router.post("/", response_model=schemas.Filter)  # type: ignore[misc]
 def create_filter(
     *,
     db: Session = Depends(deps.get_db),
     filter_in: schemas.FilterCreate
-) -> Any:
+) -> schemas.Filter:
     filter = crud.filters.create(db, filter_create=filter_in)
     return filter
 
-@router.put("/{filter_id}", response_model=schemas.Filter)
+@router.put("/{filter_id}", response_model=schemas.Filter)  # type: ignore[misc]
 def update_filter(
     *,
     db: Session = Depends(deps.get_db),
     filter_id: int,
     filter_in: schemas.FilterUpdate
-) -> Any:
+) -> schemas.Filter:
     filter = crud.filters.get(db, filter_id)
     if not filter:
         raise HTTPException(status_code=404, detail="Filter not found")
     filter = crud.filters.update(db, filter_id=filter_id, filter_update=filter_in)
     return filter
 
-@router.delete("/{filter_id}", response_model=schemas.Filter)
+@router.delete("/{filter_id}", response_model=schemas.Filter)  # type: ignore[misc]
 def delete_filter(
     *,
     db: Session = Depends(deps.get_db),
     filter_id: int
-) -> Any:
+) -> schemas.Filter:
     filter = crud.filters.get(db, filter_id)
     if not filter:
         raise HTTPException(status_code=404, detail="Filter not found")

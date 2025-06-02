@@ -1,6 +1,7 @@
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
+from typing import AsyncGenerator, Generator
 
 from app.db.session import SessionLocal
 from app.models import User
@@ -9,21 +10,21 @@ from app.crud.user import get_user_by_email
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token")
 
-def get_db():
+def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
 
-async def get_async_db():
+async def get_async_db() -> AsyncGenerator[Session, None]:
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
 
-async def get_current_user(token: str = Depends(oauth2_scheme)):
+async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
 
     email = decode_access_token(token)
     if email is None:

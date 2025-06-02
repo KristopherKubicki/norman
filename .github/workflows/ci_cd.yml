@@ -26,6 +26,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
 
+      - name: Run mypy
+        run: mypy --strict
+
       - name: Run pylint
         run: pylint --rcfile=.pylintrc $(git ls-files '*.py') || true
 

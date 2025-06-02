@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, Request
+from typing import Dict
 from app.connectors.teams_connector import TeamsConnector
 from app.core.config import get_settings, Settings
 
@@ -12,8 +13,10 @@ def get_teams_connector(settings: Settings = Depends(get_settings)) -> TeamsConn
         bot_endpoint=settings.teams_bot_endpoint,
     )
 
-@router.post("/webhooks/teams")
-async def process_teams_update(request: Request, teams_connector: TeamsConnector = Depends(get_teams_connector)):
+@router.post("/webhooks/teams")  # type: ignore[misc]
+async def process_teams_update(
+    request: Request, teams_connector: TeamsConnector = Depends(get_teams_connector)
+) -> Dict[str, str]:
     payload = await request.json()
     teams_connector.process_incoming(payload)
     return {"detail": "Update processed"}

@@ -1,8 +1,8 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
-from typing import Optional
+from typing import Optional, List, cast
+
 from app.models import Message
-from typing import List
 
 def create_message(db: Session, bot_id: int, text: str, source: str) -> Message:
     db_message = Message(bot_id=bot_id, text=text, source=source)
@@ -11,7 +11,7 @@ def create_message(db: Session, bot_id: int, text: str, source: str) -> Message:
     db.refresh(db_message)
     return db_message
 
-def get_message_by_id(db: Session, message_id: int) -> Message:
+def get_message_by_id(db: Session, message_id: int) -> Optional[Message]:
     return db.query(Message).filter(Message.id == message_id).first()
 
 def get_messages_by_bot_id(
@@ -28,7 +28,7 @@ def get_messages_by_bot_id(
         query = query.offset(offset)
     if limit is not None:
         query = query.limit(limit)
-    return query.all()
+    return cast(List[Message], query.all())
 
 def delete_message(db: Session, message_id: int) -> None:
     message = get_message_by_id(db, message_id)
@@ -46,16 +46,19 @@ def update_message(db: Session, message_id: int, text: str) -> Optional[Message]
     return None
 
 
-def get_last_messages_by_bot_id(db: Session, bot_id: int, limit: int = 10):
-    return (
-        db.query(Message)
-        .filter(Message.bot_id == bot_id)
-        .order_by(desc(Message.created_at))
-        .limit(limit)
-        .all()
+def get_last_messages_by_bot_id(db: Session, bot_id: int, limit: int = 10) -> List[Message]:
+    return cast(
+        List[Message],
+        (
+            db.query(Message)
+            .filter(Message.bot_id == bot_id)
+            .order_by(desc(Message.created_at))
+            .limit(limit)
+            .all()
+        ),
     )
 
-def delete_messages_by_bot_id(db: Session, bot_id: int):
+def delete_messages_by_bot_id(db: Session, bot_id: int) -> None:
     db.query(Message).filter(Message.bot_id == bot_id).delete(synchronize_session='fetch')
     db.commit()
 

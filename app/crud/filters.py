@@ -1,4 +1,4 @@
-from typing import Optional, List
+from typing import Optional, List, cast
 from sqlalchemy.orm import Session
 
 from app.models.channel_filter import Filter as FilterModel
@@ -19,7 +19,8 @@ def get(db: Session, filter_id: int) -> Optional[FilterModel]:
 
 def get_multi(db: Session, skip: int = 0, limit: int = 100) -> List[FilterModel]:
     """Return multiple filters."""
-    return db.query(FilterModel).offset(skip).limit(limit).all()
+    filters = db.query(FilterModel).offset(skip).limit(limit).all()
+    return cast(List[FilterModel], filters)
 
 
 def update(db: Session, filter_id: int, filter_update: FilterUpdate) -> Optional[FilterModel]:

@@ -19,5 +19,5 @@ router.include_router(connectors_router, prefix="/v1")
 router.include_router(platform_connectors_router, prefix="/v1/connectors")
 router.include_router(users_router, prefix="/v1/users")
 
-def init_routers(app: FastAPI):
+def init_routers(app: FastAPI) -> None:
     app.include_router(router, prefix="/api")

@@ -5,3 +5,22 @@ from .filter import FilterCreate, FilterUpdate, Filter
 from .token import Token
 from .connector import ConnectorCreate, ConnectorUpdate, Connector
 
+__all__ = [
+    "ActionCreate",
+    "ActionUpdate",
+    "Action",
+    "BotCreate",
+    "BotUpdate",
+    "Bot",
+    "ChannelCreate",
+    "ChannelUpdate",
+    "Channel",
+    "FilterCreate",
+    "FilterUpdate",
+    "Filter",
+    "Token",
+    "ConnectorCreate",
+    "ConnectorUpdate",
+    "Connector",
+]
+

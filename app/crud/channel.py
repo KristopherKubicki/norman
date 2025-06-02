@@ -1,6 +1,6 @@
 """CRUD operations for :class:`~app.models.channel.Channel`."""
 
-from typing import List, Optional
+from typing import List, Optional, cast
 
 from sqlalchemy.orm import Session
 
@@ -15,7 +15,8 @@ def get(db: Session, channel_id: int) -> Optional[ChannelModel]:
 
 def get_multi(db: Session, skip: int = 0, limit: int = 100) -> List[ChannelModel]:
     """Return multiple channels."""
-    return db.query(ChannelModel).offset(skip).limit(limit).all()
+    channels = db.query(ChannelModel).offset(skip).limit(limit).all()
+    return cast(List[ChannelModel], channels)
 
 
 def create(db: Session, obj_in: ChannelCreate) -> ChannelModel:

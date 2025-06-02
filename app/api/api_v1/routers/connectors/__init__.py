@@ -9,6 +9,17 @@ from .mcp import router as mcp_router
 
 router = APIRouter()
 
+__all__ = [
+    "router",
+    "telegram_router",
+    "slack_router",
+    "teams_router",
+    "google_chat_router",
+    "discord_router",
+    "webhook_router",
+    "mcp_router",
+]
+
 router.include_router(telegram_router, prefix="/telegram", tags=["Telegram"])
 router.include_router(slack_router, prefix="/slack", tags=["Slack"])
 router.include_router(teams_router, prefix="/microsoft_teams", tags=["Microsoft Teams"])

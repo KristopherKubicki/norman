@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, Request
+from typing import Dict
 from app.connectors.discord_connector import DiscordConnector
 from app.core.config import get_settings, Settings
 
@@ -10,8 +11,10 @@ def get_discord_connector(settings: Settings = Depends(get_settings)) -> Discord
         channel_id=settings.discord_channel_id,
     )
 
-@router.post("/webhooks/discord")
-async def process_discord_update(request: Request, discord_connector: DiscordConnector = Depends(get_discord_connector)):
+@router.post("/webhooks/discord")  # type: ignore[misc]
+async def process_discord_update(
+    request: Request, discord_connector: DiscordConnector = Depends(get_discord_connector)
+) -> Dict[str, str]:
     payload = await request.json()
     discord_connector.process_incoming(payload)
     return {"detail": "Update processed"}

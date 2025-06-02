@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Optional, cast
 from sqlalchemy.orm import Session
 
 from app.models.connectors import Connector as ConnectorModel
@@ -10,7 +10,8 @@ def get(db: Session, connector_id: int) -> Optional[ConnectorModel]:
 
 
 def get_multi(db: Session, skip: int = 0, limit: int = 100) -> List[ConnectorModel]:
-    return db.query(ConnectorModel).offset(skip).limit(limit).all()
+    connectors = db.query(ConnectorModel).offset(skip).limit(limit).all()
+    return cast(List[ConnectorModel], connectors)
 
 
 def create(db: Session, obj_in: ConnectorCreate) -> ConnectorModel:
