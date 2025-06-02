@@ -145,19 +145,19 @@ textarea {
 }
 
 
-html.dark-mode,
-body.dark-mode {
+html.dark,
+body.dark {
     background-color: #121212;
     color: #f8f9fa;
 }
-html.dark-mode a,
-body.dark-mode a { color: #f8f9fa; }
-html.dark-mode .navbar,
-body.dark-mode .navbar,
-html.dark-mode footer,
-body.dark-mode footer,
-html.dark-mode .card,
-body.dark-mode .card {
+html.dark a,
+body.dark a { color: #f8f9fa; }
+html.dark .navbar,
+body.dark .navbar,
+html.dark footer,
+body.dark footer,
+html.dark .card,
+body.dark .card {
     background-color: #1e1e1e;
     color: #f8f9fa;
 }

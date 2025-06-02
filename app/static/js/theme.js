@@ -11,9 +11,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
 function setTheme(dark) {
   if (dark) {
-    document.documentElement.classList.add('dark-mode');
+    document.documentElement.classList.add('dark');
   } else {
-    document.documentElement.classList.remove('dark-mode');
+    document.documentElement.classList.remove('dark');
   }
   localStorage.setItem('theme', dark ? 'dark' : 'light');
 }
