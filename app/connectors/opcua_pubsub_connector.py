@@ -56,9 +56,31 @@ class OPCUAPubSubConnector(BaseConnector):
         return "sent"
 
     async def listen_and_process(self) -> None:
-        """Listening for OPC UA messages is not implemented."""
+        """Listen for UDP datagrams and process them."""
 
-        return None
+        target = self.endpoint.split("://")[-1]
+        if ":" in target:
+            _, port_str = target.split(":", 1)
+            port = int(port_str)
+        else:
+            port = 4840
+
+        loop = asyncio.get_running_loop()
+
+        class _Handler(asyncio.DatagramProtocol):
+            def datagram_received(self, data: bytes, addr):
+                msg = data.decode("utf-8", errors="replace")
+                asyncio.create_task(self_conn.process_incoming(msg))
+
+        self_conn = self
+        transport, _ = await loop.create_datagram_endpoint(
+            _Handler,
+            local_addr=("0.0.0.0", port),
+        )
+        try:
+            await asyncio.Future()
+        finally:
+            transport.close()
 
     async def process_incoming(self, message: Any) -> Any:
         # Placeholder for processing inbound OPC UA messages
