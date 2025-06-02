@@ -9,10 +9,10 @@ from fastapi import Request
 
 from .config import settings
 
-request_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+request_id_var: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "request_id", default=None
 )
-conversation_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+conversation_id_var: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "conversation_id", default=None
 )
 
