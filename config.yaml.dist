@@ -176,6 +176,9 @@ broadcast_connectors: ""
 
 openai_api_key:
 openai_default_model: "gpt-4.1-mini"
+openai_available_models:
+  - gpt-4.1-mini
+  - o3
 openai_max_tokens: 150
 google_client_id: "your_google_client_id"
 google_client_secret: "your_google_client_secret"

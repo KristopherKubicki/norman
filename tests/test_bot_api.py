@@ -19,7 +19,7 @@ def test_create_message_endpoint_stores_interaction(
     test_app: TestClient, db: Session, monkeypatch
 ) -> None:
     bot = crud.create_bot(
-        db, BotCreate(name="bot", description="desc", gpt_model="gpt-4")
+        db, BotCreate(name="bot", description="desc", gpt_model="gpt-4.1-mini")
     )
 
     async def dummy_create_chat_interaction(*args, **kwargs):

@@ -19,7 +19,7 @@
 
  - [x] Improve logging and exception handling
  - [x] Add more unit tests and integration tests
-- [ ] Implement support for additional GPT models
+ - [x] Implement support for additional GPT models
 - [ ] Write documentation for the project
 - [x] Redesign the bots.html page to be similar to the OpenAI chat window
       - Bots should be listed on the left side of the screen
