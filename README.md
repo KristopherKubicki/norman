@@ -71,6 +71,8 @@ source env/bin/activate
 pip install -r requirements.txt
 ```
 
+Norman automatically enables [WAL](https://www.sqlite.org/wal.html) mode when using SQLite for improved concurrency.
+
 4. Run Norman once to automatically generate `config.yaml` with secure defaults.
    Afterwards edit this file to configure connectors and add your OpenAI API key.
 
