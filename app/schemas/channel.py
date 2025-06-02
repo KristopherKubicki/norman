@@ -8,7 +8,7 @@ class ChannelBase(BaseModel):
 
 
 class ChannelCreate(ChannelBase):
-    pass
+    """Schema for creating a channel."""
 
 
 class ChannelUpdate(BaseModel):

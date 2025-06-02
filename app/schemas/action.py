@@ -11,10 +11,10 @@ class ActionBase(BaseModel):
         allow_population_by_field_name = True
 
 class ActionCreate(ActionBase):
-    pass
+    """Schema for creating an action."""
 
 class ActionUpdate(ActionBase):
-    pass
+    """Schema for updating an action."""
 
 class Action(ActionBase):
     id: int

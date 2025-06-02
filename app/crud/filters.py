@@ -6,6 +6,7 @@ from app.schemas.filter import FilterCreate, FilterUpdate
 
 
 def create(db: Session, filter_create: FilterCreate) -> FilterModel:
+    """Create a new channel filter."""
     db_obj = FilterModel(**filter_create.dict())
     db.add(db_obj)
     db.commit()
@@ -14,6 +15,7 @@ def create(db: Session, filter_create: FilterCreate) -> FilterModel:
 
 
 def get(db: Session, filter_id: int) -> Optional[FilterModel]:
+    """Return a filter by its ID."""
     return db.query(FilterModel).filter(FilterModel.id == filter_id).first()
 
 
@@ -23,6 +25,7 @@ def get_multi(db: Session, skip: int = 0, limit: int = 100) -> List[FilterModel]
 
 
 def update(db: Session, filter_id: int, filter_update: FilterUpdate) -> Optional[FilterModel]:
+    """Update an existing filter."""
     db_obj = get(db, filter_id)
     if not db_obj:
         return None
@@ -34,6 +37,7 @@ def update(db: Session, filter_id: int, filter_update: FilterUpdate) -> Optional
 
 
 def delete(db: Session, filter_id: int) -> Optional[FilterModel]:
+    """Delete a filter and return the deleted instance."""
     db_obj = get(db, filter_id)
     if db_obj:
         db.delete(db_obj)

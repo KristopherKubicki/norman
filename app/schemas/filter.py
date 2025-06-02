@@ -18,7 +18,7 @@ class FilterBase(BaseModel):
 
 
 class FilterCreate(FilterBase):
-    pass
+    """Schema for creating a channel filter."""
 
 
 class FilterUpdate(BaseModel):
