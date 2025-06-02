@@ -17,3 +17,7 @@ jobs:
         id: release
         with:
           release-type: python
+          package-name: norman
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@v3
+        if: ${{ steps.release.outputs.release_created }}
