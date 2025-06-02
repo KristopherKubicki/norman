@@ -9,6 +9,8 @@ engine = create_engine(
     poolclass=QueuePool,
     pool_size=settings.database_pool_size,
     max_overflow=settings.database_max_overflow,
+    pool_pre_ping=True,
+    # TODO: explore enabling WAL mode or other SQLite optimizations
     connect_args={"check_same_thread": False}
     if settings.database_url.startswith("sqlite")
     else {},
