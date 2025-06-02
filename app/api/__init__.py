@@ -15,7 +15,7 @@ router.include_router(actions_router, prefix="/v1/actions")
 router.include_router(bots_router, prefix="/v1/bots")
 router.include_router(channels_router, prefix="/v1/channels")
 router.include_router(filters_router, prefix="/v1/filters")
-router.include_router(connectors_router, prefix="/v1/connectors")
+router.include_router(connectors_router, prefix="/v1")
 router.include_router(platform_connectors_router, prefix="/v1/connectors")
 router.include_router(users_router, prefix="/v1/users")
 
