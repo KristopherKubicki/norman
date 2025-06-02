@@ -32,3 +32,18 @@ def test_sqlite_check_same_thread():
         connect_args = db_session.engine.pool._creator.__closure__[1].cell_contents
         assert connect_args.get("check_same_thread") is False
 
+
+def test_session_connection_cleanup():
+    spec = importlib.util.spec_from_file_location(
+        "temp_db_session", os.path.join("app", "db", "session.py")
+    )
+    db_session = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(db_session)
+    engine = db_session.engine
+    start_checked_out = engine.pool.checkedout()
+    session = db_session.SessionLocal()
+    session.execute("SELECT 1")
+    assert engine.pool.checkedout() == start_checked_out + 1
+    session.close()
+    assert engine.pool.checkedout() == start_checked_out
+
