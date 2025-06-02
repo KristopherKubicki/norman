@@ -51,15 +51,42 @@ class WhatsAppConnector(BaseConnector):
             logger.error("Error sending WhatsApp message: %s", exc)
             return None
 
-    async def listen_and_process(self):
-        # Code to listen for incoming messages from WhatsApp
-        # and call process_incoming for each message
-        return None
+    async def listen_and_process(self) -> Optional[list]:
+        """Fetch recent messages from Twilio and process them."""
 
-    async def process_incoming(self, message):
-        # Code to process the incoming message, including applying filters
-        # and calling the appropriate action(s)
-        return message
+        params = {
+            "From": f"whatsapp:{self.to_number}",
+            "To": f"whatsapp:{self.from_number}",
+        }
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    self._url(), params=params, auth=(self.account_sid, self.auth_token)
+                )
+            resp.raise_for_status()
+            payload = resp.json()
+        except httpx.HTTPError as exc:  # pragma: no cover - network
+            logger.error("Error fetching WhatsApp messages: %s", exc)
+            return None
+
+        results = []
+        for msg in payload.get("messages", []):
+            processed = self.process_incoming(msg)
+            if asyncio.iscoroutine(processed):
+                processed = await processed
+            if processed:
+                results.append(processed)
+        return results
+
+    async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize the incoming Twilio message payload."""
+
+        return {
+            "text": message.get("body", ""),
+            "from": message.get("from"),
+            "to": message.get("to", self.to_number),
+            "sid": message.get("sid"),
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if the Twilio credentials appear valid."""

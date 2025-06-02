@@ -50,11 +50,16 @@ def test_send_message_error(monkeypatch):
 
 def test_process_incoming():
     connector = WhatsAppConnector("SID", "TOKEN", "+1", "+2")
-    payload = {"body": "hello"}
+    payload = {"body": "hello", "from": "+2", "sid": "123"}
     result = asyncio.get_event_loop().run_until_complete(
         connector.process_incoming(payload)
     )
-    assert result == payload
+    assert result == {
+        "text": "hello",
+        "from": "+2",
+        "to": "+2",
+        "sid": "123",
+    }
 
 
 def test_is_connected_success(monkeypatch):
