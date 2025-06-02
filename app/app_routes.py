@@ -163,7 +163,7 @@ async def create_message_endpoint(
             gpt_model=interaction_response['model'],
             output_data=interaction_response['choices'][0]['message']['content'],
             tokens_in=interaction_response['usage']['prompt_tokens'],
-            tokens_out=interaction_response['usage']['completion_tokens'], # FIX
+            tokens_out=interaction_response.get("usage", {}).get("completion_tokens", 0),
             status_code=200,
             headers=str(interaction_response.get('headers', {})),
         )
