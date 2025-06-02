@@ -13,7 +13,20 @@ async def auth_middleware(request: Request, call_next):
         if request.url.path.endswith(".html") and request.url.path != "/login.html":
             return RedirectResponse(url="/login.html", status_code=303)
     elif request.url.path == "/login.html":
-        pass
+        # If the user already has a valid token, redirect them away from the
+        # login page. Otherwise allow the request to continue so the login form
+        # is shown.
+        if token is not None:
+            try:
+                headers = MutableHeaders(scope=request.scope)
+                headers["Authorization"] = f"Bearer {token}"
+                request.scope["headers"] = headers.items()
+                token_value = await oauth2_scheme(request)
+                await get_current_user(token_value)
+                return RedirectResponse(url="/index.html", status_code=303)
+            except HTTPException:
+                # Invalid token should not prevent access to the login page
+                pass
     elif request.url.path not in ("/favicon.ico", "/login"):
         try:
             # Set the token in the Authorization header
