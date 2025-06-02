@@ -5,6 +5,9 @@ import httpx
 from typing import Any, Dict, Optional
 
 from .base_connector import BaseConnector
+from app.core.logging import setup_logger
+
+logger = setup_logger(__name__)
 
 class MCPConnector(BaseConnector):
     """Connector for interacting with an MCP service."""
@@ -29,7 +32,7 @@ class MCPConnector(BaseConnector):
                 resp.raise_for_status()
                 return resp.text
             except httpx.HTTPError as exc:  # pragma: no cover - network
-                print(f"Error sending message to MCP: {exc}")
+                logger.error("Error sending message to MCP: %s", exc)
                 return None
 
     async def listen_and_process(self) -> None:
@@ -45,7 +48,7 @@ class MCPConnector(BaseConnector):
                     resp.raise_for_status()
                     messages = resp.json() if resp.content else []
                 except httpx.HTTPError as exc:
-                    print(f"Error fetching MCP events: {exc}")
+                    logger.error("Error fetching MCP events: %s", exc)
                     await asyncio.sleep(30)
                     continue
 

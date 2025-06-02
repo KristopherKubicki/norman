@@ -6,6 +6,9 @@ from typing import Any, Dict, Optional
 from pydantic import BaseModel
 
 from .base_connector import BaseConnector
+from app.core.logging import setup_logger
+
+logger = setup_logger(__name__)
 
 
 class WebhookConnector(BaseConnector):
@@ -34,7 +37,7 @@ class WebhookConnector(BaseConnector):
                 response.raise_for_status()
                 return response.text
             except httpx.HTTPError as exc:  # pragma: no cover - network
-                print(f"Error sending message to webhook: {exc}")
+                logger.error("Error sending message to webhook: %s", exc)
                 return None
 
     async def send_to_webhook(self, data: Dict[str, Any]) -> str:

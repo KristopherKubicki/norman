@@ -6,6 +6,9 @@ from typing import Optional
 import httpx
 
 from .base_connector import BaseConnector
+from app.core.logging import setup_logger
+
+logger = setup_logger(__name__)
 
 
 class BlueskyConnector(BaseConnector):
@@ -38,7 +41,7 @@ class BlueskyConnector(BaseConnector):
                 data = resp.json()
                 self._access_jwt = data.get("accessJwt")
             except httpx.HTTPError as exc:  # pragma: no cover - network
-                print(f"Error logging in to Bluesky: {exc}")
+                logger.error("Error logging in to Bluesky: %s", exc)
                 return None
         return self._access_jwt
 
@@ -65,7 +68,7 @@ class BlueskyConnector(BaseConnector):
                 self.sent_messages.append(message)
                 return resp.text
             except httpx.HTTPError as exc:  # pragma: no cover - network
-                print(f"Error sending Bluesky message: {exc}")
+                logger.error("Error sending Bluesky message: %s", exc)
                 return None
 
     async def listen_and_process(self):

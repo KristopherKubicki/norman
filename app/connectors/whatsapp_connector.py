@@ -4,6 +4,9 @@ import httpx
 from typing import Any, Dict, Optional
 
 from .base_connector import BaseConnector
+from app.core.logging import setup_logger
+
+logger = setup_logger(__name__)
 
 class WhatsAppConnector(BaseConnector):
     """Connector for sending and receiving WhatsApp messages via Twilio."""
@@ -45,7 +48,7 @@ class WhatsAppConnector(BaseConnector):
             resp.raise_for_status()
             return resp.text
         except httpx.HTTPError as exc:  # pragma: no cover - network
-            print(f"Error sending WhatsApp message: {exc}")
+            logger.error("Error sending WhatsApp message: %s", exc)
             return None
 
     async def listen_and_process(self):

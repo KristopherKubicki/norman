@@ -6,6 +6,9 @@ except ImportError:  # pragma: no cover - library optional
     aprslib = None
 
 from .base_connector import BaseConnector
+from app.core.logging import setup_logger
+
+logger = setup_logger(__name__)
 
 
 class APRSConnector(BaseConnector):
@@ -52,4 +55,4 @@ class APRSConnector(BaseConnector):
             self.client.close()
 
     async def process_incoming(self, message):
-        print(f"APRS received: {message}")
+        logger.info("APRS received: %s", message)

@@ -4,6 +4,9 @@ import httpx
 from typing import Any, Dict, Optional
 
 from .base_connector import BaseConnector
+from app.core.logging import setup_logger
+
+logger = setup_logger(__name__)
 
 
 DEFAULT_API_URL = (
@@ -35,7 +38,7 @@ class SteamChatConnector(BaseConnector):
                 resp.raise_for_status()
                 return resp.text
             except httpx.HTTPError as exc:  # pragma: no cover - network
-                print(f"Error sending Steam Chat message: {exc}")
+                logger.error("Error sending Steam Chat message: %s", exc)
                 return None
 
     async def listen_and_process(self) -> None:

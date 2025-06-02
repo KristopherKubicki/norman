@@ -4,6 +4,9 @@ import httpx
 from typing import Any, Dict, List, Optional
 
 from .base_connector import BaseConnector
+from app.core.logging import setup_logger
+
+logger = setup_logger(__name__)
 
 
 class JiraServiceDeskConnector(BaseConnector):
@@ -47,7 +50,7 @@ class JiraServiceDeskConnector(BaseConnector):
             resp.raise_for_status()
             return resp.text
         except httpx.HTTPError as exc:  # pragma: no cover - network
-            print(f"Error communicating with Jira Service Desk: {exc}")
+            logger.error("Error communicating with Jira Service Desk: %s", exc)
             return None
 
     async def _fetch_issues(self) -> List[Dict[str, Any]]:
@@ -69,7 +72,7 @@ class JiraServiceDeskConnector(BaseConnector):
             try:
                 issues = await self._fetch_issues()
             except httpx.HTTPError as exc:  # pragma: no cover - network
-                print(f"Error fetching Jira issues: {exc}")
+                logger.error("Error fetching Jira issues: %s", exc)
                 await asyncio.sleep(30)
                 continue
 

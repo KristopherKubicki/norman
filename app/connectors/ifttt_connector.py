@@ -2,6 +2,9 @@ import httpx
 from typing import Any, Dict, Optional
 
 from .base_connector import BaseConnector
+from app.core.logging import setup_logger
+
+logger = setup_logger(__name__)
 
 
 class IFTTTConnector(BaseConnector):
@@ -21,7 +24,7 @@ class IFTTTConnector(BaseConnector):
                 response.raise_for_status()
                 return response.text
             except httpx.HTTPError as exc:
-                print(f"Error sending message to IFTTT: {exc}")
+                logger.error("Error sending message to IFTTT: %s", exc)
                 return None
 
     async def listen_and_process(self) -> None:

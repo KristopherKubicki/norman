@@ -3,6 +3,9 @@ from typing import Any, Dict, Optional
 import httpx
 
 from .base_connector import BaseConnector
+from app.core.logging import setup_logger
+
+logger = setup_logger(__name__)
 
 
 class GitterConnector(BaseConnector):
@@ -25,7 +28,7 @@ class GitterConnector(BaseConnector):
             resp.raise_for_status()
             return resp.text
         except httpx.HTTPError as exc:  # pragma: no cover - network error
-            print(f"Error sending message to Gitter: {exc}")
+            logger.error("Error sending message to Gitter: %s", exc)
             return None
 
     async def listen_and_process(self) -> None:  # pragma: no cover - not implemented

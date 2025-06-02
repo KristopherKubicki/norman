@@ -36,10 +36,10 @@ def delete_message(db: Session, message_id: int) -> None:
         db.delete(message)
         db.commit()
 
-def update_message(db: Session, message_id: int, content: str) -> Message:
+def update_message(db: Session, message_id: int, text: str) -> Optional[Message]:
     message = get_message_by_id(db, message_id)
     if message:
-        message.content = content
+        message.text = text
         db.commit()
         db.refresh(message)
         return message

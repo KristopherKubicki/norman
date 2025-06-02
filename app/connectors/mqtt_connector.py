@@ -7,6 +7,9 @@ except ImportError:  # pragma: no cover - library may not be installed for tests
     mqtt = None
 
 from .base_connector import BaseConnector
+from app.core.logging import setup_logger
+
+logger = setup_logger(__name__)
 
 
 class MQTTConnector(BaseConnector):
@@ -59,7 +62,7 @@ class MQTTConnector(BaseConnector):
             self.client.disconnect()
 
     async def process_incoming(self, message: str):
-        print(f"MQTT received: {message}")
+        logger.info("MQTT received: %s", message)
 
     def _on_message(self, client, userdata, msg):  # pragma: no cover - callback
         asyncio.create_task(self.process_incoming(msg.payload.decode()))
