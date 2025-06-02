@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import QueuePool
 
@@ -15,4 +15,9 @@ engine = create_engine(
     if settings.database_url.startswith("sqlite")
     else {},
 )
+
+if settings.database_url.startswith("sqlite"):
+    with engine.connect() as conn:
+        conn.execute(text("PRAGMA journal_mode=WAL"))
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
