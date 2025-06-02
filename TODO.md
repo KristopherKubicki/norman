@@ -9,7 +9,7 @@
 - [x] Create a minimal Web UI for configuration and management
 - [x] Implement the core logic for handling incoming messages and triggering actions
 - [x] Finalize the configuration system to use `config.yaml` and `config.yaml.dist`
-- [ ] Test and optimize the SQLite database configuration
+ - [x] Test and optimize the SQLite database configuration
 - [x] Develop a system for handling multiple channel connectors
 - [x] Implement a lightweight API for external communication
 - [x] Refactor the current connector model to use dynamic Connectors that read existing hardcoded models as connector_types
@@ -18,7 +18,7 @@
 ## Medium Priority
 
 - [ ] Improve logging and exception handling
-- [ ] Add more unit tests and integration tests
+ - [x] Add more unit tests and integration tests
 - [ ] Implement support for additional GPT models
 - [ ] Write documentation for the project
 - [x] Redesign the bots.html page to be similar to the OpenAI chat window

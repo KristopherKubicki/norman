@@ -57,6 +57,18 @@ def test_sqlite_synchronous_normal():
         assert synchronous == 1
 
 
+def test_sqlite_foreign_keys_on():
+    spec = importlib.util.spec_from_file_location(
+        "temp_db_session", os.path.join("app", "db", "session.py")
+    )
+    db_session = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(db_session)
+    if settings.database_url.startswith("sqlite"):
+        with db_session.engine.connect() as conn:
+            fk = conn.execute(db_session.text("PRAGMA foreign_keys")).scalar()
+        assert fk == 1
+
+
 def test_session_connection_cleanup():
     spec = importlib.util.spec_from_file_location(
         "temp_db_session", os.path.join("app", "db", "session.py")
