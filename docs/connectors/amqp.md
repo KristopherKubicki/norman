@@ -18,4 +18,5 @@ amqp_queue: "norman"
 
 ## Usage
 
-This connector currently only supports sending messages to the configured queue. Listening for incoming messages is not implemented.
+This connector publishes messages to the configured queue and can also process
+messages received from that queue when `listen_and_process` is called.
