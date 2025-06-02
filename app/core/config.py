@@ -157,6 +157,7 @@ class Settings(BaseSettings):
     line_user_id: str
     viber_auth_token: str
     viber_receiver: str
+    connector_status_cache_ttl: int = 30
     coap_oscore_host: str
     coap_oscore_port: int
     opcua_pubsub_endpoint: str

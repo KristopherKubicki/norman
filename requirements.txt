@@ -22,3 +22,4 @@ openai
 tiktoken
 paho-mqtt
 pika
+redis
