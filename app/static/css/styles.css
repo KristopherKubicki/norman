@@ -81,6 +81,11 @@ main {
     cursor: pointer;
   }
 
+  .bot-item.active {
+    background-color: #0d6efd;
+    color: #fff;
+  }
+
 
 textarea {
   width: 60vw; /* or any other width you want */

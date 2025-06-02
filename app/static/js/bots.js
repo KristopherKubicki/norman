@@ -167,6 +167,9 @@ function createBotElement(bot) {
     document.getElementById('send-message').removeAttribute('disabled');
     document.getElementById('input-message').removeAttribute('disabled');
     document.getElementById('input-message').placeholder = 'Enter your message...';
+
+    document.querySelectorAll('.bot-item').forEach(item => item.classList.remove('active'));
+    botElement.classList.add('active');
   });
 
 
