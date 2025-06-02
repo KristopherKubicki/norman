@@ -364,11 +364,10 @@ def test_get_configured_connectors_with_slack(monkeypatch):
     from app.connectors.connector_utils import get_configured_connectors
 
     config = load_config()
-    config['slack_token'] = 'x'
-    config['slack_channel_id'] = 'C1'
+    config['connectors'] = [{"type": "slack", "token": 'x', "channel_id": 'C1'}]
     settings = Settings(**config)
 
     monkeypatch.setattr('app.connectors.connector_utils.get_settings', lambda: settings)
     connectors = get_configured_connectors()
     assert 'slack' in connectors
-    assert isinstance(connectors['slack'], SlackConnector)
+    assert isinstance(connectors['slack'][0], SlackConnector)

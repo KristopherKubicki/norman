@@ -10,159 +10,56 @@ return real metadata about each connector.
 """
 
 import inspect
-from typing import Any, Dict, List
+import pkgutil
+import importlib
+import os
+from typing import Any, Dict, List, Optional
 
 from app.core.config import get_settings, Settings
 
+# Import BaseConnector for subclass checks
 from .base_connector import BaseConnector
-from .discord_connector import DiscordConnector
-from .google_chat_connector import GoogleChatConnector
-from .irc_connector import IRCConnector
-from .slack_connector import SlackConnector
-from .teams_connector import TeamsConnector
-from .telegram_connector import TelegramConnector
-from .webhook_connector import WebhookConnector
-from .rest_callback_connector import RESTCallbackConnector
-from .whatsapp_connector import WhatsAppConnector
-from .matrix_connector import MatrixConnector
-from .signal_connector import SignalConnector
-from .twitch_connector import TwitchConnector
-from .mcp_connector import MCPConnector
-from .smtp_connector import SMTPConnector
-from .mqtt_connector import MQTTConnector
-from .mastodon_connector import MastodonConnector
-from .sms_connector import SMSConnector
-from .steam_chat_connector import SteamChatConnector
-from .xmpp_connector import XMPPConnector
-from .bluesky_connector import BlueskyConnector
-from .facebook_messenger_connector import FacebookMessengerConnector
-from .linkedin_connector import LinkedInConnector
-from .skype_connector import SkypeConnector
-from .rocketchat_connector import RocketChatConnector
-from .mattermost_connector import MattermostConnector
-from .wechat_connector import WeChatConnector
-from .reddit_chat_connector import RedditChatConnector
-from .instagram_dm_connector import InstagramDMConnector
-from .twitter_connector import TwitterConnector
-from .imessage_connector import IMessageConnector
-from .aprs_connector import APRSConnector
-from .ax25_connector import AX25Connector
-from .zapier_connector import ZapierConnector
-from .ifttt_connector import IFTTTConnector
-from .salesforce_connector import SalesforceConnector
-from .github_connector import GitHubConnector
-from .gitter_connector import GitterConnector
-from .jira_service_desk_connector import JiraServiceDeskConnector
-from .tap_snpp_connector import TAPSNPPConnector
-from .acars_connector import ACARSConnector
-from .rfc5425_connector import RFC5425Connector
-from .amqp_connector import AMQPConnector
-from .redis_pubsub_connector import RedisPubSubConnector
-from .kafka_connector import KafkaConnector
-from .nats_connector import NATSConnector
-from .pagerduty_connector import PagerDutyConnector
-from .line_connector import LineConnector
-from .viber_connector import ViberConnector
-from .coap_oscore_connector import CoAPOSCOREConnector
-from .opcua_pubsub_connector import OPCUAPubSubConnector
-from .ais_safety_text_connector import AISSafetyTextConnector
-from .cap_connector import CAPConnector
-from .google_business_rcs_connector import GoogleBusinessRCSConnector
-from .apple_messages_business_connector import AppleMessagesBusinessConnector
-from .intercom_connector import IntercomConnector
-from .snmp_connector import SNMPConnector
-from .tox_connector import ToxConnector
-from .zulip_connector import ZulipConnector
-from .broadcast_connector import BroadcastConnector
 
-from .aws_iot_core_connector import AWSIoTCoreConnector
-from .aws_eventbridge_connector import AWSEventBridgeConnector
-from .google_pubsub_connector import GooglePubSubConnector
-from .azure_eventgrid_connector import AzureEventGridConnector
 # Registry of available connectors keyed by their identifier.
-connector_classes: Dict[str, type] = {
-    "discord": DiscordConnector,
-    "google_chat": GoogleChatConnector,
-    "irc": IRCConnector,
-    "slack": SlackConnector,
-    "teams": TeamsConnector,
-    "telegram": TelegramConnector,
-    "webhook": WebhookConnector,
-    "rest_callback": RESTCallbackConnector,
-    "whatsapp": WhatsAppConnector,
-    "matrix": MatrixConnector,
-    "signal": SignalConnector,
-    "twitch": TwitchConnector,
-    "mcp": MCPConnector,
-    "smtp": SMTPConnector,
-    "mqtt": MQTTConnector,
-    "mastodon": MastodonConnector,
-    "sms": SMSConnector,
-    "steam_chat": SteamChatConnector,
-    "xmpp": XMPPConnector,
-    "bluesky": BlueskyConnector,
-    "facebook_messenger": FacebookMessengerConnector,
-    "linkedin": LinkedInConnector,
-    "skype": SkypeConnector,
-    "rocketchat": RocketChatConnector,
-    "mattermost": MattermostConnector,
-    "wechat": WeChatConnector,
-    "reddit_chat": RedditChatConnector,
-    "instagram_dm": InstagramDMConnector,
-    "twitter": TwitterConnector,
-    "imessage": IMessageConnector,
-    "aprs": APRSConnector,
-    "ax25": AX25Connector,
-    "zapier": ZapierConnector,
-    "ifttt": IFTTTConnector,
-    "salesforce": SalesforceConnector,
-    "github": GitHubConnector,
-    "gitter": GitterConnector,
-    "jira_service_desk": JiraServiceDeskConnector,
-    "tap_snpp": TAPSNPPConnector,
-    "acars": ACARSConnector,
-    "aws_iot_core": AWSIoTCoreConnector,
-    "aws_eventbridge": AWSEventBridgeConnector,
-    "google_pubsub": GooglePubSubConnector,
-    "azure_eventgrid": AzureEventGridConnector,
-    "rfc5425": RFC5425Connector,
-    "amqp": AMQPConnector,
-    "redis_pubsub": RedisPubSubConnector,
-    "kafka": KafkaConnector,
-    "nats": NATSConnector,
-    "pagerduty": PagerDutyConnector,
-    "line": LineConnector,
-    "viber": ViberConnector,
-    "coap_oscore": CoAPOSCOREConnector,
-    "opcua_pubsub": OPCUAPubSubConnector,
-    "ais_safety_text": AISSafetyTextConnector,
-    "cap": CAPConnector,
-    "google_business_rcs": GoogleBusinessRCSConnector,
-    "apple_messages_business": AppleMessagesBusinessConnector,
-    "intercom": IntercomConnector,
-    "snmp": SNMPConnector,
-    "tox": ToxConnector,
-    "zulip": ZulipConnector,
-    "broadcast": BroadcastConnector,
-}
+connector_classes: Dict[str, type] = {}
 
 
-def get_connector(connector_name: str) -> BaseConnector:
-    """Return an instantiated connector configured from settings."""
+def _discover_connectors() -> None:
+    """Populate :data:`connector_classes` by scanning the package."""
+
+    package = __name__.rsplit(".", 1)[0]
+    package_path = os.path.dirname(__file__)
+    for _, mod_name, _ in pkgutil.iter_modules([package_path]):
+        if not mod_name.endswith("_connector"):
+            continue
+        module = importlib.import_module(f"{package}.{mod_name}")
+        for _, obj in inspect.getmembers(module, inspect.isclass):
+            if issubclass(obj, BaseConnector) and obj is not BaseConnector:
+                connector_classes[obj.id] = obj
+
+
+_discover_connectors()
+
+
+def get_connector(connector_name: str, config: Optional[Dict[str, Any]] = None) -> BaseConnector:
+    """Return an instantiated connector."""
 
     if connector_name not in connector_classes:
         raise ValueError(f"Invalid connector name: {connector_name}")
 
     connector_class = connector_classes[connector_name]
 
-    settings = get_settings()
-    signature = inspect.signature(connector_class.__init__)
-    kwargs: Dict[str, Any] = {}
-    for param in signature.parameters.values():
-        if param.name == "self":
-            continue
-        setting_name = f"{connector_name}_{param.name}"
-        kwargs[param.name] = getattr(settings, setting_name, None)
+    if config is None:
+        settings = get_settings()
+        signature = inspect.signature(connector_class.__init__)
+        kwargs: Dict[str, Any] = {}
+        for param in signature.parameters.values():
+            if param.name == "self":
+                continue
+            setting_name = f"{connector_name}_{param.name}"
+            kwargs[param.name] = getattr(settings, setting_name, None)
+    else:
+        kwargs = config
 
     return connector_class(**kwargs)
 
@@ -178,31 +75,53 @@ def get_connectors_data() -> List[Dict[str, Any]]:
     settings = get_settings()
     connectors_data: List[Dict[str, Any]] = []
 
-    for name, connector_cls in connector_classes.items():
-        signature = inspect.signature(connector_cls.__init__)
-        fields = [p.name for p in signature.parameters.values() if p.name != "self"]
+    if settings.connectors:
+        for item in settings.connectors:
+            name = item.get("type")
+            connector_cls = connector_classes.get(name)
+            if not connector_cls:
+                continue
+            signature = inspect.signature(connector_cls.__init__)
+            fields = [p.name for p in signature.parameters.values() if p.name != "self"]
+            configured = all(
+                item.get(f) not in (None, "", f"your_{name}_{f}") for f in fields
+            )
+            connectors_data.append(
+                {
+                    "id": connector_cls.id,
+                    "name": connector_cls.name,
+                    "status": "configured" if configured else "missing_config",
+                    "fields": fields,
+                    "last_message_sent": None,
+                    "enabled": configured,
+                }
+            )
+    else:
+        for name, connector_cls in connector_classes.items():
+            signature = inspect.signature(connector_cls.__init__)
+            fields = [p.name for p in signature.parameters.values() if p.name != "self"]
 
-        configured = True
-        for field in fields:
-            setting_name = f"{name}_{field}"
-            value = getattr(settings, setting_name, None)
-            if value in (None, "", f"your_{setting_name}"):
-                configured = False
-        connectors_data.append(
-            {
-                "id": connector_cls.id,
-                "name": connector_cls.name,
-                "status": "configured" if configured else "missing_config",
-                "fields": fields,
-                "last_message_sent": None,
-                "enabled": configured,
-            }
-        )
+            configured = True
+            for field in fields:
+                setting_name = f"{name}_{field}"
+                value = getattr(settings, setting_name, None)
+                if value in (None, "", f"your_{setting_name}"):
+                    configured = False
+            connectors_data.append(
+                {
+                    "id": connector_cls.id,
+                    "name": connector_cls.name,
+                    "status": "configured" if configured else "missing_config",
+                    "fields": fields,
+                    "last_message_sent": None,
+                    "enabled": configured,
+                }
+            )
 
     return connectors_data
 
 
-def _is_configured(name: str, settings: Settings) -> bool:
+def _is_configured(name: str, settings: Settings, config: Optional[Dict[str, Any]] = None) -> bool:
     """Return ``True`` if the connector ``name`` is fully configured."""
 
     if name not in connector_classes:
@@ -210,28 +129,49 @@ def _is_configured(name: str, settings: Settings) -> bool:
 
     connector_cls = connector_classes[name]
     signature = inspect.signature(connector_cls.__init__)
-    for param in signature.parameters.values():
-        if param.name == "self":
-            continue
-        if param.default is not inspect._empty and param.default is None:
-            # optional parameter
-            continue
-        setting_name = f"{name}_{param.name}"
-        value = getattr(settings, setting_name, None)
-        if value in (None, "") or str(value).startswith("your_"):
-            return False
+    if config is None:
+        for param in signature.parameters.values():
+            if param.name == "self":
+                continue
+            if param.default is not inspect._empty and param.default is None:
+                continue
+            setting_name = f"{name}_{param.name}"
+            value = getattr(settings, setting_name, None)
+            if value in (None, "") or str(value).startswith("your_"):
+                return False
+    else:
+        for param in signature.parameters.values():
+            if param.name == "self":
+                continue
+            if param.default is not inspect._empty and param.default is None:
+                continue
+            value = config.get(param.name)
+            if value in (None, "") or str(value).startswith("your_"):
+                return False
     return True
 
 
-def get_configured_connectors() -> Dict[str, BaseConnector]:
-    """Return a mapping of configured connector instances keyed by name."""
+def get_configured_connectors() -> Dict[str, List[BaseConnector]]:
+    """Return mapping of configured connector instances keyed by type."""
 
     settings = get_settings()
-    configured: Dict[str, BaseConnector] = {}
+    configured: Dict[str, List[BaseConnector]] = {}
 
-    for name in connector_classes:
-        if _is_configured(name, settings):
-            configured[name] = get_connector(name)
+    if settings.connectors:
+        for item in settings.connectors:
+            name = item.get("type")
+            config = {k: v for k, v in item.items() if k != "type"}
+            if not _is_configured(name, settings, config):
+                continue
+            try:
+                conn = get_connector(name, config)
+            except Exception:  # pragma: no cover
+                continue
+            configured.setdefault(name, []).append(conn)
+    else:
+        for name in connector_classes:
+            if _is_configured(name, settings):
+                configured.setdefault(name, []).append(get_connector(name))
 
     return configured
 

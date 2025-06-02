@@ -1,5 +1,5 @@
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 from pydantic import BaseSettings, validator
 
 # should this move to schemas?
@@ -170,6 +170,7 @@ class Settings(BaseSettings):
     zulip_site_url: str
     zulip_stream: str
     zulip_topic: str
+    connectors: List[Dict[str, Any]] = []
     broadcast_connectors: str = ""
     openai_api_key: Optional[str]
     openai_default_model: str = "gpt-3.5-turbo"
@@ -271,12 +272,16 @@ def load_config():
     # Read the config from the dist file
     with open("config.yaml.dist", "r") as dist_file:
         config = yaml.safe_load(dist_file)
+    if "connectors" not in config:
+        config["connectors"] = []
 
     # If the config.yaml file exists, merge its contents with the dist config
     if os.path.exists("config.yaml"):
         with open("config.yaml", "r") as custom_file:
             custom_config = yaml.safe_load(custom_file)
             config.update(custom_config)
+    if "connectors" not in config:
+        config["connectors"] = []
 
     return config
 

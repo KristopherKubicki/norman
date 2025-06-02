@@ -20,8 +20,8 @@ Norman supports various chat platforms through connectors. To create a new conne
    `True`.  Override this if your connector can perform a meaningful health
    check.
 
-3. Register your new connector in `app/connectors/connector_utils.py` by adding
-   it to the `connector_classes` dictionary.
+3. Place the new module inside the `app/connectors` package with a filename
+   ending in `_connector.py`. Norman will automatically discover it.
 
 4. Update the configuration files to include any necessary settings for your connector.
 
