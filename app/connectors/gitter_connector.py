@@ -1,6 +1,6 @@
 from typing import Any, Dict, Optional
 
-import requests
+import httpx
 
 from .base_connector import BaseConnector
 
@@ -20,10 +20,11 @@ class GitterConnector(BaseConnector):
         url = f"https://api.gitter.im/v1/rooms/{self.room_id}/chatMessages"
         headers = {"Authorization": f"Bearer {self.token}"}
         try:
-            resp = requests.post(url, json={"text": text}, headers=headers)
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(url, json={"text": text}, headers=headers)
             resp.raise_for_status()
             return resp.text
-        except requests.RequestException as exc:  # pragma: no cover - network error
+        except httpx.HTTPError as exc:  # pragma: no cover - network error
             print(f"Error sending message to Gitter: {exc}")
             return None
 

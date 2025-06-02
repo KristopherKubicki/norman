@@ -1,5 +1,5 @@
 import asyncio
-import requests
+import httpx
 from typing import Any, Dict, Optional
 
 from .base_connector import BaseConnector
@@ -29,13 +29,14 @@ class SalesforceConnector(BaseConnector):
             "Content-Type": "application/json",
         }
 
-    def send_message(self, data: Dict[str, Any]) -> Optional[str]:
+    async def send_message(self, data: Dict[str, Any]) -> Optional[str]:
         url = f"{self.instance_url}/{self.endpoint}"
         try:
-            resp = requests.post(url, json=data, headers=self._headers())
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(url, json=data, headers=self._headers())
             resp.raise_for_status()
             return resp.text
-        except requests.RequestException as exc:  # pragma: no cover - network
+        except httpx.HTTPError as exc:  # pragma: no cover - network
             print(f"Error sending message to Salesforce: {exc}")
             return None
 
@@ -44,24 +45,29 @@ class SalesforceConnector(BaseConnector):
 
         last_id: Optional[str] = None
         url = f"{self.instance_url}/services/data/v57.0/sobjects/{self.endpoint}"
-        while True:
-            try:
-                resp = requests.get(url, headers=self._headers(), params={"_lastid": last_id} if last_id else None)
-                resp.raise_for_status()
-                data = resp.json().get("records", [])
-            except requests.RequestException as exc:  # pragma: no cover - network
-                print(f"Error fetching Salesforce records: {exc}")
+        async with httpx.AsyncClient() as client:
+            while True:
+                try:
+                    resp = await client.get(
+                        url,
+                        headers=self._headers(),
+                        params={"_lastid": last_id} if last_id else None,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json().get("records", [])
+                except httpx.HTTPError as exc:  # pragma: no cover - network
+                    print(f"Error fetching Salesforce records: {exc}")
+                    await asyncio.sleep(30)
+                    continue
+
+                for record in data:
+                    last_id = record.get("Id")
+                    result = self.process_incoming(record)
+                    if asyncio.iscoroutine(result):
+                        await result
+
                 await asyncio.sleep(30)
-                continue
-
-            for record in data:
-                last_id = record.get("Id")
-                result = self.process_incoming(record)
-                if asyncio.iscoroutine(result):
-                    await result
-
-            await asyncio.sleep(30)
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
-        self.send_message(message)
+        await self.send_message(message)
         return message

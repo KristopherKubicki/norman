@@ -1,6 +1,6 @@
 """WhatsApp connector implemented using the Twilio API."""
 
-import requests
+import httpx
 from typing import Any, Dict, Optional
 
 from .base_connector import BaseConnector
@@ -30,7 +30,7 @@ class WhatsAppConnector(BaseConnector):
             f"https://api.twilio.com/2010-04-01/Accounts/{self.account_sid}/Messages.json"
         )
 
-    def send_message(self, text: str) -> Optional[str]:
+    async def send_message(self, text: str) -> Optional[str]:
         """Send ``text`` to the configured WhatsApp number via Twilio."""
         data = {
             "From": f"whatsapp:{self.from_number}",
@@ -38,12 +38,13 @@ class WhatsAppConnector(BaseConnector):
             "Body": text,
         }
         try:
-            resp = requests.post(
-                self._url(), data=data, auth=(self.account_sid, self.auth_token)
-            )
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    self._url(), data=data, auth=(self.account_sid, self.auth_token)
+                )
             resp.raise_for_status()
             return resp.text
-        except requests.RequestException as exc:  # pragma: no cover - network
+        except httpx.HTTPError as exc:  # pragma: no cover - network
             print(f"Error sending WhatsApp message: {exc}")
             return None
 

@@ -1,7 +1,7 @@
 """Connector for Intercom conversations."""
 
 from typing import Any, Dict, Optional
-import requests
+import httpx
 from .base_connector import BaseConnector
 
 
@@ -17,7 +17,7 @@ class IntercomConnector(BaseConnector):
         self.app_id = app_id
         self.api_url = "https://api.intercom.io/messages"
 
-    def send_message(self, text: str) -> Optional[str]:
+    async def send_message(self, text: str) -> Optional[str]:
         headers = {
             "Authorization": f"Bearer {self.access_token}",
             "Accept": "application/json",
@@ -25,10 +25,11 @@ class IntercomConnector(BaseConnector):
         }
         payload = {"message_type": "inapp", "body": text, "app_id": self.app_id}
         try:
-            resp = requests.post(self.api_url, json=payload, headers=headers)
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(self.api_url, json=payload, headers=headers)
             resp.raise_for_status()
             return resp.text
-        except requests.RequestException as exc:  # pragma: no cover - network
+        except httpx.HTTPError as exc:  # pragma: no cover - network
             print(f"Error sending Intercom message: {exc}")
             return None
 

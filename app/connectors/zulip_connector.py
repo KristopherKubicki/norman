@@ -1,4 +1,4 @@
-import requests
+import httpx
 from typing import Any, Dict, Optional
 
 from .base_connector import BaseConnector
@@ -18,7 +18,7 @@ class ZulipConnector(BaseConnector):
         self.stream = stream
         self.topic = topic
 
-    def send_message(self, text: str) -> Optional[str]:
+    async def send_message(self, text: str) -> Optional[str]:
         url = f"{self.site_url}/api/v1/messages"
         data = {
             "type": "stream",
@@ -27,10 +27,11 @@ class ZulipConnector(BaseConnector):
             "content": text,
         }
         try:
-            resp = requests.post(url, data=data, auth=(self.email, self.api_key))
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(url, data=data, auth=(self.email, self.api_key))
             resp.raise_for_status()
             return resp.text
-        except requests.RequestException as exc:  # pragma: no cover - network
+        except httpx.HTTPError as exc:  # pragma: no cover - network
             print(f"Error sending Zulip message: {exc}")
             return None
 
@@ -44,8 +45,8 @@ class ZulipConnector(BaseConnector):
     def is_connected(self) -> bool:
         url = f"{self.site_url}/api/v1/server_settings"
         try:
-            resp = requests.get(url, auth=(self.email, self.api_key))
+            resp = httpx.get(url, auth=(self.email, self.api_key))
             resp.raise_for_status()
             return True
-        except requests.RequestException:
+        except httpx.HTTPError:
             return False

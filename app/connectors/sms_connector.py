@@ -1,5 +1,5 @@
 from typing import Any, Dict, Optional
-import requests
+import httpx
 
 from .base_connector import BaseConnector
 
@@ -27,17 +27,20 @@ class SMSConnector(BaseConnector):
     def _url(self) -> str:
         return f"https://api.twilio.com/2010-04-01/Accounts/{self.account_sid}/Messages.json"
 
-    def send_message(self, text: str) -> Optional[str]:
+    async def send_message(self, text: str) -> Optional[str]:
         data = {
             "From": self.from_number,
             "To": self.to_number,
             "Body": text,
         }
         try:
-            resp = requests.post(self._url(), data=data, auth=(self.account_sid, self.auth_token))
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    self._url(), data=data, auth=(self.account_sid, self.auth_token)
+                )
             resp.raise_for_status()
             return resp.text
-        except requests.RequestException as exc:  # pragma: no cover - network
+        except httpx.HTTPError as exc:  # pragma: no cover - network
             print(f"Error sending SMS: {exc}")
             return None
 

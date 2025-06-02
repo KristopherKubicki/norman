@@ -1,7 +1,7 @@
 """Connector for Apple Messages for Business."""
 
 from typing import Any, Dict, Optional
-import requests
+import httpx
 from .base_connector import BaseConnector
 
 
@@ -17,14 +17,15 @@ class AppleMessagesBusinessConnector(BaseConnector):
         self.sender_id = sender_id
         self.api_url = "https://api.apple.com/business/v1/messages"
 
-    def send_message(self, text: str) -> Optional[str]:
+    async def send_message(self, text: str) -> Optional[str]:
         headers = {"Authorization": f"Bearer {self.access_token}"}
         payload = {"sender": {"id": self.sender_id}, "message": {"text": text}}
         try:
-            resp = requests.post(self.api_url, json=payload, headers=headers)
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(self.api_url, json=payload, headers=headers)
             resp.raise_for_status()
             return resp.text
-        except requests.RequestException as exc:  # pragma: no cover - network
+        except httpx.HTTPError as exc:  # pragma: no cover - network
             print(f"Error sending Apple Messages for Business: {exc}")
             return None
 
