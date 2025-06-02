@@ -61,6 +61,14 @@ async def bots(request: Request):
         {"request": request, "active_page": "bots"},
     )
 
+
+async def credentials(request: Request):
+    return templates.TemplateResponse(
+        request,
+        "credentials.html",
+        {"request": request, "active_page": "credentials"},
+    )
+
 async def login(request: Request):
     return templates.TemplateResponse(
         request,

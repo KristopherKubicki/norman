@@ -267,6 +267,41 @@ import shutil
 import secrets
 import yaml
 
+ENC_PREFIX = "ENC:"
+
+
+def _decrypt_value(value: Any, manager) -> Any:
+    if isinstance(value, str) and value.startswith(ENC_PREFIX):
+        try:
+            return manager.decrypt(value[len(ENC_PREFIX) :])
+        except Exception:
+            return value
+    if isinstance(value, dict):
+        return {k: _decrypt_value(v, manager) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_decrypt_value(v, manager) for v in value]
+    return value
+
+
+def decrypt_config(data: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        from .encryption import EncryptionManager
+    except Exception:
+        return data
+    manager = EncryptionManager()
+    return {k: _decrypt_value(v, manager) for k, v in data.items()}
+
+
+def save_config(data: Dict[str, Any]) -> None:
+    with open("config.yaml", "w") as f:
+        yaml.safe_dump(data, f)
+
+
+def reload_settings() -> None:
+    global config_data, settings
+    config_data = load_config()
+    settings = Settings(**config_data)
+
 
 def ensure_user_config():
     """Create config.yaml with random credentials on first run."""
@@ -301,6 +336,7 @@ def load_config():
         with open("config.yaml", "r") as custom_file:
             custom_config = yaml.safe_load(custom_file)
             config.update(custom_config)
+    config = decrypt_config(config)
     if "connectors" not in config:
         config["connectors"] = []
 

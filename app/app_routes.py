@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi import status
 from fastapi.security import OAuth2PasswordRequestForm
@@ -14,7 +14,7 @@ from app.schemas.user import UserAuthenticate, UserCreate
 from app.schemas.bot import Bot, BotCreate, BotOut
 from app.schemas.message import Message
 from app.schemas.interaction import InteractionCreate
-from app.core.config import settings
+from app.core.config import settings, save_config, ensure_user_config
 from app.core.security import create_access_token
 from app.crud.user import authenticate_user
 from app.crud.user import get_user_by_email, create_user
@@ -32,10 +32,12 @@ import requests
 import jwt
 from urllib.parse import urlencode
 import traceback
+import yaml
 
-from .views import home, connectors, filters, channels, process_message, bots, messages, login, logout, get_bots
+from .views import home, connectors, filters, channels, process_message, bots, messages, login, logout, get_bots, credentials
 from app.connectors.connector_utils import get_connector
 from app.schemas.connector import ConnectorCreate, ConnectorUpdate, Connector
+from app.schemas.credential import SlackCredentialUpdate
 
 current_dir = os.path.dirname(os.path.realpath(__file__))
 app_routes = APIRouter()
@@ -71,6 +73,10 @@ async def channels_endpoint(request: Request):
 @app_routes.get("/bots.html")
 async def bots_endpoint(request: Request):
     return await bots(request)
+
+@app_routes.get("/credentials.html")
+async def credentials_endpoint(request: Request):
+    return await credentials(request)
 
 @app_routes.get("/messages_log.html")
 async def messages_endpoint(request: Request):
@@ -109,7 +115,7 @@ async def get_messages_endpoint(
     bot_id: int,
     limit: int = 100,
     offset: int = 0,
-    cursor: int | None = None,
+    cursor: Optional[int] = None,
     db: Session = Depends(get_async_db),
 ):
     """Return messages for a bot with optional pagination."""
@@ -222,6 +228,25 @@ async def test_connector_endpoint(connector_id: int, db: Session = Depends(get_a
     instance = get_connector(connector.connector_type, connector.config or {})
     status_value = "up" if instance.is_connected() else "down"
     return {"status": status_value}
+
+
+@app_routes.post("/api/credentials/slack")
+async def update_slack_credentials(creds: SlackCredentialUpdate):
+    ensure_user_config()
+    with open("config.yaml", "r") as f:
+        cfg = yaml.safe_load(f)
+    try:
+        from app.core.encryption import EncryptionManager
+        manager = EncryptionManager()
+        cfg["slack_token"] = f"ENC:{manager.encrypt(creds.token)}"
+        cfg["slack_channel_id"] = f"ENC:{manager.encrypt(creds.channel_id)}"
+    except Exception:
+        cfg["slack_token"] = creds.token
+        cfg["slack_channel_id"] = creds.channel_id
+    save_config(cfg)
+    settings.slack_token = creds.token
+    settings.slack_channel_id = creds.channel_id
+    return {"status": "success"}
 
 
 @app_routes.get("/api/connectors/{connector_id}/status")
