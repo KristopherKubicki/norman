@@ -3,6 +3,25 @@
 {% block content %}
 <h1>Connectors</h1>
 
+<div class="card mb-4">
+  <div class="card-body">
+    <h5 class="card-title">Status</h5>
+    <div class="table-responsive">
+      <table class="table" id="connector-status-table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Status</th>
+            <th>Last Sent</th>
+            <th>Last Received</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
 <form id="add-connector-form" class="card card-body mb-4">
   <div class="row g-2 align-items-end">
     <div class="col-sm">

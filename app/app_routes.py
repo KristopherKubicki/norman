@@ -231,7 +231,12 @@ async def connector_status_endpoint(connector_id: int, db: Session = Depends(get
         raise HTTPException(status_code=404, detail="Connector not found")
     instance = get_connector(connector.connector_type, connector.config or {})
     status_value = "up" if instance.is_connected() else "down"
-    return {"status": status_value}
+    return {
+        "status": status_value,
+        "last_message_sent": connector.last_message_sent.isoformat() if connector.last_message_sent else None,
+        "last_message_received": connector.last_message_received.isoformat() if connector.last_message_received else None,
+        "last_successful_message": connector.last_successful_message.isoformat() if connector.last_successful_message else None,
+    }
 
 @app_routes.post("/token", response_model=Token)
 async def token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_async_db)):

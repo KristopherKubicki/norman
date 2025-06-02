@@ -2,6 +2,7 @@
 
 document.addEventListener('DOMContentLoaded', () => {
   fetchConnectorsAndRender();
+  startStatusPolling();
 
   const addForm = document.getElementById('add-connector-form');
   if (addForm) {
@@ -48,6 +49,7 @@ async function fetchConnectorsAndRender() {
       el.querySelector('.connector-status').textContent = 'unknown';
     }
   }
+  renderStatusTable(connectors);
 }
 
 async function getConnectors() {
@@ -147,4 +149,51 @@ function createConnectorElement(connector) {
   body.appendChild(testBtn);
   card.appendChild(body);
   return card;
+}
+
+function startStatusPolling() {
+  fetchStatuses();
+  setInterval(fetchStatuses, 10000);
+}
+
+async function fetchStatuses() {
+  const connectors = await getConnectors();
+  renderStatusTable(connectors);
+  const cards = document.querySelectorAll('.connector-status');
+  for (const connector of connectors) {
+    try {
+      const status = await getConnectorStatus(connector.id);
+      const card = Array.from(cards).find(c => c.closest('.card').querySelector('h5').textContent.startsWith(connector.name));
+      if (card) {
+        card.textContent = status.status;
+      }
+    } catch (e) {
+      const card = Array.from(cards).find(c => c.closest('.card').querySelector('h5').textContent.startsWith(connector.name));
+      if (card) {
+        card.textContent = 'unknown';
+      }
+    }
+  }
+}
+
+function renderStatusTable(connectors) {
+  const tbody = document.querySelector('#connector-status-table tbody');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+  connectors.forEach(async (c) => {
+    let status;
+    try {
+      status = await getConnectorStatus(c.id);
+    } catch (e) {
+      status = { status: 'unknown' };
+    }
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${c.name} (${c.connector_type})</td>
+      <td>${status.status}</td>
+      <td>${status.last_message_sent || ''}</td>
+      <td>${status.last_message_received || ''}</td>
+    `;
+    tbody.appendChild(tr);
+  });
 }
