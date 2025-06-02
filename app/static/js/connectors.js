@@ -1,5 +1,22 @@
 // connectors.js - dynamic connector management
 
+function showError(input, message) {
+  input.classList.add('is-invalid');
+  let feedback = input.parentNode.querySelector('.invalid-feedback');
+  if (!feedback) {
+    feedback = document.createElement('div');
+    feedback.className = 'invalid-feedback';
+    input.parentNode.appendChild(feedback);
+  }
+  feedback.textContent = message;
+}
+
+function clearError(input) {
+  input.classList.remove('is-invalid');
+  const feedback = input.parentNode.querySelector('.invalid-feedback');
+  if (feedback) feedback.textContent = '';
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   fetchConnectorsAndRender();
 
@@ -10,18 +27,35 @@ document.addEventListener('DOMContentLoaded', () => {
       const nameInput = document.getElementById('connector-name');
       const typeInput = document.getElementById('connector-type');
       const configInput = document.getElementById('connector-config');
+      clearError(nameInput);
+      clearError(typeInput);
+      clearError(configInput);
+
+      const name = nameInput.value.trim();
+      const type = typeInput.value.trim();
       let config = {};
+
+      if (!name) {
+        showError(nameInput, 'Name is required');
+        return;
+      }
+
+      if (!type) {
+        showError(typeInput, 'Type is required');
+        return;
+      }
+
       if (configInput.value.trim()) {
         try {
           config = JSON.parse(configInput.value);
         } catch (e) {
-          alert('Config must be valid JSON');
+          showError(configInput, 'Config must be valid JSON');
           return;
         }
       }
       const connector = await createConnector({
-        name: nameInput.value.trim(),
-        connector_type: typeInput.value.trim(),
+        name,
+        connector_type: type,
         config: config
       });
       document.querySelector('.connectors-container')
