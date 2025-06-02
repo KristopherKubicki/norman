@@ -70,6 +70,7 @@ The following connectors are currently supported:
 61. [Azure Event Grid](./connectors/azure_eventgrid.md)
 62. [SMS](./connectors/sms.md)
 63. [Broadcast](./connectors/broadcast.md)
+64. [X.com](./connectors/xcom.md)
 
 
 ## Usage

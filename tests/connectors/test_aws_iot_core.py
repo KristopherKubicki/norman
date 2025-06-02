@@ -26,3 +26,10 @@ def test_send_message_no_boto3(monkeypatch):
     with pytest.raises(RuntimeError):
         asyncio.get_event_loop().run_until_complete(connector.send_message("hi"))
 
+
+def test_listen_requires_mqtt(monkeypatch):
+    monkeypatch.setattr(mod, "mqtt", None)
+    connector = mod.AWSIoTCoreConnector(region="us", topic="t", endpoint="https://e")
+    with pytest.raises(RuntimeError):
+        asyncio.get_event_loop().run_until_complete(connector.listen_and_process())
+

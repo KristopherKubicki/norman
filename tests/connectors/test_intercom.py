@@ -46,3 +46,27 @@ def test_send_message_error(monkeypatch):
     connector = IntercomConnector("TOKEN", "APP")
     result = asyncio.get_event_loop().run_until_complete(connector.send_message("hi"))
     assert result is None
+
+
+class DummyGetResponse:
+    def __init__(self, status=200):
+        self.status_code = status
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError("error", request=None, response=None)
+
+
+def test_is_connected_success(monkeypatch):
+    monkeypatch.setattr(httpx, "get", lambda url, headers=None: DummyGetResponse())
+    connector = IntercomConnector("TOKEN", "APP")
+    assert connector.is_connected()
+
+
+def test_is_connected_error(monkeypatch):
+    def raise_err(url, headers=None):
+        raise httpx.HTTPError("boom")
+
+    monkeypatch.setattr(httpx, "get", raise_err)
+    connector = IntercomConnector("TOKEN", "APP")
+    assert not connector.is_connected()

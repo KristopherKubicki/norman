@@ -1,6 +1,6 @@
 # TAP/SNPP Connector
 
-The TAP/SNPP connector is a placeholder for sending pages using the Telocator Alphanumeric Protocol or Simple Network Paging Protocol.
+The TAP/SNPP connector sends pages using the Telocator Alphanumeric Protocol or the Simple Network Paging Protocol.
 
 ## Configuration
 
@@ -14,4 +14,5 @@ tap_snpp_password: "your_tap_snpp_password"
 
 ## Usage
 
-This connector currently contains placeholder methods for sending and receiving pages.
+Messages are delivered over a TCP connection to the configured ``host`` and ``port``.
+The connector does not currently implement inbound paging support.

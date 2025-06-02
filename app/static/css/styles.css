@@ -30,6 +30,11 @@ main {
     margin: 0 auto;
 }
 
+.hero {
+    text-align: center;
+    padding: 4rem 1rem;
+}
+
 
 .messages-log {
     height: 500px;

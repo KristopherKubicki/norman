@@ -1,6 +1,6 @@
 # OPC UA PubSub Connector
 
-This connector acts as a placeholder for publishing messages via OPC UA PubSub.
+This connector publishes messages via OPC UA PubSub using UDP datagrams.
 
 ## Configuration
 
@@ -10,4 +10,6 @@ opcua_pubsub_endpoint: "your_opcua_pubsub_endpoint"
 
 ## Usage
 
-Message publishing and subscription are not yet implemented.
+Messages are transmitted as UDP datagrams to the configured ``endpoint``. The
+connector can also listen on the endpoint's port for incoming datagrams and
+forward them to Norman.

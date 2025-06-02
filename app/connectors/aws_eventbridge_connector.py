@@ -37,6 +37,16 @@ class AWSEventBridgeConnector(BaseConnector):
         }
         return self.client.put_events(Entries=[entry])
 
+    def is_connected(self) -> bool:
+        """Return ``True`` if the configured event bus is reachable."""
+        if not boto3:
+            return False
+        try:
+            self.client.describe_event_bus(Name=self.event_bus_name)
+            return True
+        except Exception:  # pragma: no cover - network/permission issues
+            return False
+
     async def listen_and_process(self) -> None:
         """EventBridge does not support listening for messages."""
         return None

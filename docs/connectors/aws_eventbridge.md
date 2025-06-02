@@ -19,3 +19,7 @@ aws_eventbridge_event_bus_name: "default"
 ## Usage
 
 Incoming messages are not supported. The connector only publishes events.
+
+The connector checks connectivity by calling `DescribeEventBus` on startup when
+`is_connected()` is invoked. If the credentials or event bus are incorrect, this
+method returns `False`.
