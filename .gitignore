@@ -47,3 +47,5 @@ config.yaml
 # ignore user databases
 db/*.db
 coverage.xml
+node_modules/
+app/static/dist/

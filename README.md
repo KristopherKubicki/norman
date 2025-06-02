@@ -85,12 +85,17 @@ chmod +x generate_key.sh
 
 You can also edit `config.yaml` manually to provide your own values. Be sure to add your OpenAI key under `openai_api_key`.
 
-6. Run the application:
+6. Build the frontend assets with Webpack (requires Node.js):
+```bash
+npm install
+npm run build
+```
+7. Run the application:
 ```
 python main.py
 ````
 
-7. Open the API documentation in your browser: [http://localhost:8000/docs](http://localhost:8000/docs)
+8. Open the API documentation in your browser: [http://localhost:8000/docs](http://localhost:8000/docs)
 
 For more information, refer to the [documentation](docs/) and the [contributing guidelines](CONTRIBUTING.md).
 
@@ -118,6 +123,14 @@ pytest --cov=./ -vv
 ## Deployment
 
 Norman can be deployed on various platforms, such as on a local server or a cloud provider. For detailed deployment instructions, please refer to our [Deployment](docs/deployment.md) guide.
+
+## Frontend Bundling
+
+The web UI assets are built using Webpack. The configuration uses multiple entry
+points so the core layout and authentication code are bundled separately from
+rarely used views. Route-level modules like the Settings page and Audit Log are
+lazily loaded via `import()` to keep the initial bundle under 50 kB when
+gzipped. Run `npm run build` to generate the bundles in `app/static/dist`.
 
 ## Architecture
 

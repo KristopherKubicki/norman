@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Audit Log</h1>
+<p>Placeholder audit log page.</p>
+{% endblock %}
+{% block scripts %}
+<script src="/static/dist/views.bundle.js" defer></script>
+<script>
+  document.body.dataset.view = 'audit';
+</script>
+{% endblock %}

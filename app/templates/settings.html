@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Settings</h1>
+<p>Placeholder settings page.</p>
+{% endblock %}
+{% block scripts %}
+<script src="/static/dist/views.bundle.js" defer></script>
+<script>
+  document.body.dataset.view = 'settings';
+</script>
+{% endblock %}
