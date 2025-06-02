@@ -130,6 +130,10 @@ class Settings(BaseSettings):
     aws_iot_core_region: str
     aws_iot_core_topic: str
     aws_iot_core_endpoint: str
+    aws_iot_core_client_id: str
+    aws_iot_core_cert_path: str
+    aws_iot_core_key_path: str
+    aws_iot_core_ca_path: str
     azure_eventgrid_endpoint: str
     azure_eventgrid_key: str
     google_pubsub_project_id: str
