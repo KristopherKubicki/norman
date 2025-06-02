@@ -156,3 +156,27 @@ body.dark-mode .card {
     background-color: #1e1e1e;
     color: #f8f9fa;
 }
+
+/* Placeholder shimmer effect */
+.placeholder-message {
+  position: relative;
+  overflow: hidden;
+  background-color: #e0e0e0;
+  border-radius: 0.25rem;
+  margin-bottom: 1rem;
+}
+.placeholder-message::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -150px;
+  width: 150px;
+  height: 100%;
+  background: linear-gradient(90deg, rgba(255,255,255,0), rgba(255,255,255,0.4), rgba(255,255,255,0));
+  animation: placeholder-shimmer 1.2s infinite;
+}
+@keyframes placeholder-shimmer {
+  0% { left: -150px; }
+  100% { left: 100%; }
+}
+
