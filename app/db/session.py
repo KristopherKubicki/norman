@@ -33,5 +33,6 @@ if settings.database_url.startswith("sqlite"):
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
     with engine.connect() as conn:
         conn.execute(text("PRAGMA journal_mode=WAL"))
+        conn.execute(text("PRAGMA synchronous=NORMAL"))
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
