@@ -6,6 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
 [![Python 3.8](https://img.shields.io/badge/python-3.8-blue.svg)](https://www.python.org/)
 [![Python 3.9](https://img.shields.io/badge/python-3.9-blue.svg)](https://www.python.org/)
+[![Python 3.10](https://img.shields.io/badge/python-3.10-blue.svg)](https://www.python.org/)
 [![GitHub release](https://img.shields.io/github/v/release/KristopherKubicki/norman.svg)](https://github.com/KristopherKubicki/norman/releases)
 
 Norman is an open-source chatbot that leverages OpenAI's GPT models to assist and automate communication on various chat platforms like Slack and IRC. The project is built with FastAPI, SQLite, and SQLAlchemy, and is designed to be easily extensible with additional connectors.
@@ -51,7 +52,7 @@ Norman is an open-source chatbot that leverages OpenAI's GPT models to assist an
 
 ### Prerequisites
 
-- Python 3.8 or 3.9
+- Python 3.8, 3.9, or 3.10
 - pip
 - SQLite
 - virtualenv (optional)
