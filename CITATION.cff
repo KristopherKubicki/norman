@@ -4,8 +4,8 @@ authors:
   - family-names: "Kubicki"
     given-names: "Kristopher"
     orcid: "https://orcid.org/0009-0001-8074-6202"
-title: "Norman: A Multi-platform Chatbot with GPT-4 Integration"
-version: 0.1.0
-date-released: 2023-04-27
+title: "Norman: A Pidgin-powered Chatbot with GPT-4 Integration"
+version: 0.2.0
+date-released: 2025-06-03
 repository-code: "https://github.com/KristopherKubicki/norman"
 license: "MIT"
