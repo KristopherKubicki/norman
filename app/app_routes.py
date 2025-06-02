@@ -19,6 +19,7 @@ from app.core.security import create_access_token
 from app.crud.user import authenticate_user
 from app.crud.user import get_user_by_email, create_user
 from app.crud.bot import create_bot, delete_bot, get_bot_by_id
+from app.crud import connector as connector_crud
 from app.crud.message import create_message, get_messages_by_bot_id, delete_message, get_last_messages_by_bot_id, delete_messages_by_bot_id
 from app.crud.interaction import create_interaction
 from app.handlers.openai_handler import create_chat_interaction
@@ -33,6 +34,8 @@ from urllib.parse import urlencode
 import traceback
 
 from .views import home, connectors, filters, channels, process_message, bots, messages, login, logout, get_bots
+from app.connectors.connector_utils import get_connector
+from app.schemas.connector import ConnectorCreate, ConnectorUpdate, Connector
 
 current_dir = os.path.dirname(os.path.realpath(__file__))
 app_routes = APIRouter()
@@ -175,6 +178,58 @@ async def create_message_endpoint(
     except Exception as e:
         print("Error:", e)
         return {"status": "error", "message": "Failed to create message and interaction"}
+
+
+@app_routes.post("/api/connectors/create")
+async def create_connector_endpoint(request: Request, db: Session = Depends(get_async_db)):
+    data = await request.json()
+    connector_in = ConnectorCreate(**data)
+    connector = connector_crud.create(db, obj_in=connector_in)
+    return JSONResponse(content=Connector.from_orm(connector).dict())
+
+
+@app_routes.get("/api/connectors", response_model=List[Connector])
+async def get_connectors_endpoint(db: Session = Depends(get_async_db)):
+    connectors = connector_crud.get_multi(db)
+    return [Connector.from_orm(c).dict() for c in connectors]
+
+
+@app_routes.put("/api/connectors/{connector_id}", response_model=Connector)
+async def update_connector_endpoint(connector_id: int, request: Request, db: Session = Depends(get_async_db)):
+    data = await request.json()
+    connector = connector_crud.get(db, connector_id)
+    if not connector:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    updated = connector_crud.update(db, db_obj=connector, obj_in=ConnectorUpdate(**data))
+    return Connector.from_orm(updated).dict()
+
+
+@app_routes.delete("/api/connectors/{connector_id}")
+async def delete_connector_endpoint(connector_id: int, db: Session = Depends(get_async_db)):
+    connector = connector_crud.remove(db, connector_id)
+    if not connector:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    return {"status": "success"}
+
+
+@app_routes.post("/api/connectors/{connector_id}/test")
+async def test_connector_endpoint(connector_id: int, db: Session = Depends(get_async_db)):
+    connector = connector_crud.get(db, connector_id)
+    if not connector:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    instance = get_connector(connector.connector_type, connector.config or {})
+    status_value = "up" if instance.is_connected() else "down"
+    return {"status": status_value}
+
+
+@app_routes.get("/api/connectors/{connector_id}/status")
+async def connector_status_endpoint(connector_id: int, db: Session = Depends(get_async_db)):
+    connector = connector_crud.get(db, connector_id)
+    if not connector:
+        raise HTTPException(status_code=404, detail="Connector not found")
+    instance = get_connector(connector.connector_type, connector.config or {})
+    status_value = "up" if instance.is_connected() else "down"
+    return {"status": status_value}
 
 @app_routes.post("/token", response_model=Token)
 async def token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_async_db)):
