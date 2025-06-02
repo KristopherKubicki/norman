@@ -1,13 +1,17 @@
 # OPC UA PubSub Connector
 
-This connector acts as a placeholder for publishing messages via OPC UA PubSub.
+This connector sends and receives messages using the OPC UA PubSub UDP profile.
 
 ## Configuration
 
 ```yaml
-opcua_pubsub_endpoint: "your_opcua_pubsub_endpoint"
+opcua_pubsub_endpoint: "opc.tcp://localhost:4840"
 ```
 
 ## Usage
 
-Message publishing and subscription are not yet implemented.
+Instantiate ``OPCUAPubSubConnector`` with the desired endpoint. Messages sent via
+``send_message`` are transmitted as UDP datagrams. When
+``listen_and_process`` is run, the connector opens a UDP socket on the port
+extracted from the endpoint and forwards incoming datagrams to
+``process_incoming``.
