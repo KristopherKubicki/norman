@@ -288,6 +288,7 @@ def ensure_user_config():
         print(f"  email: {cfg['initial_admin_email']}")
         print(f"  password: {cfg['initial_admin_password']}")
         print("Edit config.yaml to customize settings, including your OpenAI API key.")
+        print("Restart Norman and visit http://localhost:8000 to sign in with these credentials.")
 
 def load_config():
     ensure_user_config()

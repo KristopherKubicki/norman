@@ -8,6 +8,7 @@ This document provides an overview of how to interact with Norman, including cre
 - [Configuring a Chatbot](#configuring-a-chatbot)
 - [Channel Filters and Actions](#channel-filters-and-actions)
 - [Examples](#examples)
+- [First Run](#first-run)
 - [Slack Quick Start](#slack-bot-quick-start)
 - [API Examples](#api-examples)
 
@@ -55,6 +56,15 @@ Here are some example use-cases for Norman:
 3. **Automated Code Review:** Create a channel filter that detects when users submit pull requests. Norman can then analyze the code, provide suggestions or corrections, and post a review comment on the pull request.
 
 Remember to expand on these sections and provide more detailed information based on your project's specific features and requirements.
+
+## First Run
+
+When starting Norman for the first time, the application creates a
+`config.yaml` file with random credentials. The admin username, email
+and password are printed to the console. Record these values, edit
+`config.yaml` to supply your `openai_api_key` and any connector
+settings, then restart Norman. Visit `http://localhost:8000` and sign
+in with the credentials shown.
 
 ## Slack Bot Quick Start
 
