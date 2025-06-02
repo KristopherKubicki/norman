@@ -41,7 +41,9 @@ def _discover_connectors() -> None:
 _discover_connectors()
 
 
-def get_connector(connector_name: str, config: Optional[Dict[str, Any]] = None) -> BaseConnector:
+def get_connector(
+    connector_name: str, config: Optional[Dict[str, Any]] = None
+) -> BaseConnector:
     """Return an instantiated connector."""
 
     if connector_name not in connector_classes:
@@ -68,8 +70,10 @@ def get_connectors_data() -> List[Dict[str, Any]]:
     """Return metadata about all available connectors.
 
     The configuration values are inspected to determine whether each connector
-    is enabled.  No network calls are made, so the ``status`` field simply
-    reflects whether the connector has been configured.
+    is enabled.  If a connector appears to be fully configured, its
+    :meth:`is_connected` method is invoked to provide an ``up`` or ``down``
+    status.  Any errors during instantiation or the status check result in a
+    ``down`` status.
     """
 
     settings = get_settings()
@@ -86,11 +90,20 @@ def get_connectors_data() -> List[Dict[str, Any]]:
             configured = all(
                 item.get(f) not in (None, "", f"your_{name}_{f}") for f in fields
             )
+            status = "missing_config"
+            if configured:
+                try:
+                    cfg = {k: v for k, v in item.items() if k != "type"}
+                    instance = get_connector(name, cfg)
+                    status = "up" if instance.is_connected() else "down"
+                except Exception:  # pragma: no cover - instantiation or check may fail
+                    status = "down"
+
             connectors_data.append(
                 {
                     "id": connector_cls.id,
                     "name": connector_cls.name,
-                    "status": "configured" if configured else "missing_config",
+                    "status": status if configured else "missing_config",
                     "fields": fields,
                     "last_message_sent": None,
                     "enabled": configured,
@@ -107,11 +120,19 @@ def get_connectors_data() -> List[Dict[str, Any]]:
                 value = getattr(settings, setting_name, None)
                 if value in (None, "", f"your_{setting_name}"):
                     configured = False
+            status = "missing_config"
+            if configured:
+                try:
+                    instance = get_connector(name)
+                    status = "up" if instance.is_connected() else "down"
+                except Exception:  # pragma: no cover - instantiation or check may fail
+                    status = "down"
+
             connectors_data.append(
                 {
                     "id": connector_cls.id,
                     "name": connector_cls.name,
-                    "status": "configured" if configured else "missing_config",
+                    "status": status if configured else "missing_config",
                     "fields": fields,
                     "last_message_sent": None,
                     "enabled": configured,
@@ -121,7 +142,9 @@ def get_connectors_data() -> List[Dict[str, Any]]:
     return connectors_data
 
 
-def _is_configured(name: str, settings: Settings, config: Optional[Dict[str, Any]] = None) -> bool:
+def _is_configured(
+    name: str, settings: Settings, config: Optional[Dict[str, Any]] = None
+) -> bool:
     """Return ``True`` if the connector ``name`` is fully configured."""
 
     if name not in connector_classes:
@@ -174,4 +197,3 @@ def get_configured_connectors() -> Dict[str, List[BaseConnector]]:
                 configured.setdefault(name, []).append(get_connector(name))
 
     return configured
-
