@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="/static/css/styles.css">
 </head>
 <body>
+    {% if show_navbar|default(True) %}
     <header class="navbar navbar-expand-lg navbar-dark bg-primary shadow-sm">
         <div class="container">
             <a class="navbar-brand" href="/index.html">Norman</a>
@@ -42,6 +43,7 @@
             </div>
         </div>
     </header>
+    {% endif %}
 
     <main class="container my-4">
         {% block content %}

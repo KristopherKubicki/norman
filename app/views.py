@@ -62,7 +62,11 @@ async def bots(request: Request):
     )
 
 async def login(request: Request):
-    return templates.TemplateResponse(request, "login.html", {"request": request})
+    return templates.TemplateResponse(
+        request,
+        "login.html",
+        {"request": request, "show_navbar": False}
+    )
 
 async def logout(request: Request):
     return templates.TemplateResponse(request, "logout.html", {"request": request})
