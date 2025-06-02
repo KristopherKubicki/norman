@@ -7,43 +7,75 @@
 {% block content %}
 <h1>Bots</h1>
 
-<div class="search-container">
-  <input type="text" placeholder="Search bots..." class="form-control search-input">
-</div>
+<div class="row">
+  <div class="col-md-3">
+    <div class="search-container mb-3">
+      <input type="text" placeholder="Search bots..." class="form-control search-input">
+    </div>
 
-<form id="add-bot-form" class="card card-body mb-4">
-  <div class="row g-2 align-items-end">
-    <div class="col-sm">
-      <label for="bot-name" class="form-label">Bot Name</label>
-      <input type="text" id="bot-name" class="form-control" required />
-    </div>
-    <div class="col-sm">
-      <label for="bot-description" class="form-label">Description</label>
-      <input type="text" id="bot-description" class="form-control" />
-    </div>
-    <div class="col-auto">
+    <form id="add-bot-form" class="card card-body mb-4">
+      <div class="mb-3">
+        <label for="bot-name" class="form-label">Bot Name</label>
+        <input type="text" id="bot-name" class="form-control" required />
+      </div>
+      <div class="mb-3">
+        <label for="bot-description" class="form-label">Description</label>
+        <input type="text" id="bot-description" class="form-control" />
+      </div>
       <button type="submit" class="btn btn-primary">Add Bot</button>
+    </form>
+
+    <div class="bots-container list-group">
+      <!-- Bots will be dynamically added here -->
     </div>
   </div>
-</form>
 
-<div class="main-container">
-  <div class="bots-container">
-    <!-- Bots will be dynamically added here -->
-  </div>
-
-  <div class="main-chat-container">
+  <div class="col-md-9 d-flex flex-column">
     <h2>Selected Bot: <span id="selected-bot-name">None</span></h2>
-    <div class="messages-container">
+    <div class="messages-container flex-grow-1 mb-2">
       <!-- Messages will be dynamically added here -->
     </div>
-    <div class="input-message-container">
-  <textarea id="input-message" rows="1" placeholder="Pick a bot..." disabled></textarea>
-
-  <button id="send-message" disabled>Send</button>
-  <div id="spinner" class="spinner" style="display: none;"></div>
+    <div class="input-message-container d-flex">
+      <textarea id="input-message" rows="1" class="form-control me-2" placeholder="Pick a bot..." disabled></textarea>
+      <button id="send-message" class="btn btn-primary" disabled>Send</button>
+      <div id="spinner" class="spinner" style="display: none;"></div>
+    </div>
+  </div>
 </div>
 
+<!-- Edit bot modal -->
+<div class="modal fade" id="editBotModal" tabindex="-1" aria-labelledby="editBotModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="editBotModalLabel">Edit Bot</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <form id="edit-bot-form">
+          <div class="mb-3">
+            <label for="edit-bot-name" class="form-label">Name</label>
+            <input type="text" id="edit-bot-name" class="form-control" required />
+          </div>
+          <div class="mb-3">
+            <label for="edit-bot-description" class="form-label">Description</label>
+            <input type="text" id="edit-bot-description" class="form-control" />
+          </div>
+          <div class="mb-3">
+            <label for="edit-bot-model" class="form-label">GPT Model</label>
+            <input type="text" id="edit-bot-model" class="form-control" />
+          </div>
+          <div class="form-check mb-3">
+            <input class="form-check-input" type="checkbox" id="edit-bot-enabled">
+            <label class="form-check-label" for="edit-bot-enabled">Enabled</label>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+        <button type="button" id="save-bot-changes" class="btn btn-primary">Save changes</button>
+      </div>
+    </div>
   </div>
 </div>
 

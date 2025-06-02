@@ -1,32 +1,49 @@
 {% extends "base.html" %}
 
-{% block extra_css %}
-<!-- Add any extra CSS required for this template here -->
-{% endblock %}
-
 {% block content %}
-<h1>Bot Details</h1>
-
-<form id="edit-bot-form">
-  <label for="bot-name">Bot Name:</label>
-  <input type="text" id="bot-name" value="{{ bot.name }}" required />
-  
-  <label for="bot-description">Description:</label>
-  <input type="text" id="bot-description" value="{{ bot.description }}" />
-  
-  <label for="bot-model">GPT Model:</label>
-  <input type="text" id="bot-model" value="{{ bot.model }}" />
-  
-  <label for="bot-enabled">Enabled:</label>
-  <input type="checkbox" id="bot-enabled" {% if bot.enabled %}checked{% endif %} />
-  
-  <button type="submit">Save Changes</button>
+<h1>Edit Bot</h1>
+<form id="bot-detail-form" class="card card-body" method="post">
+  <div class="mb-3">
+    <label for="bot-name" class="form-label">Name</label>
+    <input type="text" class="form-control" id="bot-name" value="{{ bot.name }}" required>
+  </div>
+  <div class="mb-3">
+    <label for="bot-description" class="form-label">Description</label>
+    <input type="text" class="form-control" id="bot-description" value="{{ bot.description }}">
+  </div>
+  <div class="mb-3">
+    <label for="bot-model" class="form-label">GPT Model</label>
+    <input type="text" class="form-control" id="bot-model" value="{{ bot.gpt_model }}">
+  </div>
+  <div class="form-check mb-3">
+    <input class="form-check-input" type="checkbox" id="bot-enabled" {% if bot.enabled %}checked{% endif %}>
+    <label class="form-check-label" for="bot-enabled">Enabled</label>
+  </div>
+  <button type="submit" class="btn btn-primary">Save</button>
+  <a href="/bots.html" class="btn btn-secondary">Back</a>
 </form>
-
-<a href="{{ url_for('bots') }}">Back to Bots</a>
 {% endblock %}
 
 {% block extra_js %}
-<!-- Add any extra JavaScript required for this template here -->
+<script>
+  document.getElementById('bot-detail-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const payload = {
+      name: document.getElementById('bot-name').value.trim(),
+      description: document.getElementById('bot-description').value.trim(),
+      gpt_model: document.getElementById('bot-model').value.trim(),
+      enabled: document.getElementById('bot-enabled').checked
+    };
+    const resp = await fetch('/api/bots/{{ bot.id }}', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    if (resp.ok) {
+      window.location.href = '/bots.html';
+    } else {
+      alert('Failed to update bot');
+    }
+  });
+</script>
 {% endblock %}
-
