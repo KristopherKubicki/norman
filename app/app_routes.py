@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi import status
 from fastapi.security import OAuth2PasswordRequestForm
@@ -109,7 +109,7 @@ async def get_messages_endpoint(
     bot_id: int,
     limit: int = 100,
     offset: int = 0,
-    cursor: int | None = None,
+    cursor: Optional[int] = None,
     db: Session = Depends(get_async_db),
 ):
     """Return messages for a bot with optional pagination."""
