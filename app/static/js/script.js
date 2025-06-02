@@ -13,6 +13,13 @@ sendButton.addEventListener('click', () => {
     // Display sent message
     messageDisplay.innerHTML += `<p><strong>You:</strong> ${message}</p>`;
 
+    // Show thinking indicator while waiting for response
+    const thinking = document.createElement('p');
+    thinking.id = 'thinking-indicator';
+    thinking.innerHTML = '<em>Norman is thinking...</em>';
+    messageDisplay.appendChild(thinking);
+    messageDisplay.scrollTop = messageDisplay.scrollHeight;
+
     // Send message to the backend (replace with the appropriate API endpoint)
     fetch('/api/process_message', {
         method: 'POST',
@@ -21,10 +28,13 @@ sendButton.addEventListener('click', () => {
     })
         .then(response => response.json())
         .then(data => {
-            // Display received message
+            // Remove thinking indicator and display received message
+            thinking.remove();
             messageDisplay.innerHTML += `<p><strong>Norman:</strong> ${data.response}</p>`;
+            messageDisplay.scrollTop = messageDisplay.scrollHeight;
         })
         .catch(error => {
+            thinking.remove();
             console.error('Error:', error);
         });
 });

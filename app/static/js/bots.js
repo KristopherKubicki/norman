@@ -98,6 +98,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const messagesContainer = document.querySelector('.messages-container');
       const placeholder = document.createElement('div');
       placeholder.className = 'message assistant placeholder-message';
+      placeholder.textContent = 'Thinking...';
       placeholder.style.height = textarea.scrollHeight + 'px';
       messagesContainer.appendChild(placeholder);
       messagesContainer.scrollTop = messagesContainer.scrollHeight;

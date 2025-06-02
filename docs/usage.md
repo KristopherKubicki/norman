@@ -76,6 +76,7 @@ chmod +x generate_key.sh
 
 3. Start Norman with `python main.py` and open `http://localhost:8000` in your browser.
 4. Log in with the admin credentials from `config.yaml`, create a chatbot and select the Slack connector. Messages posted in the configured channel will be processed by the bot.
+5. When a bot is generating a reply, the interface displays a *Thinking...* indicator so you know it's working.
 
 ## API Examples
 
