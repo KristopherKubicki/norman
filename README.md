@@ -131,7 +131,7 @@ We created Norman to provide an open, self-hosted, and open-source solution for 
 
 ## Contributing
 
-We welcome contributions from the community! If you're interested in helping us improve Norman, please refer to our [Contributing](docs/contributing.md) guide.
+We welcome contributions from the community! If you're interested in helping us improve Norman, please refer to our [Contributing](CONTRIBUTING.md) guide.
 
 ## Community
 
