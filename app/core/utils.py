@@ -1,5 +1,5 @@
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Set
 
 from pydantic import BaseModel, EmailStr, validator
 
@@ -24,5 +24,5 @@ class CustomBaseModel(BaseModel):
         return value or generate_unique_id()
 
 
-def get_subdict(d: Dict[str, Any], keys: set[str]) -> Dict[str, Any]:
+def get_subdict(d: Dict[str, Any], keys: Set[str]) -> Dict[str, Any]:
     return {k: v for k, v in d.items() if k in keys}
