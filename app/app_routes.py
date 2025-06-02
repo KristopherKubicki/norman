@@ -93,7 +93,7 @@ async def get_bots_endpoint(request: Request, db: Session = Depends(get_async_db
 
 @app_routes.delete("/api/bots/{bot_id}")
 async def delete_bot_endpoint(bot_id: int, db: Session = Depends(get_async_db)):
-    success = delete_messages_by_bot_id(db=db, bot_id=bot_id)
+    delete_messages_by_bot_id(db=db, bot_id=bot_id)
 
     success = delete_bot(db=db, bot_id=bot_id)
     if success:
