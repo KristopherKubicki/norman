@@ -7,6 +7,7 @@ Welcome to the Norman documentation! Here you'll find everything you need to kno
 - [Usage](usage.md) - Learn how to set up and use Norman.
 - [Examples](examples.md) - Step-by-step usage examples and API calls.
 - [Deployment](deployment.md) - Instructions on how to deploy Norman on various platforms.
+- [Docker Deployment](docker.md) - Containerized setup using Docker and docker-compose.
 - [Extending Norman](extending.md) - A guide on how to extend Norman with new connectors, actions, and filters.
 - [Architecture](architecture.md) - An explanation of Norman's architecture and design principles.
 - [Philosophy](philosophy.md) - Learn about the philosophy behind Norman and our project goals.

@@ -1,0 +1,22 @@
+version: "3.8"
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: norman
+      POSTGRES_PASSWORD: norman
+      POSTGRES_DB: norman
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+  app:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg2://norman:norman@db:5432/norman
+    depends_on:
+      - db
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./config.yaml:/app/config.yaml
+volumes:
+  postgres-data:

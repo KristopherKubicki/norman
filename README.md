@@ -18,6 +18,7 @@ Norman is an open-source chatbot that leverages OpenAI's GPT models to assist an
 - [Testing](#testing)
 - [Contributing](#contributing)
 - [License](#license)
+- [Docker Deployment](docs/docker.md)
 
 ### Features
 
@@ -119,7 +120,7 @@ pytest --cov=./ -vv
 
 ## Deployment
 
-Norman can be deployed on various platforms, such as on a local server or a cloud provider. For detailed deployment instructions, please refer to our [Deployment](docs/deployment.md) guide.
+Norman can be deployed on various platforms, such as on a local server or a cloud provider. For detailed deployment instructions, please refer to our [Deployment](docs/deployment.md) guide. A separate [Docker Deployment](docs/docker.md) guide is available if you prefer running Norman in containers.
 
 ## Architecture
 
