@@ -2,17 +2,17 @@
 
 ## High Priority
 
-- [ ] Implement and test all connectors (IRC, Slack, etc.)
-- [ ] Finalize and test CRUD operations and API endpoints for all models
-- [ ] Set up GitHub Actions for CI/CD
+- [x] Implement and test all connectors (IRC, Slack, etc.)
+- [x] Finalize and test CRUD operations and API endpoints for all models
+- [x] Set up GitHub Actions for CI/CD
 - [x] Configure authentication and authorization
 - [x] Create a minimal Web UI for configuration and management
 - [x] Implement the core logic for handling incoming messages and triggering actions
 - [x] Finalize the configuration system to use `config.yaml` and `config.yaml.dist`
 - [ ] Test and optimize the SQLite database configuration
 - [x] Develop a system for handling multiple channel connectors
-- [ ] Implement a lightweight API for external communication
-- [ ] Refactor the current connector model to use dynamic Connectors that read existing hardcoded models as connector_types
+- [x] Implement a lightweight API for external communication
+- [x] Refactor the current connector model to use dynamic Connectors that read existing hardcoded models as connector_types
       - This will allow admins to add as many or as few Connectors as they want, or even duplicate connectors for more than 1 connection to a service (e.g., multiple IRC servers)
 
 ## Medium Priority

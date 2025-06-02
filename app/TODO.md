@@ -27,7 +27,7 @@ This document outlines the remaining tasks to complete and improve the Norman pr
 
 ## Connectors
 
-- [ ] Implement additional connectors for new chat platforms.
+- [x] Implement additional connectors for new chat platforms.
 - [ ] Review and optimize the performance of the existing connectors.
 - [ ] Improve error handling and edge case handling for connectors.
 

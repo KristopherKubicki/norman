@@ -7,7 +7,7 @@ This document outlines the remaining tasks to complete and improve the Norman pr
 - [ ] Implement additional features and improvements for the `filters`, `actions`, and `connectors` routers.
 - [ ] Improve error handling and validation for router endpoints.
 - [ ] Review and optimize route definitions and dependencies.
-- [ ] Consider adding more routers for new features and endpoints.
+- [x] Consider adding more routers for new features and endpoints.
 
 ## Dependencies
 
