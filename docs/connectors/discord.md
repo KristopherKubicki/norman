@@ -38,7 +38,7 @@ Replace the values with the appropriate information for your Discord server and 
 
 ## Usage
 
-Once you have configured the Discord connector, Norman will connect to the specified Discord server and channels, and start listening for incoming messages. When a message is received, Norman will process it according to the configured channel filters and actions, and send a response back to the Discord channel.
+Once you have configured the Discord connector, Norman will poll the specified Discord channel for new messages. Incoming messages are processed according to your configured filters and actions, and a response is sent back to the channel when appropriate. Polling occurs every few seconds using the Discord HTTP API.
 
 ## Troubleshooting
 
