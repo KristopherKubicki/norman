@@ -7,7 +7,7 @@ class MessageBase(BaseModel):
     text: str
 
 class MessageCreate(MessageBase):
-    pass
+    """Schema for creating a message."""
 
 
 class MessageUpdate(BaseModel):
@@ -27,9 +27,9 @@ class MessageInDBBase(MessageBase):
 
 
 class Message(MessageInDBBase):
-    pass
+    """Public message model."""
 
 
 class MessageInDB(MessageInDBBase):
-    pass
+    """Internal message model with DB specifics."""
 

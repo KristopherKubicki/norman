@@ -16,7 +16,7 @@ class InteractionBase(BaseModel):
 
 
 class InteractionCreate(InteractionBase):
-    pass
+    """Schema for creating an interaction."""
 
 
 class InteractionUpdate(BaseModel):

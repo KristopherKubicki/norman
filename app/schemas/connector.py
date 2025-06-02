@@ -9,7 +9,7 @@ class ConnectorBase(BaseModel):
 
 
 class ConnectorCreate(ConnectorBase):
-    pass
+    """Schema for creating a connector."""
 
 
 class ConnectorUpdate(BaseModel):
