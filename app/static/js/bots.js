@@ -3,6 +3,11 @@ document.addEventListener('DOMContentLoaded', () => {
   // Fetch bots and render them in the bots container
   fetchBotsAndRender();
 
+  const searchInput = document.querySelector('.search-input');
+  if (searchInput) {
+    searchInput.addEventListener('input', filterBots);
+  }
+
   // Add event listener for the add-bot-form
   const addBotForm = document.getElementById("add-bot-form");
   if (addBotForm) {
@@ -79,6 +84,7 @@ async function fetchBotsAndRender() {
 function createBotElement(bot) {
   const botElement = document.createElement('div');
   botElement.classList.add('bot');
+  botElement.dataset.name = bot.name.toLowerCase();
 
   const nameElement = document.createElement('p');
   nameElement.textContent = bot.name;
@@ -223,5 +229,17 @@ function createMessageElement(message) {
   messageElement.appendChild(document.createElement('hr'));
 
   return messageElement;
+}
+
+function filterBots() {
+  const term = document.querySelector('.search-input').value.toLowerCase();
+  document.querySelectorAll('.bots-container .bot').forEach((botEl) => {
+    const name = botEl.dataset.name || '';
+    if (name.includes(term)) {
+      botEl.style.display = '';
+    } else {
+      botEl.style.display = 'none';
+    }
+  });
 }
 
