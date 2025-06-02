@@ -28,8 +28,13 @@ class BotOut(BaseModel):
         orm_mode = True
 
 
-class BotUpdate(BotBase):
-    pass
+class BotUpdate(BaseModel):
+    """Model for updating existing bots."""
+
+    name: Optional[constr(strip_whitespace=True, min_length=1)] = None
+    gpt_model: Optional[constr(strip_whitespace=True, min_length=1)] = None
+    session_id: Optional[str] = None
+    description: Optional[str] = None
 
 
 class Bot(BotBase):
