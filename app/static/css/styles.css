@@ -1,31 +1,51 @@
 /* styles.css */
 
+/* Theme tokens */
+:root {
+    --color-background: #f8f9fa;
+    --color-text: #212529;
+    --color-link: #333;
+    --color-border: #dee2e6;
+    --color-systemMessage: #f1f1f1;
+    --color-assistantMessage: #f0f0f0;
+    --color-userMessage: #ffffff;
+
+    --spacing-xs: 0.25rem;
+    --spacing-sm: 0.5rem;
+    --spacing-md: 1rem;
+    --spacing-lg: 1.5rem;
+    --spacing-xl: 2rem;
+
+    --typography-fontFamily: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    --typography-baseFontSize: 16px;
+}
+
 /* General styles */
 body {
-    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    font-family: var(--typography-fontFamily);
     margin: 0;
     padding: 0;
-    color: #212529;
+    color: var(--color-text);
     line-height: 1.6;
-    background-color: #f8f9fa;
+    background-color: var(--color-background);
 }
 
 a {
-    color: #333;
+    color: var(--color-link);
     text-decoration: none;
 }
 
 h1, h2, h3, h4, h5, h6 {
-    margin-bottom: 20px;
+    margin-bottom: var(--spacing-md);
 }
 
 p {
-    margin-bottom: 20px;
+    margin-bottom: var(--spacing-md);
 }
 
 /* Main content */
 main {
-    padding: 20px;
+    padding: var(--spacing-md);
     max-width: 1200px;
     margin: 0 auto;
 }
@@ -39,8 +59,8 @@ main {
 .messages-log {
     height: 500px;
     overflow-y: scroll;
-    border: 1px solid #dee2e6;
-    padding: 1rem;
+    border: 1px solid var(--color-border);
+    padding: var(--spacing-md);
     white-space: pre-wrap;
 }
 
@@ -49,8 +69,8 @@ main {
 }
 
 .messages-log .message:nth-child(odd) {
-    background-color: #f8f9fa;
-    padding: 0.5rem;
+    background-color: var(--color-background);
+    padding: var(--spacing-sm);
 }
 
 
@@ -65,7 +85,7 @@ main {
 
   .main-chat-container {
     width: 75%;
-    border-left: 1px solid #ccc;
+    border-left: 1px solid var(--color-border);
     max-height: 80vh;
     overflow: hidden;
   }
@@ -91,14 +111,14 @@ textarea {
 }
 
 .search-container {
-  margin-bottom: 1rem;
+  margin-bottom: var(--spacing-md);
 }
 
 .search-input {
   width: 100%;
   max-width: 300px;
-  padding: 0.5rem 0.75rem;
-  border: 1px solid #ced4da;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border: 1px solid var(--color-border);
   border-radius: 0.25rem;
 }
 
@@ -124,14 +144,14 @@ textarea {
 
 
 .message.system {
-  background-color: #f1f1f1;
+  background-color: var(--color-systemMessage);
 }
 .message.assistant {
-  background-color: #f0f0f0;
+  background-color: var(--color-assistantMessage);
 }
 
 .message.user {
-  background-color: #ffffff;
+  background-color: var(--color-userMessage);
 }
 
 .message-timestamp {
@@ -146,13 +166,13 @@ textarea {
 
 
 body.dark-mode {
-    background-color: #121212;
-    color: #f8f9fa;
+    background-color: var(--color-background);
+    color: var(--color-text);
 }
-body.dark-mode a { color: #f8f9fa; }
+body.dark-mode a { color: var(--color-link); }
 body.dark-mode .navbar,
 body.dark-mode footer,
 body.dark-mode .card {
-    background-color: #1e1e1e;
-    color: #f8f9fa;
+    background-color: var(--color-border);
+    color: var(--color-text);
 }
