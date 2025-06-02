@@ -9,10 +9,35 @@
 {% block content %}
 <div class="container">
     <h1 class="mt-4">Messages Log</h1>
-    <div class="search-container">
-      <input type="text" placeholder="Search messages..." class="form-control search-input">
+    <div class="row g-2 mb-3">
+      <div class="col-md">
+        <label for="connectorFilter" class="form-label">Connector</label>
+        <select id="connectorFilter" class="form-select"></select>
+      </div>
+      <div class="col-md">
+        <label for="channelFilter" class="form-label">Channel</label>
+        <select id="channelFilter" class="form-select"></select>
+      </div>
+      <div class="col-md">
+        <label for="botFilter" class="form-label">Bot</label>
+        <select id="botFilter" class="form-select"></select>
+      </div>
+      <div class="col-md">
+        <label for="searchFilter" class="form-label">Search</label>
+        <input type="text" id="searchFilter" class="form-control" placeholder="Free text">
+      </div>
+      <div class="col-md">
+        <label for="startTime" class="form-label">Start</label>
+        <input type="datetime-local" id="startTime" class="form-control">
+      </div>
+      <div class="col-md">
+        <label for="endTime" class="form-label">End</label>
+        <input type="datetime-local" id="endTime" class="form-control">
+      </div>
+      <div class="col-md-auto d-flex align-items-end">
+        <button class="btn btn-secondary" id="applyFilters" type="button">Apply</button>
+      </div>
     </div>
-    <!-- Channel selection will be populated dynamically -->
 
     <div class="card mt-4">
         <div class="card-body messages-log" id="messages-log">

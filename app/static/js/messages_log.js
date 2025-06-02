@@ -1,20 +1,36 @@
 document.addEventListener('DOMContentLoaded', () => {
-  // Fetch messages and render them in the messages container
+  populateSelects();
+  document.getElementById('applyFilters').addEventListener('click', fetchMessagesAndRender);
+  document.getElementById('searchFilter').addEventListener('input', fetchMessagesAndRender);
   fetchMessagesAndRender();
-  populateChannelSelect();
 });
 
-function fetchMessagesAndRender() {
-  // Replace this with the actual API call to fetch messages
-  const fakeMessages = [
-    { id: 1, content: 'Message 1', timestamp: '2023-01-01 10:00:00' },
-    { id: 2, content: 'Message 2', timestamp: '2023-01-01 10:05:00' },
-  ];
+async function fetchMessagesAndRender() {
+  const params = new URLSearchParams();
+  const connector = document.getElementById('connectorFilter').value;
+  const channel = document.getElementById('channelFilter').value;
+  const bot = document.getElementById('botFilter').value;
+  const q = document.getElementById('searchFilter').value;
+  const start = document.getElementById('startTime').value;
+  const end = document.getElementById('endTime').value;
 
-  const messagesContainer = document.querySelector('.messages-container');
+  if (connector) params.append('connector_id', connector);
+  if (channel) params.append('channel_id', channel);
+  if (bot) params.append('bot_id', bot);
+  if (q) params.append('q', q);
+  if (start) params.append('start', start);
+  if (end) params.append('end', end);
+
+  const resp = await fetch('/api/v1/messages?' + params.toString());
+  if (!resp.ok) {
+    console.error('Failed to fetch messages');
+    return;
+  }
+  const messages = await resp.json();
+
+  const messagesContainer = document.getElementById('messages-log');
   messagesContainer.innerHTML = '';
-
-  for (const message of fakeMessages) {
+  for (const message of messages) {
     const messageElement = createMessageElement(message);
     messagesContainer.appendChild(messageElement);
   }
@@ -36,23 +52,32 @@ function createMessageElement(message) {
   return messageElement;
 }
 
-async function populateChannelSelect() {
+async function populateSelects() {
+  await Promise.all([
+    populateGenericSelect('/api/v1/channels/', 'channelFilter'),
+    populateGenericSelect('/api/v1/connectors/', 'connectorFilter'),
+    populateGenericSelect('/api/v1/bots/', 'botFilter'),
+  ]);
+}
+
+async function populateGenericSelect(url, elementId) {
   try {
-    const resp = await fetch('/api/v1/channels/');
+    const resp = await fetch(url);
     if (!resp.ok) {
       return;
     }
-    const channels = await resp.json();
-    const select = document.getElementById('channelSelect');
-    select.innerHTML = '';
-    for (const channel of channels) {
+    const items = await resp.json();
+    const select = document.getElementById(elementId);
+    if (!select) return;
+    select.innerHTML = '<option value="">All</option>';
+    for (const item of items) {
       const opt = document.createElement('option');
-      opt.value = channel.id;
-      opt.textContent = channel.name;
+      opt.value = item.id;
+      opt.textContent = item.name;
       select.appendChild(opt);
     }
   } catch (e) {
-    console.error('Failed to load channels', e);
+    console.error('Failed to load ' + elementId, e);
   }
 }
 
