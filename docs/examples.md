@@ -36,7 +36,7 @@ Create a bot:
 ```bash
 curl -X POST http://localhost:8000/api/v1/bots/ \
   -H "Content-Type: application/json" \
-  -d '{"name": "demo", "description": "example bot", "gpt_model": "gpt-4"}'
+  -d '{"name": "demo", "description": "example bot", "gpt_model": "gpt-4.1-mini"}'
 ```
 
 List existing bots:
