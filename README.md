@@ -24,7 +24,7 @@ Norman is an open-source chatbot that leverages OpenAI's GPT models to assist an
 - Supports multiple chat platforms (e.g., Slack, IRC) through connectors
 - Allows multiple chatbots with different GPT models (e.g., gpt-4.1-mini, o3)
 - Configurable channel filters and actions for automation
-- Minimal Web UI for configuration and management
+- Configuration dashboard accessible from the Web UI
 - SQLite database for lightweight deployment
 - Authentication and authorization support
 - Extendable with custom connectors

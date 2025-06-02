@@ -5,6 +5,7 @@ class ConnectorBase(BaseModel):
     name: str
     config: Dict[str, Any]
     connector_type: str
+    enabled: bool = True
 
 class ConnectorCreate(ConnectorBase):
     pass

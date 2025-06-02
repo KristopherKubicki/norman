@@ -10,6 +10,7 @@ def create_bot(db: Session, bot_create: schemas.BotCreate):
         description=bot_create.description,
         gpt_model=bot_create.gpt_model,
         session_id=bot_create.session_id,
+        enabled=bot_create.enabled,
     )
     db.add(bot)
     db.commit()
@@ -28,7 +29,7 @@ def update_bot(db: Session, bot_id: int, bot_data: schemas.BotUpdate):
     bot = db.query(models.Bot).filter(models.Bot.id == bot_id).first()
     if bot is None:
         return None
-    for key, value in bot_data.dict().items():
+    for key, value in bot_data.dict(exclude_unset=True).items():
         if value is not None:
             setattr(bot, key, value)
     db.commit()

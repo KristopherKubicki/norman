@@ -44,13 +44,19 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
-      const bot = await addBot(name, description, "gpt4");
+      const modelInput = document.getElementById("bot-model");
+      const enabledInput = document.getElementById("bot-enabled");
+      const model = modelInput.value.trim() || "gpt-4.1-mini";
+      const enabled = enabledInput.checked;
+      const bot = await addBot(name, description, model, enabled);
       const botElement = createBotElement(bot);
       const botsContainer = document.querySelector('.bots-container');
       botsContainer.appendChild(botElement);
 
       nameInput.value = "";
       descriptionInput.value = "";
+      modelInput.value = "gpt-4.1-mini";
+      enabledInput.checked = true;
     });
   }
   sendButton.addEventListener("click", async (event) => {
@@ -110,6 +116,10 @@ function createBotElement(bot) {
   botElement.classList.add('list-group-item', 'list-group-item-action', 'bot-item');
   botElement.dataset.botId = bot.id;
   botElement.textContent = bot.name;
+  const enabledSpan = document.createElement('span');
+  enabledSpan.className = 'badge ms-2 ' + (bot.enabled ? 'bg-success' : 'bg-warning');
+  enabledSpan.textContent = bot.enabled ? 'enabled' : 'disabled';
+  botElement.appendChild(enabledSpan);
 
   const editButton = document.createElement('button');
   editButton.className = 'btn btn-sm btn-secondary float-end ms-2';
@@ -148,13 +158,13 @@ function createBotElement(bot) {
 }
 
 
-async function addBot(name, description, model) {
+async function addBot(name, description, model, enabled) {
   const response = await fetch("/api/bots/create", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ name, description, model }),
+    body: JSON.stringify({ name, description, gpt_model: model, enabled }),
   });
   const bot = await response.json();
   return bot;

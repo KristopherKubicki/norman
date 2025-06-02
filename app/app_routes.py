@@ -80,8 +80,8 @@ async def messages_endpoint(request: Request):
 async def create_bot_endpoint(request: Request, db: Session = Depends(get_async_db)):
     form_data = await request.json()
     bot = BotCreate(**form_data)
-    bot = create_bot(db=db, bot_create=bot)
-    return JSONResponse(content={"id": bot.id, "name": bot.name, "description": bot.description})
+    bot_obj = create_bot(db=db, bot_create=bot)
+    return JSONResponse(content=BotOut.from_orm(bot_obj).dict())
 
 @app_routes.get("/api/bots", response_model=List[BotOut])
 async def get_bots_endpoint(request: Request, db: Session = Depends(get_async_db)):
@@ -93,6 +93,15 @@ async def get_bots_endpoint(request: Request, db: Session = Depends(get_async_db
     except Exception as e:
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail="An error occurred while fetching bots")
+
+@app_routes.put("/api/bots/{bot_id}")
+async def update_bot_endpoint(bot_id: int, request: Request, db: Session = Depends(get_async_db)):
+    data = await request.json()
+    bot_data = BotUpdate(**data)
+    updated = update_bot(db=db, bot_id=bot_id, bot_data=bot_data)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    return BotOut.from_orm(updated).dict()
 
 @app_routes.delete("/api/bots/{bot_id}")
 async def delete_bot_endpoint(bot_id: int, db: Session = Depends(get_async_db)):

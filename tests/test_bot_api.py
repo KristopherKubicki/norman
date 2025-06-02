@@ -12,6 +12,7 @@ def test_create_bot_api(test_app: TestClient, db: Session) -> None:
     data = response.json()
     assert data["name"] == payload["name"]
     assert data["description"] == payload["description"]
+    assert data["enabled"] is True
     assert "id" in data
 
 

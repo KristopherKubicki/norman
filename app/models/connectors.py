@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, JSON
+from sqlalchemy import Column, Integer, String, DateTime, JSON, Boolean
 from sqlalchemy.sql import func
 from app.db.base import Base
 
@@ -14,5 +14,6 @@ class Connector(Base):
     last_message_sent = Column(DateTime(timezone=True))
     last_message_received = Column(DateTime(timezone=True))
     last_successful_message = Column(DateTime(timezone=True))
+    enabled = Column(Boolean, nullable=False, default=True)
     config = Column(JSON)
 

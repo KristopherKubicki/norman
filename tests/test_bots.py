@@ -17,6 +17,7 @@ def test_create_bot(test_app: TestClient, db: Session) -> None:
     assert bot.gpt_model == gpt_model
     assert bot.name == name
     assert bot.session_id == session_id
+    assert bot.enabled is True
 
 def test_get_bot(test_app: TestClient, db: Session) -> None:
     gpt_model = "test-model"
@@ -32,4 +33,5 @@ def test_get_bot(test_app: TestClient, db: Session) -> None:
     assert bot.name == bot_2.name
     assert bot.id == bot_2.id
     assert bot.session_id == bot_2.session_id
+    assert bot_2.enabled is True
 

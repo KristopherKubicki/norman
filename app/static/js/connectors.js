@@ -10,6 +10,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const nameInput = document.getElementById('connector-name');
       const typeInput = document.getElementById('connector-type');
       const configInput = document.getElementById('connector-config');
+      const enabledInput = document.getElementById('connector-enabled');
       let config = {};
       if (configInput.value.trim()) {
         try {
@@ -22,13 +23,15 @@ document.addEventListener('DOMContentLoaded', () => {
       const connector = await createConnector({
         name: nameInput.value.trim(),
         connector_type: typeInput.value.trim(),
-        config: config
+        config: config,
+        enabled: enabledInput.checked
       });
       document.querySelector('.connectors-container')
         .appendChild(createConnectorElement(connector));
       nameInput.value = '';
       typeInput.value = '';
       configInput.value = '';
+      enabledInput.checked = true;
     });
   }
 });
@@ -97,7 +100,11 @@ function createConnectorElement(connector) {
   const statusSpan = document.createElement('span');
   statusSpan.className = 'badge bg-secondary ms-2 connector-status';
   statusSpan.textContent = '...';
+  const enabledSpan = document.createElement('span');
+  enabledSpan.className = 'badge ms-2 ' + (connector.enabled ? 'bg-success' : 'bg-warning');
+  enabledSpan.textContent = connector.enabled ? 'enabled' : 'disabled';
   header.appendChild(statusSpan);
+  header.appendChild(enabledSpan);
   body.appendChild(header);
 
   const editBtn = document.createElement('button');
@@ -126,6 +133,17 @@ function createConnectorElement(connector) {
     }
   });
 
+  const toggleBtn = document.createElement('button');
+  toggleBtn.className = 'btn btn-sm btn-outline-secondary me-2';
+  toggleBtn.textContent = connector.enabled ? 'Disable' : 'Enable';
+  toggleBtn.addEventListener('click', async () => {
+    connector.enabled = !connector.enabled;
+    const updated = await updateConnector(connector.id, { enabled: connector.enabled });
+    toggleBtn.textContent = updated.enabled ? 'Disable' : 'Enable';
+    enabledSpan.className = 'badge ms-2 ' + (updated.enabled ? 'bg-success' : 'bg-warning');
+    enabledSpan.textContent = updated.enabled ? 'enabled' : 'disabled';
+  });
+
   const deleteBtn = document.createElement('button');
   deleteBtn.className = 'btn btn-sm btn-danger me-2';
   deleteBtn.textContent = 'Delete';
@@ -143,6 +161,7 @@ function createConnectorElement(connector) {
   });
 
   body.appendChild(editBtn);
+  body.appendChild(toggleBtn);
   body.appendChild(deleteBtn);
   body.appendChild(testBtn);
   card.appendChild(body);

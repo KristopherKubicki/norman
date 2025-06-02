@@ -2,6 +2,8 @@
 
 This document provides an overview of how to interact with Norman, including creating and configuring chatbots, setting up channel filters and actions, and examples of common use-cases and automations.
 
+Norman now includes a configuration dashboard accessible from the Web UI. Most settings that previously required editing `config.yaml` can be managed directly in the browser. Use the dashboard to create or edit chatbots, enable or disable connectors, and review the status of each integration.
+
 ## Table of Contents
 
 - [Creating a Chatbot](#creating-a-chatbot)
@@ -60,7 +62,7 @@ Remember to expand on these sections and provide more detailed information based
 
 This example demonstrates how to connect Norman to Slack and create a simple bot.
 
-1. Run Norman once to generate `config.yaml` and edit the Slack section:
+1. Run Norman once to generate `config.yaml`. You can edit the Slack section in the file or provide the details later via the dashboard:
 
 ```yaml
 slack_token: "xoxb-your-slack-token"

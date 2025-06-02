@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Boolean
 from sqlalchemy.sql import func
 from app.db.base import Base
 
@@ -9,6 +9,7 @@ class Bot(Base):
     description = Column(String, nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"))
     session_id = Column(String, nullable=True)
+    enabled = Column(Boolean, nullable=False, default=True)
     gpt_model = Column(String, nullable=False, default="gpt-4.1-mini")
     system_prompt = Column(String, nullable=False, default="You are a helpful assistant.")
     default_response_tokens = Column(Integer, nullable=False, default=150) # how much to generate
