@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Dict, Optional
 from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi import status
 from fastapi.security import OAuth2PasswordRequestForm
@@ -42,7 +42,7 @@ app_routes = APIRouter()
 
 
 @app_routes.get("/health")
-async def health() -> dict[str, str]:
+async def health() -> Dict[str, str]:
     """Simple health check endpoint."""
     return {"status": "ok"}
 
@@ -119,7 +119,7 @@ async def get_messages_endpoint(
     bot_id: int,
     limit: int = 100,
     offset: int = 0,
-    cursor: int | None = None,
+    cursor: Optional[int] = None,
     db: Session = Depends(get_async_db),
 ):
     """Return messages for a bot with optional pagination."""

@@ -1,9 +1,9 @@
 import asyncio
-from typing import Awaitable, Callable, List, Tuple
+from typing import Awaitable, Callable, List, Tuple, Union
 
 # Type alias for hook callables
-PreHook = Callable[[str, dict], Awaitable[Tuple[str, dict]] | Tuple[str, dict]]
-PostHook = Callable[[str, dict], Awaitable[Tuple[str, dict]] | Tuple[str, dict]]
+PreHook = Callable[[str, dict], Union[Awaitable[Tuple[str, dict]], Tuple[str, dict]]]
+PostHook = Callable[[str, dict], Union[Awaitable[Tuple[str, dict]], Tuple[str, dict]]]
 
 _pre_hooks: List[PreHook] = []
 _post_hooks: List[PostHook] = []
