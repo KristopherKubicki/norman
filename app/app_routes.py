@@ -1,5 +1,5 @@
 from typing import List
-from fastapi import APIRouter, Depends, Request, HTTPException
+from fastapi import APIRouter, Depends, Request, HTTPException, BackgroundTasks
 from fastapi import status
 from fastapi.security import OAuth2PasswordRequestForm
 
@@ -25,8 +25,9 @@ from app.crud.interaction import create_interaction
 from app.handlers.openai_handler import create_chat_interaction
 from app.api.deps import get_async_db
 
-from datetime import timedelta
+from datetime import timedelta, datetime
 import os
+import json
 import uuid
 import requests
 import jwt
@@ -36,6 +37,7 @@ import traceback
 from .views import home, connectors, filters, channels, process_message, bots, messages, login, logout, get_bots
 from app.connectors.connector_utils import get_connector
 from app.schemas.connector import ConnectorCreate, ConnectorUpdate, Connector
+from app.core.redis_cache import get_redis_client
 
 current_dir = os.path.dirname(os.path.realpath(__file__))
 app_routes = APIRouter()
@@ -223,13 +225,49 @@ async def test_connector_endpoint(connector_id: int, db: Session = Depends(get_a
 
 
 @app_routes.get("/api/connectors/{connector_id}/status")
-async def connector_status_endpoint(connector_id: int, db: Session = Depends(get_async_db)):
+async def connector_status_endpoint(
+    connector_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_async_db),
+):
+    key = f"connector_status:{connector_id}"
+    redis_client = get_redis_client()
+    if redis_client:
+        cached = redis_client.get(key)
+        if cached:
+            data = json.loads(cached)
+            background_tasks.add_task(_refresh_status, connector_id)
+            return data
+
     connector = connector_crud.get(db, connector_id)
     if not connector:
         raise HTTPException(status_code=404, detail="Connector not found")
     instance = get_connector(connector.connector_type, connector.config or {})
     status_value = "up" if instance.is_connected() else "down"
-    return {"status": status_value}
+    data = {"status": status_value, "timestamp": datetime.utcnow().isoformat()}
+    if redis_client:
+        redis_client.setex(key, 30, json.dumps(data))
+    return data
+
+
+def _refresh_status(connector_id: int) -> None:
+    """Refresh connector status in the background."""
+    redis_client = get_redis_client()
+    if not redis_client:
+        return
+    from app.db.session import SessionLocal
+
+    db = SessionLocal()
+    try:
+        connector = connector_crud.get(db, connector_id)
+        if not connector:
+            return
+        instance = get_connector(connector.connector_type, connector.config or {})
+        status_value = "up" if instance.is_connected() else "down"
+        data = {"status": status_value, "timestamp": datetime.utcnow().isoformat()}
+        redis_client.setex(f"connector_status:{connector_id}", 30, json.dumps(data))
+    finally:
+        db.close()
 
 @app_routes.post("/token", response_model=Token)
 async def token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_async_db)):
