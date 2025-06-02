@@ -22,6 +22,8 @@ from app.crud.bot import create_bot, delete_bot, get_bot_by_id
 from app.crud import connector as connector_crud
 from app.crud.message import create_message, get_messages_by_bot_id, delete_message, get_last_messages_by_bot_id, delete_messages_by_bot_id
 from app.crud.interaction import create_interaction
+from app.crud.audit_event import create_audit_event
+from app.schemas.audit_event import AuditEventCreate
 from app.handlers.openai_handler import create_chat_interaction
 from app.api.deps import get_async_db
 
@@ -243,6 +245,14 @@ async def token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = 
             headers={"WWW-Authenticate": "Bearer"},
         )
     access_token = create_access_token(data={"sub": user.email})
+    create_audit_event(
+        db,
+        AuditEventCreate(
+            user_id=user.id,
+            event_type="login_success",
+            ip_address="api",
+        ),
+    )
     return {"access_token": access_token, "token_type": "bearer"}
 
 @app_routes.get("/login.html")
@@ -261,14 +271,28 @@ async def logout_endpoint(request: Request, response: Response):
 @app_routes.post("/login", response_class=HTMLResponse)
 async def login_post(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_async_db)):
 
-    user = UserAuthenticate(email=form_data.username, password=form_data.password)
+    try:
+        credentials = UserAuthenticate(email=form_data.username, password=form_data.password)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Incorrect email or password")
 
-    if user is None:
+    user = authenticate_user(db, credentials)
+
+    if not user:
         raise HTTPException(status_code=400, detail="Incorrect email or password")
 
     access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
     access_token = create_access_token(
         data={"sub": user.email}, expires_delta=access_token_expires
+    )
+
+    create_audit_event(
+        db,
+        AuditEventCreate(
+            user_id=user.id,
+            event_type="login_success",
+            ip_address=request.client.host if request.client else "unknown",
+        ),
     )
 
     response = RedirectResponse(url="/", status_code=303)
@@ -345,6 +369,14 @@ async def google_callback(request: Request, db: Session = Depends(get_async_db))
     user = get_user_by_email(db, email=email)
     if not user:
         user = create_user(db, UserCreate(email=email, username=username, password=_random_password()))
+    create_audit_event(
+        db,
+        AuditEventCreate(
+            user_id=user.id,
+            event_type="login_success",
+            ip_address=request.client.host if request.client else "unknown",
+        ),
+    )
     return _set_login_cookie(user.email)
 
 
@@ -388,5 +420,13 @@ async def microsoft_callback(request: Request, db: Session = Depends(get_async_d
     user = get_user_by_email(db, email=email)
     if not user:
         user = create_user(db, UserCreate(email=email, username=username, password=_random_password()))
+    create_audit_event(
+        db,
+        AuditEventCreate(
+            user_id=user.id,
+            event_type="login_success",
+            ip_address=request.client.host if request.client else "unknown",
+        ),
+    )
     return _set_login_cookie(user.email)
 

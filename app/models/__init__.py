@@ -7,4 +7,5 @@ from .channel_filter import Filter
 from .interaction import Interaction
 from .user import User
 from .message import Message
+from .audit_event import AuditEvent
 

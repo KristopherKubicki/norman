@@ -7,7 +7,18 @@ from passlib.context import CryptContext
 from datetime import datetime, timedelta, timezone
 from app.core.config import settings
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+try:
+    from passlib.hash import argon2
+    argon2.set_backend("argon2_cffi")
+    pwd_context = CryptContext(
+        schemes=["argon2"],
+        deprecated="auto",
+        argon2__type="id",
+        argon2__time_cost=2,
+        argon2__memory_cost=65536,
+    )
+except Exception:  # pragma: no cover - fallback if argon2 not available
+    pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 def verify_password(plain_password, hashed_password):

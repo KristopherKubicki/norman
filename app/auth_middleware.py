@@ -38,7 +38,7 @@ async def auth_middleware(request: Request, call_next):
         except HTTPException as e:
             if e.status_code == 401:
                 #return Response(content="Unauthorized", status_code=401)
-                return RedirectResponse(url="/login.html", content="Unauthorized", status_code=401)
+                return RedirectResponse(url="/login.html", status_code=401)
             raise e
 
     response = await call_next(request)

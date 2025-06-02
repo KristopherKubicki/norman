@@ -11,6 +11,7 @@ from app.api import init_routers
 from app.app_routes import app_routes
 from app.core.config import settings
 from app.auth_middleware import auth_middleware
+from app.rate_limit import rate_limit_middleware
 
 def run_alembic_migrations():
     if not os.path.exists("alembic/versions"):
@@ -32,6 +33,7 @@ async def startup_event():
 
 # add authentication
 app.middleware("http")(auth_middleware)
+app.middleware("http")(rate_limit_middleware)
 
 # Initialize the connectors
 init_connectors(app, settings)

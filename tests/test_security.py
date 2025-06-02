@@ -7,6 +7,7 @@ def test_password_hash_round_trip() -> None:
     password = "secret"
     hashed = get_password_hash(password)
     assert hashed != password
+    assert hashed.startswith("$argon2id$") or hashed.startswith("$2b$")
     assert verify_password(password, hashed)
 
 
