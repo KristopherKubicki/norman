@@ -33,7 +33,7 @@ class PagerDutyConnector(BaseConnector):
             response.raise_for_status()
             return response.text
         except requests.RequestException as exc:  # pragma: no cover - network
-            print(f"Error sending PagerDuty event: {exc}")
+            self.logger.error("Error sending PagerDuty event: %s", exc)
             return None
 
     async def listen_and_process(self) -> None:

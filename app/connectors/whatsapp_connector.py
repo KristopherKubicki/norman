@@ -44,7 +44,7 @@ class WhatsAppConnector(BaseConnector):
             resp.raise_for_status()
             return resp.text
         except requests.RequestException as exc:  # pragma: no cover - network
-            print(f"Error sending WhatsApp message: {exc}")
+            self.logger.error("Error sending WhatsApp message: %s", exc)
             return None
 
     async def listen_and_process(self):

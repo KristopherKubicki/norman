@@ -34,7 +34,7 @@ class WebhookConnector(BaseConnector):
                 response.raise_for_status()
                 return response.text
             except httpx.HTTPError as exc:  # pragma: no cover - network
-                print(f"Error sending message to webhook: {exc}")
+                self.logger.error("Error sending message to webhook: %s", exc)
                 return None
 
     async def send_to_webhook(self, data: Dict[str, Any]) -> str:

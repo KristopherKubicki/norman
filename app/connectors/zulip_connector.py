@@ -31,7 +31,7 @@ class ZulipConnector(BaseConnector):
             resp.raise_for_status()
             return resp.text
         except requests.RequestException as exc:  # pragma: no cover - network
-            print(f"Error sending Zulip message: {exc}")
+            self.logger.error("Error sending Zulip message: %s", exc)
             return None
 
     async def listen_and_process(self) -> None:

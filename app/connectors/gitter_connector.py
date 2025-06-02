@@ -24,7 +24,7 @@ class GitterConnector(BaseConnector):
             resp.raise_for_status()
             return resp.text
         except requests.RequestException as exc:  # pragma: no cover - network error
-            print(f"Error sending message to Gitter: {exc}")
+            self.logger.error("Error sending message to Gitter: %s", exc)
             return None
 
     async def listen_and_process(self) -> None:  # pragma: no cover - not implemented

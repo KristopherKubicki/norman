@@ -19,7 +19,7 @@ class TelegramConnector(BaseConnector):
             response = requests.post(url, data=data)
             response.raise_for_status()
         except requests.exceptions.RequestException as e:
-            print(f"Error while sending message to Telegram: {e}")
+            self.logger.error("Error while sending message to Telegram: %s", e)
             return None
 
         return response.text
@@ -44,7 +44,7 @@ class TelegramConnector(BaseConnector):
             response = requests.post(url, json={"url": webhook_url})
             response.raise_for_status()
         except requests.exceptions.RequestException as e:
-            print(f"Error while setting webhook for Telegram: {e}")
+            self.logger.error("Error while setting webhook for Telegram: %s", e)
             return False
 
         return True

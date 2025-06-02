@@ -27,7 +27,7 @@ class MastodonConnector(BaseConnector):
             resp.raise_for_status()
             return resp.text
         except requests.RequestException as exc:  # pragma: no cover - network
-            print(f"Error sending message to Mastodon: {exc}")
+            self.logger.error("Error sending message to Mastodon: %s", exc)
             return None
 
     async def listen_and_process(self) -> None:
@@ -48,7 +48,7 @@ class MastodonConnector(BaseConnector):
                             continue
                         await self.process_incoming({"event": line})
             except httpx.HTTPError as exc:  # pragma: no cover - network
-                print(f"Error listening to Mastodon stream: {exc}")
+                self.logger.error("Error listening to Mastodon stream: %s", exc)
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
         return message

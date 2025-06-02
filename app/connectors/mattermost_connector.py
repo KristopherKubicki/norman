@@ -30,7 +30,7 @@ class MattermostConnector(BaseConnector):
                 self.sent_messages.append(message)
                 return resp.text
             except httpx.HTTPError as exc:  # pragma: no cover - network
-                print(f"Error sending Mattermost message: {exc}")
+                self.logger.error("Error sending Mattermost message: %s", exc)
                 return None
 
     async def listen_and_process(self):

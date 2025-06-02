@@ -38,7 +38,7 @@ class SNMPConnector(BaseConnector):
             self._sock.sendto(payload, (self.host, self.port))
             return "ok"
         except OSError as exc:  # pragma: no cover - network errors
-            print(f"Error sending SNMP trap: {exc}")
+            self.logger.error("Error sending SNMP trap: %s", exc)
             return None
 
     async def listen_and_process(self) -> None:

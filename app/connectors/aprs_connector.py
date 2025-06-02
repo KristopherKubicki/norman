@@ -52,4 +52,4 @@ class APRSConnector(BaseConnector):
             self.client.close()
 
     async def process_incoming(self, message):
-        print(f"APRS received: {message}")
+        self.logger.error("APRS received: %s", message)

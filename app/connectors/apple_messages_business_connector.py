@@ -25,7 +25,9 @@ class AppleMessagesBusinessConnector(BaseConnector):
             resp.raise_for_status()
             return resp.text
         except requests.RequestException as exc:  # pragma: no cover - network
-            print(f"Error sending Apple Messages for Business: {exc}")
+            self.logger.error(
+                "Error sending Apple Messages for Business: %s", exc
+            )
             return None
 
     async def listen_and_process(self) -> None:

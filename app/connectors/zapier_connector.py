@@ -21,7 +21,7 @@ class ZapierConnector(BaseConnector):
                 response.raise_for_status()
                 return response.text
             except httpx.HTTPError as exc:
-                print(f"Error sending message to Zapier: {exc}")
+                self.logger.error("Error sending message to Zapier: %s", exc)
                 return None
 
     async def listen_and_process(self) -> None:

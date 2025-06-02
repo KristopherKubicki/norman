@@ -59,7 +59,7 @@ class MQTTConnector(BaseConnector):
             self.client.disconnect()
 
     async def process_incoming(self, message: str):
-        print(f"MQTT received: {message}")
+        self.logger.error("MQTT received: %s", message)
 
     def _on_message(self, client, userdata, msg):  # pragma: no cover - callback
         asyncio.create_task(self.process_incoming(msg.payload.decode()))

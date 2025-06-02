@@ -36,7 +36,7 @@ class SalesforceConnector(BaseConnector):
             resp.raise_for_status()
             return resp.text
         except requests.RequestException as exc:  # pragma: no cover - network
-            print(f"Error sending message to Salesforce: {exc}")
+            self.logger.error("Error sending message to Salesforce: %s", exc)
             return None
 
     async def listen_and_process(self) -> None:
@@ -50,7 +50,7 @@ class SalesforceConnector(BaseConnector):
                 resp.raise_for_status()
                 data = resp.json().get("records", [])
             except requests.RequestException as exc:  # pragma: no cover - network
-                print(f"Error fetching Salesforce records: {exc}")
+                self.logger.error("Error fetching Salesforce records: %s", exc)
                 await asyncio.sleep(30)
                 continue
 

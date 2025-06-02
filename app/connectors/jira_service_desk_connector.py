@@ -46,7 +46,9 @@ class JiraServiceDeskConnector(BaseConnector):
             resp.raise_for_status()
             return resp.text
         except requests.RequestException as exc:  # pragma: no cover - network
-            print(f"Error communicating with Jira Service Desk: {exc}")
+            self.logger.error(
+                "Error communicating with Jira Service Desk: %s", exc
+            )
             return None
 
     def _fetch_issues(self) -> List[Dict[str, Any]]:
@@ -67,7 +69,7 @@ class JiraServiceDeskConnector(BaseConnector):
             try:
                 issues = self._fetch_issues()
             except requests.RequestException as exc:  # pragma: no cover - network
-                print(f"Error fetching Jira issues: {exc}")
+                self.logger.error("Error fetching Jira issues: %s", exc)
                 await asyncio.sleep(30)
                 continue
 

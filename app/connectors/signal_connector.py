@@ -25,7 +25,7 @@ class SignalConnector(BaseConnector):
                 resp.raise_for_status()
                 return resp.text
             except httpx.HTTPError as exc:  # pragma: no cover - network
-                print(f"Error sending Signal message: {exc}")
+                self.logger.error("Error sending Signal message: %s", exc)
                 return None
 
     async def listen_and_process(self):

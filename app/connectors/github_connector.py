@@ -37,7 +37,7 @@ class GitHubConnector(BaseConnector):
             response.raise_for_status()
             return response.text
         except requests.RequestException as exc:  # pragma: no cover - network
-            print(f"Error communicating with GitHub: {exc}")
+            self.logger.error("Error communicating with GitHub: %s", exc)
             return None
 
     def _fetch_events(self) -> List[Dict[str, Any]]:
@@ -56,7 +56,7 @@ class GitHubConnector(BaseConnector):
             try:
                 events = self._fetch_events()
             except requests.RequestException as exc:  # pragma: no cover - network
-                print(f"Error fetching GitHub events: {exc}")
+                self.logger.error("Error fetching GitHub events: %s", exc)
                 await asyncio.sleep(30)
                 continue
 
