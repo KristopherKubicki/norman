@@ -73,17 +73,16 @@ pip install -r requirements.txt
 
 Norman automatically enables [WAL](https://www.sqlite.org/wal.html) mode when using SQLite for improved concurrency.
 
-4. Run Norman once to automatically generate `config.yaml` with secure defaults.
-   Afterwards edit this file to configure connectors and add your OpenAI API key.
+4. Copy `.env.example` to `.env` and adjust the values for your environment.
 
-5. (Optional) Regenerate the secrets in `config.yaml` using the provided script:
+5. (Optional) Regenerate the secrets in `.env` using the provided script:
 
 ```
 chmod +x generate_key.sh
 ./generate_key.sh
 ```
 
-You can also edit `config.yaml` manually to provide your own values. Be sure to add your OpenAI key under `openai_api_key`.
+You can also edit `.env` manually to provide your own values. Be sure to add your OpenAI key under `OPENAI_API_KEY`.
 
 6. Run the application:
 ```
@@ -93,6 +92,13 @@ python main.py
 7. Open the API documentation in your browser: [http://localhost:8000/docs](http://localhost:8000/docs)
 
 For more information, refer to the [documentation](docs/) and the [contributing guidelines](CONTRIBUTING.md).
+
+### Using AWS Secrets Manager
+
+When deploying with Docker or GitHub Actions you can provide `AWS_SECRET_ID` and
+`AWS_REGION` environment variables. The provided `docker-compose.yml` and CI
+workflow will fetch secrets from AWS Secrets Manager and write them to `.env` at
+runtime.
 
 ## Usage
 

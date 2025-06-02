@@ -344,13 +344,11 @@ def test_get_connectors_data_missing_config(monkeypatch):
 
 
 def test_get_connectors_data_status_up(monkeypatch):
-    from app.core.config import load_config, Settings
+    from app.core.config import Settings
 
-    config = load_config()
-    config["connectors"] = [
+    settings = Settings(connectors=[
         {"type": "slack", "token": "x", "channel_id": "C1", "config": {}}
-    ]
-    settings = Settings(**config)
+    ])
 
     monkeypatch.setattr("app.connectors.connector_utils.get_settings", lambda: settings)
     monkeypatch.setattr(
@@ -506,12 +504,10 @@ def test_get_configured_connectors_none(monkeypatch):
 
 
 def test_get_configured_connectors_with_slack(monkeypatch):
-    from app.core.config import load_config, Settings
+    from app.core.config import Settings
     from app.connectors.connector_utils import get_configured_connectors
 
-    config = load_config()
-    config["connectors"] = [{"type": "slack", "token": "x", "channel_id": "C1"}]
-    settings = Settings(**config)
+    settings = Settings(connectors=[{"type": "slack", "token": "x", "channel_id": "C1"}])
 
     monkeypatch.setattr("app.connectors.connector_utils.get_settings", lambda: settings)
     connectors = get_configured_connectors()

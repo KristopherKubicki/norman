@@ -6,7 +6,7 @@ from app.connectors import init_connectors
 from app.connectors.connector_utils import connector_classes
 from app.core.test_settings import test_settings
 from app.connectors.slack_connector import SlackConnector
-from app.core.config import Settings, load_config
+from app.core.config import Settings
 
 # Provide a minimal slack_sdk stub if the real package isn't installed
 if 'slack_sdk' not in sys.modules:
@@ -36,9 +36,7 @@ def test_init_connectors_adds_placeholders(monkeypatch):
 
 
 def test_init_connectors_with_slack(monkeypatch):
-    config = load_config()
-    config["connectors"] = [{"type": "slack", "token": "x", "channel_id": "C1"}]
-    settings = Settings(**config)
+    settings = Settings(connectors=[{"type": "slack", "token": "x", "channel_id": "C1"}])
 
     monkeypatch.setattr("app.connectors.get_settings", lambda: settings)
     monkeypatch.setattr("app.connectors.connector_utils.get_settings", lambda: settings)

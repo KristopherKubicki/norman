@@ -11,9 +11,17 @@ on:
 jobs:
   build_and_test:
     runs-on: ubuntu-latest
+    env:
+      AWS_SECRET_ID: ${{ secrets.AWS_SECRET_ID }}
+      AWS_REGION: ${{ secrets.AWS_REGION }}
     steps:
       - name: Check out code
         uses: actions/checkout@v3
+
+      - name: Load secrets
+        if: env.AWS_SECRET_ID != ''
+        run: |
+          aws secretsmanager get-secret-value --secret-id "$AWS_SECRET_ID" --query SecretString --output text > .env
 
       - name: Set up Python
         uses: actions/setup-python@v4

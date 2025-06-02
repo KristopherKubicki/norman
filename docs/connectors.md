@@ -79,13 +79,10 @@ To use a specific connector, you'll need to provide the necessary configuration 
 
 ### Configuration
 
-You'll need to update the `config.yaml` file with the appropriate settings for the connector you want to use. The required settings may vary depending on the platform. Here's an example of what the configuration for a Slack connector might look like:
+You'll need to update your environment variables with the appropriate settings for the connector you want to use. The required settings may vary depending on the platform. Here's an example of what the configuration for a Slack connector might look like in `.env`:
 
-```yaml
-connectors:
-  - type: "slack"
-    token: "your-slack-bot-token"
-    channel: "your-slack-channel"
+```bash
+CONNECTORS='[{"type": "slack", "token": "your-slack-bot-token", "channel_id": "your-slack-channel"}]'
 ```
 
 For other connectors, consult the platform-specific documentation for information on obtaining the necessary credentials and configuring the connector.

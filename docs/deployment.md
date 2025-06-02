@@ -53,8 +53,11 @@ Before deploying Norman, ensure that your server meets the following requirement
 
 ## Configuration
 
-1. Run Norman once to automatically create `config.yaml` with secure defaults.
-   Edit this file to configure the required settings, such as the database connection string and API keys.
+1. Copy `.env.example` to `.env` and adjust the values for your deployment.
+   You can manage these variables with AWS Secrets Manager in production.
+
+2. The included `docker-compose.yml` will automatically pull secrets from AWS if
+   `AWS_SECRET_ID` and `AWS_REGION` are provided in the environment.
 
 ## Running the Application
 

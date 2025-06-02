@@ -4,14 +4,14 @@ This page walks through a small end‑to‑end example and shows how to interact
 
 ## Slack Bot Quick Start
 
-1. Run Norman once to generate `config.yaml` and edit the Slack section:
+1. Copy `.env.example` to `.env` and edit the Slack variables:
 
 ```yaml
 slack_token: "xoxb-your-slack-token"
 slack_channel_id: "C01234567"
 ```
 
-2. Set your `openai_api_key` in `config.yaml` and optionally regenerate the secrets:
+2. Set your `OPENAI_API_KEY` in `.env` and optionally regenerate the secrets:
 
 ```bash
 chmod +x generate_key.sh
@@ -24,7 +24,7 @@ chmod +x generate_key.sh
 python main.py
 ```
 
-4. Visit `http://localhost:8000` and log in with the admin credentials from `config.yaml`.
+4. Visit `http://localhost:8000` and log in with the admin credentials from `.env`.
 5. Create a chatbot in the Web UI and select the Slack connector. Messages sent to the configured channel will be processed by the bot.
 
 ## API Examples

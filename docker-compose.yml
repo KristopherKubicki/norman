@@ -1,0 +1,13 @@
+version: "3.8"
+services:
+  norman:
+    image: python:3.8
+    working_dir: /app
+    volumes:
+      - .:/app
+    command: bash -c "if [ -n \"$AWS_SECRET_ID\" ]; then aws secretsmanager get-secret-value --secret-id $AWS_SECRET_ID --query SecretString --output text > .env; fi && python main.py"
+    env_file:
+      - .env
+    environment:
+      - AWS_SECRET_ID
+      - AWS_REGION
