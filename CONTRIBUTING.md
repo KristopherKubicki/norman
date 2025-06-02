@@ -56,6 +56,12 @@ Please adhere to the following coding standards when contributing to the project
 - Include comments to explain complex or non-obvious code.
 - Keep functions and methods small and focused on a single task.
 - Follow the established code structure and organization.
+### Style Guide
+- Run `make lint` or use `pre-commit` to format with Black and check with pylint.
+- Use `snake_case` for functions and variables and `CamelCase` for classes.
+- Name database session objects `db` when passed as a dependency.
+- Keep error handling consistent across connectors.
+
 
 ## Testing
 

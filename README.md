@@ -142,6 +142,10 @@ Norman is built to be extensible, allowing you to add new connectors, actions, a
 ## Philosophy
 
 We created Norman to provide an open, self-hosted, and open-source solution for accessing large language models like GPT-4. We hope others can build upon and extend Norman to incorporate additional chat technologies and channels. Our philosophy centers on continuous improvement, utilizing automation, and striving for excellence in our project. Learn more about our philosophy in our [Philosophy](docs/philosophy.md) document.
+## Coding Style
+
+We use [pylint](https://pylint.pycqa.org/) with the configuration in `.pylintrc` and format code using [Black](https://github.com/psf/black). Run `make lint` before submitting a PR or install pre-commit hooks with `pre-commit install` to automatically check formatting and linting.
+
 
 ## Contributing
 
