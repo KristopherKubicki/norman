@@ -12,7 +12,7 @@ router = APIRouter()
 
 # endpoints and handlers go here
 @router.post("/bots/", response_model=Bot)
-async def api_create_bot(bot: BotCreate, db: Session = Depends(get_db)):
+async def api_create_bot(bot: BotCreate, db: Session = Depends(get_db)) -> Bot:
     # Logic to create a new bot
     bot = create_bot(db=db, bot_create=bot)
     if bot is None:
@@ -43,7 +43,7 @@ async def api_update_bot(
     return updated
 
 @router.delete("/bots/{bot_id}", response_model=Bot)
-async def api_delete_bot(bot_id: int, db: Session = Depends(get_db)):
+async def api_delete_bot(bot_id: int, db: Session = Depends(get_db)) -> Bot:
     bot = delete_bot(db=db, bot_id=bot_id)
     if bot is None:
         raise HTTPException(status_code=404, detail="Bot not found")

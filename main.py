@@ -12,7 +12,7 @@ from app.app_routes import app_routes
 from app.core.config import settings
 from app.auth_middleware import auth_middleware
 
-def run_alembic_migrations():
+def run_alembic_migrations() -> None:
     if not os.path.exists("alembic/versions"):
         os.makedirs("alembic/versions", exist_ok=True)
     alembic_cfg = Config("alembic.ini")
@@ -23,7 +23,7 @@ app = FastAPI()
 
 # Create the initial user
 @app.on_event("startup")
-async def startup_event():
+async def startup_event() -> None:
     if not os.environ.get("SKIP_MIGRATIONS"):
         if not os.path.exists("db"):
             os.makedirs("db", exist_ok=True)

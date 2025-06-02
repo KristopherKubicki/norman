@@ -10,7 +10,9 @@ def get_slack_connector(settings: Settings = Depends(get_settings)) -> SlackConn
 
 
 @router.post("/webhooks/slack")
-async def process_slack_update(request: Request, slack_connector: SlackConnector = Depends(get_slack_connector)):
+async def process_slack_update(
+    request: Request, slack_connector: SlackConnector = Depends(get_slack_connector)
+) -> dict[str, str]:
     payload = await request.json()
     slack_connector.process_incoming(payload)
     return {"detail": "Update processed"}

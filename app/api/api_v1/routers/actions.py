@@ -10,7 +10,7 @@ def create_action(
     *,
     db: Session = Depends(get_db),
     action_in: schemas.ActionCreate
-):
+) -> schemas.Action:
     action = crud.action.create(db, obj_in=action_in)
     return action
 
@@ -19,7 +19,7 @@ def read_action(
     *,
     db: Session = Depends(get_db),
     action_id: int
-):
+) -> schemas.Action:
     action = crud.action.get(db, action_id)
     if not action:
         raise HTTPException(status_code=404, detail="Action not found")
@@ -31,7 +31,7 @@ def update_action(
     db: Session = Depends(get_db),
     action_id: int,
     action_in: schemas.ActionUpdate
-):
+) -> schemas.Action:
     action = crud.action.get(db, action_id)
     if not action:
         raise HTTPException(status_code=404, detail="Action not found")
@@ -43,7 +43,7 @@ def delete_action(
     *,
     db: Session = Depends(get_db),
     action_id: int
-):
+) -> schemas.Action:
     action = crud.action.get(db, action_id)
     if not action:
         raise HTTPException(status_code=404, detail="Action not found")

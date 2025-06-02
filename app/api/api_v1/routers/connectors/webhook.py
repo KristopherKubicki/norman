@@ -8,7 +8,9 @@ def get_webhook_connector(settings: Settings = Depends(get_settings)) -> Webhook
     return WebhookConnector(webhook_url=settings.webhook_secret)
 
 @router.post("/webhooks/webhook")
-async def process_webhook_update(request: Request, webhook_connector: WebhookConnector = Depends(get_webhook_connector)):
+async def process_webhook_update(
+    request: Request, webhook_connector: WebhookConnector = Depends(get_webhook_connector)
+) -> dict[str, str]:
     payload = await request.json()
     webhook_connector.process_incoming(payload)
     return {"detail": "Update processed"}

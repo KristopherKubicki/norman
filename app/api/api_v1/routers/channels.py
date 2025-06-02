@@ -16,7 +16,7 @@ router = APIRouter()
 @router.post("/", response_model=Channel, status_code=status.HTTP_201_CREATED)
 async def create_channel(
     channel: ChannelCreate, db: Session = Depends(get_db)
-):
+) -> Channel:
     """Create a new channel."""
     try:
         return crud.channel.create(db, obj_in=channel)
@@ -24,12 +24,12 @@ async def create_channel(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 @router.get("/", response_model=List[Channel])
-async def get_channels(db: Session = Depends(get_db)):
+async def get_channels(db: Session = Depends(get_db)) -> List[Channel]:
     """Return all channels."""
     return crud.channel.get_multi(db)
 
 @router.get("/{channel_id}", response_model=Channel)
-async def get_channel(channel_id: int, db: Session = Depends(get_db)):
+async def get_channel(channel_id: int, db: Session = Depends(get_db)) -> Channel:
     """Return a channel by ID."""
     channel = crud.channel.get(db, channel_id)
     if not channel:
@@ -39,7 +39,7 @@ async def get_channel(channel_id: int, db: Session = Depends(get_db)):
 @router.put("/{channel_id}", response_model=Channel)
 async def update_channel(
     channel_id: int, channel: ChannelUpdate, db: Session = Depends(get_db)
-):
+) -> Channel:
     """Update a channel."""
     db_channel = crud.channel.get(db, channel_id)
     if not db_channel:
@@ -47,7 +47,7 @@ async def update_channel(
     return crud.channel.update(db, db_obj=db_channel, obj_in=channel)
 
 @router.delete("/{channel_id}", response_model=Channel)
-async def delete_channel(channel_id: int, db: Session = Depends(get_db)):
+async def delete_channel(channel_id: int, db: Session = Depends(get_db)) -> Channel:
     """Delete a channel."""
     channel = crud.channel.remove(db, channel_id)
     if not channel:

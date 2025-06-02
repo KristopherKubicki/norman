@@ -13,7 +13,9 @@ def get_teams_connector(settings: Settings = Depends(get_settings)) -> TeamsConn
     )
 
 @router.post("/webhooks/teams")
-async def process_teams_update(request: Request, teams_connector: TeamsConnector = Depends(get_teams_connector)):
+async def process_teams_update(
+    request: Request, teams_connector: TeamsConnector = Depends(get_teams_connector)
+) -> dict[str, str]:
     payload = await request.json()
     teams_connector.process_incoming(payload)
     return {"detail": "Update processed"}

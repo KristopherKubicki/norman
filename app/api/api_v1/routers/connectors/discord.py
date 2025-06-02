@@ -11,7 +11,9 @@ def get_discord_connector(settings: Settings = Depends(get_settings)) -> Discord
     )
 
 @router.post("/webhooks/discord")
-async def process_discord_update(request: Request, discord_connector: DiscordConnector = Depends(get_discord_connector)):
+async def process_discord_update(
+    request: Request, discord_connector: DiscordConnector = Depends(get_discord_connector)
+) -> dict[str, str]:
     payload = await request.json()
     discord_connector.process_incoming(payload)
     return {"detail": "Update processed"}

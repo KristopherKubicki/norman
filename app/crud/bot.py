@@ -1,10 +1,12 @@
 from sqlalchemy.orm import Session
+from typing import Optional
+
 from app import models, schemas
 
-def get_bot_by_id(db: Session, bot_id: int):
+def get_bot_by_id(db: Session, bot_id: int) -> Optional[models.Bot]:
     return db.query(models.Bot).filter(models.Bot.id == bot_id).first()
 
-def create_bot(db: Session, bot_create: schemas.BotCreate):
+def create_bot(db: Session, bot_create: schemas.BotCreate) -> models.Bot:
     bot = models.Bot(
         name=bot_create.name,
         description=bot_create.description,
@@ -16,7 +18,7 @@ def create_bot(db: Session, bot_create: schemas.BotCreate):
     db.refresh(bot)
     return bot
 
-def delete_bot(db: Session, bot_id: int):
+def delete_bot(db: Session, bot_id: int) -> Optional[models.Bot]:
     bot = db.query(models.Bot).filter(models.Bot.id == bot_id).first()
     if bot is None:
         return None
@@ -24,7 +26,7 @@ def delete_bot(db: Session, bot_id: int):
     db.commit()
     return bot
 
-def update_bot(db: Session, bot_id: int, bot_data: schemas.BotUpdate):
+def update_bot(db: Session, bot_id: int, bot_data: schemas.BotUpdate) -> Optional[models.Bot]:
     bot = db.query(models.Bot).filter(models.Bot.id == bot_id).first()
     if bot is None:
         return None

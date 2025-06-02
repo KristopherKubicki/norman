@@ -8,7 +8,9 @@ def get_mcp_connector(settings: Settings = Depends(get_settings)) -> MCPConnecto
     return MCPConnector(api_url=settings.mcp_api_url, api_key=settings.mcp_api_key)
 
 @router.post("/webhooks/mcp")
-async def process_mcp_update(request: Request, mcp_connector: MCPConnector = Depends(get_mcp_connector)):
+async def process_mcp_update(
+    request: Request, mcp_connector: MCPConnector = Depends(get_mcp_connector)
+) -> dict[str, str]:
     payload = await request.json()
     await mcp_connector.process_incoming(payload)
     return {"detail": "Update processed"}
