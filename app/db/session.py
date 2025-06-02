@@ -1,10 +1,18 @@
 
+
 import os
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import QueuePool
+from pathlib import Path
 
 from app.core.config import settings
+
+
+# Ensure the SQLite database directory exists before creating the engine
+if settings.database_url.startswith("sqlite"):
+    db_path = settings.database_url.replace("sqlite:///", "")
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
 engine = create_engine(
     settings.database_url,
@@ -16,6 +24,7 @@ engine = create_engine(
     if settings.database_url.startswith("sqlite")
     else {},
 )
+
 
 if settings.database_url.startswith("sqlite"):
     # Ensure the SQLite database directory exists before connecting

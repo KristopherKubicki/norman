@@ -20,12 +20,17 @@ class IntercomConnector(BaseConnector):
         self.app_id = app_id
         self.api_url = "https://api.intercom.io/messages"
 
-    async def send_message(self, text: str) -> Optional[str]:
-        headers = {
+    def _headers(self) -> Dict[str, str]:
+        """Return HTTP headers required for API requests."""
+
+        return {
             "Authorization": f"Bearer {self.access_token}",
             "Accept": "application/json",
             "Content-Type": "application/json",
         }
+
+    async def send_message(self, text: str) -> Optional[str]:
+        headers = self._headers()
         payload = {"message_type": "inapp", "body": text, "app_id": self.app_id}
         try:
             async with httpx.AsyncClient() as client:
@@ -42,3 +47,14 @@ class IntercomConnector(BaseConnector):
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the API token appears valid."""
+
+        url = "https://api.intercom.io/me"
+        try:
+            resp = httpx.get(url, headers=self._headers())
+            resp.raise_for_status()
+            return True
+        except httpx.HTTPError:
+            return False

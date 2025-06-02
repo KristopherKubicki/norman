@@ -51,11 +51,21 @@ def test_send_message_error(monkeypatch):
 
 def test_process_incoming():
     connector = DiscordConnector("TOKEN", "CHAN")
-    payload = {"foo": "bar"}
+    payload = {
+        "id": "1",
+        "content": "hello",
+        "author": {"username": "bob"},
+        "channel_id": "CHAN",
+    }
     result = asyncio.get_event_loop().run_until_complete(
         connector.process_incoming(payload)
     )
-    assert result == payload
+    assert result == {
+        "id": "1",
+        "text": "hello",
+        "user": "bob",
+        "channel": "CHAN",
+    }
 
 
 class DummyGetResponse:

@@ -60,3 +60,14 @@ class WhatsAppConnector(BaseConnector):
         # Code to process the incoming message, including applying filters
         # and calling the appropriate action(s)
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the Twilio credentials appear valid."""
+
+        url = f"https://api.twilio.com/2010-04-01/Accounts/{self.account_sid}.json"
+        try:
+            resp = httpx.get(url, auth=(self.account_sid, self.auth_token))
+            resp.raise_for_status()
+            return True
+        except httpx.HTTPError:
+            return False
