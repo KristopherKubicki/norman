@@ -1,4 +1,3 @@
-from contextlib import contextmanager
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
@@ -10,7 +9,6 @@ from app.crud.user import get_user_by_email
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token")
 
-@contextmanager
 def get_db():
     db = SessionLocal()
     try:

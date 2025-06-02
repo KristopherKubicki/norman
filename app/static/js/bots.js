@@ -3,6 +3,7 @@ let selectedBotId = null;
 const sendButton = document.getElementById('send-message');
 
 document.addEventListener('DOMContentLoaded', () => {
+  const sendButton = document.getElementById('send-message');
   // Fetch bots and render them in the bots container
   fetchBotsAndRender();
 
@@ -52,39 +53,38 @@ document.addEventListener('DOMContentLoaded', () => {
       descriptionInput.value = "";
     });
   }
+  sendButton.addEventListener("click", async (event) => {
+    event.preventDefault();
 
-});
+    // Disable the button
+    sendButton.disabled = true;
 
-
-sendButton.addEventListener("click", async (event) => {
-  event.preventDefault();
-
-  // Disable the button
-  sendButton.disabled = true;
- 
-  // reset the enter dialog
-const textarea = document.querySelector('textarea');
+    // reset the enter dialog
+    const textarea = document.querySelector('textarea');
     textarea.style.height = 'auto';
 
-const spinner = document.getElementById('spinner');
-  const selectedBotNameElement = document.getElementById('selected-bot-name');
-  const content = textarea.value.trim();
+    const spinner = document.getElementById('spinner');
+    const selectedBotNameElement = document.getElementById('selected-bot-name');
+    const content = textarea.value.trim();
 
-	spinner.style.display = 'inline-block';
+    spinner.style.display = 'inline-block';
 
-  if (selectedBotNameElement.innerText !== 'None' && content) {
-    const bot_id = selectedBotNameElement.dataset.botId; // Get the bot_id from the selected bot
-    await sendMessage(bot_id, content);
-    textarea.value = '';
-    textarea.style.height = "auto";
-    fetchMessagesAndRender(bot_id);
-  }
+    if (selectedBotNameElement.innerText !== 'None' && content) {
+      const bot_id = selectedBotNameElement.dataset.botId;
+      await sendMessage(bot_id, content);
+      textarea.value = '';
+      textarea.style.height = "auto";
+      fetchMessagesAndRender(bot_id);
+    }
 
-  // Re-enable the button
-  sendButton.disabled = false;
- spinner.style.display = 'none';
+    // Re-enable the button
+    sendButton.disabled = false;
+    spinner.style.display = 'none';
+  });
 
 });
+
+
 
 async function fetchBotsAndRender() {
   const response = await fetch("/api/bots");
