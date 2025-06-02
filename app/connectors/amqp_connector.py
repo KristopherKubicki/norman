@@ -1,4 +1,6 @@
 from typing import Optional
+import asyncio
+import contextlib
 
 try:
     import pika
@@ -45,8 +47,33 @@ class AMQPConnector(BaseConnector):
         self._channel.basic_publish(exchange="", routing_key=self.queue, body=message.encode())
 
     async def listen_and_process(self) -> None:
-        """Listening not implemented."""
-        return None
+        """Consume messages from the queue and process them."""
+
+        if not pika:
+            raise RuntimeError("pika not installed")
+
+        if not self._channel:
+            self.connect()
+
+        assert self._channel is not None
+
+        loop = asyncio.get_running_loop()
+
+        def _callback(ch, method, properties, body):  # pragma: no cover - thread
+            message = body.decode("utf-8", errors="replace")
+            loop.call_soon_threadsafe(asyncio.create_task, self.process_incoming(message))
+
+        self._channel.basic_consume(
+            queue=self.queue,
+            on_message_callback=_callback,
+            auto_ack=True,
+        )
+
+        try:
+            await loop.run_in_executor(None, self._channel.start_consuming)
+        finally:
+            with contextlib.suppress(Exception):
+                self._channel.stop_consuming()
 
     async def process_incoming(self, message: str) -> str:
         return message
