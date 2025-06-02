@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/KristopherKubicki/norman/actions/workflows/ci_cd.yml/badge.svg)](https://github.com/KristopherKubicki/norman/actions/workflows/ci_cd.yml)
 [![Codecov](https://codecov.io/gh/KristopherKubicki/norman/branch/main/graph/badge.svg)](https://codecov.io/gh/KristopherKubicki/norman)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/KristopherKubicki/norman/badge)](https://securityscorecards.dev/viewer/?uri=github.com/KristopherKubicki/norman)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/kristopherkubicki/norman/badge)](https://securityscorecards.dev/viewer/?uri=github.com/kristopherkubicki/norman)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
 [![Python 3.8](https://img.shields.io/badge/python-3.8-blue.svg)](https://www.python.org/)
 [![GitHub release](https://img.shields.io/github/v/release/KristopherKubicki/norman.svg)](https://github.com/KristopherKubicki/norman/releases)
