@@ -1,5 +1,6 @@
 import httpx
 from typing import Any, Dict, Optional
+from app.core.http_utils import async_get
 
 from .base_connector import BaseConnector
 from app.core.logging import setup_logger
@@ -44,14 +45,13 @@ class MattermostConnector(BaseConnector):
         """Return the incoming ``message`` payload."""
         return message
 
-    def is_connected(self) -> bool:
+    async def is_connected(self) -> bool:
         """Return ``True`` if the token appears valid."""
 
         api_url = f"{self.url}/api/v4/users/me"
         headers = {"Authorization": f"Bearer {self.token}"}
         try:
-            resp = httpx.get(api_url, headers=headers)
-            resp.raise_for_status()
+            await async_get(api_url, headers=headers)
             return True
         except httpx.HTTPError:
             return False

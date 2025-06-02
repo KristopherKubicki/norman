@@ -72,15 +72,20 @@ class DummyGetResponse:
 
 
 def test_is_connected_success(monkeypatch):
-    monkeypatch.setattr(httpx, "get", lambda url, headers=None: DummyGetResponse())
+    async def fake_get(url, headers=None):
+        return DummyGetResponse()
+
+    monkeypatch.setattr("app.connectors.rocketchat_connector.async_get", fake_get)
     connector = RocketChatConnector("http://host", "TOKEN", "UID")
-    assert connector.is_connected()
+    result = asyncio.get_event_loop().run_until_complete(connector.is_connected())
+    assert result
 
 
 def test_is_connected_error(monkeypatch):
-    def raise_err(url, headers=None):
+    async def raise_err(url, headers=None):
         raise httpx.HTTPError("boom")
 
-    monkeypatch.setattr(httpx, "get", raise_err)
+    monkeypatch.setattr("app.connectors.rocketchat_connector.async_get", raise_err)
     connector = RocketChatConnector("http://host", "TOKEN", "UID")
-    assert not connector.is_connected()
+    result = asyncio.get_event_loop().run_until_complete(connector.is_connected())
+    assert not result

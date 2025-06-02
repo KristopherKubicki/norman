@@ -59,15 +59,23 @@ def test_is_connected_success(monkeypatch):
     def fake_get(url, auth=None):
         return DummyResponse(status=200)
 
-    monkeypatch.setattr(httpx, "get", fake_get)
+    async def async_fake_get(url, auth=None):
+        return fake_get(url, auth=auth)
+
+    monkeypatch.setattr("app.connectors.zulip_connector.async_get", async_fake_get)
     connector = ZulipConnector("email", "KEY", "https://zulip.example.com", "stream", "topic")
-    assert connector.is_connected()
+    result = asyncio.get_event_loop().run_until_complete(connector.is_connected())
+    assert result
 
 
 def test_is_connected_error(monkeypatch):
     def fake_get(url, auth=None):
         raise httpx.HTTPError("boom")
 
-    monkeypatch.setattr(httpx, "get", fake_get)
+    async def async_err(url, auth=None):
+        return fake_get(url, auth=auth)
+
+    monkeypatch.setattr("app.connectors.zulip_connector.async_get", async_err)
     connector = ZulipConnector("email", "KEY", "https://zulip.example.com", "stream", "topic")
-    assert not connector.is_connected()
+    result = asyncio.get_event_loop().run_until_complete(connector.is_connected())
+    assert not result

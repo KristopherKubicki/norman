@@ -26,7 +26,7 @@ async def home(request: Request):
     )
 
 async def connectors(request: Request):
-    connectors_data = get_connectors_data()
+    connectors_data = await get_connectors_data()
     return templates.TemplateResponse(
         request,
         "connectors.html",

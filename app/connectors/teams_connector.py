@@ -2,6 +2,7 @@
 
 import httpx
 from typing import Any, Dict, Optional
+from app.core.http_utils import async_get
 
 from .base_connector import BaseConnector
 from app.core.logging import setup_logger
@@ -43,12 +44,11 @@ class TeamsConnector(BaseConnector):
         """Return the raw ``message`` payload."""
         return message
 
-    def is_connected(self) -> bool:
+    async def is_connected(self) -> bool:
         """Return ``True`` if the bot endpoint is reachable."""
         headers = {"Authorization": f"Bearer {self.app_password}"}
         try:
-            resp = httpx.get(self.bot_endpoint, headers=headers)
-            resp.raise_for_status()
+            await async_get(self.bot_endpoint, headers=headers)
             return True
         except httpx.HTTPError:
             return False

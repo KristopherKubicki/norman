@@ -1,4 +1,6 @@
 from typing import List
+import asyncio
+from app.core.http_utils import async_post
 from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi import status
 from fastapi.security import OAuth2PasswordRequestForm
@@ -28,7 +30,6 @@ from app.api.deps import get_async_db
 from datetime import timedelta
 import os
 import uuid
-import requests
 import jwt
 from urllib.parse import urlencode
 import traceback
@@ -218,7 +219,10 @@ async def test_connector_endpoint(connector_id: int, db: Session = Depends(get_a
     if not connector:
         raise HTTPException(status_code=404, detail="Connector not found")
     instance = get_connector(connector.connector_type, connector.config or {})
-    status_value = "up" if instance.is_connected() else "down"
+    result = instance.is_connected()
+    if asyncio.iscoroutine(result):
+        result = await result
+    status_value = "up" if result else "down"
     return {"status": status_value}
 
 
@@ -228,7 +232,10 @@ async def connector_status_endpoint(connector_id: int, db: Session = Depends(get
     if not connector:
         raise HTTPException(status_code=404, detail="Connector not found")
     instance = get_connector(connector.connector_type, connector.config or {})
-    status_value = "up" if instance.is_connected() else "down"
+    result = instance.is_connected()
+    if asyncio.iscoroutine(result):
+        result = await result
+    status_value = "up" if result else "down"
     return {"status": status_value}
 
 @app_routes.post("/token", response_model=Token)
@@ -331,8 +338,7 @@ async def google_callback(request: Request, db: Session = Depends(get_async_db))
         "redirect_uri": _get_redirect_uri(request, "google"),
         "grant_type": "authorization_code",
     }
-    resp = requests.post("https://oauth2.googleapis.com/token", data=data)
-    resp.raise_for_status()
+    resp = await async_post("https://oauth2.googleapis.com/token", data=data)
     token_info = resp.json()
     id_token = token_info.get("id_token")
     if not id_token:
@@ -374,8 +380,7 @@ async def microsoft_callback(request: Request, db: Session = Depends(get_async_d
         "grant_type": "authorization_code",
         "scope": "https://graph.microsoft.com/user.read openid email profile",
     }
-    resp = requests.post("https://login.microsoftonline.com/common/oauth2/v2.0/token", data=data)
-    resp.raise_for_status()
+    resp = await async_post("https://login.microsoftonline.com/common/oauth2/v2.0/token", data=data)
     token_info = resp.json()
     id_token = token_info.get("id_token")
     if not id_token:

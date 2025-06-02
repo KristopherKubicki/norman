@@ -3,6 +3,7 @@
 import asyncio
 import httpx
 from typing import Any, Dict, Optional, List
+from app.core.http_utils import async_get
 
 from .base_connector import BaseConnector
 from app.core.logging import setup_logger
@@ -75,13 +76,12 @@ class DiscordConnector(BaseConnector):
             "channel": message.get("channel_id", self.channel_id),
         }
 
-    def is_connected(self) -> bool:
+    async def is_connected(self) -> bool:
         """Return ``True`` if the API token appears valid."""
         url = "https://discord.com/api/v9/users/@me"
         headers = {"Authorization": f"Bot {self.token}"}
         try:
-            resp = httpx.get(url, headers=headers)
-            resp.raise_for_status()
+            await async_get(url, headers=headers)
             return True
         except httpx.HTTPError:
             return False

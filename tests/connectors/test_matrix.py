@@ -74,15 +74,20 @@ class DummyGetResponse:
 
 
 def test_is_connected_success(monkeypatch):
-    monkeypatch.setattr(httpx, "get", lambda url, headers=None: DummyGetResponse())
+    async def fake_get(url, headers=None):
+        return DummyGetResponse()
+
+    monkeypatch.setattr("app.connectors.matrix_connector.async_get", fake_get)
     connector = MatrixConnector("https://hs", "@u:hs", "TOK", "!room")
-    assert connector.is_connected()
+    result = asyncio.get_event_loop().run_until_complete(connector.is_connected())
+    assert result
 
 
 def test_is_connected_error(monkeypatch):
-    def raise_err(url, headers=None):
+    async def raise_err(url, headers=None):
         raise httpx.HTTPError("boom")
 
-    monkeypatch.setattr(httpx, "get", raise_err)
+    monkeypatch.setattr("app.connectors.matrix_connector.async_get", raise_err)
     connector = MatrixConnector("https://hs", "@u:hs", "TOK", "!room")
-    assert not connector.is_connected()
+    result = asyncio.get_event_loop().run_until_complete(connector.is_connected())
+    assert not result

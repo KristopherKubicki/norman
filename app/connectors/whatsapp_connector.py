@@ -2,6 +2,7 @@
 
 import httpx
 from typing import Any, Dict, Optional
+from app.core.http_utils import async_get
 
 from .base_connector import BaseConnector
 from app.core.logging import setup_logger
@@ -61,13 +62,12 @@ class WhatsAppConnector(BaseConnector):
         # and calling the appropriate action(s)
         return message
 
-    def is_connected(self) -> bool:
+    async def is_connected(self) -> bool:
         """Return ``True`` if the Twilio credentials appear valid."""
 
         url = f"https://api.twilio.com/2010-04-01/Accounts/{self.account_sid}.json"
         try:
-            resp = httpx.get(url, auth=(self.account_sid, self.auth_token))
-            resp.raise_for_status()
+            await async_get(url, auth=(self.account_sid, self.auth_token))
             return True
         except httpx.HTTPError:
             return False

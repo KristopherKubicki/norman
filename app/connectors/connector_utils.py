@@ -13,6 +13,7 @@ import inspect
 import pkgutil
 import importlib
 import os
+import asyncio
 from typing import Any, Dict, List, Optional
 
 from app.core.config import get_settings, Settings
@@ -66,7 +67,7 @@ def get_connector(
     return connector_class(**kwargs)
 
 
-def get_connectors_data() -> List[Dict[str, Any]]:
+async def get_connectors_data() -> List[Dict[str, Any]]:
     """Return metadata about all available connectors.
 
     The configuration values are inspected to determine whether each connector
@@ -78,6 +79,7 @@ def get_connectors_data() -> List[Dict[str, Any]]:
 
     settings = get_settings()
     connectors_data: List[Dict[str, Any]] = []
+    tasks = []
 
     if settings.connectors:
         for item in settings.connectors:
@@ -90,25 +92,29 @@ def get_connectors_data() -> List[Dict[str, Any]]:
             configured = all(
                 item.get(f) not in (None, "", f"your_{name}_{f}") for f in fields
             )
-            status = "missing_config"
-            if configured:
-                try:
-                    cfg = {k: v for k, v in item.items() if k != "type"}
-                    instance = get_connector(name, cfg)
-                    status = "up" if instance.is_connected() else "down"
-                except Exception:  # pragma: no cover - instantiation or check may fail
-                    status = "down"
+            cfg = {k: v for k, v in item.items() if k != "type"}
+            data = {
+                "id": connector_cls.id,
+                "name": connector_cls.name,
+                "status": "missing_config",
+                "fields": fields,
+                "last_message_sent": None,
+                "enabled": configured,
+            }
+            connectors_data.append(data)
 
-            connectors_data.append(
-                {
-                    "id": connector_cls.id,
-                    "name": connector_cls.name,
-                    "status": status if configured else "missing_config",
-                    "fields": fields,
-                    "last_message_sent": None,
-                    "enabled": configured,
-                }
-            )
+            async def check(idx: int, connector_name: str, conf: Dict[str, Any]) -> None:
+                try:
+                    instance = get_connector(connector_name, conf)
+                    result = instance.is_connected()
+                    if asyncio.iscoroutine(result):
+                        result = await result
+                    connectors_data[idx]["status"] = "up" if result else "down"
+                except Exception:  # pragma: no cover
+                    connectors_data[idx]["status"] = "down"
+
+            if configured:
+                tasks.append(check(len(connectors_data) - 1, name, cfg))
     else:
         for name, connector_cls in connector_classes.items():
             signature = inspect.signature(connector_cls.__init__)
@@ -120,25 +126,31 @@ def get_connectors_data() -> List[Dict[str, Any]]:
                 value = getattr(settings, setting_name, None)
                 if value in (None, "", f"your_{setting_name}"):
                     configured = False
-            status = "missing_config"
-            if configured:
+            data = {
+                "id": connector_cls.id,
+                "name": connector_cls.name,
+                "status": "missing_config",
+                "fields": fields,
+                "last_message_sent": None,
+                "enabled": configured,
+            }
+            connectors_data.append(data)
+
+            async def check(idx: int, connector_name: str) -> None:
                 try:
-                    instance = get_connector(name)
-                    status = "up" if instance.is_connected() else "down"
-                except Exception:  # pragma: no cover - instantiation or check may fail
-                    status = "down"
+                    instance = get_connector(connector_name)
+                    result = instance.is_connected()
+                    if asyncio.iscoroutine(result):
+                        result = await result
+                    connectors_data[idx]["status"] = "up" if result else "down"
+                except Exception:  # pragma: no cover
+                    connectors_data[idx]["status"] = "down"
 
-            connectors_data.append(
-                {
-                    "id": connector_cls.id,
-                    "name": connector_cls.name,
-                    "status": status if configured else "missing_config",
-                    "fields": fields,
-                    "last_message_sent": None,
-                    "enabled": configured,
-                }
-            )
+            if configured:
+                tasks.append(check(len(connectors_data) - 1, name))
 
+    if tasks:
+        await asyncio.gather(*tasks)
     return connectors_data
 
 

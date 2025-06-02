@@ -51,5 +51,13 @@ class BroadcastConnector(BaseConnector):
     async def process_incoming(self, message: Any) -> Any:
         return message
 
-    def is_connected(self) -> bool:
-        return all(getattr(c, "is_connected", lambda: True)() for c in self.connectors)
+    async def is_connected(self) -> bool:
+        checks = []
+        for conn in self.connectors:
+            method = getattr(conn, "is_connected", lambda: True)
+            if asyncio.iscoroutinefunction(method):
+                checks.append(method())
+            else:
+                checks.append(asyncio.to_thread(method))
+        results = await asyncio.gather(*checks, return_exceptions=True)
+        return all(bool(r) for r in results)

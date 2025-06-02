@@ -1,3 +1,4 @@
+import asyncio
 from app.connectors.broadcast_connector import BroadcastConnector
 from app.connectors.base_connector import BaseConnector
 
@@ -33,4 +34,5 @@ def test_send_message(monkeypatch):
     connector.send_message("hi")
     assert instances["a"].sent == ["hi"]
     assert instances["b"].sent == ["hi"]
-    assert connector.is_connected() is True
+    result = asyncio.get_event_loop().run_until_complete(connector.is_connected())
+    assert result is True

@@ -2,6 +2,7 @@
 
 import httpx
 from typing import Any, Dict, Optional
+from app.core.http_utils import async_get
 
 from .base_connector import BaseConnector
 from app.core.logging import setup_logger
@@ -42,14 +43,13 @@ class MatrixConnector(BaseConnector):
         """Return the incoming ``message`` payload."""
         return message
 
-    def is_connected(self) -> bool:
+    async def is_connected(self) -> bool:
         """Return ``True`` if the access token is valid."""
 
         url = f"{self.homeserver}/_matrix/client/v3/account/whoami"
         headers = {"Authorization": f"Bearer {self.access_token}"}
         try:
-            resp = httpx.get(url, headers=headers)
-            resp.raise_for_status()
+            await async_get(url, headers=headers)
             return True
         except httpx.HTTPError:
             return False

@@ -1,5 +1,6 @@
 import httpx
 from typing import Any, Dict, Optional
+from app.core.http_utils import async_get
 from .base_connector import BaseConnector
 from app.core.logging import setup_logger
 
@@ -54,12 +55,11 @@ class TelegramConnector(BaseConnector):
 
         return True
 
-    def is_connected(self) -> bool:
+    async def is_connected(self) -> bool:
         """Return ``True`` if the bot token is valid."""
         url = f"https://api.telegram.org/bot{self.token}/getMe"
         try:
-            response = httpx.get(url)
-            response.raise_for_status()
+            response = await async_get(url)
             data = response.json()
             return bool(data.get("ok"))
         except httpx.HTTPError:

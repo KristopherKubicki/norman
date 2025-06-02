@@ -58,15 +58,20 @@ def test_process_incoming():
 
 
 def test_is_connected_success(monkeypatch):
-    monkeypatch.setattr(httpx, "get", lambda url, auth=None: DummyResponse())
+    async def fake_get(url, auth=None):
+        return DummyResponse()
+
+    monkeypatch.setattr("app.connectors.whatsapp_connector.async_get", fake_get)
     connector = WhatsAppConnector("SID", "TOKEN", "+1", "+2")
-    assert connector.is_connected()
+    result = asyncio.get_event_loop().run_until_complete(connector.is_connected())
+    assert result
 
 
 def test_is_connected_error(monkeypatch):
-    def raise_err(url, auth=None):
+    async def raise_err(url, auth=None):
         raise httpx.HTTPError("boom")
 
-    monkeypatch.setattr(httpx, "get", raise_err)
+    monkeypatch.setattr("app.connectors.whatsapp_connector.async_get", raise_err)
     connector = WhatsAppConnector("SID", "TOKEN", "+1", "+2")
-    assert not connector.is_connected()
+    result = asyncio.get_event_loop().run_until_complete(connector.is_connected())
+    assert not result

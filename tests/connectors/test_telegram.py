@@ -93,15 +93,20 @@ class DummyGetResponse:
 
 
 def test_is_connected_success(monkeypatch):
-    monkeypatch.setattr(httpx, "get", lambda url: DummyGetResponse(True))
+    async def fake_get(url):
+        return DummyGetResponse(True)
+
+    monkeypatch.setattr("app.connectors.telegram_connector.async_get", fake_get)
     connector = TelegramConnector("TOKEN", "CHAT")
-    assert connector.is_connected()
+    result = asyncio.get_event_loop().run_until_complete(connector.is_connected())
+    assert result
 
 
 def test_is_connected_error(monkeypatch):
-    def raise_err(url):
+    async def raise_err(url):
         raise httpx.HTTPError("boom")
 
-    monkeypatch.setattr(httpx, "get", raise_err)
+    monkeypatch.setattr("app.connectors.telegram_connector.async_get", raise_err)
     connector = TelegramConnector("TOKEN", "CHAT")
-    assert not connector.is_connected()
+    result = asyncio.get_event_loop().run_until_complete(connector.is_connected())
+    assert not result

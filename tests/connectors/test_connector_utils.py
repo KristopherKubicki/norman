@@ -1,5 +1,6 @@
 import sys
 import types
+import asyncio
 
 # Provide a minimal slack_sdk stub if the real package isn't installed
 if "slack_sdk" not in sys.modules:
@@ -337,7 +338,7 @@ def test_get_connectors_data_missing_config(monkeypatch):
     monkeypatch.setattr(
         "app.connectors.connector_utils.get_settings", lambda: test_settings
     )
-    data = get_connectors_data()
+    data = asyncio.get_event_loop().run_until_complete(get_connectors_data())
     assert all(item["status"] == "missing_config" for item in data)
     slack_data = next(item for item in data if item["id"] == "slack")
     assert slack_data["status"] == "missing_config"
@@ -357,7 +358,7 @@ def test_get_connectors_data_status_up(monkeypatch):
         "app.connectors.slack_connector.SlackConnector.is_connected", lambda self: True
     )
 
-    data = get_connectors_data()
+    data = asyncio.get_event_loop().run_until_complete(get_connectors_data())
     slack_data = next(item for item in data if item["id"] == "slack")
     assert slack_data["status"] == "up"
 
