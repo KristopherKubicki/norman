@@ -12,4 +12,6 @@ intercom_app_id: "your_app_id"
 ## Usage
 
 The connector posts simple in-app messages to Intercom. Incoming
-message support has not been added.
+message support has not been added.  Norman now verifies the access
+token by hitting the `/me` endpoint, so your connector status will
+show **up** only when the credentials are valid.
