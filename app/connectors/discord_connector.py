@@ -1,7 +1,7 @@
 """Simple Discord connector using the HTTP API."""
 
 import asyncio
-import httpx
+import importlib
 from typing import Any, Dict, Optional, List
 
 from .base_connector import BaseConnector
@@ -25,6 +25,7 @@ class DiscordConnector(BaseConnector):
         """Send ``message`` to the configured Discord channel."""
         url = f"https://discord.com/api/v9/channels/{self.channel_id}/messages"
         headers = {"Authorization": f"Bot {self.token}"}
+        httpx = importlib.import_module("httpx")
         async with httpx.AsyncClient() as client:
             try:
                 resp = await client.post(
@@ -41,6 +42,7 @@ class DiscordConnector(BaseConnector):
         url = f"https://discord.com/api/v9/channels/{self.channel_id}/messages"
         headers = {"Authorization": f"Bot {self.token}"}
         params = {"limit": 50}
+        httpx = importlib.import_module("httpx")
         if after:
             params["after"] = after
         async with httpx.AsyncClient() as client:
@@ -50,6 +52,7 @@ class DiscordConnector(BaseConnector):
 
     async def listen_and_process(self) -> None:
         """Poll for new Discord messages and process them."""
+        httpx = importlib.import_module("httpx")
         while True:
             try:
                 messages = await self._get_messages(after=self._last_message_id)
@@ -79,6 +82,7 @@ class DiscordConnector(BaseConnector):
         """Return ``True`` if the API token appears valid."""
         url = "https://discord.com/api/v9/users/@me"
         headers = {"Authorization": f"Bot {self.token}"}
+        httpx = importlib.import_module("httpx")
         try:
             resp = httpx.get(url, headers=headers)
             resp.raise_for_status()

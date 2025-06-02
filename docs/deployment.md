@@ -61,7 +61,10 @@ Before deploying Norman, ensure that your server meets the following requirement
 1. Start the Norman application:
 
    ```
-   uvicorn app.main:app --host 0.0.0.0 --port 8000
+   uvicorn app.main:app --host 0.0.0.0 --port 8000 --compression gzip
+
+   If the `brotli_asgi` package is installed and your Uvicorn version supports
+   it, you can use `--compression brotli` instead for better compression.
    ```
 
 2. Access the Norman Web UI in your browser by navigating to `http://your_server_ip:8000`.

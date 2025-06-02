@@ -33,3 +33,15 @@ def test_create_message_flow(monkeypatch, test_app: TestClient):
     assert len(messages) == 2
     assert messages[0]["text"] == "hello"
     assert messages[1]["text"] == "assistant reply"
+
+    # pagination with limit and cursor
+    resp = test_app.get(f"/api/bots/{bot_id}/messages?limit=1")
+    assert resp.status_code == 200
+    first_page = resp.json()
+    assert len(first_page) == 1
+    cursor = first_page[0]["id"]
+
+    resp = test_app.get(f"/api/bots/{bot_id}/messages?cursor={cursor}")
+    assert resp.status_code == 200
+    next_page = resp.json()
+    assert len(next_page) == 1
