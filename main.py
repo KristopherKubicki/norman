@@ -21,6 +21,7 @@ from app.app_routes import app_routes
 from app.core.config import settings
 from app.auth_middleware import auth_middleware
 from app.core.logging import request_context_middleware
+from app.core.exception_handlers import add_exception_handlers
 
 def run_alembic_migrations():
     if not os.path.exists("alembic/versions"):
@@ -65,6 +66,7 @@ init_connectors(app, settings)
 
 # Initialize the routers
 init_routers(app)
+add_exception_handlers(app)
 
 current_dir = os.path.dirname(os.path.realpath(__file__))
 app.mount("/static", StaticFiles(directory=os.path.join(current_dir, "app/static")), name="static")
