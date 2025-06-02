@@ -140,7 +140,11 @@ async def create_message_endpoint(
 ):
     try:
         ljson = await request.json()
-        message = create_message(db=db, bot_id=bot_id, text=ljson.get('content'), source='user')
+        user_text = ljson.get('content')
+        from app.core.hooks import run_pre_hooks, run_post_hooks
+
+        user_text, hook_ctx = await run_pre_hooks(user_text, {"bot_id": bot_id})
+        message = create_message(db=db, bot_id=bot_id, text=user_text, source='user')
 
 
         # get the last messages for this bot, so it can generate a response based on history
@@ -170,13 +174,16 @@ async def create_message_endpoint(
             max_tokens=bot.default_response_tokens
         )
 
+        assistant_text = interaction_response['choices'][0]['message']['content']
+        assistant_text, hook_ctx = await run_post_hooks(assistant_text, hook_ctx)
+
         # Create an interaction schema
         interaction_in = InteractionCreate(
             bot_id=bot_id,
             message_id=message.id,
             input_data=message.text,
             gpt_model=interaction_response['model'],
-            output_data=interaction_response['choices'][0]['message']['content'],
+            output_data=assistant_text,
             tokens_in=interaction_response['usage']['prompt_tokens'],
             tokens_out=interaction_response.get("usage", {}).get("completion_tokens", 0),
             status_code=200,
@@ -185,7 +192,7 @@ async def create_message_endpoint(
 
         # Create a new interaction in the database
         interaction = create_interaction(db=db, interaction=interaction_in)
-        message = create_message(db=db, bot_id=bot_id, text=interaction_response['choices'][0]['message']['content'], source='assistant')
+        message = create_message(db=db, bot_id=bot_id, text=assistant_text, source='assistant')
         return {"status": "success", "message": "Message and interaction created successfully", "data": {"message": message, "interaction": interaction}}
     except Exception as e:
         print("Error:", e)

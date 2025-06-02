@@ -57,6 +57,33 @@ Norman's core functionality can be modified and extended to suit your specific n
 
 When making changes to the core functionality, ensure that your modifications are compatible with the existing features and that they do not introduce new issues or vulnerabilities.
 
+## Registering Pre/Post Hooks
+
+Norman exposes simple hook points that allow you to run code before a message is
+sent to the LLM and after a reply is generated. This lets you implement custom
+checks, logging, or response rewriting without touching the core code.
+
+Hooks are defined in `app.core.hooks`:
+
+```python
+from app.core import hooks
+
+def my_pre_hook(message: str, context: dict) -> tuple[str, dict]:
+    # Modify or reject the message here
+    return message, context
+
+def my_post_hook(reply: str, context: dict) -> tuple[str, dict]:
+    # Inspect or alter the assistant reply
+    return reply, context
+
+hooks.register_pre_hook(my_pre_hook)
+hooks.register_post_hook(my_post_hook)
+```
+
+The hooks receive the message text (or reply) and a context dictionary. Each
+hook should return the possibly modified text and context. All registered hooks
+are executed in the order they were added.
+
 ## Contributing to Norman
 
 Contributions to the Norman project are welcome. Before submitting a pull request, please read and follow the [CONTRIBUTING.md](../CONTRIBUTING.md) guidelines.
