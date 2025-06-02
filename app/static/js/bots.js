@@ -1,12 +1,76 @@
 
+let editModal;
+let editState = {};
+let sendButton;
+let textarea;
+
 document.addEventListener('DOMContentLoaded', () => {
   // Fetch bots and render them in the bots container
   fetchBotsAndRender();
 
+  editModal = new bootstrap.Modal(document.getElementById('editBotModal'));
+  document.getElementById('save-edit-bot').addEventListener('click', saveEditBot);
+
+  sendButton = document.getElementById('send-message');
+  textarea = document.getElementById('input-message');
+
+  sendButton.addEventListener('click', async (event) => {
+    event.preventDefault();
+    sendButton.disabled = true;
+
+    textarea.style.height = 'auto';
+
+    const spinner = document.getElementById('spinner');
+    const selectedBotNameElement = document.getElementById('selected-bot-name');
+    const content = textarea.value.trim();
+    const historyDepth = document.getElementById('history-depth').value;
+    const responseLength = document.getElementById('response-length').value;
+
+    spinner.style.display = 'inline-block';
+
+    if (selectedBotNameElement.innerText !== 'None' && content) {
+      const bot_id = selectedBotNameElement.dataset.botId;
+      await sendMessage(bot_id, content, historyDepth, responseLength);
+      textarea.value = '';
+      textarea.style.height = 'auto';
+      fetchMessagesAndRender(bot_id);
+    }
+
+    sendButton.disabled = false;
+    spinner.style.display = 'none';
+  });
+
+  textarea.addEventListener('input', () => {
+    textarea.style.height = 'auto';
+    textarea.style.height = Math.min(textarea.scrollHeight, 300) + 'px';
+  });
+
+  textarea.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendButton.click();
+    }
+  });
+
+  textarea.dispatchEvent(new Event('input'));
+
+  const historySlider = document.getElementById('history-depth');
+  const historyValue = document.getElementById('history-depth-value');
+  const responseSlider = document.getElementById('response-length');
+  const responseValue = document.getElementById('response-length-value');
+
+  historySlider.addEventListener('input', () => {
+    historyValue.innerText = historySlider.value;
+  });
+
+  responseSlider.addEventListener('input', () => {
+    responseValue.innerText = responseSlider.value;
+  });
+
   // Add event listener for the add-bot-form
-  const addBotForm = document.getElementById("add-bot-form");
+  const addBotForm = document.getElementById('add-bot-form');
   if (addBotForm) {
-    addBotForm.addEventListener("submit", async (event) => {
+    addBotForm.addEventListener('submit', async (event) => {
       event.preventDefault();
 
       const nameInput = document.getElementById("bot-name");
@@ -29,37 +93,6 @@ document.addEventListener('DOMContentLoaded', () => {
       descriptionInput.value = "";
     });
   }
-
-});
-
-
-sendButton.addEventListener("click", async (event) => {
-  event.preventDefault();
-
-  // Disable the button
-  sendButton.disabled = true;
- 
-  // reset the enter dialog
-const textarea = document.querySelector('textarea');
-    textarea.style.height = 'auto';
-
-const spinner = document.getElementById('spinner');
-  const selectedBotNameElement = document.getElementById('selected-bot-name');
-  const content = textarea.value.trim();
-
-	spinner.style.display = 'inline-block';
-
-  if (selectedBotNameElement.innerText !== 'None' && content) {
-    const bot_id = selectedBotNameElement.dataset.botId; // Get the bot_id from the selected bot
-    await sendMessage(bot_id, content);
-    textarea.value = '';
-    textarea.style.height = "auto";
-    fetchMessagesAndRender(bot_id);
-  }
-
-  // Re-enable the button
-  sendButton.disabled = false;
- spinner.style.display = 'none';
 
 });
 
@@ -89,22 +122,17 @@ function createBotElement(bot) {
 
   const editButton = document.createElement("button");
   editButton.textContent = "Edit";
-  editButton.addEventListener("click", async () => {
-    const newName = prompt("Enter the new bot name:", bot.name);
-    const newDescription = prompt("Enter the new bot description:", bot.description);
-
-    if (newName && newDescription) {
-      const updatedBot = await updateBot(bot.id, { name: newName, description: newDescription });
-      nameElement.textContent = `Name: ${updatedBot.name}`;
-      descriptionElement.textContent = `Description: ${updatedBot.description}`;
-    }
+  editButton.addEventListener("click", () => {
+    openEditModal(bot, nameElement, descriptionElement);
   });
 
   const deleteButton = document.createElement("button");
   deleteButton.textContent = "Delete";
   deleteButton.addEventListener("click", async () => {
-    await deleteBot(bot.id);
-    botElement.remove();
+    if (confirm("Delete this bot?")) {
+      await deleteBot(bot.id);
+      botElement.remove();
+    }
   });
 
   const lastTriggeredElement = document.createElement('p');
@@ -114,6 +142,7 @@ function createBotElement(bot) {
   botElement.appendChild(lastTriggeredElement);
   botElement.appendChild(nameElement);
   botElement.appendChild(descriptionElement);
+  botElement.appendChild(editButton);
   botElement.appendChild(deleteButton);
 
   // Add click event listener to fetch and display messages
@@ -165,6 +194,22 @@ async function updateBot(botId, botData) {
   return bot;
 }
 
+function openEditModal(bot, nameEl, descEl) {
+  editState = { id: bot.id, nameEl, descEl };
+  document.getElementById("edit-bot-name").value = bot.name;
+  document.getElementById("edit-bot-description").value = bot.description || "";
+  editModal.show();
+}
+
+async function saveEditBot() {
+  const newName = document.getElementById("edit-bot-name").value.trim();
+  const newDesc = document.getElementById("edit-bot-description").value.trim();
+  const updatedBot = await updateBot(editState.id, { name: newName, description: newDesc });
+  if (editState.nameEl) editState.nameEl.textContent = updatedBot.name;
+  if (editState.descEl) editState.descEl.textContent = `Description: ${updatedBot.description}`;
+  editModal.hide();
+}
+
 
 async function fetchMessagesAndRender(bot_id) {
   const response = await fetch(`/api/bots/${bot_id}/messages`);
@@ -182,8 +227,8 @@ async function fetchMessagesAndRender(bot_id) {
 
 }
 
-async function sendMessage(bot_id, content) {
-  const response = await fetch(`/api/bots/${bot_id}/messages`, {
+async function sendMessage(bot_id, content, historyDepth, responseLength) {
+  const response = await fetch(`/api/bots/${bot_id}/messages?history_limit=${historyDepth}&response_tokens=${responseLength}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
