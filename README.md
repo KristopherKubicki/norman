@@ -79,7 +79,9 @@ pip install -r requirements.txt
 Norman automatically enables [WAL](https://www.sqlite.org/wal.html) mode when using SQLite for improved concurrency.
 
 4. Run Norman once to automatically generate `config.yaml` with secure defaults.
-   Afterwards edit this file to configure connectors and add your OpenAI API key.
+   The admin username, email and password will be printed to the console.
+   Take note of these values, edit `config.yaml` to configure connectors and
+   add your OpenAI API key, then start Norman again.
 
 5. (Optional) Regenerate the secrets in `config.yaml` using the provided script:
 
