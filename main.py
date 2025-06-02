@@ -1,10 +1,19 @@
 import os
 import uvicorn
+import inspect
 
 from alembic import command
 from alembic.config import Config
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.gzip import GZipMiddleware
+
+try:
+    from brotli_asgi import BrotliMiddleware  # type: ignore
+    _brotli = True
+except Exception:  # pragma: no cover - optional dep may not be installed
+    BrotliMiddleware = None  # type: ignore
+    _brotli = False
 from app.initial_setup import create_initial_admin_user
 from app.connectors import init_connectors
 from app.api import init_routers
@@ -20,6 +29,21 @@ def run_alembic_migrations():
     command.upgrade(alembic_cfg, "head")
 
 app = FastAPI()
+
+if _brotli and BrotliMiddleware:
+    app.add_middleware(BrotliMiddleware)
+else:
+    app.add_middleware(GZipMiddleware, minimum_size=500)
+
+@app.middleware("http")
+async def cache_control_middleware(request: Request, call_next):
+    response = await call_next(request)
+    if (
+        request.method == "GET"
+        and response.headers.get("content-type", "").startswith("application/json")
+    ):
+        response.headers.setdefault("Cache-Control", "max-age=60")
+    return response
 
 # Create the initial user
 @app.on_event("startup")
@@ -48,13 +72,15 @@ app.include_router(app_routes)
 
 def main() -> None:
     """Run the FastAPI application using Uvicorn."""
-    uvicorn.run(
-        app,
-        host=settings.host,
-        port=settings.port,
-        reload=settings.debug,
-        log_level=settings.log_level.lower(),
-    )
+    kwargs = {
+        "host": settings.host,
+        "port": settings.port,
+        "reload": settings.debug,
+        "log_level": settings.log_level.lower(),
+    }
+    if "compression" in inspect.signature(uvicorn.Config).parameters:
+        kwargs["compression"] = "brotli" if _brotli else "gzip"
+    uvicorn.run(app, **kwargs)
 
 
 if __name__ == "__main__":

@@ -85,10 +85,12 @@ chmod +x generate_key.sh
 
 You can also edit `config.yaml` manually to provide your own values. Be sure to add your OpenAI key under `openai_api_key`.
 
-6. Run the application:
+6. Run the application with Uvicorn:
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --compression gzip
 ```
-python main.py
-````
+If `brotli_asgi` is installed and supported by your Uvicorn version,
+replace `gzip` with `brotli` for improved compression.
 
 7. Open the API documentation in your browser: [http://localhost:8000/docs](http://localhost:8000/docs)
 
