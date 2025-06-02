@@ -2,6 +2,8 @@
 
 from typing import Any, Dict, Optional
 
+import asyncio
+
 import httpx
 
 from .base_connector import BaseConnector
@@ -32,8 +34,10 @@ class LineConnector(BaseConnector):
             return None
 
     async def listen_and_process(self) -> None:
-        """Listening for LINE messages is not implemented."""
-        return None
+        """Return immediately as LINE does not support polling for messages."""
+
+        self.logger.info("LINE connector does not support incoming messages")
+        await asyncio.sleep(0)
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
         return message
