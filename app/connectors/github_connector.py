@@ -3,6 +3,9 @@ import httpx
 from typing import Any, Dict, List, Optional
 
 from .base_connector import BaseConnector
+from app.core.logging import setup_logger
+
+logger = setup_logger(__name__)
 
 
 class GitHubConnector(BaseConnector):
@@ -38,7 +41,7 @@ class GitHubConnector(BaseConnector):
             response.raise_for_status()
             return response.text
         except httpx.HTTPError as exc:  # pragma: no cover - network
-            print(f"Error communicating with GitHub: {exc}")
+            logger.error("Error communicating with GitHub: %s", exc)
             return None
 
     async def _fetch_events(self) -> List[Dict[str, Any]]:
@@ -58,7 +61,7 @@ class GitHubConnector(BaseConnector):
             try:
                 events = await self._fetch_events()
             except httpx.HTTPError as exc:  # pragma: no cover - network
-                print(f"Error fetching GitHub events: {exc}")
+                logger.error("Error fetching GitHub events: %s", exc)
                 await asyncio.sleep(30)
                 continue
 

@@ -3,6 +3,9 @@ import httpx
 from typing import Any, Dict, Optional
 
 from .base_connector import BaseConnector
+from app.core.logging import setup_logger
+
+logger = setup_logger(__name__)
 
 
 class SalesforceConnector(BaseConnector):
@@ -37,7 +40,7 @@ class SalesforceConnector(BaseConnector):
             resp.raise_for_status()
             return resp.text
         except httpx.HTTPError as exc:  # pragma: no cover - network
-            print(f"Error sending message to Salesforce: {exc}")
+            logger.error("Error sending message to Salesforce: %s", exc)
             return None
 
     async def listen_and_process(self) -> None:
@@ -56,7 +59,7 @@ class SalesforceConnector(BaseConnector):
                     resp.raise_for_status()
                     data = resp.json().get("records", [])
                 except httpx.HTTPError as exc:  # pragma: no cover - network
-                    print(f"Error fetching Salesforce records: {exc}")
+                    logger.error("Error fetching Salesforce records: %s", exc)
                     await asyncio.sleep(30)
                     continue
 

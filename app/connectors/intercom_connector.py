@@ -3,6 +3,9 @@
 from typing import Any, Dict, Optional
 import httpx
 from .base_connector import BaseConnector
+from app.core.logging import setup_logger
+
+logger = setup_logger(__name__)
 
 
 class IntercomConnector(BaseConnector):
@@ -30,7 +33,7 @@ class IntercomConnector(BaseConnector):
             resp.raise_for_status()
             return resp.text
         except httpx.HTTPError as exc:  # pragma: no cover - network
-            print(f"Error sending Intercom message: {exc}")
+            logger.error("Error sending Intercom message: %s", exc)
             return None
 
     async def listen_and_process(self) -> None:

@@ -7,6 +7,9 @@ import asyncio
 import httpx
 
 from .base_connector import BaseConnector
+from app.core.logging import setup_logger
+
+logger = setup_logger(__name__)
 
 
 class LineConnector(BaseConnector):
@@ -30,7 +33,7 @@ class LineConnector(BaseConnector):
             resp.raise_for_status()
             return resp.text
         except httpx.HTTPError as exc:  # pragma: no cover - network
-            print(f"Error sending LINE message: {exc}")
+            logger.error("Error sending LINE message: %s", exc)
             return None
 
     async def listen_and_process(self) -> None:

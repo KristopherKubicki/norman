@@ -2,6 +2,9 @@ import httpx
 from typing import Any, Dict, Optional
 
 from .base_connector import BaseConnector
+from app.core.logging import setup_logger
+
+logger = setup_logger(__name__)
 
 
 class MattermostConnector(BaseConnector):
@@ -30,7 +33,7 @@ class MattermostConnector(BaseConnector):
                 self.sent_messages.append(message)
                 return resp.text
             except httpx.HTTPError as exc:  # pragma: no cover - network
-                print(f"Error sending Mattermost message: {exc}")
+                logger.error("Error sending Mattermost message: %s", exc)
                 return None
 
     async def listen_and_process(self):

@@ -1,6 +1,9 @@
 import httpx
 from typing import Any, Dict, Optional
 from .base_connector import BaseConnector
+from app.core.logging import setup_logger
+
+logger = setup_logger(__name__)
 
 
 class TelegramConnector(BaseConnector):
@@ -20,7 +23,7 @@ class TelegramConnector(BaseConnector):
                 response = await client.post(url, data=data)
             response.raise_for_status()
         except httpx.HTTPError as e:
-            print(f"Error while sending message to Telegram: {e}")
+            logger.error("Error while sending message to Telegram: %s", e)
             return None
 
         return response.text
@@ -46,7 +49,7 @@ class TelegramConnector(BaseConnector):
                 response = await client.post(url, json={"url": webhook_url})
             response.raise_for_status()
         except httpx.HTTPError as e:
-            print(f"Error while setting webhook for Telegram: {e}")
+            logger.error("Error while setting webhook for Telegram: %s", e)
             return False
 
         return True

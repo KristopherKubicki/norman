@@ -3,6 +3,9 @@ import httpx
 from typing import Any, Dict, Optional
 
 from .base_connector import BaseConnector
+from app.core.logging import setup_logger
+
+logger = setup_logger(__name__)
 
 
 class RESTCallbackConnector(BaseConnector):
@@ -23,7 +26,7 @@ class RESTCallbackConnector(BaseConnector):
                 response.raise_for_status()
                 return response.text
             except httpx.HTTPError as exc:
-                print(f"Error sending message to {self.callback_url}: {exc}")
+                logger.error("Error sending message to %s: %s", self.callback_url, exc)
                 return None
 
     async def listen_and_process(self) -> None:
@@ -40,7 +43,7 @@ class RESTCallbackConnector(BaseConnector):
                     resp.raise_for_status()
                     messages = resp.json() if resp.content else []
                 except httpx.HTTPError as exc:
-                    print(f"Error polling {self.callback_url}: {exc}")
+                    logger.error("Error polling %s: %s", self.callback_url, exc)
                     await asyncio.sleep(30)
                     continue
 

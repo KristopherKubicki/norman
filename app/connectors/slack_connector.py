@@ -2,6 +2,9 @@ import asyncio
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 from .base_connector import BaseConnector
+from app.core.logging import setup_logger
+
+logger = setup_logger(__name__)
 
 
 class SlackConnector(BaseConnector):
@@ -28,7 +31,7 @@ class SlackConnector(BaseConnector):
             loop = asyncio.get_running_loop()
             messages = await loop.run_in_executor(None, self.receive_message)
         except SlackApiError as exc:
-            print(f"Error receiving messages: {exc}")
+            logger.error("Error receiving messages: %s", exc)
             return []
 
         results = []
@@ -40,13 +43,13 @@ class SlackConnector(BaseConnector):
                 if processed:
                     results.append(processed)
             except Exception as exc:  # pylint: disable=broad-except
-                print(f"Error processing message: {exc}")
+                logger.error("Error processing message: %s", exc)
         return results
 
     def process_incoming(self, payload: dict):
         """Extract the useful fields from a Slack event payload."""
         if not isinstance(payload, dict):
-            print("Invalid payload type")
+            logger.error("Invalid payload type")
             return {}
 
         return {
@@ -61,7 +64,7 @@ class SlackConnector(BaseConnector):
             response = self.client.chat_postMessage(channel=self.channel_id, text=message)
             return response
         except SlackApiError as e:
-            print(f"Error sending message: {e}")
+            logger.error("Error sending message: %s", e)
 
     def receive_message(self):
         """Retrieve the most recent message from the Slack channel."""
@@ -71,7 +74,7 @@ class SlackConnector(BaseConnector):
             )
             return response.get("messages", [])
         except SlackApiError as e:
-            print(f"Error receiving message: {e}")
+            logger.error("Error receiving message: %s", e)
             return []
 
     def is_connected(self):

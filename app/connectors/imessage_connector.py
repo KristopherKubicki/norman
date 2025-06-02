@@ -4,6 +4,9 @@ import httpx
 from typing import Any, Dict, Optional
 
 from .base_connector import BaseConnector
+from app.core.logging import setup_logger
+
+logger = setup_logger(__name__)
 
 
 class IMessageConnector(BaseConnector):
@@ -26,7 +29,7 @@ class IMessageConnector(BaseConnector):
                 resp.raise_for_status()
                 return resp.text
             except httpx.HTTPError as exc:  # pragma: no cover - network
-                print(f"Error sending iMessage: {exc}")
+                logger.error("Error sending iMessage: %s", exc)
                 return None
 
     async def listen_and_process(self):

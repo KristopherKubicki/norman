@@ -5,6 +5,9 @@ import asyncio
 from typing import Optional
 
 from .base_connector import BaseConnector
+from app.core.logging import setup_logger
+
+logger = setup_logger(__name__)
 
 
 class SNMPConnector(BaseConnector):
@@ -38,7 +41,7 @@ class SNMPConnector(BaseConnector):
             self._sock.sendto(payload, (self.host, self.port))
             return "ok"
         except OSError as exc:  # pragma: no cover - network errors
-            print(f"Error sending SNMP trap: {exc}")
+            logger.error("Error sending SNMP trap: %s", exc)
             return None
 
     async def listen_and_process(self) -> None:
