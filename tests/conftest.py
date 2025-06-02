@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import QueuePool
 from pathlib import Path
 
 os.environ["SKIP_MIGRATIONS"] = "1"
@@ -29,7 +30,15 @@ db_dir = Path("./db")
 db_dir.mkdir(parents=True, exist_ok=True)
 
 settings.database_url = f"sqlite:///{db_dir}/test.db"
-engine = create_engine(settings.database_url)
+engine = create_engine(
+    settings.database_url,
+    poolclass=QueuePool,
+    pool_size=settings.database_pool_size,
+    max_overflow=settings.database_max_overflow,
+    connect_args={"check_same_thread": False}
+    if settings.database_url.startswith("sqlite")
+    else {},
+)
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base.metadata.create_all(bind=engine)
 

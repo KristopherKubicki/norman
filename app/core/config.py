@@ -187,6 +187,8 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str
+    database_pool_size: int = 5
+    database_max_overflow: int = 10
 
     # Server
     host: str
