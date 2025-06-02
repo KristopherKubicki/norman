@@ -1,5 +1,6 @@
 from typing import List
 from fastapi import APIRouter, Depends, Request, HTTPException
+from fastapi import status
 from fastapi.security import OAuth2PasswordRequestForm
 
 from starlette.staticfiles import StaticFiles
@@ -29,6 +30,7 @@ import uuid
 import requests
 import jwt
 from urllib.parse import urlencode
+import traceback
 
 from .views import home, connectors, filters, channels, process_message, bots, messages, login, logout, get_bots
 
