@@ -3,6 +3,7 @@ from fastapi.templating import Jinja2Templates
 from typing import List
 from fastapi import Depends
 from sqlalchemy.orm import Session
+import asyncio
 
 from app.models.bot import Bot as BotModel
 from app.schemas.bot import Bot
@@ -55,7 +56,11 @@ async def process_message(request: Request):
     connector = get_connector(channel_id)
 
     # Use the connector to process the message.
-    response = await connector.process_message(message)
+    result = connector.send_message(message)
+    if asyncio.iscoroutine(result):
+        response = await result
+    else:
+        response = result
 
     # Return the response to the frontend, which can be used to update the messages log.
     return templates.TemplateResponse(request, "process_message.html", {"request": request, "response": response})
