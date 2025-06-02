@@ -29,6 +29,8 @@ The fields are:
 ## Usage
 
 Once configured, Norman will join the specified room and can send and receive messages via Matrix.
+The connector polls the Matrix sync API for new events and dispatches any
+`m.room.message` content to Norman.
 
 ## Troubleshooting
 

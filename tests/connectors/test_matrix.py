@@ -1,5 +1,6 @@
 import asyncio
 import httpx
+import pytest
 
 from app.connectors.matrix_connector import MatrixConnector
 
@@ -27,6 +28,9 @@ class DummyClient:
 
     async def post(self, url, json=None, headers=None):
         self.sent = (url, json, headers)
+        return self.response
+
+    async def get(self, url, params=None, headers=None, timeout=None):
         return self.response
 
 
@@ -86,3 +90,46 @@ def test_is_connected_error(monkeypatch):
     monkeypatch.setattr(httpx, "get", raise_err)
     connector = MatrixConnector("https://hs", "@u:hs", "TOK", "!room")
     assert not connector.is_connected()
+
+
+def test_listen_and_process(monkeypatch):
+    data = {
+        "next_batch": "s1",
+        "rooms": {
+            "join": {
+                "!room": {
+                    "timeline": {
+                        "events": [
+                            {
+                                "type": "m.room.message",
+                                "content": {"body": "hi"},
+                            }
+                        ]
+                    }
+                }
+            }
+        },
+    }
+
+    resp = DummyResponse(status=200)
+    resp.json = lambda: data
+    client = DummyClient(resp)
+    monkeypatch.setattr(httpx, "AsyncClient", lambda: client)
+
+    processed = []
+
+    class TestConnector(MatrixConnector):
+        async def process_incoming(self, message):
+            processed.append(message)
+
+    connector = TestConnector("https://hs", "@u:hs", "TOK", "!room")
+
+    async def stop(_):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(asyncio, "sleep", stop)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.get_event_loop().run_until_complete(connector.listen_and_process())
+
+    assert processed == ["hi"]

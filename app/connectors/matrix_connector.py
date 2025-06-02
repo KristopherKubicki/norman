@@ -1,5 +1,6 @@
 """Minimal Matrix connector leveraging the client-server API."""
 
+import asyncio
 import httpx
 from typing import Any, Dict, Optional
 
@@ -21,6 +22,7 @@ class MatrixConnector(BaseConnector):
         self.access_token = access_token
         self.room_id = room_id
         self._send_url = f"{self.homeserver}/_matrix/client/v3/rooms/{self.room_id}/send/m.room.message"
+        self._next_batch: Optional[str] = None
 
     async def send_message(self, message):
         headers = {"Authorization": f"Bearer {self.access_token}"}
@@ -35,8 +37,45 @@ class MatrixConnector(BaseConnector):
                 return None
 
     async def listen_and_process(self):
-        """Listening for Matrix events is not implemented."""
-        return None
+        """Long-poll the sync API and dispatch new messages."""
+
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+        async with httpx.AsyncClient() as client:
+            while True:  # pragma: no cover - loop runs until cancelled
+                params = {"timeout": 30000}
+                if self._next_batch:
+                    params["since"] = self._next_batch
+                try:
+                    resp = await client.get(
+                        f"{self.homeserver}/_matrix/client/v3/sync",
+                        params=params,
+                        headers=headers,
+                        timeout=35,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                except httpx.HTTPError as exc:  # pragma: no cover - network
+                    logger.error("Matrix sync failed: %s", exc)
+                    await asyncio.sleep(5)
+                    continue
+
+                self._next_batch = data.get("next_batch")
+                events = (
+                    data.get("rooms", {})
+                    .get("join", {})
+                    .get(self.room_id, {})
+                    .get("timeline", {})
+                    .get("events", [])
+                )
+                for event in events:
+                    if event.get("type") != "m.room.message":
+                        continue
+                    content = event.get("content", {})
+                    body = content.get("body", "")
+                    result = self.process_incoming(body)
+                    if asyncio.iscoroutine(result):
+                        await result
+                await asyncio.sleep(1)
 
     async def process_incoming(self, message):
         """Return the incoming ``message`` payload."""
