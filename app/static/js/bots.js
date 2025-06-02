@@ -70,6 +70,12 @@ document.addEventListener('DOMContentLoaded', () => {
     spinner.style.display = 'inline-block';
 
     if (selectedBotNameElement.innerText !== 'None' && content) {
+      const messagesContainer = document.querySelector('.messages-container');
+      const placeholder = document.createElement('div');
+      placeholder.className = 'message assistant placeholder-message';
+      placeholder.style.height = textarea.scrollHeight + 'px';
+      messagesContainer.appendChild(placeholder);
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
       const bot_id = selectedBotNameElement.dataset.botId;
       await sendMessage(bot_id, content);
       textarea.value = '';

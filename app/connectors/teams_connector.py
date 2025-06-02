@@ -1,6 +1,6 @@
 """Connector for sending messages to Microsoft Teams via a bot endpoint."""
 
-import httpx
+import importlib
 from typing import Any, Dict, Optional
 
 from .base_connector import BaseConnector
@@ -24,6 +24,7 @@ class TeamsConnector(BaseConnector):
     async def send_message(self, message: str) -> Optional[str]:
         """POST ``message`` to the configured bot endpoint."""
         headers = {"Authorization": f"Bearer {self.app_password}"}
+        httpx = importlib.import_module("httpx")
         async with httpx.AsyncClient() as client:
             try:
                 resp = await client.post(
@@ -46,6 +47,7 @@ class TeamsConnector(BaseConnector):
     def is_connected(self) -> bool:
         """Return ``True`` if the bot endpoint is reachable."""
         headers = {"Authorization": f"Bearer {self.app_password}"}
+        httpx = importlib.import_module("httpx")
         try:
             resp = httpx.get(self.bot_endpoint, headers=headers)
             resp.raise_for_status()

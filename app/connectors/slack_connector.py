@@ -1,6 +1,5 @@
 import asyncio
-from slack_sdk import WebClient
-from slack_sdk.errors import SlackApiError
+import importlib
 from .base_connector import BaseConnector
 from app.core.logging import setup_logger
 
@@ -16,7 +15,14 @@ class SlackConnector(BaseConnector):
         super().__init__(config)
         self.token = token
         self.channel_id = channel_id
-        self.client = WebClient(token=self.token)
+        self.client = None
+
+    def _get_client(self):
+        """Lazily import and return the Slack WebClient."""
+        if self.client is None:
+            slack_sdk = importlib.import_module("slack_sdk")
+            self.client = slack_sdk.WebClient(token=self.token)
+        return self.client
 
     def connect(self):
         pass  # No need for a separate connect method, as WebClient will handle it.
@@ -27,10 +33,12 @@ class SlackConnector(BaseConnector):
     async def listen_and_process(self):
         """Poll for messages asynchronously and process them."""
 
+        errors_mod = importlib.import_module("slack_sdk.errors")
+
         try:
             loop = asyncio.get_running_loop()
             messages = await loop.run_in_executor(None, self.receive_message)
-        except SlackApiError as exc:
+        except errors_mod.SlackApiError as exc:
             logger.error("Error receiving messages: %s", exc)
             return []
 
@@ -60,26 +68,32 @@ class SlackConnector(BaseConnector):
         }
 
     def send_message(self, message):
+        errors_mod = importlib.import_module("slack_sdk.errors")
+        client = self._get_client()
         try:
-            response = self.client.chat_postMessage(channel=self.channel_id, text=message)
+            response = client.chat_postMessage(channel=self.channel_id, text=message)
             return response
-        except SlackApiError as e:
-            logger.error("Error sending message: %s", e)
+        except errors_mod.SlackApiError as exc:
+            logger.error("Error sending message: %s", exc)
 
     def receive_message(self):
         """Retrieve the most recent message from the Slack channel."""
+        errors_mod = importlib.import_module("slack_sdk.errors")
+        client = self._get_client()
         try:
-            response = self.client.conversations_history(
+            response = client.conversations_history(
                 channel=self.channel_id, limit=1
             )
             return response.get("messages", [])
-        except SlackApiError as e:
-            logger.error("Error receiving message: %s", e)
+        except errors_mod.SlackApiError as exc:
+            logger.error("Error receiving message: %s", exc)
             return []
 
     def is_connected(self):
+        errors_mod = importlib.import_module("slack_sdk.errors")
+        client = self._get_client()
         try:
-            self.client.auth_test()
+            client.auth_test()
             return True
-        except SlackApiError:
+        except errors_mod.SlackApiError:
             return False
