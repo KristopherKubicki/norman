@@ -1,8 +1,11 @@
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
-from typing import Optional
+from typing import List, Optional
+import logging
+
 from app.models import Message
-from typing import List
+
+logger = logging.getLogger(__name__)
 
 def create_message(db: Session, bot_id: int, text: str, source: str) -> Message:
     db_message = Message(bot_id=bot_id, text=text, source=source)
@@ -11,7 +14,7 @@ def create_message(db: Session, bot_id: int, text: str, source: str) -> Message:
     db.refresh(db_message)
     return db_message
 
-def get_message_by_id(db: Session, message_id: int) -> Message:
+def get_message_by_id(db: Session, message_id: int) -> Optional[Message]:
     return db.query(Message).filter(Message.id == message_id).first()
 
 def get_messages_by_bot_id(
@@ -38,6 +41,8 @@ def delete_message(db: Session, message_id: int) -> None:
     if message:
         db.delete(message)
         db.commit()
+    else:
+        logger.warning("Message id %s not found for deletion", message_id)
 
 def update_message(db: Session, message_id: int, text: str) -> Optional[Message]:
     message = get_message_by_id(db, message_id)
@@ -46,10 +51,11 @@ def update_message(db: Session, message_id: int, text: str) -> Optional[Message]
         db.commit()
         db.refresh(message)
         return message
+    logger.warning("Message id %s not found for update", message_id)
     return None
 
 
-def get_last_messages_by_bot_id(db: Session, bot_id: int, limit: int = 10):
+def get_last_messages_by_bot_id(db: Session, bot_id: int, limit: int = 10) -> List[Message]:
     return (
         db.query(Message)
         .filter(Message.bot_id == bot_id)
