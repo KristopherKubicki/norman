@@ -1,33 +1,18 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Login</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" integrity="sha384-9ndCyUaIbzAi2FUVXJi0CjmCapSmO7OGpamoFVy38MVBnE+IbbVYUew+OrCXaRkfj" crossorigin="anonymous">
-</head>
-<body>
-    <div class="container mt-5" style="max-width: 400px;">
-        <form action="/login" method="post" class="card p-4 shadow-sm">
-            <h1 class="h4 mb-3 text-center">Login</h1>
-            <div class="mb-3">
-                <input type="email" class="form-control" name="username" placeholder="Email" required>
-            </div>
-            <div class="mb-3">
-                <input type="password" class="form-control" name="password" placeholder="Password" required>
-            </div>
-            <button type="submit" class="btn btn-primary w-100">Login</button>
-            <hr class="my-3">
-            <a href="/auth/google/login" class="btn btn-outline-danger w-100 mb-2">Sign in with Google</a>
-            <a href="/auth/microsoft/login" class="btn btn-outline-primary w-100">Sign in with Microsoft</a>
-        </form>
-    </div>
-    <div class="form-check form-switch text-end mt-3">
-        <input class="form-check-input" type="checkbox" id="themeToggle">
-        <label class="form-check-label" for="themeToggle">Dark Mode</label>
-    </div>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" integrity="sha384-ENjdO4Dr2bkBIFxQpeoKMJQ0Z6D9F6EU2ygSABR03SuhDL7z8Zef3CJXTgq1Q0Q" crossorigin="anonymous"></script>
-    <script src="/static/js/theme.js"></script>
-</body>
-</html>
-
+{% extends "base.html" %}
+{% block content %}
+<div class="container mt-5" style="max-width: 400px;">
+    <form action="/login" method="post" class="card p-4 shadow-sm">
+        <h1 class="h4 mb-3 text-center">Login</h1>
+        <div class="mb-3">
+            <input type="email" class="form-control" name="username" placeholder="Email" required>
+        </div>
+        <div class="mb-3">
+            <input type="password" class="form-control" name="password" placeholder="Password" required>
+        </div>
+        <button type="submit" class="btn btn-primary w-100">Login</button>
+        <hr class="my-3">
+        <a href="/auth/google/login" class="btn btn-outline-danger w-100 mb-2">Sign in with Google</a>
+        <a href="/auth/microsoft/login" class="btn btn-outline-primary w-100">Sign in with Microsoft</a>
+    </form>
+</div>
+{% endblock %}
