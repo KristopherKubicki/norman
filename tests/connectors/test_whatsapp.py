@@ -55,3 +55,18 @@ def test_process_incoming():
         connector.process_incoming(payload)
     )
     assert result == payload
+
+
+def test_is_connected_success(monkeypatch):
+    monkeypatch.setattr(httpx, "get", lambda url, auth=None: DummyResponse())
+    connector = WhatsAppConnector("SID", "TOKEN", "+1", "+2")
+    assert connector.is_connected()
+
+
+def test_is_connected_error(monkeypatch):
+    def raise_err(url, auth=None):
+        raise httpx.HTTPError("boom")
+
+    monkeypatch.setattr(httpx, "get", raise_err)
+    connector = WhatsAppConnector("SID", "TOKEN", "+1", "+2")
+    assert not connector.is_connected()
