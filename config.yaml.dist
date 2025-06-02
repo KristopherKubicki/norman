@@ -4,6 +4,7 @@ initial_admin_email: "admin@example.com"
 initial_admin_username: "admin"
 app_name: "norman"
 debug: false
+log_level: INFO
 api_version: "v1"
 api_prefix: "/api"
 

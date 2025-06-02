@@ -16,3 +16,26 @@ def test_setup_logger_idempotent():
     # cleanup
     for handler in list(logger1.handlers):
         logger1.removeHandler(handler)
+
+
+def test_setup_logger_level_from_settings(monkeypatch):
+    name = "test_setup_logger_level_from_settings"
+    from app.core import config
+
+    old_level = config.settings.log_level
+    monkeypatch.setattr(config.settings, "log_level", "WARNING")
+    try:
+        logger = setup_logger(name)
+        assert logger.level == logging.WARNING
+    finally:
+        monkeypatch.setattr(config.settings, "log_level", old_level)
+        for handler in list(logger.handlers):
+            logger.removeHandler(handler)
+
+
+def test_setup_logger_explicit_level():
+    name = "test_setup_logger_explicit_level"
+    logger = setup_logger(name, level="ERROR")
+    assert logger.level == logging.ERROR
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
