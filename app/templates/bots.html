@@ -37,43 +37,82 @@
     <div class="messages-container">
       <!-- Messages will be dynamically added here -->
     </div>
-    <div class="input-message-container">
-  <textarea id="input-message" rows="1" placeholder="Pick a bot..." disabled></textarea>
 
-  <button id="send-message" disabled>Send</button>
-  <div id="spinner" class="spinner" style="display: none;"></div>
+    <div class="controls my-3">
+      <label for="history-depth" class="form-label">History Depth: <span id="history-depth-value">10</span></label>
+      <input type="range" class="form-range" id="history-depth" min="1" max="50" value="10">
+      <label for="response-length" class="form-label mt-2">Response Length: <span id="response-length-value">150</span></label>
+      <input type="range" class="form-range" id="response-length" min="50" max="500" value="150">
+    </div>
+
+    <div class="input-message-container">
+      <textarea id="input-message" rows="1" placeholder="Pick a bot..." disabled></textarea>
+      <button id="send-message" disabled>Send</button>
+      <div id="spinner" class="spinner" style="display: none;"></div>
+    </div>
+
+  </div>
 </div>
 
+<!-- Edit Bot Modal -->
+<div class="modal fade" id="editBotModal" tabindex="-1" aria-labelledby="editBotModalLabel" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="editBotModalLabel">Edit Bot</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <form id="edit-bot-form">
+          <div class="mb-3">
+            <label for="edit-bot-name" class="form-label">Name</label>
+            <input type="text" class="form-control" id="edit-bot-name" required>
+          </div>
+          <div class="mb-3">
+            <label for="edit-bot-description" class="form-label">Description</label>
+            <input type="text" class="form-control" id="edit-bot-description">
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" id="save-edit-bot">Save</button>
+      </div>
+    </div>
   </div>
 </div>
 
 <script>
 
-
 var textarea = document.getElementById('input-message');
+var sendButton = document.getElementById('send-message');
 
 textarea.addEventListener('input', () => {
-  // Temporarily set the height to 'auto' so the scrollHeight property will give us the full height of the content
   textarea.style.height = 'auto';
-
-  // Now set the height to the content's full height (but not more than max-height)
-  // The 'Math.min' part is not necessary if you don't have a max-height
   textarea.style.height = Math.min(textarea.scrollHeight, 300) + 'px';
 });
+
+textarea.addEventListener('keydown', function (e) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendButton.click();
+  }
+});
+
 textarea.dispatchEvent(new Event('input'));
 
+var historySlider = document.getElementById('history-depth');
+var historyValue = document.getElementById('history-depth-value');
+var responseSlider = document.getElementById('response-length');
+var responseValue = document.getElementById('response-length-value');
 
-var sendButton = document.getElementById("send-message");
-    textarea.oninput = function() {
-        var lines = textarea.value.split('\n');
-        for (var i = 0; i < lines.length; i++) {
-            if (lines[i] === "" && lines[i+1] === "") {
-                textarea.value = lines.slice(0, i+1).join('\n');
-		    sendButton.click();
-            }
-        }
-    };
+historySlider.addEventListener('input', () => {
+  historyValue.innerText = historySlider.value;
+});
 
+responseSlider.addEventListener('input', () => {
+  responseValue.innerText = responseSlider.value;
+});
 
 </script>
 

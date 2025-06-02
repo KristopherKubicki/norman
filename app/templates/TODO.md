@@ -3,15 +3,15 @@
 ## bots.html
 
 1. Implement markdown for UI screens. Currently facing a library include issue.
-2. Make the input box multiline and more like the openai chatgpt window.
+2. ~~Make the input box multiline and more like the openai chatgpt window.~~
 3. Make bots on the left side smaller and easily identifiable, including some kind of highlight on click.
-4. Disable the send button until a bot is selected.
-5. Add edit mode from the same area as delete. Edit mode should pop up a modal with the bot details.
-6. Add a warning alert when the delete bot is clicked.
+4. ~~Disable the send button until a bot is selected.~~
+5. ~~Add edit mode from the same area as delete. Edit mode should pop up a modal with the bot details.~~
+6. ~~Add a warning alert when the delete bot is clicked.~~
 7. Make the "search bots" dialog functional and collapsible by default.
-8. Add sliders for controlling:
-   - The number of messages of history used for the prompt.
-   - The amount of response to generate.
+8. ~~Add sliders for controlling:~~
+   - ~~The number of messages of history used for the prompt.~~
+   - ~~The amount of response to generate.~~
 
 ## connectors.html
 

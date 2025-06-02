@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi import status
 from fastapi.security import OAuth2PasswordRequestForm
@@ -121,6 +121,7 @@ async def create_message_endpoint(
     bot_id: int,
     request: Request,
     history_limit: int = 10,
+    response_tokens: Optional[int] = None,
     db: Session = Depends(get_async_db),
 ):
     try:
@@ -149,10 +150,11 @@ async def create_message_endpoint(
             # remove the oldest user/assistant message
             messages.pop(1)
 
+        max_tokens = response_tokens or bot.default_response_tokens
         interaction_response = await create_chat_interaction(
             model=bot.gpt_model,
             messages=messages,
-            max_tokens=bot.default_response_tokens
+            max_tokens=max_tokens
         )
 
         # Create an interaction schema
