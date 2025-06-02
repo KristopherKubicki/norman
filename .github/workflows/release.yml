@@ -15,9 +15,10 @@ jobs:
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
+        continue-on-error: true
         with:
           release-type: python
           package-name: norman
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || github.token }}
       - uses: actions/checkout@v3
         if: ${{ steps.release.outputs.release_created }}
