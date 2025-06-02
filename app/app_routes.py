@@ -33,7 +33,7 @@ import jwt
 from urllib.parse import urlencode
 import traceback
 
-from .views import home, connectors, filters, channels, process_message, bots, messages, login, logout, get_bots
+from .views import home, connectors, filters, channels, process_message, bots, messages, captions, login, logout, get_bots
 from app.connectors.connector_utils import get_connector
 from app.schemas.connector import ConnectorCreate, ConnectorUpdate, Connector
 
@@ -75,6 +75,10 @@ async def bots_endpoint(request: Request):
 @app_routes.get("/messages_log.html")
 async def messages_endpoint(request: Request):
     return await messages(request)
+
+@app_routes.get("/captions.html")
+async def captions_endpoint(request: Request):
+    return await captions(request)
 
 @app_routes.post("/api/bots/create")
 async def create_bot_endpoint(request: Request, db: Session = Depends(get_async_db)):

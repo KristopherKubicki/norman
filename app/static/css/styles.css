@@ -144,6 +144,16 @@ textarea {
   float: right;
 }
 
+.caption-thumb {
+  width: 120px;
+  height: auto;
+  display: block;
+}
+
+#captions-table th {
+  cursor: pointer;
+}
+
 
 html.dark-mode,
 body.dark-mode {
