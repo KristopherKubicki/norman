@@ -4,7 +4,7 @@ This document outlines the remaining tasks to complete and improve the test suit
 
 ## General
 
-- [ ] Improve test coverage for all CRUD operations in `app/crud`.
+- [x] Improve test coverage for all CRUD operations in `app/crud`.
 - [ ] Add tests for exception handling and edge cases.
 
 ## Connectors
@@ -18,9 +18,9 @@ This document outlines the remaining tasks to complete and improve the test suit
 
 ## Routers
 
-- [ ] Write tests for the `filters` router in `tests/routers/test_filters.py`.
-- [ ] Write tests for the `actions` router in `tests/routers/test_actions.py`.
-- [ ] Write tests for the `connectors` router in `tests/routers/test_connectors.py`.
+- [x] Write tests for the `filters` router in `tests/routers/test_filters.py`.
+- [x] Write tests for the `actions` router in `tests/routers/test_actions.py`.
+- [x] Write tests for the `connectors` router in `tests/routers/test_connectors.py`.
 
 ## Utils and Core
 
@@ -30,6 +30,6 @@ This document outlines the remaining tasks to complete and improve the test suit
 
 ## Integration and End-to-End Tests
 
-- [ ] Write integration tests for the entire application.
-- [ ] Write end-to-end tests to simulate user interactions and verify the system's functionality.
+- [x] Write integration tests for the entire application.
+- [x] Write end-to-end tests to simulate user interactions and verify the system's functionality.
 

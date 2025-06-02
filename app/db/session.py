@@ -1,7 +1,7 @@
 
 
 import os
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import QueuePool
 from pathlib import Path
@@ -31,8 +31,13 @@ if settings.database_url.startswith("sqlite"):
     db_path = engine.url.database
     if db_path and db_path != ":memory:":
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    with engine.connect() as conn:
-        conn.execute(text("PRAGMA journal_mode=WAL"))
-        conn.execute(text("PRAGMA synchronous=NORMAL"))
+
+    @event.listens_for(engine, "connect")
+    def _set_sqlite_pragmas(dbapi_connection, connection_record):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
