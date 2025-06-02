@@ -97,6 +97,10 @@ class Settings(BaseSettings):
     twitter_api_secret: str
     twitter_access_token: str
     twitter_access_token_secret: str
+    xcom_api_key: str
+    xcom_api_secret: str
+    xcom_access_token: str
+    xcom_access_token_secret: str
     imessage_service_url: str
     imessage_phone_number: str
     aprs_host: str

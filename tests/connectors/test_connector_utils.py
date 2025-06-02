@@ -217,6 +217,16 @@ def test_get_connector_returns_twitter(monkeypatch):
     assert isinstance(connector, TwitterConnector)
 
 
+def test_get_connector_returns_xcom(monkeypatch):
+    monkeypatch.setattr(
+        "app.connectors.connector_utils.get_settings", lambda: test_settings
+    )
+    connector = get_connector("xcom")
+    from app.connectors.xcom_connector import XComConnector
+
+    assert isinstance(connector, XComConnector)
+
+
 def test_get_connector_returns_imessage(monkeypatch):
     monkeypatch.setattr(
         "app.connectors.connector_utils.get_settings", lambda: test_settings
