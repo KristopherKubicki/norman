@@ -18,14 +18,32 @@ def init_connectors(app: FastAPI, _settings: Settings) -> None:
     settings = get_settings()
     logger = logging.getLogger(__name__)
 
-    for name in connector_classes:
-        if not _is_configured(name, settings):
-            setattr(app.state, f"{name}_connector", None)
-            continue
-        try:
-            connector = get_connector(name)
-        except Exception:  # pylint: disable=broad-except
-            logger.exception("Failed to initialize connector %s", name)
-            connector = None
-        setattr(app.state, f"{name}_connector", connector)
+    connectors: dict = {}
+
+    if settings.connectors:
+        for item in settings.connectors:
+            name = item.get("type")
+            cfg = {k: v for k, v in item.items() if k != "type"}
+            if name not in connector_classes:
+                logger.warning("Unknown connector %s", name)
+                continue
+            try:
+                conn = get_connector(name, cfg)
+            except Exception:  # pylint: disable=broad-except
+                logger.exception("Failed to initialize connector %s", name)
+                conn = None
+            connectors.setdefault(name, []).append(conn)
+    else:
+        for name in connector_classes:
+            if not _is_configured(name, settings):
+                connectors[name] = []
+                continue
+            try:
+                conn = get_connector(name)
+            except Exception:  # pylint: disable=broad-except
+                logger.exception("Failed to initialize connector %s", name)
+                conn = None
+            connectors.setdefault(name, []).append(conn)
+
+    app.state.connectors = connectors
 

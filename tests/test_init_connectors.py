@@ -30,16 +30,14 @@ def test_init_connectors_adds_placeholders(monkeypatch):
 
     app = FastAPI()
     init_connectors(app, test_settings)
-    for name in connector_classes:
-        attr = f"{name}_connector"
-        assert hasattr(app.state, attr)
-        assert getattr(app.state, attr) is None
+    assert hasattr(app.state, "connectors")
+    assert set(app.state.connectors) == set(connector_classes)
+    assert all(v == [] for v in app.state.connectors.values())
 
 
 def test_init_connectors_with_slack(monkeypatch):
     config = load_config()
-    config["slack_token"] = "x"
-    config["slack_channel_id"] = "C1"
+    config["connectors"] = [{"type": "slack", "token": "x", "channel_id": "C1"}]
     settings = Settings(**config)
 
     monkeypatch.setattr("app.connectors.get_settings", lambda: settings)
@@ -47,9 +45,7 @@ def test_init_connectors_with_slack(monkeypatch):
 
     app = FastAPI()
     init_connectors(app, settings)
-    for name in connector_classes:
-        attr = f"{name}_connector"
-        assert hasattr(app.state, attr)
-    connector = getattr(app.state, "slack_connector")
+    assert "slack" in app.state.connectors
+    connector = app.state.connectors["slack"][0]
     assert isinstance(connector, SlackConnector)
 
