@@ -6,9 +6,9 @@ from app import crud
 from app.schemas import ConnectorCreate, ConnectorUpdate, Connector
 from app.api.deps import get_db
 
-router = APIRouter()
+router = APIRouter(prefix="/connectors")
 
-@router.post("/connectors/", response_model=Connector, status_code=201)
+@router.post("/", response_model=Connector, status_code=201)
 async def create_connector(
     connector: ConnectorCreate, db: Session = Depends(get_db)
 ):
@@ -17,19 +17,19 @@ async def create_connector(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.get("/connectors/", response_model=List[Connector])
+@router.get("/", response_model=List[Connector])
 async def get_connectors(db: Session = Depends(get_db)):
     connectors = crud.connector.get_multi(db)
     return connectors
 
-@router.get("/connectors/{connector_id}", response_model=Connector)
+@router.get("/{connector_id}", response_model=Connector)
 async def get_connector(connector_id: int, db: Session = Depends(get_db)):
     connector = crud.connector.get(db, connector_id)
     if not connector:
         raise HTTPException(status_code=404, detail="Connector not found")
     return connector
 
-@router.put("/connectors/{connector_id}", response_model=Connector)
+@router.put("/{connector_id}", response_model=Connector)
 async def update_connector(
     connector_id: int,
     connector: ConnectorUpdate,
@@ -43,7 +43,7 @@ async def update_connector(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.delete("/connectors/{connector_id}", response_model=Connector)
+@router.delete("/{connector_id}", response_model=Connector)
 async def delete_connector(connector_id: int, db: Session = Depends(get_db)):
     connector = crud.connector.remove(db, connector_id)
     if not connector:
