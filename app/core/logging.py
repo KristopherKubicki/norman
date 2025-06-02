@@ -1,6 +1,9 @@
 import logging
+from typing import Optional, Union
 
-def setup_logger(name: str) -> logging.Logger:
+from .config import settings
+
+def setup_logger(name: str, level: Optional[Union[int, str]] = None) -> logging.Logger:
     """Return a configured :class:`logging.Logger` instance.
 
     The function is safe to call multiple times for the same ``name``. A
@@ -9,12 +12,16 @@ def setup_logger(name: str) -> logging.Logger:
     """
 
     logger = logging.getLogger(name)
-    logger.setLevel(logging.DEBUG)
+    if level is None:
+        level = settings.log_level
+    if isinstance(level, str):
+        level = getattr(logging, level.upper(), logging.INFO)
+    logger.setLevel(level)
 
     has_stream = any(isinstance(h, logging.StreamHandler) for h in logger.handlers)
     if not has_stream:
         handler = logging.StreamHandler()
-        handler.setLevel(logging.DEBUG)
+        handler.setLevel(level)
         formatter = logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )

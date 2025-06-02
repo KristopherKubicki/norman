@@ -1,12 +1,14 @@
 
 from typing import Any, Dict, Optional, List
 from pydantic import BaseSettings, validator
+import logging
 
 # should this move to schemas?
 class Settings(BaseSettings):
     secret_key: str
     app_name: str
     debug: bool
+    log_level: str = "INFO"
     api_version: str
     api_prefix: str
 
@@ -237,6 +239,15 @@ class Settings(BaseSettings):
         assert v != "admin", (
             "You must set an admin username in the config.yaml!"
         )
+        return v
+
+    @validator("log_level", pre=True)
+    def validate_log_level(cls, v):
+        if isinstance(v, str):
+            level = v.upper()
+            if level not in logging._nameToLevel:
+                raise ValueError(f"Invalid log level: {v}")
+            return level
         return v
 
     class Config:
