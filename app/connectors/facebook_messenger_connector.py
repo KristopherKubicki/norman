@@ -1,5 +1,6 @@
 """Simple Facebook Messenger connector using the Graph API."""
 
+import asyncio
 import httpx
 from typing import Any, Dict, Optional
 
@@ -30,9 +31,11 @@ class FacebookMessengerConnector(BaseConnector):
                 print(f"Error sending Facebook message: {exc}")
                 return None
 
-    async def listen_and_process(self):
-        """Listening for Messenger messages is not implemented."""
-        return None
+    async def listen_and_process(self) -> None:
+        """Return immediately as Messenger does not offer a polling API."""
+
+        self.logger.info("Facebook Messenger connector does not support incoming messages")
+        await asyncio.sleep(0)
 
     async def process_incoming(self, message):
         """Return the incoming ``message`` payload."""
