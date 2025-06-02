@@ -144,10 +144,20 @@ textarea {
   float: right;
 }
 
+
 /* Typing indicator style */
 #thinking-indicator {
   font-style: italic;
   opacity: 0.7;
+
+.caption-thumb {
+  width: 120px;
+  height: auto;
+  display: block;
+}
+
+#captions-table th {
+  cursor: pointer;
 }
 
 
