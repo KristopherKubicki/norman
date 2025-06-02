@@ -145,13 +145,18 @@ textarea {
 }
 
 
+html.dark-mode,
 body.dark-mode {
     background-color: #121212;
     color: #f8f9fa;
 }
+html.dark-mode a,
 body.dark-mode a { color: #f8f9fa; }
+html.dark-mode .navbar,
 body.dark-mode .navbar,
+html.dark-mode footer,
 body.dark-mode footer,
+html.dark-mode .card,
 body.dark-mode .card {
     background-color: #1e1e1e;
     color: #f8f9fa;
