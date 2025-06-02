@@ -1,3 +1,20 @@
+function showError(input, message) {
+  input.classList.add('is-invalid');
+  let feedback = input.parentNode.querySelector('.invalid-feedback');
+  if (!feedback) {
+    feedback = document.createElement('div');
+    feedback.className = 'invalid-feedback';
+    input.parentNode.appendChild(feedback);
+  }
+  feedback.textContent = message;
+}
+
+function clearError(input) {
+  input.classList.remove('is-invalid');
+  const feedback = input.parentNode.querySelector('.invalid-feedback');
+  if (feedback) feedback.textContent = '';
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   loadChannels();
   fetchFiltersAndRender();
@@ -111,9 +128,25 @@ document.getElementById('add-filter-form').addEventListener('submit', async (eve
   const regexInput = document.getElementById('filter-regex');
   const descriptionInput = document.getElementById('filter-description');
 
+  clearError(regexInput);
+
+  const regexValue = regexInput.value.trim();
+
+  if (!regexValue) {
+    showError(regexInput, 'Regex is required');
+    return;
+  }
+
+  try {
+    new RegExp(regexValue);
+  } catch (e) {
+    showError(regexInput, 'Invalid regular expression');
+    return;
+  }
+
   const filterData = {
     channel_id: parseInt(channelSelect.value, 10),
-    regex: regexInput.value,
+    regex: regexValue,
     description: descriptionInput.value,
   };
 

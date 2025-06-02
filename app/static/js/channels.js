@@ -1,4 +1,21 @@
 // Add a listener for DOMContentLoaded to make sure the page is fully loaded before running the script
+function showError(input, message) {
+  input.classList.add('is-invalid');
+  let feedback = input.parentNode.querySelector('.invalid-feedback');
+  if (!feedback) {
+    feedback = document.createElement('div');
+    feedback.className = 'invalid-feedback';
+    input.parentNode.appendChild(feedback);
+  }
+  feedback.textContent = message;
+}
+
+function clearError(input) {
+  input.classList.remove('is-invalid');
+  const feedback = input.parentNode.querySelector('.invalid-feedback');
+  if (feedback) feedback.textContent = '';
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   fetchChannelsAndRender();
 });
@@ -98,9 +115,25 @@ document.getElementById('add-channel-form').addEventListener('submit', async (ev
   const nameInput = document.getElementById('channel-name');
   const connectorInput = document.getElementById('channel-connector');
 
+  clearError(nameInput);
+  clearError(connectorInput);
+
+  const name = nameInput.value.trim();
+  const connector = connectorInput.value;
+
+  if (!name) {
+    showError(nameInput, 'Name is required');
+    return;
+  }
+
+  if (!connector) {
+    showError(connectorInput, 'Connector is required');
+    return;
+  }
+
   const channelData = {
-    name: nameInput.value,
-    connector_id: parseInt(connectorInput.value, 10),
+    name,
+    connector_id: connector,
   };
 
   const newChannel = await createChannel(channelData);

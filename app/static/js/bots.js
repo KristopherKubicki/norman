@@ -2,6 +2,23 @@
 let selectedBotId = null;
 const sendButton = document.getElementById('send-message');
 
+function showError(input, message) {
+  input.classList.add('is-invalid');
+  let feedback = input.parentNode.querySelector('.invalid-feedback');
+  if (!feedback) {
+    feedback = document.createElement('div');
+    feedback.className = 'invalid-feedback';
+    input.parentNode.appendChild(feedback);
+  }
+  feedback.textContent = message;
+}
+
+function clearError(input) {
+  input.classList.remove('is-invalid');
+  const feedback = input.parentNode.querySelector('.invalid-feedback');
+  if (feedback) feedback.textContent = '';
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   const sendButton = document.getElementById('send-message');
   // Fetch bots and render them in the bots container
@@ -12,12 +29,18 @@ document.addEventListener('DOMContentLoaded', () => {
   if (saveBtn) {
     saveBtn.addEventListener('click', async () => {
       if (!selectedBotId) return;
+      const nameInput = document.getElementById('edit-bot-name');
+      clearError(nameInput);
       const data = {
-        name: document.getElementById('edit-bot-name').value.trim(),
+        name: nameInput.value.trim(),
         description: document.getElementById('edit-bot-description').value.trim(),
         gpt_model: document.getElementById('edit-bot-model').value.trim(),
         enabled: document.getElementById('edit-bot-enabled').checked
       };
+      if (!data.name) {
+        showError(nameInput, 'Name is required');
+        return;
+      }
       const updated = await updateBot(selectedBotId, data);
       if (updated) {
         fetchBotsAndRender();
@@ -36,11 +59,13 @@ document.addEventListener('DOMContentLoaded', () => {
       const nameInput = document.getElementById("bot-name");
       const descriptionInput = document.getElementById("bot-description");
 
+      clearError(nameInput);
+
       const name = nameInput.value.trim();
       const description = descriptionInput.value.trim();
 
       if (!name) {
-        alert("Please enter a bot name.");
+        showError(nameInput, 'Name is required');
         return;
       }
 
