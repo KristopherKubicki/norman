@@ -9,8 +9,10 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token")
 async def auth_middleware(request: Request, call_next):
     token = request.cookies.get("access_token", None)
 
+    path = request.url.path
+
     if token is None:
-        if request.url.path.endswith(".html") and request.url.path != "/login.html":
+        if (path.endswith(".html") or path in ("/", "/index.html")) and path != "/login.html":
             return RedirectResponse(url="/login.html", status_code=303)
     elif request.url.path == "/login.html":
         # If the user already has a valid token, redirect them away from the
