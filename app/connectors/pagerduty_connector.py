@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, Optional
 
-import requests
+import httpx
 
 from .base_connector import BaseConnector
 
@@ -18,7 +18,7 @@ class PagerDutyConnector(BaseConnector):
         self.routing_key = routing_key
         self.api_url = "https://events.pagerduty.com/v2/enqueue"
 
-    def send_message(self, message: Dict[str, Any]) -> Optional[str]:
+    async def send_message(self, message: Dict[str, Any]) -> Optional[str]:
         payload = {
             "routing_key": self.routing_key,
             "event_action": message.get("event_action", "trigger"),
@@ -29,10 +29,11 @@ class PagerDutyConnector(BaseConnector):
             },
         }
         try:
-            response = requests.post(self.api_url, json=payload)
+            async with httpx.AsyncClient() as client:
+                response = await client.post(self.api_url, json=payload)
             response.raise_for_status()
             return response.text
-        except requests.RequestException as exc:  # pragma: no cover - network
+        except httpx.HTTPError as exc:  # pragma: no cover - network
             print(f"Error sending PagerDuty event: {exc}")
             return None
 

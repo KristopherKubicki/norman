@@ -1,6 +1,6 @@
 import asyncio
 import base64
-import requests
+import httpx
 from typing import Any, Dict, List, Optional
 
 from .base_connector import BaseConnector
@@ -26,7 +26,7 @@ class JiraServiceDeskConnector(BaseConnector):
             "Content-Type": "application/json",
         }
 
-    def send_message(self, message: Dict[str, Any]) -> Optional[str]:
+    async def send_message(self, message: Dict[str, Any]) -> Optional[str]:
         issue_key = message.get("issue_key")
         if issue_key:
             url = f"{self.url}/rest/api/3/issue/{issue_key}/comment"
@@ -42,20 +42,22 @@ class JiraServiceDeskConnector(BaseConnector):
                 }
             }
         try:
-            resp = requests.post(url, json=payload, headers=self._headers())
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(url, json=payload, headers=self._headers())
             resp.raise_for_status()
             return resp.text
-        except requests.RequestException as exc:  # pragma: no cover - network
+        except httpx.HTTPError as exc:  # pragma: no cover - network
             print(f"Error communicating with Jira Service Desk: {exc}")
             return None
 
-    def _fetch_issues(self) -> List[Dict[str, Any]]:
+    async def _fetch_issues(self) -> List[Dict[str, Any]]:
         """Return recently created issues for the configured project."""
 
         jql = f"project={self.project_key} ORDER BY created DESC"
         url = f"{self.url}/rest/api/3/search"
         params = {"jql": jql, "maxResults": 10}
-        response = requests.get(url, params=params, headers=self._headers())
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, params=params, headers=self._headers())
         response.raise_for_status()
         return response.json().get("issues", [])
 
@@ -65,8 +67,8 @@ class JiraServiceDeskConnector(BaseConnector):
         last_seen: Optional[str] = None
         while True:
             try:
-                issues = self._fetch_issues()
-            except requests.RequestException as exc:  # pragma: no cover - network
+                issues = await self._fetch_issues()
+            except httpx.HTTPError as exc:  # pragma: no cover - network
                 print(f"Error fetching Jira issues: {exc}")
                 await asyncio.sleep(30)
                 continue
@@ -83,5 +85,5 @@ class JiraServiceDeskConnector(BaseConnector):
             await asyncio.sleep(30)
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
-        self.send_message(message)
+        await self.send_message(message)
         return message

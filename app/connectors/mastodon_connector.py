@@ -1,6 +1,5 @@
 from typing import Any, Dict, Optional
 
-import requests
 import httpx
 
 from .base_connector import BaseConnector
@@ -20,13 +19,14 @@ class MastodonConnector(BaseConnector):
     def _headers(self) -> Dict[str, str]:
         return {"Authorization": f"Bearer {self.access_token}"}
 
-    def send_message(self, text: str) -> Optional[str]:
+    async def send_message(self, text: str) -> Optional[str]:
         url = f"{self.base_url}/api/v1/statuses"
         try:
-            resp = requests.post(url, headers=self._headers(), data={"status": text})
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(url, headers=self._headers(), data={"status": text})
             resp.raise_for_status()
             return resp.text
-        except requests.RequestException as exc:  # pragma: no cover - network
+        except httpx.HTTPError as exc:  # pragma: no cover - network
             print(f"Error sending message to Mastodon: {exc}")
             return None
 
@@ -58,8 +58,8 @@ class MastodonConnector(BaseConnector):
 
         url = f"{self.base_url}/api/v1/accounts/verify_credentials"
         try:
-            resp = requests.get(url, headers=self._headers())
+            resp = httpx.get(url, headers=self._headers())
             resp.raise_for_status()
             return True
-        except requests.RequestException:
+        except httpx.HTTPError:
             return False

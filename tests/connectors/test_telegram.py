@@ -1,6 +1,5 @@
-import requests
 import asyncio
-
+import httpx
 from app.connectors.telegram_connector import TelegramConnector
 
 
@@ -11,26 +10,42 @@ class DummyResponse:
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            raise requests.HTTPError("error")
+            raise httpx.HTTPStatusError("error", request=None, response=None)
+
+
+class DummyClient:
+    def __init__(self, response):
+        self.response = response
+        self.sent = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        pass
+
+    async def post(self, url, data=None, json=None):
+        self.sent = (url, data, json)
+        return self.response
 
 
 def test_send_message_success(monkeypatch):
-    def fake_post(url, data=None, json=None):
-        assert "sendMessage" in url
-        return DummyResponse("sent")
-
-    monkeypatch.setattr(requests, "post", fake_post)
+    resp = DummyResponse("sent")
+    monkeypatch.setattr(httpx, "AsyncClient", lambda: DummyClient(resp))
     connector = TelegramConnector("TOKEN", "CHAT")
-    assert connector.send_message("hi") == "sent"
+    result = asyncio.get_event_loop().run_until_complete(connector.send_message("hi"))
+    assert result == "sent"
 
 
 def test_send_message_error(monkeypatch):
-    def fake_post(url, data=None, json=None):
-        raise requests.RequestException("boom")
+    class BadClient(DummyClient):
+        async def post(self, url, data=None, json=None):
+            raise httpx.HTTPError("boom")
 
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(httpx, "AsyncClient", lambda: BadClient(DummyResponse()))
     connector = TelegramConnector("TOKEN", "CHAT")
-    assert connector.send_message("hi") is None
+    result = asyncio.get_event_loop().run_until_complete(connector.send_message("hi"))
+    assert result is None
 
 
 def test_process_incoming():
@@ -43,21 +58,26 @@ def test_process_incoming():
 
 
 def test_set_webhook_success(monkeypatch):
-    def fake_post(url, json=None):
-        return DummyResponse("ok")
-
-    monkeypatch.setattr(requests, "post", fake_post)
+    resp = DummyResponse("ok")
+    monkeypatch.setattr(httpx, "AsyncClient", lambda: DummyClient(resp))
     connector = TelegramConnector("TOKEN", "CHAT")
-    assert connector.set_webhook("http://example.com") is True
+    result = asyncio.get_event_loop().run_until_complete(
+        connector.set_webhook("http://example.com")
+    )
+    assert result is True
 
 
 def test_set_webhook_error(monkeypatch):
-    def fake_post(url, json=None):
-        raise requests.RequestException("boom")
+    class BadClient(DummyClient):
+        async def post(self, url, json=None):
+            raise httpx.HTTPError("boom")
 
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(httpx, "AsyncClient", lambda: BadClient(DummyResponse()))
     connector = TelegramConnector("TOKEN", "CHAT")
-    assert connector.set_webhook("http://example.com") is False
+    result = asyncio.get_event_loop().run_until_complete(
+        connector.set_webhook("http://example.com")
+    )
+    assert result is False
 
 
 class DummyGetResponse:
@@ -66,22 +86,22 @@ class DummyGetResponse:
 
     def raise_for_status(self):
         if not self._ok:
-            raise requests.HTTPError("error")
+            raise httpx.HTTPStatusError("error", request=None, response=None)
 
     def json(self):
         return {"ok": self._ok}
 
 
 def test_is_connected_success(monkeypatch):
-    monkeypatch.setattr(requests, "get", lambda url: DummyGetResponse(True))
+    monkeypatch.setattr(httpx, "get", lambda url: DummyGetResponse(True))
     connector = TelegramConnector("TOKEN", "CHAT")
     assert connector.is_connected()
 
 
 def test_is_connected_error(monkeypatch):
     def raise_err(url):
-        raise requests.RequestException("boom")
+        raise httpx.HTTPError("boom")
 
-    monkeypatch.setattr(requests, "get", raise_err)
+    monkeypatch.setattr(httpx, "get", raise_err)
     connector = TelegramConnector("TOKEN", "CHAT")
     assert not connector.is_connected()

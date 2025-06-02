@@ -1,6 +1,5 @@
 import asyncio
-import requests
-
+import httpx
 from app.connectors.gitter_connector import GitterConnector
 
 
@@ -11,24 +10,39 @@ class DummyResponse:
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            raise requests.HTTPError("error")
+            raise httpx.HTTPStatusError("error", request=None, response=None)
+
+
+class DummyClient:
+    def __init__(self, response):
+        self.response = response
+        self.sent = None
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        pass
+
+    async def post(self, url, json=None, headers=None):
+        self.sent = (url, json, headers)
+        return self.response
 
 
 def test_send_message_success(monkeypatch):
-    def fake_post(url, json=None, headers=None):
-        return DummyResponse("sent")
-
-    monkeypatch.setattr(requests, "post", fake_post)
+    resp = DummyResponse("sent")
+    monkeypatch.setattr(httpx, "AsyncClient", lambda: DummyClient(resp))
     connector = GitterConnector("TOKEN", "ROOM")
     result = asyncio.get_event_loop().run_until_complete(connector.send_message("hi"))
     assert result == "sent"
 
 
 def test_send_message_error(monkeypatch):
-    def fake_post(url, json=None, headers=None):
-        raise requests.RequestException("boom")
+    class BadClient(DummyClient):
+        async def post(self, url, json=None, headers=None):
+            raise httpx.HTTPError("boom")
 
-    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(httpx, "AsyncClient", lambda: BadClient(DummyResponse()))
     connector = GitterConnector("TOKEN", "ROOM")
     result = asyncio.get_event_loop().run_until_complete(connector.send_message("hi"))
     assert result is None

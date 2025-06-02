@@ -1,4 +1,4 @@
-import requests
+import httpx
 
 from .base_connector import BaseConnector
 
@@ -28,9 +28,10 @@ class WeChatConnector(BaseConnector):
             "text": {"content": message},
         }
         try:
-            resp = requests.post(url, json=payload, timeout=5)
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(url, json=payload, timeout=5)
             resp.raise_for_status()
-        except requests.RequestException:  # pragma: no cover - network
+        except httpx.HTTPError:  # pragma: no cover - network
             pass
         return "sent"
 
