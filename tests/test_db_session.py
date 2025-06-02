@@ -33,6 +33,18 @@ def test_sqlite_check_same_thread():
         assert connect_args.get("check_same_thread") is False
 
 
+def test_sqlite_wal_enabled():
+    spec = importlib.util.spec_from_file_location(
+        "temp_db_session", os.path.join("app", "db", "session.py")
+    )
+    db_session = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(db_session)
+    if settings.database_url.startswith("sqlite"):
+        with db_session.engine.connect() as conn:
+            mode = conn.execute(db_session.text("PRAGMA journal_mode")).scalar().lower()
+        assert mode == "wal"
+
+
 def test_session_connection_cleanup():
     spec = importlib.util.spec_from_file_location(
         "temp_db_session", os.path.join("app", "db", "session.py")
