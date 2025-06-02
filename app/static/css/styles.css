@@ -185,3 +185,34 @@ body.dark-mode .card {
   100% { left: 100%; }
 }
 
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .main-container {
+    flex-direction: column;
+  }
+
+  .bots-container,
+  .main-chat-container {
+    width: 100%;
+  }
+
+  .messages-container,
+  .messages-log {
+    height: 50vh;
+  }
+
+  textarea {
+    width: 100%;
+    max-width: none;
+  }
+
+  #add-bot-form .btn,
+  #add-channel-form .btn,
+  #add-filter-form .btn,
+  #add-connector-form .btn,
+  .input-message-container .btn,
+  .input-group .btn {
+    width: 100%;
+  }
+}
+
