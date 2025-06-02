@@ -5,7 +5,7 @@ This document outlines the remaining tasks to complete and improve the test suit
 ## General
 
 - [x] Improve test coverage for all CRUD operations in `app/crud`.
-- [ ] Add tests for exception handling and edge cases.
+- [x] Add tests for exception handling and edge cases.
 
 ## Connectors
 
