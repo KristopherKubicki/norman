@@ -20,7 +20,7 @@
  - [x] Improve logging and exception handling
  - [x] Add more unit tests and integration tests
  - [x] Implement support for additional GPT models
-- [ ] Write documentation for the project
+ - [x] Write documentation for the project
 - [x] Redesign the bots.html page to be similar to the OpenAI chat window
       - Bots should be listed on the left side of the screen
       - The main chat window should be in the middle of the screen
@@ -36,5 +36,5 @@
 
 ## Low Priority
 
-- [ ] Explore options for direct communication with Norman for configuration
-- [ ] Implement additional features and improvements based on user feedback
+ - [x] Explore options for direct communication with Norman for configuration
+ - [x] Implement additional features and improvements based on user feedback
