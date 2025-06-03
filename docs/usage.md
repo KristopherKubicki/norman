@@ -114,6 +114,12 @@ Delete a bot:
 curl -X DELETE http://localhost:8000/api/v1/bots/1
 ```
 
+List available connectors and their status:
+
+```bash
+curl http://localhost:8000/api/v1/connectors/available
+```
+
 Authentication headers may be required depending on your configuration.
 
 ### Rate limiting

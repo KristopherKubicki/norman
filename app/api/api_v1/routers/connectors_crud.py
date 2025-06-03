@@ -3,11 +3,22 @@ from sqlalchemy.orm import Session
 from typing import List
 
 from app import crud
-from app.connectors.connector_utils import connector_classes
-from app.schemas import ConnectorCreate, ConnectorUpdate, Connector
+from app.connectors.connector_utils import connector_classes, get_connectors_data
+from app.schemas import (
+    ConnectorCreate,
+    ConnectorUpdate,
+    Connector,
+    ConnectorInfo,
+)
 from app.api.deps import get_db
 
 router = APIRouter(prefix="/connectors", tags=["connectors"])
+
+
+@router.get("/available", response_model=List[ConnectorInfo])
+async def list_available_connectors() -> List[ConnectorInfo]:
+    """Return metadata about all available connector implementations."""
+    return get_connectors_data()
 
 @router.post("/", response_model=Connector, status_code=201)
 async def create_connector(
