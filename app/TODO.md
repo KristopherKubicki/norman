@@ -10,7 +10,7 @@ This document outlines the remaining tasks to complete and improve the Norman pr
 
 ## Database
 
-- [ ] Optimize database connection handling and connection pooling in `app/db/base.py`.
+- [x] Optimize database connection handling and connection pooling in `app/db/session.py`.
 - [x] Improve the database models in `app/db/models`.
 - [x] Implement any necessary database migrations.
 

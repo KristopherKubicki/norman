@@ -189,6 +189,8 @@ microsoft_client_secret: "your_microsoft_client_secret"
 database_url: "sqlite:///./db/norman.db"
 database_pool_size: 5
 database_max_overflow: 10
+database_pool_timeout: 30
+database_pool_recycle: 3600
 
 # Server
 host: "0.0.0.0"
