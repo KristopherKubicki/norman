@@ -200,6 +200,8 @@ class Settings(BaseSettings):
     database_url: str
     database_pool_size: int = 5
     database_max_overflow: int = 10
+    database_pool_timeout: int = 30
+    database_pool_recycle: int = 3600
 
     # Server
     host: str

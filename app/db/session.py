@@ -19,6 +19,8 @@ engine = create_engine(
     poolclass=QueuePool,
     pool_size=settings.database_pool_size,
     max_overflow=settings.database_max_overflow,
+    pool_timeout=settings.database_pool_timeout,
+    pool_recycle=settings.database_pool_recycle,
     pool_pre_ping=True,
     connect_args={"check_same_thread": False}
     if settings.database_url.startswith("sqlite")

@@ -83,3 +83,21 @@ def test_session_connection_cleanup():
     session.close()
     assert engine.pool.checkedout() == start_checked_out
 
+
+def test_engine_pool_timeout_and_recycle():
+    old_timeout = settings.database_pool_timeout
+    old_recycle = settings.database_pool_recycle
+    settings.database_pool_timeout = 99
+    settings.database_pool_recycle = 50
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "temp_db_session", os.path.join("app", "db", "session.py")
+        )
+        db_session = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(db_session)
+        assert db_session.engine.pool._timeout == 99
+        assert db_session.engine.pool._recycle == 50
+    finally:
+        settings.database_pool_timeout = old_timeout
+        settings.database_pool_recycle = old_recycle
+
