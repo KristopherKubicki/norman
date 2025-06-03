@@ -1,11 +1,11 @@
 from typing import List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, conint
 
 class ActionBase(BaseModel):
-    channel_filter_id: int
+    channel_filter_id: conint(gt=0)
     prompt: str
-    reply_channel_id: int = Field(..., alias="reply_to")
-    execution_order: int
+    reply_channel_id: conint(gt=0) = Field(..., alias="reply_to")
+    execution_order: conint(gt=0)
 
     class Config:
         allow_population_by_field_name = True

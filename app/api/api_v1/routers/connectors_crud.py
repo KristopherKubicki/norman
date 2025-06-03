@@ -3,15 +3,18 @@ from sqlalchemy.orm import Session
 from typing import List
 
 from app import crud
+from app.connectors.connector_utils import connector_classes
 from app.schemas import ConnectorCreate, ConnectorUpdate, Connector
 from app.api.deps import get_db
 
-router = APIRouter(prefix="/connectors")
+router = APIRouter(prefix="/connectors", tags=["connectors"])
 
 @router.post("/", response_model=Connector, status_code=201)
 async def create_connector(
     connector: ConnectorCreate, db: Session = Depends(get_db)
 ):
+    if connector.connector_type not in connector_classes:
+        raise HTTPException(status_code=400, detail="Invalid connector type")
     try:
         return crud.connector.create(db, obj_in=connector)
     except Exception as e:
