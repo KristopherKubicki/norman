@@ -4,4 +4,5 @@ from .channel import ChannelCreate, ChannelUpdate, Channel
 from .filter import FilterCreate, FilterUpdate, Filter
 from .token import Token
 from .connector import ConnectorCreate, ConnectorUpdate, Connector
+from .connector_info import ConnectorInfo
 
