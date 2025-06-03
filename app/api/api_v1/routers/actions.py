@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from app import crud, schemas
 from app.api.deps import get_db
 
-router = APIRouter()
+router = APIRouter(prefix="/actions", tags=["actions"])
 
 @router.post("/", response_model=schemas.Action)
 def create_action(

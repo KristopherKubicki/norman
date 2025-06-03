@@ -204,6 +204,8 @@ class Settings(BaseSettings):
     # Server
     host: str
     port: int
+    rate_limit_requests: int = 60
+    rate_limit_window_seconds: int = 60
 
     @validator("secret_key", pre=True)
     def validate_secret_key(cls, v):

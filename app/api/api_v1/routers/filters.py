@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app import crud, models, schemas
 from app.api import deps
 
-router = APIRouter()
+router = APIRouter(prefix="/filters", tags=["filters"])
 
 @router.get("/", response_model=List[schemas.Filter])
 def read_filters(

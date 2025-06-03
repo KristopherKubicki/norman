@@ -193,6 +193,8 @@ database_max_overflow: 10
 # Server
 host: "0.0.0.0"
 port: 8000
+rate_limit_requests: 60
+rate_limit_window_seconds: 60
 
 
 # how long before a session should close from the web ui

@@ -90,7 +90,9 @@ chmod +x generate_key.sh
 
 ## API Examples
 
-You can also interact with Norman programmatically. The API is available under `/api/v1`. The following `curl` commands illustrate common operations:
+You can also interact with Norman programmatically. The API is exposed under the
+path configured by `api_prefix` and `api_version` in `config.yaml` (by default
+`/api/v1`). The following `curl` commands illustrate common operations:
 
 Create a bot:
 
@@ -113,3 +115,9 @@ curl -X DELETE http://localhost:8000/api/v1/bots/1
 ```
 
 Authentication headers may be required depending on your configuration.
+
+### Rate limiting
+
+Norman applies a simple IP based rate limit to API requests. The limits can be
+adjusted via `rate_limit_requests` and `rate_limit_window_seconds` in
+`config.yaml`. Exceeding the limit returns a `429 Too Many Requests` response.

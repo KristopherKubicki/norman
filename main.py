@@ -21,6 +21,7 @@ from app.app_routes import app_routes
 from app.core.config import settings
 from app.auth_middleware import auth_middleware
 from app.core.logging import request_context_middleware
+from app.core.rate_limit import RateLimiter
 from app.core.exception_handlers import add_exception_handlers
 
 def run_alembic_migrations():
@@ -32,12 +33,15 @@ def run_alembic_migrations():
 
 app = FastAPI()
 
+rate_limiter = RateLimiter()
+
 if _brotli and BrotliMiddleware:
     app.add_middleware(BrotliMiddleware)
 else:
     app.add_middleware(GZipMiddleware, minimum_size=500)
 
 app.middleware("http")(request_context_middleware)
+app.middleware("http")(rate_limiter)
 
 @app.middleware("http")
 async def cache_control_middleware(request: Request, call_next):
