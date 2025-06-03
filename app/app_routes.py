@@ -291,26 +291,22 @@ async def logout_endpoint(request: Request, response: Response):
 #    user = await authenticate_user(form_data.username, form_data.password)
 
 @app_routes.post("/login", response_class=HTMLResponse)
-async def login_post(request: Request, form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_async_db)):
+async def login_post(
+    request: Request,
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_async_db),
+):
+    """Handle username/password login and set the auth cookie."""
 
-    user = UserAuthenticate(email=form_data.username, password=form_data.password)
+    user_credentials = UserAuthenticate(
+        email=form_data.username, password=form_data.password
+    )
+    user = await authenticate_user(db, user_credentials)
 
-    if user is None:
+    if not user:
         raise HTTPException(status_code=400, detail="Incorrect email or password")
 
-    access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
-    access_token = create_access_token(
-        data={"sub": user.email}, expires_delta=access_token_expires
-    )
-
-    response = RedirectResponse(url="/", status_code=303)
-    response.set_cookie(
-        key="access_token",
-        value=f"Bearer {access_token}",
-        httponly=True,
-        max_age=settings.access_token_expire_minutes * 60,
-    )
-    return response
+    return _set_login_cookie(user.email)
 
 
 def _random_password() -> str:
