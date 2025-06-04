@@ -1,7 +1,7 @@
-
 from typing import Any, Dict, Optional, List
 from pydantic import BaseSettings, validator
 import logging
+
 
 # should this move to schemas?
 class Settings(BaseSettings):
@@ -97,6 +97,7 @@ class Settings(BaseSettings):
     twitter_api_secret: str
     twitter_access_token: str
     twitter_access_token_secret: str
+    twitter_recipient_id: str
     xcom_api_key: str
     xcom_api_secret: str
     xcom_access_token: str
@@ -213,6 +214,7 @@ class Settings(BaseSettings):
     def validate_secret_key(cls, v):
         """Ensure a real secret key is provided outside of tests."""
         import sys
+
         if "pytest" in sys.modules:
             return v
         assert v != "super_secret_key_change_me", (
@@ -225,33 +227,34 @@ class Settings(BaseSettings):
     def validate_secret_admin(cls, v):
         """Validate admin password unless running under pytest."""
         import sys
+
         if "pytest" in sys.modules:
             return v
-        assert v != "change_me_too", (
-            "You must set an admin password in the config.yaml!"
-        )
+        assert (
+            v != "change_me_too"
+        ), "You must set an admin password in the config.yaml!"
         return v
 
     @validator("initial_admin_email", pre=True)
     def validate_secret_email(cls, v):
         """Validate admin email unless running under pytest."""
         import sys
+
         if "pytest" in sys.modules:
             return v
-        assert v != "admin@example.com", (
-            "You must set an admin email in the config.yaml!"
-        )
+        assert (
+            v != "admin@example.com"
+        ), "You must set an admin email in the config.yaml!"
         return v
 
     @validator("initial_admin_username", pre=True)
     def validate_admin_username(cls, v):
         """Validate admin username unless running under pytest."""
         import sys
+
         if "pytest" in sys.modules:
             return v
-        assert v != "admin", (
-            "You must set an admin username in the config.yaml!"
-        )
+        assert v != "admin", "You must set an admin username in the config.yaml!"
         return v
 
     @validator("log_level", pre=True)
@@ -266,6 +269,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+
 
 import os
 import shutil
@@ -292,7 +296,10 @@ def ensure_user_config():
         print(f"  email: {cfg['initial_admin_email']}")
         print(f"  password: {cfg['initial_admin_password']}")
         print("Edit config.yaml to customize settings, including your OpenAI API key.")
-        print("Restart Norman and visit http://localhost:8000 to sign in with these credentials.")
+        print(
+            "Restart Norman and visit http://localhost:8000 to sign in with these credentials."
+        )
+
 
 def load_config():
     ensure_user_config()
@@ -312,8 +319,10 @@ def load_config():
 
     return config
 
+
 config_data = load_config()
 settings = Settings(**config_data)
+
 
 def get_settings() -> Settings:
     return settings

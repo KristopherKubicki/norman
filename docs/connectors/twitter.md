@@ -11,8 +11,9 @@ twitter_api_key: "your_twitter_api_key"
 twitter_api_secret: "your_twitter_api_secret"
 twitter_access_token: "your_twitter_access_token"
 twitter_access_token_secret: "your_twitter_access_token_secret"
+twitter_recipient_id: "the_user_id_to_message"
 ```
 
 ## Usage
 
-With these values provided, Norman will be able to send and receive messages through X.com. The current code is a stub intended for integration with the Twitter API.
+With these values provided, Norman can send direct messages using the Twitter API via Tweepy. Incoming message support is not yet implemented.
