@@ -43,7 +43,7 @@ export default function InfiniteMessages({ botId }) {
   if (status === 'error') return <p>Error loading messages</p>;
 
   return (
-    <div>
+    <div role="region">
       {data.pages.map((page, pageIndex) => (
         <React.Fragment key={pageIndex}>
           {page.map((msg, i) => {

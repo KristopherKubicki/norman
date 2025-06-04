@@ -122,6 +122,15 @@ pip install -r requirements-dev.txt
 pytest -vv
 ```
 
+For front-end components located in the `frontend` directory, Jest is used
+alongside React Testing Library. To run these tests you will need Node.js and
+install the dev dependencies defined in `package.json`:
+
+```bash
+npm install
+npm test
+```
+
 For a test coverage report you can additionally run:
 
 ```bash
