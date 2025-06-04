@@ -96,15 +96,12 @@ textarea.dispatchEvent(new Event('input'));
 
 
 var sendButton = document.getElementById("send-message");
-    textarea.oninput = function() {
-        var lines = textarea.value.split('\n');
-        for (var i = 0; i < lines.length; i++) {
-            if (lines[i] === "" && lines[i+1] === "") {
-                textarea.value = lines.slice(0, i+1).join('\n');
-		    sendButton.click();
-            }
-        }
-    };
+textarea.addEventListener('keydown', function(e) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendButton.click();
+  }
+});
 
 
 </script>
