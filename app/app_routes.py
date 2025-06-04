@@ -306,7 +306,7 @@ async def login_post(request: Request, form_data: OAuth2PasswordRequestForm = De
     response = RedirectResponse(url="/", status_code=303)
     response.set_cookie(
         key="access_token",
-        value=f"Bearer {access_token}",
+        value=access_token,
         httponly=True,
         max_age=settings.access_token_expire_minutes * 60,
     )
@@ -326,7 +326,7 @@ def _set_login_cookie(user_email: str) -> Response:
     response = RedirectResponse(url="/", status_code=303)
     response.set_cookie(
         key="access_token",
-        value=f"Bearer {access_token}",
+        value=access_token,
         httponly=True,
         max_age=settings.access_token_expire_minutes * 60,
     )
