@@ -75,6 +75,7 @@ The following connectors are currently supported:
 66. [DingTalk](./connectors/dingtalk.md)
 67. [Flowdock](./connectors/flowdock.md)
 68. [HipChat](./connectors/hipchat.md)
+69. [GitLab](./connectors/gitlab.md)
 
 
 ## Usage
@@ -145,6 +146,7 @@ For more detailed information on each connector, please refer to the platform-sp
 - [Zoom Connector](./connectors/zoom.md)
 - [DingTalk Connector](./connectors/dingtalk.md)
 - [Flowdock Connector](./connectors/flowdock.md)
+- [GitLab Connector](./connectors/gitlab.md)
 - [HipChat Connector](./connectors/hipchat.md)
 
 Remember to follow the platform-specific guidelines and best practices when creating bots or apps for each service.
