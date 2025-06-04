@@ -17,4 +17,6 @@ mastodon_access_token: "your_mastodon_token"
 
 ## Usage
 
-After configuration, Norman can send status updates to Mastodon. Incoming message processing is not yet implemented.
+After configuration, Norman can send status updates to Mastodon. The connector
+also listens to the public streaming API and parses incoming events for use by
+other parts of the system.

@@ -1,5 +1,7 @@
 from typing import Any, Dict, Optional
 
+import json
+
 import httpx
 
 from .base_connector import BaseConnector
@@ -45,15 +47,30 @@ class MastodonConnector(BaseConnector):
                     "GET", stream_url, headers=self._headers(), params=params
                 ) as resp:
                     resp.raise_for_status()
+                    event: Dict[str, str] = {}
                     async for line in resp.aiter_lines():
                         line = line.strip()
-                        if not line or line.startswith(":"):
+                        if line == "":
+                            if event:
+                                await self.process_incoming(event)
+                                event = {}
                             continue
-                        await self.process_incoming({"event": line})
+                        if line.startswith(":"):
+                            continue
+                        if ":" in line:
+                            key, value = line.split(":", 1)
+                            event[key.strip()] = value.strip()
             except httpx.HTTPError as exc:  # pragma: no cover - network
                 logger.error("Error listening to Mastodon stream: %s", exc)
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the parsed event with JSON decoded if possible."""
+        data = message.get("data")
+        if isinstance(data, str):
+            try:
+                message["data"] = json.loads(data)
+            except ValueError:  # pragma: no cover - data may not be JSON
+                pass
         return message
 
     def is_connected(self) -> bool:
