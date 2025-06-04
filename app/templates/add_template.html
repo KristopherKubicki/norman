@@ -1,11 +1,16 @@
 {% extends "base.html" %}
 
 {% block content %}
-  <h1>Add a new filter</h1>
-  <form action="/filters/create" method="post">
-    <label for="regex">Regex:</label>
-    <input type="text" id="regex" name="regex" required>
-    <br>
-    <input type="submit" value="Create Filter">
+<div class="card card-body">
+  <h1 class="h5 mb-3">Add a new filter</h1>
+  <form id="add-filter-form" action="/filters/create" method="post" class="row g-2 align-items-end">
+    <div class="col-sm">
+      <label for="regex" class="form-label">Regex</label>
+      <input type="text" id="regex" name="regex" class="form-control" required />
+    </div>
+    <div class="col-12 col-sm-auto">
+      <button type="submit" class="btn btn-primary w-100">Create Filter</button>
+    </div>
   </form>
+</div>
 {% endblock %}
