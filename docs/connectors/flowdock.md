@@ -13,4 +13,5 @@ flowdock_flow: "your_flowdock_flow"
 
 ## Usage
 
-This connector currently records sent messages locally. Extend it to integrate with the Flowdock API.
+Once configured, Norman can send chat messages using Flowdock's push API.
+Incoming message polling is not implemented.
