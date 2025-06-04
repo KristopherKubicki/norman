@@ -10,4 +10,5 @@ pinterest_board_id: "your_pinterest_board_id"
 ```
 
 ## Usage
-The current code is a stub and can be expanded to integrate with the Pinterest API.
+The connector now creates pins on the specified board by calling the Pinterest API.
+Each message sent becomes the ``note`` field of the new pin.
