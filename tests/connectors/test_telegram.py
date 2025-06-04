@@ -105,3 +105,44 @@ def test_is_connected_error(monkeypatch):
     monkeypatch.setattr(httpx, "get", raise_err)
     connector = TelegramConnector("TOKEN", "CHAT")
     assert not connector.is_connected()
+
+
+class DummyUpdateResponse:
+    def __init__(self, data):
+        self._data = data
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._data
+
+
+def test_listen_and_process(monkeypatch):
+    resp = DummyUpdateResponse({"ok": True, "result": [{"update_id": 1, "message": {"text": "hi"}}]})
+
+    class Client(DummyClient):
+        async def get(self, url, params=None, timeout=None):
+            self.sent_get = (url, params)
+            return resp
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda: Client(resp))
+
+    connector = TelegramConnector("TOKEN", "CHAT")
+    results = asyncio.get_event_loop().run_until_complete(
+        connector.listen_and_process()
+    )
+    assert results == [{"text": "hi", "channel": "Telegram"}]
+
+
+def test_listen_and_process_error(monkeypatch):
+    class BadClient(DummyClient):
+        async def get(self, url, params=None, timeout=None):
+            raise httpx.HTTPError("boom")
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda: BadClient(DummyResponse()))
+    connector = TelegramConnector("TOKEN", "CHAT")
+    results = asyncio.get_event_loop().run_until_complete(
+        connector.listen_and_process()
+    )
+    assert results == []
