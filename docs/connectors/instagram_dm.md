@@ -13,4 +13,7 @@ instagram_user_id: "your_instagram_user_id"
 
 ## Usage
 
-Once configured, Norman can send and receive direct messages via Instagram. The current implementation is a stub meant to be extended for your preferred integration method.
+Once configured, Norman can send direct messages using the Instagram Graph API.
+The connector issues a ``POST`` request to the Graph API endpoint for your
+configured ``instagram_user_id``. Incoming messages are not yet supported, so
+``listen_and_process`` currently returns ``None``.
