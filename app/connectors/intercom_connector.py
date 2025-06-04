@@ -1,6 +1,8 @@
 """Connector for Intercom conversations."""
 
+import asyncio
 from typing import Any, Dict, Optional
+
 import httpx
 from .base_connector import BaseConnector
 from app.core.logging import setup_logger
@@ -14,7 +16,9 @@ class IntercomConnector(BaseConnector):
     id = "intercom"
     name = "Intercom"
 
-    def __init__(self, access_token: str, app_id: str, config: Optional[dict] = None) -> None:
+    def __init__(
+        self, access_token: str, app_id: str, config: Optional[dict] = None
+    ) -> None:
         super().__init__(config)
         self.access_token = access_token
         self.app_id = app_id
@@ -41,9 +45,41 @@ class IntercomConnector(BaseConnector):
             logger.error("Error sending Intercom message: %s", exc)
             return None
 
+    async def _get_conversations(self, updated_since: Optional[int] = None):
+        """Return recently updated conversations."""
+
+        params = {"sort": "desc", "sort_field": "updated_at"}
+        if updated_since:
+            params["updated_since"] = updated_since
+
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                "https://api.intercom.io/conversations",
+                headers=self._headers(),
+                params=params,
+            )
+        resp.raise_for_status()
+        return resp.json().get("conversations", [])
+
     async def listen_and_process(self) -> None:
-        """Listening for Intercom messages is not implemented."""
-        return None
+        """Poll for new Intercom conversations and process them."""
+
+        last_seen: Optional[int] = None
+        while True:
+            try:
+                conversations = await self._get_conversations(last_seen)
+            except httpx.HTTPError as exc:  # pragma: no cover - network
+                logger.error("Error fetching Intercom conversations: %s", exc)
+                await asyncio.sleep(5)
+                continue
+
+            for convo in reversed(conversations):
+                last_seen = convo.get("updated_at", last_seen)
+                result = self.process_incoming(convo)
+                if asyncio.iscoroutine(result):
+                    await result
+
+            await asyncio.sleep(5)
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
         return message
