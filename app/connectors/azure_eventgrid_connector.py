@@ -2,6 +2,8 @@
 
 from typing import Any, Dict, Optional
 
+import importlib
+
 try:
     from azure.eventgrid import EventGridPublisherClient, EventGridEvent
     from azure.core.credentials import AzureKeyCredential
@@ -35,6 +37,18 @@ class AzureEventGridConnector(BaseConnector):
         event = EventGridEvent(subject="norman", event_type="Message", data=message, data_version="1.0")
         self.client.send([event])
         return "ok"
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the Event Grid endpoint is reachable."""
+        if not EventGridPublisherClient:
+            return False
+        httpx = importlib.import_module("httpx")
+        try:
+            resp = httpx.get(self.endpoint, timeout=5)
+            resp.raise_for_status()
+            return True
+        except httpx.HTTPError:
+            return False
 
     async def listen_and_process(self) -> None:
         """Listening is not implemented for Event Grid."""

@@ -19,3 +19,7 @@ azure_eventgrid_key: "your-access-key"
 ## Usage
 
 This connector only sends events and does not listen for incoming messages.
+
+The connector verifies connectivity by making a simple HTTP request to the
+configured endpoint when :code:`is_connected()` is called. If the request fails
+or returns an error status code, the method returns ``False``.
