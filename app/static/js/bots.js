@@ -166,7 +166,7 @@ function createBotElement(bot) {
     fetchMessagesAndRender(bot.id);
     document.getElementById('send-message').removeAttribute('disabled');
     document.getElementById('input-message').removeAttribute('disabled');
-    document.getElementById('input-message').placeholder = 'Enter your message...';
+    document.getElementById('input-message').placeholder = 'Enter to send, Shift+Enter for newline';
 
     document.querySelectorAll('.bot-item').forEach(item => item.classList.remove('active'));
     botElement.classList.add('active');
