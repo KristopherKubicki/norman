@@ -7,6 +7,9 @@ import xml.etree.ElementTree as ET
 import httpx
 
 from .base_connector import BaseConnector
+from app.core.logging import setup_logger
+
+logger = setup_logger(__name__)
 
 
 class CAPConnector(BaseConnector):
@@ -20,17 +23,18 @@ class CAPConnector(BaseConnector):
         self.endpoint = endpoint
         self.sent_messages: List[Any] = []
 
-    async def send_message(self, message: Any) -> str:
+    async def send_message(self, message: Any) -> Optional[str]:
         """POST ``message`` to the configured endpoint and record it."""
 
-        self.sent_messages.append(message)
         async with httpx.AsyncClient() as client:
             try:
                 resp = await client.post(self.endpoint, data=message)
                 resp.raise_for_status()
-            except httpx.HTTPError:  # pragma: no cover - network
-                pass
-        return "sent"
+                self.sent_messages.append(message)
+                return resp.text
+            except httpx.HTTPError as exc:  # pragma: no cover - network
+                logger.error("Error sending CAP message: %s", exc)
+                return None
 
     async def listen_and_process(self) -> List[Any]:
         """Fetch CAP XML from the endpoint and process any alerts."""
@@ -71,3 +75,13 @@ class CAPConnector(BaseConnector):
 
     async def process_incoming(self, message: Any) -> Any:
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the endpoint responds successfully."""
+
+        try:
+            resp = httpx.get(self.endpoint, timeout=5)
+            resp.raise_for_status()
+            return True
+        except httpx.HTTPError:
+            return False
