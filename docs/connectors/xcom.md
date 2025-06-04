@@ -15,4 +15,4 @@ xcom_access_token_secret: "your_xcom_access_token_secret"
 
 ## Usage
 
-With these values provided, Norman will be able to send and receive messages through X.com. The current code is a stub intended for integration with the X.com API.
+With these values provided, Norman will be able to send and receive direct messages on X.com using the Tweepy library.

@@ -17,14 +17,21 @@ if "tweepy" not in sys.modules:
         def __init__(self, auth=None):
             self.auth = auth
             self.sent = []
+            self.messages = []
             self.raise_on_send = False
             self.raise_on_verify = False
+            self.raise_on_list = False
 
         def send_direct_message(self, recipient_id, text=None):
             if self.raise_on_send:
                 raise TweepyException("boom")
             self.sent.append((recipient_id, text))
             return {"event_id": "1"}
+
+        def list_direct_messages(self):
+            if self.raise_on_list:
+                raise TweepyException("fail")
+            return self.messages
 
         def verify_credentials(self):
             if self.raise_on_verify:
