@@ -18,8 +18,10 @@ aws_eventbridge_event_bus_name: "default"
 
 ## Usage
 
-Incoming messages are not supported. The connector only publishes events.
+Events can be delivered to Norman via a webhook. Configure EventBridge to send
+notifications to `/api/v1/connectors/aws_eventbridge/webhooks/eventbridge`.
 
-The connector checks connectivity by calling `DescribeEventBus` on startup when
-`is_connected()` is invoked. If the credentials or event bus are incorrect, this
-method returns `False`.
+The connector still publishes events to EventBridge using `put_events`.  It
+verifies connectivity by calling `DescribeEventBus` when `is_connected()` is
+invoked. If the credentials or event bus are incorrect, this method returns
+`False`.
