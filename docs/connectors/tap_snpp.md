@@ -1,6 +1,7 @@
 # TAP/SNPP Connector
 
-The TAP/SNPP connector sends pages using the Telocator Alphanumeric Protocol or the Simple Network Paging Protocol.
+The TAP/SNPP connector sends pages using the Telocator Alphanumeric Protocol or
+the Simple Network Paging Protocol.
 
 ## Configuration
 
@@ -15,4 +16,7 @@ tap_snpp_password: "your_tap_snpp_password"
 ## Usage
 
 Messages are delivered over a TCP connection to the configured ``host`` and ``port``.
-The connector does not currently implement inbound paging support.
+The connector automatically establishes a TCP connection when sending the first
+message and keeps it open for subsequent pages. Use
+``is_connected`` to check if the link is active. The connector does not currently
+implement inbound paging support.

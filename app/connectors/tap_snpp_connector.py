@@ -17,22 +17,44 @@ class TAPSNPPConnector(BaseConnector):
         self.port = port
         self.password = password
         self.sent_messages: List[str] = []
+        self._reader: Optional[asyncio.StreamReader] = None
+        self._writer: Optional[asyncio.StreamWriter] = None
+
+    async def connect(self) -> None:
+        """Establish a TCP connection to the TAP/SNPP service."""
+
+        try:
+            self._reader, self._writer = await asyncio.open_connection(self.host, self.port)
+            if self.password:
+                self._writer.write(f"PASS {self.password}\r\n".encode())
+                await self._writer.drain()
+        except OSError:
+            self._reader = None
+            self._writer = None
+
+    async def disconnect(self) -> None:
+        """Close any open TCP connection."""
+
+        if self._writer:
+            try:
+                self._writer.close()
+                await self._writer.wait_closed()
+            finally:
+                self._reader = None
+                self._writer = None
 
     async def send_message(self, message: str) -> str:
         """Send ``message`` over TCP and record it locally."""
 
         self.sent_messages.append(message)
-        try:
-            reader, writer = await asyncio.open_connection(self.host, self.port)
-            if self.password:
-                writer.write(f"PASS {self.password}\r\n".encode())
-                await writer.drain()
-            writer.write(f"PAGE {message}\r\n".encode())
-            await writer.drain()
-            writer.close()
-            await writer.wait_closed()
-        except OSError:
-            pass
+        if self._writer is None:
+            await self.connect()
+        if self._writer is not None:
+            try:
+                self._writer.write(f"PAGE {message}\r\n".encode())
+                await self._writer.drain()
+            except OSError:
+                await self.disconnect()
         return "sent"
 
     async def listen_and_process(self) -> None:
@@ -43,3 +65,6 @@ class TAPSNPPConnector(BaseConnector):
         """Return the incoming ``message`` payload."""
 
         return message
+
+    def is_connected(self) -> bool:
+        return self._writer is not None and not self._writer.is_closing()
