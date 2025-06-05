@@ -6,6 +6,8 @@ from .google_chat import router as google_chat_router
 from .discord import router as discord_router
 from .webhook import router as webhook_router
 from .mcp import router as mcp_router
+from .aws_eventbridge import router as aws_eventbridge_router
+from .azure_eventgrid import router as azure_eventgrid_router
 
 router = APIRouter()
 
@@ -16,4 +18,14 @@ router.include_router(google_chat_router, prefix="/google_chat", tags=["Google C
 router.include_router(discord_router, prefix="/discord", tags=["Discord"])
 router.include_router(webhook_router, prefix="/webhook", tags=["Webhook"])
 router.include_router(mcp_router, prefix="/mcp", tags=["MCP"])
+router.include_router(
+    aws_eventbridge_router,
+    prefix="/aws_eventbridge",
+    tags=["AWS EventBridge"],
+)
+router.include_router(
+    azure_eventgrid_router,
+    prefix="/azure_eventgrid",
+    tags=["Azure Event Grid"],
+)
 

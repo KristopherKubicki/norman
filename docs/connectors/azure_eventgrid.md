@@ -18,8 +18,11 @@ azure_eventgrid_key: "your-access-key"
 
 ## Usage
 
-This connector only sends events and does not listen for incoming messages.
+Configure Azure Event Grid to post events to
+`/api/v1/connectors/azure_eventgrid/webhooks/eventgrid`. The connector will
+process these incoming events in addition to publishing events to the configured
+topic.
 
-The connector verifies connectivity by making a simple HTTP request to the
-configured endpoint when :code:`is_connected()` is called. If the request fails
-or returns an error status code, the method returns ``False``.
+Connectivity is verified by making a simple HTTP request to the configured
+endpoint when :code:`is_connected()` is called. If the request fails or returns
+an error status code, the method returns ``False``.
