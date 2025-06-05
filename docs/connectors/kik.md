@@ -1,6 +1,6 @@
 # Kik Connector
 
-This connector enables Norman to interact with the Kik messaging platform.
+This connector enables Norman to interact with the Kik messaging platform via the official HTTP API.
 
 ## Configuration
 
@@ -12,4 +12,4 @@ kik_api_key: "your_kik_api_key"
 
 ## Usage
 
-With these values provided, Norman can send and receive messages through Kik. The current implementation is a stub for future integration with the Kik API.
+With these values provided, Norman can send messages through Kik using the built-in API integration. Incoming messages should be delivered to Norman via a webhook endpoint.
