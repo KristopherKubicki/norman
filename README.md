@@ -100,8 +100,15 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --compression gzip
 If `brotli_asgi` is installed and supported by your Uvicorn version,
 replace `gzip` with `brotli` for improved compression.
 
-7. Open the API documentation in your browser: [http://localhost:8000/docs](http://localhost:8000/docs)
+7. Generate the OpenAPI schema:
+```bash
+python generate_openapi.py
+```
+   The schema is saved to `docs/openapi.json`.
+
+8. Open the API documentation in your browser: [http://localhost:8000/docs](http://localhost:8000/docs)
    A basic health check endpoint is available at [http://localhost:8000/health](http://localhost:8000/health)
+9. View the hosted API documentation at [https://kristopherkubicki.github.io/norman](https://kristopherkubicki.github.io/norman)
 
 Norman emits structured JSON logs that include the timestamp, module and request ID. Sensitive data such as API keys are automatically redacted so these logs can be safely forwarded to monitoring systems.
 

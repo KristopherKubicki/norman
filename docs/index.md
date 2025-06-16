@@ -14,6 +14,7 @@ Welcome to the Norman documentation! Here you'll find everything you need to kno
 - [Contributing](../contributing.md) - A guide on how to contribute to the Norman project.
 - [Community](community.md) - Information about the Norman community and how to get involved.
 - [Connectors](connectors.md) - An overview of the available connectors and how to use them.
+- [API Docs](https://kristopherkubicki.github.io/norman) - Hosted Swagger UI generated on each release.
 
 ## Getting Started
 
