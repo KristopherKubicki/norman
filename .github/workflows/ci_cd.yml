@@ -18,6 +18,16 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v3
 
+      - name: Detect frontend changes
+        id: changes
+        uses: dorny/paths-filter@v2
+        with:
+          filters: |
+            frontend:
+              - 'frontend/**'
+              - 'package.json'
+              - 'vite.config.js'
+
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
@@ -31,6 +41,25 @@ jobs:
 
       - name: Run pylint
         run: pylint --rcfile=.pylintrc $(git ls-files '*.py') || true
+
+      - name: Set up Node
+        if: steps.changes.outputs.frontend == 'true'
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Install frontend dependencies
+        if: steps.changes.outputs.frontend == 'true'
+        run: npm ci
+
+      - name: Run frontend tests
+        if: steps.changes.outputs.frontend == 'true'
+        run: npm test
+
+      - name: Build frontend
+        if: steps.changes.outputs.frontend == 'true'
+        run: npm run build
 
       - name: Run tests with coverage
         run: |
