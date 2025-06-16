@@ -16,7 +16,7 @@ Here is a text-based representation of Norman's high-level architecture:
 ```
 +---------------------+     +--------------------+     +-------------------+
 | Chat Platform       | <-> | Connector          | <-> | FastAPI App       |
-| (Slack, IRC, etc.)  |     | (Slack, IRC, etc.) |     | (app/main.py)     |
+| (Slack, IRC, etc.)  |     | (Slack, IRC, etc.) |     | (main.py)        |
 +---------------------+     +--------------------+     +-------------------+
                                           |                  |
                                           v                  v

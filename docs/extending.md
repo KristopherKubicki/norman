@@ -49,7 +49,7 @@ Norman performs various actions based on the filters and rules defined by the us
 
 Norman's core functionality can be modified and extended to suit your specific needs. Before making changes, familiarize yourself with the codebase and understand the key components, such as:
 
-- The FastAPI application (`app/main.py`)
+- The FastAPI application (`main.py`)
 - The database models (`app/models`)
 - The API routes (`app/api`)
 - The connectors (`app/connectors`)

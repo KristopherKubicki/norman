@@ -95,7 +95,7 @@ You can also edit `config.yaml` manually to provide your own values. Be sure to 
 
 6. Run the application with Uvicorn:
 ```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --compression gzip
+uvicorn main:app --host 0.0.0.0 --port 8000 --compression gzip
 ```
 If `brotli_asgi` is installed and supported by your Uvicorn version,
 replace `gzip` with `brotli` for improved compression.
