@@ -72,9 +72,9 @@ python -m venv env
 source env/bin/activate
 ```
 
-3. Install the required packages:
+3. Install the package and its dependencies:
 ```
-pip install -r requirements.txt
+pip install .
 ```
 
 Norman automatically enables [WAL](https://www.sqlite.org/wal.html) mode when using SQLite for improved concurrency.
@@ -114,11 +114,11 @@ Practical walkthroughs and API calls can be found in the [Examples](./docs/examp
 
 ## Testing
 
-Automated tests are powered by `pytest`. The development dependencies are listed
-in `requirements-dev.txt`.
+Automated tests are powered by `pytest`. Install the development dependencies
+with the optional `dev` extras:
 
 ```bash
-pip install -r requirements-dev.txt
+pip install '.[dev]'
 pytest -vv
 ```
 

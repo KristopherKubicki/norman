@@ -45,10 +45,10 @@ Before deploying Norman, ensure that your server meets the following requirement
    source env/bin/activate
    ```
 
-5. Install the required packages:
+5. Install Norman and its dependencies:
 
    ```
-   pip install -r requirements.txt
+   pip install .
    ```
 
 ## Configuration
@@ -89,10 +89,10 @@ To update your Norman installation, perform the following steps:
    git pull
    ```
 
-4. Update the installed packages:
+4. Update the installed package:
 
    ```
-   pip install -r requirements.txt
+   pip install .
    ```
 
 5. Restart the Norman application.

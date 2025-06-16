@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "norman"
+version = "0.2.0"
+description = "Norman: A Pidgin-powered Chatbot with GPT-4 Integration"
+authors = [{name = "Kristopher Kubicki"}]
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.8"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "sqlalchemy",
+    "alembic",
+    "psycopg2-binary",
+    "pika",
+    "httpx",
+    "requests",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "coverage",
+    "flake8",
+    "black",
+    "mypy",
+    "pytest",
+    "pytest-asyncio",
+]
+
+[project.scripts]
+norman = "main:main"
