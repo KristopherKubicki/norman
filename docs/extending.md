@@ -29,6 +29,16 @@ Norman supports various chat platforms through connectors. To create a new conne
 
 6. Test your new connector and ensure it works correctly with Norman's core functionality.
 
+7. If you package the connector separately, expose it via the
+   `norman.connectors` entry point group in your `pyproject.toml`:
+
+   ```toml
+   [project.entry-points."norman.connectors"]
+   my_connector = "your_package.module:ConnectorClass"
+   ```
+
+   Norman will automatically load connectors advertised through this group.
+
 ## Adding Custom Actions
 
 Norman performs various actions based on the filters and rules defined by the user. To add a custom action, follow these steps:

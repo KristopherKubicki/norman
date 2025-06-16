@@ -13,6 +13,7 @@ import inspect
 import pkgutil
 import importlib
 import os
+from importlib import metadata
 from typing import Any, Dict, List, Optional
 
 from app.core.config import get_settings, Settings
@@ -36,6 +37,23 @@ def _discover_connectors() -> None:
         for _, obj in inspect.getmembers(module, inspect.isclass):
             if issubclass(obj, BaseConnector) and obj is not BaseConnector:
                 connector_classes[obj.id] = obj
+
+    try:
+        eps = metadata.entry_points(group="norman.connectors")
+    except TypeError:  # pragma: no cover - older Python
+        eps = metadata.entry_points().get("norman.connectors", [])
+
+    for ep in eps:
+        try:
+            obj = ep.load()
+        except Exception:  # pragma: no cover - faulty entry point
+            continue
+        if (
+            inspect.isclass(obj)
+            and issubclass(obj, BaseConnector)
+            and obj is not BaseConnector
+        ):
+            connector_classes[obj.id] = obj
 
 
 _discover_connectors()

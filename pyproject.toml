@@ -1,0 +1,10 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "norman"
+version = "0.2.0"
+
+[project.entry-points."norman.connectors"]
+# Third-party packages can add connectors here.
