@@ -209,6 +209,8 @@ class Settings(BaseSettings):
     port: int
     rate_limit_requests: int = 60
     rate_limit_window_seconds: int = 60
+    rate_limit_backend: str = "memory"
+    rate_limit_redis_url: str = "redis://localhost:6379/0"
 
     @validator("secret_key", pre=True)
     def validate_secret_key(cls, v):

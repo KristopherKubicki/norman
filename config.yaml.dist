@@ -198,6 +198,8 @@ host: "0.0.0.0"
 port: 8000
 rate_limit_requests: 60
 rate_limit_window_seconds: 60
+rate_limit_backend: "memory"
+rate_limit_redis_url: "redis://localhost:6379/0"
 
 
 # how long before a session should close from the web ui
@@ -205,3 +207,4 @@ access_token_expire_minutes: 1440
 algorithm: HS256
 encryption_key: "your_encryption_key"
 encryption_salt: "your_encryption_salt"
+
