@@ -37,6 +37,36 @@ jobs:
           coverage run -m pytest -vv
           coverage xml
 
+      - name: Compute coverage percentage
+        id: coverage
+        run: |
+          coverage json -o coverage.json
+          python - <<'EOF' > coverage_percent.txt
+import json
+with open('coverage.json') as f:
+    print(json.load(f)['totals']['percent_covered'])
+EOF
+          echo "percent=$(cat coverage_percent.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Get main branch coverage
+        id: maincov
+        run: |
+          curl -s https://codecov.io/gh/KristopherKubicki/norman/branch/main/graph/badge.svg -o main_coverage_badge.svg
+          MAIN=$(grep -oE '[0-9]+\.?[0-9]*%' main_coverage_badge.svg | tr -d '%')
+          echo "percent=$MAIN" >> "$GITHUB_OUTPUT"
+
+      - name: Check coverage threshold
+        run: |
+          THRESHOLD=80
+          CURRENT=${{ steps.coverage.outputs.percent }}
+          MAIN=${{ steps.maincov.outputs.percent }}
+          echo "Current coverage: $CURRENT%"
+          echo "Main branch coverage: $MAIN%"
+          if (( $(echo "$CURRENT < $THRESHOLD" | bc -l) )) || (( $(echo "$CURRENT < $MAIN" | bc -l) )); then
+            echo "Coverage dropped below threshold or main branch value"
+            exit 1
+          fi
+
       - name: Upload coverage
         uses: codecov/codecov-action@v3
         with:
