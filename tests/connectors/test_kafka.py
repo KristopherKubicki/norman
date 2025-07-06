@@ -3,11 +3,14 @@ import asyncio
 import pytest
 import app.connectors.kafka_connector as mod
 
+
 class DummyProducer:
     def __init__(self):
         self.messages = []
+
     def produce(self, topic, value=None):
         self.messages.append((topic, value))
+
     def flush(self):
         pass
 
@@ -15,8 +18,10 @@ class DummyProducer:
 class DummyMessage:
     def __init__(self, value):
         self._value = value.encode()
+
     def error(self):
         return False
+
     def value(self):
         return self._value
 
@@ -26,12 +31,15 @@ class DummyConsumer:
         self.messages = messages
         self.subscribed = []
         self.closed = False
+
     def subscribe(self, topics):
         self.subscribed = topics
+
     def poll(self, timeout=0.1):
         if self.messages:
             return self.messages.pop(0)
         return None
+
     def close(self):
         self.closed = True
 
@@ -54,6 +62,7 @@ def test_listen_and_process(monkeypatch):
     monkeypatch.setattr(mod, "Consumer", lambda conf: DummyConsumer(msgs))
 
     processed = []
+
     class TestConnector(mod.KafkaConnector):
         async def process_incoming(self, message):
             processed.append(message)

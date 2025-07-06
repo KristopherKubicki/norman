@@ -27,7 +27,7 @@ async def create_chat_interaction(
     Returns:
     Dict[str, str]: Response from OpenAI API.
 
-    The system role's content field should be from the "prompt" field in the Filter.  
+    The system role's content field should be from the "prompt" field in the Filter.
     The "user" role should be the incoming message
     The "assistant" role should be the response
 
@@ -35,9 +35,7 @@ async def create_chat_interaction(
 
     try:
         response = await openai.ChatCompletion.acreate(
-            model=model,
-            messages=messages,
-            max_tokens=max_tokens
+            model=model, messages=messages, max_tokens=max_tokens
         )
 
         return response

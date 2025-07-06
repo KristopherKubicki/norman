@@ -59,7 +59,5 @@ def test_process_incoming():
 
 def test_listen_and_process():
     connector = LineConnector("TOKEN", "USER")
-    result = asyncio.get_event_loop().run_until_complete(
-        connector.listen_and_process()
-    )
+    result = asyncio.get_event_loop().run_until_complete(connector.listen_and_process())
     assert result is None

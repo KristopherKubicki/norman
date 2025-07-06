@@ -119,7 +119,9 @@ class DummyUpdateResponse:
 
 
 def test_listen_and_process(monkeypatch):
-    resp = DummyUpdateResponse({"ok": True, "result": [{"update_id": 1, "message": {"text": "hi"}}]})
+    resp = DummyUpdateResponse(
+        {"ok": True, "result": [{"update_id": 1, "message": {"text": "hi"}}]}
+    )
 
     class Client(DummyClient):
         async def get(self, url, params=None, timeout=None):

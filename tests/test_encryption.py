@@ -38,7 +38,9 @@ def load_encryption_module(monkeypatch):
     backend_mod.default_backend = lambda: None
 
     monkeypatch.setitem(sys.modules, "cryptography", types.ModuleType("cryptography"))
-    monkeypatch.setitem(sys.modules, "cryptography.fernet", types.SimpleNamespace(Fernet=DummyFernet))
+    monkeypatch.setitem(
+        sys.modules, "cryptography.fernet", types.SimpleNamespace(Fernet=DummyFernet)
+    )
     hazmat_mod = types.ModuleType("hazmat")
     monkeypatch.setitem(sys.modules, "cryptography.hazmat", hazmat_mod)
     primitives_mod = types.ModuleType("primitives")
@@ -48,9 +50,13 @@ def load_encryption_module(monkeypatch):
     primitives_mod.hashes = hashes_mod
     primitives_mod.kdf = kdf_mod
     monkeypatch.setitem(sys.modules, "cryptography.hazmat.primitives", primitives_mod)
-    monkeypatch.setitem(sys.modules, "cryptography.hazmat.primitives.hashes", hashes_mod)
+    monkeypatch.setitem(
+        sys.modules, "cryptography.hazmat.primitives.hashes", hashes_mod
+    )
     monkeypatch.setitem(sys.modules, "cryptography.hazmat.primitives.kdf", kdf_mod)
-    monkeypatch.setitem(sys.modules, "cryptography.hazmat.primitives.kdf.pbkdf2", pbkdf2_mod)
+    monkeypatch.setitem(
+        sys.modules, "cryptography.hazmat.primitives.kdf.pbkdf2", pbkdf2_mod
+    )
     monkeypatch.setitem(sys.modules, "cryptography.hazmat.backends", backend_mod)
 
     if "app.core.encryption" in sys.modules:

@@ -4,9 +4,7 @@ from app.connectors.hipchat_connector import HipChatConnector
 
 def test_send_message():
     connector = HipChatConnector("token", "room")
-    result = asyncio.get_event_loop().run_until_complete(
-        connector.send_message("hi")
-    )
+    result = asyncio.get_event_loop().run_until_complete(connector.send_message("hi"))
     assert result == "sent"
     assert connector.sent_messages == ["hi"]
 

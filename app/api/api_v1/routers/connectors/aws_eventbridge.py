@@ -5,7 +5,18 @@ from app.core.config import get_settings, Settings
 router = APIRouter()
 
 
-def get_eventbridge_connector(settings: Settings = Depends(get_settings)) -> AWSEventBridgeConnector:
+def get_eventbridge_connector(
+    settings: Settings = Depends(get_settings),
+) -> AWSEventBridgeConnector:
+    """Instantiate an EventBridge connector using app settings.
+
+    Args:
+        settings: Application settings dependency.
+
+    Returns:
+        Configured :class:`AWSEventBridgeConnector` instance.
+    """
+
     return AWSEventBridgeConnector(
         region=settings.aws_eventbridge_region,
         event_bus_name=settings.aws_eventbridge_event_bus_name,
@@ -17,6 +28,16 @@ async def process_eventbridge_update(
     request: Request,
     eventbridge_connector: AWSEventBridgeConnector = Depends(get_eventbridge_connector),
 ):
+    """Handle incoming EventBridge webhook events.
+
+    Args:
+        request: Incoming HTTP request containing the event payload.
+        eventbridge_connector: Dependency that processes the payload.
+
+    Returns:
+        A confirmation message once processed.
+    """
+
     payload = await request.json()
     eventbridge_connector.process_incoming(payload)
     return {"detail": "Update processed"}

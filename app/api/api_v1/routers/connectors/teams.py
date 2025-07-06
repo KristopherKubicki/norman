@@ -4,7 +4,17 @@ from app.core.config import get_settings, Settings
 
 router = APIRouter()
 
+
 def get_teams_connector(settings: Settings = Depends(get_settings)) -> TeamsConnector:
+    """Instantiate a Microsoft Teams connector.
+
+    Args:
+        settings: Application settings dependency.
+
+    Returns:
+        Configured :class:`TeamsConnector` instance.
+    """
+
     return TeamsConnector(
         app_id=settings.teams_app_id,
         app_password=settings.teams_app_password,
@@ -12,9 +22,21 @@ def get_teams_connector(settings: Settings = Depends(get_settings)) -> TeamsConn
         bot_endpoint=settings.teams_bot_endpoint,
     )
 
+
 @router.post("/webhooks/teams")
-async def process_teams_update(request: Request, teams_connector: TeamsConnector = Depends(get_teams_connector)):
+async def process_teams_update(
+    request: Request, teams_connector: TeamsConnector = Depends(get_teams_connector)
+):
+    """Handle Teams webhook events.
+
+    Args:
+        request: Incoming HTTP request containing the event payload.
+        teams_connector: Dependency that processes the payload.
+
+    Returns:
+        A confirmation message once processed.
+    """
+
     payload = await request.json()
     teams_connector.process_incoming(payload)
     return {"detail": "Update processed"}
-

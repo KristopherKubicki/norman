@@ -24,7 +24,9 @@ def create(db: Session, obj_in: ConnectorCreate) -> ConnectorModel:
     return db_obj
 
 
-def update(db: Session, db_obj: ConnectorModel, obj_in: ConnectorUpdate) -> ConnectorModel:
+def update(
+    db: Session, db_obj: ConnectorModel, obj_in: ConnectorUpdate
+) -> ConnectorModel:
     """Update an existing connector."""
     for field, value in obj_in.dict(exclude_unset=True).items():
         setattr(db_obj, field, value)

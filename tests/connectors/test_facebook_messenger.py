@@ -36,9 +36,7 @@ def test_send_message_success(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", lambda: client)
     connector = FacebookMessengerConnector("TOKEN", "VERIFY")
     msg = {"message": {"text": "hi"}, "recipient": {"id": "U"}}
-    result = asyncio.get_event_loop().run_until_complete(
-        connector.send_message(msg)
-    )
+    result = asyncio.get_event_loop().run_until_complete(connector.send_message(msg))
     assert result == "sent"
     assert client.sent[0].startswith("https://graph.facebook.com")
 
@@ -67,7 +65,5 @@ def test_process_incoming():
 
 def test_listen_and_process():
     connector = FacebookMessengerConnector("TOKEN", "VERIFY")
-    result = asyncio.get_event_loop().run_until_complete(
-        connector.listen_and_process()
-    )
+    result = asyncio.get_event_loop().run_until_complete(connector.listen_and_process())
     assert result is None

@@ -17,7 +17,9 @@ class AWSEventBridgeConnector(BaseConnector):
     id = "aws_eventbridge"
     name = "AWS EventBridge"
 
-    def __init__(self, region: str, event_bus_name: str, config: Optional[dict] = None) -> None:
+    def __init__(
+        self, region: str, event_bus_name: str, config: Optional[dict] = None
+    ) -> None:
         super().__init__(config)
         self.region = region
         self.event_bus_name = event_bus_name

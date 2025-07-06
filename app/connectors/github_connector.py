@@ -34,7 +34,10 @@ class GitHubConnector(BaseConnector):
             payload = {"body": message.get("body", "")}
         else:
             url = f"{self.api_url}/repos/{self.repo}/issues"
-            payload = {"title": message.get("title", "Norman Issue"), "body": message.get("body", "")}
+            payload = {
+                "title": message.get("title", "Norman Issue"),
+                "body": message.get("body", ""),
+            }
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(url, json=payload, headers=self._headers())

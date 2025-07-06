@@ -100,4 +100,3 @@ def test_engine_pool_timeout_and_recycle():
     finally:
         settings.database_pool_timeout = old_timeout
         settings.database_pool_recycle = old_recycle
-

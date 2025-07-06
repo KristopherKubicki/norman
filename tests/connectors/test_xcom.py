@@ -66,7 +66,9 @@ def test_send_message_error():
 
 def test_process_incoming():
     connector = XComConnector("k", "s", "at", "ats", "1")
-    result = asyncio.get_event_loop().run_until_complete(connector.process_incoming({"msg": 1}))
+    result = asyncio.get_event_loop().run_until_complete(
+        connector.process_incoming({"msg": 1})
+    )
     assert result == {"msg": 1}
 
 

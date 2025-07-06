@@ -34,7 +34,9 @@ class AzureEventGridConnector(BaseConnector):
     async def send_message(self, message: Dict[str, Any]) -> Any:
         if not EventGridPublisherClient:
             raise RuntimeError("azure-eventgrid not installed")
-        event = EventGridEvent(subject="norman", event_type="Message", data=message, data_version="1.0")
+        event = EventGridEvent(
+            subject="norman", event_type="Message", data=message, data_version="1.0"
+        )
         self.client.send([event])
         return "ok"
 

@@ -4,6 +4,7 @@ import sys
 from pydantic import typing as _pydantic_typing
 
 if sys.version_info >= (3, 12):
+
     def _evaluate_forwardref(type_, globalns, localns):
         return type_._evaluate(globalns, localns, None, recursive_guard=set())
 
@@ -35,18 +36,22 @@ engine = create_engine(
     poolclass=QueuePool,
     pool_size=settings.database_pool_size,
     max_overflow=settings.database_max_overflow,
-    connect_args={"check_same_thread": False}
-    if settings.database_url.startswith("sqlite")
-    else {},
+    connect_args=(
+        {"check_same_thread": False}
+        if settings.database_url.startswith("sqlite")
+        else {}
+    ),
 )
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base.metadata.create_all(bind=engine)
 
 # Override the application's SessionLocal to ensure the API uses the test database
 from app.db import session as db_session
+
 db_session.SessionLocal = TestingSessionLocal
 db_session.engine = engine
 import app.api.deps as api_deps
+
 api_deps.SessionLocal = TestingSessionLocal
 
 
@@ -64,4 +69,3 @@ def db():
         yield session
     finally:
         session.close()
-

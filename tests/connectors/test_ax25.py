@@ -4,9 +4,7 @@ from app.connectors.ax25_connector import AX25Connector
 
 def test_send_message():
     connector = AX25Connector("port", "CALL")
-    result = asyncio.get_event_loop().run_until_complete(
-        connector.send_message("hi")
-    )
+    result = asyncio.get_event_loop().run_until_complete(connector.send_message("hi"))
     assert result == "sent"
     assert connector.sent_messages == ["hi"]
 

@@ -6,6 +6,7 @@ from app import crud
 from app.schemas.user import UserCreate, UserUpdate
 from app.tests.utils.utils import random_email, random_lower_string
 
+
 def test_create_user(test_app: TestClient, db: Session) -> None:
     email = random_email()
     password = random_lower_string()
@@ -13,6 +14,7 @@ def test_create_user(test_app: TestClient, db: Session) -> None:
     user_in = UserCreate(email=email, password=password, username=username)
     user = crud.user.create_user(db, user=user_in)
     assert user.email == email
+
 
 def test_get_user(test_app: TestClient, db: Session) -> None:
     email = random_email()

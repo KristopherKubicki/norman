@@ -9,21 +9,39 @@ from app.crud.user import get_user_by_email
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token")
 
+
 def get_db():
+    """Provide a synchronous database session."""
+
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+
 
 async def get_async_db():
+    """Provide an asynchronous database session."""
+
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
 
+
 async def get_current_user(token: str = Depends(oauth2_scheme)):
+    """Return the current authenticated user.
+
+    Args:
+        token: OAuth2 access token extracted from the request.
+
+    Returns:
+        The user associated with the token.
+
+    Raises:
+        HTTPException: If authentication fails or user does not exist.
+    """
 
     email = decode_access_token(token)
     if email is None:
@@ -37,4 +55,3 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         if user is None:
             raise HTTPException(status_code=404, detail="User not found")
         return user
-

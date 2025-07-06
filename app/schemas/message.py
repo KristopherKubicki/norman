@@ -6,6 +6,7 @@ from datetime import datetime
 class MessageBase(BaseModel):
     text: str
 
+
 class MessageCreate(MessageBase):
     """Schema for creating a message."""
 
@@ -32,4 +33,3 @@ class Message(MessageInDBBase):
 
 class MessageInDB(MessageInDBBase):
     """Internal message model with DB specifics."""
-

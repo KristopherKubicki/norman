@@ -6,6 +6,7 @@ from app.crud import action as action_crud
 from app.schemas.action import ActionCreate, ActionUpdate
 from app.tests.utils.utils import random_lower_string
 
+
 def test_create_action(test_app: TestClient, db: Session) -> None:
     prompt = random_lower_string()
     execution_order = 1
@@ -18,6 +19,7 @@ def test_create_action(test_app: TestClient, db: Session) -> None:
     action = action_crud.create(db, obj_in=action_in)
     assert action.prompt == prompt
     assert action.execution_order == execution_order
+
 
 def test_get_action(test_app: TestClient, db: Session) -> None:
     prompt = random_lower_string()

@@ -17,7 +17,7 @@ class RocketChatConnector(BaseConnector):
 
     def __init__(self, url: str, token: str, user_id: str, config=None) -> None:
         super().__init__(config)
-        self.url = url.rstrip('/')
+        self.url = url.rstrip("/")
         self.token = token
         self.user_id = user_id
 
@@ -27,7 +27,9 @@ class RocketChatConnector(BaseConnector):
         headers = {"X-Auth-Token": self.token, "X-User-Id": self.user_id}
         async with httpx.AsyncClient() as client:
             try:
-                resp = await client.post(api_url, json={"text": message}, headers=headers)
+                resp = await client.post(
+                    api_url, json={"text": message}, headers=headers
+                )
                 resp.raise_for_status()
                 return resp.text
             except httpx.HTTPError as exc:  # pragma: no cover - network

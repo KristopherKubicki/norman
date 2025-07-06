@@ -74,9 +74,7 @@ def test_listen_and_process(monkeypatch):
     connector, sock = make_connector(monkeypatch)
     sock.to_recv = [b":u!u@h PRIVMSG #chan :hello\r\n"]
     connector.connect()
-    result = asyncio.get_event_loop().run_until_complete(
-        connector.listen_and_process()
-    )
+    result = asyncio.get_event_loop().run_until_complete(connector.listen_and_process())
     assert result == [{"raw": ":u!u@h PRIVMSG #chan :hello\r\n"}]
 
 
@@ -84,7 +82,5 @@ def test_listen_and_process_ping(monkeypatch):
     connector, sock = make_connector(monkeypatch)
     sock.to_recv = [b"PING :server\r\n"]
     connector.connect()
-    result = asyncio.get_event_loop().run_until_complete(
-        connector.listen_and_process()
-    )
+    result = asyncio.get_event_loop().run_until_complete(connector.listen_and_process())
     assert result == []

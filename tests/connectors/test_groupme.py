@@ -51,7 +51,9 @@ def test_send_message_error(monkeypatch):
 
 def test_process_incoming():
     connector = GroupMeConnector("botid")
-    result = asyncio.get_event_loop().run_until_complete(connector.process_incoming({"m": 1}))
+    result = asyncio.get_event_loop().run_until_complete(
+        connector.process_incoming({"m": 1})
+    )
     assert result == {"m": 1}
 
 

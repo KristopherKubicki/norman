@@ -124,7 +124,9 @@ def test_listen_and_process_error(monkeypatch):
         def stream(self, method, url, headers=None, params=None):
             raise httpx.HTTPError("boom")
 
-    monkeypatch.setattr(httpx, "AsyncClient", lambda timeout=None: BadClient(DummyStreamResponse([])))
+    monkeypatch.setattr(
+        httpx, "AsyncClient", lambda timeout=None: BadClient(DummyStreamResponse([]))
+    )
 
     connector = MastodonConnector("http://host", "TOKEN")
     result = asyncio.get_event_loop().run_until_complete(connector.listen_and_process())

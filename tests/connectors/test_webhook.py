@@ -3,6 +3,7 @@ import httpx
 
 from app.connectors.webhook_connector import WebhookConnector
 
+
 class DummyResponse:
     def __init__(self, text="ok", status=200):
         self.text = text
@@ -11,6 +12,7 @@ class DummyResponse:
     def raise_for_status(self):
         if self.status_code >= 400:
             raise httpx.HTTPStatusError("error", request=None, response=None)
+
 
 class DummyClient:
     def __init__(self, response):

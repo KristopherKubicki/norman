@@ -24,5 +24,6 @@ router.include_router(connectors_router, prefix=api_prefix)
 router.include_router(platform_connectors_router, prefix=f"{api_prefix}/connectors")
 router.include_router(users_router, prefix=f"{api_prefix}/users")
 
+
 def init_routers(app: FastAPI):
     app.include_router(router, prefix=settings.api_prefix)

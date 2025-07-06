@@ -16,7 +16,9 @@ class ViberConnector(BaseConnector):
     id = "viber"
     name = "Viber Bots"
 
-    def __init__(self, auth_token: str, receiver: str, config: Optional[dict] = None) -> None:
+    def __init__(
+        self, auth_token: str, receiver: str, config: Optional[dict] = None
+    ) -> None:
         super().__init__(config)
         self.auth_token = auth_token
         self.receiver = receiver

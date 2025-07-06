@@ -8,8 +8,8 @@ logger = setup_logger(__name__)
 
 class SlackConnector(BaseConnector):
 
-    id = 'slack'
-    name = 'Slack'
+    id = "slack"
+    name = "Slack"
 
     def __init__(self, token: str, channel_id: str, config=None):
         super().__init__(config)
@@ -81,9 +81,7 @@ class SlackConnector(BaseConnector):
         errors_mod = importlib.import_module("slack_sdk.errors")
         client = self._get_client()
         try:
-            response = client.conversations_history(
-                channel=self.channel_id, limit=1
-            )
+            response = client.conversations_history(channel=self.channel_id, limit=1)
             return response.get("messages", [])
         except errors_mod.SlackApiError as exc:
             logger.error("Error receiving message: %s", exc)

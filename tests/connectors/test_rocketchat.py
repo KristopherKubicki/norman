@@ -34,9 +34,7 @@ def test_send_message_success(monkeypatch):
     resp = DummyResponse("sent")
     monkeypatch.setattr(httpx, "AsyncClient", lambda: DummyClient(resp))
     connector = RocketChatConnector("http://host", "TOKEN", "UID")
-    result = asyncio.get_event_loop().run_until_complete(
-        connector.send_message("hi")
-    )
+    result = asyncio.get_event_loop().run_until_complete(connector.send_message("hi"))
     assert result == "sent"
 
 
@@ -47,9 +45,7 @@ def test_send_message_error(monkeypatch):
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda: BadClient(DummyResponse()))
     connector = RocketChatConnector("http://host", "TOKEN", "UID")
-    result = asyncio.get_event_loop().run_until_complete(
-        connector.send_message("hi")
-    )
+    result = asyncio.get_event_loop().run_until_complete(connector.send_message("hi"))
     assert result is None
 
 

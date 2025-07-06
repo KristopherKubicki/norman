@@ -3,15 +3,19 @@ import types
 import pytest
 import app.connectors.google_pubsub_connector as mod
 
+
 class DummyFuture:
     def result(self):
         return "id"
 
+
 class DummyPublisher:
     def __init__(self):
         self.published = []
+
     def topic_path(self, project_id, topic_id):
         return f"{project_id}/{topic_id}"
+
     def publish(self, topic_path, message):
         self.published.append((topic_path, message))
         return DummyFuture()

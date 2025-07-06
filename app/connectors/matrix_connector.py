@@ -9,13 +9,21 @@ from app.core.logging import setup_logger
 
 logger = setup_logger(__name__)
 
+
 class MatrixConnector(BaseConnector):
     """Connector for interacting with Matrix chat networks."""
 
-    id = 'matrix'
-    name = 'Matrix'
+    id = "matrix"
+    name = "Matrix"
 
-    def __init__(self, homeserver: str, user_id: str, access_token: str, room_id: str, config: Optional[dict] = None) -> None:
+    def __init__(
+        self,
+        homeserver: str,
+        user_id: str,
+        access_token: str,
+        room_id: str,
+        config: Optional[dict] = None,
+    ) -> None:
         super().__init__(config)
         self.homeserver = homeserver
         self.user_id = user_id

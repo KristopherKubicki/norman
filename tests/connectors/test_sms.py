@@ -38,7 +38,9 @@ def test_send_message_success(monkeypatch):
         from_number="+1",
         to_number="+2",
     )
-    result = asyncio.get_event_loop().run_until_complete(connector.send_message("hello"))
+    result = asyncio.get_event_loop().run_until_complete(
+        connector.send_message("hello")
+    )
     assert result == "sent"
 
 
@@ -54,5 +56,7 @@ def test_send_message_error(monkeypatch):
         from_number="+1",
         to_number="+2",
     )
-    result = asyncio.get_event_loop().run_until_complete(connector.send_message("hello"))
+    result = asyncio.get_event_loop().run_until_complete(
+        connector.send_message("hello")
+    )
     assert result is None

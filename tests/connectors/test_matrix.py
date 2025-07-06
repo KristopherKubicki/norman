@@ -39,9 +39,7 @@ def test_send_message_success(monkeypatch):
     client = DummyClient(resp)
     monkeypatch.setattr(httpx, "AsyncClient", lambda: client)
     connector = MatrixConnector("https://hs", "@u:hs", "TOK", "!room")
-    result = asyncio.get_event_loop().run_until_complete(
-        connector.send_message("hi")
-    )
+    result = asyncio.get_event_loop().run_until_complete(connector.send_message("hi"))
     assert result == "sent"
     assert client.sent[2]["Authorization"] == "Bearer TOK"
 
@@ -53,9 +51,7 @@ def test_send_message_error(monkeypatch):
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda: BadClient(DummyResponse()))
     connector = MatrixConnector("https://hs", "@u:hs", "TOK", "!room")
-    result = asyncio.get_event_loop().run_until_complete(
-        connector.send_message("hi")
-    )
+    result = asyncio.get_event_loop().run_until_complete(connector.send_message("hi"))
     assert result is None
 
 

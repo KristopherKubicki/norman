@@ -1,6 +1,8 @@
 import asyncio
 import httpx
-from app.connectors.apple_messages_business_connector import AppleMessagesBusinessConnector
+from app.connectors.apple_messages_business_connector import (
+    AppleMessagesBusinessConnector,
+)
 
 
 class DummyResponse:

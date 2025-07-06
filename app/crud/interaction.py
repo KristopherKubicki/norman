@@ -30,4 +30,3 @@ def delete_interaction(db: Session, interaction_id: int):
         db.commit()
         return True
     return False
-

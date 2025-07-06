@@ -4,9 +4,7 @@ from app.connectors.tap_snpp_connector import TAPSNPPConnector
 
 def test_send_message():
     connector = TAPSNPPConnector("host")
-    result = asyncio.get_event_loop().run_until_complete(
-        connector.send_message("hi")
-    )
+    result = asyncio.get_event_loop().run_until_complete(connector.send_message("hi"))
     assert result == "sent"
     assert connector.sent_messages == ["hi"]
 

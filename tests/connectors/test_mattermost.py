@@ -33,9 +33,7 @@ def test_send_message(monkeypatch):
     resp = DummyResponse("sent")
     monkeypatch.setattr(httpx, "AsyncClient", lambda: DummyClient(resp))
     connector = MattermostConnector("http://mm", "tok", "chan")
-    result = asyncio.get_event_loop().run_until_complete(
-        connector.send_message("hi")
-    )
+    result = asyncio.get_event_loop().run_until_complete(connector.send_message("hi"))
     assert result == "sent"
     assert connector.sent_messages == ["hi"]
 
@@ -47,9 +45,7 @@ def test_send_message_error(monkeypatch):
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda: BadClient(DummyResponse()))
     connector = MattermostConnector("http://mm", "tok", "chan")
-    result = asyncio.get_event_loop().run_until_complete(
-        connector.send_message("hi")
-    )
+    result = asyncio.get_event_loop().run_until_complete(connector.send_message("hi"))
     assert result is None
 
 

@@ -15,7 +15,14 @@ class JiraServiceDeskConnector(BaseConnector):
     id = "jira_service_desk"
     name = "Jira Service Desk"
 
-    def __init__(self, url: str, email: str, api_token: str, project_key: str, config: Optional[dict] = None) -> None:
+    def __init__(
+        self,
+        url: str,
+        email: str,
+        api_token: str,
+        project_key: str,
+        config: Optional[dict] = None,
+    ) -> None:
         super().__init__(config)
         self.url = url.rstrip("/")
         self.email = email

@@ -6,6 +6,7 @@ from app.core.config import Settings, get_settings
 from .connector_utils import connector_classes, get_connector, _is_configured
 import logging
 
+
 def init_connectors(app: FastAPI, _settings: Settings) -> None:
     """Instantiate all connectors defined in :mod:`connector_utils`.
 
@@ -46,4 +47,3 @@ def init_connectors(app: FastAPI, _settings: Settings) -> None:
             connectors.setdefault(name, []).append(conn)
 
     app.state.connectors = connectors
-

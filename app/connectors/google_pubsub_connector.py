@@ -16,14 +16,22 @@ class GooglePubSubConnector(BaseConnector):
     id = "google_pubsub"
     name = "Google Pub/Sub"
 
-    def __init__(self, project_id: str, topic_id: str, credentials_path: Optional[str] = None, config: Optional[dict] = None) -> None:
+    def __init__(
+        self,
+        project_id: str,
+        topic_id: str,
+        credentials_path: Optional[str] = None,
+        config: Optional[dict] = None,
+    ) -> None:
         super().__init__(config)
         self.project_id = project_id
         self.topic_id = topic_id
         self.credentials_path = credentials_path
         if pubsub_v1:
             if self.credentials_path:
-                self.publisher = pubsub_v1.PublisherClient.from_service_account_file(self.credentials_path)
+                self.publisher = pubsub_v1.PublisherClient.from_service_account_file(
+                    self.credentials_path
+                )
             else:
                 self.publisher = pubsub_v1.PublisherClient()
         else:  # pragma: no cover - dependency may be missing

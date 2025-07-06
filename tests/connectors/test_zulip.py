@@ -32,7 +32,9 @@ class DummyClient:
 def test_send_message_success(monkeypatch):
     resp = DummyResponse("sent")
     monkeypatch.setattr(httpx, "AsyncClient", lambda: DummyClient(resp))
-    connector = ZulipConnector("email", "KEY", "https://zulip.example.com", "stream", "topic")
+    connector = ZulipConnector(
+        "email", "KEY", "https://zulip.example.com", "stream", "topic"
+    )
     result = asyncio.get_event_loop().run_until_complete(connector.send_message("hi"))
     assert result == "sent"
 
@@ -43,15 +45,21 @@ def test_send_message_error(monkeypatch):
             raise httpx.HTTPError("boom")
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda: BadClient(DummyResponse()))
-    connector = ZulipConnector("email", "KEY", "https://zulip.example.com", "stream", "topic")
+    connector = ZulipConnector(
+        "email", "KEY", "https://zulip.example.com", "stream", "topic"
+    )
     result = asyncio.get_event_loop().run_until_complete(connector.send_message("hi"))
     assert result is None
 
 
 def test_process_incoming():
-    connector = ZulipConnector("email", "KEY", "https://zulip.example.com", "stream", "topic")
+    connector = ZulipConnector(
+        "email", "KEY", "https://zulip.example.com", "stream", "topic"
+    )
     payload = {"foo": "bar"}
-    result = asyncio.get_event_loop().run_until_complete(connector.process_incoming(payload))
+    result = asyncio.get_event_loop().run_until_complete(
+        connector.process_incoming(payload)
+    )
     assert result == payload
 
 
@@ -60,7 +68,9 @@ def test_is_connected_success(monkeypatch):
         return DummyResponse(status=200)
 
     monkeypatch.setattr(httpx, "get", fake_get)
-    connector = ZulipConnector("email", "KEY", "https://zulip.example.com", "stream", "topic")
+    connector = ZulipConnector(
+        "email", "KEY", "https://zulip.example.com", "stream", "topic"
+    )
     assert connector.is_connected()
 
 
@@ -69,5 +79,7 @@ def test_is_connected_error(monkeypatch):
         raise httpx.HTTPError("boom")
 
     monkeypatch.setattr(httpx, "get", fake_get)
-    connector = ZulipConnector("email", "KEY", "https://zulip.example.com", "stream", "topic")
+    connector = ZulipConnector(
+        "email", "KEY", "https://zulip.example.com", "stream", "topic"
+    )
     assert not connector.is_connected()

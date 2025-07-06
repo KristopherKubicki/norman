@@ -12,7 +12,9 @@ class ACARSConnector(BaseConnector):
     id = "acars"
     name = "ACARS"
 
-    def __init__(self, host: str, port: int = 429, config: Optional[dict] = None) -> None:
+    def __init__(
+        self, host: str, port: int = 429, config: Optional[dict] = None
+    ) -> None:
         super().__init__(config)
         self.host = host
         self.port = port

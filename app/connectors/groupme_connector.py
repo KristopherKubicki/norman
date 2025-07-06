@@ -9,6 +9,7 @@ from app.core.logging import setup_logger
 
 logger = setup_logger(__name__)
 
+
 class GroupMeConnector(BaseConnector):
     """Send messages using the GroupMe bot API."""
 

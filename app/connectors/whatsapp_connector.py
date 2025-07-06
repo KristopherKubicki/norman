@@ -8,11 +8,12 @@ from app.core.logging import setup_logger
 
 logger = setup_logger(__name__)
 
+
 class WhatsAppConnector(BaseConnector):
     """Connector for sending and receiving WhatsApp messages via Twilio."""
 
-    id = 'whatsapp'
-    name = 'WhatsApp'
+    id = "whatsapp"
+    name = "WhatsApp"
 
     def __init__(
         self,
@@ -29,9 +30,7 @@ class WhatsAppConnector(BaseConnector):
         self.to_number = to_number
 
     def _url(self) -> str:
-        return (
-            f"https://api.twilio.com/2010-04-01/Accounts/{self.account_sid}/Messages.json"
-        )
+        return f"https://api.twilio.com/2010-04-01/Accounts/{self.account_sid}/Messages.json"
 
     async def send_message(self, text: str) -> Optional[str]:
         """Send ``text`` to the configured WhatsApp number via Twilio."""

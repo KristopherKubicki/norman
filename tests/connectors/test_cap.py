@@ -36,9 +36,7 @@ def test_send_message_success(monkeypatch):
     resp = DummyResponse("sent")
     monkeypatch.setattr(httpx, "AsyncClient", lambda: DummyClient(resp))
     connector = CAPConnector("http://example.com")
-    result = asyncio.get_event_loop().run_until_complete(
-        connector.send_message("hi")
-    )
+    result = asyncio.get_event_loop().run_until_complete(connector.send_message("hi"))
     assert result == "sent"
     assert connector.sent_messages == ["hi"]
 
@@ -50,9 +48,7 @@ def test_send_message_error(monkeypatch):
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda: BadClient(DummyResponse()))
     connector = CAPConnector("http://example.com")
-    result = asyncio.get_event_loop().run_until_complete(
-        connector.send_message("hi")
-    )
+    result = asyncio.get_event_loop().run_until_complete(connector.send_message("hi"))
     assert result is None
     assert connector.sent_messages == []
 
@@ -79,21 +75,15 @@ def test_listen_and_process(monkeypatch):
     resp = DummyResponse(xml)
     monkeypatch.setattr(httpx, "AsyncClient", lambda: DummyClient(resp))
     connector = CAPConnector("http://example.com")
-    result = asyncio.get_event_loop().run_until_complete(
-        connector.listen_and_process()
-    )
-    assert result == [
-        {"headline": "Test", "description": "Hello", "severity": "Minor"}
-    ]
+    result = asyncio.get_event_loop().run_until_complete(connector.listen_and_process())
+    assert result == [{"headline": "Test", "description": "Hello", "severity": "Minor"}]
 
 
 def test_listen_and_process_bad_xml(monkeypatch):
     resp = DummyResponse("<bad>")
     monkeypatch.setattr(httpx, "AsyncClient", lambda: DummyClient(resp))
     connector = CAPConnector("http://example.com")
-    result = asyncio.get_event_loop().run_until_complete(
-        connector.listen_and_process()
-    )
+    result = asyncio.get_event_loop().run_until_complete(connector.listen_and_process())
     assert result == []
 
 

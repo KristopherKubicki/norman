@@ -78,9 +78,7 @@ def test_listen_and_process_error():
         raise SlackApiError("error", {})
 
     connector.receive_message = raise_error
-    result = asyncio.get_event_loop().run_until_complete(
-        connector.listen_and_process()
-    )
+    result = asyncio.get_event_loop().run_until_complete(connector.listen_and_process())
     assert result == []
 
 

@@ -9,6 +9,7 @@ from app.core.logging import setup_logger
 
 logger = setup_logger(__name__)
 
+
 class SnapchatConnector(BaseConnector):
     """Connector for the Snapchat messaging service."""
 

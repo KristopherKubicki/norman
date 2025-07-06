@@ -28,4 +28,3 @@ router.include_router(
     prefix="/azure_eventgrid",
     tags=["Azure Event Grid"],
 )
-

@@ -7,6 +7,7 @@ from app.schemas.bot import BotCreate
 from app.core.config import settings
 from app.tests.utils.utils import random_lower_string
 
+
 def test_create_bot(test_app: TestClient, db: Session) -> None:
     gpt_model = settings.openai_default_model
     name = random_lower_string()
@@ -18,6 +19,7 @@ def test_create_bot(test_app: TestClient, db: Session) -> None:
     assert bot.gpt_model == gpt_model
     assert bot.name == name
     assert bot.session_id == session_id
+
 
 def test_get_bot(test_app: TestClient, db: Session) -> None:
     gpt_model = settings.openai_default_model
@@ -33,4 +35,3 @@ def test_get_bot(test_app: TestClient, db: Session) -> None:
     assert bot.name == bot_2.name
     assert bot.id == bot_2.id
     assert bot.session_id == bot_2.session_id
-

@@ -14,6 +14,7 @@ def test_process_webhook_update(monkeypatch, test_app: TestClient):
     class DummyConnector:
         def __init__(self, webhook_url: str):
             self.webhook_url = webhook_url
+
         def process_incoming(self, payload):
             received["payload"] = payload
             return "ok"

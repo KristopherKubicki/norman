@@ -5,6 +5,7 @@ import sys
 from fastapi import Request, Response
 from app.core.config import get_settings
 
+
 class RateLimiter:
     """Simple in-memory IP based rate limiter middleware."""
 
@@ -21,7 +22,9 @@ class RateLimiter:
         identifier = request.client.host if request.client else "unknown"
         now = time.time()
         async with self.lock:
-            timestamps = [t for t in self.requests.get(identifier, []) if now - t < self.window]
+            timestamps = [
+                t for t in self.requests.get(identifier, []) if now - t < self.window
+            ]
             if len(timestamps) >= self.max_requests:
                 return Response(status_code=429, content="Too Many Requests")
             timestamps.append(now)

@@ -1,5 +1,3 @@
-
-
 import os
 from sqlalchemy import create_engine, text, event
 from sqlalchemy.orm import sessionmaker
@@ -22,9 +20,11 @@ engine = create_engine(
     pool_timeout=settings.database_pool_timeout,
     pool_recycle=settings.database_pool_recycle,
     pool_pre_ping=True,
-    connect_args={"check_same_thread": False}
-    if settings.database_url.startswith("sqlite")
-    else {},
+    connect_args=(
+        {"check_same_thread": False}
+        if settings.database_url.startswith("sqlite")
+        else {}
+    ),
 )
 
 
@@ -41,5 +41,6 @@ if settings.database_url.startswith("sqlite"):
         cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
+
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

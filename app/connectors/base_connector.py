@@ -16,6 +16,7 @@ class BaseConnector(ABC):
         self.logger = logging.getLogger(self.__class__.__name__)
         self._send_queue: asyncio.Queue[Any] = asyncio.Queue()
         self._dispatcher_task: Optional[asyncio.Task] = None
+
     async def connect(self) -> None:  # pragma: no cover - default no-op
         """Establish any connection required by the connector."""
 
@@ -76,4 +77,3 @@ class BaseConnector(ABC):
         """Return ``True`` if the connector appears to be healthy."""
 
         return True
-

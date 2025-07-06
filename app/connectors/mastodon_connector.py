@@ -16,9 +16,11 @@ class MastodonConnector(BaseConnector):
     id = "mastodon"
     name = "Mastodon"
 
-    def __init__(self, base_url: str, access_token: str, config: Optional[dict] = None) -> None:
+    def __init__(
+        self, base_url: str, access_token: str, config: Optional[dict] = None
+    ) -> None:
         super().__init__(config)
-        self.base_url = base_url.rstrip('/')
+        self.base_url = base_url.rstrip("/")
         self.access_token = access_token
 
     def _headers(self) -> Dict[str, str]:
@@ -28,7 +30,9 @@ class MastodonConnector(BaseConnector):
         url = f"{self.base_url}/api/v1/statuses"
         try:
             async with httpx.AsyncClient() as client:
-                resp = await client.post(url, headers=self._headers(), data={"status": text})
+                resp = await client.post(
+                    url, headers=self._headers(), data={"status": text}
+                )
             resp.raise_for_status()
             return resp.text
         except httpx.HTTPError as exc:  # pragma: no cover - network

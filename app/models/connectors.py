@@ -15,4 +15,3 @@ class Connector(Base):
     last_message_received = Column(DateTime(timezone=True))
     last_successful_message = Column(DateTime(timezone=True))
     config = Column(JSON)
-

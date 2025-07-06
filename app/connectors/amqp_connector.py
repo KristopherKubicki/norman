@@ -21,7 +21,9 @@ class AMQPConnector(BaseConnector):
         self.url = url
         self.queue = queue
         self._connection: Optional[pika.BlockingConnection] = None if pika else None
-        self._channel: Optional[pika.adapters.blocking_connection.BlockingChannel] = None
+        self._channel: Optional[pika.adapters.blocking_connection.BlockingChannel] = (
+            None
+        )
 
     def connect(self) -> None:
         if not pika:
@@ -44,7 +46,9 @@ class AMQPConnector(BaseConnector):
         if not self._channel:
             self.connect()
         assert self._channel is not None
-        self._channel.basic_publish(exchange="", routing_key=self.queue, body=message.encode())
+        self._channel.basic_publish(
+            exchange="", routing_key=self.queue, body=message.encode()
+        )
 
     async def listen_and_process(self) -> None:
         """Consume messages from the queue and process them."""
@@ -61,7 +65,9 @@ class AMQPConnector(BaseConnector):
 
         def _callback(ch, method, properties, body):  # pragma: no cover - thread
             message = body.decode("utf-8", errors="replace")
-            loop.call_soon_threadsafe(asyncio.create_task, self.process_incoming(message))
+            loop.call_soon_threadsafe(
+                asyncio.create_task, self.process_incoming(message)
+            )
 
         self._channel.basic_consume(
             queue=self.queue,

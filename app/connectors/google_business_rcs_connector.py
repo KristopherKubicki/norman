@@ -14,7 +14,9 @@ class GoogleBusinessRCSConnector(BaseConnector):
     id = "google_business_rcs"
     name = "Google Business Messages / RCS"
 
-    def __init__(self, access_token: str, phone_number: str, config: Optional[dict] = None) -> None:
+    def __init__(
+        self, access_token: str, phone_number: str, config: Optional[dict] = None
+    ) -> None:
         super().__init__(config)
         self.access_token = access_token
         self.phone_number = phone_number

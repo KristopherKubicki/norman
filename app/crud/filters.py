@@ -24,7 +24,9 @@ def get_multi(db: Session, skip: int = 0, limit: int = 100) -> List[FilterModel]
     return db.query(FilterModel).offset(skip).limit(limit).all()
 
 
-def update(db: Session, filter_id: int, filter_update: FilterUpdate) -> Optional[FilterModel]:
+def update(
+    db: Session, filter_id: int, filter_update: FilterUpdate
+) -> Optional[FilterModel]:
     """Update an existing filter."""
     db_obj = get(db, filter_id)
     if not db_obj:

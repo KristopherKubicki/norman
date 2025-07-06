@@ -7,8 +7,8 @@ from .base_connector import BaseConnector
 
 class IRCConnector(BaseConnector):
 
-    name = 'IRC'
-    id = 'irc'
+    name = "IRC"
+    id = "irc"
 
     def __init__(
         self,
@@ -59,9 +59,7 @@ class IRCConnector(BaseConnector):
     def send_message(self, message):
         if self.socket and self.channels:
             channel = self.channels[0]
-            self.socket.sendall(
-                f"PRIVMSG {channel} :{message}\r\n".encode("utf-8")
-            )
+            self.socket.sendall(f"PRIVMSG {channel} :{message}\r\n".encode("utf-8"))
 
     def receive_message(self):
         while True:

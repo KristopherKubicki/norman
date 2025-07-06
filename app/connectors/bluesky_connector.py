@@ -57,7 +57,9 @@ class BlueskyConnector(BaseConnector):
             "record": {
                 "$type": "app.bsky.feed.post",
                 "text": message,
-                "createdAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "createdAt": datetime.now(timezone.utc)
+                .isoformat()
+                .replace("+00:00", "Z"),
             },
         }
         headers = {"Authorization": f"Bearer {token}"}

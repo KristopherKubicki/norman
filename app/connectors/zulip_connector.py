@@ -13,7 +13,15 @@ class ZulipConnector(BaseConnector):
     id = "zulip"
     name = "Zulip"
 
-    def __init__(self, email: str, api_key: str, site_url: str, stream: str, topic: str, config: Optional[dict] = None) -> None:
+    def __init__(
+        self,
+        email: str,
+        api_key: str,
+        site_url: str,
+        stream: str,
+        topic: str,
+        config: Optional[dict] = None,
+    ) -> None:
         super().__init__(config)
         self.email = email
         self.api_key = api_key
@@ -31,7 +39,9 @@ class ZulipConnector(BaseConnector):
         }
         try:
             async with httpx.AsyncClient() as client:
-                resp = await client.post(url, data=data, auth=(self.email, self.api_key))
+                resp = await client.post(
+                    url, data=data, auth=(self.email, self.api_key)
+                )
             resp.raise_for_status()
             return resp.text
         except httpx.HTTPError as exc:  # pragma: no cover - network
