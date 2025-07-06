@@ -72,19 +72,24 @@ python -m venv env
 source env/bin/activate
 ```
 
-3. Install the required packages:
+3. Install the required Python packages:
 ```
 pip install -r requirements.txt
 ```
 
 Norman automatically enables [WAL](https://www.sqlite.org/wal.html) mode when using SQLite for improved concurrency.
 
-4. Run Norman once to automatically generate `config.yaml` with secure defaults.
+4. Install the Node.js dependencies used by the front-end and Jest tests:
+```bash
+npm install
+```
+
+5. Run Norman once to automatically generate `config.yaml` with secure defaults.
    The admin username, email and password will be printed to the console.
    Take note of these values, edit `config.yaml` to configure connectors and
    add your OpenAI API key, then start Norman again.
 
-5. (Optional) Regenerate the secrets in `config.yaml` using the provided script:
+6. (Optional) Regenerate the secrets in `config.yaml` using the provided script:
 
 ```
 chmod +x generate_key.sh
@@ -93,14 +98,14 @@ chmod +x generate_key.sh
 
 You can also edit `config.yaml` manually to provide your own values. Be sure to add your OpenAI key under `openai_api_key`.
 
-6. Run the application with Uvicorn:
+7. Run the application with Uvicorn:
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --compression gzip
 ```
 If `brotli_asgi` is installed and supported by your Uvicorn version,
 replace `gzip` with `brotli` for improved compression.
 
-7. Open the API documentation in your browser: [http://localhost:8000/docs](http://localhost:8000/docs)
+8. Open the API documentation in your browser: [http://localhost:8000/docs](http://localhost:8000/docs)
    A basic health check endpoint is available at [http://localhost:8000/health](http://localhost:8000/health)
 
 Norman emits structured JSON logs that include the timestamp, module and request ID. Sensitive data such as API keys are automatically redacted so these logs can be safely forwarded to monitoring systems.
