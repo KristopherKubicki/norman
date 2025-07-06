@@ -63,7 +63,9 @@ class CAPConnector(BaseConnector):
                 continue
             message = {
                 "headline": info.findtext("cap:headline", default="", namespaces=ns),
-                "description": info.findtext("cap:description", default="", namespaces=ns),
+                "description": info.findtext(
+                    "cap:description", default="", namespaces=ns
+                ),
                 "severity": info.findtext("cap:severity", default="", namespaces=ns),
             }
             processed = self.process_incoming(message)

@@ -73,6 +73,7 @@ async def request_context_middleware(request: Request, call_next):
     response.headers["X-Request-ID"] = req_id
     return response
 
+
 def setup_logger(name: str, level: Optional[Union[int, str]] = None) -> logging.Logger:
     """Return a configured :class:`logging.Logger` instance.
 

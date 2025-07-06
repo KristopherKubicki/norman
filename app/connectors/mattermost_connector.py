@@ -13,7 +13,9 @@ class MattermostConnector(BaseConnector):
     id = "mattermost"
     name = "Mattermost"
 
-    def __init__(self, url: str, token: str, channel_id: str, config: Optional[dict] = None):
+    def __init__(
+        self, url: str, token: str, channel_id: str, config: Optional[dict] = None
+    ):
         super().__init__(config)
         self.url = url.rstrip("/")
         self.token = token

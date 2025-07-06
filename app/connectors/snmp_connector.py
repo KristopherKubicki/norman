@@ -16,7 +16,13 @@ class SNMPConnector(BaseConnector):
     id = "snmp"
     name = "SNMP"
 
-    def __init__(self, host: str, port: int = 162, community: str = "public", config: Optional[dict] = None) -> None:
+    def __init__(
+        self,
+        host: str,
+        port: int = 162,
+        community: str = "public",
+        config: Optional[dict] = None,
+    ) -> None:
         super().__init__(config)
         self.host = host
         self.port = port

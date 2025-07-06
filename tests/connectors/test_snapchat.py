@@ -59,7 +59,9 @@ def test_send_message_error():
 
 def test_process_incoming():
     connector = SnapchatConnector("user", "pw", "friend")
-    result = asyncio.get_event_loop().run_until_complete(connector.process_incoming({"m": 1}))
+    result = asyncio.get_event_loop().run_until_complete(
+        connector.process_incoming({"m": 1})
+    )
     assert result == {"m": 1}
 
 
@@ -79,7 +81,9 @@ def test_listen_and_process():
     connector = SnapchatConnector("user", "pw", "friend")
     client = connector._get_client()
     client.messages = [{"text": "hello"}]
-    results = asyncio.get_event_loop().run_until_complete(connector.listen_and_process())
+    results = asyncio.get_event_loop().run_until_complete(
+        connector.listen_and_process()
+    )
     assert results == [{"text": "hello"}]
 
 
@@ -87,5 +91,7 @@ def test_listen_and_process_error():
     connector = SnapchatConnector("user", "pw", "friend")
     client = connector._get_client()
     client.raise_on_messages = True
-    results = asyncio.get_event_loop().run_until_complete(connector.listen_and_process())
+    results = asyncio.get_event_loop().run_until_complete(
+        connector.listen_and_process()
+    )
     assert results == []

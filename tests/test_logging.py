@@ -11,7 +11,9 @@ def test_setup_logger_idempotent():
     assert logger1 is logger2
     assert logger1.handlers == initial_handlers
     # ensure exactly one StreamHandler is attached
-    stream_handlers = [h for h in logger1.handlers if isinstance(h, logging.StreamHandler)]
+    stream_handlers = [
+        h for h in logger1.handlers if isinstance(h, logging.StreamHandler)
+    ]
     assert len(stream_handlers) == 1
     # cleanup
     for handler in list(logger1.handlers):

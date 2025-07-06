@@ -3,18 +3,24 @@ import asyncio
 import pytest
 from app.connectors.snmp_connector import SNMPConnector
 
+
 class DummySocket:
     def __init__(self):
         self.sent = []
         self.recv = [b"hello"]
+
     def sendto(self, data, addr):
         self.sent.append((data, addr))
+
     def close(self):
         pass
+
     def bind(self, addr):
         pass
+
     def setblocking(self, flag):
         pass
+
     def recvfrom(self, n):
         if self.recv:
             return self.recv.pop(0), ("localhost", 0)
@@ -35,6 +41,7 @@ def test_listen_and_process(monkeypatch):
     monkeypatch.setattr(socket, "socket", lambda *a, **k: dummy)
 
     processed = []
+
     class TestConnector(SNMPConnector):
         async def process_incoming(self, message):
             processed.append(message)
@@ -50,4 +57,3 @@ def test_listen_and_process(monkeypatch):
         asyncio.get_event_loop().run_until_complete(connector.listen_and_process())
 
     assert processed == ["hello"]
-

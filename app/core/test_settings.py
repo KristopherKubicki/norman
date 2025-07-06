@@ -9,9 +9,7 @@ class TestSettings(Settings):
     class Config(Settings.Config):
         env_prefix = ""
 
+
 test_defaults = load_config()
 test_defaults["connectors"] = []
-test_settings = Settings(
-    **{**test_defaults, "database_url": "sqlite:///./db/test.db"}
-)
-
+test_settings = Settings(**{**test_defaults, "database_url": "sqlite:///./db/test.db"})

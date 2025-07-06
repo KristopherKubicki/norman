@@ -51,5 +51,7 @@ def test_send_message_error(monkeypatch):
 def test_process_incoming():
     connector = GitterConnector("TOKEN", "ROOM")
     payload = {"text": "hi"}
-    result = asyncio.get_event_loop().run_until_complete(connector.process_incoming(payload))
+    result = asyncio.get_event_loop().run_until_complete(
+        connector.process_incoming(payload)
+    )
     assert result == payload

@@ -3,16 +3,21 @@ import types
 import pytest
 import app.connectors.aprs_connector as mod
 
+
 class DummyIS:
     def __init__(self):
         self.sent = []
         self.closed = False
+
     def connect(self):
         pass
+
     def sendall(self, msg):
         self.sent.append(msg)
+
     def close(self):
         self.closed = True
+
     def __iter__(self):
         return iter([])
 

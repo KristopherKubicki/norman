@@ -2,14 +2,18 @@ import asyncio
 import contextlib
 from app.connectors.base_connector import BaseConnector
 
+
 class DummyConnector(BaseConnector):
     def __init__(self):
         super().__init__()
         self.sent = []
+
     def send_message(self, message):
         self.sent.append(message)
+
     async def listen_and_process(self):
         return None
+
     async def process_incoming(self, message):
         return message
 

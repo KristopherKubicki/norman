@@ -35,9 +35,7 @@ def test_send_message_success(monkeypatch):
     client = DummyClient(resp)
     monkeypatch.setattr(httpx, "AsyncClient", lambda: client)
     connector = IMessageConnector("http://api", "+1")
-    result = asyncio.get_event_loop().run_until_complete(
-        connector.send_message("hi")
-    )
+    result = asyncio.get_event_loop().run_until_complete(connector.send_message("hi"))
     assert result == "sent"
     assert client.sent[0] == "http://api"
     assert client.sent[1]["to"] == "+1"
@@ -50,9 +48,7 @@ def test_send_message_error(monkeypatch):
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda: BadClient(DummyResponse()))
     connector = IMessageConnector("http://api", "+1")
-    result = asyncio.get_event_loop().run_until_complete(
-        connector.send_message("hi")
-    )
+    result = asyncio.get_event_loop().run_until_complete(connector.send_message("hi"))
     assert result is None
 
 

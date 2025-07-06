@@ -14,7 +14,9 @@ def test_channel_crud(db: Session) -> None:
     assert fetched.id == channel_id
     assert fetched.connector_id == 1
 
-    updated = channel_crud.update(db, db_obj=fetched, obj_in=ChannelUpdate(name="updated", connector_id=1))
+    updated = channel_crud.update(
+        db, db_obj=fetched, obj_in=ChannelUpdate(name="updated", connector_id=1)
+    )
     assert updated.name == "updated"
 
     all_channels = channel_crud.get_multi(db)
@@ -23,4 +25,3 @@ def test_channel_crud(db: Session) -> None:
     removed = channel_crud.remove(db, channel_id)
     assert removed.id == channel_id
     assert channel_crud.get(db, channel_id) is None
-

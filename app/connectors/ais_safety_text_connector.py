@@ -14,7 +14,9 @@ class AISSafetyTextConnector(BaseConnector):
     id = "ais_safety_text"
     name = "AIS Safety-Related Text"
 
-    def __init__(self, host: str, port: int = 12345, config: Optional[dict] = None) -> None:
+    def __init__(
+        self, host: str, port: int = 12345, config: Optional[dict] = None
+    ) -> None:
         super().__init__(config)
         self.host = host
         self.port = port

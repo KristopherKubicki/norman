@@ -12,10 +12,12 @@ logger = setup_logger(__name__)
 class SignalConnector(BaseConnector):
     """Connector for sending and receiving Signal messages."""
 
-    id = 'signal'
-    name = 'Signal'
+    id = "signal"
+    name = "Signal"
 
-    def __init__(self, service_url: str, phone_number: str, config: Optional[dict] = None) -> None:
+    def __init__(
+        self, service_url: str, phone_number: str, config: Optional[dict] = None
+    ) -> None:
         super().__init__(config)
         self.service_url = service_url
         self.phone_number = phone_number

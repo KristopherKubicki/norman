@@ -14,7 +14,9 @@ class CoAPOSCOREConnector(BaseConnector):
     id = "coap_oscore"
     name = "CoAP + OSCORE"
 
-    def __init__(self, host: str, port: int = 5684, config: Optional[dict] = None) -> None:
+    def __init__(
+        self, host: str, port: int = 5684, config: Optional[dict] = None
+    ) -> None:
         super().__init__(config)
         self.host = host
         self.port = port

@@ -10,6 +10,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 
 try:
     from brotli_asgi import BrotliMiddleware  # type: ignore
+
     _brotli = True
 except Exception:  # pragma: no cover - optional dep may not be installed
     BrotliMiddleware = None  # type: ignore
@@ -24,12 +25,14 @@ from app.core.logging import request_context_middleware
 from app.core.rate_limit import RateLimiter
 from app.core.exception_handlers import add_exception_handlers
 
+
 def run_alembic_migrations():
     if not os.path.exists("alembic/versions"):
         os.makedirs("alembic/versions", exist_ok=True)
     alembic_cfg = Config("alembic.ini")
     alembic_cfg.set_main_option("sqlalchemy.url", settings.database_url)
     command.upgrade(alembic_cfg, "head")
+
 
 app = FastAPI()
 
@@ -43,15 +46,16 @@ else:
 app.middleware("http")(request_context_middleware)
 app.middleware("http")(rate_limiter)
 
+
 @app.middleware("http")
 async def cache_control_middleware(request: Request, call_next):
     response = await call_next(request)
-    if (
-        request.method == "GET"
-        and response.headers.get("content-type", "").startswith("application/json")
+    if request.method == "GET" and response.headers.get("content-type", "").startswith(
+        "application/json"
     ):
         response.headers.setdefault("Cache-Control", "max-age=60")
     return response
+
 
 # Create the initial user
 @app.on_event("startup")
@@ -61,6 +65,7 @@ async def startup_event():
             os.makedirs("db", exist_ok=True)
         run_alembic_migrations()
         create_initial_admin_user()
+
 
 # add authentication
 app.middleware("http")(auth_middleware)
@@ -73,11 +78,16 @@ init_routers(app)
 add_exception_handlers(app)
 
 current_dir = os.path.dirname(os.path.realpath(__file__))
-app.mount("/static", StaticFiles(directory=os.path.join(current_dir, "app/static")), name="static")
+app.mount(
+    "/static",
+    StaticFiles(directory=os.path.join(current_dir, "app/static")),
+    name="static",
+)
 
 
 # Include app_routes
 app.include_router(app_routes)
+
 
 def main() -> None:
     """Run the FastAPI application using Uvicorn."""
@@ -94,4 +104,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

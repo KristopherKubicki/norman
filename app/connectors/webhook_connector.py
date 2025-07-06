@@ -64,13 +64,14 @@ class WebhookConnector(BaseConnector):
         await self.send_message(data)
         return data
 
+
 class IncomingMessage(BaseModel):
     channel: str
     message: str
     user: str
 
+
 async def process_webhook_message(message: IncomingMessage):
     webhook_connector = WebhookConnector("https://your-webhook-url.example.com/")
     response = await webhook_connector.process_incoming(message.dict())
     return response
-

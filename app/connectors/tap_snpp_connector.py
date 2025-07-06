@@ -11,7 +11,13 @@ class TAPSNPPConnector(BaseConnector):
     id = "tap_snpp"
     name = "TAP/SNPP"
 
-    def __init__(self, host: str, port: int = 444, password: Optional[str] = None, config: Optional[dict] = None) -> None:
+    def __init__(
+        self,
+        host: str,
+        port: int = 444,
+        password: Optional[str] = None,
+        config: Optional[dict] = None,
+    ) -> None:
         super().__init__(config)
         self.host = host
         self.port = port
@@ -24,7 +30,9 @@ class TAPSNPPConnector(BaseConnector):
         """Establish a TCP connection to the TAP/SNPP service."""
 
         try:
-            self._reader, self._writer = await asyncio.open_connection(self.host, self.port)
+            self._reader, self._writer = await asyncio.open_connection(
+                self.host, self.port
+            )
             if self.password:
                 self._writer.write(f"PASS {self.password}\r\n".encode())
                 await self._writer.drain()

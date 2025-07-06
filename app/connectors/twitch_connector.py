@@ -49,9 +49,7 @@ class TwitchConnector(BaseConnector):
     def send_message(self, message: str) -> None:
         if not self.socket:
             raise RuntimeError("TwitchConnector is not connected")
-        self.socket.sendall(
-            f"PRIVMSG #{self.channel} :{message}\r\n".encode("utf-8")
-        )
+        self.socket.sendall(f"PRIVMSG #{self.channel} :{message}\r\n".encode("utf-8"))
 
     def receive_message(self) -> str:
         if not self.socket:

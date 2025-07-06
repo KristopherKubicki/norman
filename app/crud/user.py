@@ -16,9 +16,11 @@ def get_user_by_username(db: Session, username: str):
     """Return a user by username."""
     return db.query(User).filter(User.username == username).first()
 
+
 def get_user_by_email(db: Session, email: str):
     """Return a user by email address."""
     return db.query(User).filter(User.email == email).first()
+
 
 def create_user(db: Session, user: UserCreate):
     """Create a new user."""
@@ -33,21 +35,26 @@ def create_user(db: Session, user: UserCreate):
     db.refresh(db_user)
     return db_user
 
+
 def authenticate_user(db: Session, user_auth: UserAuthenticate):
     """Authenticate a user by email and password."""
-    user = get_user_by_email(db=db, email=user_auth.email) # should be an email address
+    user = get_user_by_email(db=db, email=user_auth.email)  # should be an email address
     if not user:
         return None
     if not verify_password(user_auth.password, user.password):
         return None
     return user
 
+
 def is_admin_user_exists(db: Session) -> bool:
     """Check if an administrator user exists."""
     admin_user = db.query(models.User).filter(models.User.is_superuser == True).first()
     return admin_user is not None
 
-def create_admin_user(db: Session, email: str, password: str, username: str) -> models.User:
+
+def create_admin_user(
+    db: Session, email: str, password: str, username: str
+) -> models.User:
     """Create the initial administrator user."""
     hashed_password = get_password_hash(password)
     user = models.User(

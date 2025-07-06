@@ -14,9 +14,7 @@ def test_connectors_router_crud(test_app: TestClient, db: Session) -> None:
     assert any(c["id"] == connector_id for c in resp.json())
 
     update = {"connector_type": "irc", "name": "c2", "config": {}}
-    resp = test_app.put(
-        f"/api/v1/connectors/{connector_id}", json=update
-    )
+    resp = test_app.put(f"/api/v1/connectors/{connector_id}", json=update)
     assert resp.status_code == 200
     assert resp.json()["name"] == update["name"]
 

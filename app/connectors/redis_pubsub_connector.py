@@ -15,12 +15,20 @@ class RedisPubSubConnector(BaseConnector):
     id = "redis_pubsub"
     name = "Redis Pub/Sub"
 
-    def __init__(self, host: str = "localhost", port: int = 6379, channel: str = "norman", config: Optional[dict] = None) -> None:
+    def __init__(
+        self,
+        host: str = "localhost",
+        port: int = 6379,
+        channel: str = "norman",
+        config: Optional[dict] = None,
+    ) -> None:
         super().__init__(config)
         self.host = host
         self.port = port
         self.channel = channel
-        self._client: Optional[redis.Redis] = redis.Redis(host=self.host, port=self.port) if redis else None
+        self._client: Optional[redis.Redis] = (
+            redis.Redis(host=self.host, port=self.port) if redis else None
+        )
 
     def connect(self) -> None:
         if not redis:

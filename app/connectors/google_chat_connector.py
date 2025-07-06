@@ -8,10 +8,11 @@ from app.core.logging import setup_logger
 
 logger = setup_logger(__name__)
 
+
 class GoogleChatConnector(BaseConnector):
 
-    id = 'google_chat'
-    name = 'Google Chat'
+    id = "google_chat"
+    name = "Google Chat"
 
     def __init__(self, service_account_key_path: str, space: str, config=None):
         super().__init__(config)
@@ -38,4 +39,3 @@ class GoogleChatConnector(BaseConnector):
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
         """Return the raw ``message`` payload."""
         return message
-

@@ -16,7 +16,9 @@ class FacebookMessengerConnector(BaseConnector):
     id = "facebook_messenger"
     name = "Facebook Messenger"
 
-    def __init__(self, page_token: str, verify_token: str, config: Optional[dict] = None) -> None:
+    def __init__(
+        self, page_token: str, verify_token: str, config: Optional[dict] = None
+    ) -> None:
         super().__init__(config)
         self.page_token = page_token
         self.verify_token = verify_token
@@ -37,7 +39,9 @@ class FacebookMessengerConnector(BaseConnector):
     async def listen_and_process(self) -> None:
         """Return immediately as Messenger does not offer a polling API."""
 
-        self.logger.info("Facebook Messenger connector does not support incoming messages")
+        self.logger.info(
+            "Facebook Messenger connector does not support incoming messages"
+        )
         await asyncio.sleep(0)
 
     async def process_incoming(self, message):

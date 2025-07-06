@@ -7,6 +7,7 @@ from app.models import Message
 
 logger = logging.getLogger(__name__)
 
+
 def create_message(db: Session, bot_id: int, text: str, source: str) -> Message:
     """Create and persist a new message."""
     db_message = Message(bot_id=bot_id, text=text, source=source)
@@ -15,9 +16,11 @@ def create_message(db: Session, bot_id: int, text: str, source: str) -> Message:
     db.refresh(db_message)
     return db_message
 
+
 def get_message_by_id(db: Session, message_id: int) -> Optional[Message]:
     """Return a message by its ID."""
     return db.query(Message).filter(Message.id == message_id).first()
+
 
 def get_messages_by_bot_id(
     db: Session,
@@ -29,7 +32,9 @@ def get_messages_by_bot_id(
 ) -> List[Message]:
     """Return messages for a bot with optional pagination."""
 
-    query = db.query(Message).filter(Message.bot_id == bot_id).order_by(Message.created_at)
+    query = (
+        db.query(Message).filter(Message.bot_id == bot_id).order_by(Message.created_at)
+    )
     if cursor is not None:
         query = query.filter(Message.id > cursor)
     if offset is not None:
@@ -37,6 +42,7 @@ def get_messages_by_bot_id(
     if limit is not None:
         query = query.limit(limit)
     return query.all()
+
 
 def delete_message(db: Session, message_id: int) -> None:
     """Delete a message by ID."""
@@ -46,6 +52,7 @@ def delete_message(db: Session, message_id: int) -> None:
         db.commit()
     else:
         logger.warning("Message id %s not found for deletion", message_id)
+
 
 def update_message(db: Session, message_id: int, text: str) -> Optional[Message]:
     """Update the text of an existing message."""
@@ -59,7 +66,9 @@ def update_message(db: Session, message_id: int, text: str) -> Optional[Message]
     return None
 
 
-def get_last_messages_by_bot_id(db: Session, bot_id: int, limit: int = 10) -> List[Message]:
+def get_last_messages_by_bot_id(
+    db: Session, bot_id: int, limit: int = 10
+) -> List[Message]:
     """Return the most recent messages for a bot."""
     return (
         db.query(Message)
@@ -69,8 +78,10 @@ def get_last_messages_by_bot_id(db: Session, bot_id: int, limit: int = 10) -> Li
         .all()
     )
 
+
 def delete_messages_by_bot_id(db: Session, bot_id: int):
     """Delete all messages belonging to a bot."""
-    db.query(Message).filter(Message.bot_id == bot_id).delete(synchronize_session='fetch')
+    db.query(Message).filter(Message.bot_id == bot_id).delete(
+        synchronize_session="fetch"
+    )
     db.commit()
-

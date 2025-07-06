@@ -2,6 +2,7 @@ from sqlalchemy import Column, Integer, Text, DateTime, ForeignKey
 from sqlalchemy.sql import func
 from app.db.base import Base
 
+
 class Action(Base):
     __tablename__ = "actions"
     id = Column(Integer, primary_key=True)

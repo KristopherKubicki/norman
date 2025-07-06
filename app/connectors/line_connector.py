@@ -18,7 +18,9 @@ class LineConnector(BaseConnector):
     id = "line"
     name = "LINE Messaging"
 
-    def __init__(self, channel_access_token: str, user_id: str, config: Optional[dict] = None) -> None:
+    def __init__(
+        self, channel_access_token: str, user_id: str, config: Optional[dict] = None
+    ) -> None:
         super().__init__(config)
         self.channel_access_token = channel_access_token
         self.user_id = user_id

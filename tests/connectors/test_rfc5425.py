@@ -2,13 +2,17 @@ import socket
 import ssl
 import app.connectors.rfc5425_connector as mod
 
+
 class DummySocket:
     def __init__(self):
         self.sent = []
+
     def sendall(self, data):
         self.sent.append(data)
+
     def close(self):
         pass
+
 
 class DummyContext:
     def wrap_socket(self, sock, server_hostname=None):

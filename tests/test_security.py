@@ -1,6 +1,11 @@
 import asyncio
 
-from app.core.security import get_password_hash, verify_password, create_access_token, decode_access_token
+from app.core.security import (
+    get_password_hash,
+    verify_password,
+    create_access_token,
+    decode_access_token,
+)
 
 
 def test_password_hash_round_trip() -> None:

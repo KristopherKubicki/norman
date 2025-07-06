@@ -14,7 +14,9 @@ class AppleMessagesBusinessConnector(BaseConnector):
     id = "apple_messages_business"
     name = "Apple Messages for Business"
 
-    def __init__(self, access_token: str, sender_id: str, config: Optional[dict] = None) -> None:
+    def __init__(
+        self, access_token: str, sender_id: str, config: Optional[dict] = None
+    ) -> None:
         super().__init__(config)
         self.access_token = access_token
         self.sender_id = sender_id

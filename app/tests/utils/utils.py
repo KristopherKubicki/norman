@@ -4,7 +4,7 @@ import string
 
 def random_lower_string(length: int = 12) -> str:
     """Generate a random string of lowercase letters."""
-    return ''.join(random.choice(string.ascii_lowercase) for _ in range(length))
+    return "".join(random.choice(string.ascii_lowercase) for _ in range(length))
 
 
 def random_email() -> str:

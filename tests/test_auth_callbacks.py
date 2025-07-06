@@ -24,7 +24,11 @@ def test_google_callback_success(monkeypatch, test_app: TestClient, db: Session)
         return DummyResponse({"id_token": "tok"})
 
     monkeypatch.setattr(routes.requests, "post", fake_post)
-    monkeypatch.setattr(routes.jwt, "decode", lambda token, options=None: {"email": "g@example.com", "name": "GUser"})
+    monkeypatch.setattr(
+        routes.jwt,
+        "decode",
+        lambda token, options=None: {"email": "g@example.com", "name": "GUser"},
+    )
     test_app.cookies.clear()
     resp = test_app.get("/auth/google/callback?code=abc", follow_redirects=False)
     assert resp.status_code == 303
@@ -48,7 +52,11 @@ def test_microsoft_callback_success(monkeypatch, test_app: TestClient, db: Sessi
         return DummyResponse({"id_token": "tok"})
 
     monkeypatch.setattr(routes.requests, "post", fake_post)
-    monkeypatch.setattr(routes.jwt, "decode", lambda token, options=None: {"email": "m@example.com", "name": "MUser"})
+    monkeypatch.setattr(
+        routes.jwt,
+        "decode",
+        lambda token, options=None: {"email": "m@example.com", "name": "MUser"},
+    )
     test_app.cookies.clear()
     resp = test_app.get("/auth/microsoft/callback?code=abc", follow_redirects=False)
     assert resp.status_code == 303
@@ -56,7 +64,9 @@ def test_microsoft_callback_success(monkeypatch, test_app: TestClient, db: Sessi
     assert crud.user.get_user_by_email(db, "m@example.com")
 
 
-def test_microsoft_callback_missing_email(monkeypatch, test_app: TestClient, db: Session):
+def test_microsoft_callback_missing_email(
+    monkeypatch, test_app: TestClient, db: Session
+):
     def fake_post(url, data=None):
         return DummyResponse({"id_token": "tok"})
 
@@ -65,4 +75,3 @@ def test_microsoft_callback_missing_email(monkeypatch, test_app: TestClient, db:
     test_app.cookies.clear()
     resp = test_app.get("/auth/microsoft/callback?code=abc", follow_redirects=False)
     assert resp.status_code == 400
-

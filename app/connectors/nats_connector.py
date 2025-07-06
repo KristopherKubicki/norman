@@ -17,7 +17,12 @@ class NATSConnector(BaseConnector):
     id = "nats"
     name = "NATS/JetStream"
 
-    def __init__(self, servers: str = "nats://127.0.0.1:4222", subject: str = "norman", config: Optional[dict] = None) -> None:
+    def __init__(
+        self,
+        servers: str = "nats://127.0.0.1:4222",
+        subject: str = "norman",
+        config: Optional[dict] = None,
+    ) -> None:
         super().__init__(config)
         self.servers = servers
         self.subject = subject

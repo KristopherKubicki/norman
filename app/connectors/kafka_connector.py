@@ -29,7 +29,9 @@ class KafkaConnector(BaseConnector):
         self.bootstrap_servers = bootstrap_servers
         self.topic = topic
         self._producer: Optional[Producer] = (
-            Producer({"bootstrap.servers": self.bootstrap_servers}) if Producer else None
+            Producer({"bootstrap.servers": self.bootstrap_servers})
+            if Producer
+            else None
         )
         self._consumer_conf = {
             "bootstrap.servers": self.bootstrap_servers,

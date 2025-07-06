@@ -43,4 +43,3 @@ def remove(db: Session, channel_id: int) -> Optional[ChannelModel]:
         db.delete(obj)
         db.commit()
     return obj
-

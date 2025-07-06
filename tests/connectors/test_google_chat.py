@@ -3,6 +3,7 @@ import httpx
 
 from app.connectors.google_chat_connector import GoogleChatConnector
 
+
 class DummyResponse:
     def __init__(self, text="ok", status=200):
         self.text = text
@@ -11,6 +12,7 @@ class DummyResponse:
     def raise_for_status(self):
         if self.status_code >= 400:
             raise httpx.HTTPStatusError("error", request=None, response=None)
+
 
 class DummyClient:
     def __init__(self, response):
@@ -27,13 +29,12 @@ class DummyClient:
         self.sent = (url, json, headers)
         return self.response
 
+
 def test_send_message_success(monkeypatch):
     resp = DummyResponse("sent")
     monkeypatch.setattr(httpx, "AsyncClient", lambda: DummyClient(resp))
     connector = GoogleChatConnector("KEY", "spaces/AAA")
-    result = asyncio.get_event_loop().run_until_complete(
-        connector.send_message("hi")
-    )
+    result = asyncio.get_event_loop().run_until_complete(connector.send_message("hi"))
     assert result == "sent"
 
 
@@ -44,9 +45,7 @@ def test_send_message_error(monkeypatch):
 
     monkeypatch.setattr(httpx, "AsyncClient", lambda: BadClient(DummyResponse()))
     connector = GoogleChatConnector("KEY", "spaces/AAA")
-    result = asyncio.get_event_loop().run_until_complete(
-        connector.send_message("hi")
-    )
+    result = asyncio.get_event_loop().run_until_complete(connector.send_message("hi"))
     assert result is None
 
 

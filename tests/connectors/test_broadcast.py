@@ -1,6 +1,7 @@
 from app.connectors.broadcast_connector import BroadcastConnector
 from app.connectors.base_connector import BaseConnector
 
+
 class DummyConnector(BaseConnector):
     def __init__(self):
         super().__init__()
@@ -26,6 +27,7 @@ def test_send_message(monkeypatch):
         return instances[name]
 
     import app.connectors.connector_utils as cu
+
     monkeypatch.setattr(cu, "get_connector", fake_get_connector)
     monkeypatch.setitem(cu.connector_classes, "a", DummyConnector)
     monkeypatch.setitem(cu.connector_classes, "b", DummyConnector)

@@ -2,23 +2,30 @@ import socket
 import ssl
 from app.connectors.irc_connector import IRCConnector
 
+
 class DummySocket:
     def __init__(self):
         self.sent = []
         self.to_recv = [b"PING :server\r\n", b":u!u@h PRIVMSG #chan :hello\r\n"]
         self.closed = False
+
     def sendall(self, data):
         self.sent.append(data)
+
     def recv(self, n):
         return self.to_recv.pop(0)
+
     def close(self):
         self.closed = True
+
     def getpeername(self):
         return ("host", 6667)
+
 
 class DummyContext:
     def __init__(self):
         self.wrapped = None
+
     def wrap_socket(self, sock, server_hostname=None):
         self.wrapped = sock
         return sock

@@ -3,6 +3,7 @@ from typing import Any, List, Optional
 
 from .base_connector import BaseConnector
 
+
 class BroadcastConnector(BaseConnector):
     """Connector that forwards messages to multiple other connectors."""
 

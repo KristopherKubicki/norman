@@ -9,13 +9,16 @@ from app.core.logging import setup_logger
 
 logger = setup_logger(__name__)
 
+
 class MCPConnector(BaseConnector):
     """Connector for interacting with an MCP service."""
 
-    id = 'mcp'
-    name = 'MCP'
+    id = "mcp"
+    name = "MCP"
 
-    def __init__(self, api_url: str, api_key: str, config: Optional[dict] = None) -> None:
+    def __init__(
+        self, api_url: str, api_key: str, config: Optional[dict] = None
+    ) -> None:
         super().__init__(config)
         self.api_url = api_url.rstrip("/")
         self.api_key = api_key
@@ -43,7 +46,9 @@ class MCPConnector(BaseConnector):
             while True:
                 try:
                     resp = await client.get(
-                        self.api_url, headers={"Authorization": f"Bearer {self.api_key}"}, params={"since": last} if last else None
+                        self.api_url,
+                        headers={"Authorization": f"Bearer {self.api_key}"},
+                        params={"since": last} if last else None,
                     )
                     resp.raise_for_status()
                     messages = resp.json() if resp.content else []

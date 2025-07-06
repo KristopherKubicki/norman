@@ -6,13 +6,16 @@ from starlette.datastructures import MutableHeaders
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token")
 
+
 async def auth_middleware(request: Request, call_next):
     token = request.cookies.get("access_token", None)
 
     path = request.url.path
 
     if token is None:
-        if (path.endswith(".html") or path in ("/", "/index.html")) and path != "/login.html":
+        if (
+            path.endswith(".html") or path in ("/", "/index.html")
+        ) and path != "/login.html":
             return RedirectResponse(url="/login.html", status_code=303)
     elif request.url.path == "/login.html":
         # If the user already has a valid token, redirect them away from the
@@ -34,15 +37,16 @@ async def auth_middleware(request: Request, call_next):
             # Set the token in the Authorization header
             headers = MutableHeaders(scope=request.scope)
             headers["Authorization"] = f"Bearer {token}"
-            request.scope['headers'] = headers.items()
+            request.scope["headers"] = headers.items()
             token = await oauth2_scheme(request)
             current_user = await get_current_user(token)
         except HTTPException as e:
             if e.status_code == 401:
-                #return Response(content="Unauthorized", status_code=401)
-                return RedirectResponse(url="/login.html", content="Unauthorized", status_code=401)
+                # return Response(content="Unauthorized", status_code=401)
+                return RedirectResponse(
+                    url="/login.html", content="Unauthorized", status_code=401
+                )
             raise e
 
     response = await call_next(request)
     return response
-
