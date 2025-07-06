@@ -18,4 +18,5 @@ nats_subject: "norman"
 
 ## Usage
 
-The connector publishes messages to the configured subject and can also subscribe to that subject to process incoming messages.
+The connector publishes messages to the configured subject and can also subscribe to that subject to process incoming
+messages.

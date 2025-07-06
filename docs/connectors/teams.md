@@ -1,6 +1,7 @@
 # Microsoft Teams Connector
 
-The Microsoft Teams connector enables Norman to interact with Microsoft Teams channels. This document provides information on how to set up and configure the Microsoft Teams connector for use with Norman.
+The Microsoft Teams connector enables Norman to interact with Microsoft Teams channels. This document provides
+information on how to set up and configure the Microsoft Teams connector for use with Norman.
 
 ## Requirements
 
@@ -14,7 +15,8 @@ To use the Microsoft Teams connector, you need the following:
 To configure the Microsoft Teams connector, follow these steps:
 
 1. Go to the [Azure Portal](https://portal.azure.com/) and sign in with your Microsoft account.
-2. Create a new App Registration, or use an existing one, in the "App registrations" section under "Azure Active Directory".
+2. Create a new App Registration, or use an existing one, in the "App registrations" section under "Azure Active
+   Directory".
 3. In the "Overview" section, note the Application (client) ID and Directory (tenant) ID.
 4. In the "Certificates & secrets" section, create a new Client secret and note its value.
 5. Set up the necessary API permissions for the Microsoft Graph API under "API permissions".
@@ -38,7 +40,9 @@ Replace the values with the appropriate information for your Microsoft Teams set
 
 ## Usage
 
-Once you have configured the Microsoft Teams connector, Norman will connect to the specified Microsoft Teams workspace and channels, and start listening for incoming messages. When a message is received, Norman will process it according to the configured channel filters and actions, and send a response back to the Microsoft Teams channel.
+Once you have configured the Microsoft Teams connector, Norman will connect to the specified Microsoft Teams workspace
+and channels, and start listening for incoming messages. When a message is received, Norman will process it according to
+the configured channel filters and actions, and send a response back to the Microsoft Teams channel.
 
 ## Troubleshooting
 
@@ -48,4 +52,5 @@ If you encounter issues when using the Microsoft Teams connector, please check t
 2. Make sure the necessary API permissions are granted for the Microsoft Graph API.
 3. Check that the channels you want to join are spelled correctly and exist in the workspace.
 
-If you continue to experience issues, consult the Norman logs for any error messages or warnings that might provide more information about the problem.
+If you continue to experience issues, consult the Norman logs for any error messages or warnings that might provide more
+information about the problem.

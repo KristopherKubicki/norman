@@ -1,6 +1,7 @@
 # AWS IoT Core Connector
 
-The AWS IoT Core connector publishes MQTT messages using the `boto3` IoT Data client and can optionally subscribe to topics via MQTT.
+The AWS IoT Core connector publishes MQTT messages using the `boto3` IoT Data client and can optionally subscribe to
+topics via MQTT.
 
 ## Requirements
 
@@ -23,4 +24,5 @@ aws_iot_core_ca_path: "path/to/ca.pem"               # optional
 
 ## Usage
 
-If the optional certificate paths are provided and the `paho-mqtt` library is installed, the connector will also subscribe to the configured topic using TLS.
+If the optional certificate paths are provided and the `paho-mqtt` library is installed, the connector will also
+subscribe to the configured topic using TLS.

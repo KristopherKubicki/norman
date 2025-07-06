@@ -15,4 +15,5 @@ snmp_community: "public"
 ```
 
 ## Usage
-This implementation sends a basic trap with the message text as payload and can listen for inbound traps to process them.
+This implementation sends a basic trap with the message text as payload and can listen for inbound traps to process
+them.

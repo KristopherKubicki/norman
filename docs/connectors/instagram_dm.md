@@ -13,4 +13,5 @@ instagram_user_id: "your_instagram_user_id"
 
 ## Usage
 
-Once configured, Norman can send and receive direct messages via Instagram. The current implementation is a stub meant to be extended for your preferred integration method.
+Once configured, Norman can send and receive direct messages via Instagram. The current implementation is a stub meant
+to be extended for your preferred integration method.

@@ -1,6 +1,8 @@
 # MCP Connector
 
-The MCP connector integrates Norman with a Model Context Protocol (MCP) service. MCP servers expose tools to the Agents SDK so that LLMs can interact with external systems.  Norman can forward webhooks from an MCP server and access its tools.
+The MCP connector integrates Norman with a Model Context Protocol (MCP) service. MCP servers expose tools to the Agents
+SDK so that LLMs can interact with external systems.  Norman can forward webhooks from an MCP server and access its
+tools.
 
 ## Requirements
 
@@ -23,7 +25,9 @@ The fields are:
 
 ## Usage
 
-Once configured, Norman will initialize the MCP connector at startup. Incoming updates can be posted to `/api/v1/connectors/mcp/webhooks/mcp`. The connector can also be used programmatically to list and call tools from the MCP server.
+Once configured, Norman will initialize the MCP connector at startup. Incoming updates can be posted to
+`/api/v1/connectors/mcp/webhooks/mcp`. The connector can also be used programmatically to list and call tools from the
+MCP server.
 
 ## Troubleshooting
 

@@ -1,6 +1,7 @@
 # Google Chat Connector
 
-The Google Chat connector allows Norman to send messages to Google Chat spaces. This document describes how to set up and configure the connector.
+The Google Chat connector allows Norman to send messages to Google Chat spaces. This document describes how to set up
+and configure the connector.
 
 ## Requirements
 

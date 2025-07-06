@@ -13,4 +13,5 @@ imessage_phone_number: "your_imessage_phone_number"
 
 ## Usage
 
-Once these settings are in place, Norman can send and receive iMessage messages via the configured service. The implementation is a stub that can be expanded to integrate with your chosen gateway.
+Once these settings are in place, Norman can send and receive iMessage messages via the configured service. The
+implementation is a stub that can be expanded to integrate with your chosen gateway.

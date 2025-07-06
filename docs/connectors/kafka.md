@@ -18,4 +18,5 @@ kafka_topic: "norman"
 
 ## Usage
 
-The connector publishes messages to the configured topic and also listens on the same topic to process incoming messages.
+The connector publishes messages to the configured topic and also listens on the same topic to process incoming
+messages.

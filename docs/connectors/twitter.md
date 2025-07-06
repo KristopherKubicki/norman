@@ -16,4 +16,5 @@ twitter_recipient_id: "the_user_id_to_message"
 
 ## Usage
 
-With these values provided, Norman can send direct messages using the Twitter API via Tweepy. Incoming message support is not yet implemented.
+With these values provided, Norman can send direct messages using the Twitter API via Tweepy. Incoming message support
+is not yet implemented.
