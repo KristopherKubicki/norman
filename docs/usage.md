@@ -122,7 +122,7 @@ curl http://localhost:8000/api/v1/connectors/available
 
 Authentication headers may be required depending on your configuration.
 
-### Rate limiting
+### Rate Limiting
 
 Norman applies a simple IP based rate limit to API requests. The limits can be
 adjusted via `rate_limit_requests` and `rate_limit_window_seconds` in
