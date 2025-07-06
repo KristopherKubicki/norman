@@ -53,9 +53,10 @@ Norman is an open-source chatbot that leverages OpenAI's GPT models to assist an
 
 ### Prerequisites
 
- - Python 3.8, 3.9, 3.10, or 3.11
+- Python 3.8, 3.9, 3.10, or 3.11
 - pip
 - SQLite
+- PyYAML
 - virtualenv (optional)
 
 ### Installation
