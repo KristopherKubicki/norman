@@ -22,7 +22,8 @@ smtp_to_address: "destination@example.com"
 
 ## Usage
 
-When enabled, Norman can send messages through the configured SMTP server. Incoming messages are not supported for this connector.
+When enabled, Norman can send messages through the configured SMTP server. Incoming messages are not supported for this
+connector.
 
 ## Troubleshooting
 

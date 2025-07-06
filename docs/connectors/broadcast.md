@@ -12,4 +12,5 @@ broadcast_connectors: "slack,discord"
 
 ## Usage
 
-When instantiated, `BroadcastConnector` sends each message to all configured connectors. Use this to mirror output across several platforms.
+When instantiated, `BroadcastConnector` sends each message to all configured connectors. Use this to mirror output
+across several platforms.

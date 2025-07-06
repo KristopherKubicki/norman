@@ -1,6 +1,7 @@
 # Norman Documentation
 
-Welcome to the Norman documentation! Here you'll find everything you need to know about setting up, using, and extending Norman.
+Welcome to the Norman documentation! Here you'll find everything you need to know about setting up, using, and extending
+Norman.
 
 ## Table of Contents
 
@@ -17,5 +18,7 @@ Welcome to the Norman documentation! Here you'll find everything you need to kno
 
 ## Getting Started
 
-If you're new to Norman, we recommend starting with the [Usage](usage.md) guide to learn how to set up and use the application. From there, you can explore the other sections of the documentation to learn more about Norman's features and how to extend its capabilities.
+If you're new to Norman, we recommend starting with the [Usage](usage.md) guide to learn how to set up and use the
+application. From there, you can explore the other sections of the documentation to learn more about Norman's features
+and how to extend its capabilities.
 

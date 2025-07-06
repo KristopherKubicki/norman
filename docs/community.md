@@ -1,6 +1,7 @@
 # Community
 
-Welcome to the Norman community! We're glad to have you here. This document provides information about how you can get involved, interact with others, and contribute to the project.
+Welcome to the Norman community! We're glad to have you here. This document provides information about how you can get
+involved, interact with others, and contribute to the project.
 
 ## Table of Contents
 
@@ -14,19 +15,23 @@ Welcome to the Norman community! We're glad to have you here. This document prov
 
 ## Code of Conduct
 
-Please read and follow our [Code of Conduct](CODE_OF_CONDUCT.md) to maintain a welcoming, inclusive, and respectful environment for everyone.
+Please read and follow our [Code of Conduct](CODE_OF_CONDUCT.md) to maintain a welcoming, inclusive, and respectful
+environment for everyone.
 
 ## Mailing List
 
-Join our mailing list to stay informed about the latest news, updates, and announcements related to Norman. You can sign up [here](https://mailinglist.example.com).
+Join our mailing list to stay informed about the latest news, updates, and announcements related to Norman. You can sign
+up [here](https://mailinglist.example.com).
 
 ## Discussion Forums
 
-Participate in our discussion forums to ask questions, share your experiences, and engage in conversations with other community members. You can find our forums at [https://forums.example.com](https://forums.example.com).
+Participate in our discussion forums to ask questions, share your experiences, and engage in conversations with other
+community members. You can find our forums at [https://forums.example.com](https://forums.example.com).
 
 ## Chat Rooms
 
-Join our chat rooms to interact with other community members in real-time. We use [Slack](https://slack.com) for our chat platform. You can request an invitation [here](https://slack-invite.example.com).
+Join our chat rooms to interact with other community members in real-time. We use [Slack](https://slack.com) for our
+chat platform. You can request an invitation [here](https://slack-invite.example.com).
 
 ## Social Media
 
@@ -38,12 +43,15 @@ Follow us on social media to stay up-to-date with the latest news and updates:
 
 ## Meetups and Events
 
-Attend local meetups and events to connect with other community members, learn from experts, and share your knowledge. Check our [events page](https://events.example.com) for upcoming meetups and conferences.
+Attend local meetups and events to connect with other community members, learn from experts, and share your knowledge.
+Check our [events page](https://events.example.com) for upcoming meetups and conferences.
 
 ## Contributing
 
-We encourage you to contribute to the project and help us improve Norman. Please read our [Contributing Guide](CONTRIBUTING.md) to learn more about how you can get involved.
+We encourage you to contribute to the project and help us improve Norman. Please read our [Contributing
+Guide](CONTRIBUTING.md) to learn more about how you can get involved.
 
 ---
 
-You can add this file to your `docs` directory and link to it from your `README.md` or other relevant documentation. Make sure to update the example links with your actual project's links.
+You can add this file to your `docs` directory and link to it from your `README.md` or other relevant documentation.
+Make sure to update the example links with your actual project's links.

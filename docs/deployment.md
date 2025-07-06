@@ -1,6 +1,7 @@
 # Deployment
 
-This document outlines the steps to deploy Norman on a server or cloud provider. The guide covers installation, configuration, and basic maintenance tasks.
+This document outlines the steps to deploy Norman on a server or cloud provider. The guide covers installation,
+configuration, and basic maintenance tasks.
 
 ## Table of Contents
 
@@ -103,7 +104,9 @@ If you encounter issues during deployment or operation, consult the following re
 
 - Norman's [GitHub Issues](https://github.com/KristopherKubicki/norman/issues) for known problems and solutions.
 - The [FastAPI documentation](https://fastapi.tiangolo.com/) for general information on the web framework.
-- The [Python logging documentation](https://docs.python.org/3/library/logging.html) for guidance on configuring and troubleshooting logging.
+- The [Python logging documentation](https://docs.python.org/3/library/logging.html) for guidance on configuring and
+  troubleshooting logging.
 - Norman exposes a simple health check at `/health` that can be polled by monitoring systems.
 
-Feel free to modify and expand this document to include any additional information or steps specific to your project or deployment preferences.
+Feel free to modify and expand this document to include any additional information or steps specific to your project or
+deployment preferences.

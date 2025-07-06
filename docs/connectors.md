@@ -1,6 +1,8 @@
 # Connectors
 
-Connectors are the way Norman interacts with different chat platforms. They handle sending and receiving messages from various services, allowing you to use Norman with a wide range of platforms. This document describes the available connectors and how to use them.
+Connectors are the way Norman interacts with different chat platforms. They handle sending and receiving messages from
+various services, allowing you to use Norman with a wide range of platforms. This document describes the available
+connectors and how to use them.
 
 ## Available Connectors
 
@@ -80,11 +82,15 @@ The following connectors are currently supported:
 
 ## Usage
 
-To use a specific connector, you'll need to provide the necessary configuration details and credentials for that platform. This usually involves creating a bot or app on the respective platform and obtaining API keys, tokens, or other authentication details.
+To use a specific connector, you'll need to provide the necessary configuration details and credentials for that
+platform. This usually involves creating a bot or app on the respective platform and obtaining API keys, tokens, or
+other authentication details.
 
 ### Configuration
 
-You'll need to update the `config.yaml` file with the appropriate settings for the connector you want to use. The required settings may vary depending on the platform. Here's an example of what the configuration for a Slack connector might look like:
+You'll need to update the `config.yaml` file with the appropriate settings for the connector you want to use. The
+required settings may vary depending on the platform. Here's an example of what the configuration for a Slack connector
+might look like:
 
 ```yaml
 connectors:
@@ -93,11 +99,15 @@ connectors:
     channel: "your-slack-channel"
 ```
 
-For other connectors, consult the platform-specific documentation for information on obtaining the necessary credentials and configuring the connector.
+For other connectors, consult the platform-specific documentation for information on obtaining the necessary credentials
+and configuring the connector.
 
 ### Extending Norman with New Connectors
 
-You can extend Norman with new connectors by creating a new class that inherits from `BaseConnector`. Implement `send_message` and optionally `connect` and `disconnect` for any setup or teardown logic. Messages can be queued with `queue_message` and will be dispatched while `run()` is active. Place the new file inside the `app/connectors` package with a name ending in `_connector.py` so it can be auto-discovered.
+You can extend Norman with new connectors by creating a new class that inherits from `BaseConnector`. Implement
+`send_message` and optionally `connect` and `disconnect` for any setup or teardown logic. Messages can be queued with
+`queue_message` and will be dispatched while `run()` is active. Place the new file inside the `app/connectors` package
+with a name ending in `_connector.py` so it can be auto-discovered.
 
 ## More Information
 

@@ -22,7 +22,8 @@ zulip_topic: "Norman"
 
 ## Usage
 
-With these values provided, Norman will be able to send messages to the given stream and topic. Receiving messages has not been implemented yet.
+With these values provided, Norman will be able to send messages to the given stream and topic. Receiving messages has
+not been implemented yet.
 
 ## Troubleshooting
 

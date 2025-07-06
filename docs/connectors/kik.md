@@ -12,4 +12,5 @@ kik_api_key: "your_kik_api_key"
 
 ## Usage
 
-With these values provided, Norman can send messages through Kik using the built-in API integration. Incoming messages should be delivered to Norman via a webhook endpoint.
+With these values provided, Norman can send messages through Kik using the built-in API integration. Incoming messages
+should be delivered to Norman via a webhook endpoint.

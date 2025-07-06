@@ -1,6 +1,7 @@
 # REST Callback Connector
 
-The REST Callback connector allows Norman to forward messages to an arbitrary REST endpoint. It is useful for integrating with external services that expose a simple HTTP interface.
+The REST Callback connector allows Norman to forward messages to an arbitrary REST endpoint. It is useful for
+integrating with external services that expose a simple HTTP interface.
 
 ## Requirements
 
@@ -18,7 +19,8 @@ rest_callback_url: "https://example.com/callback"
 
 ## Usage
 
-When enabled, Norman will send POST requests with the message data to the configured endpoint whenever this connector is used.
+When enabled, Norman will send POST requests with the message data to the configured endpoint whenever this connector is
+used.
 
 ## Troubleshooting
 

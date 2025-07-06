@@ -1,6 +1,7 @@
 # Usage
 
-This document provides an overview of how to interact with Norman, including creating and configuring chatbots, setting up channel filters and actions, and examples of common use-cases and automations.
+This document provides an overview of how to interact with Norman, including creating and configuring chatbots, setting
+up channel filters and actions, and examples of common use-cases and automations.
 
 ## Table of Contents
 
@@ -51,11 +52,16 @@ To create an action:
 
 Here are some example use-cases for Norman:
 
-1. **Helpdesk Automation:** Create a channel filter that detects when users mention "helpdesk" in a customer support channel. When the filter is triggered, Norman can investigate the issue, summarize its findings, and reply in an internal helpdesk channel.
-2. **Meeting Scheduling:** Create a channel filter that detects when users request a meeting. Norman can then check participants' calendars, find an available time, and send out calendar invites.
-3. **Automated Code Review:** Create a channel filter that detects when users submit pull requests. Norman can then analyze the code, provide suggestions or corrections, and post a review comment on the pull request.
+1. **Helpdesk Automation:** Create a channel filter that detects when users mention "helpdesk" in a customer support
+   channel. When the filter is triggered, Norman can investigate the issue, summarize its findings, and reply in an
+   internal helpdesk channel.
+2. **Meeting Scheduling:** Create a channel filter that detects when users request a meeting. Norman can then check
+   participants' calendars, find an available time, and send out calendar invites.
+3. **Automated Code Review:** Create a channel filter that detects when users submit pull requests. Norman can then
+   analyze the code, provide suggestions or corrections, and post a review comment on the pull request.
 
-Remember to expand on these sections and provide more detailed information based on your project's specific features and requirements.
+Remember to expand on these sections and provide more detailed information based on your project's specific features and
+requirements.
 
 ## First Run
 
@@ -85,7 +91,8 @@ chmod +x generate_key.sh
 ```
 
 3. Start Norman with `python main.py` and open `http://localhost:8000` in your browser.
-4. Log in with the admin credentials from `config.yaml`, create a chatbot and select the Slack connector. Messages posted in the configured channel will be processed by the bot.
+4. Log in with the admin credentials from `config.yaml`, create a chatbot and select the Slack connector. Messages
+   posted in the configured channel will be processed by the bot.
 5. When a bot is generating a reply, the interface displays a *Thinking...* indicator so you know it's working.
 
 ## API Examples

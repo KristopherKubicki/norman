@@ -1,6 +1,7 @@
 # Salesforce Connector
 
-The Salesforce connector posts data to a Salesforce REST endpoint. Use it to integrate Norman with your Salesforce workflows.
+The Salesforce connector posts data to a Salesforce REST endpoint. Use it to integrate Norman with your Salesforce
+workflows.
 
 ## Requirements
 

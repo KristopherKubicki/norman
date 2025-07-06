@@ -25,7 +25,8 @@ python main.py
 ```
 
 4. Visit `http://localhost:8000` and log in with the admin credentials from `config.yaml`.
-5. Create a chatbot in the Web UI and select the Slack connector. Messages sent to the configured channel will be processed by the bot.
+5. Create a chatbot in the Web UI and select the Slack connector. Messages sent to the configured channel will be
+   processed by the bot.
 
 ## API Examples
 
