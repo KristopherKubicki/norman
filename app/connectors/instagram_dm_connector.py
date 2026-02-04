@@ -52,3 +52,18 @@ class InstagramDMConnector(BaseConnector):
     async def process_incoming(self, message: Any) -> Any:
         """Return the incoming ``message`` payload."""
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the access token is valid."""
+        if not super().is_connected():
+            return False
+        try:
+            resp = httpx.get(
+                f"https://graph.facebook.com/v17.0/{self.user_id}",
+                params={"access_token": self.access_token},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            return True
+        except httpx.HTTPError:
+            return False

@@ -85,3 +85,7 @@ class OPCUAPubSubConnector(BaseConnector):
     async def process_incoming(self, message: Any) -> Any:
         # Placeholder for processing inbound OPC UA messages
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the connector is configured."""
+        return super().is_connected()

@@ -10,7 +10,7 @@ class Bot(Base):
     description = Column(String, nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"))
     session_id = Column(String, nullable=True)
-    gpt_model = Column(String, nullable=False, default="gpt-4.1-mini")
+    gpt_model = Column(String, nullable=False, default="gpt-5-mini")
     system_prompt = Column(
         String, nullable=False, default="You are a helpful assistant."
     )

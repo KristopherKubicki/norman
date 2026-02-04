@@ -1,3 +1,4 @@
+import httpx
 from .base_connector import BaseConnector
 
 
@@ -24,3 +25,18 @@ class LinkedInConnector(BaseConnector):
     async def process_incoming(self, message):
         """Return the incoming ``message`` payload."""
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the token can access LinkedIn."""
+        if not super().is_connected():
+            return False
+        try:
+            resp = httpx.get(
+                "https://api.linkedin.com/v2/me",
+                headers={"Authorization": f"Bearer {self.access_token}"},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            return True
+        except httpx.HTTPError:
+            return False

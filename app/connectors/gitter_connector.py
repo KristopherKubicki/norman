@@ -37,3 +37,17 @@ class GitterConnector(BaseConnector):
 
     async def process_incoming(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         return payload
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the token can access the room."""
+        if not super().is_connected():
+            return False
+        try:
+            url = f"https://api.gitter.im/v1/rooms/{self.room_id}"
+            resp = httpx.get(
+                url, headers={"Authorization": f"Bearer {self.token}"}, timeout=10
+            )
+            resp.raise_for_status()
+            return True
+        except httpx.HTTPError:
+            return False

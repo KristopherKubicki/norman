@@ -78,3 +78,9 @@ class KafkaConnector(BaseConnector):
 
     async def process_incoming(self, message: str) -> str:
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the client library is available."""
+        if not super().is_connected():
+            return False
+        return Producer is not None and Consumer is not None

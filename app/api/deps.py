@@ -1,4 +1,4 @@
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 
@@ -7,7 +7,7 @@ from app.models import User
 from app.core.security import decode_access_token
 from app.crud.user import get_user_by_email
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token", auto_error=False)
 
 
 def get_db():
@@ -30,7 +30,7 @@ async def get_async_db():
         db.close()
 
 
-async def get_current_user(token: str = Depends(oauth2_scheme)):
+async def get_current_user(request: Request, token: str = Depends(oauth2_scheme)):
     """Return the current authenticated user.
 
     Args:
@@ -43,7 +43,9 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         HTTPException: If authentication fails or user does not exist.
     """
 
-    email = decode_access_token(token)
+    if not token:
+        token = request.cookies.get("access_token")
+    email = decode_access_token(token) if token else None
     if email is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

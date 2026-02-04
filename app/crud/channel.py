@@ -5,6 +5,7 @@ from typing import List, Optional
 from sqlalchemy.orm import Session
 
 from app.models.channel import Channel as ChannelModel
+from app.models.connectors import Connector as ConnectorModel
 from app.schemas.channel import ChannelCreate, ChannelUpdate
 
 
@@ -16,6 +17,30 @@ def get(db: Session, channel_id: int) -> Optional[ChannelModel]:
 def get_multi(db: Session, skip: int = 0, limit: int = 100) -> List[ChannelModel]:
     """Return multiple channels."""
     return db.query(ChannelModel).offset(skip).limit(limit).all()
+
+
+def get_multi_by_user(
+    db: Session, user_id: int, skip: int = 0, limit: int = 100
+) -> List[ChannelModel]:
+    """Return channels owned by a user via connector ownership."""
+    return (
+        db.query(ChannelModel)
+        .join(ConnectorModel, ChannelModel.connector_id == ConnectorModel.id)
+        .filter(ConnectorModel.user_id == user_id)
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+
+def get_for_user(db: Session, channel_id: int, user_id: int) -> Optional[ChannelModel]:
+    """Return a channel if it belongs to the user."""
+    return (
+        db.query(ChannelModel)
+        .join(ConnectorModel, ChannelModel.connector_id == ConnectorModel.id)
+        .filter(ChannelModel.id == channel_id, ConnectorModel.user_id == user_id)
+        .first()
+    )
 
 
 def create(db: Session, obj_in: ChannelCreate) -> ChannelModel:

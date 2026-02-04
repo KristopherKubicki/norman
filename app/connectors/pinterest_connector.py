@@ -56,3 +56,18 @@ class PinterestConnector(BaseConnector):
 
     async def process_incoming(self, message: Any) -> Any:
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the access token is valid."""
+        if not super().is_connected():
+            return False
+        try:
+            resp = httpx.get(
+                f"{self.api_url}/user_account",
+                headers=self._headers(),
+                timeout=10,
+            )
+            resp.raise_for_status()
+            return True
+        except httpx.HTTPError:
+            return False

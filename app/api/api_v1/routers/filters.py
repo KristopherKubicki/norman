@@ -9,6 +9,7 @@ from app.api import deps
 router = APIRouter(prefix="/filters", tags=["filters"])
 
 
+@router.get("", response_model=List[schemas.Filter])
 @router.get("/", response_model=List[schemas.Filter])
 def read_filters(
     db: Session = Depends(deps.get_db),
@@ -30,6 +31,7 @@ def read_filters(
     return filters
 
 
+@router.post("", response_model=schemas.Filter)
 @router.post("/", response_model=schemas.Filter)
 def create_filter(
     *, db: Session = Depends(deps.get_db), filter_in: schemas.FilterCreate
@@ -53,7 +55,7 @@ def update_filter(
     *,
     db: Session = Depends(deps.get_db),
     filter_id: int,
-    filter_in: schemas.FilterUpdate
+    filter_in: schemas.FilterUpdate,
 ) -> Any:
     """Update an existing filter.
 

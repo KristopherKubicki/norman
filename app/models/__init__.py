@@ -3,7 +3,10 @@
 from .action import Action
 from .bot import Bot
 from .channel import Channel
+from .channel_message import ChannelMessage
 from .channel_filter import Filter
 from .interaction import Interaction
 from .user import User
 from .message import Message
+from .connectors import Connector
+from .routing import RoutingRule, RoutingEvent, RoutingJob

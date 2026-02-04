@@ -1,44 +1,60 @@
 {% extends "base.html" %}
 
-{% block extra_css %}
-<!-- Add any extra CSS required for this template here -->
-{% endblock %}
-
 {% block content %}
-<h1>Bots</h1>
+<div class="d-flex align-items-center justify-content-between mb-3">
+  <div>
+    <h1 class="mb-1">Bots</h1>
+    <div class="text-muted">Create bots, then test responses in one place.</div>
+  </div>
+</div>
 
-<div class="row">
-  <div class="col-md-3">
-    <div class="search-container mb-3">
-      <input type="text" placeholder="Search bots..." class="form-control search-input">
-    </div>
-
-    <form id="add-bot-form" class="card card-body mb-4">
-      <div class="mb-3">
+<div class="row g-4">
+  <div class="col-lg-4">
+    <div id="bots-status" class="alert alert-info d-none" role="alert"></div>
+    <div class="card p-3 mb-3">
+      <div class="d-flex align-items-center justify-content-between mb-2">
+        <h2 class="h6 mb-0">Create Bot</h2>
+      </div>
+      <form id="add-bot-form" class="d-grid gap-2">
         <label for="bot-name" class="form-label">Bot Name</label>
         <input type="text" id="bot-name" class="form-control" required />
-      </div>
-      <div class="mb-3">
         <label for="bot-description" class="form-label">Description</label>
         <input type="text" id="bot-description" class="form-control" />
-      </div>
-      <button type="submit" class="btn btn-primary">Add Bot</button>
-    </form>
+        <button type="submit" class="btn btn-primary">Create Bot</button>
+      </form>
+    </div>
 
-    <div class="bots-container list-group">
-      <!-- Bots will be dynamically added here -->
+    <div class="card p-3">
+      <div class="d-flex align-items-center justify-content-between mb-2">
+        <h2 class="h6 mb-0">Your Bots</h2>
+        <span class="badge bg-light text-dark" id="bots-count">0</span>
+      </div>
+      <input type="text" placeholder="Search bots..." class="form-control form-control-sm mb-2" id="botSearch">
+      <div class="bots-container list-group menu-list">
+        <!-- Bots will be dynamically added here -->
+      </div>
     </div>
   </div>
 
-  <div class="col-md-9 d-flex flex-column">
-    <h2>Selected Bot: <span id="selected-bot-name">None</span></h2>
-    <div class="messages-container flex-grow-1 mb-2">
-      <!-- Messages will be dynamically added here -->
-    </div>
-    <div class="input-message-container d-flex flex-column flex-sm-row">
-      <textarea id="input-message" rows="1" class="form-control me-sm-2 mb-2 mb-sm-0" placeholder="Pick a bot..." disabled></textarea>
-      <button id="send-message" class="btn btn-primary" disabled>Send</button>
-      <div id="spinner" class="spinner" style="display: none;"></div>
+  <div class="col-lg-8 d-flex flex-column">
+    <div class="card p-3 flex-grow-1">
+      <div class="d-flex align-items-center justify-content-between mb-2">
+        <div>
+          <h2 class="h5 mb-1">Selected Bot</h2>
+          <div class="text-muted small" id="selected-bot-meta">Pick a bot to start.</div>
+        </div>
+        <span class="badge bg-light text-dark" id="selected-bot-name">None</span>
+      </div>
+      <div class="messages-container flex-grow-1 mb-2">
+        <!-- Messages will be dynamically added here -->
+      </div>
+      <div class="input-message-container">
+        <div class="input-group flex-column flex-sm-row">
+          <textarea id="input-message" rows="1" class="form-control me-sm-2 mb-2 mb-sm-0" placeholder="Pick a bot..." disabled></textarea>
+          <button id="send-message" class="btn btn-primary" disabled>Send</button>
+          <div id="spinner" class="spinner" style="display: none;"></div>
+        </div>
+      </div>
     </div>
   </div>
 </div>
@@ -79,35 +95,6 @@
   </div>
 </div>
 
-<script>
-
-
-var textarea = document.getElementById('input-message');
-
-textarea.addEventListener('input', () => {
-  // Temporarily set the height to 'auto' so the scrollHeight property will give us the full height of the content
-  textarea.style.height = 'auto';
-
-  // Now set the height to the content's full height (but not more than max-height)
-  // The 'Math.min' part is not necessary if you don't have a max-height
-  textarea.style.height = Math.min(textarea.scrollHeight, 300) + 'px';
-});
-textarea.dispatchEvent(new Event('input'));
-
-
-var sendButton = document.getElementById("send-message");
-textarea.addEventListener('keydown', function(e) {
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault();
-    sendButton.click();
-  }
-});
-
-
-</script>
-
-<script src="/static/js/marked.min.js" defer></script>
-<script src="/static/js/bots.js" defer></script>
+<script src="{{ url_for('static', path='js/marked.min.js') }}" defer></script>
+<script src="{{ url_for('static', path='js/bots.js') }}" defer></script>
 {% endblock %}
-
-

@@ -84,3 +84,7 @@ class ToxConnector(BaseConnector):
                 asyncio.create_task(result)
         except Exception:  # pylint: disable=broad-except
             logger.exception("Error processing Tox message from %s", friend_number)
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the connector is configured."""
+        return super().is_connected()

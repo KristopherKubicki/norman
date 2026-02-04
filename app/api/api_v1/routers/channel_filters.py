@@ -5,14 +5,17 @@ from sqlalchemy.orm import Session
 
 from app import crud, models
 from app.schemas import FilterCreate, FilterUpdate, Filter
-from app.api.deps import get_db
+from app.api.deps import get_db, get_current_user
+from app.models import User
 
 router = APIRouter()
 
 
 @router.post("/filters/", response_model=Filter, status_code=status.HTTP_201_CREATED)
 async def create_channel_filter(
-    channel_filter: FilterCreate, db: Session = Depends(get_db)
+    channel_filter: FilterCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> Filter:
     """Create a new channel filter.
 
@@ -23,11 +26,17 @@ async def create_channel_filter(
     Returns:
         The created filter instance.
     """
+    channel = crud.channel.get_for_user(db, channel_filter.channel_id, current_user.id)
+    if not channel:
+        raise HTTPException(status_code=404, detail="Channel not found")
     return crud.channel_filter.create(db, obj_in=channel_filter)
 
 
 @router.get("/filters/", response_model=List[Filter])
-async def get_filters(db: Session = Depends(get_db)) -> List[Filter]:
+async def get_filters(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> List[Filter]:
     """Return all channel filters.
 
     Args:
@@ -36,12 +45,14 @@ async def get_filters(db: Session = Depends(get_db)) -> List[Filter]:
     Returns:
         List of channel filters.
     """
-    return db.query(models.Filter).all()
+    return crud.channel_filter.get_multi_by_user(db, current_user.id)
 
 
 @router.get("/filters/{channel_filter_id}", response_model=Filter)
 async def get_channel_filter(
-    channel_filter_id: int, db: Session = Depends(get_db)
+    channel_filter_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> Filter:
     """Fetch a channel filter by ID.
 
@@ -55,7 +66,9 @@ async def get_channel_filter(
     Raises:
         HTTPException: If the filter does not exist.
     """
-    filter_obj = crud.channel_filter.get(db, channel_filter_id)
+    filter_obj = crud.channel_filter.get_for_user(
+        db, channel_filter_id, current_user.id
+    )
     if not filter_obj:
         raise HTTPException(status_code=404, detail="Filter not found")
     return filter_obj
@@ -66,6 +79,7 @@ async def update_channel_filter(
     channel_filter_id: int,
     channel_filter: FilterUpdate,
     db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> Filter:
     """Update an existing channel filter.
 
@@ -80,6 +94,15 @@ async def update_channel_filter(
     Raises:
         HTTPException: If the filter does not exist.
     """
+    existing = crud.channel_filter.get_for_user(db, channel_filter_id, current_user.id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Filter not found")
+    if channel_filter.channel_id is not None:
+        channel = crud.channel.get_for_user(
+            db, channel_filter.channel_id, current_user.id
+        )
+        if not channel:
+            raise HTTPException(status_code=404, detail="Channel not found")
     updated = crud.channel_filter.update(db, channel_filter_id, channel_filter)
     if not updated:
         raise HTTPException(status_code=404, detail="Filter not found")
@@ -88,7 +111,9 @@ async def update_channel_filter(
 
 @router.delete("/filters/{channel_filter_id}", response_model=Filter)
 async def delete_channel_filter(
-    channel_filter_id: int, db: Session = Depends(get_db)
+    channel_filter_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> Filter:
     """Delete a channel filter.
 
@@ -102,6 +127,9 @@ async def delete_channel_filter(
     Raises:
         HTTPException: If the filter does not exist.
     """
+    existing = crud.channel_filter.get_for_user(db, channel_filter_id, current_user.id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Filter not found")
     deleted = crud.channel_filter.delete(db, channel_filter_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Filter not found")

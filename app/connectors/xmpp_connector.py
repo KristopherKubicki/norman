@@ -1,3 +1,4 @@
+import socket
 from typing import Any, List
 
 from .base_connector import BaseConnector
@@ -31,3 +32,17 @@ class XMPPConnector(BaseConnector):
         """Return the incoming ``message`` payload."""
 
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the server is reachable."""
+        if not super().is_connected():
+            return False
+        try:
+            host, port = self.server, 5222
+            if ":" in self.server:
+                host, port_str = self.server.rsplit(":", 1)
+                port = int(port_str)
+            with socket.create_connection((host, port), timeout=5):
+                return True
+        except Exception:
+            return False

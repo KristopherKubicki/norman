@@ -1,11 +1,11 @@
 .PHONY: lint format test
 
 lint:
-	black --check .
-	pylint --rcfile=.pylintrc $(shell git ls-files '*.py')
+	./.venv/bin/ruff format --check .
+	./.venv/bin/ruff check app main.py setup.py
 
 format:
-	black .
+	./.venv/bin/ruff format .
 
 test:
 	pytest -vv

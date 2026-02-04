@@ -64,6 +64,21 @@ class WebhookConnector(BaseConnector):
         await self.send_message(data)
         return data
 
+    def is_connected(self) -> bool:
+        """Return ``True`` if the webhook URL appears reachable."""
+        if not super().is_connected():
+            return False
+        try:
+            resp = httpx.head(self.webhook_url, timeout=10)
+            if resp.status_code >= 500:
+                return False
+            if resp.status_code == 405:
+                resp = httpx.get(self.webhook_url, timeout=10)
+                return resp.status_code < 500
+            return True
+        except httpx.HTTPError:
+            return False
+
 
 class IncomingMessage(BaseModel):
     channel: str

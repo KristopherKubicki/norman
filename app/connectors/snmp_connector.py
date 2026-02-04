@@ -70,3 +70,13 @@ class SNMPConnector(BaseConnector):
 
     async def process_incoming(self, message: str) -> str:
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the host appears reachable."""
+        if not super().is_connected():
+            return False
+        try:
+            socket.gethostbyname(self.host)
+            return True
+        except socket.error:
+            return False

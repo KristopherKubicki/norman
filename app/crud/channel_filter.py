@@ -2,11 +2,33 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from app import models
+from app.models.channel import Channel as ChannelModel
+from app.models.connectors import Connector as ConnectorModel
 from app.schemas.filter import FilterCreate, FilterUpdate
 
 
 def get(db: Session, filter_id: int) -> Optional[models.Filter]:
     return db.query(models.Filter).filter(models.Filter.id == filter_id).first()
+
+
+def get_for_user(db: Session, filter_id: int, user_id: int) -> Optional[models.Filter]:
+    return (
+        db.query(models.Filter)
+        .join(ChannelModel, models.Filter.channel_id == ChannelModel.id)
+        .join(ConnectorModel, ChannelModel.connector_id == ConnectorModel.id)
+        .filter(models.Filter.id == filter_id, ConnectorModel.user_id == user_id)
+        .first()
+    )
+
+
+def get_multi_by_user(db: Session, user_id: int):
+    return (
+        db.query(models.Filter)
+        .join(ChannelModel, models.Filter.channel_id == ChannelModel.id)
+        .join(ConnectorModel, ChannelModel.connector_id == ConnectorModel.id)
+        .filter(ConnectorModel.user_id == user_id)
+        .all()
+    )
 
 
 def create(db: Session, obj_in: FilterCreate) -> models.Filter:

@@ -24,3 +24,7 @@ class DingTalkConnector(BaseConnector):
     async def process_incoming(self, message):
         """Return the incoming ``message`` payload."""
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the connector is configured."""
+        return super().is_connected()

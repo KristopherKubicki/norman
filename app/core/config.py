@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     api_version: str
     api_prefix: str
 
+    # initial setup
+    admin_setup_key: str = "change_me_setup_key"
+
     # initial admin
     initial_admin_email: str = "admin@example.com"
     initial_admin_password: str = "password123"
@@ -20,17 +23,23 @@ class Settings(BaseSettings):
     # Connectors
     telegram_token: str
     telegram_chat_id: str
+    telegram_webhook_secret: str = ""
     slack_token: str
     slack_channel_id: str
+    slack_signing_secret: str = ""
     google_chat_service_account_key_path: str
     google_chat_space: str
     discord_token: str
     discord_channel_id: str
+    discord_webhook_url: str = ""
     teams_app_id: str
     teams_app_password: str
     teams_tenant_id: str
     teams_bot_endpoint: str
+    teams_webhook_url: str = ""
+    teams_scope: str = "https://graph.microsoft.com/.default"
     webhook_secret: str
+    webhook_url: str = ""
     whatsapp_account_sid: str
     whatsapp_auth_token: str
     whatsapp_from_number: str
@@ -59,6 +68,12 @@ class Settings(BaseSettings):
     smtp_password: str
     smtp_from_address: str
     smtp_to_address: str
+    imap_host: str = ""
+    imap_port: int = 993
+    imap_username: str = ""
+    imap_password: str = ""
+    imap_mailbox: str = "INBOX"
+    imap_use_ssl: bool = True
     mqtt_host: str
     mqtt_port: int = 1883
     mqtt_topic: str
@@ -184,8 +199,8 @@ class Settings(BaseSettings):
     connectors: List[Dict[str, Any]] = []
     broadcast_connectors: str = ""
     openai_api_key: Optional[str]
-    openai_default_model: str = "gpt-4.1-mini"
-    openai_available_models: List[str] = ["gpt-4.1-mini", "o3"]
+    openai_default_model: str = "gpt-5-mini"
+    openai_available_models: List[str] = ["gpt-5-mini", "o3"]
     openai_max_tokens: int = 150
     google_client_id: str = ""
     google_client_secret: str = ""
@@ -223,12 +238,27 @@ class Settings(BaseSettings):
         )
         return v
 
+    @validator("admin_setup_key", pre=True)
+    def validate_admin_setup_key(cls, v):
+        """Require a real setup key outside of tests."""
+        import sys
+
+        if "pytest" in sys.modules:
+            return v
+        assert (
+            v != "change_me_setup_key"
+        ), "You must set admin_setup_key in config.yaml for first-time setup."
+        return v
+
     @validator("initial_admin_password", pre=True)
-    def validate_secret_admin(cls, v):
+    def validate_secret_admin(cls, v, values):
         """Validate admin password unless running under pytest."""
         import sys
 
         if "pytest" in sys.modules:
+            return v
+        setup_key = values.get("admin_setup_key")
+        if setup_key and setup_key != "change_me_setup_key":
             return v
         assert (
             v != "change_me_too"
@@ -236,11 +266,14 @@ class Settings(BaseSettings):
         return v
 
     @validator("initial_admin_email", pre=True)
-    def validate_secret_email(cls, v):
+    def validate_secret_email(cls, v, values):
         """Validate admin email unless running under pytest."""
         import sys
 
         if "pytest" in sys.modules:
+            return v
+        setup_key = values.get("admin_setup_key")
+        if setup_key and setup_key != "change_me_setup_key":
             return v
         assert (
             v != "admin@example.com"
@@ -248,11 +281,14 @@ class Settings(BaseSettings):
         return v
 
     @validator("initial_admin_username", pre=True)
-    def validate_admin_username(cls, v):
+    def validate_admin_username(cls, v, values):
         """Validate admin username unless running under pytest."""
         import sys
 
         if "pytest" in sys.modules:
+            return v
+        setup_key = values.get("admin_setup_key")
+        if setup_key and setup_key != "change_me_setup_key":
             return v
         assert v != "admin", "You must set an admin username in the config.yaml!"
         return v
@@ -284,6 +320,7 @@ def ensure_user_config():
         with open("config.yaml", "r") as f:
             cfg = yaml.safe_load(f)
         cfg["secret_key"] = secrets.token_urlsafe(32)
+        cfg["admin_setup_key"] = secrets.token_urlsafe(16)
         cfg["initial_admin_password"] = secrets.token_urlsafe(12)
         cfg["initial_admin_email"] = f"admin+{secrets.token_hex(4)}@example.com"
         cfg["initial_admin_username"] = f"admin_{secrets.token_hex(4)}"
@@ -316,6 +353,18 @@ def load_config():
             config.update(custom_config)
     if "connectors" not in config:
         config["connectors"] = []
+
+    if (
+        not config.get("admin_setup_key")
+        or config.get("admin_setup_key") == "change_me_setup_key"
+    ):
+        config["admin_setup_key"] = secrets.token_urlsafe(16)
+        with open("config.yaml", "r") as f:
+            custom_config = yaml.safe_load(f)
+        custom_config["admin_setup_key"] = config["admin_setup_key"]
+        with open("config.yaml", "w") as f:
+            yaml.safe_dump(custom_config, f)
+        print("Generated admin_setup_key in config.yaml")
 
     return config
 

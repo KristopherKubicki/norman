@@ -1,4 +1,5 @@
 secret_key: "super_secret_key_change_me"
+admin_setup_key: "change_me_setup_key"
 initial_admin_password: "change_me_too"
 initial_admin_email: "admin@example.com"
 initial_admin_username: "admin"
@@ -11,17 +12,23 @@ api_prefix: "/api"
 # Connectors
 telegram_token: "your_telegram_token"
 telegram_chat_id: "your_telegram_chat_id"
+telegram_webhook_secret: "your_telegram_webhook_secret"
 slack_token: "your_slack_token"
 slack_channel_id: "your_slack_channel_id"
+slack_signing_secret: "your_slack_signing_secret"
 google_chat_service_account_key_path: "your_google_chat_service_account_key_path"
 google_chat_space: "your_google_chat_space"
 discord_token: "your_discord_token"
 discord_channel_id: "your_discord_channel_id"
+discord_webhook_url: "your_discord_webhook_url"
 teams_app_id: "your_teams_app_id"
 teams_app_password: "your_teams_app_password"
 teams_tenant_id: "your_teams_tenant_id"
 teams_bot_endpoint: "your_teams_bot_endpoint"
+teams_webhook_url: "your_teams_webhook_url"
+teams_scope: "https://graph.microsoft.com/.default"
 webhook_secret: "your_webhook_secret"
+webhook_url: "your_webhook_url"
 whatsapp_account_sid: "your_whatsapp_account_sid"
 whatsapp_auth_token: "your_whatsapp_auth_token"
 whatsapp_from_number: "your_whatsapp_from_number"
@@ -50,6 +57,12 @@ smtp_username: "your_smtp_username"
 smtp_password: "your_smtp_password"
 smtp_from_address: "your_from@example.com"
 smtp_to_address: "your_to@example.com"
+imap_host: "your_imap_host"
+imap_port: 993
+imap_username: "your_imap_username"
+imap_password: "your_imap_password"
+imap_mailbox: "INBOX"
+imap_use_ssl: true
 mqtt_host: "your_mqtt_host"
 mqtt_port: 1883
 mqtt_topic: "your_mqtt_topic"
@@ -176,9 +189,9 @@ connectors: []
 broadcast_connectors: ""
 
 openai_api_key:
-openai_default_model: "gpt-4.1-mini"
+openai_default_model: "gpt-5-mini"
 openai_available_models:
-  - gpt-4.1-mini
+  - gpt-5-mini
   - o3
 openai_max_tokens: 150
 google_client_id: "your_google_client_id"

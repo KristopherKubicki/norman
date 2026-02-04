@@ -1,15 +1,15 @@
 from fastapi import Request
-from fastapi.templating import Jinja2Templates
-from typing import List
-from fastapi import Depends
 from sqlalchemy.orm import Session
+from typing import Optional
+from fastapi.templating import Jinja2Templates
 import asyncio
 
-from app.models.bot import Bot as BotModel
-from app.schemas.bot import Bot
-from app.api.deps import get_db, get_current_user
 
 from app.connectors.connector_utils import get_connector, get_connectors_data
+from app.core.config import settings
+from app.core.security import decode_access_token
+from app.crud.user import get_user_by_email
+from app import models
 
 from app.core.logging import setup_logger
 
@@ -19,11 +19,34 @@ logger = setup_logger(__name__)
 templates = Jinja2Templates(directory="app/templates")
 
 
-async def home(request: Request):
+async def home(request: Request, db: Optional[Session] = None):
+    token = request.cookies.get("access_token")
+    user_email = decode_access_token(token) if token else None
+    bot_count = 0
+    connector_count = 0
+    if db and user_email:
+        user = get_user_by_email(db, email=user_email)
+        if user:
+            bot_count = (
+                db.query(models.Bot).filter(models.Bot.user_id == user.id).count()
+            )
+            connector_count = (
+                db.query(models.Connector)
+                .filter(models.Connector.user_id == user.id)
+                .count()
+            )
     return templates.TemplateResponse(
         request,
         "index.html",
-        {"request": request, "active_page": "home"},
+        {
+            "request": request,
+            "active_page": "home",
+            "user_email": user_email,
+            "openai_configured": bool(settings.openai_api_key),
+            "bot_count": bot_count,
+            "connector_count": connector_count,
+            "onboarding_ready": bot_count > 0 and connector_count > 0,
+        },
     )
 
 
@@ -80,19 +103,40 @@ async def captions(request: Request):
     )
 
 
+async def quickstart(request: Request):
+    return templates.TemplateResponse(
+        request,
+        "quickstart.html",
+        {"request": request, "active_page": "quickstart"},
+    )
+
+
 async def login(request: Request):
     return templates.TemplateResponse(
         request, "login.html", {"request": request, "show_navbar": False}
     )
 
 
+async def setup(request: Request):
+    return templates.TemplateResponse(
+        request, "setup.html", {"request": request, "show_navbar": False}
+    )
+
+
+async def settings_page(request: Request, openai_configured: bool):
+    return templates.TemplateResponse(
+        request,
+        "settings.html",
+        {
+            "request": request,
+            "active_page": "settings",
+            "openai_configured": openai_configured,
+        },
+    )
+
+
 async def logout(request: Request):
     return templates.TemplateResponse(request, "logout.html", {"request": request})
-
-
-async def get_bots(db: Session, current_user=Depends(get_current_user)):
-    """Return bots owned by the current authenticated user."""
-    return db.query(BotModel).filter(BotModel.user_id == current_user.id).all()
 
 
 async def process_message(request: Request):

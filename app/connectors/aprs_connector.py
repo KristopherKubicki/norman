@@ -56,3 +56,7 @@ class APRSConnector(BaseConnector):
 
     async def process_incoming(self, message):
         logger.info("APRS received: %s", message)
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the connector is configured."""
+        return super().is_connected()

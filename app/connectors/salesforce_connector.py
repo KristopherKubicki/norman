@@ -74,3 +74,18 @@ class SalesforceConnector(BaseConnector):
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
         await self.send_message(message)
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the token can access the instance."""
+        if not super().is_connected():
+            return False
+        try:
+            resp = httpx.get(
+                f"{self.instance_url}/services/data",
+                headers=self._headers(),
+                timeout=10,
+            )
+            resp.raise_for_status()
+            return True
+        except httpx.HTTPError:
+            return False

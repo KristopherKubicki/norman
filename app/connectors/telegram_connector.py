@@ -8,14 +8,20 @@ logger = setup_logger(__name__)
 
 
 class TelegramConnector(BaseConnector):
-
     id = "telegram"
     name = "Telegram"
 
-    def __init__(self, token: str, chat_id: str, config=None):
+    def __init__(
+        self,
+        token: str,
+        chat_id: str,
+        webhook_secret: Optional[str] = None,
+        config=None,
+    ):
         super().__init__(config)
         self.token = token
         self.chat_id = chat_id
+        self.webhook_secret = webhook_secret
         self._offset: Optional[int] = None
 
     async def _send_request(self, data: Dict[str, Any]) -> Optional[str]:
@@ -73,7 +79,10 @@ class TelegramConnector(BaseConnector):
         url = f"https://api.telegram.org/bot{self.token}/setWebhook"
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.post(url, json={"url": webhook_url})
+                payload = {"url": webhook_url}
+                if self.webhook_secret:
+                    payload["secret_token"] = self.webhook_secret
+                response = await client.post(url, json=payload)
             response.raise_for_status()
         except httpx.HTTPError as e:
             logger.error("Error while setting webhook for Telegram: %s", e)

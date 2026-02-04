@@ -22,6 +22,7 @@ class ConnectorUpdate(BaseModel):
 
 class Connector(ConnectorBase):
     id: int
+    user_id: int
 
     class Config:
         orm_mode = True

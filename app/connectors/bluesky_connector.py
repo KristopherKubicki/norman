@@ -80,3 +80,16 @@ class BlueskyConnector(BaseConnector):
     async def process_incoming(self, message):
         """Return the incoming ``message`` payload."""
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if credentials can create a session."""
+        if not super().is_connected():
+            return False
+        url = f"{self.service_url}/xrpc/com.atproto.server.createSession"
+        payload = {"identifier": self.handle, "password": self.app_password}
+        try:
+            resp = httpx.post(url, json=payload, timeout=10)
+            resp.raise_for_status()
+            return True
+        except httpx.HTTPError:
+            return False

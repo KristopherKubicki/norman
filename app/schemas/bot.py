@@ -5,7 +5,11 @@ from app.core.config import settings
 
 class BotBase(BaseModel):
     name: constr(strip_whitespace=True, min_length=1)
-    gpt_model: constr(strip_whitespace=True, min_length=1)
+    gpt_model: constr(strip_whitespace=True, min_length=1) = (
+        settings.openai_available_models[0]
+        if settings.openai_available_models
+        else "gpt-5-mini"
+    )
     session_id: Optional[str] = None
 
     @validator("gpt_model")
@@ -23,6 +27,7 @@ class BotOut(BaseModel):
     id: int
     name: str
     description: Optional[str]
+    gpt_model: str
 
     class Config:
         orm_mode = True

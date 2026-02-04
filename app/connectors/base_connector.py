@@ -4,11 +4,11 @@ import asyncio
 import contextlib
 import logging
 from abc import ABC, abstractmethod
+import inspect
 from typing import Any, Optional
 
 
 class BaseConnector(ABC):
-
     def __init__(self, config: Optional[dict] = None) -> None:
         """Initialize the connector with optional configuration."""
 
@@ -75,5 +75,19 @@ class BaseConnector(ABC):
 
     def is_connected(self) -> bool:  # pragma: no cover - default implementation
         """Return ``True`` if the connector appears to be healthy."""
+        try:
+            signature = inspect.signature(self.__init__)
+        except (TypeError, ValueError):
+            return True
 
+        for param in signature.parameters.values():
+            if param.name in {"self", "config"}:
+                continue
+            if param.kind in (param.VAR_KEYWORD, param.VAR_POSITIONAL):
+                continue
+            if param.default is not inspect._empty:
+                continue
+            value = getattr(self, param.name, None)
+            if value is None or value == "":
+                return False
         return True

@@ -1,11 +1,87 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="hero">
-    <h1 class="display-4">Welcome to Norman</h1>
-    <p class="lead">Manage connectors, channels, bots and filters from one place.</p>
-    <p>Use the navigation bar to explore the available features.</p>
-</div>
-<script src="/static/js/script.js"></script>
-{% endblock %}
+<div class="row g-4">
+    <div class="col-lg-7">
+        <div class="card p-4 shadow-sm">
+            <h1 class="display-6 mb-2">Welcome to Norman</h1>
+            <p class="lead mb-4">Get to a working bot in under a minute.</p>
 
+            <div class="d-flex flex-column flex-sm-row gap-2">
+                <a class="btn btn-primary btn-lg" href="/messages_log.html">Open Messages</a>
+                <a class="btn btn-outline-secondary btn-lg" href="/bots.html">Manage Bots</a>
+                <a class="btn btn-outline-secondary btn-lg" href="/settings.html">Open Settings</a>
+                <button class="btn btn-outline-success btn-lg" id="demo-message-btn" type="button" disabled>
+                    Send Demo Message
+                </button>
+                <a class="btn btn-success btn-lg d-none" id="demo-view-link" href="/bots.html">
+                    View Reply
+                </a>
+            </div>
+            <div class="small text-muted mt-2" id="demo-message-status">
+                Preparing your demo bot...
+            </div>
+
+            <hr class="my-4">
+
+            <div class="row g-3">
+                <div class="col-md-6">
+                    <div class="border rounded p-3 h-100">
+                        <div class="small text-muted">Signed in as</div>
+                        <div class="fw-semibold">
+                            {{ user_email if user_email else "Unknown user" }}
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="border rounded p-3 h-100">
+                        <div class="small text-muted">OpenAI API key</div>
+                        {% if openai_configured %}
+                        <div class="fw-semibold text-success">Configured</div>
+                        {% else %}
+                        <div class="fw-semibold text-danger">Missing</div>
+                        <div class="small text-muted">Set openai_api_key in config.yaml</div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-lg-5">
+        <div class="card p-4 h-100">
+            <h5 class="mb-3">Workspace status</h5>
+            <div class="row g-3 mb-3">
+                <div class="col-6">
+                    <div class="border rounded p-3 h-100">
+                        <div class="small text-muted">Bots</div>
+                        <div class="fw-semibold">{{ bot_count }}</div>
+                    </div>
+                </div>
+                <div class="col-6">
+                    <div class="border rounded p-3 h-100">
+                        <div class="small text-muted">Connectors</div>
+                        <div class="fw-semibold">{{ connector_count }}</div>
+                    </div>
+                </div>
+            </div>
+            {% if onboarding_ready %}
+            <div class="alert alert-success mb-3">
+                Starter bot and webhook connector are ready.
+            </div>
+            <ol class="mb-0">
+                <li>Open Bots and send a test message.</li>
+                <li>Open Connectors to copy your webhook URL.</li>
+                <li>Add an integration when you're ready.</li>
+            </ol>
+            {% else %}
+            <ol class="mb-0">
+                <li>Create a bot and test it in Messages.</li>
+                <li>Add a connector to receive external messages.</li>
+                <li>Configure filters and routing rules.</li>
+            </ol>
+            {% endif %}
+        </div>
+    </div>
+</div>
+<script src="/static/js/home.js" defer></script>
+{% endblock %}

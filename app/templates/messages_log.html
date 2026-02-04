@@ -1,40 +1,113 @@
 {% extends "base.html" %}
 
-{% block extra_css %}
-<!-- Add any extra CSS required for this template here -->
-{% endblock %}
-
-
-
 {% block content %}
-<h1 class="mt-4">Messages Log</h1>
-<div class="row">
-  <div class="col-md-3">
-    <div class="channels-container list-group">
-      <!-- Channels will be dynamically added here -->
+<div class="d-flex align-items-center justify-content-between mb-3">
+  <div>
+    <h1 class="mb-1">Messages</h1>
+    <div class="text-muted">Your central hub for channels, bots, and filters.</div>
+  </div>
+</div>
+
+<div class="row g-4">
+  <div class="col-lg-3">
+    <div class="card p-3 mb-3">
+      <div class="d-flex align-items-center justify-content-between mb-2">
+        <h5 class="mb-0">Channels</h5>
+        <span class="badge bg-light text-dark" id="channels-count">0</span>
+      </div>
+      <input class="form-control form-control-sm mb-2" type="text" id="channelSearch" placeholder="Filter channels...">
+      <div id="channels-status" class="alert alert-info d-none" role="alert"></div>
+      <div class="channels-container list-group menu-list">
+        <!-- Channels will be dynamically added here -->
+      </div>
+    </div>
+
+    <div class="card p-3">
+      <h6 class="mb-2">Add Channel</h6>
+      <form id="messages-add-channel-form" class="d-grid gap-2">
+        <input type="text" id="channel-name" class="form-control" placeholder="Channel name" required>
+        <select class="form-select" id="channel-connector">
+          <option value="" selected disabled>Loading connectors...</option>
+        </select>
+        <button id="addChannelBtn" class="btn btn-primary" type="submit">Create Channel</button>
+      </form>
+      <div class="small text-muted mt-2">
+        Need a new connector? <a href="/connectors.html">Open Connectors</a>
+      </div>
+    </div>
+
+    <div class="card p-3 mt-3">
+      <h6 class="mb-2">Sample Channels</h6>
+      <p class="small text-muted">Create example channels with seeded messages.</p>
+      <button class="btn btn-outline-primary w-100" id="add-sample-channels" type="button">
+        Add sample channels
+      </button>
     </div>
   </div>
 
-  <div class="col-md-9 d-flex flex-column">
-    <div class="search-container mb-2">
-      <input type="text" placeholder="Search messages..." class="form-control search-input">
-    </div>
-    <div class="card flex-grow-1">
+  <div class="col-lg-6 d-flex flex-column">
+    <div class="card p-3 flex-grow-1">
+      <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3">
+        <div>
+          <h5 class="mb-1">Conversation</h5>
+          <div class="small text-muted">Active channel: <span id="active-channel-name">None</span></div>
+        </div>
+        <div class="min-width-220">
+          <label class="form-label small mb-1" for="message-channel-select">Send to channel</label>
+          <select id="message-channel-select" class="form-select form-select-sm">
+            <option value="" selected disabled>Choose a channel...</option>
+          </select>
+        </div>
+      </div>
+
       <div class="card-body messages-log" id="messages-log">
         <!-- Messages will be displayed here -->
       </div>
+
+      <div class="input-message-container mt-3">
+        <div class="input-group flex-column flex-sm-row">
+          <input type="text" class="form-control mb-2 mb-sm-0" id="messageInput" placeholder="Type your message...">
+          <button class="btn btn-primary" id="sendButton" type="button">Send</button>
+        </div>
+      </div>
     </div>
-    <div class="input-group mt-2 flex-column flex-sm-row">
-      <input type="text" class="form-control mb-2 mb-sm-0" id="messageInput" placeholder="Type your message...">
-      <button class="btn btn-primary w-100" id="sendButton" type="button">Send</button>
+  </div>
+
+  <div class="col-lg-3">
+    <div class="card p-3 mb-3">
+      <div class="d-flex align-items-center justify-content-between mb-2">
+        <h5 class="mb-0">Bots</h5>
+        <span class="badge bg-light text-dark" id="bots-count">0</span>
+      </div>
+      <div id="bots-status" class="alert alert-info d-none" role="alert"></div>
+      <div class="list-group menu-list mb-3" id="bots-list"></div>
+      <form id="messages-add-bot-form" class="d-grid gap-2">
+        <input type="text" id="bot-name" class="form-control" placeholder="Bot name" required>
+        <input type="text" id="bot-description" class="form-control" placeholder="Description (optional)">
+        <button type="submit" class="btn btn-outline-primary">Create Bot</button>
+      </form>
+    </div>
+
+    <div class="card p-3">
+      <div class="d-flex align-items-center justify-content-between mb-2">
+        <h5 class="mb-0">Filters</h5>
+        <span class="badge bg-light text-dark" id="filters-count">0</span>
+      </div>
+      <div id="filters-status" class="alert alert-info d-none" role="alert"></div>
+      <div class="list-group menu-list mb-3" id="filters-list"></div>
+      <form id="messages-add-filter-form" class="d-grid gap-2">
+        <select id="filter-channel" class="form-select">
+          <option value="" selected disabled>Choose channel...</option>
+        </select>
+        <input type="text" id="filter-regex" class="form-control" placeholder="Regex pattern" required>
+        <input type="text" id="filter-description" class="form-control" placeholder="Description (optional)">
+        <button type="submit" class="btn btn-outline-primary">Create Filter</button>
+      </form>
     </div>
   </div>
 </div>
-<script src="/static/js/script.js"></script>
 {% endblock %}
-
 
 {% block extra_js %}
-<script src="{{ url_for('static', filename='js/messages_log.js') }}"></script>
+<script src="{{ url_for('static', path='js/messages_log.js') }}" defer></script>
 {% endblock %}
-

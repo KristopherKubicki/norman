@@ -59,3 +59,16 @@ class GitLabConnector(BaseConnector):
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
         await self.send_message(message)
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the token can access the GitLab API."""
+        if not super().is_connected():
+            return False
+        try:
+            resp = httpx.get(
+                f"{self.api_url}/user", headers=self._headers(), timeout=10
+            )
+            resp.raise_for_status()
+            return True
+        except httpx.HTTPError:
+            return False

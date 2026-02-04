@@ -46,3 +46,9 @@ class PagerDutyConnector(BaseConnector):
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the routing key looks valid."""
+        if not super().is_connected():
+            return False
+        return len(self.routing_key) >= 20

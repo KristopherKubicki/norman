@@ -50,3 +50,7 @@ class RFC5425Connector(BaseConnector):
 
     async def process_incoming(self, message):
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the connector is configured."""
+        return super().is_connected()

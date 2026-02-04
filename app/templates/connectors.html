@@ -5,44 +5,232 @@
 
 <div class="card mb-4">
   <div class="card-body">
-    <h5 class="card-title">Status</h5>
-    <div class="table-responsive">
-      <table class="table" id="connector-status-table">
-        <thead>
-          <tr>
-            <th>Name</th>
-            <th>Status</th>
-            <th>Last Sent</th>
-            <th>Last Received</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
+    <div class="d-flex align-items-center justify-content-between">
+      <h5 class="card-title mb-0">Status</h5>
+      <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#connector-status-panel" aria-expanded="true">Collapse</button>
+    </div>
+    <div class="collapse show mt-3" id="connector-status-panel">
+      <div class="table-responsive">
+        <table class="table" id="connector-status-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Status</th>
+              <th>Last Sent</th>
+              <th>Last Received</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
   </div>
 </div>
 
-<form id="add-connector-form" class="card card-body mb-4">
-  <div class="row g-2 align-items-end">
-    <div class="col-sm">
-      <label for="connector-name" class="form-label">Name</label>
-      <input type="text" id="connector-name" class="form-control" required />
+<div class="card mb-4">
+  <div class="card-body">
+    <div class="d-flex align-items-center justify-content-between">
+      <h5 class="card-title mb-0">Add Connector</h5>
+      <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#add-connector-panel" aria-expanded="true">Collapse</button>
     </div>
-    <div class="col-sm">
-      <label for="connector-type" class="form-label">Type</label>
-      <input type="text" id="connector-type" class="form-control" required />
-    </div>
-    <div class="col-sm">
-      <label for="connector-config" class="form-label">Config (JSON)</label>
-      <input type="text" id="connector-config" class="form-control" />
-    </div>
-    <div class="col-12 col-sm-auto">
-      <button type="submit" class="btn btn-primary">Add Connector</button>
+    <div class="collapse show mt-3" id="add-connector-panel">
+      <form id="add-connector-form" class="row g-2 align-items-end">
+        <div class="col-sm">
+          <label for="connector-name" class="form-label">Name</label>
+          <input type="text" id="connector-name" class="form-control" required />
+        </div>
+        <div class="col-sm">
+          <label for="connector-type" class="form-label">Type</label>
+          <select id="connector-type" class="form-select" required>
+            <option value="" selected disabled>Loading connector types...</option>
+          </select>
+        </div>
+        <div class="col-sm">
+          <label for="connector-config" class="form-label">Config (JSON)</label>
+          <input type="text" id="connector-config" class="form-control" />
+        </div>
+        <div class="col-12 col-sm-auto">
+          <button type="submit" class="btn btn-primary">Add Connector</button>
+        </div>
+      </form>
     </div>
   </div>
-</form>
+</div>
 
-<div class="connectors-container"></div>
+<div class="card mb-4">
+  <div class="card-body">
+    <div class="d-flex align-items-center justify-content-between">
+      <h5 class="card-title mb-0">Webhook URLs</h5>
+      <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#webhook-urls-panel" aria-expanded="true">Collapse</button>
+    </div>
+    <div class="collapse show mt-3" id="webhook-urls-panel">
+      <p class="text-muted mb-2">Use these URLs when configuring inbound webhooks in Slack/Google Chat.</p>
+    <div class="input-group mb-2">
+      <span class="input-group-text">Slack</span>
+      <input type="text" class="form-control" id="slack-webhook-url" readonly>
+      <button class="btn btn-outline-secondary" type="button" data-copy-target="slack-webhook-url">Copy</button>
+    </div>
+    <div class="input-group mb-2">
+      <span class="input-group-text">Google Chat</span>
+      <input type="text" class="form-control" id="google-chat-webhook-url" readonly>
+      <button class="btn btn-outline-secondary" type="button" data-copy-target="google-chat-webhook-url">Copy</button>
+    </div>
+    <div class="input-group mb-2">
+      <span class="input-group-text">Webhook</span>
+      <input type="text" class="form-control" id="generic-webhook-url" readonly>
+      <button class="btn btn-outline-secondary" type="button" data-copy-target="generic-webhook-url">Copy</button>
+    </div>
+    <div class="input-group mb-2">
+      <span class="input-group-text">Discord</span>
+      <input type="text" class="form-control" id="discord-webhook-url" readonly>
+      <button class="btn btn-outline-secondary" type="button" data-copy-target="discord-webhook-url">Copy</button>
+    </div>
+    <div class="input-group mb-2">
+      <span class="input-group-text">Teams</span>
+      <input type="text" class="form-control" id="teams-webhook-url" readonly>
+      <button class="btn btn-outline-secondary" type="button" data-copy-target="teams-webhook-url">Copy</button>
+    </div>
+    <div class="input-group mb-2">
+      <span class="input-group-text">Telegram</span>
+      <input type="text" class="form-control" id="telegram-webhook-url" readonly>
+      <button class="btn btn-outline-secondary" type="button" data-copy-target="telegram-webhook-url">Copy</button>
+    </div>
+    <div class="input-group mb-2">
+      <span class="input-group-text">WhatsApp</span>
+      <input type="text" class="form-control" id="whatsapp-webhook-url" readonly>
+      <button class="btn btn-outline-secondary" type="button" data-copy-target="whatsapp-webhook-url">Copy</button>
+    </div>
+    <div class="input-group mb-2">
+      <span class="input-group-text">Jira</span>
+      <input type="text" class="form-control" id="jira-webhook-url" readonly>
+      <button class="btn btn-outline-secondary" type="button" data-copy-target="jira-webhook-url">Copy</button>
+    </div>
+    <div class="input-group mb-2">
+      <span class="input-group-text">Facebook</span>
+      <input type="text" class="form-control" id="facebook-webhook-url" readonly>
+      <button class="btn btn-outline-secondary" type="button" data-copy-target="facebook-webhook-url">Copy</button>
+    </div>
+    <div class="input-group mb-2">
+      <span class="input-group-text">Pinterest</span>
+      <input type="text" class="form-control" id="pinterest-webhook-url" readonly>
+      <button class="btn btn-outline-secondary" type="button" data-copy-target="pinterest-webhook-url">Copy</button>
+    </div>
+    <div class="input-group mb-2">
+      <span class="input-group-text">LinkedIn</span>
+      <input type="text" class="form-control" id="linkedin-webhook-url" readonly>
+      <button class="btn btn-outline-secondary" type="button" data-copy-target="linkedin-webhook-url">Copy</button>
+    </div>
+    <div class="input-group mb-2">
+      <span class="input-group-text">Reddit Chat</span>
+      <input type="text" class="form-control" id="reddit-webhook-url" readonly>
+      <button class="btn btn-outline-secondary" type="button" data-copy-target="reddit-webhook-url">Copy</button>
+    </div>
+    <div class="input-group mb-2">
+      <span class="input-group-text">Twitter</span>
+      <input type="text" class="form-control" id="twitter-webhook-url" readonly>
+      <button class="btn btn-outline-secondary" type="button" data-copy-target="twitter-webhook-url">Copy</button>
+    </div>
+    <div class="input-group">
+      <span class="input-group-text">Instagram</span>
+      <input type="text" class="form-control" id="instagram-webhook-url" readonly>
+      <button class="btn btn-outline-secondary" type="button" data-copy-target="instagram-webhook-url">Copy</button>
+    </div>
+      <div class="small text-muted mt-2">
+        Replace <code>{connector_id}</code> with the connector ID shown in the list below.
+      </div>
+      <div class="alert alert-info mt-3 mb-0">
+        IMAP is inbound-only. Create a connector of type <code>imap</code> with config:
+        <code>{"host":"imap.example.com","username":"user","password":"pass","mailbox":"INBOX","use_ssl":true}</code>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-4">
+  <div class="card-body">
+    <div class="d-flex align-items-center justify-content-between">
+      <h5 class="card-title mb-0">Routing Rules</h5>
+      <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#routing-rules-panel" aria-expanded="true">Collapse</button>
+    </div>
+    <div class="collapse show mt-3" id="routing-rules-panel">
+    <form id="routing-rule-form" class="row g-2 align-items-end mb-3">
+      <div class="col-md-3">
+        <label for="routing-rule-name" class="form-label">Name</label>
+        <input type="text" id="routing-rule-name" class="form-control" required>
+      </div>
+      <div class="col-md-3">
+        <label for="routing-rule-connector" class="form-label">Connector</label>
+        <select id="routing-rule-connector" class="form-select"></select>
+      </div>
+      <div class="col-md-3">
+        <label for="routing-rule-bot" class="form-label">Bot</label>
+        <select id="routing-rule-bot" class="form-select" required></select>
+      </div>
+      <div class="col-md-3">
+        <label for="routing-rule-type" class="form-label">Match</label>
+        <select id="routing-rule-type" class="form-select">
+          <option value="all">All</option>
+          <option value="contains">Contains</option>
+          <option value="regex">Regex</option>
+        </select>
+      </div>
+      <div class="col-md-4">
+        <label for="routing-rule-value" class="form-label">Value</label>
+        <input type="text" id="routing-rule-value" class="form-control" placeholder="Optional">
+      </div>
+      <div class="col-md-2">
+        <label for="routing-rule-priority" class="form-label">Priority</label>
+        <input type="number" id="routing-rule-priority" class="form-control" value="0">
+      </div>
+      <div class="col-md-2 form-check mt-4">
+        <input class="form-check-input" type="checkbox" id="routing-rule-active" checked>
+        <label class="form-check-label" for="routing-rule-active">Active</label>
+      </div>
+      <div class="col-md-2">
+        <button type="submit" class="btn btn-primary w-100">Add Rule</button>
+      </div>
+    </form>
+      <div id="routing-rules-list" class="list-group small"></div>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-4">
+  <div class="card-body">
+    <div class="d-flex align-items-center justify-content-between">
+      <h5 class="card-title mb-0">Routing Events</h5>
+      <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#routing-events-panel" aria-expanded="true">Collapse</button>
+    </div>
+    <div class="collapse show mt-3" id="routing-events-panel">
+      <div class="table-responsive">
+        <table class="table table-sm" id="routing-events-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Connector</th>
+              <th>Bot</th>
+              <th>Status</th>
+              <th>Delivery</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-4">
+  <div class="card-body">
+    <div class="d-flex align-items-center justify-content-between">
+      <h5 class="card-title mb-0">Connectors</h5>
+      <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#connectors-list-panel" aria-expanded="true">Collapse</button>
+    </div>
+    <div class="collapse show mt-3" id="connectors-list-panel">
+      <div class="connectors-container"></div>
+    </div>
+  </div>
+</div>
 
 <script src="/static/js/connectors.js" defer></script>
 {% endblock %}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import httpx
 from typing import Optional
 
 from .base_connector import BaseConnector
@@ -78,4 +79,17 @@ class TwitchConnector(BaseConnector):
         return message
 
     def is_connected(self) -> bool:
-        return self.socket is not None
+        if self.socket is not None:
+            return True
+        if not super().is_connected():
+            return False
+        try:
+            resp = httpx.get(
+                "https://id.twitch.tv/oauth2/validate",
+                headers={"Authorization": f"OAuth {self.token}"},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            return True
+        except httpx.HTTPError:
+            return False

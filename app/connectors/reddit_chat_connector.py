@@ -1,3 +1,4 @@
+import httpx
 from .base_connector import BaseConnector
 
 
@@ -36,3 +37,24 @@ class RedditChatConnector(BaseConnector):
     async def process_incoming(self, message):
         """Return the incoming ``message`` payload."""
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if credentials can obtain a token."""
+        if not super().is_connected():
+            return False
+        try:
+            resp = httpx.post(
+                "https://www.reddit.com/api/v1/access_token",
+                auth=(self.client_id, self.client_secret),
+                data={
+                    "grant_type": "password",
+                    "username": self.username,
+                    "password": self.password,
+                },
+                headers={"User-Agent": self.user_agent},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            return True
+        except httpx.HTTPError:
+            return False

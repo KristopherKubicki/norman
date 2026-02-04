@@ -66,3 +66,19 @@ class MQTTConnector(BaseConnector):
 
     def _on_message(self, client, userdata, msg):  # pragma: no cover - callback
         asyncio.create_task(self.process_incoming(msg.payload.decode()))
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the broker is reachable."""
+        if not super().is_connected():
+            return False
+        if not mqtt:
+            return False
+        try:
+            client = mqtt.Client()
+            if self.username and self.password:
+                client.username_pw_set(self.username, self.password)
+            client.connect(self.host, self.port)
+            client.disconnect()
+            return True
+        except Exception:
+            return False

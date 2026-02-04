@@ -41,3 +41,18 @@ class GoogleBusinessRCSConnector(BaseConnector):
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the access token works."""
+        if not super().is_connected():
+            return False
+        try:
+            resp = httpx.get(
+                f"{self.api_url}/conversations/{self.phone_number}",
+                headers={"Authorization": f"Bearer {self.access_token}"},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            return True
+        except httpx.HTTPError:
+            return False

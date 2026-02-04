@@ -10,7 +10,7 @@ from app.schemas import (
     Connector,
     ConnectorInfo,
 )
-from app.api.deps import get_db
+from app.api.deps import get_db, get_current_user
 
 router = APIRouter(prefix="/connectors", tags=["connectors"])
 
@@ -22,7 +22,11 @@ async def list_available_connectors() -> List[ConnectorInfo]:
 
 
 @router.post("/", response_model=Connector, status_code=201)
-async def create_connector(connector: ConnectorCreate, db: Session = Depends(get_db)):
+async def create_connector(
+    connector: ConnectorCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
     """Create a connector entry.
 
     Args:
@@ -38,13 +42,15 @@ async def create_connector(connector: ConnectorCreate, db: Session = Depends(get
     if connector.connector_type not in connector_classes:
         raise HTTPException(status_code=400, detail="Invalid connector type")
     try:
-        return crud.connector.create(db, obj_in=connector)
+        return crud.connector.create(db, obj_in=connector, user_id=current_user.id)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/", response_model=List[Connector])
-async def get_connectors(db: Session = Depends(get_db)):
+async def get_connectors(
+    db: Session = Depends(get_db), current_user=Depends(get_current_user)
+):
     """Return all connectors.
 
     Args:
@@ -54,12 +60,16 @@ async def get_connectors(db: Session = Depends(get_db)):
         List of connectors.
     """
 
-    connectors = crud.connector.get_multi(db)
+    connectors = crud.connector.get_multi_by_user(db, current_user.id)
     return connectors
 
 
 @router.get("/{connector_id}", response_model=Connector)
-async def get_connector(connector_id: int, db: Session = Depends(get_db)):
+async def get_connector(
+    connector_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
     """Fetch a connector by ID.
 
     Args:
@@ -74,7 +84,7 @@ async def get_connector(connector_id: int, db: Session = Depends(get_db)):
     """
 
     connector = crud.connector.get(db, connector_id)
-    if not connector:
+    if not connector or connector.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Connector not found")
     return connector
 
@@ -84,6 +94,7 @@ async def update_connector(
     connector_id: int,
     connector: ConnectorUpdate,
     db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
     """Update an existing connector.
 
@@ -99,7 +110,7 @@ async def update_connector(
         HTTPException: If the connector does not exist or update fails.
     """
     db_connector = crud.connector.get(db, connector_id)
-    if not db_connector:
+    if not db_connector or db_connector.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Connector not found")
     try:
         return crud.connector.update(db, db_obj=db_connector, obj_in=connector)
@@ -108,7 +119,11 @@ async def update_connector(
 
 
 @router.delete("/{connector_id}", response_model=Connector)
-async def delete_connector(connector_id: int, db: Session = Depends(get_db)):
+async def delete_connector(
+    connector_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
     """Delete a connector by ID.
 
     Args:
@@ -123,6 +138,6 @@ async def delete_connector(connector_id: int, db: Session = Depends(get_db)):
     """
 
     connector = crud.connector.remove(db, connector_id)
-    if not connector:
+    if not connector or connector.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Connector not found")
     return connector

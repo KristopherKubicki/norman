@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import Optional, List
 import logging
 
 from app import models, schemas
@@ -12,18 +12,26 @@ def get_bot_by_id(db: Session, bot_id: int) -> Optional[models.Bot]:
     return db.query(models.Bot).filter(models.Bot.id == bot_id).first()
 
 
-def create_bot(db: Session, bot_create: schemas.BotCreate) -> models.Bot:
+def create_bot(
+    db: Session, bot_create: schemas.BotCreate, user_id: Optional[int] = None
+) -> models.Bot:
     """Create a new bot entry."""
     bot = models.Bot(
         name=bot_create.name,
-        description=bot_create.description,
+        description=bot_create.description or "",
         gpt_model=bot_create.gpt_model,
         session_id=bot_create.session_id,
+        user_id=user_id,
     )
     db.add(bot)
     db.commit()
     db.refresh(bot)
     return bot
+
+
+def get_bots_by_user_id(db: Session, user_id: int) -> List[models.Bot]:
+    """Return bots owned by a specific user."""
+    return db.query(models.Bot).filter(models.Bot.user_id == user_id).all()
 
 
 def delete_bot(db: Session, bot_id: int) -> Optional[models.Bot]:

@@ -1,6 +1,19 @@
 
 let selectedBotId = null;
 const sendButton = document.getElementById('send-message');
+let botsCache = [];
+
+function setStatus(message, type = 'info') {
+  const status = document.getElementById('bots-status');
+  if (!status) return;
+  if (!message) {
+    status.classList.add('d-none');
+    status.textContent = '';
+    return;
+  }
+  status.className = `alert alert-${type}`;
+  status.textContent = message;
+}
 
 function showError(input, message) {
   input.classList.add('is-invalid');
@@ -19,6 +32,18 @@ function clearError(input) {
   if (feedback) feedback.textContent = '';
 }
 
+function updateCount(count) {
+  const el = document.getElementById('bots-count');
+  if (el) el.textContent = count;
+}
+
+function filterBots(query) {
+  const filtered = botsCache.filter(bot =>
+    bot.name.toLowerCase().includes(query.toLowerCase())
+  );
+  renderBots(filtered);
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   const sendButton = document.getElementById('send-message');
   // Fetch bots and render them in the bots container
@@ -31,12 +56,15 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!selectedBotId) return;
       const nameInput = document.getElementById('edit-bot-name');
       clearError(nameInput);
+      const descriptionValue = document.getElementById('edit-bot-description').value.trim();
+      const modelValue = document.getElementById('edit-bot-model').value.trim();
       const data = {
         name: nameInput.value.trim(),
-        description: document.getElementById('edit-bot-description').value.trim(),
-        gpt_model: document.getElementById('edit-bot-model').value.trim(),
-        enabled: document.getElementById('edit-bot-enabled').checked
+        description: descriptionValue
       };
+      if (modelValue) {
+        data.gpt_model = modelValue;
+      }
       if (!data.name) {
         showError(nameInput, 'Name is required');
         return;
@@ -69,10 +97,27 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
-      const bot = await addBot(name, description, "gpt4");
-      const botElement = createBotElement(bot);
-      const botsContainer = document.querySelector('.bots-container');
-      botsContainer.appendChild(botElement);
+      try {
+        let bot;
+        try {
+          bot = await addBot(name, description, "gpt-5-mini");
+        } catch (err) {
+          if (String(err.message || '').includes('Invalid GPT model')) {
+            bot = await addBot(name, description, null);
+          } else {
+            throw err;
+          }
+        }
+        if (!bot || !bot.id) {
+          setStatus('Failed to add bot. Check your session or required fields.', 'danger');
+          return;
+        }
+        await fetchBotsAndRender(bot.id);
+        setStatus(`Bot "${bot.name}" created.`, 'success');
+      } catch (err) {
+        setStatus(err.message || 'Failed to add bot.', 'danger');
+        return;
+      }
 
       nameInput.value = "";
       descriptionInput.value = "";
@@ -114,17 +159,96 @@ document.addEventListener('DOMContentLoaded', () => {
     spinner.style.display = 'none';
   });
 
+  const botSearch = document.getElementById('botSearch');
+  if (botSearch) {
+    botSearch.addEventListener('input', (event) => {
+      filterBots(event.target.value);
+    });
+  }
+
+  const textarea = document.getElementById('input-message');
+  if (textarea) {
+    textarea.addEventListener('input', () => {
+      textarea.style.height = 'auto';
+      textarea.style.height = Math.min(textarea.scrollHeight, 300) + 'px';
+    });
+    textarea.dispatchEvent(new Event('input'));
+
+    textarea.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendButton.click();
+      }
+    });
+  }
 });
 
+function getRequestedBotId() {
+  const params = new URLSearchParams(window.location.search);
+  const value = params.get('bot_id');
+  if (!value) return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+function isDemoView() {
+  const params = new URLSearchParams(window.location.search);
+  return params.get('demo') === '1';
+}
+
+function highlightLatestAssistant(messagesContainer) {
+  const assistantMessages = messagesContainer.querySelectorAll('.message.assistant');
+  if (!assistantMessages.length) return;
+  const latest = assistantMessages[assistantMessages.length - 1];
+  latest.classList.add('message-highlight');
+  latest.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  setTimeout(() => {
+    latest.classList.remove('message-highlight');
+  }, 2400);
+}
+
+function selectBotById(botId) {
+  const botElement = document.querySelector(`.bot-item[data-bot-id="${botId}"]`);
+  if (botElement) {
+    botElement.click();
+  }
+}
 
 
-async function fetchBotsAndRender() {
+
+async function fetchBotsAndRender(preselectId = null) {
   const response = await fetch("/api/bots");
+  if (!response.ok) {
+    setStatus('Unable to load bots. Please refresh or log in again.', 'danger');
+    return;
+  }
   const bots = await response.json();
+  botsCache = bots;
+  updateCount(bots.length);
 
+  if (!bots.length) {
+    setStatus('No bots yet. Create one on the left.', 'info');
+    renderBots([]);
+  } else {
+    setStatus('');
+    renderBots(bots);
+  }
+  const requestedBotId = preselectId ?? getRequestedBotId();
+  if (requestedBotId) {
+    selectBotById(requestedBotId);
+  }
+}
+
+function renderBots(bots) {
   const botsContainer = document.querySelector('.bots-container');
   botsContainer.innerHTML = '';
-
+  if (!bots.length) {
+    const empty = document.createElement('div');
+    empty.className = 'list-group-item text-muted';
+    empty.textContent = 'No bots created yet.';
+    botsContainer.appendChild(empty);
+    return;
+  }
   for (const bot of bots) {
     const botElement = createBotElement(bot);
     botsContainer.appendChild(botElement);
@@ -132,13 +256,26 @@ async function fetchBotsAndRender() {
 }
 
 function createBotElement(bot) {
-  const botElement = document.createElement('a');
-  botElement.classList.add('list-group-item', 'list-group-item-action', 'bot-item');
+  const botElement = document.createElement('div');
+  botElement.classList.add('list-group-item', 'bot-item');
   botElement.dataset.botId = bot.id;
-  botElement.textContent = bot.name;
+  botElement.setAttribute('role', 'button');
+  botElement.setAttribute('tabindex', '0');
+
+  const nameElement = document.createElement('span');
+  nameElement.className = 'bot-name';
+  nameElement.textContent = bot.name;
+
+  const metaElement = document.createElement('span');
+  metaElement.className = 'small text-muted';
+  metaElement.textContent = bot.gpt_model || 'model not set';
+
+  const actions = document.createElement('div');
+  actions.className = 'bot-actions';
 
   const editButton = document.createElement('button');
-  editButton.className = 'btn btn-sm btn-secondary float-end ms-2';
+  editButton.className = 'btn btn-sm btn-secondary';
+  editButton.type = 'button';
   editButton.textContent = 'Edit';
   editButton.addEventListener('click', (e) => {
     e.stopPropagation();
@@ -146,23 +283,39 @@ function createBotElement(bot) {
   });
 
   const deleteButton = document.createElement('button');
-  deleteButton.className = 'btn btn-sm btn-danger float-end';
+  deleteButton.className = 'btn btn-sm btn-danger';
+  deleteButton.type = 'button';
   deleteButton.textContent = 'Delete';
   deleteButton.addEventListener('click', async (e) => {
     e.stopPropagation();
-    await deleteBot(bot.id);
-    botElement.remove();
+    if (!confirm(`Delete bot "${bot.name}"?`)) return;
+    try {
+      await deleteBot(bot.id);
+      botElement.remove();
+      botsCache = botsCache.filter(item => item.id !== bot.id);
+      updateCount(botsCache.length);
+      setStatus('Bot deleted.', 'success');
+    } catch (err) {
+      setStatus(err.message || 'Failed to delete bot.', 'danger');
+    }
   });
 
-  botElement.appendChild(deleteButton);
-  botElement.appendChild(editButton);
+  actions.appendChild(editButton);
+  actions.appendChild(deleteButton);
 
-  // Add click event listener to fetch and display messages
-  botElement.addEventListener('click', () => {
+  botElement.appendChild(nameElement);
+  botElement.appendChild(metaElement);
+  botElement.appendChild(actions);
+
+  const activate = () => {
     const selectedBotNameElement = document.getElementById('selected-bot-name');
+    const selectedBotMeta = document.getElementById('selected-bot-meta');
     selectedBotId = bot.id;
     selectedBotNameElement.innerText = bot.name;
     selectedBotNameElement.setAttribute('data-bot-id', bot.id);
+    if (selectedBotMeta) {
+      selectedBotMeta.textContent = bot.description || bot.gpt_model || 'No description';
+    }
     fetchMessagesAndRender(bot.id);
     document.getElementById('send-message').removeAttribute('disabled');
     document.getElementById('input-message').removeAttribute('disabled');
@@ -170,6 +323,15 @@ function createBotElement(bot) {
 
     document.querySelectorAll('.bot-item').forEach(item => item.classList.remove('active'));
     botElement.classList.add('active');
+  };
+
+  // Add click event listener to fetch and display messages
+  botElement.addEventListener('click', activate);
+  botElement.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      activate();
+    }
   });
 
 
@@ -178,14 +340,21 @@ function createBotElement(bot) {
 
 
 async function addBot(name, description, model) {
+  const payload = { name, description };
+  if (model) {
+    payload.gpt_model = model;
+  }
   const response = await fetch("/api/bots/create", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ name, description, model }),
+    body: JSON.stringify(payload),
   });
   const bot = await response.json();
+  if (!response.ok) {
+    throw new Error(bot.detail || bot.message || 'Failed to create bot');
+  }
   return bot;
 }
 
@@ -194,6 +363,9 @@ async function deleteBot(botId) {
     method: "DELETE",
   });
   const bot = await response.json();
+  if (!response.ok) {
+    throw new Error(bot.detail || bot.message || "Failed to delete bot");
+  }
   return bot;
 }
 
@@ -222,7 +394,10 @@ async function fetchMessagesAndRender(bot_id) {
     const messageElement = createMessageElement(message);
     messagesContainer.appendChild(messageElement);
   }
-	messagesContainer.scrollTop = messagesContainer.scrollHeight;
+  messagesContainer.scrollTop = messagesContainer.scrollHeight;
+  if (isDemoView()) {
+    highlightLatestAssistant(messagesContainer);
+  }
 
 
 }
@@ -280,4 +455,3 @@ function openEditModal(bot) {
   const modal = new bootstrap.Modal(modalEl);
   modal.show();
 }
-

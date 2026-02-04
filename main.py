@@ -1,9 +1,17 @@
 import os
 import uvicorn
-import inspect
+import inspect as uvicorn_inspect
+import signal
+import atexit
+import faulthandler
+import subprocess
+import sys
 
 from alembic import command
 from alembic.config import Config
+from sqlalchemy import inspect
+from app.db.session import engine
+from app.db.base import Base
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.gzip import GZipMiddleware
@@ -24,17 +32,52 @@ from app.auth_middleware import auth_middleware
 from app.core.logging import request_context_middleware
 from app.core.rate_limit import RateLimiter
 from app.core.exception_handlers import add_exception_handlers
+from app.routing.worker import start_routing_worker
+from app.core.logging import setup_logger
 
 
 def run_alembic_migrations():
     if not os.path.exists("alembic/versions"):
         os.makedirs("alembic/versions", exist_ok=True)
-    alembic_cfg = Config("alembic.ini")
-    alembic_cfg.set_main_option("sqlalchemy.url", settings.database_url)
-    command.upgrade(alembic_cfg, "head")
+    logger.info("Alembic: upgrade head start")
+    try:
+        # Run alembic in a subprocess to avoid abrupt exits in the main process.
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        if result.stdout:
+            logger.info("Alembic stdout: %s", result.stdout.strip())
+        if result.stderr:
+            logger.warning("Alembic stderr: %s", result.stderr.strip())
+    except subprocess.CalledProcessError as exc:
+        logger.error("Alembic failed: %s", exc.stderr or exc.stdout or str(exc))
+        raise
+    logger.info("Alembic: upgrade head done")
 
 
 app = FastAPI()
+logger = setup_logger(__name__)
+faulthandler.enable()
+
+
+def _handle_signal(signum, _frame):
+    logger.error("Received signal %s; exiting", signum)
+
+
+for _sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT):
+    try:
+        signal.signal(_sig, _handle_signal)
+    except Exception:
+        pass
+
+
+@atexit.register
+def _on_exit():
+    logger.error("Process exiting")
+
 
 rate_limiter = RateLimiter()
 
@@ -60,11 +103,62 @@ async def cache_control_middleware(request: Request, call_next):
 # Create the initial user
 @app.on_event("startup")
 async def startup_event():
-    if not os.environ.get("SKIP_MIGRATIONS"):
-        if not os.path.exists("db"):
-            os.makedirs("db", exist_ok=True)
-        run_alembic_migrations()
-        create_initial_admin_user()
+    logger.info("Startup: begin")
+    try:
+        should_skip = os.environ.get("SKIP_MIGRATIONS")
+        if not should_skip:
+            if not os.path.exists("db"):
+                os.makedirs("db", exist_ok=True)
+            logger.info("Startup: running migrations")
+            run_alembic_migrations()
+        logger.info("Startup: ensuring tables exist")
+        try:
+            Base.metadata.create_all(bind=engine)
+        except Exception:
+            logger.exception("Startup: failed creating tables")
+            raise
+        logger.info("Startup: migrations complete")
+        return
+
+        try:
+            inspector = inspect(engine)
+            has_users = inspector.has_table("users")
+        except Exception:
+            has_users = False
+
+        if not has_users:
+            if not os.path.exists("db"):
+                os.makedirs("db", exist_ok=True)
+            logger.info("Startup: users table missing; running migrations")
+            run_alembic_migrations()
+        logger.info("Startup: ensuring tables exist after migrations")
+        try:
+            Base.metadata.create_all(bind=engine)
+        except Exception:
+            logger.exception("Startup: failed creating tables")
+            raise
+        logger.info("Startup: migrations skipped")
+        if not os.environ.get("SKIP_ROUTING_WORKER"):
+            logger.info("Startup: starting routing worker")
+            task, stop_event = start_routing_worker()
+            app.state.routing_task = task
+            app.state.routing_stop_event = stop_event
+        logger.info("Startup: complete")
+    except BaseException:
+        logger.exception("Startup: failed")
+        raise
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    logger.info("Shutdown: begin")
+    stop_event = getattr(app.state, "routing_stop_event", None)
+    task = getattr(app.state, "routing_task", None)
+    if stop_event:
+        stop_event.set()
+    if task:
+        task.cancel()
+    logger.info("Shutdown: complete")
 
 
 # add authentication
@@ -97,7 +191,7 @@ def main() -> None:
         "reload": settings.debug,
         "log_level": settings.log_level.lower(),
     }
-    if "compression" in inspect.signature(uvicorn.Config).parameters:
+    if "compression" in uvicorn_inspect.signature(uvicorn.Config).parameters:
         kwargs["compression"] = "brotli" if _brotli else "gzip"
     uvicorn.run(app, **kwargs)
 

@@ -46,7 +46,7 @@ class SMTPConnector(BaseConnector):
             finally:
                 self.server = None
 
-    async def send_message(self, message: str) -> None:
+    async def send_message(self, message: str) -> Optional[str]:
         if not self.server:
             self.connect()
         msg = EmailMessage()
@@ -55,6 +55,7 @@ class SMTPConnector(BaseConnector):
         msg["Subject"] = "Norman Notification"
         msg.set_content(message)
         self.server.send_message(msg)
+        return "sent"
 
     async def listen_and_process(self):
         """SMTP connector does not support incoming messages."""
@@ -64,4 +65,12 @@ class SMTPConnector(BaseConnector):
         return message
 
     def is_connected(self) -> bool:
-        return self.server is not None
+        if self.server:
+            return True
+        try:
+            self.connect()
+            return True
+        except Exception:
+            return False
+        finally:
+            self.disconnect()

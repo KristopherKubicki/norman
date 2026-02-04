@@ -70,3 +70,19 @@ class MCPConnector(BaseConnector):
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
         await self.send_message(message)
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the API is reachable."""
+        if not super().is_connected():
+            return False
+        try:
+            resp = httpx.get(
+                self.api_url,
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                timeout=10,
+            )
+            if resp.status_code >= 500:
+                return False
+            return True
+        except httpx.HTTPError:
+            return False

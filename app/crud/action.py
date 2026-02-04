@@ -5,6 +5,9 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.models.action import Action as ActionModel
+from app.models.channel_filter import Filter as FilterModel
+from app.models.channel import Channel as ChannelModel
+from app.models.connectors import Connector as ConnectorModel
 from app.schemas.action import ActionCreate, ActionUpdate
 
 
@@ -12,6 +15,18 @@ def get(db: Session, action_id: int) -> Optional[ActionModel]:
     """Return an action by its ID."""
 
     return db.query(ActionModel).filter(ActionModel.id == action_id).first()
+
+
+def get_for_user(db: Session, action_id: int, user_id: int) -> Optional[ActionModel]:
+    """Return an action if it belongs to the user via filter/channel."""
+    return (
+        db.query(ActionModel)
+        .join(FilterModel, ActionModel.channel_filter_id == FilterModel.id)
+        .join(ChannelModel, FilterModel.channel_id == ChannelModel.id)
+        .join(ConnectorModel, ChannelModel.connector_id == ConnectorModel.id)
+        .filter(ActionModel.id == action_id, ConnectorModel.user_id == user_id)
+        .first()
+    )
 
 
 def create(db: Session, obj_in: ActionCreate) -> ActionModel:

@@ -81,6 +81,8 @@ class SnapchatConnector(BaseConnector):
     def is_connected(self) -> bool:
         """Return ``True`` if authentication appears valid."""
 
+        if not super().is_connected():
+            return False
         client = self._get_client()
         try:
             return bool(client.logged_in())

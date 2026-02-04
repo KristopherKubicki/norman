@@ -40,3 +40,15 @@ class SignalConnector(BaseConnector):
     async def process_incoming(self, message):
         """Return the incoming ``message`` payload."""
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the service URL is reachable."""
+        if not super().is_connected():
+            return False
+        try:
+            resp = httpx.get(self.service_url, timeout=10)
+            if resp.status_code >= 500:
+                return False
+            return True
+        except httpx.HTTPError:
+            return False

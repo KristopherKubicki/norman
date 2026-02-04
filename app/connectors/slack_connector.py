@@ -7,7 +7,6 @@ logger = setup_logger(__name__)
 
 
 class SlackConnector(BaseConnector):
-
     id = "slack"
     name = "Slack"
 
@@ -60,11 +59,12 @@ class SlackConnector(BaseConnector):
             logger.error("Invalid payload type")
             return {}
 
+        event = payload.get("event", payload)
         return {
-            "text": payload.get("text", ""),
-            "user": payload.get("user"),
-            "channel": payload.get("channel", self.channel_id),
-            "ts": payload.get("ts"),
+            "text": event.get("text", ""),
+            "user": event.get("user"),
+            "channel": event.get("channel", self.channel_id),
+            "ts": event.get("ts"),
         }
 
     def send_message(self, message):

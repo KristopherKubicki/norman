@@ -30,3 +30,11 @@ def delete_interaction(db: Session, interaction_id: int):
         db.commit()
         return True
     return False
+
+
+def delete_interactions_by_bot_id(db: Session, bot_id: int) -> None:
+    """Delete all interactions belonging to a bot."""
+    db.query(Interaction).filter(Interaction.bot_id == bot_id).delete(
+        synchronize_session="fetch"
+    )
+    db.commit()

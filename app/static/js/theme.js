@@ -1,12 +1,13 @@
 document.addEventListener('DOMContentLoaded', () => {
-  const toggle = document.getElementById('themeToggle');
-  if (!toggle) return;
+  const toggles = Array.from(document.querySelectorAll('.theme-toggle'));
   const storedTheme = localStorage.getItem('theme');
   const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
   const isDark = storedTheme ? storedTheme === 'dark' : prefersDark;
   setTheme(isDark);
-  toggle.checked = isDark;
-  toggle.addEventListener('change', () => setTheme(toggle.checked));
+  toggles.forEach(toggle => {
+    toggle.checked = isDark;
+    toggle.addEventListener('change', () => setTheme(toggle.checked));
+  });
 });
 
 function setTheme(dark) {

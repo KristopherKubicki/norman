@@ -61,3 +61,15 @@ class RESTCallbackConnector(BaseConnector):
         """Forward an incoming message to the callback URL."""
         await self.send_message(message)
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the callback URL is reachable."""
+        if not super().is_connected():
+            return False
+        try:
+            resp = httpx.head(self.callback_url, timeout=10)
+            if resp.status_code == 405:
+                resp = httpx.get(self.callback_url, timeout=10)
+            return resp.status_code < 500
+        except httpx.HTTPError:
+            return False

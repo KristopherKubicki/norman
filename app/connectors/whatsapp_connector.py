@@ -1,5 +1,9 @@
 """WhatsApp connector implemented using the Twilio API."""
 
+import asyncio
+import hmac
+import hashlib
+import base64
 import httpx
 from typing import Any, Dict, Optional
 
@@ -21,6 +25,7 @@ class WhatsAppConnector(BaseConnector):
         auth_token: str,
         from_number: str,
         to_number: str,
+        status_callback_url: Optional[str] = None,
         config: Optional[dict] = None,
     ) -> None:
         super().__init__(config)
@@ -28,6 +33,7 @@ class WhatsAppConnector(BaseConnector):
         self.auth_token = auth_token
         self.from_number = from_number
         self.to_number = to_number
+        self.status_callback_url = status_callback_url
 
     def _url(self) -> str:
         return f"https://api.twilio.com/2010-04-01/Accounts/{self.account_sid}/Messages.json"
@@ -39,6 +45,8 @@ class WhatsAppConnector(BaseConnector):
             "To": f"whatsapp:{self.to_number}",
             "Body": text,
         }
+        if self.status_callback_url:
+            data["StatusCallback"] = self.status_callback_url
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.post(
@@ -81,10 +89,10 @@ class WhatsAppConnector(BaseConnector):
         """Normalize the incoming Twilio message payload."""
 
         return {
-            "text": message.get("body", ""),
-            "from": message.get("from"),
-            "to": message.get("to", self.to_number),
-            "sid": message.get("sid"),
+            "text": message.get("Body") or message.get("body", ""),
+            "from": message.get("From") or message.get("from"),
+            "to": message.get("To") or message.get("to", self.to_number),
+            "sid": message.get("MessageSid") or message.get("sid"),
         }
 
     def is_connected(self) -> bool:
@@ -97,3 +105,50 @@ class WhatsAppConnector(BaseConnector):
             return True
         except httpx.HTTPError:
             return False
+
+    async def set_webhook(self, webhook_url: str) -> bool:
+        """Configure Twilio WhatsApp webhook for the sending number."""
+        url = f"https://api.twilio.com/2010-04-01/Accounts/{self.account_sid}/IncomingPhoneNumbers.json"
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(url, auth=(self.account_sid, self.auth_token))
+            resp.raise_for_status()
+            numbers = resp.json().get("incoming_phone_numbers", [])
+            target = None
+            from_number = self.from_number
+            if not from_number.startswith("whatsapp:"):
+                from_number = f"whatsapp:{from_number}"
+            for item in numbers:
+                if item.get("phone_number") == from_number:
+                    target = item
+                    break
+            if not target:
+                return False
+            target_url = target.get("uri")
+            if not target_url:
+                return False
+            update_url = f"https://api.twilio.com{target_url}"
+            payload = {
+                "SmsUrl": webhook_url,
+                "SmsMethod": "POST",
+            }
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    update_url, data=payload, auth=(self.account_sid, self.auth_token)
+                )
+            resp.raise_for_status()
+            return True
+        except httpx.HTTPError as exc:  # pragma: no cover - network
+            logger.error("Error setting WhatsApp webhook: %s", exc)
+            return False
+
+    def verify_signature(self, signature: str, url: str, form: Dict[str, Any]) -> bool:
+        """Validate a Twilio webhook signature."""
+        if not signature or not self.auth_token:
+            return False
+        data = url + "".join(f"{k}{v}" for k, v in sorted(form.items()))
+        digest = hmac.new(
+            self.auth_token.encode("utf-8"), data.encode("utf-8"), hashlib.sha1
+        ).digest()
+        expected = base64.b64encode(digest).decode("utf-8")
+        return hmac.compare_digest(expected, signature)

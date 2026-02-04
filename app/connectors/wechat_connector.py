@@ -42,3 +42,23 @@ class WeChatConnector(BaseConnector):
     async def process_incoming(self, message):
         """Return the incoming ``message`` payload."""
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the app credentials can get a token."""
+        if not super().is_connected():
+            return False
+        try:
+            resp = httpx.get(
+                "https://api.weixin.qq.com/cgi-bin/token",
+                params={
+                    "grant_type": "client_credential",
+                    "appid": self.app_id,
+                    "secret": self.app_secret,
+                },
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return "access_token" in data
+        except httpx.HTTPError:
+            return False

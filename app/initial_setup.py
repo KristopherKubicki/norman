@@ -6,7 +6,6 @@ from app.db.session import SessionLocal
 
 
 def create_initial_admin_user():
-
     db = SessionLocal()
     if not is_admin_user_exists(db):
         create_admin_user(

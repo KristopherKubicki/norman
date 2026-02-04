@@ -50,3 +50,16 @@ class GooglePubSubConnector(BaseConnector):
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the publisher can resolve the topic."""
+        if not super().is_connected():
+            return False
+        if not pubsub_v1:
+            return False
+        try:
+            topic_path = self.publisher.topic_path(self.project_id, self.topic_id)
+            self.publisher.get_topic(request={"topic": topic_path})
+            return True
+        except Exception:
+            return False

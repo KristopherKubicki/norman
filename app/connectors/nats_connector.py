@@ -73,3 +73,9 @@ class NATSConnector(BaseConnector):
 
     async def process_incoming(self, message: str) -> str:
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the NATS client is available."""
+        if not super().is_connected():
+            return False
+        return nats is not None

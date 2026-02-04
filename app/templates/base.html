@@ -16,13 +16,18 @@
         })();
     </script>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" integrity="sha384-9ndCyUaIbzAi2FUVXJi0CjmCapSmO7OGpamoFVy38MVBnE+IbbVYUew+OrCXaRkfj" crossorigin="anonymous">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap">
     <link rel="stylesheet" href="/static/css/styles.css">
+    {% block extra_css %}{% endblock %}
 </head>
 <body>
     {% if show_navbar|default(True) %}
     <header class="navbar navbar-expand-md navbar-dark bg-primary shadow-sm">
         <div class="container">
-            <a class="navbar-brand" href="/index.html">Norman</a>
+            <a class="navbar-brand d-flex align-items-center gap-2" href="/index.html">
+                <span class="brand-mark">N</span>
+                <span class="brand-text">Norman</span>
+            </a>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
                 <span class="navbar-toggler-icon"></span>
             </button>
@@ -41,19 +46,20 @@
                         <a class="nav-link {% if active_page == 'bots' %}active{% endif %}" href="/bots.html">Bots</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link {% if active_page == 'filters' %}active{% endif %}" href="/filters.html">Filters</a>
-                    </li>
-                    <li class="nav-item">
                         <a class="nav-link {% if active_page == 'messages' %}active{% endif %}" href="/messages_log.html">Messages</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link {% if active_page == 'captions' %}active{% endif %}" href="/captions.html">Captions</a>
+                        <a class="nav-link {% if active_page == 'filters' %}active{% endif %}" href="/filters.html">Filters</a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link {% if active_page == 'settings' %}active{% endif %}" href="/settings.html">Settings</a>
                     </li>
                 </ul>
-                <div class="form-check form-switch text-light">
-                    <input class="form-check-input" type="checkbox" id="themeToggle">
-                    <label class="form-check-label" for="themeToggle">Dark Mode</label>
-                </div>
+                {% if openai_configured is defined %}
+                <span class="badge ms-3 {% if openai_configured %}bg-success{% else %}bg-warning text-dark{% endif %}">
+                    OpenAI {{ "configured" if openai_configured else "missing" }}
+                </span>
+                {% endif %}
             </div>
         </div>
     </header>
@@ -64,10 +70,11 @@
         {% endblock %}
     </main>
 
-    <footer class="text-center py-3 bg-light">
+    <footer class="text-center bg-light">
         &copy; Norman {{ year }}
     </footer>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" integrity="sha384-ENjdO4Dr2bkBIFxQpeoKMJQ0Z6D9F6EU2ygSABR03SuhDL7z8Zef3CJXTgq1Q0Q" crossorigin="anonymous"></script>
     <script src="/static/js/theme.js"></script>
+    {% block extra_js %}{% endblock %}
 </body>
 </html>

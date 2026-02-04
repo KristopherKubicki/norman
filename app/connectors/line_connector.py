@@ -46,3 +46,7 @@ class LineConnector(BaseConnector):
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the connector is configured."""
+        return super().is_connected()

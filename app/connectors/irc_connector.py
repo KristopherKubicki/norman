@@ -6,7 +6,6 @@ from .base_connector import BaseConnector
 
 
 class IRCConnector(BaseConnector):
-
     name = "IRC"
     id = "irc"
 

@@ -34,3 +34,15 @@ class ZapierConnector(BaseConnector):
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
         await self.send_message(message)
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the webhook URL appears reachable."""
+        if not super().is_connected():
+            return False
+        try:
+            resp = httpx.head(self.webhook_url, timeout=10)
+            if resp.status_code == 405:
+                resp = httpx.get(self.webhook_url, timeout=10)
+            return resp.status_code < 500
+        except httpx.HTTPError:
+            return False

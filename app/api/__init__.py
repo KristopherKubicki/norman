@@ -7,6 +7,7 @@ from .api_v1.routers import (
     connectors_router,
     platform_connectors_router,
     users_router,
+    routing_router,
 )
 from app.core.config import get_settings
 
@@ -23,6 +24,7 @@ router.include_router(filters_router, prefix=api_prefix)
 router.include_router(connectors_router, prefix=api_prefix)
 router.include_router(platform_connectors_router, prefix=f"{api_prefix}/connectors")
 router.include_router(users_router, prefix=f"{api_prefix}/users")
+router.include_router(routing_router, prefix=api_prefix)
 
 
 def init_routers(app: FastAPI):

@@ -102,3 +102,15 @@ class AWSIoTCoreConnector(BaseConnector):
 
     def _on_message(self, client, userdata, msg) -> None:  # pragma: no cover - callback
         asyncio.create_task(self.process_incoming(msg.payload.decode()))
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if IoT endpoint can be resolved."""
+        if not super().is_connected():
+            return False
+        if not boto3:
+            return False
+        try:
+            resp = self.client.describe_endpoint(endpointType="iot:Data-ATS")
+            return bool(resp.get("endpointAddress"))
+        except Exception:
+            return False

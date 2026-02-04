@@ -1,3 +1,4 @@
+import httpx
 from .base_connector import BaseConnector
 
 
@@ -25,3 +26,23 @@ class SkypeConnector(BaseConnector):
     async def process_incoming(self, message):
         """Return the incoming ``message`` payload."""
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the app credentials can get a token."""
+        if not super().is_connected():
+            return False
+        try:
+            resp = httpx.post(
+                "https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token",
+                data={
+                    "client_id": self.app_id,
+                    "client_secret": self.app_password,
+                    "grant_type": "client_credentials",
+                    "scope": "https://api.botframework.com/.default",
+                },
+                timeout=10,
+            )
+            resp.raise_for_status()
+            return True
+        except httpx.HTTPError:
+            return False

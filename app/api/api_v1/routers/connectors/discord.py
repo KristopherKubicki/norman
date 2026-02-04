@@ -1,6 +1,10 @@
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, HTTPException
 from app.connectors.discord_connector import DiscordConnector
+from app.crud import connector as connector_crud
 from app.core.config import get_settings, Settings
+from app.api.deps import get_db
+from app.routing.engine import enqueue_routing_job
+from sqlalchemy.orm import Session
 
 router = APIRouter()
 
@@ -20,6 +24,7 @@ def get_discord_connector(
     return DiscordConnector(
         token=settings.discord_token,
         channel_id=settings.discord_channel_id,
+        webhook_url=settings.discord_webhook_url,
     )
 
 
@@ -40,4 +45,29 @@ async def process_discord_update(
 
     payload = await request.json()
     discord_connector.process_incoming(payload)
+    return {"detail": "Update processed"}
+
+
+@router.post("/webhooks/discord/{connector_id}")
+async def process_discord_update_for_connector(
+    connector_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    connector = connector_crud.get(db, connector_id)
+    if not connector or connector.connector_type != "discord":
+        raise HTTPException(status_code=404, detail="Connector not found")
+
+    config = connector.config or {}
+    discord_connector = DiscordConnector(
+        token=config.get("token"),
+        channel_id=config.get("channel_id"),
+        webhook_url=config.get("webhook_url"),
+        config=config,
+    )
+    payload = await request.json()
+    normalized = discord_connector.process_incoming(payload)
+    await enqueue_routing_job(
+        db=db, connector=connector, normalized=normalized, payload=payload
+    )
     return {"detail": "Update processed"}

@@ -4,41 +4,47 @@
 {% block content %}
     <h1>Channels</h1>
 
-    <div class="search-container">
-        <input class="form-control search-input" type="text" id="channelSearch" placeholder="Search channels...">
-    </div>
+    <div id="channels-status" class="alert alert-info d-none" role="alert"></div>
 
-    <div class="card mb-4">
-        <div class="card-body">
-            <h2 class="h5">Add a Channel</h2>
-            <form id="add-channel-form" class="row g-2 align-items-end">
-                <div class="col-sm">
-                    <input type="text" id="channel-name" class="form-control" placeholder="Channel name" required>
+    <div class="row g-4">
+        <div class="col-lg-8">
+            <div class="card p-3 mb-3">
+                <div class="d-flex align-items-center justify-content-between mb-2">
+                    <h2 class="h5 mb-0">Channels</h2>
+                    <span class="badge bg-light text-dark" id="channels-count">0</span>
                 </div>
-                <div class="col-sm">
+                <div class="search-container">
+                    <input class="form-control search-input" type="text" id="channelSearch" placeholder="Search channels...">
+                </div>
+                <div class="channels-container list-group menu-list">
+                    <!-- Channels will be listed here -->
+                </div>
+            </div>
+        </div>
+
+        <div class="col-lg-4">
+            <div class="card p-3">
+                <h2 class="h5">Add a Channel</h2>
+                <form id="add-channel-form" class="d-grid gap-2">
+                    <input type="text" id="channel-name" class="form-control" placeholder="Channel name" required>
                     <label for="channel-connector" class="form-label">Connector</label>
                     <select class="form-select" id="channel-connector">
-                        <option value="webhook">Webhook</option>
-                        <option value="irc">IRC</option>
-                        <option value="slack">Slack</option>
-                        <option value="teams">Microsoft Teams</option>
-                        <option value="discord">Discord</option>
-                        <option value="google_chat">Google Chat</option>
-                        <option value="telegram">Telegram</option>
+                        <option value="" selected disabled>Loading connectors...</option>
                     </select>
+                    <button id="addChannelBtn" class="btn btn-primary" type="submit">Create Channel</button>
+                </form>
+                <div class="small text-muted mt-2">
+                    Need a connector? <a href="/connectors.html">Open Connectors</a>
                 </div>
-                <div class="col-12 col-sm-auto">
-                    <button id="addChannelBtn" class="btn btn-primary">Add Channel</button>
-                </div>
-            </form>
+            </div>
+
+            <div class="card p-3 mt-3">
+                <h2 class="h6">Sample Channels</h2>
+                <p class="small text-muted">Generate example channels with seeded messages.</p>
+                <button id="add-sample-channels" class="btn btn-outline-primary" type="button">Add sample channels</button>
+            </div>
         </div>
     </div>
 
-    <div class="channels-container">
-        <!-- Channels will be listed here -->
-    </div>
-
-    <script src="{{ url_for('static', filename='js/channels.js') }}" defer></script>
+    <script src="{{ url_for('static', path='js/channels.js') }}" defer></script>
 {% endblock %}
-
-

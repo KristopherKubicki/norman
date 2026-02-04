@@ -42,3 +42,18 @@ class ViberConnector(BaseConnector):
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if the auth token is valid."""
+        if not super().is_connected():
+            return False
+        try:
+            resp = httpx.get(
+                "https://chatapi.viber.com/pa/get_account_info",
+                headers={"X-Viber-Auth-Token": self.auth_token},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            return True
+        except httpx.HTTPError:
+            return False

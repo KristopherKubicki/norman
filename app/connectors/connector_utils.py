@@ -16,12 +16,14 @@ import os
 from typing import Any, Dict, List, Optional
 
 from app.core.config import get_settings, Settings
+from app.core.logging import setup_logger
 
 # Import BaseConnector for subclass checks
 from .base_connector import BaseConnector
 
 # Registry of available connectors keyed by their identifier.
 connector_classes: Dict[str, type] = {}
+logger = setup_logger(__name__)
 
 
 def _discover_connectors() -> None:
@@ -32,7 +34,11 @@ def _discover_connectors() -> None:
     for _, mod_name, _ in pkgutil.iter_modules([package_path]):
         if not mod_name.endswith("_connector"):
             continue
-        module = importlib.import_module(f"{package}.{mod_name}")
+        try:
+            module = importlib.import_module(f"{package}.{mod_name}")
+        except Exception as exc:
+            logger.warning("Skipping connector %s: %s", mod_name, exc)
+            continue
         for _, obj in inspect.getmembers(module, inspect.isclass):
             if issubclass(obj, BaseConnector) and obj is not BaseConnector:
                 connector_classes[obj.id] = obj
@@ -51,9 +57,11 @@ def get_connector(
 
     connector_class = connector_classes[connector_name]
 
+    signature = inspect.signature(connector_class.__init__)
+    valid_params = {p.name for p in signature.parameters.values() if p.name != "self"}
+
     if config is None:
         settings = get_settings()
-        signature = inspect.signature(connector_class.__init__)
         kwargs: Dict[str, Any] = {}
         for param in signature.parameters.values():
             if param.name == "self":
@@ -61,7 +69,7 @@ def get_connector(
             setting_name = f"{connector_name}_{param.name}"
             kwargs[param.name] = getattr(settings, setting_name, None)
     else:
-        kwargs = config
+        kwargs = {k: v for k, v in config.items() if k in valid_params}
 
     return connector_class(**kwargs)
 

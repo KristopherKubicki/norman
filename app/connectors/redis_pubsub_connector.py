@@ -80,3 +80,15 @@ class RedisPubSubConnector(BaseConnector):
 
     async def process_incoming(self, message: str) -> str:
         return message
+
+    def is_connected(self) -> bool:
+        """Return ``True`` if Redis is reachable."""
+        if not super().is_connected():
+            return False
+        if not redis:
+            return False
+        try:
+            client = self._client or redis.Redis(host=self.host, port=self.port)
+            return bool(client.ping())
+        except Exception:
+            return False
