@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="actions-page subpage-shell">
+  <div class="page-header subpage-header d-flex align-items-center justify-content-between mb-2">
+    <div>
+      <div class="subpage-eyebrow">Pipeline Deck</div>
+      <div class="subpage-title">Actions</div>
+      <div class="subpage-subtitle">Deliver responses and downstream automations.</div>
+    </div>
+    <div class="subpage-actions d-flex gap-2 flex-wrap">
+      <a class="btn btn-sm btn-outline-secondary" href="/bot/norman/">Norman</a>
+      <a class="btn btn-sm btn-outline-secondary" href="/dashboard.html?view=switchboard">Switchboard</a>
+      <a class="btn btn-sm btn-outline-secondary" href="/filters.html">Filters</a>
+    </div>
+  </div>
+  <div class="actions-mobile-nav d-lg-none" role="tablist" aria-label="Actions view">
+    <button type="button" class="btn btn-sm btn-outline-secondary is-active" data-actions-pane="list">Actions</button>
+    <button type="button" class="btn btn-sm btn-outline-secondary" data-actions-pane="setup">Add</button>
+  </div>
+  <div id="actions-status" class="alert alert-info d-none" role="alert"></div>
+
+  <div class="row g-4">
+    <div class="col-lg-8 actions-col actions-col--list" id="actions-pane-list">
+      <div class="card p-3 mb-3">
+        <div class="d-flex align-items-center justify-content-between mb-2">
+          <div class="section-title">Actions</div>
+          <span class="badge bg-light text-dark" id="actions-count">0</span>
+        </div>
+        <div class="actions-container list-group">
+          <!-- Actions will be dynamically added here -->
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-4 actions-col actions-col--sidebar" id="actions-pane-setup">
+      <div class="card card-body">
+        <div class="collapsible-header d-flex align-items-center justify-content-between mb-2" role="button" data-bs-toggle="collapse" data-bs-target="#actions-add-panel" aria-expanded="false" aria-controls="actions-add-panel">
+          <div class="section-title">Add Action</div>
+          <span class="small text-muted">Tap to expand</span>
+        </div>
+        <div class="collapse" id="actions-add-panel">
+          <form id="add-action-form">
+            <div class="mb-3">
+              <label for="action-filter" class="form-label">Filter</label>
+              <select id="action-filter" class="form-select">
+                <option value="" selected disabled>Loading filters...</option>
+              </select>
+            </div>
+            <div class="mb-3">
+              <label for="action-type" class="form-label">Action Type</label>
+              <select id="action-type" class="form-select">
+                <option value="reply" selected>Post reply to channel</option>
+                <option value="webhook" disabled>Post webhook (coming soon)</option>
+              </select>
+            </div>
+            <div class="mb-3">
+              <label for="action-reply-channel" class="form-label">Reply Channel</label>
+              <select id="action-reply-channel" class="form-select">
+                <option value="" selected disabled>Loading channels...</option>
+              </select>
+            </div>
+            <div class="mb-3">
+              <label for="action-prompt" class="form-label">Prompt</label>
+              <textarea id="action-prompt" class="form-control" rows="3" placeholder="Draft the reply instructions..." required></textarea>
+            </div>
+            <div class="mb-3">
+              <label for="action-order" class="form-label">Execution Order</label>
+              <input type="number" id="action-order" class="form-control" value="1" min="1" />
+            </div>
+            <div class="mobile-form-actions">
+              <button type="submit" class="btn btn-primary">Create Action</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="{{ url_for('static', path='js/actions.js') }}" defer></script>
+{% endblock %}

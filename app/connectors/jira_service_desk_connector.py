@@ -95,8 +95,46 @@ class JiraServiceDeskConnector(BaseConnector):
             await asyncio.sleep(30)
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
-        await self.send_message(message)
-        return message
+        """Normalize Jira webhook payloads."""
+        if not isinstance(message, dict):
+            return {"text": str(message)}
+
+        issue = message.get("issue") or {}
+        fields = issue.get("fields") or {}
+        comment = message.get("comment") or {}
+        author = (comment.get("author") or {}).get("displayName") or (
+            fields.get("reporter") or {}
+        ).get("displayName")
+
+        summary = fields.get("summary") or ""
+        body = (comment.get("body") or {}).get("content")
+        if isinstance(body, list):
+            body = " ".join(
+                chunk.get("text", "")
+                for block in body
+                for chunk in block.get("content", [])
+                if isinstance(chunk, dict)
+            )
+
+        status = (fields.get("status") or {}).get("name")
+        issue_key = issue.get("key")
+
+        summary_parts = ["jira"]
+        if issue_key:
+            summary_parts.append(issue_key)
+        if summary:
+            summary_parts.append(summary)
+        summary_text = " • ".join(part for part in summary_parts if part)
+
+        return {
+            "event": message.get("webhookEvent") or "jira",
+            "issue_key": issue_key,
+            "summary": summary,
+            "body": body or "",
+            "status": status,
+            "user": author,
+            "text": summary_text,
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if credentials can access Jira."""

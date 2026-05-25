@@ -55,7 +55,25 @@ class APRSConnector(BaseConnector):
             self.client.close()
 
     async def process_incoming(self, message):
-        logger.info("APRS received: %s", message)
+        if not isinstance(message, dict):
+            text = str(message)
+            logger.info("APRS received: %s", text)
+            summary = f"aprs • {text}" if text else "aprs"
+            return {"text": text, "text_summary": summary}
+        text = message.get("text") or message.get("comment") or ""
+        summary_parts = ["aprs"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {
+            "text": text,
+            "source": message.get("source"),
+            "destination": message.get("destination"),
+            "path": message.get("path"),
+            "latitude": message.get("latitude"),
+            "longitude": message.get("longitude"),
+            "text_summary": summary,
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if the connector is configured."""

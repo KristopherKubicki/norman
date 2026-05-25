@@ -40,7 +40,25 @@ class GoogleBusinessRCSConnector(BaseConnector):
         return None
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
-        return message
+        if not isinstance(message, dict):
+            text = str(message)
+            summary = f"gbm • {text}" if text else "gbm"
+            return {"text": text, "text_summary": summary}
+        text = (
+            message.get("message", {}).get("text")
+            if isinstance(message.get("message"), dict)
+            else message.get("text")
+        ) or ""
+        summary_parts = ["gbm"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {
+            "text": text,
+            "sender": message.get("sender") or message.get("senderId"),
+            "conversation_id": message.get("conversationId"),
+            "text_summary": summary,
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if the access token works."""

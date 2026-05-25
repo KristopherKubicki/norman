@@ -1,6 +1,6 @@
 """CRUD helpers for :class:`~app.models.action.Action`."""
 
-from typing import Optional
+from typing import Optional, List
 
 from sqlalchemy.orm import Session
 
@@ -26,6 +26,19 @@ def get_for_user(db: Session, action_id: int, user_id: int) -> Optional[ActionMo
         .join(ConnectorModel, ChannelModel.connector_id == ConnectorModel.id)
         .filter(ActionModel.id == action_id, ConnectorModel.user_id == user_id)
         .first()
+    )
+
+
+def get_multi_by_user(db: Session, user_id: int) -> List[ActionModel]:
+    """Return all actions for a user via filter/channel ownership."""
+    return (
+        db.query(ActionModel)
+        .join(FilterModel, ActionModel.channel_filter_id == FilterModel.id)
+        .join(ChannelModel, FilterModel.channel_id == ChannelModel.id)
+        .join(ConnectorModel, ChannelModel.connector_id == ConnectorModel.id)
+        .filter(ConnectorModel.user_id == user_id)
+        .order_by(ActionModel.execution_order.asc(), ActionModel.id.asc())
+        .all()
     )
 
 

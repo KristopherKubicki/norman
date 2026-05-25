@@ -75,6 +75,15 @@ class MastodonConnector(BaseConnector):
                 message["data"] = json.loads(data)
             except ValueError:  # pragma: no cover - data may not be JSON
                 pass
+        payload = message.get("data") if isinstance(message.get("data"), dict) else {}
+        status = payload.get("content") or payload.get("text") or ""
+        summary_parts = ["mastodon"]
+        if status:
+            summary_parts.append(status)
+        summary = " • ".join(part for part in summary_parts if part)
+        message["text_summary"] = summary
+        if "text" not in message:
+            message["text"] = status
         return message
 
     def is_connected(self) -> bool:

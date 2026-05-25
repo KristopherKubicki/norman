@@ -1,0 +1,425 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="home-page">
+    <section class="card home-prime" id="home-prime">
+        <div class="home-prime__hero">
+            <div class="home-prime__hero-copy">
+                <div class="home-prime__title">Norman Prime</div>
+                <div class="home-prime__focus" id="home-prime-focus">Norman is reading the estate and triage queue…</div>
+            </div>
+            <div class="home-prime__hero-aside">
+                <div class="home-prime__stats">
+                    <div class="home-prime__stat">
+                        <div class="home-prime__stat-value" id="home-prime-open-count">--</div>
+                        <div class="home-prime__stat-label">Tasks</div>
+                    </div>
+                    <div class="home-prime__stat">
+                        <div class="home-prime__stat-value" id="home-prime-critical-count">--</div>
+                        <div class="home-prime__stat-label">Urgent</div>
+                    </div>
+                    <div class="home-prime__stat">
+                        <div class="home-prime__stat-value" id="home-prime-agent-count">--</div>
+                        <div class="home-prime__stat-label">Waiting</div>
+                    </div>
+                    <div class="home-prime__stat">
+                        <div class="home-prime__stat-value" id="home-prime-chat-count">--</div>
+                        <div class="home-prime__stat-label">Active</div>
+                    </div>
+                </div>
+                <div class="home-prime__actions" id="home-prime-actions">
+                    <span class="home-prime__placeholder">Loading Norman routes…</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="home-prime__flow">
+            <div class="home-prime__main">
+                <section class="home-prime__section home-prime__summary-panel">
+                    <div class="home-prime__section-head">
+                        <div>
+                            <div class="section-title">Focus</div>
+                        </div>
+                    </div>
+                    <div class="home-prime__summary" id="home-prime-summary">
+                        <div class="home-prime__placeholder">Building Norman summary…</div>
+                    </div>
+                </section>
+                <section class="home-prime__section home-prime__desk-panel">
+                    <div class="home-prime__section-head">
+                        <div>
+                            <div class="section-title">Desk</div>
+                        </div>
+                        <div class="small text-muted" id="home-prime-desk-status">Waiting for task…</div>
+                    </div>
+                    <div class="prime-desk" id="home-prime-desk">
+                        <div class="prime-desk__eyebrow">Norman Prime</div>
+                        <div class="prime-desk__title" id="home-prime-desk-title">No task card selected</div>
+                        <div class="prime-desk__meta" id="home-prime-desk-meta">Select a task card to focus Norman Prime.</div>
+                        <div class="prime-desk__detail" id="home-prime-desk-detail">Norman Prime will use the selected item to frame a coordination prompt while the deep repo or machine context stays with the right worker.</div>
+                        <div class="prime-desk__brief-label">Coordination Brief</div>
+                        <div class="prime-desk__prompt" id="home-prime-desk-prompt">Norman, look across the current task cards, decide what matters most, and tell me what should happen next.</div>
+                        <div class="prime-desk__actions" id="home-prime-desk-actions">
+                            <span class="home-prime__placeholder">Loading Norman actions…</span>
+                        </div>
+                    </div>
+                </section>
+                <section class="home-prime__section home-prime__ops-panel">
+                    <div class="home-prime__section-head home-prime__section-head--stack">
+                        <div>
+                            <div class="section-title">Workers</div>
+                        </div>
+                        <div class="home-prime__ops-head">
+                            <div class="small text-muted" id="home-prime-ops-status">Scanning managed sessions…</div>
+                            <div class="home-prime__ops-tools">
+                                <button class="btn btn-outline-secondary btn-sm" type="button" id="home-prime-ops-refresh">Refresh</button>
+                                <button class="btn btn-outline-secondary btn-sm" type="button" id="home-prime-ops-unlock-all">Unlock All</button>
+                                <button class="btn btn-outline-danger btn-sm" type="button" id="home-prime-ops-killswitch">Stop + Lock</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="home-prime__ops-summary" id="home-prime-ops-summary">
+                        <div class="home-prime__placeholder">Building worker summary…</div>
+                    </div>
+                    <div class="home-prime__ops-controls">
+                        <div class="home-prime__ops-filters" id="home-prime-ops-filters">
+                            <div class="home-prime__placeholder">Loading lane focus…</div>
+                        </div>
+                        <div class="home-prime__ops-modes" id="home-prime-ops-modes">
+                            <div class="home-prime__placeholder">Loading worker views…</div>
+                        </div>
+                    </div>
+                    <div class="home-prime__ops-focus" id="home-prime-ops-focus">
+                        <div class="home-prime__placeholder">Scanning for the next agent turn…</div>
+                    </div>
+                    <div class="home-prime__ops-items" id="home-prime-ops">
+                        <div class="home-prime__placeholder">Loading managed sessions…</div>
+                    </div>
+                </section>
+            </div>
+            <aside class="home-prime__side">
+                <section class="home-prime__section home-prime__inbox-panel">
+                <div class="home-prime__section-head">
+                    <div>
+                        <div class="section-title">Tasks</div>
+                    </div>
+                    <div class="small text-muted" id="home-prime-inbox-count">Scanning…</div>
+                </div>
+                <div class="home-prime__inbox-items" id="home-prime-inbox">
+                    <div class="home-prime__placeholder">Inbox loading…</div>
+                </div>
+                </section>
+                <div class="home-prime__utility-grid">
+                    <section class="home-prime__section home-prime__section--utility">
+                        <div class="home-prime__section-head">
+                            <div>
+                                <div class="section-title">Lanes</div>
+                            </div>
+                            <a class="btn btn-sm btn-outline-secondary" href="/systems.html#agent-directory">Directory</a>
+                        </div>
+                        <div class="home-prime__lane-grid" id="home-prime-lanes">
+                            <div class="home-prime__placeholder">Loading lane routes…</div>
+                        </div>
+                    </section>
+                    <section class="home-prime__section home-prime__section--utility">
+                        <div class="home-prime__section-head">
+                            <div>
+                                <div class="section-title">Starts</div>
+                            </div>
+                            <div class="small text-muted" id="home-prime-dispatch-status">Prompt recipes loading…</div>
+                        </div>
+                        <div class="home-prime__dispatch-grid" id="home-prime-dispatch">
+                            <div class="home-prime__placeholder">Loading dispatch recipes…</div>
+                        </div>
+                    </section>
+                </div>
+            </aside>
+        </div>
+    </section>
+    <div class="home-grid">
+        <div class="home-flow card full-map">
+            <div class="section-header">
+                <div>
+                    <div class="section-title">Flow</div>
+                </div>
+                <div class="flow-header-actions">
+                    <div class="status-legend">
+                        <span class="status-chip ok">Online</span>
+                        <span class="status-chip warn">Needs attention</span>
+                        <span class="status-chip idle">Offline</span>
+                    </div>
+                    <button class="btn btn-outline-secondary btn-sm" type="button" id="flow-info-toggle">
+                        How it works
+                    </button>
+                    <button class="btn btn-outline-secondary btn-sm" type="button" id="flow-breathe-toggle">
+                        Pause Breathing
+                    </button>
+                    <button class="btn btn-outline-secondary btn-sm" type="button" id="flow-rotate-toggle">
+                        Rotate View
+                    </button>
+                </div>
+            </div>
+            <div class="home-mobile-deck d-md-none" aria-label="Mobile operations deck">
+                <div class="home-mobile-deck__header">
+                    <div class="section-title">Routes</div>
+                </div>
+                <div class="home-mobile-deck__grid">
+                    <a class="home-mobile-deck__card" href="/editor.html">
+                        <span class="home-mobile-deck__label">Editor</span>
+                        <span class="home-mobile-deck__value">Work</span>
+                        <span class="home-mobile-deck__meta">Threads, dispatch, and live operator flow</span>
+                    </a>
+                    <a class="home-mobile-deck__card" href="/systems.html#agent-directory">
+                        <span class="home-mobile-deck__label">Directory</span>
+                        <span class="home-mobile-deck__value">{{ bot_count }}</span>
+                        <span class="home-mobile-deck__meta">{{ 'Routes' if bot_count > 0 else 'No routes' }}</span>
+                    </a>
+                    <a class="home-mobile-deck__card" href="/connectors.html">
+                        <span class="home-mobile-deck__label">Pipeline</span>
+                        <span class="home-mobile-deck__value">{{ connector_count + filter_count }}</span>
+                        <span class="home-mobile-deck__meta">Connectors, routing, sources, and actions</span>
+                    </a>
+                    <a class="home-mobile-deck__card" href="/settings.html">
+                        <span class="home-mobile-deck__label">Settings</span>
+                        <span class="home-mobile-deck__value">{{ 'On' if onboarding_ready else '--' }}</span>
+                        <span class="home-mobile-deck__meta">{{ 'Themes, policy, and defaults' if onboarding_ready else 'Finish Norman setup' }}</span>
+                    </a>
+                </div>
+                <div class="home-mobile-fleet">
+                    <div class="home-mobile-fleet__header">
+                        <div class="section-title">Directory</div>
+                        <a class="home-mobile-fleet__browse" href="/systems.html#agent-directory">Open</a>
+                    </div>
+                    <div class="home-mobile-fleet__items" id="home-mobile-fleet-items">
+                        <div class="home-mobile-fleet__empty">Loading agent routes…</div>
+                    </div>
+                </div>
+            </div>
+            <div class="attention-rail" id="attention-rail" aria-live="polite">
+                <div class="attention-rail__header">
+                    <div class="attention-rail__title">Attention Rail</div>
+                    <div class="attention-rail__count" id="attention-rail-count">Scanning...</div>
+                </div>
+                <div class="attention-rail__items" id="attention-rail-items">
+                    <div class="attention-rail__empty">No incidents detected.</div>
+                </div>
+            </div>
+            <div class="traffic-map main-map">
+                <svg viewBox="0 0 1600 900" role="img" aria-label="Norman traffic flow map" preserveAspectRatio="xMidYMid meet">
+                    <defs>
+                        <linearGradient id="flowNode" x1="0" y1="0" x2="1" y2="1">
+                            <stop offset="0" stop-color="#0D172A"></stop>
+                            <stop offset="1" stop-color="#0A1323"></stop>
+                        </linearGradient>
+                        <linearGradient id="flowShine" x1="0" y1="0" x2="1" y2="0">
+                            <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.10"></stop>
+                            <stop offset="0.35" stop-color="#FFFFFF" stop-opacity="0.02"></stop>
+                            <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"></stop>
+                        </linearGradient>
+                        <filter id="flowShadow" x="-30%" y="-30%" width="160%" height="160%">
+                            <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#000000" flood-opacity="0.45"></feDropShadow>
+                        </filter>
+                        <marker id="flowArrowMain" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+                            <path d="M 0 0 L 10 5 L 0 10 z" fill="#3BE8D7" opacity="0.85"></path>
+                        </marker>
+                    </defs>
+
+                    <g id="flow-layout">
+                        <g id="tile-channels" filter="url(#flowShadow)">
+                        <a href="/channels.html" class="flow-link" data-flow="channels">
+                            <title>Sources: manage live inputs and local feeds. Click to configure.</title>
+                            <rect class="flow-hit" x="40" y="138" width="400" height="196" rx="24" />
+                            <rect x="64" y="150" width="360" height="168" rx="22" fill="url(#flowNode)" stroke="#2A3B52" stroke-width="1.2" class="flow-tile flow-tile--a"></rect>
+                            <rect x="64" y="150" width="360" height="168" rx="22" fill="url(#flowShine)" opacity="0.4"></rect>
+                            <text x="92" y="192" class="flow-title flow-shimmer">Sources</text>
+                            <rect x="308" y="176" width="90" height="26" rx="13" class="flow-status {{ 'warn' if channel_count == 0 else 'ok' }}"></rect>
+                            <circle cx="324" cy="189" r="4.6" class="flow-chip-dot"></circle>
+                            <text x="338" y="193" class="flow-chip-text">{{ 'NEEDS' if channel_count == 0 else 'ONLINE' }}</text>
+                            <text x="92" y="224" class="flow-metric-label">Sources</text>
+                            <text x="190" y="224" class="flow-metric-value">{{ channel_count }}</text>
+                            <text x="92" y="248" class="flow-metric-label">Msgs/min</text>
+                            <text x="190" y="248" class="flow-metric-value" id="metric-channel-msgs">0</text>
+                            <text x="92" y="272" class="flow-metric-label">In flight</text>
+                            <text x="190" y="272" class="flow-metric-value" id="metric-inflight">0</text>
+                            <text x="260" y="224" class="flow-metric-label">p95 latency</text>
+                            <text x="350" y="224" class="flow-metric-value">--</text>
+                            <text x="260" y="248" class="flow-metric-label">Error rate</text>
+                            <text x="350" y="248" class="flow-metric-value">--</text>
+                            <text x="92" y="302" class="flow-metric-muted" id="metric-last-signal">Last signal: --</text>
+                        </a>
+                        </g>
+
+                        <g id="tile-bots" filter="url(#flowShadow)">
+                        <a href="/editor.html" class="flow-link" data-flow="bots">
+                            <title>Editor: active Norman threads, coordination, and live operator work. Click to open.</title>
+                            <rect class="flow-hit" x="40" y="330" width="400" height="196" rx="24" />
+                            <rect x="64" y="342" width="360" height="168" rx="22" fill="url(#flowNode)" stroke="#2A3B52" stroke-width="1.2" class="flow-tile flow-tile--b"></rect>
+                            <rect x="64" y="342" width="360" height="168" rx="22" fill="url(#flowShine)" opacity="0.4"></rect>
+                            <text x="92" y="384" class="flow-title flow-shimmer">Editor</text>
+                            <rect x="308" y="368" width="90" height="26" rx="13" class="flow-status {{ 'warn' if bot_count == 0 else 'ok' }}"></rect>
+                            <circle cx="324" cy="381" r="4.6" class="flow-chip-dot"></circle>
+                            <text x="338" y="385" class="flow-chip-text">{{ 'NEEDS' if bot_count == 0 else 'ONLINE' }}</text>
+                            <text x="92" y="416" class="flow-metric-label">Threads</text>
+                            <text x="190" y="416" class="flow-metric-value">{{ bot_count }}</text>
+                            <text x="92" y="440" class="flow-metric-label">Processing</text>
+                            <text x="190" y="440" class="flow-metric-value" id="metric-processing">0</text>
+                            <text x="92" y="464" class="flow-metric-label">Queue</text>
+                            <text x="190" y="464" class="flow-metric-value" id="metric-bot-wait">0</text>
+                            <text x="260" y="416" class="flow-metric-label">p95 latency</text>
+                            <text x="350" y="416" class="flow-metric-value" id="metric-bot-latency">0s</text>
+                            <text x="260" y="440" class="flow-metric-label">Tool errors</text>
+                            <text x="350" y="440" class="flow-metric-value">0</text>
+                        </a>
+                        </g>
+
+                        <g id="tile-filters" filter="url(#flowShadow)">
+                        <a href="/filters.html" class="flow-link" data-flow="filters">
+                            <title>Filters: routing rules and match logic. Click to edit.</title>
+                            <rect class="flow-hit" x="520" y="228" width="460" height="238" rx="24" />
+                            <rect x="540" y="240" width="420" height="200" rx="22" fill="url(#flowNode)" stroke="#2A3B52" stroke-width="1.2" class="flow-tile flow-tile--c"></rect>
+                            <rect x="540" y="240" width="420" height="200" rx="22" fill="url(#flowShine)" opacity="0.4"></rect>
+                            <text x="568" y="284" class="flow-title flow-shimmer">Filters</text>
+                            <rect x="800" y="264" width="96" height="26" rx="13" class="flow-status {{ 'warn' if filter_count == 0 else 'ok' }}"></rect>
+                            <circle cx="816" cy="277" r="4.6" class="flow-chip-dot"></circle>
+                            <text x="830" y="281" class="flow-chip-text">{{ 'NEEDS' if filter_count == 0 else 'ONLINE' }}</text>
+                            <text x="568" y="320" class="flow-metric-label">Rules</text>
+                            <text x="648" y="320" class="flow-metric-value">{{ filter_count }}</text>
+                            <text x="568" y="346" class="flow-metric-label">Matched</text>
+                            <text x="648" y="346" class="flow-metric-value" id="metric-matched">0</text>
+                            <text x="568" y="372" class="flow-metric-label">Routed</text>
+                            <text x="648" y="372" class="flow-metric-value" id="metric-routed">0</text>
+                            <text x="670" y="320" class="flow-metric-label">Drop rate</text>
+                            <text x="770" y="320" class="flow-metric-value">--</text>
+                            <text x="670" y="346" class="flow-metric-label">Delay</text>
+                            <text x="770" y="346" class="flow-metric-value" id="metric-filter-delay">0s</text>
+                        </a>
+                        </g>
+
+                        <g id="tile-actions" filter="url(#flowShadow)">
+                        <a href="/actions.html" class="flow-link" data-flow="actions">
+                            <title>Actions: outbound delivery and webhooks. Click to review.</title>
+                            <rect class="flow-hit" x="1020" y="244" width="360" height="200" rx="22" />
+                            <rect x="1040" y="256" width="340" height="170" rx="22" fill="url(#flowNode)" stroke="#2A3B52" stroke-width="1.2" class="flow-tile flow-tile--d"></rect>
+                            <rect x="1040" y="256" width="340" height="170" rx="22" fill="url(#flowShine)" opacity="0.4"></rect>
+                            <text x="1068" y="296" class="flow-title flow-shimmer">Actions</text>
+                            <rect x="1238" y="276" width="90" height="26" rx="13" class="flow-status {{ 'warn' if not onboarding_ready else 'ok' }}"></rect>
+                            <circle cx="1254" cy="289" r="4.6" class="flow-chip-dot"></circle>
+                            <text x="1268" y="293" class="flow-chip-text">{{ 'NEEDS' if not onboarding_ready else 'ONLINE' }}</text>
+                            <text x="1068" y="332" class="flow-metric-label">Sent</text>
+                            <text x="1130" y="332" class="flow-metric-value" id="metric-sent">0</text>
+                            <text x="1068" y="356" class="flow-metric-label">Failed</text>
+                            <text x="1130" y="356" class="flow-metric-value" id="metric-failed">0</text>
+                            <text x="1208" y="332" class="flow-metric-label">p95 delivery</text>
+                            <text x="1308" y="332" class="flow-metric-value">--</text>
+                            <text x="1068" y="396" class="flow-metric-muted" id="metric-last-action">Last action: --</text>
+                        </a>
+                        </g>
+
+                        <g class="flow-edge">
+                        <path id="flow-line-channels" class="flow-line flow-line--pulse flow-line-channels" d="M424 234 L520 234 L520 310 L540 310" marker-end="url(#flowArrowMain)"></path>
+                        <path id="flow-line-bots" class="flow-line flow-line--pulse flow-line-bots" d="M424 426 L520 426 L520 370 L540 370" marker-end="url(#flowArrowMain)"></path>
+                        <path id="flow-line-actions" class="flow-line flow-line--pulse flow-line-actions" d="M960 340 L1040 340" marker-end="url(#flowArrowMain)"></path>
+                        </g>
+
+                        <g>
+                        <circle id="flow-check-channels" cx="520" cy="310" r="12" class="flow-check"></circle>
+                        <path id="flow-check-channels-mark" d="M515 310 L519 314 L526 304" class="flow-check-mark"></path>
+                        <circle id="flow-check-bots" cx="520" cy="370" r="12" class="flow-check"></circle>
+                        <path id="flow-check-bots-mark" d="M515 370 L519 374 L526 364" class="flow-check-mark"></path>
+                        <circle id="flow-check-actions" cx="1000" cy="340" r="12" class="flow-check"></circle>
+                        <path id="flow-check-actions-mark" d="M995 340 L999 344 L1006 334" class="flow-check-mark"></path>
+                        </g>
+
+                        <g>
+                        <circle id="flow-drip-channels" cx="120" cy="206" r="4" fill="#3BE8D7" class="flow-drip"></circle>
+                        <circle id="flow-drip-bots" cx="120" cy="376" r="4" fill="#3BE8D7" class="flow-drip" style="animation-delay: 2s;"></circle>
+                        <circle id="flow-drip-actions" cx="900" cy="334" r="4" fill="#3BE8D7" class="flow-drip" style="animation-delay: 4s;"></circle>
+                        </g>
+                    </g>
+                </svg>
+                <div class="flow-info-panel" id="flow-info-panel">
+                    <div class="flow-info-title">How Norman Works</div>
+                    <ol>
+                        <li>Sources ingest live signals from connectors.</li>
+                        <li>Filters match what matters and route it.</li>
+                        <li>Editor and Norman decide the response or automation.</li>
+                        <li>Actions send messages or trigger webhooks.</li>
+                    </ol>
+                    <div class="small text-muted">
+                        {% if onboarding_ready %}
+                        Ready to route live traffic.
+                        {% else %}
+                        Add a session and connector to activate routing.
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="flow-assistant" aria-label="Operations assistant">
+                    <div class="flow-assistant__header">
+                        <div>
+                            <div class="flow-assistant__title">Ops Assistant</div>
+                            <div class="flow-assistant__subtitle">Internal triage bot</div>
+                        </div>
+                        <span class="flow-assistant__status">Online</span>
+                    </div>
+                    <div class="flow-assistant__body">
+                        <div class="flow-assistant__line">Last check: <span id="assistant-last-check">just now</span></div>
+                        <div class="flow-assistant__line">Focus: <span>routing latency</span></div>
+                        <div class="flow-assistant__line">Queue: <span id="assistant-queue">0 pending</span></div>
+                        <div class="flow-assistant__attach">
+                            <div class="flow-assistant__label">Attach to</div>
+                            <div class="flow-assistant__chips">
+                                <button class="flow-chip" type="button" data-attach="channels">Sources</button>
+                                <button class="flow-chip" type="button" data-attach="bots">Editor</button>
+                                <button class="flow-chip" type="button" data-attach="filters">Filters</button>
+                                <button class="flow-chip" type="button" data-attach="actions">Actions</button>
+                                <button class="flow-chip is-active" type="button" data-attach="none">None</button>
+                            </div>
+                        </div>
+                        <div class="flow-assistant__suggestions">
+                            <button class="btn btn-sm btn-outline-secondary" type="button" onclick="window.location.href='/filters.html'">Review filters</button>
+                            <button class="btn btn-sm btn-outline-secondary" type="button" onclick="window.location.href='/connectors.html'">Check connectors</button>
+                        </div>
+                        <div class="flow-assistant__input">
+                            <input class="form-control form-control-sm" type="text" placeholder="Ask worker coordinator..." aria-label="Ask worker coordinator" />
+                            <button class="btn btn-sm btn-primary" type="button" disabled>Send</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="home-sidebar">
+            <div class="card home-agent-fleet" id="agent-directory">
+                <div class="section-header mb-1">
+                    <div>
+                        <div class="section-title">Directory</div>
+                    </div>
+                    <div class="small text-muted" id="home-agent-fleet-count">Loading…</div>
+                </div>
+                <div class="home-agent-fleet__items" id="home-agent-fleet-items">
+                    <div class="home-agent-fleet__empty">Loading agent routes…</div>
+                </div>
+                <div class="home-agent-fleet__footer">
+                    <a class="btn btn-sm btn-outline-secondary" href="/systems.html#agent-directory">Open Directory</a>
+                </div>
+            </div>
+            <div class="card attention-timeline" id="attention-timeline">
+                <div class="section-header mb-1">
+                    <div>
+                        <div class="section-title">Incidents</div>
+                    </div>
+                    <div class="small text-muted" id="attention-timeline-count">0 open</div>
+                </div>
+                <div class="attention-timeline__toolbar">
+                    <button class="btn btn-sm btn-outline-secondary" type="button" id="attention-toggle-hidden">Show Hidden</button>
+                    <button class="btn btn-sm btn-outline-secondary" type="button" id="attention-clear-acked">Clear Acked</button>
+                </div>
+                <div class="attention-timeline__items" id="attention-timeline-items">
+                    <div class="attention-timeline__empty">No incidents logged.</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<script src="/static/js/home.js?v=20260505b" defer></script>
+{% endblock %}

@@ -76,7 +76,20 @@ class SnapchatConnector(BaseConnector):
 
     async def process_incoming(self, message: Any) -> Any:
         """Return the incoming ``message`` payload."""
-        return message
+        if not isinstance(message, dict):
+            return {"text": str(message)}
+        text = message.get("text") or message.get("message") or ""
+        sender = message.get("sender") or message.get("from")
+        summary_parts = ["snapchat"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {
+            "text": text,
+            "sender": sender,
+            "message_id": message.get("id"),
+            "text_summary": summary,
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if authentication appears valid."""

@@ -87,8 +87,17 @@ async def process_slack_update(
     if payload.get("type") == "url_verification":
         return {"challenge": payload.get("challenge")}
 
+    if isinstance(payload, dict):
+        payload.setdefault(
+            "_meta",
+            {
+                "headers": {k.lower(): v for k, v in request.headers.items()},
+                "query": dict(request.query_params),
+                "path": str(request.url.path),
+            },
+        )
     event = payload.get("event", payload)
-    slack_connector.process_incoming(event)
+    slack_connector.process_incoming(event if isinstance(event, dict) else payload)
     return {"detail": "Update processed"}
 
 
@@ -121,8 +130,19 @@ async def process_slack_update_for_connector(
     if payload.get("type") == "url_verification":
         return {"challenge": payload.get("challenge")}
 
+    if isinstance(payload, dict):
+        payload.setdefault(
+            "_meta",
+            {
+                "headers": {k.lower(): v for k, v in request.headers.items()},
+                "query": dict(request.query_params),
+                "path": str(request.url.path),
+            },
+        )
     event = payload.get("event", payload)
-    normalized = slack_connector.process_incoming(event)
+    normalized = slack_connector.process_incoming(
+        event if isinstance(event, dict) else payload
+    )
     await enqueue_routing_job(
         db=db, connector=connector, normalized=normalized, payload=payload
     )

@@ -1,0 +1,836 @@
+principals:
+  - slug: operator
+    display_name: Operator
+    kind: person
+    notes: Personal principal and operator identity.
+  - slug: kubicki-trust
+    display_name: Kubicki Trust
+    kind: trust
+    notes: Trust-owned Evergreen assets and related operations.
+  - slug: openbrand
+    display_name: OpenBrand
+    kind: company
+    notes: Work/company operational boundary.
+  - slug: parkergale
+    display_name: PEF
+    kind: company
+    notes: Private Equity Funbot principal. ParkerGale and PEFB remain valid aliases for the confidential finance and deal-work boundary.
+  - slug: tcg
+    display_name: TCG
+    kind: company
+    notes: Separate business boundary.
+  - slug: yhix
+    display_name: Yhix
+    kind: venture
+    notes: Studio and experiments.
+
+policy_profiles:
+  - slug: read-only
+    display_name: Read Only
+    mode: read-only
+    requires_approval: false
+    allows_outbound_send: false
+    allows_runtime_control: false
+    allows_side_effects: false
+  - slug: draft-first
+    display_name: Draft First
+    mode: draft-first
+    requires_approval: true
+    allows_outbound_send: true
+    allows_runtime_control: false
+    allows_side_effects: false
+  - slug: manual
+    display_name: Manual
+    mode: manual
+    requires_approval: true
+    allows_outbound_send: true
+    allows_runtime_control: true
+    allows_side_effects: true
+  - slug: shared
+    display_name: Shared
+    mode: shared
+    requires_approval: false
+    allows_outbound_send: true
+    allows_runtime_control: true
+    allows_side_effects: true
+  - slug: auto
+    display_name: Auto
+    mode: auto
+    requires_approval: false
+    allows_outbound_send: true
+    allows_runtime_control: true
+    allows_side_effects: true
+  - slug: panic-lock
+    display_name: Panic Lock
+    mode: manual
+    requires_approval: true
+    allows_outbound_send: false
+    allows_runtime_control: false
+    allows_side_effects: false
+
+control_classes:
+  - slug: root-controlled
+    display_name: Root Controlled
+    rank: 100
+  - slug: admin-controlled
+    display_name: Admin Controlled
+    rank: 80
+  - slug: pending-control
+    display_name: Pending Control
+    rank: 40
+  - slug: observed-only
+    display_name: Observed Only
+    rank: 10
+
+domains:
+  - slug: operator-household
+    principal: operator
+    display_name: Household
+    kind: household
+    default_policy_profile: shared
+  - slug: operator-security
+    principal: operator
+    display_name: Security
+    kind: security
+    default_policy_profile: manual
+  - slug: operator-health
+    principal: operator
+    display_name: Health
+    kind: health
+    default_policy_profile: read-only
+  - slug: operator-finance
+    principal: operator
+    display_name: Finance
+    kind: finance
+    default_policy_profile: read-only
+  - slug: operator-observability
+    principal: operator
+    display_name: Observability
+    kind: observability
+    default_policy_profile: shared
+  - slug: operator-radio
+    principal: operator
+    display_name: Radio
+    kind: radio
+    default_policy_profile: manual
+  - slug: operator-communications
+    principal: operator
+    display_name: Communications
+    kind: communications
+    default_policy_profile: draft-first
+  - slug: operator-scheduling
+    principal: operator
+    display_name: Scheduling
+    kind: scheduling
+    default_policy_profile: draft-first
+  - slug: operator-knowledge
+    principal: operator
+    display_name: Knowledge
+    kind: knowledge
+    default_policy_profile: shared
+  - slug: kubicki-evergreen
+    principal: kubicki-trust
+    display_name: Evergreen
+    kind: evergreen
+    default_policy_profile: shared
+  - slug: openbrand-ops
+    principal: openbrand
+    display_name: OpenBrand Ops
+    kind: openbrand-ops
+    default_policy_profile: shared
+  - slug: openbrand-knowledge
+    principal: openbrand
+    display_name: OpenBrand Knowledge
+    kind: knowledge
+    default_policy_profile: shared
+  - slug: openbrand-communications
+    principal: openbrand
+    display_name: OpenBrand Communications
+    kind: communications
+    default_policy_profile: draft-first
+  - slug: parkergale-private
+    principal: parkergale
+    display_name: Private
+    kind: private
+    default_policy_profile: read-only
+  - slug: yhix-studio
+    principal: yhix
+    display_name: Studio
+    kind: studio
+    default_policy_profile: manual
+  - slug: yhix-cloud
+    principal: yhix
+    display_name: Yhix Cloud
+    kind: cloud
+    default_policy_profile: shared
+
+places:
+  - slug: house
+    principal: operator
+    display_name: House
+    kind: home
+  - slug: beach
+    principal: kubicki-trust
+    display_name: Beach
+    kind: property
+  - slug: waconda
+    principal: kubicki-trust
+    display_name: Waconda
+    kind: property
+  - slug: pluto-remote-networks
+    principal: operator
+    display_name: Pluto / Remote Networks
+    kind: remote-site
+
+bots:
+  - slug: norman
+    principal: operator
+    domain: operator-knowledge
+    display_name: Norman
+    class: manager
+    policy_profile: manual
+    notes: Cross-principal general manager; service implementation remains editable.
+  - slug: evergreen-ops
+    principal: kubicki-trust
+    domain: kubicki-evergreen
+    display_name: Evergreen Ops
+    class: operator
+    policy_profile: shared
+  - slug: household-ops
+    principal: operator
+    domain: operator-household
+    display_name: Household Ops
+    class: operator
+    policy_profile: shared
+  - slug: communications
+    principal: operator
+    domain: operator-communications
+    display_name: Communications
+    class: router
+    policy_profile: draft-first
+  - slug: cyber-advisor
+    principal: operator
+    domain: operator-security
+    display_name: Cyber Advisor
+    class: advisor
+    policy_profile: manual
+  - slug: archivist
+    principal: operator
+    domain: operator-knowledge
+    display_name: Archivist
+    class: archivist
+    policy_profile: auto
+  - slug: observability
+    principal: operator
+    domain: operator-observability
+    display_name: Observability
+    class: observer
+    policy_profile: shared
+  - slug: research-analyst
+    principal: openbrand
+    domain: openbrand-knowledge
+    display_name: Research Analyst
+    class: advisor
+    policy_profile: read-only
+  - slug: finance-reader
+    principal: operator
+    domain: operator-finance
+    display_name: Finance Reader
+    class: advisor
+    policy_profile: read-only
+  - slug: health-reader
+    principal: operator
+    domain: operator-health
+    display_name: Health Reader
+    class: advisor
+    policy_profile: read-only
+    notes: Private health monitoring by default; summarize sparingly and require deliberate entry for details.
+  - slug: parkergale-reader
+    principal: parkergale
+    domain: parkergale-private
+    display_name: PEF
+    class: advisor
+    policy_profile: read-only
+    notes: Private Equity Funbot. Aliases ParkerGale, PEF, and PEFB. Confidential financial and deal-work advisor; keep hidden from ordinary fleet surfaces.
+  - slug: radio-supervisor
+    principal: operator
+    domain: operator-radio
+    display_name: Radio Supervisor
+    class: operator
+    policy_profile: manual
+  - slug: scheduler
+    principal: operator
+    domain: operator-scheduling
+    display_name: Scheduler
+    class: advisor
+    policy_profile: draft-first
+  - slug: null-agent
+    principal: yhix
+    domain: yhix-cloud
+    display_name: Null Agent
+    class: yhix
+    policy_profile: shared
+    notes: Game/TUI bot lane for the Null Agent project. Treat Yhix bots as a separate class from household, work, and shared infrastructure bots.
+
+workers:
+  - slug: hal
+    principal: operator
+    display_name: Hal
+    kind: workstation
+    hostname: hal
+    place: house
+    control_class: root-controlled
+    policy_profile: shared
+  - slug: toy-box
+    principal: operator
+    display_name: Toy Box
+    kind: server
+    hostname: toy-box
+    place: house
+    control_class: root-controlled
+    policy_profile: shared
+    bbs:
+      role: personal
+      zone: personal
+      receive: true
+      full_coverage: false
+      cross_zone: false
+      allow_private: false
+      channels:
+        - switchboard
+        - personal
+        - personal/*
+  - slug: private-host
+    principal: operator
+    display_name: Private Host
+    kind: container
+    hostname: private
+    place: house
+    control_class: root-controlled
+    policy_profile: manual
+    bbs:
+      role: private
+      zone: private
+      receive: true
+      full_coverage: true
+      cross_zone: true
+      allow_private: true
+      channels:
+        - switchboard
+        - private
+        - private/*
+        - personal/*
+        - work/*
+        - network/*
+    notes: Dedicated Proxmox LXC enclave for finance, health, and other confidential bots. Live at 192.168.0.148. Do not mix with ordinary Personal or Shared fleet runtimes.
+  - slug: norman-host
+    principal: operator
+    display_name: Norman Host
+    kind: container
+    hostname: norman
+    place: house
+    control_class: root-controlled
+    policy_profile: manual
+    bbs:
+      role: broker
+      zone: root
+      receive: true
+      full_coverage: true
+      cross_zone: true
+      allow_private: true
+      channels:
+        - "*"
+  - slug: phobos-host
+    principal: operator
+    display_name: Phobos Host
+    kind: edge
+    place: house
+    control_class: root-controlled
+    policy_profile: manual
+  - slug: networking-host
+    principal: operator
+    display_name: Networking Host
+    kind: vm
+    hostname: networking
+    place: house
+    control_class: root-controlled
+    policy_profile: manual
+    bbs:
+      role: network
+      zone: network
+      receive: true
+      full_coverage: true
+      cross_zone: false
+      allow_private: false
+      channels:
+        - switchboard
+        - network
+        - network/*
+        - dns
+        - caddy
+        - tailnet
+  - slug: quaoar
+    principal: kubicki-trust
+    display_name: Quaoar
+    kind: edge
+    place: beach
+    control_class: admin-controlled
+    policy_profile: manual
+  - slug: openbrand-work-service-node
+    principal: openbrand
+    display_name: Work Special
+    kind: container
+    hostname: work-special
+    place: house
+    control_class: pending-control
+    policy_profile: shared
+    bbs:
+      role: work
+      zone: work
+      receive: true
+      full_coverage: false
+      cross_zone: false
+      allow_private: false
+      channels:
+        - switchboard
+        - work
+        - work/*
+  - slug: yhix-cloud
+    principal: yhix
+    display_name: Yhix Cloud
+    kind: cloud
+    hostname: yhix-cloud
+    control_class: pending-control
+    policy_profile: shared
+    bbs:
+      role: yhix
+      zone: yhix
+      receive: true
+      full_coverage: false
+      cross_zone: false
+      allow_private: false
+      channels:
+        - switchboard
+        - yhix
+        - yhix/*
+
+assets:
+  - slug: phobos
+    principal: operator
+    display_name: Phobos
+    kind: radio-node
+    worker: phobos-host
+    place: house
+    control_class: root-controlled
+  - slug: pluto
+    principal: operator
+    display_name: Pluto
+    kind: radio-node
+    place: pluto-remote-networks
+    control_class: pending-control
+  - slug: hubitat-knox
+    principal: operator
+    display_name: Hubitat Knox
+    kind: hub
+    worker: hal
+    place: house
+    control_class: admin-controlled
+
+services:
+  - slug: norman-service
+    principal: operator
+    domain: operator-knowledge
+    bot: norman
+    worker: norman-host
+    place: house
+    display_name: Norman
+    kind: web-app
+    policy_profile: manual
+    web_url: http://192.168.0.241:8000/
+    web_url_tailnet: http://norman.tail00000.ts.net:8000/
+    console_url: http://192.168.0.241:8788/
+    console_url_tailnet: http://norman.tail00000.ts.net:8788/
+  - slug: switchboard
+    principal: operator
+    domain: operator-knowledge
+    bot: norman
+    worker: norman-host
+    place: house
+    display_name: Switchboard
+    kind: coordination-console
+    policy_profile: shared
+    console_url: http://192.168.0.241:8796/
+    console_url_tailnet: http://norman.tail00000.ts.net:8796/
+    notes: Canonical Norman BBS and coordination lane; legacy subprime/bot-prime routes remain compatibility aliases only.
+  - slug: norman-ops
+    principal: operator
+    domain: operator-knowledge
+    bot: norman
+    worker: norman-host
+    place: house
+    display_name: Retired Legacy Alias
+    kind: retired-console
+    policy_profile: shared
+    is_active: false
+    console_url: http://192.168.0.241:8797/
+    console_url_tailnet: http://norman.tail00000.ts.net:8797/
+    notes: Retired redundant sidecar; use Switchboard for Norman coordination.
+  - slug: norman-home
+    principal: operator
+    domain: operator-knowledge
+    worker: norman-host
+    place: house
+    display_name: Norman Host
+    kind: host-home
+    policy_profile: manual
+    web_url: http://192.168.0.241/
+    web_url_tailnet: http://norman.tail00000.ts.net/
+  - slug: toy-box-home
+    principal: operator
+    domain: operator-household
+    worker: toy-box
+    place: house
+    display_name: Toy Box
+    kind: host-home
+    policy_profile: shared
+    web_url: http://192.168.0.146/
+    web_url_tailnet: http://toy-box.tail00000.ts.net/
+  - slug: housebot
+    principal: operator
+    domain: operator-household
+    bot: household-ops
+    worker: toy-box
+    place: house
+    display_name: Housebot
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.0.146:8787/
+    console_url_tailnet: http://toy-box.tail00000.ts.net:8787/
+  - slug: glimpser
+    principal: operator
+    domain: operator-observability
+    bot: observability
+    worker: toy-box
+    place: house
+    display_name: Glimpser
+    kind: web-app
+    policy_profile: shared
+    web_url: http://192.168.0.145:8082/
+    web_url_tailnet: http://100.64.0.16:8082/
+    console_url: http://192.168.0.146:8788/
+    console_url_tailnet: http://toy-box.tail00000.ts.net:8788/
+  - slug: castle
+    principal: operator
+    domain: operator-household
+    bot: household-ops
+    worker: toy-box
+    place: house
+    display_name: Castle
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.0.146:8789/
+    console_url_tailnet: http://toy-box.tail00000.ts.net:8789/
+  - slug: diamond-roc
+    principal: operator
+    domain: kubicki-evergreen
+    bot: evergreen-ops
+    worker: toy-box
+    place: house
+    display_name: Diamond Roc
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.0.146:8796/
+    console_url_tailnet: http://toy-box.tail00000.ts.net:8796/
+    notes: Canonical home is toy-box. Retired the stale Hal tmux connector/runtime; publish only the Toy Box runtime.
+  - slug: phone-ops
+    principal: operator
+    domain: operator-communications
+    bot: communications
+    worker: toy-box
+    place: house
+    display_name: Phone Ops
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.0.146:8790/
+    console_url_tailnet: http://toy-box.tail00000.ts.net:8790/
+    notes: Switchboard/BBS fold participant for phone and tailnet operations; canonical browser route is phone.home.arpa.
+  - slug: uscache
+    principal: operator
+    domain: operator-knowledge
+    bot: archivist
+    worker: toy-box
+    place: house
+    display_name: USCache
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.0.146:8791/
+    console_url_tailnet: http://toy-box.tail00000.ts.net:8791/
+  - slug: tv
+    principal: operator
+    domain: operator-observability
+    bot: observability
+    worker: toy-box
+    place: house
+    display_name: TV
+    kind: retired-console
+    policy_profile: shared
+    is_active: false
+    console_url: http://192.168.0.146:8794/
+    console_url_tailnet: http://toy-box.tail00000.ts.net:8794/
+    notes: Archived home media lane. It never fully materialized; do not promote in the active fleet unless it is re-owned and rebuilt.
+  - slug: studio
+    principal: operator
+    domain: operator-observability
+    bot: observability
+    worker: toy-box
+    place: house
+    display_name: Studio
+    kind: retired-console
+    policy_profile: shared
+    is_active: false
+    console_url: http://192.168.0.146:8795/
+    console_url_tailnet: http://toy-box.tail00000.ts.net:8795/
+    notes: Archived home media/control-room lane. It never fully materialized; do not promote in the active fleet unless it is re-owned and rebuilt.
+  - slug: null-agent
+    principal: yhix
+    domain: yhix-cloud
+    bot: null-agent
+    worker: yhix-cloud
+    display_name: Null Agent
+    kind: game-tui
+    policy_profile: shared
+    is_active: false
+    notes: Started game project intended to run as a Yhix bot through a TUI on Yhix cloud. Add the cloud host, console URL, and deployment route before publishing.
+  - slug: autocamera
+    principal: operator
+    domain: operator-observability
+    bot: observability
+    worker: hal
+    place: house
+    display_name: Autocamera
+    kind: daemon
+    policy_profile: manual
+    web_url: http://192.168.0.137:9007/
+    web_url_tailnet: http://hal.tail00000.ts.net:9007/
+    console_url: http://192.168.0.137:8794/
+    console_url_tailnet: http://hal.tail00000.ts.net:8794/
+  - slug: hal-home
+    principal: operator
+    domain: operator-household
+    worker: hal
+    place: house
+    display_name: Hal
+    kind: host-home
+    policy_profile: manual
+    notes: Host landing page for Hal is not published yet. Use Autocamera or Theseus directly until the Hal home page is stood up.
+  - slug: theseus
+    principal: operator
+    domain: operator-observability
+    bot: observability
+    worker: hal
+    place: house
+    display_name: Theseus
+    kind: ops-console
+    policy_profile: manual
+    console_url: http://192.168.0.137:8795/
+    console_url_tailnet: http://hal.tail00000.ts.net:8795/
+  - slug: finance-reader
+    principal: operator
+    domain: operator-finance
+    bot: finance-reader
+    worker: private-host
+    place: house
+    display_name: Finance Reader
+    kind: advisor
+    policy_profile: read-only
+    is_active: false
+    notes: Planned private finance reader on the dedicated private enclave. Keep off ordinary nav until explicitly published.
+  - slug: health-reader
+    principal: operator
+    domain: operator-health
+    bot: health-reader
+    worker: private-host
+    place: house
+    display_name: Health Reader
+    kind: advisor
+    policy_profile: read-only
+    is_active: false
+    notes: Planned private health reader on the dedicated private enclave. Keep off ordinary nav until explicitly published.
+  - slug: parkergale
+    principal: parkergale
+    domain: parkergale-private
+    bot: parkergale-reader
+    worker: private-host
+    place: house
+    display_name: PEF
+    kind: ops-console
+    policy_profile: read-only
+    is_active: true
+    console_url: http://192.168.0.148:8796/
+    console_url_tailnet: http://private.home.example.test:8796/
+    notes: Private Equity Funbot on the dedicated private enclave. Aliases ParkerGale, PEF, and PEFB. Treat all work as confidential and deliberate-entry only.
+  - slug: private-home
+    principal: operator
+    domain: operator-household
+    worker: private-host
+    place: house
+    display_name: Private Host
+    kind: host-home
+    policy_profile: manual
+    web_url: http://192.168.0.148/
+    web_url_tailnet: http://private.home.example.test/
+  - slug: earlybird
+    principal: openbrand
+    domain: openbrand-ops
+    worker: openbrand-work-service-node
+    display_name: Earlybird
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.0.147:8781/
+    console_url_tailnet: http://work-special.tail00000.ts.net:8781/
+  - slug: infra
+    principal: openbrand
+    domain: openbrand-ops
+    worker: openbrand-work-service-node
+    display_name: Infra
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.0.147:8782/
+    console_url_tailnet: http://work-special.tail00000.ts.net:8782/
+  - slug: control-plane
+    principal: openbrand
+    domain: openbrand-ops
+    worker: openbrand-work-service-node
+    display_name: Control Plane
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.0.147:8783/
+    console_url_tailnet: http://work-special.tail00000.ts.net:8783/
+  - slug: market-sizing
+    principal: openbrand
+    domain: openbrand-ops
+    worker: openbrand-work-service-node
+    display_name: Market Sizing
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.0.147:8784/
+    console_url_tailnet: http://work-special.tail00000.ts.net:8784/
+  - slug: tmi-dashboards
+    principal: openbrand
+    domain: openbrand-ops
+    worker: openbrand-work-service-node
+    display_name: TMI Dashboards
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.0.147:8785/
+    console_url_tailnet: http://work-special.tail00000.ts.net:8785/
+  - slug: gold-book
+    principal: openbrand
+    domain: openbrand-ops
+    worker: openbrand-work-service-node
+    display_name: Gold Book
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.0.147:8786/
+    console_url_tailnet: http://work-special.tail00000.ts.net:8786/
+  - slug: compere
+    principal: openbrand
+    domain: openbrand-ops
+    worker: openbrand-work-service-node
+    display_name: Keystone
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.0.147:8789/
+    console_url_tailnet: http://work-special.tail00000.ts.net:8789/
+  - slug: leadership-kpis
+    principal: openbrand
+    domain: openbrand-ops
+    worker: openbrand-work-service-node
+    display_name: Leadership KPIs
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.0.147:8790/
+    console_url_tailnet: http://work-special.tail00000.ts.net:8790/
+  - slug: panelbot
+    principal: openbrand
+    domain: openbrand-ops
+    worker: openbrand-work-service-node
+    display_name: Panelbot
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.0.147:8791/
+    console_url_tailnet: http://work-special.tail00000.ts.net:8791/
+  - slug: work-special-home
+    principal: openbrand
+    domain: openbrand-ops
+    worker: openbrand-work-service-node
+    display_name: Work Special
+    kind: host-home
+    policy_profile: shared
+    web_url: http://192.168.0.147/
+    web_url_tailnet: http://work-special.tail00000.ts.net/
+  - slug: networking
+    principal: operator
+    domain: operator-communications
+    bot: communications
+    worker: networking-host
+    place: house
+    display_name: NetOps
+    kind: ops-console
+    policy_profile: manual
+    console_url: http://192.168.0.242:8791/
+    console_url_tailnet: http://networking.tail00000.ts.net:8791/
+  - slug: uplink
+    principal: operator
+    domain: operator-communications
+    bot: communications
+    worker: networking-host
+    place: house
+    display_name: Uplink
+    kind: ops-console
+    policy_profile: manual
+    console_url: http://192.168.0.242:8792/
+    console_url_tailnet: http://networking.tail00000.ts.net:8792/
+  - slug: cloudagent
+    principal: operator
+    domain: operator-knowledge
+    bot: archivist
+    worker: networking-host
+    place: house
+    display_name: CloudAgent
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.0.242:8793/
+    console_url_tailnet: http://networking.tail00000.ts.net:8793/
+  - slug: networking-home
+    principal: operator
+    domain: operator-communications
+    worker: networking-host
+    place: house
+    display_name: Networking Host
+    kind: host-home
+    policy_profile: manual
+    web_url: http://192.168.0.242/
+    web_url_tailnet: http://networking.tail00000.ts.net/
+  - slug: d-ace
+    principal: openbrand
+    domain: openbrand-ops
+    display_name: d.ace
+    kind: pipeline
+    policy_profile: shared
+  - slug: acast
+    principal: openbrand
+    domain: openbrand-ops
+    display_name: Acast
+    kind: pipeline
+    policy_profile: shared
+  - slug: platinum-standard
+    principal: openbrand
+    domain: openbrand-knowledge
+    bot: research-analyst
+    display_name: Platinum Standard
+    kind: batch
+    policy_profile: read-only
+
+channels: []
+people: []

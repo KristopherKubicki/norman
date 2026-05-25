@@ -30,8 +30,23 @@ class XMPPConnector(BaseConnector):
 
     async def process_incoming(self, message: Any) -> Any:
         """Return the incoming ``message`` payload."""
-
-        return message
+        if not isinstance(message, dict):
+            text = str(message)
+            return {
+                "text": text,
+                "text_summary": f"xmpp • {text}" if text else "xmpp",
+            }
+        text = message.get("body") or message.get("text") or ""
+        sender = message.get("from") or message.get("sender")
+        summary_parts = ["xmpp"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {
+            "text": text,
+            "sender": sender,
+            "text_summary": summary,
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if the server is reachable."""

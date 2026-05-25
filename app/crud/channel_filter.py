@@ -58,3 +58,13 @@ def update(
     db.commit()
     db.refresh(filter_)
     return filter_
+
+
+def delete_by_channel(db: Session, channel_id: int) -> int:
+    deleted = (
+        db.query(models.Filter)
+        .filter(models.Filter.channel_id == channel_id)
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+    return deleted

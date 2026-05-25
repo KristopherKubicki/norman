@@ -42,7 +42,21 @@ class FlowdockConnector(BaseConnector):
         return None
 
     async def process_incoming(self, message: Any) -> Any:
-        return message
+        if not isinstance(message, dict):
+            text = str(message)
+            summary = f"flowdock • {text}" if text else "flowdock"
+            return {"text": text, "text_summary": summary}
+        text = message.get("content") or message.get("text") or ""
+        summary_parts = ["flowdock"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {
+            "text": text,
+            "user": message.get("user"),
+            "flow": message.get("flow"),
+            "text_summary": summary,
+        }
 
     def is_connected(self) -> bool:
         """Check if the Flowdock flow is reachable."""

@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "norman"
+version = "0.2.0"
+dependencies = [
+  "fastapi",
+  "uvicorn",
+  "pydantic==1.10.13",
+  "sqlalchemy",
+  "alembic",
+  "psycopg2-binary",
+  "pika",
+  "httpx>=0.27,<0.28",
+  "requests",
+  "google-auth",
+  "passlib",
+  "openai",
+  "jinja2",
+  "python-multipart",
+  "email-validator>=2.3.0",
+  "pyjwt>=2.11.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==6.2.5",
+  "pytest-asyncio==0.16.0",
+  "coverage==7.4.4",
+  "ruff==0.5.2",
+  "pre-commit==3.5.0",
+  "hypothesis==6.99.0",
+  "PyYAML",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py38"
+exclude = [
+  ".venv",
+  "env",
+  "venv",
+  "node_modules",
+  ".git",
+  "db",
+  "alembic/versions",
+]
+
+[tool.ruff.lint]
+select = ["E", "F"]
+ignore = ["E402", "E501", "E712", "F401", "F841"]

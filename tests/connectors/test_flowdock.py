@@ -72,4 +72,5 @@ def test_process_incoming():
     result = asyncio.get_event_loop().run_until_complete(
         connector.process_incoming({"msg": 1})
     )
-    assert result == {"msg": 1}
+    assert result["text"] == ""
+    assert result["text_summary"] == "flowdock"

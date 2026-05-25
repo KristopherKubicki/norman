@@ -27,7 +27,20 @@ class HipChatConnector(BaseConnector):
         return None
 
     async def process_incoming(self, message: Any) -> Any:
-        return message
+        if not isinstance(message, dict):
+            return {"text": str(message)}
+        text = message.get("message") or message.get("text") or ""
+        user = message.get("from") or message.get("user")
+        summary_parts = ["hipchat"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {
+            "text": text,
+            "user": user,
+            "room": message.get("room"),
+            "text_summary": summary,
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if the connector is configured."""

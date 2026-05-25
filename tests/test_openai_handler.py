@@ -6,31 +6,29 @@ from app.core.exceptions import APIError
 
 
 def test_openai_handler_returns_fallback(monkeypatch):
-    monkeypatch.setattr(openai_handler.openai, "api_key", None)
-
-    async def _fail(*args, **kwargs):
-        raise Exception("boom")
-
-    monkeypatch.setattr(openai_handler.openai.ChatCompletion, "acreate", _fail)
+    monkeypatch.setattr(openai_handler.settings, "openai_api_key", None, raising=False)
 
     messages = [{"role": "user", "content": "hi"}]
-    resp = asyncio.get_event_loop().run_until_complete(
-        openai_handler.create_chat_interaction(messages)
-    )
+    resp = asyncio.run(openai_handler.create_chat_interaction(messages))
     assert resp.get("error") is True
     assert "Please add your OpenAI API key" in resp["choices"][0]["message"]["content"]
 
 
 def test_openai_handler_raises_apierror(monkeypatch):
-    monkeypatch.setattr(openai_handler.openai, "api_key", "x")
+    monkeypatch.setattr(openai_handler.settings, "openai_api_key", "x", raising=False)
 
-    async def _fail(*args, **kwargs):
-        raise Exception("boom")
+    class DummyCompletions:
+        def create(self, *args, **kwargs):
+            raise Exception("boom")
 
-    monkeypatch.setattr(openai_handler.openai.ChatCompletion, "acreate", _fail)
+    class DummyChat:
+        completions = DummyCompletions()
+
+    class DummyClient:
+        chat = DummyChat()
+
+    monkeypatch.setattr(openai_handler, "_client", lambda: DummyClient())
 
     messages = [{"role": "user", "content": "hi"}]
     with pytest.raises(APIError):
-        asyncio.get_event_loop().run_until_complete(
-            openai_handler.create_chat_interaction(messages)
-        )
+        asyncio.run(openai_handler.create_chat_interaction(messages))

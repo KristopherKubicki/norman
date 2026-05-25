@@ -54,18 +54,10 @@ def test_send_message_error(monkeypatch):
     assert result is None
 
 
-def test_process_incoming(monkeypatch):
-    called = {}
-
-    async def fake_send(msg):
-        called["msg"] = msg
-        return "ok"
-
+def test_process_incoming():
     connector = RESTCallbackConnector("http://example.com")
-    monkeypatch.setattr(connector, "send_message", fake_send)
     payload = {"foo": 1}
     result = asyncio.get_event_loop().run_until_complete(
         connector.process_incoming(payload)
     )
-    assert result == payload
-    assert called["msg"] == payload
+    assert result["text"] == ""

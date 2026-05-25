@@ -1,62 +1,293 @@
 {% extends "base.html" %}
 
 {% block content %}
-<div class="d-flex align-items-center justify-content-between mb-3">
-  <div>
-    <h1 class="mb-1">Messages</h1>
-    <div class="text-muted">Your central hub for channels, bots, and filters.</div>
-  </div>
-</div>
-
-<div class="row g-4">
-  <div class="col-lg-3">
-    <div class="card p-3 mb-3">
-      <div class="d-flex align-items-center justify-content-between mb-2">
-        <h5 class="mb-0">Channels</h5>
-        <span class="badge bg-light text-dark" id="channels-count">0</span>
+<div class="messages-page subpage-shell{% if super_tui_mode %} messages-page--super{% endif %}"{% if super_tui_mode %} data-super-tui="true"{% endif %}>
+  <div class="page-header subpage-header d-flex align-items-center justify-content-between mb-2">
+    <div>
+      <div class="subpage-eyebrow">{% if super_tui_mode %}Super TUI{% elif switchboard_mode|default(False) %}Switchboard BBS{% else %}Operator TUI{% endif %}</div>
+      <div class="subpage-title">{% if super_tui_mode %}<a class="messages-super-cartouche" href="/bot/norman/" aria-label="Norman"><span class="messages-super-cartouche__mark" aria-hidden="true">N1</span><span class="messages-super-cartouche__label">Norman</span></a>{% elif switchboard_mode|default(False) %}Switchboard BBS{% else %}Norman Chat{% endif %}</div>
+      <div class="subpage-subtitle">{% if super_tui_mode %}Gold super TUI on top. Switchboard, directory, pipeline, and settings stay buried under Norman menu paths unless you need the lower deck.{% elif switchboard_mode|default(False) %}Operator threads, board traffic, and handoffs land here. Switchboard handles the broker and relay layer under Norman.{% else %}Work threads here, then hand off to the right worker.{% endif %}</div>
+    </div>
+    <div class="streams-header-actions d-flex align-items-center gap-2">
+      <div class="messages-llm-status" id="messages-llm-status" title="Checking model durability state…">
+        <span class="status-chip idle" id="messages-llm-status-chip">LLM</span>
+        <span class="messages-llm-status__detail" id="messages-llm-status-detail">Checking…</span>
       </div>
-      <input class="form-control form-control-sm mb-2" type="text" id="channelSearch" placeholder="Filter channels...">
+      {% if super_tui_mode %}
+      <button type="button" class="btn btn-sm btn-outline-secondary streams-advanced-control" id="messages-prime-layer-toggle" aria-expanded="false">Switchboard deck</button>
+      <a class="btn btn-sm btn-outline-secondary streams-advanced-control" href="/dashboard.html" target="_blank" rel="noreferrer noopener">Pop out</a>
+      {% else %}
+      <a class="btn btn-sm btn-outline-secondary" href="{% if switchboard_mode|default(False) %}/dashboard.html?view=switchboard{% else %}/dashboard.html{% endif %}">{% if switchboard_mode|default(False) %}Deck{% else %}Switchboard{% endif %}</a>
+      {% endif %}
+      <a class="btn btn-sm btn-outline-secondary streams-advanced-control" href="/systems.html#agent-directory" title="Open Directory">Dir</a>
+      <button type="button" class="btn btn-sm btn-outline-secondary" id="streams-thread-toggle" aria-pressed="true" title="Switch between thread and feed views">
+        Switch
+      </button>
+      <button type="button" class="btn btn-sm btn-outline-secondary streams-advanced-control" id="streams-focus-toggle" aria-pressed="false">
+        Focus
+      </button>
+      <button type="button" class="btn btn-sm btn-outline-secondary" id="streams-simple-toggle" aria-pressed="true">
+        Menu
+      </button>
+      <button type="button" class="btn btn-sm btn-outline-secondary streams-advanced-control" id="streams-toggle-left" aria-pressed="false">
+        {% if switchboard_mode|default(False) %}Hide Boards{% else %}Hide Threads{% endif %}
+      </button>
+      <button type="button" class="btn btn-sm btn-outline-secondary streams-advanced-control" id="streams-toggle-right" aria-pressed="false">
+        Hide Side
+      </button>
+      <button type="button" class="btn btn-sm btn-outline-secondary streams-advanced-control" id="streams-wide-toggle" aria-pressed="false">
+        Wide
+      </button>
+      <button type="button" class="btn btn-sm btn-outline-secondary streams-advanced-control" id="streams-fullscreen-toggle" aria-pressed="false">
+        Fullscreen
+      </button>
+      <button type="button" class="btn btn-sm btn-outline-secondary streams-profile-btn streams-advanced-control" id="streams-profile-save" title="Save tmux layout">
+        Save Layout
+      </button>
+      <button type="button" class="btn btn-sm btn-outline-secondary streams-profile-btn streams-advanced-control" id="streams-profile-load" title="Load tmux layout">
+        Load Layout
+      </button>
+      <button type="button" class="btn btn-sm btn-outline-success streams-profile-btn streams-advanced-control" id="streams-hunt-toggle" aria-pressed="true" title="Keep Norman synced to running tmux sessions and save a live snapshot">
+        Auto Hunt On
+      </button>
+      <button type="button" class="btn btn-sm btn-outline-secondary streams-profile-btn streams-advanced-control" id="streams-profile-panel-toggle" aria-expanded="false" aria-controls="streams-profile-panel">
+        Layouts
+      </button>
+    </div>
+  </div>
+  <div class="card p-2 mb-2 streams-profile-panel d-none" id="streams-profile-panel" aria-live="polite">
+    <div class="d-flex align-items-center gap-2 flex-wrap streams-profile-controls">
+      <select id="streams-profile-select" class="form-select form-select-sm streams-profile-select" aria-label="Saved layouts">
+        <option value="" selected>No layouts yet</option>
+      </select>
+      <input
+        id="streams-profile-name"
+        type="text"
+        class="form-control form-control-sm streams-profile-name"
+        placeholder="layout-name"
+        autocomplete="off"
+        spellcheck="false"
+        maxlength="64"
+      >
+      <button type="button" class="btn btn-sm btn-outline-secondary streams-profile-btn" id="streams-profile-refresh">Refresh</button>
+      <button type="button" class="btn btn-sm btn-outline-secondary streams-profile-btn" id="streams-profile-sync" title="Load selected layout, adopt running tmux sessions, then save the live snapshot">
+        Sync Sessions
+      </button>
+      <button type="button" class="btn btn-sm btn-outline-secondary streams-profile-btn" id="streams-profile-rename">Rename</button>
+      <button type="button" class="btn btn-sm btn-outline-danger streams-profile-btn" id="streams-profile-delete">Delete</button>
+      <button type="button" class="btn btn-sm btn-outline-secondary streams-profile-btn" id="streams-profile-close">Close</button>
+    </div>
+    <div class="small text-muted mt-1">Tip: use letters, numbers, dots, underscores, or dashes. Auto Hunt keeps running tmux sessions synced and saves a live snapshot as <code>running_now</code>.</div>
+  </div>
+
+  <div class="messages-mobile-nav d-lg-none" role="toolbar" aria-label="Editor mobile controls">
+    <button type="button" class="btn btn-sm btn-outline-secondary messages-mobile-thread-btn" data-messages-pane="channels" aria-label="{% if switchboard_mode|default(False) %}Choose board{% else %}Choose thread{% endif %}">
+      <span class="messages-mobile-nav__icon" aria-hidden="true">☰</span>
+      <span class="messages-mobile-thread-copy">
+        <span class="messages-mobile-thread-kicker">{% if switchboard_mode|default(False) %}Board{% else %}Thread{% endif %}</span>
+        <span class="messages-mobile-thread-label" id="messages-mobile-thread-label">None</span>
+      </span>
+      <span class="messages-mobile-thread-mode messages-thread-state messages-thread-state--muted" id="messages-mobile-thread-mode">auto</span>
+      <span class="messages-mobile-nav__badge d-none" id="messages-threads-badge">0</span>
+    </button>
+    <button type="button" class="btn btn-sm btn-outline-secondary" id="messages-inbox-jump-mobile">
+      <span>Inbox</span>
+      <span class="messages-mobile-nav__badge d-none" id="messages-inbox-badge">0</span>
+    </button>
+    <button type="button" class="btn btn-sm btn-outline-secondary" data-messages-pane="automation">Tools</button>
+    <button type="button" class="btn btn-sm btn-outline-secondary" id="streams-compose-jump-mobile">Type</button>
+  </div>
+  <button
+    type="button"
+    class="messages-mobile-drawer-backdrop d-lg-none"
+    id="messages-mobile-drawer-backdrop"
+    aria-label="Close side panel"
+  ></button>
+
+  <div class="row g-2 messages-layout">
+  <div class="col-lg-3 messages-col messages-col--left" id="messages-pane-channels">
+    <div class="messages-mobile-drawer-head d-lg-none">
+      <div class="messages-mobile-drawer-title">{% if switchboard_mode|default(False) %}Boards{% else %}Threads{% endif %}</div>
+      <button type="button" class="btn btn-sm btn-outline-secondary" data-messages-pane="conversation">Back</button>
+    </div>
+    <div class="card p-3 mb-3 messages-sidebar-card">
+      <div class="d-flex align-items-center justify-content-between mb-2">
+        <div class="section-title">{% if switchboard_mode|default(False) %}Boards{% else %}Threads{% endif %}</div>
+        <span class="badge streams-count-badge" id="channels-count">0</span>
+      </div>
+      <input class="form-control form-control-sm mb-2" type="text" id="channelSearch" placeholder="{% if switchboard_mode|default(False) %}Filter boards...{% else %}Filter threads...{% endif %}">
       <div id="channels-status" class="alert alert-info d-none" role="alert"></div>
-      <div class="channels-container list-group menu-list">
+      <div class="channels-container list-group menu-list channels-menu">
         <!-- Channels will be dynamically added here -->
       </div>
     </div>
 
-    <div class="card p-3">
-      <h6 class="mb-2">Add Channel</h6>
-      <form id="messages-add-channel-form" class="d-grid gap-2">
-        <input type="text" id="channel-name" class="form-control" placeholder="Channel name" required>
-        <select class="form-select" id="channel-connector">
-          <option value="" selected disabled>Loading connectors...</option>
-        </select>
-        <button id="addChannelBtn" class="btn btn-primary" type="submit">Create Channel</button>
-      </form>
-      <div class="small text-muted mt-2">
-        Need a new connector? <a href="/connectors.html">Open Connectors</a>
+    <div class="card p-3 messages-sidebar-card">
+      <div class="collapsible-header d-flex align-items-center justify-content-between mb-2" role="button" data-bs-toggle="collapse" data-bs-target="#messages-add-channel-panel" aria-expanded="false" aria-controls="messages-add-channel-panel">
+        <div class="section-title">Add Thread</div>
+        <span class="small text-muted">Tap to expand</span>
+      </div>
+      <div class="collapse" id="messages-add-channel-panel">
+        <form id="messages-add-channel-form" class="d-grid gap-2">
+          <input type="text" id="channel-name" class="form-control" placeholder="{% if switchboard_mode|default(False) %}Thread name{% else %}Source name{% endif %}" required>
+          <select class="form-select" id="channel-connector">
+            <option value="" selected disabled>Loading connectors...</option>
+          </select>
+          <button id="addChannelBtn" class="btn btn-primary" type="submit">{% if switchboard_mode|default(False) %}Create Thread{% else %}Create Source{% endif %}</button>
+        </form>
+        <div class="small text-muted mt-2">
+          Need a new connector? <a href="/connectors.html">Open Connectors</a>
+        </div>
       </div>
     </div>
 
-    <div class="card p-3 mt-3">
-      <h6 class="mb-2">Sample Channels</h6>
-      <p class="small text-muted">Create example channels with seeded messages.</p>
-      <button class="btn btn-outline-primary w-100" id="add-sample-channels" type="button">
-        Add sample channels
-      </button>
+    <div class="card p-3 mt-3 messages-sidebar-card messages-starter-card">
+      <div class="collapsible-header d-flex align-items-center justify-content-between mb-2" role="button" data-bs-toggle="collapse" data-bs-target="#messages-starter-panel" aria-expanded="false" aria-controls="messages-starter-panel">
+        <div class="section-title">{% if switchboard_mode|default(False) %}Starter Boards{% else %}Starter Sources{% endif %}</div>
+        <span class="small text-muted">Tap to expand</span>
+      </div>
+      <div class="collapse" id="messages-starter-panel">
+        <p class="small text-muted">{% if switchboard_mode|default(False) %}Pick board templates, intake lanes, or connected feeds.{% else %}Pick local feeds or connect external sources.{% endif %}</p>
+        <a class="btn btn-outline-primary w-100" href="{% if switchboard_mode|default(False) %}/channels.html?view=switchboard{% else %}/channels.html{% endif %}">
+          {% if switchboard_mode|default(False) %}Configure boards{% else %}Configure starter sources{% endif %}
+        </a>
+      </div>
     </div>
   </div>
 
-  <div class="col-lg-6 d-flex flex-column">
-    <div class="card p-3 flex-grow-1">
-      <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3">
-        <div>
-          <h5 class="mb-1">Conversation</h5>
-          <div class="small text-muted">Active channel: <span id="active-channel-name">None</span></div>
+  <div class="col-lg-6 d-flex flex-column messages-col messages-col--center" id="messages-pane-conversation">
+    <div class="card p-3 flex-grow-1 messages-chat-card">
+      <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3" id="messages-conversation-header">
+        <div class="messages-conversation-summary">
+          <div class="section-title">Active Thread</div>
+          <div class="messages-conversation-primary">
+            <span class="messages-conversation-value messages-conversation-value--primary" id="active-channel-name">None</span>
+            <span class="messages-active-mode messages-thread-state messages-thread-state--muted" id="messages-active-mode">auto</span>
+          </div>
+          <div class="messages-conversation-rail">
+            <div class="messages-conversation-pill">
+              <span class="messages-conversation-pill-label">Target</span>
+              <span class="messages-conversation-pill-value" id="active-delivery-target">None</span>
+            </div>
+            <div class="messages-conversation-pill" id="active-web-line">
+              <span class="messages-conversation-pill-label">App</span>
+              <span class="messages-conversation-pill-value messages-conversation-value--link">
+                <a
+                  class="messages-conversation-link d-none"
+                  id="active-web-link"
+                  href="#"
+                  target="_blank"
+                  rel="noreferrer noopener"
+                >Open App</a>
+                <span id="active-web-link-empty">None</span>
+              </span>
+            </div>
+          </div>
         </div>
-        <div class="min-width-220">
-          <label class="form-label small mb-1" for="message-channel-select">Send to channel</label>
-          <select id="message-channel-select" class="form-select form-select-sm">
-            <option value="" selected disabled>Choose a channel...</option>
-          </select>
+      </div>
+
+      <div id="random-sim-panel" class="random-sim d-none">
+        <div class="d-flex align-items-center justify-content-between mb-2">
+          <div class="fw-semibold">Random Data Simulator</div>
+          <span class="status-chip warn">Demo</span>
+        </div>
+        <div class="row g-2">
+          <div class="col-6 col-lg-3">
+            <label class="form-label">Duration (min)</label>
+            <input type="number" class="form-control form-control-sm" id="random-duration" value="3" min="1" max="120">
+          </div>
+          <div class="col-6 col-lg-3">
+            <label class="form-label">Every (sec)</label>
+            <input type="number" class="form-control form-control-sm" id="random-interval" value="5" min="1" max="3600">
+          </div>
+          <div class="col-6 col-lg-3">
+            <label class="form-label">Jitter (sec)</label>
+            <input type="number" class="form-control form-control-sm" id="random-jitter" value="1" min="0" max="30">
+          </div>
+          <div class="col-6 col-lg-3">
+            <label class="form-label">Batch size</label>
+            <input type="number" class="form-control form-control-sm" id="random-batch" value="1" min="1" max="10">
+          </div>
+        </div>
+        <div class="d-flex align-items-center gap-2 mt-2">
+          <button class="btn btn-sm btn-primary" id="random-start" type="button">Start</button>
+          <button class="btn btn-sm btn-outline-secondary" id="random-stop" type="button" disabled>Stop</button>
+          <span class="small text-muted" id="random-status">Ready to simulate.</span>
+        </div>
+      </div>
+
+      <div id="streams-agent-controls" class="streams-agent-controls d-none" aria-live="polite">
+        <div class="streams-agent-controls__header">
+          <div class="streams-agent-controls__title" id="streams-agent-controls-title">Thread Controls</div>
+          <div class="small text-muted" id="streams-agent-session-label">session: --</div>
+        </div>
+        <div class="streams-agent-controls__actions">
+          <button type="button" class="btn btn-sm btn-outline-secondary" id="streams-agent-take">Manual</button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" id="streams-agent-copilot">Shared</button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" id="streams-agent-release">Auto</button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" id="streams-agent-refresh">Refresh</button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" id="streams-agent-lock-toggle">Lock</button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" id="streams-agent-start-stop">Stop</button>
+          <button type="button" class="btn btn-sm btn-outline-secondary" id="streams-agent-restart">Restart</button>
+        </div>
+        <div class="streams-agent-controls__status" id="streams-agent-controls-status">Ready.</div>
+        <div class="streams-agent-web d-none" id="streams-agent-web">
+          <div class="streams-agent-web__header">
+            <div class="streams-agent-web__title">Web Link</div>
+            <a
+              class="btn btn-sm btn-outline-secondary d-none"
+              id="streams-agent-web-open"
+              href="#"
+              target="_blank"
+              rel="noreferrer noopener"
+            >Open App</a>
+          </div>
+          <div class="streams-agent-web__controls">
+            <input
+              type="text"
+              class="form-control form-control-sm"
+              id="streams-agent-web-url"
+              placeholder="192.168.0.137:8788"
+              inputmode="url"
+              autocomplete="off"
+              spellcheck="false"
+            >
+            <button type="button" class="btn btn-sm btn-outline-secondary" id="streams-agent-web-save">Save Link</button>
+          </div>
+          <div class="small text-muted">Primary app URL for this session. Save blank to clear.</div>
+        </div>
+        <div class="streams-agent-auth d-none" id="streams-agent-auth">
+          <div class="streams-agent-web__header">
+            <div class="streams-agent-web__title">Auth</div>
+            <div class="streams-agent-auth__actions">
+              <button type="button" class="btn btn-sm btn-outline-secondary" id="streams-agent-auth-browser">
+                Browser Sign-In
+              </button>
+              <a
+                class="btn btn-sm btn-outline-secondary d-none"
+                id="streams-agent-auth-open"
+                href="#"
+                target="_blank"
+                rel="noreferrer noopener"
+              >Open Auth Page</a>
+              <button type="button" class="btn btn-sm btn-outline-secondary" id="streams-agent-auth-device">
+                Device Code
+              </button>
+            </div>
+          </div>
+          <div class="streams-agent-auth__summary" id="streams-agent-auth-summary">Auth is healthy.</div>
+          <div class="streams-agent-auth__device d-none" id="streams-agent-auth-device-panel">
+            <div class="small text-muted">Verification URL</div>
+            <a
+              class="streams-agent-auth__link"
+              id="streams-agent-auth-verification"
+              href="#"
+              target="_blank"
+              rel="noreferrer noopener"
+            ></a>
+            <div class="small text-muted">One-time code</div>
+            <code class="streams-agent-auth__code" id="streams-agent-auth-code"></code>
+          </div>
         </div>
       </div>
 
@@ -64,50 +295,282 @@
         <!-- Messages will be displayed here -->
       </div>
 
+      <div class="messages-bottom-bar" id="messages-bottom-bar">
+        <div class="messages-bottom-meta">
+          <div class="small text-muted">Send to thread</div>
+        </div>
+        <div class="messages-bottom-select min-width-220">
+          <label class="form-label small mb-1" for="message-channel-select">Thread</label>
+          <select id="message-channel-select" class="form-select form-select-sm">
+            <option value="" selected disabled>Choose a thread...</option>
+          </select>
+        </div>
+      </div>
+
       <div class="input-message-container mt-3">
-        <div class="input-group flex-column flex-sm-row">
-          <input type="text" class="form-control mb-2 mb-sm-0" id="messageInput" placeholder="Type your message...">
-          <button class="btn btn-primary" id="sendButton" type="button">Send</button>
+        <div class="streams-compose-title d-lg-none">Reply</div>
+        <div class="streams-compose-context" aria-live="polite">
+          <div class="streams-compose-context__target">
+            <span class="streams-compose-context__label">Thread</span>
+            <span class="streams-compose-context__value" id="streams-compose-target-label">No thread</span>
+          </div>
+          <div class="streams-compose-context__meta">
+            <span class="streams-compose-mode" id="streams-compose-mode">idle</span>
+            <span class="streams-compose-state" id="streams-compose-state">Ready</span>
+            <span class="streams-compose-count" id="streams-compose-count">0</span>
+          </div>
+        </div>
+        <form class="input-group input-group--composer" id="messageComposerForm" autocomplete="off">
+          <textarea
+            class="form-control composer-input"
+            id="messageInput"
+            placeholder="Type your message..."
+            rows="1"
+            enterkeyhint="send"
+            aria-label="Message composer"
+            aria-describedby="streams-compose-state streams-compose-count streams-compose-feedback"
+          ></textarea>
+          <button class="btn btn-primary" id="sendButton" type="button" aria-label="Send message" disabled>Send</button>
+        </form>
+        <div class="streams-compose-tools">
+          <button
+            type="button"
+            class="btn btn-sm btn-outline-secondary"
+            id="streams-compose-expand"
+            aria-pressed="false"
+          >
+            Expand
+          </button>
+          <button
+            type="button"
+            class="btn btn-sm btn-outline-secondary"
+            id="streams-compose-clear"
+            disabled
+          >
+            Clear
+          </button>
+          <button
+            type="button"
+            class="btn btn-sm btn-outline-secondary"
+            id="streams-secret-toggle"
+            aria-expanded="false"
+            aria-controls="streams-secret-panel"
+          >
+            Secrets
+          </button>
+          <div class="streams-secret-summary" id="streams-secret-summary">
+            Keep raw values out of the thread. Stash them here and send only a pointer.
+          </div>
+        </div>
+        <div class="card p-2 streams-secret-panel d-none" id="streams-secret-panel" aria-live="polite">
+          <div class="streams-secret-panel__header">
+            <div>
+              <div class="section-title mb-1">Private Secret Stash</div>
+              <div class="small text-muted">
+                Values stay in Norman’s encrypted local stash. The thread only gets a pointer.
+              </div>
+            </div>
+          </div>
+          <div class="streams-secret-status" id="streams-secret-status">Select a thread, then stash a secret.</div>
+          <div class="streams-secret-draft-meta" id="streams-secret-draft-meta">No draft loaded.</div>
+          <div class="streams-secret-panel__grid">
+            <input
+              id="streams-secret-label"
+              type="text"
+              class="form-control form-control-sm"
+              maxlength="120"
+              placeholder="Label, for example camera password"
+              autocomplete="off"
+              spellcheck="false"
+            >
+            <textarea
+              id="streams-secret-value"
+              class="form-control form-control-sm"
+              rows="3"
+              placeholder="Paste a secret here. It will not be added to the thread."
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+            ></textarea>
+            <div class="streams-secret-panel__actions">
+              <button type="button" class="btn btn-sm btn-primary" id="streams-secret-stash">Stash And Insert Pointer</button>
+              <button type="button" class="btn btn-sm btn-outline-secondary" id="streams-secret-stash-only">Stash Only</button>
+              <button type="button" class="btn btn-sm btn-outline-secondary" id="streams-secret-visibility" disabled>Conceal Draft</button>
+              <button type="button" class="btn btn-sm btn-outline-secondary" id="streams-secret-clear">Clear</button>
+            </div>
+          </div>
+          <div class="streams-secret-list" id="streams-secret-list"></div>
+        </div>
+        <div class="streams-compose-feedback" id="streams-compose-feedback" role="status" aria-live="polite"></div>
+        <div class="streams-compose-hint" id="streams-compose-hint">Ready</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-3 messages-col messages-col--right" id="messages-pane-automation">
+    <div class="messages-mobile-drawer-head d-lg-none">
+      <div class="messages-mobile-drawer-title">Tools</div>
+      <button type="button" class="btn btn-sm btn-outline-secondary" data-messages-pane="conversation">Back</button>
+    </div>
+    <div id="messages-automation-stack">
+      <div class="card p-3 mb-3 messages-sidebar-card" id="messages-inbox-card">
+        <div class="d-flex align-items-start justify-content-between gap-2 mb-2">
+          <div>
+            <div class="section-title">Inbox</div>
+            <div class="small text-muted">Approvals and anything Norman needs you to decide.</div>
+          </div>
+          <div class="d-flex align-items-center gap-2">
+            <span class="badge streams-count-badge" id="messages-inbox-count">0</span>
+            <button type="button" class="btn btn-sm btn-outline-secondary" id="messages-inbox-refresh">Refresh</button>
+          </div>
+        </div>
+        <div class="small text-muted mb-2" id="messages-inbox-status">Loading inbox…</div>
+        <div class="list-group menu-list messages-inbox-list" id="messages-inbox-list"></div>
+      </div>
+
+      <div class="card p-3 mb-3 messages-sidebar-card">
+        <div class="d-flex align-items-center justify-content-between mb-2">
+          <div class="section-title">Sessions</div>
+          <span class="badge streams-count-badge" id="bots-count">0</span>
+        </div>
+        <div id="bots-status" class="alert alert-info d-none" role="alert"></div>
+        <div class="list-group menu-list mb-3" id="bots-list"></div>
+        <div class="collapsible-header d-flex align-items-center justify-content-between mb-2" role="button" data-bs-toggle="collapse" data-bs-target="#messages-add-bot-panel" aria-expanded="false" aria-controls="messages-add-bot-panel">
+          <div class="section-title">Add Session</div>
+          <span class="small text-muted">Tap to expand</span>
+        </div>
+        <div class="collapse" id="messages-add-bot-panel">
+          <form id="messages-add-bot-form" class="d-grid gap-2">
+            <input type="text" id="bot-name" class="form-control" placeholder="Session name" required>
+            <input type="text" id="bot-description" class="form-control" placeholder="Description (optional)">
+            <button type="submit" class="btn btn-outline-primary">Create Session</button>
+          </form>
+        </div>
+      </div>
+
+      <div class="card p-3 messages-sidebar-card">
+        <div class="d-flex align-items-center justify-content-between mb-2">
+          <h5 class="mb-0">Filters</h5>
+          <span class="badge streams-count-badge" id="filters-count">0</span>
+        </div>
+        <div id="filters-status" class="alert alert-info d-none" role="alert"></div>
+        <div class="list-group menu-list mb-3" id="filters-list"></div>
+        <div class="collapsible-header d-flex align-items-center justify-content-between mb-2" role="button" data-bs-toggle="collapse" data-bs-target="#messages-add-filter-panel" aria-expanded="false" aria-controls="messages-add-filter-panel">
+          <div class="section-title">Add Filter</div>
+          <span class="small text-muted">Tap to expand</span>
+        </div>
+        <div class="collapse" id="messages-add-filter-panel">
+          <form id="messages-add-filter-form" class="d-grid gap-2">
+            <select id="filter-channel" class="form-select">
+              <option value="" selected disabled>Choose a thread...</option>
+            </select>
+            <input type="text" id="filter-regex" class="form-control" placeholder="Regex pattern" required>
+            <input type="text" id="filter-description" class="form-control" placeholder="Description (optional)">
+            <button type="submit" class="btn btn-outline-primary">Create Filter</button>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <div id="messages-console-stack">
+      <div class="card p-3 messages-sidebar-card">
+        <div class="d-flex align-items-center justify-content-between mb-2">
+          <div class="section-title">Console Inspector</div>
+          <span class="badge streams-count-badge" id="messages-console-count">0</span>
+        </div>
+        <div class="small text-muted mb-2">Pane viewer and quick diagnostics for tmux panes.</div>
+        <div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
+          <button id="messages-console-jump-compose" type="button" class="btn btn-outline-secondary btn-sm">
+            Type in Stream View
+          </button>
+          <button
+            type="button"
+            class="btn btn-outline-secondary btn-sm"
+            data-bs-toggle="collapse"
+            data-bs-target="#messages-console-direct-panel"
+            aria-expanded="false"
+            aria-controls="messages-console-direct-panel"
+          >
+            Direct Pane Command
+          </button>
+        </div>
+        <div id="messages-consoles-status" class="alert alert-info d-none" role="alert"></div>
+
+        <label class="form-label small mb-1" for="messages-console-select">Pane</label>
+        <select id="messages-console-select" class="form-select form-select-sm mb-2">
+          <option value="" selected disabled>Loading panes...</option>
+        </select>
+
+        <div class="d-flex gap-2 align-items-center mb-2 flex-wrap">
+          <label class="small text-muted mb-0" for="messages-console-lines">Lines</label>
+          <select id="messages-console-lines" class="form-select form-select-sm" style="width: 96px;">
+            <option value="80">80</option>
+            <option value="120" selected>120</option>
+            <option value="200">200</option>
+            <option value="400">400</option>
+          </select>
+          <div class="form-check form-switch m-0">
+            <input class="form-check-input" type="checkbox" id="messages-console-follow" checked>
+            <label class="form-check-label small text-muted" for="messages-console-follow">Follow</label>
+          </div>
+          <button id="messages-console-refresh" type="button" class="btn btn-outline-secondary btn-sm">Refresh</button>
+        </div>
+
+        <pre id="messages-console-output" class="messages-console-output">Select a pane to start capture.</pre>
+        <div class="collapse messages-console-direct" id="messages-console-direct-panel">
+          <div class="messages-console-compose mt-2">
+            <label class="form-label small mb-1" for="messages-console-input">Type to pane</label>
+            <div class="input-group input-group-sm">
+              <input
+                id="messages-console-input"
+                type="text"
+                class="form-control"
+                placeholder="Type and press Enter..."
+                autocomplete="off"
+                spellcheck="false"
+              >
+              <button id="messages-console-send" type="button" class="btn btn-primary">Send</button>
+            </div>
+            <div class="small text-muted mt-1">Advanced path for direct pane commands.</div>
+          </div>
+        </div>
+        <div class="small text-muted mt-2">
+          Need advanced controls? <a href="/consoles.html?advanced=1">Open tmux inspector</a>
         </div>
       </div>
     </div>
   </div>
 
-  <div class="col-lg-3">
-    <div class="card p-3 mb-3">
-      <div class="d-flex align-items-center justify-content-between mb-2">
-        <h5 class="mb-0">Bots</h5>
-        <span class="badge bg-light text-dark" id="bots-count">0</span>
+  {% if super_tui_mode %}
+  <section
+    class="card messages-prime-layer mt-2"
+    id="messages-prime-layer"
+    data-open="false"
+    data-src="{{ dashboard_embed_url }}"
+  >
+    <div class="messages-prime-layer__head">
+      <div>
+        <div class="messages-prime-layer__eyebrow">Switchboard Deck</div>
+        <div class="messages-prime-layer__title">Embedded Switchboard</div>
       </div>
-      <div id="bots-status" class="alert alert-info d-none" role="alert"></div>
-      <div class="list-group menu-list mb-3" id="bots-list"></div>
-      <form id="messages-add-bot-form" class="d-grid gap-2">
-        <input type="text" id="bot-name" class="form-control" placeholder="Bot name" required>
-        <input type="text" id="bot-description" class="form-control" placeholder="Description (optional)">
-        <button type="submit" class="btn btn-outline-primary">Create Bot</button>
-      </form>
-    </div>
-
-    <div class="card p-3">
-      <div class="d-flex align-items-center justify-content-between mb-2">
-        <h5 class="mb-0">Filters</h5>
-        <span class="badge bg-light text-dark" id="filters-count">0</span>
+      <div class="messages-prime-layer__actions">
+        <span class="messages-prime-layer__hint">Chat is the main surface. Switchboard stays buried until you open it for routing, audit, credits, and fleet state.</span>
+        <a class="btn btn-sm btn-outline-secondary" href="/dashboard.html" target="_blank" rel="noreferrer noopener">Open full</a>
       </div>
-      <div id="filters-status" class="alert alert-info d-none" role="alert"></div>
-      <div class="list-group menu-list mb-3" id="filters-list"></div>
-      <form id="messages-add-filter-form" class="d-grid gap-2">
-        <select id="filter-channel" class="form-select">
-          <option value="" selected disabled>Choose channel...</option>
-        </select>
-        <input type="text" id="filter-regex" class="form-control" placeholder="Regex pattern" required>
-        <input type="text" id="filter-description" class="form-control" placeholder="Description (optional)">
-        <button type="submit" class="btn btn-outline-primary">Create Filter</button>
-      </form>
     </div>
-  </div>
+    <div class="messages-prime-layer__body" id="messages-prime-layer-body" hidden>
+      <iframe
+        class="messages-prime-layer__frame"
+        id="messages-prime-layer-frame"
+        loading="lazy"
+        title="Embedded Switchboard dashboard"
+      ></iframe>
+    </div>
+  </section>
+  {% endif %}
 </div>
 {% endblock %}
 
 {% block extra_js %}
-<script src="{{ url_for('static', path='js/messages_log.js') }}" defer></script>
+<script src="{{ url_for('static', path='js/messages_log.js') }}?v=20260410c" defer></script>
 {% endblock %}

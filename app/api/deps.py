@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.db.session import SessionLocal
 from app.models import User
+from app.core.auth_cache import get_cached_user, cache_user
 from app.core.security import decode_access_token
 from app.crud.user import get_user_by_email
 
@@ -52,8 +53,11 @@ async def get_current_user(request: Request, token: str = Depends(oauth2_scheme)
             detail="Could not validate credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    cached_user = get_cached_user(email)
+    if cached_user is not None:
+        return cached_user
     async for db in get_async_db():
         user = get_user_by_email(db, email=email)
         if user is None:
             raise HTTPException(status_code=404, detail="User not found")
-        return user
+        return cache_user(user)

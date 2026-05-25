@@ -80,7 +80,20 @@ class XComConnector(BaseConnector):
             await asyncio.sleep(5)
 
     async def process_incoming(self, message: Any) -> Any:
-        return message
+        if not isinstance(message, dict):
+            return {"text": str(message)}
+        text = message.get("text") or message.get("message") or ""
+        sender = message.get("sender_id") or message.get("from_id")
+        summary_parts = ["xcom"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {
+            "text": text,
+            "sender": sender,
+            "message_id": message.get("id"),
+            "text_summary": summary,
+        }
 
     def is_connected(self) -> bool:
         tweepy = importlib.import_module("tweepy")

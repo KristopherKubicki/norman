@@ -1,0 +1,151 @@
+{
+  "items": [
+    {
+      "connector_name": "tmux-main",
+      "protected": false,
+      "session": "norman",
+      "session_bootstrap": "",
+      "target": "norman:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux-mls",
+      "protected": false,
+      "session": "mls-codex",
+      "session_bootstrap": "",
+      "target": "mls-codex:0.0",
+      "web_url": "https://mlsbot.home.arpa/",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux-watchdog",
+      "protected": false,
+      "session": "norman-watchdog",
+      "session_bootstrap": "",
+      "target": "norman-watchdog:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:ops-web-3394e001",
+      "protected": false,
+      "session": "ops-web-3394e001",
+      "session_bootstrap": "",
+      "target": "ops-web-3394e001:0.0",
+      "web_url": "http://127.0.0.1:8788",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:ops-auth-78f5702f",
+      "protected": false,
+      "session": "ops-auth-78f5702f",
+      "session_bootstrap": "",
+      "target": "ops-auth-78f5702f:0.0",
+      "web_url": "http://127.0.0.1:8799?token=test",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:castle-lite",
+      "protected": false,
+      "session": "castle-lite",
+      "session_bootstrap": "codex resume 019c-test-castle",
+      "target": "castle-lite:0.0",
+      "web_url": "",
+      "working_dir": "/tmp/pytest-of-operator/pytest-59/test_tmux_control_adopt_create0/castle-lite"
+    },
+    {
+      "connector_name": "tmux:ops",
+      "protected": false,
+      "session": "ops",
+      "session_bootstrap": "codex resume 019c-control-test",
+      "target": "ops:0.0",
+      "web_url": "",
+      "working_dir": "/tmp/ops"
+    },
+    {
+      "connector_name": "tmux:ops-locked",
+      "protected": false,
+      "session": "ops-locked",
+      "session_bootstrap": "",
+      "target": "ops-locked:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:ops-lockable",
+      "protected": false,
+      "session": "ops-lockable",
+      "session_bootstrap": "",
+      "target": "ops-lockable:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:ops-operator",
+      "protected": false,
+      "session": "ops-operator",
+      "session_bootstrap": "",
+      "target": "ops-operator:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:ops-web",
+      "protected": false,
+      "session": "ops-web",
+      "session_bootstrap": "",
+      "target": "ops-web:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:ops-auth-device",
+      "protected": false,
+      "session": "ops-auth-device",
+      "session_bootstrap": "",
+      "target": "ops-auth-device:0.0",
+      "web_url": "http://127.0.0.1:8799?token=test",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:ops-auth-browser",
+      "protected": false,
+      "session": "ops-auth-browser",
+      "session_bootstrap": "",
+      "target": "ops-auth-browser:0.0",
+      "web_url": "http://127.0.0.1:8799?token=test",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:first",
+      "protected": false,
+      "session": "first",
+      "session_bootstrap": "",
+      "target": "first:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:second",
+      "protected": false,
+      "session": "second",
+      "session_bootstrap": "",
+      "target": "second:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:profile-web-3d86bbb8",
+      "protected": false,
+      "session": "profile-web-3d86bbb8",
+      "session_bootstrap": "codex resume 019c-profile-test",
+      "target": "profile-web-3d86bbb8:0.0",
+      "web_url": "http://127.0.0.1:8788",
+      "working_dir": "/tmp/ops"
+    }
+  ],
+  "saved_at": "2026-05-02T14:30:10.309330+00:00",
+  "snapshot_mode": "managed",
+  "version": 1
+}

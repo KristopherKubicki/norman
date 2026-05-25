@@ -44,6 +44,15 @@ async def process_teams_update(
     """
 
     payload = await request.json()
+    if isinstance(payload, dict):
+        payload.setdefault(
+            "_meta",
+            {
+                "headers": {k.lower(): v for k, v in request.headers.items()},
+                "query": dict(request.query_params),
+                "path": str(request.url.path),
+            },
+        )
     teams_connector.process_incoming(payload)
     return {"detail": "Update processed"}
 
@@ -73,6 +82,15 @@ async def process_teams_update_for_connector(
         config=config,
     )
     payload = await request.json()
+    if isinstance(payload, dict):
+        payload.setdefault(
+            "_meta",
+            {
+                "headers": {k.lower(): v for k, v in request.headers.items()},
+                "query": dict(request.query_params),
+                "path": str(request.url.path),
+            },
+        )
     normalized = teams_connector.process_incoming(payload)
     await enqueue_routing_job(
         db=db, connector=connector, normalized=normalized, payload=payload

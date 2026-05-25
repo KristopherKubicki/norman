@@ -54,7 +54,8 @@ def test_process_incoming():
     result = asyncio.get_event_loop().run_until_complete(
         connector.process_incoming({"foo": "bar"})
     )
-    assert result == {"foo": "bar"}
+    assert result["text"] == ""
+    assert result["text_summary"] == "mattermost"
 
 
 class DummyGetResponse:

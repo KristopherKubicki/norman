@@ -44,6 +44,15 @@ async def process_discord_update(
     """
 
     payload = await request.json()
+    if isinstance(payload, dict):
+        payload.setdefault(
+            "_meta",
+            {
+                "headers": {k.lower(): v for k, v in request.headers.items()},
+                "query": dict(request.query_params),
+                "path": str(request.url.path),
+            },
+        )
     discord_connector.process_incoming(payload)
     return {"detail": "Update processed"}
 
@@ -66,6 +75,15 @@ async def process_discord_update_for_connector(
         config=config,
     )
     payload = await request.json()
+    if isinstance(payload, dict):
+        payload.setdefault(
+            "_meta",
+            {
+                "headers": {k.lower(): v for k, v in request.headers.items()},
+                "query": dict(request.query_params),
+                "path": str(request.url.path),
+            },
+        )
     normalized = discord_connector.process_incoming(payload)
     await enqueue_routing_job(
         db=db, connector=connector, normalized=normalized, payload=payload

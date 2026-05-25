@@ -1,5 +1,5 @@
 # Repo Guidelines
-- Run `make format` for Black.
-- Verify `make lint` and `make test` succeed.
-- Run `npm test` if anything in `frontend/` changes.
-- Mention all tests in the PR summary.
+- Format with `make format`.
+- Run `make lint` and `make test`.
+- If you change `frontend/`, run `npm test`.
+- List tests run in the PR summary.

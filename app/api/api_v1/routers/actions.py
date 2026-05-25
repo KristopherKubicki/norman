@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from app import crud, schemas
 from app.api.deps import get_db, get_current_user
 from app.models import User
+from typing import List
 
 router = APIRouter(prefix="/actions", tags=["actions"])
 
@@ -37,6 +38,17 @@ def create_action(
             raise HTTPException(status_code=404, detail="Channel not found")
     action = crud.action.create(db, obj_in=action_in)
     return action
+
+
+@router.get("/", response_model=List[schemas.Action])
+def list_actions(
+    *,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """List actions for the current user."""
+
+    return crud.action.get_multi_by_user(db, current_user.id)
 
 
 @router.get("/{action_id}", response_model=schemas.Action)

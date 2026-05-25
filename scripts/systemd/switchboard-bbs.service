@@ -1,0 +1,16 @@
+[Unit]
+Description=Switchboard BBS Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /usr/local/lib/switchboard-bbs/switchboard_bbs_service.py --bind 0.0.0.0 --port 8765 --root-dir /var/lib/switchboard-bbs --token-dir /root/.config/networking/switchboard-bbs/tokens --bot-directory /etc/switchboard-bbs/SWITCHBOARD_BOT_DIRECTORY.json --tag-taxonomy /etc/switchboard-bbs/SWITCHBOARD_TAG_TAXONOMY.json
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

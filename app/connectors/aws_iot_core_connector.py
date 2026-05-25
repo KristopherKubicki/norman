@@ -98,7 +98,22 @@ class AWSIoTCoreConnector(BaseConnector):
             self.mqtt_client.disconnect()
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
-        return message
+        if isinstance(message, bytes):
+            message = message.decode("utf-8", errors="replace")
+        if not isinstance(message, dict):
+            text = str(message)
+            summary = f"iot • {text}" if text else "iot"
+            return {"text": text, "text_summary": summary}
+        text = message.get("message") or message.get("text") or ""
+        summary_parts = ["iot"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {
+            "text": text,
+            "topic": message.get("topic") or self.topic,
+            "text_summary": summary,
+        }
 
     def _on_message(self, client, userdata, msg) -> None:  # pragma: no cover - callback
         asyncio.create_task(self.process_incoming(msg.payload.decode()))

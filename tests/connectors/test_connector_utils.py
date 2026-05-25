@@ -517,3 +517,30 @@ def test_get_configured_connectors_with_slack(monkeypatch):
     connectors = get_configured_connectors()
     assert "slack" in connectors
     assert isinstance(connectors["slack"][0], SlackConnector)
+
+
+def test_get_connector_coerces_string_config_types() -> None:
+    connector = get_connector(
+        "irc",
+        {
+            "server": "irc.example.com",
+            "port": "6697",
+            "use_ssl": "true",
+            "channels": "#ops,#alerts",
+        },
+    )
+    assert connector.port == 6697
+    assert connector.use_ssl is True
+    assert connector.channels == ["#ops", "#alerts"]
+
+
+def test_get_connectors_data_includes_constructor_defaults(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.connectors.connector_utils.get_settings", lambda: test_settings
+    )
+    data = get_connectors_data()
+    irc_data = next(item for item in data if item["id"] == "irc")
+    assert irc_data["defaults"]["port"] == 6667
+    assert irc_data["defaults"]["nickname"] == "norman"
+    assert irc_data["capabilities"]["supports_inbound"] is True
+    assert irc_data["capabilities"]["supports_outbound"] is True

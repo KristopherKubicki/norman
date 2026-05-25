@@ -4,6 +4,16 @@ initial_admin_password: "change_me_too"
 initial_admin_email: "admin@example.com"
 initial_admin_username: "admin"
 app_name: "norman"
+ui_theme: "default"
+ui_background_image_url: ""
+ui_titlebar_image_url: ""
+ui_ambient_backgrounds: false
+ui_available_themes:
+  - default
+  - fluxbox
+  - classic
+  - graphite
+  - terminal
 debug: false
 log_level: INFO
 api_version: "v1"
@@ -194,6 +204,23 @@ openai_available_models:
   - gpt-5-mini
   - o3
 openai_max_tokens: 150
+
+# LLM runtime lanes for operator status and future provider fallback.
+# The primary lane defaults to OpenAI using openai_api_key/openai_default_model.
+llm_primary_provider: "openai"
+llm_primary_api_key: ""
+llm_primary_base_url: ""
+llm_primary_model: ""
+llm_backup_provider: "disabled"
+llm_backup_api_key: ""
+llm_backup_base_url: ""
+llm_backup_model: ""
+llm_offline_provider: "ollama"
+llm_offline_api_key: ""
+llm_offline_base_url: "http://192.168.0.133:11434"
+llm_offline_model: "qwen3:8b"
+llm_provider_timeout_seconds: 5
+
 google_client_id: "your_google_client_id"
 google_client_secret: "your_google_client_secret"
 microsoft_client_id: "your_microsoft_client_id"
@@ -218,3 +245,16 @@ access_token_expire_minutes: 1440
 algorithm: HS256
 encryption_key: "your_encryption_key"
 encryption_salt: "your_encryption_salt"
+
+# Safety / execution controls
+safety_execution_enabled: true
+safety_read_only: false
+safety_default_tmux_mode: "chat"
+safety_tmux_send_timeout_seconds: 8
+safety_kill_switch_level: 0
+safety_provenance_enforce: true
+safety_shadow_rules_default: true
+safety_tmux_watchdog_autolock: false
+safety_budget_default_per_minute: 0
+safety_budget_default_per_hour: 0
+safety_budget_autolock: true

@@ -35,12 +35,36 @@ venv/
 *.old
 *.dead
 *.ignore
+*.orig
+*.bak-*
+*.bak.*
 
 # logs
 logs/
 
 # config file
 config.yaml
+db/hypervisor/apps.yaml
+db/hypervisor/state/
+db/estate/registry.yaml
+db/tmux_profiles/*/running_now.json
+
+# local/generated artifacts
+node_modules/
+.pytest_cache/
+.hypothesis/
+.backup/
+.codex-backups/
+.session
+tmp/
+tmp_console_audit_stage/
+app_tmp_bundle/
+norman.egg-info/
+*.db
+*.db-shm
+*.db-wal
+db/*.db.backup-*
+db/*.db.bak-*
 
 
 *.sw[op]

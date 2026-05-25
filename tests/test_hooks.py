@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 from app.handlers import openai_handler
 import app.app_routes as app_routes
 from app.core import hooks
+from app.core.config import settings
 
 
 async def _dummy_chat_interaction(
@@ -35,7 +36,11 @@ def test_message_hooks(monkeypatch, test_app: TestClient):
     hooks.register_pre_hook(_pre_hook)
     hooks.register_post_hook(_post_hook)
 
-    payload = {"name": "hookbot", "description": "desc", "gpt_model": "gpt-4.1-mini"}
+    payload = {
+        "name": "hookbot",
+        "description": "desc",
+        "gpt_model": settings.openai_default_model,
+    }
     resp = test_app.post("/api/bots/create", json=payload)
     assert resp.status_code == 200
     bot_id = resp.json()["id"]

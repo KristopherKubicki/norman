@@ -45,7 +45,35 @@ class PagerDutyConnector(BaseConnector):
         return None
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
-        return message
+        """Normalize PagerDuty webhook payloads."""
+        if not isinstance(message, dict):
+            return {"text": str(message)}
+
+        event = message.get("event") or {}
+        event_type = event.get("event_type") or message.get("event_type")
+        data = event.get("data") or {}
+        incident = data.get("incident") or event.get("incident") or {}
+        summary = incident.get("title") or event.get("description") or ""
+        status = incident.get("status") or event.get("status")
+        urgency = incident.get("urgency")
+        url = incident.get("html_url") or incident.get("self")
+
+        summary_parts = ["pagerduty"]
+        if event_type:
+            summary_parts.append(event_type)
+        if summary:
+            summary_parts.append(summary)
+        summary_text = " • ".join(part for part in summary_parts if part)
+
+        return {
+            "event": event_type or "pagerduty",
+            "summary": summary,
+            "status": status,
+            "urgency": urgency,
+            "url": url,
+            "text": summary,
+            "text_summary": summary_text,
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if the routing key looks valid."""

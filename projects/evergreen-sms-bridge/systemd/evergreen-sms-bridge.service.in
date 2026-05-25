@@ -1,0 +1,15 @@
+[Unit]
+Description=Evergreen SMS bridge consumer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@PROJECT_ROOT@
+EnvironmentFile=@PROJECT_ROOT@/.env
+ExecStart=@PROJECT_ROOT@/.venv/bin/python @PROJECT_ROOT@/run-consumer.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

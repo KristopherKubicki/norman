@@ -60,12 +60,11 @@ def test_process_incoming():
     result = asyncio.get_event_loop().run_until_complete(
         connector.process_incoming(payload)
     )
-    assert result == {
-        "id": "1",
-        "text": "hello",
-        "user": "bob",
-        "channel": "CHAN",
-    }
+    assert result["id"] == "1"
+    assert result["text"] == "hello"
+    assert result["user"] == "bob"
+    assert result["channel"] == "CHAN"
+    assert result["text_summary"] == "discord • hello"
 
 
 class DummyGetResponse:

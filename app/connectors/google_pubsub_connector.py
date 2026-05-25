@@ -49,7 +49,21 @@ class GooglePubSubConnector(BaseConnector):
         return None
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
-        return message
+        if not isinstance(message, dict):
+            text = str(message)
+            summary = f"pubsub • {text}" if text else "pubsub"
+            return {"text": text, "text_summary": summary}
+        text = message.get("message") or message.get("text") or ""
+        summary_parts = ["pubsub"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {
+            "text": text,
+            "subscription": message.get("subscription"),
+            "message_id": message.get("message_id"),
+            "text_summary": summary,
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if the publisher can resolve the topic."""

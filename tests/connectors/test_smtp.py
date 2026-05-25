@@ -55,4 +55,4 @@ def test_process_incoming():
     result = asyncio.get_event_loop().run_until_complete(
         connector.process_incoming("x")
     )
-    assert result == "x"
+    assert result == {"text": "x", "text_summary": "smtp • x"}

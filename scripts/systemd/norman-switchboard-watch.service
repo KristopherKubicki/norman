@@ -1,0 +1,14 @@
+[Unit]
+Description=Norman Switchboard BBS watcher
+After=network-online.target switchboard-bbs.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/root/.config/networking/switchboard-bbs/actors/norman.env
+ExecStart=/usr/bin/python3 /usr/local/lib/switchboard-bbs/switchboard_bbs_watch.py --state-dir /var/lib/norman/switchboard-bbs --poll-secs 15
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

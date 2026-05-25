@@ -59,7 +59,7 @@ def test_process_incoming():
     result = asyncio.get_event_loop().run_until_complete(
         connector.process_incoming(payload)
     )
-    assert result == payload
+    assert result["text"] == ""
 
 
 def test_listen_and_process(monkeypatch):
@@ -76,7 +76,12 @@ def test_listen_and_process(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", lambda: DummyClient(resp))
     connector = CAPConnector("http://example.com")
     result = asyncio.get_event_loop().run_until_complete(connector.listen_and_process())
-    assert result == [{"headline": "Test", "description": "Hello", "severity": "Minor"}]
+    assert len(result) == 1
+    assert result[0]["headline"] == "Test"
+    assert result[0]["description"] == "Hello"
+    assert result[0]["severity"] == "Minor"
+    assert result[0]["text"] == "Test"
+    assert result[0]["text_summary"] == "cap • Minor • Test"
 
 
 def test_listen_and_process_bad_xml(monkeypatch):

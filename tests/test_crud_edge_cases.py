@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app import crud
 from app.crud import message as message_crud
 from app.schemas.bot import BotUpdate
+from app.core.config import settings
 
 
 def test_get_bot_invalid_id_returns_none(db: Session) -> None:
@@ -15,7 +16,7 @@ def test_delete_bot_invalid_id_returns_none(db: Session) -> None:
 
 
 def test_update_bot_invalid_id_returns_none(db: Session) -> None:
-    update = BotUpdate(name="foo", gpt_model="gpt-4.1-mini")
+    update = BotUpdate(name="foo", gpt_model=settings.openai_default_model)
     assert crud.update_bot(db, 9999, update) is None
 
 

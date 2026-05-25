@@ -45,7 +45,24 @@ class LineConnector(BaseConnector):
         await asyncio.sleep(0)
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
-        return message
+        if not isinstance(message, dict):
+            return {"text": str(message)}
+        events = message.get("events") or []
+        event = events[0] if events else {}
+        msg = event.get("message") or {}
+        text = msg.get("text") or ""
+        summary_parts = ["line"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {
+            "text": text,
+            "reply_token": event.get("replyToken"),
+            "user_id": (event.get("source") or {}).get("userId"),
+            "event_type": event.get("type"),
+            "timestamp": event.get("timestamp"),
+            "text_summary": summary,
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if the connector is configured."""

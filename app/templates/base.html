@@ -1,80 +1,135 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-default-theme="{{ 'graphite' if (settings.ui_theme|default('default')) == 'default' else (settings.ui_theme|default('default')) }}">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#0f172a">
     <title>Norman</title>
     <script>
         (function() {
+            var root = document.documentElement;
             var theme = localStorage.getItem('theme');
+            if (!theme) {
+                theme = root.dataset.defaultTheme || 'default';
+            }
             if (!theme && window.matchMedia('(prefers-color-scheme: dark)').matches) {
                 theme = 'dark';
             }
-            if (theme === 'dark') {
-                document.documentElement.classList.add('dark-mode');
+            root.dataset.theme = theme;
+            if (theme === 'dark' || theme === 'graphite' || theme === 'terminal') {
+                root.classList.add('dark-mode');
             }
         })();
     </script>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" integrity="sha384-9ndCyUaIbzAi2FUVXJi0CjmCapSmO7OGpamoFVy38MVBnE+IbbVYUew+OrCXaRkfj" crossorigin="anonymous">
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" crossorigin="anonymous">
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap">
-    <link rel="stylesheet" href="/static/css/styles.css">
+    <link rel="stylesheet" href="/static/css/styles.css?v=20260525a">
     {% block extra_css %}{% endblock %}
 </head>
-<body>
+<body
+  class="{% if settings.ui_background_image_url %}has-user-background{% endif %}{% if settings.ui_ambient_backgrounds %} ambient-backgrounds{% endif %}{% if active_page == 'home' %} home-mode{% endif %}{% if embed_mode|default(False) %} embed-mode{% endif %} page-{{ active_page|default('app') }}"
+  {% if settings.ui_background_image_url %}style="--user-bg-image: url('{{ settings.ui_background_image_url }}');"{% endif %}
+>
     {% if show_navbar|default(True) %}
-    <header class="navbar navbar-expand-md navbar-dark bg-primary shadow-sm">
+    <header class="navbar navbar-expand-md navbar-dark bg-primary shadow-sm site-banner site-banner--norman-shell">
         <div class="container">
-            <a class="navbar-brand d-flex align-items-center gap-2" href="/index.html">
+            <a class="navbar-brand d-flex align-items-center gap-2" href="/editor.html?pane=conversation&amp;thread=console+-+Norman&amp;shell=prime">
+                {% if settings.ui_titlebar_image_url %}
+                <img class="brand-image" src="{{ settings.ui_titlebar_image_url }}" alt="Norman">
+                {% else %}
                 <span class="brand-mark">N</span>
-                <span class="brand-text">Norman</span>
+                {% endif %}
+                <span class="brand-copy">
+                    <span class="brand-title">Norman</span>
+                    <span class="brand-sub">{% if active_page == 'home' %}Prime{% else %}Chat{% endif %}</span>
+                </span>
             </a>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
                 <span class="navbar-toggler-icon"></span>
             </button>
             <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+                <ul class="navbar-nav norman-shell-nav me-auto mb-2 mb-lg-0">
                     <li class="nav-item">
-                        <a class="nav-link {% if active_page == 'home' %}active{% endif %}" href="/index.html">Home</a>
+                        <a class="nav-link {% if active_page == 'messages' or active_page == 'consoles' %}active{% endif %}" href="/editor.html?pane=conversation&amp;thread=console+-+Norman&amp;shell=prime">Chat</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link {% if active_page == 'connectors' %}active{% endif %}" href="/connectors.html">Connectors</a>
+                        <a class="nav-link {% if active_page == 'home' or switchboard_mode|default(False) or bbs_mode|default(False) %}active{% endif %}" href="/dashboard.html">Dashboard</a>
                     </li>
-                    <li class="nav-item">
-                        <a class="nav-link {% if active_page == 'channels' %}active{% endif %}" href="/channels.html">Channels</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link {% if active_page == 'bots' %}active{% endif %}" href="/bots.html">Bots</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link {% if active_page == 'messages' %}active{% endif %}" href="/messages_log.html">Messages</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link {% if active_page == 'filters' %}active{% endif %}" href="/filters.html">Filters</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link {% if active_page == 'settings' %}active{% endif %}" href="/settings.html">Settings</a>
+                    <li class="nav-item dropdown norman-shell-menu">
+                        <button class="nav-link dropdown-toggle {% if active_page in ['systems', 'connectors', 'channels', 'filters', 'actions', 'settings'] %}active{% endif %}" type="button" id="normanShellMenu" data-bs-toggle="dropdown" aria-expanded="false">
+                            Menu
+                            <span class="badge rounded-pill bg-warning text-dark ms-1 d-none" id="nav-approvals-badge" title="Pending approvals">0</span>
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end norman-shell-menu__sheet" aria-labelledby="normanShellMenu">
+                            <li><h6 class="dropdown-header">Norman</h6></li>
+                            <li><a class="dropdown-item" href="/bot/switchboard/">Switchboard lane</a></li>
+                            <li><a class="dropdown-item {% if active_page == 'systems' %}active{% endif %}" href="/systems.html">Directory</a></li>
+                            <li><a class="dropdown-item {% if active_page == 'settings' %}active{% endif %}" href="/settings.html">Settings</a></li>
+                            <li><a class="dropdown-item {% if switchboard_mode|default(False) or bbs_mode|default(False) %}active{% endif %}" href="/bbs">Switchboard BBS</a></li>
+                            <li><a class="dropdown-item {% if active_page == 'home' and switchboard_mode|default(False) %}active{% endif %}" href="/dashboard.html?view=switchboard">Switchboard deck</a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><h6 class="dropdown-header">Pipeline</h6></li>
+                            <li><a class="dropdown-item {% if active_page == 'connectors' %}active{% endif %}" href="/connectors.html">Connectors</a></li>
+                            <li><a class="dropdown-item {% if active_page == 'channels' %}active{% endif %}" href="{% if switchboard_mode|default(False) or bbs_mode|default(False) %}/channels.html?view=switchboard{% else %}/channels.html{% endif %}">{% if switchboard_mode|default(False) or bbs_mode|default(False) %}Boards{% else %}Sources{% endif %}</a></li>
+                            <li><a class="dropdown-item {% if active_page == 'filters' %}active{% endif %}" href="/filters.html">Filters</a></li>
+                            <li><a class="dropdown-item {% if active_page == 'actions' %}active{% endif %}" href="/actions.html">Actions</a></li>
+                        </ul>
                     </li>
                 </ul>
-                {% if openai_configured is defined %}
-                <span class="badge ms-3 {% if openai_configured %}bg-success{% else %}bg-warning text-dark{% endif %}">
-                    OpenAI {{ "configured" if openai_configured else "missing" }}
-                </span>
-                {% endif %}
+                <div
+                  class="safety-strip site-safety-inline"
+                  id="global-safety-strip"
+                  data-kill-switch-level="{{ settings.safety_kill_switch_level|default(0)|int }}"
+                  data-execution-enabled="{% if settings.safety_execution_enabled|default(True) %}1{% else %}0{% endif %}"
+                  data-read-only="{% if settings.safety_read_only|default(False) %}1{% else %}0{% endif %}"
+                  data-can-panic="0"
+                >
+                  <div class="safety-strip__left">
+                    <span class="safety-strip__chip" id="safety-strip-chip">L{{ settings.safety_kill_switch_level|default(0)|int }}</span>
+                    <span class="safety-strip__text" id="safety-strip-text">Safety state loading...</span>
+                  </div>
+                  <div class="safety-strip__right">
+                    <button type="button" class="btn btn-sm btn-danger" id="safety-strip-panic">Panic</button>
+                  </div>
+                </div>
             </div>
         </div>
     </header>
     {% endif %}
 
-    <main class="container my-4">
+    <main class="{% if embed_mode|default(False) %}container-fluid px-0 embed-shell{% else %}{% if active_page == 'home' %}container home-shell home-main{% elif active_page in ['systems', 'connectors', 'channels', 'filters', 'actions', 'settings', 'bots'] %}container-fluid lower-deck-main my-3{% else %}container my-4{% endif %}{% endif %}">
         {% block content %}
         {% endblock %}
     </main>
 
-    <footer class="text-center bg-light">
-        &copy; Norman {{ year }}
-    </footer>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" integrity="sha384-ENjdO4Dr2bkBIFxQpeoKMJQ0Z6D9F6EU2ygSABR03SuhDL7z8Zef3CJXTgq1Q0Q" crossorigin="anonymous"></script>
-    <script src="/static/js/theme.js"></script>
+    {% if show_statusbar|default(True) %}
+    <div class="status-bar" id="global-status-bar">
+        <div class="status-bar__left">
+            <span class="status-pill">Ready</span>
+            <span class="status-text">All systems normal.</span>
+        </div>
+        <div class="status-bar__right">
+            <span class="status-copy">&copy; Norman {{ year }}</span>
+            <span class="status-build" title="Frontend version">v{{ app_version }}</span>
+            <span class="status-meta">{{ user_email if user_email else "Unknown user" }}</span>
+            {% if openai_configured %}
+            <span class="status-dot success" title="OpenAI configured"></span>
+            {% else %}
+            <span class="status-dot warning" title="OpenAI missing"></span>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js" crossorigin="anonymous"></script>
+    <script src="/static/js/theme.js?v=20260222a"></script>
+    {# Only poll approvals when a user session exists (prevents 401 spam on login/signup pages). #}
+    {% if user_email %}
+    <script src="/static/js/approvals_badge.js?v=20260222a"></script>
+    {% endif %}
+    {% if show_navbar|default(True) %}
+    <script src="/static/js/safety_strip.js?v=20260223c" defer></script>
+    {% endif %}
     {% block extra_js %}{% endblock %}
 </body>
 </html>

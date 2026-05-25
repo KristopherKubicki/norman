@@ -36,7 +36,20 @@ class GroupMeConnector(BaseConnector):
         return None
 
     async def process_incoming(self, message: Any) -> Any:
-        return message
+        if not isinstance(message, dict):
+            return {"text": str(message)}
+        text = message.get("text") or message.get("message") or ""
+        sender = message.get("name") or message.get("sender_id")
+        summary_parts = ["groupme"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {
+            "text": text,
+            "sender": sender,
+            "group_id": message.get("group_id"),
+            "text_summary": summary,
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if the GroupMe API is reachable."""

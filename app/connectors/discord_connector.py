@@ -86,12 +86,28 @@ class DiscordConnector(BaseConnector):
             await asyncio.sleep(5)
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract basic fields from a Discord message payload."""
+        """Extract basic fields from a Discord message or webhook payload."""
+        if not isinstance(message, dict):
+            return {"text": str(message)}
+
+        author = message.get("author") or {}
+        text = message.get("content") or message.get("text") or ""
+        channel = message.get("channel_id") or message.get("channel") or self.channel_id
+        user = author.get("username") or author.get("id")
+        msg_id = message.get("id")
+
+        summary_parts = ["discord"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+
         return {
-            "id": message.get("id"),
-            "text": message.get("content", ""),
-            "user": message.get("author", {}).get("username"),
-            "channel": message.get("channel_id", self.channel_id),
+            "id": msg_id,
+            "text": text,
+            "user": user,
+            "channel": channel,
+            "timestamp": message.get("timestamp"),
+            "text_summary": summary,
         }
 
     def is_connected(self) -> bool:

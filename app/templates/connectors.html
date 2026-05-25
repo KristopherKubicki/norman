@@ -1,23 +1,462 @@
 {% extends "base.html" %}
 
 {% block content %}
-<h1>Connectors</h1>
+<div class="connectors-page subpage-shell">
+<div class="page-header connectors-header d-flex align-items-center justify-content-between mb-1">
+  <div class="d-flex align-items-center gap-2 flex-wrap">
+    <div class="subpage-eyebrow">Pipeline Deck</div>
+    <div class="connectors-title">Connectors</div>
+    <div class="connectors-subtitle connectors-subtitle--caps" aria-label="Connector capability legend">
+      <span class="connectors-cap-pill connectors-cap-pill--in" title="Inbound">↓ In</span>
+      <span class="connectors-cap-pill connectors-cap-pill--route" title="Routing">↔ Route</span>
+      <span class="connectors-cap-pill connectors-cap-pill--out" title="Outbound">↑ Out</span>
+      <span class="connectors-cap-pill connectors-cap-pill--sso" title="Single sign-on">◎ SSO</span>
+    </div>
+    <div class="connectors-status-pill">
+      <span class="badge bg-light text-dark" id="connectors-ready-count">0 ready</span>
+      <span class="badge bg-light text-dark" id="connectors-missing-count">0 needs setup</span>
+    </div>
+  </div>
+  <div class="subpage-actions d-flex gap-2 flex-wrap">
+    <a class="btn btn-sm btn-outline-secondary" href="/bot/norman/">Norman</a>
+    <a class="btn btn-sm btn-outline-secondary" href="/dashboard.html?view=switchboard">Switchboard</a>
+    <a class="btn btn-sm btn-outline-secondary" href="/channels.html">Sources</a>
+    <a class="btn btn-sm btn-outline-secondary" href="/filters.html">Filters</a>
+  </div>
+</div>
 
-<div class="card mb-4">
+<div class="connectors-mobile-nav d-lg-none mb-2" role="navigation" aria-label="Connectors sections">
+  <button type="button" class="btn btn-sm btn-outline-secondary is-active" data-connectors-jump data-target="connectors-section-catalog">Catalog</button>
+  <button type="button" class="btn btn-sm btn-outline-secondary" data-connectors-jump data-target="connectors-section-routing" data-expand="routing-rules-panel">Routing</button>
+  <button type="button" class="btn btn-sm btn-outline-secondary" data-connectors-jump data-target="connectors-section-ops" data-expand="approvals-panel">Ops</button>
+  <button type="button" class="btn btn-sm btn-outline-secondary" data-connectors-jump data-target="connectors-section-configured">Configured</button>
+</div>
+
+<div class="card mb-3" id="connectors-section-catalog">
   <div class="card-body">
     <div class="d-flex align-items-center justify-content-between">
-      <h5 class="card-title mb-0">Status</h5>
-      <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#connector-status-panel" aria-expanded="true">Collapse</button>
+      <div class="section-title">Connector Catalog</div>
+      <div class="connector-catalog-meta">
+        <span class="small text-muted">Browse everything Norman can connect to</span>
+        <span class="small text-muted" id="connector-cache-age">Cache: warming...</span>
+        <button type="button" class="btn btn-sm btn-outline-secondary" id="connector-cache-refresh">Refresh now</button>
+      </div>
     </div>
-    <div class="collapse show mt-3" id="connector-status-panel">
-      <div class="table-responsive">
-        <table class="table" id="connector-status-table">
+    <div class="connector-catalog-header mt-3">
+      <input type="text" class="form-control form-control-sm" id="connector-catalog-search" placeholder="Search connectors...">
+      <div class="connector-catalog-controls">
+        <div class="btn-group btn-group-sm" role="group" aria-label="Catalog filters">
+          <button type="button" class="btn btn-outline-secondary is-active" data-filter="all">All</button>
+          <button type="button" class="btn btn-outline-secondary" data-filter="installed">Installed</button>
+          <button type="button" class="btn btn-outline-secondary" data-filter="online">Online</button>
+          <button type="button" class="btn btn-outline-secondary" data-filter="broken">Broken</button>
+        </div>
+        <div class="btn-group btn-group-sm" role="group" aria-label="Catalog view">
+          <button type="button" class="btn btn-outline-secondary is-active" data-view="tiles">Tiles</button>
+          <button type="button" class="btn btn-outline-secondary" data-view="list">List</button>
+        </div>
+        <div class="input-group input-group-sm">
+          <span class="input-group-text">Group</span>
+          <select class="form-select form-select-sm" id="connector-catalog-group">
+            <option value="none" selected>None</option>
+            <option value="category">Category</option>
+            <option value="status">Status</option>
+          </select>
+        </div>
+      </div>
+    </div>
+    <div class="connector-catalog mt-3" id="connector-catalog"></div>
+    <div class="connector-catalog-footer mt-2" id="connector-catalog-footer"></div>
+  </div>
+</div>
+
+<div class="card mb-3">
+  <div class="card-body">
+    <div class="d-flex align-items-center justify-content-between collapsible-header" role="button" data-bs-toggle="collapse" data-bs-target="#starter-pack-panel" aria-expanded="false" aria-controls="starter-pack-panel">
+      <div class="section-title">Starter Pack</div>
+      <span class="small text-muted">Tap to expand</span>
+    </div>
+    <div class="collapse mt-2" id="starter-pack-panel">
+      <p class="text-muted mb-2">Install a practical baseline so Norman can listen, route, and post. You can edit configs later.</p>
+      <div class="starter-pack__grid">
+        <label class="starter-pack__item">
+          <input class="form-check-input" type="checkbox" data-starter-pack="slack" checked>
+          <span>Slack</span>
+        </label>
+        <label class="starter-pack__item">
+          <input class="form-check-input" type="checkbox" data-starter-pack="discord" checked>
+          <span>Discord</span>
+        </label>
+        <label class="starter-pack__item">
+          <input class="form-check-input" type="checkbox" data-starter-pack="telegram" checked>
+          <span>Telegram</span>
+        </label>
+        <label class="starter-pack__item">
+          <input class="form-check-input" type="checkbox" data-starter-pack="webhook" checked>
+          <span>Generic Webhook</span>
+        </label>
+        <label class="starter-pack__item">
+          <input class="form-check-input" type="checkbox" data-starter-pack="snmp" checked>
+          <span>SNMP Sensor</span>
+        </label>
+        <label class="starter-pack__item">
+          <input class="form-check-input" type="checkbox" data-starter-pack="arp" checked>
+          <span>ARP Sensor</span>
+        </label>
+        <label class="starter-pack__item">
+          <input class="form-check-input" type="checkbox" data-starter-pack="syslog" checked>
+          <span>Syslog Sensor</span>
+        </label>
+        <label class="starter-pack__item">
+          <input class="form-check-input" type="checkbox" data-starter-pack="glimpser" checked>
+          <span>Glimpser Feed</span>
+        </label>
+        <label class="starter-pack__item">
+          <input class="form-check-input" type="checkbox" data-starter-pack="hubitat" checked>
+          <span>Hubitat Feed</span>
+        </label>
+      </div>
+      <div class="d-flex flex-wrap gap-2 align-items-center mt-2">
+        <button type="button" class="btn btn-sm btn-primary" id="starter-pack-install">Install Starter Pack</button>
+        <button type="button" class="btn btn-sm btn-outline-secondary" id="starter-pack-select-all">Select all</button>
+        <button type="button" class="btn btn-sm btn-outline-secondary" id="starter-pack-select-none">Select none</button>
+        <span class="small text-muted" id="starter-pack-status">Nothing installed yet.</span>
+      </div>
+      <pre class="starter-pack__log mt-2" id="starter-pack-log" aria-live="polite"></pre>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-3">
+  <div class="card-body">
+    <div class="d-flex align-items-center justify-content-between collapsible-header" role="button" data-bs-toggle="collapse" data-bs-target="#routing-simulator-panel" aria-expanded="false" aria-controls="routing-simulator-panel">
+      <div class="section-title">Route Simulator</div>
+      <span class="small text-muted">Tap to expand</span>
+    </div>
+    <div class="collapse mt-2" id="routing-simulator-panel">
+      <form id="routing-simulator-form" class="row g-2 align-items-end mb-2">
+        <div class="col-md-4">
+          <label for="routing-simulator-connector" class="form-label">Connector</label>
+          <select id="routing-simulator-connector" class="form-select form-select-sm">
+            <option value="">Any connector</option>
+          </select>
+        </div>
+        <div class="col-md-6">
+          <label for="routing-simulator-message" class="form-label">Sample message</label>
+          <input type="text" id="routing-simulator-message" class="form-control form-control-sm" placeholder='e.g. "proxy route to signal"' required>
+        </div>
+        <div class="col-md-2">
+          <div class="mobile-form-actions">
+            <button type="submit" class="btn btn-primary btn-sm w-100">Simulate</button>
+          </div>
+        </div>
+      </form>
+      <div class="d-flex flex-wrap gap-2 mb-2">
+        <button type="button" class="btn btn-sm btn-outline-secondary" data-sim-preset="proxy_to_signal">Proxy -> Signal</button>
+        <button type="button" class="btn btn-sm btn-outline-secondary" data-sim-preset="support_ticket">Support ticket</button>
+        <button type="button" class="btn btn-sm btn-outline-secondary" data-sim-preset="incident_alert">Incident alert</button>
+        <button type="button" class="btn btn-sm btn-outline-secondary" data-sim-preset="passive_snmp">Passive SNMP</button>
+        <button type="button" class="btn btn-sm btn-outline-secondary" data-sim-preset="passive_glimpser">Passive Glimpser</button>
+        <button type="button" class="btn btn-sm btn-outline-secondary" data-sim-preset="passive_hubitat">Passive Hubitat</button>
+      </div>
+      <div id="routing-simulator-result" class="small text-muted">No simulation run yet.</div>
+    </div>
+  </div>
+</div>
+
+
+<div class="card mb-3" id="connectors-section-ops">
+  <div class="card-body">
+    <div class="d-flex align-items-center justify-content-between collapsible-header" role="button" data-bs-toggle="collapse" data-bs-target="#approvals-panel" aria-expanded="false" aria-controls="approvals-panel">
+      <div class="section-title">Command Approvals</div>
+      <span class="small text-muted"><span id="approvals-count">0</span> pending • Tap to expand</span>
+    </div>
+    <div class="collapse mt-2" id="approvals-panel">
+      <div class="small text-muted mb-2">
+        Commands for execution-capable connectors land here when policy requires a human approval.
+      </div>
+      <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+        <button type="button" class="btn btn-sm btn-outline-secondary" id="approvals-refresh">Refresh</button>
+        <span class="small text-muted" id="approvals-status">Not loaded.</span>
+      </div>
+      <div class="approvals-table-wrap">
+        <table class="table table-sm table-dark table-striped approvals-table mobile-card-table">
           <thead>
             <tr>
-              <th>Name</th>
-              <th>Status</th>
-              <th>Last Sent</th>
-              <th>Last Received</th>
+              <th scope="col">ID</th>
+              <th scope="col">Connector</th>
+              <th scope="col">Class</th>
+              <th scope="col">Command</th>
+              <th scope="col">Reason</th>
+              <th scope="col">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="approvals-tbody">
+            <tr><td colspan="6" class="text-muted">No pending approvals.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="small text-muted mt-2">
+        Destructive approvals require a confirm token.
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-3">
+  <div class="card-body">
+    <div class="d-flex align-items-center justify-content-between collapsible-header" role="button" data-bs-toggle="collapse" data-bs-target="#webhook-urls-panel" aria-expanded="false" aria-controls="webhook-urls-panel">
+      <div class="section-title">Webhook URLs</div>
+      <span class="small text-muted">Tap to expand</span>
+    </div>
+    <div class="collapse mt-2" id="webhook-urls-panel">
+      <p class="text-muted mb-2">Use these URLs when configuring inbound webhooks in Slack/Google Chat.</p>
+      <div class="webhook-grid">
+        <div class="input-group input-group-sm">
+          <span class="input-group-text">Slack</span>
+          <input type="text" class="form-control" id="slack-webhook-url" readonly>
+          <button class="btn btn-outline-secondary" type="button" data-copy-target="slack-webhook-url">Copy</button>
+        </div>
+        <div class="input-group input-group-sm">
+          <span class="input-group-text">Generic</span>
+          <input type="text" class="form-control" id="generic-typed-webhook-url" readonly>
+          <button class="btn btn-outline-secondary" type="button" data-copy-target="generic-typed-webhook-url">Copy</button>
+        </div>
+        <div class="input-group input-group-sm">
+          <span class="input-group-text">Google Chat</span>
+          <input type="text" class="form-control" id="google-chat-webhook-url" readonly>
+          <button class="btn btn-outline-secondary" type="button" data-copy-target="google-chat-webhook-url">Copy</button>
+        </div>
+        <div class="input-group input-group-sm">
+          <span class="input-group-text">Webhook</span>
+          <input type="text" class="form-control" id="generic-webhook-url" readonly>
+          <button class="btn btn-outline-secondary" type="button" data-copy-target="generic-webhook-url">Copy</button>
+        </div>
+        <div class="input-group input-group-sm">
+          <span class="input-group-text">Discord</span>
+          <input type="text" class="form-control" id="discord-webhook-url" readonly>
+          <button class="btn btn-outline-secondary" type="button" data-copy-target="discord-webhook-url">Copy</button>
+        </div>
+        <div class="input-group input-group-sm">
+          <span class="input-group-text">Teams</span>
+          <input type="text" class="form-control" id="teams-webhook-url" readonly>
+          <button class="btn btn-outline-secondary" type="button" data-copy-target="teams-webhook-url">Copy</button>
+        </div>
+        <div class="input-group input-group-sm">
+          <span class="input-group-text">Telegram</span>
+          <input type="text" class="form-control" id="telegram-webhook-url" readonly>
+          <button class="btn btn-outline-secondary" type="button" data-copy-target="telegram-webhook-url">Copy</button>
+        </div>
+        <div class="input-group input-group-sm">
+          <span class="input-group-text">WhatsApp</span>
+          <input type="text" class="form-control" id="whatsapp-webhook-url" readonly>
+          <button class="btn btn-outline-secondary" type="button" data-copy-target="whatsapp-webhook-url">Copy</button>
+        </div>
+        <div class="input-group input-group-sm">
+          <span class="input-group-text">SMS</span>
+          <input type="text" class="form-control" id="sms-webhook-url" readonly>
+          <button class="btn btn-outline-secondary" type="button" data-copy-target="sms-webhook-url">Copy</button>
+        </div>
+        <div class="input-group input-group-sm">
+          <span class="input-group-text">Jira</span>
+          <input type="text" class="form-control" id="jira-webhook-url" readonly>
+          <button class="btn btn-outline-secondary" type="button" data-copy-target="jira-webhook-url">Copy</button>
+        </div>
+        <div class="input-group input-group-sm">
+          <span class="input-group-text">Facebook</span>
+          <input type="text" class="form-control" id="facebook-webhook-url" readonly>
+          <button class="btn btn-outline-secondary" type="button" data-copy-target="facebook-webhook-url">Copy</button>
+        </div>
+        <div class="input-group input-group-sm">
+          <span class="input-group-text">Pinterest</span>
+          <input type="text" class="form-control" id="pinterest-webhook-url" readonly>
+          <button class="btn btn-outline-secondary" type="button" data-copy-target="pinterest-webhook-url">Copy</button>
+        </div>
+        <div class="input-group input-group-sm">
+          <span class="input-group-text">LinkedIn</span>
+          <input type="text" class="form-control" id="linkedin-webhook-url" readonly>
+          <button class="btn btn-outline-secondary" type="button" data-copy-target="linkedin-webhook-url">Copy</button>
+        </div>
+        <div class="input-group input-group-sm">
+          <span class="input-group-text">Reddit Chat</span>
+          <input type="text" class="form-control" id="reddit-webhook-url" readonly>
+          <button class="btn btn-outline-secondary" type="button" data-copy-target="reddit-webhook-url">Copy</button>
+        </div>
+        <div class="input-group input-group-sm">
+          <span class="input-group-text">Twitter</span>
+          <input type="text" class="form-control" id="twitter-webhook-url" readonly>
+          <button class="btn btn-outline-secondary" type="button" data-copy-target="twitter-webhook-url">Copy</button>
+        </div>
+        <div class="input-group input-group-sm">
+          <span class="input-group-text">Instagram</span>
+          <input type="text" class="form-control" id="instagram-webhook-url" readonly>
+          <button class="btn btn-outline-secondary" type="button" data-copy-target="instagram-webhook-url">Copy</button>
+        </div>
+        <div class="input-group input-group-sm">
+          <span class="input-group-text">Glimpser</span>
+          <input type="text" class="form-control" id="glimpser-webhook-url" readonly>
+          <button class="btn btn-outline-secondary" type="button" data-copy-target="glimpser-webhook-url">Copy</button>
+        </div>
+        <div class="input-group input-group-sm">
+          <span class="input-group-text">Hubitat</span>
+          <input type="text" class="form-control" id="hubitat-webhook-url" readonly>
+          <button class="btn btn-outline-secondary" type="button" data-copy-target="hubitat-webhook-url">Copy</button>
+        </div>
+        <div class="input-group input-group-sm">
+          <span class="input-group-text">Activity Monitor</span>
+          <input type="text" class="form-control" id="activity-monitor-webhook-url" readonly>
+          <button class="btn btn-outline-secondary" type="button" data-copy-target="activity-monitor-webhook-url">Copy</button>
+        </div>
+      </div>
+      <div class="small text-muted mt-2">
+        Replace <code>{connector_id}</code> with the connector ID shown in the list below.
+      </div>
+      <div class="alert alert-info mt-3 mb-0">
+        IMAP is inbound-only. Create a connector of type <code>imap</code> with config:
+        <code>{"host":"imap.example.com","username":"user","password":"pass","mailbox":"INBOX","use_ssl":true}</code>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-3">
+  <div class="card-body">
+    <div class="d-flex align-items-center justify-content-between collapsible-header" role="button" data-bs-toggle="collapse" data-bs-target="#passive-sensors-panel" aria-expanded="false" aria-controls="passive-sensors-panel">
+      <div class="section-title">Passive Sensors</div>
+      <span class="small text-muted">Tap to expand</span>
+    </div>
+    <div class="collapse mt-2" id="passive-sensors-panel">
+      <p class="text-muted mb-2">Quick-create passive listeners and copy sample webhook payloads for routing notes.</p>
+      <div class="passive-sensors__actions mb-2">
+        <button type="button" class="btn btn-sm btn-outline-secondary" data-passive-create="snmp">Create SNMP Sensor</button>
+        <button type="button" class="btn btn-sm btn-outline-secondary" data-passive-create="arp">Create ARP Sensor</button>
+        <button type="button" class="btn btn-sm btn-outline-secondary" data-passive-create="syslog">Create Syslog Sensor</button>
+        <button type="button" class="btn btn-sm btn-outline-secondary" data-passive-create="glimpser">Create Glimpser Feed</button>
+        <button type="button" class="btn btn-sm btn-outline-secondary" data-passive-create="hubitat">Create Hubitat Feed</button>
+        <button type="button" class="btn btn-sm btn-outline-secondary" data-passive-create="activity_monitor">Create Activity Feed</button>
+      </div>
+      <div class="small text-muted mb-1" id="passive-sensors-last-created">No passive sensor created yet.</div>
+      <div class="passive-sensors__preview">
+        <div class="input-group input-group-sm">
+          <span class="input-group-text">Webhook</span>
+          <input type="text" class="form-control" id="passive-sensor-webhook-url" readonly>
+          <button class="btn btn-outline-secondary" type="button" data-passive-copy-target="passive-sensor-webhook-url">Copy</button>
+        </div>
+        <label for="passive-sensor-payload" class="form-label small mt-2 mb-1">Sample payload</label>
+        <textarea class="form-control form-control-sm" id="passive-sensor-payload" rows="5" readonly></textarea>
+        <div class="d-flex justify-content-end mt-2">
+          <button class="btn btn-sm btn-outline-secondary" type="button" data-passive-copy-target="passive-sensor-payload">Copy Payload</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-3" id="connectors-section-routing">
+  <div class="card-body">
+    <div class="d-flex align-items-center justify-content-between collapsible-header" role="button" data-bs-toggle="collapse" data-bs-target="#routing-rules-panel" aria-expanded="false" aria-controls="routing-rules-panel">
+      <div class="section-title">Routing Rules</div>
+      <span class="small text-muted">Tap to expand</span>
+    </div>
+    <div class="collapse mt-2" id="routing-rules-panel">
+    <form id="routing-rule-form" class="row g-2 align-items-end mb-3">
+      <div class="col-md-3">
+        <label for="routing-rule-name" class="form-label">Name</label>
+        <input type="text" id="routing-rule-name" class="form-control" required>
+      </div>
+      <div class="col-md-3">
+        <label for="routing-rule-connector" class="form-label">Connector</label>
+        <select id="routing-rule-connector" class="form-select"></select>
+      </div>
+      <div class="col-md-3">
+        <label for="routing-rule-bot" class="form-label">Bot</label>
+        <select id="routing-rule-bot" class="form-select" required></select>
+      </div>
+      <div class="col-md-3">
+        <label for="routing-rule-destination" class="form-label">Deliver To</label>
+        <select id="routing-rule-destination" class="form-select"></select>
+      </div>
+      <div class="col-md-3">
+        <label for="routing-rule-type" class="form-label">Match</label>
+        <select id="routing-rule-type" class="form-select">
+          <option value="all">All</option>
+          <option value="contains">Contains</option>
+          <option value="regex">Regex</option>
+          <option value="passive">Passive Sensor</option>
+        </select>
+      </div>
+      <div class="col-md-4">
+        <label for="routing-rule-value" class="form-label">Value</label>
+        <input type="text" id="routing-rule-value" class="form-control" placeholder="Optional">
+      </div>
+      <div class="col-md-2">
+        <label for="routing-rule-priority" class="form-label">Priority</label>
+        <input type="number" id="routing-rule-priority" class="form-control" value="0">
+      </div>
+      <div class="col-md-2 form-check mt-4">
+        <input class="form-check-input" type="checkbox" id="routing-rule-active" checked>
+        <label class="form-check-label" for="routing-rule-active">Active</label>
+      </div>
+      <div class="col-md-2">
+        <div class="mobile-form-actions">
+          <button type="submit" class="btn btn-primary w-100">Add Rule</button>
+        </div>
+      </div>
+    </form>
+      <div class="d-flex align-items-center gap-2 mb-2">
+        <button type="button" class="btn btn-sm btn-outline-secondary" id="routing-rules-apply-form-filter">Filter by selected connector</button>
+        <button type="button" class="btn btn-sm btn-outline-secondary" id="routing-rules-clear-filter-inline">Clear filter</button>
+      </div>
+      <div class="small text-muted mb-2 d-none" id="routing-rules-filter-meta"></div>
+      <div id="routing-rules-list" class="list-group small"></div>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-3">
+  <div class="card-body">
+    <div class="section-title">Import / Export</div>
+    <div class="small text-muted mb-2">Move connectors and routing rules between Norman installs. Export omits OAuth tokens, so SSO-backed connectors will need to reconnect after import.</div>
+    <div class="row g-2">
+      <div class="col-lg-8">
+        <label for="connector-bundle-payload" class="form-label">Bundle JSON</label>
+        <textarea id="connector-bundle-payload" class="form-control form-control-sm" rows="10" placeholder="Paste a connector bundle here or export one from this page."></textarea>
+      </div>
+      <div class="col-lg-4">
+        <label for="connector-bundle-file" class="form-label">Import File</label>
+        <input type="file" id="connector-bundle-file" class="form-control form-control-sm mb-2" accept=".json,application/json">
+        <div class="d-grid gap-2">
+          <button type="button" class="btn btn-sm btn-outline-secondary" id="connector-bundle-export">Export JSON</button>
+          <button type="button" class="btn btn-sm btn-primary" id="connector-bundle-import">Import JSON</button>
+        </div>
+        <div class="small text-muted mt-2" id="connector-bundle-status">Exports include connectors and routing rules for the current user.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-3">
+  <div class="card-body">
+    <div class="d-flex align-items-center justify-content-between collapsible-header" role="button" data-bs-toggle="collapse" data-bs-target="#routing-jobs-panel" aria-expanded="false" aria-controls="routing-jobs-panel">
+      <div class="section-title">Delivery Queue</div>
+      <span class="small text-muted">Tap to expand</span>
+    </div>
+    <div class="collapse mt-2" id="routing-jobs-panel">
+      <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+        <button type="button" class="btn btn-sm btn-outline-secondary" id="routing-jobs-refresh">Refresh</button>
+        <span class="small text-muted" id="routing-jobs-meta">Queue idle.</span>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-sm mobile-card-table" id="routing-jobs-table">
+          <thead>
+            <tr>
+              <th>State</th>
+              <th>Event</th>
+              <th>Flow</th>
+              <th>Attempts</th>
+              <th>Next</th>
+              <th>Error</th>
+              <th>Action</th>
             </tr>
           </thead>
           <tbody></tbody>
@@ -27,13 +466,91 @@
   </div>
 </div>
 
-<div class="card mb-4">
+<div class="card mb-3">
   <div class="card-body">
-    <div class="d-flex align-items-center justify-content-between">
-      <h5 class="card-title mb-0">Add Connector</h5>
-      <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#add-connector-panel" aria-expanded="true">Collapse</button>
+    <div class="d-flex align-items-center justify-content-between collapsible-header" role="button" data-bs-toggle="collapse" data-bs-target="#routing-events-panel" aria-expanded="false" aria-controls="routing-events-panel">
+      <div class="section-title">Routing Events</div>
+      <span class="small text-muted">Tap to expand</span>
     </div>
-    <div class="collapse show mt-3" id="add-connector-panel">
+    <div class="collapse mt-2" id="routing-events-panel">
+      <div class="table-responsive">
+        <table class="table table-sm mobile-card-table" id="routing-events-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Connector</th>
+              <th>Bot</th>
+              <th>Status</th>
+              <th>Delivery</th>
+              <th>Trace</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-3">
+  <div class="card-body">
+    <div class="d-flex align-items-center justify-content-between collapsible-header" role="button" data-bs-toggle="collapse" data-bs-target="#connector-status-panel" aria-expanded="false" aria-controls="connector-status-panel">
+      <div class="section-title">Connector Status</div>
+      <span class="small text-muted">Tap to expand</span>
+    </div>
+    <div class="collapse mt-2" id="connector-status-panel">
+      <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+        <button type="button" class="btn btn-sm btn-outline-secondary" id="connector-status-refresh">Refresh now</button>
+        <span class="small text-muted" id="connector-status-meta">Uses background health checks; refresh is throttled.</span>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-sm mobile-card-table" id="connector-status-table">
+          <thead>
+            <tr>
+              <th>Connector</th>
+              <th>Status</th>
+              <th>Last sent</th>
+              <th>Last received</th>
+              <th>Checked</th>
+              <th>Failures</th>
+              <th>History</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-3" id="connectors-section-configured">
+  <div class="card-body">
+    <div class="section-title">Configured Connectors</div>
+    <div class="small text-muted mb-2">Only configured connectors show up in Channels.</div>
+    <div class="connector-groups mt-2">
+      <div class="connector-group">
+        <div class="connector-group__title">Ready</div>
+        <div class="connectors-container" id="connectors-ready"></div>
+      </div>
+      <div class="connector-group">
+        <div class="connector-group__title">Needs Setup</div>
+        <div class="connectors-container" id="connectors-missing"></div>
+      </div>
+      <div class="connector-group">
+        <div class="connector-group__title">Down</div>
+        <div class="connectors-container" id="connectors-down"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-3">
+  <div class="card-body">
+    <div class="d-flex align-items-center justify-content-between collapsible-header" role="button" data-bs-toggle="collapse" data-bs-target="#add-connector-panel" aria-expanded="false" aria-controls="add-connector-panel">
+      <div class="section-title">Add Connector</div>
+      <span class="small text-muted">Tap to expand</span>
+    </div>
+    <div class="collapse mt-2" id="add-connector-panel">
       <form id="add-connector-form" class="row g-2 align-items-end">
         <div class="col-sm">
           <label for="connector-name" class="form-label">Name</label>
@@ -50,187 +567,65 @@
           <input type="text" id="connector-config" class="form-control" />
         </div>
         <div class="col-12 col-sm-auto">
-          <button type="submit" class="btn btn-primary">Add Connector</button>
+          <div class="mobile-form-actions">
+            <button type="submit" class="btn btn-primary">Add Connector</button>
+          </div>
         </div>
       </form>
     </div>
   </div>
 </div>
 
-<div class="card mb-4">
-  <div class="card-body">
-    <div class="d-flex align-items-center justify-content-between">
-      <h5 class="card-title mb-0">Webhook URLs</h5>
-      <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#webhook-urls-panel" aria-expanded="true">Collapse</button>
-    </div>
-    <div class="collapse show mt-3" id="webhook-urls-panel">
-      <p class="text-muted mb-2">Use these URLs when configuring inbound webhooks in Slack/Google Chat.</p>
-    <div class="input-group mb-2">
-      <span class="input-group-text">Slack</span>
-      <input type="text" class="form-control" id="slack-webhook-url" readonly>
-      <button class="btn btn-outline-secondary" type="button" data-copy-target="slack-webhook-url">Copy</button>
-    </div>
-    <div class="input-group mb-2">
-      <span class="input-group-text">Google Chat</span>
-      <input type="text" class="form-control" id="google-chat-webhook-url" readonly>
-      <button class="btn btn-outline-secondary" type="button" data-copy-target="google-chat-webhook-url">Copy</button>
-    </div>
-    <div class="input-group mb-2">
-      <span class="input-group-text">Webhook</span>
-      <input type="text" class="form-control" id="generic-webhook-url" readonly>
-      <button class="btn btn-outline-secondary" type="button" data-copy-target="generic-webhook-url">Copy</button>
-    </div>
-    <div class="input-group mb-2">
-      <span class="input-group-text">Discord</span>
-      <input type="text" class="form-control" id="discord-webhook-url" readonly>
-      <button class="btn btn-outline-secondary" type="button" data-copy-target="discord-webhook-url">Copy</button>
-    </div>
-    <div class="input-group mb-2">
-      <span class="input-group-text">Teams</span>
-      <input type="text" class="form-control" id="teams-webhook-url" readonly>
-      <button class="btn btn-outline-secondary" type="button" data-copy-target="teams-webhook-url">Copy</button>
-    </div>
-    <div class="input-group mb-2">
-      <span class="input-group-text">Telegram</span>
-      <input type="text" class="form-control" id="telegram-webhook-url" readonly>
-      <button class="btn btn-outline-secondary" type="button" data-copy-target="telegram-webhook-url">Copy</button>
-    </div>
-    <div class="input-group mb-2">
-      <span class="input-group-text">WhatsApp</span>
-      <input type="text" class="form-control" id="whatsapp-webhook-url" readonly>
-      <button class="btn btn-outline-secondary" type="button" data-copy-target="whatsapp-webhook-url">Copy</button>
-    </div>
-    <div class="input-group mb-2">
-      <span class="input-group-text">Jira</span>
-      <input type="text" class="form-control" id="jira-webhook-url" readonly>
-      <button class="btn btn-outline-secondary" type="button" data-copy-target="jira-webhook-url">Copy</button>
-    </div>
-    <div class="input-group mb-2">
-      <span class="input-group-text">Facebook</span>
-      <input type="text" class="form-control" id="facebook-webhook-url" readonly>
-      <button class="btn btn-outline-secondary" type="button" data-copy-target="facebook-webhook-url">Copy</button>
-    </div>
-    <div class="input-group mb-2">
-      <span class="input-group-text">Pinterest</span>
-      <input type="text" class="form-control" id="pinterest-webhook-url" readonly>
-      <button class="btn btn-outline-secondary" type="button" data-copy-target="pinterest-webhook-url">Copy</button>
-    </div>
-    <div class="input-group mb-2">
-      <span class="input-group-text">LinkedIn</span>
-      <input type="text" class="form-control" id="linkedin-webhook-url" readonly>
-      <button class="btn btn-outline-secondary" type="button" data-copy-target="linkedin-webhook-url">Copy</button>
-    </div>
-    <div class="input-group mb-2">
-      <span class="input-group-text">Reddit Chat</span>
-      <input type="text" class="form-control" id="reddit-webhook-url" readonly>
-      <button class="btn btn-outline-secondary" type="button" data-copy-target="reddit-webhook-url">Copy</button>
-    </div>
-    <div class="input-group mb-2">
-      <span class="input-group-text">Twitter</span>
-      <input type="text" class="form-control" id="twitter-webhook-url" readonly>
-      <button class="btn btn-outline-secondary" type="button" data-copy-target="twitter-webhook-url">Copy</button>
-    </div>
-    <div class="input-group">
-      <span class="input-group-text">Instagram</span>
-      <input type="text" class="form-control" id="instagram-webhook-url" readonly>
-      <button class="btn btn-outline-secondary" type="button" data-copy-target="instagram-webhook-url">Copy</button>
-    </div>
-      <div class="small text-muted mt-2">
-        Replace <code>{connector_id}</code> with the connector ID shown in the list below.
-      </div>
-      <div class="alert alert-info mt-3 mb-0">
-        IMAP is inbound-only. Create a connector of type <code>imap</code> with config:
-        <code>{"host":"imap.example.com","username":"user","password":"pass","mailbox":"INBOX","use_ssl":true}</code>
-      </div>
-    </div>
-  </div>
-</div>
-
-<div class="card mb-4">
-  <div class="card-body">
-    <div class="d-flex align-items-center justify-content-between">
-      <h5 class="card-title mb-0">Routing Rules</h5>
-      <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#routing-rules-panel" aria-expanded="true">Collapse</button>
-    </div>
-    <div class="collapse show mt-3" id="routing-rules-panel">
-    <form id="routing-rule-form" class="row g-2 align-items-end mb-3">
-      <div class="col-md-3">
-        <label for="routing-rule-name" class="form-label">Name</label>
-        <input type="text" id="routing-rule-name" class="form-control" required>
-      </div>
-      <div class="col-md-3">
-        <label for="routing-rule-connector" class="form-label">Connector</label>
-        <select id="routing-rule-connector" class="form-select"></select>
-      </div>
-      <div class="col-md-3">
-        <label for="routing-rule-bot" class="form-label">Bot</label>
-        <select id="routing-rule-bot" class="form-select" required></select>
-      </div>
-      <div class="col-md-3">
-        <label for="routing-rule-type" class="form-label">Match</label>
-        <select id="routing-rule-type" class="form-select">
-          <option value="all">All</option>
-          <option value="contains">Contains</option>
-          <option value="regex">Regex</option>
-        </select>
-      </div>
-      <div class="col-md-4">
-        <label for="routing-rule-value" class="form-label">Value</label>
-        <input type="text" id="routing-rule-value" class="form-control" placeholder="Optional">
-      </div>
-      <div class="col-md-2">
-        <label for="routing-rule-priority" class="form-label">Priority</label>
-        <input type="number" id="routing-rule-priority" class="form-control" value="0">
-      </div>
-      <div class="col-md-2 form-check mt-4">
-        <input class="form-check-input" type="checkbox" id="routing-rule-active" checked>
-        <label class="form-check-label" for="routing-rule-active">Active</label>
-      </div>
-      <div class="col-md-2">
-        <button type="submit" class="btn btn-primary w-100">Add Rule</button>
-      </div>
-    </form>
-      <div id="routing-rules-list" class="list-group small"></div>
-    </div>
-  </div>
-</div>
-
-<div class="card mb-4">
-  <div class="card-body">
-    <div class="d-flex align-items-center justify-content-between">
-      <h5 class="card-title mb-0">Routing Events</h5>
-      <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#routing-events-panel" aria-expanded="true">Collapse</button>
-    </div>
-    <div class="collapse show mt-3" id="routing-events-panel">
-      <div class="table-responsive">
-        <table class="table table-sm" id="routing-events-table">
-          <thead>
-            <tr>
-              <th>Time</th>
-              <th>Connector</th>
-              <th>Bot</th>
-              <th>Status</th>
-              <th>Delivery</th>
-            </tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </div>
-  </div>
-</div>
-
-<div class="card mb-4">
-  <div class="card-body">
-    <div class="d-flex align-items-center justify-content-between">
-      <h5 class="card-title mb-0">Connectors</h5>
-      <button class="btn btn-sm btn-outline-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#connectors-list-panel" aria-expanded="true">Collapse</button>
-    </div>
-    <div class="collapse show mt-3" id="connectors-list-panel">
-      <div class="connectors-container"></div>
-    </div>
-  </div>
-</div>
-
+<script src="/static/js/connector_rule_match.js" defer></script>
 <script src="/static/js/connectors.js" defer></script>
+
+<div class="modal fade" id="connector-modal" tabindex="-1" aria-hidden="true" data-bs-backdrop="true" data-bs-keyboard="true">
+  <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable modal-fullscreen-sm-down">
+    <div class="modal-content connector-modal">
+      <div class="modal-header">
+        <div>
+          <div class="modal-title connector-modal__title" id="connector-modal-title">Connector</div>
+          <div class="small text-muted" id="connector-modal-subtitle"></div>
+          <div class="small text-muted connector-modal__health" id="connector-modal-health"></div>
+        </div>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="row g-2">
+          <div class="col-md-6">
+            <label class="form-label">Name</label>
+            <input type="text" class="form-control form-control-sm" id="connector-modal-name">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label">Type</label>
+            <select class="form-select form-select-sm" id="connector-modal-type"></select>
+          </div>
+          <div class="col-12">
+            <label class="form-label">Config (JSON)</label>
+            <div class="connector-modal__required-editor d-none" id="connector-modal-required-editor"></div>
+            <div class="connector-modal__presets d-none" id="connector-modal-presets"></div>
+            <div class="connector-modal__mode d-none" id="connector-modal-mode"></div>
+            <div class="connector-modal__tmux d-none" id="connector-modal-tmux"></div>
+            <div class="connector-modal__webhook d-none" id="connector-modal-webhook"></div>
+            <textarea class="form-control form-control-sm" rows="4" id="connector-modal-config"></textarea>
+            <div class="small text-muted mt-1" id="connector-modal-fields"></div>
+            <div class="small mt-1 d-none" id="connector-modal-validation" role="status" aria-live="polite"></div>
+            <div class="small text-muted mt-1 connector-modal__shortcuts">Shortcuts: <code>Enter</code> save (outside JSON), <code>Ctrl/Cmd+S</code> save.</div>
+            <div class="connector-modal__sso mt-2" id="connector-modal-sso"></div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-danger btn-sm" id="connector-modal-remove">Remove</button>
+        <button type="button" class="btn btn-outline-info btn-sm" id="connector-modal-test">Test Connection</button>
+        <div class="small text-muted me-auto" id="connector-modal-test-status"></div>
+        <div class="ms-auto d-flex gap-2">
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Close</button>
+          <button type="button" class="btn btn-primary btn-sm" id="connector-modal-save">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
 {% endblock %}

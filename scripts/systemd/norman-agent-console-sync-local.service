@@ -1,0 +1,7 @@
+[Unit]
+Description=Sync Norman local agent console templates
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/operator/code/norman
+ExecStart=/home/operator/code/norman/.venv/bin/python /home/operator/code/norman/scripts/sync_agent_console_template.py --targets hal

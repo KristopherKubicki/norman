@@ -81,8 +81,16 @@ class AX25Connector(BaseConnector):
 
     async def process_incoming(self, message: Any) -> Any:
         """Return the incoming ``message`` payload."""
-
-        return message
+        if not isinstance(message, dict):
+            text = str(message)
+            summary = f"ax25 • {text}" if text else "ax25"
+            return {"text": text, "text_summary": summary}
+        text = message.get("text") or message.get("message") or ""
+        summary_parts = ["ax25"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {"text": text, "text_summary": summary}
 
     def is_connected(self) -> bool:
         """Return ``True`` if the connector is configured."""

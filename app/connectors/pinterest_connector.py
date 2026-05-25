@@ -55,7 +55,19 @@ class PinterestConnector(BaseConnector):
         await asyncio.sleep(0)
 
     async def process_incoming(self, message: Any) -> Any:
-        return message
+        if not isinstance(message, dict):
+            return {"text": str(message)}
+        text = message.get("title") or message.get("description") or ""
+        summary_parts = ["pinterest"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {
+            "text": text,
+            "pin_id": message.get("id"),
+            "board_id": message.get("board_id"),
+            "text_summary": summary,
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if the access token is valid."""

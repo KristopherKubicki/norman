@@ -7,3 +7,6 @@ from .bot import (
 
 from . import bot, connector, channel
 from . import filters, channel_filter, user, action
+from . import command_approval
+from . import console_target
+from . import secret_keys

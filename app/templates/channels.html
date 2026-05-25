@@ -2,46 +2,92 @@
 {% extends "base.html" %}
 
 {% block content %}
-    <h1>Channels</h1>
-
-    <div id="channels-status" class="alert alert-info d-none" role="alert"></div>
-
-    <div class="row g-4">
-        <div class="col-lg-8">
-            <div class="card p-3 mb-3">
-                <div class="d-flex align-items-center justify-content-between mb-2">
-                    <h2 class="h5 mb-0">Channels</h2>
-                    <span class="badge bg-light text-dark" id="channels-count">0</span>
-                </div>
-                <div class="search-container">
-                    <input class="form-control search-input" type="text" id="channelSearch" placeholder="Search channels...">
-                </div>
-                <div class="channels-container list-group menu-list">
-                    <!-- Channels will be listed here -->
-                </div>
+    <div class="channels-page subpage-shell">
+        <div class="page-header subpage-header d-flex align-items-center justify-content-between mb-2">
+            <div>
+                <div class="subpage-eyebrow">{% if switchboard_mode|default(False) %}Switchboard BBS{% else %}Pipeline Deck{% endif %}</div>
+                <div class="subpage-title">{% if switchboard_mode|default(False) %}Boards{% else %}Sources{% endif %}</div>
+                <div class="subpage-subtitle">{% if switchboard_mode|default(False) %}Organize boards, intake lanes, and starter board packs.{% else %}Organize inbound sources and quick-start source packs.{% endif %}</div>
+            </div>
+            <div class="subpage-actions d-flex gap-2 flex-wrap">
+                <a class="btn btn-sm btn-outline-secondary" href="/bot/norman/">Norman</a>
+                <a class="btn btn-sm btn-outline-secondary" href="/bbs">Switchboard</a>
+                <a class="btn btn-sm btn-outline-secondary" href="/connectors.html">Connectors</a>
             </div>
         </div>
+        <div class="channels-mobile-nav d-lg-none" role="tablist" aria-label="{% if switchboard_mode|default(False) %}Boards view{% else %}Sources view{% endif %}">
+            <button type="button" class="btn btn-sm btn-outline-secondary is-active" data-channels-pane="list">{% if switchboard_mode|default(False) %}Boards{% else %}Sources{% endif %}</button>
+            <button type="button" class="btn btn-sm btn-outline-secondary" data-channels-pane="setup">Setup</button>
+        </div>
 
-        <div class="col-lg-4">
-            <div class="card p-3">
-                <h2 class="h5">Add a Channel</h2>
-                <form id="add-channel-form" class="d-grid gap-2">
-                    <input type="text" id="channel-name" class="form-control" placeholder="Channel name" required>
-                    <label for="channel-connector" class="form-label">Connector</label>
-                    <select class="form-select" id="channel-connector">
-                        <option value="" selected disabled>Loading connectors...</option>
-                    </select>
-                    <button id="addChannelBtn" class="btn btn-primary" type="submit">Create Channel</button>
-                </form>
-                <div class="small text-muted mt-2">
-                    Need a connector? <a href="/connectors.html">Open Connectors</a>
+        <div id="channels-status" class="alert alert-info d-none" role="alert"></div>
+
+        <div class="row g-4 channels-layout">
+            <div class="col-lg-8 channels-col channels-col--list" id="channels-pane-list">
+                <div class="card p-3 mb-3">
+                    <div class="d-flex align-items-center justify-content-between mb-2">
+                        <h2 class="h5 mb-0">{% if switchboard_mode|default(False) %}Boards{% else %}Sources{% endif %}</h2>
+                        <span class="badge bg-light text-dark" id="channels-count">0</span>
+                    </div>
+                    <div class="search-container">
+                        <input class="form-control search-input" type="text" id="channelSearch" placeholder="{% if switchboard_mode|default(False) %}Search boards...{% else %}Search sources...{% endif %}">
+                    </div>
+                    <div class="channels-container channels-grid">
+                        <!-- Boards or sources will be listed here -->
+                    </div>
                 </div>
             </div>
 
-            <div class="card p-3 mt-3">
-                <h2 class="h6">Sample Channels</h2>
-                <p class="small text-muted">Generate example channels with seeded messages.</p>
-                <button id="add-sample-channels" class="btn btn-outline-primary" type="button">Add sample channels</button>
+            <div class="col-lg-4 channels-col channels-col--sidebar" id="channels-pane-setup">
+                <div class="accordion" id="channels-sidebar">
+                    <div class="accordion-item">
+                        <h2 class="accordion-header" id="channels-add-heading">
+                            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#channels-add-collapse" aria-expanded="false" aria-controls="channels-add-collapse">
+                                {% if switchboard_mode|default(False) %}Add a Board{% else %}Add a Source{% endif %}
+                            </button>
+                        </h2>
+                        <div id="channels-add-collapse" class="accordion-collapse collapse" aria-labelledby="channels-add-heading" data-bs-parent="#channels-sidebar">
+                            <div class="accordion-body">
+                                <form id="add-channel-form" class="d-grid gap-2">
+                                    <input type="text" id="channel-name" class="form-control" placeholder="{% if switchboard_mode|default(False) %}Board name{% else %}Source name{% endif %}" required>
+                                    <label for="channel-connector" class="form-label mb-0">Connector</label>
+                                    <select class="form-select" id="channel-connector">
+                                        <option value="" selected disabled>Loading connectors...</option>
+                                    </select>
+                                    <div class="mobile-form-actions">
+                                        <button id="addChannelBtn" class="btn btn-primary" type="submit">{% if switchboard_mode|default(False) %}Create Board{% else %}Create Source{% endif %}</button>
+                                    </div>
+                                </form>
+                                <div class="small text-muted mt-2">
+                                    Only configured connectors are selectable. <a href="/connectors.html">Open Connectors</a>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="accordion-item mt-3">
+                        <h2 class="accordion-header" id="channels-tiles-heading">
+                            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#channels-tiles-collapse" aria-expanded="false" aria-controls="channels-tiles-collapse">
+                                {% if switchboard_mode|default(False) %}Starter Boards{% else %}Source Tiles{% endif %}
+                            </button>
+                        </h2>
+                        <div id="channels-tiles-collapse" class="accordion-collapse collapse" aria-labelledby="channels-tiles-heading" data-bs-parent="#channels-sidebar">
+                            <div class="accordion-body starter-channels-card">
+                                <div class="d-flex align-items-center justify-content-between">
+                                    <div>
+                                        <h2 class="h6 mb-1">{% if switchboard_mode|default(False) %}Board Pack{% else %}Starter Pack{% endif %}</h2>
+                                        <p class="small text-muted mb-0">{% if switchboard_mode|default(False) %}Thread boards, intake lanes, and connected feeds.{% else %}Local feeds and connector-based sources.{% endif %}</p>
+                                    </div>
+                                    <button id="create-starter-channels" class="btn btn-primary btn-sm" type="button">
+                                        Create selected
+                                    </button>
+                                </div>
+                                <div id="starter-channels-list" class="starter-channels-list mt-2"></div>
+                                <div class="small text-muted mt-2">{% if switchboard_mode|default(False) %}Use board packs for Switchboard-facing lanes. Connector-backed boards appear only when configured.{% else %}Local feeds run on this server. Connector tiles appear only when configured.{% endif %}</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>

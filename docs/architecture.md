@@ -12,6 +12,12 @@ high-level understanding of the architecture will help developers work with the 
 
 ## High-Level Architecture
 
+For the higher-level control-plane model, digital-twin vocabulary, and current estate map, see
+[`docs/bot_empire.md`](bot_empire.md).
+
+For the dedicated confidential-host model for finance, health, and similar
+high-sensitivity bots, see [`docs/private_enclave.md`](private_enclave.md).
+
 Here is a text-based representation of Norman's high-level architecture:
 
 ```
@@ -43,6 +49,14 @@ Here is a text-based representation of Norman's high-level architecture:
 
 - **Actions**: Modules that define the actions to be performed when a channel filter is triggered. Actions can include
   generating replies, fetching data, or performing other tasks.
+
+- **Estate / Fleet Model**: Norman's principal, domain, bot, worker, and
+  service model that keeps `Work`, `Personal`, `Shared`, and `Private`
+  boundaries explicit.
+
+- **Private Enclave**: A dedicated worker/host for confidential bots such as
+  health, finance, and PEF (ParkerGale / PEFB). Prime should see summary/status, while the
+  enclave holds the isolated runtimes and secrets policy.
 
 ## Data Flow
 

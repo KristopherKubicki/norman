@@ -50,7 +50,16 @@ class BroadcastConnector(BaseConnector):
         return None
 
     async def process_incoming(self, message: Any) -> Any:
-        return message
+        if not isinstance(message, dict):
+            text = str(message)
+            summary = f"broadcast • {text}" if text else "broadcast"
+            return {"text": text, "text_summary": summary}
+        text = message.get("text") or message.get("message") or ""
+        summary_parts = ["broadcast"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {"text": text, "text_summary": summary}
 
     def is_connected(self) -> bool:
         return all(getattr(c, "is_connected", lambda: True)() for c in self.connectors)

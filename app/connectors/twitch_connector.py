@@ -76,20 +76,16 @@ class TwitchConnector(BaseConnector):
         return messages
 
     def process_incoming(self, message: dict) -> dict:
-        return message
+        if not isinstance(message, dict):
+            return {"text": str(message)}
+        raw = message.get("raw") or ""
+        text = raw.strip()
+        summary_parts = ["twitch"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {"text": text, "raw": raw, "text_summary": summary}
 
     def is_connected(self) -> bool:
-        if self.socket is not None:
-            return True
-        if not super().is_connected():
-            return False
-        try:
-            resp = httpx.get(
-                "https://id.twitch.tv/oauth2/validate",
-                headers={"Authorization": f"OAuth {self.token}"},
-                timeout=10,
-            )
-            resp.raise_for_status()
-            return True
-        except httpx.HTTPError:
-            return False
+        # For this IRC-style connector, "connected" means we have an active socket.
+        return self.socket is not None

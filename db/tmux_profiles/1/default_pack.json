@@ -1,0 +1,394 @@
+{
+  "items": [
+    {
+      "connector_name": "tmux ops",
+      "protected": false,
+      "session": "ops",
+      "session_bootstrap": "",
+      "target": "ops:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:norman-bot-prime",
+      "protected": false,
+      "session": "norman-bot-prime",
+      "session_bootstrap": "",
+      "target": "norman-bot-prime:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:theseus",
+      "protected": false,
+      "session": "theseus",
+      "session_bootstrap": "",
+      "target": "theseus:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:queue-source",
+      "protected": false,
+      "session": "queue-source",
+      "session_bootstrap": "",
+      "target": "queue-source:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:queue-target",
+      "protected": false,
+      "session": "queue-target",
+      "session_bootstrap": "",
+      "target": "queue-target:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:acl-root-source",
+      "protected": false,
+      "session": "acl-root-source",
+      "session_bootstrap": "",
+      "target": "acl-root-source:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:acl-private-target",
+      "protected": false,
+      "session": "acl-private-target",
+      "session_bootstrap": "",
+      "target": "acl-private-target:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:acl-private-root-source",
+      "protected": false,
+      "session": "acl-private-root-source",
+      "session_bootstrap": "",
+      "target": "acl-private-root-source:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:acl-private-granted-target",
+      "protected": false,
+      "session": "acl-private-granted-target",
+      "session_bootstrap": "",
+      "target": "acl-private-granted-target:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:acl-work-source",
+      "protected": false,
+      "session": "acl-work-source",
+      "session_bootstrap": "",
+      "target": "acl-work-source:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:acl-work-target",
+      "protected": false,
+      "session": "acl-work-target",
+      "session_bootstrap": "",
+      "target": "acl-work-target:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:acl-work-private-source",
+      "protected": false,
+      "session": "acl-work-private-source",
+      "session_bootstrap": "",
+      "target": "acl-work-private-source:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:acl-private-explicit-target",
+      "protected": false,
+      "session": "acl-private-explicit-target",
+      "session_bootstrap": "",
+      "target": "acl-private-explicit-target:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:acl-network-source",
+      "protected": false,
+      "session": "acl-network-source",
+      "session_bootstrap": "",
+      "target": "acl-network-source:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:acl-dns-target",
+      "protected": false,
+      "session": "acl-dns-target",
+      "session_bootstrap": "",
+      "target": "acl-dns-target:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:acl-network-work-source",
+      "protected": false,
+      "session": "acl-network-work-source",
+      "session_bootstrap": "",
+      "target": "acl-network-work-source:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:acl-network-work-target",
+      "protected": false,
+      "session": "acl-network-work-target",
+      "session_bootstrap": "",
+      "target": "acl-network-work-target:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:acl-work-network-source",
+      "protected": false,
+      "session": "acl-work-network-source",
+      "session_bootstrap": "",
+      "target": "acl-work-network-source:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:acl-network-explicit-target",
+      "protected": false,
+      "session": "acl-network-explicit-target",
+      "session_bootstrap": "",
+      "target": "acl-network-explicit-target:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:acl-private-no-cross-source",
+      "protected": false,
+      "session": "acl-private-no-cross-source",
+      "session_bootstrap": "",
+      "target": "acl-private-no-cross-source:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:acl-private-no-cross-work-target",
+      "protected": false,
+      "session": "acl-private-no-cross-work-target",
+      "session_bootstrap": "",
+      "target": "acl-private-no-cross-work-target:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:acl-private-cross-source",
+      "protected": false,
+      "session": "acl-private-cross-source",
+      "session_bootstrap": "",
+      "target": "acl-private-cross-source:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:acl-private-cross-network-target",
+      "protected": false,
+      "session": "acl-private-cross-network-target",
+      "session_bootstrap": "",
+      "target": "acl-private-cross-network-target:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:callback-source",
+      "protected": false,
+      "session": "callback-source",
+      "session_bootstrap": "",
+      "target": "callback-source:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:stale-source",
+      "protected": false,
+      "session": "stale-source",
+      "session_bootstrap": "",
+      "target": "stale-source:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:stale-target",
+      "protected": false,
+      "session": "stale-target",
+      "session_bootstrap": "",
+      "target": "stale-target:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "TMUX Export",
+      "protected": false,
+      "session": "ops-export",
+      "session_bootstrap": "",
+      "target": "ops-export:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "TMUX Import",
+      "protected": false,
+      "session": "ops-import",
+      "session_bootstrap": "",
+      "target": "ops-import:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux-main",
+      "protected": false,
+      "session": "norman",
+      "session_bootstrap": "",
+      "target": "norman:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux-mls",
+      "protected": false,
+      "session": "mls-codex",
+      "session_bootstrap": "",
+      "target": "mls-codex:0.0",
+      "web_url": "https://mlsbot.home.arpa/",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux-watchdog",
+      "protected": false,
+      "session": "norman-watchdog",
+      "session_bootstrap": "",
+      "target": "norman-watchdog:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:ops-web-c8b7a5ed",
+      "protected": false,
+      "session": "ops-web-c8b7a5ed",
+      "session_bootstrap": "",
+      "target": "ops-web-c8b7a5ed:0.0",
+      "web_url": "http://127.0.0.1:8788",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:ops-auth-bcb95429",
+      "protected": false,
+      "session": "ops-auth-bcb95429",
+      "session_bootstrap": "",
+      "target": "ops-auth-bcb95429:0.0",
+      "web_url": "http://127.0.0.1:8799?token=test",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:castle-lite",
+      "protected": false,
+      "session": "castle-lite",
+      "session_bootstrap": "codex resume 019c-test-castle",
+      "target": "castle-lite:0.0",
+      "web_url": "",
+      "working_dir": "/tmp/pytest-of-operator/pytest-252/test_tmux_control_adopt_create0/castle-lite"
+    },
+    {
+      "connector_name": "tmux:ops-locked",
+      "protected": false,
+      "session": "ops-locked",
+      "session_bootstrap": "",
+      "target": "ops-locked:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:ops-lockable",
+      "protected": false,
+      "session": "ops-lockable",
+      "session_bootstrap": "",
+      "target": "ops-lockable:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:ops-operator",
+      "protected": false,
+      "session": "ops-operator",
+      "session_bootstrap": "",
+      "target": "ops-operator:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:ops-web",
+      "protected": false,
+      "session": "ops-web",
+      "session_bootstrap": "",
+      "target": "ops-web:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:ops-auth-device",
+      "protected": false,
+      "session": "ops-auth-device",
+      "session_bootstrap": "",
+      "target": "ops-auth-device:0.0",
+      "web_url": "http://127.0.0.1:8799?token=test",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:ops-auth-browser",
+      "protected": false,
+      "session": "ops-auth-browser",
+      "session_bootstrap": "",
+      "target": "ops-auth-browser:0.0",
+      "web_url": "http://127.0.0.1:8799?token=test",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:first",
+      "protected": false,
+      "session": "first",
+      "session_bootstrap": "",
+      "target": "first:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:second",
+      "protected": false,
+      "session": "second",
+      "session_bootstrap": "",
+      "target": "second:0.0",
+      "web_url": "",
+      "working_dir": ""
+    },
+    {
+      "connector_name": "tmux:profile-web-c0ad4451",
+      "protected": false,
+      "session": "profile-web-c0ad4451",
+      "session_bootstrap": "codex resume 019c-profile-test",
+      "target": "profile-web-c0ad4451:0.0",
+      "web_url": "http://127.0.0.1:8788",
+      "working_dir": "/tmp/ops"
+    }
+  ],
+  "saved_at": "2026-05-25T18:28:50.305839+00:00",
+  "snapshot_mode": "managed",
+  "version": 1
+}

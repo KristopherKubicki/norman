@@ -39,7 +39,20 @@ class AppleMessagesBusinessConnector(BaseConnector):
         return None
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
-        return message
+        if not isinstance(message, dict):
+            return {"text": str(message)}
+        text = message.get("message", {}).get("text") or message.get("text") or ""
+        sender = (message.get("sender") or {}).get("id")
+        summary_parts = ["apple_messages"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {
+            "text": text,
+            "sender": sender,
+            "message_id": message.get("messageId") or message.get("id"),
+            "text_summary": summary,
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if the access token is present."""

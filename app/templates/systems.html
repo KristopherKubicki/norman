@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="systems-page subpage-shell">
+  <div class="page-header subpage-header d-flex align-items-center justify-content-between mb-3 flex-wrap gap-2">
+      <div>
+        <div class="subpage-eyebrow">Norman Menu</div>
+        <div class="subpage-title">Directory</div>
+        <div class="subpage-subtitle">Host landings and published routes across Norman, Private, Toy Box, Work Special, and shared infrastructure.</div>
+      </div>
+      <div class="subpage-actions d-flex gap-2 align-items-center flex-wrap">
+        <a class="btn btn-outline-secondary btn-sm" href="/bot/norman/">Norman</a>
+        <a class="btn btn-outline-secondary btn-sm" href="/bot/switchboard/">Switchboard lane</a>
+        <a class="btn btn-outline-secondary btn-sm" href="/dashboard.html?view=switchboard">Switchboard deck</a>
+        <button type="button" class="btn btn-outline-secondary btn-sm" id="systems-refresh">Refresh</button>
+      </div>
+  </div>
+
+  <div id="systems-status" class="alert alert-info d-none" role="alert"></div>
+
+  <div class="card p-3 mb-3 systems-directory-card" id="agent-directory">
+    <div class="systems-directory-head">
+      <div>
+        <div class="subpage-title">Published Routes</div>
+        <div class="subpage-subtitle">Live app and chat entry points grouped by lane, including protected private domains.</div>
+      </div>
+      <div class="small text-muted" id="systems-directory-count">Loading routes…</div>
+    </div>
+    <div class="systems-directory-note">
+      Use Directory to find anything you can open or chat with. It now includes host landing pages as well as app/chat routes, resolved for the network you are on.
+    </div>
+    <div id="systems-directory-groups" class="systems-directory-groups">
+      <div class="home-agent-fleet__empty">Loading agent routes…</div>
+    </div>
+  </div>
+
+  <div class="card p-3 mb-3 systems-toolbar">
+    <div class="row g-2 align-items-center">
+      <div class="col-xl-4 col-lg-5">
+        <label class="small text-muted mb-1" for="systems-search">Search</label>
+        <input type="search" class="form-control form-control-sm" id="systems-search" placeholder="Find agents, services, workers, places, or assets...">
+      </div>
+      <div class="col-xl-8 col-lg-7">
+        <div class="small text-muted mb-1">Lanes</div>
+        <div class="systems-chip-bar" id="systems-principal-filters"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="systems-summary-row" class="mb-3"></div>
+
+  <div id="systems-principals" class="d-flex flex-column gap-3"></div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="/static/js/systems.js?v=20260505b" defer></script>
+{% endblock %}

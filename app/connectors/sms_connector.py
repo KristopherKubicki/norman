@@ -1,3 +1,6 @@
+import base64
+import hashlib
+import hmac
 from typing import Any, Dict, Optional
 import httpx
 
@@ -52,7 +55,23 @@ class SMSConnector(BaseConnector):
         return None
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
-        return message
+        if not isinstance(message, dict):
+            return {"text": str(message)}
+        text = message.get("Body") or message.get("body") or ""
+        sender = message.get("From") or message.get("from")
+        to = message.get("To") or message.get("to") or self.to_number
+        sid = message.get("MessageSid") or message.get("sid")
+        summary_parts = ["sms"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {
+            "text": text,
+            "from": sender,
+            "to": to,
+            "sid": sid,
+            "text_summary": summary,
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if Twilio credentials appear valid."""
@@ -65,3 +84,14 @@ class SMSConnector(BaseConnector):
             return True
         except httpx.HTTPError:
             return False
+
+    def verify_signature(self, signature: str, url: str, form: Dict[str, Any]) -> bool:
+        """Validate a Twilio webhook signature for inbound SMS."""
+        if not signature or not self.auth_token:
+            return False
+        data = url + "".join(f"{k}{v}" for k, v in sorted(form.items()))
+        digest = hmac.new(
+            self.auth_token.encode("utf-8"), data.encode("utf-8"), hashlib.sha1
+        ).digest()
+        expected = base64.b64encode(digest).decode("utf-8")
+        return hmac.compare_digest(expected, signature)

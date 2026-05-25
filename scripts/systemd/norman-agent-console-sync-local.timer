@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodic Norman local agent console template sync
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+Unit=norman-agent-console-sync-local.service
+
+[Install]
+WantedBy=timers.target

@@ -2,6 +2,122 @@
 let selectedBotId = null;
 const sendButton = document.getElementById('send-message');
 let botsCache = [];
+let activeBotsMobilePane = 'roster';
+let botsMobilePaneMedia = null;
+const BOTS_MOBILE_PANE_KEY = 'norman.mobile.bots.pane.v1';
+const SENSITIVE_ASSIGNMENT_RE = /((?:"|')?(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|client[_ -]?secret|signing[_ -]?secret|webhook[_ -]?secret|app[_ -]?password|mcp[_ -]?api[_ -]?key|password|passwd|passphrase|passcode|secret|token|pwd)(?:"|')?\s*[:=]\s*)("[^"\n]*"|'[^'\n]*'|[^\s,;]+)/gi;
+const SENSITIVE_QUERY_RE = /((?:[?&])(?:api(?:[_-]?key)?|access[_-]?token|refresh[_-]?token|client[_-]?secret|signing[_-]?secret|webhook[_-]?secret|app[_-]?password|password|passwd|passcode|secret|token|pwd)=)([^&#\s]+)/gi;
+const SENSITIVE_BEARER_RE = /(\bBearer\s+)([A-Za-z0-9._~+/=-]+)/gi;
+let secretSegmentSerial = 0;
+
+function updateSelectedBotSummary(bot = null) {
+  const selectedBotNameElement = document.getElementById('selected-bot-name');
+  const selectedBotMeta = document.getElementById('selected-bot-meta');
+  const selectedBotState = document.getElementById('selected-bot-state');
+  const textarea = document.getElementById('input-message');
+  const send = document.getElementById('send-message');
+
+  if (!selectedBotNameElement || !selectedBotMeta || !selectedBotState) return;
+
+  if (!bot) {
+    selectedBotNameElement.innerText = 'No session selected';
+    selectedBotNameElement.removeAttribute('data-bot-id');
+    selectedBotMeta.textContent = 'Choose a session from the left to continue the thread.';
+    selectedBotState.textContent = 'Idle';
+    if (textarea) {
+      textarea.setAttribute('disabled', 'disabled');
+      textarea.placeholder = 'Choose a session to start writing…';
+    }
+    if (send) {
+      send.setAttribute('disabled', 'disabled');
+    }
+    return;
+  }
+
+  const details = [
+    bot.description,
+    bot.gpt_model ? `Model ${bot.gpt_model}` : '',
+    bot.enabled === false ? 'Disabled' : 'Ready',
+  ].filter(Boolean);
+
+  selectedBotNameElement.innerText = bot.name;
+  selectedBotNameElement.setAttribute('data-bot-id', bot.id);
+  selectedBotMeta.textContent = details.join(' · ') || 'Ready for the next turn.';
+  selectedBotState.textContent = bot.enabled === false ? 'Paused' : 'Live';
+  if (textarea) {
+    textarea.removeAttribute('disabled');
+    textarea.placeholder = 'Enter to send, Shift+Enter for newline';
+  }
+  if (send) {
+    send.removeAttribute('disabled');
+  }
+}
+
+function readStoredBotsMobilePane() {
+  try {
+    const value = (localStorage.getItem(BOTS_MOBILE_PANE_KEY) || '').trim();
+    return ['chat', 'roster'].includes(value) ? value : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+function writeStoredBotsMobilePane(pane) {
+  try {
+    localStorage.setItem(BOTS_MOBILE_PANE_KEY, pane);
+  } catch (err) {
+    // ignore storage errors
+  }
+}
+
+function isCompactBotsViewport() {
+  return Boolean(botsMobilePaneMedia?.matches);
+}
+
+function setBotsMobilePane(pane) {
+  const page = document.querySelector('.bots-page');
+  if (!page) return;
+  activeBotsMobilePane = pane;
+  writeStoredBotsMobilePane(pane);
+  page.dataset.mobilePane = pane;
+  document.querySelectorAll('[data-bots-pane]').forEach((btn) => {
+    btn.classList.toggle('is-active', btn.getAttribute('data-bots-pane') === pane);
+  });
+}
+
+function initBotsMobilePaneSwitcher() {
+  const page = document.querySelector('.bots-page');
+  const buttons = Array.from(document.querySelectorAll('[data-bots-pane]'));
+  if (!page || !buttons.length) return;
+
+  const savedPane = readStoredBotsMobilePane();
+  if (savedPane) {
+    activeBotsMobilePane = savedPane;
+  }
+
+  botsMobilePaneMedia = window.matchMedia('(max-width: 991px)');
+  setBotsMobilePane(activeBotsMobilePane);
+
+  buttons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      setBotsMobilePane(btn.getAttribute('data-bots-pane') || 'chat');
+    });
+  });
+
+  const syncPaneMode = () => {
+    if (isCompactBotsViewport()) {
+      page.dataset.mobilePane = activeBotsMobilePane;
+      return;
+    }
+    page.removeAttribute('data-mobile-pane');
+  };
+  syncPaneMode();
+  if (typeof botsMobilePaneMedia.addEventListener === 'function') {
+    botsMobilePaneMedia.addEventListener('change', syncPaneMode);
+  } else if (typeof botsMobilePaneMedia.addListener === 'function') {
+    botsMobilePaneMedia.addListener(syncPaneMode);
+  }
+}
 
 function setStatus(message, type = 'info') {
   const status = document.getElementById('bots-status');
@@ -44,10 +160,86 @@ function filterBots(query) {
   renderBots(filtered);
 }
 
+function nextSecretSegmentToken() {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  let current = secretSegmentSerial;
+  secretSegmentSerial += 1;
+  let suffix = '';
+  while (true) {
+    suffix = `${alphabet[current % 26]}${suffix}`;
+    current = Math.floor(current / 26);
+    if (current === 0) break;
+    current -= 1;
+  }
+  return `__SECRET_SEGMENT_${suffix}__`;
+}
+
+function buildSecretSpoiler(value) {
+  const safeValue = String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+  return `<button type="button" class="secret-spoiler" aria-pressed="false" aria-label="Reveal hidden value" title="Reveal hidden value"><span class="secret-spoiler-mask" aria-hidden="true">&bull;&bull;&bull;&bull;&bull;&bull;</span><span class="secret-spoiler-value">${safeValue}</span></button>`;
+}
+
+function stashSensitiveSegments(text) {
+  let nextText = String(text || '');
+  const stash = {};
+  const apply = (regex) => {
+    nextText = nextText.replace(regex, (_, prefix, value) => {
+      const token = nextSecretSegmentToken();
+      stash[token] = buildSecretSpoiler(value);
+      return `${prefix}${token}`;
+    });
+  };
+  apply(SENSITIVE_ASSIGNMENT_RE);
+  apply(SENSITIVE_QUERY_RE);
+  apply(SENSITIVE_BEARER_RE);
+  return { text: nextText, stash };
+}
+
+function restoreSecretSegments(rendered, stash) {
+  let output = String(rendered || '');
+  Object.entries(stash || {}).forEach(([token, snippet]) => {
+    output = output.replaceAll(token, snippet);
+  });
+  return output;
+}
+
+function renderMessageHtml(text) {
+  const sensitive = stashSensitiveSegments(String(text || ''));
+  const withSpacing = sensitive.text
+    .replace(/\t/g, '&nbsp;&nbsp;&nbsp;&nbsp;')
+    .replace(/\n/g, '<br/>');
+  return restoreSecretSegments(marked.marked(withSpacing), sensitive.stash);
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   const sendButton = document.getElementById('send-message');
+  const messagesPanel = document.querySelector('.messages-container');
+  initBotsMobilePaneSwitcher();
+  updateSelectedBotSummary(null);
   // Fetch bots and render them in the bots container
   fetchBotsAndRender();
+
+  const mobileSelect = document.getElementById('bots-mobile-select');
+  if (mobileSelect) {
+    mobileSelect.addEventListener('change', (event) => {
+      const value = event.target.value;
+      if (value) selectBotById(value);
+    });
+  }
+
+  messagesPanel?.addEventListener('click', (event) => {
+    const button = event.target.closest('.secret-spoiler');
+    if (!(button instanceof HTMLElement)) return;
+    event.preventDefault();
+    const nextState = !button.classList.contains('revealed');
+    button.classList.toggle('revealed', nextState);
+    button.setAttribute('aria-pressed', nextState ? 'true' : 'false');
+  });
 
   // Set up handler for saving edits
   const saveBtn = document.getElementById('save-bot-changes');
@@ -58,9 +250,11 @@ document.addEventListener('DOMContentLoaded', () => {
       clearError(nameInput);
       const descriptionValue = document.getElementById('edit-bot-description').value.trim();
       const modelValue = document.getElementById('edit-bot-model').value.trim();
+      const enabledValue = document.getElementById('edit-bot-enabled').checked;
       const data = {
         name: nameInput.value.trim(),
-        description: descriptionValue
+        description: descriptionValue,
+        enabled: enabledValue
       };
       if (modelValue) {
         data.gpt_model = modelValue;
@@ -69,11 +263,16 @@ document.addEventListener('DOMContentLoaded', () => {
         showError(nameInput, 'Name is required');
         return;
       }
-      const updated = await updateBot(selectedBotId, data);
-      if (updated) {
-        fetchBotsAndRender();
-        const modal = bootstrap.Modal.getInstance(document.getElementById('editBotModal'));
-        modal.hide();
+      try {
+        const updated = await updateBot(selectedBotId, data);
+        if (updated) {
+          fetchBotsAndRender();
+          const modal = bootstrap.Modal.getInstance(document.getElementById('editBotModal'));
+          modal.hide();
+          setStatus(`Bot "${updated.name || data.name}" updated.`, 'success');
+        }
+      } catch (err) {
+        setStatus(err.message || 'Failed to update bot.', 'danger');
       }
     });
   }
@@ -129,8 +328,11 @@ document.addEventListener('DOMContentLoaded', () => {
     // Disable the button
     sendButton.disabled = true;
 
-    // reset the enter dialog
-    const textarea = document.querySelector('textarea');
+    const textarea = document.getElementById('input-message');
+    if (!textarea) {
+      sendButton.disabled = false;
+      return;
+    }
     textarea.style.height = 'auto';
 
     const spinner = document.getElementById('spinner');
@@ -139,16 +341,46 @@ document.addEventListener('DOMContentLoaded', () => {
 
     spinner.style.display = 'inline-block';
 
-    if (selectedBotNameElement.innerText !== 'None' && content) {
+    const bot_id = selectedBotNameElement?.dataset?.botId;
+    if (bot_id && content) {
       const messagesContainer = document.querySelector('.messages-container');
       const placeholder = document.createElement('div');
       placeholder.className = 'message assistant placeholder-message';
-      placeholder.textContent = 'Thinking...';
+      const placeholderSource = document.createElement('span');
+      placeholderSource.className = 'message-source';
+      placeholderSource.textContent = 'Bot';
+      const placeholderContent = document.createElement('span');
+      placeholderContent.className = 'message-content';
+      placeholderContent.textContent = 'Thinking...';
+      const placeholderTime = document.createElement('span');
+      placeholderTime.className = 'message-timestamp';
+      placeholderTime.textContent = '...';
+      const placeholderMeta = document.createElement('span');
+      placeholderMeta.className = 'message-meta';
+      placeholderMeta.appendChild(placeholderTime);
+      placeholder.appendChild(placeholderSource);
+      placeholder.appendChild(placeholderContent);
+      placeholder.appendChild(placeholderMeta);
       placeholder.style.height = textarea.scrollHeight + 'px';
       messagesContainer.appendChild(placeholder);
       messagesContainer.scrollTop = messagesContainer.scrollHeight;
-      const bot_id = selectedBotNameElement.dataset.botId;
-      await sendMessage(bot_id, content);
+      try {
+        const result = await sendMessage(bot_id, content);
+        if (result?.data?.message) {
+          const assistantMessage = createMessageElement(result.data.message);
+          messagesContainer.appendChild(assistantMessage);
+          messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+      } catch (err) {
+        const messageText = err.message || 'Failed to send message.';
+        setStatus(messageText, 'danger');
+        placeholder.textContent = messageText;
+        placeholder.classList.add('message-error');
+        fetchMessagesAndRender(bot_id);
+        sendButton.disabled = false;
+        spinner.style.display = 'none';
+        return;
+      }
       textarea.value = '';
       textarea.style.height = "auto";
       fetchMessagesAndRender(bot_id);
@@ -217,7 +449,7 @@ function selectBotById(botId) {
 
 
 async function fetchBotsAndRender(preselectId = null) {
-  const response = await fetch("/api/bots");
+  const response = await fetch("/api/bots", { cache: "no-store" });
   if (!response.ok) {
     setStatus('Unable to load bots. Please refresh or log in again.', 'danger');
     return;
@@ -229,9 +461,15 @@ async function fetchBotsAndRender(preselectId = null) {
   if (!bots.length) {
     setStatus('No bots yet. Create one on the left.', 'info');
     renderBots([]);
+    if (isCompactBotsViewport()) {
+      setBotsMobilePane('roster');
+    }
   } else {
     setStatus('');
     renderBots(bots);
+    if (isCompactBotsViewport() && !selectedBotId && !preselectId) {
+      setBotsMobilePane('roster');
+    }
   }
   const requestedBotId = preselectId ?? getRequestedBotId();
   if (requestedBotId) {
@@ -242,6 +480,7 @@ async function fetchBotsAndRender(preselectId = null) {
 function renderBots(bots) {
   const botsContainer = document.querySelector('.bots-container');
   botsContainer.innerHTML = '';
+  renderBotsMobileSelect(botsCache);
   if (!bots.length) {
     const empty = document.createElement('div');
     empty.className = 'list-group-item text-muted';
@@ -255,6 +494,30 @@ function renderBots(bots) {
   }
 }
 
+function renderBotsMobileSelect(bots) {
+  const select = document.getElementById('bots-mobile-select');
+  if (!select) return;
+  select.innerHTML = '';
+
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = bots.length ? 'Select bot...' : 'No bots yet';
+  placeholder.disabled = true;
+  placeholder.selected = !selectedBotId;
+  select.appendChild(placeholder);
+
+  for (const bot of bots) {
+    const opt = document.createElement('option');
+    opt.value = bot.id;
+    opt.textContent = bot.name;
+    select.appendChild(opt);
+  }
+
+  if (selectedBotId) {
+    select.value = String(selectedBotId);
+  }
+}
+
 function createBotElement(bot) {
   const botElement = document.createElement('div');
   botElement.classList.add('list-group-item', 'bot-item');
@@ -262,13 +525,20 @@ function createBotElement(bot) {
   botElement.setAttribute('role', 'button');
   botElement.setAttribute('tabindex', '0');
 
+  const info = document.createElement('div');
+  info.className = 'bot-info';
+
   const nameElement = document.createElement('span');
   nameElement.className = 'bot-name';
   nameElement.textContent = bot.name;
 
   const metaElement = document.createElement('span');
-  metaElement.className = 'small text-muted';
-  metaElement.textContent = bot.gpt_model || 'model not set';
+  metaElement.className = 'bot-meta';
+  metaElement.textContent = bot.description || bot.gpt_model || 'Ready for the next turn';
+
+  const modelElement = document.createElement('span');
+  modelElement.className = 'bot-model';
+  modelElement.textContent = bot.gpt_model || (bot.enabled === false ? 'paused' : 'session');
 
   const actions = document.createElement('div');
   actions.className = 'bot-actions';
@@ -291,9 +561,15 @@ function createBotElement(bot) {
     if (!confirm(`Delete bot "${bot.name}"?`)) return;
     try {
       await deleteBot(bot.id);
-      botElement.remove();
-      botsCache = botsCache.filter(item => item.id !== bot.id);
-      updateCount(botsCache.length);
+      if (selectedBotId === bot.id) {
+        selectedBotId = null;
+        const mobileSelect = document.getElementById('bots-mobile-select');
+        if (mobileSelect) mobileSelect.value = '';
+        updateSelectedBotSummary(null);
+        const messagesContainer = document.querySelector('.messages-container');
+        if (messagesContainer) messagesContainer.innerHTML = '';
+      }
+      await fetchBotsAndRender();
       setStatus('Bot deleted.', 'success');
     } catch (err) {
       setStatus(err.message || 'Failed to delete bot.', 'danger');
@@ -303,26 +579,24 @@ function createBotElement(bot) {
   actions.appendChild(editButton);
   actions.appendChild(deleteButton);
 
-  botElement.appendChild(nameElement);
-  botElement.appendChild(metaElement);
+  info.appendChild(nameElement);
+  info.appendChild(metaElement);
+  info.appendChild(modelElement);
+  botElement.appendChild(info);
   botElement.appendChild(actions);
 
   const activate = () => {
-    const selectedBotNameElement = document.getElementById('selected-bot-name');
-    const selectedBotMeta = document.getElementById('selected-bot-meta');
     selectedBotId = bot.id;
-    selectedBotNameElement.innerText = bot.name;
-    selectedBotNameElement.setAttribute('data-bot-id', bot.id);
-    if (selectedBotMeta) {
-      selectedBotMeta.textContent = bot.description || bot.gpt_model || 'No description';
-    }
+    const mobileSelect = document.getElementById('bots-mobile-select');
+    if (mobileSelect) mobileSelect.value = String(bot.id);
+    updateSelectedBotSummary(bot);
     fetchMessagesAndRender(bot.id);
-    document.getElementById('send-message').removeAttribute('disabled');
-    document.getElementById('input-message').removeAttribute('disabled');
-    document.getElementById('input-message').placeholder = 'Enter to send, Shift+Enter for newline';
 
     document.querySelectorAll('.bot-item').forEach(item => item.classList.remove('active'));
     botElement.classList.add('active');
+    if (isCompactBotsViewport()) {
+      setBotsMobilePane('chat');
+    }
   };
 
   // Add click event listener to fetch and display messages
@@ -351,8 +625,16 @@ async function addBot(name, description, model) {
     },
     body: JSON.stringify(payload),
   });
-  const bot = await response.json();
+  let bot = {};
+  try {
+    bot = await response.json();
+  } catch (err) {
+    // non-JSON error (e.g., rate limit HTML/text)
+  }
   if (!response.ok) {
+    if (response.status === 429) {
+      throw new Error('Too many requests. Please wait a moment and try again.');
+    }
     throw new Error(bot.detail || bot.message || 'Failed to create bot');
   }
   return bot;
@@ -362,11 +644,14 @@ async function deleteBot(botId) {
   const response = await fetch(`/api/bots/${botId}`, {
     method: "DELETE",
   });
-  const bot = await response.json();
+  const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(bot.detail || bot.message || "Failed to delete bot");
+    throw new Error(payload.detail || payload.message || "Failed to delete bot");
   }
-  return bot;
+  if (payload.status && payload.status !== 'success') {
+    throw new Error(payload.message || "Failed to delete bot");
+  }
+  return payload;
 }
 
 
@@ -378,7 +663,10 @@ async function updateBot(botId, botData) {
     },
     body: JSON.stringify(botData),
   });
-  const bot = await response.json();
+  const bot = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(bot.detail || bot.message || 'Failed to update bot');
+  }
   return bot;
 }
 
@@ -410,24 +698,36 @@ async function sendMessage(bot_id, content) {
     },
     body: JSON.stringify({ content }),
   });
-  const message = await response.json();
+  const message = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    if (response.status === 429) {
+      throw new Error('Rate limited. Try again in a few seconds.');
+    }
+    throw new Error(message.detail || message.message || 'Failed to send message');
+  }
+  if (message.status && message.status !== 'success') {
+    throw new Error(message.message || 'Failed to send message');
+  }
   return message;
 }
 
 
 function createMessageElement(message) {
   const messageElement = document.createElement('div');
-  messageElement.className = 'message ' + message.source;
+  const sourceLabel = message.source === 'user' ? 'You' : message.source === 'assistant' ? 'Bot' : (message.source || 'System');
+  messageElement.className = `message ${message.source || 'assistant'}`;
   marked.setOptions({ mangle: false, headerIds: false });
 
-  const contentElement = document.createElement('p');
-  contentElement.className = 'message-content';
-  const messageWithTabsAndNewlinesReplaced = message.text.replace(/\t/g, "&nbsp;&nbsp;&nbsp;&nbsp;").replace(/\n/g, "<br/>");
-  const messageHTML = marked.marked(messageWithTabsAndNewlinesReplaced);
-  contentElement.innerHTML = messageHTML;
-  messageElement.appendChild(contentElement);
+  const sourceElement = document.createElement('span');
+  sourceElement.className = 'message-source';
+  sourceElement.textContent = sourceLabel;
 
-  const timestampElement = document.createElement('p');
+  const contentElement = document.createElement('span');
+  contentElement.className = 'message-content';
+  const text = message.text || message.content || '';
+  contentElement.innerHTML = renderMessageHtml(text);
+
+  const timestampElement = document.createElement('span');
   timestampElement.className = 'message-timestamp';
   timestampElement.innerText = message.created_at; // Changed from 'timestamp' to 'created_at'
 
@@ -435,12 +735,17 @@ function createMessageElement(message) {
   copyButton.className = 'copy-button';
   copyButton.textContent = 'Copy';
   copyButton.addEventListener('click', function() {
-    navigator.clipboard.writeText(message.text);
+    navigator.clipboard.writeText(text);
   });
 
-  messageElement.appendChild(timestampElement);
-  messageElement.appendChild(copyButton);
-  messageElement.appendChild(document.createElement('hr'));
+  const metaWrap = document.createElement('span');
+  metaWrap.className = 'message-meta';
+  metaWrap.appendChild(timestampElement);
+  metaWrap.appendChild(copyButton);
+
+  messageElement.appendChild(sourceElement);
+  messageElement.appendChild(contentElement);
+  messageElement.appendChild(metaWrap);
 
   return messageElement;
 }

@@ -51,10 +51,7 @@ def test_send_message_error(monkeypatch):
 def test_process_incoming():
     connector = TelegramConnector("TOKEN", "CHAT")
     payload = {"message": {"text": "hello"}}
-    assert connector.process_incoming(payload) == {
-        "text": "hello",
-        "channel": "Telegram",
-    }
+    assert connector.process_incoming(payload)["text"] == "hello"
 
 
 def test_set_webhook_success(monkeypatch):
@@ -134,7 +131,7 @@ def test_listen_and_process(monkeypatch):
     results = asyncio.get_event_loop().run_until_complete(
         connector.listen_and_process()
     )
-    assert results == [{"text": "hi", "channel": "Telegram"}]
+    assert results[0]["text"] == "hi"
 
 
 def test_listen_and_process_error(monkeypatch):

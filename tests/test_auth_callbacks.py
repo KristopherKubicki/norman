@@ -25,12 +25,19 @@ def test_google_callback_success(monkeypatch, test_app: TestClient, db: Session)
 
     monkeypatch.setattr(routes.requests, "post", fake_post)
     monkeypatch.setattr(
-        routes.jwt,
-        "decode",
-        lambda token, options=None: {"email": "g@example.com", "name": "GUser"},
+        routes,
+        "_verify_google_id_token",
+        lambda token, nonce: {"email": "g@example.com", "name": "GUser"},
     )
+    state = "state123"
+    nonce = "nonce123"
     test_app.cookies.clear()
-    resp = test_app.get("/auth/google/callback?code=abc", follow_redirects=False)
+    test_app.cookies.set(routes._oauth_cookie_name("google", "state"), state)
+    test_app.cookies.set(routes._oauth_cookie_name("google", "nonce"), nonce)
+    resp = test_app.get(
+        f"/auth/google/callback?code=abc&state={state}",
+        follow_redirects=False,
+    )
     assert resp.status_code == 303
     assert resp.cookies.get("access_token")
     assert crud.user.get_user_by_email(db, "g@example.com")
@@ -41,9 +48,16 @@ def test_google_callback_missing_email(monkeypatch, test_app: TestClient, db: Se
         return DummyResponse({"id_token": "tok"})
 
     monkeypatch.setattr(routes.requests, "post", fake_post)
-    monkeypatch.setattr(routes.jwt, "decode", lambda token, options=None: {})
+    monkeypatch.setattr(routes, "_verify_google_id_token", lambda token, nonce: {})
+    state = "state123"
+    nonce = "nonce123"
     test_app.cookies.clear()
-    resp = test_app.get("/auth/google/callback?code=abc", follow_redirects=False)
+    test_app.cookies.set(routes._oauth_cookie_name("google", "state"), state)
+    test_app.cookies.set(routes._oauth_cookie_name("google", "nonce"), nonce)
+    resp = test_app.get(
+        f"/auth/google/callback?code=abc&state={state}",
+        follow_redirects=False,
+    )
     assert resp.status_code == 400
 
 

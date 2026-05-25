@@ -7,6 +7,24 @@ import logging
 class Settings(BaseSettings):
     secret_key: str
     app_name: str
+    ui_theme: str = "default"
+    ui_available_themes: List[str] = [
+        "default",
+        "fluxbox",
+        "classic",
+        "graphite",
+        "terminal",
+        "colorblind",
+        "oceanic",
+        "sunset",
+        "mono",
+        "forest",
+        "neon",
+    ]
+    # Optional UI customization. These are stored as web paths under /static/...
+    ui_background_image_url: str = ""
+    ui_titlebar_image_url: str = ""
+    ui_ambient_backgrounds: bool = False
     debug: bool
     log_level: str = "INFO"
     api_version: str
@@ -202,6 +220,21 @@ class Settings(BaseSettings):
     openai_default_model: str = "gpt-5-mini"
     openai_available_models: List[str] = ["gpt-5-mini", "o3"]
     openai_max_tokens: int = 150
+    llm_primary_provider: str = "openai"
+    llm_primary_api_key: str = ""
+    llm_primary_base_url: str = ""
+    llm_primary_model: str = ""
+    llm_backup_provider: str = "disabled"
+    llm_backup_api_key: str = ""
+    llm_backup_base_url: str = ""
+    llm_backup_model: str = ""
+    llm_offline_provider: str = "disabled"
+    llm_offline_api_key: str = ""
+    llm_offline_base_url: str = ""
+    llm_offline_model: str = ""
+    llm_provider_timeout_seconds: int = 45
+    mcp_api_url: str = ""
+    mcp_api_key: str = ""
     google_client_id: str = ""
     google_client_secret: str = ""
     microsoft_client_id: str = ""
@@ -214,8 +247,8 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str
-    database_pool_size: int = 5
-    database_max_overflow: int = 10
+    database_pool_size: int = 20
+    database_max_overflow: int = 40
     database_pool_timeout: int = 30
     database_pool_recycle: int = 3600
 
@@ -224,6 +257,38 @@ class Settings(BaseSettings):
     port: int
     rate_limit_requests: int = 60
     rate_limit_window_seconds: int = 60
+
+    # Notifications
+    notify_email_enabled: bool = False
+    notify_email_to: str = ""
+    notify_webhook_enabled: bool = False
+    notify_webhook_url: str = ""
+    notify_digest_frequency: str = "daily"
+
+    # Connector defaults
+    connector_default_language: str = "en"
+    connector_default_channel: str = ""
+    connector_retry_attempts: int = 3
+    connector_timeout_seconds: int = 10
+
+    # Safety / execution controls
+    safety_execution_enabled: bool = True
+    safety_read_only: bool = False
+    safety_default_tmux_mode: str = "chat"
+    safety_tmux_send_timeout_seconds: int = 8
+    safety_kill_switch_level: int = 0
+    safety_provenance_enforce: bool = True
+    safety_shadow_rules_default: bool = True
+    safety_tmux_watchdog_autolock: bool = False
+    safety_budget_default_per_minute: int = 0
+    safety_budget_default_per_hour: int = 0
+    safety_budget_autolock: bool = True
+
+    # Routing controls
+    routing_ingest_only: bool = False
+
+    # Performance
+    cache_ttl_seconds: int = 60
 
     @validator("secret_key", pre=True)
     def validate_secret_key(cls, v):

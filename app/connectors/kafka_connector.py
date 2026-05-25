@@ -77,7 +77,9 @@ class KafkaConnector(BaseConnector):
                 await result
 
     async def process_incoming(self, message: str) -> str:
-        return message
+        text = message if isinstance(message, str) else str(message)
+        summary = f"kafka • {text}" if text else "kafka"
+        return {"text": text, "text_summary": summary}
 
     def is_connected(self) -> bool:
         """Return ``True`` if the client library is available."""

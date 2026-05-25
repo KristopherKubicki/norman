@@ -36,7 +36,20 @@ class GitterConnector(BaseConnector):
         return None
 
     async def process_incoming(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        return payload
+        if not isinstance(payload, dict):
+            return {"text": str(payload)}
+        text = payload.get("text") or payload.get("message") or ""
+        user = (payload.get("fromUser") or {}).get("username") or payload.get("user")
+        summary_parts = ["gitter"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {
+            "text": text,
+            "user": user,
+            "message_id": payload.get("id"),
+            "text_summary": summary,
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if the token can access the room."""

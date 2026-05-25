@@ -45,8 +45,33 @@ class FacebookMessengerConnector(BaseConnector):
         await asyncio.sleep(0)
 
     async def process_incoming(self, message):
-        """Return the incoming ``message`` payload."""
-        return message
+        """Normalize incoming Messenger webhook payloads."""
+        if not isinstance(message, dict):
+            return {"text": str(message)}
+
+        entry = (message.get("entry") or [{}])[0]
+        messaging = entry.get("messaging") or entry.get("messages") or []
+        event = messaging[0] if messaging else {}
+        msg = event.get("message") or {}
+        text = msg.get("text") or ""
+        sender = (event.get("sender") or {}).get("id")
+        recipient = (event.get("recipient") or {}).get("id")
+        timestamp = event.get("timestamp")
+        attachments = msg.get("attachments") or []
+
+        summary_parts = ["facebook"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+
+        return {
+            "text": text,
+            "sender": sender,
+            "recipient": recipient,
+            "timestamp": timestamp,
+            "attachments": attachments,
+            "text_summary": summary,
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if the page token is valid."""

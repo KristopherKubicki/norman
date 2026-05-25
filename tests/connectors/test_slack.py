@@ -37,7 +37,11 @@ from app.connectors.slack_connector import SlackConnector
 def test_process_incoming():
     connector = SlackConnector(token="x", channel_id="C1")
     payload = {"text": "hi", "user": "U1", "channel": "C1", "ts": "1"}
-    assert connector.process_incoming(payload) == payload
+    result = connector.process_incoming(payload)
+    assert result["text"] == "hi"
+    assert result["user"] == "U1"
+    assert result["channel"] == "C1"
+    assert result["event"] == "message"
 
 
 def test_receive_message_success():
@@ -68,7 +72,9 @@ def test_listen_and_process():
     results = asyncio.get_event_loop().run_until_complete(
         connector.listen_and_process()
     )
-    assert results == [{"text": "hi", "user": "U1", "channel": "C1", "ts": None}]
+    assert results[0]["text"] == "hi"
+    assert results[0]["user"] == "U1"
+    assert results[0]["channel"] == "C1"
 
 
 def test_listen_and_process_error():

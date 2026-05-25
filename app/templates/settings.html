@@ -1,0 +1,418 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="settings-page subpage-shell">
+  <div class="page-header subpage-header d-flex align-items-center justify-content-between mb-2">
+    <div>
+      <div class="subpage-eyebrow">Norman Menu</div>
+      <div class="subpage-title">Settings</div>
+      <div class="subpage-subtitle">Account keys, themes, and preferences.</div>
+    </div>
+    <div class="subpage-actions d-flex gap-2 flex-wrap">
+      <a class="btn btn-sm btn-outline-secondary" href="/bot/norman/">Norman</a>
+      <a class="btn btn-sm btn-outline-secondary" href="/bot/switchboard/">Switchboard lane</a>
+      <a class="btn btn-sm btn-outline-secondary" href="/dashboard.html?view=switchboard">Switchboard deck</a>
+    </div>
+  </div>
+  <div class="settings-mobile-nav d-lg-none" role="navigation" aria-label="Settings sections">
+    <button type="button" class="btn btn-sm btn-outline-secondary is-active" data-settings-jump data-target="settings-section-openai">Account</button>
+    <button type="button" class="btn btn-sm btn-outline-secondary" data-settings-jump data-target="settings-section-safety">Safety</button>
+    <button type="button" class="btn btn-sm btn-outline-secondary" data-settings-jump data-target="settings-section-appearance">Appearance</button>
+    <button type="button" class="btn btn-sm btn-outline-secondary" data-settings-jump data-target="settings-section-api">Integrations</button>
+    <button type="button" class="btn btn-sm btn-outline-secondary" data-settings-jump data-target="settings-section-notifications">Notify</button>
+    <button type="button" class="btn btn-sm btn-outline-secondary" data-settings-jump data-target="settings-section-performance">Perf</button>
+  </div>
+  <div class="settings-layout">
+  <div class="settings-stack settings-stack--primary">
+    <div class="card p-4 settings-section" id="settings-section-openai">
+      <div class="section-title mb-2">OpenAI</div>
+      {% if settings_message %}
+      <div class="alert alert-{{ settings_status if settings_status else 'info' }}" role="alert">
+        {{ settings_message }}
+      </div>
+      {% endif %}
+      <p class="text-muted small">
+        Update the OpenAI API key used for bot responses.
+      </p>
+      <form action="/settings/openai" method="post">
+        <div class="mb-3">
+          <label for="openai_api_key" class="form-label">OpenAI API Key</label>
+          <input
+            type="password"
+            id="openai_api_key"
+            name="openai_api_key"
+            class="form-control form-control-sm"
+            placeholder="sk-..."
+            required
+          />
+        </div>
+        <div class="d-flex align-items-center gap-2">
+          <button type="submit" class="btn btn-primary btn-sm">Save</button>
+          {% if openai_configured %}
+          <span class="badge bg-success">Configured</span>
+          {% else %}
+          <span class="badge bg-warning text-dark">Missing</span>
+          {% endif %}
+        </div>
+      </form>
+      <div class="small text-muted mt-3">
+        This updates <code>config.yaml</code> on disk and takes effect immediately.
+      </div>
+    <div class="card p-4 mt-4">
+      <div class="section-title mb-2">SSO Providers</div>
+      <p class="text-muted small mb-3">
+        Configure Google and Microsoft OAuth client credentials once. Connector SSO buttons use these.
+        If you saw <code>Error 401: invalid_client</code>, these values are missing or incorrect.
+      </p>
+      <form action="/settings/sso" method="post">
+        <div class="row g-2">
+          <div class="col-md-7">
+            <label class="form-label" for="google_client_id">Google Client ID</label>
+            <input type="text" id="google_client_id" name="google_client_id" class="form-control form-control-sm" placeholder="...apps.googleusercontent.com">
+          </div>
+          <div class="col-md-5">
+            <label class="form-label" for="google_client_secret">Google Client Secret</label>
+            <input type="password" id="google_client_secret" name="google_client_secret" class="form-control form-control-sm" placeholder="Leave blank to keep existing">
+          </div>
+          <div class="col-md-7">
+            <label class="form-label" for="microsoft_client_id">Microsoft Client ID</label>
+            <input type="text" id="microsoft_client_id" name="microsoft_client_id" class="form-control form-control-sm" placeholder="Application (client) ID">
+          </div>
+          <div class="col-md-5">
+            <label class="form-label" for="microsoft_client_secret">Microsoft Client Secret</label>
+            <input type="password" id="microsoft_client_secret" name="microsoft_client_secret" class="form-control form-control-sm" placeholder="Leave blank to keep existing">
+          </div>
+        </div>
+        <div class="d-flex align-items-center gap-2 mt-2">
+          <button type="submit" class="btn btn-primary btn-sm">Save</button>
+          {% if google_sso_enabled %}
+          <span class="badge bg-success">Google configured</span>
+          {% else %}
+          <span class="badge bg-warning text-dark">Google missing</span>
+          {% endif %}
+          {% if microsoft_sso_enabled %}
+          <span class="badge bg-success">Microsoft configured</span>
+          {% else %}
+          <span class="badge bg-warning text-dark">Microsoft missing</span>
+          {% endif %}
+        </div>
+      </form>
+      <div class="small text-muted mt-2">
+        The redirect URIs should include <code>/api/v1/connectors/oauth/callback/google</code> and <code>/api/v1/connectors/oauth/callback/microsoft</code>.
+      </div>
+    </div>
+
+    </div>
+
+
+
+    <div class="card p-4 mt-4 settings-section" id="settings-section-safety">
+      <div class="section-title mb-2">Safety Controls</div>
+      <p class="text-muted small mb-3">
+        Execution-capable connectors (for example, <code>tmux</code>) are gated behind deterministic policy checks and an approval queue.
+        These toggles are global and take effect immediately.
+      </p>
+      <form action="/settings/safety" method="post">
+        <div class="row g-2">
+          <div class="col-md-6">
+            <label class="form-label" for="safety_kill_switch_level">Kill switch level</label>
+            <select id="safety_kill_switch_level" name="safety_kill_switch_level" class="form-select form-select-sm">
+              <option value="0" {% if settings.safety_kill_switch_level == 0 %}selected{% endif %}>L0 - normal</option>
+              <option value="1" {% if settings.safety_kill_switch_level == 1 %}selected{% endif %}>L1 - action hold</option>
+              <option value="2" {% if settings.safety_kill_switch_level == 2 %}selected{% endif %}>L2 - command hold</option>
+              <option value="3" {% if settings.safety_kill_switch_level == 3 %}selected{% endif %}>L3 - quarantine</option>
+              <option value="4" {% if settings.safety_kill_switch_level == 4 %}selected{% endif %}>L4 - read only</option>
+              <option value="5" {% if settings.safety_kill_switch_level == 5 %}selected{% endif %}>L5 - hard kill</option>
+            </select>
+            <div class="small text-muted mt-1">
+              Progressive failsafe ladder. L5 locks tmux connectors and blocks execution globally.
+            </div>
+          </div>
+        </div>
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" id="safety_execution_enabled" name="safety_execution_enabled" {% if settings.safety_execution_enabled %}checked{% endif %}>
+          <label class="form-check-label" for="safety_execution_enabled">Enable execution (global)</label>
+        </div>
+        <div class="small text-muted mt-1">
+          When disabled, all execution requests become approvals and nothing is executed.
+        </div>
+        <div class="form-check form-switch mt-3">
+          <input class="form-check-input" type="checkbox" id="safety_read_only" name="safety_read_only" {% if settings.safety_read_only %}checked{% endif %}>
+          <label class="form-check-label" for="safety_read_only">Read-only mode</label>
+        </div>
+        <div class="small text-muted mt-1">
+          If enabled, Norman will never execute commands even after approval (useful for demos and audits).
+        </div>
+        <div class="form-check form-switch mt-3">
+          <input class="form-check-input" type="checkbox" id="routing_ingest_only" name="routing_ingest_only" {% if settings.routing_ingest_only %}checked{% endif %}>
+          <label class="form-check-label" for="routing_ingest_only">Ingest-only mode (no actions)</label>
+        </div>
+        <div class="small text-muted mt-1">
+          Incoming events are logged, but routing jobs (bots and outbound sends) are not executed.
+        </div>
+        <div class="form-check form-switch mt-3">
+          <input class="form-check-input" type="checkbox" id="safety_provenance_enforce" name="safety_provenance_enforce" {% if settings.safety_provenance_enforce %}checked{% endif %}>
+          <label class="form-check-label" for="safety_provenance_enforce">Block untrusted provenance actions</label>
+        </div>
+        <div class="small text-muted mt-1">
+          If a signal is tagged <code>untrusted</code>, Norman logs and routes context but suppresses outbound actions.
+        </div>
+        <div class="form-check form-switch mt-3">
+          <input class="form-check-input" type="checkbox" id="safety_shadow_rules_default" name="safety_shadow_rules_default" {% if settings.safety_shadow_rules_default %}checked{% endif %}>
+          <label class="form-check-label" for="safety_shadow_rules_default">New routing rules start in shadow mode</label>
+        </div>
+        <div class="small text-muted mt-1">
+          New rules are created inactive by default so they can be simulated first.
+        </div>
+        <div class="form-check form-switch mt-3">
+          <input class="form-check-input" type="checkbox" id="safety_tmux_watchdog_autolock" name="safety_tmux_watchdog_autolock" {% if settings.safety_tmux_watchdog_autolock %}checked{% endif %}>
+          <label class="form-check-label" for="safety_tmux_watchdog_autolock">tmux watchdog auto-lock</label>
+        </div>
+        <div class="small text-muted mt-1">
+          Automatically locks managed tmux connectors when an expected session disappears.
+        </div>
+        <div class="row g-2 mt-2">
+          <div class="col-md-4">
+            <label class="form-label" for="safety_budget_default_per_minute">Default budget / minute</label>
+            <input type="number" min="0" step="1" class="form-control form-control-sm" id="safety_budget_default_per_minute" name="safety_budget_default_per_minute" value="{{ settings.safety_budget_default_per_minute }}">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label" for="safety_budget_default_per_hour">Default budget / hour</label>
+            <input type="number" min="0" step="1" class="form-control form-control-sm" id="safety_budget_default_per_hour" name="safety_budget_default_per_hour" value="{{ settings.safety_budget_default_per_hour }}">
+          </div>
+        </div>
+        <div class="form-check form-switch mt-2">
+          <input class="form-check-input" type="checkbox" id="safety_budget_autolock" name="safety_budget_autolock" {% if settings.safety_budget_autolock %}checked{% endif %}>
+          <label class="form-check-label" for="safety_budget_autolock">Auto-lock tmux when budget trips</label>
+        </div>
+        <div class="small text-muted mt-1">
+          Per-connector <code>policy.budget_per_minute</code> / <code>policy.budget_per_hour</code> override these defaults.
+        </div>
+        <div class="row g-2 mt-3">
+          <div class="col-md-6">
+            <label class="form-label" for="safety_default_tmux_mode">Default tmux policy mode</label>
+            <select id="safety_default_tmux_mode" name="safety_default_tmux_mode" class="form-select form-select-sm">
+              <option value="chat" {% if settings.safety_default_tmux_mode == "chat" %}selected{% endif %}>chat</option>
+              <option value="shell" {% if settings.safety_default_tmux_mode == "shell" %}selected{% endif %}>shell</option>
+            </select>
+            <div class="small text-muted mt-1">
+              <code>chat</code> is for sending natural language to an agent pane. <code>shell</code> is stricter and treats the first token as a command verb.
+            </div>
+          </div>
+        </div>
+        <div class="mt-3">
+          <button type="submit" class="btn btn-primary btn-sm">Save</button>
+        </div>
+      </form>
+    </div>
+    <div class="card p-4 mt-4 settings-section" id="settings-section-appearance">
+      <div class="section-title mb-2">Appearance</div>
+      <form action="/settings/theme" method="post" class="mb-3">
+        <label for="themeSelectSettings" class="form-label">Theme</label>
+        <div class="d-flex gap-2 align-items-center">
+          <select id="themeSelectSettings" name="ui_theme" class="form-select form-select-sm theme-select">
+            {% for theme in settings.ui_available_themes %}
+            <option value="{{ theme }}">{{ theme|replace("_", " ")|title }}</option>
+            {% endfor %}
+          </select>
+          <button type="submit" class="btn btn-primary btn-sm">Save</button>
+        </div>
+        <div class="small text-muted mt-2">Sets the default palette for this browser.</div>
+      </form>
+      <div class="form-check form-switch">
+        <input class="form-check-input theme-toggle" type="checkbox" id="themeToggleSettings">
+        <label class="form-check-label" for="themeToggleSettings">Dark mode</label>
+      </div>
+      <div class="small text-muted mt-2">Quick toggle between light and dark.</div>
+    </div>
+
+    <div class="card p-4 mt-4 settings-section" id="settings-section-background">
+      <div class="section-title mb-2">Background</div>
+      <p class="text-muted small mb-3">
+        Upload an image for the app background or the title bar. Ambient mode animates the background layer.
+      </p>
+
+      <div class="row g-3 mb-3">
+        <div class="col-md-6">
+          <div class="small text-muted">Current background</div>
+          {% if settings.ui_background_image_url %}
+          <img class="settings-image-preview" src="{{ settings.ui_background_image_url }}" alt="Background preview">
+          {% else %}
+          <div class="small">None</div>
+          {% endif %}
+        </div>
+        <div class="col-md-6">
+          <div class="small text-muted">Current title bar image</div>
+          {% if settings.ui_titlebar_image_url %}
+          <img class="settings-image-preview settings-image-preview--small" src="{{ settings.ui_titlebar_image_url }}" alt="Title bar preview">
+          {% else %}
+          <div class="small">None</div>
+          {% endif %}
+        </div>
+      </div>
+
+      <form action="/settings/background/upload" method="post" enctype="multipart/form-data" class="mb-3">
+        <div class="row g-2 align-items-end">
+          <div class="col-md-8">
+            <label class="form-label" for="background_file">Image</label>
+            <input class="form-control form-control-sm" type="file" id="background_file" name="file" accept="image/png,image/jpeg,image/webp" required>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label" for="background_target">Apply to</label>
+            <select id="background_target" name="target" class="form-select form-select-sm">
+              <option value="background">Background</option>
+              <option value="titlebar">Title bar</option>
+            </select>
+          </div>
+        </div>
+        <div class="mt-2 d-flex gap-2">
+          <button type="submit" class="btn btn-primary btn-sm">Upload</button>
+        </div>
+        <div class="small text-muted mt-2">Saved under <code>app/static/user_media/</code> and referenced from <code>config.yaml</code>.</div>
+      </form>
+
+      <form action="/settings/background/ambient" method="post" class="mb-2">
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" id="ui_ambient_backgrounds" name="ui_ambient_backgrounds" {% if settings.ui_ambient_backgrounds %}checked{% endif %}>
+          <label class="form-check-label" for="ui_ambient_backgrounds">Ambient backgrounds</label>
+        </div>
+        <button type="submit" class="btn btn-primary btn-sm mt-2">Save</button>
+        <button type="submit" class="btn btn-outline-secondary btn-sm mt-2 ms-2" formaction="/settings/notifications/test" formmethod="post" name="notifications_test" value="1">Send Test</button>
+
+      </form>
+
+      <form action="/settings/background/clear" method="post" class="d-flex gap-2">
+        <input type="hidden" name="target" value="background">
+        <button type="submit" class="btn btn-outline-secondary btn-sm">Clear background</button>
+      </form>
+      <form action="/settings/background/clear" method="post" class="d-flex gap-2 mt-2">
+        <input type="hidden" name="target" value="titlebar">
+        <button type="submit" class="btn btn-outline-secondary btn-sm">Clear title bar</button>
+      </form>
+    </div>
+
+  </div>
+
+  <div class="settings-stack settings-stack--secondary">
+    <div class="card p-4 settings-section" id="settings-section-api">
+      <div class="section-title mb-2">API Keys & Models</div>
+      <form action="/settings/api-keys" method="post">
+        <div class="row g-2">
+          <div class="col-md-8">
+            <label class="form-label" for="mcp_api_url">MCP API URL</label>
+            <input type="text" id="mcp_api_url" name="mcp_api_url" class="form-control form-control-sm" value="{{ settings.mcp_api_url }}">
+          </div>
+          <div class="col-md-4">
+            <label class="form-label" for="mcp_api_key">MCP API Key</label>
+            <input type="password" id="mcp_api_key" name="mcp_api_key" class="form-control form-control-sm" value="{{ settings.mcp_api_key }}">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label" for="openai_default_model">Default Model</label>
+            <input type="text" id="openai_default_model" name="openai_default_model" class="form-control form-control-sm" value="{{ settings.openai_default_model }}">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label" for="openai_max_tokens">Max Tokens</label>
+            <input type="number" id="openai_max_tokens" name="openai_max_tokens" class="form-control form-control-sm" value="{{ settings.openai_max_tokens }}">
+          </div>
+        </div>
+        <div class="mt-2">
+          <button type="submit" class="btn btn-primary btn-sm">Save</button>
+        </div>
+      </form>
+      <div class="small text-muted mt-2">Stored in <code>config.yaml</code>. Takes effect immediately.</div>
+    </div>
+
+    <div class="card p-4 mt-4 settings-section" id="settings-section-notifications">
+      <div class="section-title mb-2">Notifications</div>
+      <form action="/settings/notifications" method="post">
+        <div class="form-check form-switch mb-2">
+          <input class="form-check-input" type="checkbox" id="notify_email_enabled" name="notify_email_enabled" {% if settings.notify_email_enabled %}checked{% endif %}>
+          <label class="form-check-label" for="notify_email_enabled">Email notifications</label>
+        </div>
+        <div class="mb-2">
+          <label class="form-label" for="notify_email_to">Email to</label>
+          <input type="email" id="notify_email_to" name="notify_email_to" class="form-control form-control-sm" value="{{ settings.notify_email_to }}">
+        </div>
+        <div class="form-check form-switch mb-2">
+          <input class="form-check-input" type="checkbox" id="notify_webhook_enabled" name="notify_webhook_enabled" {% if settings.notify_webhook_enabled %}checked{% endif %}>
+          <label class="form-check-label" for="notify_webhook_enabled">Webhook notifications</label>
+        </div>
+        <div class="mb-2">
+          <label class="form-label" for="notify_webhook_url">Webhook URL</label>
+          <input type="text" id="notify_webhook_url" name="notify_webhook_url" class="form-control form-control-sm" value="{{ settings.notify_webhook_url }}">
+        </div>
+        <div class="mb-2">
+          <label class="form-label" for="notify_digest_frequency">Digest frequency</label>
+          <select id="notify_digest_frequency" name="notify_digest_frequency" class="form-select form-select-sm">
+            <option value="hourly" {% if settings.notify_digest_frequency == "hourly" %}selected{% endif %}>Hourly</option>
+            <option value="daily" {% if settings.notify_digest_frequency == "daily" %}selected{% endif %}>Daily</option>
+            <option value="weekly" {% if settings.notify_digest_frequency == "weekly" %}selected{% endif %}>Weekly</option>
+            <option value="off" {% if settings.notify_digest_frequency == "off" %}selected{% endif %}>Off</option>
+          </select>
+        </div>
+        <button type="submit" class="btn btn-primary btn-sm mt-2">Save</button>
+      </form>
+    </div>
+
+    <div class="card p-4 mt-4 settings-section" id="settings-section-connectors">
+      <div class="section-title mb-2">Connector Defaults</div>
+      <form action="/settings/connectors" method="post">
+        <div class="row g-2">
+          <div class="col-md-4">
+            <label class="form-label" for="connector_default_language">Default language</label>
+            <input type="text" id="connector_default_language" name="connector_default_language" class="form-control form-control-sm" value="{{ settings.connector_default_language }}">
+          </div>
+          <div class="col-md-8">
+            <label class="form-label" for="connector_default_channel">Default channel</label>
+            <input type="text" id="connector_default_channel" name="connector_default_channel" class="form-control form-control-sm" value="{{ settings.connector_default_channel }}">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label" for="connector_retry_attempts">Retry attempts</label>
+            <input type="number" id="connector_retry_attempts" name="connector_retry_attempts" class="form-control form-control-sm" value="{{ settings.connector_retry_attempts }}">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label" for="connector_timeout_seconds">Timeout (sec)</label>
+            <input type="number" id="connector_timeout_seconds" name="connector_timeout_seconds" class="form-control form-control-sm" value="{{ settings.connector_timeout_seconds }}">
+          </div>
+        </div>
+        <button type="submit" class="btn btn-primary btn-sm mt-2">Save</button>
+      </form>
+    </div>
+
+    <div class="card p-4 mt-4 settings-section" id="settings-section-performance">
+      <div class="section-title mb-2">Performance</div>
+      <form action="/settings/performance" method="post">
+        <div class="row g-2">
+          <div class="col-md-6">
+            <label class="form-label" for="rate_limit_requests">Rate limit requests</label>
+            <input type="number" id="rate_limit_requests" name="rate_limit_requests" class="form-control form-control-sm" value="{{ settings.rate_limit_requests }}">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label" for="rate_limit_window_seconds">Rate limit window (sec)</label>
+            <input type="number" id="rate_limit_window_seconds" name="rate_limit_window_seconds" class="form-control form-control-sm" value="{{ settings.rate_limit_window_seconds }}">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label" for="cache_ttl_seconds">Cache TTL (sec)</label>
+            <input type="number" id="cache_ttl_seconds" name="cache_ttl_seconds" class="form-control form-control-sm" value="{{ settings.cache_ttl_seconds }}">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label" for="database_pool_size">DB pool size</label>
+            <input type="number" id="database_pool_size" name="database_pool_size" class="form-control form-control-sm" value="{{ settings.database_pool_size }}">
+          </div>
+          <div class="col-md-6">
+            <label class="form-label" for="database_max_overflow">DB max overflow</label>
+            <input type="number" id="database_max_overflow" name="database_max_overflow" class="form-control form-control-sm" value="{{ settings.database_max_overflow }}">
+          </div>
+        </div>
+        <button type="submit" class="btn btn-primary btn-sm mt-2">Save</button>
+        <div class="small text-muted mt-2">Some changes require a server restart.</div>
+      </form>
+    </div>
+  </div>
+</div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="/static/js/settings.js" defer></script>
+{% endblock %}

@@ -1,0 +1,14 @@
+[Unit]
+Description=PhoneOps Switchboard BBS watcher
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/root/.config/phoneops/switchboard.env
+ExecStart=/usr/bin/python3 /usr/local/lib/switchboard-bbs/switchboard_bbs_watch.py --state-dir /var/lib/phoneops/switchboard-bbs --poll-secs 15
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

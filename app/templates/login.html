@@ -1,18 +1,31 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="container mt-5" style="max-width: 400px;">
-    <form action="/login" method="post" class="card p-4 shadow-sm">
-        <h1 class="h4 mb-3 text-center">Login</h1>
+<section class="norman-auth-shell">
+    <div class="norman-auth-shell__brand">
+        <span class="brand-mark">N</span>
+        <span class="brand-copy">
+            <span class="brand-title">Norman</span>
+            <span class="brand-sub">Control Plane Sign In</span>
+        </span>
+    </div>
+    <form action="/login" method="post" class="norman-auth-card">
+        <div class="norman-auth-card__eyebrow">Gold shell</div>
+        <h1 class="norman-auth-card__title">Sign in to Norman</h1>
+        <p class="norman-auth-card__copy">Use the main Norman front door first. Directory, pipeline, and settings stay under the lower deck once you are in.</p>
         <div class="mb-3">
-            <input type="email" class="form-control" name="username" placeholder="Email" required>
+            <input type="email" class="form-control norman-auth-card__input" name="username" placeholder="Email" required>
         </div>
         <div class="mb-3">
-            <input type="password" class="form-control" name="password" placeholder="Password" required>
+            <input type="password" class="form-control norman-auth-card__input" name="password" placeholder="Password" required>
         </div>
-        <button type="submit" class="btn btn-primary w-100">Login</button>
+        <button type="submit" class="btn btn-primary w-100 norman-auth-card__submit">Login</button>
         <hr class="my-3">
-        <a href="/auth/google/login" class="btn btn-outline-danger w-100 mb-2">Sign in with Google</a>
-        <a href="/auth/microsoft/login" class="btn btn-outline-primary w-100">Sign in with Microsoft</a>
+        {% if google_sso_enabled %}
+        <a href="/auth/google/login" class="btn btn-outline-danger w-100 mb-2 norman-auth-card__provider">Sign in with Google</a>
+        {% endif %}
+        {% if microsoft_sso_enabled %}
+        <a href="/auth/microsoft/login" class="btn btn-outline-primary w-100 norman-auth-card__provider">Sign in with Microsoft</a>
+        {% endif %}
     </form>
-</div>
+</section>
 {% endblock %}
