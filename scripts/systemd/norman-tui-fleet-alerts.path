@@ -1,0 +1,9 @@
+[Unit]
+Description=Run Norman TUI fleet alert policy when doctor state changes
+
+[Path]
+PathChanged=/home/kristopher/.local/state/norman/tui-fleet-doctor.json
+Unit=norman-tui-fleet-alerts.service
+
+[Install]
+WantedBy=multi-user.target

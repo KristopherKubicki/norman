@@ -24,6 +24,19 @@ def test_registry_loader_only_includes_tui_service_kinds(
     tmp_path: Path, monkeypatch
 ) -> None:
     module = _load_scorecard(monkeypatch)
+
+    assert module.DEFAULT_HEADSCALE_RESOLVER == "100.64.0.5"
+    assert module.DEFAULT_TAILSCALE_RESOLVER == "100.100.100.100"
+    assert module.DEFAULT_RESOLVER_PROFILE == "tailscale"
+    assert module.RESOLVER_PROFILES == {
+        "headscale": "100.64.0.5",
+        "tailscale": "100.100.100.100",
+    }
+    assert module.FRONTDOOR_PROFILES == {
+        "headscale": "192.168.2.241",
+        "tailscale": "100.103.34.17",
+    }
+
     registry = tmp_path / "registry.yaml"
     registry.write_text(
         """
@@ -59,7 +72,7 @@ services:
 
     items = module.load_registry_items(registry)
 
-    assert {item.slug for item in items} == {"active-game", "ops", "switchboard"}
+    assert {item.slug for item in items} == {"active-game", "ops"}
 
 
 def test_db_loader_requires_explicit_web_or_collector_console(
@@ -107,6 +120,33 @@ def test_db_loader_requires_explicit_web_or_collector_console(
                 "web_url": "https://web-lane.home.arpa/",
             },
         ),
+        (
+            "Console - Publisher",
+            "tmux:publisher",
+            {
+                "collector_url": "http://publisher.local:8788/",
+                "session": "publisher",
+                "target": "publisher:0.0",
+            },
+        ),
+        (
+            "Console - Subprime",
+            "tmux:norman-bot-prime",
+            {
+                "collector_url": "http://subprime.local:8788/",
+                "session": "subprime",
+                "target": "subprime:0.0",
+            },
+        ),
+        (
+            "Console - Switchboard",
+            "tmux:switchboard",
+            {
+                "collector_url": "http://switchboard.local:8788/",
+                "session": "switchboard",
+                "target": "switchboard:0.0",
+            },
+        ),
     ]
     for idx, (channel_name, connector_name, config) in enumerate(rows, start=1):
         con.execute(
@@ -123,3 +163,188 @@ def test_db_loader_requires_explicit_web_or_collector_console(
     items = module.load_db_items(db_path)
 
     assert {item.slug for item in items} == {"bot-lane", "web-lane"}
+
+
+def test_console_link_token_paths_use_active_home_and_env_override(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _load_scorecard(monkeypatch)
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("NORMAN_CONSOLE_LINK_PATHS", raising=False)
+
+    paths = module.console_link_token_paths()
+
+    assert paths[0] == home / ".codex-work" / "web-bridge" / "console_links.json"
+    assert paths[1] == home / ".codex-bot-prime" / "web-bridge" / "console_links.json"
+    assert module.DEFAULT_OPERATOR_CONSOLE_LINK_PATHS[0] in paths
+
+    override_a = tmp_path / "a.json"
+    override_b = tmp_path / "b.json"
+    monkeypatch.setenv(
+        "NORMAN_CONSOLE_LINK_PATHS",
+        f"{override_a}{module.os.pathsep}{override_b}",
+    )
+
+    assert module.console_link_token_paths() == [override_a, override_b]
+
+
+def test_load_tokens_from_console_links_indexes_all_console_url_shapes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _load_scorecard(monkeypatch)
+    path = tmp_path / "console_links.json"
+    path.write_text(
+        json.dumps(
+            {
+                "links": [
+                    {
+                        "url": "https://phone.home.arpa/?token=phone-token",
+                        "lan_url": "http://192.168.2.146:8790/?token=lan-token",
+                        "tailnet_url": "https://phone.tail.ts.net/?token=tail-token",
+                    },
+                    {
+                        "url": "https://missing-token.home.arpa/",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    tokens = module._load_tokens_from_console_links([path])
+
+    assert tokens["phone.home.arpa"] == "phone-token"
+    assert tokens["192.168.2.146:8790"] == "lan-token"
+    assert tokens["phone.tail.ts.net"] == "tail-token"
+    assert "missing-token.home.arpa" not in tokens
+
+
+def test_check_authenticated_status_uses_visible_status_without_token(
+    monkeypatch,
+) -> None:
+    module = _load_scorecard(monkeypatch)
+    item = module.FleetItem(
+        slug="studio",
+        label="Camera Studio",
+        source="registry",
+        collector_url="http://studio.local:8795/",
+    )
+    monkeypatch.setattr(
+        module,
+        "fetch_console_status",
+        lambda *args, **kwargs: {"reachable": True, "state": "ok"},
+    )
+
+    result, status = module.check_authenticated_status(item)
+
+    assert result.ok is True
+    assert result.score == 12
+    assert result.status == "visible-no-token"
+    assert status["state"] == "ok"
+
+
+def test_check_authenticated_status_still_reports_missing_when_no_token_unreachable(
+    monkeypatch,
+) -> None:
+    module = _load_scorecard(monkeypatch)
+    item = module.FleetItem(
+        slug="studio",
+        label="Camera Studio",
+        source="registry",
+        collector_url="http://studio.local:8795/",
+    )
+    monkeypatch.setattr(
+        module,
+        "fetch_console_status",
+        lambda *args, **kwargs: {"reachable": False},
+    )
+
+    result, status = module.check_authenticated_status(item)
+
+    assert result.ok is False
+    assert result.score == 0
+    assert result.status == "missing-token"
+    assert status == {}
+
+
+def test_scorecard_surfaces_drift_and_usage_signals(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _load_scorecard(monkeypatch)
+    item = module.FleetItem(
+        slug="control-plane",
+        label="Control Plane",
+        source="registry",
+        collector_url="http://control-plane.local:8788/",
+        web_url="https://cp.kris.openbrand.com/",
+        token="demo-token",
+        route_hosts=[],
+    )
+    status = {
+        "reachable": True,
+        "state": "ok",
+        "pending": False,
+        "queue_depth": 0,
+        "last_error": "",
+        "drift_assessment": {
+            "enabled": True,
+            "tone": "alert",
+            "summary": "Power checkpoint",
+            "mission_drift": "cross_lane",
+            "context_drift": "possibly_stale",
+            "scope_drift": "over_budget",
+            "power_drift": ["key", "sword"],
+        },
+        "usage": {
+            "last_24h": {"total_tokens": 250_000, "turns": 4},
+            "current_thread": {"total_tokens": 180_000, "turns": 2},
+            "billing": {
+                "sparkline": [10_000, 40_000, 250_000],
+                "tag_health": {"state": "ok"},
+                "last_24h_estimate": {"configured": False},
+            },
+        },
+    }
+
+    monkeypatch.setattr(
+        module,
+        "check_collector",
+        lambda item: module.CheckResult(True, 20, 20, "ok", "200"),
+    )
+    monkeypatch.setattr(
+        module,
+        "check_authenticated_status",
+        lambda item: (
+            module.CheckResult(True, 20, 20, "ok", "ok"),
+            status,
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "check_frontdoor",
+        lambda item: module.CheckResult(True, 15, 15, "ok", "200"),
+    )
+    monkeypatch.setattr(
+        module,
+        "check_dns",
+        lambda item, expected, resolver: module.CheckResult(True, 15, 15, "ok", "ok"),
+    )
+    monkeypatch.setattr(
+        module,
+        "check_persistence",
+        lambda item, path: module.CheckResult(True, 10, 10, "ok", "ok"),
+    )
+
+    row = module.score_item(item, {}, "100.100.100.100", tmp_path / "hosts.caddy")
+    markdown = module.render_markdown([row])
+
+    assert row.drift.status == "alert"
+    assert "mission=cross lane" in row.drift.detail
+    assert "power=key+sword" in row.drift.detail
+    assert row.usage.status == "alert"
+    assert "250K tok" in row.usage.detail
+    assert "burn=" in row.usage.detail
+    assert "| Score | Grade | TUI | Runtime | Drift | Tokens |" in markdown
+    assert "drift: Power checkpoint" in markdown
+    assert "usage: 250K tok" in markdown

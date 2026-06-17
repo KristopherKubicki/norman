@@ -16,6 +16,21 @@ Default operating posture:
   state changes.
 - Never publish from Hal. Diamond Roc's canonical runtime is Toy Box only.
 
+Emerald Canopy execution policy:
+- Use connected mode as the default for Diamond Roc service work because this
+  lane may need local repo inspection, Toy Box service state, routing context,
+  cloud-control coordination, and Evergreen runbooks.
+- Use air_gapped mode only for local repo-only edits under `/opt/diamond-roc`
+  where no network, deploy, publish, or external state change is needed.
+- Use deploy mode before public routing, publishing, production data mutation,
+  credential rotation, service restarts, billing/quota changes, destructive
+  actions, or irreversible actions.
+- Use benchmark mode only when comparing model behavior for Diamond Roc code or
+  operational workflows. Each run must log route, model, token use, estimated
+  cost, elapsed time, outcome, and artifacts.
+- Follow repo AGENTS.md first. Never revert unrelated user changes. List tests
+  run, skipped checks, changed files, and residual risk.
+
 Escalation points:
 - Ask before changing public routing, deleting assets, rotating credentials,
   altering billing/quotas, publishing externally, or touching unrelated

@@ -1,0 +1,692 @@
+[
+  {
+    "slug": "norman",
+    "pattern": "prime-orbit-weave",
+    "group": "norman",
+    "colors": [
+      "#5fd2c4",
+      "#7b8dff",
+      "#d8b25b"
+    ],
+    "font": "Poppins + Bahnschrift",
+    "flair": "prime double halo + gold rail",
+    "angle": 12,
+    "cross": 102,
+    "grain": 18,
+    "cross_grain": 41,
+    "glow": [
+      24,
+      9
+    ],
+    "reason": "one Norman identity; prime desk gets extra orbit, weave, and gold trim",
+    "mark": "N1",
+    "texture_alpha": 0.5
+  },
+  {
+    "slug": "housebot",
+    "pattern": "ledger-plaid",
+    "group": "personal",
+    "colors": [
+      "#8fcfb8",
+      "#7bb4dc",
+      "#e4bc74"
+    ],
+    "font": "IBM Plex Sans",
+    "flair": "soft inset",
+    "angle": 0,
+    "cross": 90,
+    "grain": 24,
+    "cross_grain": 38,
+    "glow": [
+      30,
+      12
+    ],
+    "reason": "household ledger plaid with calm domestic warmth",
+    "mark": "HB",
+    "texture_alpha": 0.4
+  },
+  {
+    "slug": "eyebat",
+    "pattern": "scan-noise",
+    "group": "personal",
+    "colors": [
+      "#c2a3ff",
+      "#7dd8f1",
+      "#e6bc68"
+    ],
+    "font": "IBM Plex Mono",
+    "flair": "scan corners",
+    "angle": 128,
+    "cross": 38,
+    "grain": 17,
+    "cross_grain": 52,
+    "glow": [
+      76,
+      13
+    ],
+    "reason": "manages Glimpser visual scan work",
+    "mark": "EYE",
+    "texture_alpha": 0.43
+  },
+  {
+    "slug": "castle",
+    "pattern": "stone-course",
+    "group": "personal",
+    "colors": [
+      "#d89b88",
+      "#c17aa3",
+      "#d8b25b"
+    ],
+    "font": "Georgia + IBM Plex Sans",
+    "flair": "masonry frame",
+    "angle": 90,
+    "cross": 0,
+    "grain": 34,
+    "cross_grain": 18,
+    "glow": [
+      18,
+      16
+    ],
+    "reason": "stone-course masonry reads fortified without becoming heavy",
+    "mark": "CST",
+    "texture_alpha": 0.42
+  },
+  {
+    "slug": "diamond-roc",
+    "pattern": "facet-lattice",
+    "group": "personal",
+    "colors": [
+      "#9ed7ff",
+      "#c9a9ff",
+      "#f0d575"
+    ],
+    "font": "Bahnschrift",
+    "flair": "faceted bevel",
+    "angle": 45,
+    "cross": 135,
+    "grain": 20,
+    "cross_grain": 20,
+    "glow": [
+      50,
+      10
+    ],
+    "reason": "facet lattice gives it a cut-stone signal",
+    "mark": "DR",
+    "texture_alpha": 0.45
+  },
+  {
+    "slug": "phone-ops",
+    "pattern": "call-bars",
+    "group": "personal",
+    "colors": [
+      "#e7a0c5",
+      "#9f9bea",
+      "#d8b25b"
+    ],
+    "font": "IBM Plex Mono",
+    "flair": "channel rails",
+    "angle": 90,
+    "cross": 12,
+    "grain": 18,
+    "cross_grain": 36,
+    "glow": [
+      68,
+      11
+    ],
+    "reason": "call-log bars and channel strips",
+    "mark": "PH",
+    "texture_alpha": 0.44
+  },
+  {
+    "slug": "uscache",
+    "pattern": "archive-shelves",
+    "group": "personal",
+    "colors": [
+      "#89cdbb",
+      "#7fbadf",
+      "#d6b25f"
+    ],
+    "font": "IBM Plex Serif",
+    "flair": "archive tabs",
+    "angle": 118,
+    "cross": 28,
+    "grain": 31,
+    "cross_grain": 44,
+    "glow": [
+      34,
+      10
+    ],
+    "reason": "archive shelf striations make it feel indexed",
+    "mark": "US",
+    "texture_alpha": 0.4
+  },
+  {
+    "slug": "usbhome",
+    "pattern": "circuit-pins",
+    "group": "personal",
+    "colors": [
+      "#84cbb2",
+      "#76b6dd",
+      "#d9b663"
+    ],
+    "font": "JetBrains Mono",
+    "flair": "pin rail",
+    "angle": 6,
+    "cross": 96,
+    "grain": 15,
+    "cross_grain": 42,
+    "glow": [
+      58,
+      14
+    ],
+    "reason": "circuit pins on a bus trace",
+    "mark": "USB",
+    "texture_alpha": 0.42
+  },
+  {
+    "slug": "autocamera",
+    "pattern": "aperture-sweep",
+    "group": "personal",
+    "colors": [
+      "#8fd2bf",
+      "#78b8de",
+      "#d8b25b"
+    ],
+    "font": "Segoe UI",
+    "flair": "lens notch",
+    "angle": 132,
+    "cross": 42,
+    "grain": 26,
+    "cross_grain": 57,
+    "glow": [
+      72,
+      9
+    ],
+    "reason": "aperture sweep and focus lines",
+    "mark": "CAM",
+    "texture_alpha": 0.41
+  },
+  {
+    "slug": "theseus",
+    "pattern": "microscope-stage",
+    "group": "personal",
+    "colors": [
+      "#8fb9e6",
+      "#7fd0bc",
+      "#d9b362"
+    ],
+    "font": "IBM Plex Serif + IBM Plex Mono",
+    "flair": "slide caliper rail",
+    "angle": 90,
+    "cross": 0,
+    "grain": 18,
+    "cross_grain": 36,
+    "glow": [
+      58,
+      10
+    ],
+    "reason": "active Hal personal bot for microscope work",
+    "mark": "TH",
+    "texture_alpha": 0.4
+  },
+  {
+    "slug": "maps",
+    "pattern": "contour-lines",
+    "group": "personal",
+    "colors": [
+      "#8fcfb8",
+      "#8cb7ef",
+      "#d8b25b"
+    ],
+    "font": "Iowan Old Style / Georgia",
+    "flair": "map collar",
+    "angle": 30,
+    "cross": 120,
+    "grain": 27,
+    "cross_grain": 54,
+    "glow": [
+      46,
+      15
+    ],
+    "reason": "contour lines for survey/navigation",
+    "mark": "MAP",
+    "texture_alpha": 0.38
+  },
+  {
+    "slug": "earlybird",
+    "pattern": "sunburst",
+    "group": "work",
+    "colors": [
+      "#e0be73",
+      "#d48f66",
+      "#76a8ff"
+    ],
+    "font": "Poppins",
+    "flair": "sunrise edge",
+    "angle": 72,
+    "cross": 162,
+    "grain": 23,
+    "cross_grain": 39,
+    "glow": [
+      18,
+      18
+    ],
+    "reason": "work bot sunrise scan",
+    "mark": "EB",
+    "texture_alpha": 0.44
+  },
+  {
+    "slug": "infra",
+    "pattern": "rack-rails",
+    "group": "shared",
+    "colors": [
+      "#9fb4c8",
+      "#82c8bb",
+      "#d8b25b"
+    ],
+    "font": "IBM Plex Sans Condensed",
+    "flair": "rack rail",
+    "angle": 90,
+    "cross": 0,
+    "grain": 14,
+    "cross_grain": 44,
+    "glow": [
+      54,
+      8
+    ],
+    "reason": "rack rails and bay divisions",
+    "mark": "IF",
+    "texture_alpha": 0.43
+  },
+  {
+    "slug": "control-plane",
+    "pattern": "command-grid",
+    "group": "work",
+    "colors": [
+      "#97a7e9",
+      "#b6a0dd",
+      "#d8b25b"
+    ],
+    "font": "Poppins + IBM Plex Mono",
+    "flair": "command corners",
+    "angle": 0,
+    "cross": 90,
+    "grain": 16,
+    "cross_grain": 33,
+    "glow": [
+      42,
+      9
+    ],
+    "reason": "command grid with hard routing nodes",
+    "mark": "CP",
+    "texture_alpha": 0.44
+  },
+  {
+    "slug": "market-sizing",
+    "pattern": "spreadsheet-slope",
+    "group": "work",
+    "colors": [
+      "#7bc6d2",
+      "#88abf0",
+      "#d8b25b"
+    ],
+    "font": "Poppins",
+    "flair": "ledger rule",
+    "angle": 8,
+    "cross": 98,
+    "grain": 28,
+    "cross_grain": 52,
+    "glow": [
+      74,
+      12
+    ],
+    "reason": "spreadsheet slope and model rows",
+    "mark": "MS",
+    "texture_alpha": 0.39
+  },
+  {
+    "slug": "tmi-dashboards",
+    "pattern": "dashboard-pixels",
+    "group": "work",
+    "colors": [
+      "#ca9de4",
+      "#91b5f4",
+      "#d8b25b"
+    ],
+    "font": "Poppins + IBM Plex Mono",
+    "flair": "metric ticks",
+    "angle": 144,
+    "cross": 54,
+    "grain": 18,
+    "cross_grain": 45,
+    "glow": [
+      64,
+      10
+    ],
+    "reason": "dashboard pixels and metric cells",
+    "mark": "TMI",
+    "texture_alpha": 0.41
+  },
+  {
+    "slug": "gold-book",
+    "pattern": "gilded-book-grain",
+    "group": "work",
+    "colors": [
+      "#e2b84e",
+      "#f2d36b",
+      "#7aa7ff"
+    ],
+    "font": "Poppins + Georgia",
+    "flair": "gilded spine + leaf flecks",
+    "angle": 45,
+    "cross": 135,
+    "grain": 22,
+    "cross_grain": 30,
+    "glow": [
+      36,
+      13
+    ],
+    "reason": "the gold is literal now: gilt spine, warm leaf flecks, aged page fiber",
+    "mark": "GB",
+    "texture_alpha": 0.48
+  },
+  {
+    "slug": "keystone",
+    "pattern": "keystone-arch-weave",
+    "group": "work",
+    "colors": [
+      "#d8ab75",
+      "#c58a68",
+      "#76a8ff"
+    ],
+    "font": "Poppins Condensed",
+    "flair": "keystone arch rail",
+    "angle": 36,
+    "cross": 126,
+    "grain": 19,
+    "cross_grain": 49,
+    "glow": [
+      22,
+      11
+    ],
+    "reason": "Keystone is canonical; Compere is the old/same surface name",
+    "mark": "KEY",
+    "texture_alpha": 0.46
+  },
+  {
+    "slug": "leadership-kpis",
+    "pattern": "scorecard-lines",
+    "group": "work",
+    "colors": [
+      "#c59de0",
+      "#dc9fbf",
+      "#d8b25b"
+    ],
+    "font": "Poppins",
+    "flair": "scorecard rule",
+    "angle": 90,
+    "cross": 24,
+    "grain": 20,
+    "cross_grain": 51,
+    "glow": [
+      70,
+      8
+    ],
+    "reason": "scorecard lines for exec readouts",
+    "mark": "KPI",
+    "texture_alpha": 0.38
+  },
+  {
+    "slug": "panelbot",
+    "pattern": "panel-rhythm",
+    "group": "work",
+    "colors": [
+      "#76d4c5",
+      "#7db6f1",
+      "#d8b25b"
+    ],
+    "font": "Poppins + IBM Plex Mono",
+    "flair": "panel tabs",
+    "angle": 0,
+    "cross": 90,
+    "grain": 13,
+    "cross_grain": 39,
+    "glow": [
+      28,
+      10
+    ],
+    "reason": "panel rhythm grid",
+    "mark": "PNL",
+    "texture_alpha": 0.4
+  },
+  {
+    "slug": "mls",
+    "pattern": "parcel-pinboard",
+    "group": "work",
+    "colors": [
+      "#85c0ff",
+      "#74d3bd",
+      "#d8b25b"
+    ],
+    "font": "Poppins + IBM Plex Mono",
+    "flair": "tiny listing pins",
+    "angle": 0,
+    "cross": 90,
+    "grain": 19,
+    "cross_grain": 37,
+    "glow": [
+      66,
+      12
+    ],
+    "reason": "tiny but active work bot for listings/property intelligence",
+    "mark": "MLS",
+    "texture_alpha": 0.36
+  },
+  {
+    "slug": "platinum-standard",
+    "pattern": "brushed-platinum",
+    "group": "work",
+    "colors": [
+      "#c6d6ee",
+      "#8ca5c9",
+      "#d8b25b"
+    ],
+    "font": "Poppins + Bahnschrift",
+    "flair": "platinum bevel + cold shine",
+    "angle": 22,
+    "cross": 112,
+    "grain": 25,
+    "cross_grain": 46,
+    "glow": [
+      60,
+      11
+    ],
+    "reason": "cool silver-white platinum with brushed threads and a hard bevel",
+    "mark": "PT",
+    "texture_alpha": 0.47
+  },
+  {
+    "slug": "netops",
+    "pattern": "packet-lanes",
+    "group": "shared",
+    "colors": [
+      "#78b8ff",
+      "#67d5ec",
+      "#d7b660"
+    ],
+    "font": "IBM Plex Sans Condensed",
+    "flair": "packet rails",
+    "angle": 90,
+    "cross": 0,
+    "grain": 17,
+    "cross_grain": 42,
+    "glow": [
+      48,
+      8
+    ],
+    "reason": "NetOps is the bot identity; old Networking label becomes an alias",
+    "mark": "NET",
+    "texture_alpha": 0.42
+  },
+  {
+    "slug": "uplink",
+    "pattern": "beam-sweep",
+    "group": "shared",
+    "colors": [
+      "#75d0c6",
+      "#89afe9",
+      "#d8b25b"
+    ],
+    "font": "IBM Plex Sans Condensed",
+    "flair": "signal edge",
+    "angle": 16,
+    "cross": 106,
+    "grain": 19,
+    "cross_grain": 36,
+    "glow": [
+      82,
+      10
+    ],
+    "reason": "beam sweep toward the edge",
+    "mark": "UP",
+    "texture_alpha": 0.44
+  },
+  {
+    "slug": "cloudagent",
+    "pattern": "cloud-mesh",
+    "group": "shared",
+    "colors": [
+      "#90bbee",
+      "#8dd2c5",
+      "#d8b25b"
+    ],
+    "font": "IBM Plex Sans",
+    "flair": "cloud glow",
+    "angle": 62,
+    "cross": 152,
+    "grain": 26,
+    "cross_grain": 43,
+    "glow": [
+      20,
+      12
+    ],
+    "reason": "manages DOHIO/cloud edge surfaces",
+    "mark": "CLD",
+    "texture_alpha": 0.4
+  },
+  {
+    "slug": "dohio",
+    "pattern": "registry-mesh",
+    "group": "shared",
+    "colors": [
+      "#75d0c6",
+      "#90bbee",
+      "#d8b25b"
+    ],
+    "font": "IBM Plex Sans",
+    "flair": "edge registry mesh",
+    "angle": 145,
+    "cross": 55,
+    "grain": 20,
+    "cross_grain": 44,
+    "glow": [
+      12,
+      12
+    ],
+    "reason": "service surface for registry, DNS, CA, and cloud edge state; managed by CloudAgent",
+    "mark": "DOH",
+    "texture_alpha": 0.4
+  },
+  {
+    "slug": "null-agent",
+    "pattern": "void-static",
+    "group": "yhix",
+    "colors": [
+      "#ad9cff",
+      "#72d3f5",
+      "#e0b85b"
+    ],
+    "font": "JetBrains Mono",
+    "flair": "yhix neon edge",
+    "angle": 17,
+    "cross": 107,
+    "grain": 15,
+    "cross_grain": 58,
+    "glow": [
+      52,
+      7
+    ],
+    "reason": "Yhix game agent / void static",
+    "mark": "NULL",
+    "texture_alpha": 0.46
+  },
+  {
+    "slug": "scout",
+    "pattern": "field-map",
+    "group": "work",
+    "colors": [
+      "#86c8ee",
+      "#83d2b5",
+      "#d8b25b"
+    ],
+    "font": "Poppins + IBM Plex Mono",
+    "flair": "field map ticks",
+    "angle": 135,
+    "cross": 45,
+    "grain": 21,
+    "cross_grain": 55,
+    "glow": [
+      76,
+      12
+    ],
+    "reason": "field map contours",
+    "mark": "SCT",
+    "texture_alpha": 0.39
+  },
+  {
+    "slug": "pefb",
+    "pattern": "memo-fiber",
+    "group": "private",
+    "colors": [
+      "#b5c2cf",
+      "#7fc6bd",
+      "#c7a46e"
+    ],
+    "font": "Poppins Editorial",
+    "flair": "private memo line",
+    "angle": 32,
+    "cross": 122,
+    "grain": 20,
+    "cross_grain": 40,
+    "glow": [
+      62,
+      14
+    ],
+    "reason": "Parkergale private equity funbot",
+    "mark": "PE",
+    "texture_alpha": 0.36
+  },
+  {
+    "slug": "artmonster",
+    "pattern": "halftone-tooth",
+    "group": "personal",
+    "colors": [
+      "#d8b25b",
+      "#d38b46",
+      "#8fc6f2"
+    ],
+    "font": "Poppins Display",
+    "flair": "studio tooth border",
+    "angle": 108,
+    "cross": 18,
+    "grain": 16,
+    "cross_grain": 50,
+    "glow": [
+      44,
+      15
+    ],
+    "reason": "halftone tooth for creative work",
+    "mark": "ART",
+    "texture_alpha": 0.43
+  }
+]

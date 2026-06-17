@@ -14,6 +14,22 @@ BILLING_URL = "https://platform.openai.com/settings/organization/billing/overvie
 LIMITS_URL = "https://platform.openai.com/settings/organization/limits"
 DEFAULT_USAGE_WINDOW_SECONDS = 24 * 60 * 60
 DEFAULT_AUDIT_LIMIT = 200
+ACCOUNTING_KEYS = (
+    "accounting_version",
+    "billing_scope",
+    "billing_unit",
+    "billing_owner",
+    "billing_project",
+    "agent_slug",
+    "actor_slug",
+    "agent_name",
+    "agent_group",
+    "console_title",
+    "host_name",
+    "workdir",
+    "state_dir",
+    "codex_home",
+)
 
 
 @dataclass
@@ -144,6 +160,13 @@ def console_usage_state(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def console_accounting_state(payload: dict[str, Any]) -> dict[str, Any]:
+    accounting = payload.get("accounting")
+    if not isinstance(accounting, dict):
+        accounting = {}
+    return {key: str(accounting.get(key) or "").strip() for key in ACCOUNTING_KEYS}
+
+
 def _console_request_token(query_items: dict[str, str], access_token: str = "") -> str:
     explicit = str(access_token or "").strip()
     if explicit:
@@ -240,6 +263,7 @@ def fetch_console_status(
         "auth_verification_url": "",
         "auth_device_code": "",
         **console_usage_state({}),
+        **console_accounting_state({}),
     }
     status_url = console_status_url(web_url, access_token=access_token)
     if not status_url:
@@ -309,6 +333,7 @@ def fetch_console_status(
             "default_detail": default_detail,
             **console_auth_state(payload),
             **console_usage_state(payload),
+            **console_accounting_state(payload),
         }
     )
     return snapshot

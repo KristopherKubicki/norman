@@ -89,6 +89,55 @@ def test_build_kpi_snapshot_marks_stale_non_prompt_as_wedged() -> None:
         tmp.cleanup()
 
 
+def test_build_kpi_snapshot_marks_running_no_output_degraded_not_wedged() -> None:
+    module = _load_norman_codex_web()
+    tmp = _configure_state(module)
+    original_now = module.now_ts
+    original_wedge_seconds = module.KPI_WEDGE_SECONDS
+    original_running_no_output = module.RUNNING_NO_OUTPUT_SECONDS
+    try:
+        module.now_ts = lambda: 1000
+        module.KPI_WEDGE_SECONDS = 300
+        module.RUNNING_NO_OUTPUT_SECONDS = 600
+        pane = "model process active but visually unchanged"
+        snapshot = module.build_kpi_snapshot(
+            {
+                "pending": True,
+                "model_process_alive": True,
+                "web_worker_alive": True,
+                "last_started_at": 200,
+                "pane": pane,
+                "usage": {"totals": {}},
+                "services": [],
+                "auth": {"required": False},
+            },
+            previous={
+                "state": "working",
+                "last_pane_hash": module._pane_hash(pane),
+                "last_output_changed_at": 100,
+                "metrics": {
+                    "wedge_count": 0,
+                    "degraded_count": 0,
+                    "state_changes": 0,
+                },
+            },
+        )
+
+        assert snapshot["state"] == "degraded"
+        assert snapshot["activity_state"] == "working"
+        assert snapshot["health_state"] == "degraded"
+        assert snapshot["stale_seconds"] == 900
+        assert snapshot["metrics"]["pending_seconds"] == 800
+        assert snapshot["metrics"]["wedge_count"] == 0
+        assert snapshot["metrics"]["degraded_count"] == 1
+        assert snapshot["signals"][0]["code"] == "running_no_output"
+    finally:
+        module.now_ts = original_now
+        module.KPI_WEDGE_SECONDS = original_wedge_seconds
+        module.RUNNING_NO_OUTPUT_SECONDS = original_running_no_output
+        tmp.cleanup()
+
+
 def test_build_kpi_snapshot_marks_auth_required_as_blocked() -> None:
     module = _load_norman_codex_web()
     tmp = _configure_state(module)
@@ -107,5 +156,123 @@ def test_build_kpi_snapshot_marks_auth_required_as_blocked() -> None:
         assert snapshot["state"] == "blocked"
         assert snapshot["health_state"] == "blocked"
         assert snapshot["signals"][0]["code"] == "auth_required"
+    finally:
+        tmp.cleanup()
+
+
+def test_build_kpi_snapshot_marks_latest_usage_limit_failure_blocked() -> None:
+    module = _load_norman_codex_web()
+    tmp = _configure_state(module)
+    try:
+        latest_error = "You've hit your usage limit. Try again at 5:28 PM."
+        assert (
+            module._current_usage_limit_error_text(
+                {
+                    "last_error": "",
+                    "history": [
+                        {"error": "", "started_at": 10, "finished_at": 20},
+                        {
+                            "error": latest_error,
+                            "started_at": 30,
+                            "finished_at": 40,
+                        },
+                    ],
+                },
+                "",
+            )
+            == latest_error
+        )
+        snapshot = module.build_kpi_snapshot(
+            {
+                "pending": False,
+                "state": "ok",
+                "last_error": "",
+                "pane": "› ready",
+                "usage": {"totals": {}},
+                "services": [],
+                "auth": {"required": False},
+                "history": [
+                    {
+                        "error": "",
+                        "started_at": 10,
+                        "finished_at": 20,
+                    },
+                    {
+                        "error": "You've hit your usage limit. Try again at 5:28 PM.",
+                        "started_at": 30,
+                        "finished_at": 40,
+                    },
+                ],
+            },
+            previous={},
+        )
+
+        assert snapshot["state"] == "blocked"
+        assert snapshot["health_state"] == "blocked"
+        assert snapshot["signals"][0]["code"] == "usage_limit"
+    finally:
+        tmp.cleanup()
+
+
+def test_build_kpi_snapshot_ignores_stale_usage_limit_after_success() -> None:
+    module = _load_norman_codex_web()
+    tmp = _configure_state(module)
+    try:
+        assert (
+            module._current_usage_limit_error_text(
+                {
+                    "last_error": "",
+                    "state": "ok",
+                    "history": [
+                        {
+                            "error": "You've hit your usage limit. Try again at 5:28 PM.",
+                            "started_at": 10,
+                            "finished_at": 20,
+                        },
+                        {
+                            "error": "",
+                            "service_tier": "bedrock-failover",
+                            "started_at": 30,
+                            "finished_at": 40,
+                        },
+                    ],
+                },
+                "old output: You've hit your usage limit. Try again at 5:28 PM.",
+            )
+            == ""
+        )
+        snapshot = module.build_kpi_snapshot(
+            {
+                "pending": False,
+                "state": "ok",
+                "last_error": "",
+                "pane": (
+                    "old output: You've hit your usage limit. "
+                    "Try again at 5:28 PM.\n› ready"
+                ),
+                "usage": {"totals": {}},
+                "services": [],
+                "auth": {"required": False},
+                "history": [
+                    {
+                        "error": "You've hit your usage limit. Try again at 5:28 PM.",
+                        "started_at": 10,
+                        "finished_at": 20,
+                    },
+                    {
+                        "error": "",
+                        "service_tier": "bedrock-failover",
+                        "started_at": 30,
+                        "finished_at": 40,
+                    },
+                ],
+            },
+            previous={},
+        )
+
+        assert "usage_limit" not in {
+            str(item.get("code") or "") for item in snapshot["signals"]
+        }
+        assert snapshot["state"] != "blocked"
     finally:
         tmp.cleanup()

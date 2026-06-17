@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sqlite3
 import subprocess
@@ -28,14 +29,35 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = REPO_ROOT / "db" / "norman.db"
 DEFAULT_REGISTRY = REPO_ROOT / "db" / "estate" / "registry.yaml"
 DEFAULT_PERSISTED_HOSTS = Path("/etc/caddy/includes/norman-bot-hosts.caddy")
-DEFAULT_DOHIO_RESOLVER = "100.64.0.14"
+DEFAULT_OPERATOR_CONSOLE_LINK_PATHS = (
+    Path("/home/operator/.codex-work/web-bridge/console_links.json"),
+    Path("/home/operator/.codex-bot-prime/web-bridge/console_links.json"),
+)
+DEFAULT_HEADSCALE_RESOLVER = "100.64.0.5"
+DEFAULT_TAILSCALE_RESOLVER = "100.100.100.100"
+DEFAULT_RESOLVER_PROFILE = "tailscale"
+RESOLVER_PROFILES = {
+    "headscale": DEFAULT_HEADSCALE_RESOLVER,
+    "tailscale": DEFAULT_TAILSCALE_RESOLVER,
+}
 DEFAULT_FRONTDOOR_IP = "127.0.0.1"
-DEFAULT_TAILNET_FRONTDOOR = "100.64.0.17"
+DEFAULT_HEADSCALE_FRONTDOOR = "192.168.2.241"
+DEFAULT_TAILSCALE_FRONTDOOR = "100.103.34.17"
+FRONTDOOR_PROFILES = {
+    "headscale": DEFAULT_HEADSCALE_FRONTDOOR,
+    "tailscale": DEFAULT_TAILSCALE_FRONTDOOR,
+}
 
 TUI_SERVICE_KINDS = {
-    "coordination-console",
     "game-tui",
     "ops-console",
+}
+
+NON_TUI_SLUGS = {
+    "norman-ops",
+    "publisher",
+    "subprime",
+    "switchboard",
 }
 
 SLUG_ALIASES = {
@@ -80,6 +102,8 @@ class ScoreRow:
     collector: CheckResult
     authenticated: CheckResult
     runtime: CheckResult
+    drift: CheckResult
+    usage: CheckResult
     frontdoor: CheckResult
     dns: CheckResult
     persistence: CheckResult
@@ -147,6 +171,74 @@ def _dedupe(values: list[str]) -> list[str]:
         seen.add(text)
         output.append(text)
     return output
+
+
+def console_link_token_paths() -> list[Path]:
+    env_value = os.environ.get("NORMAN_CONSOLE_LINK_PATHS", "").strip()
+    if env_value:
+        return [
+            Path(value).expanduser()
+            for value in env_value.split(os.pathsep)
+            if value.strip()
+        ]
+    home = Path.home()
+    candidates = [
+        home / ".codex-work" / "web-bridge" / "console_links.json",
+        home / ".codex-bot-prime" / "web-bridge" / "console_links.json",
+        *DEFAULT_OPERATOR_CONSOLE_LINK_PATHS,
+    ]
+    seen: set[str] = set()
+    paths: list[Path] = []
+    for path in candidates:
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        paths.append(path)
+    return paths
+
+
+def _coerce_int(value: object) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _compact_number(value: object) -> str:
+    number = max(0, _coerce_int(value))
+    if number >= 1_000_000:
+        text = f"{number / 1_000_000:.1f}M"
+    elif number >= 1_000:
+        text = f"{number / 1_000:.1f}K"
+    else:
+        return str(number)
+    return text.replace(".0", "")
+
+
+def sparkline_glyphs(values: list[object], *, floor: int = 0) -> str:
+    clean_values = [max(0, _coerce_int(value)) for value in values if value is not None]
+    if not clean_values:
+        return ""
+    bars = "▁▂▃▄▅▆▇█"
+    max_value = max(max(clean_values), floor, 1)
+    return "".join(
+        bars[min(len(bars) - 1, round((value / max_value) * (len(bars) - 1)))]
+        for value in clean_values
+    )
+
+
+def _tone_status(value: object) -> str:
+    clean = str(value or "").strip().lower()
+    if clean in {"alert", "error", "danger"}:
+        return "alert"
+    if clean in {"warn", "watch", "warning"}:
+        return "warn"
+    if clean in {"active", "busy"}:
+        return "active"
+    if clean in {"ok", "good", "ready"}:
+        return "ok"
+    return clean or "unknown"
 
 
 def _host_from_url(value: str) -> str:
@@ -251,6 +343,8 @@ def load_db_items(db_path: Path) -> list[FleetItem]:
         token = str(cfg.get("web_token") or "").strip()
         if not collector_url and not web_url:
             continue
+        if slug in NON_TUI_SLUGS:
+            continue
         items.append(
             FleetItem(
                 slug=slug,
@@ -289,6 +383,8 @@ def load_registry_items(registry_path: Path) -> list[FleetItem]:
         if not slug:
             continue
         slug = SLUG_ALIASES.get(slug, slug)
+        if slug in NON_TUI_SLUGS:
+            continue
         web_url = str(service.get("web_url") or "").strip()
         items.append(
             FleetItem(
@@ -368,7 +464,13 @@ def _curl_status(
         cmd.extend(["--resolve", f"{resolve_host}:{port}:{DEFAULT_FRONTDOOR_IP}"])
     cmd.append(url)
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 1)
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=timeout + 1,
+        )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return 0, str(exc)
     code_text = str(proc.stdout or "").strip()
@@ -392,6 +494,18 @@ def check_collector(item: FleetItem) -> CheckResult:
 
 def check_authenticated_status(item: FleetItem) -> tuple[CheckResult, dict]:
     if not item.token:
+        status = fetch_console_status(item.collector_url, timeout=1.75)
+        if status.get("reachable"):
+            return (
+                CheckResult(
+                    True,
+                    12,
+                    20,
+                    "status visible without known token",
+                    "visible-no-token",
+                ),
+                status,
+            )
         return CheckResult(False, 0, 20, "no status token known", "missing-token"), {}
     status = fetch_console_status(
         item.collector_url, access_token=item.token, timeout=1.75
@@ -420,6 +534,104 @@ def check_runtime(status: dict) -> CheckResult:
     if state in {"ok", "idle", "ready"}:
         return CheckResult(True, 20, 20, "ready", state)
     return CheckResult(True, 16, 20, state or "reachable", state or "unknown")
+
+
+def check_drift(status: dict) -> CheckResult:
+    if not status:
+        return CheckResult(True, 0, 0, "drift unknown", "unknown")
+    drift = status.get("drift_assessment")
+    if not isinstance(drift, dict):
+        return CheckResult(True, 0, 0, "no drift signal yet", "missing")
+    if drift.get("enabled") is False:
+        return CheckResult(True, 0, 0, "drift disabled", "disabled")
+    tone = _tone_status(drift.get("tone"))
+    mission = str(drift.get("mission_drift") or "in_lane").replace("_", " ")
+    context = str(drift.get("context_drift") or "fresh").replace("_", " ")
+    scope = str(drift.get("scope_drift") or "normal").replace("_", " ")
+    power = (
+        drift.get("power_drift") if isinstance(drift.get("power_drift"), list) else []
+    )
+    summary = str(drift.get("summary") or tone or "drift").strip()
+    severity_values = [
+        {"in_lane": 0, "adjacent": 1, "cross_lane": 2}.get(
+            str(drift.get("mission_drift") or "in_lane"), 0
+        ),
+        {"fresh": 0, "possibly_stale": 1, "conflicting": 2}.get(
+            str(drift.get("context_drift") or "fresh"), 0
+        ),
+        {"normal": 0, "expanding": 1, "over_budget": 2}.get(
+            str(drift.get("scope_drift") or "normal"), 0
+        ),
+        min(2, len([item for item in power if str(item or "").strip()])),
+    ]
+    glyph = sparkline_glyphs(severity_values, floor=2)
+    power_label = (
+        "+".join(str(item) for item in power if str(item or "").strip()) or "none"
+    )
+    detail = (
+        f"{summary} {glyph}; mission={mission}; context={context}; "
+        f"scope={scope}; power={power_label}"
+    )
+    return CheckResult(
+        ok=tone not in {"warn", "alert"},
+        score=0,
+        max_score=0,
+        detail=detail,
+        status=tone,
+    )
+
+
+def check_usage(status: dict) -> CheckResult:
+    if not status:
+        return CheckResult(True, 0, 0, "usage unknown", "unknown")
+    usage = status.get("usage") if isinstance(status.get("usage"), dict) else {}
+    recent = usage.get("last_24h") if isinstance(usage.get("last_24h"), dict) else {}
+    thread = (
+        usage.get("current_thread")
+        if isinstance(usage.get("current_thread"), dict)
+        else {}
+    )
+    billing = usage.get("billing") if isinstance(usage.get("billing"), dict) else {}
+    tag_health = (
+        billing.get("tag_health") if isinstance(billing.get("tag_health"), dict) else {}
+    )
+    estimate = (
+        billing.get("last_24h_estimate")
+        if isinstance(billing.get("last_24h_estimate"), dict)
+        else {}
+    )
+    sparkline_values = (
+        billing.get("sparkline") if isinstance(billing.get("sparkline"), list) else []
+    )
+    recent_tokens = _coerce_int(recent.get("total_tokens"))
+    recent_turns = _coerce_int(recent.get("turns"))
+    thread_tokens = _coerce_int(thread.get("total_tokens"))
+    tag_state = _tone_status(tag_health.get("state") or "ok")
+    sparkline = sparkline_glyphs(sparkline_values)
+    if recent_tokens >= 220_000:
+        tone = "alert"
+    elif recent_tokens >= 90_000 or tag_state in {"warn", "missing"}:
+        tone = "warn"
+    else:
+        tone = "ok"
+    if estimate.get("configured"):
+        value = f"${float(estimate.get('usd') or 0.0):.2f}"
+    elif recent_tokens:
+        value = f"{_compact_number(recent_tokens)} tok"
+    else:
+        value = "quiet"
+    detail = (
+        f"{value}; 24h={_compact_number(recent_tokens)} tok/{recent_turns} turns; "
+        f"thread={_compact_number(thread_tokens)} tok; tags={tag_state}; "
+        f"burn={sparkline or 'n/a'}"
+    )
+    return CheckResult(
+        ok=tone == "ok",
+        score=0,
+        max_score=0,
+        detail=detail,
+        status=tone,
+    )
 
 
 def check_frontdoor(item: FleetItem) -> CheckResult:
@@ -460,6 +672,7 @@ def _dig_a(host: str, resolver: str) -> list[str]:
             ],
             capture_output=True,
             text=True,
+            stdin=subprocess.DEVNULL,
             timeout=4,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -534,6 +747,8 @@ def score_item(
     collector = check_collector(item)
     authenticated, status = check_authenticated_status(item)
     runtime = check_runtime(status)
+    drift = check_drift(status)
+    usage = check_usage(status)
     frontdoor = check_frontdoor(item)
     dns = check_dns(item, expected_dns, resolver)
     persistence = check_persistence(item, persisted_hosts_path)
@@ -553,6 +768,8 @@ def score_item(
         ("collector", collector),
         ("auth", authenticated),
         ("runtime", runtime),
+        ("drift", drift),
+        ("usage", usage),
         ("frontdoor", frontdoor),
         ("dns", dns),
         ("persist", persistence),
@@ -568,6 +785,8 @@ def score_item(
         collector=collector,
         authenticated=authenticated,
         runtime=runtime,
+        drift=drift,
+        usage=usage,
         frontdoor=frontdoor,
         dns=dns,
         persistence=persistence,
@@ -592,7 +811,7 @@ def render_markdown(rows: list[ScoreRow]) -> str:
         counts[row.grade] = counts.get(row.grade, 0) + 1
     checked_at = time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime())
     lines = [
-        f"# TUI Fleet Scorecard",
+        "# TUI Fleet Scorecard",
         "",
         f"Checked at: `{checked_at}`",
         "",
@@ -604,17 +823,21 @@ def render_markdown(rows: list[ScoreRow]) -> str:
             for name in ("good", "watch", "degraded", "critical", "down")
         ),
         "",
-        "| Score | Grade | TUI | Runtime | Frontdoor | DNS | Persist | Notes |",
-        "| ---: | --- | --- | --- | --- | --- | --- | --- |",
+        "| Score | Grade | TUI | Runtime | Drift | Tokens | Frontdoor | DNS | Persist | Notes |",
+        "| ---: | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for row in sorted(rows, key=lambda item: (item.score, item.label.lower())):
         notes = "; ".join(row.notes[:4]) or "clear"
         lines.append(
-            "| {score} | {grade} | {label} | {runtime} | {frontdoor} | {dns} | {persist} | {notes} |".format(
+            "| {score} | {grade} | {label} | {runtime} | {drift} | {usage} | {frontdoor} | {dns} | {persist} | {notes} |".format(
                 score=row.score,
                 grade=row.grade,
                 label=row.label.replace("|", "\\|"),
                 runtime=row.runtime.status or ("ok" if row.runtime.ok else "bad"),
+                drift=(row.drift.status or "unknown").replace("|", "\\|"),
+                usage=(row.usage.detail or row.usage.status or "unknown").replace(
+                    "|", "\\|"
+                ),
                 frontdoor=row.frontdoor.status or ("ok" if row.frontdoor.ok else "bad"),
                 dns=row.dns.status or ("ok" if row.dns.ok else "bad"),
                 persist=row.persistence.status
@@ -629,8 +852,22 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Score Norman TUI fleet health.")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
     parser.add_argument("--registry", type=Path, default=DEFAULT_REGISTRY)
-    parser.add_argument("--resolver", default=DEFAULT_DOHIO_RESOLVER)
-    parser.add_argument("--tailnet-frontdoor", default=DEFAULT_TAILNET_FRONTDOOR)
+    parser.add_argument(
+        "--resolver-profile",
+        choices=sorted(RESOLVER_PROFILES),
+        default=DEFAULT_RESOLVER_PROFILE,
+        help="Named DNS resolver plane to score.",
+    )
+    parser.add_argument(
+        "--resolver",
+        default="",
+        help="Override DNS resolver IP. Defaults to --resolver-profile.",
+    )
+    parser.add_argument(
+        "--tailnet-frontdoor",
+        default="",
+        help="Override expected frontdoor IP. Defaults to --resolver-profile.",
+    )
     parser.add_argument("--persisted-hosts", type=Path, default=DEFAULT_PERSISTED_HOSTS)
     parser.add_argument("--jobs", type=int, default=12)
     parser.add_argument(
@@ -638,25 +875,24 @@ def main() -> int:
     )
     parser.add_argument("--output", type=Path, help="Write report to this path.")
     args = parser.parse_args()
-
-    token_map = _load_tokens_from_console_links(
-        [
-            Path("/home/operator/.codex-work/web-bridge/console_links.json"),
-            Path("/home/operator/.codex-bot-prime/web-bridge/console_links.json"),
-        ]
+    resolver = args.resolver or RESOLVER_PROFILES[args.resolver_profile]
+    tailnet_frontdoor = (
+        args.tailnet_frontdoor or FRONTDOOR_PROFILES[args.resolver_profile]
     )
+
+    token_map = _load_tokens_from_console_links(console_link_token_paths())
     items = merge_items(
         [*load_db_items(args.db), *load_registry_items(args.registry)],
         token_map,
     )
-    expected_dns = expected_tailnet_dns(items, args.tailnet_frontdoor)
+    expected_dns = expected_tailnet_dns(items, tailnet_frontdoor)
     with ThreadPoolExecutor(max_workers=max(1, int(args.jobs))) as executor:
         rows = list(
             executor.map(
                 lambda item: score_item(
                     item,
                     expected_dns,
-                    args.resolver,
+                    resolver,
                     args.persisted_hosts,
                 ),
                 items,

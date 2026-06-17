@@ -1,0 +1,11 @@
+[Unit]
+Description=Post Norman TUI fleet health alerts to Switchboard BBS
+After=network-online.target switchboard-bbs.service
+Wants=network-online.target switchboard-bbs.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/home/kristopher/code/norman
+ExecStart=/usr/bin/python3 /home/kristopher/code/norman/scripts/tui_fleet_alerts.py

@@ -1,0 +1,12 @@
+[Unit]
+Description=Norman TUI fleet drift doctor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=kristopher
+Group=kristopher
+WorkingDirectory=/home/kristopher/code/norman
+ExecStartPre=/usr/bin/mkdir -p /home/kristopher/.local/state/norman
+ExecStart=/home/kristopher/code/norman/.venv/bin/python /home/kristopher/code/norman/scripts/tui_fleet_doctor.py --output /home/kristopher/.local/state/norman/tui-fleet-doctor.md --json-output /home/kristopher/.local/state/norman/tui-fleet-doctor.json

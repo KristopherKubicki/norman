@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Norman TUI fleet drift doctor periodically
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -8193,6 +8193,102 @@ body.dark-mode .bots-page .input-message-container {
   min-height: 0;
 }
 
+.systems-fleet-health {
+  display: grid;
+  gap: 12px;
+  border-left: 4px solid rgba(148, 163, 184, 0.45);
+}
+
+.systems-fleet-health-ok {
+  border-left-color: rgba(34, 197, 94, 0.65);
+}
+
+.systems-fleet-health-warn {
+  border-left-color: rgba(245, 158, 11, 0.72);
+}
+
+.systems-fleet-health-fail {
+  border-left-color: rgba(239, 68, 68, 0.72);
+}
+
+.systems-fleet-health-main {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.systems-fleet-health-title {
+  font-weight: 700;
+}
+
+.systems-fleet-health-meta,
+.systems-fleet-health-detail {
+  font-size: 0.78rem;
+  color: var(--ink-muted);
+}
+
+.systems-fleet-health-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
+  gap: 8px;
+}
+
+.systems-fleet-health-stats > div {
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.03);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+}
+
+.systems-fleet-health-stats span {
+  display: block;
+  font-size: 1.05rem;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.systems-fleet-health-stats small {
+  display: block;
+  margin-top: 2px;
+  color: var(--ink-muted);
+}
+
+.systems-fleet-health-issues {
+  display: grid;
+  gap: 6px;
+}
+
+.systems-fleet-health-issue {
+  display: grid;
+  grid-template-columns: auto minmax(120px, 0.7fr) minmax(160px, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  padding: 7px 8px;
+  border-radius: 10px;
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.systems-fleet-health-issue > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .systems-fleet-health-main,
+  .systems-directory-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .systems-fleet-health-issue {
+    grid-template-columns: 1fr;
+    align-items: flex-start;
+  }
+}
+
 .systems-summary-header {
   display: flex;
   align-items: flex-start;
@@ -11219,6 +11315,12 @@ body.dark-mode .systems-chip.is-active {
 }
 
 body.dark-mode .systems-summary-stat {
+  background: rgba(148, 163, 184, 0.08);
+  border-color: rgba(148, 163, 184, 0.14);
+}
+
+body.dark-mode .systems-fleet-health-stats > div,
+body.dark-mode .systems-fleet-health-issue {
   background: rgba(148, 163, 184, 0.08);
   border-color: rgba(148, 163, 184, 0.14);
 }

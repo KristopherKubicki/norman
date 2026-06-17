@@ -1,14 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SESSION="${HOUSEBOT_CODEX_SESSION:-housebot-codex}"
-TMUX_SOCKET="${HOUSEBOT_CODEX_TMUX_SOCKET:-$SESSION}"
-WORKDIR="${HOUSEBOT_CODEX_WORKDIR:-/opt/housebot}"
-LAUNCHER="${HOUSEBOT_CODEX_LAUNCHER:-/opt/housebot/scripts/housebot_codex_launch.sh}"
-CODEX_HOME="${CODEX_HOME:-${HOUSEBOT_CODEX_HOME:-}}"
-UPDATE_INTERSTITIAL_CHOICE="${HOUSEBOT_CODEX_UPDATE_INTERSTITIAL_CHOICE:-2}"
-AUTO_CLEAR_UPDATE_INTERSTITIAL="${HOUSEBOT_CODEX_AUTO_CLEAR_UPDATE_INTERSTITIAL:-1}"
-AUTO_CLEAR_AUTH_INTERSTITIAL="${HOUSEBOT_CODEX_AUTO_CLEAR_AUTH_INTERSTITIAL:-1}"
+bridge_console_env_prefixes() {
+    local name suffix alias
+    for name in ${!NORMAN_CODEX_@}; do
+        suffix="${name#NORMAN_CODEX_}"
+        alias="HOUSEBOT_CODEX_${suffix}"
+        if [[ -z "${!alias+x}" ]]; then
+            export "$alias=${!name}"
+        fi
+    done
+    for name in ${!HOUSEBOT_CODEX_@}; do
+        suffix="${name#HOUSEBOT_CODEX_}"
+        alias="NORMAN_CODEX_${suffix}"
+        if [[ -z "${!alias+x}" ]]; then
+            export "$alias=${!name}"
+        fi
+    done
+}
+
+bridge_console_env_prefixes
+
+SESSION="${NORMAN_CODEX_SESSION:-housebot-codex}"
+TMUX_SOCKET="${NORMAN_CODEX_TMUX_SOCKET:-$SESSION}"
+WORKDIR="${NORMAN_CODEX_WORKDIR:-/opt/housebot}"
+LAUNCHER="${NORMAN_CODEX_LAUNCHER:-/opt/housebot/scripts/housebot_codex_launch.sh}"
+CODEX_HOME="${CODEX_HOME:-${NORMAN_CODEX_HOME:-}}"
+UPDATE_INTERSTITIAL_CHOICE="${NORMAN_CODEX_UPDATE_INTERSTITIAL_CHOICE:-2}"
+AUTO_CLEAR_UPDATE_INTERSTITIAL="${NORMAN_CODEX_AUTO_CLEAR_UPDATE_INTERSTITIAL:-1}"
+AUTO_CLEAR_AUTH_INTERSTITIAL="${NORMAN_CODEX_AUTO_CLEAR_AUTH_INTERSTITIAL:-1}"
 
 tmux_cmd() {
     tmux -L "$TMUX_SOCKET" "$@"
