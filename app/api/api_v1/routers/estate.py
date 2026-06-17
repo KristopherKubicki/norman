@@ -18,6 +18,8 @@ from app.models import (
     EstateWorker,
     User,
 )
+from app.services import estate_registry, estate_sync
+from app.services.tui_fleet_health import read_tui_fleet_health
 
 
 router = APIRouter(tags=["estate"])
@@ -43,6 +45,17 @@ async def estate_summary(
         .filter(EstateService.is_active.is_(True))
         .count(),
     }
+
+
+@router.get("/estate/tui-fleet-health")
+async def estate_tui_fleet_health(_: User = Depends(get_current_user)):
+    return read_tui_fleet_health()
+
+
+@router.get("/estate/powers")
+async def estate_powers(_: User = Depends(get_current_user)):
+    registry = estate_sync.load_runtime_registry()
+    return estate_registry.power_manifest(registry)
 
 
 @router.get("/estate/overview")

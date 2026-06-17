@@ -15,7 +15,8 @@ class DummyCompleted:
 def test_send_message_uses_target_and_enter(monkeypatch):
     calls = []
 
-    def fake_run(cmd, capture_output, text, check):
+    def fake_run(cmd, capture_output, text, check, stdin=None):
+        assert stdin == subprocess.DEVNULL
         calls.append(cmd)
         if cmd[1] == "capture-pane":
             return DummyCompleted(stdout="shell prompt")
@@ -38,7 +39,7 @@ def test_send_message_uses_target_and_enter(monkeypatch):
 def test_send_message_honors_enter_count_payload(monkeypatch):
     calls = []
 
-    def fake_run(cmd, capture_output, text, check):
+    def fake_run(cmd, capture_output, text, check, stdin=None):
         calls.append(cmd)
         if cmd[1] == "capture-pane":
             return DummyCompleted(stdout="shell prompt")
@@ -62,7 +63,7 @@ def test_send_message_honors_enter_count_payload(monkeypatch):
 def test_send_message_applies_working_dir(monkeypatch):
     calls = []
 
-    def fake_run(cmd, capture_output, text, check):
+    def fake_run(cmd, capture_output, text, check, stdin=None):
         calls.append(cmd)
         if cmd[1] == "capture-pane":
             return DummyCompleted(stdout="shell prompt")
@@ -90,7 +91,7 @@ def test_send_message_ignores_empty():
 def test_is_connected_true(monkeypatch):
     calls = []
 
-    def fake_run(cmd, capture_output, text, check):
+    def fake_run(cmd, capture_output, text, check, stdin=None):
         calls.append(cmd)
         return DummyCompleted()
 
@@ -109,7 +110,7 @@ def test_is_connected_false_when_tmux_missing(monkeypatch):
 
 
 def test_is_connected_false_when_session_missing(monkeypatch):
-    def fake_run(cmd, capture_output, text, check):
+    def fake_run(cmd, capture_output, text, check, stdin=None):
         raise subprocess.CalledProcessError(returncode=1, cmd=cmd)
 
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/tmux")
@@ -122,7 +123,7 @@ def test_is_connected_false_when_session_missing(monkeypatch):
 def test_send_message_resolves_target_by_pane_tty(monkeypatch):
     calls = []
 
-    def fake_run(cmd, capture_output, text, check):
+    def fake_run(cmd, capture_output, text, check, stdin=None):
         calls.append(cmd)
         if cmd[1] == "list-panes":
             return DummyCompleted(
@@ -171,7 +172,7 @@ def test_send_message_resolves_target_by_pane_tty(monkeypatch):
 def test_send_message_auto_uses_tab_enter_for_codex_prompt(monkeypatch):
     calls = []
 
-    def fake_run(cmd, capture_output, text, check):
+    def fake_run(cmd, capture_output, text, check, stdin=None):
         calls.append(cmd)
         if cmd[1] == "capture-pane":
             return DummyCompleted(stdout="... tab to queue message ...")
@@ -195,7 +196,7 @@ def test_send_message_auto_uses_tab_enter_for_codex_prompt(monkeypatch):
 def test_send_message_auto_uses_tab_enter_for_codex_shortcuts_hint(monkeypatch):
     calls = []
 
-    def fake_run(cmd, capture_output, text, check):
+    def fake_run(cmd, capture_output, text, check, stdin=None):
         calls.append(cmd)
         if cmd[1] == "capture-pane":
             return DummyCompleted(stdout="? for shortcuts")
@@ -219,7 +220,7 @@ def test_send_message_auto_uses_tab_enter_for_codex_shortcuts_hint(monkeypatch):
 def test_send_message_auto_uses_tab_enter_for_codex_context_left_hint(monkeypatch):
     calls = []
 
-    def fake_run(cmd, capture_output, text, check):
+    def fake_run(cmd, capture_output, text, check, stdin=None):
         calls.append(cmd)
         if cmd[1] == "capture-pane":
             return DummyCompleted(stdout="24% context left")
@@ -243,7 +244,7 @@ def test_send_message_auto_uses_tab_enter_for_codex_context_left_hint(monkeypatc
 def test_send_message_submit_mode_override_forces_enter(monkeypatch):
     calls = []
 
-    def fake_run(cmd, capture_output, text, check):
+    def fake_run(cmd, capture_output, text, check, stdin=None):
         calls.append(cmd)
         if cmd[1] == "capture-pane":
             return DummyCompleted(stdout="... tab to queue message ...")
@@ -266,7 +267,7 @@ def test_send_message_submit_mode_override_forces_enter(monkeypatch):
 
 
 def test_is_connected_true_with_pane_tty(monkeypatch):
-    def fake_run(cmd, capture_output, text, check):
+    def fake_run(cmd, capture_output, text, check, stdin=None):
         if cmd[1] == "list-panes":
             return DummyCompleted(stdout="/dev/pts/31\tplatinum_standard\t0\t0\n")
         raise AssertionError("Unexpected tmux call")

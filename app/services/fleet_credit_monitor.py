@@ -53,6 +53,20 @@ class FleetCreditSnapshot:
     usage_window_total_tokens: int = 0
     usage_last_turn_at: int = 0
     usage_last_turn_total_tokens: int = 0
+    accounting_version: str = ""
+    billing_scope: str = ""
+    billing_unit: str = ""
+    billing_owner: str = ""
+    billing_project: str = ""
+    agent_slug: str = ""
+    actor_slug: str = ""
+    agent_name: str = ""
+    agent_group: str = ""
+    console_title: str = ""
+    host_name: str = ""
+    workdir: str = ""
+    state_dir: str = ""
+    codex_home: str = ""
     failures: int = 0
 
 
@@ -284,6 +298,20 @@ class FleetCreditMonitorService:
                 usage_last_turn_total_tokens=int(
                     status.get("usage_last_turn_total_tokens") or 0
                 ),
+                accounting_version=str(status.get("accounting_version") or ""),
+                billing_scope=str(status.get("billing_scope") or ""),
+                billing_unit=str(status.get("billing_unit") or ""),
+                billing_owner=str(status.get("billing_owner") or ""),
+                billing_project=str(status.get("billing_project") or ""),
+                agent_slug=str(status.get("agent_slug") or ""),
+                actor_slug=str(status.get("actor_slug") or ""),
+                agent_name=str(status.get("agent_name") or ""),
+                agent_group=str(status.get("agent_group") or ""),
+                console_title=str(status.get("console_title") or ""),
+                host_name=str(status.get("host_name") or ""),
+                workdir=str(status.get("workdir") or ""),
+                state_dir=str(status.get("state_dir") or ""),
+                codex_home=str(status.get("codex_home") or ""),
                 failures=failures,
             )
 

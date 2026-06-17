@@ -280,20 +280,20 @@
       "working_dir": ""
     },
     {
-      "connector_name": "tmux:ops-web-c8b7a5ed",
+      "connector_name": "tmux:ops-web-bbe3e6bd",
       "protected": false,
-      "session": "ops-web-c8b7a5ed",
+      "session": "ops-web-bbe3e6bd",
       "session_bootstrap": "",
-      "target": "ops-web-c8b7a5ed:0.0",
+      "target": "ops-web-bbe3e6bd:0.0",
       "web_url": "http://127.0.0.1:8788",
       "working_dir": ""
     },
     {
-      "connector_name": "tmux:ops-auth-bcb95429",
+      "connector_name": "tmux:ops-auth-4549cec6",
       "protected": false,
-      "session": "ops-auth-bcb95429",
+      "session": "ops-auth-4549cec6",
       "session_bootstrap": "",
-      "target": "ops-auth-bcb95429:0.0",
+      "target": "ops-auth-4549cec6:0.0",
       "web_url": "http://127.0.0.1:8799?token=test",
       "working_dir": ""
     },
@@ -304,7 +304,7 @@
       "session_bootstrap": "codex resume 019c-test-castle",
       "target": "castle-lite:0.0",
       "web_url": "",
-      "working_dir": "/tmp/pytest-of-operator/pytest-252/test_tmux_control_adopt_create0/castle-lite"
+      "working_dir": "/tmp/pytest-of-kristopher/pytest-1473/test_tmux_control_adopt_create0/castle-lite"
     },
     {
       "connector_name": "tmux:ops-locked",
@@ -379,16 +379,16 @@
       "working_dir": ""
     },
     {
-      "connector_name": "tmux:profile-web-c0ad4451",
+      "connector_name": "tmux:profile-web-bd24aa5a",
       "protected": false,
-      "session": "profile-web-c0ad4451",
+      "session": "profile-web-bd24aa5a",
       "session_bootstrap": "codex resume 019c-profile-test",
-      "target": "profile-web-c0ad4451:0.0",
+      "target": "profile-web-bd24aa5a:0.0",
       "web_url": "http://127.0.0.1:8788",
       "working_dir": "/tmp/ops"
     }
   ],
-  "saved_at": "2026-05-25T18:28:50.305839+00:00",
+  "saved_at": "2026-06-17T01:19:33.465098+00:00",
   "snapshot_mode": "managed",
   "version": 1
 }

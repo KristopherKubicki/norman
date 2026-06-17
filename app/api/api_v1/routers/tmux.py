@@ -189,6 +189,20 @@ class TmuxControlCreditsItemOut(BaseModel):
     usage_window_total_tokens: int = 0
     usage_last_turn_at: int = 0
     usage_last_turn_total_tokens: int = 0
+    accounting_version: str = ""
+    billing_scope: str = ""
+    billing_unit: str = ""
+    billing_owner: str = ""
+    billing_project: str = ""
+    agent_slug: str = ""
+    actor_slug: str = ""
+    agent_name: str = ""
+    agent_group: str = ""
+    console_title: str = ""
+    host_name: str = ""
+    workdir: str = ""
+    state_dir: str = ""
+    codex_home: str = ""
 
 
 class TmuxControlCreditsResponse(BaseModel):
@@ -800,6 +814,7 @@ def _pane_child_command(target: str, socket_path: str = "") -> str:
         capture_output=True,
         text=True,
         check=False,
+        stdin=subprocess.DEVNULL,
     )
     if ps_proc.returncode != 0:
         return ""
@@ -1700,6 +1715,20 @@ async def list_control_credits(
                 usage_last_turn_total_tokens=int(
                     getattr(snap, "usage_last_turn_total_tokens", 0) or 0
                 ),
+                accounting_version=str(getattr(snap, "accounting_version", "") or ""),
+                billing_scope=str(getattr(snap, "billing_scope", "") or ""),
+                billing_unit=str(getattr(snap, "billing_unit", "") or ""),
+                billing_owner=str(getattr(snap, "billing_owner", "") or ""),
+                billing_project=str(getattr(snap, "billing_project", "") or ""),
+                agent_slug=str(getattr(snap, "agent_slug", "") or ""),
+                actor_slug=str(getattr(snap, "actor_slug", "") or ""),
+                agent_name=str(getattr(snap, "agent_name", "") or ""),
+                agent_group=str(getattr(snap, "agent_group", "") or ""),
+                console_title=str(getattr(snap, "console_title", "") or ""),
+                host_name=str(getattr(snap, "host_name", "") or ""),
+                workdir=str(getattr(snap, "workdir", "") or ""),
+                state_dir=str(getattr(snap, "state_dir", "") or ""),
+                codex_home=str(getattr(snap, "codex_home", "") or ""),
             )
         )
     if not items and connector_ids:

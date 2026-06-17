@@ -310,7 +310,7 @@ workers:
         - personal/*
         - work/*
         - network/*
-    notes: Dedicated Proxmox LXC enclave for finance, health, and other confidential bots. Live at 192.168.0.148. Do not mix with ordinary Personal or Shared fleet runtimes.
+    notes: Dedicated Proxmox LXC enclave for finance, health, and other confidential bots. Live at 192.168.2.148. Do not mix with ordinary Personal or Shared fleet runtimes.
   - slug: norman-host
     principal: operator
     display_name: Norman Host
@@ -416,10 +416,10 @@ services:
     display_name: Norman Prime
     kind: web-app
     policy_profile: manual
-    web_url: http://192.168.0.241:8000/
-    web_url_tailnet: http://norman.tail00000.ts.net:8000/
-    console_url: http://192.168.0.241:8788/
-    console_url_tailnet: http://norman.tail00000.ts.net:8788/
+    web_url: http://192.168.2.241:8000/
+    web_url_tailnet: http://norman.tail94915.ts.net:8000/
+    console_url: http://192.168.2.241:8788/
+    console_url_tailnet: http://norman.tail94915.ts.net:8788/
   - slug: norman-home
     principal: operator
     domain: operator-knowledge
@@ -428,8 +428,8 @@ services:
     display_name: Norman Host
     kind: host-home
     policy_profile: manual
-    web_url: http://192.168.0.241/
-    web_url_tailnet: http://norman.tail00000.ts.net/
+    web_url: http://192.168.2.241/
+    web_url_tailnet: http://norman.tail94915.ts.net/
   - slug: toy-box-home
     principal: operator
     domain: operator-household
@@ -438,8 +438,8 @@ services:
     display_name: Toy Box
     kind: host-home
     policy_profile: shared
-    web_url: http://192.168.0.146/
-    web_url_tailnet: http://toy-box.tail00000.ts.net/
+    web_url: http://192.168.2.146/
+    web_url_tailnet: http://toy-box.tail94915.ts.net/
   - slug: housebot
     principal: operator
     domain: operator-household
@@ -449,8 +449,8 @@ services:
     display_name: Housebot
     kind: ops-console
     policy_profile: shared
-    console_url: http://192.168.0.146:8787/
-    console_url_tailnet: http://toy-box.tail00000.ts.net:8787/
+    console_url: http://192.168.2.146:8787/
+    console_url_tailnet: http://toy-box.tail94915.ts.net:8787/
   - slug: glimpser
     principal: operator
     domain: operator-observability
@@ -460,10 +460,10 @@ services:
     display_name: Glimpser
     kind: web-app
     policy_profile: shared
-    web_url: http://192.168.0.145:8082/
+    web_url: http://192.168.2.145:8082/
     web_url_tailnet: http://100.64.0.16:8082/
-    console_url: http://192.168.0.146:8788/
-    console_url_tailnet: http://toy-box.tail00000.ts.net:8788/
+    console_url: http://192.168.2.146:8788/
+    console_url_tailnet: http://toy-box.tail94915.ts.net:8788/
   - slug: castle
     principal: operator
     domain: operator-household
@@ -473,8 +473,8 @@ services:
     display_name: Castle
     kind: ops-console
     policy_profile: shared
-    console_url: http://192.168.0.146:8789/
-    console_url_tailnet: http://toy-box.tail00000.ts.net:8789/
+    console_url: http://192.168.2.146:8789/
+    console_url_tailnet: http://toy-box.tail94915.ts.net:8789/
   - slug: diamond-roc
     principal: operator
     domain: kubicki-evergreen
@@ -484,8 +484,8 @@ services:
     display_name: Diamond Roc
     kind: ops-console
     policy_profile: shared
-    console_url: http://192.168.0.146:8796/
-    console_url_tailnet: http://toy-box.tail00000.ts.net:8796/
+    console_url: http://192.168.2.146:8796/
+    console_url_tailnet: http://toy-box.tail94915.ts.net:8796/
     notes: Canonical home is toy-box. Retired the stale Hal tmux connector/runtime; publish only the Toy Box runtime.
   - slug: phone-ops
     principal: operator
@@ -496,8 +496,8 @@ services:
     display_name: Phone Ops
     kind: ops-console
     policy_profile: shared
-    console_url: http://192.168.0.146:8790/
-    console_url_tailnet: http://toy-box.tail00000.ts.net:8790/
+    console_url: https://phone.home.arpa/
+    console_url_tailnet: http://toy-box.tail94915.ts.net:8790/
   - slug: uscache
     principal: operator
     domain: operator-knowledge
@@ -507,8 +507,8 @@ services:
     display_name: USCache
     kind: ops-console
     policy_profile: shared
-    console_url: http://192.168.0.146:8791/
-    console_url_tailnet: http://toy-box.tail00000.ts.net:8791/
+    console_url: http://192.168.2.146:8791/
+    console_url_tailnet: http://toy-box.tail94915.ts.net:8791/
   - slug: autocamera
     principal: operator
     domain: operator-observability
@@ -518,10 +518,10 @@ services:
     display_name: Autocamera
     kind: daemon
     policy_profile: manual
-    web_url: http://192.168.0.137:9007/
-    web_url_tailnet: http://hal.tail00000.ts.net:9007/
-    console_url: http://192.168.0.137:8794/
-    console_url_tailnet: http://hal.tail00000.ts.net:8794/
+    web_url: http://192.168.2.137:9007/
+    web_url_tailnet: http://hal.tail94915.ts.net:9007/
+    console_url: http://192.168.2.137:8794/
+    console_url_tailnet: http://hal.tail94915.ts.net:8794/
   - slug: hal-home
     principal: operator
     domain: operator-household
@@ -540,8 +540,8 @@ services:
     display_name: Theseus
     kind: ops-console
     policy_profile: manual
-    console_url: http://192.168.0.137:8795/
-    console_url_tailnet: http://hal.tail00000.ts.net:8795/
+    console_url: http://192.168.2.137:8795/
+    console_url_tailnet: http://hal.tail94915.ts.net:8795/
   - slug: finance-reader
     principal: operator
     domain: operator-finance
@@ -574,8 +574,8 @@ services:
     kind: ops-console
     policy_profile: read-only
     is_active: true
-    console_url: http://192.168.0.148:8796/
-    console_url_tailnet: http://private.home.example.test:8796/
+    console_url: http://192.168.2.148:8796/
+    console_url_tailnet: http://private.home.lollie.org:8796/
     notes: Private Equity Funbot on the dedicated private enclave. Aliases ParkerGale, PEF, and PEFB. Treat all work as confidential and deliberate-entry only.
   - slug: private-home
     principal: operator
@@ -585,8 +585,8 @@ services:
     display_name: Private Host
     kind: host-home
     policy_profile: manual
-    web_url: http://192.168.0.148/
-    web_url_tailnet: http://private.home.example.test/
+    web_url: http://192.168.2.148/
+    web_url_tailnet: http://private.home.lollie.org/
   - slug: earlybird
     principal: openbrand
     domain: openbrand-ops
@@ -594,8 +594,8 @@ services:
     display_name: Earlybird
     kind: ops-console
     policy_profile: shared
-    console_url: http://192.168.0.147:8781/
-    console_url_tailnet: http://work-special.tail00000.ts.net:8781/
+    console_url: https://earlybird.kris.openbrand.com/
+    console_url_tailnet: http://work-special.tail94915.ts.net:8781/
   - slug: infra
     principal: openbrand
     domain: openbrand-ops
@@ -603,8 +603,8 @@ services:
     display_name: Infra
     kind: ops-console
     policy_profile: shared
-    console_url: http://192.168.0.147:8782/
-    console_url_tailnet: http://work-special.tail00000.ts.net:8782/
+    console_url: https://infra.kris.openbrand.com/
+    console_url_tailnet: http://work-special.tail94915.ts.net:8782/
   - slug: control-plane
     principal: openbrand
     domain: openbrand-ops
@@ -612,8 +612,8 @@ services:
     display_name: Control Plane
     kind: ops-console
     policy_profile: shared
-    console_url: http://192.168.0.147:8783/
-    console_url_tailnet: http://work-special.tail00000.ts.net:8783/
+    console_url: https://cp.kris.openbrand.com/
+    console_url_tailnet: http://work-special.tail94915.ts.net:8783/
   - slug: market-sizing
     principal: openbrand
     domain: openbrand-ops
@@ -621,8 +621,8 @@ services:
     display_name: Market Sizing
     kind: ops-console
     policy_profile: shared
-    console_url: http://192.168.0.147:8784/
-    console_url_tailnet: http://work-special.tail00000.ts.net:8784/
+    console_url: https://market.kris.openbrand.com/
+    console_url_tailnet: http://work-special.tail94915.ts.net:8784/
   - slug: tmi-dashboards
     principal: openbrand
     domain: openbrand-ops
@@ -630,8 +630,8 @@ services:
     display_name: TMI Dashboards
     kind: ops-console
     policy_profile: shared
-    console_url: http://192.168.0.147:8785/
-    console_url_tailnet: http://work-special.tail00000.ts.net:8785/
+    console_url: https://dashboards.kris.openbrand.com/
+    console_url_tailnet: http://work-special.tail94915.ts.net:8785/
   - slug: gold-book
     principal: openbrand
     domain: openbrand-ops
@@ -639,8 +639,8 @@ services:
     display_name: Gold Book
     kind: ops-console
     policy_profile: shared
-    console_url: http://192.168.0.147:8786/
-    console_url_tailnet: http://work-special.tail00000.ts.net:8786/
+    console_url: https://goldbook.kris.openbrand.com/
+    console_url_tailnet: http://work-special.tail94915.ts.net:8786/
   - slug: compere
     principal: openbrand
     domain: openbrand-ops
@@ -648,8 +648,8 @@ services:
     display_name: Keystone
     kind: ops-console
     policy_profile: shared
-    console_url: http://192.168.0.147:8789/
-    console_url_tailnet: http://work-special.tail00000.ts.net:8789/
+    console_url: https://keystone.kris.openbrand.com/
+    console_url_tailnet: http://work-special.tail94915.ts.net:8789/
   - slug: leadership-kpis
     principal: openbrand
     domain: openbrand-ops
@@ -657,8 +657,8 @@ services:
     display_name: Leadership KPIs
     kind: ops-console
     policy_profile: shared
-    console_url: http://192.168.0.147:8790/
-    console_url_tailnet: http://work-special.tail00000.ts.net:8790/
+    console_url: https://kpis.kris.openbrand.com/
+    console_url_tailnet: http://work-special.tail94915.ts.net:8790/
   - slug: panelbot
     principal: openbrand
     domain: openbrand-ops
@@ -666,8 +666,8 @@ services:
     display_name: Panelbot
     kind: ops-console
     policy_profile: shared
-    console_url: http://192.168.0.147:8791/
-    console_url_tailnet: http://work-special.tail00000.ts.net:8791/
+    console_url: https://panelbot.kris.openbrand.com/
+    console_url_tailnet: http://work-special.tail94915.ts.net:8791/
   - slug: mls
     principal: operator
     domain: operator-household
@@ -677,8 +677,8 @@ services:
     display_name: MLS
     kind: ops-console
     policy_profile: shared
-    console_url: http://192.168.0.147:8792/
-    console_url_tailnet: http://work-special.tail00000.ts.net:8792/
+    console_url: https://mls.kris.openbrand.com/
+    console_url_tailnet: http://work-special.tail94915.ts.net:8792/
   - slug: work-special-home
     principal: openbrand
     domain: openbrand-ops
@@ -686,8 +686,8 @@ services:
     display_name: Work Special
     kind: host-home
     policy_profile: shared
-    web_url: http://192.168.0.147/
-    web_url_tailnet: http://work-special.tail00000.ts.net/
+    web_url: http://192.168.2.147/
+    web_url_tailnet: http://work-special.tail94915.ts.net/
   - slug: networking
     principal: operator
     domain: operator-communications
@@ -697,8 +697,8 @@ services:
     display_name: Networking
     kind: ops-console
     policy_profile: manual
-    console_url: http://192.168.0.242:8791/
-    console_url_tailnet: http://networking.tail00000.ts.net:8791/
+    console_url: http://192.168.2.242:8791/
+    console_url_tailnet: http://networking.tail94915.ts.net:8791/
   - slug: uplink
     principal: operator
     domain: operator-communications
@@ -708,8 +708,8 @@ services:
     display_name: Uplink
     kind: ops-console
     policy_profile: manual
-    console_url: http://192.168.0.242:8792/
-    console_url_tailnet: http://networking.tail00000.ts.net:8792/
+    console_url: http://192.168.2.242:8792/
+    console_url_tailnet: http://networking.tail94915.ts.net:8792/
   - slug: cloudagent
     principal: operator
     domain: operator-knowledge
@@ -719,8 +719,8 @@ services:
     display_name: CloudAgent
     kind: ops-console
     policy_profile: shared
-    console_url: http://192.168.0.242:8793/
-    console_url_tailnet: http://networking.tail00000.ts.net:8793/
+    console_url: http://192.168.2.242:8793/
+    console_url_tailnet: http://networking.tail94915.ts.net:8793/
   - slug: networking-home
     principal: operator
     domain: operator-communications
@@ -729,8 +729,8 @@ services:
     display_name: Networking Host
     kind: host-home
     policy_profile: manual
-    web_url: http://192.168.0.242/
-    web_url_tailnet: http://networking.tail00000.ts.net/
+    web_url: http://192.168.2.242/
+    web_url_tailnet: http://networking.tail94915.ts.net/
   - slug: d-ace
     principal: openbrand
     domain: openbrand-ops

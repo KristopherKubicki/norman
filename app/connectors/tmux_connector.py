@@ -80,6 +80,7 @@ class TmuxConnector(BaseConnector):
             capture_output=True,
             text=True,
             check=check,
+            stdin=subprocess.DEVNULL,
         )
 
     def _find_target_by_tty(self) -> str:

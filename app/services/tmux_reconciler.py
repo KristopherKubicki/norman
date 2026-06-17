@@ -30,6 +30,7 @@ def _run_tmux(*args: str, check: bool = False) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         check=check,
+        stdin=subprocess.DEVNULL,
     )
 
 
@@ -77,6 +78,7 @@ def _pane_child_command(target: str) -> str:
         capture_output=True,
         text=True,
         check=False,
+        stdin=subprocess.DEVNULL,
     )
     if proc.returncode != 0:
         return ""

@@ -19,7 +19,8 @@ def test_run_tmux_falls_back_to_discovered_socket(monkeypatch) -> None:
         lambda socket_path="": ["", "/tmp/tmux-1000/custom"],
     )
 
-    def fake_run(cmd, capture_output, text, check):
+    def fake_run(cmd, capture_output, text, check, stdin=None):
+        assert stdin == subprocess.DEVNULL
         calls.append(cmd)
         if cmd[:3] == ["tmux", "-S", "/tmp/tmux-1000/custom"]:
             return _proc(returncode=0, stdout="ok")
@@ -39,7 +40,7 @@ def test_run_tmux_raises_called_process_error_when_check_enabled(monkeypatch) ->
     monkeypatch.setattr(
         subprocess,
         "run",
-        lambda cmd, capture_output, text, check: _proc(
+        lambda cmd, capture_output, text, check, stdin=None: _proc(
             returncode=1, stderr="error connecting to socket"
         ),
     )
