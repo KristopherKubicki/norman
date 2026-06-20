@@ -114,6 +114,34 @@ def test_planner_preroute_does_not_call_unavailable_local_runtime() -> None:
     assert report["summary"]["cloud_candidate_requires_policy_check_count"] == 1
 
 
+def test_spark_prefilter_can_reduce_high_authority_work_without_finalizing() -> None:
+    module = _load_module()
+    row = _row(
+        "release",
+        route_kind="local_then_5_4_verifier",
+        runtime="spark_vllm",
+        provider="vllm",
+        final_authority=True,
+    )
+
+    report = module.build_report({"rows": [row]})
+
+    routed = report["rows"][0]
+    assert routed["pre_llm_decision"] == "local_prefilter_cloud_final_policy_check"
+    assert routed["local_planner_candidate"] is False
+    assert routed["local_prefilter_candidate"] is True
+    assert routed["cloud_verifier_required"] is True
+    contract = routed["local_prefilter_contract"]
+    assert contract["schema"] == "norman.local-prefilter-router-contract.v1"
+    assert contract["advisory_only"] is True
+    assert contract["policy_validator_required"] is True
+    assert "final_authority" in contract["forbidden_outputs"]
+    assert "authority_pressure" in contract["cloud_escalation_triggers"]
+    assert report["summary"]["local_prefilter_candidate_count"] == 1
+    assert report["summary"]["spark_prefilter_candidate_count"] == 1
+    assert report["summary"]["cloud_verifier_required_count"] == 1
+
+
 def test_local_planner_proposal_validator_enforces_policy_contract() -> None:
     module = _load_module()
     valid = {

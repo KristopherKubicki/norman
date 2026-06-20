@@ -12,6 +12,7 @@ from typing import Any
 
 SCHEMA = "norman.planner-preroute-policy.v1"
 LOCAL_PLANNER_PROPOSAL_SCHEMA = "norman.local-planner-proposal.v1"
+LOCAL_PREFILTER_ROUTER_CONTRACT_SCHEMA = "norman.local-prefilter-router-contract.v1"
 LOCAL_PLANNER_ROUTE_CLASSES = {
     "deterministic_only",
     "local_execute",
@@ -53,6 +54,16 @@ def _pre_llm_decision(row: dict[str, Any]) -> tuple[str, str, bool]:
     local_runtime_routeable = bool(row.get("local_runtime_routeable", True))
     if route_kind == "deterministic_only":
         return "bypass_llm_deterministic", "exact deterministic contract", False
+    if (
+        final_authority
+        and runtime in {"spark_vllm", "ollama"}
+        and local_runtime_routeable
+    ):
+        return (
+            "local_prefilter_cloud_final_policy_check",
+            "local can reduce/classify; final authority remains cloud/operator gated",
+            True,
+        )
     if final_authority:
         return (
             "local_draft_cloud_final_policy_check",
@@ -90,6 +101,47 @@ def _local_planner_contract(decision: str) -> dict[str, Any]:
     }
 
 
+def _local_prefilter_contract(row: dict[str, Any], decision: str) -> dict[str, Any]:
+    runtime = str(row.get("selected_local_runtime_class") or "")
+    if decision not in {
+        "ask_spark_vllm_planner",
+        "ask_ollama_planner",
+        "local_prefilter_cloud_final_policy_check",
+    }:
+        return {}
+    return {
+        "schema": LOCAL_PREFILTER_ROUTER_CONTRACT_SCHEMA,
+        "runtime_class": runtime,
+        "advisory_only": True,
+        "policy_validator_required": True,
+        "allowed_outputs": [
+            "task_classification",
+            "context_reduction",
+            "draft_plan",
+            "required_evidence",
+            "cloud_escalation_reason",
+        ],
+        "forbidden_outputs": [
+            "final_authority",
+            "live_mutation",
+            "credential_use",
+            "external_write",
+            "unbounded_cloud_spend",
+        ],
+        "cloud_escalation_triggers": [
+            "authority_pressure",
+            "low_confidence",
+            "missing_evidence",
+            "no_promotion_record",
+            "no_test_or_receipt",
+            "operator_requests_certainty",
+        ],
+        "max_router_prompt_tokens": 1200,
+        "expected_cloud_context_reduction_pct": 60,
+        "model_calls_executed_by_contract": 0,
+    }
+
+
 def validate_local_planner_proposal(proposal: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     if not isinstance(proposal, dict):
@@ -121,6 +173,7 @@ def validate_local_planner_proposal(proposal: dict[str, Any]) -> list[str]:
 def build_row(row: dict[str, Any]) -> dict[str, Any]:
     decision, reason, cloud_candidate = _pre_llm_decision(row)
     local_planner_contract = _local_planner_contract(decision)
+    local_prefilter_contract = _local_prefilter_contract(row, decision)
     return {
         "skill_id": row.get("skill_id"),
         "domain": row.get("domain"),
@@ -131,6 +184,9 @@ def build_row(row: dict[str, Any]) -> dict[str, Any]:
         "decision_reason": reason,
         "local_planner_contract": local_planner_contract,
         "local_planner_contract_required": bool(local_planner_contract),
+        "local_prefilter_contract": local_prefilter_contract,
+        "local_prefilter_candidate": bool(local_prefilter_contract),
+        "cloud_verifier_required": cloud_candidate,
         "deterministic_bypass": decision == "bypass_llm_deterministic",
         "local_planner_candidate": decision
         in {"ask_spark_vllm_planner", "ask_ollama_planner"},
@@ -179,6 +235,24 @@ def build_report(route_policy: dict[str, Any]) -> dict[str, Any]:
             "local_planner_contract_required_count": sum(
                 1 for row in rows if row["local_planner_contract_required"]
             ),
+            "local_prefilter_candidate_count": sum(
+                1 for row in rows if row["local_prefilter_candidate"]
+            ),
+            "cloud_verifier_required_count": sum(
+                1 for row in rows if row["cloud_verifier_required"]
+            ),
+            "spark_prefilter_candidate_count": sum(
+                1
+                for row in rows
+                if row["local_prefilter_candidate"]
+                and row["selected_local_runtime_class"] == "spark_vllm"
+            ),
+            "ollama_prefilter_candidate_count": sum(
+                1
+                for row in rows
+                if row["local_prefilter_candidate"]
+                and row["selected_local_runtime_class"] == "ollama"
+            ),
             "spark_vllm_planner_candidate_count": sum(
                 1 for row in rows if row["pre_llm_decision"] == "ask_spark_vllm_planner"
             ),
@@ -206,6 +280,10 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Deterministic bypasses: `{summary['deterministic_bypass_count']}`",
         f"- Local planner candidates: `{summary['local_planner_candidate_count']}`",
         f"- Local planner contracts required: `{summary['local_planner_contract_required_count']}`",
+        f"- Local prefilter candidates: `{summary['local_prefilter_candidate_count']}`",
+        f"- Spark prefilter candidates: `{summary['spark_prefilter_candidate_count']}`",
+        f"- Ollama prefilter candidates: `{summary['ollama_prefilter_candidate_count']}`",
+        f"- Cloud verifier/final checks required: `{summary['cloud_verifier_required_count']}`",
         f"- Spark/vLLM planner candidates: `{summary['spark_vllm_planner_candidate_count']}`",
         f"- Ollama planner candidates: `{summary['ollama_planner_candidate_count']}`",
         f"- Cloud candidates requiring policy check: `{summary['cloud_candidate_requires_policy_check_count']}`",
