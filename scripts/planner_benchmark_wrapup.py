@@ -61,6 +61,10 @@ def _money(value: float) -> float:
     return round(max(0.0, value), 6)
 
 
+def _signed_money(value: float) -> float:
+    return round(float(value or 0.0), 6)
+
+
 def _readiness_status(*, ready: bool, blockers: list[str]) -> str:
     if ready:
         return "ready"
@@ -119,7 +123,14 @@ def build_report(
     )
     openai_frontier = _float(skill_summary, "openai_frontier_fast_xhigh_total_usd")
     spark_guarded = _float(skill_summary, "spark_guarded_pipeline_total_usd")
-    current_policy_savings = _float(route_summary, "estimated_cloud_savings_usd")
+    if "estimated_default_cloud_net_savings_usd" in route_summary:
+        current_policy_savings = _float(
+            route_summary, "estimated_default_cloud_net_savings_usd"
+        )
+    else:
+        current_policy_savings = _float(
+            route_summary, "estimated_cloud_savings_vs_bedrock_5_4_usd"
+        )
     spark_modeled_savings = _float(
         skill_summary, "spark_savings_vs_current_recommended_usd"
     )
@@ -171,7 +182,8 @@ def build_report(
         "ollama_route_count": ollama_route_count,
         "healthy_runtime_count": healthy_runtime_count,
         "local_promoted_role_count": local_promoted_role_count,
-        "current_policy_savings_usd": _money(current_policy_savings),
+        "current_policy_default_net_savings_usd": _signed_money(current_policy_savings),
+        "current_policy_savings_usd": _signed_money(current_policy_savings),
         "modeled_spark_savings_vs_recommended_usd": _money(spark_modeled_savings),
         "modeled_bedrock_vs_openai_frontier_savings_usd": bedrock_vs_openai_savings,
         "recommended_pipeline_cost_usd": _money(recommended_pipeline),
@@ -217,7 +229,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         "## Savings Evidence",
         "",
-        f"- Current policy savings: `${summary['current_policy_savings_usd']:.6f}`",
+        f"- Current policy net savings vs default: `${summary['current_policy_default_net_savings_usd']:.6f}`",
         f"- Modeled Spark savings vs recommended pipeline: `${summary['modeled_spark_savings_vs_recommended_usd']:.6f}`",
         f"- Modeled Bedrock-vs-OpenAI frontier savings: `${summary['modeled_bedrock_vs_openai_frontier_savings_usd']:.6f}`",
         "",

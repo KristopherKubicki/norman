@@ -102,21 +102,31 @@ def test_route_policy_prioritizes_local_and_counts_conservative_savings() -> Non
     assert rows["lookup"]["offline_first_route"] is True
     assert rows["lookup"]["estimated_cloud_savings_usd"] == 1.0
     assert rows["lookup"]["estimated_cloud_savings_vs_bedrock_5_4_usd"] == 0.5
+    assert rows["lookup"]["estimated_default_cloud_savings_usd"] == 0.5
+    assert rows["lookup"]["estimated_default_cloud_net_savings_usd"] == 0.5
     assert rows["draft"]["route_kind"] == "local_then_5_4_verifier"
     assert rows["draft"]["estimated_cloud_savings_usd"] == 1.25
     assert rows["draft"]["estimated_cloud_savings_vs_bedrock_5_4_usd"] == 0.0
+    assert rows["draft"]["estimated_default_cloud_net_savings_usd"] == 0.0
     assert rows["deploy"]["route_kind"] == "local_draft_final_hold"
     assert rows["deploy"]["estimated_cloud_savings_usd"] == 0.0
+    assert rows["deploy"]["estimated_default_cloud_savings_usd"] == 0.0
+    assert rows["deploy"]["estimated_default_cloud_net_savings_usd"] == -2.5
     assert rows["deploy"]["estimated_5_5_authority_premium_vs_bedrock_5_4_usd"] == 2.5
+    assert report["summary"]["default_cloud_baseline_model"] == "bedrock_5_4_xhigh"
     assert report["summary"]["baseline_all_bedrock_5_5_xhigh_cost_usd"] == 7.0
     assert report["summary"]["baseline_all_bedrock_5_4_xhigh_cost_usd"] == 2.75
+    assert report["summary"]["baseline_default_cloud_cost_usd"] == 2.75
     assert report["summary"]["baseline_recommended_pipeline_cost_usd"] == 2.75
     assert report["summary"]["estimated_policy_cloud_cost_usd"] == 4.75
     assert report["summary"]["estimated_policy_cloud_cost_vs_bedrock_5_4_usd"] == 4.75
+    assert report["summary"]["estimated_policy_default_cloud_cost_usd"] == 4.75
     assert report["summary"]["estimated_cloud_savings_usd"] == 2.25
     assert report["summary"]["estimated_cloud_savings_pct"] == 32.14
     assert report["summary"]["estimated_cloud_savings_vs_bedrock_5_4_usd"] == 0.5
     assert report["summary"]["estimated_cloud_savings_vs_bedrock_5_4_pct"] == 18.18
+    assert report["summary"]["estimated_default_cloud_savings_usd"] == 0.5
+    assert report["summary"]["estimated_default_cloud_net_savings_usd"] == -2.0
     assert report["summary"]["estimated_cloud_savings_vs_recommended_usd"] == 0.5
     assert (
         report["summary"]["estimated_5_5_authority_premium_vs_bedrock_5_4_usd"] == 2.5

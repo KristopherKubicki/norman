@@ -12,6 +12,7 @@ from typing import Any
 
 
 SCHEMA = "norman.local-model-route-policy.v1"
+DEFAULT_CLOUD_BASELINE_MODEL = "bedrock_5_4_xhigh"
 DEFAULT_SKILL_FLOORS_JSON = Path("tmp/local_model_skill_floors.json")
 DEFAULT_SKILL_MATRIX_JSON = Path("tmp/work_domain_skill_matrix.json")
 DEFAULT_PRESSURE_GUARD_JSON = Path(
@@ -45,6 +46,10 @@ def _pct(value: float) -> float:
 
 def _round_usd(value: float) -> float:
     return round(max(0.0, value), 6)
+
+
+def _round_money(value: float) -> float:
+    return round(float(value or 0.0), 6)
 
 
 def _matrix_by_skill(skill_matrix: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -239,9 +244,14 @@ def build_policy_row(
     savings_vs_recommended = max(
         0.0, recommended_cost - estimated_cloud_cost_vs_recommended
     )
+    default_cloud_net_savings = baseline_5_4_cost - estimated_cloud_cost_vs_5_4
+    recommended_net_savings = recommended_cost - estimated_cloud_cost_vs_recommended
     savings_rate = savings / baseline_5_5_cost if baseline_5_5_cost else 0.0
     savings_vs_5_4_rate = (
         savings_vs_5_4 / baseline_5_4_cost if baseline_5_4_cost else 0.0
+    )
+    default_cloud_net_savings_rate = (
+        default_cloud_net_savings / baseline_5_4_cost if baseline_5_4_cost else 0.0
     )
     savings_vs_recommended_rate = (
         savings_vs_recommended / recommended_cost if recommended_cost else 0.0
@@ -298,9 +308,13 @@ def build_policy_row(
         "final_authority_required": bool(floor_row.get("final_authority_required")),
         "baseline_all_bedrock_5_5_xhigh_cost_usd": _round_usd(baseline_5_5_cost),
         "baseline_all_bedrock_5_4_xhigh_cost_usd": _round_usd(baseline_5_4_cost),
+        "baseline_default_cloud_cost_usd": _round_usd(baseline_5_4_cost),
         "baseline_recommended_pipeline_cost_usd": _round_usd(recommended_cost),
         "estimated_policy_cloud_cost_usd": _round_usd(estimated_cloud_cost),
         "estimated_policy_cloud_cost_vs_bedrock_5_4_usd": _round_usd(
+            estimated_cloud_cost_vs_5_4
+        ),
+        "estimated_policy_default_cloud_cost_usd": _round_usd(
             estimated_cloud_cost_vs_5_4
         ),
         "estimated_policy_cloud_cost_vs_recommended_usd": _round_usd(
@@ -310,10 +324,17 @@ def build_policy_row(
         "estimated_cloud_savings_pct": _pct(savings_rate),
         "estimated_cloud_savings_vs_bedrock_5_4_usd": _round_usd(savings_vs_5_4),
         "estimated_cloud_savings_vs_bedrock_5_4_pct": _pct(savings_vs_5_4_rate),
+        "estimated_default_cloud_savings_usd": _round_usd(savings_vs_5_4),
+        "estimated_default_cloud_savings_pct": _pct(savings_vs_5_4_rate),
+        "estimated_default_cloud_net_savings_usd": _round_money(
+            default_cloud_net_savings
+        ),
+        "estimated_default_cloud_net_savings_pct": _pct(default_cloud_net_savings_rate),
         "estimated_cloud_savings_vs_recommended_usd": _round_usd(
             savings_vs_recommended
         ),
         "estimated_cloud_savings_vs_recommended_pct": _pct(savings_vs_recommended_rate),
+        "estimated_recommended_net_savings_usd": _round_money(recommended_net_savings),
         "estimated_5_5_authority_premium_vs_bedrock_5_4_usd": _round_usd(
             authority_premium_vs_5_4
         ),
@@ -379,8 +400,14 @@ def build_report(
     savings_vs_5_4_total = sum(
         _num(row.get("estimated_cloud_savings_vs_bedrock_5_4_usd")) for row in rows
     )
+    default_cloud_net_savings_total = sum(
+        float(row.get("estimated_default_cloud_net_savings_usd") or 0) for row in rows
+    )
     savings_vs_recommended_total = sum(
         _num(row.get("estimated_cloud_savings_vs_recommended_usd")) for row in rows
+    )
+    recommended_net_savings_total = sum(
+        float(row.get("estimated_recommended_net_savings_usd") or 0) for row in rows
     )
     authority_premium_vs_5_4_total = sum(
         _num(row.get("estimated_5_5_authority_premium_vs_bedrock_5_4_usd"))
@@ -390,6 +417,13 @@ def build_report(
         rows,
         key=lambda row: (
             -_num(row.get("estimated_cloud_savings_usd")),
+            str(row.get("skill_id") or ""),
+        ),
+    )[:12]
+    top_default_savings = sorted(
+        rows,
+        key=lambda row: (
+            -_num(row.get("estimated_default_cloud_savings_usd")),
             str(row.get("skill_id") or ""),
         ),
     )[:12]
@@ -403,8 +437,10 @@ def build_report(
         "pressure_admission": _pressure_admission(pressure_guard),
         "summary": {
             "skill_count": len(rows),
+            "default_cloud_baseline_model": DEFAULT_CLOUD_BASELINE_MODEL,
             "baseline_all_bedrock_5_5_xhigh_cost_usd": _round_usd(baseline_total),
             "baseline_all_bedrock_5_4_xhigh_cost_usd": _round_usd(baseline_5_4_total),
+            "baseline_default_cloud_cost_usd": _round_usd(baseline_5_4_total),
             "baseline_recommended_pipeline_cost_usd": _round_usd(
                 recommended_baseline_total
             ),
@@ -412,6 +448,7 @@ def build_report(
             "estimated_policy_cloud_cost_vs_bedrock_5_4_usd": _round_usd(
                 policy_vs_5_4_total
             ),
+            "estimated_policy_default_cloud_cost_usd": _round_usd(policy_vs_5_4_total),
             "estimated_policy_cloud_cost_vs_recommended_usd": _round_usd(
                 policy_vs_recommended_total
             ),
@@ -425,6 +462,18 @@ def build_report(
             "estimated_cloud_savings_vs_bedrock_5_4_pct": _pct(
                 savings_vs_5_4_total / baseline_5_4_total if baseline_5_4_total else 0.0
             ),
+            "estimated_default_cloud_savings_usd": _round_usd(savings_vs_5_4_total),
+            "estimated_default_cloud_savings_pct": _pct(
+                savings_vs_5_4_total / baseline_5_4_total if baseline_5_4_total else 0.0
+            ),
+            "estimated_default_cloud_net_savings_usd": _round_money(
+                default_cloud_net_savings_total
+            ),
+            "estimated_default_cloud_net_savings_pct": _pct(
+                default_cloud_net_savings_total / baseline_5_4_total
+                if baseline_5_4_total
+                else 0.0
+            ),
             "estimated_cloud_savings_vs_recommended_usd": _round_usd(
                 savings_vs_recommended_total
             ),
@@ -432,6 +481,9 @@ def build_report(
                 savings_vs_recommended_total / recommended_baseline_total
                 if recommended_baseline_total
                 else 0.0
+            ),
+            "estimated_recommended_net_savings_usd": _round_money(
+                recommended_net_savings_total
             ),
             "estimated_5_5_authority_premium_vs_bedrock_5_4_usd": _round_usd(
                 authority_premium_vs_5_4_total
@@ -472,11 +524,18 @@ def build_report(
             "savings_vs_bedrock_5_4_by_route_kind_usd": _sum_by(
                 rows, "route_kind", "estimated_cloud_savings_vs_bedrock_5_4_usd"
             ),
+            "default_cloud_savings_by_route_kind_usd": _sum_by(
+                rows, "route_kind", "estimated_default_cloud_savings_usd"
+            ),
             "savings_by_domain_usd": _sum_by(
                 rows, "domain", "estimated_cloud_savings_usd"
             ),
+            "default_cloud_savings_by_domain_usd": _sum_by(
+                rows, "domain", "estimated_default_cloud_savings_usd"
+            ),
         },
         "top_savings": top_savings,
+        "top_default_savings": top_default_savings,
         "rows": rows,
     }
 
@@ -490,11 +549,16 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Dry run only: `{str(report.get('dry_run_only')).lower()}`",
         f"- Model calls executed: `{report.get('model_calls_executed')}`",
         f"- Skills covered: `{summary['skill_count']}`",
+        f"- Default cloud baseline: `{summary['default_cloud_baseline_model']}`",
+        f"- Baseline default cloud cost: `${summary['baseline_default_cloud_cost_usd']:.6f}`",
+        f"- Estimated policy cost vs default: `${summary['estimated_policy_default_cloud_cost_usd']:.6f}`",
+        f"- Estimated net savings vs default: `${summary['estimated_default_cloud_net_savings_usd']:.6f}` ({summary['estimated_default_cloud_net_savings_pct']:.2f}%)",
+        f"- Estimated positive savings vs default: `${summary['estimated_default_cloud_savings_usd']:.6f}` ({summary['estimated_default_cloud_savings_pct']:.2f}%)",
         f"- Baseline all-Bedrock-5.5-xhigh cost: `${summary['baseline_all_bedrock_5_5_xhigh_cost_usd']:.6f}`",
         f"- Baseline all-Bedrock-5.4-xhigh cost: `${summary['baseline_all_bedrock_5_4_xhigh_cost_usd']:.6f}`",
         f"- Baseline recommended pipeline cost: `${summary['baseline_recommended_pipeline_cost_usd']:.6f}`",
         f"- Estimated policy cloud cost: `${summary['estimated_policy_cloud_cost_usd']:.6f}`",
-        f"- Estimated cloud savings vs all-5.5: `${summary['estimated_cloud_savings_usd']:.6f}` ({summary['estimated_cloud_savings_pct']:.2f}%)",
+        f"- Estimated cloud savings vs all-5.5 comparison: `${summary['estimated_cloud_savings_usd']:.6f}` ({summary['estimated_cloud_savings_pct']:.2f}%)",
         f"- Estimated cloud savings vs all-5.4: `${summary['estimated_cloud_savings_vs_bedrock_5_4_usd']:.6f}` ({summary['estimated_cloud_savings_vs_bedrock_5_4_pct']:.2f}%)",
         f"- Estimated cloud savings vs recommended: `${summary['estimated_cloud_savings_vs_recommended_usd']:.6f}` ({summary['estimated_cloud_savings_vs_recommended_pct']:.2f}%)",
         f"- Estimated 5.5 authority premium vs all-5.4: `${summary['estimated_5_5_authority_premium_vs_bedrock_5_4_usd']:.6f}`",
@@ -528,13 +592,13 @@ def render_markdown(report: dict[str, Any]) -> str:
             "- Final-authority work can still use local drafts, but savings are not counted until context-shrink evidence proves the 5.5 final pass is smaller.",
             "- Pressure-aware routing can defer cloud-heavy work while still allowing local/status work.",
             "",
-            "## Top Savings Cases",
+            "## Top Default-Baseline Savings Cases",
             "",
             "| Skill | Case | Route | Runtime | Local model | Savings | Why |",
             "| --- | --- | --- | --- | --- | ---: | --- |",
         ]
     )
-    for row in report.get("top_savings") or []:
+    for row in report.get("top_default_savings") or []:
         lines.append(
             "| {skill} | {case} | {route} | {runtime} | {model} | ${savings:.6f} | {why} |".format(
                 skill=row.get("skill_id") or "",
@@ -542,7 +606,7 @@ def render_markdown(report: dict[str, Any]) -> str:
                 route=row.get("route_kind") or "",
                 runtime=row.get("selected_local_runtime_class") or "-",
                 model=row.get("selected_local_model") or "",
-                savings=_num(row.get("estimated_cloud_savings_usd")),
+                savings=_num(row.get("estimated_default_cloud_savings_usd")),
                 why=row.get("counted_savings_reason") or "",
             )
         )
