@@ -1,0 +1,33 @@
+{
+  "schema": "norman.tui.memory-retrieval-benchmark-cases.v1",
+  "cases": [
+    {
+      "id": "panelbot-upload-callback",
+      "kind": "vector_helps",
+      "query": "panelbot upload handoff callback",
+      "expected_terms": ["panelbot", "upload"],
+      "notes": "Old session chunk where chunk-level vector ranking should beat broad FTS turn ranking."
+    },
+    {
+      "id": "work-special-wedged-ssh",
+      "kind": "hybrid_should_find",
+      "query": "work special wedged ssh banner io pressure",
+      "expected_terms": ["work", "ssh"],
+      "notes": "Recent operational recovery context; exact terms should be enough."
+    },
+    {
+      "id": "metadata-only-session-turn-id",
+      "kind": "metadata_should_find",
+      "query": "019e6d5c-199c-7480-a56e-190ef8f57d3a",
+      "expected_terms": ["019e6d5c"],
+      "notes": "Session turn IDs live in metadata; the metadata lane should recover them."
+    },
+    {
+      "id": "semantic-synonym-gap",
+      "kind": "known_gap",
+      "query": "ssl browser warning blocked file send",
+      "expected_terms": ["cert", "upload"],
+      "notes": "Sparse local vectors are not neural semantic embeddings; synonym-only queries can miss."
+    }
+  ]
+}

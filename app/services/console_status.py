@@ -167,6 +167,24 @@ def console_accounting_state(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: str(accounting.get(key) or "").strip() for key in ACCOUNTING_KEYS}
 
 
+def console_storage_state(payload: dict[str, Any]) -> dict[str, Any]:
+    preview = (
+        payload.get("context_pack_preview")
+        if isinstance(payload.get("context_pack_preview"), dict)
+        else {}
+    )
+    storage = preview.get("storage") if isinstance(preview.get("storage"), dict) else {}
+    state_db_enabled = storage.get("state_db_enabled")
+    return {
+        "storage": dict(storage),
+        "state_db_enabled": state_db_enabled
+        if isinstance(state_db_enabled, bool)
+        else None,
+        "state_db_path": str(storage.get("state_db_path") or "").strip(),
+        "history_format": str(storage.get("history_format") or "").strip(),
+    }
+
+
 def _console_request_token(query_items: dict[str, str], access_token: str = "") -> str:
     explicit = str(access_token or "").strip()
     if explicit:
@@ -262,6 +280,7 @@ def fetch_console_status(
         "auth_summary": "",
         "auth_verification_url": "",
         "auth_device_code": "",
+        **console_storage_state({}),
         **console_usage_state({}),
         **console_accounting_state({}),
     }
@@ -332,6 +351,7 @@ def fetch_console_status(
             "default_speed": str(payload.get("default_speed") or "").strip().lower(),
             "default_detail": default_detail,
             **console_auth_state(payload),
+            **console_storage_state(payload),
             **console_usage_state(payload),
             **console_accounting_state(payload),
         }

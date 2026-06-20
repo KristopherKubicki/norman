@@ -130,6 +130,33 @@ def _create_state_db(path: Path) -> None:
                     "usage": {"total_tokens": 25000, "output_tokens": 1200},
                 },
             ),
+            (
+                "visible-low-yield",
+                "thread-d",
+                400,
+                415,
+                "codex",
+                "gpt-5.5",
+                "balanced",
+                "flex",
+                1,
+                295648,
+                "what improvements remain on the context sheet?",
+                "Short answer.\n\nIt needs clearer status badges and better coverage.",
+                "",
+                {
+                    "prompt": "what improvements remain on the context sheet?",
+                    "response": "Short answer.\n\n"
+                    + "It needs clearer status badges and better coverage. " * 25,
+                    "usage": {
+                        "input_tokens": 290573,
+                        "cached_input_tokens": 217344,
+                        "output_tokens": 5075,
+                        "reasoning_output_tokens": 2167,
+                        "total_tokens": 295648,
+                    },
+                },
+            ),
         ]
         conn.executemany(
             """
@@ -217,6 +244,31 @@ def _create_state_db(path: Path) -> None:
                 0,
                 "{}",
             ),
+            (
+                "usage-visible-low-yield",
+                "thread-d",
+                400,
+                415,
+                "codex",
+                "gpt-5.5",
+                "balanced",
+                "flex",
+                1,
+                290573,
+                217344,
+                5075,
+                2167,
+                295648,
+                "per_turn",
+                "",
+                "[]",
+                "",
+                "[]",
+                "[]",
+                0,
+                0,
+                "{}",
+            ),
         ]
         conn.executemany(
             """
@@ -249,6 +301,7 @@ def test_benchmark_classifies_short_stops_and_zero_failures(
 
     assert report["schema"] == "norman.tui.bedrock-shortstop-benchmark.v1"
     assert report["summary"]["categories"] == {
+        "low_yield": 1,
         "short_stop": 1,
         "useful_or_unclassified": 1,
         "zero_transport": 1,
@@ -256,9 +309,23 @@ def test_benchmark_classifies_short_stops_and_zero_failures(
     kpi = report["summary"]["tuis"][0]
     assert kpi["short_stop_reasoning_zero"] == 1
     assert kpi["short_stop_with_request_ids"] == 1
+    assert report["summary"]["mechanisms"]["future_work_promise"] == 1
+    assert report["summary"]["mechanisms"]["provider_zero_transport"] == 1
+    assert report["summary"]["mechanisms"]["thin_output"] == 1
+    assert report["summary"]["mechanisms"]["zero_reasoning"] == 2
+    assert (
+        "Auto-continue" in report["summary"]["mechanism_hints"]["future_work_promise"]
+    )
     short = next(row for row in report["rows"] if row["turn_id"] == "short")
     assert short["category"] == "short_stop"
     assert "final response promises future work" in short["reasons"]
+    assert short["mechanisms"] == ["future_work_promise", "zero_reasoning"]
+    low_yield = next(
+        row for row in report["rows"] if row["turn_id"] == "visible-low-yield"
+    )
+    assert low_yield["category"] == "low_yield"
+    assert "short visible response chars" in " ".join(low_yield["reasons"])
+    assert "thin_output" in low_yield["mechanisms"]
 
 
 def test_cli_writes_report(tmp_path: Path, monkeypatch) -> None:
@@ -288,4 +355,8 @@ def test_cli_writes_report(tmp_path: Path, monkeypatch) -> None:
 
     assert report["run"]["databases"][0]["label"] == "kpi"
     assert report["summary"]["categories"]["short_stop"] == 1
-    assert "TUI Bedrock Short-Stop Benchmark" in output_md.read_text(encoding="utf-8")
+    assert report["summary"]["categories"]["low_yield"] == 1
+    markdown = output_md.read_text(encoding="utf-8")
+    assert "TUI Bedrock Short-Stop Benchmark" in markdown
+    assert "## Mechanisms" in markdown
+    assert "future_work_promise" in markdown

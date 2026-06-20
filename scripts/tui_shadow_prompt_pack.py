@@ -67,9 +67,59 @@ def _rules(case: dict[str, Any], key: str) -> list[str]:
                 terms.append(values)
             elif isinstance(values, list):
                 terms.extend(str(item) for item in values if str(item or "").strip())
+        forbidden = rule.get("forbidden_terms")
+        if isinstance(forbidden, str):
+            terms.append(f"avoid: {forbidden}")
+        elif isinstance(forbidden, list):
+            terms.extend(
+                f"avoid: {item}" for item in forbidden if str(item or "").strip()
+            )
         suffix = f": {', '.join(terms)}" if terms else ""
         output.append(f"{label}{suffix}")
     return output
+
+
+def _answer_contract_lines(case: dict[str, Any]) -> list[str]:
+    contract = case.get("answer_contract")
+    if not isinstance(contract, dict):
+        return []
+    lines: list[str] = []
+    min_words = _coerce_int(contract.get("min_response_words"))
+    if min_words > 0:
+        lines.append(f"Minimum response words: {min_words}")
+    min_sentences = _coerce_int(contract.get("min_sentences"))
+    if min_sentences > 0:
+        lines.append(f"Minimum sentences: {min_sentences}")
+    for key, label in (
+        ("required_sections", "Required sections"),
+        ("required_terms", "Required terms"),
+        ("forbidden_terms", "Forbidden terms"),
+    ):
+        values = contract.get(key)
+        if isinstance(values, str):
+            lines.append(f"{label}: {values}")
+        elif isinstance(values, list):
+            cleaned = [str(item) for item in values if str(item or "").strip()]
+            if cleaned:
+                lines.append(f"{label}: {', '.join(cleaned)}")
+    for key, label in (
+        ("requires_next_step", "Include an explicit next step or validation probe"),
+        ("requires_caveat", "Include a caveat, hold, or safety guard"),
+        ("requires_uncertainty", "State uncertainty or confidence"),
+        ("requires_comparison", "Compare options or tradeoffs"),
+        (
+            "requires_observed_vs_expected",
+            "Contrast observed signals with expected or baseline behavior",
+        ),
+    ):
+        if contract.get(key):
+            lines.append(label)
+    min_reasoning_markers = _coerce_int(contract.get("min_reasoning_markers"))
+    if min_reasoning_markers > 0:
+        lines.append(
+            f"Use at least {min_reasoning_markers} reasoning markers (for example evidence, hypothesis, tradeoff, uncertainty, next)"
+        )
+    return lines
 
 
 def _case_by_id(cases: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
@@ -199,6 +249,7 @@ def build_prompt(
         + _rules(case, "wisdom_checks")
     )
     traps = _rules(case, "known_traps")
+    answer_contract = _answer_contract_lines(case)
     lines = [
         "# TUI Shadow Answer Prompt",
         "",
@@ -226,20 +277,34 @@ def build_prompt(
         "",
         _format_list(benchmark_facts),
         "",
-        "## Avoid",
-        "",
-        _format_list(
-            traps
-            + [
-                "Do not claim exact invoice-grade spend unless the usage mode is normalized.",
-                "Do not claim live prompt behavior has changed during a dry-run preview.",
-                "Do not claim activation is safe while a shadow-before-activation gate remains.",
-            ]
-        ),
-        "",
-        "## Answer",
-        "",
     ]
+    if answer_contract:
+        lines.extend(
+            [
+                "## Answer Contract",
+                "",
+                _format_list(answer_contract),
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            "## Avoid",
+            "",
+            _format_list(
+                traps
+                + [
+                    "Do not claim exact invoice-grade spend unless the usage mode is normalized.",
+                    "Do not claim live prompt behavior has changed during a dry-run preview.",
+                    "Do not claim activation is safe while a shadow-before-activation gate remains.",
+                    "Do not answer with a shallow status-only summary when the case requires reasoning, comparison, or uncertainty handling.",
+                ]
+            ),
+            "",
+            "## Answer",
+            "",
+        ]
+    )
     return "\n".join(lines)
 
 

@@ -1,0 +1,9 @@
+[Unit]
+Description=Run Norman TUI host self-heal when fleet doctor state changes
+
+[Path]
+PathChanged=/home/kristopher/.local/state/norman/tui-fleet-doctor.json
+Unit=norman-tui-host-self-heal.service
+
+[Install]
+WantedBy=multi-user.target

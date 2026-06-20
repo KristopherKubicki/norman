@@ -6,6 +6,7 @@ import html
 import hashlib
 import json
 import os
+import re
 import shlex
 import socket
 import subprocess
@@ -28,6 +29,7 @@ SOURCE_FILES = {
     "bbs-lifecycle": SCRIPT_DIR / "bbs_task_lifecycle.py",
     "bbs-janitor": SCRIPT_DIR / "bbs_janitor.py",
     "memory-tool": SCRIPT_DIR / "tui_memory_tool.py",
+    "vector-preflight": SCRIPT_DIR / "tui_vector_preflight.py",
     "soul-loader": SCRIPT_DIR / "compose_soul_context.py",
     "soul-validator": SCRIPT_DIR / "validate_soul_md.py",
 }
@@ -121,7 +123,7 @@ INSTANCE_PUBLIC_HOST_OVERRIDES: dict[str, str] = {
     "parkergale": "pefb.home.arpa",
     "phone-ops": "phone.home.arpa",
     "platinum-standard": "platinum.kris.openbrand.com",
-    "scout": "scout.kris.openbrand.com",
+    "scout": "ranger.kris.openbrand.com",
     "studio": "studio.home.arpa",
     "switchboard": "switchboard.home.arpa",
     "theseus": "theseus.home.arpa",
@@ -136,6 +138,7 @@ INSTANCE_CONSOLE_URL_OVERRIDES: dict[str, str] = {
 }
 INSTANCE_LOCAL_HOST_ALIAS_OVERRIDES: dict[str, tuple[str, ...]] = {
     "phone-ops": ("phone.home.arpa", "phoneops.home.arpa"),
+    "scout": ("ranger.home.arpa", "scoutbot.home.arpa"),
 }
 PROMOTED_FOLD_INSTANCES: tuple[tuple[str, str, str, int], ...] = (
     ("phone-ops", "Phone Ops", "Personal", 170),
@@ -343,6 +346,7 @@ class ConsoleInstance:
         helper_path = str(launch_dir / "bbs_task_lifecycle.py")
         janitor_path = str(launch_dir / "bbs_janitor.py")
         memory_tool_path = str(launch_dir / "tui_memory_tool.py")
+        vector_preflight_path = str(launch_dir / "tui_vector_preflight.py")
         soul_loader_path = str(launch_dir / "compose_soul_context.py")
         soul_validator_path = str(launch_dir / "validate_soul_md.py")
         return (
@@ -352,6 +356,7 @@ class ConsoleInstance:
             ("bbs-lifecycle", helper_path),
             ("bbs-janitor", janitor_path),
             ("memory-tool", memory_tool_path),
+            ("vector-preflight", vector_preflight_path),
             ("soul-loader", soul_loader_path),
             ("soul-validator", soul_validator_path),
         )
@@ -474,7 +479,7 @@ INSTANCE_LABEL_OVERRIDES = {
     "parkergale": "PEFB",
     "phone-ops": "Phone Ops",
     "platinum-standard": "Platinum Standard",
-    "scout": "Scout",
+    "scout": "Ranger",
     "studio": "Studio",
     "tmi-dashboards": "TMI Dashboards",
     "tv": "TV",
@@ -488,7 +493,7 @@ INSTANCE_PROMPT_PLACEHOLDER_OVERRIDES = {
     "mls": "Ask MLS to inspect listings, summarize property intelligence, or compare candidate homes.",
     "parkergale": "Ask PEFB to inspect the deal room, summarize the thesis, or revise a confidential memo.",
     "platinum-standard": "Ask Platinum Standard to inspect releases, validation inputs, baselines, or a targeted workflow issue.",
-    "scout": "Ask Scout/Ranger for research collection only: refine watchlists, normalize Perplexity findings, or package a research packet.",
+    "scout": "Ask Ranger for research collection only: refine watchlists, normalize Perplexity findings, or package a research packet.",
     "studio": "Ask Studio to tie DJ, TV, Autocamera, and Glimpser into a cleaner control-room flow.",
     "tv": "Ask TV to shape channels, live sources, camera integrations, or the lean-back viewing surface.",
 }
@@ -549,6 +554,18 @@ WORK_BILLING_INSTANCES = frozenset(WORK_SPECIAL_SAL_CONSOLE_INSTANCES) | {
     "mls",
     "work-special",
 }
+
+
+def comma_split_env(name: str, default: Iterable[str] = ()) -> tuple[str, ...]:
+    raw = os.environ.get(name)
+    if raw is None:
+        return tuple(value for value in default if str(value or "").strip())
+    return tuple(value for value in (item.strip() for item in raw.split(",")) if value)
+
+
+WORK_CONFIG_HOSTS = frozenset(
+    comma_split_env("NORMAN_SYNC_WORK_CONFIG_HOSTS", ("work-special",))
+) | frozenset(comma_split_env("NORMAN_SYNC_WORK_CONFIG_EXTRA_HOSTS"))
 WORK_BEDROCK_DEFAULT_ENABLED = os.environ.get(
     "NORMAN_SYNC_WORK_BEDROCK_DEFAULT_ENABLED", "1"
 ).strip().lower() in {"1", "true", "yes", "on"}
@@ -637,6 +654,25 @@ WORK_DIRECT_FALLBACK_MODEL = os.environ.get(
 WORK_DIRECT_TIERS_ENABLED = os.environ.get(
     "NORMAN_SYNC_WORK_DIRECT_TIERS_ENABLED", "1"
 ).strip().lower() in {"1", "true", "yes", "on"}
+DEFAULT_LOCAL_LLM_FALLBACK_MODEL = (
+    os.environ.get("NORMAN_SYNC_LOCAL_LLM_FALLBACK_MODEL", "local-llm").strip()
+    or "local-llm"
+)
+DEFAULT_LOCAL_LLM_SENSE_JSON = Path(
+    os.environ.get(
+        "NORMAN_SYNC_LOCAL_LLM_SENSE_JSON",
+        str(SCRIPT_DIR.parent / "tmp" / "ollama_sense_live.json"),
+    ).strip()
+    or (SCRIPT_DIR.parent / "tmp" / "ollama_sense_live.json")
+)
+DEFAULT_LOCAL_LLM_EXTRA_SENSE_JSONS = tuple(
+    Path(item.strip())
+    for item in os.environ.get(
+        "NORMAN_SYNC_LOCAL_LLM_SENSE_JSONS",
+        str(SCRIPT_DIR.parent / "tmp" / "vllm_sense_live.json"),
+    ).split(os.pathsep)
+    if item.strip()
+)
 
 
 def comma_join_unique(values: Iterable[str]) -> str:
@@ -651,6 +687,123 @@ def comma_join_unique(values: Iterable[str]) -> str:
     return ",".join(unique)
 
 
+def _local_llm_capacity_rank(model: str) -> int:
+    name = str(model or "").strip().lower()
+    if not name:
+        return 0
+    if "llama3.2:1b" in name or re.search(r"(^|:)1b\b", name):
+        return 1
+    if any(token in name for token in ("120b", "122b", "235b")):
+        return 4
+    if "coder-next" in name or "35b" in name:
+        return 3
+    if "gpt-oss:20b" in name or "30b" in name:
+        return 2
+    return 2
+
+
+def _local_llm_order_key(model: str) -> tuple[int, int, int, str]:
+    name = str(model or "").strip().lower()
+    return (
+        -_local_llm_capacity_rank(name),
+        1 if "vl" in name else 0,
+        1 if "coder" in name else 0,
+        name,
+    )
+
+
+def _load_local_llm_sense_payload() -> dict:
+    try:
+        payload = json.loads(DEFAULT_LOCAL_LLM_SENSE_JSON.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _load_local_llm_sense_payloads() -> list[dict]:
+    payloads: list[dict] = []
+    primary = _load_local_llm_sense_payload()
+    if primary:
+        payloads.append(primary)
+    for path in DEFAULT_LOCAL_LLM_EXTRA_SENSE_JSONS:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict) and payload:
+            payloads.append(payload)
+    return payloads
+
+
+def _online_local_llm_endpoints(payload: dict) -> list[dict]:
+    endpoints: list[dict] = []
+    for endpoint in payload.get("endpoints") or []:
+        if not isinstance(endpoint, dict) or not endpoint.get("ok"):
+            continue
+        endpoint_url = str(endpoint.get("endpoint") or "").strip()
+        if not endpoint_url:
+            continue
+        endpoints.append(endpoint)
+    return endpoints
+
+
+def discovered_local_llm_models() -> tuple[str, ...]:
+    explicit = [
+        item.strip()
+        for item in os.environ.get("NORMAN_SYNC_LOCAL_LLM_MODELS", "").split(",")
+        if item.strip()
+    ]
+    if explicit:
+        return tuple(comma_join_unique(explicit).split(","))
+    discovered: list[str] = []
+    for payload in _load_local_llm_sense_payloads():
+        for endpoint in _online_local_llm_endpoints(payload):
+            for model in endpoint.get("models") or []:
+                clean = str(model or "").strip()
+                if clean:
+                    discovered.append(clean)
+    ordered = sorted(
+        comma_join_unique(discovered).split(",") if discovered else [],
+        key=_local_llm_order_key,
+    )
+    return tuple(model for model in ordered if model)
+
+
+def discovered_local_llm_endpoints() -> tuple[str, ...]:
+    explicit = [
+        item.strip()
+        for item in os.environ.get("NORMAN_SYNC_LOCAL_LLM_ENDPOINTS", "").split(",")
+        if item.strip()
+    ]
+    if explicit:
+        return tuple(comma_join_unique(explicit).split(","))
+    endpoints: list[str] = []
+    for payload in _load_local_llm_sense_payloads():
+        endpoints.extend(
+            str(endpoint.get("endpoint") or "").strip()
+            for endpoint in _online_local_llm_endpoints(payload)
+        )
+    return tuple(comma_join_unique(tuple(endpoints)).split(",")) if endpoints else ()
+
+
+def discovered_local_llm_model_endpoints() -> dict[str, list[str]]:
+    model_endpoints: dict[str, list[str]] = {}
+    for payload in _load_local_llm_sense_payloads():
+        for endpoint in _online_local_llm_endpoints(payload):
+            endpoint_url = str(endpoint.get("endpoint") or "").strip()
+            for model in endpoint.get("models") or []:
+                clean = str(model or "").strip()
+                if not clean:
+                    continue
+                model_endpoints.setdefault(clean, [])
+                if endpoint_url not in model_endpoints[clean]:
+                    model_endpoints[clean].append(endpoint_url)
+    return {
+        model: model_endpoints[model]
+        for model in sorted(model_endpoints, key=_local_llm_order_key)
+    }
+
+
 WORK_SWITCHABLE_MODELS = comma_join_unique(
     (
         WORK_BEDROCK_MODEL,
@@ -663,6 +816,20 @@ WORK_SWITCHABLE_MODELS = comma_join_unique(
 )
 WORK_DIRECT_SWITCHABLE_MODELS = comma_join_unique(
     (WORK_DIRECT_MODEL, WORK_DIRECT_FALLBACK_MODEL)
+)
+LOCAL_LLM_MODELS = discovered_local_llm_models()
+LOCAL_LLM_ENDPOINTS = discovered_local_llm_endpoints()
+LOCAL_LLM_MODEL_ENDPOINTS = discovered_local_llm_model_endpoints()
+LOCAL_LLM_DEFAULT_MODEL = os.environ.get(
+    "NORMAN_SYNC_LOCAL_LLM_MODEL",
+    LOCAL_LLM_MODELS[0] if LOCAL_LLM_MODELS else DEFAULT_LOCAL_LLM_FALLBACK_MODEL,
+).strip() or (
+    LOCAL_LLM_MODELS[0] if LOCAL_LLM_MODELS else DEFAULT_LOCAL_LLM_FALLBACK_MODEL
+)
+LOCAL_LLM_MODELS_CSV = comma_join_unique((LOCAL_LLM_DEFAULT_MODEL, *LOCAL_LLM_MODELS))
+LOCAL_LLM_ENDPOINTS_CSV = comma_join_unique(LOCAL_LLM_ENDPOINTS)
+LOCAL_LLM_MODEL_ENDPOINTS_JSON = json.dumps(
+    LOCAL_LLM_MODEL_ENDPOINTS, separators=(",", ":"), sort_keys=True
 )
 WORK_RUNTIME_DEFAULT_MODEL_RESET = os.environ.get(
     "NORMAN_SYNC_WORK_RUNTIME_DEFAULT_MODEL_RESET", "0"
@@ -767,6 +934,13 @@ WORK_ZERO_TOKEN_PROVIDER_MAX_RETRIES = os.environ.get(
     )
     else "1",
 ).strip()
+
+
+def instance_uses_work_config(host: DiscoveryHost, instance: ConsoleInstance) -> bool:
+    del instance
+    return host.name in WORK_CONFIG_HOSTS
+
+
 DEFAULT_ROUTE_RECEIPT_DIR = os.environ.get(
     "NORMAN_SYNC_ROUTE_RECEIPT_DIR", "/var/lib/norman/route_receipts"
 ).strip()
@@ -1522,13 +1696,14 @@ def sync_instance_origin_settings(
 ) -> bool:
     aliases = []
     canonical_host = instance_public_host(instance)
-    billing_scope = (
-        "work-special" if instance.name in WORK_BILLING_INSTANCES else host.name
-    )
+    uses_work_config = instance_uses_work_config(host, instance)
+    billing_scope = "work-special" if uses_work_config else host.name
     billing_owner = "openbrand" if billing_scope == "work-special" else "kristopher"
     billing_actor = BBS_ACTOR_OVERRIDES.get(instance.name, instance.name)
     soul_actor = BBS_ACTOR_OVERRIDES.get(instance.name, instance.name)
-    soul_loader = str(Path(instance.launch_path).with_name("compose_soul_context.py"))
+    launch_dir = Path(instance.launch_path).parent
+    soul_loader = str(launch_dir / "compose_soul_context.py")
+    vector_preflight = str(launch_dir / "tui_vector_preflight.py")
     for value in (
         canonical_host,
         *INSTANCE_LOCAL_HOST_ALIAS_OVERRIDES.get(instance.name, ()),
@@ -1563,9 +1738,14 @@ def sync_instance_origin_settings(
         "NORMAN_CODEX_SOUL_ACTOR": soul_actor,
         "NORMAN_CODEX_SOUL_IDENTITY_ROOT": REMOTE_SOUL_IDENTITY_ROOT,
         "NORMAN_CODEX_SOUL_LOADER": soul_loader,
+        "NORMAN_CODEX_CONTEXT_PREFLIGHT_OFFLINE_COMMAND": (
+            f"python3 {vector_preflight}"
+        ),
+        "NORMAN_CODEX_VECTOR_PREFLIGHT_LIMIT": "5",
     }
     if (
-        instance.name in WORK_BEDROCK_DEFAULT_INSTANCES
+        uses_work_config
+        and WORK_BEDROCK_DEFAULT_ENABLED
         and WORK_BEDROCK_PROFILE_V2
         and WORK_BEDROCK_MODEL
     ):
@@ -1654,7 +1834,7 @@ def sync_instance_origin_settings(
                 "NORMAN_CODEX_AVAILABLE_MODELS": WORK_DIRECT_SWITCHABLE_MODELS,
             }
         )
-        if instance.name in WORK_DIRECT_DEFAULT_INSTANCES:
+        if uses_work_config:
             updates["NORMAN_CODEX_SERVICE_TIER"] = "auto"
             remove_keys = WORK_BEDROCK_ENV_KEYS
         else:
@@ -1677,6 +1857,14 @@ def sync_instance_origin_settings(
                 "SWITCHBOARD_ENV_FILE": bbs_env_file,
             }
         )
+    if LOCAL_LLM_DEFAULT_MODEL:
+        updates["NORMAN_LOCAL_LLM_MODEL"] = LOCAL_LLM_DEFAULT_MODEL
+    if LOCAL_LLM_MODELS_CSV:
+        updates["NORMAN_LOCAL_LLM_MODELS"] = LOCAL_LLM_MODELS_CSV
+    if LOCAL_LLM_ENDPOINTS_CSV:
+        updates["NORMAN_LOCAL_LLM_ENDPOINTS"] = LOCAL_LLM_ENDPOINTS_CSV
+    if LOCAL_LLM_MODEL_ENDPOINTS:
+        updates["NORMAN_LOCAL_LLM_MODEL_ENDPOINTS"] = LOCAL_LLM_MODEL_ENDPOINTS_JSON
     updates = canonicalize_codex_env_updates(updates)
     remove_keys = list(expand_codex_env_remove_keys(remove_keys))
     for key in updates:
@@ -1985,7 +2173,8 @@ def sync_instance_bedrock_profile(
     host: DiscoveryHost, instance: ConsoleInstance
 ) -> bool:
     if (
-        instance.name not in WORK_BEDROCK_DEFAULT_INSTANCES
+        not instance_uses_work_config(host, instance)
+        or not WORK_BEDROCK_DEFAULT_ENABLED
         or not instance.codex_home
         or not WORK_BEDROCK_PROFILE_SOURCE
         or not WORK_BEDROCK_PROFILE_V2
@@ -2155,7 +2344,8 @@ def sync_instance_runtime_settings(
 ) -> bool:
     if (
         not WORK_RUNTIME_DEFAULT_MODEL_RESET
-        or instance.name not in WORK_BEDROCK_DEFAULT_INSTANCES
+        or not instance_uses_work_config(host, instance)
+        or not WORK_BEDROCK_DEFAULT_ENABLED
         or not instance.codex_home
         or not WORK_BEDROCK_MODEL
         or not WORK_RUNTIME_DEFAULT_MODEL_RESET_FROM

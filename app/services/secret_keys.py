@@ -75,6 +75,7 @@ class CredSecretProvider(SecretProviderBase):
             check=True,
             capture_output=True,
             text=True,
+            stdin=subprocess.DEVNULL,
         )
         return ProviderLeaseResult(
             value=result.stdout.strip(),

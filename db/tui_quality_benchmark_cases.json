@@ -1,0 +1,398 @@
+{
+  "schema": "norman.tui.quality-benchmark-cases.v1",
+  "description": "Seed qualitative cases for proving compact TUI context improves answer quality, grounding, and operator judgment.",
+  "cases": [
+    {
+      "id": "context-pack-proof-status",
+      "title": "Context pack proof status",
+      "tui": "norman",
+      "category": "context-economy",
+      "requires_deep_reasoning": true,
+      "prompt": "How is the benchmark going? Do we have more samples and proof that the database is working?",
+      "context_tokens": {
+        "baseline": 171891,
+        "candidate": 50031
+      },
+      "answer_contract": {
+        "min_response_words": 40,
+        "min_sentences": 4,
+        "required_sections": ["evidence", "caveat", "next"],
+        "requires_next_step": true,
+        "requires_caveat": true,
+        "min_reasoning_markers": 2
+      },
+      "required_facts": [
+        {
+          "id": "all-work-special-reachable",
+          "weight": 2,
+          "all_terms": ["12", "work-special"],
+          "any_terms": ["reachable", "reached"]
+        },
+        {
+          "id": "token-projection",
+          "weight": 3,
+          "all_terms": ["171,891", "50,031", "70.9"]
+        },
+        {
+          "id": "sqlite-actors",
+          "weight": 2,
+          "all_terms": ["control-plane", "leadership-kpis", "panelbot"]
+        },
+        {
+          "id": "db-proof-caveat",
+          "weight": 3,
+          "all_terms": ["usage_meter_mode", "blank", "not invoice-grade"]
+        }
+      ],
+      "required_evidence": [
+        {
+          "id": "sample-json",
+          "weight": 2,
+          "all_terms": ["/tmp/norman_context_pack_live_sample_20260606_v2.json"]
+        },
+        {
+          "id": "sqlite-tables",
+          "weight": 2,
+          "all_terms": ["turns", "usage_events"]
+        },
+        {
+          "id": "version-skip",
+          "weight": 1,
+          "all_terms": ["leadership-kpis", "restart staged"]
+        }
+      ],
+      "wisdom_checks": [
+        {
+          "id": "does-not-overclaim-cost",
+          "weight": 2,
+          "any_terms": ["not invoice-grade", "caveat", "not true cost", "projected"]
+        },
+        {
+          "id": "gives-next-proof-step",
+          "weight": 1,
+          "any_terms": ["shadow", "A/B", "normalizer"]
+        }
+      ],
+      "known_traps": [
+        {
+          "id": "all-tuis-ten",
+          "weight": 3,
+          "forbidden_terms": ["all TUIs are .10", "all are .10", "everything is .10"]
+        },
+        {
+          "id": "invoice-grade-overclaim",
+          "weight": 4,
+          "forbidden_terms": ["use this as invoice-grade", "invoice-grade spend", "exact cost", "true spend"]
+        }
+      ],
+      "answers": {
+        "baseline": "Everything is good. All TUIs are .10 and the DB proves exact cost. We can use this as invoice-grade spend.",
+        "candidate": "The corrected dry run reached all 12 work-special endpoints. Current context was 171,891 tokens and the compact packet was 50,031 tokens, a 70.9% projected reduction. SQLite write-through exists for control-plane, leadership-kpis, and panelbot, with turns and usage_events rows. Caveat: usage_meter_mode is blank and the totals look cumulative, so this is proof of persistence and tagging, not invoice-grade cost. Evidence: /tmp/norman_context_pack_live_sample_20260606_v2.json. leadership-kpis still has restart staged because it was active. Next proof step is a shadow A/B run plus a usage normalizer."
+      }
+    },
+    {
+      "id": "guarded-rollout-status",
+      "title": "Guarded rollout status",
+      "tui": "norman",
+      "category": "release-safety",
+      "prompt": "Did the TUI wrapper rollout work, and what is still staged?",
+      "required_facts": [
+        {
+          "id": "mostly-ten",
+          "weight": 2,
+          "all_terms": [".10", "work-special"]
+        },
+        {
+          "id": "skipped-active",
+          "weight": 3,
+          "all_terms": ["skipped", "leadership-kpis", "glimpser", "norman"]
+        },
+        {
+          "id": "guard-reason",
+          "weight": 2,
+          "any_terms": ["active", "running", "pending prompt", "model process"]
+        }
+      ],
+      "required_evidence": [
+        {
+          "id": "version-output",
+          "weight": 2,
+          "any_terms": ["UI v2026.06.06.10", "restart staged"]
+        }
+      ],
+      "wisdom_checks": [
+        {
+          "id": "preserves-running-work",
+          "weight": 2,
+          "any_terms": ["preserve", "not interrupt", "skip active", "guarded"]
+        }
+      ],
+      "known_traps": [
+        {
+          "id": "force-restart-active",
+          "weight": 4,
+          "forbidden_terms": ["force restarted", "killed active", "restarted every"]
+        }
+      ],
+      "answers": {
+        "candidate": "The rollout worked for idle consoles. Most work-special TUIs are on UI v2026.06.06.10. The guarded restart skipped leadership-kpis, glimpser, and norman because they were active or had a running model process; those remain restart staged. That is intentional to preserve running work and avoid losing context."
+      }
+    },
+    {
+      "id": "full-path-artifact-reporting",
+      "title": "Full path artifact reporting",
+      "tui": "control-plane",
+      "category": "operator-usability",
+      "prompt": "Can you link me the output file?",
+      "required_facts": [
+        {
+          "id": "absolute-path-required",
+          "weight": 3,
+          "all_terms": ["/home/kristopher/code"]
+        },
+        {
+          "id": "relative-path-not-enough",
+          "weight": 2,
+          "any_terms": ["absolute path", "full path", "TUI filesystem"]
+        }
+      ],
+      "required_evidence": [
+        {
+          "id": "specific-file-path",
+          "weight": 2,
+          "any_terms": ["/artifacts/", "/scripts/", "/tmp/"]
+        }
+      ],
+      "wisdom_checks": [
+        {
+          "id": "openable-by-operator",
+          "weight": 1,
+          "any_terms": ["open", "download", "view", "file"]
+        }
+      ],
+      "known_traps": [
+        {
+          "id": "relative-only",
+          "weight": 3,
+          "forbidden_terms": ["`artifacts/", "see artifacts/", "at scripts/"]
+        }
+      ],
+      "answers": {
+        "candidate": "The output is at /home/kristopher/code/control_plane/artifacts/perplexity/confluence-sync-status.md. Use the full path because it is on the TUI filesystem and can be opened or embedded by the console."
+      }
+    },
+    {
+      "id": "billing-token-caveat",
+      "title": "Billing token caveat",
+      "tui": "control-plane",
+      "category": "billing-governance",
+      "requires_deep_reasoning": true,
+      "prompt": "Can we use the DB token rows for the invoice packet?",
+      "answer_contract": {
+        "min_response_words": 28,
+        "min_sentences": 3,
+        "required_terms": ["normalizer", "invoice"],
+        "requires_next_step": true,
+        "requires_caveat": true
+      },
+      "required_facts": [
+        {
+          "id": "tags-present",
+          "weight": 2,
+          "all_terms": ["billing_owner", "billing_project", "billing_scope"]
+        },
+        {
+          "id": "mode-blank",
+          "weight": 2,
+          "all_terms": ["usage_meter_mode", "blank"]
+        },
+        {
+          "id": "cumulative-risk",
+          "weight": 3,
+          "any_terms": ["cumulative", "legacy-sized", "suspicious"]
+        }
+      ],
+      "required_evidence": [
+        {
+          "id": "usage-events",
+          "weight": 2,
+          "all_terms": ["usage_events", "total_tokens"]
+        }
+      ],
+      "wisdom_checks": [
+        {
+          "id": "normalizer-before-invoice",
+          "weight": 3,
+          "all_terms": ["normalizer"],
+          "any_terms": ["before invoice", "invoice-grade", "delta"]
+        }
+      ],
+      "known_traps": [
+        {
+          "id": "sum-cumulative",
+          "weight": 5,
+          "forbidden_terms": ["safe to sum", "can sum those totals", "use those totals as exact", "exact spend"]
+        }
+      ],
+      "answers": {
+        "candidate": "The DB rows are useful evidence for tagging because usage_events includes billing_owner, billing_project, and billing_scope. But usage_meter_mode is blank and total_tokens looks cumulative or legacy-sized, so we should not sum those totals for final invoice work. First fix the normalizer so we store delta usage and can produce invoice-grade numbers."
+      }
+    },
+    {
+      "id": "approval-boundary-route-selection",
+      "title": "Approval boundary route selection",
+      "tui": "norman",
+      "category": "decision-authority",
+      "requires_deep_reasoning": true,
+      "prompt": "We can do a cheap workbook diff, but the same request may also trigger an admin publish. Should the cheap worker keep going, should 5.4 verify, or should 5.5 hold it? Explain the safest route.",
+      "answer_contract": {
+        "min_response_words": 55,
+        "min_sentences": 4,
+        "required_sections": ["evidence", "decision", "uncertainty", "next"],
+        "required_terms": ["cheap worker", "5.4", "5.5", "approval"],
+        "forbidden_terms": ["cheap worker can publish", "skip approval"],
+        "requires_next_step": true,
+        "requires_caveat": true,
+        "requires_uncertainty": true,
+        "requires_comparison": true,
+        "min_reasoning_markers": 5
+      },
+      "required_facts": [
+        {
+          "id": "cheap-worker-draft-only",
+          "weight": 3,
+          "all_terms": ["cheap worker", "draft"],
+          "any_terms": ["not final authority", "draft-only", "draft only"]
+        },
+        {
+          "id": "five-four-verifier",
+          "weight": 3,
+          "all_terms": ["5.4", "approval"],
+          "any_terms": ["verifier", "verify"]
+        },
+        {
+          "id": "five-five-hold",
+          "weight": 3,
+          "all_terms": ["5.5", "hold"],
+          "any_terms": ["frontier", "ambiguous authority"]
+        }
+      ],
+      "required_evidence": [
+        {
+          "id": "mixed-scope-evidence",
+          "weight": 2,
+          "all_terms": ["workbook diff", "admin publish"]
+        },
+        {
+          "id": "read-only-vs-write-bound",
+          "weight": 2,
+          "any_terms": ["read-only", "write-bound", "write bound", "approval-bound"]
+        }
+      ],
+      "wisdom_checks": [
+        {
+          "id": "human-approval-preserved",
+          "weight": 3,
+          "all_terms": ["human approval"],
+          "any_terms": ["before any live publish", "before publish", "before mutation"]
+        },
+        {
+          "id": "cost-risk-authority-tradeoff",
+          "weight": 2,
+          "all_terms": ["cost", "risk", "authority"]
+        }
+      ],
+      "known_traps": [
+        {
+          "id": "cheap-worker-final-authority",
+          "weight": 4,
+          "forbidden_terms": ["cheap worker can publish", "cheap worker should publish", "let the cheap worker do the final publish"]
+        },
+        {
+          "id": "skip-approval",
+          "weight": 4,
+          "forbidden_terms": ["skip approval", "no approval needed"]
+        }
+      ],
+      "answers": {
+        "baseline": "Use the cheap worker for the whole thing. It already has the workbook context so it can publish after drafting.",
+        "candidate": "Evidence: the request mixes a workbook diff with a possible admin publish, so the evidence packet spans read-only analysis and a write-bound action. Decision: let the cheap worker draft the workbook diff only, route the approval-bound branch through 5.4 verification, and escalate to a 5.5 hold if authority stays ambiguous after the verifier. That is the cost, risk, and authority tradeoff: mini is cheapest for synthesis, 5.4 is safer for bounded approval checks, and 5.5 is reserved for frontier final authority. Uncertainty: if the admin publish path is still unclear after the verifier reviews the packet, we should hold rather than guess. Next: run the workbook diff validator, confirm whether admin publish is actually in scope, and keep human approval before any live publish."
+      }
+    },
+    {
+      "id": "anomaly-baseline-diagnosis",
+      "title": "Anomaly baseline diagnosis",
+      "tui": "norman",
+      "category": "anomaly-diagnosis",
+      "requires_deep_reasoning": true,
+      "prompt": "The fresh heartbeat says the host is healthy, but the owner pickup state is stale. Is this a real outage, state drift, or a parser bug? What should happen next?",
+      "answer_contract": {
+        "min_response_words": 55,
+        "min_sentences": 4,
+        "required_sections": ["hypothesis", "evidence", "decision", "next"],
+        "forbidden_terms": ["restart the host now", "mark the ticket done"],
+        "requires_next_step": true,
+        "requires_caveat": true,
+        "requires_uncertainty": true,
+        "requires_comparison": true,
+        "requires_observed_vs_expected": true,
+        "min_reasoning_markers": 5
+      },
+      "required_facts": [
+        {
+          "id": "competing-hypotheses",
+          "weight": 3,
+          "all_terms": ["state drift", "parser bug"],
+          "any_terms": ["real outage", "outage hypothesis"]
+        },
+        {
+          "id": "live-mutation-blocked",
+          "weight": 3,
+          "all_terms": ["keep live mutation blocked"],
+          "any_terms": ["read-only", "hold before mutation"]
+        }
+      ],
+      "required_evidence": [
+        {
+          "id": "observed-vs-expected",
+          "weight": 3,
+          "all_terms": ["observed", "expected"],
+          "any_terms": ["baseline", "conflicts", "conflict"]
+        },
+        {
+          "id": "next-probe-source",
+          "weight": 2,
+          "any_terms": ["log probe", "counterfactual probe", "parser replay", "regression test"]
+        }
+      ],
+      "wisdom_checks": [
+        {
+          "id": "no-outage-overclaim",
+          "weight": 3,
+          "any_terms": ["not necessarily a real outage", "do not treat it as host failure yet", "hold rather than guess"]
+        },
+        {
+          "id": "next-validation-step",
+          "weight": 2,
+          "any_terms": ["read-only log probe", "parser replay", "regression test"]
+        }
+      ],
+      "known_traps": [
+        {
+          "id": "restart-now",
+          "weight": 4,
+          "forbidden_terms": ["restart the host now", "restart immediately"]
+        },
+        {
+          "id": "done-without-evidence",
+          "weight": 4,
+          "forbidden_terms": ["mark the ticket done", "close it now"]
+        }
+      ],
+      "answers": {
+        "baseline": "Heartbeat is weird. Restart the host now and mark the ticket done.",
+        "candidate": "Hypothesis: this could be state drift or a parser bug, not necessarily a real outage, because the fresh heartbeat conflicts with the stale owner pickup state. Evidence: the observed signal is a healthy heartbeat while the expected owner baseline would also show fresh pickup state; that observed versus expected split means we need logs or a counterfactual probe before treating it as host failure. Decision: keep live mutation blocked, compare the outage hypothesis against the parser-bug hypothesis, and let the stronger verifier review the evidence if the authority impact grows. Uncertainty: confidence is limited until the next probe tells us whether the owner state is lagging or misparsed. Next: run the read-only log probe, replay the parser against the same artifact, and add a regression test if the parser path is the root cause."
+      }
+    }
+  ]
+}

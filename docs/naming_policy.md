@@ -18,7 +18,7 @@ The canonical name should match the real audience and trust boundary.
 
 | Namespace | Use | Canonical? | Notes |
 | --- | --- | --- | --- |
-| `*.work.example.test` | Work-facing bots and work apps | Yes | Best place for human-facing OpenBrand work surfaces |
+| `*.kris.openbrand.com` | Work-facing bots and work apps | Yes | Best place for human-facing OpenBrand work surfaces |
 | `*.home.arpa` | LAN-local bots, infra, private, and household surfaces | Yes for non-work browser entry points | Preferred local browser namespace now that `.internal` is causing client/browser friction |
 | `*.knox.example.test` | Main-house or Knox-site family-facing services | Yes | Best for the current primary house/site |
 | `*.beach.example.test` | Beach-house family-facing services | Yes | Site-based naming for the beach location |
@@ -36,7 +36,7 @@ The canonical name should match the real audience and trust boundary.
 
 | Audience | Canonical namespace |
 | --- | --- |
-| OpenBrand work users | `*.work.example.test` |
+| OpenBrand work users | `*.kris.openbrand.com` |
 | Infra / admin / control plane | `*.home.arpa` |
 | Confidential / private bots | `*.home.arpa` |
 | Household or family users at a specific site | `*.<site>.example.test` |
@@ -114,9 +114,9 @@ Prefer browser-safe names as the real entry points.
 
 Good examples:
 
-- `mls.home.arpa` -> `mls.work.example.test`
-- `scout.home.arpa` -> `scout.work.example.test`
-- `control.home.arpa` -> `cp.work.example.test`
+- `mls.home.arpa` -> `mls.kris.openbrand.com`
+- `ranger.home.arpa` -> `ranger.kris.openbrand.com`
+- `control.home.arpa` -> `cp.kris.openbrand.com`
 
 Do not treat `.internal` as the intended browser namespace for the fleet. If it exists at all, it should be treated as a legacy or operator-only alias, not the name Prime and Directory prefer.
 
@@ -124,19 +124,19 @@ Do not treat `.internal` as the intended browser namespace for the fleet. If it 
 
 | Thing | Kind | Canonical | Alias / redirect candidates |
 | --- | --- | --- | --- |
-| Norman Prime | control plane | `norman.home.arpa` | `bots.home.arpa`, `norman.tail00000.ts.net` |
+| Norman Prime | control plane | `norman.home.arpa` | `bots.home.arpa`, `norman.tail94915.ts.net` |
 | Norman bot proxy | control plane | `norman.home.arpa/bot/*` | `bots.home.arpa/*` |
-| MLS | work bot | `mls.work.example.test` | `mls.home.arpa`, `mlsbot.home.arpa` |
-| Scout | work bot | `scout.work.example.test` | `scout.home.arpa`, `scoutbot.home.arpa` |
-| Keystone / Compere | work bot | `keystone.work.example.test` | `keystone.home.arpa`, `compere.home.arpa` |
-| Infra | work bot | `infra.work.example.test` | `infra.home.arpa` |
-| Leadership KPIs | work bot | `kpis.work.example.test` | `leadership.work.example.test`, `leadership.home.arpa`, `kpis.home.arpa` |
-| Control Plane | work bot | `cp.work.example.test` | `control.home.arpa`, `cp.home.arpa` |
-| Earlybird | work bot | `earlybird.work.example.test` | `earlybird.home.arpa` |
-| MC / Monte Carlo | work bot | `mc.work.example.test` | `market.work.example.test`, `mc.home.arpa`, `market.home.arpa` |
-| TMI Dashboards | work bot | `dashboards.work.example.test` | `tmi.work.example.test`, `tmi.home.arpa` |
-| Gold Book | work bot | `goldbook.work.example.test` | `goldbook.home.arpa` |
-| Panelbot | work bot | `panelbot.work.example.test` | `panelbot.home.arpa` |
+| MLS | work bot | `mls.kris.openbrand.com` | `mls.home.arpa`, `mlsbot.home.arpa` |
+| Ranger TUI / Scout service | work bot | `ranger.kris.openbrand.com` | `ranger.home.arpa`, `scoutbot.home.arpa`; Scout service stays on its separate service port |
+| Keystone / Compere | work bot | `keystone.kris.openbrand.com` | `keystone.home.arpa`, `compere.home.arpa` |
+| Infra | work bot | `infra.kris.openbrand.com` | `infra.home.arpa` |
+| Leadership KPIs | work bot | `kpis.kris.openbrand.com` | `leadership.kris.openbrand.com`, `leadership.home.arpa`, `kpis.home.arpa` |
+| Control Plane | work bot | `cp.kris.openbrand.com` | `control.home.arpa`, `cp.home.arpa` |
+| Earlybird | work bot | `earlybird.kris.openbrand.com` | `earlybird.home.arpa` |
+| MC / Monte Carlo | work bot | `mc.kris.openbrand.com` | `market.kris.openbrand.com`, `mc.home.arpa`, `market.home.arpa` |
+| TMI Dashboards | work bot | `dashboards.kris.openbrand.com` | `tmi.kris.openbrand.com`, `tmi.home.arpa` |
+| Gold Book | work bot | `goldbook.kris.openbrand.com` | `goldbook.home.arpa` |
+| Panelbot | work bot | `panelbot.kris.openbrand.com` | `panelbot.home.arpa` |
 | Housebot | home bot | `housebot.home.arpa` | `house.home.arpa`, `housebot.knox.example.test` |
 | Artmonster | personal-account creative bot | `artmonster.home.arpa` | Controls cloud-hosted Artbot services; Artbot remains the service/application name |
 | Phone Ops | home bot | `phone.home.arpa` | `phoneops.home.arpa` |
@@ -178,7 +178,7 @@ Use this order:
 - `tv` and `studio` are archived home media lanes. Keep existing compatibility routes harmless, but exclude them from active fleet promotion.
 - `null-agent` belongs to the Yhix bot class, not the household/work/shared bot lanes. It should run as a TUI on Yhix cloud once the runtime exists.
 - `MC` is the preferred label for the former Market Sizing lane. Use it for Monte Carlo, survey, demographic, and market-modeling work.
-- `*.work.example.test` is the best place for work bots if clean public-trust certificates matter.
+- `*.kris.openbrand.com` is the best place for work bots if clean public-trust certificates matter.
 - Site-based `example.test` names should map to physical place or household context, not arbitrary service buckets.
 - `home.example.test` should stay the umbrella, not the dumping ground.
 - `kris.example.test` should be the personal operator namespace, not the family/shared namespace.

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Norman TUI host pressure guard every minute
+
+[Timer]
+OnBootSec=1m
+OnUnitActiveSec=1m
+AccuracySec=15s
+Unit=norman-tui-host-pressure-guard.service
+
+[Install]
+WantedBy=timers.target

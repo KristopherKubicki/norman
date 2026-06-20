@@ -141,7 +141,7 @@ const CONNECTOR_QUICK_PRESETS = {
     {
       label: 'Signal Service',
       description: 'Route through a Signal bridge endpoint.',
-      config: { service_url: 'http://localhost:8080/v2/send', phone_number: '+15555551234' }
+      config: { service_url: 'http://localhost:8080/v2/send', phone_number: '<E164_SIGNAL_PHONE>' }
     }
   ],
   telegram: [
@@ -679,7 +679,7 @@ function validateConnectorConfigByType(connectorType, config, requiredFields = [
     if (has('phone_number')) {
       const phone = String(value('phone_number'));
       if (!/^\+?[1-9][0-9]{6,15}$/.test(phone)) {
-        warnings.push('Signal phone_number should be an E.164-like number (e.g. +15551234567).');
+        warnings.push('Signal phone_number should be an E.164-like number.');
       }
     }
   }

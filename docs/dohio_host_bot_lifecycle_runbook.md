@@ -93,7 +93,7 @@ cloud gateway.
 6. Verify.
    - `curl -k https://dohio.home.arpa/api/status`
    - `curl -k https://dohio.home.arpa/api/registry`
-   - `dig @100.64.0.14 <host>.home.arpa A +short`
+   - `dig @100.99.220.14 <host>.home.arpa A +short`
    - `tailscale status` from an approved host when tailnet presence matters.
    - DOHIO reachability should move out of `unknown` unless the host is
      intentionally inventory-only.
@@ -274,7 +274,7 @@ curl -fsSL http://127.0.0.1:8765/api/v1/threads
 curl -fsSL http://127.0.0.1:8765/api/v1/bots
 curl -kfsSL https://bbs.home.arpa/ | grep -i 'Switchboard BBS'
 dig @192.168.0.1 bbs.home.arpa A +short
-dig @100.64.0.14 bbs.home.arpa A +short
+dig @100.99.220.14 bbs.home.arpa A +short
 ```
 
 Health semantics:
@@ -305,7 +305,7 @@ Use these checks after any lifecycle change:
 ```bash
 curl -k https://dohio.home.arpa/api/status
 curl -k https://dohio.home.arpa/api/registry
-dig @100.64.0.14 <name>.home.arpa A +short
+dig @100.99.220.14 <name>.home.arpa A +short
 curl -k https://<surface>/healthz
 ```
 

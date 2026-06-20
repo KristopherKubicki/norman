@@ -13,7 +13,7 @@ TUIs, DOHIO registry entries, Caddy routes, BBS routing, and heartbeats now live
 in [DOHIO Host and Bot Lifecycle Runbook](dohio_host_bot_lifecycle_runbook.md).
 
 DOHIO is live at `dohio.home.arpa` and `dohio.home.example.test` on
-`100.64.0.14`, host `cloud-gw-ohio`. DOHIO DNS currently knows the CA names,
+`100.99.220.14`, host `cloud-gw-ohio`. DOHIO DNS currently knows the CA names,
 but DOHIO HTTPS is still issued from a separate `DOHIO Local CA`, not from the
 Example Internal CA chain.
 
@@ -30,14 +30,14 @@ to those clients and verified in those renderers.
 - `https://ca.home.arpa/roots.pem` serves `Example Internal CA Root CA`.
 - CA provisioners exposed by `https://ca.home.arpa/provisioners` are `admin` JWK and `acme` ACME.
 - `glimpser.home.example.test` presents a leaf cert issued by `Example Internal CA Intermediate CA`.
-- `dohio.home.arpa` resolves to `100.64.0.14`.
-- `dohio.home.example.test` resolves to `100.64.0.14`.
+- `dohio.home.arpa` resolves to `100.99.220.14`.
+- `dohio.home.example.test` resolves to `100.99.220.14`.
 - DOHIO `/api/status` reports brand `DOHIO`, name `dns-ohio`, host `cloud-gw-ohio`.
 - DOHIO services report `unbound`, `firewall_guard`, and `dashboard` active.
-- DOHIO private probe resolves `norman.home.arpa` to `100.64.0.17`.
-- Queries to `@100.64.0.14` resolve `ca.home.arpa` and `ca.home.example.test` to `192.168.0.149`.
-- Queries to `@100.64.0.14` resolve Norman-hosted bot names such as `uplink.home.arpa` to Norman tailnet IP `100.64.0.17`.
-- Pending as of `2026-05-02`: `artmonster.home.arpa` should resolve to the Norman front door (`100.64.0.17` on the tailnet, LAN split view matching `norman.home.arpa`) but is not yet present in local DNS.
+- DOHIO private probe resolves `norman.home.arpa` to `100.103.34.17`.
+- Queries to `@100.99.220.14` resolve `ca.home.arpa` and `ca.home.example.test` to `192.168.0.149`.
+- Queries to `@100.99.220.14` resolve Norman-hosted bot names such as `uplink.home.arpa` to Norman tailnet IP `100.103.34.17`.
+- Pending as of `2026-05-02`: `artmonster.home.arpa` should resolve to the Norman front door (`100.103.34.17` on the tailnet, LAN split view matching `norman.home.arpa`) but is not yet present in local DNS.
 
 ## Certificate Split
 
@@ -110,8 +110,12 @@ Confirmed host/service facts:
 
 - Smallstep CA host: `192.168.0.149`.
 - Smallstep service endpoint: `https://ca.home.arpa/`.
-- DOHIO host: `cloud-gw-ohio`, tailnet IP `100.64.0.14`.
+- DOHIO host: `cloud-gw-ohio`, tailnet IP `100.99.220.14`.
 - DOHIO role: recursive/policy resolver and estate DNS portal.
+- Norman management access gap checked on `2026-06-07`: Norman can reach
+  DOHIO HTTPS and normal SSH reaches `root@100.99.220.14`, but the host does
+  not yet accept the Norman deploy key. The access request is tracked in
+  Switchboard thread `th_dohio_tailnet_dns_20260427`.
 
 Ownership still needs an explicit assignment:
 
@@ -159,8 +163,8 @@ curl -k https://ca.home.arpa/health
 curl -k https://ca.home.arpa/version
 curl -k https://ca.home.arpa/provisioners
 curl -k https://ca.home.arpa/roots.pem | openssl x509 -noout -subject -issuer -dates -fingerprint -sha256
-dig @100.64.0.14 ca.home.arpa A +short
-dig @100.64.0.14 ca.home.example.test A +short
+dig @100.99.220.14 ca.home.arpa A +short
+dig @100.99.220.14 ca.home.example.test A +short
 curl -k https://dohio.home.arpa/api/status
 curl -k https://dohio.home.arpa/ca/root.crt | openssl x509 -noout -subject -issuer -dates -fingerprint -sha256
 printf '%s\n' | openssl s_client -connect dohio.home.arpa:443 -servername dohio.home.arpa -showcerts 2>/dev/null | openssl x509 -noout -subject -issuer -dates -fingerprint -sha256
@@ -170,6 +174,7 @@ printf '%s\n' | openssl s_client -connect glimpser.home.example.test:443 -server
 ## Open Items
 
 - Find and document the DOHIO DNS sync source on `cloud-gw-ohio`.
+- Enroll or document Norman's management SSH path for `cloud-gw-ohio`.
 - Wire DOHIO/NetOps BBS enrollment to the estate registry `bbs` worker policy
   blocks.
 - Assign a named Smallstep CA lifecycle owner.

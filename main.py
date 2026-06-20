@@ -54,6 +54,7 @@ def run_alembic_migrations():
             check=True,
             capture_output=True,
             text=True,
+            stdin=subprocess.DEVNULL,
         )
         if result.stdout:
             logger.info("Alembic stdout: %s", result.stdout.strip())

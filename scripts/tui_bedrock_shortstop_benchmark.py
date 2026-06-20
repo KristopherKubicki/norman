@@ -16,7 +16,20 @@ DEFAULT_OUTPUT_MD = Path("/tmp/norman_tui_bedrock_shortstop_benchmark.md")
 DEFAULT_SINCE_HOURS = 24
 DEFAULT_MIN_LOW_YIELD_TOKENS = 20_000
 DEFAULT_LOW_YIELD_OUTPUT_TOKENS = 1_000
-DEFAULT_LOW_YIELD_SECONDS = 90
+DEFAULT_LOW_YIELD_SECONDS = 300
+DEFAULT_VISIBLE_LOW_YIELD_INPUT_TOKENS = 100_000
+DEFAULT_VISIBLE_LOW_YIELD_CHARS = 2_500
+PROBLEM_CATEGORIES = {"short_stop", "low_yield", "zero_transport", "failed_nonzero"}
+MECHANISM_HINTS = {
+    "approval_boundary_stop": "Park as approval-needed; do not retry as ordinary low-yield.",
+    "fast_return": "Require completion evidence before accepting fast high-context turns.",
+    "future_work_promise": "Auto-continue or fail the turn when final text only promises work.",
+    "missing_tool_or_dependency": "Preflight required tools and route to setup/fallback before model spend.",
+    "provider_zero_transport": "Retry/fail over provider before surfacing a successful-looking turn.",
+    "status_or_continue_prompt": "Use stricter status/proceed contracts that forbid future-tense work claims.",
+    "thin_output": "Gate high-input turns on visible evidence, not token/process success alone.",
+    "zero_reasoning": "Treat zero-reasoning problem turns as provider/accounting suspect.",
+}
 
 WORK_SPECIAL_DB_PATHS = {
     "leadership-kpis": "/home/kristopher/.codex-leadership-kpis/web-bridge/tui_state.sqlite3",
@@ -281,6 +294,7 @@ def load_tui_records(
                 ),
                 "prompt_preview": _one_line(prompt),
                 "response_preview": _one_line(response),
+                "response_chars": len(response),
                 "error_preview": _one_line(error),
                 "raw_turn_payload_keys": sorted(turn_payload.keys())
                 if isinstance(turn_payload, dict)
@@ -299,12 +313,16 @@ def classify_record(
     min_low_yield_tokens: int = DEFAULT_MIN_LOW_YIELD_TOKENS,
     low_yield_output_tokens: int = DEFAULT_LOW_YIELD_OUTPUT_TOKENS,
     low_yield_seconds: int = DEFAULT_LOW_YIELD_SECONDS,
+    visible_low_yield_input_tokens: int = DEFAULT_VISIBLE_LOW_YIELD_INPUT_TOKENS,
+    visible_low_yield_chars: int = DEFAULT_VISIBLE_LOW_YIELD_CHARS,
 ) -> tuple[str, list[str]]:
     response = str(record.get("response_preview") or "")
     error = str(record.get("error_preview") or "")
     total = _coerce_int(record.get("total_tokens"))
+    input_tokens = _coerce_int(record.get("input_tokens"))
     output = _coerce_int(record.get("output_tokens"))
     reasoning = _coerce_int(record.get("reasoning_output_tokens"))
+    response_chars = _coerce_int(record.get("response_chars")) or len(response)
     duration = max(
         0,
         _coerce_int(record.get("finished_at")) - _coerce_int(record.get("started_at")),
@@ -355,9 +373,88 @@ def classify_record(
             reasons.append("zero reasoning tokens")
         return "low_yield", reasons
 
+    visible_low_yield = (
+        success
+        and total >= min_low_yield_tokens
+        and input_tokens >= visible_low_yield_input_tokens
+        and response_chars <= visible_low_yield_chars
+        and duration <= low_yield_seconds
+    )
+    if visible_low_yield:
+        reasons.append(f"high input tokens: {input_tokens}")
+        reasons.append(f"short visible response chars: {response_chars}")
+        if input_tokens:
+            chars_per_1k = round(response_chars / input_tokens * 1000, 2)
+            reasons.append(f"visible yield chars per 1k input tokens: {chars_per_1k}")
+        if duration <= low_yield_seconds:
+            reasons.append(f"fast return: {duration}s")
+        return "low_yield", reasons
+
     if success:
         return "useful_or_unclassified", []
     return "failed_nonzero", [provider_error or "nonzero failure"]
+
+
+def mechanism_tags(record: dict[str, Any]) -> list[str]:
+    category = str(record.get("category") or "").strip()
+    if category not in PROBLEM_CATEGORIES:
+        return []
+    response = str(record.get("response_preview") or "").lower()
+    prompt = str(record.get("prompt_preview") or "").lower()
+    reasons = " ".join(str(reason).lower() for reason in record.get("reasons") or [])
+    tags: list[str] = []
+    if category == "zero_transport" or record.get("zero_token_provider_failure"):
+        tags.append("provider_zero_transport")
+    if "final response promises future work" in reasons:
+        tags.append("future_work_promise")
+    if (
+        "zero reasoning tokens" in reasons
+        or _coerce_int(record.get("reasoning_output_tokens")) == 0
+    ):
+        tags.append("zero_reasoning")
+    if (
+        "low output tokens" in reasons
+        or "short visible response" in reasons
+        or (
+            _coerce_int(record.get("input_tokens"))
+            >= DEFAULT_VISIBLE_LOW_YIELD_INPUT_TOKENS
+            and _coerce_int(record.get("response_chars"))
+            <= DEFAULT_VISIBLE_LOW_YIELD_CHARS
+        )
+    ):
+        tags.append("thin_output")
+    if "fast return" in reasons:
+        tags.append("fast_return")
+    if (
+        "status" in prompt
+        or "stuats" in prompt
+        or "stauts" in prompt
+        or "proceed" in prompt
+        or "continue" in prompt
+        or "auto-continuation" in prompt
+    ):
+        tags.append("status_or_continue_prompt")
+    if (
+        "approval" in response
+        or "approved:" in prompt
+        or "operator-gated" in prompt
+        or "requires approval" in response
+    ):
+        tags.append("approval_boundary_stop")
+    if (
+        "missing" in response
+        or "not installed" in response
+        or "is absent" in response
+        or "no such file" in response
+        or "command not found" in response
+    ):
+        tags.append("missing_tool_or_dependency")
+    return sorted(set(tags))
+
+
+def _increment_counts(counts: dict[str, int], keys: list[str]) -> None:
+    for key in keys:
+        counts[key] = counts.get(key, 0) + 1
 
 
 def summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -372,9 +469,11 @@ def summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
             _coerce_int(record.get("finished_at"))
             - _coerce_int(record.get("started_at")),
         )
+        enriched["mechanisms"] = mechanism_tags(enriched)
         categorized.append(enriched)
 
     by_tui: dict[str, dict[str, Any]] = {}
+    mechanism_counts: dict[str, int] = {}
     for record in categorized:
         tui = str(record.get("tui") or "unknown")
         row = by_tui.setdefault(
@@ -388,11 +487,19 @@ def summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
                 "durations": [],
                 "short_stop_reasoning_zero": 0,
                 "short_stop_with_request_ids": 0,
+                "mechanisms": {},
             },
         )
         row["turns"] += 1
         category = str(record.get("category") or "")
         row["categories"][category] = row["categories"].get(category, 0) + 1
+        mechanisms = [
+            str(item).strip()
+            for item in record.get("mechanisms", [])
+            if str(item).strip()
+        ]
+        _increment_counts(row["mechanisms"], mechanisms)
+        _increment_counts(mechanism_counts, mechanisms)
         row["total_tokens"] += _coerce_int(record.get("total_tokens"))
         row["output_tokens"] += _coerce_int(record.get("output_tokens"))
         row["reasoning_output_tokens"] += _coerce_int(
@@ -451,6 +558,12 @@ def summarize_records(records: list[dict[str, Any]]) -> dict[str, Any]:
                     {str(record.get("category") or "") for record in categorized}
                 )
             },
+            "mechanisms": dict(sorted(mechanism_counts.items())),
+            "mechanism_hints": {
+                key: MECHANISM_HINTS[key]
+                for key in sorted(mechanism_counts)
+                if key in MECHANISM_HINTS
+            },
         },
         "examples": examples[:25],
         "rows": categorized,
@@ -483,6 +596,30 @@ def render_markdown(report: dict[str, Any]) -> str:
                 reasoning_zero=_coerce_int(row.get("short_stop_reasoning_zero")),
             )
         )
+    mechanisms = report.get("summary", {}).get("mechanisms", {})
+    if isinstance(mechanisms, dict) and mechanisms:
+        lines.extend(
+            [
+                "",
+                "## Mechanisms",
+                "",
+                "| Mechanism | Count | Harness implication |",
+                "|---|---:|---|",
+            ]
+        )
+        hints = report.get("summary", {}).get("mechanism_hints", {})
+        if not isinstance(hints, dict):
+            hints = {}
+        for key, count in sorted(
+            mechanisms.items(), key=lambda item: (-_coerce_int(item[1]), str(item[0]))
+        ):
+            lines.append(
+                "| {key} | {count} | {hint} |".format(
+                    key=key,
+                    count=_coerce_int(count),
+                    hint=str(hints.get(key) or "").replace("|", "/"),
+                )
+            )
     lines.extend(
         [
             "",
@@ -515,7 +652,7 @@ def render_markdown(report: dict[str, Any]) -> str:
             "## Interpretation",
             "",
             "- `short_stop`: process-level success, but final response promises future work.",
-            "- `low_yield`: process-level success with high input, tiny output, and fast return.",
+            "- `low_yield`: process-level success with high input, tiny token output or short visible response, and fast return.",
             "- `zero_transport`: provider/stream failure with zero token usage.",
             "- This report does not call a model or mutate any TUI state.",
             "",

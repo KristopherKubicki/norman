@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Norman BBS policy doctor
+Wants=switchboard-bbs.service
+After=network-online.target switchboard-bbs.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/kristopher/code/norman
+ExecStart=/usr/bin/python3 /home/kristopher/code/norman/scripts/bbs_doctor.py --repair-launcher
+TimeoutStartSec=60
+Nice=5

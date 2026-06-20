@@ -41,6 +41,7 @@ def adapt_caddyfile(caddyfile: Path, paths_include: Path, hosts_include: Path) -
             check=True,
             capture_output=True,
             text=True,
+            stdin=subprocess.DEVNULL,
         )
         return result.stdout
     finally:

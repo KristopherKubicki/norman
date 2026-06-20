@@ -152,6 +152,8 @@ def test_alert_policy_compacts_noisy_remote_scan_details(monkeypatch) -> None:
         {"new_alerts": [issue], "suppressed_warnings": [], "ignored_warnings": []},
     )
 
+    assert "Action needed:" in body
+    assert "work-special/panelbot" in body
     assert "ssh scan failed; remote probe did not complete" in body
     assert "python3 - <<PY" not in body
 
@@ -192,6 +194,7 @@ def test_alert_post_creates_thread_and_posts_message(monkeypatch) -> None:
     assert calls[2][0] == "POST"
     assert calls[2][3]["kind"] == "alert"
     assert "TUI fleet health alert" in calls[2][3]["body"]
+    assert "Action needed:" in calls[2][3]["body"]
     assert calls[2][3]["metadata"]["has_failure"] is True
 
 

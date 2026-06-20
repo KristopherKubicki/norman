@@ -19,6 +19,6 @@ If you've checked the resources above and still need help, please open a new iss
 
 ## Contact Us
 
-If you have any other questions or need further assistance, feel free to reach out to us directly at norman.contact.email@gmail.com.
+If you have any other questions or need further assistance, use the maintainer contact channel configured for this repository.
 
 Please understand that we are maintaining this project on a voluntary basis, and our response time may vary depending on our availability. We appreciate your patience and understanding.

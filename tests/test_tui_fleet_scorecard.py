@@ -287,6 +287,9 @@ def test_scorecard_surfaces_drift_and_usage_signals(
         "pending": False,
         "queue_depth": 0,
         "last_error": "",
+        "state_db_enabled": True,
+        "state_db_path": "/home/kristopher/.codex-control-plane/web-bridge/tui_state.sqlite3",
+        "history_format": "jsonl_write_through_sqlite",
         "drift_assessment": {
             "enabled": True,
             "tone": "alert",
@@ -345,6 +348,8 @@ def test_scorecard_surfaces_drift_and_usage_signals(
     assert row.usage.status == "alert"
     assert "250K tok" in row.usage.detail
     assert "burn=" in row.usage.detail
-    assert "| Score | Grade | TUI | Runtime | Drift | Tokens |" in markdown
+    assert row.storage.status == "db"
+    assert "jsonl_write_through_sqlite" in row.storage.detail
+    assert "| Score | Grade | TUI | Runtime | Drift | Tokens | DB |" in markdown
     assert "drift: Power checkpoint" in markdown
     assert "usage: 250K tok" in markdown

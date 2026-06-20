@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodic Norman BBS policy doctor
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=15min
+AccuracySec=1min
+Persistent=true
+Unit=norman-bbs-doctor.service
+
+[Install]
+WantedBy=timers.target

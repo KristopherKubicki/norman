@@ -109,6 +109,81 @@ def test_xfast_response_speed_requires_explicit_emergency_gate(
     assert module.response_reasoning_effort("xfast") == "low"
 
 
+def test_host_pressure_guard_blocks_new_web_prompt(monkeypatch, tmp_path) -> None:
+    guard_path = tmp_path / "pressure-guard.json"
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_HOST_PRESSURE_GUARD_PATH=str(guard_path),
+    )
+    guard_path.write_text(
+        json.dumps(
+            {
+                "target": "work-special",
+                "checked_at_epoch": module.now_ts(),
+                "status": "critical",
+                "admission": {
+                    "action": "block_new_work",
+                    "reason": "swap_used_ratio>=0.70",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    actions: list[tuple[str, str]] = []
+    monkeypatch.setattr(module, "current_snapshot", lambda: _cheap_snapshot(module))
+    monkeypatch.setattr(
+        module, "record_action", lambda action, detail: actions.append((action, detail))
+    )
+
+    accepted, snapshot = module.start_web_prompt("do expensive work", "careful", 5)
+
+    assert accepted is False
+    assert snapshot["pressure_guard_blocked"] is True
+    assert "swap_used_ratio>=0.70" in snapshot["pressure_guard_error"]
+    assert actions == [
+        (
+            "pressure-guard-block",
+            "Host pressure guard is blocking new work on work-special: swap_used_ratio>=0.70.",
+        )
+    ]
+
+
+def test_host_pressure_guard_defers_heavy_web_prompt(monkeypatch, tmp_path) -> None:
+    guard_path = tmp_path / "pressure-guard.json"
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_HOST_PRESSURE_GUARD_PATH=str(guard_path),
+    )
+    guard_path.write_text(
+        json.dumps(
+            {
+                "target": "work-special",
+                "checked_at_epoch": module.now_ts(),
+                "status": "watching",
+                "admission": {
+                    "action": "defer_heavy_work",
+                    "reason": "swap_used_ratio>=0.25",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    actions: list[tuple[str, str]] = []
+    monkeypatch.setattr(module, "current_snapshot", lambda: _cheap_snapshot(module))
+    monkeypatch.setattr(
+        module, "record_action", lambda action, detail: actions.append((action, detail))
+    )
+
+    accepted, snapshot = module.start_web_prompt("implement the full fix", "careful", 5)
+
+    assert accepted is False
+    assert snapshot["pressure_guard_deferred"] is True
+    assert "Heavy new work is deferred" in snapshot["pressure_guard_error"]
+    assert actions[0][0] == "pressure-guard-defer"
+
+
 def test_auto_turn_controls_downshift_status_from_xhigh(monkeypatch, tmp_path) -> None:
     module = _load_norman_codex_web(monkeypatch, tmp_path)
 
@@ -2392,6 +2467,9 @@ def test_promised_work_classifier_catches_future_tense_action(
     assert module.response_promises_unfinished_work(
         "Initial sweep shows more than the KPI wrapper: recent KPI component artifacts exist, but the all-in-one wrapper summary is still missing. I\u2019ll now inspect schedules/processes and the latest component health outputs."
     )
+    assert module.response_promises_unfinished_work(
+        "The broad grep was noisy; I\u2019m tightening to source files only."
+    )
     assert not module.response_promises_unfinished_work(
         "Recommended Reply: Hey Anthony, we verified the old backlog cleanup."
     )
@@ -2470,6 +2548,74 @@ def test_prompt_worker_auto_continues_promised_work_once(monkeypatch, tmp_path) 
     events = module.load_audit_events(limit=20)
     assert any(event["event_type"] == "chat.needs-continuation" for event in events)
     assert any(event["event_type"] == "chat.auto-continue" for event in events)
+
+
+def test_auto_continuation_uses_deeper_reasoning_floor(monkeypatch, tmp_path) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_AUTO_CONTINUE_PROMISES="1",
+    )
+    module.ensure_state_dir()
+    calls = []
+
+    def fake_execute_runtime(
+        prompt,
+        speed,
+        detail,
+        attachments,
+        runtime,
+        model,
+        timeout_seconds=None,
+        service_tier="",
+        job_budget="",
+    ):
+        calls.append((prompt, speed, detail))
+        if len(calls) == 1:
+            return (
+                "The evidence pass is started. I'll inspect the SQLite checkpoint rows next.",
+                "",
+                "thread-promised",
+                module.normalize_usage_entry({"total_tokens": 10}),
+            )
+        return (
+            "DONE\nInspected the SQLite checkpoint rows and posted the concrete finding.",
+            "",
+            "thread-promised",
+            module.normalize_usage_entry({"total_tokens": 20}),
+        )
+
+    monkeypatch.setattr(module, "_execute_prompt_runtime", fake_execute_runtime)
+
+    accepted, snapshot = module.start_web_prompt(
+        "check whether checkpoints are stalling",
+        "balanced",
+        2,
+        "normal",
+        service_tier="default",
+    )
+
+    assert accepted is True
+    assert snapshot["pending"] is True
+
+    for _ in range(20):
+        worker = module.ACTIVE_PROMPT_THREAD
+        if worker is not None:
+            worker.join(timeout=0.2)
+        final_snapshot = module.current_snapshot()
+        if not final_snapshot["pending"] and len(calls) == 2:
+            break
+
+    assert len(calls) == 2
+    assert calls[0][1:] == ("balanced", 3)
+    assert calls[1][1:] == ("careful", 4)
+
+    events = module.load_audit_events(limit=20)
+    auto_event = next(
+        event for event in events if event["event_type"] == "chat.auto-continue"
+    )
+    assert auto_event["payload"]["speed"] == "careful"
+    assert auto_event["payload"]["detail"] == 4
 
 
 def test_prompt_worker_auto_plans_after_checkpoint_once(monkeypatch, tmp_path) -> None:
@@ -2845,6 +2991,113 @@ def test_prompt_worker_retries_zero_token_provider_failure(
     assert "OpenAI credits/cost" in retry_events[0]["detail"]
 
 
+def test_prompt_worker_downgrades_bedrock_55_to_standard_54_before_flex(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_MODEL_FLOOR="gpt-5.4",
+        NORMAN_CODEX_MODEL="openai.gpt-5.4",
+        NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.4",
+        NORMAN_CODEX_STANDARD_AWS_PROFILE="ob-traqline-admin",
+        NORMAN_CODEX_STANDARD_AWS_REGION="us-east-2",
+        NORMAN_CODEX_SWITCHABLE_MODELS="openai.gpt-5.4,openai.gpt-5.5",
+        NORMAN_CODEX_AVAILABLE_MODELS="openai.gpt-5.4,openai.gpt-5.5",
+        NORMAN_CODEX_ZERO_TOKEN_PROVIDER_MAX_RETRIES="1",
+    )
+    module.ensure_state_dir()
+    calls = []
+    provider_error = (
+        "Task submission failed with status 404 Not Found: Engine not found"
+    )
+
+    usage = module.normalize_usage_entry(
+        {
+            "service_tier": "default",
+            "provider_surface": "aws-bedrock",
+            "provider_error_kind": "bedrock_engine_not_found",
+            "provider_error_text": provider_error,
+            "total_tokens": 0,
+            "zero_token_provider_failure": True,
+        }
+    )
+    assert module.zero_token_provider_retry_model("openai.gpt-5.5", usage) == (
+        "openai.gpt-5.4"
+    )
+
+    def fake_execute_runtime(
+        prompt,
+        speed,
+        detail,
+        attachments,
+        runtime,
+        model,
+        timeout_seconds=None,
+        service_tier="",
+        job_budget="",
+    ):
+        calls.append({"prompt": prompt, "model": model, "service_tier": service_tier})
+        if len(calls) == 1:
+            return "", provider_error, "thread-bedrock", usage
+        return (
+            "Recovered on Bedrock 5.4.",
+            "",
+            "thread-bedrock",
+            module.normalize_usage_entry({"total_tokens": 20}),
+        )
+
+    monkeypatch.setattr(module, "_execute_prompt_runtime", fake_execute_runtime)
+
+    accepted, snapshot = module.start_web_prompt(
+        "status?",
+        "careful",
+        5,
+        "normal",
+        model="openai.gpt-5.5",
+        service_tier="default",
+    )
+
+    assert accepted is True
+    assert snapshot["pending"] is True
+
+    for _ in range(20):
+        worker = module.ACTIVE_PROMPT_THREAD
+        if worker is not None:
+            worker.join(timeout=0.2)
+        final_snapshot = module.current_snapshot()
+        if not final_snapshot["pending"] and len(calls) == 2:
+            break
+
+    assert len(calls) == 2
+    assert calls[0]["model"] == "openai.gpt-5.5"
+    assert calls[0]["service_tier"] == "default"
+    assert calls[1]["model"] == "openai.gpt-5.4"
+    assert calls[1]["service_tier"] == "default"
+    assert module.AUTO_CONTINUE_ZERO_TOKEN_PROVIDER_MARKER in calls[1]["prompt"]
+
+    final_snapshot = module.current_snapshot()
+    assert final_snapshot["pending"] is False
+    assert final_snapshot["state"] == "ok"
+    assert final_snapshot["last_response"] == "Recovered on Bedrock 5.4."
+    events = module.load_audit_events(limit=20)
+    retry_events = [
+        event
+        for event in events
+        if event["event_type"] == "chat.zero-token-provider-retry"
+    ]
+    assert retry_events
+    payload = retry_events[0]["payload"]
+    assert payload["previous_model"] == "openai.gpt-5.5"
+    assert payload["retry_model"] == "openai.gpt-5.4"
+    assert payload["model_fallback"] is True
+    assert payload["previous_service_tier"] == "default"
+    assert payload["retry_service_tier"] == "default"
+    assert payload["service_tier_fallback"] is False
+    assert "OpenAI credits/cost" not in retry_events[0]["detail"]
+
+
 def test_bedrock_zero_token_retry_stays_on_bedrock_when_direct_tiers_disabled(
     monkeypatch, tmp_path
 ) -> None:
@@ -2993,6 +3246,133 @@ def test_prompt_worker_hands_off_bedrock_capacity_after_side_effects(
     assert not module.load_audit_events(
         limit=20, event_type="chat.zero-token-provider-no-retry"
     )
+
+
+def test_prompt_worker_hands_off_bedrock_55_failure_to_standard_54_after_side_effects(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_MODEL_FLOOR="gpt-5.4",
+        NORMAN_CODEX_MODEL="openai.gpt-5.4",
+        NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.4",
+        NORMAN_CODEX_STANDARD_AWS_PROFILE="ob-traqline-admin",
+        NORMAN_CODEX_STANDARD_AWS_REGION="us-east-2",
+        NORMAN_CODEX_SWITCHABLE_MODELS="openai.gpt-5.4,openai.gpt-5.5",
+        NORMAN_CODEX_AVAILABLE_MODELS="openai.gpt-5.4,openai.gpt-5.5",
+        NORMAN_CODEX_ZERO_TOKEN_PROVIDER_MAX_RETRIES="1",
+    )
+    module.ensure_state_dir()
+    calls = []
+    provider_error = (
+        "Task submission failed with status 404 Not Found: Engine not found"
+    )
+
+    def fake_execute_runtime(
+        prompt,
+        speed,
+        detail,
+        attachments,
+        runtime,
+        model,
+        timeout_seconds=None,
+        service_tier="",
+        job_budget="",
+    ):
+        calls.append({"prompt": prompt, "model": model, "service_tier": service_tier})
+        if len(calls) == 1:
+            live_turn = dict(module.load_status_meta().get("live_turn") or {})
+            live_turn.update(
+                {
+                    "file_interaction_count": 1,
+                    "last_file": "/tmp/platinum-result.json",
+                    "last_tool": "exec_command",
+                }
+            )
+            module.update_status_meta(live_turn=live_turn)
+            return (
+                "",
+                provider_error,
+                "thread-bedrock",
+                module.normalize_usage_entry(
+                    {
+                        "service_tier": "default",
+                        "provider_surface": "aws-bedrock",
+                        "provider_error_kind": "bedrock_engine_not_found",
+                        "provider_error_text": provider_error,
+                        "total_tokens": 0,
+                        "zero_token_provider_failure": True,
+                    }
+                ),
+            )
+        return (
+            "Recovered from provider recovery checkpoint on 5.4.",
+            "",
+            "thread-bedrock",
+            module.normalize_usage_entry(
+                {
+                    "service_tier": service_tier,
+                    "provider_surface": "aws-bedrock",
+                    "total_tokens": 30,
+                }
+            ),
+        )
+
+    monkeypatch.setattr(module, "_execute_prompt_runtime", fake_execute_runtime)
+
+    accepted, snapshot = module.start_web_prompt(
+        "finish the scan",
+        "careful",
+        5,
+        "normal",
+        model="openai.gpt-5.5",
+        service_tier="default",
+    )
+
+    assert accepted is True
+    assert snapshot["pending"] is True
+
+    for _ in range(20):
+        worker = module.ACTIVE_PROMPT_THREAD
+        if worker is not None:
+            worker.join(timeout=0.2)
+        final_snapshot = module.current_snapshot()
+        if not final_snapshot["pending"] and len(calls) == 2:
+            break
+
+    assert len(calls) == 2
+    assert calls[0]["model"] == "openai.gpt-5.5"
+    assert calls[0]["service_tier"] == "default"
+    assert calls[1]["model"] == "openai.gpt-5.4"
+    assert calls[1]["service_tier"] == "default"
+    assert module.AUTO_CONTINUE_ZERO_TOKEN_PROVIDER_MARKER in calls[1]["prompt"]
+    assert "Provider recovery checkpoint" in calls[1]["prompt"]
+    assert "Original prompt: finish the scan" in calls[1]["prompt"]
+    assert "Provider error kind: bedrock_engine_not_found" in calls[1]["prompt"]
+    assert "Do not resend the original prompt unchanged" in calls[1]["prompt"]
+
+    final_snapshot = module.current_snapshot()
+    assert final_snapshot["pending"] is False
+    assert final_snapshot["state"] == "ok"
+    assert final_snapshot["last_response"] == (
+        "Recovered from provider recovery checkpoint on 5.4."
+    )
+
+    events = module.load_audit_events(
+        limit=20, event_type="chat.zero-token-provider-recovery-handoff"
+    )
+    assert events
+    event = events[0]
+    assert "OpenAI credits/cost" not in event["detail"]
+    assert event["payload"]["previous_model"] == "openai.gpt-5.5"
+    assert event["payload"]["retry_model"] == "openai.gpt-5.4"
+    assert event["payload"]["model_fallback"] is True
+    assert event["payload"]["previous_service_tier"] == "default"
+    assert event["payload"]["retry_service_tier"] == "default"
+    assert event["payload"]["service_tier_fallback"] is False
+    assert event["payload"]["provider_error_kind"] == "bedrock_engine_not_found"
 
 
 def test_bbs_relay_prompt_starts_when_console_is_idle(monkeypatch, tmp_path) -> None:
@@ -3242,6 +3622,52 @@ def test_runtime_registry_includes_codex_and_local_llm(monkeypatch, tmp_path) ->
     assert module.normalize_runtime("gpt-oss") == "gptoss"
     assert module.normalize_runtime("spark") == "codexspark"
     assert module.normalize_runtime("deepseek-r1") == "deepseek"
+
+
+def test_runtime_registry_uses_configured_local_llm_inventory(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_LOCAL_LLM_MODEL="gpt-oss:120b",
+        NORMAN_LOCAL_LLM_MODELS=(
+            "gpt-oss:120b,qwen3.5:122b-a10b-q4_K_M,qwen3-coder-next:q4_K_M"
+        ),
+        NORMAN_LOCAL_LLM_ENDPOINTS=(
+            "http://192.168.2.151:11434,http://192.168.2.152:11434"
+        ),
+        NORMAN_LOCAL_LLM_MODEL_ENDPOINTS=json.dumps(
+            {
+                "gpt-oss:120b": [
+                    "http://192.168.2.151:11434",
+                    "http://192.168.2.152:11434",
+                ],
+                "qwen3-coder-next:q4_K_M": ["http://192.168.2.152:11434"],
+            },
+            separators=(",", ":"),
+        ),
+    )
+
+    registry = {item["key"]: item for item in module.runtime_registry_payload()}
+
+    assert registry["localllm"]["default_model"] == "gpt-oss:120b"
+    assert registry["localllm"]["models"] == [
+        "gpt-oss:120b",
+        "qwen3.5:122b-a10b-q4_K_M",
+        "qwen3-coder-next:q4_K_M",
+    ]
+    assert registry["localllm"]["endpoints"] == [
+        "http://192.168.2.151:11434",
+        "http://192.168.2.152:11434",
+    ]
+    assert registry["localllm"]["model_endpoints"]["gpt-oss:120b"] == [
+        "http://192.168.2.151:11434",
+        "http://192.168.2.152:11434",
+    ]
+    assert registry["localllm"]["model_endpoints"]["qwen3-coder-next:q4_K_M"] == [
+        "http://192.168.2.152:11434"
+    ]
 
 
 def test_bedrock_converse_can_enable_claude_runtime(monkeypatch, tmp_path) -> None:
@@ -4260,6 +4686,123 @@ def test_execute_prompt_records_bedrock_stream_disconnect_diagnostics(
     assert usage["zero_token_provider_failure"] is True
 
 
+def test_provider_request_id_extraction_filters_false_positive_field_names(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+
+    text = "\n".join(
+        [
+            "request_id: Optional",
+            "request_id: b.ue_id",
+            "request_id: opts.requestId",
+            "request_id: request_id_var.get",
+            "lease.request_id: a.requestId",
+            "x-amzn-requestid: amz-abcdef",
+            "x-request-id: 03a0f9c81234",
+            "request_id=req-123456",
+        ]
+    )
+    payload = [
+        {"ResponseMetadata": {"RequestId": "8f0f8f2f-1234-4567-89ab-123456789abc"}},
+        {
+            "headers": {
+                "x-amzn-requestid": "amz-struct-abcdef",
+                "x-amzn-trace-id": "Root=1-abcdef12-1234567890abcdef",
+            }
+        },
+        {"request_id": "opts.requestId", "trace_id": "trace-struct-123"},
+    ]
+
+    request_ids = module.extract_provider_request_ids(
+        text
+    ) + module.extract_provider_request_ids_from_payload(payload)
+    trace_ids = module.extract_provider_trace_ids_from_payload(payload)
+
+    assert "amz-abcdef" in request_ids
+    assert "03a0f9c81234" in request_ids
+    assert "req-123456" in request_ids
+    assert "8f0f8f2f-1234-4567-89ab-123456789abc" in request_ids
+    assert "amz-struct-abcdef" in request_ids
+    assert "Root=1-abcdef12-1234567890abcdef" in trace_ids
+    assert "trace-struct-123" in trace_ids
+    assert "Optional" not in request_ids
+    assert "b.ue_id" not in request_ids
+    assert "opts.requestId" not in request_ids
+    assert "request_id_var.get" not in request_ids
+    assert "a.requestId" not in request_ids
+
+
+def test_execute_prompt_records_silent_bedrock_zero_token_no_final_diagnostics(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_SERVICE_TIER="default",
+        NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_STANDARD_AWS_PROFILE="ob-traqline-admin",
+        NORMAN_CODEX_STANDARD_AWS_REGION="us-east-2",
+        NORMAN_CODEX_DIRECT_TIERS_ENABLED="0",
+    )
+
+    class FakePopen:
+        pid = 12345
+        returncode = 0
+
+        def __init__(self, cmd, text, stdin, stdout, stderr, env, start_new_session):
+            assert "--profile-v2" in cmd
+            assert cmd[cmd.index("--profile-v2") + 1] == "traqline-bedrock"
+            output_path = pathlib.Path(cmd[cmd.index("-o") + 1])
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        def communicate(self, *args, **kwargs):
+            return (
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "type": "thread.started",
+                                "thread_id": "019edb09-1234-7000-8000-abcdef123456",
+                            }
+                        ),
+                        json.dumps({"type": "turn.started"}),
+                        json.dumps(
+                            {"type": "item.started", "item": {"type": "reasoning"}}
+                        ),
+                        json.dumps(
+                            {"type": "item.completed", "item": {"type": "reasoning"}}
+                        ),
+                    ]
+                ),
+                "",
+            )
+
+    monkeypatch.setattr(module.subprocess, "Popen", FakePopen)
+
+    response, error_text, thread_id, usage = module._execute_codex_prompt(
+        "status?", "balanced", 3, [], service_tier="default"
+    )
+
+    assert response == ""
+    assert error_text == ""
+    assert thread_id == "019edb09-1234-7000-8000-abcdef123456"
+    assert usage["provider_surface"] == "aws-bedrock"
+    assert usage["provider_error_kind"] == "bedrock_zero_token_no_final"
+    assert "without a final completion" in usage["provider_error_text"]
+    assert "missing_turn_completed=true" in usage["provider_diagnostic_excerpt"]
+    assert (
+        "codex_event_types=thread.started,turn.started,item.started,item.completed"
+        in (usage["provider_diagnostic_excerpt"])
+    )
+    assert usage["provider_request_ids"] == []
+    assert usage["provider_trace_ids"] == []
+    assert usage["codex_returncode"] == 0
+    assert usage["codex_turn_failed_count"] == 0
+    assert usage["zero_token_provider_failure"] is True
+
+
 def test_execute_prompt_resets_bedrock_stream_disconnect_thread(
     monkeypatch, tmp_path
 ) -> None:
@@ -4385,6 +4928,11 @@ def test_stale_arg0_cleanup_warning_is_not_provider_error(
     )
 
     assert module.provider_error_kind(warning, provider_surface="openai-direct") == ""
+    assert module.strip_benign_codex_provider_warnings(warning) == ""
+    assert (
+        module.strip_benign_codex_provider_warnings(f"{warning}\nreal failure")
+        == "real failure"
+    )
     assert (
         module.provider_error_kind(
             f"{warning} Task submission failed with status 404 Not Found: Engine not found",

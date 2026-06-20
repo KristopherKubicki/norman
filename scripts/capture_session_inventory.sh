@@ -23,12 +23,18 @@ now = datetime.now().isoformat(timespec="seconds")
 
 
 def run(cmd):
-    return subprocess.check_output(cmd, text=True, errors="ignore")
+    return subprocess.check_output(
+        cmd,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        errors="ignore",
+    )
 
 
 def command_exists(name):
     return subprocess.call(
-        ["bash", "-lc", f"command -v {name} >/dev/null 2>&1"]
+        ["bash", "-lc", f"command -v {name} >/dev/null 2>&1"],
+        stdin=subprocess.DEVNULL,
     ) == 0
 
 
@@ -150,7 +156,13 @@ if command_exists("tmux"):
 
 screen_out = ""
 if command_exists("screen"):
-    proc = subprocess.run(["screen", "-ls"], capture_output=True, text=True, check=False)
+    proc = subprocess.run(
+        ["screen", "-ls"],
+        capture_output=True,
+        text=True,
+        check=False,
+        stdin=subprocess.DEVNULL,
+    )
     screen_out = (proc.stdout or proc.stderr or "").strip()
 
 lines = []

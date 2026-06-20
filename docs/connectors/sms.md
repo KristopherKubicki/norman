@@ -14,8 +14,8 @@ Add the following keys to your `config.yaml` file:
 ```yaml
 sms_account_sid: "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 sms_auth_token: "your_token"
-sms_from_number: "+15555555555"
-sms_to_number: "+15555555556"
+sms_from_number: "<E164_FROM_NUMBER>"
+sms_to_number: "<E164_TO_NUMBER>"
 ```
 
 ## Usage

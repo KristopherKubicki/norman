@@ -136,6 +136,14 @@ def display_issue_detail(issue: dict[str, Any], *, max_chars: int = 280) -> str:
     return detail[: max(0, max_chars - 3)].rstrip() + "..."
 
 
+def issue_location(issue: dict[str, Any]) -> str:
+    host = str(issue.get("host") or "unknown").strip() or "unknown"
+    instance = str(issue.get("instance") or "").strip()
+    if instance and instance != "<host>":
+        return f"{host}/{instance}"
+    return host
+
+
 def issue_signature(issue: dict[str, Any]) -> str:
     parts = [
         str(issue.get("severity") or "").strip().lower(),
@@ -240,11 +248,23 @@ def evaluate_alerts(
     }
 
 
+def alert_action_line(decision: dict[str, Any]) -> str:
+    new_alerts = [
+        issue for issue in decision.get("new_alerts") or [] if isinstance(issue, dict)
+    ]
+    if any(_issue_severity(issue) == "fail" for issue in new_alerts):
+        return "Check the failed host or TUI first; use doctor JSON for exact evidence before restarting anything."
+    if new_alerts:
+        return "Review repeated warnings; they crossed the debounce threshold and may need cleanup."
+    return "No new operator action; this post records current fleet state."
+
+
 def render_alert_body(health: dict[str, Any], decision: dict[str, Any]) -> str:
     summary = health.get("summary") if isinstance(health.get("summary"), dict) else {}
     lines = [
         "TUI fleet health alert",
         "",
+        f"Action needed: {alert_action_line(decision)}",
         f"Checked: {health.get('checked_at') or 'unknown'}",
         (
             "Summary: "
@@ -258,10 +278,9 @@ def render_alert_body(health: dict[str, Any], decision: dict[str, Any]) -> str:
     ]
     for issue in decision["new_alerts"]:
         lines.append(
-            "- [{severity}] {host}/{instance} {check}: {detail}".format(
+            "- [{severity}] {location} · {check}: {detail}".format(
                 severity=issue.get("severity") or "warn",
-                host=issue.get("host") or "unknown",
-                instance=issue.get("instance") or "unknown",
+                location=issue_location(issue),
                 check=issue.get("check") or "check",
                 detail=display_issue_detail(issue),
             )

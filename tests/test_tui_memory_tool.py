@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import time
 from pathlib import Path
 
 
@@ -169,6 +170,326 @@ def test_discover_import_and_time_series(tmp_path: Path, monkeypatch) -> None:
     assert len(usage_paths) == 1
     assert sum(row.get("turns", 0) for row in series["rows"]) == 2
     assert sum(row.get("total_tokens", 0) for row in series["rows"]) == 300
+
+
+def test_import_redacts_secret_values_before_search_and_vector_index(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _load_memory_tool(monkeypatch)
+    db = tmp_path / "tui_state.sqlite3"
+    history = tmp_path / "history.jsonl"
+    bearer_value = "bearer-secret-value-123"
+    env_value = "raw-network-token-456"
+    aws_value = "AKIA1234567890ABCDEF"
+    access_value = "networking-secret-access-789"
+    _write_jsonl(
+        history,
+        [
+            {
+                "thread_id": "thread-secret",
+                "started_at": 1_780_000_000,
+                "prompt": (
+                    "Use Authorization: Bearer "
+                    f"{bearer_value} and NETWORK_API_TOKEN={env_value}."
+                ),
+                "response": (
+                    f"Do not store {aws_value} or "
+                    f"aws_secret_access_key={access_value}."
+                ),
+                "usage": {"total_tokens": 100},
+            }
+        ],
+    )
+
+    with module.connect(db) as conn:
+        module.import_history_files(conn, [history])
+        module.rebuild_memory_vectors(conn)
+        row = conn.execute(
+            "SELECT prompt_preview, response_preview, payload_json FROM turns"
+        ).fetchone()
+        chunks = conn.execute("SELECT text, text_preview FROM memory_chunks").fetchall()
+        raw_searches = {
+            value: module.search_turns(conn, query=value, limit=5)
+            for value in (bearer_value, env_value, aws_value, access_value)
+        }
+        raw_metadata = {
+            value: module.metadata_search(conn, query=value, limit=5)
+            for value in (bearer_value, env_value, aws_value, access_value)
+        }
+        raw_vectors = {
+            value: module.vector_search(conn, query=value, limit=5)
+            for value in (bearer_value, env_value, aws_value, access_value)
+        }
+
+    payload = json.loads(row["payload_json"])
+    stored_text = "\n".join(
+        [
+            row["prompt_preview"],
+            row["response_preview"],
+            row["payload_json"],
+            *[chunk["text"] for chunk in chunks],
+            *[chunk["text_preview"] for chunk in chunks],
+        ]
+    )
+    for value in (bearer_value, env_value, aws_value, access_value):
+        assert value not in stored_text
+        assert raw_searches[value]["rows"] == []
+        assert raw_metadata[value]["rows"] == []
+        assert raw_vectors[value]["rows"] == []
+    assert payload["memory_redacted"] is True
+    assert payload["memory_redactions_count"] >= 4
+    assert "[REDACTED:secret]" in stored_text
+
+
+def test_import_session_files_creates_searchable_turns(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _load_memory_tool(monkeypatch)
+    db = tmp_path / "tui_state.sqlite3"
+    session = (
+        tmp_path
+        / ".codex-work"
+        / "sessions"
+        / "2026"
+        / "06"
+        / "18"
+        / "rollout-2026-06-18T01-02-03-session-a.jsonl"
+    )
+    _write_jsonl(
+        session,
+        [
+            {
+                "timestamp": "2026-06-18T01:02:03Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": "session-a",
+                    "timestamp": "2026-06-18T01:02:03Z",
+                    "cwd": "/repo",
+                    "originator": "codex_exec",
+                    "source": "exec",
+                    "cli_version": "1.2.3",
+                },
+            },
+            {
+                "timestamp": "2026-06-18T01:02:04Z",
+                "type": "event_msg",
+                "payload": {"type": "task_started", "turn_id": "turn-a"},
+            },
+            {
+                "timestamp": "2026-06-18T01:02:05Z",
+                "type": "turn_context",
+                "payload": {"turn_id": "turn-a", "model": "gpt-5.5"},
+            },
+            {
+                "timestamp": "2026-06-18T01:02:06Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "user_message",
+                    "message": "Find the imported session needle.",
+                },
+            },
+            {
+                "timestamp": "2026-06-18T01:02:07Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "agent_message",
+                    "phase": "final_answer",
+                    "message": "The imported session needle is searchable.",
+                },
+            },
+            {
+                "timestamp": "2026-06-18T01:02:08Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "task_complete",
+                    "turn_id": "turn-a",
+                    "last_agent_message": "The imported session needle is searchable.",
+                },
+            },
+        ],
+    )
+
+    with module.connect(db) as conn:
+        imported = module.import_session_files(conn, [session])
+        result = module.search_turns(conn, query="imported needle", limit=5)
+        metadata_result = module.metadata_search(conn, query="turn-a", limit=5)
+        metadata_body_result = module.metadata_search(
+            conn, query="imported session needle", limit=5
+        )
+        hybrid_result = module.hybrid_search(conn, query="turn-a", limit=5)
+        stats = module.stats(conn)
+        row = conn.execute(
+            "SELECT thread_id, model, payload_json FROM turns"
+        ).fetchone()
+
+    payload = json.loads(row["payload_json"])
+    assert imported["files"] == 1
+    assert imported["rows_seen"] == 6
+    assert imported["rows_imported"] == 1
+    assert len(result["rows"]) == 1
+    assert metadata_result["rows"][0]["thread_id"] == "session-a"
+    assert metadata_body_result["rows"] == []
+    assert hybrid_result["metadata"]["rows"][0]["thread_id"] == "session-a"
+    assert stats["turns"]["turns"] == 1
+    assert stats["imports"][0]["kind"] == "session"
+    assert row["thread_id"] == "session-a"
+    assert row["model"] == "gpt-5.5"
+    assert payload["session_turn_id"] == "turn-a"
+    assert payload["session_cwd"] == "/repo"
+
+
+def test_import_session_files_skips_malformed_jsonl_lines(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _load_memory_tool(monkeypatch)
+    db = tmp_path / "tui_state.sqlite3"
+    session = tmp_path / ".codex-work" / "sessions" / "session-malformed.jsonl"
+    session.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {
+            "timestamp": "2026-06-18T01:02:03Z",
+            "type": "session_meta",
+            "payload": {"id": "session-malformed"},
+        },
+        "{not valid json",
+        {
+            "timestamp": "2026-06-18T01:02:04Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "user_message",
+                "message": "Recover the valid session line.",
+            },
+        },
+        {
+            "timestamp": "2026-06-18T01:02:05Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "agent_message",
+                "message": "The valid session line survived import.",
+            },
+        },
+    ]
+    session.write_text(
+        "\n".join(
+            row if isinstance(row, str) else json.dumps(row, sort_keys=True)
+            for row in rows
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with module.connect(db) as conn:
+        imported = module.import_session_files(conn, [session])
+        result = module.search_turns(conn, query="valid session line", limit=5)
+
+    assert imported["files"] == 1
+    assert imported["rows_seen"] == 4
+    assert imported["rows_imported"] == 1
+    assert result["rows"][0]["thread_id"] == "session-malformed"
+
+
+def test_codex_home_discovers_session_files(tmp_path: Path, monkeypatch) -> None:
+    module = _load_memory_tool(monkeypatch)
+    codex_home = tmp_path / ".codex-work"
+    session = codex_home / "sessions" / "2026" / "06" / "18" / "session.jsonl"
+    _write_jsonl(
+        session,
+        [
+            {
+                "timestamp": "2026-06-18T01:02:03Z",
+                "type": "session_meta",
+                "payload": {"id": "session-b"},
+            },
+            {
+                "timestamp": "2026-06-18T01:02:04Z",
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": "Hello history."},
+            },
+            {
+                "timestamp": "2026-06-18T01:02:05Z",
+                "type": "event_msg",
+                "payload": {"type": "agent_message", "message": "Hello imported."},
+            },
+        ],
+    )
+
+    assert module.discover_session_files(codex_home) == [session]
+
+
+def test_memory_vector_rebuild_and_search(tmp_path: Path, monkeypatch) -> None:
+    module = _load_memory_tool(monkeypatch)
+    db = tmp_path / "tui_state.sqlite3"
+    history = tmp_path / "history.jsonl"
+    _write_jsonl(
+        history,
+        [
+            {
+                "thread_id": "thread-vector-a",
+                "started_at": 1_780_000_000,
+                "prompt": "Diagnose panelbot upload handoff failure.",
+                "response": (
+                    "The callback path lost the queue relay after the attachment "
+                    "handoff completed."
+                ),
+            },
+            {
+                "thread_id": "thread-vector-b",
+                "started_at": 1_780_000_100,
+                "prompt": "Summarize unrelated dashboard colors.",
+                "response": "The palette uses blue and gray.",
+            },
+        ],
+    )
+
+    with module.connect(db) as conn:
+        module.import_history_files(conn, [history])
+        rebuild = module.rebuild_memory_vectors(conn)
+        vector = module.vector_search(conn, query="callback queue attachment", limit=3)
+        hybrid = module.hybrid_search(conn, query="panelbot callback", limit=3)
+        stats = module.stats(conn)
+
+    assert rebuild["embedding_model"] == "local-sparse-v1"
+    assert rebuild["chunks"] >= 4
+    assert vector["rows"]
+    assert vector["rows"][0]["thread_id"] == "thread-vector-a"
+    assert hybrid["mode"] == "hybrid"
+    assert hybrid["vector"]["rows"]
+    assert stats["memory_vector"]["indexed_turns"] == 2
+
+
+def test_memory_vector_synthetic_runtime_stays_bounded(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _load_memory_tool(monkeypatch)
+    db = tmp_path / "tui_state.sqlite3"
+    history = tmp_path / "history.jsonl"
+    _write_jsonl(
+        history,
+        [
+            {
+                "thread_id": f"thread-{index}",
+                "started_at": 1_780_000_000 + index,
+                "prompt": f"Panelbot upload shard {index} status.",
+                "response": (
+                    "Callback queue attachment relay evidence "
+                    f"for synthetic benchmark row {index}."
+                ),
+            }
+            for index in range(150)
+        ],
+    )
+
+    started = time.perf_counter()
+    with module.connect(db) as conn:
+        module.import_history_files(conn, [history])
+        module.rebuild_memory_vectors(conn)
+        result = module.vector_search(
+            conn, query="panelbot callback attachment", limit=5
+        )
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 5.0
+    assert len(result["rows"]) == 5
 
 
 def test_cli_search_prints_markdown(tmp_path: Path, monkeypatch, capsys) -> None:

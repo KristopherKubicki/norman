@@ -103,7 +103,7 @@
     parkergale: 'pefb.home.arpa',
     'phone-ops': 'phone.home.arpa',
     'platinum-standard': 'platinum.kris.openbrand.com',
-    scout: 'scout.kris.openbrand.com',
+    scout: 'ranger.kris.openbrand.com',
     switchboard: 'switchboard.home.arpa',
     theseus: 'theseus.home.arpa',
     'tmi-dashboards': 'dashboards.kris.openbrand.com',

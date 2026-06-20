@@ -14,7 +14,7 @@ Use this section to tell people about which versions of your project are current
 We take security issues seriously. If you discover a security vulnerability in the project, please follow these steps:
 
 1. Do not open a public issue on GitHub.
-2. Email us at norman.contact.email@gmail.com with the necessary details to reproduce the vulnerability.
+2. Use the private vulnerability reporting or maintainer contact channel configured for this repository, and include the necessary details to reproduce the vulnerability.
 3. We will review your report and assess the vulnerability. We may ask for additional information to better understand the issue.
 4. We'll try to keep you informed about our progress towards resolving the issue.
 5. Once the issue is resolved, we'll give you appropriate credit for discovering and reporting the vulnerability.

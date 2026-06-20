@@ -26,7 +26,7 @@ BOT_PATH_ALIASES: dict[str, tuple[str, ...]] = {
     "parkergale": ("pefb", "pef"),
     "phone-ops": ("phone", "phoneops"),
     "platinum-standard": ("platinum", "platinumstandard"),
-    "scout": ("scoutbot",),
+    "scout": ("ranger", "scoutbot"),
     "studio": ("camera-studio", "control-room"),
     "tmi-dashboards": ("tmi", "dashboards"),
 }
@@ -52,7 +52,7 @@ BOT_HOST_LABELS: dict[str, tuple[str, ...]] = {
     "parkergale": ("pefb", "pef", "parkergale"),
     "phone-ops": ("phone", "phoneops"),
     "platinum-standard": ("platinum", "platinumstandard"),
-    "scout": ("scout", "scoutbot"),
+    "scout": ("ranger", "scoutbot"),
     "studio": ("studio", "camera-studio"),
     "theseus": ("theseus",),
     "tmi-dashboards": ("tmi",),
@@ -71,22 +71,23 @@ BOT_INTERNAL_FQDN_OVERRIDES: dict[str, tuple[str, ...]] = {
 }
 
 BOT_PUBLIC_FQDN_OVERRIDES: dict[str, tuple[str, ...]] = {
-    "compere": ("keystone.work.example.test",),
-    "control-plane": ("cp.work.example.test", "control.work.example.test"),
-    "earlybird": ("earlybird.work.example.test",),
-    "gold-book": ("goldbook.work.example.test",),
-    "infra": ("infra.work.example.test",),
-    "leadership-kpis": ("kpis.work.example.test", "leadership.work.example.test"),
-    "market-sizing": ("mc.work.example.test", "market.work.example.test"),
-    "mc": ("mc.work.example.test", "market.work.example.test"),
-    "mls": ("mls.work.example.test",),
-    "panelbot": ("panelbot.work.example.test",),
-    "platinum-standard": ("platinum.work.example.test",),
-    "scout": ("scout.work.example.test",),
-    "tmi-dashboards": ("dashboards.work.example.test", "tmi.work.example.test"),
+    "compere": ("keystone.kris.openbrand.com",),
+    "control-plane": ("cp.kris.openbrand.com", "control.kris.openbrand.com"),
+    "earlybird": ("earlybird.kris.openbrand.com",),
+    "gold-book": ("goldbook.kris.openbrand.com",),
+    "infra": ("infra.kris.openbrand.com",),
+    "leadership-kpis": ("kpis.kris.openbrand.com", "leadership.kris.openbrand.com"),
+    "market-sizing": ("mc.kris.openbrand.com", "market.kris.openbrand.com"),
+    "mc": ("mc.kris.openbrand.com", "market.kris.openbrand.com"),
+    "mls": ("mls.kris.openbrand.com",),
+    "panelbot": ("panelbot.kris.openbrand.com",),
+    "platinum-standard": ("platinum.kris.openbrand.com",),
+    # The console/TUI is Ranger; the underlying service identity remains scout.
+    "scout": ("ranger.kris.openbrand.com",),
+    "tmi-dashboards": ("dashboards.kris.openbrand.com", "tmi.kris.openbrand.com"),
 }
 
-# These work-bot names live under the work.example.test namespace but are
+# These work-bot names live under the kris.openbrand.com namespace but are
 # intentionally Knox-local only. `io` resolves them to Norman via split DNS and
 # Caddy terminates them with internal TLS, but they should not be treated as a
 # Route53/public DNS target unless explicitly promoted later.
@@ -118,7 +119,7 @@ STATIC_PUBLIC_WORK_PORTS: dict[str, str] = {
     "leadership-kpis": "8790",
     "panelbot": "8791",
     "mls": "8792",
-    "scout": "8794",
+    "scout": "8793",
 }
 
 STATIC_TUI_PORTS: dict[str, tuple[str, str]] = {
@@ -141,15 +142,27 @@ STATIC_TUI_PORTS: dict[str, tuple[str, str]] = {
 KNOX_LOCAL_ONLY_CLIENTS = (
     "127.0.0.1/32",
     "::1/128",
-    "192.168.0.1/32",  # io / router
-    "192.168.0.136/32",  # pixel10
-    "100.64.0.73/32",  # pixel10 tailnet
-    "192.168.0.137/32",  # hal
+    "192.168.2.1/32",  # io / router
+    "192.168.2.241/32",  # norman LAN front door
+    "100.103.34.17/32",  # norman tailnet front door
+    "fd7a:115c:a1e0::3438:2211/128",  # norman tailnet front door ipv6
+    "192.168.2.136/32",  # pixel10
+    "100.78.41.73/32",  # pixel10 tailnet
+    "fd7a:115c:a1e0::4d33:2949/128",  # pixel10 tailnet ipv6
+    "192.168.2.137/32",  # hal
     "100.112.62.71/32",  # hal tailnet
-    "192.168.0.140/32",  # plasma-mobile
+    "192.168.2.140/32",  # plasma-mobile
     "100.109.202.7/32",  # plasma-mobile tailnet
-    "192.168.0.141/32",  # yoga laptop
+    "192.168.2.141/32",  # sal LAN
+    "100.77.147.57/32",  # sal tailscale
 )
+
+BOT_EXTRA_KNOX_LOCAL_ONLY_CLIENTS: dict[str, tuple[str, ...]] = {
+    "panelbot": (
+        "192.168.2.141/32",  # sal LAN
+        "100.77.147.57/32",  # sal tailscale
+    ),
+}
 
 RESERVED_HOSTS = {
     host.public_host.strip().lower()
@@ -162,8 +175,8 @@ ALLOWED_RESERVED_BOT_HOSTS = {
 }
 
 SPECIAL_PATH_ROUTES: dict[str, str] = {
-    "switchboard": f"{HOSTS['norman'].lan_host}:8796",
-    "subprime": f"{HOSTS['norman'].lan_host}:8796",
+    "switchboard": f"{HOSTS['norman'].lan_host}:8765",
+    "subprime": f"{HOSTS['norman'].lan_host}:8765",
 }
 
 SPECIAL_HOST_GROUPS: dict[str, tuple[tuple[str, ...], ...]] = {
@@ -188,7 +201,7 @@ SPECIAL_HOST_ONLY_ROUTES: dict[str, tuple[str, tuple[tuple[str, ...], ...]]] = {
     ),
 }
 
-NORMAN_TAILNET_FRONTDOOR = os.environ.get("NORMAN_TAILNET_FRONTDOOR", "100.64.0.17")
+NORMAN_TAILNET_FRONTDOOR = os.environ.get("NORMAN_TAILNET_FRONTDOOR", "100.103.34.17")
 
 
 def _route_block(slug: str, upstream: str) -> str:
@@ -213,6 +226,17 @@ def _dedupe_preserve_order(values: list[str]) -> list[str]:
         seen.add(candidate)
         ordered.append(candidate)
     return ordered
+
+
+def knox_local_clients_for_bot(name: str) -> tuple[str, ...]:
+    return tuple(
+        _dedupe_preserve_order(
+            [
+                *KNOX_LOCAL_ONLY_CLIENTS,
+                *BOT_EXTRA_KNOX_LOCAL_ONLY_CLIENTS.get(name, ()),
+            ]
+        )
+    )
 
 
 def _internal_bot_hosts(name: str) -> tuple[str, ...]:
@@ -251,7 +275,7 @@ def bot_hosts(name: str) -> tuple[str, ...]:
 
 
 def _uses_public_tls(hostnames: tuple[str, ...]) -> bool:
-    return any(host.endswith(".work.example.test") for host in hostnames)
+    return any(host.endswith(".kris.openbrand.com") for host in hostnames)
 
 
 def _host_block(
@@ -372,7 +396,7 @@ def render_hosts() -> str:
                     hostnames == public_hosts and name in BOT_PUBLIC_INTERNAL_TLS_NAMES
                 ),
                 allowed_clients=(
-                    KNOX_LOCAL_ONLY_CLIENTS
+                    knox_local_clients_for_bot(name)
                     if hostnames == public_hosts
                     and name in BOT_PUBLIC_KNOX_LOCAL_ONLY_NAMES
                     else ()

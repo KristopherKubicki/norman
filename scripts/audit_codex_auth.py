@@ -114,9 +114,22 @@ def discover_runtime_processes(home_index: dict[str, dict]) -> list[dict]:
             continue
         env = read_environ(entry)
         cmd = read_cmdline(entry)
-        codex_home = env.get("HOUSEBOT_CODEX_HOME") or env.get("CODEX_HOME") or ""
-        service_name = env.get("HOUSEBOT_CODEX_SERVICE_NAME") or ""
-        agent_name = env.get("HOUSEBOT_CODEX_AGENT_NAME") or ""
+        codex_home = (
+            env.get("NORMAN_CODEX_HOME")
+            or env.get("HOUSEBOT_CODEX_HOME")
+            or env.get("CODEX_HOME")
+            or ""
+        )
+        service_name = (
+            env.get("NORMAN_CODEX_SERVICE_NAME")
+            or env.get("HOUSEBOT_CODEX_SERVICE_NAME")
+            or ""
+        )
+        agent_name = (
+            env.get("NORMAN_CODEX_AGENT_NAME")
+            or env.get("HOUSEBOT_CODEX_AGENT_NAME")
+            or ""
+        )
         if not codex_home and not service_name and "codex" not in cmd:
             continue
         home_record = home_index.get(codex_home)

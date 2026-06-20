@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Norman BBS policy doctor when launcher or BBS policy inputs change
+
+[Path]
+PathChanged=/home/kristopher/code/norman/scripts/norman_codex_launch.sh
+PathChanged=/home/kristopher/code/norman/scripts/agent_console_template/agent_console_launch.sh
+PathChanged=/etc/switchboard-bbs/SWITCHBOARD_BOT_DIRECTORY.json
+PathChanged=/usr/local/lib/switchboard-bbs/switchboard_bbs_service.py
+Unit=norman-bbs-doctor.service
+
+[Install]
+WantedBy=multi-user.target

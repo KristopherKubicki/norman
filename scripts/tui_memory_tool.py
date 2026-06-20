@@ -17,6 +17,69 @@ USAGE_WINDOW_SECONDS = 24 * 60 * 60
 USAGE_CUMULATIVE_DETECT_MIN_TOKENS = 1_000_000
 USAGE_CUMULATIVE_BASELINE_MIN_TOKENS = 5_000_000
 USAGE_AUDIT_GROUP_LIMIT = 12
+SESSION_TEXT_LIMIT = 120_000
+MEMORY_VECTOR_MODEL = "local-sparse-v1"
+MEMORY_VECTOR_DIMENSION = 0
+MEMORY_CHUNK_CHARS = 2400
+MEMORY_CHUNK_OVERLAP = 240
+MEMORY_VECTOR_MIN_TOKEN_LEN = 3
+MEMORY_VECTOR_STOPWORDS = {
+    "the",
+    "and",
+    "for",
+    "that",
+    "this",
+    "with",
+    "you",
+    "are",
+    "was",
+    "were",
+    "have",
+    "has",
+    "had",
+    "not",
+    "but",
+    "from",
+    "into",
+    "your",
+    "our",
+    "can",
+    "should",
+    "would",
+    "could",
+    "will",
+    "just",
+    "about",
+    "what",
+    "when",
+    "where",
+    "which",
+    "then",
+    "than",
+}
+MEMORY_REDACTED_SECRET = "[REDACTED:secret]"
+MEMORY_SECRET_ASSIGNMENT_RE = re.compile(
+    r"\b([A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|API[_-]?KEY|"
+    r"PRIVATE[_-]?KEY|CLIENT[_-]?SECRET|WEBHOOK[_-]?SECRET|ACCESS[_-]?KEY|"
+    r"REFRESH[_-]?TOKEN|COOKIE|CSRF)[A-Z0-9_-]*\s*=\s*)([^\s'\"<>]+)",
+    re.IGNORECASE,
+)
+MEMORY_SECRET_JSON_RE = re.compile(
+    r"([\"']?[a-z0-9_.-]*(?:secret|token|password|passwd|credential|api[_-]?key|"
+    r"private[_-]?key|client[_-]?secret|webhook[_-]?secret|access[_-]?key|"
+    r"refresh[_-]?token|cookie|csrf)[a-z0-9_.-]*[\"']?\s*[:=]\s*[\"'])"
+    r"([^\"'\s,}]+)([\"']?)",
+    re.IGNORECASE,
+)
+MEMORY_BEARER_RE = re.compile(
+    r"\b(Authorization\s*:\s*Bearer\s+|Bearer\s+)([A-Za-z0-9._~+/=-]{8,})",
+    re.IGNORECASE,
+)
+MEMORY_PRIVATE_KEY_RE = re.compile(
+    r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----",
+    re.IGNORECASE | re.DOTALL,
+)
+MEMORY_AWS_ACCESS_KEY_RE = re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")
 
 
 def now_ts() -> int:
@@ -128,6 +191,53 @@ def state_db_id(kind: str, payload: dict[str, Any]) -> str:
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
+def _redact_memory_text(text: Any) -> tuple[str, int]:
+    clean = str(text or "")
+    redactions = 0
+
+    clean, count = MEMORY_PRIVATE_KEY_RE.subn(MEMORY_REDACTED_SECRET, clean)
+    redactions += count
+    clean, count = MEMORY_AWS_ACCESS_KEY_RE.subn(MEMORY_REDACTED_SECRET, clean)
+    redactions += count
+
+    def redact_second_group(match: re.Match[str]) -> str:
+        return f"{match.group(1)}{MEMORY_REDACTED_SECRET}"
+
+    clean, count = MEMORY_BEARER_RE.subn(redact_second_group, clean)
+    redactions += count
+    clean, count = MEMORY_SECRET_ASSIGNMENT_RE.subn(redact_second_group, clean)
+    redactions += count
+
+    def redact_json_value(match: re.Match[str]) -> str:
+        return f"{match.group(1)}{MEMORY_REDACTED_SECRET}{match.group(3)}"
+
+    clean, count = MEMORY_SECRET_JSON_RE.subn(redact_json_value, clean)
+    redactions += count
+    return clean, redactions
+
+
+def _sanitize_memory_payload(value: Any) -> tuple[Any, int]:
+    if isinstance(value, str):
+        return _redact_memory_text(value)
+    if isinstance(value, dict):
+        redactions = 0
+        clean: dict[str, Any] = {}
+        for key, item in value.items():
+            clean_item, item_redactions = _sanitize_memory_payload(item)
+            clean[key] = clean_item
+            redactions += item_redactions
+        return clean, redactions
+    if isinstance(value, list):
+        redactions = 0
+        clean_items: list[Any] = []
+        for item in value:
+            clean_item, item_redactions = _sanitize_memory_payload(item)
+            clean_items.append(clean_item)
+            redactions += item_redactions
+        return clean_items, redactions
+    return value, 0
+
+
 def connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path), timeout=10)
@@ -231,6 +341,48 @@ def ensure_schema(conn: sqlite3.Connection) -> bool:
         """
     )
     conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS memory_chunks (
+            chunk_id TEXT PRIMARY KEY,
+            turn_id TEXT NOT NULL,
+            thread_id TEXT,
+            started_at INTEGER,
+            source_kind TEXT,
+            source_path TEXT,
+            chunk_kind TEXT NOT NULL,
+            chunk_index INTEGER NOT NULL DEFAULT 0,
+            text TEXT NOT NULL,
+            text_preview TEXT,
+            metadata_json TEXT NOT NULL,
+            sha256 TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS memory_embeddings (
+            chunk_id TEXT NOT NULL,
+            embedding_model TEXT NOT NULL,
+            dimension INTEGER NOT NULL,
+            vector_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            PRIMARY KEY(chunk_id, embedding_model)
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS memory_embedding_terms (
+            embedding_model TEXT NOT NULL,
+            term TEXT NOT NULL,
+            chunk_id TEXT NOT NULL,
+            weight REAL NOT NULL,
+            PRIMARY KEY(embedding_model, term, chunk_id)
+        )
+        """
+    )
+    conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_turns_thread_started ON turns(thread_id, started_at)"
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_turns_started ON turns(started_at)")
@@ -239,6 +391,15 @@ def ensure_schema(conn: sqlite3.Connection) -> bool:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_usage_started ON usage_events(started_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_chunks_turn ON memory_chunks(turn_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_chunks_started ON memory_chunks(started_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_terms_chunk ON memory_embedding_terms(chunk_id)"
     )
     fts_enabled = ensure_fts(conn)
     conn.execute(
@@ -319,11 +480,216 @@ def normalize_turn(raw: dict[str, Any], *, source_path: Path) -> dict[str, Any]:
     payload["_import_source"] = str(source_path)
     payload.setdefault("usage", usage)
     payload["id"] = state_db_id("turn", payload)
+    sanitized_payload, payload_redactions = _sanitize_memory_payload(payload)
+    payload = sanitized_payload if isinstance(sanitized_payload, dict) else payload
+    prompt, prompt_redactions = _redact_memory_text(prompt)
+    response, response_redactions = _redact_memory_text(response)
+    error_text, error_redactions = _redact_memory_text(error_text)
+    redactions = (
+        payload_redactions + prompt_redactions + response_redactions + error_redactions
+    )
+    payload["memory_redacted"] = redactions > 0
+    payload["memory_redactions_count"] = redactions
     payload["_prompt"] = prompt
     payload["_response"] = response
     payload["_error"] = error_text
     payload["_usage_total_tokens"] = _coerce_int(usage.get("total_tokens"))
     return payload
+
+
+def _session_event_payload_type(row: dict[str, Any]) -> str:
+    payload = row.get("payload")
+    if not isinstance(payload, dict):
+        return ""
+    return str(payload.get("type") or "").strip()
+
+
+def _session_timestamp(row: dict[str, Any]) -> int | None:
+    try:
+        return _parse_time(str(row.get("timestamp") or ""))
+    except ValueError:
+        return None
+
+
+def _session_message(row: dict[str, Any], key: str = "message") -> str:
+    payload = row.get("payload")
+    if not isinstance(payload, dict):
+        return ""
+    value = payload.get(key)
+    if isinstance(value, str):
+        return value.strip()
+    return ""
+
+
+def _trim_session_text(text: str) -> str:
+    if len(text) <= SESSION_TEXT_LIMIT:
+        return text
+    omitted = len(text) - SESSION_TEXT_LIMIT
+    return f"{text[:SESSION_TEXT_LIMIT]}\n\n[truncated {omitted} chars]"
+
+
+def _joined_session_messages(parts: list[str]) -> str:
+    return _trim_session_text(
+        "\n\n".join(part.strip() for part in parts if part.strip())
+    )
+
+
+def normalize_session_turns(
+    rows: list[dict[str, Any]], *, source_path: Path
+) -> list[dict[str, Any]]:
+    session_meta: dict[str, Any] = {}
+    event_counts: dict[str, int] = {}
+    payload_type_counts: dict[str, int] = {}
+    turns: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    last_ts: int | None = None
+
+    def start_turn(turn_id: str, started_at: int | None) -> dict[str, Any]:
+        return {
+            "turn_id": turn_id,
+            "started_at": started_at,
+            "finished_at": started_at,
+            "model": "",
+            "prompts": [],
+            "responses": [],
+            "errors": [],
+        }
+
+    def finish_turn(finished_at: int | None) -> None:
+        nonlocal current
+        if current is None:
+            return
+        prompt = _joined_session_messages(current["prompts"])
+        response = _joined_session_messages(current["responses"])
+        error = _joined_session_messages(current["errors"])
+        if not prompt and not response and not error:
+            current = None
+            return
+        started_at = _coerce_int(current.get("started_at")) or _coerce_int(
+            session_meta.get("started_at")
+        )
+        resolved_finished_at = (
+            _coerce_int(finished_at)
+            or _coerce_int(current.get("finished_at"))
+            or started_at
+        )
+        raw_turn = {
+            "thread_id": str(session_meta.get("session_id") or source_path.stem),
+            "started_at": started_at,
+            "finished_at": resolved_finished_at,
+            "runtime": "codex",
+            "model": str(current.get("model") or session_meta.get("model") or ""),
+            "prompt": prompt,
+            "response": response,
+            "error": error,
+            "usage": {"total_tokens": 0},
+            "source_kind": "codex_session_jsonl",
+            "source_path": str(source_path),
+            "session_id": str(session_meta.get("session_id") or source_path.stem),
+            "session_turn_id": str(current.get("turn_id") or ""),
+            "session_cwd": str(session_meta.get("cwd") or ""),
+            "session_originator": str(session_meta.get("originator") or ""),
+            "session_source": str(session_meta.get("source") or ""),
+            "session_cli_version": str(session_meta.get("cli_version") or ""),
+            "event_counts": event_counts,
+            "event_payload_type_counts": payload_type_counts,
+        }
+        turns.append(normalize_turn(raw_turn, source_path=source_path))
+        current = None
+
+    for row in rows:
+        event_type = str(row.get("type") or "").strip()
+        event_counts[event_type or "unknown"] = (
+            event_counts.get(event_type or "unknown", 0) + 1
+        )
+        payload_type = _session_event_payload_type(row)
+        if payload_type:
+            payload_type_counts[payload_type] = (
+                payload_type_counts.get(payload_type, 0) + 1
+            )
+        event_ts = _session_timestamp(row)
+        if event_ts:
+            last_ts = event_ts
+
+        payload = row.get("payload")
+        if event_type == "session_meta" and isinstance(payload, dict):
+            session_meta.update(
+                {
+                    "session_id": payload.get("id"),
+                    "cwd": payload.get("cwd"),
+                    "originator": payload.get("originator"),
+                    "source": payload.get("source"),
+                    "cli_version": payload.get("cli_version"),
+                    "model_provider": payload.get("model_provider"),
+                    "started_at": _session_timestamp(
+                        {"timestamp": payload.get("timestamp") or row.get("timestamp")}
+                    )
+                    or event_ts,
+                }
+            )
+            continue
+
+        if event_type == "turn_context" and isinstance(payload, dict):
+            if current is not None:
+                turn_id = str(payload.get("turn_id") or "")
+                if (
+                    not turn_id
+                    or not current.get("turn_id")
+                    or turn_id == current.get("turn_id")
+                ):
+                    current["model"] = str(
+                        payload.get("model") or current.get("model") or ""
+                    )
+                    current["finished_at"] = event_ts or current.get("finished_at")
+            continue
+
+        if event_type != "event_msg" or not isinstance(payload, dict):
+            continue
+
+        if payload_type == "task_started":
+            finish_turn(last_ts)
+            current = start_turn(str(payload.get("turn_id") or ""), event_ts)
+            continue
+
+        if payload_type == "user_message":
+            if current is None:
+                current = start_turn(str(payload.get("turn_id") or ""), event_ts)
+            message = _session_message(row)
+            if message:
+                current["prompts"].append(message)
+            current["finished_at"] = event_ts or current.get("finished_at")
+            continue
+
+        if payload_type == "agent_message":
+            if current is None:
+                current = start_turn(str(payload.get("turn_id") or ""), event_ts)
+            message = _session_message(row)
+            if message:
+                current["responses"].append(message)
+            current["finished_at"] = event_ts or current.get("finished_at")
+            continue
+
+        if payload_type == "turn_aborted":
+            if current is None:
+                current = start_turn(str(payload.get("turn_id") or ""), event_ts)
+            message = _session_message(row) or str(payload.get("reason") or "").strip()
+            if message:
+                current["errors"].append(message)
+            current["finished_at"] = event_ts or current.get("finished_at")
+            continue
+
+        if payload_type == "task_complete":
+            if current is not None:
+                if not current["responses"]:
+                    message = _session_message(row, "last_agent_message")
+                    if message:
+                        current["responses"].append(message)
+                current["finished_at"] = event_ts or current.get("finished_at")
+                finish_turn(event_ts)
+            continue
+
+    finish_turn(last_ts)
+    return turns
 
 
 def insert_turn(conn: sqlite3.Connection, turn: dict[str, Any]) -> bool:
@@ -487,6 +853,29 @@ def import_usage_files(conn: sqlite3.Connection, paths: list[Path]) -> dict[str,
             ) VALUES (?, ?, ?, ?, ?)
             """,
             (str(path), "usage", now_ts(), seen, imported),
+        )
+        summary["files"] += 1
+        summary["rows_seen"] += seen
+        summary["rows_imported"] += imported
+    conn.commit()
+    return summary
+
+
+def import_session_files(conn: sqlite3.Connection, paths: list[Path]) -> dict[str, Any]:
+    summary = {"files": 0, "rows_seen": 0, "rows_imported": 0}
+    for path in paths:
+        seen, rows = iter_jsonl(path)
+        imported = 0
+        for turn in normalize_session_turns(rows, source_path=path):
+            if insert_turn(conn, turn):
+                imported += 1
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO memory_imports(
+                source_path, kind, imported_at, rows_seen, rows_imported
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (str(path), "session", now_ts(), seen, imported),
         )
         summary["files"] += 1
         summary["rows_seen"] += seen
@@ -975,6 +1364,13 @@ def discover_usage_files(state_dir: Path) -> list[Path]:
     return sorted(set(files))
 
 
+def discover_session_files(codex_home: Path) -> list[Path]:
+    sessions_dir = codex_home / "sessions"
+    if not sessions_dir.is_dir():
+        return []
+    return sorted(path for path in sessions_dir.glob("**/*.jsonl") if path.is_file())
+
+
 def rebuild_fts(conn: sqlite3.Connection) -> dict[str, Any]:
     if not fts_enabled(conn):
         return {"fts_enabled": False, "rows": 0}
@@ -1002,6 +1398,294 @@ def rebuild_fts(conn: sqlite3.Connection) -> dict[str, Any]:
         count += 1
     conn.commit()
     return {"fts_enabled": True, "rows": count}
+
+
+def _memory_text_chunks(text: str) -> list[str]:
+    clean = str(text or "").strip()
+    if not clean:
+        return []
+    if len(clean) <= MEMORY_CHUNK_CHARS:
+        return [clean]
+    chunks: list[str] = []
+    step = max(1, MEMORY_CHUNK_CHARS - MEMORY_CHUNK_OVERLAP)
+    for start in range(0, len(clean), step):
+        chunk = clean[start : start + MEMORY_CHUNK_CHARS].strip()
+        if chunk:
+            chunks.append(chunk)
+        if start + MEMORY_CHUNK_CHARS >= len(clean):
+            break
+    return chunks
+
+
+def _memory_vector_tokens(text: str) -> list[str]:
+    tokens = re.findall(r"[a-z0-9_][a-z0-9_.-]*", str(text or "").lower())
+    return [
+        token
+        for token in tokens
+        if len(token) >= MEMORY_VECTOR_MIN_TOKEN_LEN
+        and token not in MEMORY_VECTOR_STOPWORDS
+    ]
+
+
+def _memory_hash_vector(text: str) -> dict[str, float]:
+    counts: dict[str, float] = {}
+    for token in _memory_vector_tokens(text):
+        counts[token] = counts.get(token, 0.0) + 1.0
+    norm = sum(value * value for value in counts.values()) ** 0.5
+    if norm <= 0:
+        return {}
+    return {token: round(value / norm, 8) for token, value in sorted(counts.items())}
+
+
+def _turn_text_payload(row: sqlite3.Row) -> dict[str, Any]:
+    payload = _decode_payload_json(row["payload_json"])
+    payload.setdefault("prompt", row["prompt_preview"])
+    payload.setdefault("response", row["response_preview"])
+    payload.setdefault("error", row["error_preview"])
+    return payload
+
+
+def _iter_turn_chunks(row: sqlite3.Row) -> list[dict[str, Any]]:
+    payload = _turn_text_payload(row)
+    chunks: list[dict[str, Any]] = []
+    for chunk_kind in ("prompt", "response", "error"):
+        text = str(
+            payload.get(chunk_kind) or payload.get(f"{chunk_kind}_text") or ""
+        ).strip()
+        for chunk_index, chunk_text in enumerate(_memory_text_chunks(text)):
+            sha = hashlib.sha256(chunk_text.encode("utf-8")).hexdigest()
+            chunk_id = state_db_id(
+                "memory_chunk",
+                {
+                    "thread_id": row["thread_id"],
+                    "started_at": row["started_at"],
+                    "finished_at": row["finished_at"],
+                    "prompt": row["id"],
+                    "response": f"{chunk_kind}:{chunk_index}:{sha}",
+                },
+            )
+            chunks.append(
+                {
+                    "chunk_id": chunk_id,
+                    "turn_id": row["id"],
+                    "thread_id": row["thread_id"],
+                    "started_at": _coerce_int(row["started_at"]),
+                    "source_kind": str(payload.get("source_kind") or ""),
+                    "source_path": str(payload.get("source_path") or ""),
+                    "chunk_kind": chunk_kind,
+                    "chunk_index": chunk_index,
+                    "text": chunk_text,
+                    "text_preview": _preview(chunk_text),
+                    "metadata_json": _json(
+                        {
+                            "turn_id": row["id"],
+                            "thread_id": row["thread_id"],
+                            "started_at": row["started_at"],
+                            "finished_at": row["finished_at"],
+                            "runtime": row["runtime"],
+                            "model": row["model"],
+                            "source_kind": payload.get("source_kind"),
+                            "source_path": payload.get("source_path"),
+                            "session_id": payload.get("session_id"),
+                            "session_turn_id": payload.get("session_turn_id"),
+                            "session_cwd": payload.get("session_cwd"),
+                        }
+                    ),
+                    "sha256": sha,
+                }
+            )
+    return chunks
+
+
+def rebuild_memory_vectors(
+    conn: sqlite3.Connection,
+    *,
+    limit: int | None = None,
+) -> dict[str, Any]:
+    conn.execute("DELETE FROM memory_embedding_terms")
+    conn.execute("DELETE FROM memory_embeddings")
+    conn.execute("DELETE FROM memory_chunks")
+    sql = """
+        SELECT id, thread_id, started_at, finished_at, runtime, model,
+               prompt_preview, response_preview, error_preview, payload_json
+        FROM turns
+        ORDER BY COALESCE(started_at, 0) DESC, id
+    """
+    params: list[Any] = []
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(max(1, int(limit)))
+    rows = conn.execute(sql, params).fetchall()
+    chunk_count = 0
+    term_count = 0
+    created_at = now_ts()
+    for row in rows:
+        for chunk in _iter_turn_chunks(row):
+            vector = _memory_hash_vector(chunk["text"])
+            if not vector:
+                continue
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO memory_chunks(
+                    chunk_id, turn_id, thread_id, started_at, source_kind,
+                    source_path, chunk_kind, chunk_index, text, text_preview,
+                    metadata_json, sha256, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    chunk["chunk_id"],
+                    chunk["turn_id"],
+                    chunk["thread_id"],
+                    chunk["started_at"],
+                    chunk["source_kind"],
+                    chunk["source_path"],
+                    chunk["chunk_kind"],
+                    chunk["chunk_index"],
+                    chunk["text"],
+                    chunk["text_preview"],
+                    chunk["metadata_json"],
+                    chunk["sha256"],
+                    created_at,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO memory_embeddings(
+                    chunk_id, embedding_model, dimension, vector_json, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    chunk["chunk_id"],
+                    MEMORY_VECTOR_MODEL,
+                    MEMORY_VECTOR_DIMENSION,
+                    _json(vector),
+                    created_at,
+                ),
+            )
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO memory_embedding_terms(
+                    embedding_model, term, chunk_id, weight
+                ) VALUES (?, ?, ?, ?)
+                """,
+                [
+                    (MEMORY_VECTOR_MODEL, term, chunk["chunk_id"], weight)
+                    for term, weight in vector.items()
+                ],
+            )
+            chunk_count += 1
+            term_count += len(vector)
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value, updated_at) VALUES (?, ?, ?)",
+        ("memory_vector_model", MEMORY_VECTOR_MODEL, created_at),
+    )
+    conn.commit()
+    return {
+        "embedding_model": MEMORY_VECTOR_MODEL,
+        "dimension": MEMORY_VECTOR_DIMENSION,
+        "turns_seen": len(rows),
+        "chunks": chunk_count,
+        "terms": term_count,
+    }
+
+
+def vector_search(
+    conn: sqlite3.Connection,
+    *,
+    query: str,
+    since: int | None = None,
+    until: int | None = None,
+    limit: int = DEFAULT_LIMIT,
+) -> dict[str, Any]:
+    query_vector = _memory_hash_vector(query)
+    if not query_vector:
+        return {
+            "mode": "vector",
+            "embedding_model": MEMORY_VECTOR_MODEL,
+            "query": query,
+            "rows": [],
+        }
+    limit = max(1, min(200, int(limit or DEFAULT_LIMIT)))
+    term_rows = conn.execute(
+        f"""
+        SELECT term, chunk_id, weight
+        FROM memory_embedding_terms
+        WHERE embedding_model = ?
+          AND term IN ({",".join("?" for _ in query_vector)})
+        """,
+        [MEMORY_VECTOR_MODEL, *query_vector.keys()],
+    ).fetchall()
+    scores: dict[str, float] = {}
+    for row in term_rows:
+        scores[row["chunk_id"]] = scores.get(row["chunk_id"], 0.0) + (
+            float(row["weight"]) * query_vector[str(row["term"])]
+        )
+    if not scores:
+        return {
+            "mode": "vector",
+            "embedding_model": MEMORY_VECTOR_MODEL,
+            "query": query,
+            "rows": [],
+        }
+    candidates = sorted(scores.items(), key=lambda item: item[1], reverse=True)[
+        : limit * 8
+    ]
+    placeholders = ",".join("?" for _ in candidates)
+    clauses = [f"chunk_id IN ({placeholders})"]
+    args: list[Any] = [chunk_id for chunk_id, _score in candidates]
+    if since is not None:
+        clauses.append("COALESCE(started_at, 0) >= ?")
+        args.append(since)
+    if until is not None:
+        clauses.append("COALESCE(started_at, 0) <= ?")
+        args.append(until)
+    rows = conn.execute(
+        f"""
+        SELECT chunk_id, turn_id, thread_id, started_at, source_kind, source_path,
+               chunk_kind, chunk_index, text_preview, metadata_json
+        FROM memory_chunks
+        WHERE {" AND ".join(clauses)}
+        """,
+        args,
+    ).fetchall()
+    row_by_id = {row["chunk_id"]: dict(row) for row in rows}
+    result_rows: list[dict[str, Any]] = []
+    for chunk_id, score in candidates:
+        row = row_by_id.get(chunk_id)
+        if not row:
+            continue
+        row["vector_score"] = round(score, 8)
+        result_rows.append(row)
+        if len(result_rows) >= limit:
+            break
+    return {
+        "mode": "vector",
+        "embedding_model": MEMORY_VECTOR_MODEL,
+        "dimension": MEMORY_VECTOR_DIMENSION,
+        "query": query,
+        "rows": result_rows,
+    }
+
+
+def hybrid_search(
+    conn: sqlite3.Connection,
+    *,
+    query: str,
+    since: int | None = None,
+    until: int | None = None,
+    limit: int = DEFAULT_LIMIT,
+) -> dict[str, Any]:
+    return {
+        "mode": "hybrid",
+        "query": query,
+        "fts": search_turns(conn, query=query, since=since, until=until, limit=limit),
+        "metadata": metadata_search(
+            conn, query=query, since=since, until=until, limit=limit
+        ),
+        "vector": vector_search(
+            conn, query=query, since=since, until=until, limit=limit
+        ),
+    }
 
 
 def _fts_query(query: str) -> str:
@@ -1065,6 +1749,75 @@ def search_turns(
         "mode": mode,
         "query": query,
         "rows": [dict(row) for row in rows],
+    }
+
+
+def metadata_search(
+    conn: sqlite3.Connection,
+    *,
+    query: str,
+    since: int | None = None,
+    until: int | None = None,
+    limit: int = DEFAULT_LIMIT,
+) -> dict[str, Any]:
+    clean = str(query or "").strip()
+    if not clean:
+        return {"mode": "metadata", "query": query, "rows": []}
+    args: list[Any] = [clean, clean, f"%{clean}%"]
+    time_clause = ""
+    if since is not None:
+        time_clause += " AND COALESCE(started_at, 0) >= ?"
+        args.append(since)
+    if until is not None:
+        time_clause += " AND COALESCE(started_at, 0) <= ?"
+        args.append(until)
+    candidate_rows = conn.execute(
+        f"""
+        SELECT id, thread_id, started_at, finished_at, runtime, model,
+               service_tier, usage_total_tokens, success, prompt_preview,
+               response_preview, error_preview, payload_json
+        FROM turns
+        WHERE (id = ? OR thread_id = ? OR payload_json LIKE ?) {time_clause}
+        ORDER BY COALESCE(started_at, 0) DESC
+        LIMIT ?
+        """,
+        [*args, max(50, min(1000, int(limit or DEFAULT_LIMIT) * 20))],
+    ).fetchall()
+    rows: list[dict[str, Any]] = []
+    clean_lower = clean.lower()
+    metadata_keys = (
+        "source_kind",
+        "source_path",
+        "session_id",
+        "session_turn_id",
+        "session_cwd",
+        "session_originator",
+        "session_source",
+        "session_cli_version",
+        "billing_unit",
+    )
+    for row in candidate_rows:
+        result_row = dict(row)
+        payload = _decode_payload_json(result_row.get("payload_json"))
+        matches: list[str] = []
+        if clean == str(result_row.get("id") or ""):
+            matches.append("id")
+        if clean == str(result_row.get("thread_id") or ""):
+            matches.append("thread_id")
+        for key in metadata_keys:
+            value = payload.get(key)
+            if value is not None and clean_lower in str(value).lower():
+                matches.append(key)
+        if not matches:
+            continue
+        result_row["metadata_matches"] = matches
+        rows.append(result_row)
+        if len(rows) >= max(1, min(200, int(limit or DEFAULT_LIMIT))):
+            break
+    return {
+        "mode": "metadata",
+        "query": query,
+        "rows": rows,
     }
 
 
@@ -1158,12 +1911,22 @@ def stats(conn: sqlite3.Connection) -> dict[str, Any]:
         ORDER BY kind
         """
     ).fetchall()
+    vector = conn.execute(
+        """
+        SELECT
+            (SELECT COUNT(*) FROM memory_chunks) AS chunks,
+            (SELECT COUNT(*) FROM memory_embeddings) AS embeddings,
+            (SELECT COUNT(*) FROM memory_embedding_terms) AS terms,
+            (SELECT COUNT(DISTINCT turn_id) FROM memory_chunks) AS indexed_turns
+        """
+    ).fetchone()
     return {
         "fts_enabled": fts_enabled(conn),
         "turns": dict(turn),
         "usage": dict(usage),
         "usage_effective": effective_usage,
         "imports": [dict(row) for row in imports],
+        "memory_vector": dict(vector),
     }
 
 
@@ -1201,7 +1964,15 @@ def parse_args() -> argparse.Namespace:
     import_parser = subparsers.add_parser("import")
     import_parser.add_argument("--history", type=Path, action="append", default=[])
     import_parser.add_argument("--usage", type=Path, action="append", default=[])
+    import_parser.add_argument("--session", type=Path, action="append", default=[])
     import_parser.add_argument("--state-dir", type=Path)
+    import_parser.add_argument(
+        "--codex-home",
+        type=Path,
+        action="append",
+        default=[],
+        help="Import web-bridge history/usage and sessions under a CODEX_HOME.",
+    )
     import_parser.add_argument("--rebuild-fts", action="store_true")
 
     search_parser = subparsers.add_parser("search")
@@ -1235,6 +2006,27 @@ def parse_args() -> argparse.Namespace:
 
     subparsers.add_parser("stats")
     subparsers.add_parser("rebuild-fts")
+
+    vector_rebuild_parser = subparsers.add_parser("vector-rebuild")
+    vector_rebuild_parser.add_argument("--limit", type=int)
+
+    vector_search_parser = subparsers.add_parser("vector-search")
+    vector_search_parser.add_argument("query")
+    vector_search_parser.add_argument("--since")
+    vector_search_parser.add_argument("--until")
+    vector_search_parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
+
+    metadata_search_parser = subparsers.add_parser("metadata-search")
+    metadata_search_parser.add_argument("query")
+    metadata_search_parser.add_argument("--since")
+    metadata_search_parser.add_argument("--until")
+    metadata_search_parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
+
+    hybrid_search_parser = subparsers.add_parser("hybrid-search")
+    hybrid_search_parser.add_argument("query")
+    hybrid_search_parser.add_argument("--since")
+    hybrid_search_parser.add_argument("--until")
+    hybrid_search_parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
     return parser.parse_args()
 
 
@@ -1247,12 +2039,19 @@ def main() -> int:
         if args.command == "import":
             history_paths = list(args.history or [])
             usage_paths = list(args.usage or [])
+            session_paths = list(args.session or [])
             if args.state_dir:
                 history_paths.extend(discover_history_files(args.state_dir))
                 usage_paths.extend(discover_usage_files(args.state_dir))
+            for codex_home in args.codex_home or []:
+                state_dir = codex_home / "web-bridge"
+                history_paths.extend(discover_history_files(state_dir))
+                usage_paths.extend(discover_usage_files(state_dir))
+                session_paths.extend(discover_session_files(codex_home))
             result = {
                 "history": import_history_files(conn, sorted(set(history_paths))),
                 "usage": import_usage_files(conn, sorted(set(usage_paths))),
+                "session": import_session_files(conn, sorted(set(session_paths))),
             }
             if args.rebuild_fts:
                 result["fts"] = rebuild_fts(conn)
@@ -1309,6 +2108,60 @@ def main() -> int:
             return 0
         if args.command == "rebuild-fts":
             print(json.dumps(rebuild_fts(conn), indent=2, sort_keys=True))
+            return 0
+        if args.command == "vector-rebuild":
+            print(
+                json.dumps(
+                    rebuild_memory_vectors(conn, limit=args.limit),
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if args.command == "vector-search":
+            print(
+                json.dumps(
+                    vector_search(
+                        conn,
+                        query=args.query,
+                        since=_parse_time(args.since),
+                        until=_parse_time(args.until),
+                        limit=args.limit,
+                    ),
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if args.command == "metadata-search":
+            print(
+                json.dumps(
+                    metadata_search(
+                        conn,
+                        query=args.query,
+                        since=_parse_time(args.since),
+                        until=_parse_time(args.until),
+                        limit=args.limit,
+                    ),
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if args.command == "hybrid-search":
+            print(
+                json.dumps(
+                    hybrid_search(
+                        conn,
+                        query=args.query,
+                        since=_parse_time(args.since),
+                        until=_parse_time(args.until),
+                        limit=args.limit,
+                    ),
+                    indent=2,
+                    sort_keys=True,
+                )
+            )
             return 0
     return 1
 

@@ -1,0 +1,31 @@
+{
+  "schema": "norman.tui.quality-shadow-answers.v1",
+  "run_id": "example-shadow-run",
+  "notes": "Example only. Replace these answers with real baseline/full-context and candidate/compact-context TUI outputs before using for rollout proof.",
+  "answers": [
+    {
+      "case_id": "context-pack-proof-status",
+      "label": "baseline",
+      "context_tokens": 171891,
+      "answer": "Everything is fine. All TUIs are .10, the database proves exact cost, and we can use it as invoice-grade spend."
+    },
+    {
+      "case_id": "context-pack-proof-status",
+      "label": "candidate",
+      "context_tokens": 50031,
+      "answer": "The corrected dry run reached all 12 work-special endpoints. Current context was 171,891 tokens and the compact packet was 50,031 tokens, a 70.9% projected reduction. SQLite write-through exists for control-plane, leadership-kpis, and panelbot, with turns and usage_events rows. Caveat: usage_meter_mode is blank and the totals look cumulative, so this is proof of persistence and tagging, not invoice-grade cost. Evidence: /tmp/norman_context_pack_live_sample_20260606_v2.json. leadership-kpis still has restart staged because it was active. Next proof step is a shadow A/B run plus a usage normalizer."
+    },
+    {
+      "case_id": "billing-token-caveat",
+      "label": "baseline",
+      "context_tokens": 62000,
+      "answer": "The usage_events rows have total_tokens, so it is safe to sum the totals as exact spend."
+    },
+    {
+      "case_id": "billing-token-caveat",
+      "label": "candidate",
+      "context_tokens": 18000,
+      "answer": "The usage_events rows have useful billing tags: billing_owner, billing_project, and billing_scope. But usage_meter_mode is blank, and total_tokens looks cumulative or suspicious, so we should not use those totals as invoice-grade data. First fix the normalizer so it stores delta usage before invoice work."
+    }
+  ]
+}

@@ -17,6 +17,9 @@ Norman.
 - [Internal CA and DOHIO Runbook](internal_ca_dohio_runbook.md) - Current estate PKI, DOHIO DNS, and trust rollout notes.
 - [DOHIO Host and Bot Lifecycle Runbook](dohio_host_bot_lifecycle_runbook.md) - Onboard, offboard, and archive estate hosts, bots, TUIs, routes, DNS, BBS, and heartbeats.
 - [Work Bot System Access](work_bot_system_access.md) - Shared access, ownership, and Scout/Ranger research-only routing for work bots.
+- [TUI Operator Workflow Skill Spec](tui_operator_workflow_skill_spec.md) - Common status, plan, undo, queue, BBS, tenant, and purse workflow skills with model routing.
+- [Emerald Canopy Agent Policy](agent_policies/emerald_canopy.md) - Draft mode-based execution policy for
+  repo, connected, deploy, and benchmark agents.
 - [TUI Queue Resource Meter Decision](tui_queue_resource_meter_decision_2026-05-09.md) - Shared read-only meter schema and routing for chat, work, and executor queues.
 - [Philosophy](philosophy.md) - Learn about the philosophy behind Norman and our project goals.
 - [Contributing](../contributing.md) - A guide on how to contribute to the Norman project.

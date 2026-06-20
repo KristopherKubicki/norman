@@ -42,18 +42,18 @@ else
     chmod 0600 "$NEW_ENV"
 fi
 
-set_env_value HOUSEBOT_CODEX_SESSION norman-switchboard
-set_env_value HOUSEBOT_CODEX_TMUX_SOCKET norman-switchboard
-set_env_value HOUSEBOT_CODEX_AGENT_NAME Switchboard
-set_env_value HOUSEBOT_CODEX_AGENT_GROUP Norman
-set_env_value HOUSEBOT_CODEX_CONSOLE_TITLE "Switchboard Console"
-set_env_value HOUSEBOT_CODEX_PROMPT_PLACEHOLDER "Ask Switchboard to triage, route, or supervise a fleet issue."
-set_env_value HOUSEBOT_CODEX_PROMPT_FILE "${ROOT_DIR}/scripts/norman_switchboard_prompt.txt"
-set_env_value HOUSEBOT_CODEX_WEB_PORT 8796
-set_env_value HOUSEBOT_CODEX_CANONICAL_HOST switchboard.home.arpa
-set_env_value HOUSEBOT_CODEX_LOCAL_HOST_ALIASES "switchboard.home.arpa,switchboard.norman.home.arpa,norman.home.arpa,subprime.home.arpa,subprime.norman.home.arpa,botprime.home.arpa,bot.norman.home.arpa"
-set_env_value HOUSEBOT_CODEX_SERVICE_NAME "${NEW_PREFIX}-codex.service"
-set_env_value HOUSEBOT_CODEX_WEB_SERVICE_NAME "${NEW_PREFIX}-codex-web.service"
+set_env_value NORMAN_CODEX_SESSION norman-switchboard
+set_env_value NORMAN_CODEX_TMUX_SOCKET norman-switchboard
+set_env_value NORMAN_CODEX_AGENT_NAME Switchboard
+set_env_value NORMAN_CODEX_AGENT_GROUP Norman
+set_env_value NORMAN_CODEX_CONSOLE_TITLE "Switchboard Console"
+set_env_value NORMAN_CODEX_PROMPT_PLACEHOLDER "Ask Switchboard to triage, route, or supervise a fleet issue."
+set_env_value NORMAN_CODEX_PROMPT_FILE "${ROOT_DIR}/scripts/norman_switchboard_prompt.txt"
+set_env_value NORMAN_CODEX_WEB_PORT 8796
+set_env_value NORMAN_CODEX_CANONICAL_HOST switchboard.home.arpa
+set_env_value NORMAN_CODEX_LOCAL_HOST_ALIASES "switchboard.home.arpa,switchboard.norman.home.arpa,norman.home.arpa,subprime.home.arpa,subprime.norman.home.arpa,botprime.home.arpa,bot.norman.home.arpa"
+set_env_value NORMAN_CODEX_SERVICE_NAME "${NEW_PREFIX}-codex.service"
+set_env_value NORMAN_CODEX_WEB_SERVICE_NAME "${NEW_PREFIX}-codex-web.service"
 
 cat >"${SYSTEMD_DIR}/${NEW_PREFIX}-codex.service" <<EOF
 [Unit]

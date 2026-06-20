@@ -1,0 +1,11 @@
+[Unit]
+Description=Conservative Norman TUI host self-heal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/home/kristopher/code/norman
+ExecStart=/usr/bin/python3 /home/kristopher/code/norman/scripts/tui_host_self_heal.py --target work-special --execute --approved --json-output /home/kristopher/.local/state/norman/tui-host-self-heal.json

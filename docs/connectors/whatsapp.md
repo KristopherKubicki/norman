@@ -15,8 +15,8 @@ Add the following keys to your `config.yaml` file:
 ```yaml
 whatsapp_account_sid: "your_whatsapp_account_sid"
 whatsapp_auth_token: "your_whatsapp_auth_token"
-whatsapp_from_number: "whatsapp:+1234567890"
-whatsapp_to_number: "whatsapp:+0987654321"
+whatsapp_from_number: "whatsapp:<E164_FROM_NUMBER>"
+whatsapp_to_number: "whatsapp:<E164_TO_NUMBER>"
 ```
 
 The fields are:

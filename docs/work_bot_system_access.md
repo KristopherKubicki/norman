@@ -9,10 +9,10 @@ used by the work bots exposed through the public Norman bot hosts.
 
 | Hostname | Bot | Repo | Primary Prompt |
 | --- | --- | --- | --- |
-| `cp.work.example.test` | `control-plane` | `/home/operator/code/control_plane` | `/home/operator/code/norman/scripts/agent_console_template/prompts/control-plane.txt` |
-| `goldbook.work.example.test` | `gold-book` | `/home/operator/code/gold_book` | `/home/operator/code/norman/scripts/agent_console_template/prompts/gold-book.txt` |
-| `mc.work.example.test` | `mc` / Monte Carlo | `/home/operator/code/market-sizing` or successor repo | Survey, demographic, market-modeling, and Monte Carlo lane |
-| `platinum.work.example.test` | `platinum-standard` | `/home/operator/code/platinum_standard` | `/home/operator/code/norman/scripts/agent_console_template/prompts/platinum-standard.txt` |
+| `cp.kris.openbrand.com` | `control-plane` | `/home/operator/code/control_plane` | `/home/operator/code/norman/scripts/agent_console_template/prompts/control-plane.txt` |
+| `goldbook.kris.openbrand.com` | `gold-book` | `/home/operator/code/gold_book` | `/home/operator/code/norman/scripts/agent_console_template/prompts/gold-book.txt` |
+| `mc.kris.openbrand.com` | `mc` / Monte Carlo | `/home/operator/code/market-sizing` or successor repo | Survey, demographic, market-modeling, and Monte Carlo lane |
+| `platinum.kris.openbrand.com` | `platinum-standard` | `/home/operator/code/platinum_standard` | `/home/operator/code/norman/scripts/agent_console_template/prompts/platinum-standard.txt` |
 
 ## Shared Access Guide
 
@@ -33,13 +33,34 @@ The key operating rule is:
 - do not say a system is inaccessible until the expected auth artifact is
   checked
 - prefer repo helper scripts and connectors over inventing a new access path
+- do not use HAL as a shortcut for work-bot access; HAL is a quiet personal
+  desktop and sensitive credential host
+
+## HAL / Desktop Boundary
+
+Work bots should not go onto HAL for background discovery, screenshots,
+browser windows, live-session inspection, or credential hunting. HAL access is
+allowed only when the operator explicitly asks for a HAL-specific maintenance
+action or an approved runbook says HAL is the right target.
+
+Use lower-interference evidence first:
+
+- BBS / Switchboard handoff state
+- target host service health
+- repo runbooks and helper scripts
+- explicit auth artifacts on the owning work host
+- logs and APIs on the actual system being repaired
+
+HAL credentials are expected to rotate. Do not treat them as durable automation
+material, and do not copy HAL credential material into prompts, BBS posts,
+runbooks, screenshots, exports, or handoffs.
 
 ## Expected Auth Artifacts
 
 | Surface | Expected Access Artifact / Pattern |
 | --- | --- |
 | GAPI admin | `GAPI_SESSION_COOKIE` plus `/home/operator/code/control_plane/connectors/gapi_admin_import.py` |
-| GAPI DB | AWS profile `ob-openbrand-admin` plus Secrets Manager / SSM |
+| GAPI DB | configured work AWS named profile plus Secrets Manager / SSM |
 | WebGOAT | `~/.webgoat.cookies.txt` in Netscape format |
 | Gold Book live Sheets | Google service account configured per `/home/operator/code/gold_book/AUTH.md` |
 
@@ -49,7 +70,7 @@ The bots should report the missing dependency explicitly:
 
 - missing `GAPI_SESSION_COOKIE`
 - missing `~/.webgoat.cookies.txt`
-- missing AWS profile `ob-openbrand-admin`
+- missing configured work AWS named profile
 - missing Google service-account credentials
 - missing Armitage run URL / ticket / source evidence
 
@@ -104,13 +125,13 @@ and open questions back through Norman/Switchboard or the owning lane.
 
 ## Retired Lanes
 
-- `acast` / `acast.work.example.test` is retired from the active fleet. Do not rely on it for new work unless it is explicitly re-owned and rebuilt.
+- `acast` / `acast.kris.openbrand.com` is retired from the active fleet. Do not rely on it for new work unless it is explicitly re-owned and rebuilt.
 
 ## Known Blockers
 
 - Missing `GAPI_SESSION_COOKIE`
 - Missing `~/.webgoat.cookies.txt`
-- Missing AWS profile `ob-openbrand-admin`
+- Missing configured work AWS named profile
 - Missing Google service-account credentials
 - Sheet permission block on the target workbook
 - QuickSight UI request without the dataset/build artifact
@@ -124,7 +145,7 @@ and open questions back through Norman/Switchboard or the owning lane.
 python3 /home/operator/code/control_plane/connectors/gapi_admin_import.py --help
 
 # GAPI DB auth check
-aws sts get-caller-identity --profile ob-openbrand-admin
+aws sts get-caller-identity --profile "$WORK_AWS_PROFILE"
 
 # WebGOAT auth check
 python3 /home/operator/code/control_plane/scripts/webgoat_oneoff_probe.py --help

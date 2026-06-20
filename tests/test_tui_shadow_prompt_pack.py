@@ -89,6 +89,12 @@ def _sample_cases() -> list[dict]:
             "title": "Billing token caveat",
             "tui": "control-plane",
             "prompt": "Can we use the DB token rows for the invoice packet?",
+            "answer_contract": {
+                "min_response_words": 28,
+                "required_sections": ["evidence", "next"],
+                "requires_next_step": True,
+                "requires_caveat": True,
+            },
             "required_facts": [
                 {
                     "id": "tags-present",
@@ -136,6 +142,10 @@ def test_build_pack_writes_prompts_manifest_and_overlay(
     assert "Candidate mode" in candidate_text
     assert "evidence-reference packet" in candidate_text
     assert "13,000 body tokens -> 728 reference tokens" in candidate_text
+    assert "## Answer Contract" in candidate_text
+    assert "Minimum response words: 28" in candidate_text
+    assert "Required sections: evidence, next" in candidate_text
+    assert "avoid: exact spend" in candidate_text
     assert "Do not claim exact invoice-grade spend" in candidate_text
 
     overlay = json.loads(overlay_path.read_text(encoding="utf-8"))

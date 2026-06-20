@@ -247,6 +247,7 @@ def tmux_send(
             check=True,
             capture_output=True,
             text=True,
+            stdin=subprocess.DEVNULL,
         )
 
     if working_dir:

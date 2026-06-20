@@ -971,10 +971,11 @@ def test_template_exposes_human_intervention_loop() -> None:
     assert "function humanInterventionApprovalAsk(item)" in source
     assert "function humanInterventionFinePrint(item)" in source
     assert "Prompt parked after restart" in source
-    assert "Review the parked prompt first." in source
-    assert "Review, Draft note, and Close alert are local." in source
+    assert "Close it if superseded." in source
+    assert "Close, Review, and Draft do not send a model prompt." in source
     assert '"stale_web_prompt_after_restart",' in source
     assert "not automatically a provider, sign-in, or captcha failure" in source
+    assert 'label: "Close"' in source
     assert 'label: "Review"' in source
     assert "Use only when you want a fresh model turn" in source
     assert "Review the abandoned web prompt after restart for this TUI." in source
@@ -982,9 +983,10 @@ def test_template_exposes_human_intervention_loop() -> None:
     assert "toast-alert-brief" in source
     assert "Operator alert summary" in source
     assert "toast-alert-label" in source
+    assert '<span class="toast-alert-label">Do</span>' in source
     assert "toast-fineprint" in source
-    assert "<summary>Fine print</summary>" in source
-    assert "Fine print: Approve queues a model prompt and may spend tokens." in source
+    assert "<summary>Details</summary>" in source
+    assert "Approve queues a model prompt and may spend tokens." in source
     assert "function detectReadingScale()" in source
     assert "function normalizeTextZoom(value)" in source
     assert 'data-setting="textZoom" data-value="auto"' in source
@@ -1007,13 +1009,19 @@ def test_template_exposes_human_intervention_loop() -> None:
     assert 'label: "Approve"' in source
     assert 'label: "Resolve"' in source
     assert 'label: "Details"' in source
-    assert 'label: "Close alert"' in source
+    assert 'title: "Close alert. Marks this local blocker handled' in source
     assert 'className = "toast-actions"' in source
+    assert ".toast.monitor .toast-control,\n    .toast.monitor .toast-action," in source
+    assert "touch-action: manipulation;" in source
     assert "].slice(0, 4);" in source
     assert 'className = "toast-action-key"' in source
     assert 'className = "toast-action-impact"' in source
+    assert 'button.addEventListener("pointerdown", (event) => {{' in source
+    assert "if (eventStartedInsideInteractiveTarget(event, toast)) {{" in source
+    assert "if (pointerId === null) {{" in source
     assert 'data-slot="human-intervention-actions"' in source
     assert "Opened intervention details. No model call was made." in source
+    assert "Alert closed. No model call was made." in source
     assert 'value: askNow > 1 ? `${{askNow}} asks` : "1 ask"' in source
     assert "Needs you:" in source
 
@@ -1699,6 +1707,17 @@ def test_template_makes_inline_code_urls_clickable() -> None:
     assert "sensitive.text = sensitive.text.replace(/`([^`]+)`/g" in source
 
 
+def test_template_promotes_bbs_ids_to_official_signs() -> None:
+    source = _agent_console_web_source()
+
+    assert "const BBS_REF_RE =" in source
+    assert "function renderBbsRefLink(refId)" in source
+    assert "function highlightBbsRefs(text)" in source
+    assert "function appendBbsOfficialSigns(row, item)" in source
+    assert '"/api/bbs/thread"' in source
+    assert '"/api/bbs/search"' in source
+
+
 def test_template_sanitizes_raw_html_anchor_markup_before_linkifying() -> None:
     source = _agent_console_web_source()
 
@@ -1983,6 +2002,27 @@ def test_template_compacts_norman_mobile_chrome() -> None:
     assert "bottom: calc(8px + env(safe-area-inset-bottom));" in source
     assert "max-height: min(58dvh, 360px);" in source
     assert "max-width: min(58vw, 15rem);" in source
+    assert (
+        "body.topbar-menu-open .topbar-menu {{\n"
+        "      opacity: 1;\n"
+        "      pointer-events: auto;\n"
+        "      transform: translateY(0) scale(1);\n"
+        "      z-index: 72;" in source
+    )
+    assert (
+        "body.settings-open .settings-panel {{\n"
+        "      opacity: 1;\n"
+        "      pointer-events: auto;\n"
+        "      transform: translateY(0);\n"
+        "      z-index: 72;" in source
+    )
+    assert (
+        "body.notices-open .notices-panel {{\n"
+        "      opacity: 1;\n"
+        "      pointer-events: auto;\n"
+        "      transform: translateY(0);\n"
+        "      z-index: 72;" in source
+    )
     assert "min-height: 34px;" in source
     assert (
         "bottom: calc(var(--composer-reserve) + 78px + env(safe-area-inset-bottom));"
@@ -1991,6 +2031,11 @@ def test_template_compacts_norman_mobile_chrome() -> None:
     assert ".toast.monitor .toast-fineprint {{" in source
     assert ".toast.monitor .toast-fineprint-body {{" in source
     assert "max-height: min(18dvh, 112px);" in source
+    assert "max-height: min(30dvh, 156px);" in source
+    assert "flex: 1 1 calc(50% - 6px);" in source
+    assert "min-height: 40px;" in source
+    assert "overflow-x: visible;" in source
+    assert ".toast.monitor.alert .toast-action-key {{" in source
     assert "-webkit-line-clamp: 2;" in source
     assert (
         ".toast:not(.alert):not(.offline):not(.ack):not(.stale):not(.review):not(.queue):not(.warn) {{"
@@ -2588,6 +2633,11 @@ def test_agent_console_bbs_summary_counts_threads_without_leaking_token(
         "bbs_task_lifecycle.py ack --actor panelbot th_urgent"
         in summary["top_threads"][0]["ack_command"]
     )
+    assert summary["top_threads"][0]["ack_command_label"] == "TAKEOVER ACK"
+    assert summary["top_threads"][0]["ack_command_kind"] == "takeover_ack"
+    assert (
+        "taking ownership from netops" in summary["top_threads"][0]["ack_command_note"]
+    )
     assert (
         "bbs_task_lifecycle.py blocked --actor panelbot th_urgent"
         in summary["top_threads"][0]["blocked_command"]
@@ -2607,6 +2657,8 @@ def test_agent_console_bbs_summary_counts_threads_without_leaking_token(
         "bbs_task_lifecycle.py ack --actor panelbot th_urgent"
         in summary["handoff"]["ack_command"]
     )
+    assert summary["handoff"]["ack_command_label"] == "TAKEOVER ACK"
+    assert summary["handoff"]["ack_command_kind"] == "takeover_ack"
     assert (
         "bbs_task_lifecycle.py fork --actor panelbot th_urgent"
         in summary["handoff"]["fork_command_hint"]
@@ -2620,6 +2672,11 @@ def test_agent_console_bbs_summary_counts_threads_without_leaking_token(
         in summary["handoff"]["blocked_command"]
     )
     prompt_context = module.bbs_handoff_prompt_context(summary)
+    assert "BBS decision card:" in prompt_context
+    assert "Situation:" in prompt_context
+    assert "Ownership: owner is netops; this console is panelbot" in prompt_context
+    assert "Safe next step:" in prompt_context
+    assert "Do not: ACK just to clear noise" in prompt_context
     assert "BBS handoff alert:" in prompt_context
     assert "From: Switchboard BBS." in prompt_context
     assert "Why:" in prompt_context
@@ -2628,7 +2685,8 @@ def test_agent_console_bbs_summary_counts_threads_without_leaking_token(
     assert "Choose one:" in prompt_context
     assert "Fine print:" in prompt_context
     assert "ACK means the actor in the command is taking ownership" in prompt_context
-    assert "ACK helper:" in prompt_context
+    assert "TAKEOVER ACK helper:" in prompt_context
+    assert "TAKEOVER ACK note:" in prompt_context
     assert "FORK helper:" in prompt_context
     assert "DONE helper:" in prompt_context
     assert "BLOCKED helper:" in prompt_context
@@ -2674,14 +2732,252 @@ def test_bbs_handoff_summary_flags_empty_waiting_pickup_context() -> None:
     assert thread["lifecycle_label"] == "missing context"
     assert thread["tone"] == "review"
     assert thread["has_handoff_context"] is False
+    assert thread["handoff_context_sources"] == []
     assert thread["handoff_contract_state"] == "missing_context"
     assert "Creator should add body/evidence before owner ACKs" in thread["next_action"]
+    assert thread["ack_command"] == ""
+    assert thread["ack_command_label"] == "ACK disabled"
+    assert thread["ack_command_kind"] == "ack_disabled"
+    assert "disabled until the creator adds body/evidence" in thread["ack_command_note"]
+    assert "missing body/evidence" in thread["blocked_command"]
     assert summary["handoff"]["state"] == "review"
     assert summary["handoff"]["tone"] == "review"
     assert summary["handoff"]["missing_context"] == 1
+    assert summary["handoff"]["ack_command"] == ""
+    assert summary["handoff"]["ack_command_kind"] == "ack_disabled"
+    assert "missing body/evidence" in summary["handoff"]["blocked_command"]
     prompt_context = module.bbs_handoff_prompt_context(summary)
     assert "Handoff contract: missing body/evidence" in prompt_context
     assert "Do not ACK this shell just to clear it" in prompt_context
+
+
+def test_bbs_handoff_summary_treats_summary_as_context() -> None:
+    module = _load_agent_console_web()
+
+    summary = module.summarize_bbs_payload(
+        {
+            "actor": "netops",
+            "bot": {"heartbeat_ok": True, "heartbeat_age_seconds": 4},
+            "inbox_count": 1,
+            "inbox": [
+                {
+                    "thread_id": "th_summary_only",
+                    "title": "summary-only handoff",
+                    "summary": (
+                        "Implemented the reroute and validated with pytest. "
+                        "Next owner should treat this as the current boundary."
+                    ),
+                    "priority": "normal",
+                    "status": "open",
+                    "owner": "netops",
+                    "message_count": 0,
+                    "last_message_at": "",
+                    "loop": {"state": "waiting_pickup"},
+                }
+            ],
+        }
+    )
+
+    thread = summary["top_threads"][0]
+    assert summary["counts"]["waiting_pickup"] == 1
+    assert summary["counts"]["missing_context"] == 0
+    assert thread["lifecycle"] == "needs_ack"
+    assert thread["has_handoff_context"] is True
+    assert thread["handoff_context_sources"] == ["summary"]
+    assert thread["handoff_contract_state"] == "ready"
+    assert thread["ack_command"]
+    assert thread["ack_command_kind"] in {"owner_ack", "takeover_ack"}
+    assert summary["handoff"]["state"] == "needs_ack"
+    assert summary["handoff"]["missing_context"] == 0
+    prompt_context = module.bbs_handoff_prompt_context(summary)
+    assert "Handoff contract: missing body/evidence" not in prompt_context
+    assert "Do not ACK this shell just to clear it" not in prompt_context
+
+
+def test_bbs_thread_summary_exposes_console_and_board_links(monkeypatch) -> None:
+    monkeypatch.setenv("NORMAN_CODEX_BBS_SUMMARY_ENABLED", "1")
+    monkeypatch.setenv("NORMAN_CODEX_BBS_URL", "http://bbs.local")
+    module = _load_agent_console_web()
+
+    summary = module.summarize_bbs_payload(
+        {
+            "actor": "netops",
+            "bot": {"heartbeat_ok": True, "heartbeat_age_seconds": 4},
+            "inbox_count": 1,
+            "inbox": [
+                {
+                    "thread_id": "th_20260620T031517Z_15976f8f",
+                    "title": "benchmark handoff",
+                    "summary": "Bake benchmark fixtures into suites.",
+                    "priority": "normal",
+                    "status": "open",
+                    "owner": "netops",
+                    "message_count": 1,
+                    "last_message_at": "2000-01-01T00:00:00Z",
+                    "loop": {"state": "waiting_pickup"},
+                }
+            ],
+        }
+    )
+
+    thread = summary["top_threads"][0]
+    assert thread["thread_console_url"].startswith("/api/bbs/thread?")
+    assert "thread_id=th_20260620T031517Z_15976f8f" in thread["thread_console_url"]
+    assert (
+        thread["thread_board_url"]
+        == "http://bbs.local/threads/th_20260620T031517Z_15976f8f"
+    )
+
+
+def test_bbs_message_search_proxy_uses_events_for_message_ids(monkeypatch) -> None:
+    monkeypatch.setenv("NORMAN_CODEX_BBS_SUMMARY_ENABLED", "1")
+    monkeypatch.setenv("NORMAN_CODEX_BBS_URL", "http://bbs.local")
+    monkeypatch.setenv("NORMAN_CODEX_BBS_TOKEN", "secret-bbs-token")
+    module = _load_agent_console_web()
+    calls: list[tuple[str, str]] = []
+
+    def fake_bbs_request_json(
+        path: str,
+        *,
+        token: str,
+        method: str = "GET",
+        payload: dict[str, object] | None = None,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, object]:
+        assert token == "secret-bbs-token"
+        calls.append((method, path))
+        return {
+            "ok": True,
+            "events": [
+                {
+                    "thread_id": "th_demo",
+                    "thread_title": "Demo",
+                    "message": {
+                        "message_id": "msg_20260620T031720Z_22872f4b",
+                        "kind": "handoff",
+                    },
+                },
+                {
+                    "thread_id": "th_other",
+                    "message": {"message_id": "msg_other", "kind": "note"},
+                },
+            ],
+        }
+
+    monkeypatch.setattr(module, "bbs_request_json", fake_bbs_request_json)
+
+    result = module.load_bbs_search_payload("msg_20260620T031720Z_22872f4b")
+
+    assert calls == [("GET", "/api/v1/events?limit=1000")]
+    assert result["ok"] is True
+    assert result["source"] == "events"
+    assert result["count"] == 1
+    assert result["results"][0]["thread_id"] == "th_demo"
+
+
+def test_bbs_summary_surfaces_recent_terminal_results(monkeypatch) -> None:
+    for key in (
+        "NORMAN_CODEX_BBS_URL",
+        "NORMAN_CODEX_BBS_TOKEN",
+        "NORMAN_CODEX_BBS_TOKEN_FILE",
+        "NORMAN_CODEX_BBS_ENV_FILE",
+        "NORMAN_CODEX_BBS_ACTOR",
+        "NORMAN_CODEX_BBS_SUMMARY_ENABLED",
+        "HOUSEBOT_CODEX_BBS_URL",
+        "HOUSEBOT_CODEX_BBS_TOKEN",
+        "HOUSEBOT_CODEX_BBS_TOKEN_FILE",
+        "HOUSEBOT_CODEX_BBS_ENV_FILE",
+        "HOUSEBOT_CODEX_BBS_ACTOR",
+        "HOUSEBOT_CODEX_BBS_SUMMARY_ENABLED",
+        "SWITCHBOARD_URL",
+        "SWITCHBOARD_TOKEN",
+        "SWITCHBOARD_TOKEN_FILE",
+        "SWITCHBOARD_ENV_FILE",
+        "SWITCHBOARD_ACTOR",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("NORMAN_CODEX_BBS_SUMMARY_ENABLED", "1")
+    monkeypatch.setenv("NORMAN_CODEX_BBS_URL", "http://bbs.local")
+    monkeypatch.setenv("NORMAN_CODEX_BBS_TOKEN", "secret-bbs-token")
+    monkeypatch.setenv("NORMAN_CODEX_BBS_ACTOR", "panelbot")
+    module = _load_agent_console_web()
+    monkeypatch.setattr(module, "now_ts", lambda: 1_800_000_000)
+
+    def fake_bbs_request_json(
+        path: str,
+        *,
+        token: str,
+        method: str = "GET",
+        payload: dict[str, object] | None = None,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, object]:
+        assert token == "secret-bbs-token"
+        if method == "POST" and path == "/api/v1/actors/panelbot/heartbeat":
+            return {"ok": True}
+        if path == "/api/v1/me":
+            return {
+                "ok": True,
+                "actor": "panelbot",
+                "bot": {
+                    "heartbeat_ok": True,
+                    "heartbeat_age_seconds": 12,
+                },
+                "inbox_count": 0,
+                "inbox": [],
+            }
+        if path == "/api/v1/threads":
+            return {
+                "ok": True,
+                "threads": [
+                    {
+                        "thread_id": "th_done",
+                        "title": "Resolver probe completed",
+                        "priority": "high",
+                        "status": "done",
+                        "owner": "panelbot",
+                        "updated_at": "2027-01-15T07:59:00Z",
+                    },
+                    {
+                        "thread_id": "th_blocked",
+                        "title": "Credential gate hit",
+                        "priority": "normal",
+                        "status": "blocked",
+                        "owner": "netops",
+                        "updated_at": "2027-01-15T07:58:00Z",
+                    },
+                ],
+            }
+        if path == "/api/v1/bots":
+            return {
+                "ok": True,
+                "bots": [
+                    {
+                        "actor": "panelbot",
+                        "heartbeat_required": True,
+                        "heartbeat_ok": True,
+                        "token_present": True,
+                    }
+                ],
+            }
+        return {"ok": False, "error": "unexpected_path", "path": path}
+
+    monkeypatch.setattr(module, "bbs_request_json", fake_bbs_request_json)
+
+    summary = module.current_bbs_summary(force=True)
+    janitor = summary["janitor"]
+
+    assert summary["state"] == "ok"
+    assert summary["summary"] == "BBS clear"
+    assert summary["activity"].startswith(
+        "Recent BBS result: done · Resolver probe completed"
+    )
+    assert janitor["recently_closed_count"] == 2
+    assert janitor["recent_done_count"] == 1
+    assert janitor["recent_blocked_count"] == 1
+    assert janitor["recently_closed"][0]["thread_id"] == "th_done"
+    assert janitor["recently_closed"][0]["status"] == "done"
+    assert janitor["recently_closed"][1]["thread_id"] == "th_blocked"
+    assert janitor["recently_closed"][1]["status"] == "blocked"
 
 
 def test_bbs_handoff_summary_ignores_terminal_unacked_janitor_action() -> None:
@@ -2953,6 +3249,8 @@ def test_agent_console_renders_bbs_summary_outside_conversation() -> None:
     assert "function bbsIconItems(snapshot, bbs, handoff, janitor, threads" in source
     assert "function bbsActorDisplay(value) {{" in source
     assert "function bbsRoleLine(bbs, handoff) {{" in source
+    assert "function bbsDecisionRole(actor, owner) {{" in source
+    assert "function bbsDecisionState(handoff, thread, bbs) {{" in source
     assert "function bbsOwnerActionLine(bbs, handoff, firstThread = {{}}) {{" in source
     assert "shown on ${{actorLabel}} · owner ${{ownerLabel}}" in source
     assert "needs to ACK pickup; ${{actorLabel}} is only showing the alert." in source
@@ -2980,14 +3278,27 @@ def test_agent_console_renders_bbs_summary_outside_conversation() -> None:
     assert ".bbs-thread-actions" in source
     assert ".bbs-lifecycle-button" in source
     assert 'button.dataset.bbsAction = String(action.action || "");' in source
+    assert "function bbsAckCommandLabel(item) {{" in source
+    assert "function bbsAckCommandNote(item) {{" in source
+    assert "ack_command_label" in source
+    assert "ack_command_note" in source
+    assert "ACK disabled" in source
+    assert "ack_disabled" in source
+    assert "missing body/evidence; creator must add context" in source
     assert "Prepare to run this BBS lifecycle action" in source
     assert "appendBbsLifecycleActions(row, item)" in source
     assert "appendBbsLifecycleActions(row, action)" in source
     assert "appendBbsLifecycleActions(row, thread)" in source
     assert "janitor.review_count" in source
+    assert "janitor.recent_done_count" in source
+    assert "janitor.recent_blocked_count" in source
     assert "const handoff = bbs && typeof bbs.handoff ===" in source
     assert "normalizeBbsTone(handoff.tone || bbs.tone || bbs.state)" in source
     assert "bbsKpiTone(bbs.tone || handoff.tone || bbs.state)" in source
+    assert "`You: ${{actorLabel}}`" in source
+    assert "`Owner: ${{ownerLabel}}`" in source
+    assert "`State: ${{stateLabel}}`" in source
+    assert "Next: ${{nextLine}}" in source
     assert "thread.lifecycle_label || thread.loop_label" in source
     assert "next:" in source
     assert "handoff.ack_command" in source
@@ -2996,6 +3307,7 @@ def test_agent_console_renders_bbs_summary_outside_conversation() -> None:
     assert "attentionThreadIds" in source
     assert "BBS loop needs attention." in source
     assert "Creator should add body/evidence before owner ACKs." in source
+    assert "Recent BBS result:" in source
 
 
 def test_agent_console_surfaces_bbs_activity_inline() -> None:
@@ -3081,7 +3393,7 @@ def test_work_research_routing_policy_is_durable() -> None:
     assert "Scout for research collection only" in docs_source
     assert "Do not send Scout:" in docs_source
     assert "route research-only collection to Scout" in sync_source
-    assert "Ask Scout/Ranger for research collection only" in sync_source
+    assert "Ask Ranger for research collection only" in sync_source
     assert "Use Scout/Ranger for work research collection only" in control_plane_prompt
     assert "Control Plane is still responsible for deciding" in control_plane_prompt
     assert "You are Scout/Ranger, the work research collection lane." in scout_prompt
@@ -5025,6 +5337,13 @@ def test_deadline_checkpoint_continuation_prompt_is_auto_continuation() -> None:
     assert "Approximate hard-guardrail remaining" in prompt
 
 
+def test_auto_continuation_reasoning_controls_raise_low_effort_defaults() -> None:
+    module = _load_agent_console_web()
+
+    assert module.auto_continue_reasoning_controls("balanced", 2) == ("careful", 4)
+    assert module.auto_continue_reasoning_controls("careful", 5) == ("careful", 5)
+
+
 def test_zero_token_provider_retry_prompt_is_auto_continuation() -> None:
     module = _load_agent_console_web()
 
@@ -5188,6 +5507,11 @@ def test_stale_arg0_cleanup_warning_is_not_provider_error() -> None:
     )
 
     assert module.provider_error_kind(warning, provider_surface="openai-direct") == ""
+    assert module.strip_benign_codex_provider_warnings(warning) == ""
+    assert (
+        module.strip_benign_codex_provider_warnings(f"{warning}\nreal failure")
+        == "real failure"
+    )
     assert (
         module.provider_error_kind(
             f"{warning} Task submission failed with status 404 Not Found: Engine not found",
@@ -6090,6 +6414,54 @@ def test_codex_yield_diagnostics_classifies_short_stop_and_low_yield() -> None:
         started_at=100,
         finished_at=105,
     )
+    visible_low_yield = module.codex_yield_diagnostics(
+        response="Short answer. Needs clearer status badges and better coverage.",
+        error_text="",
+        usage={
+            "input_tokens": 290_573,
+            "cached_input_tokens": 217_344,
+            "output_tokens": 5_075,
+            "reasoning_output_tokens": 2_167,
+            "total_tokens": 295_648,
+        },
+        success=True,
+        promised_followup=False,
+        continuation_incomplete=False,
+        started_at=100,
+        finished_at=115,
+    )
+    panelbot_short_stop = module.codex_yield_diagnostics(
+        response="The broad grep was noisy; I\u2019m tightening to source files only.",
+        error_text="",
+        usage={
+            "input_tokens": 58_798,
+            "cached_input_tokens": 15_557,
+            "output_tokens": 952,
+            "reasoning_output_tokens": 544,
+            "total_tokens": 59_750,
+        },
+        success=False,
+        promised_followup=True,
+        continuation_incomplete=False,
+        started_at=100,
+        finished_at=266,
+    )
+    panelbot_low_yield = module.codex_yield_diagnostics(
+        response="Checked one thing.",
+        error_text="",
+        usage={
+            "input_tokens": 58_798,
+            "cached_input_tokens": 15_557,
+            "output_tokens": 952,
+            "reasoning_output_tokens": 544,
+            "total_tokens": 59_750,
+        },
+        success=True,
+        promised_followup=False,
+        continuation_incomplete=False,
+        started_at=100,
+        finished_at=266,
+    )
     zero_transport = module.codex_yield_diagnostics(
         response="",
         error_text="stream disconnected before completion",
@@ -6109,6 +6481,14 @@ def test_codex_yield_diagnostics_classifies_short_stop_and_low_yield() -> None:
     assert "final response promises future work" in short_stop["provider_yield_reasons"]
     assert low_yield["provider_yield_kind"] == "low_yield"
     assert "low output tokens: 39" in low_yield["provider_yield_reasons"]
+    assert visible_low_yield["provider_yield_kind"] == "low_yield"
+    assert "short visible response chars" in " ".join(
+        visible_low_yield["provider_yield_reasons"]
+    )
+    assert panelbot_short_stop["provider_yield_kind"] == "short_stop"
+    assert "fast return: 166s" in panelbot_short_stop["provider_yield_reasons"]
+    assert panelbot_low_yield["provider_yield_kind"] == "low_yield"
+    assert "low output tokens: 952" in panelbot_low_yield["provider_yield_reasons"]
     assert zero_transport["provider_yield_kind"] == "zero_transport"
 
 
@@ -7232,7 +7612,7 @@ def test_topbar_controls_keep_right_aligned_tactile_layout() -> None:
 def test_tui_polish_pass_bumps_visible_ui_version() -> None:
     source = _agent_console_web_source()
 
-    assert 'DEFAULT_UI_VERSION = "2026.06.16.4"' in source
+    assert 'DEFAULT_UI_VERSION = "2026.06.20.1"' in source
 
 
 def test_tui_disables_xfast_outside_emergency_gate() -> None:
@@ -7794,6 +8174,24 @@ def test_render_initial_inline_markup_promotes_outcome_sigils() -> None:
     assert "Final status: DONE" in rendered
 
 
+def test_render_initial_inline_markup_promotes_bbs_reference_links() -> None:
+    module = _load_agent_console_web()
+
+    rendered = module._render_initial_inline_markup(
+        "Shared BBS th_20260620T031517Z_15976f8f and msg_20260620T031720Z_22872f4b.",
+        token="open-sesame",
+        profile="personal-2",
+        route="host",
+    )
+
+    assert rendered.count('class="bbs-ref-link"') == 2
+    assert 'data-bbs-kind="thread"' in rendered
+    assert 'data-bbs-kind="message"' in rendered
+    assert "/api/bbs/thread?" in rendered
+    assert "/api/bbs/search?" in rendered
+    assert "token=open-sesame" in rendered
+
+
 def test_render_initial_inline_markup_sanitizes_raw_html_anchor_links() -> None:
     module = _load_agent_console_web()
 
@@ -8192,7 +8590,7 @@ def test_bot_proxy_caddy_separates_public_work_hosts_from_internal_tls_hosts() -
     assert "kpis.kris.openbrand.com" in source
     assert "dashboards.kris.openbrand.com" in source
     assert "mls.kris.openbrand.com" in source
-    assert "scout.kris.openbrand.com" in source
+    assert "ranger.kris.openbrand.com" in source
     assert '"phone-ops": ("phone", "phoneops")' in source
     assert '"dj": ("dj", "yt")' in source
     assert '"studio": ("studio", "camera-studio")' in source
@@ -8217,7 +8615,7 @@ def test_bot_proxy_caddy_uses_internal_tls_for_pending_public_work_aliases(
         "kpis.kris.openbrand.com, leadership.kris.openbrand.com {\n    tls internal"
         in rendered
     )
-    assert "scout.kris.openbrand.com {\n    tls internal" in rendered
+    assert "ranger.kris.openbrand.com {\n    tls internal" in rendered
     assert (
         "dashboards.kris.openbrand.com, tmi.kris.openbrand.com {\n    tls internal"
         in rendered
@@ -8287,7 +8685,7 @@ def test_bot_proxy_caddy_ip_gates_knox_local_work_aliases(monkeypatch) -> None:
         "mls.kris.openbrand.com {\n" "    tls internal\n" "    @knox_allowed remote_ip"
     ) in rendered
     assert (
-        "scout.kris.openbrand.com {\n"
+        "ranger.kris.openbrand.com {\n"
         "    tls internal\n"
         "    @knox_allowed remote_ip"
     ) in rendered
@@ -8507,7 +8905,7 @@ def test_directory_shortcuts_prefer_public_work_bot_hosts() -> None:
         assert "kpis.kris.openbrand.com" in source
         assert "dashboards.kris.openbrand.com" in source
         assert "mls.kris.openbrand.com" in source
-        assert "scout.kris.openbrand.com" in source
+        assert "ranger.kris.openbrand.com" in source
         assert "publisher.kris.openbrand.com" not in source
 
 
@@ -8736,7 +9134,7 @@ def test_sync_template_uses_new_work_alias_canonicals() -> None:
         ("compere", "keystone.kris.openbrand.com"),
         ("infra", "infra.kris.openbrand.com"),
         ("leadership-kpis", "kpis.kris.openbrand.com"),
-        ("scout", "scout.kris.openbrand.com"),
+        ("scout", "ranger.kris.openbrand.com"),
         ("tmi-dashboards", "dashboards.kris.openbrand.com"),
     ):
         instance = module.ConsoleInstance(

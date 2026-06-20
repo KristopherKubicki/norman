@@ -66,7 +66,7 @@ AUTH_COOKIE_NAME = (
 AUTH_COOKIE_MAX_AGE = int(
     os.environ.get("NORMAN_CODEX_WEB_COOKIE_MAX_AGE", str(14 * 24 * 60 * 60))
 )
-DEFAULT_UI_VERSION = "2026.06.16.4"
+DEFAULT_UI_VERSION = "2026.06.20.1"
 UI_VERSION = (
     os.environ.get("NORMAN_CODEX_UI_VERSION", DEFAULT_UI_VERSION).strip()
     or DEFAULT_UI_VERSION
@@ -446,6 +446,39 @@ LOCAL_LLM_MODELS = [
     ).split(",")
     if item.strip()
 ] or [LOCAL_LLM_DEFAULT_MODEL]
+LOCAL_LLM_ENDPOINTS = _dedupe_models(
+    item.strip()
+    for item in os.environ.get("NORMAN_LOCAL_LLM_ENDPOINTS", "").split(",")
+    if item.strip()
+)
+
+
+def _load_local_llm_model_endpoints() -> dict[str, list[str]]:
+    raw = os.environ.get("NORMAN_LOCAL_LLM_MODEL_ENDPOINTS", "").strip()
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    result: dict[str, list[str]] = {}
+    for model, endpoints in payload.items():
+        clean_model = str(model or "").strip()
+        if not clean_model or not isinstance(endpoints, list):
+            continue
+        clean_endpoints = _dedupe_models(
+            str(endpoint or "").strip()
+            for endpoint in endpoints
+            if str(endpoint or "").strip()
+        )
+        if clean_endpoints:
+            result[clean_model] = clean_endpoints
+    return result
+
+
+LOCAL_LLM_MODEL_ENDPOINTS = _load_local_llm_model_endpoints()
 CODEX_STANDARD_PROFILE_V2 = (
     os.environ.get("NORMAN_CODEX_STANDARD_PROFILE_V2")
     or os.environ.get("NORMAN_CODEX_DEFAULT_PROFILE_V2")
@@ -707,6 +740,8 @@ RUNTIME_REGISTRY: dict[str, dict[str, Any]] = {
         "can_execute": False,
         "default_model": LOCAL_LLM_DEFAULT_MODEL,
         "models": LOCAL_LLM_MODELS,
+        "endpoints": LOCAL_LLM_ENDPOINTS,
+        "model_endpoints": LOCAL_LLM_MODEL_ENDPOINTS,
         "tier": "planned",
         "context": "local",
         "tools": "brokered-read-only",
@@ -1055,6 +1090,22 @@ RESOURCE_METER_PATH = Path(
         "NORMAN_CODEX_RESOURCE_METER_PATH", str(STATE_DIR / "resource_meter.json")
     )
 )
+HOST_PRESSURE_GUARD_PATH = Path(
+    os.environ.get(
+        "NORMAN_CODEX_HOST_PRESSURE_GUARD_PATH",
+        os.environ.get(
+            "NORMAN_TUI_HOST_PRESSURE_GUARD_JSON",
+            "/home/kristopher/.local/state/norman/tui-host-pressure-guard.json",
+        ),
+    )
+)
+HOST_PRESSURE_GUARD_STALE_SECONDS = max(
+    60,
+    int(os.environ.get("NORMAN_CODEX_HOST_PRESSURE_GUARD_STALE_SECONDS", "180")),
+)
+HOST_PRESSURE_GUARD_ENABLED = os.environ.get(
+    "NORMAN_CODEX_HOST_PRESSURE_GUARD_ENABLED", "1"
+).strip().lower() not in {"0", "false", "no", "off"}
 HISTORY_PATH = STATE_DIR / "history.jsonl"
 USAGE_PATH = STATE_DIR / "usage.jsonl"
 USAGE_LEDGER_PATH = Path(
@@ -3183,6 +3234,31 @@ DEFAULT_RESPONSE_SPEED = normalize_response_speed(
 DEFAULT_RESPONSE_DETAIL = normalize_response_detail(
     os.environ.get("NORMAN_CODEX_RESPONSE_DETAIL", "3")
 )
+AUTO_CONTINUE_MIN_RESPONSE_SPEED = normalize_response_speed(
+    os.environ.get("NORMAN_CODEX_AUTO_CONTINUE_MIN_RESPONSE_SPEED", "careful")
+)
+AUTO_CONTINUE_MIN_RESPONSE_DETAIL = normalize_response_detail(
+    os.environ.get("NORMAN_CODEX_AUTO_CONTINUE_MIN_RESPONSE_DETAIL", "4")
+)
+
+
+def response_speed_rank(speed: Any) -> int:
+    return {"fast": 0, "balanced": 1, "careful": 2}.get(
+        normalize_response_speed(speed), 1
+    )
+
+
+def auto_continue_reasoning_controls(speed: Any, detail: Any) -> tuple[str, int]:
+    normalized_speed = normalize_response_speed(speed)
+    if response_speed_rank(normalized_speed) < response_speed_rank(
+        AUTO_CONTINUE_MIN_RESPONSE_SPEED
+    ):
+        normalized_speed = AUTO_CONTINUE_MIN_RESPONSE_SPEED
+    normalized_detail = max(
+        normalize_response_detail(detail), AUTO_CONTINUE_MIN_RESPONSE_DETAIL
+    )
+    return normalized_speed, normalized_detail
+
 
 SERVICE_TIER_OPTIONS: dict[str, dict[str, str]] = {
     "auto": {
@@ -6020,14 +6096,14 @@ INLINE_TUI_ENTITY_DEFS: dict[str, dict[str, Any]] = {
         "group": "work",
     },
     "scout": {
-        "label": "Scout",
+        "label": "Ranger",
         "aliases": (
+            "Ranger",
+            "ranger",
             "Scout",
             "scout",
             "Scout / Ranger",
             "Scout Ranger",
-            "Ranger",
-            "ranger",
         ),
         "group": "work",
     },
@@ -6065,7 +6141,10 @@ INLINE_BOT_ENTITY_DEFS: dict[str, dict[str, Any]] = {
     "d-ace": {"label": "d.ace", "aliases": ("d.ace",), "group": "work"},
     "acast": {"label": "Acast", "aliases": ("Acast", "acast"), "group": "work"},
     "earlybird": {"label": "Earlybird", "aliases": ("Earlybird", "earlybird")},
-    "scout": {"label": "Scout", "aliases": ("Scout", "scout")},
+    "scout": {
+        "label": "Ranger",
+        "aliases": ("Ranger", "ranger", "Scout", "scout"),
+    },
     "gold-book": {"label": "Gold Book", "aliases": ("Gold Book", "gold book")},
     "platinum-standard": {
         "label": "Platinum",
@@ -6883,6 +6962,16 @@ BBS_JANITOR_STALE_DAYS = max(
 )
 BBS_JANITOR_MAX_ACTIONS = max(
     1, int(os.environ.get("NORMAN_CODEX_BBS_JANITOR_MAX_ACTIONS", "4"))
+)
+BBS_RECENT_TERMINAL_WINDOW_SECONDS = max(
+    300,
+    int(os.environ.get("NORMAN_CODEX_BBS_RECENT_TERMINAL_WINDOW_SECONDS", "86400")),
+)
+BBS_RECENT_TERMINAL_MAX_ITEMS = max(
+    1, int(os.environ.get("NORMAN_CODEX_BBS_RECENT_TERMINAL_MAX_ITEMS", "3"))
+)
+BBS_MISSING_CONTEXT_BLOCKED_REASON = (
+    "Blocked: missing body/evidence; creator must add context before owner ACKs."
 )
 BBS_SUMMARY_LOCK = threading.Lock()
 BBS_SUMMARY_CACHE: dict[str, Any] = {"expires_at": 0, "payload": None}
@@ -9216,7 +9305,7 @@ PROMISED_FOLLOWUP_RE = re.compile(
     r"(?:run|check|dig|look|verify|test|inspect|patch|fix|deploy|research|trace|"
     r"investigate|write|create|update|make|pull|query|audit|review|try|finish|"
     r"collect|execute|identify|install|continue|start|resume|complete|sample|do|"
-    r"build|scan|summarize|report)\b",
+    r"build|scan|summarize|report|tighten|narrow)\b",
     re.I,
 )
 PROMISED_IN_PROGRESS_RE = re.compile(
@@ -9226,7 +9315,7 @@ PROMISED_IN_PROGRESS_RE = re.compile(
     r"fixing|deploying|researching|tracing|investigating|writing|creating|"
     r"updating|querying|auditing|reviewing|finishing|collecting|executing|"
     r"identifying|installing|continuing|starting|resuming|completing|sampling|"
-    r"pulling|doing|"
+    r"pulling|doing|tightening|narrowing|"
     r"building|scanning|summarizing|reporting)\b",
     re.I,
 )
@@ -9535,6 +9624,24 @@ def zero_token_provider_retry_service_tier(
         ):
             return "auto"
     return tier
+
+
+def zero_token_provider_retry_model(
+    model: Any, usage: dict[str, Any] | None = None
+) -> str:
+    normalized_model = normalize_runtime_model("codex", model)
+    normalized_usage = normalize_usage_entry(usage or {})
+    provider_surface = str(normalized_usage.get("provider_surface") or "").strip()
+    if provider_surface.lower() != "aws-bedrock":
+        return normalized_model
+    if not normalized_usage.get("zero_token_provider_failure"):
+        return normalized_model
+    standard_model = codex_bedrock_model_name(CODEX_STANDARD_MODEL or MODEL)
+    current_version = _codex_model_version(normalized_model)
+    standard_version = _codex_model_version(standard_model)
+    if current_version and standard_version and current_version > standard_version:
+        return standard_model
+    return normalized_model
 
 
 def build_deadline_checkpoint_continuation_prompt(
@@ -10792,6 +10899,72 @@ def _coerce_float(value: Any) -> float:
         return 0.0
 
 
+def host_pressure_guard_snapshot(snapshot_at: int | None = None) -> dict[str, Any]:
+    if not HOST_PRESSURE_GUARD_ENABLED:
+        return {"enabled": False, "stale": True}
+    payload = read_json(HOST_PRESSURE_GUARD_PATH, {})
+    if not isinstance(payload, dict) or not payload:
+        return {"enabled": True, "stale": True, "missing": True}
+    observed_at = snapshot_at if snapshot_at is not None else now_ts()
+    checked_at = _coerce_int(payload.get("checked_at_epoch"))
+    stale = (
+        checked_at <= 0 or observed_at - checked_at > HOST_PRESSURE_GUARD_STALE_SECONDS
+    )
+    guard = dict(payload)
+    guard["enabled"] = True
+    guard["stale"] = stale
+    guard["path"] = str(HOST_PRESSURE_GUARD_PATH)
+    return guard
+
+
+def host_pressure_guard_blocks_new_work(guard: dict[str, Any]) -> bool:
+    if not guard or guard.get("stale") or guard.get("enabled") is False:
+        return False
+    admission = guard.get("admission")
+    if not isinstance(admission, dict):
+        return False
+    return str(admission.get("action") or "").strip() == "block_new_work"
+
+
+def host_pressure_guard_defers_heavy_work(guard: dict[str, Any]) -> bool:
+    if not guard or guard.get("stale") or guard.get("enabled") is False:
+        return False
+    admission = guard.get("admission")
+    if not isinstance(admission, dict):
+        return False
+    return str(admission.get("action") or "").strip() == "defer_heavy_work"
+
+
+def host_pressure_guard_work_is_heavy(
+    turn_control: dict[str, Any], *, speed: str, job_budget: str
+) -> bool:
+    workload = str(turn_control.get("workload") or "").strip()
+    if workload == "status":
+        return False
+    if response_reasoning_effort(speed) == "xhigh":
+        return True
+    if job_budget_timeout_seconds(job_budget) > 15 * 60:
+        return True
+    return workload in {
+        "implementation",
+        "approval_boundary",
+        "long_run_approval",
+    }
+
+
+def host_pressure_guard_message(guard: dict[str, Any]) -> str:
+    admission = guard.get("admission") if isinstance(guard, dict) else {}
+    reason = (
+        str(admission.get("reason") or "").strip()
+        if isinstance(admission, dict)
+        else ""
+    )
+    target = str(guard.get("target") or "this host").strip()
+    if reason:
+        return f"Host pressure guard is blocking new work on {target}: {reason}."
+    return f"Host pressure guard is blocking new work on {target}."
+
+
 def _parse_env_file(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     try:
@@ -10859,6 +11032,10 @@ def default_bbs_janitor_summary(
         "safe_count": 0,
         "review_count": 0,
         "live_actor_count": 0,
+        "recently_closed_count": 0,
+        "recent_done_count": 0,
+        "recent_blocked_count": 0,
+        "recently_closed": [],
         "actions": [],
     }
 
@@ -10905,6 +11082,63 @@ def _bbs_janitor_action_summary(action: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _bbs_terminal_thread_timestamp(thread: dict[str, Any]) -> int:
+    loop = thread.get("loop") if isinstance(thread.get("loop"), dict) else {}
+    for value in (
+        loop.get("closed_at"),
+        thread.get("updated_at"),
+        thread.get("last_message_at"),
+        thread.get("created_at"),
+    ):
+        parsed = _parse_bbs_timestamp(value)
+        if parsed:
+            return parsed
+    return 0
+
+
+def _bbs_recent_terminal_tone(status: str) -> str:
+    clean = status.strip().lower()
+    if clean == "blocked":
+        return "review"
+    return "safe"
+
+
+def _bbs_recent_terminal_summary(
+    thread: dict[str, Any], *, observed_at: int
+) -> dict[str, Any] | None:
+    status = str(thread.get("status") or "").strip().lower()
+    if status not in BBS_TERMINAL_STATUSES:
+        return None
+    closed_at = _bbs_terminal_thread_timestamp(thread)
+    if not closed_at:
+        return None
+    closed_age_seconds = max(0, observed_at - closed_at)
+    if closed_age_seconds > BBS_RECENT_TERMINAL_WINDOW_SECONDS:
+        return None
+    title = str(thread.get("title") or thread.get("thread_id") or "").strip()
+    thread_id = str(thread.get("thread_id") or "").strip()
+    owner = str(thread.get("owner") or "").strip()
+    priority = str(thread.get("priority") or "").strip()
+    status_label = status.replace("_", " ")
+    activity = (
+        f"{status_label.title()} recently"
+        if not closed_age_seconds
+        else f"{status_label.title()} {closed_age_seconds}s ago"
+    )
+    return {
+        "thread_id": thread_id,
+        "title": title,
+        "owner": owner,
+        "priority": priority,
+        "status": status,
+        "status_label": status_label,
+        "tone": _bbs_recent_terminal_tone(status),
+        "closed_at": closed_at,
+        "closed_age_seconds": closed_age_seconds,
+        "activity": activity,
+    }
+
+
 def summarize_bbs_janitor_payload(
     threads_payload: dict[str, Any],
     bots_payload: dict[str, Any],
@@ -10941,6 +11175,7 @@ def summarize_bbs_janitor_payload(
         for thread in threads_payload.get("threads") or []
         if isinstance(thread, dict)
     ]
+    observed_at = now_ts()
     live_actors = janitor.live_actors_from_bots(bots_payload)
     owner_aliases = dict(getattr(janitor, "DEFAULT_OWNER_ALIASES", {}) or {})
     actions = janitor.classify_threads(
@@ -10948,6 +11183,30 @@ def summarize_bbs_janitor_payload(
         live_actors=live_actors,
         owner_aliases=owner_aliases,
         stale_days=BBS_JANITOR_STALE_DAYS,
+    )
+    recent_terminal_items = [
+        item
+        for item in (
+            _bbs_recent_terminal_summary(thread, observed_at=observed_at)
+            for thread in threads
+        )
+        if item is not None
+    ]
+    recent_terminal_items.sort(
+        key=lambda item: (
+            -_coerce_int(item.get("closed_at")),
+            str(item.get("thread_id") or ""),
+        )
+    )
+    recent_done_count = sum(
+        1
+        for item in recent_terminal_items
+        if str(item.get("status") or "") in {"done", "closed", "canceled"}
+    )
+    recent_blocked_count = sum(
+        1
+        for item in recent_terminal_items
+        if str(item.get("status") or "") == "blocked"
     )
     safe_count = sum(1 for item in actions if item.get("safety") == "safe")
     review_count = sum(1 for item in actions if item.get("safety") != "safe")
@@ -10975,18 +11234,26 @@ def summarize_bbs_janitor_payload(
         f"{review_count} review",
         f"{len(live_actors)} live actors",
     ]
+    if recent_done_count:
+        detail_parts.append(f"{recent_done_count} done recent")
+    if recent_blocked_count:
+        detail_parts.append(f"{recent_blocked_count} blocked recent")
     return {
         "schema": "norman.tui.bbs-janitor-summary.v1",
         "enabled": True,
         "state": state,
         "summary": summary,
         "detail": " · ".join(detail_parts),
-        "generated_at": now_ts(),
+        "generated_at": observed_at,
         "open_thread_count": open_thread_count,
         "action_count": len(actions),
         "safe_count": safe_count,
         "review_count": review_count,
         "live_actor_count": len(live_actors),
+        "recently_closed_count": len(recent_terminal_items),
+        "recent_done_count": recent_done_count,
+        "recent_blocked_count": recent_blocked_count,
+        "recently_closed": recent_terminal_items[:BBS_RECENT_TERMINAL_MAX_ITEMS],
         "actions": [
             _bbs_janitor_action_summary(action)
             for action in actions[:BBS_JANITOR_MAX_ACTIONS]
@@ -11037,6 +11304,9 @@ def default_bbs_summary(
             "owner": "",
             "age_seconds": 0,
             "ack_command": "",
+            "ack_command_label": "",
+            "ack_command_kind": "",
+            "ack_command_note": "",
             "done_command": "",
             "blocked_command": "",
             "fork_command_hint": "",
@@ -11077,6 +11347,81 @@ def bbs_request_json(
         raw = response.read().decode("utf-8", errors="replace")
     payload = json.loads(raw or "{}")
     return payload if isinstance(payload, dict) else {}
+
+
+def bbs_proxy_error(detail: str, *, state: str = "unavailable") -> dict[str, Any]:
+    return {
+        "ok": False,
+        "state": state,
+        "error": detail,
+        "source_url": BBS_SUMMARY_URL,
+    }
+
+
+def load_bbs_thread_payload(thread_id: str) -> dict[str, Any]:
+    clean = str(thread_id or "").strip()
+    if not clean or not clean.startswith("th_"):
+        return bbs_proxy_error("missing or invalid BBS thread id", state="bad_request")
+    if not BBS_SUMMARY_ENABLED or not BBS_SUMMARY_URL:
+        return bbs_proxy_error("BBS summary URL is not configured")
+    token = bbs_summary_token()
+    if not token:
+        return bbs_proxy_error("BBS token is not configured")
+    try:
+        payload = bbs_request_json(f"/api/v1/threads/{quote(clean)}", token=token)
+    except Exception as exc:
+        return bbs_proxy_error(f"BBS thread fetch failed: {exc}")
+    if isinstance(payload, dict):
+        payload.setdefault("source_url", BBS_SUMMARY_URL)
+        payload.setdefault(
+            "board_url", f"{BBS_SUMMARY_URL.rstrip('/')}/threads/{quote(clean)}"
+        )
+        return payload
+    return bbs_proxy_error("BBS thread response was not JSON")
+
+
+def load_bbs_search_payload(query: str) -> dict[str, Any]:
+    clean = str(query or "").strip()
+    if not clean:
+        return bbs_proxy_error("missing BBS search query", state="bad_request")
+    if not BBS_SUMMARY_ENABLED or not BBS_SUMMARY_URL:
+        return bbs_proxy_error("BBS summary URL is not configured")
+    token = bbs_summary_token()
+    if not token:
+        return bbs_proxy_error("BBS token is not configured")
+    try:
+        if clean.startswith("msg_"):
+            events_payload = bbs_request_json("/api/v1/events?limit=1000", token=token)
+            events = (
+                events_payload.get("events")
+                if isinstance(events_payload.get("events"), list)
+                else []
+            )
+            matches = [
+                item
+                for item in events
+                if isinstance(item, dict)
+                and isinstance(item.get("message"), dict)
+                and str((item.get("message") or {}).get("message_id") or "") == clean
+            ]
+            return {
+                "ok": True,
+                "q": clean,
+                "count": len(matches),
+                "results": matches,
+                "source": "events",
+                "source_url": BBS_SUMMARY_URL,
+            }
+        payload = bbs_request_json(
+            f"/api/v1/search?{urlencode({'q': clean, 'limit': '50'})}",
+            token=token,
+        )
+    except Exception as exc:
+        return bbs_proxy_error(f"BBS search failed: {exc}")
+    if isinstance(payload, dict):
+        payload.setdefault("source_url", BBS_SUMMARY_URL)
+        return payload
+    return bbs_proxy_error("BBS search response was not JSON")
 
 
 def publish_bbs_heartbeat(token: str) -> dict[str, Any]:
@@ -11214,6 +11559,8 @@ def _bbs_lifecycle_command_hints(
     thread_id: str,
     owner: str = "",
     title: str = "",
+    ack_enabled: bool = True,
+    blocked_reason: str = "",
 ) -> dict[str, str]:
     clean_thread_id = str(thread_id or "").strip()
     actor = str(BBS_SUMMARY_ACTOR or owner or AGENT_SLUG).strip()
@@ -11222,30 +11569,57 @@ def _bbs_lifecycle_command_hints(
     if not clean_thread_id:
         return {
             "ack_command": "",
+            "ack_command_label": "",
+            "ack_command_kind": "",
+            "ack_command_note": "",
             "done_command": "",
             "blocked_command": "",
             "fork_command_hint": "",
         }
     actor_arg = f" --actor {shlex.quote(actor)}" if actor else ""
-    if actor and clean_owner and actor != clean_owner:
+    is_takeover = bool(actor and clean_owner and actor != clean_owner)
+    if is_takeover:
         ack_note = f"Picked up by {actor}; taking over from owner {clean_owner}."
+        ack_label = "TAKEOVER ACK"
+        ack_kind = "takeover_ack"
+        ack_explainer = (
+            f"Runs as {actor}; use only if this console is taking ownership from "
+            f"{clean_owner}."
+        )
     else:
         ack_note = "Picked up; working now."
+        ack_label = "ACK"
+        ack_kind = "owner_ack"
+        ack_explainer = "Use only when the owner is picking up the task."
+    if not ack_enabled:
+        ack_note = ""
+        ack_label = "ACK disabled"
+        ack_kind = "ack_disabled"
+        ack_explainer = "ACK is disabled until the creator adds body/evidence."
     thread_arg = shlex.quote(clean_thread_id)
     owner_arg = shlex.quote(clean_owner)
     child_title = shlex.quote(f"{clean_title} child task")
+    clean_blocked_reason = (
+        str(blocked_reason or "").strip()
+        or "Blocked: describe the blocker and owner needed."
+    )
     return {
-        "ack_command": (
+        "ack_command": ""
+        if not ack_enabled
+        else (
             f"python3 scripts/bbs_task_lifecycle.py ack{actor_arg} {thread_arg} "
             f'--eta "15m" --note {shlex.quote(ack_note)}'
         ),
+        "ack_command_label": ack_label,
+        "ack_command_kind": ack_kind,
+        "ack_command_note": ack_explainer,
         "done_command": (
             f"python3 scripts/bbs_task_lifecycle.py done{actor_arg} {thread_arg} "
             '--reason "Completed and posted result."'
         ),
         "blocked_command": (
             f"python3 scripts/bbs_task_lifecycle.py blocked{actor_arg} {thread_arg} "
-            '--reason "Blocked: describe the blocker and owner needed."'
+            f"--reason {shlex.quote(clean_blocked_reason)}"
         ),
         "fork_command_hint": (
             f"python3 scripts/bbs_task_lifecycle.py fork{actor_arg} {thread_arg} "
@@ -11277,6 +11651,35 @@ def _bbs_thread_tone(priority: str, loop_state: str, lifecycle: str) -> str:
     return "neutral"
 
 
+def _bbs_handoff_context_sources(
+    thread: dict[str, Any],
+    *,
+    message_count: int,
+    message_count_present: bool,
+) -> list[str]:
+    sources: list[str] = []
+    if message_count > 0:
+        sources.append("messages")
+    for key in ("summary", "body"):
+        if str(thread.get(key) or "").strip():
+            sources.append(key)
+    evidence = thread.get("evidence")
+    if (
+        isinstance(evidence, (dict, list))
+        and evidence
+        or not isinstance(evidence, (dict, list))
+        and str(evidence or "").strip()
+    ):
+        sources.append("evidence")
+    if (
+        not sources
+        and not message_count_present
+        and str(thread.get("last_message_at") or "").strip()
+    ):
+        sources.append("last_message")
+    return sources
+
+
 def _bbs_thread_summary(thread: dict[str, Any], *, observed_at: int) -> dict[str, Any]:
     loop = thread.get("loop") if isinstance(thread.get("loop"), dict) else {}
     last_message_at = _parse_bbs_timestamp(thread.get("last_message_at"))
@@ -11297,10 +11700,12 @@ def _bbs_thread_summary(thread: dict[str, Any], *, observed_at: int) -> dict[str
     title = str(thread.get("title") or "").strip()
     message_count_present = "message_count" in thread
     message_count = _coerce_int(thread.get("message_count"))
-    has_handoff_context = message_count > 0 or (
-        not message_count_present
-        and bool(str(thread.get("last_message_at") or "").strip())
+    handoff_context_sources = _bbs_handoff_context_sources(
+        thread,
+        message_count=message_count,
+        message_count_present=message_count_present,
     )
+    has_handoff_context = bool(handoff_context_sources)
     missing_handoff_context = (
         loop_state.strip().lower() == "waiting_pickup" and not has_handoff_context
     )
@@ -11337,10 +11742,20 @@ def _bbs_thread_summary(thread: dict[str, Any], *, observed_at: int) -> dict[str
         thread_id=thread_id,
         owner=owner,
         title=title,
+        ack_enabled=not missing_handoff_context,
+        blocked_reason=(
+            BBS_MISSING_CONTEXT_BLOCKED_REASON if missing_handoff_context else ""
+        ),
     )
     return {
         "thread_id": thread_id,
         "title": title,
+        "thread_console_url": _build_bbs_ref_href(thread_id) if thread_id else "",
+        "thread_board_url": (
+            f"{BBS_SUMMARY_URL.rstrip('/')}/threads/{quote(thread_id)}"
+            if BBS_SUMMARY_URL and thread_id
+            else ""
+        ),
         "priority": priority,
         "status": str(thread.get("status") or "").strip(),
         "owner": owner,
@@ -11356,6 +11771,7 @@ def _bbs_thread_summary(thread: dict[str, Any], *, observed_at: int) -> dict[str
         "eta": eta,
         "message_count": message_count,
         "has_handoff_context": has_handoff_context,
+        "handoff_context_sources": handoff_context_sources,
         "handoff_contract_state": handoff_contract_state,
         "handoff_contract_label": handoff_contract_label,
         "handoff_contract_note": handoff_contract_note,
@@ -11475,10 +11891,19 @@ def _bbs_handoff_summary(
     owner = str(focus.get("owner") or "").strip()
     reason = str(focus.get("reason") or focus.get("activity") or "").strip()
     thread_id = str(focus.get("thread_id") or "").strip()
+    focus_missing_context = (
+        str(focus.get("lifecycle") or "").strip().lower() == "missing_context"
+        or str(focus.get("handoff_contract_state") or "").strip().lower()
+        == "missing_context"
+    )
     command_hints = _bbs_lifecycle_command_hints(
         thread_id=thread_id,
         owner=owner,
         title=title,
+        ack_enabled=not focus_missing_context,
+        blocked_reason=BBS_MISSING_CONTEXT_BLOCKED_REASON
+        if focus_missing_context
+        else "",
     )
     detail_parts = []
     if title:
@@ -11726,10 +12151,9 @@ def merge_bbs_janitor_summary(
     )
     review_count = _coerce_int(janitor.get("review_count"))
     safe_count = _coerce_int(janitor.get("safe_count"))
-    if review_count <= 0 and safe_count <= 0:
-        return merged
+    recent_terminal_count = _coerce_int(janitor.get("recently_closed_count"))
     state = str(merged.get("state") or "").strip().lower()
-    if state not in {"alert", "error"}:
+    if (review_count > 0 or safe_count > 0) and state not in {"alert", "error"}:
         merged["state"] = "watch"
     counts = merged.get("counts") if isinstance(merged.get("counts"), dict) else {}
     has_visible_bbs_work = any(
@@ -11744,14 +12168,38 @@ def merge_bbs_janitor_summary(
             "stale",
         )
     )
-    if not has_visible_bbs_work:
+    if not has_visible_bbs_work and (review_count > 0 or safe_count > 0):
         merged["summary"] = str(janitor.get("summary") or merged.get("summary") or "")
     actions = janitor.get("actions") if isinstance(janitor.get("actions"), list) else []
     first_action = actions[0] if actions and isinstance(actions[0], dict) else {}
     reason = str(first_action.get("reason") or "").strip()
     action = str(first_action.get("action") or "").strip().replace("_", " ")
-    if reason and not has_visible_bbs_work:
+    if reason and not has_visible_bbs_work and (review_count > 0 or safe_count > 0):
         merged["activity"] = f"Janitor {action}: {reason}" if action else reason
+    recent_items = (
+        janitor.get("recently_closed")
+        if isinstance(janitor.get("recently_closed"), list)
+        else []
+    )
+    first_recent = (
+        recent_items[0] if recent_items and isinstance(recent_items[0], dict) else {}
+    )
+    if recent_terminal_count > 0 and not has_visible_bbs_work:
+        recent_status = str(
+            first_recent.get("status_label") or first_recent.get("status") or "closed"
+        ).strip()
+        recent_title = str(
+            first_recent.get("title") or first_recent.get("thread_id") or ""
+        ).strip()
+        recent_age_seconds = _coerce_int(first_recent.get("closed_age_seconds"))
+        recent_parts = [recent_status]
+        if recent_title:
+            recent_parts.append(recent_title)
+        if recent_age_seconds:
+            recent_parts.append(f"{recent_age_seconds}s ago")
+        merged["activity"] = f"Recent BBS result: {' · '.join(recent_parts)}"
+    if review_count <= 0 and safe_count <= 0 and recent_terminal_count <= 0:
+        return merged
     return merged
 
 
@@ -11868,12 +12316,32 @@ def bbs_handoff_prompt_context(summary: dict[str, Any] | None = None) -> str:
         or state_label
         or "The Switchboard BBS says this console has a handoff decision to close."
     )
+    actor = str(BBS_SUMMARY_ACTOR or AGENT_SLUG or AGENT_NAME or "").strip()
+    owner_line = "unknown"
+    if actor and owner:
+        if actor == owner:
+            owner_line = f"this console owns it ({actor})"
+        else:
+            owner_line = f"owner is {owner}; this console is {actor}"
+    elif owner:
+        owner_line = f"owner is {owner}"
+    elif actor:
+        owner_line = f"this console is {actor}"
+
+    safe_next = (
+        next_action or "Pick exactly one lifecycle action: ACK, fork, DONE, or BLOCKED."
+    )
     lines = [
+        "BBS decision card:",
+        f"- Situation: {reason}.",
+        f"- Ownership: {owner_line}.",
+        f"- Safe next step: {safe_next}",
+        "- Do not: ACK just to clear noise; ACK only means the actor is taking ownership.",
+        "",
         "BBS handoff alert:",
         "- From: Switchboard BBS.",
         f"- Why: {reason}.",
     ]
-    actor = str(BBS_SUMMARY_ACTOR or AGENT_SLUG or AGENT_NAME or "").strip()
     if actor or owner:
         role_parts = []
         if actor:
@@ -11918,8 +12386,9 @@ def bbs_handoff_prompt_context(summary: dict[str, Any] | None = None) -> str:
         "of the work. Do not ACK from an observer/coordinator console just to "
         "clear the alert."
     )
+    ack_label = str(command_source.get("ack_command_label") or "ACK").strip() or "ACK"
     command_labels = (
-        ("ack_command", "ACK"),
+        ("ack_command", ack_label),
         ("fork_command_hint", "FORK"),
         ("done_command", "DONE"),
         ("blocked_command", "BLOCKED"),
@@ -11927,9 +12396,11 @@ def bbs_handoff_prompt_context(summary: dict[str, Any] | None = None) -> str:
     for key, label in command_labels:
         command = str(command_source.get(key) or "").strip()
         if command:
-            if label == "ACK" and actor and owner and actor != owner:
-                label = "TAKEOVER ACK"
             lines.append(f"- {label} helper: `{command}`")
+            if key == "ack_command":
+                ack_note = str(command_source.get("ack_command_note") or "").strip()
+                if ack_note:
+                    lines.append(f"- {label} note: {ack_note}")
     return "\n".join(lines)
 
 
@@ -12172,6 +12643,7 @@ def default_usage_entry() -> dict[str, Any]:
         "provider_yield_reasons": [],
         "provider_error_kind": "",
         "provider_error_text": "",
+        "provider_diagnostic_excerpt": "",
         "provider_request_ids": [],
         "provider_trace_ids": [],
         "codex_returncode": 0,
@@ -12447,14 +12919,39 @@ def _extract_observed_service_tier(event: dict[str, Any]) -> str:
     return ""
 
 
-PROVIDER_REQUEST_ID_RE = re.compile(
+PROVIDER_REQUEST_ID_HEADER_RE = re.compile(
     r"(?i)\b(?:x-amz(?:n)?[-_ ]?request[-_ ]?id|x-amz(?:n)?[-_ ]?requestid|"
-    r"aws[-_ ]?request[-_ ]?id|request[-_ ]?id)\b[\"']?\s*[:=]\s*[\"']?"
+    r"x[-_ ]?request[-_ ]?id)\b[\"']?\s*[:=]\s*[\"']?"
     r"([A-Za-z0-9._:/+=-]{6,})"
 )
+PROVIDER_REQUEST_ID_GENERIC_RE = re.compile(
+    r"(?i)\b(?:aws[-_ ]?request[-_ ]?id|request[-_ ]?id|requestid)\b"
+    r"[\"']?\s*[:=]\s*[\"']?([A-Za-z0-9._:/+=-]{6,})"
+)
+PROVIDER_REQUEST_ID_RE = PROVIDER_REQUEST_ID_GENERIC_RE
 PROVIDER_TRACE_ID_RE = re.compile(
     r"(?i)\b(?:x-amz(?:n)?[-_ ]?trace[-_ ]?id|trace[-_ ]?id)\b[\"']?"
     r"\s*[:=]\s*[\"']?([A-Za-z0-9._:/;+=-]{6,})"
+)
+PROVIDER_REQUEST_ID_HEADER_KEYS = {
+    "xamznrequestid",
+    "xamzrequestid",
+    "xrequestid",
+}
+PROVIDER_REQUEST_ID_GENERIC_KEYS = {
+    "awsrequestid",
+    "requestid",
+}
+PROVIDER_TRACE_ID_KEYS = {
+    "xamzntraceid",
+    "xamztraceid",
+    "xtraceid",
+    "awstraceid",
+    "traceid",
+}
+PROVIDER_ID_FIELD_NAME_RE = re.compile(
+    r"(?i)(?:^|[._-])(?:requestid|request_id|request-id|traceid|trace_id|trace-id)"
+    r"(?:$|[._-])"
 )
 
 
@@ -12472,12 +12969,151 @@ def _unique_limited_values(values: list[str], *, limit: int = 12) -> list[str]:
     return results
 
 
+def _provider_payload_key_token(key: Any) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(key or "").strip().lower())
+
+
+def _provider_simple_candidate_values(value: Any) -> list[str]:
+    if isinstance(value, (str, int, float)):
+        return [str(value)]
+    if isinstance(value, (list, tuple)):
+        return [
+            str(item)
+            for item in value
+            if isinstance(item, (str, int, float)) and str(item).strip()
+        ]
+    return []
+
+
+def _provider_id_value_looks_real(
+    value: Any, *, generic: bool = False, trace: bool = False
+) -> bool:
+    clean = str(value or "").strip().strip("\"'`,;")
+    if len(clean) < 6:
+        return False
+    if any(char.isspace() for char in clean):
+        return False
+    lowered = clean.lower()
+    if lowered in {
+        "optional",
+        "none",
+        "null",
+        "string",
+        "requestid",
+        "request_id",
+        "request-id",
+        "traceid",
+        "trace_id",
+        "trace-id",
+    }:
+        return False
+    if "request_id_var" in lowered or "requestid_var" in lowered:
+        return False
+    if PROVIDER_ID_FIELD_NAME_RE.search(lowered):
+        return False
+    if lowered.startswith(
+        (
+            "opts.",
+            "self.",
+            "this.",
+            "payload.",
+            "event.",
+            "usage.",
+            "ctx.",
+            "context.",
+            "meta.",
+        )
+    ):
+        return False
+    has_digit = any(char.isdigit() for char in clean)
+    if lowered.startswith(("req", "amz")):
+        return True
+    if trace and lowered.startswith(("trace", "root=")):
+        return True
+    if re.fullmatch(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        lowered,
+    ):
+        return True
+    if not generic:
+        return has_digit or len(clean) >= 16
+    return has_digit and len(clean) >= 12
+
+
 def extract_provider_request_ids(text: str) -> list[str]:
-    return _unique_limited_values(PROVIDER_REQUEST_ID_RE.findall(text or ""))
+    candidates = [
+        value
+        for value in PROVIDER_REQUEST_ID_HEADER_RE.findall(text or "")
+        if _provider_id_value_looks_real(value)
+    ]
+    candidates.extend(
+        value
+        for value in PROVIDER_REQUEST_ID_GENERIC_RE.findall(text or "")
+        if _provider_id_value_looks_real(value, generic=True)
+    )
+    return _unique_limited_values(candidates)
 
 
 def extract_provider_trace_ids(text: str) -> list[str]:
-    return _unique_limited_values(PROVIDER_TRACE_ID_RE.findall(text or ""))
+    return _unique_limited_values(
+        [
+            value
+            for value in PROVIDER_TRACE_ID_RE.findall(text or "")
+            if _provider_id_value_looks_real(value, trace=True)
+        ]
+    )
+
+
+def extract_provider_request_ids_from_payload(value: Any) -> list[str]:
+    candidates: list[str] = []
+
+    def walk(item: Any) -> None:
+        if isinstance(item, dict):
+            for key, child in item.items():
+                token = _provider_payload_key_token(key)
+                if token in PROVIDER_REQUEST_ID_HEADER_KEYS:
+                    candidates.extend(
+                        candidate
+                        for candidate in _provider_simple_candidate_values(child)
+                        if _provider_id_value_looks_real(candidate)
+                    )
+                elif token in PROVIDER_REQUEST_ID_GENERIC_KEYS:
+                    candidates.extend(
+                        candidate
+                        for candidate in _provider_simple_candidate_values(child)
+                        if _provider_id_value_looks_real(candidate, generic=True)
+                    )
+                if isinstance(child, (dict, list, tuple)):
+                    walk(child)
+        elif isinstance(item, (list, tuple)):
+            for child in item:
+                walk(child)
+
+    walk(value)
+    return _unique_limited_values(candidates)
+
+
+def extract_provider_trace_ids_from_payload(value: Any) -> list[str]:
+    candidates: list[str] = []
+
+    def walk(item: Any) -> None:
+        if isinstance(item, dict):
+            for key, child in item.items():
+                token = _provider_payload_key_token(key)
+                if token in PROVIDER_TRACE_ID_KEYS:
+                    candidates.extend(
+                        candidate
+                        for candidate in _provider_simple_candidate_values(child)
+                        if _provider_id_value_looks_real(candidate, trace=True)
+                    )
+                if isinstance(child, (dict, list, tuple)):
+                    walk(child)
+        elif isinstance(item, (list, tuple)):
+            for child in item:
+                walk(child)
+
+    walk(value)
+    return _unique_limited_values(candidates)
 
 
 PROVIDER_CAPACITY_ERROR_KINDS = {
@@ -12578,6 +13214,8 @@ def visible_provider_error_message(
         label = "Bedrock engine lookup failure"
     elif provider_kind == "bedrock_provider_server_error":
         label = "Bedrock provider server failure"
+    elif provider_kind == "bedrock_zero_token_no_final":
+        label = "Bedrock zero-token completion failure"
     route_bits = []
     lane_label = service_tier_label(normalize_service_tier(service_tier))
     if lane_label:
@@ -12650,6 +13288,41 @@ def provider_error_kind(error_text: str, *, provider_surface: str = "") -> str:
     return "codex_provider_error" if surface else "codex_error"
 
 
+def provider_diagnostic_excerpt(
+    *,
+    proc: subprocess.CompletedProcess[str],
+    event_types: list[str],
+    messages: list[str],
+    provider_error_text: str,
+    total_tokens: int,
+    has_turn_completed: bool,
+    turn_failed_count: int,
+) -> str:
+    parts: list[str] = []
+    returncode = _coerce_int(proc.returncode)
+    if returncode:
+        parts.append(f"codex_returncode={returncode}")
+    if event_types:
+        parts.append(f"codex_event_types={','.join(event_types)}")
+    if not has_turn_completed:
+        parts.append("missing_turn_completed=true")
+    if total_tokens <= 0:
+        parts.append("total_tokens=0")
+    if turn_failed_count:
+        parts.append(f"turn_failed_count={turn_failed_count}")
+    clean_messages = [summarize_text(message, 300) for message in messages if message]
+    if clean_messages:
+        parts.append(f"messages={' | '.join(clean_messages[:3])}")
+    stderr_excerpt = summarize_text(
+        strip_benign_codex_provider_warnings(proc.stderr or ""), 600
+    )
+    if stderr_excerpt:
+        parts.append(f"stderr={stderr_excerpt}")
+    elif provider_error_text:
+        parts.append(f"provider_error={summarize_text(provider_error_text, 600)}")
+    return summarize_text(" | ".join(part for part in parts if part), 1200)
+
+
 def codex_provider_diagnostics(
     *,
     proc: subprocess.CompletedProcess[str],
@@ -12678,32 +13351,67 @@ def codex_provider_diagnostics(
     event_types = _unique_limited_values(
         [str(event.get("type") or "") for event in events], limit=20
     )
-    request_ids = extract_provider_request_ids(diagnostic_text)
-    trace_ids = extract_provider_trace_ids(diagnostic_text)
+    request_ids = _unique_limited_values(
+        extract_provider_request_ids(diagnostic_text)
+        + extract_provider_request_ids_from_payload(events)
+    )
+    trace_ids = _unique_limited_values(
+        extract_provider_trace_ids(diagnostic_text)
+        + extract_provider_trace_ids_from_payload(events)
+    )
     provider_error_text = strip_benign_codex_provider_warnings(error_text)
+    provider_surface = (
+        str(normalized_usage.get("provider_surface") or "").strip().lower()
+    )
+    total_tokens = _coerce_int(normalized_usage.get("total_tokens"))
+    turn_failed_count = sum(1 for event in events if event.get("type") == "turn.failed")
+    has_turn_completed = any(event.get("type") == "turn.completed" for event in events)
     error_kind = provider_error_kind(
         provider_error_text,
-        provider_surface=str(normalized_usage.get("provider_surface") or ""),
+        provider_surface=provider_surface,
     )
+    if (
+        not error_kind
+        and provider_surface == "aws-bedrock"
+        and total_tokens == 0
+        and not timed_out
+        and not has_turn_completed
+        and bool(events or _coerce_int(proc.returncode))
+    ):
+        error_kind = "bedrock_zero_token_no_final"
+        provider_error_text = (
+            "Bedrock turn ended without a final completion or provider error text."
+        )
     zero_token_provider_failure = bool(
         error_kind
-        and str(normalized_usage.get("provider_surface") or "").strip().lower()
-        == "aws-bedrock"
-        and _coerce_int(normalized_usage.get("total_tokens")) == 0
+        and provider_surface == "aws-bedrock"
+        and total_tokens == 0
         and not timed_out
     )
+    diagnostic_excerpt = ""
+    if provider_surface == "aws-bedrock" and (
+        error_kind or total_tokens == 0 or request_ids or trace_ids
+    ):
+        diagnostic_excerpt = provider_diagnostic_excerpt(
+            proc=proc,
+            event_types=event_types,
+            messages=messages,
+            provider_error_text=provider_error_text,
+            total_tokens=total_tokens,
+            has_turn_completed=has_turn_completed,
+            turn_failed_count=turn_failed_count,
+        )
     return {
         "provider_error_kind": error_kind,
         "provider_error_text": (
             summarize_text(provider_error_text or error_text, 800) if error_kind else ""
         ),
+        "provider_diagnostic_excerpt": diagnostic_excerpt,
         "provider_request_ids": request_ids,
         "provider_trace_ids": trace_ids,
         "codex_returncode": _coerce_int(proc.returncode),
         "codex_event_types": event_types,
-        "codex_turn_failed_count": sum(
-            1 for event in events if event.get("type") == "turn.failed"
-        ),
+        "codex_turn_failed_count": turn_failed_count,
         "codex_stdout_json_events": len(events),
         "zero_token_provider_failure": zero_token_provider_failure,
     }
@@ -12722,8 +13430,10 @@ def codex_yield_diagnostics(
 ) -> dict[str, Any]:
     normalized_usage = normalize_usage_entry(usage)
     total_tokens = _coerce_int(normalized_usage.get("total_tokens"))
+    input_tokens = _coerce_int(normalized_usage.get("input_tokens"))
     output_tokens = _coerce_int(normalized_usage.get("output_tokens"))
     reasoning_tokens = _coerce_int(normalized_usage.get("reasoning_output_tokens"))
+    response_chars = len(str(response or ""))
     duration_seconds = max(0, _coerce_int(finished_at) - _coerce_int(started_at))
     provider_error = str(normalized_usage.get("provider_error_kind") or "").strip()
     reasons: list[str] = []
@@ -12736,7 +13446,7 @@ def codex_yield_diagnostics(
     elif promised_followup or continuation_incomplete:
         kind = "short_stop"
         reasons.append("final response promises future work")
-        if duration_seconds <= 90:
+        if duration_seconds <= 300:
             reasons.append(f"fast return: {duration_seconds}s")
         if reasoning_tokens == 0:
             reasons.append("zero reasoning tokens")
@@ -12744,7 +13454,7 @@ def codex_yield_diagnostics(
         success
         and total_tokens >= 20_000
         and output_tokens <= 1_000
-        and duration_seconds <= 90
+        and duration_seconds <= 300
     ):
         kind = "low_yield"
         reasons.extend(
@@ -12755,6 +13465,22 @@ def codex_yield_diagnostics(
         )
         if reasoning_tokens == 0:
             reasons.append("zero reasoning tokens")
+    elif (
+        success
+        and total_tokens >= 20_000
+        and input_tokens >= 100_000
+        and response_chars <= 2_500
+        and duration_seconds <= 300
+    ):
+        kind = "low_yield"
+        reasons.extend(
+            [
+                f"high input tokens: {input_tokens}",
+                f"short visible response chars: {response_chars}",
+                f"visible yield chars per 1k input tokens: {round(response_chars / input_tokens * 1000, 2) if input_tokens else 0}",
+                f"fast return: {duration_seconds}s",
+            ]
+        )
     elif not success and error_text:
         kind = "failed_nonzero"
         reasons.append(provider_error or "nonzero failure")
@@ -14472,6 +15198,7 @@ BEDROCK_HEALTH_FAILURE_KINDS = {
     "bedrock_on_demand_capacity_exceeded",
     "bedrock_stream_disconnected",
     "bedrock_provider_server_error",
+    "bedrock_zero_token_no_final",
 }
 BEDROCK_HEALTH_LEDGER_CACHE_LOCK = threading.Lock()
 BEDROCK_HEALTH_LEDGER_CACHE: dict[str, Any] = {
@@ -17884,6 +18611,18 @@ def start_next_queued_prompt() -> (
             meta["recovered_after_restart"] = meta["stale_queue"]
             save_status_meta(meta)
             return None
+        guard = host_pressure_guard_snapshot()
+        if host_pressure_guard_blocks_new_work(guard):
+            detail = host_pressure_guard_message(guard)
+            meta["state"] = "pressure-blocked"
+            meta["status_message"] = detail
+            meta["queue_checkpoint_state"] = "pressure-blocked"
+            meta["queue_checkpoint_detail"] = f"{detail} Queued work remains waiting."
+            meta["last_action"] = "pressure-guard-block"
+            meta["last_action_at"] = now_ts()
+            meta["last_action_detail"] = detail
+            save_status_meta(meta)
+            return None
         item = queue.pop(run_index)
         started_at = now_ts()
         prompt = item["prompt"]
@@ -21290,12 +22029,19 @@ def _prompt_worker(
                     retry_meta = load_status_meta()
                     if zero_token_provider_retry_allowed(retry_meta, usage, error_text):
                         zero_token_provider_attempt += 1
-                        previous_service_tier = normalized_service_tier
-                        normalized_service_tier = (
-                            zero_token_provider_retry_service_tier(
-                                normalized_service_tier, usage
-                            )
+                        previous_model = normalized_model
+                        retry_model = zero_token_provider_retry_model(
+                            normalized_model, usage
                         )
+                        model_fallback = retry_model != previous_model
+                        normalized_model = retry_model
+                        previous_service_tier = normalized_service_tier
+                        if not model_fallback:
+                            normalized_service_tier = (
+                                zero_token_provider_retry_service_tier(
+                                    normalized_service_tier, usage
+                                )
+                            )
                         service_tier_fallback = (
                             normalized_service_tier != previous_service_tier
                         )
@@ -21304,6 +22050,13 @@ def _prompt_worker(
                             "Retry is allowed because no tool or file activity was "
                             "observed during the failed provider attempt."
                         )
+                        if model_fallback:
+                            fallback_note = f" on {normalized_model}"
+                            retry_detail += (
+                                f" Retry model is {normalized_model}; this keeps "
+                                "the recovery on the configured Bedrock default "
+                                "before any service-tier fallback."
+                            )
                         if service_tier_fallback:
                             retry_label = service_tier_label(normalized_service_tier)
                             fallback_note = f" on {retry_label}"
@@ -21373,6 +22126,9 @@ def _prompt_worker(
                                 "previous_service_tier": previous_service_tier,
                                 "retry_service_tier": normalized_service_tier,
                                 "service_tier_fallback": service_tier_fallback,
+                                "previous_model": previous_model,
+                                "retry_model": normalized_model,
+                                "model_fallback": model_fallback,
                                 "job_budget": normalized_budget,
                                 "optimization_mode": normalized_optimization_mode,
                                 "runtime": normalized_runtime,
@@ -21441,15 +22197,29 @@ def _prompt_worker(
                             model=normalized_model,
                         )
                     )
-                    previous_service_tier = normalized_service_tier
-                    recovery_service_tier = zero_token_provider_retry_service_tier(
-                        normalized_service_tier, usage
+                    previous_model = normalized_model
+                    recovery_model = zero_token_provider_retry_model(
+                        normalized_model, usage
                     )
-                    recovery_handoff = recovery_service_tier != normalized_service_tier
+                    model_fallback = recovery_model != previous_model
+                    previous_service_tier = normalized_service_tier
+                    if model_fallback:
+                        recovery_service_tier = normalized_service_tier
+                    else:
+                        recovery_service_tier = zero_token_provider_retry_service_tier(
+                            normalized_service_tier, usage
+                        )
+                    recovery_handoff = (
+                        model_fallback
+                        or recovery_service_tier != normalized_service_tier
+                    )
                     if recovery_handoff:
                         zero_token_provider_attempt += 1
+                        normalized_model = recovery_model
                         normalized_service_tier = recovery_service_tier
                         recovery_label = service_tier_label(normalized_service_tier)
+                        if model_fallback:
+                            recovery_label = f"{recovery_label} {normalized_model}"
                         execution_prompt = (
                             build_zero_token_provider_recovery_handoff_prompt(
                                 provider_recovery_response
@@ -21475,6 +22245,11 @@ def _prompt_worker(
                             f"from the recovery checkpoint on {recovery_label}; "
                             f"{recovery_spend_note}"
                         )
+                        if model_fallback:
+                            recovery_detail += (
+                                f" Downgraded from {previous_model} to "
+                                f"{normalized_model} before any service-tier fallback."
+                            )
                         update_status_meta(
                             pending=True,
                             state="running",
@@ -21530,7 +22305,12 @@ def _prompt_worker(
                                 "service_tier": normalized_service_tier,
                                 "previous_service_tier": previous_service_tier,
                                 "retry_service_tier": normalized_service_tier,
-                                "service_tier_fallback": True,
+                                "service_tier_fallback": (
+                                    normalized_service_tier != previous_service_tier
+                                ),
+                                "previous_model": previous_model,
+                                "retry_model": normalized_model,
+                                "model_fallback": model_fallback,
                                 "job_budget": normalized_budget,
                                 "optimization_mode": normalized_optimization_mode,
                                 "runtime": normalized_runtime,
@@ -21748,6 +22528,7 @@ def _prompt_worker(
                     "Auto-continuation returned progress-only work without a "
                     "completed result."
                 )
+            error_text = strip_benign_codex_provider_warnings(error_text)
             visible_error_text = (
                 error_text
                 if cancelled
@@ -22131,6 +22912,9 @@ def _prompt_worker(
             auto_continue_prompt = ""
             auto_continue_started_at = 0
             queue_waiting = False
+            auto_continue_speed, auto_continue_detail = (
+                auto_continue_reasoning_controls(normalized_speed, normalized_detail)
+            )
             if deadline_checkpoint_interrupted:
                 with STATUS_LOCK:
                     queue_waiting = bool(
@@ -22154,8 +22938,8 @@ def _prompt_worker(
                         ),
                         running_prompt=auto_continue_prompt,
                         running_attachments=[],
-                        running_speed=normalized_speed,
-                        running_detail=normalized_detail,
+                        running_speed=auto_continue_speed,
+                        running_detail=auto_continue_detail,
                         running_service_tier=normalized_service_tier,
                         running_job_budget=normalized_budget,
                         running_runtime=normalized_runtime,
@@ -22201,8 +22985,8 @@ def _prompt_worker(
                                 deadline_checkpoint_detail, 500
                             ),
                             "deadline_remaining_seconds": deadline_remaining_seconds,
-                            "speed": normalized_speed,
-                            "detail": normalized_detail,
+                            "speed": auto_continue_speed,
+                            "detail": auto_continue_detail,
                             "service_tier": normalized_service_tier,
                             "job_budget": normalized_budget,
                             "optimization_mode": normalized_optimization_mode,
@@ -22214,8 +22998,8 @@ def _prompt_worker(
                     next_prompt = (
                         auto_continue_prompt,
                         auto_continue_started_at,
-                        normalized_speed,
-                        normalized_detail,
+                        auto_continue_speed,
+                        auto_continue_detail,
                         normalized_service_tier,
                         normalized_budget,
                         normalized_timeout,
@@ -22265,8 +23049,8 @@ def _prompt_worker(
                         ),
                         running_prompt=auto_continue_prompt,
                         running_attachments=[],
-                        running_speed=normalized_speed,
-                        running_detail=normalized_detail,
+                        running_speed=auto_continue_speed,
+                        running_detail=auto_continue_detail,
                         running_service_tier=normalized_service_tier,
                         running_job_budget=normalized_budget,
                         running_runtime=normalized_runtime,
@@ -22294,8 +23078,8 @@ def _prompt_worker(
                         payload={
                             "previous_prompt_preview": summarize_text(prompt, 240),
                             "previous_response_preview": summarize_text(response, 240),
-                            "speed": normalized_speed,
-                            "detail": normalized_detail,
+                            "speed": auto_continue_speed,
+                            "detail": auto_continue_detail,
                             "service_tier": normalized_service_tier,
                             "job_budget": normalized_budget,
                             "optimization_mode": normalized_optimization_mode,
@@ -22307,8 +23091,8 @@ def _prompt_worker(
                     next_prompt = (
                         auto_continue_prompt,
                         auto_continue_started_at,
-                        normalized_speed,
-                        normalized_detail,
+                        auto_continue_speed,
+                        auto_continue_detail,
                         normalized_service_tier,
                         normalized_budget,
                         normalized_timeout,
@@ -22355,8 +23139,8 @@ def _prompt_worker(
                         ),
                         running_prompt=auto_continue_prompt,
                         running_attachments=[],
-                        running_speed=normalized_speed,
-                        running_detail=normalized_detail,
+                        running_speed=auto_continue_speed,
+                        running_detail=auto_continue_detail,
                         running_service_tier=normalized_service_tier,
                         running_job_budget=normalized_budget,
                         running_runtime=normalized_runtime,
@@ -22385,8 +23169,8 @@ def _prompt_worker(
                             "final_response_status": final_response_status,
                             "previous_prompt_preview": summarize_text(prompt, 240),
                             "previous_response_preview": summarize_text(response, 240),
-                            "speed": normalized_speed,
-                            "detail": normalized_detail,
+                            "speed": auto_continue_speed,
+                            "detail": auto_continue_detail,
                             "service_tier": normalized_service_tier,
                             "job_budget": normalized_budget,
                             "optimization_mode": normalized_optimization_mode,
@@ -22398,8 +23182,8 @@ def _prompt_worker(
                     next_prompt = (
                         auto_continue_prompt,
                         auto_continue_started_at,
-                        normalized_speed,
-                        normalized_detail,
+                        auto_continue_speed,
+                        auto_continue_detail,
                         normalized_service_tier,
                         normalized_budget,
                         normalized_timeout,
@@ -22634,6 +23418,15 @@ def start_web_prompt(
     clean = prompt.strip()
     if not clean:
         return False, current_snapshot()
+    guard = host_pressure_guard_snapshot()
+    if host_pressure_guard_blocks_new_work(guard):
+        detail = host_pressure_guard_message(guard)
+        snapshot = current_snapshot()
+        snapshot["pressure_guard"] = guard
+        snapshot["pressure_guard_blocked"] = True
+        snapshot["pressure_guard_error"] = detail
+        record_action("pressure-guard-block", detail)
+        return False, snapshot
     normalized_speed = normalize_response_speed(speed)
     normalized_detail = normalize_response_detail(detail)
     normalized_service_tier = normalize_service_tier(service_tier)
@@ -22666,6 +23459,22 @@ def start_web_prompt(
         normalized_budget = normalize_job_budget(
             auto_turn_controls.get("effective_job_budget")
         )
+    if host_pressure_guard_defers_heavy_work(
+        guard
+    ) and host_pressure_guard_work_is_heavy(
+        auto_turn_controls,
+        speed=normalized_speed,
+        job_budget=normalized_budget,
+    ):
+        detail = host_pressure_guard_message(guard)
+        snapshot = current_snapshot()
+        snapshot["pressure_guard"] = guard
+        snapshot["pressure_guard_deferred"] = True
+        snapshot["pressure_guard_error"] = (
+            f"{detail} Heavy new work is deferred until pressure clears."
+        )
+        record_action("pressure-guard-defer", snapshot["pressure_guard_error"])
+        return False, snapshot
     normalized_timeout = job_budget_timeout_seconds(normalized_budget)
     normalized_runtime = normalize_runtime(runtime or configured_runtime())
     normalized_model = normalize_runtime_model(
@@ -23332,6 +24141,7 @@ def current_snapshot() -> dict[str, Any]:
         "usage": usage,
         "route_receipts": route_receipt_status_snapshot(),
         "bedrock_health": bedrock_health_snapshot(snapshot_at=snapshot_at),
+        "pressure_guard": host_pressure_guard_snapshot(snapshot_at=snapshot_at),
         "accounting": usage_accounting_tags(),
         "draft_attachments": load_draft_attachments(),
         "queued_prompts": queued_prompts,
@@ -25201,6 +26011,11 @@ INITIAL_DYNAMIC_HOST_ENTITY_RE = re.compile(
 INITIAL_OUTCOME_SIGIL_RE = re.compile(
     r"(^|\n)(\s*)(DONE|BLOCKED|CHECKPOINT)(?=$|[\s.:,;!?\-])"
 )
+INITIAL_BBS_REF_RE = re.compile(
+    r"(^|[\s([{\"'“‘])"
+    r"((?:th|msg)_[A-Za-z0-9._:-]{3,128})"
+    r"(?=$|[\s).,:;!?\]}\"'”’])"
+)
 OUTCOME_SIGILS: dict[str, dict[str, str]] = {
     "DONE": {
         "outcome": "done",
@@ -25221,6 +26036,43 @@ OUTCOME_SIGILS: dict[str, dict[str, str]] = {
         "label": "CHECKPOINT",
     },
 }
+
+
+def _bbs_ref_kind(ref_id: str) -> str:
+    clean = str(ref_id or "").strip()
+    if clean.startswith("th_"):
+        return "thread"
+    if clean.startswith("msg_"):
+        return "message"
+    return ""
+
+
+def _build_bbs_ref_href(ref_id: str, *, token: str = "", prefix: str = "") -> str:
+    kind = _bbs_ref_kind(ref_id)
+    if kind == "thread":
+        query = {"thread_id": ref_id}
+        endpoint = "/api/bbs/thread"
+    else:
+        query = {"q": ref_id}
+        endpoint = "/api/bbs/search"
+    if token:
+        query["token"] = token
+    return f"{prefixed_path(endpoint, prefix)}?{urlencode(query)}"
+
+
+def _render_bbs_ref_link(ref_id: str, *, token: str = "", prefix: str = "") -> str:
+    kind = _bbs_ref_kind(ref_id)
+    if not kind:
+        return html.escape(ref_id)
+    label = "BBS thread" if kind == "thread" else "BBS message"
+    mark = "TH" if kind == "thread" else "MS"
+    href = _build_bbs_ref_href(ref_id, token=token, prefix=prefix)
+    return (
+        f'<a class="bbs-ref-link" data-bbs-kind="{html.escape(kind)}" '
+        f'data-bbs-sigil="{mark}" href="{html.escape(href)}" target="_blank" '
+        f'rel="noreferrer" title="{label}: {html.escape(ref_id)}">'
+        f"<span>{html.escape(ref_id)}</span></a>"
+    )
 
 
 def _initial_inline_entity_pattern(
@@ -25332,6 +26184,30 @@ def _highlight_initial_outcome_sigils(rendered: str) -> str:
         part
         if not part or part.startswith("<")
         else _highlight_initial_outcome_sigils_in_text(part)
+        for part in parts
+    )
+
+
+def _highlight_initial_bbs_refs_in_text(
+    text: str, *, token: str = "", prefix: str = ""
+) -> str:
+    return INITIAL_BBS_REF_RE.sub(
+        lambda match: (
+            f"{match.group(1)}"
+            f"{_render_bbs_ref_link(match.group(2), token=token, prefix=prefix)}"
+        ),
+        str(text or ""),
+    )
+
+
+def _highlight_initial_bbs_refs(
+    rendered: str, *, token: str = "", prefix: str = ""
+) -> str:
+    parts = INITIAL_HTML_TAG_RE.split(str(rendered or ""))
+    return "".join(
+        part
+        if not part or part.startswith("<")
+        else _highlight_initial_bbs_refs_in_text(part, token=token, prefix=prefix)
         for part in parts
     )
 
@@ -25491,6 +26367,7 @@ def _render_initial_inline_markup(
     rendered = re.sub(
         r"(^|[^\w*])\*([^*\n][\s\S]*?[^*\n])\*(?!\*)", r"\1<em>\2</em>", rendered
     )
+    rendered = _highlight_initial_bbs_refs(rendered, token=token, prefix=prefix)
     rendered = _highlight_initial_outcome_sigils(rendered)
     rendered = _highlight_initial_inline_entities(rendered)
     rendered = rendered.replace("\n", "<br>")
@@ -26151,6 +27028,28 @@ class Handler(BaseHTTPRequestHandler):
                 "yes",
             }
             self.json_response(current_bbs_summary(force=force_refresh))
+            return
+
+        if parsed.path == "/api/bbs/thread":
+            thread_id = str((params.get("thread_id") or [""])[0] or "").strip()
+            payload = load_bbs_thread_payload(thread_id)
+            self.json_response(
+                payload,
+                status=HTTPStatus.OK
+                if payload.get("ok", True)
+                else HTTPStatus.BAD_GATEWAY,
+            )
+            return
+
+        if parsed.path == "/api/bbs/search":
+            query = str((params.get("q") or [""])[0] or "").strip()
+            payload = load_bbs_search_payload(query)
+            self.json_response(
+                payload,
+                status=HTTPStatus.OK
+                if payload.get("ok", True)
+                else HTTPStatus.BAD_GATEWAY,
+            )
             return
 
         if parsed.path == "/api/audit":
@@ -26876,6 +27775,10 @@ class Handler(BaseHTTPRequestHandler):
             if api_path:
                 queue_depth = max(0, int(snapshot.get("queue_depth") or 0))
                 queued = bool(accepted and queue_depth > 0)
+                error_text = str(
+                    snapshot.get("pressure_guard_error")
+                    or "a web prompt is already running"
+                )
                 self.json_response(
                     {
                         "accepted": accepted,
@@ -26884,7 +27787,7 @@ class Handler(BaseHTTPRequestHandler):
                             accepted and snapshot.get("pending") and not queued
                         ),
                         "deduplicated": deduplicated_prompt,
-                        "error": "" if accepted else "a web prompt is already running",
+                        "error": "" if accepted else error_text,
                         "snapshot": snapshot,
                     },
                     status=HTTPStatus.ACCEPTED if accepted else HTTPStatus.CONFLICT,
@@ -27807,6 +28710,12 @@ class Handler(BaseHTTPRequestHandler):
             key = str(item.get("key") or "").strip()
             label = str(item.get("label") or key).strip() or key
             can_execute = bool(item.get("can_execute"))
+            models = [
+                str(model).strip()
+                for model in (item.get("models") or [])
+                if str(model).strip()
+            ]
+            model_count = len(models)
             classes = ["ghost", "setting-pill", "runtime-route-pill"]
             if key == active_runtime:
                 classes.append("active")
@@ -27830,9 +28739,16 @@ class Handler(BaseHTTPRequestHandler):
                 if can_execute
                 else f"{label} · offline plan; routing, keys, and rate cards are not wired yet"
             )
+            if model_count > 1:
+                preview = ", ".join(models[:3])
+                if model_count > 3:
+                    preview += f", +{model_count - 3} more"
+                title = f"{title} Available models: {preview}"
             attrs.append(f'title="{html.escape(title)}"')
             status = "Live" if can_execute else "Offline plan"
             model = str(item.get("default_model") or "").strip()
+            if model_count > 1 and model:
+                model = f"{model_count} models · {model}"
             return (
                 f'<button {" ".join(attrs)}>'
                 f'<span class="runtime-route-main">{html.escape(label)}</span>'
@@ -31257,6 +32173,68 @@ class Handler(BaseHTTPRequestHandler):
       font-size: 0.66rem;
       line-height: 1.3;
       color: var(--muted);
+    }}
+    .bbs-official-signs {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      align-items: center;
+      min-width: 0;
+      margin-top: 2px;
+    }}
+    .bbs-ref-link,
+    .message-body a.bbs-ref-link,
+    .raw-view a.bbs-ref-link {{
+      display: inline-flex;
+      align-items: center;
+      max-width: 100%;
+      min-height: 22px;
+      padding: 2px 7px 2px 4px;
+      border-radius: 999px;
+      border: 1px solid color-mix(in srgb, var(--agent-accent) 38%, var(--border));
+      background:
+        linear-gradient(90deg, color-mix(in srgb, var(--agent-accent) 14%, transparent), transparent 58%),
+        color-mix(in srgb, var(--surface-2) 78%, transparent);
+      color: color-mix(in srgb, var(--text) 90%, var(--agent-accent));
+      font-size: 0.64rem;
+      font-weight: 780;
+      line-height: 1.15;
+      text-decoration: none;
+      white-space: nowrap;
+      vertical-align: baseline;
+      box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--surface) 38%, transparent);
+    }}
+    .bbs-ref-link::before,
+    .message-body a.bbs-ref-link::before,
+    .raw-view a.bbs-ref-link::before {{
+      content: attr(data-bbs-sigil);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 18px;
+      height: 16px;
+      margin-right: 5px;
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--agent-accent) 22%, var(--surface));
+      color: var(--text);
+      font-size: 0.54rem;
+      letter-spacing: 0.02em;
+    }}
+    .bbs-ref-link[data-bbs-kind="message"],
+    .message-body a.bbs-ref-link[data-bbs-kind="message"],
+    .raw-view a.bbs-ref-link[data-bbs-kind="message"] {{
+      border-color: color-mix(in srgb, var(--accent-2) 40%, var(--border));
+      color: color-mix(in srgb, var(--text) 90%, var(--accent-2));
+    }}
+    .bbs-ref-link:hover,
+    .bbs-ref-link:focus-visible,
+    .message-body a.bbs-ref-link:hover,
+    .message-body a.bbs-ref-link:focus-visible,
+    .raw-view a.bbs-ref-link:hover,
+    .raw-view a.bbs-ref-link:focus-visible {{
+      border-color: color-mix(in srgb, var(--agent-accent) 64%, var(--border-strong));
+      background: color-mix(in srgb, var(--agent-accent) 16%, var(--surface-2));
+      outline: none;
     }}
     .bbs-thread-actions {{
       display: flex;
@@ -35964,7 +36942,7 @@ class Handler(BaseHTTPRequestHandler):
       cursor: pointer;
     }}
     .toast.monitor.alert {{
-      max-height: min(52dvh, 380px);
+      max-height: min(40dvh, 280px);
       overflow: auto;
     }}
     .toast.monitor.minimized {{
@@ -36139,17 +37117,17 @@ class Handler(BaseHTTPRequestHandler):
     }}
     .toast-alert-brief {{
       display: grid;
-      gap: 5px;
-      padding: 7px 8px;
+      gap: 4px;
+      padding: 6px 7px;
       border-radius: 8px;
       border: 1px solid color-mix(in srgb, var(--tone-main) 26%, var(--border));
       background: color-mix(in srgb, var(--tone-main) 6%, var(--surface-2));
     }}
     .toast-alert-row {{
       display: grid;
-      grid-template-columns: 3.25rem minmax(0, 1fr);
+      grid-template-columns: 2.25rem minmax(0, 1fr);
       align-items: start;
-      gap: 7px;
+      gap: 6px;
       min-width: 0;
     }}
     .toast-alert-label {{
@@ -36161,12 +37139,16 @@ class Handler(BaseHTTPRequestHandler):
       text-transform: uppercase;
     }}
     .toast-alert-value {{
+      display: -webkit-box;
       min-width: 0;
       color: color-mix(in srgb, var(--text) 92%, var(--tone-main));
       font-size: 0.69rem;
       font-weight: 710;
       line-height: 1.28;
+      overflow: hidden;
       overflow-wrap: anywhere;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
     }}
     .toast-approval {{
       display: grid;
@@ -36309,6 +37291,9 @@ class Handler(BaseHTTPRequestHandler):
       font-weight: 760;
       line-height: 1;
       text-transform: uppercase;
+    }}
+    .toast.monitor.alert .toast-action-impact {{
+      display: none;
     }}
     .toast-action:hover,
     .toast-action:focus-visible {{
@@ -38215,7 +39200,7 @@ class Handler(BaseHTTPRequestHandler):
         overflow: auto;
       }}
       .toast.monitor.alert {{
-        max-height: min(36dvh, 190px);
+        max-height: min(30dvh, 156px);
       }}
       .toast.monitor .toast-impact-line,
       .toast.monitor .toast-source,
@@ -38273,6 +39258,9 @@ class Handler(BaseHTTPRequestHandler):
         flex: 0 0 auto;
         min-height: 28px;
         padding: 4px 7px;
+      }}
+      .toast.monitor.alert .toast-action-key {{
+        display: none;
       }}
       .toast.monitor .toast-fineprint {{
         padding-top: 4px;
@@ -43966,6 +44954,7 @@ class Handler(BaseHTTPRequestHandler):
     const SENSITIVE_BEARER_RE = /(\\bBearer\\s+)([A-Za-z0-9._~+/=-]+)/gi;
     const RAW_HTML_ANCHOR_RE = /<a\\b([^>]*)>([\\s\\S]*?)<\\/a>/gi;
     const RAW_HTML_HREF_RE = /\\bhref\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))/i;
+    const BBS_REF_RE = /(^|[\\s([{{"'“‘])((?:th|msg)_[A-Za-z0-9._:-]{{3,128}})(?=$|[\\s).,:;!?\\]}}"'”’])/g;
     let renderSegmentSerial = 0;
 
     function nextRenderToken(prefix) {{
@@ -44441,6 +45430,53 @@ class Handler(BaseHTTPRequestHandler):
         return clean;
       }}
       return clean === "/" ? `${{REQUEST_BASE_PATH}}/` : `${{REQUEST_BASE_PATH}}${{clean}}`;
+    }}
+
+    function bbsRefKind(value) {{
+      const clean = String(value || "").trim();
+      if (clean.startsWith("th_")) return "thread";
+      if (clean.startsWith("msg_")) return "message";
+      return "";
+    }}
+
+    function buildBbsThreadHref(threadId) {{
+      const query = new URLSearchParams({{ thread_id: String(threadId || "").trim() }});
+      if (LOCAL_TOKEN) {{
+        query.set("token", LOCAL_TOKEN);
+      }}
+      return `${{clientPath("/api/bbs/thread")}}?${{query.toString()}}`;
+    }}
+
+    function buildBbsSearchHref(queryText) {{
+      const query = new URLSearchParams({{ q: String(queryText || "").trim() }});
+      if (LOCAL_TOKEN) {{
+        query.set("token", LOCAL_TOKEN);
+      }}
+      return `${{clientPath("/api/bbs/search")}}?${{query.toString()}}`;
+    }}
+
+    function buildBbsRefHref(refId) {{
+      const clean = String(refId || "").trim();
+      return bbsRefKind(clean) === "thread" ? buildBbsThreadHref(clean) : buildBbsSearchHref(clean);
+    }}
+
+    function compactBbsRefId(value) {{
+      const clean = String(value || "").trim();
+      if (clean.length <= 30) {{
+        return clean;
+      }}
+      return `${{clean.slice(0, 18)}}…${{clean.slice(-8)}}`;
+    }}
+
+    function renderBbsRefLink(refId) {{
+      const clean = String(refId || "").trim();
+      const kind = bbsRefKind(clean);
+      if (!kind) {{
+        return escapeHtml(clean);
+      }}
+      const sigil = kind === "thread" ? "TH" : "MS";
+      const label = kind === "thread" ? "BBS thread" : "BBS message";
+      return `<a class="bbs-ref-link" data-bbs-kind="${{escapeHtml(kind)}}" data-bbs-sigil="${{sigil}}" href="${{escapeHtml(buildBbsRefHref(clean))}}" target="_blank" rel="noreferrer" title="${{escapeHtml(`${{label}}: ${{clean}}`)}}"><span>${{escapeHtml(compactBbsRefId(clean))}}</span></a>`;
     }}
 
     function buildFileViewHref(value) {{
@@ -46017,6 +47053,21 @@ class Handler(BaseHTTPRequestHandler):
       return {{ text: nextText, stash }};
     }}
 
+    function highlightBbsRefs(text) {{
+      const htmlTags = stashHtmlTags(text);
+      const stash = {{}};
+      const nextText = htmlTags.text.replace(BBS_REF_RE, (match, prefix, refId) => {{
+        const clean = String(refId || "").trim();
+        if (!bbsRefKind(clean)) {{
+          return match;
+        }}
+        const token = nextRenderToken("BBS_REF");
+        stash[token] = renderBbsRefLink(clean);
+        return `${{prefix}}${{token}}`;
+      }});
+      return {{ text: restoreSegments(nextText, [htmlTags.stash]), stash }};
+    }}
+
     function highlightInlineEntities(text) {{
       const stash = {{}};
       const stashMarkup = (markup) => {{
@@ -46231,10 +47282,12 @@ class Handler(BaseHTTPRequestHandler):
           return `${{prefix}}<a href="${{escapeHtml(clean)}}" target="_blank" rel="noreferrer">${{escapeHtml(maskSensitiveUrlText(clean))}}</a>${{trailing}}`;
         }}
       );
+      const bbsRefs = highlightBbsRefs(text);
+      text = bbsRefs.text;
       text = highlightOutcomeSigils(text);
       const htmlTags = stashHtmlTags(text);
       const entities = highlightInlineEntities(htmlTags.text);
-      stashes.push(markdownLinks, htmlTags.stash, entities.stash);
+      stashes.push(markdownLinks, bbsRefs.stash, htmlTags.stash, entities.stash);
       return restoreSegments(entities.text, stashes);
     }}
 
@@ -48002,10 +49055,10 @@ class Handler(BaseHTTPRequestHandler):
       const text = humanInterventionText(item);
       const context = humanInterventionContextLine(item);
       if (humanInterventionIsAbandonedPrompt(item)) {{
-        return "The web wrapper restarted while a prompt was marked running. No model process is alive now; the prompt text is parked and will not auto-run.";
+        return "A prompt was parked during restart. It will not auto-run.";
       }}
       if (humanInterventionIsAuthGate(item)) {{
-        return "The blocked task needs a human sign-in, captcha, verification, or credential step outside this chat.";
+        return "A sign-in, captcha, verification, or credential step is blocking this task.";
       }}
       if (kind.includes("bbs") || text.includes("actor_not_allowed_for_target") || text.includes("bbs")) {{
         if (text.includes("actor_not_allowed_for_target")) {{
@@ -48023,10 +49076,10 @@ class Handler(BaseHTTPRequestHandler):
       const kind = String(item?.kind || "").toLowerCase();
       const text = humanInterventionText(item);
       if (humanInterventionIsAbandonedPrompt(item)) {{
-        return "Review the parked prompt first. Draft a note to preserve it, Retry only if you want a new model turn, or Close alert if it was superseded.";
+        return "Close it if superseded. Review or draft if useful. Retry only for a new model turn.";
       }}
       if (humanInterventionIsAuthGate(item)) {{
-        return "Finish the access step yourself, then choose Access done so the console can retry.";
+        return "Finish access outside the TUI, then choose Access done.";
       }}
       if (kind.includes("bbs") || text.includes("actor_not_allowed_for_target") || text.includes("bbs")) {{
         return "Pick one outcome: take over, fork or reassign, mark done, or mark blocked.";
@@ -48057,12 +49110,12 @@ class Handler(BaseHTTPRequestHandler):
 
     function humanInterventionFinePrint(item) {{
       if (humanInterventionIsAbandonedPrompt(item)) {{
-        return "Fine print: Review, Draft note, and Close alert are local. Retry queues a new model turn and may spend tokens; it does not approve credentials, deploys, restarts, durable state changes, or destructive access.";
+        return "Close, Review, and Draft do not send a model prompt. Retry sends a new model turn and may spend tokens.";
       }}
       if (humanInterventionIsAuthGate(item)) {{
-        return "Fine print: Access done queues a model prompt and may spend tokens. Do not paste credentials here; complete sign-in outside the TUI first.";
+        return "Access done queues a model prompt and may spend tokens. Do not paste credentials here; complete sign-in outside the TUI first.";
       }}
-      return "Fine print: Approve queues a model prompt and may spend tokens. It does not approve credentials, private-data exposure, deploys, restarts, durable state changes, or destructive access; the bot must stop and ask before purse, seal, key, or sword actions.";
+      return "Approve queues a model prompt and may spend tokens. It does not approve credentials, private-data exposure, deploys, restarts, durable state changes, or destructive access.";
     }}
 
     function humanInterventionContextLine(item) {{
@@ -48535,6 +49588,24 @@ class Handler(BaseHTTPRequestHandler):
       return "";
     }}
 
+    function bbsDecisionRole(actor, owner) {{
+      if (!owner) return "Role: watching";
+      if (actor && actor === owner) return "Role: owner";
+      if (actor) return "Role: observer";
+      return "Role: owner unknown";
+    }}
+
+    function bbsDecisionState(handoff, thread, bbs) {{
+      const raw = String(
+        thread?.lifecycle_label
+        || thread?.loop_label
+        || handoff?.state
+        || bbs?.state
+        || "unknown"
+      ).trim();
+      return raw ? raw.replace(/_/g, " ") : "unknown";
+    }}
+
     function bbsOwnerActionLine(bbs, handoff, firstThread = {{}}) {{
       const actor = String(bbs?.actor || AGENT_SLUG || "").trim();
       const owner = String(handoff?.owner || firstThread?.owner || "").trim();
@@ -48594,7 +49665,7 @@ class Handler(BaseHTTPRequestHandler):
       const janitorReview = Math.max(0, Number(janitor.review_count || 0));
       const janitorSafe = Math.max(0, Number(janitor.safe_count || 0));
       const commandHints = [
-        handoff.ack_command ? `ACK: ${{String(handoff.ack_command)}}` : "",
+        handoff.ack_command ? `${{bbsAckCommandLabel(handoff)}}: ${{String(handoff.ack_command)}}` : "",
         handoff.fork_command_hint ? `FORK: ${{String(handoff.fork_command_hint)}}` : "",
         handoff.done_command ? `DONE: ${{String(handoff.done_command)}}` : "",
         handoff.blocked_command ? `BLOCKED: ${{String(handoff.blocked_command)}}` : "",
@@ -49192,12 +50263,21 @@ class Handler(BaseHTTPRequestHandler):
 
     function bbsCommandHintTitle(item) {{
       const hints = [
-        item?.ack_command ? `ACK: ${{String(item.ack_command)}}` : "",
+        item?.ack_command ? `${{bbsAckCommandLabel(item)}}: ${{String(item.ack_command)}}` : "",
         item?.fork_command_hint ? `FORK: ${{String(item.fork_command_hint)}}` : "",
         item?.done_command ? `DONE: ${{String(item.done_command)}}` : "",
         item?.blocked_command ? `BLOCKED: ${{String(item.blocked_command)}}` : "",
       ].filter(Boolean);
       return hints.join(" · ");
+    }}
+
+    function bbsAckCommandLabel(item) {{
+      const label = String(item?.ack_command_label || "").trim();
+      return label || "ACK";
+    }}
+
+    function bbsAckCommandNote(item) {{
+      return String(item?.ack_command_note || "").trim();
     }}
 
     function bbsLifecycleCommand(item, key) {{
@@ -49211,9 +50291,10 @@ class Handler(BaseHTTPRequestHandler):
       const candidates = [
         {{
           action: "ack",
-          label: "ACK",
+          label: bbsAckCommandLabel(item),
           command: bbsLifecycleCommand(item, "ack_command"),
-          title: "Draft the BBS ACK command. Consequence: BBS mouth/status update after operator sends.",
+          title: bbsAckCommandNote(item) || "Draft the BBS ACK command. Consequence: BBS mouth/status update after operator sends.",
+          note: bbsAckCommandNote(item),
           accessKey: "a",
         }},
         {{
@@ -49251,12 +50332,65 @@ class Handler(BaseHTTPRequestHandler):
         threadId ? `Thread: ${{threadId}}` : "",
         `Title: ${{title}}`,
         nextAction ? `Context: ${{nextAction}}` : "",
+        action?.note ? `Note: ${{String(action.note)}}` : "",
         "",
         "Command:",
         command,
         "",
         "Check that this is still the right BBS state transition. If it is safe and appropriate, run it and report the result. If it would require additional approval, credentials, a route change, or a destructive/high-impact action, stop and ask first.",
       ].filter((line) => line !== "").join("\\n");
+    }}
+
+    function bbsInspectPrompt(item) {{
+      const threadId = String(item?.thread_id || "").trim();
+      const messageId = String(item?.message_id || item?.latest_message_id || "").trim();
+      const title = String(item?.title || item?.summary || threadId || messageId || "BBS activity").trim();
+      const context = String(item?.next_action || item?.meta || item?.activity || "").trim();
+      return [
+        "Inspect this BBS activity read-only before taking action.",
+        threadId ? `Thread: ${{threadId}}` : "",
+        messageId ? `Message: ${{messageId}}` : "",
+        `Title: ${{title}}`,
+        context ? `Context: ${{context}}` : "",
+        "",
+        "Use the linked BBS thread/message evidence. Summarize the latest messages, identify the current owner/state, and propose the next safe operator action. Do not ACK, DONE, BLOCKED, or reassign unless I explicitly approve that live BBS mutation.",
+      ].filter((line) => line !== "").join("\\n");
+    }}
+
+    function appendBbsOfficialSigns(row, item) {{
+      const threadId = String(item?.thread_id || "").trim();
+      const messageId = String(item?.message_id || item?.latest_message_id || "").trim();
+      if (!threadId && !messageId) {{
+        return;
+      }}
+      const shelf = document.createElement("div");
+      shelf.className = "bbs-official-signs";
+      shelf.setAttribute("aria-label", "Official BBS references");
+      for (const refId of [threadId, messageId]) {{
+        if (!refId || !bbsRefKind(refId)) {{
+          continue;
+        }}
+        const holder = document.createElement("span");
+        holder.innerHTML = renderBbsRefLink(refId);
+        const link = holder.firstElementChild;
+        if (link) {{
+          shelf.appendChild(link);
+        }}
+      }}
+      const inspect = document.createElement("button");
+      inspect.type = "button";
+      inspect.className = "bbs-lifecycle-button";
+      inspect.dataset.bbsAction = "inspect";
+      inspect.textContent = "Inspect";
+      inspect.title = "Draft a read-only BBS inspection prompt using this official thread/message reference.";
+      inspect.addEventListener("click", (event) => {{
+        event.preventDefault();
+        event.stopPropagation();
+        applyPromptSuggestion(bbsInspectPrompt(item));
+        el.statusMessage.textContent = "BBS inspection prompt drafted for review.";
+      }});
+      shelf.appendChild(inspect);
+      row.appendChild(shelf);
     }}
 
     function appendBbsLifecycleActions(row, item) {{
@@ -49350,11 +50484,15 @@ class Handler(BaseHTTPRequestHandler):
           ...label,
           key: `thread:${{String(thread.thread_id || title)}}`,
           thread_id: String(thread.thread_id || "").trim(),
+          latest_message_id: String(thread.latest_message_id || thread.message_id || "").trim(),
           title,
           state: label.label,
           meta: `${{owner}} · ${{nextAction || activity || "BBS loop needs attention"}}${{age}}`,
           commandTitle: bbsCommandHintTitle(thread),
           ack_command: String(thread.ack_command || "").trim(),
+          ack_command_label: String(thread.ack_command_label || "").trim(),
+          ack_command_kind: String(thread.ack_command_kind || "").trim(),
+          ack_command_note: String(thread.ack_command_note || "").trim(),
           done_command: String(thread.done_command || "").trim(),
           blocked_command: String(thread.blocked_command || "").trim(),
           fork_command_hint: String(thread.fork_command_hint || "").trim(),
@@ -49375,11 +50513,15 @@ class Handler(BaseHTTPRequestHandler):
           ...handoffLabel,
           key: `handoff:${{String(handoff.thread_id || handoff.summary || handoffState)}}`,
           thread_id: String(handoff.thread_id || "").trim(),
+          latest_message_id: String(handoff.latest_message_id || handoff.message_id || "").trim(),
           title: String(handoff.summary || "BBS handoff").trim(),
           state: handoffLabel.label,
           meta: String(handoff.next_action || handoff.detail || "BBS loop needs attention.").trim(),
           commandTitle: bbsCommandHintTitle(handoff),
           ack_command: String(handoff.ack_command || "").trim(),
+          ack_command_label: String(handoff.ack_command_label || "").trim(),
+          ack_command_kind: String(handoff.ack_command_kind || "").trim(),
+          ack_command_note: String(handoff.ack_command_note || "").trim(),
           done_command: String(handoff.done_command || "").trim(),
           blocked_command: String(handoff.blocked_command || "").trim(),
           fork_command_hint: String(handoff.fork_command_hint || "").trim(),
@@ -49406,11 +50548,15 @@ class Handler(BaseHTTPRequestHandler):
           sort: 70,
           key: `janitor:${{String(action.thread_id || title)}}:${{actionLabel}}`,
           thread_id: String(action.thread_id || "").trim(),
+          latest_message_id: String(action.latest_message_id || action.message_id || "").trim(),
           title: `Janitor: ${{actionLabel}} · ${{title}}`,
           state: safety || "review",
           meta: `${{ownerText}} · ${{String(action.reason || janitor?.summary || "Review BBS queue hygiene.").trim()}}`,
           commandTitle: bbsCommandHintTitle(action),
           ack_command: String(action.ack_command || "").trim(),
+          ack_command_label: String(action.ack_command_label || "").trim(),
+          ack_command_kind: String(action.ack_command_kind || "").trim(),
+          ack_command_note: String(action.ack_command_note || "").trim(),
           done_command: String(action.done_command || "").trim(),
           blocked_command: String(action.blocked_command || "").trim(),
           fork_command_hint: String(action.fork_command_hint || "").trim(),
@@ -49586,6 +50732,9 @@ class Handler(BaseHTTPRequestHandler):
       const counts = bbs && typeof bbs.counts === "object" ? bbs.counts : {{}};
       const handoff = bbs && typeof bbs.handoff === "object" ? bbs.handoff : {{}};
       const janitor = bbs && typeof bbs.janitor === "object" ? bbs.janitor : {{}};
+      const recentlyClosed = Array.isArray(janitor.recently_closed)
+        ? janitor.recently_closed.filter((item) => item && typeof item === "object")
+        : [];
       const janitorActions = Array.isArray(janitor.actions)
         ? janitor.actions.filter((item) => item && typeof item === "object")
         : [];
@@ -49594,10 +50743,24 @@ class Handler(BaseHTTPRequestHandler):
       el.bbsSummaryCard.dataset.tone = tone;
       el.bbsSummaryValue.textContent = String(bbs.summary || "BBS status unavailable");
       const actor = String(bbs.actor || AGENT_SLUG || "").trim();
-      const stateLabel = String(bbs.state || "unknown").replace(/_/g, " ");
+      const focusThreadId = String(handoff.thread_id || "").trim();
+      const focusThread = threads.find((thread) => String(thread?.thread_id || "").trim() === focusThreadId) || threads[0] || {{}};
+      const owner = String(handoff.owner || focusThread.owner || "").trim();
+      const actorLabel = bbsActorDisplay(actor) || "unknown";
+      const ownerLabel = bbsActorDisplay(owner) || "unassigned";
+      const stateLabel = bbsDecisionState(handoff, focusThread, bbs);
       const roleLine = bbsRoleLine(bbs, handoff);
-      el.bbsSummaryMeta.textContent = roleLine ? `${{roleLine}} · ${{stateLabel}}` : actor ? `${{actor}} · ${{stateLabel}}` : stateLabel;
+      const decisionRole = bbsDecisionRole(actor, owner);
+      const ownerAction = bbsOwnerActionLine(bbs, handoff, focusThread);
+      const nextLine = String(ownerAction || handoff.next_action || focusThread.next_action || "").trim();
+      el.bbsSummaryMeta.textContent = [
+        `You: ${{actorLabel}}`,
+        `Owner: ${{ownerLabel}}`,
+        decisionRole,
+        `State: ${{stateLabel}}`,
+      ].filter(Boolean).join(" · ");
       const detailParts = [];
+      if (nextLine) detailParts.push(`Next: ${{nextLine}}`);
       if (Number(counts.inbox || 0) > 0) detailParts.push(`${{formatCount(counts.inbox)}} inbox`);
       if (Number(counts.urgent || 0) > 0) detailParts.push(`${{formatCount(counts.urgent)}} urgent`);
       if (Number(counts.waiting_pickup || 0) > 0) detailParts.push(`${{formatCount(counts.waiting_pickup)}} waiting`);
@@ -49612,6 +50775,8 @@ class Handler(BaseHTTPRequestHandler):
       if (Number(handoff.owner_attention || 0) > 0) detailParts.push(`${{formatCount(handoff.owner_attention)}} owner attention`);
       if (Number(janitor.review_count || 0) > 0) detailParts.push(`${{formatCount(janitor.review_count)}} janitor review`);
       if (Number(janitor.safe_count || 0) > 0) detailParts.push(`${{formatCount(janitor.safe_count)}} safe cleanup`);
+      if (Number(janitor.recent_done_count || 0) > 0) detailParts.push(`${{formatCount(janitor.recent_done_count)}} done recently`);
+      if (Number(janitor.recent_blocked_count || 0) > 0) detailParts.push(`${{formatCount(janitor.recent_blocked_count)}} blocked recently`);
       if (bbs.heartbeat_ok) {{
         detailParts.push(`watcher heartbeat ${{formatElapsedCompact(Number(bbs.heartbeat_age_seconds || 0))}}`);
       }} else if (bbs.detail) {{
@@ -49619,13 +50784,24 @@ class Handler(BaseHTTPRequestHandler):
       }}
       el.bbsSummaryDetail.textContent = detailParts.length ? detailParts.join(" · ") : "No BBS thread data.";
       if (el.bbsSummaryActivity) {{
-        const ownerAction = bbsOwnerActionLine(bbs, handoff, threads[0] || {{}});
+        const focusTitle = String(focusThread.title || focusThread.thread_id || "").trim();
         const handoffLine = handoff.summary
-          ? `${{String(handoff.summary)}} · ${{ownerAction || String(handoff.next_action || "").trim()}}`
+          ? `${{String(handoff.summary)}} · ${{nextLine}}`
+          : focusTitle && nextLine
+            ? `${{focusTitle}} · ${{nextLine}}`
           : "";
-        el.bbsSummaryActivity.textContent = String(handoffLine || bbs.activity || bbs.detail || "No BBS activity yet.");
+        const firstRecent = recentlyClosed[0] || {{}};
+        const recentStatus = String(firstRecent.status_label || firstRecent.status || "").trim();
+        const recentTitle = String(firstRecent.title || firstRecent.thread_id || "").trim();
+        const recentAge = Number(firstRecent.closed_age_seconds || 0) > 0
+          ? ` · ${{formatElapsedCompact(Number(firstRecent.closed_age_seconds || 0))}}`
+          : "";
+        const recentLine = recentStatus
+          ? `Recent BBS result: ${{recentStatus}}${{recentTitle ? ` · ${{recentTitle}}` : ""}}${{recentAge}}`
+          : "";
+        el.bbsSummaryActivity.textContent = String(handoffLine || recentLine || bbs.activity || bbs.detail || "No BBS activity yet.");
         const handoffCommandHints = [
-          handoff.ack_command ? `ACK: ${{String(handoff.ack_command)}}` : "",
+          handoff.ack_command ? `${{bbsAckCommandLabel(handoff)}}: ${{String(handoff.ack_command)}}` : "",
           handoff.fork_command_hint ? `FORK: ${{String(handoff.fork_command_hint)}}` : "",
           handoff.done_command ? `DONE: ${{String(handoff.done_command)}}` : "",
           handoff.blocked_command ? `BLOCKED: ${{String(handoff.blocked_command)}}` : "",
@@ -49633,6 +50809,7 @@ class Handler(BaseHTTPRequestHandler):
         el.bbsSummaryActivity.title = [
           roleLine,
           String(handoff.detail || ""),
+          recentLine,
           ownerAction || String(handoff.next_action || ""),
           ...handoffCommandHints,
         ].filter(Boolean).join(" · ");
@@ -49685,6 +50862,7 @@ class Handler(BaseHTTPRequestHandler):
         ].filter(Boolean).join(" · ");
         row.appendChild(main);
         row.appendChild(meta);
+        appendBbsOfficialSigns(row, item);
         appendBbsLifecycleActions(row, item);
         el.bbsThreadList.appendChild(row);
       }}
@@ -49720,6 +50898,7 @@ class Handler(BaseHTTPRequestHandler):
         meta.textContent = `${{ownerText}} · ${{reason}}`;
         row.appendChild(main);
         row.appendChild(meta);
+        appendBbsOfficialSigns(row, action);
         appendBbsLifecycleActions(row, action);
         el.bbsThreadList.appendChild(row);
       }}
@@ -49756,13 +50935,14 @@ class Handler(BaseHTTPRequestHandler):
         row.title = [
           String(thread.activity || ""),
           String(thread.next_action || ""),
-          thread.ack_command ? `ACK: ${{String(thread.ack_command)}}` : "",
+          thread.ack_command ? `${{bbsAckCommandLabel(thread)}}: ${{String(thread.ack_command)}}` : "",
           thread.fork_command_hint ? `FORK: ${{String(thread.fork_command_hint)}}` : "",
           thread.done_command ? `DONE: ${{String(thread.done_command)}}` : "",
           thread.blocked_command ? `BLOCKED: ${{String(thread.blocked_command)}}` : "",
         ].filter(Boolean).join(" · ");
         row.appendChild(main);
         row.appendChild(meta);
+        appendBbsOfficialSigns(row, thread);
         appendBbsLifecycleActions(row, thread);
         el.bbsThreadList.appendChild(row);
       }}
@@ -50611,10 +51791,10 @@ class Handler(BaseHTTPRequestHandler):
 
     function humanInterventionNextStep(item) {{
       if (humanInterventionIsAbandonedPrompt(item)) {{
-        return "Do this: click Review first. Draft a note if the prompt matters, Retry only to spend a new model turn, or Close alert if this was already superseded.";
+        return "Do this: close if superseded; review or draft if useful; retry only for a new model turn.";
       }}
       if (humanInterventionIsAuthGate(item)) {{
-        return "Do this: complete the sign-in/captcha/verification, then click Access done.";
+        return "Do this: complete access outside the TUI, then click Access done.";
       }}
       const text = humanInterventionText(item);
       if (text.includes("actor_not_allowed_for_target") || text.includes("bbs")) {{
@@ -50680,17 +51860,35 @@ class Handler(BaseHTTPRequestHandler):
       if (!item || typeof item !== "object") {{
         return [];
       }}
+      const closeAction = {{
+        action: "not_actionable",
+        label: "Close",
+        tone: humanInterventionIsAbandonedPrompt(item) ? "primary" : "",
+        accessKey: "c",
+        impact: "local",
+        title: "Close alert. Marks this local blocker handled without sending a model prompt.",
+      }};
+      const detailsAction = {{
+        action: "details",
+        label: "Details",
+        tone: "",
+        accessKey: "v",
+        impact: "local",
+        title: "Opens the TUI system panel with the intervention evidence. No model call.",
+      }};
+      const draftAction = {{
+        action: "draft",
+        label: "Draft",
+        tone: "",
+        accessKey: "d",
+        impact: "local",
+        title: "Fills the composer with the retry/approval note without sending it.",
+      }};
       if (humanInterventionIsAbandonedPrompt(item)) {{
         return [
+          closeAction,
           humanInterventionPrimaryAction(item),
-          {{
-            action: "draft",
-            label: "Draft note",
-            tone: "",
-            accessKey: "d",
-            impact: "local",
-            title: "Fills the composer with a cleanup note without sending it.",
-          }},
+          draftAction,
           {{
             action: "retry_abandoned",
             label: "Retry",
@@ -50699,42 +51897,20 @@ class Handler(BaseHTTPRequestHandler):
             impact: "send",
             title: "Queues a retry/cleanup prompt for the abandoned web turn. Use only when you want a fresh model turn. Consequences: Mouth plus metered token spend; no credentials are sent.",
           }},
-          {{
-            action: "not_actionable",
-            label: "Close alert",
-            tone: "",
-            accessKey: "n",
-            impact: "local",
-            title: "Closes this local stale-prompt blocker record. No model call and no external action.",
-          }},
+        ];
+      }}
+      if (humanInterventionIsAuthGate(item)) {{
+        return [
+          humanInterventionPrimaryAction(item),
+          closeAction,
+          detailsAction,
         ];
       }}
       return [
+        closeAction,
         humanInterventionPrimaryAction(item),
-        {{
-          action: "draft",
-          label: "Draft note",
-          tone: "",
-          accessKey: "d",
-          impact: "local",
-          title: "Fills the composer with the retry/approval note without sending it.",
-        }},
-        {{
-          action: "details",
-          label: "Details",
-          tone: "warn",
-          accessKey: "v",
-          impact: "local",
-          title: "Opens the TUI system panel with the intervention evidence. Consequences: local UI only; no model call and no external action.",
-        }},
-        {{
-          action: "not_actionable",
-          label: "Close alert",
-          tone: "danger",
-          accessKey: "n",
-          impact: "local",
-          title: "Closes this local blocker record for now. No model call and no external action.",
-        }},
+        detailsAction,
+        draftAction,
       ].slice(0, 4);
     }}
 
@@ -50806,8 +51982,11 @@ class Handler(BaseHTTPRequestHandler):
         return;
       }}
       const closesAndRetries = cleanAction === "access_done" || cleanAction === "approve" || cleanAction === "retry_abandoned";
+      const closesOnly = cleanAction === "not_actionable";
       state.transientOperatorBanner = closesAndRetries
         ? "Queueing operator intervention response…"
+        : closesOnly
+        ? "Closing alert…"
         : "Updating operator intervention…";
       renderActivityStrip(state.snapshot);
       setBusyButtons(true);
@@ -50824,7 +52003,12 @@ class Handler(BaseHTTPRequestHandler):
         }});
         state.transientOperatorBanner = closesAndRetries
           ? "Operator intervention queued; blocker marked handled."
+          : closesOnly
+          ? "Alert closed."
           : "Operator intervention updated.";
+        el.statusMessage.textContent = closesOnly
+          ? "Alert closed. No model call was made."
+          : el.statusMessage.textContent;
         render(result.snapshot || promptSnapshot || state.snapshot);
       }} catch (err) {{
         state.transientOperatorBanner = "Operator intervention action failed.";
@@ -51074,23 +52258,20 @@ class Handler(BaseHTTPRequestHandler):
               ? `<div class="toast-detail">${{escapeHtml([fromLine ? `From ${{fromLine}}` : "", whyLine || messageLine || nextStep || "Click to review the intervention."].filter(Boolean).join(" · "))}}</div>`
               : `<section class="toast-alert-brief" aria-label="Operator alert summary">
                    <div class="toast-alert-row">
-                     <span class="toast-alert-label">From</span>
-                     <strong class="toast-alert-value">${{escapeHtml(fromLine || "This console")}}</strong>
+                     <span class="toast-alert-label">Do</span>
+                     <strong class="toast-alert-value">${{escapeHtml(needLine || approvalAsk || "Pick one safe next action.")}}</strong>
                    </div>
                    <div class="toast-alert-row">
                      <span class="toast-alert-label">Why</span>
                      <span class="toast-alert-value">${{escapeHtml(whyLine || messageLine || "A human decision is needed.")}}</span>
                    </div>
-                   <div class="toast-alert-row">
-                     <span class="toast-alert-label">Need</span>
-                     <span class="toast-alert-value">${{escapeHtml(needLine || approvalAsk || "Pick one safe next action.")}}</span>
-                   </div>
                  </section>
                  <div class="toast-action-slot" data-slot="human-intervention-actions"></div>
                  <details class="toast-fineprint">
-                   <summary>Fine print</summary>
+                   <summary>Details</summary>
                    <div class="toast-fineprint-body">
                      <div class="toast-fineprint-copy">${{escapeHtml(finePrint)}}</div>
+                     ${{fromLine ? `<div class="toast-detail"><span class="toast-section-label">From</span>${{escapeHtml(fromLine)}}</div>` : ""}}
                      ${{messageLine ? `<div class="toast-detail"><span class="toast-section-label">Original ask</span>${{escapeHtml(messageLine)}}</div>` : ""}}
                      ${{approvalAsk ? `<div class="toast-detail"><span class="toast-section-label">Prompt action</span>${{escapeHtml(approvalAsk)}}</div>` : ""}}
                      ${{sourceLine ? `<div class="toast-source">${{escapeHtml(sourceLine)}}</div>` : ""}}

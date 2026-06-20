@@ -22,7 +22,7 @@ WORK_SPECIAL_ENDPOINTS = {
     "mls": "https://mls.kris.openbrand.com/api/status",
     "panelbot": "https://panelbot.kris.openbrand.com/api/status",
     "platinum-standard": "https://platinum.kris.openbrand.com/api/status",
-    "scout": "https://scout.kris.openbrand.com/api/status",
+    "scout": "https://ranger.kris.openbrand.com/api/status",
     "tmi-dashboards": "https://dashboards.kris.openbrand.com/api/status",
 }
 

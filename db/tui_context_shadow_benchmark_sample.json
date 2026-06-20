@@ -1,0 +1,52 @@
+{
+  "schema": "norman.tui.context-shadow-benchmark-sample.v1",
+  "description": "Deterministic sample rows for the local TUI benchmark gate. Live work-special sampling is covered by `make tui-benchmarks-live`.",
+  "rows": [
+    {
+      "slug": "control-plane",
+      "state": "idle",
+      "current_tokens": 16000,
+      "packed_tokens": 5200,
+      "saved_tokens": 10800,
+      "saved_pct": 67.5,
+      "preview_state": "strong",
+      "state_db_enabled": true,
+      "history_format": "jsonl_write_through_sqlite",
+      "needs_retrieval_for_older_details": true,
+      "requires_shadow_run_before_activation": true,
+      "live_prompt_behavior_changed": false,
+      "packed_sources": [
+        {"label": "state card", "tokens": 1600, "mode": "summary"},
+        {"label": "evidence refs", "tokens": 650, "mode": "sqlite"},
+        {"label": "tail digest", "tokens": 300, "mode": "digest"}
+      ],
+      "excluded_sources": [
+        {"label": "older turn bodies", "tokens": 9000, "mode": "raw"},
+        {"label": "raw pane/log tails", "tokens": 1200, "mode": "raw"}
+      ]
+    },
+    {
+      "slug": "leadership-kpis",
+      "state": "idle",
+      "current_tokens": 14000,
+      "packed_tokens": 4300,
+      "saved_tokens": 9700,
+      "saved_pct": 69.3,
+      "preview_state": "strong",
+      "state_db_enabled": true,
+      "history_format": "jsonl_write_through_sqlite",
+      "needs_retrieval_for_older_details": true,
+      "requires_shadow_run_before_activation": true,
+      "live_prompt_behavior_changed": false,
+      "packed_sources": [
+        {"label": "state card", "tokens": 1500, "mode": "summary"},
+        {"label": "evidence refs", "tokens": 550, "mode": "sqlite"},
+        {"label": "tail digest", "tokens": 260, "mode": "digest"}
+      ],
+      "excluded_sources": [
+        {"label": "older turn bodies", "tokens": 7600, "mode": "raw"},
+        {"label": "raw pane/log tails", "tokens": 1100, "mode": "raw"}
+      ]
+    }
+  ]
+}

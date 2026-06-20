@@ -1,6 +1,7 @@
 from app.services.console_status import (
     classify_console_credit_assessment,
     console_accounting_state,
+    console_storage_state,
 )
 
 
@@ -61,3 +62,22 @@ def test_console_accounting_state_extracts_tui_billing_tags() -> None:
     assert state["actor_slug"] == "panelbot"
     assert state["host_name"] == "work-special"
     assert state["workdir"] == "/home/kristopher/code/panelbot"
+
+
+def test_console_storage_state_extracts_context_pack_db_fields() -> None:
+    state = console_storage_state(
+        {
+            "context_pack_preview": {
+                "storage": {
+                    "state_db_enabled": True,
+                    "state_db_path": "/home/kristopher/.codex-scout/web-bridge/tui_state.sqlite3",
+                    "history_format": "jsonl_write_through_sqlite",
+                }
+            }
+        }
+    )
+
+    assert state["state_db_enabled"] is True
+    assert state["history_format"] == "jsonl_write_through_sqlite"
+    assert state["state_db_path"].endswith("/web-bridge/tui_state.sqlite3")
+    assert state["storage"]["state_db_enabled"] is True

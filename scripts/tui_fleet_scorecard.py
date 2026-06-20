@@ -104,6 +104,7 @@ class ScoreRow:
     runtime: CheckResult
     drift: CheckResult
     usage: CheckResult
+    storage: CheckResult
     frontdoor: CheckResult
     dns: CheckResult
     persistence: CheckResult
@@ -634,6 +635,24 @@ def check_usage(status: dict) -> CheckResult:
     )
 
 
+def check_storage(status: dict) -> CheckResult:
+    if not status:
+        return CheckResult(True, 0, 0, "storage unknown", "unknown")
+    state_db_enabled = status.get("state_db_enabled")
+    history_format = str(status.get("history_format") or "").strip()
+    state_db_path = str(status.get("state_db_path") or "").strip()
+    if state_db_enabled is True:
+        if history_format:
+            detail = history_format
+            if state_db_path:
+                detail = f"{detail}; {state_db_path}"
+            return CheckResult(True, 0, 0, detail, "db")
+        return CheckResult(True, 0, 0, state_db_path or "state DB enabled", "db")
+    if state_db_enabled is False:
+        return CheckResult(False, 0, 0, history_format or "state DB disabled", "jsonl")
+    return CheckResult(False, 0, 0, "storage field missing from status", "missing")
+
+
 def check_frontdoor(item: FleetItem) -> CheckResult:
     if not item.web_url:
         return CheckResult(False, 0, 15, "missing route URL", "missing")
@@ -749,6 +768,7 @@ def score_item(
     runtime = check_runtime(status)
     drift = check_drift(status)
     usage = check_usage(status)
+    storage = check_storage(status)
     frontdoor = check_frontdoor(item)
     dns = check_dns(item, expected_dns, resolver)
     persistence = check_persistence(item, persisted_hosts_path)
@@ -770,6 +790,7 @@ def score_item(
         ("runtime", runtime),
         ("drift", drift),
         ("usage", usage),
+        ("storage", storage),
         ("frontdoor", frontdoor),
         ("dns", dns),
         ("persist", persistence),
@@ -787,6 +808,7 @@ def score_item(
         runtime=runtime,
         drift=drift,
         usage=usage,
+        storage=storage,
         frontdoor=frontdoor,
         dns=dns,
         persistence=persistence,
@@ -823,13 +845,13 @@ def render_markdown(rows: list[ScoreRow]) -> str:
             for name in ("good", "watch", "degraded", "critical", "down")
         ),
         "",
-        "| Score | Grade | TUI | Runtime | Drift | Tokens | Frontdoor | DNS | Persist | Notes |",
-        "| ---: | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| Score | Grade | TUI | Runtime | Drift | Tokens | DB | Frontdoor | DNS | Persist | Notes |",
+        "| ---: | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for row in sorted(rows, key=lambda item: (item.score, item.label.lower())):
         notes = "; ".join(row.notes[:4]) or "clear"
         lines.append(
-            "| {score} | {grade} | {label} | {runtime} | {drift} | {usage} | {frontdoor} | {dns} | {persist} | {notes} |".format(
+            "| {score} | {grade} | {label} | {runtime} | {drift} | {usage} | {storage} | {frontdoor} | {dns} | {persist} | {notes} |".format(
                 score=row.score,
                 grade=row.grade,
                 label=row.label.replace("|", "\\|"),
@@ -838,6 +860,7 @@ def render_markdown(rows: list[ScoreRow]) -> str:
                 usage=(row.usage.detail or row.usage.status or "unknown").replace(
                     "|", "\\|"
                 ),
+                storage=(row.storage.status or "unknown").replace("|", "\\|"),
                 frontdoor=row.frontdoor.status or ("ok" if row.frontdoor.ok else "bad"),
                 dns=row.dns.status or ("ok" if row.dns.ok else "bad"),
                 persist=row.persistence.status

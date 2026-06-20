@@ -49,6 +49,7 @@ def _run_screen(*args: str, check: bool = False) -> subprocess.CompletedProcess[
         capture_output=True,
         text=True,
         check=False,
+        stdin=subprocess.DEVNULL,
     )
     if check and proc.returncode != 0:
         raise HypervisorError(
