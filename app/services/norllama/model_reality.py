@@ -76,6 +76,33 @@ def _model_size_b(model: str) -> float | None:
     return max(parsed) if parsed else None
 
 
+def _quantization_bits(model: str) -> float | None:
+    text = _lower(model)
+    if any(marker in text for marker in ("nvfp4", "fp4", "q4_", ":q4", "-q4")):
+        return 4.0
+    if any(marker in text for marker in ("q5_", ":q5", "-q5")):
+        return 5.0
+    if any(marker in text for marker in ("q6_", ":q6", "-q6")):
+        return 6.0
+    if any(marker in text for marker in ("fp8", "q8_", ":q8", "-q8")):
+        return 8.0
+    if any(marker in text for marker in ("bf16", "fp16", "f16")):
+        return 16.0
+    return None
+
+
+def _estimated_model_memory_gb(model: str) -> float | None:
+    size_b = _model_size_b(model)
+    if size_b is None:
+        return None
+    bits = _quantization_bits(model)
+    if bits is None:
+        return round(size_b * 1.05, 2)
+    weight_gb = size_b * (bits / 8.0)
+    overhead_gb = 4.0 if size_b >= 20 else 2.0
+    return round(weight_gb * 1.18 + overhead_gb, 2)
+
+
 def _worker_id(worker: dict[str, Any]) -> str:
     return _clean(worker.get("id") or worker.get("worker_id"))
 
@@ -541,6 +568,7 @@ def _worker_fit(
     desired_residency: str,
 ) -> dict[str, Any]:
     size_b = _model_size_b(model)
+    estimated_memory_gb = _estimated_model_memory_gb(model)
     worker = next(
         (worker for worker in workers if _worker_id(worker) == target_worker_id),
         {},
@@ -556,7 +584,12 @@ def _worker_fit(
     ):
         ok = False
         reasons.append("heavy model cannot be warmed on fallback node")
-    if memory_gb and size_b is not None and size_b > max(1, memory_gb * 0.75):
+    memory_limit_gb = memory_gb * 0.85 if memory_gb else 0
+    if (
+        memory_gb
+        and estimated_memory_gb is not None
+        and estimated_memory_gb > max(1, memory_limit_gb)
+    ):
         ok = False
         reasons.append("model size exceeds conservative worker memory fit")
     if desired_residency in {"cold_only", "lab"}:
@@ -565,9 +598,14 @@ def _worker_fit(
     return {
         "ok": ok,
         "model_size_b": size_b,
+        "quantization_bits": _quantization_bits(model),
+        "estimated_model_memory_gb": estimated_memory_gb,
         "worker_id": target_worker_id,
         "worker_role": role,
         "worker_memory_gb": memory_gb,
+        "worker_memory_fit_limit_gb": round(memory_limit_gb, 2)
+        if memory_limit_gb
+        else 0,
         "reasons": reasons,
     }
 

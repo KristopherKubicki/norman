@@ -877,3 +877,99 @@ def test_build_warm_policy_blocks_heavy_model_on_fallback_node():
     assert qwen["action"] == "skip_model_reality"
     assert qwen["model_reality"]["proof_status"] == "worker_fit_blocked"
     assert "heavy model cannot be warmed on fallback node" in qwen["action_reason"]
+
+
+def test_build_warm_policy_allows_quantized_heavy_judge_on_spark():
+    packet = {
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "packet_id": "uplink-qwen-heavy-judge",
+        "shareable_view": {
+            "recommended_roles": [
+                {
+                    "lane_id": "judge",
+                    "model": "qwen3.5:122b-a10b-q4_K_M",
+                    "profile": "qwen35_122_heavy_judge",
+                    "score": 0.95,
+                    "coverage_ratio": 1.0,
+                    "status": "benchmark_backed",
+                    "target_worker": "spark-151",
+                    "use_for": "heavy local judge and verifier",
+                    "accepted_count": 1,
+                    "total_count": 1,
+                    "timeout_rate": 0,
+                    "empty_response_rate": 0,
+                    "zero_token_rate": 0,
+                    "progress_only_rate": 0,
+                    "verifier_rejection_rate": 0,
+                    "output_shape_valid": True,
+                }
+            ]
+        },
+    }
+
+    policy = warm_policy.build_warm_policy(mesh=catalog_mesh(), packet=packet)
+    by_model = {item["model"]: item for item in policy["recommendations"]}
+    qwen = by_model["qwen3.5:122b-a10b-q4_K_M"]
+
+    assert qwen["action"] == "prefetch"
+    assert qwen["model_reality"]["proof_status"] == "ready"
+    assert qwen["model_reality"]["worker_fit"] is True
+    assert qwen["model_reality"]["fit"]["estimated_model_memory_gb"] < 128
+
+
+def test_explicit_qwen_route_lanes_keep_heavy_judge_out_of_chat_pool():
+    metrics = {
+        "score": 0.95,
+        "coverage_ratio": 1.0,
+        "status": "benchmark_backed",
+        "target_worker": "spark-151",
+        "accepted_count": 1,
+        "total_count": 1,
+        "timeout_rate": 0,
+        "empty_response_rate": 0,
+        "zero_token_rate": 0,
+        "progress_only_rate": 0,
+        "verifier_rejection_rate": 0,
+        "output_shape_valid": True,
+    }
+    packet = {
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "packet_id": "uplink-qwen-explicit-lanes",
+        "shareable_view": {
+            "recommended_roles": [
+                {
+                    **metrics,
+                    "lane_id": "coder",
+                    "model": "qwen3.6:27b",
+                    "profile": "qwen36_27_local",
+                    "use_for": "local coding, repo reasoning, patch drafting",
+                },
+                {
+                    **metrics,
+                    "lane_id": "planner",
+                    "model": "qwen3.6:35b-a3b-q4_K_M",
+                    "profile": "qwen36_35_router_local",
+                    "use_for": "interactive planning, routing, filtering, scout prep",
+                },
+                {
+                    **metrics,
+                    "lane_id": "judge",
+                    "model": "qwen3.5:122b-a10b-q4_K_M",
+                    "profile": "qwen35_122_heavy_judge",
+                    "use_for": "heavy local judge and verifier",
+                },
+            ]
+        },
+    }
+
+    policy = warm_policy.build_warm_policy(mesh=catalog_mesh(), packet=packet)
+
+    chat = warm_policy.select_model_for_task_kind("chat", warm_policy_payload=policy)
+    code = warm_policy.select_model_for_task_kind("code", warm_policy_payload=policy)
+    plan = warm_policy.select_model_for_task_kind("plan", warm_policy_payload=policy)
+    judge = warm_policy.select_model_for_task_kind("judge", warm_policy_payload=policy)
+
+    assert chat["model"] == "qwen3.6:27b"
+    assert code["model"] == "qwen3.6:27b"
+    assert plan["model"] == "qwen3.6:35b-a3b-q4_K_M"
+    assert judge["model"] == "qwen3.5:122b-a10b-q4_K_M"

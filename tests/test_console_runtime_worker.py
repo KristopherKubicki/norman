@@ -162,6 +162,12 @@ def test_db_console_runtime_worker_defaults_to_local_first_norllama(db, monkeypa
         "gemma4:26b-a4b-it-q4_K_M",
         raising=False,
     )
+    monkeypatch.setattr(
+        routing.settings,
+        "llm_benchmark_packet_path",
+        "/tmp/norman-test-missing-benchmark-packet.json",
+        raising=False,
+    )
     user = _ensure_user(db)
     store = DbConsoleRuntimeStore()
     worker = DbConsoleRuntimeWorker(store)

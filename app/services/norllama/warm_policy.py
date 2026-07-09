@@ -1142,6 +1142,10 @@ def _recommendation_lanes(item: dict[str, Any]) -> list[str]:
         )
     )
     lanes: set[str] = set()
+    explicit_lane = _clean(item.get("lane_id")).lower()
+    explicit_route_lane = explicit_lane in ROUTE_GUARDRAIL_LANES
+    if explicit_route_lane:
+        lanes.add(explicit_lane)
     class_lanes = {
         "code": "coder",
         "judge": "judge",
@@ -1166,7 +1170,8 @@ def _recommendation_lanes(item: dict[str, Any]) -> list[str]:
     for lane, markers in LANE_TEXT_MARKERS.items():
         if any(marker in text for marker in markers):
             lanes.add(lane)
-    lanes.update(LANE_FAMILY_DEFAULTS.get(family, LANE_FAMILY_DEFAULTS["general"]))
+    if not explicit_route_lane:
+        lanes.update(LANE_FAMILY_DEFAULTS.get(family, LANE_FAMILY_DEFAULTS["general"]))
     if _clean(item.get("priority")) == "canary" or (
         size_b is not None and size_b <= SMALL_MODEL_MAX_B
     ):
