@@ -4,9 +4,8 @@
 <div class="messages-page subpage-shell{% if super_tui_mode %} messages-page--super{% endif %}"{% if super_tui_mode %} data-super-tui="true"{% endif %}>
   <div class="page-header subpage-header d-flex align-items-center justify-content-between mb-2">
     <div>
-      <div class="subpage-eyebrow">{% if super_tui_mode %}Super TUI{% elif switchboard_mode|default(False) %}Switchboard BBS{% else %}Operator TUI{% endif %}</div>
-      <div class="subpage-title">{% if super_tui_mode %}<a class="messages-super-cartouche" href="/bot/norman/" aria-label="Norman"><span class="messages-super-cartouche__mark" aria-hidden="true">N1</span><span class="messages-super-cartouche__label">Norman</span></a>{% elif switchboard_mode|default(False) %}Switchboard BBS{% else %}Norman Chat{% endif %}</div>
-      <div class="subpage-subtitle">{% if super_tui_mode %}Gold super TUI on top. Switchboard, directory, pipeline, and settings stay buried under Norman menu paths unless you need the lower deck.{% elif switchboard_mode|default(False) %}Operator threads, board traffic, and handoffs land here. Switchboard handles the broker and relay layer under Norman.{% else %}Work threads here, then hand off to the right worker.{% endif %}</div>
+      <div class="subpage-title">{% if super_tui_mode %}Norman{% else %}Norman Chat{% endif %}</div>
+      <div class="subpage-subtitle">{% if super_tui_mode %}Gold super TUI on top. Switchboard, directory, pipeline, and settings stay buried under Norman menu paths unless you need the lower deck.{% else %}Work threads here, then hand off to the right worker.{% endif %}</div>
     </div>
     <div class="streams-header-actions d-flex align-items-center gap-2">
       <div class="messages-llm-status" id="messages-llm-status" title="Checking model durability state…">
@@ -14,10 +13,10 @@
         <span class="messages-llm-status__detail" id="messages-llm-status-detail">Checking…</span>
       </div>
       {% if super_tui_mode %}
-      <button type="button" class="btn btn-sm btn-outline-secondary streams-advanced-control" id="messages-prime-layer-toggle" aria-expanded="false">Switchboard deck</button>
+      <button type="button" class="btn btn-sm btn-outline-secondary streams-advanced-control" id="messages-prime-layer-toggle" aria-expanded="false">Prime deck</button>
       <a class="btn btn-sm btn-outline-secondary streams-advanced-control" href="/dashboard.html" target="_blank" rel="noreferrer noopener">Pop out</a>
       {% else %}
-      <a class="btn btn-sm btn-outline-secondary" href="{% if switchboard_mode|default(False) %}/dashboard.html?view=switchboard{% else %}/dashboard.html{% endif %}">{% if switchboard_mode|default(False) %}Deck{% else %}Switchboard{% endif %}</a>
+      <a class="btn btn-sm btn-outline-secondary" href="/dashboard.html">Prime</a>
       {% endif %}
       <a class="btn btn-sm btn-outline-secondary streams-advanced-control" href="/systems.html#agent-directory" title="Open Directory">Dir</a>
       <button type="button" class="btn btn-sm btn-outline-secondary" id="streams-thread-toggle" aria-pressed="true" title="Switch between thread and feed views">
@@ -30,7 +29,7 @@
         Menu
       </button>
       <button type="button" class="btn btn-sm btn-outline-secondary streams-advanced-control" id="streams-toggle-left" aria-pressed="false">
-        {% if switchboard_mode|default(False) %}Hide Boards{% else %}Hide Threads{% endif %}
+        Hide Threads
       </button>
       <button type="button" class="btn btn-sm btn-outline-secondary streams-advanced-control" id="streams-toggle-right" aria-pressed="false">
         Hide Side
@@ -81,10 +80,10 @@
   </div>
 
   <div class="messages-mobile-nav d-lg-none" role="toolbar" aria-label="Editor mobile controls">
-    <button type="button" class="btn btn-sm btn-outline-secondary messages-mobile-thread-btn" data-messages-pane="channels" aria-label="{% if switchboard_mode|default(False) %}Choose board{% else %}Choose thread{% endif %}">
+    <button type="button" class="btn btn-sm btn-outline-secondary messages-mobile-thread-btn" data-messages-pane="channels" aria-label="Choose thread">
       <span class="messages-mobile-nav__icon" aria-hidden="true">☰</span>
       <span class="messages-mobile-thread-copy">
-        <span class="messages-mobile-thread-kicker">{% if switchboard_mode|default(False) %}Board{% else %}Thread{% endif %}</span>
+        <span class="messages-mobile-thread-kicker">Thread</span>
         <span class="messages-mobile-thread-label" id="messages-mobile-thread-label">None</span>
       </span>
       <span class="messages-mobile-thread-mode messages-thread-state messages-thread-state--muted" id="messages-mobile-thread-mode">auto</span>
@@ -107,15 +106,15 @@
   <div class="row g-2 messages-layout">
   <div class="col-lg-3 messages-col messages-col--left" id="messages-pane-channels">
     <div class="messages-mobile-drawer-head d-lg-none">
-      <div class="messages-mobile-drawer-title">{% if switchboard_mode|default(False) %}Boards{% else %}Threads{% endif %}</div>
+      <div class="messages-mobile-drawer-title">Threads</div>
       <button type="button" class="btn btn-sm btn-outline-secondary" data-messages-pane="conversation">Back</button>
     </div>
     <div class="card p-3 mb-3 messages-sidebar-card">
       <div class="d-flex align-items-center justify-content-between mb-2">
-        <div class="section-title">{% if switchboard_mode|default(False) %}Boards{% else %}Threads{% endif %}</div>
+        <div class="section-title">Threads</div>
         <span class="badge streams-count-badge" id="channels-count">0</span>
       </div>
-      <input class="form-control form-control-sm mb-2" type="text" id="channelSearch" placeholder="{% if switchboard_mode|default(False) %}Filter boards...{% else %}Filter threads...{% endif %}">
+      <input class="form-control form-control-sm mb-2" type="text" id="channelSearch" placeholder="Filter threads...">
       <div id="channels-status" class="alert alert-info d-none" role="alert"></div>
       <div class="channels-container list-group menu-list channels-menu">
         <!-- Channels will be dynamically added here -->
@@ -129,11 +128,11 @@
       </div>
       <div class="collapse" id="messages-add-channel-panel">
         <form id="messages-add-channel-form" class="d-grid gap-2">
-          <input type="text" id="channel-name" class="form-control" placeholder="{% if switchboard_mode|default(False) %}Thread name{% else %}Source name{% endif %}" required>
+          <input type="text" id="channel-name" class="form-control" placeholder="Source name" required>
           <select class="form-select" id="channel-connector">
             <option value="" selected disabled>Loading connectors...</option>
           </select>
-          <button id="addChannelBtn" class="btn btn-primary" type="submit">{% if switchboard_mode|default(False) %}Create Thread{% else %}Create Source{% endif %}</button>
+          <button id="addChannelBtn" class="btn btn-primary" type="submit">Create Source</button>
         </form>
         <div class="small text-muted mt-2">
           Need a new connector? <a href="/connectors.html">Open Connectors</a>
@@ -143,13 +142,13 @@
 
     <div class="card p-3 mt-3 messages-sidebar-card messages-starter-card">
       <div class="collapsible-header d-flex align-items-center justify-content-between mb-2" role="button" data-bs-toggle="collapse" data-bs-target="#messages-starter-panel" aria-expanded="false" aria-controls="messages-starter-panel">
-        <div class="section-title">{% if switchboard_mode|default(False) %}Starter Boards{% else %}Starter Sources{% endif %}</div>
+        <div class="section-title">Starter Sources</div>
         <span class="small text-muted">Tap to expand</span>
       </div>
       <div class="collapse" id="messages-starter-panel">
-        <p class="small text-muted">{% if switchboard_mode|default(False) %}Pick board templates, intake lanes, or connected feeds.{% else %}Pick local feeds or connect external sources.{% endif %}</p>
-        <a class="btn btn-outline-primary w-100" href="{% if switchboard_mode|default(False) %}/channels.html?view=switchboard{% else %}/channels.html{% endif %}">
-          {% if switchboard_mode|default(False) %}Configure boards{% else %}Configure starter sources{% endif %}
+        <p class="small text-muted">Pick local feeds or connect external sources.</p>
+        <a class="btn btn-outline-primary w-100" href="/channels.html">
+          Configure starter sources
         </a>
       </div>
     </div>
@@ -247,7 +246,7 @@
               type="text"
               class="form-control form-control-sm"
               id="streams-agent-web-url"
-              placeholder="192.168.0.137:8788"
+              placeholder="192.168.2.137:8788"
               inputmode="url"
               autocomplete="off"
               spellcheck="false"
@@ -309,46 +308,11 @@
 
       <div class="input-message-container mt-3">
         <div class="streams-compose-title d-lg-none">Reply</div>
-        <div class="streams-compose-context" aria-live="polite">
-          <div class="streams-compose-context__target">
-            <span class="streams-compose-context__label">Thread</span>
-            <span class="streams-compose-context__value" id="streams-compose-target-label">No thread</span>
-          </div>
-          <div class="streams-compose-context__meta">
-            <span class="streams-compose-mode" id="streams-compose-mode">idle</span>
-            <span class="streams-compose-state" id="streams-compose-state">Ready</span>
-            <span class="streams-compose-count" id="streams-compose-count">0</span>
-          </div>
-        </div>
         <form class="input-group input-group--composer" id="messageComposerForm" autocomplete="off">
-          <textarea
-            class="form-control composer-input"
-            id="messageInput"
-            placeholder="Type your message..."
-            rows="1"
-            enterkeyhint="send"
-            aria-label="Message composer"
-            aria-describedby="streams-compose-state streams-compose-count streams-compose-feedback"
-          ></textarea>
-          <button class="btn btn-primary" id="sendButton" type="button" aria-label="Send message" disabled>Send</button>
+          <textarea class="form-control composer-input" id="messageInput" placeholder="Type your message..." rows="1" enterkeyhint="send"></textarea>
+          <button class="btn btn-primary" id="sendButton" type="button" aria-label="Send message">Send</button>
         </form>
         <div class="streams-compose-tools">
-          <button
-            type="button"
-            class="btn btn-sm btn-outline-secondary"
-            id="streams-compose-expand"
-            aria-pressed="false"
-          >
-            Expand
-          </button>
-          <button
-            type="button"
-            class="btn btn-sm btn-outline-secondary"
-            id="streams-compose-clear"
-            disabled
-          >
-            Clear
-          </button>
           <button
             type="button"
             class="btn btn-sm btn-outline-secondary"
@@ -402,7 +366,7 @@
           <div class="streams-secret-list" id="streams-secret-list"></div>
         </div>
         <div class="streams-compose-feedback" id="streams-compose-feedback" role="status" aria-live="polite"></div>
-        <div class="streams-compose-hint" id="streams-compose-hint">Ready</div>
+        <div class="streams-compose-hint" id="streams-compose-hint">Send or Enter · Shift+Enter adds a new line</div>
       </div>
     </div>
   </div>
@@ -550,11 +514,11 @@
   >
     <div class="messages-prime-layer__head">
       <div>
-        <div class="messages-prime-layer__eyebrow">Switchboard Deck</div>
-        <div class="messages-prime-layer__title">Embedded Switchboard</div>
+        <div class="messages-prime-layer__eyebrow">Prime Deck</div>
+        <div class="messages-prime-layer__title">Embedded Norman Prime</div>
       </div>
       <div class="messages-prime-layer__actions">
-        <span class="messages-prime-layer__hint">Chat is the main surface. Switchboard stays buried until you open it for routing, audit, credits, and fleet state.</span>
+        <span class="messages-prime-layer__hint">Chat is the main surface. Prime stays buried until you open it for routing, audit, credits, and fleet state.</span>
         <a class="btn btn-sm btn-outline-secondary" href="/dashboard.html" target="_blank" rel="noreferrer noopener">Open full</a>
       </div>
     </div>
@@ -563,7 +527,7 @@
         class="messages-prime-layer__frame"
         id="messages-prime-layer-frame"
         loading="lazy"
-        title="Embedded Switchboard dashboard"
+        title="Embedded Norman Prime dashboard"
       ></iframe>
     </div>
   </section>

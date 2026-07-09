@@ -6,28 +6,10 @@
         <div class="home-prime__hero">
             <div class="home-prime__hero-copy">
                 <div class="home-prime__eyebrow">{% if switchboard_mode %}Switchboard Surface{% else %}Coordination Surface{% endif %}</div>
-                <div class="home-prime__title">{% if switchboard_mode %}Switchboard{% else %}Norman Prime{% endif %}</div>
+                <div class="home-prime__title">{% if switchboard_mode %}Norman Switchboard{% else %}Norman Prime{% endif %}</div>
                 <div class="home-prime__focus" id="home-prime-focus">{% if switchboard_mode %}Switchboard is reading routes, workers, and queue state…{% else %}Norman is reading the estate and triage queue…{% endif %}</div>
-                <div class="home-prime__signal-strip" aria-label="Prime deck state">
-                    <span>Routes armed</span>
-                    <span>Workers linked</span>
-                    <span>Audit live</span>
-                </div>
             </div>
             <div class="home-prime__hero-aside">
-                <div class="home-prime__visual" aria-hidden="true">
-                    <div class="home-prime__visual-grid">
-                        <span class="home-prime__visual-node home-prime__visual-node--core"></span>
-                        <span class="home-prime__visual-node home-prime__visual-node--north"></span>
-                        <span class="home-prime__visual-node home-prime__visual-node--east"></span>
-                        <span class="home-prime__visual-node home-prime__visual-node--south"></span>
-                        <span class="home-prime__visual-node home-prime__visual-node--west"></span>
-                        <span class="home-prime__visual-trace home-prime__visual-trace--a"></span>
-                        <span class="home-prime__visual-trace home-prime__visual-trace--b"></span>
-                        <span class="home-prime__visual-trace home-prime__visual-trace--c"></span>
-                        <span class="home-prime__visual-scan"></span>
-                    </div>
-                </div>
                 <div class="home-prime__stats">
                     <div class="home-prime__stat">
                         <div class="home-prime__stat-value" id="home-prime-open-count">--</div>
@@ -53,12 +35,12 @@
         </div>
         <div class="home-prime__dock">
             <div class="home-prime__dock-copy">
-                <div class="home-prime__dock-label">Switchboard</div>
-                <div class="home-prime__dock-detail">{% if switchboard_mode %}Switchboard is the lane map and relay deck. Norman chat stays primary, while the lower deck handles routing, fleet state, and buried control surfaces.{% else %}Use the Switchboard coordination lane for handoffs, delegation, and the party-line view across the bot fleet while Norman stays the main front door.{% endif %}</div>
+                <div class="home-prime__dock-label">{% if switchboard_mode %}Switchboard{% else %}Subprime{% endif %}</div>
+                <div class="home-prime__dock-detail">{% if switchboard_mode %}Switchboard is the lane map and relay deck. Norman chat stays primary, while the lower deck handles routing, fleet state, and buried control surfaces.{% else %}Use the Subprime coordination lane for handoffs, delegation, and the party-line view across the bot fleet while Norman stays the main front door.{% endif %}</div>
             </div>
                 <div class="home-prime__dock-actions">
-                <a class="btn btn-primary btn-sm" href="/bot/switchboard/">Open Switchboard</a>
-                <a class="btn btn-outline-secondary btn-sm" href="/bbs">Switchboard BBS</a>
+                <a class="btn btn-primary btn-sm" href="/bot/subprime/">Open Subprime</a>
+                <a class="btn btn-outline-secondary btn-sm" href="/dashboard.html?view=switchboard">Switchboard</a>
                 <a class="btn btn-outline-secondary btn-sm" href="/bot/norman/">Norman</a>
             </div>
         </div>
@@ -83,29 +65,29 @@
                         <div class="small text-muted" id="home-prime-desk-status">Waiting for task…</div>
                     </div>
                     <div class="prime-desk" id="home-prime-desk">
-                        <div class="prime-desk__eyebrow">Switchboard</div>
+                        <div class="prime-desk__eyebrow">Subprime</div>
                         <div class="prime-desk__title" id="home-prime-desk-title">No task card selected</div>
-                        <div class="prime-desk__meta" id="home-prime-desk-meta">Select a task card to focus Norman.</div>
-                        <div class="prime-desk__detail" id="home-prime-desk-detail">Switchboard will use the selected item to frame a coordination prompt while deep repo or machine context stays with the right worker.</div>
+                        <div class="prime-desk__meta" id="home-prime-desk-meta">Select a task card to focus Norman Prime.</div>
+                        <div class="prime-desk__detail" id="home-prime-desk-detail">Subprime will use the selected item to frame a coordination prompt while deep repo or machine context stays with the right worker.</div>
                         <div class="prime-desk__brief-label">Coordination Brief</div>
                         <div class="prime-desk__prompt" id="home-prime-desk-prompt">Norman, look across the current task cards, decide what matters most, and tell me what should happen next.</div>
                         <section class="prime-desk__chat" id="home-prime-chat">
                             <div class="prime-desk__chat-head">
                                 <div>
-                                    <div class="prime-desk__chat-label">Switchboard</div>
-                                    <div class="prime-desk__chat-thread" id="home-prime-chat-thread">Loading Switchboard lane…</div>
+                                    <div class="prime-desk__chat-label">Subprime</div>
+                                    <div class="prime-desk__chat-thread" id="home-prime-chat-thread">Loading Subprime lane…</div>
                                 </div>
-                                <a class="btn btn-outline-secondary btn-sm" id="home-prime-chat-open" href="/bot/switchboard/">Open lane</a>
+                                <a class="btn btn-outline-secondary btn-sm" id="home-prime-chat-open" href="/bot/subprime/">Open lane</a>
                             </div>
                             <div class="prime-desk__chat-log" id="home-prime-chat-log">
-                                <div class="home-prime__placeholder">Loading recent Switchboard chat…</div>
+                                <div class="home-prime__placeholder">Loading recent Subprime chat…</div>
                             </div>
                             <form class="prime-desk__chat-compose" id="home-prime-chat-form" autocomplete="off">
                                 <textarea
                                     class="form-control prime-desk__chat-input"
                                     id="home-prime-chat-input"
                                     rows="3"
-                                    placeholder="Send a coordination note to Switchboard…"
+                                    placeholder="Send a coordination note to Subprime…"
                                     enterkeyhint="send"
                                 ></textarea>
                                 <div class="prime-desk__chat-compose-meta" id="home-prime-chat-hint">
@@ -114,7 +96,7 @@
                                 </div>
                                 <div class="prime-desk__chat-actions">
                                     <button type="button" class="btn btn-outline-secondary btn-sm" id="home-prime-chat-load">Use brief</button>
-                                    <button type="submit" class="btn btn-primary btn-sm" id="home-prime-chat-send">Send to Switchboard</button>
+                                    <button type="submit" class="btn btn-primary btn-sm" id="home-prime-chat-send">Send to Subprime</button>
                                 </div>
                             </form>
                         </section>
@@ -138,14 +120,14 @@
                         </div>
                     </div>
                     <div class="home-prime__ops-summary" id="home-prime-ops-summary">
-                        <div class="home-prime__placeholder">Building worker summary…</div>
+                        <div class="home-prime__placeholder">Building ops summary…</div>
                     </div>
                     <div class="home-prime__ops-controls">
                         <div class="home-prime__ops-filters" id="home-prime-ops-filters">
                             <div class="home-prime__placeholder">Loading lane focus…</div>
                         </div>
                         <div class="home-prime__ops-modes" id="home-prime-ops-modes">
-                            <div class="home-prime__placeholder">Loading worker views…</div>
+                            <div class="home-prime__placeholder">Loading ops views…</div>
                         </div>
                     </div>
                     <div class="home-prime__ops-focus" id="home-prime-ops-focus">
@@ -211,9 +193,29 @@
                     <section class="home-prime__section home-prime__section--utility">
                         <div class="home-prime__section-head">
                             <div>
+                                <div class="section-title">Model</div>
+                            </div>
+                            <div class="home-prime__section-tools">
+                                <button class="btn btn-sm btn-outline-secondary" type="button" id="home-prime-llm-ping">Ping</button>
+                                <div class="small text-muted" id="home-prime-llm-status">Checking…</div>
+                            </div>
+                        </div>
+                        <div class="home-prime__llm-summary" id="home-prime-llm-summary">
+                            <div class="home-prime__placeholder">Checking model durability lane…</div>
+                        </div>
+                        <div class="home-prime__llm-items" id="home-prime-llm-items">
+                            <div class="home-prime__placeholder">No model runtime data yet.</div>
+                        </div>
+                    </section>
+                    <section class="home-prime__section home-prime__section--utility">
+                        <div class="home-prime__section-head">
+                            <div>
                                 <div class="section-title">Lanes</div>
                             </div>
-                            <a class="btn btn-sm btn-outline-secondary" href="/systems.html#agent-directory">Directory</a>
+                            <div class="d-flex gap-2 flex-wrap">
+                                <a class="btn btn-sm btn-outline-secondary" href="/systems.html#agent-directory">Directory</a>
+                                <a class="btn btn-sm btn-outline-secondary" href="https://dohio.home.arpa/" target="_blank" rel="noreferrer">Topology</a>
+                            </div>
                         </div>
                         <div class="home-prime__lane-grid" id="home-prime-lanes">
                             <div class="home-prime__placeholder">Loading lane routes…</div>
@@ -483,7 +485,7 @@
                             <button class="btn btn-sm btn-outline-secondary" type="button" onclick="window.location.href='/connectors.html'">Check connectors</button>
                         </div>
                         <div class="flow-assistant__input">
-                            <input class="form-control form-control-sm" type="text" placeholder="Ask worker coordinator..." aria-label="Ask worker coordinator" />
+                            <input class="form-control form-control-sm" type="text" placeholder="Ask ops assistant..." aria-label="Ask ops assistant" />
                             <button class="btn btn-sm btn-primary" type="button" disabled>Send</button>
                         </div>
                     </div>
@@ -525,5 +527,5 @@
     </div>
     </details>
 </div>
-<script src="/static/js/home.js?v=20260505b" defer></script>
+<script src="/static/js/home.js?v=20260427a" defer></script>
 {% endblock %}

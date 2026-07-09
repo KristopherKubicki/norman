@@ -19,6 +19,13 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token")
 logger = setup_logger(__name__)
 
 
+def _redirect_to_login(*, clear_cookie: bool = False) -> RedirectResponse:
+    response = RedirectResponse(url="/login.html", status_code=303)
+    if clear_cookie:
+        response.delete_cookie("access_token")
+    return response
+
+
 async def auth_middleware(request: Request, call_next):
     if "pytest" in sys.modules and os.environ.get(
         "ENABLE_AUTH_MIDDLEWARE_IN_TESTS", ""
@@ -52,7 +59,7 @@ async def auth_middleware(request: Request, call_next):
             "/setup.html",
         ):
             logger.debug("Auth redirect: missing token; login required")
-            return RedirectResponse(url="/login.html", status_code=303)
+            return _redirect_to_login()
     elif request.url.path in ("/login.html", "/setup.html"):
         # If the user already has a valid token, redirect them away from the
         # login page. Otherwise allow the request to continue so the login form
@@ -94,9 +101,8 @@ async def auth_middleware(request: Request, call_next):
                 raise HTTPException(status_code=401, detail="Invalid token")
         except HTTPException as e:
             if e.status_code == 401:
-                # return Response(content="Unauthorized", status_code=401)
-                logger.debug("Auth redirect: already authenticated")
-                return RedirectResponse(url="/index.html", status_code=303)
+                logger.debug("Auth redirect: invalid token; login required")
+                return _redirect_to_login(clear_cookie=True)
             raise e
 
     response = await call_next(request)

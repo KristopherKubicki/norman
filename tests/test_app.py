@@ -17,10 +17,7 @@ def test_root_redirects_to_main_norman_chat_when_auth_disabled(
 ) -> None:
     response = test_app.get("/", follow_redirects=False)
     assert response.status_code == 307
-    assert (
-        response.headers["location"]
-        == "/editor.html?pane=conversation&thread=console+-+Norman&shell=prime"
-    )
+    assert response.headers["location"] == "/bot/norman/"
 
 
 def test_dashboard_embed_hides_global_chrome(test_app: TestClient) -> None:
@@ -38,13 +35,13 @@ def test_switchboard_host_redirects_to_bbs_surface(test_app: TestClient) -> None
         follow_redirects=False,
     )
     assert response.status_code == 307
-    assert response.headers["location"] == "/messages_log.html?view=switchboard"
+    assert response.headers["location"] == "/dashboard.html?view=switchboard"
 
 
 def test_switchboard_endpoint_redirects_to_bbs_surface(test_app: TestClient) -> None:
     response = test_app.get("/switchboard", follow_redirects=False)
     assert response.status_code == 307
-    assert response.headers["location"] == "/messages_log.html?view=switchboard"
+    assert response.headers["location"] == "/dashboard.html?view=switchboard"
 
 
 def test_bots_page_requires_login(

@@ -14,6 +14,7 @@ from .api_v1.routers import (
     estate_router,
     keys_router,
     operator_state_router,
+    console_runtime_router,
 )
 from app.core.config import get_settings
 
@@ -37,6 +38,7 @@ router.include_router(approvals_router, prefix=api_prefix)
 router.include_router(estate_router, prefix=api_prefix)
 router.include_router(keys_router, prefix=api_prefix)
 router.include_router(operator_state_router, prefix=api_prefix)
+router.include_router(console_runtime_router, prefix=api_prefix)
 
 
 def init_routers(app: FastAPI):

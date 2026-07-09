@@ -199,14 +199,15 @@ connectors: []
 broadcast_connectors: ""
 
 openai_api_key:
-openai_default_model: "gpt-5-mini"
+openai_default_model: "gpt-5.5"
 openai_available_models:
+  - gpt-5.5
   - gpt-5-mini
   - o3
 openai_max_tokens: 150
 
-# LLM runtime lanes for operator status and future provider fallback.
-# The primary lane defaults to OpenAI using openai_api_key/openai_default_model.
+# LLM durability / provider chain. Keep clients on the logical local front door;
+# Caddy and Norllama own worker selection and failover behind it.
 llm_primary_provider: "openai"
 llm_primary_api_key: ""
 llm_primary_base_url: ""
@@ -215,11 +216,56 @@ llm_backup_provider: "disabled"
 llm_backup_api_key: ""
 llm_backup_base_url: ""
 llm_backup_model: ""
-llm_offline_provider: "ollama"
-llm_offline_api_key: ""
-llm_offline_base_url: "http://192.168.0.133:11434"
-llm_offline_model: "qwen3:8b"
-llm_provider_timeout_seconds: 5
+llm_offline_provider: "openai_compatible"
+llm_offline_api_key: "ollama"
+llm_offline_base_url: "https://llm.home.arpa/v1"
+llm_offline_model: "qwen3.6:27b"
+llm_provider_timeout_seconds: 45
+console_runtime_norllama_timeout_seconds: 180
+llm_mesh_cache_ttl_seconds: 15
+llm_mesh_cache_stale_seconds: 300
+llm_mesh_workers:
+  - id: "mac-mini-133"
+    name: "Mac mini fallback"
+    role: "fallback"
+    base_url: "http://192.168.2.133:18151"
+    memory_gb: 16
+    priority: 1
+  - id: "spark-150"
+    name: "Production spark 150"
+    role: "production"
+    base_url: "http://192.168.2.150:18151"
+    memory_gb: 128
+    priority: 2
+  - id: "spark-151"
+    name: "Production spark 151"
+    role: "production"
+    base_url: "http://192.168.2.151:18151"
+    memory_gb: 128
+    priority: 3
+llm_benchmark_packet_path: "/var/lib/norman/norllama/benchmark_packet.json"
+llm_benchmark_packet_url: ""
+llm_warm_policy_enabled: true
+llm_warm_policy_prefetch_limit: 3
+llm_warm_policy_prefetch_timeout_seconds: 5
+llm_ping_targets:
+  # Optional extra model health checks beyond the primary/backup/offline chain.
+  # Prefer api_key_env for third-party keys; do not commit plaintext secrets.
+  # - id: "openai-55"
+  #   name: "OpenAI 5.5"
+  #   provider: "openai"
+  #   model: "gpt-5.5"  # Replace with the exact OpenAI model id to check.
+  #   api_key_env: "OPENAI_API_KEY"
+  # - id: "claude-main"
+  #   name: "Claude"
+  #   provider: "anthropic"
+  #   model: "claude-sonnet-4-7"  # Replace with the exact Anthropic model id.
+  #   api_key_env: "ANTHROPIC_API_KEY"
+  # - id: "bedrock-labeler"
+  #   name: "Bedrock labeler"
+  #   provider: "bedrock"
+  #   model: "anthropic.claude-sonnet-4-7-v1:0"  # Exact Bedrock model id.
+  #   region: "us-east-2"
 
 google_client_id: "your_google_client_id"
 google_client_secret: "your_google_client_secret"
@@ -228,8 +274,8 @@ microsoft_client_secret: "your_microsoft_client_secret"
 
 # Database
 database_url: "sqlite:///./db/norman.db"
-database_pool_size: 5
-database_max_overflow: 10
+database_pool_size: 20
+database_max_overflow: 40
 database_pool_timeout: 30
 database_pool_recycle: 3600
 
@@ -258,3 +304,17 @@ safety_tmux_watchdog_autolock: false
 safety_budget_default_per_minute: 0
 safety_budget_default_per_hour: 0
 safety_budget_autolock: true
+
+# Console runtime worker. Keep disabled unless the host should lease and execute
+# console-runtime jobs continuously. Dry-run mode emits the full event stream
+# without calling an external model adapter.
+console_runtime_worker_enabled: false
+console_runtime_worker_dry_run: true
+console_runtime_worker_live_execution_enabled: false
+console_runtime_worker_continuous_enabled: false
+console_runtime_worker_max_steps: 4
+console_runtime_worker_max_runtime_seconds: 1800
+console_runtime_worker_goal_phase_sequence: ["plan", "work", "verify"]
+console_runtime_worker_tick_seconds: 5
+console_runtime_worker_batch_size: 1
+console_runtime_worker_id: "runtime-background-worker"

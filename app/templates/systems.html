@@ -10,8 +10,9 @@
       </div>
       <div class="subpage-actions d-flex gap-2 align-items-center flex-wrap">
         <a class="btn btn-outline-secondary btn-sm" href="/bot/norman/">Norman</a>
-        <a class="btn btn-outline-secondary btn-sm" href="/bot/switchboard/">Switchboard lane</a>
-        <a class="btn btn-outline-secondary btn-sm" href="/dashboard.html?view=switchboard">Switchboard deck</a>
+        <a class="btn btn-outline-secondary btn-sm" href="/bot/subprime/">Subprime</a>
+        <a class="btn btn-outline-secondary btn-sm" href="/dashboard.html?view=switchboard">Switchboard</a>
+        <a class="btn btn-outline-secondary btn-sm" href="https://dohio.home.arpa/" target="_blank" rel="noreferrer">DOHIO Topology</a>
         <button type="button" class="btn btn-outline-secondary btn-sm" id="systems-refresh">Refresh</button>
       </div>
   </div>
@@ -28,7 +29,7 @@
       <div class="small text-muted" id="systems-directory-count">Loading routes…</div>
     </div>
     <div class="systems-directory-note">
-      Use Directory to find anything you can open or chat with. It now includes host landing pages as well as app/chat routes, resolved for the network you are on.
+      Use Directory to find anything you can open or chat with. It now includes host landing pages, DOHIO/Switchyard topology, and app/chat routes, resolved for the network you are on.
     </div>
     <div id="systems-directory-groups" class="systems-directory-groups">
       <div class="home-agent-fleet__empty">Loading agent routes…</div>
@@ -55,5 +56,5 @@
 {% endblock %}
 
 {% block extra_js %}
-<script src="/static/js/systems.js?v=20260528a" defer></script>
+<script src="/static/js/systems.js?v=20260427a" defer></script>
 {% endblock %}

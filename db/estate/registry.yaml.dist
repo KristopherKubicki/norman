@@ -445,6 +445,15 @@ workers:
         - dns
         - caddy
         - tailnet
+  - slug: cloud-gw-ohio
+    principal: operator
+    display_name: Cloud GW Ohio
+    kind: cloud-gateway
+    hostname: cloud-gw-ohio.tail94915.ts.net
+    place: pluto-remote-networks
+    control_class: admin-controlled
+    policy_profile: manual
+    notes: AWS us-east-2 seed gateway behind dohio.home.arpa. Publishes the DOHIO topology surface and Switchyard network board.
   - slug: quaoar
     principal: kubicki-trust
     display_name: Quaoar
@@ -1010,6 +1019,30 @@ services:
     policy_profile: manual
     web_url: http://192.168.2.242/
     web_url_tailnet: http://networking.tail94915.ts.net/
+  - slug: dohio-topology
+    principal: operator
+    domain: operator-observability
+    bot: observability
+    worker: cloud-gw-ohio
+    place: pluto-remote-networks
+    display_name: DOHIO Topology
+    kind: network-topology
+    policy_profile: manual
+    web_url: https://dohio.home.arpa/
+    web_url_tailnet: https://cloud-gw-ohio.tail94915.ts.net/
+    notes: Cloud gateway topology landing page. Cross-link this from the BBS/Directory so the route map and operator board stay aligned.
+  - slug: switchyard-network-board
+    principal: operator
+    domain: operator-observability
+    bot: observability
+    worker: cloud-gw-ohio
+    place: pluto-remote-networks
+    display_name: Switchyard Network Board
+    kind: proxy-topology
+    policy_profile: manual
+    web_url: https://dohio.home.arpa/admin
+    web_url_tailnet: https://cloud-gw-ohio.tail94915.ts.net/admin
+    notes: Runtime, current, and target proxy topology board served from DOHIO. Links back to Norman's BBS/Directory.
   - slug: d-ace
     principal: openbrand
     domain: openbrand-ops

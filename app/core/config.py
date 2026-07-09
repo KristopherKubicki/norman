@@ -217,8 +217,8 @@ class Settings(BaseSettings):
     connectors: List[Dict[str, Any]] = []
     broadcast_connectors: str = ""
     openai_api_key: Optional[str]
-    openai_default_model: str = "gpt-5-mini"
-    openai_available_models: List[str] = ["gpt-5-mini", "o3"]
+    openai_default_model: str = "gpt-5.5"
+    openai_available_models: List[str] = ["gpt-5.5", "gpt-5-mini", "o3"]
     openai_max_tokens: int = 150
     llm_primary_provider: str = "openai"
     llm_primary_api_key: str = ""
@@ -228,11 +228,66 @@ class Settings(BaseSettings):
     llm_backup_api_key: str = ""
     llm_backup_base_url: str = ""
     llm_backup_model: str = ""
-    llm_offline_provider: str = "disabled"
-    llm_offline_api_key: str = ""
-    llm_offline_base_url: str = ""
-    llm_offline_model: str = ""
+    llm_offline_provider: str = "openai_compatible"
+    llm_offline_api_key: str = "ollama"
+    llm_offline_base_url: str = "https://llm.home.arpa/v1"
+    llm_offline_model: str = "qwen3.6:27b"
     llm_provider_timeout_seconds: int = 45
+    console_runtime_norllama_timeout_seconds: int = 180
+    llm_mesh_cache_ttl_seconds: int = 15
+    llm_mesh_cache_stale_seconds: int = 300
+    llm_mesh_workers: List[Dict[str, Any]] = [
+        {
+            "id": "mac-mini-133",
+            "name": "Mac mini fallback",
+            "role": "fallback",
+            "base_url": "http://192.168.2.133:18151",
+            "memory_gb": 16,
+            "priority": 1,
+        },
+        {
+            "id": "spark-150",
+            "name": "Production spark 150",
+            "role": "production",
+            "base_url": "http://192.168.2.150:18151",
+            "memory_gb": 128,
+            "priority": 2,
+        },
+        {
+            "id": "spark-151",
+            "name": "Production spark 151",
+            "role": "production",
+            "base_url": "http://192.168.2.151:18151",
+            "memory_gb": 128,
+            "priority": 3,
+        },
+    ]
+    llm_benchmark_packet_path: str = "/var/lib/norman/norllama/benchmark_packet.json"
+    llm_benchmark_packet_url: str = ""
+    llm_warm_policy_enabled: bool = True
+    llm_warm_policy_prefetch_limit: int = 3
+    llm_warm_policy_prefetch_timeout_seconds: int = 30
+    llm_warm_policy_min_benchmark_score: float = 0.6
+    llm_warm_policy_min_coverage_ratio: float = 0.5
+    llm_warm_policy_min_accepted_count: int = 1
+    llm_warm_policy_max_timeout_rate: float = 0.25
+    llm_warm_policy_max_progress_only_rate: float = 0.10
+    llm_warm_policy_max_verifier_rejection_rate: float = 0.30
+    llm_warm_policy_reject_zero_token: bool = True
+    llm_warm_policy_reject_empty_response: bool = True
+    llm_warm_policy_fallback_prefetch: bool = False
+    tui_acceptance_report_glob: str = "tmp/tuiacc-*.json"
+    tui_acceptance_report_max_age_seconds: int = 86400
+    tui_acceptance_required_targets: List[str] = [
+        "norman",
+        "housebot",
+        "uplink",
+        "networking",
+        "scout",
+        "cloudagent",
+    ]
+    llm_ping_targets: List[Dict[str, Any]] = []
+    planner_cloud_gate_mode: str = "enforce"
     mcp_api_url: str = ""
     mcp_api_key: str = ""
     google_client_id: str = ""
@@ -286,6 +341,24 @@ class Settings(BaseSettings):
 
     # Routing controls
     routing_ingest_only: bool = False
+
+    # Console runtime service integration
+    console_runtime_service_token: str = ""
+    console_runtime_service_user_email: str = ""
+    console_runtime_worker_enabled: bool = False
+    console_runtime_worker_dry_run: bool = True
+    console_runtime_worker_live_execution_enabled: bool = False
+    console_runtime_worker_continuous_enabled: bool = False
+    console_runtime_worker_max_steps: int = 4
+    console_runtime_worker_max_runtime_seconds: int = 1800
+    console_runtime_worker_goal_phase_sequence: list[str] = ["plan", "work", "verify"]
+    console_runtime_worker_tick_seconds: float = 5.0
+    console_runtime_worker_batch_size: int = 1
+    console_runtime_worker_id: str = "runtime-background-worker"
+
+    # Norman Keys service integration
+    norman_keys_service_token: str = ""
+    norman_keys_service_user_email: str = ""
 
     # Performance
     cache_ttl_seconds: int = 60
@@ -365,6 +438,18 @@ class Settings(BaseSettings):
             if level not in logging._nameToLevel:
                 raise ValueError(f"Invalid log level: {v}")
             return level
+        return v
+
+    @validator("llm_ping_targets", pre=True)
+    def validate_llm_ping_targets(cls, v):
+        if v is None:
+            return []
+        return v
+
+    @validator("llm_mesh_workers", pre=True)
+    def validate_llm_mesh_workers(cls, v):
+        if v is None:
+            return []
         return v
 
     class Config:

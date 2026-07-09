@@ -5,18 +5,18 @@
     <div class="channels-page subpage-shell">
         <div class="page-header subpage-header d-flex align-items-center justify-content-between mb-2">
             <div>
-                <div class="subpage-eyebrow">{% if switchboard_mode|default(False) %}Switchboard BBS{% else %}Pipeline Deck{% endif %}</div>
-                <div class="subpage-title">{% if switchboard_mode|default(False) %}Boards{% else %}Sources{% endif %}</div>
-                <div class="subpage-subtitle">{% if switchboard_mode|default(False) %}Organize boards, intake lanes, and starter board packs.{% else %}Organize inbound sources and quick-start source packs.{% endif %}</div>
+                <div class="subpage-eyebrow">Pipeline Deck</div>
+                <div class="subpage-title">Sources</div>
+                <div class="subpage-subtitle">Organize inbound sources and quick-start source packs.</div>
             </div>
             <div class="subpage-actions d-flex gap-2 flex-wrap">
                 <a class="btn btn-sm btn-outline-secondary" href="/bot/norman/">Norman</a>
-                <a class="btn btn-sm btn-outline-secondary" href="/bbs">Switchboard</a>
+                <a class="btn btn-sm btn-outline-secondary" href="/dashboard.html?view=switchboard">Switchboard</a>
                 <a class="btn btn-sm btn-outline-secondary" href="/connectors.html">Connectors</a>
             </div>
         </div>
-        <div class="channels-mobile-nav d-lg-none" role="tablist" aria-label="{% if switchboard_mode|default(False) %}Boards view{% else %}Sources view{% endif %}">
-            <button type="button" class="btn btn-sm btn-outline-secondary is-active" data-channels-pane="list">{% if switchboard_mode|default(False) %}Boards{% else %}Sources{% endif %}</button>
+        <div class="channels-mobile-nav d-lg-none" role="tablist" aria-label="Sources view">
+            <button type="button" class="btn btn-sm btn-outline-secondary is-active" data-channels-pane="list">Sources</button>
             <button type="button" class="btn btn-sm btn-outline-secondary" data-channels-pane="setup">Setup</button>
         </div>
 
@@ -26,14 +26,14 @@
             <div class="col-lg-8 channels-col channels-col--list" id="channels-pane-list">
                 <div class="card p-3 mb-3">
                     <div class="d-flex align-items-center justify-content-between mb-2">
-                        <h2 class="h5 mb-0">{% if switchboard_mode|default(False) %}Boards{% else %}Sources{% endif %}</h2>
+                        <h2 class="h5 mb-0">Sources</h2>
                         <span class="badge bg-light text-dark" id="channels-count">0</span>
                     </div>
                     <div class="search-container">
-                        <input class="form-control search-input" type="text" id="channelSearch" placeholder="{% if switchboard_mode|default(False) %}Search boards...{% else %}Search sources...{% endif %}">
+                        <input class="form-control search-input" type="text" id="channelSearch" placeholder="Search sources...">
                     </div>
                     <div class="channels-container channels-grid">
-                        <!-- Boards or sources will be listed here -->
+                        <!-- Sources will be listed here -->
                     </div>
                 </div>
             </div>
@@ -43,19 +43,19 @@
                     <div class="accordion-item">
                         <h2 class="accordion-header" id="channels-add-heading">
                             <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#channels-add-collapse" aria-expanded="false" aria-controls="channels-add-collapse">
-                                {% if switchboard_mode|default(False) %}Add a Board{% else %}Add a Source{% endif %}
+                                Add a Source
                             </button>
                         </h2>
                         <div id="channels-add-collapse" class="accordion-collapse collapse" aria-labelledby="channels-add-heading" data-bs-parent="#channels-sidebar">
                             <div class="accordion-body">
                                 <form id="add-channel-form" class="d-grid gap-2">
-                                    <input type="text" id="channel-name" class="form-control" placeholder="{% if switchboard_mode|default(False) %}Board name{% else %}Source name{% endif %}" required>
+                                    <input type="text" id="channel-name" class="form-control" placeholder="Source name" required>
                                     <label for="channel-connector" class="form-label mb-0">Connector</label>
                                     <select class="form-select" id="channel-connector">
                                         <option value="" selected disabled>Loading connectors...</option>
                                     </select>
                                     <div class="mobile-form-actions">
-                                        <button id="addChannelBtn" class="btn btn-primary" type="submit">{% if switchboard_mode|default(False) %}Create Board{% else %}Create Source{% endif %}</button>
+                                        <button id="addChannelBtn" class="btn btn-primary" type="submit">Create Source</button>
                                     </div>
                                 </form>
                                 <div class="small text-muted mt-2">
@@ -68,22 +68,22 @@
                     <div class="accordion-item mt-3">
                         <h2 class="accordion-header" id="channels-tiles-heading">
                             <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#channels-tiles-collapse" aria-expanded="false" aria-controls="channels-tiles-collapse">
-                                {% if switchboard_mode|default(False) %}Starter Boards{% else %}Source Tiles{% endif %}
+                                Source Tiles
                             </button>
                         </h2>
                         <div id="channels-tiles-collapse" class="accordion-collapse collapse" aria-labelledby="channels-tiles-heading" data-bs-parent="#channels-sidebar">
                             <div class="accordion-body starter-channels-card">
                                 <div class="d-flex align-items-center justify-content-between">
                                     <div>
-                                        <h2 class="h6 mb-1">{% if switchboard_mode|default(False) %}Board Pack{% else %}Starter Pack{% endif %}</h2>
-                                        <p class="small text-muted mb-0">{% if switchboard_mode|default(False) %}Thread boards, intake lanes, and connected feeds.{% else %}Local feeds and connector-based sources.{% endif %}</p>
+                                        <h2 class="h6 mb-1">Starter Pack</h2>
+                                        <p class="small text-muted mb-0">Local feeds and connector-based sources.</p>
                                     </div>
                                     <button id="create-starter-channels" class="btn btn-primary btn-sm" type="button">
                                         Create selected
                                     </button>
                                 </div>
                                 <div id="starter-channels-list" class="starter-channels-list mt-2"></div>
-                                <div class="small text-muted mt-2">{% if switchboard_mode|default(False) %}Use board packs for Switchboard-facing lanes. Connector-backed boards appear only when configured.{% else %}Local feeds run on this server. Connector tiles appear only when configured.{% endif %}</div>
+                                <div class="small text-muted mt-2">Local feeds run on this server. Connector tiles appear only when configured.</div>
                             </div>
                         </div>
                     </div>

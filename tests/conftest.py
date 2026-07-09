@@ -24,12 +24,14 @@ from sqlalchemy.pool import QueuePool, StaticPool
 
 os.environ["SKIP_MIGRATIONS"] = "1"
 os.environ["SKIP_ROUTING_WORKER"] = "1"
+os.environ["SKIP_CONSOLE_AUDIT_MONITOR"] = "1"
 from app.main import app
 from app.connectors import init_connectors
 from app.core.test_settings import test_settings
 from app.core.config import settings
 from app.api.deps import get_db
 from app.api.deps import get_current_user
+from app.api.deps import get_console_runtime_user
 from app.db.base import Base
 from app.crud.user import get_user_by_email, create_user
 from app.schemas.user import UserCreate
@@ -169,12 +171,14 @@ def test_app():
             db.close()
 
     app.dependency_overrides[get_current_user] = _override_get_current_user
+    app.dependency_overrides[get_console_runtime_user] = _override_get_current_user
     client = SyncASGIClient(app)
     print("test_app fixture: SyncASGIClient ready", flush=True)
     try:
         yield client
     finally:
         app.dependency_overrides.pop(get_current_user, None)
+        app.dependency_overrides.pop(get_console_runtime_user, None)
         client.close()
 
 

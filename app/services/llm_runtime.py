@@ -1,271 +1,296 @@
-"""Runtime status for Norman's primary/backup/offline LLM lanes."""
-
 from __future__ import annotations
 
-from dataclasses import dataclass
+import threading
+import time
+from dataclasses import asdict, dataclass, field
 from typing import Any
-from urllib.parse import urljoin
-
-import requests
 
 from app.core.config import settings
 
 
-DISABLED_PROVIDERS = {"", "disabled", "none", "off", "false"}
-OLLAMA_PROVIDERS = {"ollama", "local_ollama", "local-ollama"}
-OPENAI_COMPATIBLE_PROVIDERS = {
-    "openai-compatible",
-    "openai_compatible",
-    "openai-compatible-local",
-}
-REQUEST_TIMEOUT_SECONDS = 5
+def _now_ts() -> float:
+    return time.time()
 
 
-@dataclass(frozen=True)
-class ProviderStatus:
-    slot: str
-    provider: str
-    provider_label: str
-    configured: bool
-    available: bool
-    model: str
-    base_url: str
-    mode: str
-    reason: str
-
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "slot": self.slot,
-            "provider": self.provider,
-            "provider_label": self.provider_label,
-            "configured": self.configured,
-            "available": self.available,
-            "model": self.model,
-            "base_url": self.base_url,
-            "mode": self.mode,
-            "reason": self.reason,
-        }
-
-
-def _clean(value: Any) -> str:
+def _clean_str(value: Any) -> str:
     return str(value or "").strip()
 
 
-def _provider_label(provider: str) -> str:
-    labels = {
-        "openai": "OpenAI",
-        "ollama": "Ollama",
-        "local_ollama": "Ollama",
-        "local-ollama": "Ollama",
-        "openai-compatible": "OpenAI-compatible",
-        "openai_compatible": "OpenAI-compatible",
-        "openai-compatible-local": "OpenAI-compatible",
-    }
-    return labels.get(provider, provider.replace("_", " ").replace("-", " ").title())
+def _provider_kind_label(kind: str) -> str:
+    normalized = _clean_str(kind).lower()
+    if normalized == "openai":
+        return "OpenAI"
+    if normalized == "openai_compatible":
+        return "OpenAI-compatible"
+    if normalized in {"norllama", "ollama", "local_ollama", "local-ollama"}:
+        return "Norllama"
+    if normalized in {"bedrock", "aws-bedrock", "aws_bedrock"}:
+        return "Bedrock"
+    if normalized == "disabled":
+        return "Disabled"
+    return normalized or "Unknown"
 
 
-def _model_list_url(provider: str, base_url: str) -> str:
-    if provider in OLLAMA_PROVIDERS:
-        return urljoin(base_url.rstrip("/") + "/", "api/tags")
-    return urljoin(base_url.rstrip("/") + "/", "v1/models")
+def _provider_mode_label(mode: str) -> str:
+    normalized = _clean_str(mode).lower()
+    if normalized == "primary":
+        return "Primary"
+    if normalized == "backup_online":
+        return "Backup"
+    if normalized == "offline_local":
+        return "Offline"
+    if normalized == "control_only":
+        return "Control only"
+    return normalized or "Unknown"
 
 
-def _models_from_response(provider: str, payload: dict[str, Any]) -> set[str]:
-    if provider in OLLAMA_PROVIDERS:
-        return {
-            _clean(model.get("name") or model.get("model"))
-            for model in payload.get("models", [])
-            if isinstance(model, dict)
-        }
-    return {
-        _clean(model.get("id"))
-        for model in payload.get("data", [])
-        if isinstance(model, dict)
-    }
+@dataclass
+class LlmProviderConfig:
+    slot: str
+    mode: str
+    kind: str
+    label: str
+    configured: bool
+    base_url: str = ""
+    model: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
-def _remote_provider_status(
-    *,
-    slot: str,
-    provider: str,
-    model: str,
-    base_url: str,
-    api_key: str,
-    mode: str,
-) -> ProviderStatus:
-    if provider in DISABLED_PROVIDERS:
-        return ProviderStatus(
-            slot=slot,
-            provider="disabled",
-            provider_label="Disabled",
-            configured=False,
-            available=False,
-            model=model,
-            base_url=base_url,
-            mode=mode,
-            reason="provider disabled",
-        )
+@dataclass
+class LlmRuntimeState:
+    mode: str
+    mode_label: str
+    active_provider: str
+    active_provider_label: str
+    active_provider_kind: str
+    active_model: str
+    fallback_active: bool
+    fallback_reason: str
+    configured: bool
+    providers: list[dict[str, Any]] = field(default_factory=list)
+    last_error: str = ""
+    last_primary_error: str = ""
+    last_backup_error: str = ""
+    last_offline_error: str = ""
+    last_success_at: float = 0.0
+    updated_at: float = 0.0
 
-    label = _provider_label(provider)
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
-    if provider == "openai" and not base_url:
-        if api_key:
-            return ProviderStatus(
-                slot=slot,
-                provider=provider,
-                provider_label=label,
-                configured=True,
-                available=True,
-                model=model,
-                base_url=base_url,
-                mode=mode,
-                reason="OpenAI API key configured",
-            )
-        return ProviderStatus(
-            slot=slot,
-            provider=provider,
-            provider_label=label,
-            configured=False,
-            available=False,
-            model=model,
-            base_url=base_url,
-            mode=mode,
-            reason="OpenAI API key missing",
-        )
 
-    if not base_url:
-        return ProviderStatus(
-            slot=slot,
-            provider=provider,
-            provider_label=label,
-            configured=False,
-            available=False,
-            model=model,
-            base_url=base_url,
-            mode=mode,
-            reason="base URL missing",
-        )
+def _build_provider_configs() -> list[LlmProviderConfig]:
+    primary_kind = _clean_str(
+        getattr(settings, "llm_primary_provider", "openai")
+    ).lower()
+    if not primary_kind:
+        primary_kind = "openai"
+    primary_base_url = _clean_str(getattr(settings, "llm_primary_base_url", ""))
+    primary_model = _clean_str(
+        getattr(settings, "llm_primary_model", "")
+    ) or _clean_str(getattr(settings, "openai_default_model", ""))
+    primary_api_key = _clean_str(
+        getattr(settings, "llm_primary_api_key", "")
+    ) or _clean_str(getattr(settings, "openai_api_key", ""))
+    primary_configured = False
+    if primary_kind == "openai":
+        primary_configured = bool(primary_api_key)
+    elif primary_kind == "openai_compatible":
+        primary_configured = bool(primary_base_url)
 
-    headers = {}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-
-    try:
-        response = requests.get(
-            _model_list_url(provider, base_url),
-            headers=headers,
-            timeout=min(settings.llm_provider_timeout_seconds, REQUEST_TIMEOUT_SECONDS),
-        )
-        response.raise_for_status()
-        models = _models_from_response(provider, response.json())
-    except Exception as exc:
-        return ProviderStatus(
-            slot=slot,
-            provider=provider,
-            provider_label=label,
-            configured=True,
-            available=False,
-            model=model,
-            base_url=base_url,
-            mode=mode,
-            reason=f"health check failed: {exc}",
-        )
-
-    if model and model not in models:
-        return ProviderStatus(
-            slot=slot,
-            provider=provider,
-            provider_label=label,
-            configured=True,
-            available=False,
-            model=model,
-            base_url=base_url,
-            mode=mode,
-            reason=f"model {model!r} not available",
-        )
-
-    return ProviderStatus(
-        slot=slot,
-        provider=provider,
-        provider_label=label,
-        configured=True,
-        available=True,
-        model=model or next(iter(models), ""),
-        base_url=base_url,
-        mode=mode,
-        reason="provider reachable",
+    backup_kind = (
+        _clean_str(getattr(settings, "llm_backup_provider", "disabled")).lower()
+        or "disabled"
     )
+    backup_base_url = _clean_str(getattr(settings, "llm_backup_base_url", ""))
+    backup_model = _clean_str(getattr(settings, "llm_backup_model", ""))
+    backup_configured = backup_kind != "disabled" and bool(backup_base_url)
 
+    offline_kind = (
+        _clean_str(getattr(settings, "llm_offline_provider", "disabled")).lower()
+        or "disabled"
+    )
+    offline_base_url = _clean_str(getattr(settings, "llm_offline_base_url", ""))
+    offline_model = _clean_str(getattr(settings, "llm_offline_model", ""))
+    offline_configured = offline_kind != "disabled" and bool(offline_base_url)
 
-def _provider_statuses() -> list[ProviderStatus]:
-    primary_model = _clean(settings.llm_primary_model) or _clean(
-        settings.openai_default_model
-    )
-    primary_api_key = _clean(settings.llm_primary_api_key) or _clean(
-        settings.openai_api_key
-    )
     return [
-        _remote_provider_status(
+        LlmProviderConfig(
             slot="primary",
-            provider=_clean(settings.llm_primary_provider).lower(),
-            model=primary_model,
-            base_url=_clean(settings.llm_primary_base_url),
-            api_key=primary_api_key,
             mode="primary",
+            kind=primary_kind,
+            label=_provider_kind_label(primary_kind),
+            configured=primary_configured,
+            base_url=primary_base_url,
+            model=primary_model,
         ),
-        _remote_provider_status(
+        LlmProviderConfig(
             slot="backup",
-            provider=_clean(settings.llm_backup_provider).lower(),
-            model=_clean(settings.llm_backup_model),
-            base_url=_clean(settings.llm_backup_base_url),
-            api_key=_clean(settings.llm_backup_api_key),
             mode="backup_online",
+            kind=backup_kind,
+            label=_provider_kind_label(backup_kind),
+            configured=backup_configured,
+            base_url=backup_base_url,
+            model=backup_model,
         ),
-        _remote_provider_status(
+        LlmProviderConfig(
             slot="offline",
-            provider=_clean(settings.llm_offline_provider).lower(),
-            model=_clean(settings.llm_offline_model),
-            base_url=_clean(settings.llm_offline_base_url),
-            api_key=_clean(settings.llm_offline_api_key),
             mode="offline_local",
+            kind=offline_kind,
+            label=_provider_kind_label(offline_kind),
+            configured=offline_configured,
+            base_url=offline_base_url,
+            model=offline_model,
         ),
     ]
 
 
+_llm_state_lock = threading.Lock()
+_llm_runtime_state = LlmRuntimeState(
+    mode="control_only",
+    mode_label="Control only",
+    active_provider="",
+    active_provider_label="Unavailable",
+    active_provider_kind="disabled",
+    active_model="",
+    fallback_active=False,
+    fallback_reason="",
+    configured=False,
+    updated_at=0.0,
+)
+
+
+def reset_llm_runtime_state() -> None:
+    providers = _build_provider_configs()
+    configured = any(item.configured for item in providers)
+    mode = "primary" if providers and providers[0].configured else "control_only"
+    active_provider = providers[0].slot if providers and providers[0].configured else ""
+    active_provider_label = (
+        providers[0].label if providers and providers[0].configured else "Unavailable"
+    )
+    active_provider_kind = (
+        providers[0].kind if providers and providers[0].configured else "disabled"
+    )
+    active_model = providers[0].model if providers and providers[0].configured else ""
+    with _llm_state_lock:
+        _llm_runtime_state.mode = mode
+        _llm_runtime_state.mode_label = _provider_mode_label(mode)
+        _llm_runtime_state.active_provider = active_provider
+        _llm_runtime_state.active_provider_label = active_provider_label
+        _llm_runtime_state.active_provider_kind = active_provider_kind
+        _llm_runtime_state.active_model = active_model
+        _llm_runtime_state.fallback_active = False
+        _llm_runtime_state.fallback_reason = ""
+        _llm_runtime_state.configured = configured
+        _llm_runtime_state.providers = [item.as_dict() for item in providers]
+        _llm_runtime_state.last_error = ""
+        _llm_runtime_state.last_primary_error = ""
+        _llm_runtime_state.last_backup_error = ""
+        _llm_runtime_state.last_offline_error = ""
+        _llm_runtime_state.last_success_at = 0.0
+        _llm_runtime_state.updated_at = 0.0
+
+
 def get_llm_runtime_status() -> dict[str, Any]:
-    providers = _provider_statuses()
-    active = next((provider for provider in providers if provider.available), None)
-    primary = providers[0]
+    providers = [item.as_dict() for item in _build_provider_configs()]
+    configured = any(item["configured"] for item in providers)
+    default_mode = "primary" if providers[0]["configured"] else "control_only"
+    default_mode_label = _provider_mode_label(default_mode)
+    default_provider = ""
+    default_provider_label = "Unavailable"
+    default_provider_kind = "disabled"
+    default_model = ""
+    if providers[0]["configured"]:
+        default_provider = providers[0]["slot"]
+        default_provider_label = providers[0]["label"]
+        default_provider_kind = providers[0]["kind"]
+        default_model = providers[0]["model"]
 
-    if active is None:
-        return {
-            "mode": "control_only",
-            "mode_label": "Control only",
-            "active_provider_label": "Unavailable",
-            "active_model": "",
-            "fallback_reason": "No configured LLM provider is currently available",
-            "last_error": "; ".join(
-                provider.reason for provider in providers if provider.configured
-            ),
-            "providers": [provider.as_dict() for provider in providers],
-        }
+    with _llm_state_lock:
+        state = _llm_runtime_state.as_dict()
 
-    fallback_reason = ""
-    if active.slot != "primary":
-        fallback_reason = primary.reason or "primary provider unavailable"
+    state["providers"] = providers
+    state["configured"] = configured
+    if not _clean_str(state.get("mode")):
+        state["mode"] = default_mode
+    if not _clean_str(state.get("mode_label")):
+        state["mode_label"] = default_mode_label
+    if not _clean_str(state.get("active_provider")):
+        state["active_provider"] = default_provider
+    if not _clean_str(state.get("active_provider_label")):
+        state["active_provider_label"] = default_provider_label
+    if not _clean_str(state.get("active_provider_kind")):
+        state["active_provider_kind"] = default_provider_kind
+    if not _clean_str(state.get("active_model")):
+        state["active_model"] = default_model
+    if state.get("mode") == "control_only" and configured:
+        state["mode_label"] = _provider_mode_label("control_only")
+    return state
 
-    mode_labels = {
-        "primary": "Primary",
-        "backup_online": "Backup",
-        "offline_local": "Offline",
-    }
 
-    return {
-        "mode": active.mode,
-        "mode_label": mode_labels.get(active.mode, active.mode),
-        "active_provider_label": active.provider_label,
-        "active_model": active.model,
-        "fallback_reason": fallback_reason,
-        "last_error": "" if active.slot == "primary" else primary.reason,
-        "providers": [provider.as_dict() for provider in providers],
-    }
+def record_llm_success(
+    *,
+    provider_slot: str,
+    provider_kind: str,
+    active_model: str,
+    fallback_reason: str = "",
+    provider_label: str = "",
+) -> None:
+    mode = "control_only"
+    fallback_active = False
+    if provider_slot == "primary":
+        mode = "primary"
+    elif provider_slot == "backup":
+        mode = "backup_online"
+        fallback_active = True
+    elif provider_slot == "offline":
+        mode = "offline_local"
+        fallback_active = True
+    now = _now_ts()
+    providers = _build_provider_configs()
+    configured = any(item.configured for item in providers)
+    label = provider_label or _provider_kind_label(provider_kind)
+    with _llm_state_lock:
+        _llm_runtime_state.mode = mode
+        _llm_runtime_state.mode_label = _provider_mode_label(mode)
+        _llm_runtime_state.active_provider = provider_slot
+        _llm_runtime_state.active_provider_label = label
+        _llm_runtime_state.active_provider_kind = provider_kind
+        _llm_runtime_state.active_model = _clean_str(active_model)
+        _llm_runtime_state.fallback_active = fallback_active
+        _llm_runtime_state.fallback_reason = _clean_str(fallback_reason)
+        _llm_runtime_state.configured = configured
+        _llm_runtime_state.providers = [item.as_dict() for item in providers]
+        _llm_runtime_state.last_error = ""
+        _llm_runtime_state.last_success_at = now
+        _llm_runtime_state.updated_at = now
+
+
+def record_llm_failure(
+    *,
+    last_error: str,
+    primary_error: str = "",
+    backup_error: str = "",
+    offline_error: str = "",
+) -> None:
+    now = _now_ts()
+    providers = _build_provider_configs()
+    configured = any(item.configured for item in providers)
+    with _llm_state_lock:
+        _llm_runtime_state.mode = "control_only"
+        _llm_runtime_state.mode_label = _provider_mode_label("control_only")
+        _llm_runtime_state.active_provider = ""
+        _llm_runtime_state.active_provider_label = "Unavailable"
+        _llm_runtime_state.active_provider_kind = "disabled"
+        _llm_runtime_state.active_model = ""
+        _llm_runtime_state.fallback_active = False
+        _llm_runtime_state.fallback_reason = ""
+        _llm_runtime_state.configured = configured
+        _llm_runtime_state.providers = [item.as_dict() for item in providers]
+        _llm_runtime_state.last_error = _clean_str(last_error)
+        _llm_runtime_state.last_primary_error = _clean_str(primary_error)
+        _llm_runtime_state.last_backup_error = _clean_str(backup_error)
+        _llm_runtime_state.last_offline_error = _clean_str(offline_error)
+        _llm_runtime_state.updated_at = now

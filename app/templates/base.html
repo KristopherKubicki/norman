@@ -23,8 +23,8 @@
     </script>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" crossorigin="anonymous">
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap">
-    <link rel="stylesheet" href="/static/css/styles.css?v=20260525a">
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@300;400;500;600;700&family=Poppins:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap">
+    <link rel="stylesheet" href="/static/css/styles.css?v=20260422b">
     {% block extra_css %}{% endblock %}
 </head>
 <body
@@ -34,7 +34,7 @@
     {% if show_navbar|default(True) %}
     <header class="navbar navbar-expand-md navbar-dark bg-primary shadow-sm site-banner site-banner--norman-shell">
         <div class="container">
-            <a class="navbar-brand d-flex align-items-center gap-2" href="/editor.html?pane=conversation&amp;thread=console+-+Norman&amp;shell=prime">
+            <a class="navbar-brand d-flex align-items-center gap-2" href="/bot/norman/">
                 {% if settings.ui_titlebar_image_url %}
                 <img class="brand-image" src="{{ settings.ui_titlebar_image_url }}" alt="Norman">
                 {% else %}
@@ -42,7 +42,7 @@
                 {% endif %}
                 <span class="brand-copy">
                     <span class="brand-title">Norman</span>
-                    <span class="brand-sub">{% if active_page == 'home' %}Prime{% else %}Chat{% endif %}</span>
+                    <span class="brand-sub">{% if active_page == 'home' %}Switchboard{% elif active_page == 'messages' %}Super TUI{% elif active_page == 'login' %}Sign In{% else %}Control Plane{% endif %}</span>
                 </span>
             </a>
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
@@ -51,10 +51,10 @@
             <div class="collapse navbar-collapse" id="navbarNav">
                 <ul class="navbar-nav norman-shell-nav me-auto mb-2 mb-lg-0">
                     <li class="nav-item">
-                        <a class="nav-link {% if active_page == 'messages' or active_page == 'consoles' %}active{% endif %}" href="/editor.html?pane=conversation&amp;thread=console+-+Norman&amp;shell=prime">Chat</a>
+                        <a class="nav-link {% if active_page == 'messages' or active_page == 'consoles' %}active{% endif %}" href="/bot/norman/">Chat</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link {% if active_page == 'home' or switchboard_mode|default(False) or bbs_mode|default(False) %}active{% endif %}" href="/dashboard.html">Dashboard</a>
+                        <a class="nav-link {% if active_page == 'home' %}active{% endif %}" href="/dashboard.html?view=switchboard">Switchboard</a>
                     </li>
                     <li class="nav-item dropdown norman-shell-menu">
                         <button class="nav-link dropdown-toggle {% if active_page in ['systems', 'connectors', 'channels', 'filters', 'actions', 'settings'] %}active{% endif %}" type="button" id="normanShellMenu" data-bs-toggle="dropdown" aria-expanded="false">
@@ -63,15 +63,14 @@
                         </button>
                         <ul class="dropdown-menu dropdown-menu-dark dropdown-menu-end norman-shell-menu__sheet" aria-labelledby="normanShellMenu">
                             <li><h6 class="dropdown-header">Norman</h6></li>
-                            <li><a class="dropdown-item" href="/bot/switchboard/">Switchboard lane</a></li>
+                            <li><a class="dropdown-item" href="/bot/subprime/">Subprime lane</a></li>
                             <li><a class="dropdown-item {% if active_page == 'systems' %}active{% endif %}" href="/systems.html">Directory</a></li>
                             <li><a class="dropdown-item {% if active_page == 'settings' %}active{% endif %}" href="/settings.html">Settings</a></li>
-                            <li><a class="dropdown-item {% if switchboard_mode|default(False) or bbs_mode|default(False) %}active{% endif %}" href="/bbs">Switchboard BBS</a></li>
-                            <li><a class="dropdown-item {% if active_page == 'home' and switchboard_mode|default(False) %}active{% endif %}" href="/dashboard.html?view=switchboard">Switchboard deck</a></li>
+                            <li><a class="dropdown-item {% if active_page == 'home' %}active{% endif %}" href="/dashboard.html?view=switchboard">Switchboard deck</a></li>
                             <li><hr class="dropdown-divider"></li>
                             <li><h6 class="dropdown-header">Pipeline</h6></li>
                             <li><a class="dropdown-item {% if active_page == 'connectors' %}active{% endif %}" href="/connectors.html">Connectors</a></li>
-                            <li><a class="dropdown-item {% if active_page == 'channels' %}active{% endif %}" href="{% if switchboard_mode|default(False) or bbs_mode|default(False) %}/channels.html?view=switchboard{% else %}/channels.html{% endif %}">{% if switchboard_mode|default(False) or bbs_mode|default(False) %}Boards{% else %}Sources{% endif %}</a></li>
+                            <li><a class="dropdown-item {% if active_page == 'channels' %}active{% endif %}" href="/channels.html">Sources</a></li>
                             <li><a class="dropdown-item {% if active_page == 'filters' %}active{% endif %}" href="/filters.html">Filters</a></li>
                             <li><a class="dropdown-item {% if active_page == 'actions' %}active{% endif %}" href="/actions.html">Actions</a></li>
                         </ul>
@@ -98,7 +97,7 @@
     </header>
     {% endif %}
 
-    <main class="{% if embed_mode|default(False) %}container-fluid px-0 embed-shell{% else %}{% if active_page == 'home' %}container home-shell home-main{% elif active_page in ['systems', 'connectors', 'channels', 'filters', 'actions', 'settings', 'bots'] %}container-fluid lower-deck-main my-3{% else %}container my-4{% endif %}{% endif %}">
+    <main class="{% if embed_mode|default(False) %}container-fluid px-0 embed-shell{% else %}{% if active_page == 'home' %}container home-shell home-main{% elif active_page in ['systems', 'connectors', 'channels', 'filters', 'actions', 'settings'] %}container-fluid lower-deck-main my-3{% else %}container my-4{% endif %}{% endif %}">
         {% block content %}
         {% endblock %}
     </main>

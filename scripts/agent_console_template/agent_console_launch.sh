@@ -67,6 +67,11 @@ else
 fi
 export PATH
 
+# Legacy source checks:
+# CODEX_BIN="${HOUSEBOT_CODEX_BIN:-}"
+# MODEL="${HOUSEBOT_CODEX_MODEL:-gpt-5.5}"
+# /opt/node-v20.19.6/bin/codex
+# /home/kristopher/.nvm/versions/node/v20.19.6/bin/codex
 CODEX_BIN="${NORMAN_CODEX_BIN:-}"
 if [[ -z "$CODEX_BIN" ]]; then
     for candidate in \
@@ -125,11 +130,36 @@ STANDARD_AWS_PROFILE="${NORMAN_CODEX_STANDARD_AWS_PROFILE:-}"
 STANDARD_AWS_REGION="${NORMAN_CODEX_STANDARD_AWS_REGION:-}"
 CODEX_PROFILE_ARGS=()
 CODEX_SERVICE_TIER_ARGS=()
+CODEX_PROFILE_FLAG="${NORMAN_CODEX_PROFILE_CONFIG_FLAG:-}"
+if [[ -z "$CODEX_PROFILE_FLAG" ]]; then
+    CODEX_PROFILE_HELP="$("$CODEX_BIN" --help 2>&1 || true)"
+    HAS_PROFILE=0
+    HAS_PROFILE_V2=0
+    grep -q -- "--profile" <<<"$CODEX_PROFILE_HELP" && HAS_PROFILE=1
+    grep -q -- "--profile-v2" <<<"$CODEX_PROFILE_HELP" && HAS_PROFILE_V2=1
+    if [[ "$HAS_PROFILE" == "1" && "$HAS_PROFILE_V2" == "1" ]]; then
+        CODEX_VERSION="$("$CODEX_BIN" --version 2>/dev/null | awk '{print $2; exit}')"
+        IFS=. read -r CODEX_VERSION_MAJOR CODEX_VERSION_MINOR _ <<<"$CODEX_VERSION"
+        CODEX_VERSION_MAJOR="${CODEX_VERSION_MAJOR:-0}"
+        CODEX_VERSION_MINOR="${CODEX_VERSION_MINOR:-0}"
+        if (( CODEX_VERSION_MAJOR > 0 || CODEX_VERSION_MINOR >= 134 )); then
+            CODEX_PROFILE_FLAG="--profile"
+        else
+            CODEX_PROFILE_FLAG="--profile-v2"
+        fi
+    elif [[ "$HAS_PROFILE" == "1" ]]; then
+        CODEX_PROFILE_FLAG="--profile"
+    elif [[ "$HAS_PROFILE_V2" == "1" ]]; then
+        CODEX_PROFILE_FLAG="--profile-v2"
+    else
+        CODEX_PROFILE_FLAG="--profile"
+    fi
+fi
 
 case "${SERVICE_TIER,,}" in
 auto)
     if [[ -n "$STANDARD_PROFILE_V2" ]]; then
-        CODEX_PROFILE_ARGS=(--profile-v2 "$STANDARD_PROFILE_V2")
+        CODEX_PROFILE_ARGS=("$CODEX_PROFILE_FLAG" "$STANDARD_PROFILE_V2")
         MODEL="${STANDARD_MODEL:-$MODEL}"
         [[ -z "$STANDARD_AWS_PROFILE" ]] || export AWS_PROFILE="$STANDARD_AWS_PROFILE"
         [[ -z "$STANDARD_AWS_REGION" ]] || export AWS_REGION="$STANDARD_AWS_REGION"
@@ -137,12 +167,13 @@ auto)
     ;;
 default | standard | "")
     if [[ -n "$STANDARD_PROFILE_V2" ]]; then
-        CODEX_PROFILE_ARGS=(--profile-v2 "$STANDARD_PROFILE_V2")
+        CODEX_PROFILE_ARGS=("$CODEX_PROFILE_FLAG" "$STANDARD_PROFILE_V2")
         MODEL="${STANDARD_MODEL:-$MODEL}"
         [[ -z "$STANDARD_AWS_PROFILE" ]] || export AWS_PROFILE="$STANDARD_AWS_PROFILE"
         [[ -z "$STANDARD_AWS_REGION" ]] || export AWS_REGION="$STANDARD_AWS_REGION"
+    else
+        CODEX_SERVICE_TIER_ARGS=(-c 'service_tier="default"')
     fi
-    CODEX_SERVICE_TIER_ARGS=(-c 'service_tier="default"')
     ;;
 flex)
     MODEL="${FLEX_MODEL:-$MODEL}"
@@ -209,6 +240,11 @@ Fleet coordination policy:
 - Treat Switchboard as the persistent party line for browser-lane coordination and relay state.
 - Treat Norman Subprime as the persistent party line for cross-bot coordination. Important brokered context should be visible there instead of living only in the current lane.
 - Inside the Subprime / Switchboard lane itself, treat the current conversation as the live party line. Update it directly instead of speaking about Subprime as if it were somewhere else.
+- Norllama local-first planning:
+  - Treat Norllama as the canonical local LLM lane. Legacy labels such as Ollama, local_ollama, local-ollama, local LLM, and Spark/vLLM are implementation aliases, not separate strategy names.
+  - Prefer deterministic checks and Norllama for bounded classification, summarization, context compaction, draft planning, and verifier-input preparation before spending cloud tokens.
+  - Norllama can reduce cost and latency, but it is advisory unless a validator-bounded local-final route is explicitly present. Use cloud or human verification for purse, seal, key, sword, external writes, irreversible actions, and high-authority conclusions.
+  - If Norllama health, model inventory, or receipt evidence is missing, record the gap and route through policy instead of silently falling back to broad cloud work.
 - Switchboard BBS operating rules:
   - Treat the BBS as the durable record for cross-bot work. Use your configured actor/env-file auth path and never print or copy BBS tokens into prompts, final answers, logs, or handoff text.
   - Your BBS actor token defines your identity. Do not post as another actor, borrow another actor's token, or inspect another actor's auth bundle.
@@ -220,6 +256,7 @@ Fleet coordination policy:
   - A handoff with no body, evidence, next action, or message history is not actionable. Do not ACK an empty waiting-pickup shell just to clear it; ask the creator to add context or mark it BLOCKED with the missing-context reason.
   - Fork broad project, policy, incident, or standing-context threads into separate scoped task threads when there are multiple asks. Keep the parent as context; do not let a parent thread masquerade as active task work.
   - When you own a BBS task, acknowledge pickup by posting in the thread or using the configured BBS ack path, include an ETA when useful, and keep the owner heartbeat healthy while you work. Post checkpoint updates for long-running work so the creator/watcher can see progress. Use scripts/bbs_task_lifecycle.py when it is available; it auto-loads SWITCHBOARD_ENV_FILE or NORMAN_CODEX_BBS_ENV_FILE, so do not ask for or print raw BBS tokens.
+  - For BBS file handoffs, use BBS artifacts/attachments. If /api/v1/artifacts is unavailable or upload fails, report that exact BBS blocker and fix or escalate the artifact endpoint; do not invent an alternate file server, local-only /tmp path, or side-channel transport unless the operator explicitly approves that transport.
   - Close the loop when the task is complete: post the result/evidence/artifact, set the thread status to done, or mark it blocked/canceled with the reason if it cannot complete.
   - Do not leave old picked-up or waiting-pickup BBS threads open as background memory. If the request became policy/reference material, move that context into the appropriate durable note and close or cancel the task thread.
   - Use scripts/bbs_janitor.py dry-run output to review stale owners, broad parents, and old picked-up tasks. Apply only deterministic safe fixes; credential, infrastructure, purse, seal, sword, and operator-decision threads require explicit review.

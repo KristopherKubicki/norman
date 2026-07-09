@@ -17,8 +17,7 @@
 
   const FLEET_PRIORITY = {
     'norman-service': 0,
-    switchboard: 1,
-    'norman-home': 2,
+    'norman-home': 1,
     'finance-reader': 1,
     'health-reader': 2,
     parkergale: 3,
@@ -27,12 +26,12 @@
     housebot: 6,
     glimpser: 7,
     dj: 8,
-    castle: 9,
-    'diamond-roc': 10,
+    tv: 9,
+    studio: 10,
+    castle: 11,
     'phone-ops': 12,
     uscache: 13,
     theseus: 14,
-    'work-special': 12,
     'work-special-home': 12,
     earlybird: 13,
     infra: 14,
@@ -48,23 +47,22 @@
     networking: 31,
     uplink: 32,
     cloudagent: 33,
-    'null-agent': 40,
+    'dohio-topology': 34,
+    'switchyard-network-board': 35,
   };
 
-  const DIRECTORY_LANE_ORDER = ['Norman', 'Private', 'Personal', 'Work', 'Yhix', 'Shared'];
+  const DIRECTORY_LANE_ORDER = ['Norman', 'Private', 'Personal', 'Work', 'Shared'];
   const DIRECTORY_LANE_COPY = {
-    Norman: 'Norman, Switchboard, editor, and control surfaces.',
+    Norman: 'Norman Prime, editor, and control surfaces.',
     Private: 'Finance, health, and confidential advisors that should be entered deliberately.',
     Personal: 'Toy Box agents, Glimpser, phone work, and personal operators.',
     Work: 'Work Special bots, live projects, and operator-heavy work sessions.',
-    Yhix: 'Yhix cloud experiments, game TUIs, and venture-specific bot lanes.',
-    Shared: 'Networking, Uplink, CloudAgent, and shared infrastructure control.',
+    Shared: 'Networking, Uplink, CloudAgent, DOHIO topology, and shared infrastructure control.',
   };
   const PRIVATE_SERVICE_SLUGS = new Set(['finance-reader', 'health-reader', 'parkergale', 'private-home']);
-  const PERSONAL_SERVICE_SLUGS = new Set(['toy-box-home', 'housebot', 'glimpser', 'dj', 'castle', 'diamond-roc', 'phone-ops', 'uscache', 'autocamera', 'theseus']);
-  const WORK_SERVICE_SLUGS = new Set(['work-special', 'work-special-home', 'earlybird', 'infra', 'control-plane', 'market-sizing', 'tmi-dashboards', 'gold-book', 'platinum-standard', 'compere', 'leadership-kpis', 'panelbot', 'd-ace']);
-  const YHIX_SERVICE_SLUGS = new Set(['null-agent']);
-  const SHARED_SERVICE_SLUGS = new Set(['networking-home', 'networking', 'uplink', 'cloudagent']);
+  const PERSONAL_SERVICE_SLUGS = new Set(['toy-box-home', 'housebot', 'glimpser', 'dj', 'tv', 'studio', 'castle', 'phone-ops', 'uscache', 'autocamera', 'theseus']);
+  const WORK_SERVICE_SLUGS = new Set(['work-special-home', 'earlybird', 'infra', 'control-plane', 'market-sizing', 'tmi-dashboards', 'gold-book', 'platinum-standard', 'publisher', 'compere', 'leadership-kpis', 'panelbot', 'd-ace']);
+  const SHARED_SERVICE_SLUGS = new Set(['networking-home', 'networking', 'uplink', 'cloudagent', 'dohio-topology', 'switchyard-network-board']);
   const BOT_PROXY_ALIASES = {
     autocamera: 'auto',
     compere: 'keystone',
@@ -78,9 +76,8 @@
     'phone-ops': 'phone',
     'platinum-standard': 'platinum',
     scout: 'scoutbot',
+    studio: 'camera-studio',
     'tmi-dashboards': 'tmi',
-    'work-special': 'work-special',
-    'work-special-home': 'work-special',
   };
   const BOT_HOST_SHORTCUTS = {
     autocamera: 'autocamera.home.arpa',
@@ -88,10 +85,10 @@
     cloudagent: 'cloudagent.home.arpa',
     compere: 'keystone.kris.openbrand.com',
     'control-plane': 'cp.kris.openbrand.com',
-    'diamond-roc': 'diamond-roc.home.arpa',
     dj: 'dj.home.arpa',
+    'dohio-topology': 'dohio.home.arpa',
     earlybird: 'earlybird.kris.openbrand.com',
-    glimpser: 'glimpser.home.arpa',
+    glimpser: 'eyebat.home.arpa',
     'gold-book': 'goldbook.kris.openbrand.com',
     housebot: 'housebot.home.arpa',
     infra: 'infra.kris.openbrand.com',
@@ -103,16 +100,92 @@
     parkergale: 'pefb.home.arpa',
     'phone-ops': 'phone.home.arpa',
     'platinum-standard': 'platinum.kris.openbrand.com',
-    scout: 'ranger.kris.openbrand.com',
-    switchboard: 'switchboard.home.arpa',
+    publisher: 'publisher.kris.openbrand.com',
+    scout: 'scout.kris.openbrand.com',
+    studio: 'studio.home.arpa',
+    'switchyard-network-board': 'dohio.home.arpa/admin',
     theseus: 'theseus.home.arpa',
     'tmi-dashboards': 'dashboards.kris.openbrand.com',
+    tv: 'tv.home.arpa',
     uplink: 'uplink.home.arpa',
     usbhome: 'usbhome.home.arpa',
     uscache: 'uscache.home.arpa',
-    'work-special': 'work-special.home.arpa',
-    'work-special-home': 'work-special.home.arpa',
   };
+  const FLEET_MARK_ALIASES = {
+    norman: 'N',
+    autocamera: 'AC',
+    castle: 'CS',
+    cloudagent: 'CA',
+    compere: 'CP',
+    'control plane': 'CP',
+    dj: 'DJ',
+    dohio: 'DO',
+    'dohio topology': 'DO',
+    earlybird: 'EB',
+    glimpser: 'GL',
+    'gold book': 'GB',
+    housebot: 'HB',
+    infra: 'IF',
+    keystone: 'KS',
+    'leadership kpis': 'LK',
+    'market sizing': 'MS',
+    mls: 'ML',
+    networking: 'NW',
+    panelbot: 'PB',
+    parkergale: 'PE',
+    pefb: 'PE',
+    'phone ops': 'PH',
+    'platinum standard': 'PL',
+    publisher: 'PU',
+    scout: 'SC',
+    shared: 'SH',
+    personal: 'PS',
+    private: 'PV',
+    subprime: 'SP',
+    studio: 'ST',
+    switchboard: 'SW',
+    'switchyard network board': 'SY',
+    theseus: 'TH',
+    'tmi dashboards': 'TD',
+    tv: 'TV',
+    uplink: 'UP',
+    usbhome: 'UH',
+    uscache: 'US',
+    work: 'WK',
+  };
+
+  function normalizeFleetMarkKey(value) {
+    return String(value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  }
+
+  function fleetMarkForLabel(label, fallback = '•') {
+    const clean = normalizeFleetMarkKey(label);
+    if (!clean) return fallback;
+    if (Object.prototype.hasOwnProperty.call(FLEET_MARK_ALIASES, clean)) {
+      return FLEET_MARK_ALIASES[clean];
+    }
+    const aliasEntry = Object.entries(FLEET_MARK_ALIASES).find(([key]) => clean.includes(key));
+    if (aliasEntry) return aliasEntry[1];
+    const tokens = String(label || '').match(/[A-Za-z0-9]+/g) || [];
+    if (!tokens.length) return fallback;
+    if (tokens.length === 1) return tokens[0].replace(/[^A-Za-z0-9]+/g, '').slice(0, 2).toUpperCase() || fallback;
+    return `${tokens[0][0]}${tokens[1][0]}`.toUpperCase();
+  }
+
+  function fleetMarkForService(service) {
+    const candidates = [
+      service?.display_name,
+      service?.bot_name,
+      service?.slug,
+      service?.worker_name,
+      service?.domain_name,
+    ].filter(Boolean);
+    for (const candidate of candidates) {
+      const mark = fleetMarkForLabel(candidate, '');
+      if (mark) return mark;
+    }
+    return fleetMarkForLabel(service?.display_name || service?.slug || service?.bot_name, '•');
+  }
 
   function setStatus(message, level = 'info') {
     if (!statusEl) return;
@@ -227,146 +300,6 @@
       .replace(/'/g, '&#39;');
   }
 
-  // BEGIN GENERATED TUI MICROTEXTURES
-  const NAMED_TUI_TEXTURES = {
-    'norman': { angle: 12, crossAngle: 102, grain: 18, crossGrain: 41, glowX: 24, accent: 'rgba(95, 210, 196, 0.044)' },
-    'norman-service': { angle: 12, crossAngle: 102, grain: 18, crossGrain: 41, glowX: 24, accent: 'rgba(95, 210, 196, 0.044)' },
-    'switchboard': { angle: 12, crossAngle: 102, grain: 18, crossGrain: 41, glowX: 24, accent: 'rgba(95, 210, 196, 0.044)' },
-    'subprime': { angle: 12, crossAngle: 102, grain: 18, crossGrain: 41, glowX: 24, accent: 'rgba(95, 210, 196, 0.044)' },
-    'housebot': { angle: 0, crossAngle: 90, grain: 24, crossGrain: 38, glowX: 30, accent: 'rgba(143, 207, 184, 0.044)' },
-    'eyebat': { angle: 128, crossAngle: 38, grain: 17, crossGrain: 52, glowX: 76, accent: 'rgba(194, 163, 255, 0.044)' },
-    'glimpser': { angle: 128, crossAngle: 38, grain: 17, crossGrain: 52, glowX: 76, accent: 'rgba(194, 163, 255, 0.044)' },
-    'castle': { angle: 90, crossAngle: 0, grain: 34, crossGrain: 18, glowX: 18, accent: 'rgba(216, 155, 136, 0.044)' },
-    'diamond-roc': { angle: 45, crossAngle: 135, grain: 20, crossGrain: 20, glowX: 50, accent: 'rgba(158, 215, 255, 0.044)' },
-    'phone-ops': { angle: 90, crossAngle: 12, grain: 18, crossGrain: 36, glowX: 68, accent: 'rgba(231, 160, 197, 0.044)' },
-    'dj': { angle: 90, crossAngle: 12, grain: 18, crossGrain: 36, glowX: 68, accent: 'rgba(231, 160, 197, 0.044)' },
-    'uscache': { angle: 118, crossAngle: 28, grain: 31, crossGrain: 44, glowX: 34, accent: 'rgba(137, 205, 187, 0.044)' },
-    'usbhome': { angle: 6, crossAngle: 96, grain: 15, crossGrain: 42, glowX: 58, accent: 'rgba(132, 203, 178, 0.044)' },
-    'autocamera': { angle: 132, crossAngle: 42, grain: 26, crossGrain: 57, glowX: 72, accent: 'rgba(143, 210, 191, 0.044)' },
-    'studio': { angle: 132, crossAngle: 42, grain: 26, crossGrain: 57, glowX: 72, accent: 'rgba(143, 210, 191, 0.044)' },
-    'camera-studio': { angle: 132, crossAngle: 42, grain: 26, crossGrain: 57, glowX: 72, accent: 'rgba(143, 210, 191, 0.044)' },
-    'tv': { angle: 132, crossAngle: 42, grain: 26, crossGrain: 57, glowX: 72, accent: 'rgba(143, 210, 191, 0.044)' },
-    'theseus': { angle: 90, crossAngle: 0, grain: 18, crossGrain: 36, glowX: 58, accent: 'rgba(143, 185, 230, 0.044)' },
-    'maps': { angle: 30, crossAngle: 120, grain: 27, crossGrain: 54, glowX: 46, accent: 'rgba(143, 207, 184, 0.044)' },
-    'earlybird': { angle: 72, crossAngle: 162, grain: 23, crossGrain: 39, glowX: 18, accent: 'rgba(224, 190, 115, 0.044)' },
-    'infra': { angle: 90, crossAngle: 0, grain: 14, crossGrain: 44, glowX: 54, accent: 'rgba(159, 180, 200, 0.044)' },
-    'control-plane': { angle: 0, crossAngle: 90, grain: 16, crossGrain: 33, glowX: 42, accent: 'rgba(151, 167, 233, 0.050)' },
-    'market-sizing': { angle: 8, crossAngle: 98, grain: 28, crossGrain: 52, glowX: 74, accent: 'rgba(123, 198, 210, 0.044)' },
-    'tmi-dashboards': { angle: 144, crossAngle: 54, grain: 18, crossGrain: 45, glowX: 64, accent: 'rgba(202, 157, 228, 0.044)' },
-    'gold-book': { angle: 45, crossAngle: 135, grain: 22, crossGrain: 30, glowX: 36, accent: 'rgba(226, 184, 78, 0.050)' },
-    'keystone': { angle: 36, crossAngle: 126, grain: 19, crossGrain: 49, glowX: 22, accent: 'rgba(216, 171, 117, 0.044)' },
-    'compere': { angle: 36, crossAngle: 126, grain: 19, crossGrain: 49, glowX: 22, accent: 'rgba(216, 171, 117, 0.044)' },
-    'leadership-kpis': { angle: 90, crossAngle: 24, grain: 20, crossGrain: 51, glowX: 70, accent: 'rgba(197, 157, 224, 0.044)' },
-    'kpis': { angle: 90, crossAngle: 24, grain: 20, crossGrain: 51, glowX: 70, accent: 'rgba(197, 157, 224, 0.044)' },
-    'panelbot': { angle: 0, crossAngle: 90, grain: 13, crossGrain: 39, glowX: 28, accent: 'rgba(118, 212, 197, 0.044)' },
-    'mls': { angle: 0, crossAngle: 90, grain: 19, crossGrain: 37, glowX: 66, accent: 'rgba(133, 192, 255, 0.044)' },
-    'platinum-standard': { angle: 22, crossAngle: 112, grain: 25, crossGrain: 46, glowX: 60, accent: 'rgba(198, 214, 238, 0.044)' },
-    'netops': { angle: 90, crossAngle: 0, grain: 17, crossGrain: 42, glowX: 48, accent: 'rgba(120, 184, 255, 0.044)' },
-    'networking': { angle: 90, crossAngle: 0, grain: 17, crossGrain: 42, glowX: 48, accent: 'rgba(120, 184, 255, 0.044)' },
-    'uplink': { angle: 16, crossAngle: 106, grain: 19, crossGrain: 36, glowX: 82, accent: 'rgba(117, 208, 198, 0.044)' },
-    'cloudagent': { angle: 62, crossAngle: 152, grain: 26, crossGrain: 43, glowX: 20, accent: 'rgba(144, 187, 238, 0.044)' },
-    'dohio': { angle: 145, crossAngle: 55, grain: 20, crossGrain: 44, glowX: 12, accent: 'rgba(117, 208, 198, 0.052)' },
-    'null-agent': { angle: 17, crossAngle: 107, grain: 15, crossGrain: 58, glowX: 52, accent: 'rgba(173, 156, 255, 0.044)' },
-    'scout': { angle: 135, crossAngle: 45, grain: 21, crossGrain: 55, glowX: 76, accent: 'rgba(134, 200, 238, 0.044)' },
-    'pefb': { angle: 32, crossAngle: 122, grain: 20, crossGrain: 40, glowX: 62, accent: 'rgba(181, 194, 207, 0.044)' },
-    'parkergale': { angle: 32, crossAngle: 122, grain: 20, crossGrain: 40, glowX: 62, accent: 'rgba(181, 194, 207, 0.044)' },
-    'artmonster': { angle: 108, crossAngle: 18, grain: 16, crossGrain: 50, glowX: 44, accent: 'rgba(216, 178, 91, 0.044)' },
-    'finance-reader': { angle: 35, crossAngle: 125, grain: 28, crossGrain: 40, glowX: 24, accent: 'rgba(110, 231, 183, 0.042)' },
-    'health-reader': { angle: 64, crossAngle: 154, grain: 24, crossGrain: 32, glowX: 62, accent: 'rgba(167, 243, 208, 0.040)' },
-    'work-special': { angle: 28, crossAngle: 118, grain: 20, crossGrain: 28, glowX: 18, accent: 'rgba(250, 204, 21, 0.052)' },
-    'work-special-home': { angle: 28, crossAngle: 118, grain: 20, crossGrain: 28, glowX: 18, accent: 'rgba(250, 204, 21, 0.052)' },
-    'd-ace': { angle: 154, crossAngle: 64, grain: 32, crossGrain: 20, glowX: 80, accent: 'rgba(99, 102, 241, 0.040)' },
-    'acast': { angle: 110, crossAngle: 20, grain: 28, crossGrain: 36, glowX: 66, accent: 'rgba(244, 114, 182, 0.042)' },
-  };
-  // END GENERATED TUI MICROTEXTURES
-
-  const TUI_TEXTURE_ACCENTS = {
-    archiveGold: 'rgba(255, 221, 145, 0.052)',
-    artMagenta: 'rgba(217, 70, 239, 0.044)',
-    audioPink: 'rgba(244, 114, 182, 0.042)',
-    blue: 'rgba(56, 189, 248, 0.040)',
-    blueGold: 'rgba(125, 211, 252, 0.040)',
-    bookGold: 'rgba(250, 204, 21, 0.060)',
-    cloudCyan: 'rgba(103, 232, 249, 0.044)',
-    commandGold: 'rgba(250, 204, 21, 0.064)',
-    cyan: 'rgba(108, 200, 255, 0.052)',
-    emeraldGold: 'rgba(110, 231, 183, 0.042)',
-    gold: 'rgba(250, 204, 21, 0.052)',
-    green: 'rgba(45, 212, 191, 0.044)',
-    indigo: 'rgba(99, 102, 241, 0.040)',
-    inkBlue: 'rgba(96, 165, 250, 0.042)',
-    kpiGreen: 'rgba(74, 222, 128, 0.044)',
-    mapGreen: 'rgba(132, 204, 22, 0.040)',
-    mint: 'rgba(167, 243, 208, 0.040)',
-    netCyan: 'rgba(34, 211, 238, 0.048)',
-    panelBlue: 'rgba(147, 197, 253, 0.040)',
-    platinum: 'rgba(226, 232, 240, 0.046)',
-    privatePink: 'rgba(244, 114, 182, 0.044)',
-    purple: 'rgba(168, 85, 247, 0.046)',
-    roseGold: 'rgba(251, 191, 136, 0.046)',
-    scoutBlue: 'rgba(96, 165, 250, 0.046)',
-    signalBlue: 'rgba(56, 189, 248, 0.050)',
-    steel: 'rgba(148, 163, 184, 0.040)',
-    stoneGold: 'rgba(214, 169, 83, 0.046)',
-    sunrise: 'rgba(251, 191, 36, 0.050)',
-    teal: 'rgba(45, 212, 191, 0.040)',
-    violetGold: 'rgba(196, 181, 253, 0.042)',
-    yhixPurple: 'rgba(139, 92, 246, 0.048)',
-  };
-
-  function microtextureSeed(value) {
-    return Array.from(String(value || 'shared')).reduce((hash, char) => {
-      const nextHash = ((hash << 5) - hash) + char.charCodeAt(0);
-      return nextHash | 0;
-    }, 216613626);
-  }
-
-  function namedTuiTexture(value) {
-    const key = String(value || '').trim().toLowerCase();
-    return NAMED_TUI_TEXTURES[key] || null;
-  }
-
-  function textureStyleFromSpec(spec) {
-    const accent = TUI_TEXTURE_ACCENTS[spec.accent] || spec.accent || TUI_TEXTURE_ACCENTS.gold;
-    return [
-      `--service-card-angle: ${spec.angle}deg`,
-      `--service-card-cross-angle: ${spec.crossAngle}deg`,
-      `--service-card-grain: ${spec.grain}px`,
-      `--service-card-cross-grain: ${spec.crossGrain}px`,
-      `--service-card-glow-x: ${spec.glowX}%`,
-      `--service-card-accent: ${accent}`,
-    ].join('; ');
-  }
-
-  function microtextureStyleForService(service, lane = '') {
-    const named = namedTuiTexture(service?.slug);
-    if (named) return textureStyleFromSpec(named);
-    const key = service?.slug || service?.display_name || service?.bot_name || 'service';
-    const laneKey = lane || service?.principal_name || service?.domain_name || service?.kind || 'shared';
-    const seed = Math.abs(microtextureSeed(`${key}:${laneKey}`));
-    const angle = seed % 180;
-    const crossAngle = (angle + 86 + (seed % 11)) % 180;
-    const grain = 4 + (seed % 6);
-    const crossGrain = 5 + ((seed >> 3) % 8);
-    const glowX = 18 + ((seed >> 5) % 64);
-    const accents = [
-      'rgba(250, 204, 21, 0.050)',
-      'rgba(168, 85, 247, 0.046)',
-      'rgba(45, 212, 191, 0.040)',
-      'rgba(56, 189, 248, 0.038)',
-      'rgba(244, 114, 182, 0.040)',
-    ];
-    const accent = accents[seed % accents.length];
-    return [
-      `--service-card-angle: ${angle}deg`,
-      `--service-card-cross-angle: ${crossAngle}deg`,
-      `--service-card-grain: ${grain}px`,
-      `--service-card-cross-grain: ${crossGrain}px`,
-      `--service-card-glow-x: ${glowX}%`,
-      `--service-card-accent: ${accent}`,
-    ].join('; ');
-  }
-
   function classifyServiceUrl(url) {
     const value = String(url || '').trim();
     const lower = value.toLowerCase();
@@ -479,7 +412,7 @@
       principal?.display_name,
       principal?.slug,
     ].join(' ').toLowerCase();
-    if (slug === 'norman-service' || slug === 'switchboard') return 'Norman';
+    if (slug === 'norman-service') return 'Norman';
     if (
       PRIVATE_SERVICE_SLUGS.has(slug)
       || routeText.includes('finance')
@@ -488,12 +421,10 @@
       || routeText.includes('pef')
       || routeText.includes('private')
     ) return 'Private';
-    if (PERSONAL_SERVICE_SLUGS.has(slug) || routeText.includes('toy-box') || routeText.includes('toy box') || routeText.includes('192.168.2.146')) return 'Personal';
+    if (PERSONAL_SERVICE_SLUGS.has(slug) || routeText.includes('toy-box') || routeText.includes('192.168.2.146')) return 'Personal';
     if (WORK_SERVICE_SLUGS.has(slug) || routeText.includes('work-special') || routeText.includes('192.168.2.147')) return 'Work';
-    if (YHIX_SERVICE_SLUGS.has(slug) || routeText.includes('yhix')) return 'Yhix';
     if (SHARED_SERVICE_SLUGS.has(slug) || routeText.includes('networking.tail94915.ts.net') || routeText.includes('192.168.2.242')) return 'Shared';
     if (String(principal?.slug || '').trim().toLowerCase() === 'openbrand') return 'Work';
-    if (String(principal?.slug || '').trim().toLowerCase() === 'yhix') return 'Yhix';
     return 'Shared';
   }
 
@@ -507,7 +438,6 @@
 
     (payload?.principals || []).forEach((principal) => {
       (principal.services || []).forEach((service) => {
-        if (service?.is_active === false) return;
         if (!hasDirectoryLinks(service)) return;
         if (!directoryServiceMatches(principal, service)) return;
         const lane = laneNameForService(service, principal);
@@ -545,7 +475,6 @@
   }
 
   function directoryServiceMatches(principal, service) {
-    if (service?.is_active === false) return false;
     if (!searchTerm) return true;
     return JSON.stringify({
       principal: principal.display_name,
@@ -615,13 +544,24 @@
       service.principal_name || principal.display_name,
     ].filter(Boolean).slice(0, 4);
     const proxyDisplay = proxyDisplayForService(service);
-    const textureStyle = microtextureStyleForService(service, principal.display_name);
+    const laneLabel = laneNameForService(service, principal);
+    const tone = laneLabel.toLowerCase();
+    const mark = fleetMarkForService(service);
+    const plateLabel = `${laneLabel} lane`;
+    const kindLine = [
+      service.kind || 'service',
+      principal.display_name,
+    ].filter(Boolean).join(' · ');
     return `
-      <div class="fleet-card systems-directory-service" data-service-slug="${escapeHtml(service.slug || '')}" style="${escapeHtml(textureStyle)}">
+      <div class="fleet-card systems-directory-service">
         <div class="fleet-card__header">
-          <div>
-            <div class="fleet-card__title">${escapeHtml(service.display_name || service.slug)}</div>
-            <div class="fleet-card__kind">${escapeHtml(service.kind || 'service')}</div>
+          <div class="fleet-card__identity" data-tone="${escapeHtml(tone)}">
+            <span class="fleet-card__mark" data-tone="${escapeHtml(tone)}" aria-hidden="true">${escapeHtml(mark)}</span>
+            <div class="fleet-card__identity-copy">
+              <div class="fleet-card__eyebrow">${escapeHtml(plateLabel)}</div>
+              <div class="fleet-card__title">${escapeHtml(service.display_name || service.slug)}</div>
+              <div class="fleet-card__kind">${escapeHtml(kindLine)}</div>
+            </div>
           </div>
           <span class="status-chip ${escapeHtml(routeState.tone)}">${escapeHtml(routeState.label)}</span>
         </div>

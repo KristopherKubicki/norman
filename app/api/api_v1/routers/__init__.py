@@ -12,6 +12,7 @@ from .routing import router as routing_router
 from .estate import router as estate_router
 from .keys import router as keys_router
 from .operator_state import router as operator_state_router
+from .console_runtime import router as console_runtime_router
 
 __all__ = [
     "actions_router",
@@ -28,4 +29,5 @@ __all__ = [
     "estate_router",
     "keys_router",
     "operator_state_router",
+    "console_runtime_router",
 ]

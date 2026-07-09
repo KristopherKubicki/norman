@@ -14,6 +14,7 @@ from .routing import RoutingRule, RoutingEvent, RoutingJob
 from .command_approval import CommandApproval
 from .console_target import ConsoleTarget
 from .console_audit_event import ConsoleAuditEvent
+from .console_runtime import ConsoleRuntimeEventRecord, ConsoleRuntimeJobRecord
 from .estate_principal import EstatePrincipal
 from .estate_policy_profile import EstatePolicyProfile
 from .estate_control_class import EstateControlClass

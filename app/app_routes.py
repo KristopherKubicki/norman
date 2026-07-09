@@ -64,6 +64,25 @@ try:
 except ImportError:  # pragma: no cover - older live hosts may not have this module yet
     get_llm_runtime_status = None
 
+try:
+    from app.services.model_ping import list_model_ping_targets, ping_model_targets
+except ImportError:  # pragma: no cover - older live hosts may not have this module yet
+    list_model_ping_targets = None
+    ping_model_targets = None
+
+try:
+    from app.services.norllama.mesh_cache import get_mesh_overview
+    from app.services.norllama.warm_policy import apply_warm_policy, build_warm_policy
+except ImportError:  # pragma: no cover - older live hosts may not have this module yet
+    get_mesh_overview = None
+    build_warm_policy = None
+    apply_warm_policy = None
+
+try:
+    from app.services.norllama.gateway import fetch_tool_activity
+except ImportError:  # pragma: no cover - older live hosts may not have this module yet
+    fetch_tool_activity = None
+
 from datetime import timedelta
 from datetime import datetime, timezone
 import inspect
@@ -110,31 +129,18 @@ _CONSOLE_HEARTBEAT_MAX_AGE_SECONDS = 60 * 60 * 24
 _SWITCHBOARD_HOSTS = {"switchboard.home.arpa", "switchboard.norman.home.arpa"}
 
 
-def _switchboard_bbs_url(request: Request) -> str:
-    params: dict[str, str] = {"view": "switchboard"}
-    for key in ("pane", "thread", "channel", "message"):
-        value = str(request.query_params.get(key) or "").strip()
-        if value:
-            params[key] = value
-    return f"/messages_log.html?{urlencode(params)}"
-
-
 def _norman_chat_redirect_url(request: Request) -> str:
     request_host = (request.headers.get("host") or "").split(":", 1)[0].strip().lower()
     if request_host in _SWITCHBOARD_HOSTS:
-        return _switchboard_bbs_url(request)
-    params: dict[str, str] = {
-        "pane": "conversation",
-        "thread": "console - Norman",
-        "shell": "prime",
-    }
+        return "/dashboard.html?view=switchboard"
+    params: dict[str, str] = {}
     profile = str(request.query_params.get("profile") or "").strip()
     if profile:
         params["profile"] = profile
     route = str(request.query_params.get("route") or "").strip()
     if route:
         params["route"] = route
-    return f"/editor.html?{urlencode(params)}"
+    return f"/bot/norman/?{urlencode(params)}" if params else "/bot/norman/"
 
 
 def _console_heartbeat_now() -> tuple[float, str]:
@@ -236,6 +242,18 @@ async def index_endpoint(request: Request, db: Session = Depends(get_async_db)):
     return await home(request, db)
 
 
+@app_routes.get("/bot/norman")
+async def norman_bot_redirect_endpoint(
+    request: Request, db: Session = Depends(get_async_db)
+):
+    return RedirectResponse(url="/bot/norman/", status_code=307)
+
+
+@app_routes.get("/bot/norman/")
+async def norman_bot_endpoint(request: Request, db: Session = Depends(get_async_db)):
+    return await home(request, db)
+
+
 @app_routes.get("/dashboard")
 async def dashboard_endpoint(request: Request, db: Session = Depends(get_async_db)):
     return await home(request, db)
@@ -250,24 +268,24 @@ async def dashboard_html_endpoint(
 
 @app_routes.get("/switchboard")
 async def switchboard_endpoint(request: Request, db: Session = Depends(get_async_db)):
-    return RedirectResponse(url=_switchboard_bbs_url(request), status_code=307)
+    return RedirectResponse(url="/dashboard.html?view=switchboard", status_code=307)
 
 
 @app_routes.get("/switchboard.html")
 async def switchboard_html_endpoint(
     request: Request, db: Session = Depends(get_async_db)
 ):
-    return RedirectResponse(url=_switchboard_bbs_url(request), status_code=307)
+    return RedirectResponse(url="/dashboard.html?view=switchboard", status_code=307)
 
 
 @app_routes.get("/bbs")
 async def bbs_endpoint(request: Request):
-    return RedirectResponse(url=_switchboard_bbs_url(request), status_code=307)
+    return RedirectResponse(url="/messages_log.html?view=switchboard", status_code=307)
 
 
 @app_routes.get("/bbs.html")
 async def bbs_html_endpoint(request: Request):
-    return RedirectResponse(url=_switchboard_bbs_url(request), status_code=307)
+    return RedirectResponse(url="/messages_log.html?view=switchboard", status_code=307)
 
 
 @app_routes.get("/connectors.html")
@@ -1162,7 +1180,161 @@ async def get_llm_status(
             status_code=503,
             detail="LLM runtime status is unavailable on this host",
         )
-    return JSONResponse(content=get_llm_runtime_status())
+    payload = get_llm_runtime_status()
+    if get_mesh_overview is not None:
+        payload = dict(payload)
+        payload["norllama_mesh"] = get_mesh_overview(timeout_seconds=2)
+        if build_warm_policy is not None:
+            payload["norllama_warm_policy"] = build_warm_policy(
+                mesh=payload["norllama_mesh"]
+            )
+    if fetch_tool_activity is not None:
+        payload = dict(payload)
+        try:
+            payload["norllama_tool_activity"] = fetch_tool_activity(
+                limit=200,
+                timeout_seconds=2,
+            )
+        except Exception as exc:
+            payload["norllama_tool_activity"] = {
+                "schema": "norman.norllama.tool-activity.v1",
+                "provider": "norllama",
+                "status": "error",
+                "tool_call_count": 0,
+                "capability_counts": {},
+                "latest_tool_call": {},
+                "items": [],
+                "error": str(exc)[:240],
+            }
+    return JSONResponse(content=payload)
+
+
+@app_routes.get("/api/llm/mesh")
+async def get_llm_mesh(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    if get_mesh_overview is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Norllama mesh overview is unavailable on this host",
+        )
+    refresh = str(request.query_params.get("refresh") or "").lower() in {
+        "1",
+        "true",
+        "yes",
+        "force",
+    }
+    return JSONResponse(
+        content=get_mesh_overview(force_refresh=refresh, timeout_seconds=2)
+    )
+
+
+@app_routes.get("/api/llm/warm-policy")
+async def get_llm_warm_policy(
+    current_user: User = Depends(get_current_user),
+):
+    if build_warm_policy is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Norllama warm policy is unavailable on this host",
+        )
+    return JSONResponse(content=build_warm_policy())
+
+
+@app_routes.get("/api/llm/tool-activity")
+async def get_llm_tool_activity(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    if fetch_tool_activity is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Norllama tool activity is unavailable on this host",
+        )
+    try:
+        limit = int(request.query_params.get("limit") or 200)
+    except ValueError:
+        limit = 200
+    try:
+        payload = fetch_tool_activity(
+            limit=max(1, min(limit, 1000)),
+            timeout_seconds=2,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Norllama tool activity is unavailable: {str(exc)[:200]}",
+        ) from exc
+    return JSONResponse(content=payload)
+
+
+@app_routes.post("/api/llm/warm-policy/prefetch")
+async def post_llm_warm_policy_prefetch(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    if apply_warm_policy is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Norllama warm policy is unavailable on this host",
+        )
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    body = body if isinstance(body, dict) else {}
+    dry_run = bool(body.get("dry_run", True))
+    prefetch_limit = body.get("prefetch_limit")
+    try:
+        limit = int(prefetch_limit) if prefetch_limit is not None else None
+    except (TypeError, ValueError):
+        limit = None
+    priority = str(body.get("priority") or "background").strip() or "background"
+    return JSONResponse(
+        content=apply_warm_policy(
+            dry_run=dry_run,
+            prefetch_limit=limit,
+            priority=priority,
+        )
+    )
+
+
+@app_routes.get("/api/llm/ping/targets")
+async def get_llm_ping_targets(
+    current_user: User = Depends(get_current_user),
+):
+    if list_model_ping_targets is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Model ping targets are unavailable on this host",
+        )
+    return JSONResponse(content={"items": list_model_ping_targets()})
+
+
+@app_routes.post("/api/llm/ping")
+async def post_llm_ping(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
+    if ping_model_targets is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Model ping is unavailable on this host",
+        )
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+    target_id = ""
+    if isinstance(payload, dict):
+        target_id = str(payload.get("target_id") or payload.get("target") or "").strip()
+    try:
+        return JSONResponse(content=await ping_model_targets(target_id=target_id))
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404, detail="Model ping target not found"
+        ) from exc
 
 
 @app_routes.post("/api/v1/safety/panic")
@@ -1569,7 +1741,7 @@ def _bootstrap_user_workspace(db: Session, user: User) -> None:
             default_model = (
                 settings.openai_available_models[0]
                 if settings.openai_available_models
-                else "gpt-5-mini"
+                else settings.openai_default_model or "gpt-5.5"
             )
             bot_for_default = create_bot(
                 db=db,

@@ -43,10 +43,7 @@ def test_login_allows_access_to_home(test_app: TestClient, db: Session) -> None:
         "/", headers={"Authorization": f"Bearer {token}"}, follow_redirects=False
     )
     assert resp2.status_code == 307
-    assert (
-        resp2.headers["location"]
-        == "/editor.html?pane=conversation&thread=console+-+Norman&shell=prime"
-    )
+    assert resp2.headers["location"] == "/bot/norman/"
     resp3 = test_app.get(
         resp2.headers["location"],
         headers={"Authorization": f"Bearer {token}"},

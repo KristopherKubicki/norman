@@ -141,7 +141,7 @@ const CONNECTOR_QUICK_PRESETS = {
     {
       label: 'Signal Service',
       description: 'Route through a Signal bridge endpoint.',
-      config: { service_url: 'http://localhost:8080/v2/send', phone_number: '<E164_SIGNAL_PHONE>' }
+      config: { service_url: 'http://localhost:8080/v2/send', phone_number: '+15555551234' }
     }
   ],
   telegram: [
@@ -241,7 +241,7 @@ const CONNECTOR_QUICK_PRESETS = {
     {
       label: 'Office Workstation',
       description: 'Treat a desktop as the primary office engagement signal.',
-      config: { site: 'knox', zone: 'office', host: 'hal', person: 'operator' }
+      config: { site: 'knox', zone: 'office', host: 'hal', person: 'kristopher' }
     }
   ],
   home_assistant: [
@@ -679,7 +679,7 @@ function validateConnectorConfigByType(connectorType, config, requiredFields = [
     if (has('phone_number')) {
       const phone = String(value('phone_number'));
       if (!/^\+?[1-9][0-9]{6,15}$/.test(phone)) {
-        warnings.push('Signal phone_number should be an E.164-like number.');
+        warnings.push('Signal phone_number should be an E.164-like number (e.g. +15551234567).');
       }
     }
   }
@@ -964,6 +964,7 @@ const popularityOrder = [
   'google_chat',
   'discord',
   'telegram',
+  'sms',
   'whatsapp',
   'gmail',
   'outlook',
@@ -1000,6 +1001,7 @@ const connectorCatalog = [
   { id: 'teams', name: 'Microsoft Teams', category: 'Chat', desc: 'Teams channels and bot posts.', fields: ['app_id', 'app_password', 'tenant_id', 'bot_endpoint', 'webhook_url', 'scope'] },
   { id: 'discord', name: 'Discord', category: 'Chat', desc: 'Discord channels and webhook events.', fields: ['token', 'channel_id', 'webhook_url'] },
   { id: 'telegram', name: 'Telegram', category: 'Chat', desc: 'Telegram bot updates.', fields: ['token', 'chat_id', 'webhook_secret'] },
+  { id: 'sms', name: 'SMS', category: 'Chat', desc: 'SMS messages via Twilio.', fields: ['account_sid', 'auth_token', 'from_number', 'to_number'] },
   { id: 'whatsapp', name: 'WhatsApp', category: 'Chat', desc: 'WhatsApp messages via Twilio.', fields: ['account_sid', 'auth_token', 'from_number', 'to_number', 'status_callback_url'] },
   { id: 'reddit_chat', name: 'Reddit Chat', category: 'Community', desc: 'Reddit inbox and chat.', fields: ['client_id', 'client_secret', 'username', 'password', 'user_agent'] },
   { id: 'twitter', name: 'X / Twitter', category: 'Social', desc: 'Mentions, DMs, and replies.', fields: ['api_key', 'api_secret', 'access_token', 'access_token_secret', 'recipient_id'] },
@@ -4628,7 +4630,11 @@ function renderWebhookUrls() {
   }
   const whatsappInput = document.getElementById('whatsapp-webhook-url');
   if (whatsappInput) {
-    whatsappInput.value = `${origin}/api/v1/connectors/webhooks/whatsapp/{connector_id}`;
+    whatsappInput.value = `${origin}/api/v1/connectors/whatsapp/webhooks/whatsapp/{connector_id}`;
+  }
+  const smsInput = document.getElementById('sms-webhook-url');
+  if (smsInput) {
+    smsInput.value = `${origin}/api/v1/connectors/sms/webhooks/sms/{connector_id}`;
   }
   const jiraInput = document.getElementById('jira-webhook-url');
   if (jiraInput) {

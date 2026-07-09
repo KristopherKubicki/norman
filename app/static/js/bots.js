@@ -5,10 +5,6 @@ let botsCache = [];
 let activeBotsMobilePane = 'roster';
 let botsMobilePaneMedia = null;
 const BOTS_MOBILE_PANE_KEY = 'norman.mobile.bots.pane.v1';
-const SENSITIVE_ASSIGNMENT_RE = /((?:"|')?(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|client[_ -]?secret|signing[_ -]?secret|webhook[_ -]?secret|app[_ -]?password|mcp[_ -]?api[_ -]?key|password|passwd|passphrase|passcode|secret|token|pwd)(?:"|')?\s*[:=]\s*)("[^"\n]*"|'[^'\n]*'|[^\s,;]+)/gi;
-const SENSITIVE_QUERY_RE = /((?:[?&])(?:api(?:[_-]?key)?|access[_-]?token|refresh[_-]?token|client[_-]?secret|signing[_-]?secret|webhook[_-]?secret|app[_-]?password|password|passwd|passcode|secret|token|pwd)=)([^&#\s]+)/gi;
-const SENSITIVE_BEARER_RE = /(\bBearer\s+)([A-Za-z0-9._~+/=-]+)/gi;
-let secretSegmentSerial = 0;
 
 function updateSelectedBotSummary(bot = null) {
   const selectedBotNameElement = document.getElementById('selected-bot-name');
@@ -160,65 +156,8 @@ function filterBots(query) {
   renderBots(filtered);
 }
 
-function nextSecretSegmentToken() {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
-  let current = secretSegmentSerial;
-  secretSegmentSerial += 1;
-  let suffix = '';
-  while (true) {
-    suffix = `${alphabet[current % 26]}${suffix}`;
-    current = Math.floor(current / 26);
-    if (current === 0) break;
-    current -= 1;
-  }
-  return `__SECRET_SEGMENT_${suffix}__`;
-}
-
-function buildSecretSpoiler(value) {
-  const safeValue = String(value || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-  return `<button type="button" class="secret-spoiler" aria-pressed="false" aria-label="Reveal hidden value" title="Reveal hidden value"><span class="secret-spoiler-mask" aria-hidden="true">&bull;&bull;&bull;&bull;&bull;&bull;</span><span class="secret-spoiler-value">${safeValue}</span></button>`;
-}
-
-function stashSensitiveSegments(text) {
-  let nextText = String(text || '');
-  const stash = {};
-  const apply = (regex) => {
-    nextText = nextText.replace(regex, (_, prefix, value) => {
-      const token = nextSecretSegmentToken();
-      stash[token] = buildSecretSpoiler(value);
-      return `${prefix}${token}`;
-    });
-  };
-  apply(SENSITIVE_ASSIGNMENT_RE);
-  apply(SENSITIVE_QUERY_RE);
-  apply(SENSITIVE_BEARER_RE);
-  return { text: nextText, stash };
-}
-
-function restoreSecretSegments(rendered, stash) {
-  let output = String(rendered || '');
-  Object.entries(stash || {}).forEach(([token, snippet]) => {
-    output = output.replaceAll(token, snippet);
-  });
-  return output;
-}
-
-function renderMessageHtml(text) {
-  const sensitive = stashSensitiveSegments(String(text || ''));
-  const withSpacing = sensitive.text
-    .replace(/\t/g, '&nbsp;&nbsp;&nbsp;&nbsp;')
-    .replace(/\n/g, '<br/>');
-  return restoreSecretSegments(marked.marked(withSpacing), sensitive.stash);
-}
-
 document.addEventListener('DOMContentLoaded', () => {
   const sendButton = document.getElementById('send-message');
-  const messagesPanel = document.querySelector('.messages-container');
   initBotsMobilePaneSwitcher();
   updateSelectedBotSummary(null);
   // Fetch bots and render them in the bots container
@@ -231,15 +170,6 @@ document.addEventListener('DOMContentLoaded', () => {
       if (value) selectBotById(value);
     });
   }
-
-  messagesPanel?.addEventListener('click', (event) => {
-    const button = event.target.closest('.secret-spoiler');
-    if (!(button instanceof HTMLElement)) return;
-    event.preventDefault();
-    const nextState = !button.classList.contains('revealed');
-    button.classList.toggle('revealed', nextState);
-    button.setAttribute('aria-pressed', nextState ? 'true' : 'false');
-  });
 
   // Set up handler for saving edits
   const saveBtn = document.getElementById('save-bot-changes');
@@ -299,7 +229,7 @@ document.addEventListener('DOMContentLoaded', () => {
       try {
         let bot;
         try {
-          bot = await addBot(name, description, "gpt-5-mini");
+          bot = await addBot(name, description, "gpt-5.5");
         } catch (err) {
           if (String(err.message || '').includes('Invalid GPT model')) {
             bot = await addBot(name, description, null);
@@ -725,7 +655,9 @@ function createMessageElement(message) {
   const contentElement = document.createElement('span');
   contentElement.className = 'message-content';
   const text = message.text || message.content || '';
-  contentElement.innerHTML = renderMessageHtml(text);
+  const messageWithTabsAndNewlinesReplaced = text.replace(/\t/g, "&nbsp;&nbsp;&nbsp;&nbsp;").replace(/\n/g, "<br/>");
+  const messageHTML = marked.marked(messageWithTabsAndNewlinesReplaced);
+  contentElement.innerHTML = messageHTML;
 
   const timestampElement = document.createElement('span');
   timestampElement.className = 'message-timestamp';

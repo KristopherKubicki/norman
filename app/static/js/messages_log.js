@@ -49,9 +49,6 @@ let currentConsoleConversationText = '';
 let secretPanelOpen = false;
 let secretStashCache = [];
 let secretDraftState = { value: '', concealed: false };
-let composerDraftSaveTimer = null;
-let composerHistoryCursor = null;
-let composerExpanded = false;
 const tmuxAutoResumeAttempts = new Map();
 const MESSAGES_MOBILE_PANE_KEY = 'norman.mobile.messages.pane.v1';
 const STREAMS_FOCUS_MODE_KEY = 'norman.streams.focus_mode.v1';
@@ -65,16 +62,13 @@ const STREAMS_TMUX_PROFILE_KEY = 'norman.streams.tmux_profile.v1';
 const STREAMS_TMUX_HUNT_KEY = 'norman.streams.tmux_hunt_enabled.v1';
 const STREAMS_TMUX_PROFILE_DEFAULT = 'default_pack';
 const STREAMS_TMUX_RUNNING_PROFILE = 'running_now';
-const STREAMS_COMPOSER_DRAFTS_KEY = 'norman.streams.composer.drafts.v2';
-const STREAMS_COMPOSER_HISTORY_KEY = 'norman.streams.composer.history.v1';
-const STREAMS_COMPOSER_EXPANDED_KEY = 'norman.streams.composer.expanded.v1';
 const MESSAGE_FOLLOW_INTERVAL_MS = 4000;
 const CONSOLE_FOLLOW_INTERVAL_MS = 2500;
 const TMUX_AUTO_HUNT_INTERVAL_MS = 15000;
 const TMUX_SEND_TIMEOUT_MS = 12000;
 const CHANNEL_SEND_TIMEOUT_MS = 12000;
 const CONSOLE_RESPONSE_STALE_MS = 45000;
-const DEFAULT_COMPOSE_HINT = 'Ready';
+const DEFAULT_COMPOSE_HINT = 'Send or Enter · Shift+Enter adds a new line · @session routes thread';
 const TMUX_SEND_ENTER_COUNT = 2;
 const TMUX_SIMPLIFIED_MAX_LINES = 60;
 const TMUX_SIMPLIFIED_TAIL_LINES = 45;
@@ -84,9 +78,6 @@ const INBOX_MIN_FETCH_INTERVAL_MS = 8000;
 const SECRET_STASH_DEFAULT_TTL_SECONDS = 86400;
 const LLM_STATUS_POLL_INTERVAL_MS = 30000;
 const SUPER_TUI_PRIME_OPEN_KEY = 'norman.messages.super_tui.prime_open.v1';
-const COMPOSER_DRAFT_SAVE_DELAY_MS = 180;
-const COMPOSER_HISTORY_LIMIT = 30;
-const COMPOSER_LONG_DRAFT_CHARS = 4000;
 let llmStatusPollTimer = null;
 const CONSOLE_COMMAND_PREFIXES = [
   'sudo', 'cd', 'ls', 'pwd', 'git', 'npm', 'node', 'python', 'python3', 'pytest',
@@ -522,8 +513,6 @@ function appendPointerToComposer(reference = '') {
   window.requestAnimationFrame(syncComposerOffset);
   input.focus({ preventScroll: true });
   updateComposerSecretState();
-  persistComposerDraft();
-  syncComposerState();
 }
 
 function stageSecretDraft(value = '', options = {}) {
@@ -753,7 +742,6 @@ function updateComposerSecretState() {
   const directFlagged = directPaneInput ? shouldCaptureSensitiveText(directPaneInput.value || '') : false;
   if (composer) composer.classList.toggle('is-secret-risk', composerFlagged);
   if (directPaneInput) directPaneInput.classList.toggle('is-secret-risk', directFlagged);
-  syncComposerState();
   if (composerFlagged || directFlagged) {
     const analysis = analyzeSensitiveText(
       composerFlagged ? composer.value || '' : directPaneInput?.value || '',
@@ -1114,19 +1102,15 @@ function setActiveOperatorBadge(channel = null) {
     );
     el.classList.add(`messages-thread-state--${descriptor.tone}`);
   });
-  syncComposerTargetSummary(channel);
 }
 
 async function triggerSendMessage() {
   if (sendInFlight) return;
-  syncComposerState();
   sendInFlight = true;
-  syncComposerState();
   try {
     await sendMessage();
   } finally {
     sendInFlight = false;
-    syncComposerState();
   }
 }
 
@@ -1584,41 +1568,6 @@ function writeStoredStreamsChannelId(channelId) {
   if (!Number.isFinite(Number(channelId))) return;
   try {
     localStorage.setItem(STREAMS_SELECTED_CHANNEL_KEY, String(Number(channelId)));
-  } catch (err) {
-    // ignore storage errors
-  }
-}
-
-function readStoredJsonObject(key) {
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
-  } catch (err) {
-    return {};
-  }
-}
-
-function writeStoredJsonObject(key, value) {
-  try {
-    localStorage.setItem(key, JSON.stringify(value || {}));
-  } catch (err) {
-    // ignore storage errors
-  }
-}
-
-function readStoredComposerExpanded() {
-  try {
-    return localStorage.getItem(STREAMS_COMPOSER_EXPANDED_KEY) === '1';
-  } catch (err) {
-    return false;
-  }
-}
-
-function writeStoredComposerExpanded(enabled) {
-  try {
-    localStorage.setItem(STREAMS_COMPOSER_EXPANDED_KEY, enabled ? '1' : '0');
   } catch (err) {
     // ignore storage errors
   }
@@ -2122,9 +2071,7 @@ function applyLaunchDraftToComposer() {
   if (launchDraftMessage) {
     input.value = launchDraftMessage;
     autoResizeComposer();
-    persistComposerDraft();
-    syncComposerState();
-    setComposeFeedback('Norman brief loaded.', 'muted');
+    setComposeFeedback('Norman Prime brief loaded.', 'muted');
   }
   if (launchFocusComposer) {
     window.setTimeout(() => {
@@ -2139,253 +2086,8 @@ function autoResizeComposer() {
   const input = document.getElementById('messageInput');
   if (!input) return;
   input.style.height = 'auto';
-  const maxHeight = composerExpanded ? 420 : 220;
-  const minHeight = composerExpanded ? 136 : 44;
-  const next = Math.max(minHeight, Math.min(input.scrollHeight, maxHeight));
+  const next = Math.max(44, Math.min(input.scrollHeight, 220));
   input.style.height = `${next}px`;
-}
-
-function getComposerDraftKey(channelId = selectedChannelId) {
-  const id = Number(channelId || 0);
-  return id > 0 ? `channel:${id}` : '';
-}
-
-function persistComposerDraft(channelId = selectedChannelId) {
-  const input = document.getElementById('messageInput');
-  const key = getComposerDraftKey(channelId);
-  if (!input || !key) return;
-  const value = String(input.value || '');
-  const drafts = readStoredJsonObject(STREAMS_COMPOSER_DRAFTS_KEY);
-  if (value.trim()) {
-    drafts[key] = {
-      value,
-      updated_at: new Date().toISOString(),
-    };
-  } else {
-    delete drafts[key];
-  }
-  writeStoredJsonObject(STREAMS_COMPOSER_DRAFTS_KEY, drafts);
-}
-
-function clearComposerDraft(channelId = selectedChannelId) {
-  const key = getComposerDraftKey(channelId);
-  if (!key) return;
-  const drafts = readStoredJsonObject(STREAMS_COMPOSER_DRAFTS_KEY);
-  if (!Object.prototype.hasOwnProperty.call(drafts, key)) return;
-  delete drafts[key];
-  writeStoredJsonObject(STREAMS_COMPOSER_DRAFTS_KEY, drafts);
-}
-
-function queueComposerDraftSave() {
-  if (composerDraftSaveTimer) {
-    clearTimeout(composerDraftSaveTimer);
-  }
-  composerDraftSaveTimer = window.setTimeout(() => {
-    composerDraftSaveTimer = null;
-    persistComposerDraft();
-  }, COMPOSER_DRAFT_SAVE_DELAY_MS);
-}
-
-function restoreComposerDraft(channelId = selectedChannelId, options = {}) {
-  const { onlyIfBlank = false } = options;
-  const input = document.getElementById('messageInput');
-  const key = getComposerDraftKey(channelId);
-  if (!input || !key) return;
-  if (onlyIfBlank && String(input.value || '').trim()) return;
-  const drafts = readStoredJsonObject(STREAMS_COMPOSER_DRAFTS_KEY);
-  const draft = drafts[key];
-  input.value = String(draft?.value || '');
-  composerHistoryCursor = null;
-  autoResizeComposer();
-  updateComposerSecretState();
-  syncComposerState();
-}
-
-function readComposerHistory(channelId = selectedChannelId) {
-  const key = getComposerDraftKey(channelId);
-  if (!key) return [];
-  const history = readStoredJsonObject(STREAMS_COMPOSER_HISTORY_KEY);
-  const items = Array.isArray(history[key]) ? history[key] : [];
-  return items.map((item) => String(item || '')).filter((item) => item.trim());
-}
-
-function rememberComposerHistory(channelId, value = '') {
-  const key = getComposerDraftKey(channelId);
-  const text = String(value || '').trim();
-  if (!key || !text) return;
-  const history = readStoredJsonObject(STREAMS_COMPOSER_HISTORY_KEY);
-  const existing = Array.isArray(history[key]) ? history[key] : [];
-  history[key] = [
-    ...existing.filter((item) => String(item || '').trim() !== text),
-    text,
-  ].slice(-COMPOSER_HISTORY_LIMIT);
-  writeStoredJsonObject(STREAMS_COMPOSER_HISTORY_KEY, history);
-}
-
-function recallComposerHistory(direction) {
-  const input = document.getElementById('messageInput');
-  if (!input || input.disabled) return false;
-  const history = readComposerHistory();
-  if (!history.length) return false;
-  if (direction < 0) {
-    if (composerHistoryCursor == null) {
-      if (String(input.value || '').trim()) return false;
-      composerHistoryCursor = history.length - 1;
-    } else {
-      composerHistoryCursor = Math.max(0, composerHistoryCursor - 1);
-    }
-  } else {
-    if (composerHistoryCursor == null) return false;
-    composerHistoryCursor += 1;
-    if (composerHistoryCursor >= history.length) {
-      composerHistoryCursor = null;
-      input.value = '';
-      clearComposerDraft();
-      autoResizeComposer();
-      syncComposerState();
-      return true;
-    }
-  }
-  input.value = history[composerHistoryCursor] || '';
-  autoResizeComposer();
-  updateComposerSecretState();
-  syncComposerState();
-  window.setTimeout(() => {
-    const end = input.value.length;
-    input.setSelectionRange(end, end);
-  }, 0);
-  return true;
-}
-
-function setComposerExpanded(enabled) {
-  const page = document.querySelector('.messages-page');
-  const button = document.getElementById('streams-compose-expand');
-  composerExpanded = Boolean(enabled);
-  if (page) {
-    page.classList.toggle('is-composer-expanded', composerExpanded);
-  }
-  if (button) {
-    button.textContent = composerExpanded ? 'Compact' : 'Expand';
-    button.setAttribute('aria-pressed', composerExpanded ? 'true' : 'false');
-  }
-  writeStoredComposerExpanded(composerExpanded);
-  autoResizeComposer();
-  syncComposerOffset();
-}
-
-function formatComposerCount(value = '') {
-  const text = String(value || '');
-  const chars = text.length;
-  const lines = text ? text.split(/\n/).length : 0;
-  if (!chars) return '0';
-  return lines > 1 ? `${lines} lines / ${chars}` : String(chars);
-}
-
-function getComposerModeLabel(channel = getSelectedChannel()) {
-  if (!channel) return 'idle';
-  if (isConsoleChannel(channel)) {
-    return activeConversationConsoleTarget ? `tmux ${activeConversationConsoleTarget}` : 'console';
-  }
-  const mode = normalizeOperatorMode(getChannelOperatorState(channel)?.mode || 'observe');
-  if (mode === 'take') return 'manual';
-  if (mode === 'co_pilot') return 'shared';
-  return 'auto';
-}
-
-function syncComposerTargetSummary(channel = getSelectedChannel()) {
-  const target = document.getElementById('streams-compose-target-label');
-  const mode = document.getElementById('streams-compose-mode');
-  if (target) {
-    target.textContent = channel?.name ? String(channel.name) : 'No thread';
-    target.title = channel?.name ? String(channel.name) : '';
-  }
-  if (mode) {
-    mode.textContent = getComposerModeLabel(channel);
-  }
-}
-
-function syncComposerState() {
-  const input = document.getElementById('messageInput');
-  const sendButton = document.getElementById('sendButton');
-  const clearButton = document.getElementById('streams-compose-clear');
-  const state = document.getElementById('streams-compose-state');
-  const count = document.getElementById('streams-compose-count');
-  const shell = document.querySelector('.messages-page .input-message-container');
-  const value = String(input?.value || '');
-  const content = value.trim();
-  const hasThread = Number(selectedChannelId || 0) > 0;
-  const enabled = Boolean(input && !input.disabled && hasThread);
-  const hasContent = Boolean(content);
-  const flagged = shouldCaptureSensitiveText(value);
-  const command = parseRouteCommand(value);
-  const routedChannel = command ? resolveChannelByRouteTarget(command.target) : null;
-  let tone = 'muted';
-  let label = 'Ready';
-
-  if (!hasThread) {
-    label = 'No thread';
-  } else if (!enabled) {
-    label = 'Read-only';
-    tone = 'warn';
-  } else if (flagged) {
-    label = 'Secret detected';
-    tone = 'warn';
-  } else if (command && routedChannel) {
-    label = `Route: ${routedChannel.name}`;
-    tone = 'info';
-  } else if (command && !routedChannel) {
-    label = `Unknown route: ${command.target}`;
-    tone = 'warn';
-  } else if (value.length >= COMPOSER_LONG_DRAFT_CHARS) {
-    label = 'Long draft';
-    tone = 'info';
-  } else if (hasContent) {
-    label = 'Draft';
-    tone = 'ok';
-  }
-
-  if (state) {
-    state.textContent = sendInFlight ? 'Sending' : label;
-    state.className = `streams-compose-state is-${sendInFlight ? 'pending' : tone}`;
-  }
-  if (count) {
-    count.textContent = formatComposerCount(value);
-  }
-  if (shell) {
-    shell.classList.toggle('has-content', hasContent);
-    shell.classList.toggle('is-busy', sendInFlight);
-    shell.classList.toggle('is-disabled', !enabled);
-    shell.classList.toggle('is-secret-risk', flagged);
-    shell.classList.toggle('is-route-command', Boolean(command && routedChannel));
-    shell.classList.toggle('is-route-unknown', Boolean(command && !routedChannel));
-  }
-  if (sendButton) {
-    sendButton.disabled = sendInFlight || !enabled || !hasContent;
-    sendButton.textContent = sendInFlight ? 'Sending...' : getComposerSendLabel();
-  }
-  if (clearButton) {
-    clearButton.disabled = sendInFlight || !hasContent;
-  }
-  syncComposerTargetSummary();
-}
-
-function clearComposerInput(options = {}) {
-  const { focus = true, feedback = true } = options;
-  const input = document.getElementById('messageInput');
-  if (!input) return;
-  input.value = '';
-  clearComposerDraft();
-  composerHistoryCursor = null;
-  autoResizeComposer();
-  updateComposerSecretState();
-  syncComposerState();
-  syncComposerOffset();
-  if (feedback) {
-    setComposeFeedback('Draft cleared.', 'muted');
-  }
-  if (focus && !input.disabled) {
-    input.focus({ preventScroll: true });
-  }
 }
 
 function initComposerInput() {
@@ -2452,14 +2154,8 @@ function initComposerInput() {
   }
   autoResizeComposer();
   syncComposerOffset();
-  setComposerExpanded(readStoredComposerExpanded());
-  input.addEventListener('input', () => {
-    composerHistoryCursor = null;
-    autoResizeComposer();
-    queueComposerDraftSave();
-    updateComposerSecretState();
-    syncComposerState();
-  });
+  input.addEventListener('input', autoResizeComposer);
+  input.addEventListener('input', updateComposerSecretState);
   input.addEventListener('input', () => {
     window.requestAnimationFrame(syncComposerOffset);
   });
@@ -2485,28 +2181,6 @@ function initComposerInput() {
     submitFromKeyboard();
   });
   input.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') {
-      input.blur();
-      return;
-    }
-    if (!event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey) {
-      if (event.key === 'ArrowUp' && input.selectionStart === 0 && input.selectionEnd === 0) {
-        if (recallComposerHistory(-1)) {
-          event.preventDefault();
-          return;
-        }
-      }
-      if (
-        event.key === 'ArrowDown'
-        && input.selectionStart === input.value.length
-        && input.selectionEnd === input.value.length
-      ) {
-        if (recallComposerHistory(1)) {
-          event.preventDefault();
-          return;
-        }
-      }
-    }
     if (!isEnterLikeEvent(event)) return;
     const mobileSendMode = shouldTreatEnterAsSend();
     if (!mobileSendMode && event.shiftKey) {
@@ -2528,23 +2202,7 @@ function initComposerInput() {
     if (inputType !== 'insertLineBreak' && inputType !== 'insertParagraph') return;
     submitFromKeyboard(event);
   });
-  const clearButton = document.getElementById('streams-compose-clear');
-  if (clearButton) {
-    clearButton.addEventListener('click', () => {
-      clearComposerInput();
-    });
-  }
-  const expandButton = document.getElementById('streams-compose-expand');
-  if (expandButton) {
-    expandButton.addEventListener('click', () => {
-      setComposerExpanded(!composerExpanded);
-      if (!input.disabled) {
-        input.focus({ preventScroll: true });
-      }
-    });
-  }
   updateComposerSecretState();
-  syncComposerState();
 }
 
 function formatMessageSource(source) {
@@ -4289,8 +3947,6 @@ function setConversationConsoleTarget(target, socketPath = '') {
       consoleSelect.value = activeConversationConsoleTarget;
     }
   }
-  syncComposerTargetSummary();
-  syncComposerState();
 }
 
 function syncComposerOffset() {
@@ -4336,8 +3992,6 @@ function setComposerEnabled(
   if (!enabled) {
     setComposeFeedback('Pick a thread to start typing.', 'muted');
   }
-  syncComposerTargetSummary();
-  syncComposerState();
 }
 
 function getComposerSendLabel() {
@@ -4345,7 +3999,9 @@ function getComposerSendLabel() {
 }
 
 function syncComposerSendLabel() {
-  syncComposerState();
+  const sendButton = document.getElementById('sendButton');
+  if (!sendButton) return;
+  sendButton.textContent = getComposerSendLabel();
 }
 
 function focusMainComposer() {
@@ -4398,8 +4054,6 @@ function clearConversationConsoleMode() {
     log.classList.remove('messages-log--console');
   }
   currentConsoleConversationText = '';
-  syncComposerTargetSummary();
-  syncComposerState();
 }
 
 function extractConsoleLabel(channelName) {
@@ -4740,10 +4394,7 @@ async function loadChannels() {
 }
 
 function selectChannel(channelId, options = {}) {
-  const { focusComposer = false, preserveComposer = false } = options;
-  if (!preserveComposer && Number(selectedChannelId || 0) !== Number(channelId || 0)) {
-    persistComposerDraft(selectedChannelId);
-  }
+  const { focusComposer = false } = options;
   if (!pendingConsoleResponse || Number(pendingConsoleResponse.channelId) !== Number(channelId)) {
     clearPendingConsoleResponse();
   }
@@ -4763,8 +4414,6 @@ function selectChannel(channelId, options = {}) {
   updateAgentControls(channel || null);
   updateRandomSimulator(channel);
   setActiveOperatorBadge(channel || null);
-  syncComposerTargetSummary(channel || null);
-  syncComposerState();
   syncSecretPanelState();
   loadSecretStash(channelId).catch((err) => {
     setSecretStatus(err.message || 'Unable to load secret stash.', 'err');
@@ -4772,7 +4421,7 @@ function selectChannel(channelId, options = {}) {
   if (channel && isConsoleChannel(channel)) {
     refreshTmuxControlSessions({ silent: true });
   }
-  loadMessages(channelId, { forceScroll: true, focusComposer, preserveComposer });
+  loadMessages(channelId, { forceScroll: true, focusComposer });
   updateComposerSecretState();
   if (isCompactMessagesViewport()) {
     setMessagesMobilePane('conversation');
@@ -4780,7 +4429,7 @@ function selectChannel(channelId, options = {}) {
 }
 
 async function loadConsoleConversation(channel, options = {}) {
-  const { focusComposer = false, allowRecovery = true, preserveComposer = false } = options;
+  const { focusComposer = false, allowRecovery = true } = options;
   if (!channel) return;
 
   if (!consolePanesCache.length) {
@@ -4824,14 +4473,13 @@ async function loadConsoleConversation(channel, options = {}) {
   setConsoleChannelMode(true);
   if (canSendToTmux) {
     setComposerEnabled(true, `Send to tmux • ${target}`, focusComposer, 'Send');
-    if (!preserveComposer) restoreComposerDraft(channel.id);
-    setComposeHint(`Console mode · ${target}`);
+    setComposeHint(`Console mode · Send or Enter to ${target}`);
     const hasPendingForChannel = Boolean(
       pendingConsoleResponse
       && Number(pendingConsoleResponse.channelId) === Number(channel.id)
     );
     if (!hasPendingForChannel) {
-      setComposeFeedback(`Connected to ${target}.`, 'ok');
+      setComposeFeedback(`Connected to ${target}. Send or Enter runs command.`, 'ok');
     }
   } else {
     clearPendingConsoleResponse();
@@ -4879,11 +4527,10 @@ async function loadConsoleConversation(channel, options = {}) {
           renderConversationConsoleText(recoveredText, recoveredTarget);
           const output = document.getElementById('messages-console-output');
           if (output) output.innerHTML = renderMaskedPreformattedText(recoveredText);
-            setComposeHint(`Console mode · ${recoveredTarget}`);
-            if (canSendToTmux) {
-              setComposerEnabled(true, `Send to tmux • ${recoveredTarget}`, focusComposer, 'Send');
-              if (!preserveComposer) restoreComposerDraft(channel.id);
-            }
+          setComposeHint(`Console mode · Send or Enter to ${recoveredTarget}`);
+          if (canSendToTmux) {
+            setComposerEnabled(true, `Send to tmux • ${recoveredTarget}`, focusComposer, 'Send');
+          }
           updatePendingConsoleResponse(channel, recoveredText);
           if (!pendingConsoleResponse) {
             setComposeFeedback(`Remapped to ${recoveredTarget}.`, 'muted');
@@ -4958,7 +4605,7 @@ async function sendConsoleMessage(channel, content) {
       }
       target = recoveredTarget;
       setConversationConsoleTarget(target, socketPath);
-      setComposeHint(`Console mode · ${target}`);
+      setComposeHint(`Console mode · Send or Enter to ${target}`);
       setComposeFeedback(`Remapped. Sending to ${target}`, 'pending');
       setStatus('channels-status', `Remapped stale tmux target to ${target}.`, 'info');
     }
@@ -5071,7 +4718,7 @@ async function sendSelectedPaneMessage() {
           && isConsoleChannel(selectedChannel)
         ) {
           setConversationConsoleTarget(sendTarget, activeConversationConsoleSocketPath);
-          setComposeHint(`Console mode · ${sendTarget}`);
+          setComposeHint(`Console mode · Send or Enter to ${sendTarget}`);
           setComposeFeedback(`Remapped to ${sendTarget}.`, 'muted');
         }
         setConsoleStatus(`Remapped stale tmux target to ${sendTarget}.`, 'info');
@@ -5122,18 +4769,13 @@ async function sendSelectedPaneMessage() {
 }
 
 async function loadMessages(channelId, options = {}) {
-  const {
-    forceScroll = false,
-    silent = false,
-    focusComposer = false,
-    preserveComposer = false,
-  } = options;
+  const { forceScroll = false, silent = false, focusComposer = false } = options;
   const channel = channelsCache.find(ch => ch.id === channelId) || null;
   if (!connectorsById.size) {
     await loadConnectors().catch(() => {});
   }
   if (isConsoleChannel(channel)) {
-    await loadConsoleConversation(channel, { focusComposer, preserveComposer });
+    await loadConsoleConversation(channel, { focusComposer });
     return;
   }
 
@@ -5144,7 +4786,6 @@ async function loadMessages(channelId, options = {}) {
   const placeholder = channelName ? `Message ${channelName}...` : 'Type your message...';
   const operator = getChannelOperatorState(channel);
   setComposerEnabled(true, placeholder, focusComposer);
-  if (!preserveComposer) restoreComposerDraft(channelId);
   setActiveDeliveryTarget(channelName || 'None', 'muted');
   setComposeFeedback(channelName ? `Typing in ${channelName}` : 'Ready', 'muted');
   setComposeHint(
@@ -5372,7 +5013,7 @@ async function sendMessage() {
     content = String(command.content || '').trim();
     setComposeFeedback(`Routing to ${routedChannel.name}`, 'pending');
     if (targetChannel && targetChannel !== Number(selectedChannelId || 0)) {
-      selectChannel(targetChannel, { focusComposer: false, preserveComposer: true });
+      selectChannel(targetChannel, { focusComposer: false });
     }
   }
 
@@ -5392,7 +5033,6 @@ async function sendMessage() {
     if (stageSecretDraft(content)) {
       if (input) {
         input.value = '';
-        clearComposerDraft();
         autoResizeComposer();
       }
       setComposeFeedback('Potential secret moved to Secrets. Stash it and send the pointer instead.', 'warn');
@@ -5413,9 +5053,7 @@ async function sendMessage() {
     if (channel && isConsoleChannel(channel)) {
       const result = await sendConsoleMessage(channel, content);
       if (result?.status === 'sent') {
-        rememberComposerHistory(targetChannel, content);
         input.value = '';
-        clearComposerDraft(targetChannel);
         autoResizeComposer();
         updateComposerSecretState();
         input.focus({ preventScroll: true });
@@ -5426,9 +5064,7 @@ async function sendMessage() {
     }
 
     await postChannelMessage(targetChannel, content);
-    rememberComposerHistory(targetChannel, content);
     input.value = '';
-    clearComposerDraft(targetChannel);
     autoResizeComposer();
     updateComposerSecretState();
     if (selectedChannelId === targetChannel) {
@@ -5461,7 +5097,8 @@ async function sendMessage() {
       failure.tone,
     );
   } finally {
-    syncComposerState();
+    if (sendButton && !input?.disabled) sendButton.disabled = false;
+    syncComposerSendLabel();
   }
 }
 
@@ -6189,7 +5826,7 @@ document.addEventListener('DOMContentLoaded', () => {
       setStatus('bots-status', 'Session name is required.', 'danger');
       return;
     }
-    const bot = await createBot({ name, description: descInput.value.trim(), gpt_model: 'gpt-5-mini' });
+    const bot = await createBot({ name, description: descInput.value.trim(), gpt_model: 'gpt-5.5' });
     if (!bot?.id) {
       setStatus('bots-status', 'Failed to create session.', 'danger');
       return;
@@ -6240,11 +5877,6 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   window.addEventListener('beforeunload', () => {
-    persistComposerDraft();
-    if (composerDraftSaveTimer) {
-      clearTimeout(composerDraftSaveTimer);
-      composerDraftSaveTimer = null;
-    }
     document.body.classList.remove('streams-fullscreen-ui');
     document.body.classList.remove('messages-drawer-open');
     if (messagesViewportTrackingCleanup) {
