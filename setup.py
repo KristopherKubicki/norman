@@ -1,5 +1,9 @@
 from pathlib import Path
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised on Python < 3.11
+    import tomli as tomllib
 
 from setuptools import setup, find_packages
 

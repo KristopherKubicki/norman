@@ -8,39 +8,52 @@ on:
   pull_request:
     branches:
       - main
+      - staging
+  workflow_dispatch:
 
 jobs:
-  build_and_test:
+  python:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ['3.8', '3.9', '3.10', '3.11']
     steps:
       - name: Check out code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: '3.10'
           cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            pyproject.toml
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt -r requirements-dev.txt
+          python -m venv .venv
+          ./.venv/bin/python -m pip install --upgrade pip
+          ./.venv/bin/pip install -r requirements.txt -e ".[dev]"
 
-      - name: Run pylint
-        run: pylint --rcfile=.pylintrc $(git ls-files '*.py') || true
+      - name: Run lint
+        run: make lint
 
-      - name: Run tests with coverage
-        run: |
-          coverage run -m pytest -vv
-          coverage xml
+      - name: Run tests
+        run: make test
 
-      - name: Upload coverage
-        uses: codecov/codecov-action@v3
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
-          files: coverage.xml
-          fail_ci_if_error: true
-          token: ${{ secrets.CODECOV_TOKEN }}
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Run frontend tests
+        run: |
+          npm test -- --runInBand

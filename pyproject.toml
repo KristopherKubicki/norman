@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61", "wheel"]
+requires = ["setuptools>=61", "wheel", "tomli; python_version < '3.11'"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -33,6 +33,7 @@ dev = [
   "pre-commit==3.5.0",
   "hypothesis==6.99.0",
   "PyYAML",
+  "tomli; python_version < '3.11'",
   "setuptools>=61",
   "wheel",
 ]
