@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import socket
 import ssl
@@ -31,6 +32,42 @@ WORKER_BY_HOST = {
     "192.168.2.151": "spark-151",
     "2.151": "spark-151",
 }
+WORKER_BY_NAME = {
+    "macmini133": "mac-mini-133",
+    "mac-mini-133": "mac-mini-133",
+    "spark150": "spark-150",
+    "spark-150": "spark-150",
+    "spark151": "spark-151",
+    "spark-151": "spark-151",
+}
+OCR_SMOKE_PNG_BASE64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAAO4AAAAoCAAAAADcNJlXAAAAIGNIUk0AAHomAACAhAAA"
+    "+gAAAIDoAAB1MAAA6mAAADqYAAAXcJy6UTwAAAACYktHRAD/h4/MvwAAAAd0SU1FB+"
+    "oHCQ47BIViB/UAAARkSURBVGje7Zl9TFVlHMc/D69i8uJFb8SLSVsWNFZEOfJt2GLQZ"
+    "upaOrbMf3L2xnIt9V+c0mrV1Aw2WzgGrsZkI2WzcDqT4VzhcKW5rEQtgRS8DLjGSwK/"
+    "/jj35ZzLOefeW2xtcL//8PB9fs/z/X3Oc+GcA0qYTYr6vxuI4EZwI7gR3AhuBHcWaf"
+    "bhtiillIp15G9t9fs3dhelxc/JKNnX73Uqlbrrmy5XC6BUGXTKu5VSSqlMXYhmxzufee"
+    "eC3ggaae5ahFjVnvUM65R6G0S+8de/OCIiIjK2PdZrJVZpluwBt3j1FqkiJcawk4atM"
+    "sQvnf36eIBhF2nuWoRY1bZpo5YYyiYlBoCGAu7daT94temNWoCxF07i2Fz0wGTP6Xp3"
+    "+a+fWHwyPnMDHNpPewJANgD1+dpkrLG26WlGutuqbx+872NCj7RqxCzEvumOl8afq1O"
+    "e09WuwF9LUde0s+N5l3ZR/lwGNRanq+l9ne+/mAb57L5HiOmWkCPNXYsQ29rO+3nKLS"
+    "J6XGmGQyLyUxRPjHp3GcwidXC6cKUB6iTkSHPXPMS2tu9hlvSKiBh+M+dBD1A/yb54r"
+    "5dUiesLpktL4abBsI0MpxG72uE1v6WfWAgBN6JxmAsc46Eiv7khkaPThjsB8wyGbWQ4"
+    "jdjUjm/8PqVlMVNwz0MOuH5hlc5MKOC7acNth1yDYRcZTiM2tfLq8TnNeUzBdVeSVQy"
+    "3IEe/06MMuUIH6r6qaci0qd2kPas3bCPDacSmdmc9NSs9Y+1G1H+Lib5zezvja2OgF1"
+    "L0K1NgMDVk3DLP18+3BExMujtPHejmw2hCjbRu5LrHz0r2zlnXHmiE5pcNuOu0b3Jql"
+    "gEKDH/AElAh01rJc3kT9r7iMUKItG5ks8c5vMk7Z13bmJh37kjxFj2uphWtUQBOGNCv"
+    "HIBkQlbbCsupuJzSNxcZLdvIcBqxrs04vij/923LtY+69rPbJiKVnP0WgDT4Wb/yCsk"
+    "OppxwmAfedLPLNfLDB37aECItGsF/3/Udrk1t3ePzG2KGy0Z1uAA7lvDaCIAjlzbdwu"
+    "EOCgGSwP+KMMSC8HAXZmY4prx9BYm0aMRU1rXxUPgeF7cH4MZV0bkHgLVcO+Nf2XiX9"
+    "QDZcNln/siD4eGaKlikuWsu29odpVQfBQzPzBuIvSgicjmKJ//WPY+lD4mIDMSxyWu2"
+    "Q/W/eogMNOwjzV3zEPva3nQcfwQ8M3fNo3BCRKQc1g1qC28vh2ZtuBVqPWYuqa5pwQ0"
+    "SaepahNjXnolm5XjAK8JHUCUiMloMzp1fX+ho3pYMFZ79XNmw5vD5S6crnKivfDEBuP"
+    "WXNF0JCTdIpKlrgRukdhdUBODee4ykLhGRsXd9N6ikL30b3ijwmvOP+WMCcL0KeL23wg"
+    "0SaeZa4AapnVhNdKsRV1phvTa6vmuVMzYuvWR/v27DicaNi+cmZK/+9I7O/G+4wSJNX"
+    "CvcILU9TjJdKvIfwBmsCO5MVgR3JiuCO5MVwZ3J+geodmS3G08qGAAAABR0RVh0bGFi"
+    "ZWwAUk9VVEUgUFJPT0YgT0u3v613AAAAAElFTkSuQmCC"
+)
 
 
 @dataclass(frozen=True)
@@ -122,6 +159,11 @@ def worker_from_url(value: Any) -> str:
     return WORKER_BY_HOST.get(host, "")
 
 
+def normalize_worker_name(value: Any) -> str:
+    raw = clean(value).lower().replace("_", "-")
+    return WORKER_BY_NAME.get(raw, raw)
+
+
 def output_shape_for_text(
     text: str, *, timeout: bool = False, error: bool = False
 ) -> str:
@@ -173,6 +215,39 @@ def json_request(
     return parsed if isinstance(parsed, dict) else {}
 
 
+def http_json_request(
+    method: str,
+    url: str,
+    *,
+    payload: dict[str, Any] | None = None,
+    body: bytes | None = None,
+    headers: dict[str, str] | None = None,
+    timeout_seconds: float = 30.0,
+    verify_tls: bool = False,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    request_headers = {
+        "User-Agent": "norman-route-proof-benchmark/1.0",
+        **(headers or {}),
+    }
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+        request_headers.setdefault("Content-Type", "application/json")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        method=method,
+        headers=request_headers,
+    )
+    context = None if verify_tls else ssl._create_unverified_context()
+    with urllib.request.urlopen(
+        request, timeout=timeout_seconds, context=context
+    ) as response:
+        response_headers = {str(k).lower(): str(v) for k, v in response.headers.items()}
+        data = response.read().decode("utf-8", errors="replace")
+    parsed = json.loads(data)
+    return parsed if isinstance(parsed, dict) else {}, response_headers
+
+
 def usage_tokens(payload: dict[str, Any]) -> tuple[int, int, int]:
     usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
 
@@ -190,6 +265,14 @@ def usage_tokens(payload: dict[str, Any]) -> tuple[int, int, int]:
     return input_tokens, output_tokens, total_tokens
 
 
+def usage_value(payload: dict[str, Any], key: str, default: int = 0) -> int:
+    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+    try:
+        return max(default, int(usage.get(key) or default))
+    except (TypeError, ValueError):
+        return default
+
+
 def chat_text(payload: dict[str, Any]) -> str:
     choices = payload.get("choices") if isinstance(payload.get("choices"), list) else []
     first = choices[0] if choices and isinstance(choices[0], dict) else {}
@@ -200,6 +283,89 @@ def chat_text(payload: dict[str, Any]) -> str:
 def route_metadata(payload: dict[str, Any]) -> dict[str, Any]:
     meta = payload.get("norllama")
     return meta if isinstance(meta, dict) else {}
+
+
+def worker_from_route(
+    route: dict[str, Any],
+    headers: dict[str, str] | None = None,
+) -> tuple[str, str]:
+    headers = headers or {}
+    upstream = clean(route.get("upstream")) or clean(headers.get("x-norllama-upstream"))
+    worker = normalize_worker_name(route.get("selected_worker")) or worker_from_url(
+        upstream
+    )
+    if not worker and isinstance(route.get("attempts"), list):
+        worker = worker_from_url((route.get("attempts") or [""])[-1])
+    return worker, upstream
+
+
+def tool_row(
+    *,
+    lane_id: str,
+    model: str,
+    profile: str,
+    use_for: str,
+    guardrail: str,
+    capability_class: str,
+    accepted: bool,
+    elapsed_ms: int,
+    route: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+    output_shape: str = "complete",
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    total_tokens: int = 0,
+    status: str = "",
+    error: str = "",
+    score: float = 0.95,
+) -> dict[str, Any]:
+    route = route if isinstance(route, dict) else {}
+    worker, upstream = worker_from_route(route, headers)
+    if not total_tokens:
+        total_tokens = input_tokens + output_tokens
+    failed_shape = output_shape if output_shape else "error"
+    return {
+        "lane_id": lane_id,
+        "model": clean(route.get("selected_model")) or model,
+        "profile": profile,
+        "priority": "p0",
+        "capability_class": capability_class,
+        "use_for": use_for,
+        "guardrail": guardrail,
+        "target_worker": worker,
+        "target_role": "production",
+        "status": "benchmark_backed" if accepted else status or "failed",
+        "benchmark_status": "benchmark_backed" if accepted else status or "failed",
+        "score": score if accepted else 0.0,
+        "coverage_ratio": 1.0,
+        "accepted_count": 1 if accepted else 0,
+        "total_count": 1,
+        "timeout_count": 0,
+        "timeout_rate": 0,
+        "empty_response_count": 0 if accepted else 1 if failed_shape == "empty" else 0,
+        "empty_response_rate": 0 if accepted else 1 if failed_shape == "empty" else 0,
+        "zero_token_count": 0,
+        "zero_token_rate": 0,
+        "progress_only_count": 0,
+        "progress_only_rate": 0,
+        "verifier_rejection_count": 0 if accepted else 1,
+        "verifier_rejection_rate": 0 if accepted else 1,
+        "output_shape_valid": bool(accepted and output_shape == "complete"),
+        "output_shape": output_shape,
+        "cold_start_p95": elapsed_ms,
+        "warm_latency_p95": elapsed_ms,
+        "completion_ms": elapsed_ms,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "usage_bucket": "offline_local",
+        "selected_provider": "norllama",
+        "cloud_proxy": False,
+        "frontdoor": DEFAULT_FRONTDOOR,
+        "upstream": upstream,
+        "observed_worker": worker,
+        "error": error[:240],
+    }
 
 
 def row_from_probe(
@@ -285,6 +451,238 @@ def row_from_probe(
         "matched_expected": matched,
         "error": error[:240],
     }
+
+
+def run_embedding_probe(*, frontdoor: str, verify_tls: bool) -> dict[str, Any]:
+    started = time.perf_counter()
+    model = "bge-m3:latest"
+    try:
+        payload, headers = http_json_request(
+            "POST",
+            f"{frontdoor.rstrip('/')}/v1/embeddings",
+            payload={
+                "model": model,
+                "input": "Norman route proof embedding smoke",
+            },
+            timeout_seconds=60,
+            verify_tls=verify_tls,
+        )
+        data = payload.get("data") if isinstance(payload.get("data"), list) else []
+        vector = data[0].get("embedding") if data and isinstance(data[0], dict) else []
+        accepted = isinstance(vector, list) and len(vector) >= 64
+        return tool_row(
+            lane_id="embedding",
+            model=clean(payload.get("model")) or model,
+            profile="bge_m3_embedding_route_proof",
+            capability_class="embed",
+            use_for="local text memory embeddings for repo, docs, logs, and evidence packets",
+            guardrail="Use for retrieval and memory only; never as reasoning authority.",
+            accepted=accepted,
+            elapsed_ms=int((time.perf_counter() - started) * 1000),
+            route=route_metadata(payload),
+            headers=headers,
+            output_shape="complete" if accepted else "empty",
+            input_tokens=usage_value(payload, "prompt_tokens", 1),
+            total_tokens=usage_value(payload, "total_tokens", 1),
+            status="failed",
+        )
+    except (
+        TimeoutError,
+        socket.timeout,
+        urllib.error.URLError,
+        json.JSONDecodeError,
+        OSError,
+    ) as exc:
+        return tool_row(
+            lane_id="embedding",
+            model=model,
+            profile="bge_m3_embedding_route_proof",
+            capability_class="embed",
+            use_for="local text memory embeddings for repo, docs, logs, and evidence packets",
+            guardrail="Use for retrieval and memory only; never as reasoning authority.",
+            accepted=False,
+            elapsed_ms=int((time.perf_counter() - started) * 1000),
+            output_shape="timeout"
+            if isinstance(exc, (TimeoutError, socket.timeout))
+            else "error",
+            error=str(exc),
+        )
+
+
+def run_rerank_probe(*, frontdoor: str, verify_tls: bool) -> dict[str, Any]:
+    started = time.perf_counter()
+    model = "BAAI/bge-reranker-v2-m3"
+    documents = [
+        "The weather is rainy.",
+        "Norman selected a local Qwen model on a Spark worker.",
+        "Route receipts include worker attribution and token accounting.",
+    ]
+    try:
+        payload, headers = http_json_request(
+            "POST",
+            f"{frontdoor.rstrip('/')}/v1/rerank",
+            payload={
+                "model": model,
+                "query": "local-first route proof worker attribution",
+                "documents": documents,
+            },
+            timeout_seconds=60,
+            verify_tls=verify_tls,
+        )
+        results = (
+            payload.get("results") if isinstance(payload.get("results"), list) else []
+        )
+        top = results[0] if results and isinstance(results[0], dict) else {}
+        accepted = bool(results) and int(top.get("index", -1)) in {1, 2}
+        return tool_row(
+            lane_id="rerank",
+            model=clean(payload.get("model")) or model,
+            profile="bge_reranker_cross_encoder_route_proof",
+            capability_class="rerank",
+            use_for="local evidence reranking before planner, judge, or cloud escalation",
+            guardrail="Use as an ordering signal; exact answers and writes still require verification.",
+            accepted=accepted,
+            elapsed_ms=int((time.perf_counter() - started) * 1000),
+            route=route_metadata(payload),
+            headers=headers,
+            output_shape="complete" if accepted else "empty",
+            input_tokens=len(documents),
+            total_tokens=max(1, usage_value(payload, "total_tokens", len(documents))),
+            status="failed",
+        )
+    except (
+        TimeoutError,
+        socket.timeout,
+        urllib.error.URLError,
+        json.JSONDecodeError,
+        OSError,
+    ) as exc:
+        return tool_row(
+            lane_id="rerank",
+            model=model,
+            profile="bge_reranker_cross_encoder_route_proof",
+            capability_class="rerank",
+            use_for="local evidence reranking before planner, judge, or cloud escalation",
+            guardrail="Use as an ordering signal; exact answers and writes still require verification.",
+            accepted=False,
+            elapsed_ms=int((time.perf_counter() - started) * 1000),
+            output_shape="timeout"
+            if isinstance(exc, (TimeoutError, socket.timeout))
+            else "error",
+            error=str(exc),
+        )
+
+
+def run_safety_probe(*, frontdoor: str, verify_tls: bool) -> dict[str, Any]:
+    started = time.perf_counter()
+    model = "Qwen/Qwen3Guard-Stream-0.6B"
+    text = "Summarize this local route proof receipt without revealing secrets."
+    try:
+        payload, headers = http_json_request(
+            "POST",
+            f"{frontdoor.rstrip('/')}/v1/safety/classify",
+            payload={"model": model, "text": text},
+            timeout_seconds=60,
+            verify_tls=verify_tls,
+        )
+        accepted = (
+            clean(payload.get("schema")) == "norllama.safety-classification.v1"
+            and clean(payload.get("status")) == "ok"
+        )
+        return tool_row(
+            lane_id="safety",
+            model=clean(payload.get("model")) or model,
+            profile="qwen3guard_stream_route_proof",
+            capability_class="safety",
+            use_for="local safety, privacy, and prompt-risk classification before tool execution",
+            guardrail="Use as a preflight classifier; high-authority actions still require policy gates.",
+            accepted=accepted,
+            elapsed_ms=int((time.perf_counter() - started) * 1000),
+            route=route_metadata(payload),
+            headers=headers,
+            output_shape="complete" if accepted else "empty",
+            input_tokens=max(1, len(text.split())),
+            total_tokens=max(
+                1, usage_value(payload, "total_tokens", len(text.split()))
+            ),
+            status="failed",
+        )
+    except (
+        TimeoutError,
+        socket.timeout,
+        urllib.error.URLError,
+        json.JSONDecodeError,
+        OSError,
+    ) as exc:
+        return tool_row(
+            lane_id="safety",
+            model=model,
+            profile="qwen3guard_stream_route_proof",
+            capability_class="safety",
+            use_for="local safety, privacy, and prompt-risk classification before tool execution",
+            guardrail="Use as a preflight classifier; high-authority actions still require policy gates.",
+            accepted=False,
+            elapsed_ms=int((time.perf_counter() - started) * 1000),
+            output_shape="timeout"
+            if isinstance(exc, (TimeoutError, socket.timeout))
+            else "error",
+            error=str(exc),
+        )
+
+
+def run_ocr_probe(*, frontdoor: str, verify_tls: bool) -> dict[str, Any]:
+    started = time.perf_counter()
+    model = "paddleocr:PP-OCRv6-small"
+    try:
+        payload, headers = http_json_request(
+            "POST",
+            f"{frontdoor.rstrip('/')}/v1/ocr?format=json",
+            body=base64.b64decode(OCR_SMOKE_PNG_BASE64),
+            headers={
+                "Content-Type": "image/png",
+                "X-Filename": "route-proof-smoke.png",
+            },
+            timeout_seconds=60,
+            verify_tls=verify_tls,
+        )
+        text = clean(payload.get("text") or payload.get("merged_text"))
+        accepted = clean(payload.get("status")) == "ok" and "ROUTE" in text.upper()
+        return tool_row(
+            lane_id="ocr",
+            model=model,
+            profile="paddleocr_small_route_proof",
+            capability_class="ocr",
+            use_for="local OCR and document text extraction before planner or cloud escalation",
+            guardrail="Verify identifiers, tables, and extracted facts before downstream writes.",
+            accepted=accepted,
+            elapsed_ms=int((time.perf_counter() - started) * 1000),
+            headers=headers,
+            output_shape="complete" if accepted else "empty",
+            input_tokens=max(1, int(payload.get("line_count") or 1)),
+            total_tokens=max(1, int(payload.get("line_count") or 1)),
+            status="failed",
+        )
+    except (
+        TimeoutError,
+        socket.timeout,
+        urllib.error.URLError,
+        json.JSONDecodeError,
+        OSError,
+    ) as exc:
+        return tool_row(
+            lane_id="ocr",
+            model=model,
+            profile="paddleocr_small_route_proof",
+            capability_class="ocr",
+            use_for="local OCR and document text extraction before planner or cloud escalation",
+            guardrail="Verify identifiers, tables, and extracted facts before downstream writes.",
+            accepted=False,
+            elapsed_ms=int((time.perf_counter() - started) * 1000),
+            output_shape="timeout"
+            if isinstance(exc, (TimeoutError, socket.timeout))
+            else "error",
+            error=str(exc),
+        )
 
 
 def run_chat_probe(
@@ -407,6 +805,34 @@ def capability_contracts(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         title="Heavy local verification and escalation reduction",
         aliases=["verifier", "heavyweight_judge"],
     )
+    add(
+        "embed",
+        by_lane.get("embedding"),
+        title="Local text memory embeddings",
+        dispatch="embedding_proxy",
+        aliases=["embedding", "embeddings", "vectorize", "dense_embed"],
+    )
+    add(
+        "rerank",
+        by_lane.get("rerank"),
+        title="Local evidence reranking",
+        dispatch="rerank_proxy",
+        aliases=["reranker", "rank", "reranking"],
+    )
+    add(
+        "safety_privacy_classify",
+        by_lane.get("safety"),
+        title="Local safety, privacy, and prompt-risk classification",
+        dispatch="safety_proxy",
+        aliases=["safety_classify", "privacy_classify"],
+    )
+    add(
+        "doc_parse",
+        by_lane.get("ocr"),
+        title="Local OCR and document parsing",
+        dispatch="ocr_proxy",
+        aliases=["document_parse", "ocr_parse"],
+    )
     return contracts
 
 
@@ -472,6 +898,11 @@ def parse_args() -> argparse.Namespace:
         help="Skip the 122B judge probe when doing a quick refresh.",
     )
     parser.add_argument(
+        "--skip-tool-lanes",
+        action="store_true",
+        help="Only probe chat/code/planner/judge lanes.",
+    )
+    parser.add_argument(
         "--allow-failures",
         action="store_true",
         help="Write a packet even if one or more probes fail.",
@@ -495,6 +926,27 @@ def main() -> int:
         )
         for spec in specs
     ]
+    if not args.skip_tool_lanes:
+        rows.extend(
+            [
+                run_embedding_probe(
+                    frontdoor=args.frontdoor.rstrip("/"),
+                    verify_tls=bool(args.verify_tls),
+                ),
+                run_rerank_probe(
+                    frontdoor=args.frontdoor.rstrip("/"),
+                    verify_tls=bool(args.verify_tls),
+                ),
+                run_safety_probe(
+                    frontdoor=args.frontdoor.rstrip("/"),
+                    verify_tls=bool(args.verify_tls),
+                ),
+                run_ocr_probe(
+                    frontdoor=args.frontdoor.rstrip("/"),
+                    verify_tls=bool(args.verify_tls),
+                ),
+            ]
+        )
     packet = build_packet(
         rows=rows,
         frontdoor=args.frontdoor.rstrip("/"),
