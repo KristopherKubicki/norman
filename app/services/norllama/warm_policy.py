@@ -125,6 +125,20 @@ ROUTE_GUARDRAIL_LANES = (
     "world",
     "canary",
 )
+NARROW_SPECIALIST_LANES = {
+    "embedding",
+    "rerank",
+    "safety",
+    "prompt_injection",
+    "ocr",
+    "doc_parse",
+    "gui_ground",
+    "speech",
+    "forecast",
+    "graph",
+    "network",
+    "world",
+}
 LANE_TEXT_MARKERS = {
     "planner": (
         "plan",
@@ -1144,8 +1158,6 @@ def _recommendation_lanes(item: dict[str, Any]) -> list[str]:
     lanes: set[str] = set()
     explicit_lane = _clean(item.get("lane_id")).lower()
     explicit_route_lane = explicit_lane in ROUTE_GUARDRAIL_LANES
-    if explicit_route_lane:
-        lanes.add(explicit_lane)
     class_lanes = {
         "code": "coder",
         "judge": "judge",
@@ -1165,12 +1177,20 @@ def _recommendation_lanes(item: dict[str, Any]) -> list[str]:
         "vl_rerank": "doc_parse",
         "world": "world",
     }
-    if capability_class in class_lanes:
-        lanes.add(class_lanes[capability_class])
-    for lane, markers in LANE_TEXT_MARKERS.items():
-        if any(marker in text for marker in markers):
-            lanes.add(lane)
-    if not explicit_route_lane:
+    class_lane = class_lanes.get(capability_class, "")
+    if explicit_route_lane:
+        lanes.add(explicit_lane)
+    if class_lane:
+        lanes.add(class_lane)
+    narrow_specialist = bool(
+        (explicit_route_lane and explicit_lane in NARROW_SPECIALIST_LANES)
+        or class_lane in NARROW_SPECIALIST_LANES
+    )
+    if not narrow_specialist:
+        for lane, markers in LANE_TEXT_MARKERS.items():
+            if any(marker in text for marker in markers):
+                lanes.add(lane)
+    if not explicit_route_lane and not narrow_specialist:
         lanes.update(LANE_FAMILY_DEFAULTS.get(family, LANE_FAMILY_DEFAULTS["general"]))
     if _clean(item.get("priority")) == "canary" or (
         size_b is not None and size_b <= SMALL_MODEL_MAX_B

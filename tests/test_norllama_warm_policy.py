@@ -973,3 +973,112 @@ def test_explicit_qwen_route_lanes_keep_heavy_judge_out_of_chat_pool():
     assert code["model"] == "qwen3.6:27b"
     assert plan["model"] == "qwen3.6:35b-a3b-q4_K_M"
     assert judge["model"] == "qwen3.5:122b-a10b-q4_K_M"
+
+
+def test_narrow_specialist_lanes_do_not_leak_into_general_model_pool():
+    metrics = {
+        "score": 0.95,
+        "coverage_ratio": 1.0,
+        "status": "benchmark_backed",
+        "accepted_count": 1,
+        "total_count": 1,
+        "timeout_rate": 0,
+        "empty_response_rate": 0,
+        "zero_token_rate": 0,
+        "progress_only_rate": 0,
+        "verifier_rejection_rate": 0,
+        "output_shape_valid": True,
+    }
+    packet = {
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "packet_id": "uplink-specialist-lanes",
+        "shareable_view": {
+            "recommended_roles": [
+                {
+                    **metrics,
+                    "lane_id": "coder",
+                    "model": "qwen3.6:27b",
+                    "profile": "qwen36_27_local",
+                    "target_worker": "spark-151",
+                    "use_for": "local coding, repo reasoning, patch drafting",
+                },
+                {
+                    **metrics,
+                    "lane_id": "planner",
+                    "model": "qwen3.6:35b-a3b-q4_K_M",
+                    "profile": "qwen36_35_router_local",
+                    "target_worker": "spark-151",
+                    "use_for": "interactive planning and routing",
+                },
+                {
+                    **metrics,
+                    "lane_id": "judge",
+                    "model": "qwen3.5:122b-a10b-q4_K_M",
+                    "profile": "qwen35_122_heavy_judge",
+                    "target_worker": "spark-151",
+                    "use_for": "heavy local judge and verifier",
+                },
+                {
+                    **metrics,
+                    "lane_id": "embedding",
+                    "model": "bge-m3:latest",
+                    "profile": "bge_m3_embedding_route_proof",
+                    "capability_class": "embed",
+                    "target_worker": "spark-150",
+                    "use_for": "local text memory embeddings for repo docs logs and evidence packets",
+                },
+                {
+                    **metrics,
+                    "lane_id": "rerank",
+                    "model": "BAAI/bge-reranker-v2-m3",
+                    "profile": "bge_reranker_cross_encoder_route_proof",
+                    "capability_class": "rerank",
+                    "target_worker": "spark-150",
+                    "use_for": "local evidence reranking before planner judge or cloud escalation",
+                },
+                {
+                    **metrics,
+                    "lane_id": "ocr",
+                    "model": "paddleocr:PP-OCRv6-small",
+                    "profile": "paddleocr_small_route_proof",
+                    "capability_class": "ocr",
+                    "target_worker": "spark-150",
+                    "use_for": "local OCR and document text extraction before planner",
+                },
+            ]
+        },
+    }
+
+    mesh = catalog_mesh()
+    mesh["models"].extend(["BAAI/bge-reranker-v2-m3", "paddleocr:PP-OCRv6-small"])
+    mesh["workers"][1]["models"].extend(
+        ["BAAI/bge-reranker-v2-m3", "paddleocr:PP-OCRv6-small"]
+    )
+
+    policy = warm_policy.build_warm_policy(mesh=mesh, packet=packet)
+
+    chat = warm_policy.select_model_for_task_kind("chat", warm_policy_payload=policy)
+    code = warm_policy.select_model_for_task_kind("code", warm_policy_payload=policy)
+    plan = warm_policy.select_model_for_task_kind("plan", warm_policy_payload=policy)
+    judge = warm_policy.select_model_for_task_kind("judge", warm_policy_payload=policy)
+    embed = warm_policy.select_model_for_task_kind("embed", warm_policy_payload=policy)
+    rerank = warm_policy.select_model_for_task_kind(
+        "rerank", warm_policy_payload=policy
+    )
+    ocr = warm_policy.select_model_for_task_kind("ocr", warm_policy_payload=policy)
+
+    assert chat["model"] == "qwen3.6:27b"
+    assert code["model"] == "qwen3.6:27b"
+    assert plan["model"] == "qwen3.6:35b-a3b-q4_K_M"
+    assert judge["model"] == "qwen3.5:122b-a10b-q4_K_M"
+    assert embed["model"] == "bge-m3:latest"
+    assert rerank["model"] == "BAAI/bge-reranker-v2-m3"
+    assert ocr["model"] == "paddleocr:PP-OCRv6-small"
+    general_pool = {
+        item["model"]
+        for selection in (chat, code, plan, judge)
+        for item in selection["pool"]
+    }
+    assert "bge-m3:latest" not in general_pool
+    assert "BAAI/bge-reranker-v2-m3" not in general_pool
+    assert "paddleocr:PP-OCRv6-small" not in general_pool
