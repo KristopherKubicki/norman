@@ -133,6 +133,66 @@ def test_proxy_invokes_default_safety_tool_handler(monkeypatch):
     assert "Ignore all previous instructions" in calls[0]["text"]
 
 
+def test_proxy_invokes_default_image_generation_tool_handler(monkeypatch):
+    calls = []
+
+    def fake_generate_image(**kwargs):
+        calls.append(kwargs)
+        return {
+            "model": kwargs["model"],
+            "data": [{"b64_json": "abc"}],
+            "image_count": 1,
+            "usage": {"image_count": 1},
+            "headers": {
+                "x-norllama-worker-id": "spark-151",
+                "x-norllama-upstream": "http://192.168.2.151:18151",
+            },
+            "raw": {
+                "norllama": {
+                    "selected_worker": "spark-151",
+                    "output_shape": "complete",
+                    "verifier_result": "pass",
+                    "usage_bucket": "offline_local",
+                    "cloud_proxy": False,
+                }
+            },
+        }
+
+    monkeypatch.setattr(
+        proxy_module.norllama_gateway, "generate_image", fake_generate_image
+    )
+
+    request = NorllamaTaskRequest(
+        kind="image_generate",
+        input_text="draw a shell",
+        route_policy={
+            "provider": "norllama",
+            "use_capability_catalog": True,
+            "negative_prompt": "watermark",
+            "size": "768x768",
+            "steps": 22,
+            "n": 1,
+        },
+    )
+
+    receipt = NorllamaProxy().invoke(request).as_dict()
+
+    assert receipt["status"] == "completed"
+    assert receipt["route"]["tool_lane"] is True
+    assert receipt["route"]["capability"] == "image_generate"
+    assert receipt["route"]["cloud_proxy"] is False
+    assert receipt["route"]["attribution"]["selection_source"] == "gateway_response"
+    assert receipt["route"]["attribution"]["worker_id"] == "spark-151"
+    assert receipt["output"]["data"] == [{"b64_json": "abc"}]
+    assert receipt["output"]["usage"]["usage_bucket"] == "offline_local"
+    assert receipt["metadata"]["route_receipt"]["selected_worker"] == "spark-151"
+    assert receipt["metadata"]["route_receipt"]["output_shape"] == "complete"
+    assert calls[0]["prompt"] == "draw a shell"
+    assert calls[0]["negative_prompt"] == "watermark"
+    assert calls[0]["size"] == "768x768"
+    assert calls[0]["steps"] == 22
+
+
 def test_proxy_returns_planned_receipt_when_tool_handler_is_missing():
     request = NorllamaTaskRequest(
         kind="ocr",

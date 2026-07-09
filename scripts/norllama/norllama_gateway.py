@@ -32,6 +32,7 @@ DEFAULT_TRANSCRIBE_BASES = ("http://127.0.0.1:8097",)
 DEFAULT_OCR_BASES = ("http://127.0.0.1:8098",)
 DEFAULT_RERANK_BASES = ("http://127.0.0.1:8102",)
 DEFAULT_SAFETY_BASES = ("http://127.0.0.1:8103",)
+DEFAULT_IMAGE_BASES = ("http://127.0.0.1:7860",)
 DEFAULT_MEDIA_KEY_FILE = str(Path.home() / ".config/norllama/media/api_key")
 DEFAULT_MEDIA_KEY_DIR = str(Path.home() / ".config/norllama/media/keys")
 DEFAULT_TRANSCRIBE_KEY_FILE = str(Path.home() / ".config/norllama/transcribe/api_key")
@@ -42,6 +43,8 @@ DEFAULT_RERANK_KEY_FILE = "/etc/spark-rerank/api_key"
 DEFAULT_RERANK_KEY_DIR = str(Path.home() / ".config/norllama/rerank/keys")
 DEFAULT_SAFETY_KEY_FILE = "/etc/spark-safety/api_key"
 DEFAULT_SAFETY_KEY_DIR = str(Path.home() / ".config/norllama/safety/keys")
+DEFAULT_IMAGE_KEY_FILE = str(Path.home() / ".config/norllama/image/api_key")
+DEFAULT_IMAGE_KEY_DIR = str(Path.home() / ".config/norllama/image/keys")
 DEFAULT_PEER_BASES: tuple[str, ...] = ()
 DEFAULT_DISCOVERY_ENV_FILES = (
     "/etc/net-agents/uplink.env",
@@ -126,6 +129,8 @@ WARM_POLICY_CONTRACT_LANES = {
     "safety_privacy_classify": ("filter", "verifier"),
     "safety_classify": ("filter", "verifier"),
     "privacy_classify": ("filter", "verifier"),
+    "image_generate": ("scout", "planner"),
+    "stable_diffusion": ("scout", "planner"),
     "entity_event_extract": ("scout", "summarizer", "planner"),
     "entity_extract": ("scout", "summarizer", "planner"),
     "event_extract": ("scout", "summarizer", "planner"),
@@ -161,6 +166,7 @@ WARM_POLICY_TOOL_ONLY_DISPATCHES = {
     "hybrid_pipeline",
     "media_proxy",
     "ocr_proxy",
+    "image_generation_proxy",
     "rerank_proxy",
     "safety_proxy",
     "transcribe_proxy",
@@ -828,6 +834,8 @@ def infer_model_capabilities(model_id: str, provider: str) -> list[str]:
         caps.extend(["audio", "transcribe"])
     elif "rerank" in lower or "reranker" in lower:
         caps.append("rerank")
+    elif "stable-diffusion" in lower or "sdxl" in lower or "txt2img" in lower:
+        caps.append("image_generate")
     elif (
         "embed" in lower
         or lower.startswith("nomic-embed")
@@ -852,6 +860,7 @@ def infer_model_access(model_id: str, provider: str, capabilities: list[str]) ->
         "embed" in capabilities
         or "rerank" in capabilities
         or "transcribe" in capabilities
+        or "image_generate" in capabilities
     ):
         return "passthrough_only"
     if "vision" in capabilities:
@@ -903,6 +912,10 @@ def infer_model_summary(model_id: str, provider: str, capabilities: list[str]) -
         return "Production local safety and prompt-injection classification lane."
     if "transcribe" in capabilities:
         return "Audio/transcription lane served through media/transcribe, not unified chat."
+    if "image_generate" in capabilities:
+        return (
+            "Stable Diffusion-compatible image generation lane served through Norllama."
+        )
     if "chat" in capabilities:
         return "General local chat lane."
     return "Specialized local model."
@@ -1056,6 +1069,9 @@ class App:
         self.safety_bases = split_env_urls(
             "NORLLAMA_SAFETY_BASES", DEFAULT_SAFETY_BASES
         )
+        image_bases = split_env_urls("NORLLAMA_IMAGE_BASES", DEFAULT_IMAGE_BASES)
+        sd_bases = split_env_urls("NORLLAMA_STABLE_DIFFUSION_BASES", ())
+        self.image_bases = unique_items([*image_bases, *sd_bases])
         auto_peer_candidates: list[str] = []
         for env_path in self.discovery_env_files:
             auto_peer_candidates.extend(
@@ -1071,6 +1087,7 @@ class App:
             *self.ocr_bases,
             *self.rerank_bases,
             *self.safety_bases,
+            *self.image_bases,
         ]:
             frontdoor = frontdoor_for_url(value, default_port=self.port)
             if frontdoor:
@@ -1110,6 +1127,8 @@ class App:
             return "Safety classification lane available through Norllama."
         if "ocr" in capabilities:
             return "OCR/document parsing lane available through Norllama."
+        if "image_generate" in capabilities:
+            return "Image generation lane available through Norllama."
         return summary.replace("Spark fleet", "Norllama fleet").replace(
             "Spark", "Norllama"
         )
@@ -1238,6 +1257,11 @@ class App:
             {"path": "/v1/ocr", "methods": ["POST", "OPTIONS"], "kind": "ocr"},
             {"path": "/ocr", "methods": ["POST", "OPTIONS"], "kind": "ocr"},
             {
+                "path": "/v1/images/generations",
+                "methods": ["POST", "OPTIONS"],
+                "kind": "image_generate",
+            },
+            {
                 "path": "/v1/chat/completions",
                 "methods": ["POST", "OPTIONS"],
                 "kind": "unified_chat",
@@ -1351,6 +1375,16 @@ class App:
             DEFAULT_SAFETY_KEY_FILE,
             "NORLLAMA_SAFETY_KEY_DIR",
             DEFAULT_SAFETY_KEY_DIR,
+        )
+
+    def image_key(self, base_url: str) -> str:
+        return load_key(
+            base_url,
+            "NORLLAMA_IMAGE_API_KEY",
+            "NORLLAMA_IMAGE_API_KEY_FILE",
+            DEFAULT_IMAGE_KEY_FILE,
+            "NORLLAMA_IMAGE_KEY_DIR",
+            DEFAULT_IMAGE_KEY_DIR,
         )
 
     def fetch_json(self, url: str, *, timeout_s: float | None = None) -> dict:
@@ -2032,6 +2066,77 @@ class App:
         )
         return [str(row["base_url"]) for row in healthy], rows
 
+    def image_health_doc(self, base: str) -> dict | None:
+        for path in ("/health", "/sdapi/v1/options"):
+            doc = self.fetch_json_or_none(
+                base.rstrip("/") + path,
+                timeout_s=min(self.timeout_s, self.inventory_timeout_s),
+            )
+            if isinstance(doc, dict):
+                doc["_health_path"] = path
+                return doc
+        return None
+
+    def choose_image_base(self) -> tuple[str | None, list[dict]]:
+        rows: list[dict] = []
+        for base in self.image_bases:
+            try:
+                doc = self.image_health_doc(base)
+                if not isinstance(doc, dict):
+                    rows.append(
+                        {
+                            "base_url": base,
+                            "status": "error",
+                            "error": "no_health_response",
+                        }
+                    )
+                    continue
+                model = (
+                    doc.get("model")
+                    or doc.get("sd_model_checkpoint")
+                    or doc.get("checkpoint")
+                    or "stable-diffusion:configured-backend"
+                )
+                status = str(doc.get("status") or "").strip().lower()
+                if not status:
+                    status = "ok" if doc.get("_health_path") else "unknown"
+                row = {
+                    "base_url": base,
+                    "status": status,
+                    "engine": doc.get("engine") or "stable-diffusion",
+                    "model": model,
+                    "device": doc.get("device") or doc.get("cuda") or "",
+                    "loaded": bool(doc.get("loaded", True)),
+                    "health_path": doc.get("_health_path"),
+                    "http_status": int(doc.get("_http_status") or 0),
+                }
+                rows.append(row)
+            except Exception as exc:
+                rows.append({"base_url": base, "status": "error", "error": str(exc)})
+        healthy = [row for row in rows if row.get("status") == "ok"]
+        if not healthy:
+            return None, rows
+        healthy.sort(
+            key=lambda row: (
+                not bool(row.get("loaded", True)),
+                str(row.get("device") or "") != "cuda",
+                str(row.get("base_url") or ""),
+            )
+        )
+        return str(healthy[0]["base_url"]), rows
+
+    def image_candidate_bases(self) -> tuple[list[str], list[dict]]:
+        _, rows = self.choose_image_base()
+        healthy = [row for row in rows if row.get("status") == "ok"]
+        healthy.sort(
+            key=lambda row: (
+                not bool(row.get("loaded", True)),
+                str(row.get("device") or "") != "cuda",
+                str(row.get("base_url") or ""),
+            )
+        )
+        return [str(row["base_url"]) for row in healthy], rows
+
     def combined_models(self) -> dict:
         merged: dict[tuple[str, str], dict] = {}
         for row in self.ollama_host_rows():
@@ -2196,6 +2301,37 @@ class App:
         except Exception:
             pass
         try:
+            for row in self.image_candidate_bases()[1]:
+                if row.get("status") != "ok":
+                    continue
+                raw_model = str(row.get("model") or "").strip()
+                model_id = raw_model or "stable-diffusion:configured-backend"
+                key = ("image", model_id)
+                base = str(row.get("base_url") or "")
+                item = {
+                    "id": model_id,
+                    "object": "model",
+                    "provider": "image",
+                    "host": base,
+                    "hosts": [base],
+                    "capabilities": ["image_generate"],
+                    "access": "image_generation_proxy",
+                    "recommended_path": "/v1/images/generations",
+                    "summary": "Local Stable Diffusion-compatible image generation lane.",
+                    "details": {
+                        "engine": row.get("engine"),
+                        "device": row.get("device"),
+                        "loaded": bool(row.get("loaded")),
+                        "health_path": row.get("health_path"),
+                    },
+                }
+                if key not in merged:
+                    merged[key] = item
+                elif base and base not in merged[key].get("hosts", []):
+                    merged[key]["hosts"].append(base)
+        except Exception:
+            pass
+        try:
             for base in self.peer_bases:
                 doc = self.fetch_json_or_none(
                     base.rstrip("/") + "/health",
@@ -2316,6 +2452,44 @@ class App:
                         merged[key]["hosts"].append(base)
         except Exception:
             pass
+        try:
+            for base in self.peer_bases:
+                doc = self.fetch_json_or_none(
+                    base.rstrip("/") + "/health",
+                    timeout_s=min(self.timeout_s, self.peer_timeout_s),
+                )
+                if not isinstance(doc, dict):
+                    continue
+                for row in (doc.get("downstreams") or {}).get("image") or []:
+                    if not isinstance(row, dict) or row.get("status") != "ok":
+                        continue
+                    raw_model = str(row.get("model") or "").strip()
+                    model_id = raw_model or "stable-diffusion:configured-backend"
+                    key = ("image", model_id)
+                    item = {
+                        "id": model_id,
+                        "object": "model",
+                        "provider": "image",
+                        "host": base,
+                        "hosts": [base],
+                        "peer_discovered": True,
+                        "capabilities": ["image_generate"],
+                        "access": "image_generation_proxy",
+                        "recommended_path": "/v1/images/generations",
+                        "summary": "Peer Stable Diffusion-compatible image generation lane.",
+                        "details": {
+                            "engine": row.get("engine"),
+                            "device": row.get("device"),
+                            "loaded": bool(row.get("loaded")),
+                            "health_path": row.get("health_path"),
+                        },
+                    }
+                    if key not in merged:
+                        merged[key] = item
+                    elif base and base not in merged[key].get("hosts", []):
+                        merged[key]["hosts"].append(base)
+        except Exception:
+            pass
         data = sorted(
             merged.values(),
             key=lambda row: (str(row.get("provider") or ""), str(row.get("id") or "")),
@@ -2347,6 +2521,8 @@ class App:
             return "/v1/ocr"
         if "safety" in capabilities or access == "safety_proxy":
             return "/v1/safety/classify"
+        if "image_generate" in capabilities or access == "image_generation_proxy":
+            return "/v1/images/generations"
         if "embed" in capabilities:
             return "/v1/embeddings"
         return "/ollama/v1/chat/completions"
@@ -2369,6 +2545,7 @@ class App:
             "ocr_proxy": True,
             "native_rerank_proxy": True,
             "safety_proxy": True,
+            "image_generation_api": True,
             "gateway_only_broadcast": not self.expose_upstream_details
             and not self.advertise_aux_services,
             "upstream_details_public": self.expose_upstream_details,
@@ -2948,6 +3125,36 @@ class App:
                     "generated_at": str(preflight_doc.get("generated_at") or ""),
                 }
             )
+        endpoints = self.public_endpoints()
+        endpoint_kinds = {
+            str(row.get("kind") or "").strip()
+            for row in endpoints
+            if str(row.get("kind") or "").strip()
+        }
+        tool_lanes: list[str] = []
+        for kind, lanes in {
+            "embedding": ("embed",),
+            "rerank": ("rerank",),
+            "safety": ("prompt_injection", "safety"),
+            "ocr": ("doc_parse", "ocr"),
+            "asr": ("asr", "stt"),
+            "media": ("doc_parse", "gui_ground", "ocr"),
+            "image_generate": ("image_generate",),
+        }.items():
+            if kind in endpoint_kinds:
+                for lane in lanes:
+                    if lane not in tool_lanes:
+                        tool_lanes.append(lane)
+        task_kinds = list(tool_lanes)
+        if "unified_chat" in endpoint_kinds:
+            task_kinds = ["chat", "plan", "code", *task_kinds]
+        modalities = ["text"]
+        if endpoint_kinds.intersection({"image_generate", "media", "ocr"}):
+            modalities.append("image")
+        if endpoint_kinds.intersection({"media", "ocr"}):
+            modalities.extend(["file", "pdf"])
+        if "asr" in endpoint_kinds:
+            modalities.append("audio")
         return {
             "service": "norllama",
             "gateway": gateway_identity(),
@@ -2955,6 +3162,9 @@ class App:
             "features": self.feature_flags(),
             "sources": sources,
             "contracts": contracts,
+            "tool_lanes": tool_lanes,
+            "task_kinds": unique_items(task_kinds),
+            "modalities": unique_items(modalities),
             "model_policy": {
                 "schema": "norllama.model-policy.v1",
                 "mode": "qwen_first_local",
@@ -3006,7 +3216,7 @@ class App:
                 "levels": sorted(PRIORITY_LEVELS),
                 "notes": "Priority is exposed in headers and logs now. It does not yet reorder execution.",
             },
-            "endpoints": self.public_endpoints(),
+            "endpoints": endpoints,
         }
 
     def catalog(self) -> dict:
@@ -3103,6 +3313,11 @@ class App:
             for row in downstreams.get("transcribe") or []
             if str(row.get("base_url") or "")
         }
+        image_rows = {
+            str(row.get("base_url") or ""): row
+            for row in downstreams.get("image") or []
+            if str(row.get("base_url") or "")
+        }
         ds4_rows_raw = downstreams.get("ds4") or []
         if isinstance(ds4_rows_raw, list):
             ds4_rows = {
@@ -3116,6 +3331,7 @@ class App:
             *(base for base in ollama_rows if base),
             *(base for base in media_rows if base),
             *(base for base in transcribe_rows if base),
+            *(base for base in image_rows if base),
             *(base for base in ds4_rows if base),
         }
         merged: dict[str, dict[str, object]] = {}
@@ -3142,6 +3358,10 @@ class App:
                         "status": "unknown",
                         "model": "",
                     },
+                    "image": {
+                        "status": "unknown",
+                        "model": "",
+                    },
                     "ds4": {
                         "healthy": False,
                         "models": [],
@@ -3163,6 +3383,11 @@ class App:
                 and "transcribe" not in row["selected_lanes"]
             ):
                 row["selected_lanes"].append("transcribe")
+            if (
+                str(routing.get("image") or "") == base
+                and "image" not in row["selected_lanes"]
+            ):
+                row["selected_lanes"].append("image")
             if (
                 str(routing.get("ds4") or "") == base
                 and "ds4" not in row["selected_lanes"]
@@ -3188,6 +3413,12 @@ class App:
                 row["transcribe"] = {
                     "status": str(transcribe.get("status") or "unknown"),
                     "model": str(transcribe.get("model") or ""),
+                }
+            if base in image_rows:
+                image = image_rows.get(base) or {}
+                row["image"] = {
+                    "status": str(image.get("status") or "unknown"),
+                    "model": str(image.get("model") or ""),
                 }
             if base in ds4_rows:
                 ds4 = ds4_rows.get(base) or {}
@@ -3681,6 +3912,11 @@ class App:
                 status = str(info.get("status") or "unknown")
                 model = str(info.get("model") or "")
                 return status if not model else f"{status} / {model}"
+            if lane == "image":
+                info = row.get("image") or {}
+                status = str(info.get("status") or "unknown")
+                model = str(info.get("model") or "")
+                return status if not model else f"{status} / {model}"
             info = row.get("ds4") or {}
             if not info.get("healthy"):
                 return "-"
@@ -3692,6 +3928,7 @@ class App:
             f"<td>{html.escape(lane_state(row, 'ollama'))}</td>"
             f"<td>{html.escape(lane_state(row, 'media'))}</td>"
             f"<td>{html.escape(lane_state(row, 'transcribe'))}</td>"
+            f"<td>{html.escape(lane_state(row, 'image'))}</td>"
             f"<td>{html.escape(lane_state(row, 'ds4'))}</td>"
             f"<td>{html.escape(', '.join(row.get('selected_lanes') or []) or '-')}</td>"
             "</tr>"
@@ -3767,6 +4004,7 @@ class App:
       <div class="card"><div class="k">DS4 Route</div><div class="v mono">{html.escape(str(routes.get('ds4') or ''))}</div></div>
       <div class="card"><div class="k">Media Route</div><div class="v mono">{html.escape(str(routes.get('media') or ''))}</div></div>
       <div class="card"><div class="k">Transcribe Route</div><div class="v mono">{html.escape(str(routes.get('transcribe') or ''))}</div></div>
+      <div class="card"><div class="k">Image Route</div><div class="v mono">{html.escape(str(routes.get('image') or ''))}</div></div>
     </div>
 """
             if self.expose_upstream_details
@@ -3784,7 +4022,7 @@ class App:
       <div class="sub">What each Spark is carrying right now, and which lanes Norllama is actively selecting.</div>
       <table>
         <thead>
-          <tr><th>Host</th><th>Ollama</th><th>Media</th><th>ASR</th><th>DS4</th><th>Selected Lanes</th></tr>
+          <tr><th>Host</th><th>Ollama</th><th>Media</th><th>ASR</th><th>Images</th><th>DS4</th><th>Selected Lanes</th></tr>
         </thead>
         <tbody>
           {fleet_rows}
@@ -3846,8 +4084,8 @@ class App:
     .v {{ font-size: 1rem; font-weight: 700; word-break: break-word; }}
     .mono {{ font-family: "SFMono-Regular", "Menlo", "Consolas", monospace; }}
     .two {{ display: grid; gap: 18px; grid-template-columns: 1.05fr 1.4fr; }}
-    textarea, select, button {{ width: 100%; font: inherit; }}
-    textarea, select {{ box-sizing: border-box; border: 1px solid var(--line); border-radius: 10px; padding: 10px; background: var(--field); color: var(--ink); }}
+    textarea, select, button, input {{ width: 100%; font: inherit; }}
+    textarea, select, input {{ box-sizing: border-box; border: 1px solid var(--line); border-radius: 10px; padding: 10px; background: var(--field); color: var(--ink); }}
     button {{ border: 0; background: linear-gradient(135deg, #118277, #1a6285); color: #f7fffe; padding: 12px 14px; border-radius: 999px; cursor: pointer; font-weight: 700; }}
     table {{ width: 100%; border-collapse: collapse; background: var(--paper); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }}
     th, td {{ text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }}
@@ -3859,7 +4097,11 @@ class App:
     .subcell {{ color: var(--muted); font-size: 0.86rem; margin-top: 4px; }}
     .code-links a {{ color: var(--accent); text-decoration: none; }}
     .code-links a:hover {{ text-decoration: underline; }}
+    .form-grid {{ display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap:10px; margin-top:10px; }}
+    .image-preview {{ display:grid; place-items:center; min-height:260px; margin-top:12px; border:1px solid var(--line); border-radius:12px; background:var(--code-bg); overflow:hidden; }}
+    .image-preview img {{ max-width:100%; height:auto; display:block; }}
     @media (max-width: 900px) {{ .hero, .two {{ grid-template-columns: 1fr; }} }}
+    @media (max-width: 700px) {{ .form-grid {{ grid-template-columns: 1fr; }} }}
   </style>
 </head>
 <body>
@@ -3922,6 +4164,42 @@ class App:
         <div class="sub">Machine-facing behavior that matters for agents and wrappers.</div>
         <ul>{features}</ul>
         <div class="sub" style="margin-top:12px;">Use <code>/v1/overview</code> for a compact gateway snapshot, then <code>/v1/capabilities</code>, <code>/v1/catalog</code>, and <code>/v1/activity</code> for deeper bot-to-bot discovery and tracing.</div>
+      </div>
+    </div>
+    <div class="two" style="margin-top:18px;">
+      <div class="card">
+        <h2>Image Shell</h2>
+        <div class="sub">Local Stable Diffusion-compatible lane through Norllama.</div>
+        <label class="k" for="imagePrompt">Prompt</label>
+        <textarea id="imagePrompt" rows="5">a small matte black shell terminal on a desk, clean product render</textarea>
+        <label class="k" for="imageNegative" style="display:block;margin-top:10px;">Negative Prompt</label>
+        <textarea id="imageNegative" rows="2">blurry, distorted text, watermark</textarea>
+        <div class="form-grid">
+          <div>
+            <label class="k" for="imageSize">Size</label>
+            <select id="imageSize">
+              <option value="768x768">768x768</option>
+              <option value="1024x1024" selected>1024x1024</option>
+              <option value="1024x768">1024x768</option>
+              <option value="768x1024">768x1024</option>
+            </select>
+          </div>
+          <div>
+            <label class="k" for="imageSteps">Steps</label>
+            <input id="imageSteps" type="number" min="1" max="150" value="24">
+          </div>
+          <div>
+            <label class="k" for="imageCount">Count</label>
+            <input id="imageCount" type="number" min="1" max="4" value="1">
+          </div>
+        </div>
+        <div style="margin-top:12px;"><button id="generateImage">Generate</button></div>
+      </div>
+      <div class="card">
+        <h2>Image Output</h2>
+        <div class="sub">The response is logged as <code>image_generate</code> with worker attribution and offline-local accounting.</div>
+        <pre id="imageOut">No image request yet.</pre>
+        <div id="imagePreview" class="image-preview"><span class="sub">No preview.</span></div>
       </div>
     </div>
     <div style="margin-top:18px;">
@@ -4004,6 +4282,50 @@ class App:
         out.textContent = String(err);
       }}
     }});
+    const imageOut = document.getElementById('imageOut');
+    const imagePreview = document.getElementById('imagePreview');
+    document.getElementById('generateImage').addEventListener('click', async () => {{
+      const prompt = document.getElementById('imagePrompt').value;
+      const negative_prompt = document.getElementById('imageNegative').value;
+      const size = document.getElementById('imageSize').value;
+      const steps = Number(document.getElementById('imageSteps').value || 24);
+      const n = Number(document.getElementById('imageCount').value || 1);
+      imageOut.textContent = 'Working...';
+      imagePreview.innerHTML = '<span class="sub">Generating...</span>';
+      try {{
+        const resp = await fetch('/v1/images/generations', {{
+          method: 'POST',
+          headers: {{
+            'Content-Type': 'application/json',
+            'X-Norllama-Priority': 'background',
+          }},
+          body: JSON.stringify({{ prompt, negative_prompt, size, steps, n }})
+        }});
+        const text = await resp.text();
+        let doc = null;
+        try {{ doc = JSON.parse(text); }} catch (err) {{}}
+        imageOut.textContent = [
+          'status=' + resp.status,
+          'request_id=' + (resp.headers.get('X-Norllama-Request-Id') || ''),
+          {("'upstream=' + (resp.headers.get('X-Norllama-Upstream') || '')," if self.expose_upstream_details else "")}
+          text
+        ].join('\\n');
+        const first = doc && doc.data && doc.data[0] ? doc.data[0] : null;
+        const b64 = first && first.b64_json ? first.b64_json : '';
+        const url = first && first.url ? first.url : '';
+        if (b64) {{
+          const src = b64.startsWith('data:') ? b64 : 'data:image/png;base64,' + b64;
+          imagePreview.innerHTML = '<img alt="Generated image" src="' + src + '">';
+        }} else if (url) {{
+          imagePreview.innerHTML = '<img alt="Generated image" src="' + url + '">';
+        }} else {{
+          imagePreview.innerHTML = '<span class="sub">No image returned.</span>';
+        }}
+      }} catch (err) {{
+        imageOut.textContent = String(err);
+        imagePreview.innerHTML = '<span class="sub">Request failed.</span>';
+      }}
+    }});
     async function refreshActivity() {{
       try {{
         const resp = await fetch('/v1/activity?limit=12');
@@ -4034,6 +4356,7 @@ class App:
         ocr_selected, ocr_rows = self.choose_ocr_base()
         rerank_selected, rerank_rows = self.choose_rerank_base()
         safety_selected, safety_rows = self.choose_safety_base()
+        image_selected, image_rows = self.choose_image_base()
         ollama_selected, ollama_rows = self.choose_ollama_base()
         ds4_selected, ds4_rows = self.choose_ds4_base()
         local_visible_model_count = 0
@@ -4050,6 +4373,9 @@ class App:
         )
         local_visible_model_count += len(
             [row for row in safety_rows if row.get("status") == "ok"]
+        )
+        local_visible_model_count += len(
+            [row for row in image_rows if row.get("status") == "ok"]
         )
         payload = {
             "service": "norllama",
@@ -4072,6 +4398,7 @@ class App:
                 "ocr": ocr_selected,
                 "rerank": rerank_selected,
                 "safety": safety_selected,
+                "image": image_selected,
             }
             payload["downstreams"] = {
                 "media": media_rows,
@@ -4079,6 +4406,7 @@ class App:
                 "ocr": ocr_rows,
                 "rerank": rerank_rows,
                 "safety": safety_rows,
+                "image": image_rows,
                 "ollama": ollama_rows,
                 "ds4": ds4_rows,
             }
@@ -4089,6 +4417,7 @@ class App:
                 "prefetch": True,
                 "evict": True,
                 "safety": True,
+                "image_generation": True,
                 "aux_services_advertised": self.advertise_aux_services,
                 "peer_frontdoor_fallback": bool(self.peer_bases),
                 "peer_frontdoor_count": len(self.peer_bases),
@@ -4236,6 +4565,7 @@ class Handler(BaseHTTPRequestHandler):
                 "verifier_result",
                 "native_rerank_error",
                 "native_safety_error",
+                "image_count",
             ):
                 value = norllama_meta.get(key)
                 if value is not None and value != "":
@@ -4549,6 +4879,164 @@ class Handler(BaseHTTPRequestHandler):
             )
             return None
         return payload
+
+    def clamp_image_int(
+        self, value: object, default: int, *, minimum: int, maximum: int
+    ) -> int:
+        try:
+            parsed = int(value) if value is not None and value != "" else default
+        except Exception:
+            parsed = default
+        return max(minimum, min(parsed, maximum))
+
+    def image_size_from_payload(self, payload: dict[str, object]) -> tuple[int, int]:
+        raw = payload.get("size") or payload.get("resolution")
+        width = payload.get("width")
+        height = payload.get("height")
+        if isinstance(raw, str):
+            clean = raw.lower().replace("*", "x").replace(" ", "")
+            if "x" in clean:
+                width, height = clean.split("x", 1)
+        elif isinstance(raw, dict):
+            width = raw.get("width") or raw.get("w") or width
+            height = raw.get("height") or raw.get("h") or height
+        return (
+            self.clamp_image_int(width, 1024, minimum=64, maximum=2048),
+            self.clamp_image_int(height, 1024, minimum=64, maximum=2048),
+        )
+
+    def image_timeout_from_payload(self, payload: dict[str, object]) -> float:
+        raw = payload.get("timeout_seconds") or payload.get("timeout")
+        try:
+            timeout_s = float(raw) if raw not in (None, "") else self.app.timeout_s
+        except Exception:
+            timeout_s = self.app.timeout_s
+        return max(5.0, min(timeout_s, 900.0))
+
+    def prompt_from_payload(self, payload: dict[str, object]) -> str:
+        prompt = str(payload.get("prompt") or payload.get("input") or "").strip()
+        if prompt:
+            return prompt
+        messages = payload.get("messages")
+        if not isinstance(messages, list):
+            return ""
+        parts: list[str] = []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content")
+            if isinstance(content, str) and content.strip():
+                parts.append(content.strip())
+        return "\n".join(parts).strip()
+
+    def stable_diffusion_payload(
+        self, payload: dict[str, object], *, prompt: str, model: str
+    ) -> dict[str, object]:
+        width, height = self.image_size_from_payload(payload)
+        request_payload: dict[str, object] = {
+            "prompt": prompt,
+            "negative_prompt": str(payload.get("negative_prompt") or "").strip(),
+            "batch_size": self.clamp_image_int(
+                payload.get("n", payload.get("count")), 1, minimum=1, maximum=4
+            ),
+            "width": width,
+            "height": height,
+            "steps": self.clamp_image_int(
+                payload.get("steps"), 24, minimum=1, maximum=150
+            ),
+        }
+        if payload.get("cfg_scale") not in (None, ""):
+            try:
+                request_payload["cfg_scale"] = max(
+                    1.0, min(float(payload.get("cfg_scale")), 30.0)
+                )
+            except Exception:
+                pass
+        if payload.get("seed") not in (None, ""):
+            try:
+                request_payload["seed"] = int(payload.get("seed"))
+            except Exception:
+                pass
+        sampler = str(
+            payload.get("sampler") or payload.get("sampler_name") or ""
+        ).strip()
+        if sampler:
+            request_payload["sampler_name"] = sampler
+        if model and model != "stable-diffusion:configured-backend":
+            request_payload["override_settings"] = {"sd_model_checkpoint": model}
+        return request_payload
+
+    def openai_image_response(
+        self,
+        upstream_payload: dict[str, object],
+        *,
+        requested_model: str,
+        upstream: str,
+        attempts: list[str],
+    ) -> dict[str, object]:
+        data: list[dict[str, str]] = []
+        raw_data = upstream_payload.get("data")
+        if isinstance(raw_data, list):
+            for item in raw_data:
+                if isinstance(item, dict):
+                    if str(item.get("b64_json") or "").strip():
+                        data.append({"b64_json": str(item.get("b64_json"))})
+                    elif str(item.get("url") or "").strip():
+                        data.append({"url": str(item.get("url"))})
+                elif str(item or "").strip():
+                    data.append({"b64_json": str(item)})
+        raw_images = upstream_payload.get("images")
+        if not data and isinstance(raw_images, list):
+            for item in raw_images:
+                image = str(item or "").strip()
+                if image:
+                    data.append({"b64_json": image})
+        info_doc: dict[str, object] = {}
+        info = upstream_payload.get("info")
+        if isinstance(info, str) and info.strip():
+            try:
+                parsed_info = json.loads(info)
+                if isinstance(parsed_info, dict):
+                    info_doc = parsed_info
+            except Exception:
+                info_doc = {}
+        elif isinstance(info, dict):
+            info_doc = info
+        model = (
+            str(upstream_payload.get("model") or "").strip()
+            or str(info_doc.get("sd_model_name") or "").strip()
+            or str(info_doc.get("sd_model_checkpoint") or "").strip()
+            or requested_model
+            or "stable-diffusion:configured-backend"
+        )
+        image_count = len(data)
+        output_shape = "complete" if image_count else "empty"
+        return {
+            "created": int(time.time()),
+            "model": model,
+            "data": data,
+            "usage": {
+                "usage_bucket": "offline_local",
+                "image_count": image_count,
+            },
+            "norllama": {
+                "capability": "image_generate",
+                "mode": "image_generation_proxy",
+                "selected_provider": "norllama",
+                "selected_model": model,
+                "selected_worker": self.app.host_alias(upstream),
+                "frontdoor": "https://llm.home.arpa",
+                "peer_path": [self.app.host_alias(item) for item in attempts],
+                "usage_bucket": "offline_local",
+                "cloud_proxy": False,
+                "fallback_used": False,
+                "output_shape": output_shape,
+                "verifier_result": "pass" if image_count else "fail",
+                "image_count": image_count,
+                "upstream": upstream,
+                "attempts": attempts,
+            },
+        }
 
     def embedding_candidates(
         self, model: str
@@ -5955,6 +6443,147 @@ class Handler(BaseHTTPRequestHandler):
             },
         )
 
+    def handle_image_generation(self, body: bytes) -> None:
+        payload = self.parse_json_body(body)
+        if payload is None:
+            return
+        prompt = self.prompt_from_payload(payload)
+        if not prompt:
+            self.send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"ok": False, "error": "missing_prompt"},
+            )
+            return
+        requested_model = (
+            str(payload.get("model") or "stable-diffusion:configured-backend").strip()
+            or "stable-diffusion:configured-backend"
+        )
+        self._model_hint = requested_model
+        upstream_payload = self.stable_diffusion_payload(
+            payload, prompt=prompt, model=requested_model
+        )
+        request_body = json.dumps(upstream_payload).encode("utf-8")
+        timeout_s = self.image_timeout_from_payload(payload)
+        candidates, rows = self.app.image_candidate_bases()
+        attempted: list[str] = []
+        last_status = 0
+        last_error = "no_image_candidates" if not candidates else ""
+        for base in candidates:
+            attempted.append(base)
+            headers = {"Accept": "application/json", "Content-Type": "application/json"}
+            key = self.app.image_key(base)
+            if key:
+                headers["Authorization"] = f"Bearer {key}"
+            try:
+                status, response_headers, response_body = self.request_upstream(
+                    base,
+                    "/sdapi/v1/txt2img",
+                    headers=headers,
+                    body=request_body,
+                    method="POST",
+                    timeout_s=timeout_s,
+                )
+            except Exception as exc:
+                last_error = str(exc)[:240]
+                continue
+            last_status = status
+            if status == 404 or status >= 500:
+                last_error = f"http_{status}"
+                continue
+            if status >= 400:
+                last_error = response_body.decode("utf-8", errors="replace")[:240]
+                break
+            content_type = str(response_headers.get("Content-Type") or "")
+            if "json" not in content_type.lower():
+                last_error = "non_json_image_response"
+                continue
+            try:
+                response_doc = json.loads(
+                    response_body.decode("utf-8", errors="replace")
+                )
+            except Exception as exc:
+                last_error = f"invalid_json:{exc}"
+                continue
+            if not isinstance(response_doc, dict):
+                last_error = "non_object_image_response"
+                continue
+            response = self.openai_image_response(
+                response_doc,
+                requested_model=requested_model,
+                upstream=base,
+                attempts=attempted,
+            )
+            image_count = int((response.get("usage") or {}).get("image_count") or 0)
+            if image_count <= 0:
+                last_error = "empty_image_response"
+                continue
+            self._activity_extra = {
+                "mode": "image_generation_proxy",
+                "capability": "image_generate",
+                "model": str(response.get("model") or requested_model),
+                "image_count": image_count,
+                "output_shape": "complete",
+            }
+            self.send_json(
+                HTTPStatus.OK,
+                response,
+                extra_headers={
+                    "X-Norllama-Upstream": base,
+                    "X-Norllama-Attempts": ",".join(attempted),
+                    "X-Norllama-Worker-Id": self.app.host_alias(base),
+                },
+            )
+            return
+        peer_bases, peer_rows = self.peer_candidate_bases()
+        if peer_bases:
+            self.forward_candidates(
+                peer_bases,
+                "/v1/images/generations",
+                body=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+                peer_bases={normalize_base_url(base) for base in peer_bases},
+            )
+            return
+        self._activity_extra = {
+            "mode": "image_generation_proxy",
+            "capability": "image_generate",
+            "model": requested_model,
+            "image_count": 0,
+            "output_shape": "error",
+            "fallback_used": False,
+            "fallback_reason": last_error or "image_generation_unavailable",
+        }
+        self.send_json(
+            HTTPStatus.BAD_GATEWAY,
+            {
+                "ok": False,
+                "error": "image_generation_unavailable",
+                "model": requested_model,
+                "last_status": last_status,
+                "last_error": last_error,
+                "candidates": self.app.public_candidate_rows("image", rows + peer_rows),
+                "norllama": {
+                    "capability": "image_generate",
+                    "mode": "image_generation_proxy",
+                    "selected_provider": "norllama",
+                    "selected_model": requested_model,
+                    "selected_worker": "",
+                    "frontdoor": "https://llm.home.arpa",
+                    "peer_path": [],
+                    "usage_bucket": "offline_local",
+                    "cloud_proxy": False,
+                    "fallback_used": False,
+                    "fallback_reason": last_error or "image_generation_unavailable",
+                    "output_shape": "error",
+                    "verifier_result": "fail",
+                    "image_count": 0,
+                    "attempts": attempted,
+                },
+            },
+            extra_headers={"X-Norllama-Attempts": ",".join(attempted)},
+        )
+
     def handle_media(self, path: str, body: bytes) -> None:
         candidates, rows = self.app.media_candidate_bases()
         if not candidates:
@@ -6064,6 +6693,7 @@ class Handler(BaseHTTPRequestHandler):
             "/rerank",
             "/v1/safety/classify",
             "/safety/classify",
+            "/v1/images/generations",
         }:
             return ["POST", "OPTIONS"]
         if path.startswith("/media/"):
@@ -6373,6 +7003,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/v1/chat/completions":
             self.handle_unified_chat(body)
+            return
+        if parsed.path == "/v1/images/generations":
+            self.handle_image_generation(body)
             return
         if parsed.path in {"/v1/embeddings", "/api/embeddings"}:
             self.handle_openai_embeddings(body)

@@ -123,6 +123,7 @@ ROUTE_GUARDRAIL_LANES = (
     "graph",
     "network",
     "world",
+    "image_generate",
     "canary",
 )
 NARROW_SPECIALIST_LANES = {
@@ -138,6 +139,7 @@ NARROW_SPECIALIST_LANES = {
     "graph",
     "network",
     "world",
+    "image_generate",
 }
 LANE_TEXT_MARKERS = {
     "planner": (
@@ -165,6 +167,7 @@ LANE_TEXT_MARKERS = {
     "graph": ("graph", "estate", "relational"),
     "network": ("packet", "dns", "network", "traffic"),
     "world": ("world", "simulator", "simulation", "browser rehearsal"),
+    "image_generate": ("image", "diffusion", "stable diffusion", "txt2img"),
 }
 LANE_FAMILY_DEFAULTS = {
     "qwen": ("planner", "scout", "coder", "summarizer"),
@@ -183,6 +186,10 @@ LANE_FAMILY_DEFAULTS = {
     "network": ("network",),
     "agentworld": ("world",),
     "webworld": ("world",),
+    "stable-diffusion": ("image_generate",),
+    "diffusion": ("image_generate",),
+    "sdxl": ("image_generate",),
+    "txt2img": ("image_generate",),
     "general": ("planner", "scout", "summarizer"),
 }
 TASK_KIND_ROUTE_LANES = {
@@ -211,6 +218,8 @@ TASK_KIND_ROUTE_LANES = {
     "world": ("world", "planner", "verifier"),
     "web_world": ("world", "gui_ground", "planner"),
     "browser_sim": ("world", "gui_ground", "planner"),
+    "image_generate": ("image_generate",),
+    "stable_diffusion": ("image_generate",),
 }
 ACTION_SELECTION_RANK = {
     "keep_warm": 0,

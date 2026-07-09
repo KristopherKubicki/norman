@@ -131,6 +131,10 @@ def _safety_classify_url(base_url: str) -> str:
     return _frontdoor_url(base_url, "v1/safety/classify")
 
 
+def _image_generation_url(base_url: str) -> str:
+    return _frontdoor_url(base_url, "v1/images/generations")
+
+
 def _activity_url(base_url: str, limit: int) -> str:
     clean_limit = max(1, min(int(limit or 200), 1000))
     return f"{_frontdoor_url(base_url, 'v1/activity')}?limit={clean_limit}"
@@ -373,6 +377,75 @@ def classify_safety(
     }
 
 
+def generate_image(
+    *,
+    prompt: str,
+    base_url: str,
+    model: str = "",
+    api_key: str = "",
+    negative_prompt: str = "",
+    size: str = "1024x1024",
+    n: int = 1,
+    steps: int | None = None,
+    cfg_scale: float | None = None,
+    seed: int | None = None,
+    sampler: str = "",
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
+    """Invoke the Norllama Stable Diffusion-compatible image lane."""
+
+    frontdoor = _clean(base_url) or _clean(
+        getattr(settings, "llm_offline_base_url", "")
+    )
+    clean_prompt = _clean(prompt)
+    if not frontdoor:
+        raise RuntimeError("Norllama base URL is not configured")
+    if not clean_prompt:
+        raise RuntimeError("Norllama image prompt is missing")
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    key = api_key if api_key else _clean(getattr(settings, "llm_offline_api_key", ""))
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    request_payload: dict[str, Any] = {
+        "prompt": clean_prompt,
+        "n": max(1, min(int(n or 1), 4)),
+        "size": _clean(size) or "1024x1024",
+    }
+    if _clean(model):
+        request_payload["model"] = _clean(model)
+    if _clean(negative_prompt):
+        request_payload["negative_prompt"] = _clean(negative_prompt)
+    if steps is not None:
+        request_payload["steps"] = max(1, min(int(steps), 150))
+    if cfg_scale is not None:
+        request_payload["cfg_scale"] = float(cfg_scale)
+    if seed is not None:
+        request_payload["seed"] = int(seed)
+    if _clean(sampler):
+        request_payload["sampler"] = _clean(sampler)
+    response = _requests_post(
+        _image_generation_url(frontdoor),
+        headers=headers,
+        json=request_payload,
+        timeout=timeout_seconds
+        or max(1, min(float(settings.llm_provider_timeout_seconds), 300.0)),
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        payload = {}
+    data = payload.get("data") if isinstance(payload.get("data"), list) else []
+    image_count = len([item for item in data if isinstance(item, dict)])
+    return {
+        "model": _clean(payload.get("model")) or _clean(model),
+        "data": data,
+        "image_count": image_count,
+        "usage": payload.get("usage") if isinstance(payload.get("usage"), dict) else {},
+        "headers": _routing_headers(response),
+        "raw": payload,
+    }
+
+
 def prefetch_model(
     *,
     model: str,
@@ -498,6 +571,8 @@ CONTRACT_TASK_KIND_MAP = {
     "prompt_injection": ("prompt_injection",),
     "rerank": ("rerank",),
     "safety_privacy_classify": ("safety",),
+    "image_generate": ("image_generate",),
+    "stable_diffusion": ("image_generate",),
     "vision_grounding": ("gui_ground", "doc_parse"),
     "world": ("world",),
     "web_world": ("world", "gui_ground"),
@@ -506,6 +581,7 @@ DISPATCH_TASK_KIND_MAP = {
     "embedding_proxy": ("embed",),
     "hybrid_pipeline": ("embed", "rerank"),
     "media_proxy": ("doc_parse", "ocr", "gui_ground"),
+    "image_generation_proxy": ("image_generate",),
     "rerank_proxy": ("rerank",),
     "safety_proxy": ("safety", "prompt_injection"),
     "transcribe_proxy": ("stt", "asr"),
@@ -515,6 +591,9 @@ ENDPOINT_KIND_TASK_KIND_MAP = {
     "audio": ("stt", "asr"),
     "embedding": ("embed",),
     "media": ("ocr", "doc_parse", "gui_ground"),
+    "image": ("image_generate",),
+    "image_generate": ("image_generate",),
+    "stable_diffusion": ("image_generate",),
     "moderation": ("safety",),
     "prompt_injection": ("prompt_injection",),
     "rerank": ("rerank",),
@@ -561,6 +640,9 @@ def _contract_task_kinds(payload: dict[str, Any]) -> list[str]:
             ("prompt_injection", ("prompt_injection",)),
             ("moderation", ("safety",)),
             ("embedding", ("embed",)),
+            ("images/generations", ("image_generate",)),
+            ("txt2img", ("image_generate",)),
+            ("stable_diffusion", ("image_generate",)),
             ("world", ("world",)),
         ):
             if marker in path:
@@ -592,6 +674,11 @@ def _contract_modalities(payload: dict[str, Any]) -> list[str]:
             _append_unique(modalities, "image", "pdf")
         if dispatch == "transcribe_proxy" or contract_id == "audio_diarize":
             _append_unique(modalities, "audio")
+        if dispatch == "image_generation_proxy" or contract_id in {
+            "image_generate",
+            "stable_diffusion",
+        }:
+            _append_unique(modalities, "image")
     return modalities
 
 
@@ -614,6 +701,8 @@ TOOL_ACTIVITY_PATH_CAPABILITIES = {
     "/v1/doc-parse": "doc_parse",
     "/v1/gui/ground": "gui_ground",
     "/v1/world": "world",
+    "/v1/images/generations": "image_generate",
+    "/sdapi/v1/txt2img": "image_generate",
     "/v1/retrieve": "hybrid_retrieve",
     "/v1/hybrid-retrieve": "hybrid_retrieve",
     "/v1/hybrid_retrieve": "hybrid_retrieve",
@@ -643,6 +732,8 @@ TOOL_ACTIVITY_CAPABILITIES = {
     "chat",
     "code",
     "plan",
+    "image_generate",
+    "stable_diffusion",
 }
 PROBE_ACTIVITY_PATHS = {
     "/",
@@ -852,6 +943,7 @@ def normalize_capabilities_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "safety",
             "stt",
             "world",
+            "image_generate",
         }:
             _append_unique(tool_lanes, kind)
     task_kinds = _list_values(
@@ -875,6 +967,7 @@ def normalize_capabilities_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "rerank",
             "safety",
             "world",
+            "image_generate",
         }.intersection(set(task_kinds))
     )
     supports_streaming = bool(

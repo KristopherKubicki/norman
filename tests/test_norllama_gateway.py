@@ -56,6 +56,10 @@ def test_frontdoor_urls_do_not_duplicate_v1_prefix():
         gateway._safety_classify_url("https://llm.home.arpa/v1")
         == "https://llm.home.arpa/v1/safety/classify"
     )
+    assert (
+        gateway._image_generation_url("https://llm.home.arpa/v1")
+        == "https://llm.home.arpa/v1/images/generations"
+    )
     assert gateway._capability_urls("https://llm.home.arpa/v1")[:3] == [
         "https://llm.home.arpa/v1/capabilities",
         "https://llm.home.arpa/api/capabilities",
@@ -148,6 +152,12 @@ def test_normalize_capabilities_payload_promotes_contracts_to_tool_lanes():
                     "status": "indirect_benchmark",
                 },
                 {
+                    "contract_id": "image_generate",
+                    "dispatch": "image_generation_proxy",
+                    "default_model": "stable-diffusion:configured-backend",
+                    "status": "live_tool_lane",
+                },
+                {
                     "contract_id": "web_world",
                     "dispatch": "world_proxy",
                     "default_model": "Qwen/WebWorld-8B",
@@ -157,6 +167,7 @@ def test_normalize_capabilities_payload_promotes_contracts_to_tool_lanes():
             "endpoints": [
                 {"kind": "transcribe", "path": "/v1/audio/transcriptions"},
                 {"kind": "safety", "path": "/v1/safety/classify"},
+                {"kind": "image_generate", "path": "/v1/images/generations"},
                 {"kind": "world", "path": "/v1/world"},
             ],
         }
@@ -168,6 +179,7 @@ def test_normalize_capabilities_payload_promotes_contracts_to_tool_lanes():
         "Qwen/Qwen3Guard-Stream-0.6B",
         "faster-whisper:distil-large-v3",
         "qwen3-vl:30b-a3b-instruct-q4_K_M",
+        "stable-diffusion:configured-backend",
         "Qwen/WebWorld-8B",
     ]
     assert set(payload["tool_lanes"]) >= {
@@ -175,6 +187,7 @@ def test_normalize_capabilities_payload_promotes_contracts_to_tool_lanes():
         "doc_parse",
         "embed",
         "gui_ground",
+        "image_generate",
         "ocr",
         "prompt_injection",
         "rerank",
@@ -185,6 +198,7 @@ def test_normalize_capabilities_payload_promotes_contracts_to_tool_lanes():
     assert set(payload["task_kinds"]) >= {
         "asr",
         "embed",
+        "image_generate",
         "prompt_injection",
         "rerank",
         "safety",
@@ -246,6 +260,57 @@ def test_prefetch_model_includes_target_worker_hints(monkeypatch):
     assert calls[0][2]["target_endpoint"] == "http://192.168.2.150:18151"
 
 
+def test_generate_image_posts_to_frontdoor(monkeypatch):
+    calls = []
+
+    def fake_post(url, headers, json, timeout, verify):
+        calls.append((url, headers, json, timeout, verify))
+        return FakeResponse(
+            {
+                "model": "sdxl-local",
+                "data": [{"b64_json": "abc"}],
+                "usage": {"image_count": 1, "usage_bucket": "offline_local"},
+                "norllama": {"selected_worker": "spark-150"},
+            },
+            headers={
+                "X-Norllama-Worker-Id": "spark-150",
+                "X-Norllama-Upstream": "http://192.168.2.150:18151",
+            },
+        )
+
+    monkeypatch.setattr(gateway.requests, "post", fake_post)
+
+    payload = gateway.generate_image(
+        prompt="draw a shell",
+        base_url="https://llm.home.arpa/v1",
+        api_key="token",
+        model="stable-diffusion:configured-backend",
+        negative_prompt="watermark",
+        size="768x768",
+        n=2,
+        steps=28,
+        cfg_scale=7.5,
+        seed=123,
+        sampler="DPM++ 2M",
+        timeout_seconds=12,
+    )
+
+    assert calls[0][0] == "https://llm.home.arpa/v1/images/generations"
+    assert calls[0][1]["Authorization"] == "Bearer token"
+    assert calls[0][2]["prompt"] == "draw a shell"
+    assert calls[0][2]["negative_prompt"] == "watermark"
+    assert calls[0][2]["n"] == 2
+    assert calls[0][2]["steps"] == 28
+    assert calls[0][2]["cfg_scale"] == 7.5
+    assert calls[0][2]["seed"] == 123
+    assert calls[0][2]["sampler"] == "DPM++ 2M"
+    assert calls[0][3] == 12
+    assert calls[0][4] is False
+    assert payload["image_count"] == 1
+    assert payload["data"] == [{"b64_json": "abc"}]
+    assert payload["headers"]["x-norllama-worker-id"] == "spark-150"
+
+
 def test_fetch_tool_activity_filters_probe_noise(monkeypatch):
     calls = []
 
@@ -253,7 +318,7 @@ def test_fetch_tool_activity_filters_probe_noise(monkeypatch):
         calls.append((url, headers, timeout, verify))
         return FakeResponse(
             {
-                "count": 4,
+                "count": 5,
                 "items": [
                     {
                         "method": "GET",
@@ -285,6 +350,15 @@ def test_fetch_tool_activity_filters_probe_noise(monkeypatch):
                         "selected_model": "Qwen/Qwen3Guard-Stream-0.6B",
                         "selected_worker": "spark150",
                     },
+                    {
+                        "method": "POST",
+                        "path": "/v1/images/generations",
+                        "status": 200,
+                        "duration_ms": 5120,
+                        "selected_model": "sdxl-local",
+                        "selected_worker": "spark151",
+                        "image_count": 1,
+                    },
                 ],
             }
         )
@@ -303,14 +377,21 @@ def test_fetch_tool_activity_filters_probe_noise(monkeypatch):
     assert calls[0][3] is False
     assert payload["schema"] == "norman.norllama.tool-activity.v1"
     assert payload["status"] == "active"
-    assert payload["tool_call_count"] == 3
+    assert payload["tool_call_count"] == 4
     assert payload["dropped_probe_count"] == 1
-    assert payload["capability_counts"] == {"embed": 1, "rerank": 1, "safety": 1}
+    assert payload["capability_counts"] == {
+        "embed": 1,
+        "image_generate": 1,
+        "rerank": 1,
+        "safety": 1,
+    }
     assert payload["latest_tool_call"]["capability"] == "embed"
     assert payload["latest_tool_call"]["model"] == "bge-m3:latest"
     assert payload["latest_tool_call"]["upstream"] == "http://192.168.2.150:18151"
     assert payload["items"][2]["capability"] == "safety"
     assert payload["items"][2]["worker_id"] == "spark150"
+    assert payload["items"][3]["capability"] == "image_generate"
+    assert payload["items"][3]["worker_id"] == "spark151"
 
 
 def test_fetch_tool_activity_tracks_asr_and_world_paths(monkeypatch):
