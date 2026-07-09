@@ -340,6 +340,77 @@ def test_db_console_runtime_store_summarizes_route_offload_evidence(db):
     assert proof["sessions"][0]["models_by_phase"]
 
 
+def test_local_first_proof_excludes_dry_run_and_shadow_from_live_spark_proof(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    job_id = f"job-live-spark-proof-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(objective="Separate telemetry from live proof"),
+    )
+    base_payload = {
+        "selected_provider": "norllama",
+        "selected_model": "qwen3.6:27b",
+        "worker_id": "spark-151",
+        "local": True,
+        "cloud_proxy": False,
+        "egress_class": "lan",
+        "allowed": True,
+    }
+    store.append_event(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        event_type="route.decided",
+        payload={**base_payload, "dry_run": True},
+    )
+    store.append_event(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        event_type="route.decided",
+        payload={
+            **base_payload,
+            "turn_shadow": True,
+            "metadata": {
+                "source": "agent_console_web",
+                "kind": "tui_turn_shadow",
+                "kernel_execution_enabled": False,
+            },
+        },
+    )
+    store.append_event(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        event_type="route.decided",
+        payload={
+            **base_payload,
+            "turn_shadow": True,
+            "route_proof_required": True,
+            "metadata": {
+                "source": "agent_console_web",
+                "kind": "tui_turn_shadow",
+                "kernel_execution_enabled": True,
+                "kernel_execution_candidate": True,
+                "route_proof_required": True,
+            },
+        },
+    )
+
+    summary = store.route_activity_summary(db, user_id=user.id, job_id=job_id)
+    proof = store.local_first_proof(db, user_id=user.id, session_limit=1)
+
+    assert summary["spark_evidence_count"] == 3
+    assert summary["live_spark_proof_count"] == 1
+    assert proof["totals"]["spark_evidence_count"] == 3
+    assert proof["totals"]["live_spark_proof_count"] == 1
+    assert proof["release_gate"]["has_spark_evidence"] is True
+    assert proof["release_gate"]["spark_evidence_excludes_dry_run_shadow"] is True
+
+
 def test_local_first_proof_synthesizes_missing_receipt_audit(db):
     user = _ensure_user(db)
     store = DbConsoleRuntimeStore()
@@ -378,6 +449,7 @@ def test_local_first_proof_synthesizes_missing_receipt_audit(db):
                 "policy_mode": "local_first",
                 "cloud_proxy": False,
                 "benchmark_packet_id": "uplink-fallback-1",
+                "benchmark_source": "uplink_route_proof",
                 "benchmark_fresh": True,
                 "benchmark_score": 0.75,
                 "coverage_ratio": 1.0,
@@ -649,6 +721,9 @@ def test_db_console_runtime_store_excludes_tui_stream_jobs_from_runnable(db):
                 "kind": "tui_turn_shadow",
                 "kernel_execution_enabled": True,
                 "kernel_execution_candidate": True,
+                "route_proof_required": True,
+                "require_route_proof": True,
+                "require_verifier_for_completion": True,
             },
             route_policy={
                 "provider": "norllama",
@@ -658,6 +733,9 @@ def test_db_console_runtime_store_excludes_tui_stream_jobs_from_runnable(db):
                 "kernel_execution_enabled": True,
                 "kernel_execution_candidate": True,
                 "continuous_goal_candidate": True,
+                "route_proof_required": True,
+                "require_route_proof": True,
+                "require_verifier_for_completion": True,
             },
             metadata={
                 "source": "agent_console_web",
@@ -665,6 +743,9 @@ def test_db_console_runtime_store_excludes_tui_stream_jobs_from_runnable(db):
                 "kernel_execution_enabled": True,
                 "kernel_execution_candidate": True,
                 "continuous_goal_candidate": True,
+                "route_proof_required": True,
+                "require_route_proof": True,
+                "require_verifier_for_completion": True,
             },
         ),
         metadata={
@@ -673,6 +754,9 @@ def test_db_console_runtime_store_excludes_tui_stream_jobs_from_runnable(db):
             "kernel_execution_enabled": True,
             "kernel_execution_candidate": True,
             "continuous_goal_candidate": True,
+            "route_proof_required": True,
+            "require_route_proof": True,
+            "require_verifier_for_completion": True,
         },
     )
     store.create_job(

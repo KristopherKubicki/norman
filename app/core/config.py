@@ -262,6 +262,10 @@ class Settings(BaseSettings):
             "priority": 3,
         },
     ]
+    llm_route_proof_benchmark_packet_path: str = (
+        "/var/lib/norman/norllama/route_proof_benchmark_packet.json"
+    )
+    llm_route_proof_benchmark_packet_url: str = ""
     llm_benchmark_packet_path: str = "/var/lib/norman/norllama/benchmark_packet.json"
     llm_benchmark_packet_url: str = ""
     llm_warm_policy_enabled: bool = True
@@ -275,6 +279,22 @@ class Settings(BaseSettings):
     llm_warm_policy_max_verifier_rejection_rate: float = 0.30
     llm_warm_policy_reject_zero_token: bool = True
     llm_warm_policy_reject_empty_response: bool = True
+    llm_warm_policy_smoke_min_benchmark_score: float = 0.5
+    llm_warm_policy_smoke_min_coverage_ratio: float = 0.25
+    llm_warm_policy_smoke_min_accepted_count: int = 1
+    llm_warm_policy_smoke_max_timeout_rate: float = 0.50
+    llm_warm_policy_smoke_max_progress_only_rate: float = 0.25
+    llm_warm_policy_smoke_max_verifier_rejection_rate: float = 0.50
+    llm_warm_policy_smoke_reject_zero_token: bool = True
+    llm_warm_policy_smoke_reject_empty_response: bool = True
+    llm_warm_policy_production_min_benchmark_score: float = 0.6
+    llm_warm_policy_production_min_coverage_ratio: float = 0.5
+    llm_warm_policy_production_min_accepted_count: int = 1
+    llm_warm_policy_production_max_timeout_rate: float = 0.25
+    llm_warm_policy_production_max_progress_only_rate: float = 0.10
+    llm_warm_policy_production_max_verifier_rejection_rate: float = 0.30
+    llm_warm_policy_production_reject_zero_token: bool = True
+    llm_warm_policy_production_reject_empty_response: bool = True
     llm_warm_policy_fallback_prefetch: bool = False
     tui_acceptance_report_glob: str = "tmp/tuiacc-*.json"
     tui_acceptance_report_max_age_seconds: int = 86400

@@ -483,6 +483,9 @@ def test_console_runtime_turn_shadow_creates_per_turn_job(monkeypatch, tmp_path)
     assert create_payload["route_policy"]["turn_shadow"] is True
     assert create_payload["route_policy"]["kernel_execution_enabled"] is False
     assert create_payload["route_policy"]["kernel_execution_candidate"] is False
+    assert create_payload["route_policy"]["route_proof_required"] is False
+    assert create_payload["route_policy"]["require_route_proof"] is False
+    assert create_payload["route_policy"]["require_verifier_for_completion"] is False
     assert create_payload["route_policy"]["continuous_goal_candidate"] is True
     assert create_payload["route_policy"]["goal_phase_sequence"] == [
         "plan",
@@ -493,6 +496,9 @@ def test_console_runtime_turn_shadow_creates_per_turn_job(monkeypatch, tmp_path)
     assert create_payload["route_policy"]["selected_runtime"] == "localllm"
     assert create_payload["metadata"]["kernel_execution_enabled"] is False
     assert create_payload["metadata"]["kernel_execution_candidate"] is False
+    assert create_payload["metadata"]["route_proof_required"] is False
+    assert create_payload["metadata"]["require_route_proof"] is False
+    assert create_payload["metadata"]["require_verifier_for_completion"] is False
     assert create_payload["metadata"]["continuous_goal_candidate"] is True
     assert create_payload["metadata"]["goal_phase_sequence"] == [
         "plan",
@@ -567,14 +573,22 @@ def test_console_runtime_turn_shadow_can_mark_kernel_execution_candidate(
     assert create_payload["authority_flags"]["kind"] == "tui_turn_shadow"
     assert create_payload["authority_flags"]["kernel_execution_enabled"] is True
     assert create_payload["authority_flags"]["kernel_execution_candidate"] is True
+    assert create_payload["authority_flags"]["route_proof_required"] is True
+    assert create_payload["authority_flags"]["require_route_proof"] is True
     assert create_payload["route_policy"]["provider"] == "norllama"
     assert create_payload["route_policy"]["preferred_provider"] == "norllama"
     assert create_payload["route_policy"]["kernel_execution_enabled"] is True
     assert create_payload["route_policy"]["kernel_execution_candidate"] is True
+    assert create_payload["route_policy"]["route_proof_required"] is True
+    assert create_payload["route_policy"]["require_route_proof"] is True
+    assert create_payload["route_policy"]["require_verifier_for_completion"] is True
     assert create_payload["route_policy"]["continuous_goal_candidate"] is True
     assert create_payload["route_policy"]["cloud_token_budget"] == 0
     assert create_payload["metadata"]["kernel_execution_enabled"] is True
     assert create_payload["metadata"]["kernel_execution_candidate"] is True
+    assert create_payload["metadata"]["route_proof_required"] is True
+    assert create_payload["metadata"]["require_route_proof"] is True
+    assert create_payload["metadata"]["require_verifier_for_completion"] is True
 
 
 def test_kernel_primary_runtime_can_return_visible_response(monkeypatch, tmp_path):

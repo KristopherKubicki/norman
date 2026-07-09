@@ -318,6 +318,47 @@ def _event_has_spark_hint(payload: dict[str, Any]) -> bool:
     return any(hint in haystack for hint in _SPARK_HINTS)
 
 
+def _event_is_dry_run(payload: dict[str, Any]) -> bool:
+    metadata = _payload_metadata(payload)
+    receipt = _payload_route_receipt(payload)
+    return any(
+        _json_bool(container.get("dry_run"))
+        for container in (payload, metadata, receipt)
+        if isinstance(container, dict)
+    )
+
+
+def _event_is_shadow_only(payload: dict[str, Any]) -> bool:
+    metadata = _payload_metadata(payload)
+    route = _payload_route(payload)
+    receipt = _payload_route_receipt(payload)
+    containers = [payload, metadata, route, receipt]
+    shadow = any(
+        _json_bool(container.get("turn_shadow"))
+        or _clean(container.get("kind")) == "tui_turn_shadow"
+        for container in containers
+        if isinstance(container, dict)
+    )
+    if not shadow:
+        return False
+    promoted = any(
+        _json_bool(container.get("kernel_execution_enabled"))
+        and _json_bool(container.get("kernel_execution_candidate"))
+        and _json_bool(container.get("route_proof_required"))
+        for container in containers
+        if isinstance(container, dict)
+    )
+    return not promoted
+
+
+def _event_counts_as_live_spark_proof(payload: dict[str, Any]) -> bool:
+    return bool(
+        _event_has_spark_hint(payload)
+        and not _event_is_dry_run(payload)
+        and not _event_is_shadow_only(payload)
+    )
+
+
 def _compact_route_event(event: ConsoleRuntimeEvent) -> dict[str, Any]:
     payload = event.payload
     return {
@@ -334,6 +375,7 @@ def _compact_route_event(event: ConsoleRuntimeEvent) -> dict[str, Any]:
         "allowed": bool(payload.get("allowed", True)),
         "worker_id": _payload_worker_id(payload),
         "spark_hint": _event_has_spark_hint(payload),
+        "live_spark_proof": _event_counts_as_live_spark_proof(payload),
     }
 
 
@@ -654,6 +696,7 @@ def _route_activity_summary(events: list[ConsoleRuntimeEvent]) -> dict[str, Any]
     route_cloud_proxy = 0
     route_web = 0
     route_spark_hint = 0
+    route_live_spark_proof = 0
     route_offline_safe = 0
     model_completed = 0
     model_local = 0
@@ -663,6 +706,7 @@ def _route_activity_summary(events: list[ConsoleRuntimeEvent]) -> dict[str, Any]
     planner_local = 0
     planner_cloud_proxy = 0
     planner_spark_hint = 0
+    planner_live_spark_proof = 0
     tool_events = 0
     shell_events = 0
     latest_route: dict[str, Any] | None = None
@@ -681,6 +725,7 @@ def _route_activity_summary(events: list[ConsoleRuntimeEvent]) -> dict[str, Any]
             is_cloud_proxy = _payload_cloud_proxy(payload)
             is_allowed = bool(payload.get("allowed", True))
             has_spark_hint = _event_has_spark_hint(payload)
+            live_spark_proof = _event_counts_as_live_spark_proof(payload)
             _inc(route_counts_by_provider, provider)
             _inc(route_counts_by_lane, lane)
             if worker_id:
@@ -692,6 +737,7 @@ def _route_activity_summary(events: list[ConsoleRuntimeEvent]) -> dict[str, Any]
             route_cloud_proxy += int(is_cloud_proxy)
             route_web += int(_lower(payload.get("egress_class")) == "web_research")
             route_spark_hint += int(has_spark_hint)
+            route_live_spark_proof += int(live_spark_proof)
             route_offline_safe += int(is_allowed and is_local and not is_cloud_proxy)
             latest_route = _compact_route_event(event)
         elif event.event_type == "model.completed":
@@ -738,9 +784,11 @@ def _route_activity_summary(events: list[ConsoleRuntimeEvent]) -> dict[str, Any]
             is_local = _provider_key(provider) in _LOCAL_ROUTE_PROVIDERS
             is_cloud_proxy = _payload_cloud_proxy(payload)
             has_spark_hint = _event_has_spark_hint(payload)
+            live_spark_proof = _event_counts_as_live_spark_proof(payload)
             planner_local += int(is_local)
             planner_cloud_proxy += int(is_cloud_proxy)
             planner_spark_hint += int(has_spark_hint)
+            planner_live_spark_proof += int(live_spark_proof)
             latest_planner = {
                 "sequence": event.sequence,
                 "provider": provider,
@@ -761,13 +809,14 @@ def _route_activity_summary(events: list[ConsoleRuntimeEvent]) -> dict[str, Any]
     local_evidence = route_offline_safe + model_local + planner_local
     cloud_evidence = route_cloud + model_cloud + route_cloud_proxy + planner_cloud_proxy
     spark_evidence = route_spark_hint + planner_spark_hint
+    live_spark_proof = route_live_spark_proof + planner_live_spark_proof
     usage_ledger = _usage_ledger_summary(events)
     local_first_kpi = _local_first_kpi(
         usage_ledger,
         evidence_total=evidence_total,
         local_evidence=local_evidence,
         cloud_evidence=cloud_evidence,
-        spark_evidence=spark_evidence,
+        spark_evidence=live_spark_proof,
     )
 
     return {
@@ -779,6 +828,7 @@ def _route_activity_summary(events: list[ConsoleRuntimeEvent]) -> dict[str, Any]
         "local_evidence_count": local_evidence,
         "cloud_evidence_count": cloud_evidence,
         "spark_evidence_count": spark_evidence,
+        "live_spark_proof_count": live_spark_proof,
         "local_evidence_percent": _pct(local_evidence, evidence_total),
         "cloud_evidence_percent": _pct(cloud_evidence, evidence_total),
         "route": {
@@ -791,6 +841,7 @@ def _route_activity_summary(events: list[ConsoleRuntimeEvent]) -> dict[str, Any]
             "cloud_proxy": route_cloud_proxy,
             "web_research": route_web,
             "spark_hint": route_spark_hint,
+            "live_spark_proof": route_live_spark_proof,
             "local_percent": _pct(route_local, route_total),
             "offline_safe_percent": _pct(route_offline_safe, route_total),
             "by_provider": route_counts_by_provider,
@@ -812,6 +863,7 @@ def _route_activity_summary(events: list[ConsoleRuntimeEvent]) -> dict[str, Any]
             "local": planner_local,
             "cloud_proxy": planner_cloud_proxy,
             "spark_hint": planner_spark_hint,
+            "live_spark_proof": planner_live_spark_proof,
             "local_percent": _pct(planner_local, planner_receipts),
             "by_provider": planner_counts_by_provider,
             "by_worker": planner_counts_by_worker,
@@ -863,6 +915,7 @@ def _local_first_proof(
                 "other_cloud_tokens": 0,
                 "cloud_proxy_tokens": 0,
                 "spark_evidence_count": 0,
+                "live_spark_proof_count": 0,
                 "providers": {},
                 "models_by_phase": {},
                 "workers": {},
@@ -918,6 +971,8 @@ def _local_first_proof(
             _inc(row["workers"], worker_id)
         if _event_has_spark_hint(payload):
             row["spark_evidence_count"] += 1
+        if _event_counts_as_live_spark_proof(payload):
+            row["live_spark_proof_count"] += 1
         receipt = _payload_route_receipt(payload)
         fallback_reason = _clean(receipt.get("fallback_reason"))
         if fallback_reason and fallback_reason not in row["fallbacks"]:
@@ -1019,6 +1074,9 @@ def _local_first_proof(
         "spark_evidence_count": sum(
             _json_int(row.get("spark_evidence_count")) for row in rows
         ),
+        "live_spark_proof_count": sum(
+            _json_int(row.get("live_spark_proof_count")) for row in rows
+        ),
         "specialist_required_count": sum(
             _json_int(row.get("specialist_required_count")) for row in rows
         ),
@@ -1060,7 +1118,8 @@ def _local_first_proof(
                 + totals["bedrock_amazon_tokens"]
                 + totals["other_cloud_tokens"]
             ),
-            "has_spark_evidence": totals["spark_evidence_count"] > 0,
+            "has_spark_evidence": totals["live_spark_proof_count"] > 0,
+            "spark_evidence_excludes_dry_run_shadow": True,
             "specialist_cascade_visible": totals["specialist_required_count"] > 0,
             "has_specialist_evidence": totals["specialist_evidence_count"] > 0,
             "specialist_proof_ready": (totals["specialist_production_ready_count"] > 0),
@@ -1149,10 +1208,16 @@ def _is_executable_tui_turn_record(
         _json_bool(container.get("continuous_goal_candidate"))
         for container in (metadata, contract_metadata, authority_flags, route_policy)
     )
+    route_proof_required = any(
+        _json_bool(container.get("route_proof_required"))
+        or _json_bool(container.get("require_route_proof"))
+        for container in (metadata, contract_metadata, authority_flags, route_policy)
+    )
     if not (
         kernel_execution_enabled
         and kernel_execution_candidate
         and continuous_goal_candidate
+        and route_proof_required
     ):
         return False
     provider = _provider_key(

@@ -545,7 +545,7 @@ def _benchmark_evidence(item: dict[str, Any]) -> dict[str, Any]:
     if coverage is None:
         coverage = _as_float(item.get("coverage_ratio"))
     state = _clean(quality.get("state") or item.get("benchmark_status"))
-    benchmarked = source == "uplink_benchmark" and (
+    benchmarked = source in {"uplink_benchmark", "uplink_route_proof"} and (
         bool(state) or score is not None or coverage is not None
     )
     eligible = bool(quality.get("eligible")) if quality else benchmarked

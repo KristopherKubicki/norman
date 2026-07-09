@@ -164,6 +164,12 @@ def test_db_console_runtime_worker_defaults_to_local_first_norllama(db, monkeypa
     )
     monkeypatch.setattr(
         routing.settings,
+        "llm_route_proof_benchmark_packet_path",
+        "/tmp/norman-test-missing-route-proof-benchmark-packet.json",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        routing.settings,
         "llm_benchmark_packet_path",
         "/tmp/norman-test-missing-benchmark-packet.json",
         raising=False,
@@ -311,6 +317,58 @@ def test_db_console_runtime_worker_checkpoints_when_route_proof_fails(db):
         "bad_output_shape:progress_only"
         in (audit_event.payload["receipt_audit"]["failures"])
     )
+
+
+def test_db_console_runtime_worker_audits_after_verifier_normalization(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-verifier-normalized-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Verify the route proof after normalization",
+            route_policy={
+                "provider": "norllama",
+                "route_proof_required": True,
+                "require_verifier_for_completion": True,
+                "verifier_can_stop": True,
+            },
+        ),
+    )
+    result = _proof_model_result(job_id, "STATUS: COMPLETE\nNo remaining work.")
+    route_receipt = result.metadata["norllama_receipt"]["route_receipt"]
+    route_receipt["phase"] = "verify"
+    route_receipt["task_kind"] = "verify"
+    route_receipt["verifier_result"] = "skipped"
+    adapter = FakeModelAdapter(responses=[result], name="norllama", model="qwen3:8b")
+
+    run = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-verifier-normalized",
+            dry_run=True,
+            planner_kind="verify",
+            include_capabilities=False,
+            metadata={"goal_phase": "verify"},
+        ),
+        adapter=adapter,
+    )
+
+    events = store.events_after(db, user_id=user.id, job_id=job_id)
+    audit_event = next(
+        event for event in events if event.event_type == "route.receipt_audited"
+    )
+
+    assert run["job"]["status"] == "done"
+    assert run["route_proof"]["gate_passed"] is True
+    assert audit_event.payload["route_receipt"]["verifier_result"] == "pass"
+    assert audit_event.payload["receipt_audit"]["pass"] is True
+    assert audit_event.payload["receipt_audit"]["failures"] == []
 
 
 def test_db_console_runtime_worker_runs_bounded_goal_loop(db):

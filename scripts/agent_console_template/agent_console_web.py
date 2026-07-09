@@ -15137,6 +15137,7 @@ def console_runtime_turn_route_policy(
     normalized_model = normalize_runtime_model(normalized_runtime, model)
     route = dict(cost_route or {})
     run_shape = console_runtime_kernel_primary_run_shape(prompt)
+    route_proof_required = bool(TUI_KERNEL_EXECUTION_ENABLED)
     return {
         "runtime": "kernel_shadow",
         "visible_runtime": normalized_runtime,
@@ -15151,6 +15152,9 @@ def console_runtime_turn_route_policy(
         "kernel_shadow": TUI_KERNEL_SHADOW_ENABLED,
         "kernel_execution_enabled": TUI_KERNEL_EXECUTION_ENABLED,
         "kernel_execution_candidate": TUI_KERNEL_EXECUTION_ENABLED,
+        "route_proof_required": route_proof_required,
+        "require_route_proof": route_proof_required,
+        "require_verifier_for_completion": route_proof_required,
         "kernel_owned_turn": TUI_KERNEL_OWNED_TURN_ENABLED,
         "local_first": True,
         "allow_cloud_proxy": False,
@@ -15189,6 +15193,7 @@ def console_runtime_turn_metadata(
     cost_route: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     run_shape = console_runtime_kernel_primary_run_shape(prompt)
+    route_proof_required = bool(TUI_KERNEL_EXECUTION_ENABLED)
     return {
         "source": "agent_console_web",
         "kind": "tui_turn_shadow",
@@ -15211,6 +15216,9 @@ def console_runtime_turn_metadata(
         "kernel_shadow": TUI_KERNEL_SHADOW_ENABLED,
         "kernel_execution_enabled": TUI_KERNEL_EXECUTION_ENABLED,
         "kernel_execution_candidate": TUI_KERNEL_EXECUTION_ENABLED,
+        "route_proof_required": route_proof_required,
+        "require_route_proof": route_proof_required,
+        "require_verifier_for_completion": route_proof_required,
         "kernel_owned_turn": TUI_KERNEL_OWNED_TURN_ENABLED,
         "continuous_goal_candidate": True,
         "task_kind": run_shape["task_kind"],
@@ -15298,6 +15306,9 @@ def ensure_console_runtime_turn_shadow_job(
             "kernel_shadow": TUI_KERNEL_SHADOW_ENABLED,
             "kernel_execution_enabled": TUI_KERNEL_EXECUTION_ENABLED,
             "kernel_execution_candidate": TUI_KERNEL_EXECUTION_ENABLED,
+            "route_proof_required": bool(TUI_KERNEL_EXECUTION_ENABLED),
+            "require_route_proof": bool(TUI_KERNEL_EXECUTION_ENABLED),
+            "require_verifier_for_completion": bool(TUI_KERNEL_EXECUTION_ENABLED),
             "kernel_owned_turn": TUI_KERNEL_OWNED_TURN_ENABLED,
         },
         "route_policy": route_policy,

@@ -141,6 +141,14 @@ def _image_generation_url(base_url: str) -> str:
     return _frontdoor_url(base_url, "v1/images/generations")
 
 
+def _ocr_url(base_url: str) -> str:
+    return f"{_frontdoor_url(base_url, 'v1/ocr')}?format=json"
+
+
+def _transcribe_url(base_url: str) -> str:
+    return _frontdoor_url(base_url, "v1/audio/transcriptions")
+
+
 def _activity_url(base_url: str, limit: int) -> str:
     clean_limit = max(1, min(int(limit or 200), 1000))
     return f"{_frontdoor_url(base_url, 'v1/activity')}?limit={clean_limit}"
@@ -202,6 +210,21 @@ def _requests_post(
         warnings.simplefilter("ignore", InsecureRequestWarning)
         return requests.post(
             url, headers=headers, json=json, timeout=timeout, verify=False
+        )
+
+
+def _requests_post_data(
+    url: str, *, headers: dict[str, str], data: bytes, timeout: float
+):
+    verify = _verify_tls_for_url(url)
+    if verify:
+        return requests.post(
+            url, headers=headers, data=data, timeout=timeout, verify=True
+        )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", InsecureRequestWarning)
+        return requests.post(
+            url, headers=headers, data=data, timeout=timeout, verify=False
         )
 
 
@@ -378,6 +401,119 @@ def classify_safety(
         "category": _clean(payload.get("category")),
         "confidence": payload.get("confidence"),
         "usage": payload.get("usage") if isinstance(payload.get("usage"), dict) else {},
+        "headers": _routing_headers(response),
+        "raw": payload,
+    }
+
+
+def ocr_document(
+    *,
+    content: bytes,
+    base_url: str,
+    model: str = "",
+    api_key: str = "",
+    filename: str = "upload.bin",
+    content_type: str = "application/octet-stream",
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
+    """Invoke the Norllama OCR/document parsing lane through the front door."""
+
+    frontdoor = _clean(base_url) or _clean(
+        getattr(settings, "llm_offline_base_url", "")
+    )
+    if not frontdoor:
+        raise RuntimeError("Norllama base URL is not configured")
+    if not content:
+        raise RuntimeError("Norllama OCR content is missing")
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": _clean(content_type) or "application/octet-stream",
+        "X-Filename": _clean(filename) or "upload.bin",
+    }
+    key = api_key if api_key else _clean(getattr(settings, "llm_offline_api_key", ""))
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    response = _requests_post_data(
+        _ocr_url(frontdoor),
+        headers=headers,
+        data=content,
+        timeout=timeout_seconds
+        or max(1, min(float(settings.llm_provider_timeout_seconds), 180.0)),
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        payload = {}
+    text = _clean(payload.get("text") or payload.get("merged_text"))
+    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+    usage.setdefault("input_tokens", int(payload.get("line_count") or 0))
+    usage.setdefault("output_tokens", 0)
+    usage.setdefault("total_tokens", usage.get("input_tokens") or 0)
+    usage.setdefault("usage_bucket", "offline_local")
+    return {
+        "model": _clean(payload.get("model")) or _clean(model),
+        "text": text,
+        "status": _clean(payload.get("status")),
+        "line_count": payload.get("line_count"),
+        "usage": usage,
+        "headers": _routing_headers(response),
+        "raw": payload,
+    }
+
+
+def transcribe_audio(
+    *,
+    content: bytes,
+    base_url: str,
+    model: str = "",
+    api_key: str = "",
+    filename: str = "upload.wav",
+    content_type: str = "audio/wav",
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
+    """Invoke the Norllama ASR/transcription lane through the front door."""
+
+    frontdoor = _clean(base_url) or _clean(
+        getattr(settings, "llm_offline_base_url", "")
+    )
+    if not frontdoor:
+        raise RuntimeError("Norllama base URL is not configured")
+    if not content:
+        raise RuntimeError("Norllama ASR content is missing")
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": _clean(content_type) or "audio/wav",
+        "X-Filename": _clean(filename) or "upload.wav",
+    }
+    key = api_key if api_key else _clean(getattr(settings, "llm_offline_api_key", ""))
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    response = _requests_post_data(
+        _transcribe_url(frontdoor),
+        headers=headers,
+        data=content,
+        timeout=timeout_seconds
+        or max(1, min(float(settings.llm_provider_timeout_seconds), 240.0)),
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        payload = {}
+    text = _clean(payload.get("text") or payload.get("transcript"))
+    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+    usage.setdefault("input_tokens", 1)
+    usage.setdefault("output_tokens", len(text.split()) if text else 0)
+    usage.setdefault(
+        "total_tokens",
+        int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0),
+    )
+    usage.setdefault("usage_bucket", "offline_local")
+    return {
+        "model": _clean(payload.get("model")) or _clean(model),
+        "text": text,
+        "status": _clean(payload.get("status")),
+        "duration_seconds": payload.get("duration_seconds"),
+        "usage": usage,
         "headers": _routing_headers(response),
         "raw": payload,
     }

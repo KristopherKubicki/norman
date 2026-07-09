@@ -196,6 +196,22 @@ def _route_policy_has_runner(policy: dict[str, Any]) -> bool:
     )
 
 
+def _is_live_tui_execution_policy(
+    route_policy: dict[str, Any],
+    options: "ConsoleRuntimeRunOptions",
+) -> bool:
+    containers = (route_policy, options.metadata)
+    return any(
+        _flag(container.get("kernel_execution_enabled"))
+        and _flag(container.get("kernel_execution_candidate"))
+        for container in containers
+    ) and any(
+        _clean(container.get("kind")) == "tui_turn_shadow"
+        or _flag(container.get("turn_shadow"))
+        for container in containers
+    )
+
+
 def _local_first_route_policy(policy: dict[str, Any]) -> dict[str, Any]:
     return with_local_first_catalog_defaults(policy)
 
@@ -234,6 +250,7 @@ def _route_proof_required(
 ) -> bool:
     return (
         not options.dry_run
+        or _is_live_tui_execution_policy(route_policy, options)
         or _flag(route_policy.get("route_proof_required"))
         or _flag(route_policy.get("require_route_proof"))
     )
@@ -276,11 +293,8 @@ def _receipt_completion_summary(
             "require_verifier": require_verifier,
             "verification_signal": verification_signal,
         }
-    receipt_for_gate = dict(route_receipt)
-    if require_verifier and verification_signal == "complete":
-        receipt_for_gate["verifier_result"] = "pass"
     gate_passed = receipt_completion_gate_passes(
-        receipt_for_gate,
+        route_receipt,
         audit=audit,
         require_verifier=require_verifier,
     )
@@ -296,6 +310,29 @@ def _receipt_completion_summary(
         "require_verifier": require_verifier,
         "verification_signal": verification_signal,
     }
+
+
+def _normalize_receipt_for_verification(
+    route_receipt: dict[str, Any],
+    *,
+    require_proof: bool,
+    require_verifier: bool,
+    verification_signal: str,
+) -> dict[str, Any]:
+    if not route_receipt:
+        return {}
+    normalized = dict(route_receipt)
+    normalized["route_proof_required"] = bool(
+        normalized.get("route_proof_required") or require_proof
+    )
+    normalized["require_verifier_for_completion"] = bool(
+        normalized.get("require_verifier_for_completion") or require_verifier
+    )
+    if require_verifier and verification_signal == "complete":
+        normalized["verifier_result"] = "pass"
+    elif require_verifier and verification_signal == "needs_more_work":
+        normalized["verifier_result"] = "fail"
+    return normalized
 
 
 @dataclass
@@ -548,6 +585,9 @@ class DbConsoleRuntimeWorker:
                 "route_policy": route_policy,
                 "runtime_job_id": job_id,
                 "worker_id": opts.worker_id,
+                "dry_run": opts.dry_run,
+                "turn_shadow": bool(route_policy.get("turn_shadow")),
+                "route_proof_required": _route_proof_required(route_policy, opts),
                 "model_timeout_seconds": route_policy.get("model_timeout_seconds")
                 or route_policy.get("provider_timeout_seconds"),
                 "completion_requested": opts.complete,
@@ -642,9 +682,40 @@ class DbConsoleRuntimeWorker:
                 "output_tokens": result.usage.output_tokens,
                 "total_tokens": result.usage.total_tokens,
             }
-        receipt_audit = _receipt_audit(route_receipt) if route_receipt else {}
         require_proof = _route_proof_required(route_policy, opts)
         require_verifier = _verifier_required_for_completion(route_policy, opts)
+        goal_phase = (
+            _clean(opts.metadata.get("goal_phase")) or opts.planner_kind
+        ).lower()
+        verification_signal = ""
+        if self._verifier_can_stop(route_policy, opts) and goal_phase == "verify":
+            verification_signal = _verification_signal(result.text)
+            if verification_signal:
+                self.store.append_event(
+                    db,
+                    user_id=user_id,
+                    job_id=job_id,
+                    event_type="verification.completed"
+                    if verification_signal == "complete"
+                    else "verification.needs_more_work",
+                    payload={
+                        "signal": verification_signal,
+                        "phase": goal_phase,
+                        "output_preview": _preview(result.text, 800),
+                        "worker_id": opts.worker_id,
+                    },
+                    summary="Verifier marked goal complete"
+                    if verification_signal == "complete"
+                    else "Verifier requested more local work",
+                    detail=_preview(result.text, 800),
+                )
+        route_receipt = _normalize_receipt_for_verification(
+            route_receipt,
+            require_proof=require_proof,
+            require_verifier=require_verifier,
+            verification_signal=verification_signal,
+        )
+        receipt_audit = _receipt_audit(route_receipt) if route_receipt else {}
         if route_receipt:
             self.store.append_event(
                 db,
@@ -675,32 +746,6 @@ class DbConsoleRuntimeWorker:
                 ),
                 detail="; ".join(receipt_audit.get("failures") or []),
             )
-
-        goal_phase = (
-            _clean(opts.metadata.get("goal_phase")) or opts.planner_kind
-        ).lower()
-        verification_signal = ""
-        if self._verifier_can_stop(route_policy, opts) and goal_phase == "verify":
-            verification_signal = _verification_signal(result.text)
-            if verification_signal:
-                self.store.append_event(
-                    db,
-                    user_id=user_id,
-                    job_id=job_id,
-                    event_type="verification.completed"
-                    if verification_signal == "complete"
-                    else "verification.needs_more_work",
-                    payload={
-                        "signal": verification_signal,
-                        "phase": goal_phase,
-                        "output_preview": _preview(result.text, 800),
-                        "worker_id": opts.worker_id,
-                    },
-                    summary="Verifier marked goal complete"
-                    if verification_signal == "complete"
-                    else "Verifier requested more local work",
-                    detail=_preview(result.text, 800),
-                )
 
         refreshed = self.store.get_job(db, user_id=user_id, job_id=job_id)
         missing = [
@@ -1436,6 +1481,9 @@ class DbConsoleRuntimeWorker:
             "usage": result.usage.as_dict(),
             "metadata": metadata,
             "output_preview": preview,
+            "dry_run": _flag(metadata.get("dry_run")),
+            "turn_shadow": _flag(metadata.get("turn_shadow")),
+            "route_proof_required": _flag(metadata.get("route_proof_required")),
         }
         if route_receipt:
             route_receipt = {

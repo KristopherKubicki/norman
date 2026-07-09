@@ -3,6 +3,7 @@ from app.services.norllama.routing import (
     route_task,
     with_response_attribution,
 )
+from app.services.norllama.route_proof import audit_route_receipt
 from app.services.norllama.types import NorllamaTaskRequest
 
 
@@ -59,6 +60,49 @@ def test_norllama_tool_task_routes_to_local_capability_lane(monkeypatch):
     assert cascade["summary"]["lane_count"] == 10
     assert "receipt_auditor" in cascade["summary"]["lanes"]
     assert "pytest" in cascade["summary"]["deterministic_experts"]
+
+
+def test_route_receipt_audit_requires_non_empty_critical_fields():
+    receipt = {
+        "schema": "norman.norllama.route-receipt.v1",
+        "status": "completed",
+        "request_id": "req-empty-critical",
+        "job_id": "",
+        "phase": "work",
+        "task_kind": "code",
+        "selected_provider": "norllama",
+        "selected_model": "",
+        "target_model": "qwen3.6:27b",
+        "effective_runtime_model": "qwen3.6:27b",
+        "selected_worker": "spark-151",
+        "observed_worker": "spark-151",
+        "frontdoor": "https://llm.home.arpa",
+        "peer_path": ["llm.home.arpa", "spark-151"],
+        "route_reason": "local-first route-proof test",
+        "policy_mode": "local_first",
+        "cloud_proxy": False,
+        "benchmark_packet_id": "route-proof-active-1",
+        "benchmark_fresh": True,
+        "benchmark_score": 0.91,
+        "coverage_ratio": 1.0,
+        "input_tokens": 1,
+        "output_tokens": 1,
+        "total_tokens": 2,
+        "usage_bucket": "offline_local",
+        "fallback_used": False,
+        "fallback_reason": "",
+        "verifier_result": "pass",
+        "output_shape": "complete",
+        "route_proof_required": True,
+    }
+
+    audit = audit_route_receipt(receipt)
+
+    assert audit["pass"] is False
+    assert "critical_fields_empty" in audit["failures"]
+    assert "job_id" in audit["empty_critical_fields"]
+    assert "selected_model" in audit["empty_critical_fields"]
+    assert "benchmark_source" in audit["absent_critical_fields"]
 
 
 def test_norllama_can_proxy_planning_to_bedrock():
@@ -162,7 +206,7 @@ def test_norllama_catalog_model_selection_for_code_and_judge():
     assert judge_route.tool_lane is False
 
 
-def test_norllama_catalog_model_selection_for_world_and_faster_whisper_asr():
+def test_norllama_catalog_model_selection_for_lab_world_and_faster_whisper_asr():
     world_request = NorllamaTaskRequest(
         kind="world",
         input_text="Simulate whether the browser click is safe.",
@@ -178,7 +222,9 @@ def test_norllama_catalog_model_selection_for_world_and_faster_whisper_asr():
     asr_route = route_task(asr_request)
 
     assert world_route.capability == "world"
-    assert world_route.model == "qwen3.6:35b-a3b-q4_K_M"
+    assert world_route.model == "qwen3.6:27b"
+    assert "AgentWorld" not in world_route.model
+    assert "WebWorld" not in world_route.model
     assert world_route.tool_lane is True
     assert asr_route.capability == "asr"
     assert asr_route.model == "faster-whisper:distil-large-v3"

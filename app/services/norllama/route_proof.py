@@ -33,6 +33,26 @@ REQUIRED_ROUTE_RECEIPT_FIELDS = (
     "verifier_result",
     "output_shape",
 )
+NON_EMPTY_ROUTE_RECEIPT_FIELDS = (
+    "request_id",
+    "job_id",
+    "phase",
+    "task_kind",
+    "selected_provider",
+    "selected_model",
+    "target_model",
+    "effective_runtime_model",
+    "selected_worker",
+    "frontdoor",
+    "peer_path",
+    "route_reason",
+    "policy_mode",
+    "benchmark_packet_id",
+    "benchmark_source",
+    "usage_bucket",
+    "verifier_result",
+    "output_shape",
+)
 
 BAD_COMPLETION_SHAPES = {"empty", "progress_only", "timeout", "error"}
 LOCAL_USAGE_BUCKETS = {"offline_local", "offline"}
@@ -46,7 +66,11 @@ CLOUD_USAGE_BUCKETS = {
 }
 GOOD_VERIFIER_RESULTS = {"pass", "passed", "complete", "verified", "ok"}
 QWEN_PRODUCTION_PREFIXES = ("qwen3.6", "qwen3.5", "nvidia/qwen3.6")
-UPLINK_BENCHMARK_SOURCES = {"uplink_benchmark", "uplink_lane_benchmark"}
+UPLINK_BENCHMARK_SOURCES = {
+    "uplink_benchmark",
+    "uplink_lane_benchmark",
+    "uplink_route_proof",
+}
 
 
 def _clean(value: Any) -> str:
@@ -75,6 +99,18 @@ def _json_int(value: Any) -> int:
         return max(0, int(value or 0))
     except (TypeError, ValueError):
         return 0
+
+
+def _critical_value_present(value: Any) -> bool:
+    if isinstance(value, bool):
+        return True
+    if isinstance(value, (int, float)):
+        return True
+    if isinstance(value, list):
+        return any(_critical_value_present(item) for item in value)
+    if isinstance(value, dict):
+        return bool(value)
+    return bool(_clean(value))
 
 
 def _is_qwen_production_model(model: str) -> bool:
@@ -135,6 +171,20 @@ def audit_route_receipt(receipt: dict[str, Any] | None) -> dict[str, Any]:
     require_verifier = completion_requested or _flag(
         receipt.get("require_verifier_for_completion")
     )
+    route_proof_required = _flag(receipt.get("route_proof_required"))
+    critical_required = status in {"accepted", "completed"} or (
+        completion_requested or route_proof_required
+    )
+    empty_critical = [
+        field
+        for field in NON_EMPTY_ROUTE_RECEIPT_FIELDS
+        if field in receipt and not _critical_value_present(receipt.get(field))
+    ]
+    absent_critical = [
+        field for field in NON_EMPTY_ROUTE_RECEIPT_FIELDS if field not in receipt
+    ]
+    if critical_required and (empty_critical or absent_critical):
+        failures.append("critical_fields_empty")
 
     if status == "completed" and not target_model:
         failures.append("target_model_missing")
@@ -160,6 +210,10 @@ def audit_route_receipt(receipt: dict[str, Any] | None) -> dict[str, Any]:
     if status == "completed" and _local_frontdoor_requires_worker(receipt):
         if not _clean(receipt.get("observed_worker")):
             failures.append("observed_worker_missing_for_frontdoor_route")
+    if _flag(receipt.get("fallback_used")) and not _clean(
+        receipt.get("fallback_reason")
+    ):
+        failures.append("fallback_used_without_reason")
 
     benchmark_source = _benchmark_source(receipt)
     model_for_benchmark = effective_model or target_model
@@ -181,6 +235,8 @@ def audit_route_receipt(receipt: dict[str, Any] | None) -> dict[str, Any]:
         "failures": failures,
         "warnings": warnings,
         "missing_required_fields": missing,
+        "empty_critical_fields": empty_critical,
+        "absent_critical_fields": absent_critical if critical_required else [],
         "receipt_id": _clean(receipt.get("request_id")),
         "job_id": _clean(receipt.get("job_id")),
         "target_model": target_model,

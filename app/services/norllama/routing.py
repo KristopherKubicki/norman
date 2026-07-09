@@ -1053,9 +1053,16 @@ def route_receipt_payload(
             metadata.get("completion_requested")
             or request.metadata.get("completion_requested")
         ),
+        "route_proof_required": bool(
+            metadata.get("route_proof_required")
+            or request.metadata.get("route_proof_required")
+            or request.route_policy.get("route_proof_required")
+            or request.route_policy.get("require_route_proof")
+        ),
         "require_verifier_for_completion": bool(
             metadata.get("require_verifier_for_completion")
             or request.metadata.get("require_verifier_for_completion")
+            or request.route_policy.get("require_verifier_for_completion")
         ),
         "model_selection": selection,
         "model_reality": reality,

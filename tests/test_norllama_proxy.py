@@ -199,17 +199,120 @@ def test_proxy_invokes_default_image_generation_tool_handler(monkeypatch):
     assert calls[0]["safety_profile"] == "adult_opt_in"
 
 
-def test_proxy_returns_planned_receipt_when_tool_handler_is_missing():
+def test_proxy_invokes_default_ocr_tool_handler(monkeypatch):
+    calls = []
+
+    def fake_ocr_document(**kwargs):
+        calls.append(kwargs)
+        return {
+            "model": kwargs["model"],
+            "text": "invoice total 12.34",
+            "pages": [{"text": "invoice total 12.34"}],
+            "usage": {"page_count": 1},
+            "headers": {
+                "x-norllama-worker-id": "spark-150",
+                "x-norllama-upstream": "http://192.168.2.150:18151",
+            },
+            "raw": {
+                "norllama": {
+                    "selected_worker": "spark-150",
+                    "output_shape": "complete",
+                    "verifier_result": "pass",
+                }
+            },
+        }
+
+    monkeypatch.setattr(
+        proxy_module.norllama_gateway, "ocr_document", fake_ocr_document
+    )
+
     request = NorllamaTaskRequest(
         kind="ocr",
-        artifacts=[{"path": "/tmp/frame.png"}],
+        artifacts=[
+            {
+                "filename": "frame.png",
+                "content_type": "image/png",
+                "bytes": b"PNG",
+            }
+        ],
+    )
+
+    receipt = NorllamaProxy().invoke(request).as_dict()
+
+    assert receipt["status"] == "completed"
+    assert receipt["route"]["capability"] == "ocr"
+    assert receipt["route"]["attribution"]["worker_id"] == "spark-150"
+    assert receipt["output"]["text"] == "invoice total 12.34"
+    assert receipt["output"]["usage"]["usage_bucket"] == "offline_local"
+    assert receipt["metadata"]["route_receipt"]["selected_worker"] == "spark-150"
+    assert receipt["metadata"]["route_receipt"]["output_shape"] == "complete"
+    assert calls[0]["content"] == b"PNG"
+    assert calls[0]["filename"] == "frame.png"
+    assert calls[0]["content_type"] == "image/png"
+
+
+def test_proxy_invokes_default_asr_tool_handler(monkeypatch):
+    calls = []
+
+    def fake_transcribe_audio(**kwargs):
+        calls.append(kwargs)
+        return {
+            "model": kwargs["model"],
+            "text": "local audio transcript",
+            "usage": {"audio_seconds": 3},
+            "headers": {
+                "x-norllama-worker-id": "spark-150",
+                "x-norllama-upstream": "http://192.168.2.150:18151",
+            },
+            "raw": {
+                "norllama": {
+                    "selected_worker": "spark-150",
+                    "output_shape": "complete",
+                    "verifier_result": "pass",
+                }
+            },
+        }
+
+    monkeypatch.setattr(
+        proxy_module.norllama_gateway, "transcribe_audio", fake_transcribe_audio
+    )
+
+    request = NorllamaTaskRequest(
+        kind="asr",
+        artifacts=[
+            {
+                "filename": "clip.wav",
+                "media_type": "audio/wav",
+                "bytes": b"WAV",
+            }
+        ],
+    )
+
+    receipt = NorllamaProxy().invoke(request).as_dict()
+
+    assert receipt["status"] == "completed"
+    assert receipt["route"]["capability"] == "asr"
+    assert receipt["route"]["attribution"]["worker_id"] == "spark-150"
+    assert receipt["output"]["text"] == "local audio transcript"
+    assert receipt["output"]["usage"]["usage_bucket"] == "offline_local"
+    assert receipt["metadata"]["route_receipt"]["selected_worker"] == "spark-150"
+    assert receipt["metadata"]["route_receipt"]["output_shape"] == "complete"
+    assert calls[0]["content"] == b"WAV"
+    assert calls[0]["filename"] == "clip.wav"
+    assert calls[0]["content_type"] == "audio/wav"
+
+
+def test_proxy_returns_planned_receipt_when_tool_handler_is_missing():
+    request = NorllamaTaskRequest(
+        kind="world",
+        input_text="Rehearse whether this browser action is safe.",
     )
 
     receipt = NorllamaProxy().invoke(request).as_dict()
 
     assert receipt["status"] == "planned"
     assert receipt["output"]["adapter_required"] is True
-    assert receipt["output"]["capability"] == "ocr"
+    assert receipt["output"]["capability"] == "world"
 
 
 def test_proxy_invokes_local_chat_lane(monkeypatch):

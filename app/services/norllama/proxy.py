@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import base64
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from app.core.config import settings
@@ -62,6 +64,50 @@ def _candidate_text(candidate: dict[str, Any]) -> str:
         if value:
             return value
     return _clean(candidate)
+
+
+def _artifact_bytes(request: NorllamaTaskRequest) -> tuple[bytes, str, str]:
+    artifact = request.artifacts[0] if request.artifacts else {}
+    if not isinstance(artifact, dict):
+        artifact = {}
+    filename = _clean(artifact.get("filename") or artifact.get("name"))
+    content_type = _clean(
+        artifact.get("content_type")
+        or artifact.get("media_type")
+        or artifact.get("mime")
+    )
+    raw = artifact.get("bytes") or artifact.get("content")
+    if isinstance(raw, bytes):
+        return raw, filename or "upload.bin", content_type or "application/octet-stream"
+    if isinstance(raw, str) and raw:
+        return (
+            raw.encode("utf-8"),
+            filename or "upload.txt",
+            content_type or "text/plain",
+        )
+    encoded = _clean(
+        artifact.get("content_base64")
+        or artifact.get("base64")
+        or artifact.get("b64")
+        or artifact.get("data_base64")
+    )
+    if encoded:
+        return (
+            base64.b64decode(encoded),
+            filename or "upload.bin",
+            content_type or "application/octet-stream",
+        )
+    path = _clean(artifact.get("path"))
+    if path:
+        candidate = Path(path).expanduser()
+        if not candidate.exists() or not candidate.is_file():
+            raise RuntimeError(f"Norllama artifact path is not readable: {path}")
+        return (
+            candidate.read_bytes(),
+            filename or candidate.name,
+            content_type or "application/octet-stream",
+        )
+    raise RuntimeError("Norllama tool lane requires a file artifact")
 
 
 def _default_rerank_tool(
@@ -129,6 +175,46 @@ def _default_safety_tool(
     return payload
 
 
+def _default_ocr_tool(
+    request: NorllamaTaskRequest, route: NorllamaRoute
+) -> dict[str, Any]:
+    content, filename, content_type = _artifact_bytes(request)
+    payload = norllama_gateway.ocr_document(
+        content=content,
+        filename=filename,
+        content_type=content_type,
+        model=route.model,
+        base_url=route.endpoint
+        or _clean(getattr(settings, "llm_offline_base_url", "")),
+        api_key=_clean(getattr(settings, "llm_offline_api_key", "")),
+        timeout_seconds=request.route_policy.get("timeout_seconds"),
+    )
+    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+    usage.setdefault("usage_bucket", "offline_local")
+    payload["usage"] = usage
+    return payload
+
+
+def _default_asr_tool(
+    request: NorllamaTaskRequest, route: NorllamaRoute
+) -> dict[str, Any]:
+    content, filename, content_type = _artifact_bytes(request)
+    payload = norllama_gateway.transcribe_audio(
+        content=content,
+        filename=filename,
+        content_type=content_type or "audio/wav",
+        model=route.model,
+        base_url=route.endpoint
+        or _clean(getattr(settings, "llm_offline_base_url", "")),
+        api_key=_clean(getattr(settings, "llm_offline_api_key", "")),
+        timeout_seconds=request.route_policy.get("timeout_seconds"),
+    )
+    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+    usage.setdefault("usage_bucket", "offline_local")
+    payload["usage"] = usage
+    return payload
+
+
 def _default_image_generation_tool(
     request: NorllamaTaskRequest, route: NorllamaRoute
 ) -> dict[str, Any]:
@@ -169,10 +255,14 @@ def _default_image_generation_tool(
 
 def _default_tool_handlers() -> dict[str, ToolHandler]:
     return {
+        "asr": _default_asr_tool,
+        "doc_parse": _default_ocr_tool,
         "image_generate": _default_image_generation_tool,
+        "ocr": _default_ocr_tool,
         "prompt_injection": _default_safety_tool,
         "rerank": _default_rerank_tool,
         "safety": _default_safety_tool,
+        "stt": _default_asr_tool,
     }
 
 

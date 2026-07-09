@@ -116,6 +116,40 @@ def test_pack_builder_includes_live_evidence_when_present(tmp_path, monkeypatch)
         "# TUI Ollama Sense\n",
         encoding="utf-8",
     )
+    (evidence_root / "local_first_proof_last20.json").write_text(
+        """
+        {
+          "schema": "norman.console-runtime.local-first-proof.v1",
+          "session_count": 20,
+          "totals": {
+            "local_tokens": 1200,
+            "openai_codex_tokens": 30,
+            "bedrock_amazon_tokens": 40,
+            "perplexity_web_tokens": 90,
+            "spark_evidence_count": 25,
+            "live_spark_proof_count": 17,
+            "route_receipt_count": 20,
+            "route_receipt_missing_count": 0,
+            "receipt_audit_pass_count": 20,
+            "receipt_audit_fail_count": 0
+          },
+          "release_gate": {
+            "proves_local_first": true,
+            "has_spark_evidence": true,
+            "spark_evidence_excludes_dry_run_shadow": true
+          }
+        }
+        """,
+        encoding="utf-8",
+    )
+    (evidence_root / "local_first_proof_last20.md").write_text(
+        "# Local First Proof\n",
+        encoding="utf-8",
+    )
+    (evidence_root / "route_proof_benchmark_packet.json").write_text(
+        '{"schema":"norman.norllama.route-proof-benchmark-packet.v1"}\n',
+        encoding="utf-8",
+    )
     (receipt_dir / "market-sizing.jsonl").write_text(
         (
             '{"owner_tui":"market-sizing","operator_intent_class":"status",'
@@ -142,11 +176,17 @@ def test_pack_builder_includes_live_evidence_when_present(tmp_path, monkeypatch)
     assert (pack_dir / "live_evidence/tui_cutover_readiness.md").exists()
     assert (pack_dir / "live_evidence/ollama_sense_live.json").exists()
     assert (pack_dir / "live_evidence/ollama_sense_live.md").exists()
+    assert (pack_dir / "live_evidence/local_first_proof_last20.json").exists()
+    assert (pack_dir / "live_evidence/local_first_proof_last20.md").exists()
+    assert (pack_dir / "live_evidence/route_proof_benchmark_packet.json").exists()
     assert (pack_dir / "live_evidence/route_receipts/market-sizing.jsonl").exists()
     handoff = (pack_dir / "brief/LIVE_HANDOFF.md").read_text(encoding="utf-8")
     assert "Receipt count: 1" in handoff
     assert "Effective model: gpt-5.4" in handoff
     assert "Receipt hash prefix: abcd1234efgh5678" in handoff
+    assert "Proof sessions: 20" in handoff
+    assert "Live Spark proof count: 17" in handoff
+    assert "Release gate excludes dry-run/shadow Spark proof: True" in handoff
 
 
 def test_pack_builder_includes_old_failure_packet_without_raw_logs(

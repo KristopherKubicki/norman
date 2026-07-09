@@ -115,6 +115,12 @@ LIVE_EVIDENCE_FILES = (
     "tui_route_receipt_manifest.md",
     "tui_route_receipt_launch_plan.json",
     "tui_route_receipt_launch_plan.md",
+    "local_first_proof_last20.json",
+    "local_first_proof_last20.md",
+    "console_runtime_local_first_proof_last20.json",
+    "console_runtime_local_first_proof_last20.md",
+    "route_proof_benchmark_packet.json",
+    "route_proof_benchmark_packet.md",
     "historic_shadow_planner_route_benchmark.json",
     "historic_shadow_planner_route_benchmark.md",
     "ollama_sense_live.json",
@@ -377,6 +383,17 @@ def _first_live_receipt(evidence_root: Path) -> dict[str, object]:
     return {}
 
 
+def _local_first_proof(evidence_root: Path) -> dict[str, object]:
+    for name in (
+        "local_first_proof_last20.json",
+        "console_runtime_local_first_proof_last20.json",
+    ):
+        raw = _read_json(evidence_root / name)
+        if isinstance(raw, dict):
+            return raw
+    return {}
+
+
 def live_handoff(generated_at: str, evidence_root: Path) -> str:
     cutover = _summary_from_cutover(evidence_root)
     summary = cutover.get("summary") if isinstance(cutover.get("summary"), dict) else {}
@@ -397,6 +414,11 @@ def live_handoff(generated_at: str, evidence_root: Path) -> str:
     receipt = _first_live_receipt(evidence_root)
     receipt_hash = str(receipt.get("receipt_hash") or "")
     receipt_hash_short = receipt_hash[:16] if receipt_hash else "missing"
+    proof = _local_first_proof(evidence_root)
+    proof_totals = proof.get("totals") if isinstance(proof.get("totals"), dict) else {}
+    proof_gate = (
+        proof.get("release_gate") if isinstance(proof.get("release_gate"), dict) else {}
+    )
 
     return f"""# Live Handoff
 
@@ -424,6 +446,22 @@ Generated: {generated_at}
 - Market-sizing validator pass rate: {metrics.get("validator_pass_rate", "missing")}
 - Market-sizing blocker(s): {", ".join(str(item) for item in blockers) or "none recorded"}
 - Market-sizing next action(s): {", ".join(str(item) for item in next_actions) or "none recorded"}
+
+## Last-20 Real-Session Local-First Proof
+
+- Proof sessions: {proof.get("session_count", "missing")}
+- Local tokens: {proof_totals.get("local_tokens", "missing")}
+- OpenAI/Codex tokens: {proof_totals.get("openai_codex_tokens", "missing")}
+- Bedrock/Amazon tokens: {proof_totals.get("bedrock_amazon_tokens", "missing")}
+- Perplexity/web tokens: {proof_totals.get("perplexity_web_tokens", "missing")}
+- Spark evidence count: {proof_totals.get("spark_evidence_count", "missing")}
+- Live Spark proof count: {proof_totals.get("live_spark_proof_count", "missing")}
+- Route receipt count: {proof_totals.get("route_receipt_count", "missing")}
+- Route receipt missing count: {proof_totals.get("route_receipt_missing_count", "missing")}
+- Receipt audit pass/fail: {proof_totals.get("receipt_audit_pass_count", "missing")}/{proof_totals.get("receipt_audit_fail_count", "missing")}
+- Release gate proves local first: {proof_gate.get("proves_local_first", "missing")}
+- Release gate has live Spark proof: {proof_gate.get("has_spark_evidence", "missing")}
+- Release gate excludes dry-run/shadow Spark proof: {proof_gate.get("spark_evidence_excludes_dry_run_shadow", "missing")}
 
 ## First Live Receipt Snapshot
 

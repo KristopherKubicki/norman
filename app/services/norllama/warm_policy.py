@@ -74,6 +74,8 @@ DEFAULT_WARM_RECOMMENDATIONS: list[dict[str, Any]] = [
     },
 ]
 
+ROUTE_PROOF_BENCHMARK_SCHEMA = "norman.norllama.route-proof-benchmark-packet.v1"
+UPLINK_PROMOTION_SOURCES = {"uplink_benchmark", "uplink_route_proof"}
 PRIORITY_RANK = {"p0": 0, "p1": 1, "canary": 2, "p2": 3}
 SMALL_MODEL_MAX_B = 4
 FALLBACK_WORKER_MEMORY_GB = 32
@@ -276,6 +278,49 @@ def _setting_bool(name: str, default: bool) -> bool:
     if isinstance(value, bool):
         return value
     return _clean(value).lower() in {"1", "true", "yes", "on"}
+
+
+def _packet_schema(packet: dict[str, Any]) -> str:
+    return _clean(packet.get("schema") or packet.get("packet_schema"))
+
+
+def _is_route_proof_packet(packet: dict[str, Any]) -> bool:
+    return _packet_schema(packet) == ROUTE_PROOF_BENCHMARK_SCHEMA
+
+
+def _packet_id(packet: dict[str, Any]) -> str:
+    return _clean(packet.get("packet_id") or packet.get("id")) or _clean(
+        packet.get("generated_at")
+    )
+
+
+def _packet_meta(
+    packet: dict[str, Any],
+    *,
+    status: str,
+    source: str,
+    path: str = "",
+    url: str = "",
+    historical: bool = False,
+    explicit_authoritative: bool | None = None,
+) -> dict[str, Any]:
+    route_proof = _is_route_proof_packet(packet)
+    if explicit_authoritative is None:
+        promotion_authoritative = bool(route_proof and not historical)
+    else:
+        promotion_authoritative = bool(explicit_authoritative and not historical)
+    return {
+        "status": status,
+        "source": source,
+        "path": path,
+        "url": url,
+        "packet_id": _packet_id(packet),
+        "generated_at": _clean(packet.get("generated_at")),
+        "schema": _packet_schema(packet),
+        "packet_kind": "route_proof" if route_proof else "broad_historical",
+        "promotion_authoritative": promotion_authoritative,
+        "historical": historical or not route_proof,
+    }
 
 
 def _as_float(value: Any) -> float | None:
@@ -534,54 +579,100 @@ def load_benchmark_packet(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Load the exported Uplink benchmark packet if Norman has one."""
 
-    configured_path = _clean(path) or _clean(
-        getattr(settings, "llm_benchmark_packet_path", "")
+    explicit_path = _clean(path)
+    explicit_url = _clean(url)
+    route_proof_path = explicit_path or _clean(
+        getattr(settings, "llm_route_proof_benchmark_packet_path", "")
     )
-    configured_url = _clean(url) or _clean(
-        getattr(settings, "llm_benchmark_packet_url", "")
+    route_proof_url = explicit_url or _clean(
+        getattr(settings, "llm_route_proof_benchmark_packet_url", "")
     )
-    if configured_path:
+    historical_path = (
+        ""
+        if explicit_path
+        else _clean(getattr(settings, "llm_benchmark_packet_path", ""))
+    )
+    historical_url = (
+        ""
+        if explicit_url
+        else _clean(getattr(settings, "llm_benchmark_packet_url", ""))
+    )
+    path_error = ""
+    if route_proof_path:
         try:
-            packet = _load_json_path(configured_path)
+            packet = _load_json_path(route_proof_path)
             if packet:
-                return packet, {
-                    "status": "loaded",
-                    "source": "path",
-                    "path": configured_path,
-                    "packet_id": _clean(packet.get("packet_id") or packet.get("id"))
-                    or _clean(packet.get("generated_at")),
-                    "generated_at": _clean(packet.get("generated_at")),
-                }
+                return packet, _packet_meta(
+                    packet,
+                    status="loaded",
+                    source="path",
+                    path=route_proof_path,
+                    explicit_authoritative=True
+                    if explicit_path and _is_route_proof_packet(packet)
+                    else None,
+                )
         except Exception as exc:
             path_error = _clean(exc)
         else:
             path_error = "not found"
-    else:
-        path_error = ""
-    if configured_url:
+    if route_proof_url:
         try:
-            packet = _load_json_url(configured_url, timeout_seconds)
+            packet = _load_json_url(route_proof_url, timeout_seconds)
             if packet:
-                return packet, {
-                    "status": "loaded",
-                    "source": "url",
-                    "url": configured_url,
-                    "packet_id": _clean(packet.get("packet_id") or packet.get("id"))
-                    or _clean(packet.get("generated_at")),
-                    "generated_at": _clean(packet.get("generated_at")),
-                }
+                return packet, _packet_meta(
+                    packet,
+                    status="loaded",
+                    source="url",
+                    url=route_proof_url,
+                    explicit_authoritative=True
+                    if explicit_url and _is_route_proof_packet(packet)
+                    else None,
+                )
+        except Exception as exc:
+            path_error = _clean(exc)
+    if historical_path:
+        try:
+            packet = _load_json_path(historical_path)
+            if packet:
+                return packet, _packet_meta(
+                    packet,
+                    status="historical",
+                    source="historical_path",
+                    path=historical_path,
+                    historical=True,
+                    explicit_authoritative=False,
+                )
+        except Exception as exc:
+            path_error = _clean(exc)
+        else:
+            path_error = path_error or "route proof packet not found"
+    if historical_url:
+        try:
+            packet = _load_json_url(historical_url, timeout_seconds)
+            if packet:
+                return packet, _packet_meta(
+                    packet,
+                    status="historical",
+                    source="historical_url",
+                    url=historical_url,
+                    historical=True,
+                    explicit_authoritative=False,
+                )
         except Exception as exc:
             return {}, {
                 "status": "error",
-                "source": "url",
-                "url": configured_url,
+                "source": "historical_url",
+                "url": historical_url,
                 "error": _clean(exc)[:240],
+                "promotion_authoritative": False,
             }
     return {}, {
         "status": "fallback",
         "source": "defaults",
-        "path": configured_path,
+        "path": route_proof_path,
+        "historical_path": historical_path,
         "error": path_error[:240],
+        "promotion_authoritative": False,
     }
 
 
@@ -646,6 +737,9 @@ def _upsert_recommendation(
         "output_shape_valid",
         "cold_start_p95",
         "warm_latency_p95",
+        "benchmark_gate",
+        "gate",
+        "promotion_gate",
     )
     quality_snapshot = {
         key: metrics_source.get(key)
@@ -673,6 +767,9 @@ def _upsert_recommendation(
 
 def benchmark_recommendations(packet: dict[str, Any]) -> list[dict[str, Any]]:
     by_model: dict[str, dict[str, Any]] = {}
+    packet_source = (
+        "uplink_route_proof" if _is_route_proof_packet(packet) else "uplink_benchmark"
+    )
     shareable = packet.get("shareable_view") if isinstance(packet, dict) else {}
     if isinstance(shareable, dict):
         for role in shareable.get("recommended_roles") or []:
@@ -683,7 +780,7 @@ def benchmark_recommendations(packet: dict[str, Any]) -> list[dict[str, Any]]:
                 model=_clean(role.get("model")),
                 profile=_clean(role.get("profile")),
                 priority=_priority_for_role(role),
-                source="uplink_benchmark",
+                source=packet_source,
                 use_for=_clean(role.get("use_for")),
                 guardrail=_clean(role.get("guardrail")),
                 score=role.get("score") or role.get("score_high"),
@@ -719,7 +816,7 @@ def benchmark_recommendations(packet: dict[str, Any]) -> list[dict[str, Any]]:
                     ),
                     profile=_clean(result_item.get("profile")),
                     priority=_clean(result_item.get("priority")) or "p1",
-                    source="uplink_benchmark",
+                    source=packet_source,
                     use_for=_clean(
                         result_item.get("use_for")
                         or result_item.get("lane_id")
@@ -760,7 +857,7 @@ def benchmark_recommendations(packet: dict[str, Any]) -> list[dict[str, Any]]:
             model=model,
             profile=_clean(contract.get("default_profile")),
             priority="p1",
-            source="uplink_benchmark",
+            source=packet_source,
             use_for=_clean(contract.get("title") or contract.get("contract_id")),
             guardrail=_clean(contract.get("guardrail")),
             score=contract.get("best_weighted_score"),
@@ -793,7 +890,7 @@ def benchmark_recommendations(packet: dict[str, Any]) -> list[dict[str, Any]]:
                 ),
                 profile=_clean(result_item.get("profile")),
                 priority=_clean(result_item.get("priority")) or "p1",
-                source="uplink_benchmark",
+                source=packet_source,
                 use_for=_clean(
                     result_item.get("use_for")
                     or result_item.get("lane_id")
@@ -883,6 +980,106 @@ def _quality_bool(item: dict[str, Any], *keys: str) -> bool | None:
     return None
 
 
+def _benchmark_gate_level(item: dict[str, Any]) -> str:
+    configured = _clean(
+        _quality_metric(item, "benchmark_gate", "gate", "promotion_gate")
+    ).lower()
+    if configured in {"smoke", "production"}:
+        return configured
+    priority = _clean(item.get("priority")).lower()
+    target_role = _clean(item.get("target_role")).lower()
+    residency = _clean(item.get("residency")).lower()
+    if priority == "canary" or target_role in {"fallback", "lab"}:
+        return "smoke"
+    if residency in {"lab", "cold_only", "aspirational"}:
+        return "smoke"
+    return "production"
+
+
+def _benchmark_gate_thresholds(item: dict[str, Any]) -> dict[str, Any]:
+    gate = _benchmark_gate_level(item)
+    prefix = (
+        "llm_warm_policy_smoke" if gate == "smoke" else "llm_warm_policy_production"
+    )
+    return {
+        "gate": gate,
+        "min_score": _setting_float(
+            f"{prefix}_min_benchmark_score",
+            _setting_float(
+                "llm_warm_policy_min_benchmark_score",
+                0.6,
+                minimum=0.0,
+                maximum=10.0,
+            ),
+            minimum=0.0,
+            maximum=10.0,
+        ),
+        "min_coverage_ratio": _setting_float(
+            f"{prefix}_min_coverage_ratio",
+            _setting_float(
+                "llm_warm_policy_min_coverage_ratio",
+                0.5,
+                minimum=0.0,
+                maximum=1.0,
+            ),
+            minimum=0.0,
+            maximum=1.0,
+        ),
+        "min_accepted_count": _setting_int(
+            f"{prefix}_min_accepted_count",
+            _setting_int(
+                "llm_warm_policy_min_accepted_count",
+                1,
+                minimum=0,
+                maximum=1000,
+            ),
+            minimum=0,
+            maximum=1000,
+        ),
+        "max_timeout_rate": _setting_float(
+            f"{prefix}_max_timeout_rate",
+            _setting_float(
+                "llm_warm_policy_max_timeout_rate",
+                0.25,
+                minimum=0.0,
+                maximum=1.0,
+            ),
+            minimum=0.0,
+            maximum=1.0,
+        ),
+        "max_progress_only_rate": _setting_float(
+            f"{prefix}_max_progress_only_rate",
+            _setting_float(
+                "llm_warm_policy_max_progress_only_rate",
+                0.10,
+                minimum=0.0,
+                maximum=1.0,
+            ),
+            minimum=0.0,
+            maximum=1.0,
+        ),
+        "max_verifier_rejection_rate": _setting_float(
+            f"{prefix}_max_verifier_rejection_rate",
+            _setting_float(
+                "llm_warm_policy_max_verifier_rejection_rate",
+                0.30,
+                minimum=0.0,
+                maximum=1.0,
+            ),
+            minimum=0.0,
+            maximum=1.0,
+        ),
+        "reject_zero_token": _setting_bool(
+            f"{prefix}_reject_zero_token",
+            _setting_bool("llm_warm_policy_reject_zero_token", True),
+        ),
+        "reject_empty_response": _setting_bool(
+            f"{prefix}_reject_empty_response",
+            _setting_bool("llm_warm_policy_reject_empty_response", True),
+        ),
+    }
+
+
 def _quality_total_count(item: dict[str, Any]) -> int | None:
     total = _quality_int(item, "total_count", "row_count", "sample_count", "count")
     if total is not None:
@@ -919,8 +1116,7 @@ def _benchmark_quality_rejection(
     *,
     score: float | None,
     coverage: float | None,
-    min_score: float,
-    min_coverage: float,
+    thresholds: dict[str, Any],
 ) -> dict[str, Any] | None:
     total_count = _quality_total_count(item)
     accepted_count = _quality_int(item, "accepted_count", "accepted")
@@ -955,23 +1151,14 @@ def _benchmark_quality_rejection(
         total_count=total_count,
     )
     output_shape_valid = _quality_bool(item, "output_shape_valid")
-    min_accepted = _setting_int(
-        "llm_warm_policy_min_accepted_count", 1, minimum=0, maximum=1000
+    min_accepted = int(thresholds.get("min_accepted_count") or 0)
+    max_timeout_rate = float(thresholds.get("max_timeout_rate") or 0.0)
+    max_progress_only_rate = float(thresholds.get("max_progress_only_rate") or 0.0)
+    max_verifier_rejection_rate = float(
+        thresholds.get("max_verifier_rejection_rate") or 0.0
     )
-    max_timeout_rate = _setting_float(
-        "llm_warm_policy_max_timeout_rate", 0.25, minimum=0.0, maximum=1.0
-    )
-    max_progress_only_rate = _setting_float(
-        "llm_warm_policy_max_progress_only_rate", 0.10, minimum=0.0, maximum=1.0
-    )
-    max_verifier_rejection_rate = _setting_float(
-        "llm_warm_policy_max_verifier_rejection_rate",
-        0.30,
-        minimum=0.0,
-        maximum=1.0,
-    )
-    reject_zero_token = _setting_bool("llm_warm_policy_reject_zero_token", True)
-    reject_empty_response = _setting_bool("llm_warm_policy_reject_empty_response", True)
+    reject_zero_token = bool(thresholds.get("reject_zero_token"))
+    reject_empty_response = bool(thresholds.get("reject_empty_response"))
     metrics = {
         "accepted_count": accepted_count,
         "total_count": total_count,
@@ -985,6 +1172,7 @@ def _benchmark_quality_rejection(
         "max_timeout_rate": max_timeout_rate,
         "max_progress_only_rate": max_progress_only_rate,
         "max_verifier_rejection_rate": max_verifier_rejection_rate,
+        "gate": _clean(thresholds.get("gate")),
     }
 
     reason = ""
@@ -1028,8 +1216,10 @@ def _benchmark_quality_rejection(
         "reason": reason,
         "score": score,
         "coverage_ratio": coverage,
-        "min_score": min_score,
-        "min_coverage_ratio": min_coverage,
+        "min_score": thresholds.get("min_score"),
+        "min_coverage_ratio": thresholds.get("min_coverage_ratio"),
+        "gate": _clean(thresholds.get("gate")),
+        "thresholds": thresholds,
         "quality_metrics": metrics,
         "source": _clean(item.get("source")),
     }
@@ -1040,12 +1230,9 @@ def _benchmark_quality(item: dict[str, Any]) -> dict[str, Any]:
     status = _clean(item.get("benchmark_status")).lower()
     score = _as_float(item.get("score"))
     coverage = _as_float(item.get("coverage_ratio"))
-    min_score = _setting_float(
-        "llm_warm_policy_min_benchmark_score", 0.6, minimum=0.0, maximum=10.0
-    )
-    min_coverage = _setting_float(
-        "llm_warm_policy_min_coverage_ratio", 0.5, minimum=0.0, maximum=1.0
-    )
+    thresholds = _benchmark_gate_thresholds(item)
+    min_score = float(thresholds.get("min_score") or 0.0)
+    min_coverage = float(thresholds.get("min_coverage_ratio") or 0.0)
     if status in BAD_BENCHMARK_STATUSES:
         return {
             "eligible": False,
@@ -1055,15 +1242,16 @@ def _benchmark_quality(item: dict[str, Any]) -> dict[str, Any]:
             "coverage_ratio": coverage,
             "min_score": min_score,
             "min_coverage_ratio": min_coverage,
+            "gate": _clean(thresholds.get("gate")),
+            "thresholds": thresholds,
             "source": source,
         }
-    if source == "uplink_benchmark":
+    if source in UPLINK_PROMOTION_SOURCES:
         quality_rejection = _benchmark_quality_rejection(
             item,
             score=score,
             coverage=coverage,
-            min_score=min_score,
-            min_coverage=min_coverage,
+            thresholds=thresholds,
         )
         if quality_rejection:
             return quality_rejection
@@ -1076,6 +1264,8 @@ def _benchmark_quality(item: dict[str, Any]) -> dict[str, Any]:
                 "coverage_ratio": coverage,
                 "min_score": min_score,
                 "min_coverage_ratio": min_coverage,
+                "gate": _clean(thresholds.get("gate")),
+                "thresholds": thresholds,
                 "source": source,
             }
         if coverage is not None and coverage < min_coverage:
@@ -1087,6 +1277,8 @@ def _benchmark_quality(item: dict[str, Any]) -> dict[str, Any]:
                 "coverage_ratio": coverage,
                 "min_score": min_score,
                 "min_coverage_ratio": min_coverage,
+                "gate": _clean(thresholds.get("gate")),
+                "thresholds": thresholds,
                 "source": source,
             }
         if score is None and coverage is None and status not in GOOD_BENCHMARK_STATUSES:
@@ -1098,6 +1290,8 @@ def _benchmark_quality(item: dict[str, Any]) -> dict[str, Any]:
                 "coverage_ratio": coverage,
                 "min_score": min_score,
                 "min_coverage_ratio": min_coverage,
+                "gate": _clean(thresholds.get("gate")),
+                "thresholds": thresholds,
                 "source": source,
             }
         return {
@@ -1108,6 +1302,8 @@ def _benchmark_quality(item: dict[str, Any]) -> dict[str, Any]:
             "coverage_ratio": coverage,
             "min_score": min_score,
             "min_coverage_ratio": min_coverage,
+            "gate": _clean(thresholds.get("gate")),
+            "thresholds": thresholds,
             "quality_metrics": (
                 item.get("quality_metrics")
                 if isinstance(item.get("quality_metrics"), dict)
@@ -1124,6 +1320,8 @@ def _benchmark_quality(item: dict[str, Any]) -> dict[str, Any]:
             "coverage_ratio": coverage,
             "min_score": min_score,
             "min_coverage_ratio": min_coverage,
+            "gate": _clean(thresholds.get("gate")),
+            "thresholds": thresholds,
             "source": source,
         }
     fallback_prefetch = _setting_bool("llm_warm_policy_fallback_prefetch", False)
@@ -1142,6 +1340,8 @@ def _benchmark_quality(item: dict[str, Any]) -> dict[str, Any]:
         "coverage_ratio": coverage,
         "min_score": min_score,
         "min_coverage_ratio": min_coverage,
+        "gate": _clean(thresholds.get("gate")),
+        "thresholds": thresholds,
         "source": source,
     }
 
@@ -1400,9 +1600,18 @@ def _preferred_worker(
     if production:
         family_preference = {
             "deepseek": "spark-150",
-            "qwen": "spark-150",
+            "qwen": "spark-151",
             "gemma": "spark-151",
             "openfugu": "spark-151",
+            "paddle": "spark-150",
+            "mineru": "spark-150",
+            "groundnext": "spark-150",
+            "guard": "spark-150",
+            "sentinel": "spark-150",
+            "toto": "spark-150",
+            "chronos": "spark-150",
+            "graph": "spark-150",
+            "network": "spark-150",
         }.get(family)
         if family_preference:
             for worker in production:
@@ -1848,14 +2057,29 @@ def build_warm_policy(
     if packet is None:
         packet, benchmark_meta = load_benchmark_packet()
     else:
+        route_proof = _is_route_proof_packet(packet)
+        explicit_authoritative = packet.get("promotion_authoritative")
+        if explicit_authoritative is None:
+            promotion_authoritative = bool(route_proof and not packet.get("historical"))
+        else:
+            promotion_authoritative = bool(
+                explicit_authoritative and not packet.get("historical")
+            )
         benchmark_meta = {
             "status": "provided",
             "source": "provided",
-            "packet_id": _clean(packet.get("packet_id") or packet.get("id"))
-            or _clean(packet.get("generated_at")),
+            "packet_id": _packet_id(packet),
             "generated_at": _clean(packet.get("generated_at")),
+            "schema": _packet_schema(packet),
+            "packet_kind": "route_proof" if route_proof else "broad_historical",
+            "promotion_authoritative": promotion_authoritative,
+            "historical": bool(packet.get("historical") or not route_proof),
         }
-    recommendations = benchmark_recommendations(packet or {}) if packet else []
+    recommendations = (
+        benchmark_recommendations(packet or {})
+        if packet and benchmark_meta.get("promotion_authoritative", True)
+        else []
+    )
     if not recommendations:
         recommendations = _fallback_recommendations()
     mesh_payload = mesh or get_mesh_overview(timeout_seconds=2)

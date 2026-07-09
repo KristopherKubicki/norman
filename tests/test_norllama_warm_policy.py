@@ -41,7 +41,7 @@ def sample_mesh():
                 "role": "production",
                 "memory_gb": 128,
                 "reachable": True,
-                "models": ["gemma4:31b"],
+                "models": ["gemma4:31b", "qwen3-coder:30b-a3b-q4_K_M"],
                 "active_models": [],
             },
         ],
@@ -51,6 +51,8 @@ def sample_mesh():
 
 def sample_packet():
     return {
+        "schema": warm_policy.ROUTE_PROOF_BENCHMARK_SCHEMA,
+        "packet_id": "route-proof-sample-1",
         "generated_at": "2026-07-05T23:32:27Z",
         "shareable_view": {
             "recommended_roles": [
@@ -96,6 +98,82 @@ def sample_packet():
     }
 
 
+def old_broad_packet():
+    packet = sample_packet()
+    packet.pop("schema", None)
+    packet["packet_id"] = "old-broad-1"
+    return packet
+
+
+def route_proof_packet():
+    metrics = {
+        "score": 0.95,
+        "coverage_ratio": 1.0,
+        "status": "benchmark_backed",
+        "benchmark_gate": "production",
+        "accepted_count": 1,
+        "total_count": 1,
+        "timeout_rate": 0,
+        "empty_response_rate": 0,
+        "zero_token_rate": 0,
+        "progress_only_rate": 0,
+        "verifier_rejection_rate": 0,
+        "output_shape_valid": True,
+    }
+    return {
+        "schema": "norman.norllama.route-proof-benchmark-packet.v1",
+        "packet_id": "route-proof-active-1",
+        "generated_at": "2026-07-09T20:00:00Z",
+        "shareable_view": {
+            "recommended_roles": [
+                {
+                    **metrics,
+                    "lane_id": "planner",
+                    "model": "qwen3.6:35b-a3b-q4_K_M",
+                    "profile": "qwen36_35_router_local_route_proof",
+                    "target_worker": "spark-151",
+                    "use_for": "interactive local planning and routing",
+                },
+                {
+                    **metrics,
+                    "lane_id": "coder",
+                    "model": "qwen3.6:27b",
+                    "profile": "qwen36_27_local_route_proof",
+                    "target_worker": "spark-151",
+                    "use_for": "local coding and repo reasoning",
+                },
+                {
+                    **metrics,
+                    "lane_id": "judge",
+                    "model": "qwen3.5:122b-a10b-q4_K_M",
+                    "profile": "qwen35_122_heavy_judge_route_proof",
+                    "target_worker": "spark-151",
+                    "priority": "p1",
+                    "use_for": "heavy local judge and verifier",
+                },
+                {
+                    **metrics,
+                    "lane_id": "rerank",
+                    "model": "BAAI/bge-reranker-v2-m3",
+                    "profile": "bge_reranker_cross_encoder_route_proof",
+                    "capability_class": "rerank",
+                    "target_worker": "spark-150",
+                    "use_for": "local evidence reranking",
+                },
+                {
+                    **metrics,
+                    "lane_id": "ocr",
+                    "model": "paddleocr:PP-OCRv6-small",
+                    "profile": "paddleocr_small_route_proof",
+                    "capability_class": "ocr",
+                    "target_worker": "spark-150",
+                    "use_for": "local OCR",
+                },
+            ]
+        },
+    }
+
+
 def catalog_mesh():
     return {
         "schema": "norman.norllama.mesh.v1",
@@ -133,7 +211,12 @@ def catalog_mesh():
                 "reachable": True,
                 "models": [
                     "bge-m3:latest",
+                    "faster-whisper:distil-large-v3",
+                    "paddleocr:PP-OCRv6-small",
+                    "BAAI/bge-reranker-v2-m3",
                     "Qwen/Qwen3Guard-Stream-0.6B",
+                    "Qwen/Qwen-AgentWorld-35B-A3B",
+                    "Qwen/WebWorld-8B",
                 ],
                 "active_models": ["bge-m3:latest", "Qwen/Qwen3Guard-Stream-0.6B"],
                 "endpoints": [{"path": "/v1/safety/classify", "kind": "safety"}],
@@ -152,20 +235,8 @@ def catalog_mesh():
                     "qwen3.6:35b-a3b-q4_K_M",
                     "qwen3.6:27b",
                     "qwen3.5:122b-a10b-q4_K_M",
-                    "faster-whisper:distil-large-v3",
-                    "Qwen/Qwen3Guard-Stream-0.6B",
-                    "Qwen/Qwen-AgentWorld-35B-A3B",
-                    "Qwen/WebWorld-8B",
                 ],
-                "active_models": [
-                    "qwen3.6:35b-a3b-q4_K_M",
-                    "Qwen/Qwen3Guard-Stream-0.6B",
-                ],
-                "endpoints": [{"path": "/v1/safety/classify", "kind": "safety"}],
-                "safety": {
-                    "model": "Qwen/Qwen3Guard-Stream-0.6B",
-                    "base_url": "http://192.168.2.151:8103",
-                },
+                "active_models": ["qwen3.6:35b-a3b-q4_K_M"],
             },
         ],
         "cache": {"status": "hit"},
@@ -240,7 +311,7 @@ def gateway_asr_mesh():
             "models": [],
             "endpoints": [{"path": "/v1/audio/transcriptions", "kind": "asr"}],
             "overview": {
-                "routing": {"transcribe": "http://192.168.2.151:8095"},
+                "routing": {"transcribe": "http://192.168.2.150:8095"},
                 "fleet": [
                     {
                         "base_url": "http://127.0.0.1:8097",
@@ -251,7 +322,7 @@ def gateway_asr_mesh():
                         },
                     },
                     {
-                        "base_url": "http://192.168.2.151:8095",
+                        "base_url": "http://192.168.2.150:8095",
                         "selected_lanes": ["transcribe"],
                         "transcribe": {
                             "model": "distil-large-v3",
@@ -271,7 +342,7 @@ def gateway_asr_mesh():
                 "active_models": [],
                 "endpoints": [{"path": "/v1/audio/transcriptions", "kind": "asr"}],
                 "overview": {
-                    "routing": {"transcribe": "http://192.168.2.151:8095"},
+                    "routing": {"transcribe": "http://192.168.2.150:8095"},
                     "fleet": [
                         {
                             "base_url": "http://127.0.0.1:8097",
@@ -282,7 +353,7 @@ def gateway_asr_mesh():
                             },
                         },
                         {
-                            "base_url": "http://192.168.2.151:8095",
+                            "base_url": "http://192.168.2.150:8095",
                             "selected_lanes": ["transcribe"],
                             "transcribe": {
                                 "model": "distil-large-v3",
@@ -293,7 +364,7 @@ def gateway_asr_mesh():
                 },
             },
             {
-                "id": "spark-151",
+                "id": "spark-150",
                 "role": "production",
                 "memory_gb": 128,
                 "reachable": True,
@@ -350,7 +421,7 @@ def test_build_warm_policy_marks_active_prefetch_and_unavailable():
         == "preflight_or_draft"
     )
     assert by_model["qwen3-coder:30b-a3b-q4_K_M"]["action"] == "prefetch"
-    assert by_model["qwen3-coder:30b-a3b-q4_K_M"]["target_worker"] == "spark-150"
+    assert by_model["qwen3-coder:30b-a3b-q4_K_M"]["target_worker"] == "spark-151"
     assert (
         by_model["hf.co/mradermacher/openfugu-conductor-3b-GGUF:q4_K_M"]["action"]
         == "skip_unavailable"
@@ -381,9 +452,7 @@ def test_build_warm_policy_includes_capability_catalog_and_spark_affinity():
     assert policy["capability_catalog"]["defaults"]["asr"] == (
         "faster-whisper:distil-large-v3"
     )
-    assert policy["capability_catalog"]["defaults"]["world"] == (
-        "qwen3.6:35b-a3b-q4_K_M"
-    )
+    assert policy["capability_catalog"]["defaults"]["world"] == ""
     assert policy["model_reality"]["schema"] == "norman.norllama.model-reality.v1"
     assert by_model["qwen3.6:35b-a3b-q4_K_M"]["action"] == "skip_quality_gate"
     assert (
@@ -408,7 +477,7 @@ def test_build_warm_policy_includes_capability_catalog_and_spark_affinity():
     assert (
         by_model["qualifire/prompt-injection-sentinel"]["action"] == "skip_unavailable"
     )
-    assert by_model["faster-whisper:distil-large-v3"]["target_worker"] == "spark-151"
+    assert by_model["faster-whisper:distil-large-v3"]["target_worker"] == "spark-150"
     assert by_model["faster-whisper:large-v3"]["target_worker"] == "spark-150"
     assert (
         "Qwen/Qwen-AgentWorld-35B-A3B"
@@ -451,8 +520,8 @@ def test_gateway_asr_service_attributes_upstream_worker_not_gateway():
     fast = by_model["faster-whisper:base"]
 
     assert distil["available"] is True
-    assert distil["target_worker"] == "spark-151"
-    assert distil["model_reality"]["service"]["worker_ids"] == ["spark-151"]
+    assert distil["target_worker"] == "spark-150"
+    assert distil["model_reality"]["service"]["worker_ids"] == ["spark-150"]
     assert distil["model_reality"]["state"] == "servable"
     assert fast["available"] is True
     assert fast["target_worker"] == "mac-mini-133"
@@ -461,6 +530,8 @@ def test_gateway_asr_service_attributes_upstream_worker_not_gateway():
 
 def test_benchmark_backed_asr_service_can_be_prefetch_eligible():
     packet = {
+        "schema": warm_policy.ROUTE_PROOF_BENCHMARK_SCHEMA,
+        "packet_id": "route-proof-asr-service",
         "generated_at": "2026-07-08T00:00:00Z",
         "results": [
             {
@@ -486,6 +557,137 @@ def test_benchmark_backed_asr_service_can_be_prefetch_eligible():
     assert fast["model_reality"]["route_eligible"] is True
 
 
+def test_live_scenario_mac_mini_only_degrades_to_fallback_without_heavy_prefetch():
+    mesh = catalog_mesh()
+    mesh["models"] = list(mesh["workers"][0]["models"])
+    mesh["workers"] = [mesh["workers"][0]]
+
+    policy = warm_policy.build_warm_policy(mesh=mesh, packet=route_proof_packet())
+    by_model = {item["model"]: item for item in policy["recommendations"]}
+    code = warm_policy.select_model_for_task_kind("code", warm_policy_payload=policy)
+
+    assert by_model["qwen3.6:27b"]["action"] == "skip_unavailable"
+    assert by_model["qwen3.6:27b"]["target_worker"] == "spark-151"
+    assert code["selected"] is False
+    assert all(
+        item["target_worker"] != "mac-mini-133"
+        or (item.get("model_size_b") is not None and item["model_size_b"] <= 4)
+        for item in policy["prefetch_candidates"]
+    )
+
+
+def test_live_scenario_spark_150_only_serves_specialists_not_qwen_brains():
+    mesh = catalog_mesh()
+    mesh["models"] = list(mesh["workers"][1]["models"])
+    mesh["workers"] = [mesh["workers"][1]]
+
+    policy = warm_policy.build_warm_policy(mesh=mesh, packet=route_proof_packet())
+    by_model = {item["model"]: item for item in policy["recommendations"]}
+    code = warm_policy.select_model_for_task_kind("code", warm_policy_payload=policy)
+    rerank = warm_policy.select_model_for_task_kind(
+        "rerank", warm_policy_payload=policy
+    )
+
+    assert by_model["qwen3.6:27b"]["action"] == "skip_unavailable"
+    assert code["selected"] is False
+    assert rerank["selected"] is True
+    assert rerank["model"] == "BAAI/bge-reranker-v2-m3"
+    assert rerank["target_worker"] == "spark-150"
+
+
+def test_live_scenario_spark_151_only_serves_qwen_brains_not_specialists():
+    mesh = catalog_mesh()
+    mesh["models"] = list(mesh["workers"][2]["models"])
+    mesh["workers"] = [mesh["workers"][2]]
+
+    policy = warm_policy.build_warm_policy(mesh=mesh, packet=route_proof_packet())
+    code = warm_policy.select_model_for_task_kind("code", warm_policy_payload=policy)
+    rerank = warm_policy.select_model_for_task_kind(
+        "rerank", warm_policy_payload=policy
+    )
+
+    assert code["selected"] is True
+    assert code["model"] == "qwen3.6:27b"
+    assert code["target_worker"] == "spark-151"
+    assert rerank["selected"] is False
+
+
+def test_live_scenario_all_sparks_down_waits_or_falls_back_honestly():
+    mesh = catalog_mesh()
+    for worker in mesh["workers"]:
+        if worker["id"].startswith("spark-"):
+            worker["reachable"] = False
+
+    policy = warm_policy.build_warm_policy(mesh=mesh, packet=route_proof_packet())
+    by_model = {item["model"]: item for item in policy["recommendations"]}
+    code = warm_policy.select_model_for_task_kind("code", warm_policy_payload=policy)
+
+    assert by_model["qwen3.6:27b"]["action"] in {
+        "wait_for_worker",
+        "skip_model_reality",
+    }
+    assert code["selected"] is False
+    assert not any(
+        item["model"].startswith("qwen3.6") for item in policy["prefetch_candidates"]
+    )
+
+
+def test_live_scenario_stale_route_proof_packet_does_not_promote():
+    packet = route_proof_packet()
+    packet["generated_at"] = "2026-01-01T00:00:00Z"
+
+    policy = warm_policy.build_warm_policy(mesh=catalog_mesh(), packet=packet)
+    by_model = {item["model"]: item for item in policy["recommendations"]}
+
+    assert policy["model_reality"]["benchmark_fresh"] is False
+    assert by_model["qwen3.6:27b"]["action"] == "skip_model_reality"
+    assert by_model["qwen3.6:27b"]["model_reality"]["proof_status"] == (
+        "installed_unproven"
+    )
+
+
+def test_live_scenario_cold_start_pressure_routes_to_available_pool_member():
+    mesh = sample_mesh()
+    mesh["models"].append("deepseek-coder:16b")
+    mesh["workers"][1]["models"].append("deepseek-coder:16b")
+    mesh["workers"][2]["models"].append("deepseek-coder:16b")
+    mesh["workers"][2]["active_models"] = [
+        "qwen3-coder:30b-a3b-q4_K_M",
+        "gemma4:31b",
+        "deepseek-coder:16b",
+    ]
+    packet = sample_packet()
+    packet["shareable_view"]["recommended_roles"].append(
+        {
+            "lane_id": "packet_code_pressure_backup",
+            "model": "deepseek-coder:16b",
+            "profile": "deepseek_local",
+            "score": 0.82,
+            "coverage_ratio": 1.0,
+            "accepted_count": 1,
+            "total_count": 1,
+            "timeout_rate": 0,
+            "empty_response_rate": 0,
+            "zero_token_rate": 0,
+            "progress_only_rate": 0,
+            "verifier_rejection_rate": 0,
+            "target_worker": "spark-150",
+            "use_for": "code patch flow",
+        }
+    )
+
+    policy = warm_policy.build_warm_policy(mesh=mesh, packet=packet)
+    selection = warm_policy.select_model_for_task_kind(
+        "code",
+        policy={"model_pool_strategy": "fast"},
+        warm_policy_payload=policy,
+    )
+
+    assert selection["selected"] is True
+    assert selection["model"] == "deepseek-coder:16b"
+    assert selection["target_worker"] == "spark-150"
+
+
 def test_load_benchmark_packet_reads_configured_path(tmp_path):
     packet_path = tmp_path / "packet.json"
     packet_path.write_text(json.dumps(sample_packet()), encoding="utf-8")
@@ -495,6 +697,97 @@ def test_load_benchmark_packet_reads_configured_path(tmp_path):
     assert packet["generated_at"] == "2026-07-05T23:32:27Z"
     assert meta["status"] == "loaded"
     assert meta["source"] == "path"
+    assert meta["promotion_authoritative"] is True
+    assert meta["packet_kind"] == "route_proof"
+
+
+def test_load_benchmark_packet_marks_broad_packet_historical(tmp_path):
+    packet_path = tmp_path / "old-broad.json"
+    packet_path.write_text(json.dumps(old_broad_packet()), encoding="utf-8")
+
+    packet, meta = warm_policy.load_benchmark_packet(path=str(packet_path))
+
+    assert packet["packet_id"] == "old-broad-1"
+    assert meta["status"] == "loaded"
+    assert meta["packet_kind"] == "broad_historical"
+    assert meta["historical"] is True
+    assert meta["promotion_authoritative"] is False
+
+
+def test_build_warm_policy_ignores_non_route_proof_broad_packet():
+    policy = warm_policy.build_warm_policy(
+        mesh=sample_mesh(),
+        packet=old_broad_packet(),
+    )
+    by_model = {item["model"]: item for item in policy["recommendations"]}
+
+    assert policy["benchmark"]["promotion_authoritative"] is False
+    assert policy["benchmark"]["historical"] is True
+    assert "hf.co/mradermacher/openfugu-conductor-3b-GGUF:q4_K_M" not in by_model
+    assert by_model["gemma3:1b"]["source"] == "fallback"
+
+
+def test_warm_policy_uses_separate_smoke_and_production_gates():
+    packet = {
+        "schema": warm_policy.ROUTE_PROOF_BENCHMARK_SCHEMA,
+        "packet_id": "route-proof-gates",
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "shareable_view": {
+            "recommended_roles": [
+                {
+                    "lane_id": "canary",
+                    "model": "gemma3:1b",
+                    "profile": "tiny_canary_smoke",
+                    "score": 0.55,
+                    "coverage_ratio": 0.3,
+                    "benchmark_gate": "smoke",
+                    "accepted_count": 1,
+                    "total_count": 10,
+                    "timeout_rate": 0.4,
+                    "empty_response_rate": 0,
+                    "zero_token_rate": 0,
+                    "progress_only_rate": 0.2,
+                    "verifier_rejection_rate": 0.4,
+                    "target_worker": "mac-mini-133",
+                    "use_for": "tiny smoke proof",
+                },
+                {
+                    "lane_id": "summarizer",
+                    "model": "gemma4:31b",
+                    "profile": "gemma31_prod",
+                    "score": 0.55,
+                    "coverage_ratio": 0.3,
+                    "benchmark_gate": "production",
+                    "accepted_count": 1,
+                    "total_count": 10,
+                    "timeout_rate": 0.4,
+                    "empty_response_rate": 0,
+                    "zero_token_rate": 0,
+                    "progress_only_rate": 0.2,
+                    "verifier_rejection_rate": 0.4,
+                    "target_worker": "spark-151",
+                    "use_for": "production summary proof",
+                },
+            ]
+        },
+    }
+
+    policy = warm_policy.build_warm_policy(mesh=sample_mesh(), packet=packet)
+    by_model = {item["model"]: item for item in policy["recommendations"]}
+
+    canary = by_model["gemma3:1b"]
+    production = by_model["gemma4:31b"]
+    assert canary["benchmark_quality"]["gate"] == "smoke"
+    assert canary["benchmark_quality"]["eligible"] is True
+    assert production["benchmark_quality"]["gate"] == "production"
+    assert production["action"] == "skip_quality_gate"
+    assert production["benchmark_quality"]["state"] in {
+        "low_score",
+        "low_coverage",
+        "timeout_heavy",
+        "progress_only_heavy",
+        "verifier_rejected",
+    }
 
 
 def test_apply_warm_policy_dry_run_uses_prefetch_candidates(monkeypatch):
@@ -675,7 +968,7 @@ def test_build_warm_policy_blocks_recent_failed_route_cooldown():
                 "status": "timeout",
                 "ok": False,
                 "model": "qwen3-coder:30b-a3b-q4_K_M",
-                "worker_id": "spark-150",
+                "worker_id": "spark-151",
                 "reason": "TUI planner timed out",
             }
         ],
@@ -685,7 +978,7 @@ def test_build_warm_policy_blocks_recent_failed_route_cooldown():
     qwen = by_model["qwen3-coder:30b-a3b-q4_K_M"]
 
     assert qwen["available"] is True
-    assert qwen["target_worker"] == "spark-150"
+    assert qwen["target_worker"] == "spark-151"
     assert qwen["action"] == "skip_cooldown"
     assert qwen["cooldown"]["active"] is True
     assert qwen["route_guardrail"]["route_state"] == "cooldown"
@@ -715,7 +1008,7 @@ def test_select_model_for_task_kind_prefers_warm_benchmark_lane():
     assert selection["lane"] == "coder"
     assert selection["model"] == "qwen3-coder:30b-a3b-q4_K_M"
     assert selection["action"] == "prefetch"
-    assert selection["target_worker"] == "spark-150"
+    assert selection["target_worker"] == "spark-151"
     assert selection["pool_strategy"] == "balanced"
     assert selection["pool_size"] >= 1
     assert selection["selected_score"] > 0
@@ -745,7 +1038,7 @@ def test_select_model_for_task_kind_uses_recent_outcomes_for_dynamic_pool():
             "status": "slow-response",
             "ok": False,
             "model": "qwen3-coder:30b-a3b-q4_K_M",
-            "worker_id": "spark-150",
+            "worker_id": "spark-151",
             "latency_ms": 22000,
         }
         for index in range(1, 6)
@@ -823,7 +1116,7 @@ def test_select_model_for_task_kind_skips_cooled_down_candidate():
                 "status": "timeout",
                 "ok": False,
                 "model": "qwen3-coder:30b-a3b-q4_K_M",
-                "worker_id": "spark-150",
+                "worker_id": "spark-151",
             }
         ],
     )
@@ -873,14 +1166,19 @@ def test_build_warm_policy_blocks_heavy_model_on_fallback_node():
     by_model = {item["model"]: item for item in policy["recommendations"]}
     qwen = by_model["qwen3-coder:30b-a3b-q4_K_M"]
 
-    assert qwen["target_worker"] == "mac-mini-133"
-    assert qwen["action"] == "skip_model_reality"
-    assert qwen["model_reality"]["proof_status"] == "worker_fit_blocked"
-    assert "heavy model cannot be warmed on fallback node" in qwen["action_reason"]
+    assert qwen["target_worker"] == "spark-151"
+    assert qwen["action"] == "prefetch"
+    assert qwen["model_reality"]["worker_fit"] is True
+    assert all(
+        item["target_worker"] != "mac-mini-133"
+        for item in policy["prefetch_candidates"]
+        if item["model"] == "qwen3-coder:30b-a3b-q4_K_M"
+    )
 
 
 def test_build_warm_policy_allows_quantized_heavy_judge_on_spark():
     packet = {
+        "schema": warm_policy.ROUTE_PROOF_BENCHMARK_SCHEMA,
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "packet_id": "uplink-qwen-heavy-judge",
         "shareable_view": {
@@ -933,6 +1231,7 @@ def test_explicit_qwen_route_lanes_keep_heavy_judge_out_of_chat_pool():
         "output_shape_valid": True,
     }
     packet = {
+        "schema": warm_policy.ROUTE_PROOF_BENCHMARK_SCHEMA,
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "packet_id": "uplink-qwen-explicit-lanes",
         "shareable_view": {
@@ -990,6 +1289,7 @@ def test_narrow_specialist_lanes_do_not_leak_into_general_model_pool():
         "output_shape_valid": True,
     }
     packet = {
+        "schema": warm_policy.ROUTE_PROOF_BENCHMARK_SCHEMA,
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "packet_id": "uplink-specialist-lanes",
         "shareable_view": {
