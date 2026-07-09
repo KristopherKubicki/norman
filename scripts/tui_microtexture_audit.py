@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -90,6 +91,8 @@ def canonical_texture_map(cards: list[dict[str, Any]]) -> dict[str, str]:
 def active_console_services(
     registry_path: Path = DEFAULT_REGISTRY,
 ) -> list[dict[str, Any]]:
+    if not registry_path.exists() and registry_path.with_suffix(".yaml.dist").exists():
+        registry_path = registry_path.with_suffix(".yaml.dist")
     raw = yaml.safe_load(registry_path.read_text(encoding="utf-8")) or {}
     services = raw.get("services") if isinstance(raw, dict) else None
     if not isinstance(services, list):
@@ -144,7 +147,11 @@ def actor_soul_rows(actors_dir: Path = DEFAULT_ACTORS_DIR) -> list[dict[str, Any
 def generated_target_presence(slug: str, target: Path) -> bool:
     source = read_text(target)
     quoted = (f'"{slug}":', f"'{slug}':")
-    return any(marker in source for marker in quoted)
+    if any(marker in source for marker in quoted):
+        return True
+    if target.suffix == ".js" and re.match(r"^[A-Za-z_$][A-Za-z0-9_$]*$", slug):
+        return bool(re.search(rf"(?<![A-Za-z0-9_$]){re.escape(slug)}\s*:", source))
+    return False
 
 
 def generated_targets_for_item(item: dict[str, Any]) -> tuple[Path, ...]:

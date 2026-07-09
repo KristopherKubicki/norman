@@ -30,8 +30,10 @@
     studio: 10,
     castle: 11,
     'phone-ops': 12,
-    uscache: 13,
-    theseus: 14,
+    'diamond-roc': 13,
+    uscache: 14,
+    theseus: 15,
+    artmonster: 16,
     'work-special-home': 12,
     earlybird: 13,
     infra: 14,
@@ -45,6 +47,7 @@
     panelbot: 22,
     'networking-home': 30,
     networking: 31,
+    netops: 31,
     uplink: 32,
     cloudagent: 33,
     'dohio-topology': 34,
@@ -60,13 +63,14 @@
     Shared: 'Networking, Uplink, CloudAgent, DOHIO topology, and shared infrastructure control.',
   };
   const PRIVATE_SERVICE_SLUGS = new Set(['finance-reader', 'health-reader', 'parkergale', 'private-home']);
-  const PERSONAL_SERVICE_SLUGS = new Set(['toy-box-home', 'housebot', 'glimpser', 'dj', 'tv', 'studio', 'castle', 'phone-ops', 'uscache', 'autocamera', 'theseus']);
+  const PERSONAL_SERVICE_SLUGS = new Set(['toy-box-home', 'housebot', 'glimpser', 'dj', 'tv', 'studio', 'castle', 'phone-ops', 'diamond-roc', 'uscache', 'autocamera', 'theseus', 'artmonster']);
   const WORK_SERVICE_SLUGS = new Set(['work-special-home', 'earlybird', 'infra', 'control-plane', 'market-sizing', 'tmi-dashboards', 'gold-book', 'platinum-standard', 'publisher', 'compere', 'leadership-kpis', 'panelbot', 'd-ace']);
-  const SHARED_SERVICE_SLUGS = new Set(['networking-home', 'networking', 'uplink', 'cloudagent', 'dohio-topology', 'switchyard-network-board']);
+  const SHARED_SERVICE_SLUGS = new Set(['networking-home', 'networking', 'netops', 'uplink', 'cloudagent', 'dohio-topology', 'switchyard-network-board']);
   const BOT_PROXY_ALIASES = {
     autocamera: 'auto',
     compere: 'keystone',
     'control-plane': 'cp',
+    'diamond-roc': 'diamond',
     dj: 'yt',
     'gold-book': 'goldbook',
     housebot: 'house',
@@ -96,9 +100,11 @@
     'market-sizing': 'market.kris.openbrand.com',
     mls: 'mls.kris.openbrand.com',
     networking: 'networking.home.arpa',
+    netops: 'networking.home.arpa',
     panelbot: 'panelbot.kris.openbrand.com',
     parkergale: 'pefb.home.arpa',
     'phone-ops': 'phone.home.arpa',
+    'diamond-roc': 'diamond.home.arpa',
     'platinum-standard': 'platinum.kris.openbrand.com',
     publisher: 'publisher.kris.openbrand.com',
     scout: 'scout.kris.openbrand.com',
@@ -114,11 +120,14 @@
   const FLEET_MARK_ALIASES = {
     norman: 'N',
     autocamera: 'AC',
+    artmonster: 'AM',
     castle: 'CS',
     cloudagent: 'CA',
     compere: 'CP',
     'control plane': 'CP',
     dj: 'DJ',
+    'diamond roc': 'DR',
+    'diamond-roc': 'DR',
     dohio: 'DO',
     'dohio topology': 'DO',
     earlybird: 'EB',
@@ -131,6 +140,7 @@
     'market sizing': 'MS',
     mls: 'ML',
     networking: 'NW',
+    netops: 'NE',
     panelbot: 'PB',
     parkergale: 'PE',
     pefb: 'PE',

@@ -24,11 +24,16 @@ SOURCE_FILES = {
     "web": TEMPLATE_ROOT / "agent_console_web.py",
     "launch": TEMPLATE_ROOT / "agent_console_launch.sh",
     "supervisor": TEMPLATE_ROOT / "agent_console_supervisor.sh",
+    "vector-preflight": SCRIPT_DIR / "tui_vector_preflight.py",
+    "soul-loader": SCRIPT_DIR / "compose_soul_context.py",
+    "soul-validator": SCRIPT_DIR / "validate_soul_md.py",
 }
 PROMPT_TEMPLATES = {
     "compere": PROMPT_TEMPLATE_ROOT / "compere.txt",
     "control-plane": PROMPT_TEMPLATE_ROOT / "control-plane.txt",
+    "diamond-roc": PROMPT_TEMPLATE_ROOT / "diamond-roc.txt",
     "dj": PROMPT_TEMPLATE_ROOT / "dj.txt",
+    "emerald-canopy": PROMPT_TEMPLATE_ROOT / "emerald-canopy.txt",
     "gold-book": PROMPT_TEMPLATE_ROOT / "gold-book.txt",
     "mls": PROMPT_TEMPLATE_ROOT / "mls.txt",
     "networking": PROMPT_TEMPLATE_ROOT / "networking.txt",
@@ -138,6 +143,9 @@ class ConsoleInstance:
             ("web", self.web_path),
             ("launch", self.launch_path),
             ("supervisor", self.supervisor_path),
+            ("vector-preflight", f"/opt/{self.name}/tui_vector_preflight.py"),
+            ("soul-loader", f"/opt/{self.name}/compose_soul_context.py"),
+            ("soul-validator", f"/opt/{self.name}/validate_soul_md.py"),
         )
 
     @property
@@ -152,6 +160,20 @@ class RemoteFileState:
     mode: str
     owner: str | None
     group: str | None
+
+
+@dataclass(frozen=True)
+class UiVersionStatus:
+    version: str
+    version_error: str = ""
+    readiness_error: str = ""
+    status_error: str = ""
+    web_restart_required: bool = False
+    web_restart_reason: str = ""
+    prompt_idle: bool = False
+    prompt_done: bool = False
+    auto_update_safe: bool = False
+    busy: bool = False
 
 
 HOSTS: dict[str, DiscoveryHost] = {
@@ -190,7 +212,7 @@ HOSTS: dict[str, DiscoveryHost] = {
     ),
     "norman": DiscoveryHost(
         name="norman",
-        ssh_target="norman.home.arpa",
+        ssh_target="",
         use_sudo=True,
         env_globs=("/etc/norman/codex-web.env",),
         public_host="norman.home.arpa",
@@ -198,6 +220,7 @@ HOSTS: dict[str, DiscoveryHost] = {
         lan_host="192.168.2.241",
         frontdoor_alias_hosts=("norman.home.lollie.org",),
         host_home_path="/var/www/host-home/index.html",
+        local=True,
     ),
     "networking-host": DiscoveryHost(
         name="networking-host",
@@ -258,6 +281,163 @@ RUNTIME_BRIDGE_ROUTE_OUTCOME_LIMIT = "200"
 RUNTIME_BRIDGE_RECENT_ITEMS = "12"
 RUNTIME_BRIDGE_LOCAL_FIRST_PROOF_LIMIT = "250"
 RUNTIME_BRIDGE_LOCAL_FIRST_SESSION_LIMIT = "20"
+WORK_BEDROCK_DEFAULT_INSTANCES: tuple[str, ...] = (
+    "compere",
+    "control-plane",
+    "earlybird",
+    "gold-book",
+    "infra",
+    "leadership-kpis",
+    "market-sizing",
+    "panelbot",
+    "platinum-standard",
+    "publisher",
+    "scout",
+    "tmi-dashboards",
+)
+WORK_SWITCHABLE_MODELS = "openai.gpt-5.4,openai.gpt-5.5,gpt-5.4,gpt-5.5"
+PERSONAL_SWITCHABLE_MODELS = "gpt-5.4,gpt-5.5"
+WORK_STANDARD_PROFILE_V2 = "traqline-bedrock"
+WORK_STANDARD_AWS_PROFILE = "ob-traqline-admin"
+WORK_STANDARD_MODEL = "openai.gpt-5.5"
+WORK_DIRECT_MODEL = "openai.gpt-5.4"
+PERSONAL_DEFAULT_MODEL = "gpt-5.4"
+NON_WORK_BEDROCK_PROFILE_V2 = "personal-bedrock"
+NON_WORK_BEDROCK_AWS_PROFILE = os.environ.get(
+    "NORMAN_SYNC_NON_WORK_BEDROCK_AWS_PROFILE", "kk-personal"
+)
+NON_WORK_BEDROCK_AWS_REGION = os.environ.get(
+    "NORMAN_SYNC_NON_WORK_BEDROCK_AWS_REGION", "us-east-2"
+)
+WORK_BEDROCK_FAILOVER_SMOKE_PATH = Path(
+    os.environ.get(
+        "NORMAN_SYNC_WORK_BEDROCK_FAILOVER_SMOKE_PATH",
+        "/var/lib/norman/bedrock_region_smoke.json",
+    )
+)
+WORK_BEDROCK_FAILOVER_MAX_AGE_SECONDS = int(
+    os.environ.get("NORMAN_SYNC_WORK_BEDROCK_FAILOVER_MAX_AGE_SECONDS", "86400")
+)
+LOCAL_SOUL_IDENTITY_ROOT = Path(
+    os.environ.get(
+        "NORMAN_SYNC_SOUL_IDENTITY_ROOT",
+        str(SCRIPT_DIR.parent / "db" / "estate" / "identity"),
+    )
+)
+REMOTE_SOUL_IDENTITY_ROOT = os.environ.get(
+    "NORMAN_SYNC_REMOTE_SOUL_IDENTITY_ROOT", "/etc/norman/identity"
+)
+REMOTE_ROUTE_RECEIPT_DIR = os.environ.get(
+    "NORMAN_SYNC_ROUTE_RECEIPT_DIR", "/var/lib/norman/route_receipts"
+)
+
+
+def _default_non_work_bedrock_source() -> str:
+    if os.environ.get(
+        "NORMAN_SYNC_TEST_ALLOW_DEFAULT_NON_WORK_BEDROCK_SOURCE", ""
+    ).strip().lower() not in {"1", "true", "yes", "on"}:
+        return ""
+    homes = [Path(os.environ.get("HOME") or "").expanduser()]
+    fallback = os.environ.get("NORMAN_SYNC_NON_WORK_BEDROCK_FALLBACK_HOME", "").strip()
+    if fallback:
+        homes.append(Path(fallback).expanduser())
+    names = ("personal-bedrock.config.toml", "traqline-bedrock.config.toml")
+    for home in homes:
+        if not str(home):
+            continue
+        for name in names:
+            candidate = home / ".codex-nonwork" / name
+            if candidate.exists():
+                return str(candidate)
+    return ""
+
+
+NON_WORK_BEDROCK_PROFILE_SOURCE = (
+    os.environ.get("NORMAN_SYNC_NON_WORK_BEDROCK_PROFILE_SOURCE", "").strip()
+    or _default_non_work_bedrock_source()
+)
+
+
+def _env_truthy(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_csv(name: str) -> set[str]:
+    return {
+        item.strip() for item in os.environ.get(name, "").split(",") if item.strip()
+    }
+
+
+def _load_json_file(path: Path) -> object:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _local_llm_inventory() -> (
+    tuple[tuple[str, ...], tuple[str, ...], dict[str, list[str]], str]
+):
+    paths: list[Path] = []
+    primary = os.environ.get("NORMAN_SYNC_LOCAL_LLM_SENSE_JSON", "").strip()
+    if primary:
+        paths.append(Path(primary))
+    extra = os.environ.get("NORMAN_SYNC_LOCAL_LLM_SENSE_JSONS", "").strip()
+    if extra:
+        paths.extend(Path(item.strip()) for item in extra.split(",") if item.strip())
+
+    endpoints: list[str] = []
+    model_endpoints: dict[str, list[str]] = {}
+    for path in paths:
+        payload = _load_json_file(path)
+        rows = payload.get("endpoints") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict) or not row.get("ok"):
+                continue
+            endpoint = str(row.get("endpoint") or "").strip()
+            if not endpoint:
+                continue
+            if endpoint not in endpoints:
+                endpoints.append(endpoint)
+            models = row.get("models")
+            if not isinstance(models, list):
+                continue
+            for model in models:
+                name = str(model or "").strip()
+                if not name:
+                    continue
+                model_endpoints.setdefault(name, [])
+                if endpoint not in model_endpoints[name]:
+                    model_endpoints[name].append(endpoint)
+
+    priority = {
+        "gpt-oss:120b": 0,
+        "qwen3.5:122b-a10b-q4_K_M": 1,
+        "meta-llama/Llama-3.1-70B-Instruct": 2,
+    }
+    model_endpoints = {
+        model: endpoints
+        for model, endpoints in model_endpoints.items()
+        if model in priority
+    }
+    models = tuple(
+        sorted(
+            model_endpoints,
+            key=lambda item: (priority.get(item, 1000), item.lower()),
+        )
+    )
+    default = models[0] if models else ""
+    return models, tuple(endpoints), model_endpoints, default
+
+
+(
+    LOCAL_LLM_MODELS,
+    LOCAL_LLM_ENDPOINTS,
+    LOCAL_LLM_MODEL_ENDPOINTS,
+    LOCAL_LLM_DEFAULT_MODEL,
+) = _local_llm_inventory()
 KERNEL_PRIMARY_CANARY_INSTANCES: tuple[str, ...] = (
     "cloudagent",
     "housebot",
@@ -439,6 +619,7 @@ python3 - <<'PY'
 import glob
 import json
 import os
+import re
 
 patterns = json.loads({payload!r})
 default_launchers = json.loads({default_launchers_payload!r})
@@ -476,6 +657,24 @@ def env_value(env, *keys):
     return ""
 
 
+def infer_codex_home(launch_path):
+    try:
+        text = open(launch_path, "r", encoding="utf-8").read()
+    except OSError:
+        return ""
+    marker = 'CODEX_HOME="$' + chr(123) + 'CODEX_HOME:-'
+    start = text.find(marker)
+    if start >= 0:
+        value_start = start + len(marker)
+        value_end = text.find(chr(125) + '"', value_start)
+        if value_end >= 0:
+            return text[value_start:value_end].strip()
+    match = re.search(r"^\\s*CODEX_HOME=(['\\\"]?)([^\\n'\\\"]+)\\1", text, re.M)
+    if match:
+        return match.group(2).strip()
+    return ""
+
+
 items = []
 for pattern in patterns:
     for env_path in sorted(glob.glob(pattern)):
@@ -508,7 +707,7 @@ for pattern in patterns:
                 "web_port": env_value(env, "HOUSEBOT_CODEX_WEB_PORT", "NORMAN_CODEX_WEB_PORT"),
                 "web_token": env_value(env, "HOUSEBOT_CODEX_WEB_TOKEN", "NORMAN_CODEX_WEB_TOKEN"),
                 "prompt_file": env_value(env, "HOUSEBOT_CODEX_PROMPT_FILE", "NORMAN_CODEX_PROMPT_FILE"),
-                "codex_home": env_value(env, "HOUSEBOT_CODEX_HOME", "NORMAN_CODEX_HOME", "CODEX_HOME"),
+                "codex_home": env_value(env, "HOUSEBOT_CODEX_HOME", "NORMAN_CODEX_HOME", "CODEX_HOME") or infer_codex_home(launch_path),
                 "restart_units": [
                     env_value(env, "HOUSEBOT_CODEX_SERVICE_NAME", "NORMAN_CODEX_SERVICE_NAME") or f"{{name}}-codex.service",
                     env_value(env, "HOUSEBOT_CODEX_WEB_SERVICE_NAME", "NORMAN_CODEX_WEB_SERVICE_NAME") or f"{{name}}-codex-web.service",
@@ -1029,6 +1228,198 @@ PY
     return capture(ssh_command(host, script)).strip() == "changed"
 
 
+def instance_uses_work_config(host: DiscoveryHost, instance: ConsoleInstance) -> bool:
+    if host.name in _env_csv("NORMAN_SYNC_WORK_CONFIG_EXTRA_HOSTS"):
+        return True
+    if host.name == "work-special":
+        return True
+    return bool(
+        instance.name in WORK_BEDROCK_DEFAULT_INSTANCES and host.name == "work-special"
+    )
+
+
+def non_work_bedrock_profile_source_ready() -> bool:
+    return bool(
+        NON_WORK_BEDROCK_PROFILE_SOURCE
+        and Path(NON_WORK_BEDROCK_PROFILE_SOURCE).exists()
+    )
+
+
+def instance_uses_non_work_bedrock(
+    host: DiscoveryHost, instance: ConsoleInstance
+) -> bool:
+    if os.environ.get("NORMAN_SYNC_NON_WORK_BEDROCK_DEFAULT_ENABLED", "1") == "0":
+        return False
+    if instance_uses_work_config(host, instance):
+        return False
+    if host.name in {"norman", "networking-host", "work-special"}:
+        return False
+    return non_work_bedrock_profile_source_ready()
+
+
+def _fresh_work_bedrock_smoke_profiles() -> list[dict[str, str]]:
+    payload = _load_json_file(WORK_BEDROCK_FAILOVER_SMOKE_PATH)
+    if not isinstance(payload, dict):
+        return []
+    checked_at = float(payload.get("checked_at") or 0)
+    if (
+        checked_at <= 0
+        or time.time() - checked_at > WORK_BEDROCK_FAILOVER_MAX_AGE_SECONDS
+    ):
+        return []
+    profiles = payload.get("profiles")
+    if not isinstance(profiles, dict):
+        return []
+    rows: list[dict[str, str]] = []
+    for name in ("traqline-bedrock-us-east-1", "traqline-bedrock-us-west-2"):
+        item = profiles.get(name)
+        if not isinstance(item, dict) or not item.get("ok"):
+            continue
+        rows.append(
+            {
+                "profile_v2": str(item.get("profile_v2") or name),
+                "model": str(item.get("model") or WORK_DIRECT_MODEL),
+                "aws_region": str(item.get("aws_region") or ""),
+            }
+        )
+    return rows
+
+
+def _work_bedrock_failover_profiles() -> list[dict[str, str]]:
+    if _env_truthy("NORMAN_SYNC_WORK_BEDROCK_FAILOVER_ENABLED"):
+        return [
+            {
+                "profile_v2": "traqline-bedrock-us-east-1",
+                "model": WORK_DIRECT_MODEL,
+                "aws_region": "us-east-1",
+            }
+        ]
+    return _fresh_work_bedrock_smoke_profiles()
+
+
+def _local_llm_env_updates() -> dict[str, str]:
+    if not LOCAL_LLM_MODELS and not LOCAL_LLM_ENDPOINTS:
+        return {}
+    return {
+        "NORMAN_LOCAL_LLM_MODEL": LOCAL_LLM_DEFAULT_MODEL,
+        "NORMAN_LOCAL_LLM_MODELS": ",".join(LOCAL_LLM_MODELS),
+        "NORMAN_LOCAL_LLM_ENDPOINTS": ",".join(LOCAL_LLM_ENDPOINTS),
+        "NORMAN_LOCAL_LLM_MODEL_ENDPOINTS": json.dumps(
+            LOCAL_LLM_MODEL_ENDPOINTS, separators=(",", ":"), sort_keys=True
+        ),
+    }
+
+
+def _origin_model_updates(
+    host: DiscoveryHost, instance: ConsoleInstance
+) -> tuple[dict[str, str], list[str]]:
+    remove_keys = [
+        "NORMAN_CODEX_STANDARD_PROFILE_V2",
+        "NORMAN_CODEX_STANDARD_AWS_PROFILE",
+        "NORMAN_CODEX_STANDARD_MODEL",
+        "NORMAN_CODEX_BEDROCK_FAILOVER_PROFILE_V2",
+        "NORMAN_CODEX_BEDROCK_FAILOVER_MODEL",
+        "NORMAN_CODEX_BEDROCK_FAILOVER_AWS_REGION",
+        "NORMAN_CODEX_BEDROCK_FAILOVER2_PROFILE_V2",
+        "NORMAN_CODEX_BEDROCK_FAILOVER2_MODEL",
+        "NORMAN_CODEX_BEDROCK_FAILOVER2_AWS_REGION",
+        "NORMAN_CODEX_DIRECT_TIERS_ENABLED",
+    ]
+    use_work = instance_uses_work_config(host, instance)
+    work_enabled = (
+        os.environ.get("NORMAN_SYNC_WORK_BEDROCK_DEFAULT_ENABLED", "1") != "0"
+    )
+    if use_work and work_enabled:
+        direct_tiers = os.environ.get("NORMAN_SYNC_WORK_DIRECT_TIERS_ENABLED", "1")
+        failovers = _work_bedrock_failover_profiles()
+        updates = {
+            "NORMAN_CODEX_BILLING_SCOPE": "work-special",
+            "NORMAN_CODEX_BILLING_OWNER": "openbrand",
+            "NORMAN_CODEX_SERVICE_TIER": "default",
+            "NORMAN_CODEX_STANDARD_PROFILE_V2": WORK_STANDARD_PROFILE_V2,
+            "NORMAN_CODEX_STANDARD_AWS_PROFILE": WORK_STANDARD_AWS_PROFILE,
+            "NORMAN_CODEX_STANDARD_MODEL": WORK_STANDARD_MODEL,
+            "NORMAN_CODEX_MODEL": WORK_DIRECT_MODEL,
+            "NORMAN_CODEX_MODEL_FLOOR": "gpt-5.4",
+            "NORMAN_CODEX_DIRECT_MODEL": WORK_DIRECT_MODEL,
+            "NORMAN_CODEX_FLEX_MODEL": WORK_DIRECT_MODEL,
+            "NORMAN_CODEX_PRIORITY_MODEL": WORK_STANDARD_MODEL,
+            "NORMAN_CODEX_SWITCHABLE_MODELS": WORK_SWITCHABLE_MODELS,
+            "NORMAN_CODEX_AVAILABLE_MODELS": WORK_SWITCHABLE_MODELS,
+            "NORMAN_CODEX_DIRECT_TIERS_ENABLED": direct_tiers,
+            "NORMAN_CODEX_ZERO_TOKEN_PROVIDER_MAX_RETRIES": str(1 + len(failovers)),
+            "NORMAN_CODEX_BEDROCK_FAILOVER_PROFILE_V2": "",
+            "NORMAN_CODEX_BEDROCK_FAILOVER_MODEL": "",
+            "NORMAN_CODEX_BEDROCK_FAILOVER_AWS_REGION": "",
+            "NORMAN_CODEX_BEDROCK_FAILOVER2_PROFILE_V2": "",
+            "NORMAN_CODEX_BEDROCK_FAILOVER2_MODEL": "",
+            "NORMAN_CODEX_BEDROCK_FAILOVER2_AWS_REGION": "",
+        }
+        if failovers:
+            updates.update(
+                {
+                    "NORMAN_CODEX_BEDROCK_FAILOVER_PROFILE_V2": failovers[0][
+                        "profile_v2"
+                    ],
+                    "NORMAN_CODEX_BEDROCK_FAILOVER_MODEL": failovers[0]["model"],
+                    "NORMAN_CODEX_BEDROCK_FAILOVER_AWS_REGION": failovers[0][
+                        "aws_region"
+                    ],
+                }
+            )
+        if len(failovers) > 1:
+            updates.update(
+                {
+                    "NORMAN_CODEX_BEDROCK_FAILOVER2_PROFILE_V2": failovers[1][
+                        "profile_v2"
+                    ],
+                    "NORMAN_CODEX_BEDROCK_FAILOVER2_MODEL": failovers[1]["model"],
+                    "NORMAN_CODEX_BEDROCK_FAILOVER2_AWS_REGION": failovers[1][
+                        "aws_region"
+                    ],
+                }
+            )
+        return updates, []
+
+    if instance_uses_non_work_bedrock(host, instance):
+        return (
+            {
+                "NORMAN_CODEX_BILLING_SCOPE": host.name,
+                "NORMAN_CODEX_BILLING_OWNER": "kristopher",
+                "NORMAN_CODEX_SERVICE_TIER": "default",
+                "NORMAN_CODEX_STANDARD_PROFILE_V2": NON_WORK_BEDROCK_PROFILE_V2,
+                "NORMAN_CODEX_STANDARD_AWS_PROFILE": NON_WORK_BEDROCK_AWS_PROFILE,
+                "NORMAN_CODEX_STANDARD_AWS_REGION": NON_WORK_BEDROCK_AWS_REGION,
+                "NORMAN_CODEX_STANDARD_MODEL": PERSONAL_DEFAULT_MODEL,
+                "NORMAN_CODEX_MODEL": PERSONAL_DEFAULT_MODEL,
+                "NORMAN_CODEX_MODEL_FLOOR": PERSONAL_DEFAULT_MODEL,
+                "NORMAN_CODEX_DIRECT_MODEL": PERSONAL_DEFAULT_MODEL,
+                "NORMAN_CODEX_FLEX_MODEL": PERSONAL_DEFAULT_MODEL,
+                "NORMAN_CODEX_PRIORITY_MODEL": PERSONAL_DEFAULT_MODEL,
+                "NORMAN_CODEX_SWITCHABLE_MODELS": PERSONAL_SWITCHABLE_MODELS,
+                "NORMAN_CODEX_AVAILABLE_MODELS": PERSONAL_SWITCHABLE_MODELS,
+                "NORMAN_CODEX_ZERO_TOKEN_PROVIDER_MAX_RETRIES": "1",
+            },
+            [],
+        )
+
+    service_tier = "auto" if use_work else "flex"
+    updates = {
+        "NORMAN_CODEX_BILLING_SCOPE": host.name,
+        "NORMAN_CODEX_BILLING_OWNER": "kristopher",
+        "NORMAN_CODEX_SERVICE_TIER": service_tier,
+        "NORMAN_CODEX_MODEL": PERSONAL_DEFAULT_MODEL,
+        "NORMAN_CODEX_MODEL_FLOOR": PERSONAL_DEFAULT_MODEL,
+        "NORMAN_CODEX_DIRECT_MODEL": PERSONAL_DEFAULT_MODEL,
+        "NORMAN_CODEX_FLEX_MODEL": PERSONAL_DEFAULT_MODEL,
+        "NORMAN_CODEX_PRIORITY_MODEL": PERSONAL_DEFAULT_MODEL,
+        "NORMAN_CODEX_SWITCHABLE_MODELS": PERSONAL_SWITCHABLE_MODELS,
+        "NORMAN_CODEX_AVAILABLE_MODELS": PERSONAL_SWITCHABLE_MODELS,
+        "NORMAN_CODEX_ZERO_TOKEN_PROVIDER_MAX_RETRIES": "1",
+    }
+    return updates, remove_keys
+
+
 def sync_instance_origin_settings(
     host: DiscoveryHost, instance: ConsoleInstance
 ) -> bool:
@@ -1057,7 +1448,31 @@ def sync_instance_origin_settings(
         "HOUSEBOT_CODEX_AGENT_GROUP": HOST_GROUP_LABELS.get(host.name, "Agents"),
         "HOUSEBOT_CODEX_ENV_FILE": instance.env_file,
     }
+    model_updates, remove_keys = _origin_model_updates(host, instance)
+    bbs_url = os.environ.get("NORMAN_SYNC_BBS_URL", "").strip()
+    switchboard_env = f"/etc/{instance.name}/switchboard-bbs.env"
+    updates.update(model_updates)
+    updates.update(
+        {
+            "NORMAN_CODEX_BBS_URL": bbs_url,
+            "NORMAN_CODEX_BBS_ACTOR": instance.name,
+            "NORMAN_CODEX_BBS_ENV_FILE": switchboard_env,
+            "SWITCHBOARD_URL": bbs_url,
+            "SWITCHBOARD_ACTOR": instance.name,
+            "SWITCHBOARD_ENV_FILE": switchboard_env,
+            "NORMAN_CODEX_SOUL_ENABLED": "1",
+            "NORMAN_CODEX_SOUL_ACTOR": instance.name,
+            "NORMAN_CODEX_SOUL_IDENTITY_ROOT": REMOTE_SOUL_IDENTITY_ROOT,
+            "NORMAN_CODEX_SOUL_LOADER": f"/opt/{instance.name}/compose_soul_context.py",
+            "NORMAN_CODEX_CONTEXT_PREFLIGHT_OFFLINE_COMMAND": (
+                f"python3 /opt/{instance.name}/tui_vector_preflight.py"
+            ),
+            "NORMAN_CODEX_VECTOR_PREFLIGHT_LIMIT": "5",
+        }
+    )
+    updates.update(_local_llm_env_updates())
     payload = json.dumps(updates, separators=(",", ":"))
+    remove_payload = json.dumps(remove_keys, separators=(",", ":"))
     script = f"""
 python3 - <<'PY'
 from pathlib import Path
@@ -1066,8 +1481,15 @@ import re
 
 path = Path({instance.env_file!r})
 updates = json.loads({payload!r})
+remove_keys = json.loads({remove_payload!r})
 text = path.read_text(encoding="utf-8")
 changed = False
+for key in remove_keys:
+    pattern = re.compile(rf"^{{re.escape(key)}}=.*\\n?", re.M)
+    updated = pattern.sub("", text)
+    if updated != text:
+        text = updated
+        changed = True
 for key, value in updates.items():
     line = f"{{key}}={{value}}"
     pattern = re.compile(rf"^{{re.escape(key)}}=.*$", re.M)
@@ -1081,6 +1503,197 @@ for key, value in updates.items():
         changed = True
 if changed:
     path.write_text(text, encoding="utf-8")
+print("changed" if changed else "unchanged")
+PY
+"""
+    return capture(ssh_command(host, script)).strip() == "changed"
+
+
+def sync_instance_route_receipts(
+    host: DiscoveryHost,
+    instance: ConsoleInstance,
+    *,
+    receipt_dir: str = REMOTE_ROUTE_RECEIPT_DIR,
+    max_items: str = "250",
+) -> bool:
+    receipt_path = f"{receipt_dir.rstrip('/')}/{instance.name}.jsonl"
+    updates = {
+        "NORMAN_CODEX_ROUTE_RECEIPTS_ENABLED": "1",
+        "NORMAN_CODEX_ROUTE_RECEIPT_OWNER_TUI": instance.name,
+        "NORMAN_CODEX_ROUTE_RECEIPT_DIR": receipt_dir,
+        "NORMAN_CODEX_ROUTE_RECEIPT_PATH": receipt_path,
+        "NORMAN_CODEX_ROUTE_RECEIPT_ITEMS": str(max_items),
+    }
+    payload = json.dumps(updates, separators=(",", ":"))
+    script = f"""
+python3 - <<'PY'
+from pathlib import Path
+import json
+import os
+import pwd
+import grp
+import re
+
+env_path = Path({instance.env_file!r})
+updates = json.loads({payload!r})
+route_receipt_path = Path({receipt_dir!r})
+receipt_owner_source = Path('/var/lib/{instance.name}/codex')
+try:
+    owner_stat = receipt_owner_source.stat()
+    target_uid = owner_stat.st_uid
+    target_gid = owner_stat.st_gid
+except OSError:
+    target_uid = pwd.getpwnam('root').pw_uid
+    target_gid = grp.getgrnam('root').gr_gid
+route_receipt_path.mkdir(parents=True, exist_ok=True)
+os.chown(route_receipt_path, target_uid, target_gid)
+os.chmod(route_receipt_path, 0o750)
+route_receipt_file = Path({receipt_path!r})
+route_receipt_file.touch()
+os.chown(route_receipt_file, target_uid, target_gid)
+os.chmod(route_receipt_file, 0o640)
+text = env_path.read_text(encoding="utf-8")
+changed = False
+for key, value in updates.items():
+    line = f"{{key}}={{value}}"
+    pattern = re.compile(rf"^{{re.escape(key)}}=.*$", re.M)
+    if pattern.search(text):
+        updated = pattern.sub(line, text, count=1)
+    else:
+        updated = text if text.endswith("\\n") else text + "\\n"
+        updated += line + "\\n"
+    if updated != text:
+        text = updated
+        changed = True
+if changed:
+    env_path.write_text(text, encoding="utf-8")
+print("changed" if changed else "unchanged")
+PY
+"""
+    return capture(ssh_command(host, script)).strip() == "changed"
+
+
+def sync_instance_runtime_settings(
+    host: DiscoveryHost, instance: ConsoleInstance
+) -> bool:
+    script = f"""
+python3 - <<'PY'
+from pathlib import Path
+import json
+
+runtime_path = Path({instance.codex_home!r}) / "runtime_settings.json"
+payload = {{}}
+if runtime_path.exists():
+    try:
+        payload = json.loads(runtime_path.read_text(encoding="utf-8") or "{{}}")
+    except json.JSONDecodeError:
+        payload = {{}}
+if payload.get("model") == "openai.gpt-5.5":
+    payload["model"] = "openai.gpt-5.4"
+payload["service_tier"] = "default"
+payload["model_floor"] = "openai.gpt-5.4"
+payload["switchable_models"] = ["openai.gpt-5.4", "openai.gpt-5.5"]
+runtime_path.parent.mkdir(parents=True, exist_ok=True)
+rendered = json.dumps(payload, sort_keys=True, indent=2) + "\\n"
+old = runtime_path.read_text(encoding="utf-8") if runtime_path.exists() else ""
+if old != rendered:
+    runtime_path.write_text(rendered, encoding="utf-8")
+    print("changed")
+else:
+    print("unchanged")
+PY
+"""
+    return capture(ssh_command(host, script)).strip() == "changed"
+
+
+def sync_instance_bedrock_profile(
+    host: DiscoveryHost, instance: ConsoleInstance
+) -> bool:
+    if instance_uses_work_config(host, instance):
+        profile_specs = [
+            {
+                "profile_v2": WORK_STANDARD_PROFILE_V2,
+                "source": "/home/kristopher/.codex-infra/traqline-bedrock.config.toml",
+                "model": WORK_STANDARD_MODEL,
+                "reasoning_effort": "xhigh",
+                "aws_region": "",
+            }
+        ]
+        if _env_truthy("NORMAN_SYNC_WORK_BEDROCK_FAILOVER_ENABLED"):
+            profile_specs.append(
+                {
+                    "profile_v2": "traqline-bedrock-us-east-1",
+                    "source": "/home/kristopher/.codex-infra/traqline-bedrock.config.toml",
+                    "model": WORK_DIRECT_MODEL,
+                    "reasoning_effort": "xhigh",
+                    "aws_region": "us-east-1",
+                }
+            )
+    elif instance_uses_non_work_bedrock(host, instance):
+        source_path = Path(NON_WORK_BEDROCK_PROFILE_SOURCE)
+        source_text = source_path.read_text(encoding="utf-8")
+        profile_specs = [
+            {
+                "profile_v2": NON_WORK_BEDROCK_PROFILE_V2,
+                "source": str(source_path),
+                "source_text": source_text,
+                "source_text_present": True,
+                "model": PERSONAL_DEFAULT_MODEL,
+                "reasoning_effort": "xhigh",
+                "aws_profile": NON_WORK_BEDROCK_AWS_PROFILE,
+                "aws_region": NON_WORK_BEDROCK_AWS_REGION,
+            }
+        ]
+    else:
+        return False
+    payload = json.dumps(profile_specs, separators=(",", ":"))
+    script = f"""
+python3 - <<'PY'
+from pathlib import Path
+import json
+import re
+
+target_home = Path({instance.codex_home!r})
+profile_specs = json.loads({payload!r})
+target_home.mkdir(parents=True, exist_ok=True)
+
+def ensure_table_setting(text, table, key, value):
+    if not value:
+        return text
+    aws_table = table
+    header = f"[{{aws_table}}]" if aws_table else ""
+    line = f"{{key}} = {{json.dumps(value)}}"
+    pattern = re.compile(rf"^{{re.escape(key)}}\\s*=.*$", re.M)
+    if pattern.search(text):
+        return pattern.sub(line, text, count=1)
+    if header and header not in text:
+        text = (text.rstrip() + "\\n\\n" + header + "\\n").lstrip("\\n")
+    return text.rstrip() + "\\n" + line + "\\n"
+
+changed = False
+for spec in profile_specs:
+    profile_name = str(spec["profile_v2"])
+    source = Path(str(spec["source"]))
+    target = target_home / (profile_name + ".config.toml")
+    if spec.get("source_text_present"):
+        rendered = str(spec.get("source_text") or "")
+    elif source.exists():
+        rendered = source.read_text(encoding="utf-8")
+    else:
+        rendered = ""
+    aws_region = str(spec.get("aws_region") or "")
+    aws_profile = str(spec.get("aws_profile") or "")
+    aws_table = "aws"
+    model_reasoning_effort = str(spec.get("reasoning_effort") or "xhigh")
+    rendered = ensure_table_setting(rendered, "", "model", str(spec.get("model") or ""))
+    rendered = ensure_table_setting(rendered, "", "model_reasoning_effort", model_reasoning_effort)
+    rendered = ensure_table_setting(rendered, aws_table, "profile", aws_profile)
+    rendered = ensure_table_setting(rendered, aws_table, "region", aws_region)
+    old = target.read_text(encoding="utf-8") if target.exists() else ""
+    if old != rendered:
+        target.write_text(rendered, encoding="utf-8")
+        changed = True
+
 print("changed" if changed else "unchanged")
 PY
 """
@@ -1671,6 +2284,30 @@ def install_source_path(
     return True
 
 
+def sync_soul_identity_tree(host: DiscoveryHost) -> list[str]:
+    if not LOCAL_SOUL_IDENTITY_ROOT.exists():
+        return []
+    candidates = [LOCAL_SOUL_IDENTITY_ROOT / "BASE_SOUL.md"]
+    actors_dir = LOCAL_SOUL_IDENTITY_ROOT / "actors"
+    if actors_dir.exists():
+        candidates.extend(sorted(actors_dir.glob("*/SOUL.md")))
+
+    changed: list[str] = []
+    for source in candidates:
+        if not source.exists():
+            continue
+        rel = source.relative_to(LOCAL_SOUL_IDENTITY_ROOT)
+        remote_path = str(Path(REMOTE_SOUL_IDENTITY_ROOT) / rel)
+        if install_source_path(
+            host,
+            remote_path=remote_path,
+            source=source,
+            source_sha256=local_sha256(source),
+        ):
+            changed.append(remote_path)
+    return changed
+
+
 def restart_instances(host: DiscoveryHost, instances: list[ConsoleInstance]) -> None:
     units = sorted({unit for instance in instances for unit in instance.restart_units})
     if not units:
@@ -1684,6 +2321,137 @@ def restart_instances(host: DiscoveryHost, instances: list[ConsoleInstance]) -> 
         ]
     )
     run(ssh_command(host, script))
+
+
+def web_restart_units(instances: list[ConsoleInstance]) -> list[str]:
+    return sorted(
+        {
+            unit
+            for instance in instances
+            for unit in instance.restart_units
+            if unit.endswith("-web.service") or "-web" in unit
+        }
+    )
+
+
+def restart_and_health_check_instances(
+    host: DiscoveryHost,
+    instances: list[ConsoleInstance],
+    *,
+    check_health: bool,
+    web_only: bool = False,
+) -> None:
+    if web_only:
+        units = web_restart_units(instances)
+        if units:
+            unit_list = " ".join(shlex.quote(unit) for unit in units)
+            run(ssh_command(host, f"systemctl restart {unit_list}"))
+    else:
+        restart_instances(host, instances)
+    if check_health:
+        health_check_instances(host, instances)
+
+
+def restart_scope_for_instance(
+    instance: ConsoleInstance,
+    *,
+    changed_paths: set[str],
+    changed_instances: dict[str, ConsoleInstance],
+) -> str:
+    if instance.name in changed_instances:
+        return "full"
+    full_paths = {instance.launch_path, instance.supervisor_path, instance.prompt_file}
+    if changed_paths & full_paths:
+        return "full"
+    if instance.web_path in changed_paths:
+        return "web"
+    for source_key, remote_path in instance.files:
+        if source_key != "web" and remote_path in changed_paths:
+            return "full"
+    return ""
+
+
+def _status_restart_block_reason(status: dict[str, object]) -> str:
+    child_pid = status.get("active_child_pid")
+    if child_pid:
+        if status.get("model_process_alive") is False:
+            return ""
+        return f"active child pid {child_pid}"
+    if status.get("pending"):
+        return "pending prompt"
+    queue_depth = int(status.get("queue_depth") or 0)
+    if queue_depth > 0:
+        return f"{queue_depth} queued"
+    return ""
+
+
+def _status_restart_handoff_summary(status: dict[str, object]) -> str:
+    handoff = status.get("context_handoff")
+    if not isinstance(handoff, dict) or not handoff.get("can_resume_thread"):
+        return ""
+    thread_id = str(handoff.get("thread_id") or "thread")
+    history = int(handoff.get("history_count") or 0)
+    queued = int(handoff.get("queue_depth") or 0)
+    return f"handoff resume {thread_id[:8]}, {history} history, {queued} queued"
+
+
+def restart_block_reasons(
+    host: DiscoveryHost, instances: list[ConsoleInstance]
+) -> dict[str, str]:
+    reasons: dict[str, str] = {}
+    for instance in instances:
+        if not instance.web_port:
+            continue
+        query = urllib.parse.urlencode({"token": instance.web_token})
+        url = f"http://127.0.0.1:{instance.web_port}/api/restart-readiness?{query}"
+        script = f"""
+python3 - <<'PY'
+import json
+import urllib.request
+with urllib.request.urlopen({url!r}, timeout={RESTART_READINESS_TIMEOUT_SECONDS}) as response:
+    print(response.read().decode("utf-8"))
+PY
+"""
+        try:
+            status = json.loads(capture(ssh_command(host, script)) or "{}")
+        except (
+            OSError,
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+            json.JSONDecodeError,
+        ):
+            status = {}
+        reason = _status_restart_block_reason(status)
+        if reason:
+            handoff = _status_restart_handoff_summary(status)
+            reasons[instance.name] = f"{reason}; {handoff}" if handoff else reason
+    return reasons
+
+
+def restart_selected_web_services(
+    selected_by_host: dict[str, list[ConsoleInstance]],
+    *,
+    force_restart: bool,
+    check_health: bool,
+) -> None:
+    for host_name, instances in selected_by_host.items():
+        host = HOSTS[host_name]
+        print(f"==> restarting web services on {host_name}")
+        reasons = restart_block_reasons(host, instances)
+        restartable = []
+        for instance in instances:
+            reason = reasons.get(instance.name)
+            if reason and not force_restart:
+                print(f"  - skip web restart {instance.name}: {reason}")
+                continue
+            restartable.append(instance)
+        if not restartable:
+            continue
+        names = " ".join(instance.name for instance in restartable)
+        print(f"  - serial web restart queue: {names}")
+        restart_and_health_check_instances(
+            host, restartable, check_health=check_health, web_only=True
+        )
 
 
 def health_check_instances(
@@ -1704,7 +2472,7 @@ def health_check_instances(
 
 def ui_versions(
     host: DiscoveryHost, instances: list[ConsoleInstance]
-) -> dict[str, str]:
+) -> dict[str, UiVersionStatus]:
     payload = json.dumps(
         [
             {"name": instance.name, "env_file": instance.env_file}
@@ -1720,6 +2488,13 @@ import urllib.parse
 import urllib.request
 
 instances = json.loads({payload!r})
+readiness_timeout = {RESTART_READINESS_TIMEOUT_SECONDS}
+status_timeout = {STATUS_PROBE_TIMEOUT_SECONDS}
+
+
+def fetch_json(url, timeout):
+    with urllib.request.urlopen(url, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8", errors="replace") or "{{}}")
 
 
 def parse_env(path):
@@ -1742,53 +2517,85 @@ def env_value(env, *keys):
     return ""
 
 
+def apply_status(result, status):
+    result["web_restart_required"] = bool(status.get("web_restart_required"))
+    result["web_restart_reason"] = str(status.get("web_restart_reason") or "")
+    result["prompt_idle"] = bool(status.get("prompt_idle") or status.get("idle"))
+    result["prompt_done"] = bool(status.get("prompt_done"))
+    result["auto_update_safe"] = bool(status.get("auto_update_safe"))
+    result["busy"] = bool(status.get("busy"))
+
+
 results = []
 for item in instances:
     name = item["name"]
     env = parse_env(item["env_file"])
     port = env_value(env, "HOUSEBOT_CODEX_WEB_PORT", "NORMAN_CODEX_WEB_PORT")
     token = env_value(env, "HOUSEBOT_CODEX_WEB_TOKEN", "NORMAN_CODEX_WEB_TOKEN")
+    result = {{"name": name, "version": "unknown"}}
     if not port:
-        results.append({{"name": name, "version": "missing-port"}})
+        result["version_error"] = "missing-port"
+        results.append(result)
         continue
     opener = urllib.request.build_opener(
         urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
     )
+    urllib.request.install_opener(opener)
     token_qs = urllib.parse.quote(token)
     version_url = f"http://127.0.0.1:{{port}}/api/version?token={{token_qs}}"
+    readiness_url = f"http://127.0.0.1:{{port}}/api/restart-readiness?token={{token_qs}}"
+    status_url = f"http://127.0.0.1:{{port}}/api/status?token={{token_qs}}"
     page_url = f"http://127.0.0.1:{{port}}/?token={{token_qs}}"
-    version_error = ""
     try:
-        with opener.open(version_url, timeout=3) as response:
-            version_payload = json.loads(
-                response.read().decode("utf-8", errors="replace") or "{{}}"
-            )
+        version_payload = fetch_json(version_url, 3)
         version = str(version_payload.get("ui_version") or "").strip()
         if version:
-            results.append({{"name": name, "version": version}})
-            continue
-        version_error = "missing-json-version"
+            result["version"] = version
+        else:
+            result["version_error"] = "missing-json-version"
     except Exception as exc:
-        version_error = exc.__class__.__name__
+        result["version_error"] = f"{{exc.__class__.__name__}}: {{exc}}"
+        try:
+            with opener.open(page_url, timeout=12) as response:
+                html = response.read().decode("utf-8", errors="replace")
+            match = re.search(r'class="version-chip"[^>]*>UI v([^<]+)<', html)
+            if not match:
+                match = re.search(r"UI v([0-9.]+)", html)
+            if match:
+                result["version"] = match.group(1).strip()
+        except Exception:
+            pass
     try:
-        with opener.open(page_url, timeout=12) as response:
-            html = response.read().decode("utf-8", errors="replace")
+        status = fetch_json(readiness_url, readiness_timeout)
+        apply_status(result, status)
     except Exception as exc:
-        error_name = exc.__class__.__name__
-        if version_error:
-            error_name = f"api-{{version_error}}/page-{{error_name}}"
-        results.append({{"name": name, "version": f"error: {{error_name}}"}})
-        continue
-    match = re.search(r'class="version-chip"[^>]*>UI v([^<]+)<', html)
-    if not match:
-        match = re.search(r"UI v([0-9.]+)", html)
-    results.append({{"name": name, "version": match.group(1).strip() if match else "missing"}})
+        result["readiness_error"] = f"{{exc.__class__.__name__}}: {{exc}}"
+        try:
+            status = fetch_json(status_url, status_timeout)
+            apply_status(result, status)
+        except Exception as status_exc:
+            result["status_error"] = f"{{status_exc.__class__.__name__}}: {{status_exc}}"
+    results.append(result)
 
 print(json.dumps(results))
 PY
 """
     raw = json.loads(capture(ssh_command(host, script)) or "[]")
-    return {str(item["name"]): str(item["version"]) for item in raw}
+    statuses: dict[str, UiVersionStatus] = {}
+    for item in raw:
+        statuses[str(item["name"])] = UiVersionStatus(
+            version=str(item.get("version") or "unknown"),
+            version_error=str(item.get("version_error") or ""),
+            readiness_error=str(item.get("readiness_error") or ""),
+            status_error=str(item.get("status_error") or ""),
+            web_restart_required=bool(item.get("web_restart_required")),
+            web_restart_reason=str(item.get("web_restart_reason") or ""),
+            prompt_idle=bool(item.get("prompt_idle")),
+            prompt_done=bool(item.get("prompt_done")),
+            auto_update_safe=bool(item.get("auto_update_safe")),
+            busy=bool(item.get("busy")),
+        )
+    return statuses
 
 
 def deployed_web_versions(
@@ -1834,7 +2641,8 @@ def verify_ui_version_parity(
     disk_versions = deployed_web_versions(host, instances)
     mismatches = []
     for instance in instances:
-        live_version = live_versions.get(instance.name, "unknown")
+        live_status = live_versions.get(instance.name)
+        live_version = live_status.version if live_status else "unknown"
         disk_version = disk_versions.get(instance.name, "unknown")
         if live_version != disk_version:
             mismatches.append(
@@ -1846,7 +2654,7 @@ def verify_ui_version_parity(
         )
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Sync the shared Codex console template to deployed agents."
     )
@@ -1857,6 +2665,19 @@ def parse_args() -> argparse.Namespace:
         help="Hosts or console names to update. Defaults to every discovered console.",
     )
     parser.add_argument("--no-restart", action="store_true", help="Copy files only.")
+    parser.add_argument(
+        "--restart", action="store_true", help="Restart changed consoles."
+    )
+    parser.add_argument(
+        "--force-restart",
+        action="store_true",
+        help="Override guarded restart blocks.",
+    )
+    parser.add_argument(
+        "--restart-web-only",
+        action="store_true",
+        help="Restart only selected console web services after readiness checks.",
+    )
     parser.add_argument(
         "--no-health", action="store_true", help="Skip post-restart health checks."
     )
@@ -1873,7 +2694,22 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Explicit operator-triggered model update for selected consoles. Template sync does not change models by default.",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--enable-route-receipts",
+        action="store_true",
+        help="Enable route receipt shadow capture for selected consoles.",
+    )
+    parser.add_argument(
+        "--route-receipt-dir",
+        default=REMOTE_ROUTE_RECEIPT_DIR,
+        help="Remote directory for per-TUI route receipt JSONL files.",
+    )
+    parser.add_argument(
+        "--route-receipt-items",
+        default="250",
+        help="Maximum route receipt items each TUI should retain.",
+    )
+    return parser.parse_args(argv)
 
 
 def select_instances(
@@ -1937,7 +2773,26 @@ def list_versions(
         versions = ui_versions(host, instances)
         print(host_name)
         for instance in instances:
-            print(f"  - {instance.name}: UI v{versions.get(instance.name, 'unknown')}")
+            status = versions.get(instance.name)
+            if status is None:
+                print(f"  - {instance.name}: UI vunknown")
+                continue
+            suffix = ""
+            if status.version_error:
+                suffix = f" (version unavailable: {status.version_error})"
+            elif status.web_restart_required:
+                labels = ["restart staged"]
+                if status.prompt_done:
+                    labels.append("prompt done")
+                if status.prompt_idle and status.auto_update_safe and not status.busy:
+                    labels.append("idle auto-update safe")
+                label = "; ".join(labels)
+                suffix = f" ({label}: {status.web_restart_reason})"
+            elif status.status_error:
+                suffix = f" (status unavailable: {status.status_error})"
+            elif status.readiness_error:
+                suffix = f" (readiness fallback: {status.readiness_error})"
+            print(f"  - {instance.name}: UI v{status.version}{suffix}")
 
 
 def main() -> int:
@@ -1999,6 +2854,11 @@ def main() -> int:
             )
             continue
 
+        soul_changes = sync_soul_identity_tree(host)
+        for remote_path in soul_changes:
+            changed_static_paths.add(remote_path)
+            print(f"  - soul identity -> {remote_path}", flush=True)
+
         for instance in selected_instances:
             if sync_instance_codex_home_seed(
                 host,
@@ -2028,6 +2888,9 @@ def main() -> int:
             if sync_instance_origin_settings(host, instance):
                 changed_instances[instance.name] = instance
                 print(f"  - origin -> {instance.env_file}", flush=True)
+            if sync_instance_bedrock_profile(host, instance):
+                changed_instances[instance.name] = instance
+                print(f"  - bedrock profile -> {instance.codex_home}", flush=True)
             if sync_instance_agent_label(host, instance):
                 changed_instances[instance.name] = instance
                 print(f"  - label -> {instance.env_file}", flush=True)
@@ -2042,6 +2905,14 @@ def main() -> int:
             if sync_instance_kernel_rollout_settings(host, instance):
                 changed_instances[instance.name] = instance
                 print(f"  - kernel rollout -> {instance.env_file}", flush=True)
+            if args.enable_route_receipts and sync_instance_route_receipts(
+                host,
+                instance,
+                receipt_dir=args.route_receipt_dir,
+                max_items=args.route_receipt_items,
+            ):
+                changed_instances[instance.name] = instance
+                print(f"  - route receipts -> {instance.env_file}", flush=True)
             if args.set_codex_model and sync_instance_model_setting(
                 host, instance, args.set_codex_model
             ):
@@ -2099,12 +2970,21 @@ def main() -> int:
 
         restart_names = " ".join(instance.name for instance in restart_scope_list)
         print(f"  - restarting {restart_names}", flush=True)
-        restart_instances(host, restart_scope_list)
+        if args.restart_web_only:
+            restart_selected_web_services(
+                {host_name: restart_scope_list},
+                force_restart=args.force_restart,
+                check_health=not args.no_health,
+            )
+            continue
+        restart_and_health_check_instances(
+            host,
+            restart_scope_list,
+            check_health=not args.no_health,
+        )
 
         if args.no_health:
             continue
-        print("  - health checks", flush=True)
-        health_check_instances(host, restart_scope_list)
         print("  - version parity", flush=True)
         verify_ui_version_parity(host, restart_scope_list)
 

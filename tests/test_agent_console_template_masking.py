@@ -4262,6 +4262,17 @@ def test_sync_template_treats_hal_as_root_managed_local_host() -> None:
     assert hal.root_managed_local is True
 
 
+def test_sync_template_treats_norman_as_sudo_local_host() -> None:
+    module = _load_sync_agent_console_template()
+
+    norman = module.HOSTS["norman"]
+
+    assert norman.local is True
+    assert norman.use_sudo is True
+    assert norman.root_managed_local is False
+    assert norman.ssh_target == ""
+
+
 def test_sync_template_source_skips_root_managed_local_host_in_user_sync() -> None:
     source = _sync_agent_console_template_source()
 

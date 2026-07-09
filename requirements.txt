@@ -1,5 +1,7 @@
 # requirements.txt
 
+setuptools>=61
+wheel
 fastapi==0.109.1
 uvicorn==0.15.0
 gunicorn==23.0.0

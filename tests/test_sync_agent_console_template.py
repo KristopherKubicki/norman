@@ -15,6 +15,14 @@ def _load_sync_script(monkeypatch):
             "NORMAN_SYNC_WORK_BEDROCK_FAILOVER_SMOKE_PATH",
             str(Path(__file__).with_name("__missing_bedrock_region_smoke__.json")),
         )
+    if (
+        "NORMAN_SYNC_NON_WORK_BEDROCK_PROFILE_SOURCE" not in os.environ
+        and "NORMAN_SYNC_TEST_ALLOW_DEFAULT_NON_WORK_BEDROCK_SOURCE" not in os.environ
+    ):
+        monkeypatch.setenv(
+            "NORMAN_SYNC_NON_WORK_BEDROCK_PROFILE_SOURCE",
+            str(Path(__file__).with_name("__missing_non_work_bedrock__.toml")),
+        )
     monkeypatch.syspath_prepend(str(scripts_dir))
     spec = importlib.util.spec_from_file_location(
         "sync_agent_console_template",
@@ -68,6 +76,43 @@ def _named_host(module, name: str, group_host: str = "192.0.2.10"):
     )
 
 
+def test_discovery_infers_codex_home_from_launcher_fallback(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_sync_script(monkeypatch)
+    env_dir = tmp_path / "etc" / "housebot"
+    env_dir.mkdir(parents=True)
+    launch_path = tmp_path / "opt" / "housebot_codex_launch.sh"
+    launch_path.parent.mkdir(parents=True)
+    launch_path.write_text(
+        'CODEX_HOME="${CODEX_HOME:-/root/.codex-housebot}"\n',
+        encoding="utf-8",
+    )
+    (env_dir / "codex-web.env").write_text(
+        f"NORMAN_CODEX_LAUNCHER={launch_path}\n" "NORMAN_CODEX_AGENT_NAME=Housebot\n",
+        encoding="utf-8",
+    )
+    host = module.DiscoveryHost(
+        name="toy-box",
+        ssh_target="root@example.invalid",
+        use_sudo=False,
+        env_globs=(str(tmp_path / "etc" / "*" / "codex-web.env"),),
+        public_host="toy-box.example.invalid",
+        lan_host="192.0.2.10",
+    )
+    monkeypatch.setattr(
+        module,
+        "ssh_command",
+        lambda host, script: ["bash", "-lc", script],
+    )
+
+    instances = module.discover_host_instances(host)
+
+    assert len(instances) == 1
+    assert instances[0].name == "housebot"
+    assert instances[0].codex_home == "/root/.codex-housebot"
+
+
 def test_list_versions_surfaces_restart_staged_state(monkeypatch, capsys) -> None:
     module = _load_sync_script(monkeypatch)
     monkeypatch.setattr(
@@ -91,6 +136,65 @@ def test_list_versions_surfaces_restart_staged_state(monkeypatch, capsys) -> Non
     )
 
 
+def test_list_versions_surfaces_idle_auto_update_safe_state(
+    monkeypatch, capsys
+) -> None:
+    module = _load_sync_script(monkeypatch)
+    monkeypatch.setattr(
+        module,
+        "ui_versions",
+        lambda host, instances: {
+            "panelbot": module.UiVersionStatus(
+                version="2026.05.31.1",
+                web_restart_required=True,
+                web_restart_reason="console web script changed after this process started",
+                prompt_idle=True,
+                auto_update_safe=True,
+                busy=False,
+            )
+        },
+    )
+
+    module.list_versions({"work-special": [_instance(module, "panelbot")]})
+
+    assert capsys.readouterr().out == (
+        "work-special\n"
+        "  - panelbot: UI v2026.05.31.1 "
+        "(restart staged; idle auto-update safe: "
+        "console web script changed after this process started)\n"
+    )
+
+
+def test_list_versions_surfaces_finished_prompt_idle_auto_update_safe_state(
+    monkeypatch, capsys
+) -> None:
+    module = _load_sync_script(monkeypatch)
+    monkeypatch.setattr(
+        module,
+        "ui_versions",
+        lambda host, instances: {
+            "panelbot": module.UiVersionStatus(
+                version="2026.05.31.1",
+                web_restart_required=True,
+                web_restart_reason="console web script changed after this process started",
+                prompt_idle=True,
+                prompt_done=True,
+                auto_update_safe=True,
+                busy=False,
+            )
+        },
+    )
+
+    module.list_versions({"work-special": [_instance(module, "panelbot")]})
+
+    assert capsys.readouterr().out == (
+        "work-special\n"
+        "  - panelbot: UI v2026.05.31.1 "
+        "(restart staged; prompt done; idle auto-update safe: "
+        "console web script changed after this process started)\n"
+    )
+
+
 def test_list_versions_surfaces_status_endpoint_errors(monkeypatch, capsys) -> None:
     module = _load_sync_script(monkeypatch)
     monkeypatch.setattr(
@@ -110,6 +214,50 @@ def test_list_versions_surfaces_status_endpoint_errors(monkeypatch, capsys) -> N
         "work-special\n"
         "  - control-plane: UI v2026.05.31.1 "
         "(status unavailable: TimeoutError: timed out)\n"
+    )
+
+
+def test_list_versions_surfaces_version_fetch_errors(monkeypatch, capsys) -> None:
+    module = _load_sync_script(monkeypatch)
+    monkeypatch.setattr(
+        module,
+        "ui_versions",
+        lambda host, instances: {
+            "control-plane": module.UiVersionStatus(
+                version="unknown",
+                version_error="URLError: connection refused",
+            )
+        },
+    )
+
+    module.list_versions({"work-special": [_instance(module, "control-plane")]})
+
+    assert capsys.readouterr().out == (
+        "work-special\n"
+        "  - control-plane: UI vunknown "
+        "(version unavailable: URLError: connection refused)\n"
+    )
+
+
+def test_list_versions_surfaces_readiness_fallback_hint(monkeypatch, capsys) -> None:
+    module = _load_sync_script(monkeypatch)
+    monkeypatch.setattr(
+        module,
+        "ui_versions",
+        lambda host, instances: {
+            "control-plane": module.UiVersionStatus(
+                version="2026.05.31.1",
+                readiness_error="HTTPError: 404 Not Found",
+            )
+        },
+    )
+
+    module.list_versions({"work-special": [_instance(module, "control-plane")]})
+
+    assert capsys.readouterr().out == (
+        "work-special\n"
+        "  - control-plane: UI v2026.05.31.1 "
+        "(readiness fallback: HTTPError: 404 Not Found)\n"
     )
 
 
@@ -316,6 +464,25 @@ def test_restart_block_reason_ignores_dead_stale_child_pid(monkeypatch) -> None:
     assert reason == ""
 
 
+def test_restart_block_reason_trusts_auto_update_safe_idle_state(monkeypatch) -> None:
+    module = _load_sync_script(monkeypatch)
+
+    reason = module._status_restart_block_reason(
+        {
+            "active_child_pid": 123,
+            "model_process_alive": False,
+            "pending": False,
+            "queue_depth": 0,
+            "state": "ok",
+            "busy": False,
+            "prompt_idle": True,
+            "auto_update_safe": True,
+        }
+    )
+
+    assert reason == ""
+
+
 def test_restart_block_reason_keeps_live_or_unknown_child_pid_conservative(
     monkeypatch,
 ) -> None:
@@ -361,6 +528,31 @@ def test_restart_guard_prefers_lightweight_readiness_probe(monkeypatch) -> None:
     assert "status_timeout = STATUS_PROBE_TIMEOUT_SECONDS" in source
     assert "fetch_json(readiness_url, readiness_timeout)" in source
     assert "fetch_json(status_url, status_timeout)" in source
+
+
+def test_ui_versions_prefers_lightweight_readiness_probe(monkeypatch) -> None:
+    module = _load_sync_script(monkeypatch)
+    captured: dict[str, str] = {}
+
+    def fake_ssh_command(host, script):
+        captured["script"] = script
+        return ["ssh", script]
+
+    monkeypatch.setattr(module, "ssh_command", fake_ssh_command)
+    monkeypatch.setattr(module, "capture", lambda _cmd: "[]")
+
+    module.ui_versions(_host(module), [_instance(module, "panelbot")])
+
+    script = captured["script"]
+    assert "/api/restart-readiness" in script
+    assert "/api/status" in script
+    assert "def fetch_json(url, timeout):" in script
+    assert "readiness_timeout = 3" in script
+    assert "status_timeout = 12" in script
+    assert "status = fetch_json(readiness_url, readiness_timeout)" in script
+    assert "status = fetch_json(status_url, status_timeout)" in script
+    assert 'result["readiness_error"]' in script
+    assert 'result["prompt_done"]' in script
 
 
 def test_origin_sync_exports_bbs_env_file_without_raw_token(monkeypatch) -> None:
@@ -493,11 +685,7 @@ def test_origin_sync_exports_discovered_local_llm_inventory(
     assert module.LOCAL_LLM_MODELS == (
         "gpt-oss:120b",
         "qwen3.5:122b-a10b-q4_K_M",
-        "qwen3-coder-next:q4_K_M",
         "meta-llama/Llama-3.1-70B-Instruct",
-        "Qwen/Qwen3-Coder-30B-A3B",
-        "qwen3-vl:30b-a3b-instruct-q4_K_M",
-        "llama3.2:1b",
     )
     assert module.LOCAL_LLM_ENDPOINTS == (
         "http://192.168.2.151:11434",
@@ -508,13 +696,8 @@ def test_origin_sync_exports_discovered_local_llm_inventory(
         "http://192.168.2.151:11434",
         "http://192.168.2.152:11434",
     ]
-    assert module.LOCAL_LLM_MODEL_ENDPOINTS["qwen3-coder-next:q4_K_M"] == [
-        "http://192.168.2.151:11434",
-        "http://192.168.2.152:11434",
-    ]
-    assert module.LOCAL_LLM_MODEL_ENDPOINTS["Qwen/Qwen3-Coder-30B-A3B"] == [
-        "http://spark-1.home.arpa:8000"
-    ]
+    assert "qwen3-coder-next:q4_K_M" not in module.LOCAL_LLM_MODEL_ENDPOINTS
+    assert "Qwen/Qwen3-Coder-30B-A3B" not in module.LOCAL_LLM_MODEL_ENDPOINTS
     assert module.sync_instance_origin_settings(_host(module), panelbot) is True
 
     script = captured["script"]
@@ -527,9 +710,9 @@ def test_origin_sync_exports_discovered_local_llm_inventory(
     assert '"NORMAN_LOCAL_LLM_MODEL_ENDPOINTS":"' in script
     assert "http://spark-1.home.arpa:8000" in script
     assert "qwen3.5:122b-a10b-q4_K_M" in script
-    assert "Qwen/Qwen3-Coder-30B-A3B" in script
-    assert "qwen3-coder-next:q4_K_M" in script
-    assert "qwen3-vl:30b-a3b-instruct-q4_K_M" in script
+    assert "Qwen/Qwen3-Coder-30B-A3B" not in script
+    assert "qwen3-coder-next:q4_K_M" not in script
+    assert "qwen3-vl:30b-a3b-instruct-q4_K_M" not in script
 
 
 def test_work_runtime_default_model_reset_migrates_old_default(
@@ -864,8 +1047,9 @@ def test_work_bedrock_profile_sync_copies_host_local_profile(monkeypatch) -> Non
     assert '"profile_v2":"traqline-bedrock-us-east-1"' not in script
     assert '"aws_region":"us-east-1"' not in script
     assert '"reasoning_effort":"xhigh"' in script
-    assert 'ensure_table_setting(rendered, "", "profile", profile_name)' in script
+    assert 'ensure_table_setting(rendered, "", "profile", profile_name)' not in script
     assert 'ensure_table_setting(rendered, aws_table, "region", aws_region)' in script
+    assert 'ensure_table_setting(rendered, aws_table, "wire_api"' not in script
     assert "model_reasoning_effort" in script
     assert 'target.write_text(rendered, encoding="utf-8")' in script
 
@@ -949,6 +1133,7 @@ def test_work_named_tui_on_norman_stays_personal_without_test_override(
     monkeypatch.setattr(module, "capture", fake_capture)
 
     assert module.instance_uses_work_config(norman, panelbot) is False
+    assert module.instance_uses_non_work_bedrock(norman, panelbot) is False
     assert module.sync_instance_bedrock_profile(norman, panelbot) is False
     assert module.sync_instance_origin_settings(norman, panelbot) is True
 
@@ -956,6 +1141,9 @@ def test_work_named_tui_on_norman_stays_personal_without_test_override(
     assert '"NORMAN_CODEX_BILLING_SCOPE":"norman"' in script
     assert '"NORMAN_CODEX_BILLING_OWNER":"kristopher"' in script
     assert '"NORMAN_CODEX_SERVICE_TIER":"flex"' in script
+    assert '"NORMAN_CODEX_MODEL":"gpt-5.4"' in script
+    assert '"NORMAN_CODEX_DIRECT_MODEL":"gpt-5.4"' in script
+    assert "NORMAN_CODEX_STANDARD_PROFILE_V2" in script
     assert "traqline-bedrock" not in script
     assert "ob-traqline-admin" not in script
 
@@ -1016,14 +1204,18 @@ def test_personal_tui_does_not_receive_work_bedrock_defaults(monkeypatch) -> Non
     script = captured["script"]
     assert '"NORMAN_CODEX_SERVICE_TIER":"flex"' in script
     assert "remove_keys" in script
+    assert '"NORMAN_CODEX_MODEL":"gpt-5.4"' in script
+    assert '"NORMAN_CODEX_DIRECT_MODEL":"gpt-5.4"' in script
     assert "NORMAN_CODEX_STANDARD_PROFILE_V2" in script
-    assert "NORMAN_CODEX_DIRECT_TIERS_ENABLED" in script
     assert "traqline-bedrock" not in script
+    assert "NORMAN_CODEX_DIRECT_TIERS_ENABLED" in script
+    assert "ob-traqline-admin" not in script
 
 
-def test_non_work_tui_defaults_to_openai_flex_and_removes_bedrock(
+def test_non_work_bedrock_defaults_can_be_disabled_and_cleaned(
     monkeypatch,
 ) -> None:
+    monkeypatch.setenv("NORMAN_SYNC_NON_WORK_BEDROCK_DEFAULT_ENABLED", "0")
     module = _load_sync_script(monkeypatch)
     housebot = _instance(module, "housebot")
     toy_box = _named_host(module, "toy-box")
@@ -1059,6 +1251,150 @@ def test_non_work_tui_defaults_to_openai_flex_and_removes_bedrock(
     assert "openai.gpt-5.5" not in script
 
 
+def test_non_work_bedrock_profile_sync_requires_explicit_source(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    source = tmp_path / "bedrock.config.toml"
+    source.write_text('model = "openai.gpt-5.4"\n', encoding="utf-8")
+    monkeypatch.setenv(
+        "NORMAN_SYNC_NON_WORK_BEDROCK_PROFILE_SOURCE",
+        str(source),
+    )
+    monkeypatch.setenv("NORMAN_SYNC_NON_WORK_BEDROCK_AWS_PROFILE", "personal-bedrock")
+    monkeypatch.setenv("NORMAN_SYNC_NON_WORK_BEDROCK_AWS_REGION", "us-west-2")
+    module = _load_sync_script(monkeypatch)
+    housebot = _instance(module, "housebot", host_name="toy-box")
+    toy_box = _named_host(module, "toy-box")
+    captured: dict[str, str] = {}
+
+    monkeypatch.setattr(
+        module,
+        "ssh_command",
+        lambda host, script: ["ssh", script],
+    )
+
+    def fake_capture(cmd):
+        captured["script"] = cmd[1]
+        return "changed\n"
+
+    monkeypatch.setattr(module, "capture", fake_capture)
+
+    assert module.instance_uses_non_work_bedrock(toy_box, housebot) is True
+    assert module.sync_instance_bedrock_profile(toy_box, housebot) is True
+
+    script = captured["script"]
+    assert str(source) in script
+    assert '"source_text":' in script
+    assert '"source_text_present":true' in script
+    assert "openai.gpt-5.4" in script
+    assert '"profile_v2":"personal-bedrock"' in script
+    assert '"aws_profile":"personal-bedrock"' in script
+    assert '"aws_region":"us-west-2"' in script
+    assert "ob-traqline-admin" not in script
+
+
+def test_personal_tui_uses_non_work_bedrock_only_with_explicit_source(
+    monkeypatch, tmp_path
+) -> None:
+    source = tmp_path / "bedrock.config.toml"
+    source.write_text('model = "openai.gpt-5.4"\n', encoding="utf-8")
+    monkeypatch.setenv("NORMAN_SYNC_NON_WORK_BEDROCK_PROFILE_SOURCE", str(source))
+    monkeypatch.setenv("NORMAN_SYNC_NON_WORK_BEDROCK_AWS_PROFILE", "personal-bedrock")
+    monkeypatch.setenv("NORMAN_SYNC_NON_WORK_BEDROCK_AWS_REGION", "us-west-2")
+    module = _load_sync_script(monkeypatch)
+    housebot = _instance(module, "housebot", host_name="toy-box")
+    toy_box = _named_host(module, "toy-box")
+    captured: dict[str, str] = {}
+
+    monkeypatch.setattr(
+        module,
+        "ssh_command",
+        lambda host, script: ["ssh", script],
+    )
+
+    def fake_capture(cmd):
+        captured["script"] = cmd[1]
+        return "changed\n"
+
+    monkeypatch.setattr(module, "capture", fake_capture)
+
+    assert module.instance_uses_non_work_bedrock(toy_box, housebot) is True
+    assert module.sync_instance_origin_settings(toy_box, housebot) is True
+
+    script = captured["script"]
+    assert '"NORMAN_CODEX_SERVICE_TIER":"default"' in script
+    assert '"NORMAN_CODEX_STANDARD_PROFILE_V2":"personal-bedrock"' in script
+    assert '"NORMAN_CODEX_STANDARD_AWS_PROFILE":"personal-bedrock"' in script
+    assert '"NORMAN_CODEX_STANDARD_AWS_REGION":"us-west-2"' in script
+    assert "ob-traqline-admin" not in script
+
+
+def test_personal_tui_uses_default_personal_bedrock_source_when_present(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("NORMAN_SYNC_TEST_ALLOW_DEFAULT_NON_WORK_BEDROCK_SOURCE", "1")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    source = tmp_path / ".codex-nonwork" / "personal-bedrock.config.toml"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("# personal bedrock overlay\n", encoding="utf-8")
+    module = _load_sync_script(monkeypatch)
+    housebot = _instance(module, "housebot", host_name="toy-box")
+    toy_box = _named_host(module, "toy-box")
+    captured: list[str] = []
+
+    monkeypatch.setattr(
+        module,
+        "ssh_command",
+        lambda host, script: ["ssh", script],
+    )
+
+    def fake_capture(cmd):
+        captured.append(cmd[1])
+        return "changed\n"
+
+    monkeypatch.setattr(module, "capture", fake_capture)
+
+    assert module.NON_WORK_BEDROCK_PROFILE_SOURCE == str(source)
+    assert module.NON_WORK_BEDROCK_AWS_PROFILE == "kk-personal"
+    assert module.NON_WORK_BEDROCK_AWS_REGION == "us-east-2"
+    assert module.instance_uses_non_work_bedrock(toy_box, housebot) is True
+    assert module.sync_instance_origin_settings(toy_box, housebot) is True
+    assert module.sync_instance_bedrock_profile(toy_box, housebot) is True
+
+    origin_script, profile_script = captured
+    assert '"NORMAN_CODEX_STANDARD_PROFILE_V2":"personal-bedrock"' in origin_script
+    assert '"NORMAN_CODEX_STANDARD_AWS_PROFILE":"kk-personal"' in origin_script
+    assert '"NORMAN_CODEX_STANDARD_AWS_REGION":"us-east-2"' in origin_script
+    assert "ob-traqline-admin" not in origin_script
+    assert str(source) in profile_script
+    assert '"source_text_present":true' in profile_script
+    assert "# personal bedrock overlay" in profile_script
+    assert '"profile_v2":"personal-bedrock"' in profile_script
+    assert '"aws_profile":"kk-personal"' in profile_script
+    assert '"aws_region":"us-east-2"' in profile_script
+    assert "ob-traqline-admin" not in profile_script
+
+
+def test_personal_bedrock_source_falls_back_when_sync_runs_as_root(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("NORMAN_SYNC_TEST_ALLOW_DEFAULT_NON_WORK_BEDROCK_SOURCE", "1")
+    root_home = tmp_path / "root"
+    fallback_home = tmp_path / "kristopher"
+    source = fallback_home / ".codex-nonwork" / "traqline-bedrock.config.toml"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("# personal fallback profile\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(root_home))
+    monkeypatch.setenv("NORMAN_SYNC_NON_WORK_BEDROCK_FALLBACK_HOME", str(fallback_home))
+
+    module = _load_sync_script(monkeypatch)
+
+    assert module.NON_WORK_BEDROCK_PROFILE_SOURCE == str(source)
+    assert module.NON_WORK_BEDROCK_PROFILE_V2 == "personal-bedrock"
+    assert module.non_work_bedrock_profile_source_ready() is True
+
+
 def test_netops_defaults_to_direct_5_4_and_removes_bedrock(
     monkeypatch,
 ) -> None:
@@ -1080,6 +1416,7 @@ def test_netops_defaults_to_direct_5_4_and_removes_bedrock(
     monkeypatch.setattr(module, "capture", fake_capture)
 
     assert "networking" not in module.WORK_BEDROCK_DEFAULT_INSTANCES
+    assert module.instance_uses_non_work_bedrock(netops_host, networking) is False
     assert module.sync_instance_bedrock_profile(netops_host, networking) is False
     assert module.sync_instance_origin_settings(netops_host, networking) is True
 
