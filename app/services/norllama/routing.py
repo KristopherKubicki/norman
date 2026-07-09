@@ -44,6 +44,7 @@ TOOL_TASK_KINDS = {
     NorllamaTaskKind.GRAPH,
     NorllamaTaskKind.NETWORK,
     NorllamaTaskKind.WORLD,
+    NorllamaTaskKind.IMAGE_GENERATE,
 }
 TOOL_TASK_KIND_VALUES = {kind.value for kind in TOOL_TASK_KINDS}
 
@@ -71,6 +72,7 @@ _CAPABILITY_BY_KIND = {
     NorllamaTaskKind.GRAPH: "graph",
     NorllamaTaskKind.NETWORK: "network",
     NorllamaTaskKind.WORLD: "world",
+    NorllamaTaskKind.IMAGE_GENERATE: "image_generate",
 }
 
 

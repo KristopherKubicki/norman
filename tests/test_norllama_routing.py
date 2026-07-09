@@ -201,6 +201,27 @@ def test_norllama_catalog_model_selection_for_specialist_tool_lane():
     assert route.cloud_proxy is False
 
 
+def test_norllama_catalog_model_selection_for_image_generation_lane():
+    request = NorllamaTaskRequest(
+        kind="image_generate",
+        input_text="Draw a Norman shell.",
+        route_policy={"provider": "norllama", "use_capability_catalog": True},
+    )
+
+    route = route_task(request)
+    route_receipt = build_task_receipt(request, route, status="planned").as_dict()[
+        "route_receipt"
+    ]
+
+    assert route.capability == "image_generate"
+    assert route.model == "stable-diffusion:configured-backend"
+    assert route_receipt["effective_runtime_model"] == (
+        "stable-diffusion:configured-backend"
+    )
+    assert route.tool_lane is True
+    assert route.cloud_proxy is False
+
+
 def test_norllama_warm_policy_model_selection(monkeypatch):
     from app.services.norllama import routing
 

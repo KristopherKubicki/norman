@@ -35,6 +35,12 @@ def _clean(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return _clean(value).lower() in {"1", "true", "yes", "on", "adult", "nsfw"}
+
+
 def _request_messages(request: NorllamaTaskRequest) -> list[dict[str, Any]]:
     if request.messages:
         return request.messages
@@ -123,8 +129,47 @@ def _default_safety_tool(
     return payload
 
 
+def _default_image_generation_tool(
+    request: NorllamaTaskRequest, route: NorllamaRoute
+) -> dict[str, Any]:
+    prompt = _clean(request.input_text or request.query)
+    if not prompt:
+        prompt = norllama_gateway.messages_to_prompt(_request_messages(request))
+    if not prompt:
+        raise RuntimeError("Norllama image generation tool requires a prompt")
+    policy = request.route_policy
+    payload = norllama_gateway.generate_image(
+        prompt=prompt,
+        model=route.model,
+        base_url=route.endpoint
+        or _clean(getattr(settings, "llm_offline_base_url", "")),
+        api_key=_clean(getattr(settings, "llm_offline_api_key", "")),
+        negative_prompt=_clean(policy.get("negative_prompt")),
+        size=_clean(policy.get("size")) or "1024x1024",
+        n=int(policy.get("n") or policy.get("count") or 1),
+        steps=int(policy["steps"]) if policy.get("steps") is not None else None,
+        cfg_scale=float(policy["cfg_scale"])
+        if policy.get("cfg_scale") is not None
+        else None,
+        seed=int(policy["seed"]) if policy.get("seed") is not None else None,
+        sampler=_clean(policy.get("sampler") or policy.get("sampler_name")),
+        allow_nsfw=_truthy(
+            policy.get("allow_nsfw") or policy.get("nsfw") or policy.get("adult")
+        ),
+        content_rating=_clean(policy.get("content_rating")),
+        safety_profile=_clean(policy.get("safety_profile")),
+        timeout_seconds=policy.get("timeout_seconds"),
+    )
+    payload["prompt"] = prompt
+    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+    usage.setdefault("usage_bucket", "offline_local")
+    payload["usage"] = usage
+    return payload
+
+
 def _default_tool_handlers() -> dict[str, ToolHandler]:
     return {
+        "image_generate": _default_image_generation_tool,
         "prompt_injection": _default_safety_tool,
         "rerank": _default_rerank_tool,
         "safety": _default_safety_tool,

@@ -25,6 +25,7 @@ CAPABILITY_CLASSES = {
     "network": "network, DNS, packet, and flow intelligence",
     "vision_geometry": "segmentation, depth, and visual matching",
     "world": "browser/world/action simulation",
+    "image_generate": "local image generation through a Stable Diffusion-compatible service",
 }
 
 CAPABILITY_MODELS: list[dict[str, Any]] = [
@@ -234,6 +235,21 @@ CAPABILITY_MODELS: list[dict[str, Any]] = [
         "use_for": "local agent voice output",
         "guardrail": "No TTS lane should gate task completion.",
         "default_for": ["tts"],
+    },
+    {
+        "capability": "stable_diffusion_image_shell",
+        "class": "image_generate",
+        "model": "stable-diffusion:configured-backend",
+        "runtime_model": "stable-diffusion:configured-backend",
+        "priority": "p1",
+        "residency": "service",
+        "target_worker": "spark-150|spark-151",
+        "target_role": "production",
+        "dispatch": "image_generation_proxy",
+        "serving_path": "/v1/images/generations",
+        "use_for": "local image generation, UI mockup sketches, thumbnails, and non-authoritative visual drafts",
+        "guardrail": "Use only through the Norllama image lane; receipts must show the backend worker and offline_local usage. Adult/NSFW mode must be explicit in request metadata and receipts. Image outputs are artifacts, not factual evidence.",
+        "default_for": ["image_generate"],
     },
     {
         "capability": "agent_world_simulator",
@@ -514,6 +530,7 @@ def catalog_payload() -> dict[str, Any]:
                 "forecast",
                 "graph",
                 "network",
+                "image_generate",
             )
         },
         "node_intent": {

@@ -43,6 +43,7 @@ class NorllamaTaskKind(str, Enum):
     GRAPH = "graph"
     NETWORK = "network"
     WORLD = "world"
+    IMAGE_GENERATE = "image_generate"
 
 
 @dataclass
