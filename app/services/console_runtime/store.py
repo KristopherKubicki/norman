@@ -31,6 +31,7 @@ from app.services.norllama.route_outcomes import (
     route_outcome_event_payload,
     summarize_route_outcomes,
 )
+from app.services.norllama.route_proof import audit_route_receipt
 from app.services.norllama.specialist_lanes import summarize_specialist_cascade
 
 _CLOUD_ROUTE_PROVIDERS = {
@@ -881,6 +882,9 @@ def _local_first_proof(
                 "receipt_audit_failures": {},
                 "receipt_audit_pass_count": 0,
                 "receipt_audit_fail_count": 0,
+                "receipt_audit_synthesized_count": 0,
+                "route_receipt_count": 0,
+                "route_receipt_missing_count": 0,
             }
             order.append(session_id)
         row = sessions[session_id]
@@ -926,9 +930,19 @@ def _local_first_proof(
         shape = _clean(payload.get("output_shape") or receipt.get("output_shape"))
         if shape:
             _inc(row["output_shapes"], shape)
+        if receipt:
+            row["route_receipt_count"] += 1
+        elif event.event_type == "model.completed":
+            row["route_receipt_missing_count"] += 1
+            row["receipt_audit_fail_count"] += 1
+            _inc(row["receipt_audit"], "fail")
+            _inc(row["receipt_audit_failures"], "route_receipt_missing")
         receipt_audit = _json_dict(
             payload.get("receipt_audit") or receipt.get("receipt_audit")
         )
+        if receipt and not receipt_audit:
+            receipt_audit = audit_route_receipt(receipt)
+            row["receipt_audit_synthesized_count"] += 1
         if receipt_audit:
             audit_status = _lower(receipt_audit.get("status")) or "unknown"
             _inc(row["receipt_audit"], audit_status)
@@ -1023,6 +1037,15 @@ def _local_first_proof(
         "receipt_audit_fail_count": sum(
             _json_int(row.get("receipt_audit_fail_count")) for row in rows
         ),
+        "receipt_audit_synthesized_count": sum(
+            _json_int(row.get("receipt_audit_synthesized_count")) for row in rows
+        ),
+        "route_receipt_count": sum(
+            _json_int(row.get("route_receipt_count")) for row in rows
+        ),
+        "route_receipt_missing_count": sum(
+            _json_int(row.get("route_receipt_missing_count")) for row in rows
+        ),
     }
     return {
         "schema": "norman.console-runtime.local-first-proof.v1",
@@ -1045,7 +1068,15 @@ def _local_first_proof(
                 totals["specialist_benchmark_fresh_count"] > 0
             ),
             "receipt_audit_passed": totals["receipt_audit_pass_count"] > 0
-            and totals["receipt_audit_fail_count"] == 0,
+            and totals["receipt_audit_fail_count"] == 0
+            and totals["route_receipt_missing_count"] == 0,
+            "route_receipts_present": totals["route_receipt_count"] > 0
+            and totals["route_receipt_missing_count"] == 0,
+            "receipt_audit_covered": (
+                totals["receipt_audit_pass_count"] + totals["receipt_audit_fail_count"]
+            )
+            >= totals["route_receipt_count"]
+            and totals["route_receipt_missing_count"] == 0,
             "cloud_proxy_visible": totals["cloud_proxy_tokens"] > 0,
         },
     }

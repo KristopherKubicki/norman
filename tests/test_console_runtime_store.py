@@ -325,7 +325,7 @@ def test_db_console_runtime_store_summarizes_route_offload_evidence(db):
     assert summary["cloud_evidence_count"] == 1
     assert summary["spark_evidence_count"] == 2
     assert direct == {**summary, "job_id": job_id}
-    proof = store.local_first_proof(db, user_id=user.id, session_limit=20)
+    proof = store.local_first_proof(db, user_id=user.id, session_limit=1)
     assert proof["schema"] == "norman.console-runtime.local-first-proof.v1"
     assert proof["totals"]["local_tokens"] >= 15
     assert proof["totals"]["spark_evidence_count"] >= 2
@@ -338,6 +338,110 @@ def test_db_console_runtime_store_summarizes_route_offload_evidence(db):
     assert proof["sessions"][0]["specialist_lanes"]["receipt_auditor"] == 1
     assert proof["sessions"][0]["deterministic_experts"]["codeql"] == 1
     assert proof["sessions"][0]["models_by_phase"]
+
+
+def test_local_first_proof_synthesizes_missing_receipt_audit(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    job_id = f"job-proof-synth-audit-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(objective="Audit complete local receipts"),
+    )
+
+    store.append_event(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        event_type="model.completed",
+        payload={
+            "provider": "norllama",
+            "model": "gemma3:1b",
+            "usage": {"input_tokens": 7, "output_tokens": 8, "total_tokens": 15},
+            "route_receipt": {
+                "request_id": "req-proof-synth",
+                "job_id": job_id,
+                "phase": "work",
+                "task_kind": "summarize",
+                "status": "completed",
+                "selected_provider": "norllama",
+                "selected_model": "gemma3:1b",
+                "target_model": "gemma3:1b",
+                "effective_runtime_model": "gemma3:1b",
+                "selected_worker": "mac-mini-133",
+                "observed_worker": "mac-mini-133",
+                "frontdoor": "https://llm.home.arpa",
+                "peer_path": ["llm.home.arpa", "mac-mini-133"],
+                "route_reason": "tiny fallback local proof",
+                "policy_mode": "local_first",
+                "cloud_proxy": False,
+                "benchmark_packet_id": "uplink-fallback-1",
+                "benchmark_fresh": True,
+                "benchmark_score": 0.75,
+                "coverage_ratio": 1.0,
+                "input_tokens": 7,
+                "output_tokens": 8,
+                "total_tokens": 15,
+                "usage_bucket": "offline_local",
+                "fallback_used": False,
+                "fallback_reason": "",
+                "verifier_result": "pass",
+                "output_shape": "complete",
+                "completion_requested": True,
+                "routing_scope": "frontdoor_worker",
+                "route_attribution_source": "gateway_response",
+            },
+        },
+    )
+
+    proof = store.local_first_proof(db, user_id=user.id, session_limit=1)
+
+    assert proof["totals"]["route_receipt_count"] == 1
+    assert proof["totals"]["route_receipt_missing_count"] == 0
+    assert proof["totals"]["receipt_audit_synthesized_count"] == 1
+    assert proof["totals"]["receipt_audit_pass_count"] == 1
+    assert proof["release_gate"]["route_receipts_present"] is True
+    assert proof["release_gate"]["receipt_audit_covered"] is True
+    assert proof["release_gate"]["receipt_audit_passed"] is True
+
+
+def test_local_first_proof_blocks_model_completion_without_route_receipt(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    job_id = f"job-proof-missing-receipt-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(objective="Reject unproven local completions"),
+    )
+
+    store.append_event(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        event_type="model.completed",
+        payload={
+            "provider": "norllama",
+            "model": "gemma3:1b",
+            "local": True,
+            "egress_class": "lan",
+            "usage": {"input_tokens": 3, "output_tokens": 4, "total_tokens": 7},
+        },
+    )
+
+    proof = store.local_first_proof(db, user_id=user.id, session_limit=1)
+    session = proof["sessions"][0]
+
+    assert proof["totals"]["route_receipt_count"] == 0
+    assert proof["totals"]["route_receipt_missing_count"] == 1
+    assert proof["totals"]["receipt_audit_fail_count"] == 1
+    assert proof["release_gate"]["route_receipts_present"] is False
+    assert proof["release_gate"]["receipt_audit_covered"] is False
+    assert proof["release_gate"]["receipt_audit_passed"] is False
+    assert session["receipt_audit_failures"] == {"route_receipt_missing": 1}
 
 
 def test_db_console_runtime_store_breaks_out_usage_ledger_by_provider(db):
