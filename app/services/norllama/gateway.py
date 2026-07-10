@@ -149,9 +149,12 @@ def _transcribe_url(base_url: str) -> str:
     return _frontdoor_url(base_url, "v1/audio/transcriptions")
 
 
-def _activity_url(base_url: str, limit: int) -> str:
+def _activity_url(base_url: str, limit: int, *, tool_only: bool = False) -> str:
     clean_limit = max(1, min(int(limit or 200), 1000))
-    return f"{_frontdoor_url(base_url, 'v1/activity')}?limit={clean_limit}"
+    suffix = f"limit={clean_limit}"
+    if tool_only:
+        suffix += "&tool_only=1"
+    return f"{_frontdoor_url(base_url, 'v1/activity')}?{suffix}"
 
 
 def _public_endpoint(value: Any) -> str:
@@ -1534,12 +1537,22 @@ def fetch_tool_activity(
     timeout = timeout_seconds or max(
         1, min(float(settings.llm_provider_timeout_seconds), 10.0)
     )
-    payload = _fetch_json(
-        _activity_url(frontdoor, limit),
-        headers=headers,
-        timeout=timeout,
-    )
+    try:
+        payload = _fetch_json(
+            _activity_url(frontdoor, limit, tool_only=True),
+            headers=headers,
+            timeout=timeout,
+        )
+    except requests.RequestException:
+        payload = _fetch_json(
+            _activity_url(frontdoor, limit),
+            headers=headers,
+            timeout=timeout,
+        )
     normalized = normalize_tool_activity_payload(payload, limit=limit)
     normalized["source"] = "v1/activity"
+    normalized["tool_only_source"] = bool(
+        isinstance(payload, dict) and payload.get("tool_only")
+    )
     normalized["base_url"] = _public_endpoint(frontdoor)
     return normalized

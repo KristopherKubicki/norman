@@ -67,6 +67,7 @@ DEFAULT_PREFLIGHT_PACKET_PATHS = tuple(
 DEFAULT_MODEL_CACHE_TTL_S = 15
 DEFAULT_INVENTORY_TIMEOUT_S = 3
 DEFAULT_ACTIVITY_LIMIT = 200
+DEFAULT_TOOL_ACTIVITY_LIMIT = 1000
 DEFAULT_PEER_TIMEOUT_S = 1.0
 DEFAULT_MAX_PEER_HOPS = 1
 DEFAULT_PREFETCH_JOB_TTL_S = 3600
@@ -1011,6 +1012,9 @@ class App:
         self.activity_limit = int(
             os.getenv("NORLLAMA_ACTIVITY_LIMIT", str(DEFAULT_ACTIVITY_LIMIT))
         )
+        self.tool_activity_limit = int(
+            os.getenv("NORLLAMA_TOOL_ACTIVITY_LIMIT", str(DEFAULT_TOOL_ACTIVITY_LIMIT))
+        )
         self.prefetch_job_ttl_s = float(
             os.getenv("NORLLAMA_PREFETCH_JOB_TTL_S", str(DEFAULT_PREFETCH_JOB_TTL_S))
         )
@@ -1104,6 +1108,7 @@ class App:
         self._ollama_inventory_refreshing = False
         self._ds4_inventory_cache: tuple[float, list[dict]] | None = None
         self._recent_activity: list[dict[str, object]] = []
+        self._recent_tool_activity: list[dict[str, object]] = []
         self._prefetch_jobs: dict[str, dict[str, object]] = {}
         self._prefetch_job_keys: dict[str, str] = {}
 
@@ -3471,16 +3476,57 @@ class App:
             self._recent_activity.append(record)
             if len(self._recent_activity) > self.activity_limit:
                 self._recent_activity = self._recent_activity[-self.activity_limit :]
+            if self._counts_as_tool_activity(record):
+                self._recent_tool_activity.append(record)
+                if len(self._recent_tool_activity) > self.tool_activity_limit:
+                    self._recent_tool_activity = self._recent_tool_activity[
+                        -self.tool_activity_limit :
+                    ]
 
-    def recent_activity(self, limit: int = 20) -> dict:
-        safe_limit = max(1, min(limit, self.activity_limit))
+    def _counts_as_tool_activity(self, record: dict[str, object]) -> bool:
+        method = str(record.get("method") or "").strip().upper() or "GET"
+        path = str(record.get("path") or "").split("?", 1)[0].strip()
+        capability = str(record.get("capability") or "").strip()
+        if method in {"GET", "HEAD"}:
+            return False
+        if capability:
+            return True
+        return path in {
+            "/api/chat",
+            "/api/generate",
+            "/api/embed",
+            "/api/embeddings",
+            "/v1/embeddings",
+            "/v1/rerank",
+            "/rerank",
+            "/v1/safety/classify",
+            "/safety/classify",
+            "/v1/audio/transcriptions",
+            "/transcribe",
+            "/v1/ocr",
+            "/ocr",
+            "/v1/images/generations",
+            "/v1/chat/completions",
+            "/v1/prefetch",
+            "/v1/evict",
+        } or path.startswith("/media/")
+
+    def recent_activity(self, limit: int = 20, *, tool_only: bool = False) -> dict:
+        retention_limit = self.tool_activity_limit if tool_only else self.activity_limit
+        safe_limit = max(1, min(limit, retention_limit))
         with self._lock:
-            rows = list(self._recent_activity[-safe_limit:])
+            source_rows = (
+                self._recent_tool_activity if tool_only else self._recent_activity
+            )
+            rows = list(source_rows[-safe_limit:])
         rows.reverse()
         return {
             "service": "norllama",
+            "schema": "norllama.activity.v1",
             "time": now_iso(),
+            "tool_only": bool(tool_only),
             "count": len(rows),
+            "retention_limit": retention_limit,
             "items": [self.public_activity_item(row) for row in rows],
         }
 
@@ -6851,7 +6897,13 @@ class Handler(BaseHTTPRequestHandler):
                 limit = int((query.get("limit") or ["20"])[0])
             except Exception:
                 limit = 20
-            self.send_json(HTTPStatus.OK, self.app.recent_activity(limit))
+            tool_only = str(
+                (query.get("tool_only") or query.get("tools") or [""])[0]
+            ).lower() in {"1", "true", "yes", "on"}
+            self.send_json(
+                HTTPStatus.OK,
+                self.app.recent_activity(limit, tool_only=tool_only),
+            )
             return
         if parsed.path == "/v1/prefetch/status":
             query = urllib.parse.parse_qs(parsed.query or "")
@@ -6996,8 +7048,14 @@ class Handler(BaseHTTPRequestHandler):
                 limit = int((query.get("limit") or ["20"])[0])
             except Exception:
                 limit = 20
-            body = json.dumps(self.app.recent_activity(limit), sort_keys=True).encode(
-                "utf-8"
+            tool_only = str(
+                (query.get("tool_only") or query.get("tools") or [""])[0]
+            ).lower() in {"1", "true", "yes", "on"}
+            body = json.dumps(
+                self.app.recent_activity(limit, tool_only=tool_only),
+                sort_keys=True,
+            ).encode(
+                "utf-8",
             )
             self.send_head_only(
                 HTTPStatus.OK, content_type="application/json", content_length=len(body)

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import os
 import shutil
+import sys
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 SPECIALIST_LANE_REGISTRY_SCHEMA = "norman.norllama.specialist-lanes.v1"
@@ -114,6 +117,25 @@ def _truthy_presence(value: Any) -> bool:
 
 def _usage_template() -> dict[str, int]:
     return {bucket: 0 for bucket in USAGE_BUCKETS}
+
+
+def _which_command(command: str) -> str:
+    command = _clean(command)
+    if not command:
+        return ""
+    path_parts: list[str] = []
+    executable_dir = Path(sys.executable).resolve().parent
+    if executable_dir.exists():
+        path_parts.append(str(executable_dir))
+    virtual_env = _clean(os.environ.get("VIRTUAL_ENV"))
+    if virtual_env:
+        venv_bin = Path(virtual_env) / "bin"
+        if venv_bin.exists():
+            path_parts.append(str(venv_bin))
+    env_path = _clean(os.environ.get("PATH"))
+    if env_path:
+        path_parts.append(env_path)
+    return shutil.which(command, path=os.pathsep.join(path_parts)) or ""
 
 
 def _float(value: Any) -> float | None:
@@ -403,13 +425,13 @@ def deterministic_expert_registry() -> dict[str, Any]:
     experts: list[dict[str, Any]] = []
     for expert in DETERMINISTIC_EXPERTS:
         command = _clean(expert.get("command"))
-        binary = shutil.which(command) if command else None
+        binary = _which_command(command)
         experts.append(
             {
                 **deepcopy(expert),
                 "state": "production" if binary else "aspirational",
                 "availability": "installed" if binary else "missing",
-                "binary": binary or "",
+                "binary": binary,
                 "route_receipt_required": True,
                 "usage_bucket": "offline_local",
             }

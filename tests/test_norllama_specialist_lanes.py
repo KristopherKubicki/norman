@@ -14,6 +14,7 @@ from app.services.norllama.specialist_lanes import (
     summarize_specialist_cascade,
     validate_specialist_output,
 )
+from app.services.norllama import specialist_lanes as specialist_module
 
 
 EXPECTED_PRODUCTION_LANES = {
@@ -179,6 +180,41 @@ def test_deterministic_experts_are_registered_in_same_cascade():
         assert expert["state"] in ALLOWED_SPECIALIST_STATES
         assert expert["usage_bucket"] == "offline_local"
         assert expert["route_receipt_required"] is True
+
+
+def test_deterministic_expert_registry_checks_python_environment_bin(
+    tmp_path, monkeypatch
+):
+    bin_dir = tmp_path / "venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    fake_python = bin_dir / "python"
+    fake_python.write_text("#!/bin/sh\n")
+    fake_tool = bin_dir / "norman-fake-expert"
+    fake_tool.write_text("#!/bin/sh\n")
+    fake_tool.chmod(0o755)
+
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    monkeypatch.setattr(specialist_module.sys, "executable", str(fake_python))
+    monkeypatch.setattr(
+        specialist_module,
+        "DETERMINISTIC_EXPERTS",
+        (
+            {
+                "expert": "fake",
+                "command": "norman-fake-expert",
+                "purpose": "test",
+                "lanes": ["receipt_auditor"],
+            },
+        ),
+    )
+
+    registry = specialist_module.deterministic_expert_registry()
+
+    assert registry["available_count"] == 1
+    assert registry["experts"][0]["availability"] == "installed"
+    assert registry["experts"][0]["state"] == "production"
+    assert registry["experts"][0]["binary"] == str(fake_tool)
 
 
 def test_specialist_output_validator_checks_lane_schema_contracts():

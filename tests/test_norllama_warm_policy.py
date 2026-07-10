@@ -453,6 +453,10 @@ def test_build_warm_policy_includes_capability_catalog_and_spark_affinity():
         "faster-whisper:distil-large-v3"
     )
     assert policy["capability_catalog"]["defaults"]["world"] == ""
+    assert (
+        policy["capability_catalog"]["defaults"]["image_generate"]
+        == "stable-diffusion:configured-backend"
+    )
     assert policy["model_reality"]["schema"] == "norman.norllama.model-reality.v1"
     assert by_model["qwen3.6:35b-a3b-q4_K_M"]["action"] == "skip_quality_gate"
     assert (
@@ -478,6 +482,12 @@ def test_build_warm_policy_includes_capability_catalog_and_spark_affinity():
         by_model["qualifire/prompt-injection-sentinel"]["action"] == "skip_unavailable"
     )
     assert by_model["faster-whisper:distil-large-v3"]["target_worker"] == "spark-150"
+    assert by_model["stable-diffusion:configured-backend"]["target_role"] == "lab"
+    assert by_model["stable-diffusion:configured-backend"]["action"] in {
+        "prefetch",
+        "skip_quality_gate",
+        "skip_unavailable",
+    }
     assert by_model["faster-whisper:large-v3"]["target_worker"] == "spark-150"
     assert (
         "Qwen/Qwen-AgentWorld-35B-A3B"
