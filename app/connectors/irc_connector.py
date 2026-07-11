@@ -81,4 +81,14 @@ class IRCConnector(BaseConnector):
 
     async def process_incoming(self, message):
         """Return the raw ``message`` payload."""
-        return message
+        if not isinstance(message, str):
+            return {"text": str(message)}
+        text = message.strip()
+        summary_parts = ["irc"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {
+            "text": text,
+            "text_summary": summary,
+        }

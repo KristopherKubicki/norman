@@ -76,7 +76,24 @@ class CAPConnector(BaseConnector):
         return results
 
     async def process_incoming(self, message: Any) -> Any:
-        return message
+        if not isinstance(message, dict):
+            text = str(message)
+            summary = f"cap • {text}" if text else "cap"
+            return {"text": text, "text_summary": summary}
+        text = message.get("headline") or message.get("description") or ""
+        summary_parts = ["cap"]
+        if message.get("severity"):
+            summary_parts.append(str(message.get("severity")))
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {
+            "text": text,
+            "headline": message.get("headline"),
+            "description": message.get("description"),
+            "severity": message.get("severity"),
+            "text_summary": summary,
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if the endpoint responds successfully."""

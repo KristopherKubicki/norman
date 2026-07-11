@@ -5,7 +5,7 @@ from app.core.test_settings import test_settings
 
 def test_get_webhook_connector_uses_settings():
     connector = webhook_router.get_webhook_connector(test_settings)
-    assert connector.webhook_url == test_settings.webhook_secret
+    assert connector.webhook_url == test_settings.webhook_url
 
 
 def test_process_webhook_update(monkeypatch, test_app: TestClient):
@@ -21,7 +21,9 @@ def test_process_webhook_update(monkeypatch, test_app: TestClient):
 
     monkeypatch.setattr(webhook_router, "WebhookConnector", DummyConnector)
     resp = test_app.post(
-        "/api/v1/connectors/webhook/webhooks/webhook", json={"text": "hi"}
+        "/api/v1/connectors/webhook/webhooks/webhook",
+        json={"text": "hi"},
+        headers={"X-Webhook-Secret": test_settings.webhook_secret},
     )
     assert resp.status_code == 200
     assert received["payload"] == {"text": "hi"}

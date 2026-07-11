@@ -1,4 +1,5 @@
 import os
+import asyncio
 import uvicorn
 import inspect as uvicorn_inspect
 import signal
@@ -10,7 +11,7 @@ import sys
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import inspect
-from app.db.session import engine
+from app.db import session as db_session
 from app.db.base import Base
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
@@ -33,17 +34,24 @@ from app.core.logging import request_context_middleware
 from app.core.rate_limit import RateLimiter
 from app.core.exception_handlers import add_exception_handlers
 from app.routing.worker import start_routing_worker
+from app.services.connector_health import connector_health
+from app.services.console_audit_monitor import console_audit_monitor
+from app.services.console_runtime.supervisor import console_runtime_worker_service
+from app.services.fleet_credit_monitor import fleet_credit_monitor
+from app.services.estate_sync import sync_registry
+from app.services.passive_udp_listeners import passive_udp_listeners
+from app.services.tmux_reconciler import reconcile_tmux_connectors_for_startup
 from app.core.logging import setup_logger
 
 
 def run_alembic_migrations():
     if not os.path.exists("alembic/versions"):
         os.makedirs("alembic/versions", exist_ok=True)
-    logger.info("Alembic: upgrade head start")
+    logger.info("Alembic: upgrade heads start")
     try:
         # Run alembic in a subprocess to avoid abrupt exits in the main process.
         result = subprocess.run(
-            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            [sys.executable, "-m", "alembic", "upgrade", "heads"],
             check=True,
             capture_output=True,
             text=True,
@@ -55,7 +63,7 @@ def run_alembic_migrations():
     except subprocess.CalledProcessError as exc:
         logger.error("Alembic failed: %s", exc.stderr or exc.stdout or str(exc))
         raise
-    logger.info("Alembic: upgrade head done")
+    logger.info("Alembic: upgrade heads done")
 
 
 app = FastAPI()
@@ -64,10 +72,19 @@ faulthandler.enable()
 
 
 def _handle_signal(signum, _frame):
-    logger.error("Received signal %s; exiting", signum)
+    # NOTE: We intentionally do *not* override SIGINT/SIGTERM. Uvicorn installs
+    # its own handlers for graceful shutdown.
+    #
+    # Screen/tmux can send SIGHUP when a session/window closes; forward that to
+    # SIGTERM so Uvicorn can run shutdown events and release the port cleanly.
+    logger.error("Received signal %s; forwarding to SIGTERM", signum)
+    try:
+        os.kill(os.getpid(), signal.SIGTERM)
+    except Exception:
+        raise SystemExit(0)
 
 
-for _sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT):
+for _sig in (signal.SIGHUP, signal.SIGQUIT):
     try:
         signal.signal(_sig, _handle_signal)
     except Exception:
@@ -76,7 +93,10 @@ for _sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT):
 
 @atexit.register
 def _on_exit():
-    logger.error("Process exiting")
+    # Avoid logging during interpreter shutdown. Some environments (pytest's
+    # output capture) close streams first, and the logging module prints noisy
+    # "Logging error" diagnostics even when exceptions are suppressed.
+    return
 
 
 rate_limiter = RateLimiter()
@@ -93,10 +113,16 @@ app.middleware("http")(rate_limiter)
 @app.middleware("http")
 async def cache_control_middleware(request: Request, call_next):
     response = await call_next(request)
-    if request.method == "GET" and response.headers.get("content-type", "").startswith(
-        "application/json"
-    ):
-        response.headers.setdefault("Cache-Control", "max-age=60")
+    path = request.url.path
+    if request.method == "GET":
+        if path.startswith("/static/icons/"):
+            response.headers.setdefault(
+                "Cache-Control", "public, max-age=86400, immutable"
+            )
+        elif path.startswith("/static/"):
+            response.headers.setdefault("Cache-Control", "public, max-age=3600")
+        elif response.headers.get("content-type", "").startswith("application/json"):
+            response.headers.setdefault("Cache-Control", "max-age=60")
     return response
 
 
@@ -113,31 +139,61 @@ async def startup_event():
             run_alembic_migrations()
         logger.info("Startup: ensuring tables exist")
         try:
-            Base.metadata.create_all(bind=engine)
+            Base.metadata.create_all(bind=db_session.engine)
         except Exception:
             logger.exception("Startup: failed creating tables")
             raise
+        if not os.environ.get("SKIP_ESTATE_SEED"):
+            logger.info("Startup: syncing estate registry seed")
+            estate_db = db_session.SessionLocal()
+            try:
+                summary = sync_registry(estate_db)
+                logger.info(f"Startup: estate registry sync summary {summary}")
+            except Exception:
+                logger.exception("Startup: estate registry sync failed")
+            finally:
+                estate_db.close()
         logger.info("Startup: migrations complete")
-        return
 
+        # Ensure there is at least one admin user on first boot.
         try:
-            inspector = inspect(engine)
-            has_users = inspector.has_table("users")
+            create_initial_admin_user()
         except Exception:
-            has_users = False
-
-        if not has_users:
-            if not os.path.exists("db"):
-                os.makedirs("db", exist_ok=True)
-            logger.info("Startup: users table missing; running migrations")
-            run_alembic_migrations()
-        logger.info("Startup: ensuring tables exist after migrations")
-        try:
-            Base.metadata.create_all(bind=engine)
-        except Exception:
-            logger.exception("Startup: failed creating tables")
+            logger.exception("Startup: failed creating initial admin user")
             raise
-        logger.info("Startup: migrations skipped")
+        if not os.environ.get("SKIP_TMUX_RECONCILE"):
+            logger.info("Startup: reconciling tmux project sessions")
+            try:
+                summary = await asyncio.to_thread(reconcile_tmux_connectors_for_startup)
+                logger.info(f"Startup: tmux reconcile summary {summary}")
+            except Exception:
+                # Keep the app available even if tmux automation fails.
+                logger.exception("Startup: tmux reconcile failed")
+
+        if not os.environ.get("SKIP_CONNECTOR_HEALTH"):
+            logger.info("Startup: starting connector health scheduler")
+            await connector_health.start()
+            app.state.connector_health_enabled = True
+        if not os.environ.get("SKIP_FLEET_CREDIT_MONITOR"):
+            logger.info("Startup: starting fleet credit monitor")
+            await fleet_credit_monitor.start()
+            app.state.fleet_credit_monitor_enabled = True
+        if not os.environ.get("SKIP_CONSOLE_AUDIT_MONITOR"):
+            logger.info("Startup: starting console audit monitor")
+            await console_audit_monitor.start()
+            app.state.console_audit_monitor_enabled = True
+        if (
+            not os.environ.get("SKIP_CONSOLE_RUNTIME_WORKER")
+            and settings.console_runtime_worker_enabled
+        ):
+            logger.info("Startup: starting console runtime worker")
+            await console_runtime_worker_service.start()
+            app.state.console_runtime_worker_enabled = True
+        try:
+            await passive_udp_listeners.start()
+            app.state.passive_udp_listeners_enabled = True
+        except Exception:
+            logger.exception("Startup: failed starting passive UDP listeners")
         if not os.environ.get("SKIP_ROUTING_WORKER"):
             logger.info("Startup: starting routing worker")
             task, stop_event = start_routing_worker()
@@ -158,6 +214,16 @@ async def shutdown_event():
         stop_event.set()
     if task:
         task.cancel()
+    if getattr(app.state, "connector_health_enabled", False):
+        await connector_health.stop()
+    if getattr(app.state, "fleet_credit_monitor_enabled", False):
+        await fleet_credit_monitor.stop()
+    if getattr(app.state, "console_audit_monitor_enabled", False):
+        await console_audit_monitor.stop()
+    if getattr(app.state, "console_runtime_worker_enabled", False):
+        await console_runtime_worker_service.stop()
+    if getattr(app.state, "passive_udp_listeners_enabled", False):
+        await passive_udp_listeners.stop()
     logger.info("Shutdown: complete")
 
 

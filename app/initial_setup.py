@@ -2,11 +2,16 @@
 
 from app.core.config import settings
 from app.crud.user import is_admin_user_exists, create_admin_user
-from app.db.session import SessionLocal
+from app.db import session as db_session
+
+# Allow tests to monkeypatch `app.initial_setup.SessionLocal` directly, while
+# defaulting to the application's configured SessionLocal.
+SessionLocal = None
 
 
 def create_initial_admin_user():
-    db = SessionLocal()
+    session_factory = SessionLocal or db_session.SessionLocal
+    db = session_factory()
     if not is_admin_user_exists(db):
         create_admin_user(
             db,

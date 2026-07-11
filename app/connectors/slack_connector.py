@@ -60,11 +60,31 @@ class SlackConnector(BaseConnector):
             return {}
 
         event = payload.get("event", payload)
+        if not isinstance(event, dict):
+            return {}
+
+        event_type = event.get("type") or payload.get("type") or "message"
+        subtype = event.get("subtype")
+        user = event.get("user") or (event.get("bot_profile") or {}).get("id")
+        text = event.get("text") or ""
+        channel = event.get("channel") or self.channel_id
+
+        summary_parts = [event_type]
+        if subtype:
+            summary_parts.append(subtype)
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+
         return {
-            "text": event.get("text", ""),
-            "user": event.get("user"),
-            "channel": event.get("channel", self.channel_id),
+            "event": event_type,
+            "subtype": subtype,
+            "text": text,
+            "user": user,
+            "channel": channel,
             "ts": event.get("ts"),
+            "thread_ts": event.get("thread_ts"),
+            "text_summary": summary,
         }
 
     def send_message(self, message):

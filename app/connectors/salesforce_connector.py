@@ -72,8 +72,31 @@ class SalesforceConnector(BaseConnector):
                 await asyncio.sleep(30)
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
-        await self.send_message(message)
-        return message
+        """Normalize Salesforce records or webhook payloads."""
+        if not isinstance(message, dict):
+            return {"text": str(message)}
+
+        record_id = message.get("Id") or message.get("id")
+        name = message.get("Name") or message.get("name")
+        title = message.get("Title") or message.get("title") or name
+        status = message.get("Status") or message.get("status")
+        description = message.get("Description") or message.get("description") or ""
+
+        summary_parts = ["salesforce"]
+        if title:
+            summary_parts.append(title)
+        if status:
+            summary_parts.append(status)
+        summary = " • ".join(part for part in summary_parts if part)
+
+        return {
+            "record_id": record_id,
+            "title": title,
+            "status": status,
+            "description": description,
+            "text": title or description,
+            "text_summary": summary,
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if the token can access the instance."""

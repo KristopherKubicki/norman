@@ -1,0 +1,12 @@
+[Unit]
+Description=Watch Norman agent console template for changes
+
+[Path]
+PathModified=%h/code/norman/scripts/agent_console_template/agent_console_web.py
+PathModified=%h/code/norman/scripts/agent_console_template/agent_console_launch.sh
+PathModified=%h/code/norman/scripts/agent_console_template/agent_console_supervisor.sh
+PathModified=%h/code/norman/scripts/sync_agent_console_template.py
+Unit=norman-agent-console-sync.service
+
+[Install]
+WantedBy=default.target

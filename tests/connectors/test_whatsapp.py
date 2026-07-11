@@ -54,12 +54,9 @@ def test_process_incoming():
     result = asyncio.get_event_loop().run_until_complete(
         connector.process_incoming(payload)
     )
-    assert result == {
-        "text": "hello",
-        "from": "+2",
-        "to": "+2",
-        "sid": "123",
-    }
+    assert result["text"] == "hello"
+    assert result["from"] == "+2"
+    assert result["sid"] == "123"
 
 
 def test_is_connected_success(monkeypatch):

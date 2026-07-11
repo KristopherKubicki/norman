@@ -79,7 +79,9 @@ class RedisPubSubConnector(BaseConnector):
             pubsub.close()
 
     async def process_incoming(self, message: str) -> str:
-        return message
+        text = message if isinstance(message, str) else str(message)
+        summary = f"redis • {text}" if text else "redis"
+        return {"text": text, "text_summary": summary}
 
     def is_connected(self) -> bool:
         """Return ``True`` if Redis is reachable."""

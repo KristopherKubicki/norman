@@ -82,7 +82,35 @@ class IntercomConnector(BaseConnector):
             await asyncio.sleep(5)
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
-        return message
+        if not isinstance(message, dict):
+            return {"text": str(message)}
+
+        event_type = message.get("topic") or message.get("type") or "intercom"
+        data = message.get("data") or {}
+        item = data.get("item") or data.get("conversation") or {}
+        user = (item.get("user") or {}).get("name") or (item.get("user") or {}).get(
+            "id"
+        )
+        subject = item.get("subject") or item.get("title") or ""
+        body = item.get("body") or item.get("source", {}).get("body") or ""
+        status = item.get("state") or item.get("status")
+
+        summary_parts = ["intercom"]
+        if status:
+            summary_parts.append(status)
+        if subject:
+            summary_parts.append(subject)
+        summary = " • ".join(part for part in summary_parts if part)
+
+        return {
+            "event": event_type,
+            "text": subject or body,
+            "user": user,
+            "conversation_id": item.get("id"),
+            "status": status,
+            "body": body,
+            "text_summary": summary,
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if the API token appears valid."""

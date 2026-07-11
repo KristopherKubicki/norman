@@ -40,8 +40,25 @@ class WeChatConnector(BaseConnector):
         return None
 
     async def process_incoming(self, message):
-        """Return the incoming ``message`` payload."""
-        return message
+        """Normalize incoming WeChat payloads."""
+        if not isinstance(message, dict):
+            return {"text": str(message)}
+        text = message.get("Content") or message.get("content") or ""
+        sender = message.get("FromUserName") or message.get("from")
+        recipient = message.get("ToUserName") or message.get("to")
+        msg_type = message.get("MsgType") or message.get("type")
+        summary_parts = ["wechat"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {
+            "text": text,
+            "sender": sender,
+            "recipient": recipient,
+            "msg_type": msg_type,
+            "timestamp": message.get("CreateTime"),
+            "text_summary": summary,
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if the app credentials can get a token."""

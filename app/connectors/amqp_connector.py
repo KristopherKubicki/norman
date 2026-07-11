@@ -82,7 +82,9 @@ class AMQPConnector(BaseConnector):
                 self._channel.stop_consuming()
 
     async def process_incoming(self, message: str) -> str:
-        return message
+        text = message if isinstance(message, str) else str(message)
+        summary = f"amqp • {text}" if text else "amqp"
+        return {"text": text, "text_summary": summary}
 
     def is_connected(self) -> bool:
         """Return ``True`` if the client library is available."""

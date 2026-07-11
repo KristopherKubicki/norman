@@ -58,9 +58,20 @@ class RESTCallbackConnector(BaseConnector):
                 await asyncio.sleep(30)
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
-        """Forward an incoming message to the callback URL."""
-        await self.send_message(message)
-        return message
+        """Normalize an incoming message payload."""
+        if not isinstance(message, dict):
+            text = str(message)
+            summary = f"rest_callback • {text}" if text else "rest_callback"
+            return {"text": text, "text_summary": summary}
+        text = message.get("text") or message.get("message") or ""
+        summary_parts = ["rest_callback"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {
+            "text": text,
+            "text_summary": summary,
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if the callback URL is reachable."""

@@ -1,0 +1,7 @@
+[Unit]
+Description=Sync Norman agent console template
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/code/norman
+ExecStart=/usr/bin/flock -n %t/norman-agent-console-sync.lock /usr/bin/python3 %h/code/norman/scripts/sync_agent_console_template.py

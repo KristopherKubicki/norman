@@ -5,45 +5,71 @@
 {% endblock %}
 
 {% block content %}
-<h1>Filters</h1>
-
-<div id="filters-status" class="alert alert-info d-none" role="alert"></div>
-
-<div class="row g-4">
-  <div class="col-lg-8">
-    <div class="card p-3 mb-3">
-      <div class="d-flex align-items-center justify-content-between mb-2">
-        <h2 class="h5 mb-0">Filters</h2>
-        <span class="badge bg-light text-dark" id="filters-count">0</span>
-      </div>
-      <div class="search-container">
-        <input type="text" placeholder="Search filters..." class="form-control search-input">
-      </div>
-      <div class="filters-container list-group">
-        <!-- Filters will be dynamically added here -->
-      </div>
+<div class="filters-page subpage-shell">
+  <div class="page-header subpage-header d-flex align-items-center justify-content-between mb-2">
+    <div>
+      <div class="subpage-eyebrow">Pipeline Deck</div>
+      <div class="subpage-title">Filters</div>
+      <div class="subpage-subtitle">Shape what matters before it reaches actions.</div>
+    </div>
+    <div class="subpage-actions d-flex gap-2 flex-wrap">
+      <a class="btn btn-sm btn-outline-secondary" href="/bot/norman/">Norman</a>
+      <a class="btn btn-sm btn-outline-secondary" href="/dashboard.html?view=switchboard">Switchboard</a>
+      <a class="btn btn-sm btn-outline-secondary" href="/actions.html">Actions</a>
     </div>
   </div>
+  <div class="filters-mobile-nav d-lg-none" role="tablist" aria-label="Filters view">
+    <button type="button" class="btn btn-sm btn-outline-secondary is-active" data-filters-pane="list">Filters</button>
+    <button type="button" class="btn btn-sm btn-outline-secondary" data-filters-pane="setup">Add</button>
+  </div>
 
-  <div class="col-lg-4">
-    <form id="add-filter-form" class="card card-body">
-      <h2 class="h5">Add Filter</h2>
-      <div class="mb-3">
-        <label for="filter-channel" class="form-label">Channel</label>
-        <select id="filter-channel" class="form-select">
-          <option value="" selected disabled>Loading channels...</option>
-        </select>
+  <div id="filters-status" class="alert alert-info d-none" role="alert"></div>
+
+  <div class="row g-4">
+    <div class="col-lg-8 filters-col filters-col--list" id="filters-pane-list">
+      <div class="card p-3 mb-3">
+        <div class="d-flex align-items-center justify-content-between mb-2">
+          <div class="section-title">Filters</div>
+          <span class="badge bg-light text-dark" id="filters-count">0</span>
+        </div>
+        <div class="search-container">
+          <input type="text" placeholder="Search filters..." class="form-control search-input" id="filterSearch">
+        </div>
+        <div class="filters-container list-group">
+          <!-- Filters will be dynamically added here -->
+        </div>
       </div>
-      <div class="mb-3">
-        <label for="filter-regex" class="form-label">Regex</label>
-        <input type="text" id="filter-regex" class="form-control" required />
+    </div>
+
+    <div class="col-lg-4 filters-col filters-col--sidebar" id="filters-pane-setup">
+      <div class="card card-body">
+        <div class="collapsible-header d-flex align-items-center justify-content-between mb-2" role="button" data-bs-toggle="collapse" data-bs-target="#filters-add-panel" aria-expanded="false" aria-controls="filters-add-panel">
+          <div class="section-title">Add Filter</div>
+          <span class="small text-muted">Tap to expand</span>
+        </div>
+        <div class="collapse" id="filters-add-panel">
+          <form id="add-filter-form">
+            <div class="mb-3">
+              <label for="filter-channel" class="form-label">Channel</label>
+              <select id="filter-channel" class="form-select">
+                <option value="" selected disabled>Loading channels...</option>
+              </select>
+            </div>
+            <div class="mb-3">
+              <label for="filter-regex" class="form-label">Regex</label>
+              <input type="text" id="filter-regex" class="form-control" required />
+            </div>
+            <div class="mb-3">
+              <label for="filter-description" class="form-label">Description</label>
+              <input type="text" id="filter-description" class="form-control" />
+            </div>
+            <div class="mobile-form-actions">
+              <button type="submit" class="btn btn-primary">Create Filter</button>
+            </div>
+          </form>
+        </div>
       </div>
-      <div class="mb-3">
-        <label for="filter-description" class="form-label">Description</label>
-        <input type="text" id="filter-description" class="form-control" />
-      </div>
-      <button type="submit" class="btn btn-primary">Create Filter</button>
-    </form>
+    </div>
   </div>
 </div>
 <script src="{{ url_for('static', path='js/filters.js') }}" defer></script>

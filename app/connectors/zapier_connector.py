@@ -32,8 +32,19 @@ class ZapierConnector(BaseConnector):
         return None
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
-        await self.send_message(message)
-        return message
+        if not isinstance(message, dict):
+            text = str(message)
+            summary = f"zapier • {text}" if text else "zapier"
+            return {"text": text, "text_summary": summary}
+        text = message.get("text") or message.get("message") or ""
+        summary_parts = ["zapier"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {
+            "text": text,
+            "text_summary": summary,
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if the webhook URL appears reachable."""

@@ -55,17 +55,10 @@ def test_send_message_error(monkeypatch):
 
 
 def test_process_incoming(monkeypatch):
-    called = {}
-
-    async def fake_send(message):
-        called["msg"] = message
-        return "ok"
-
     connector = MCPConnector("http://api", "KEY")
-    monkeypatch.setattr(connector, "send_message", fake_send)
     msg = {"foo": "bar"}
     result = asyncio.get_event_loop().run_until_complete(
         connector.process_incoming(msg)
     )
-    assert result == msg
-    assert called["msg"] == msg
+    assert result["text"] == ""
+    assert result["text_summary"] == "mcp"

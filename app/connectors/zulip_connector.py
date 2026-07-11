@@ -53,7 +53,28 @@ class ZulipConnector(BaseConnector):
         return None
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
-        return message
+        if not isinstance(message, dict):
+            return {"text": str(message)}
+        text = message.get("content") or message.get("message") or ""
+        sender = message.get("sender_email") or message.get("sender_full_name")
+        stream = message.get("display_recipient") or message.get("stream")
+        topic = message.get("subject")
+        summary_parts = ["zulip"]
+        if stream:
+            summary_parts.append(str(stream))
+        if topic:
+            summary_parts.append(str(topic))
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {
+            "text": text,
+            "sender": sender,
+            "stream": stream,
+            "topic": topic,
+            "message_id": message.get("id"),
+            "text_summary": summary,
+        }
 
     def is_connected(self) -> bool:
         url = f"{self.site_url}/api/v1/server_settings"

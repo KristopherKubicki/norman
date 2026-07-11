@@ -74,7 +74,16 @@ class CoAPOSCOREConnector(BaseConnector):
 
     async def process_incoming(self, message: Any) -> Any:
         # Placeholder for processing inbound CoAP messages
-        return message
+        if not isinstance(message, dict):
+            text = str(message)
+            summary = f"coap • {text}" if text else "coap"
+            return {"text": text, "text_summary": summary}
+        text = message.get("text") or message.get("message") or ""
+        summary_parts = ["coap"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {"text": text, "text_summary": summary}
 
     def is_connected(self) -> bool:
         """Return ``True`` if the connector is configured."""

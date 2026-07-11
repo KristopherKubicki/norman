@@ -43,8 +43,23 @@ class MattermostConnector(BaseConnector):
         return None
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
-        """Return the incoming ``message`` payload."""
-        return message
+        """Normalize Mattermost webhook payloads."""
+        if not isinstance(message, dict):
+            return {"text": str(message)}
+        text = message.get("text") or message.get("message") or ""
+        user = message.get("user_name") or message.get("user_id")
+        channel = message.get("channel_id") or message.get("channel_name")
+        summary_parts = ["mattermost"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {
+            "text": text,
+            "user": user,
+            "channel": channel,
+            "team": message.get("team_id") or message.get("team_domain"),
+            "text_summary": summary,
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if the token appears valid."""

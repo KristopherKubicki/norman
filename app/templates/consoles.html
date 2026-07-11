@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="consoles-page subpage-shell">
+  <div class="page-header subpage-header d-flex align-items-center justify-content-between mb-2 flex-wrap gap-2">
+    <div>
+      <div class="subpage-title">Tmux Inspector (Advanced)</div>
+      <div class="subpage-subtitle">Power tools for tmux debugging. Daily control lives in Editor.</div>
+    </div>
+    <div class="d-flex gap-2 align-items-center flex-wrap">
+      <a class="btn btn-outline-secondary btn-sm" href="/editor.html?pane=consoles">Back to Editor</a>
+      <div class="d-flex align-items-center gap-2 flex-wrap">
+        <label class="small text-muted mb-0" for="consoles-socket-select">Socket</label>
+        <select class="form-select form-select-sm consoles-socket-select" id="consoles-socket-select"></select>
+        <input type="text" class="form-control form-control-sm consoles-socket-custom d-none" id="consoles-socket-custom" placeholder="/tmp/tmux-1000/default">
+        <button type="button" class="btn btn-outline-secondary btn-sm" id="consoles-socket-save">Save</button>
+      </div>
+      <button type="button" class="btn btn-outline-secondary btn-sm" id="consoles-refresh">Refresh</button>
+    </div>
+  </div>
+  <div class="consoles-mobile-nav d-lg-none" role="tablist" aria-label="Consoles view">
+    <button type="button" class="btn btn-sm btn-outline-secondary is-active" data-consoles-pane="viewer">Live</button>
+    <button type="button" class="btn btn-sm btn-outline-secondary" data-consoles-pane="panes">Panes</button>
+    <button type="button" class="btn btn-sm btn-outline-secondary" data-consoles-pane="runtime">Runtime</button>
+  </div>
+
+  <div class="row g-3 consoles-layout">
+    <div class="col-lg-3 consoles-col consoles-col--sidebar" id="consoles-pane-sidebar">
+      <div class="card p-3 consoles-sidebar">
+        <div class="d-flex align-items-center justify-content-between mb-2">
+          <div class="section-title">Panes</div>
+          <span class="badge bg-light text-dark" id="consoles-count">0</span>
+        </div>
+        <div class="d-flex align-items-center justify-content-between mb-2">
+          <div class="small text-muted">Favorites</div>
+          <button type="button" class="btn btn-outline-secondary btn-sm" id="consoles-favorites-refresh">Sync</button>
+        </div>
+        <div class="list-group menu-list mb-2" id="consoles-favorites-list" role="listbox" aria-label="saved console targets"></div>
+        <input type="text" placeholder="Search panes..." class="form-control form-control-sm mb-2" id="consoles-search">
+        <div class="list-group menu-list" id="consoles-pane-list" role="listbox" aria-label="tmux panes"></div>
+      </div>
+    </div>
+
+    <div class="col-lg-6 d-flex flex-column consoles-col consoles-col--viewer" id="consoles-pane-viewer">
+      <div class="card p-3 flex-grow-1 consoles-viewer d-flex flex-column">
+        <div class="d-flex align-items-center justify-content-between mb-2 flex-wrap gap-2">
+          <div>
+            <div class="small text-muted">Selected pane</div>
+            <div class="fw-semibold" id="consoles-selected">None</div>
+            <div class="text-muted small" id="consoles-selected-meta">Pick a pane to view output.</div>
+          </div>
+          <div class="d-flex gap-2 align-items-center flex-wrap">
+            <label class="small text-muted mb-0" for="consoles-lines">Lines</label>
+            <select class="form-select form-select-sm" id="consoles-lines" style="width: 110px;">
+              <option value="100">100</option>
+              <option value="200" selected>200</option>
+              <option value="400">400</option>
+              <option value="800">800</option>
+              <option value="1200">1200</option>
+            </select>
+            <div class="form-check form-switch m-0">
+              <input class="form-check-input" type="checkbox" id="consoles-follow">
+              <label class="form-check-label small text-muted" for="consoles-follow">Follow</label>
+            </div>
+            <button type="button" class="btn btn-primary btn-sm" id="consoles-capture" disabled>Capture</button>
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="consoles-favorite-save" disabled>Save</button>
+          </div>
+        </div>
+        <div id="consoles-status" class="alert alert-info d-none" role="alert"></div>
+        <pre class="console-output flex-grow-1" id="consoles-output" aria-live="polite"></pre>
+      </div>
+    </div>
+
+    <div class="col-lg-3 consoles-col consoles-col--runtime" id="consoles-pane-runtime">
+      <div class="card p-3 consoles-runtime">
+        <div class="d-flex align-items-center justify-content-between gap-2 mb-2">
+          <div class="section-title">Runtime</div>
+          <span class="badge bg-secondary" id="consoles-runtime-status-badge">Unknown</span>
+        </div>
+        <div class="consoles-runtime-metrics mb-2" id="consoles-runtime-metrics" aria-live="polite"></div>
+        <div class="d-flex gap-2 flex-wrap mb-2">
+          <button type="button" class="btn btn-outline-secondary btn-sm" id="consoles-runtime-refresh">Refresh</button>
+          <button type="button" class="btn btn-outline-primary btn-sm" id="consoles-runtime-worker-start">Dry-run worker</button>
+          <button type="button" class="btn btn-outline-secondary btn-sm" id="consoles-runtime-worker-stop">Stop</button>
+        </div>
+        <div id="consoles-runtime-status" class="alert alert-info d-none" role="alert"></div>
+
+        <div class="d-flex align-items-center justify-content-between mt-2 mb-1">
+          <div class="small text-muted">Recent jobs</div>
+          <span class="badge bg-light text-dark" id="consoles-runtime-job-count">0</span>
+        </div>
+        <div class="list-group menu-list consoles-runtime-jobs mb-2" id="consoles-runtime-jobs" role="listbox" aria-label="runtime jobs"></div>
+
+        <div class="consoles-runtime-selected mb-2">
+          <div class="small text-muted">Selected job</div>
+          <div class="fw-semibold" id="consoles-runtime-selected">None</div>
+          <div class="text-muted small" id="consoles-runtime-selected-meta">Pick a runtime job to inspect events.</div>
+        </div>
+        <div class="d-flex gap-2 flex-wrap mb-2">
+          <button type="button" class="btn btn-primary btn-sm" id="consoles-runtime-run-dry" disabled>Run dry goal</button>
+          <button type="button" class="btn btn-outline-danger btn-sm" id="consoles-runtime-run-live" disabled>Approve goal</button>
+          <button type="button" class="btn btn-outline-secondary btn-sm" id="consoles-runtime-reject" disabled>Reject hold</button>
+        </div>
+        <input type="text" class="form-control form-control-sm mb-2" id="consoles-runtime-confirm" placeholder="Type ENABLE LIVE RUNTIME for live approval">
+        <div class="consoles-runtime-timeline" id="consoles-runtime-timeline" aria-live="polite"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/static/js/consoles.js" defer></script>
+{% endblock %}

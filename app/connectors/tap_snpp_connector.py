@@ -71,8 +71,16 @@ class TAPSNPPConnector(BaseConnector):
 
     async def process_incoming(self, message: Any) -> Any:
         """Return the incoming ``message`` payload."""
-
-        return message
+        if not isinstance(message, dict):
+            text = str(message)
+            summary = f"tap_snpp • {text}" if text else "tap_snpp"
+            return {"text": text, "text_summary": summary}
+        text = message.get("text") or message.get("message") or ""
+        summary_parts = ["tap_snpp"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {"text": text, "text_summary": summary}
 
     def is_connected(self) -> bool:
         return self._writer is not None and not self._writer.is_closing()

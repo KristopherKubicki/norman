@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app import crud
 from app.schemas.user import UserCreate, UserUpdate, User
 from app.api.deps import get_db
+from app.api.deps import get_current_user
 
 router = APIRouter()
 
@@ -37,6 +38,24 @@ async def get_users(db: Session = Depends(get_db)):
     """
 
     return crud.user.get_users(db)
+
+
+@router.get("/me", response_model=User)
+async def get_me_root(current_user=Depends(get_current_user)):
+    """Return the authenticated user.
+
+    This endpoint intentionally lives at /api/v1/users/me (when mounted) even
+    though legacy routes may also exist under /api/v1/users/users/...
+    """
+
+    return current_user
+
+
+@router.get("/users/me", response_model=User)
+async def get_me(current_user=Depends(get_current_user)):
+    """Return the authenticated user (handy for UI + tests)."""
+
+    return current_user
 
 
 @router.get("/users/{user_id}", response_model=User)

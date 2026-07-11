@@ -75,5 +75,21 @@ class GoogleChatConnector(BaseConnector):
         return None
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
-        """Return the raw ``message`` payload."""
-        return message
+        """Normalize Google Chat webhook payloads."""
+        if not isinstance(message, dict):
+            return {"text": str(message)}
+        msg = message.get("message") or {}
+        text = msg.get("text") or ""
+        sender = (msg.get("sender") or {}).get("name")
+        space = (message.get("space") or {}).get("name")
+        summary_parts = ["google_chat"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {
+            "text": text,
+            "sender": sender,
+            "space": space,
+            "thread": (msg.get("thread") or {}).get("name"),
+            "text_summary": summary,
+        }

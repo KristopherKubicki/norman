@@ -80,8 +80,62 @@ class GitHubConnector(BaseConnector):
             await asyncio.sleep(30)
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
-        await self.send_message(message)
-        return message
+        """Normalize GitHub webhook or API event payloads."""
+        if not isinstance(message, dict):
+            return {"text": str(message)}
+
+        meta = message.get("_meta") or {}
+        headers = meta.get("headers") or {}
+        event_type = headers.get("x-github-event") or message.get("event") or "github"
+        action = message.get("action")
+
+        repo = message.get("repository") or {}
+        sender = message.get("sender") or {}
+        issue = message.get("issue") or {}
+        pr = message.get("pull_request") or {}
+        comment = message.get("comment") or {}
+        release = message.get("release") or {}
+
+        title = (
+            issue.get("title")
+            or pr.get("title")
+            or release.get("name")
+            or message.get("ref")
+            or message.get("head")
+        )
+        body = (
+            comment.get("body")
+            or issue.get("body")
+            or pr.get("body")
+            or release.get("body")
+            or ""
+        )
+        url = (
+            comment.get("html_url")
+            or issue.get("html_url")
+            or pr.get("html_url")
+            or release.get("html_url")
+            or message.get("compare")
+        )
+        user = sender.get("login") or issue.get("user", {}).get("login")
+
+        summary_parts = [event_type]
+        if action:
+            summary_parts.append(action)
+        if title:
+            summary_parts.append(title)
+        summary = " • ".join(part for part in summary_parts if part)
+
+        return {
+            "event": event_type,
+            "action": action,
+            "repository": repo.get("full_name") or repo.get("name"),
+            "user": user,
+            "title": title,
+            "body": body,
+            "url": url,
+            "text": summary,
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if the token can access the GitHub API."""

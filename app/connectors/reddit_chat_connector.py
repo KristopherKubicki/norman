@@ -36,7 +36,20 @@ class RedditChatConnector(BaseConnector):
 
     async def process_incoming(self, message):
         """Return the incoming ``message`` payload."""
-        return message
+        if not isinstance(message, dict):
+            return {"text": str(message)}
+        text = message.get("text") or message.get("message") or ""
+        sender = message.get("author") or message.get("sender")
+        summary_parts = ["reddit"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {
+            "text": text,
+            "sender": sender,
+            "conversation_id": message.get("conversation_id"),
+            "text_summary": summary,
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if credentials can obtain a token."""

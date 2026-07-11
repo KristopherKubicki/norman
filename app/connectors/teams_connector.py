@@ -85,8 +85,32 @@ class TeamsConnector(BaseConnector):
         return None
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
-        """Return the raw ``message`` payload."""
-        return message
+        """Normalize Teams webhook payloads."""
+        if not isinstance(message, dict):
+            return {"text": str(message)}
+
+        text = message.get("text") or ""
+        from_user = (message.get("from") or {}).get("name") or (
+            message.get("from") or {}
+        ).get("id")
+        conversation = message.get("conversation") or {}
+        channel = conversation.get("id")
+        event_type = message.get("type") or "message"
+
+        summary_parts = ["teams", event_type]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+
+        return {
+            "event": event_type,
+            "text": text,
+            "user": from_user,
+            "channel": channel,
+            "service_url": message.get("serviceUrl"),
+            "conversation": conversation,
+            "text_summary": summary,
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if the bot endpoint is reachable."""

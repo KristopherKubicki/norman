@@ -57,8 +57,46 @@ class GitLabConnector(BaseConnector):
         return None
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
-        await self.send_message(message)
-        return message
+        """Normalize GitLab webhook payloads."""
+        if not isinstance(message, dict):
+            return {"text": str(message)}
+
+        meta = message.get("_meta") or {}
+        headers = meta.get("headers") or {}
+        event_type = (
+            headers.get("x-gitlab-event")
+            or message.get("event_type")
+            or message.get("object_kind")
+            or "gitlab"
+        )
+        user = (message.get("user") or {}).get("username") or message.get(
+            "user_username"
+        )
+        project = message.get("project") or {}
+        attrs = message.get("object_attributes") or {}
+        title = (
+            attrs.get("title")
+            or message.get("title")
+            or attrs.get("message")
+            or attrs.get("name")
+        )
+        url = attrs.get("url") or attrs.get("target_url") or attrs.get("noteable_url")
+        body = attrs.get("description") or attrs.get("note") or ""
+
+        summary_parts = [event_type]
+        if title:
+            summary_parts.append(title)
+        summary = " • ".join(part for part in summary_parts if part)
+
+        return {
+            "event": event_type,
+            "user": user,
+            "project": project.get("path_with_namespace") or project.get("name"),
+            "title": title,
+            "body": body,
+            "url": url,
+            "text": summary,
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if the token can access the GitLab API."""

@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>org.lollie.norllama-transcribe</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/Resources/Python.app/Contents/MacOS/Python</string>
+    <string>/Users/k/norllama/norllama_transcribe_service.py</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/k/norllama</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>NORLLAMA_TRANSCRIBE_BIND</key>
+    <string>127.0.0.1</string>
+    <key>NORLLAMA_TRANSCRIBE_PORT</key>
+    <string>8097</string>
+    <key>NORLLAMA_TRANSCRIBE_MODEL</key>
+    <string>faster-whisper:base</string>
+    <key>NORLLAMA_TRANSCRIBE_DEVICE</key>
+    <string>cpu</string>
+    <key>NORLLAMA_TRANSCRIBE_COMPUTE_TYPE</key>
+    <string>int8</string>
+    <key>NORLLAMA_TRANSCRIBE_API_KEY_FILE</key>
+    <string>/Users/k/.config/norllama/transcribe/api_key</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>/Users/k/Library/Logs/org.lollie.norllama-transcribe.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/k/Library/Logs/org.lollie.norllama-transcribe.err.log</string>
+</dict>
+</plist>

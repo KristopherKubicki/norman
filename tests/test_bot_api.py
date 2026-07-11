@@ -3,10 +3,16 @@ from sqlalchemy.orm import Session
 from app.models import Interaction, Message
 from app import crud
 from app.schemas.bot import BotCreate
+from app.core.config import settings
+from app.schemas.user import UserCreate
 
 
 def test_create_bot_api(test_app: TestClient, db: Session) -> None:
-    payload = {"name": "test bot", "description": "desc", "gpt_model": "gpt-4.1-mini"}
+    payload = {
+        "name": "test bot",
+        "description": "desc",
+        "gpt_model": settings.openai_default_model,
+    }
     response = test_app.post("/api/bots/create", json=payload)
     assert response.status_code == 200
     data = response.json()
@@ -18,8 +24,20 @@ def test_create_bot_api(test_app: TestClient, db: Session) -> None:
 def test_create_message_endpoint_stores_interaction(
     test_app: TestClient, db: Session, monkeypatch
 ) -> None:
+    user = crud.user.get_user_by_email(db, "test@example.com")
+    if not user:
+        user = crud.user.create_user(
+            db,
+            user=UserCreate(
+                email="test@example.com", username="test_user", password="pass123"
+            ),
+        )
     bot = crud.create_bot(
-        db, BotCreate(name="bot", description="desc", gpt_model="gpt-4.1-mini")
+        db,
+        BotCreate(
+            name="bot", description="desc", gpt_model=settings.openai_default_model
+        ),
+        user_id=user.id,
     )
 
     async def dummy_create_chat_interaction(*args, **kwargs):

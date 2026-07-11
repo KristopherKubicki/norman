@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="row g-4">
+  <div class="col-lg-5">
+    <h1 class="mb-3">Quickstart</h1>
+    <p class="text-muted">
+      Create a bot and send a test message in one flow. This verifies login,
+      bot creation, and responses.
+    </p>
+
+    <div class="card p-3 mb-3">
+      <h5 class="mb-2">1) Create a bot</h5>
+      <form id="quickstart-bot-form">
+        <div class="mb-3">
+          <label for="quickstart-bot-name" class="form-label">Bot name</label>
+          <input id="quickstart-bot-name" class="form-control" required />
+        </div>
+        <div class="mb-3">
+          <label for="quickstart-bot-description" class="form-label">Description</label>
+          <input id="quickstart-bot-description" class="form-control" />
+        </div>
+        <button type="submit" class="btn btn-primary">Create bot</button>
+      </form>
+      <div class="mt-3">
+        <div class="fw-semibold">Created bot</div>
+        <div id="quickstart-bot-summary" class="text-muted">None yet</div>
+      </div>
+    </div>
+
+    <div class="card p-3">
+      <h5 class="mb-2">2) Send a message</h5>
+      <form id="quickstart-message-form">
+        <div class="mb-3">
+          <label for="quickstart-message-text" class="form-label">Message</label>
+          <textarea id="quickstart-message-text" class="form-control" rows="3" placeholder="Ask your bot something..." required></textarea>
+        </div>
+        <button id="quickstart-send" type="submit" class="btn btn-success" disabled>Send</button>
+      </form>
+      <div id="quickstart-message-status" class="small text-muted mt-2"></div>
+    </div>
+  </div>
+
+  <div class="col-lg-7">
+    <div class="card p-3 h-100">
+      <div class="d-flex justify-content-between align-items-center mb-2">
+        <h5 class="mb-0">Response</h5>
+        <span id="quickstart-model" class="badge bg-secondary"></span>
+      </div>
+      <div id="quickstart-response" class="border rounded p-3 bg-light" style="min-height: 280px;">
+        Send a message to see a response here.
+      </div>
+      <div id="quickstart-error" class="text-danger mt-2"></div>
+    </div>
+  </div>
+</div>
+
+<script src="/static/js/quickstart.js" defer></script>
+{% endblock %}

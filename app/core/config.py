@@ -7,6 +7,24 @@ import logging
 class Settings(BaseSettings):
     secret_key: str
     app_name: str
+    ui_theme: str = "default"
+    ui_available_themes: List[str] = [
+        "default",
+        "fluxbox",
+        "classic",
+        "graphite",
+        "terminal",
+        "colorblind",
+        "oceanic",
+        "sunset",
+        "mono",
+        "forest",
+        "neon",
+    ]
+    # Optional UI customization. These are stored as web paths under /static/...
+    ui_background_image_url: str = ""
+    ui_titlebar_image_url: str = ""
+    ui_ambient_backgrounds: bool = False
     debug: bool
     log_level: str = "INFO"
     api_version: str
@@ -199,9 +217,73 @@ class Settings(BaseSettings):
     connectors: List[Dict[str, Any]] = []
     broadcast_connectors: str = ""
     openai_api_key: Optional[str]
-    openai_default_model: str = "gpt-5-mini"
-    openai_available_models: List[str] = ["gpt-5-mini", "o3"]
+    openai_default_model: str = "gpt-5.5"
+    openai_available_models: List[str] = ["gpt-5.5", "gpt-5-mini", "o3"]
     openai_max_tokens: int = 150
+    llm_primary_provider: str = "openai"
+    llm_primary_api_key: str = ""
+    llm_primary_base_url: str = ""
+    llm_primary_model: str = ""
+    llm_backup_provider: str = "disabled"
+    llm_backup_api_key: str = ""
+    llm_backup_base_url: str = ""
+    llm_backup_model: str = ""
+    llm_offline_provider: str = "openai_compatible"
+    llm_offline_api_key: str = "ollama"
+    llm_offline_base_url: str = "https://llm.home.arpa/v1"
+    llm_offline_model: str = "qwen3.6:27b"
+    llm_provider_timeout_seconds: int = 45
+    console_runtime_norllama_timeout_seconds: int = 180
+    llm_mesh_cache_ttl_seconds: int = 15
+    llm_mesh_cache_stale_seconds: int = 300
+    llm_mesh_workers: List[Dict[str, Any]] = [
+        {
+            "id": "mac-mini-133",
+            "name": "Mac mini fallback",
+            "role": "fallback",
+            "base_url": "http://192.168.2.133:18151",
+            "memory_gb": 16,
+            "priority": 1,
+        },
+        {
+            "id": "spark-150",
+            "name": "Production spark 150",
+            "role": "production",
+            "base_url": "http://192.168.2.150:18151",
+            "memory_gb": 128,
+            "priority": 2,
+        },
+        {
+            "id": "spark-151",
+            "name": "Production spark 151",
+            "role": "production",
+            "base_url": "http://192.168.2.151:18151",
+            "memory_gb": 128,
+            "priority": 3,
+        },
+    ]
+    llm_benchmark_packet_path: str = "/var/lib/norman/norllama/benchmark_packet.json"
+    llm_benchmark_packet_url: str = ""
+    llm_warm_policy_enabled: bool = True
+    llm_warm_policy_prefetch_limit: int = 3
+    llm_warm_policy_prefetch_timeout_seconds: int = 30
+    llm_warm_policy_min_benchmark_score: float = 0.6
+    llm_warm_policy_min_coverage_ratio: float = 0.5
+    llm_warm_policy_fallback_prefetch: bool = False
+    tui_acceptance_report_glob: str = "tmp/tuiacc-*.json"
+    tui_acceptance_report_max_age_seconds: int = 86400
+    tui_acceptance_required_targets: List[str] = [
+        "norman",
+        "housebot",
+        "uplink",
+        "networking",
+        "scout",
+        "cloudagent",
+    ]
+    llm_ping_targets: List[Dict[str, Any]] = []
+    planner_cloud_gate_mode: str = "enforce"
+    mcp_api_url: str = ""
+    mcp_api_key: str = ""
     google_client_id: str = ""
     google_client_secret: str = ""
     microsoft_client_id: str = ""
@@ -214,8 +296,8 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str
-    database_pool_size: int = 5
-    database_max_overflow: int = 10
+    database_pool_size: int = 20
+    database_max_overflow: int = 40
     database_pool_timeout: int = 30
     database_pool_recycle: int = 3600
 
@@ -224,6 +306,56 @@ class Settings(BaseSettings):
     port: int
     rate_limit_requests: int = 60
     rate_limit_window_seconds: int = 60
+
+    # Notifications
+    notify_email_enabled: bool = False
+    notify_email_to: str = ""
+    notify_webhook_enabled: bool = False
+    notify_webhook_url: str = ""
+    notify_digest_frequency: str = "daily"
+
+    # Connector defaults
+    connector_default_language: str = "en"
+    connector_default_channel: str = ""
+    connector_retry_attempts: int = 3
+    connector_timeout_seconds: int = 10
+
+    # Safety / execution controls
+    safety_execution_enabled: bool = True
+    safety_read_only: bool = False
+    safety_default_tmux_mode: str = "chat"
+    safety_tmux_send_timeout_seconds: int = 8
+    safety_kill_switch_level: int = 0
+    safety_provenance_enforce: bool = True
+    safety_shadow_rules_default: bool = True
+    safety_tmux_watchdog_autolock: bool = False
+    safety_budget_default_per_minute: int = 0
+    safety_budget_default_per_hour: int = 0
+    safety_budget_autolock: bool = True
+
+    # Routing controls
+    routing_ingest_only: bool = False
+
+    # Console runtime service integration
+    console_runtime_service_token: str = ""
+    console_runtime_service_user_email: str = ""
+    console_runtime_worker_enabled: bool = False
+    console_runtime_worker_dry_run: bool = True
+    console_runtime_worker_live_execution_enabled: bool = False
+    console_runtime_worker_continuous_enabled: bool = False
+    console_runtime_worker_max_steps: int = 4
+    console_runtime_worker_max_runtime_seconds: int = 1800
+    console_runtime_worker_goal_phase_sequence: list[str] = ["plan", "work", "verify"]
+    console_runtime_worker_tick_seconds: float = 5.0
+    console_runtime_worker_batch_size: int = 1
+    console_runtime_worker_id: str = "runtime-background-worker"
+
+    # Norman Keys service integration
+    norman_keys_service_token: str = ""
+    norman_keys_service_user_email: str = ""
+
+    # Performance
+    cache_ttl_seconds: int = 60
 
     @validator("secret_key", pre=True)
     def validate_secret_key(cls, v):
@@ -300,6 +432,18 @@ class Settings(BaseSettings):
             if level not in logging._nameToLevel:
                 raise ValueError(f"Invalid log level: {v}")
             return level
+        return v
+
+    @validator("llm_ping_targets", pre=True)
+    def validate_llm_ping_targets(cls, v):
+        if v is None:
+            return []
+        return v
+
+    @validator("llm_mesh_workers", pre=True)
+    def validate_llm_mesh_workers(cls, v):
+        if v is None:
+            return []
         return v
 
     class Config:

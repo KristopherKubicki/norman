@@ -86,8 +86,31 @@ class MatrixConnector(BaseConnector):
                 await asyncio.sleep(1)
 
     async def process_incoming(self, message):
-        """Return the incoming ``message`` payload."""
-        return message
+        """Normalize incoming Matrix messages."""
+        if not isinstance(message, dict):
+            text = str(message)
+            return {
+                "text": text,
+                "text_summary": f"matrix • {text}" if text else "matrix",
+            }
+
+        text = message.get("body") or message.get("text") or ""
+        sender = message.get("sender") or message.get("user")
+        event_id = message.get("event_id")
+        room_id = message.get("room_id") or self.room_id
+
+        summary_parts = ["matrix"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+
+        return {
+            "text": text,
+            "sender": sender,
+            "event_id": event_id,
+            "room_id": room_id,
+            "text_summary": summary,
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if the access token is valid."""

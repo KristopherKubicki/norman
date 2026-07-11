@@ -21,7 +21,7 @@ def test_login_sets_cookie(test_app: TestClient, db: Session) -> None:
     resp = test_app.post(
         "/login",
         data={"username": user.email, "password": password},
-        allow_redirects=False,
+        follow_redirects=False,
     )
     assert resp.status_code == 303
     token = resp.cookies.get("access_token")
@@ -35,10 +35,12 @@ def test_login_allows_access_to_home(test_app: TestClient, db: Session) -> None:
     resp = test_app.post(
         "/login",
         data={"username": user.email, "password": password},
-        allow_redirects=False,
+        follow_redirects=False,
     )
     assert resp.status_code == 303
-    cookies = resp.cookies
     token = resp.cookies.get("access_token").strip('"')
-    resp2 = test_app.get("/", headers={"Authorization": f"Bearer {token}"})
-    assert resp2.status_code == 200
+    resp2 = test_app.get(
+        "/", headers={"Authorization": f"Bearer {token}"}, follow_redirects=False
+    )
+    assert resp2.status_code == 307
+    assert resp2.headers["location"] == "/bot/norman/"

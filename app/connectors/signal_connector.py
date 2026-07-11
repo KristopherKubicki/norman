@@ -38,8 +38,23 @@ class SignalConnector(BaseConnector):
         return None
 
     async def process_incoming(self, message):
-        """Return the incoming ``message`` payload."""
-        return message
+        """Normalize incoming Signal payloads."""
+        if not isinstance(message, dict):
+            return {"text": str(message)}
+        text = message.get("message") or message.get("text") or ""
+        sender = message.get("source") or message.get("from")
+        timestamp = message.get("timestamp")
+        summary_parts = ["signal"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {
+            "text": text,
+            "sender": sender,
+            "timestamp": timestamp,
+            "attachments": message.get("attachments"),
+            "text_summary": summary,
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if the service URL is reachable."""

@@ -40,7 +40,20 @@ class IMessageConnector(BaseConnector):
 
     async def process_incoming(self, message):
         """Return the incoming ``message`` payload."""
-        return message
+        if not isinstance(message, dict):
+            text = str(message)
+            summary = f"imessage • {text}" if text else "imessage"
+            return {"text": text, "text_summary": summary}
+        text = message.get("text") or message.get("message") or ""
+        summary_parts = ["imessage"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {
+            "text": text,
+            "sender": message.get("from") or message.get("sender"),
+            "text_summary": summary,
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if the connector is configured."""

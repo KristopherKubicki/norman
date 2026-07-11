@@ -48,8 +48,13 @@ class RFC5425Connector(BaseConnector):
         """RFC 5425 is typically used for outbound logs only."""
         return None
 
-    async def process_incoming(self, message):
-        return message
+    async def process_incoming(self, message) -> dict:
+        if not isinstance(message, str):
+            text = str(message)
+        else:
+            text = message
+        summary = f"syslog • {text}" if text else "syslog"
+        return {"text": text, "text_summary": summary}
 
     def is_connected(self) -> bool:
         """Return ``True`` if the connector is configured."""

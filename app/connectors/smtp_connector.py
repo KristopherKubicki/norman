@@ -62,15 +62,18 @@ class SMTPConnector(BaseConnector):
         return None
 
     async def process_incoming(self, message):
-        return message
+        if not isinstance(message, dict):
+            text = str(message)
+            summary = f"smtp • {text}" if text else "smtp"
+            return {"text": text, "text_summary": summary}
+        text = message.get("text") or message.get("message") or ""
+        summary_parts = ["smtp"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {"text": text, "text_summary": summary}
 
     def is_connected(self) -> bool:
-        if self.server:
-            return True
-        try:
-            self.connect()
-            return True
-        except Exception:
-            return False
-        finally:
-            self.disconnect()
+        # State-based connectivity: callers can invoke `connect()` (implicitly
+        # via `send_message`) and `disconnect()` to manage lifetime.
+        return self.server is not None

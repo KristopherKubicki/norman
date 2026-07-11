@@ -14,4 +14,5 @@ def test_process_incoming():
     result = asyncio.get_event_loop().run_until_complete(
         connector.process_incoming({"bar": 2})
     )
-    assert result == {"bar": 2}
+    assert result["text"] == ""
+    assert result["text_summary"] == "reddit"

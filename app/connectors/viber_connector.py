@@ -41,7 +41,24 @@ class ViberConnector(BaseConnector):
         return None
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
-        return message
+        if not isinstance(message, dict):
+            return {"text": str(message)}
+        msg = message.get("message") or {}
+        text = msg.get("text") or ""
+        sender = (message.get("sender") or {}).get("id")
+        timestamp = message.get("timestamp")
+        summary_parts = ["viber"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {
+            "text": text,
+            "sender": sender,
+            "timestamp": timestamp,
+            "type": msg.get("type"),
+            "tracking_data": message.get("tracking_data"),
+            "text_summary": summary,
+        }
 
     def is_connected(self) -> bool:
         """Return ``True`` if the auth token is valid."""

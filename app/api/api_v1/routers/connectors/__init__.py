@@ -5,7 +5,9 @@ from .teams import router as teams_router
 from .google_chat import router as google_chat_router
 from .discord import router as discord_router
 from .webhook import router as webhook_router
+from .generic import router as generic_router
 from .whatsapp import router as whatsapp_router
+from .sms import router as sms_router
 from .jira import router as jira_router
 from .facebook import router as facebook_router
 from .instagram import router as instagram_router
@@ -25,7 +27,9 @@ router.include_router(teams_router, prefix="/microsoft_teams", tags=["Microsoft 
 router.include_router(google_chat_router, prefix="/google_chat", tags=["Google Chat"])
 router.include_router(discord_router, prefix="/discord", tags=["Discord"])
 router.include_router(webhook_router, prefix="/webhook", tags=["Webhook"])
+router.include_router(generic_router, tags=["Generic"])
 router.include_router(whatsapp_router, prefix="/whatsapp", tags=["WhatsApp"])
+router.include_router(sms_router, prefix="/sms", tags=["SMS"])
 router.include_router(jira_router, prefix="/jira", tags=["Jira"])
 router.include_router(facebook_router, prefix="/facebook", tags=["Facebook Messenger"])
 router.include_router(instagram_router, prefix="/instagram", tags=["Instagram"])

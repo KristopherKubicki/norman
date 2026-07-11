@@ -72,7 +72,9 @@ class NATSConnector(BaseConnector):
             await asyncio.sleep(3600)
 
     async def process_incoming(self, message: str) -> str:
-        return message
+        text = message if isinstance(message, str) else str(message)
+        summary = f"nats • {text}" if text else "nats"
+        return {"text": text, "text_summary": summary}
 
     def is_connected(self) -> bool:
         """Return ``True`` if the NATS client is available."""

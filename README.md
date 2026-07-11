@@ -99,12 +99,11 @@ chmod +x generate_key.sh
 
 You can also edit `config.yaml` manually to provide your own values. Be sure to add your OpenAI key under `openai_api_key`.
 
-7. Run the application with Uvicorn:
+7. Run the application:
 ```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --compression gzip
+uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
-If `brotli_asgi` is installed and supported by your Uvicorn version,
-replace `gzip` with `brotli` for improved compression.
+Response compression is enabled by middleware (gzip by default; brotli if `brotli_asgi` is installed).
 
 8. Open the API documentation in your browser: [http://localhost:8000/docs](http://localhost:8000/docs)
    A basic health check endpoint is available at [http://localhost:8000/health](http://localhost:8000/health)
@@ -117,6 +116,37 @@ For more information, refer to the [documentation](docs/) and the [contributing 
 
 For detailed information on how to use Norman, see the [Usage](./docs/usage.md) guide.
 Practical walkthroughs and API calls can be found in the [Examples](./docs/examples.md) document.
+
+### Screen Hypervisor (`normanctl`)
+
+Norman includes a screen-backed hypervisor CLI for managing app/runtime sessions
+and their paired Codex agents.
+
+1. Initialize the registry:
+```bash
+python3 scripts/normanctl.py init
+```
+
+2. Start an app + agent pair:
+```bash
+python3 scripts/normanctl.py up earlybird --target both
+```
+
+3. Send text to the agent target (default enter count is 2):
+```bash
+python3 scripts/normanctl.py send earlybird "status?"
+```
+
+4. Pull incremental logs and auto-ack inflight turns:
+```bash
+python3 scripts/normanctl.py pull earlybird --target agent
+```
+
+5. Lock/unlock a target to queue work safely:
+```bash
+python3 scripts/normanctl.py lock earlybird --target agent
+python3 scripts/normanctl.py unlock earlybird --target agent
+```
 
 ## Testing
 
@@ -136,6 +166,11 @@ install the dev dependencies defined in `package.json`:
 npm install
 npm test
 ```
+
+Note: Some test suites mock modules that are not required at runtime. To keep
+the Jest environment self-contained (and resilient to flaky npm installs), we
+map `react-query` to a local stub for tests via `moduleNameMapper` in
+`package.json` (see `frontend/test_stubs/react-query.js`).
 
 For a test coverage report you can additionally run:
 

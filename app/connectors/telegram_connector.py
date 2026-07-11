@@ -71,9 +71,24 @@ class TelegramConnector(BaseConnector):
         return results
 
     def process_incoming(self, payload: Dict[str, Any]) -> Dict[str, str]:
-        message = payload.get("message", {})
-        text = message.get("text", "")
-        return {"text": text, "channel": "Telegram"}
+        message = payload.get("message") or payload.get("edited_message") or {}
+        text = message.get("text") or message.get("caption") or ""
+        sender = (message.get("from") or {}).get("username") or (
+            message.get("from") or {}
+        ).get("id")
+        chat = message.get("chat") or {}
+        summary_parts = ["telegram"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+        return {
+            "text": text,
+            "channel": chat.get("id"),
+            "sender": sender,
+            "message_id": message.get("message_id"),
+            "chat_type": chat.get("type"),
+            "text_summary": summary,
+        }
 
     async def set_webhook(self, webhook_url: str) -> bool:
         url = f"https://api.telegram.org/bot{self.token}/setWebhook"

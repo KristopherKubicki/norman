@@ -87,12 +87,22 @@ class WhatsAppConnector(BaseConnector):
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
         """Normalize the incoming Twilio message payload."""
+        text = message.get("Body") or message.get("body", "")
+        sender = message.get("From") or message.get("from")
+        to = message.get("To") or message.get("to", self.to_number)
+        sid = message.get("MessageSid") or message.get("sid")
+
+        summary_parts = ["whatsapp"]
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
 
         return {
-            "text": message.get("Body") or message.get("body", ""),
-            "from": message.get("From") or message.get("from"),
-            "to": message.get("To") or message.get("to", self.to_number),
-            "sid": message.get("MessageSid") or message.get("sid"),
+            "text": text,
+            "from": sender,
+            "to": to,
+            "sid": sid,
+            "text_summary": summary,
         }
 
     def is_connected(self) -> bool:

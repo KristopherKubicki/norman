@@ -1,0 +1,258 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1580" viewBox="0 0 1800 1580" role="img" aria-labelledby="title desc">
+  <title id="title">Norman local-first runtime and benchmark-governed mesh</title>
+  <desc id="desc">Infographic showing how Norman web TUIs use a local-first runtime kernel, deterministic specialists, the Norllama mesh fleet, Uplink benchmark gates, route receipts, and limited cloud escalation.</desc>
+  <defs>
+    <marker id="arrow-dark" viewBox="0 0 10 10" refX="8.4" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#24313a"/>
+    </marker>
+    <marker id="arrow-warn" viewBox="0 0 10 10" refX="8.4" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#9a4a36"/>
+    </marker>
+    <style>
+      .bg { fill: #f7f6f0; }
+      .title { font: 700 34px "DejaVu Sans", Arial, sans-serif; fill: #20242a; }
+      .subtitle { font: 500 16px "DejaVu Sans", Arial, sans-serif; fill: #586069; }
+      .section-title { font: 700 20px "DejaVu Sans", Arial, sans-serif; fill: #20242a; }
+      .card-title { font: 700 18px "DejaVu Sans", Arial, sans-serif; fill: #20242a; }
+      .label { font: 700 12px "DejaVu Sans", Arial, sans-serif; fill: #30363d; text-transform: uppercase; letter-spacing: .3px; }
+      .text { font: 500 14px "DejaVu Sans", Arial, sans-serif; fill: #3f4650; }
+      .small { font: 500 12px "DejaVu Sans", Arial, sans-serif; fill: #59626c; }
+      .mono { font: 600 13px "DejaVu Sans Mono", Consolas, monospace; fill: #24313a; }
+      .mono-small { font: 600 11px "DejaVu Sans Mono", Consolas, monospace; fill: #24313a; }
+      .panel-runtime { fill: #eaf5ef; stroke: #4f8f73; stroke-width: 2; }
+      .panel-bench { fill: #eef3fb; stroke: #55749d; stroke-width: 2; }
+      .panel-models { fill: #f7efd9; stroke: #b88932; stroke-width: 2; }
+      .panel-proof { fill: #fbefea; stroke: #b56854; stroke-width: 2; }
+      .card { fill: #ffffff; stroke: #34414d; stroke-width: 1.6; }
+      .card-green { fill: #ffffff; stroke: #4f8f73; stroke-width: 1.7; }
+      .card-blue { fill: #ffffff; stroke: #55749d; stroke-width: 1.7; }
+      .card-gold { fill: #ffffff; stroke: #b88932; stroke-width: 1.7; }
+      .card-red { fill: #ffffff; stroke: #b56854; stroke-width: 1.7; }
+      .muted-card { fill: #fbfcfd; stroke: #9aa4af; stroke-width: 1.2; }
+      .flow { fill: none; stroke: #24313a; stroke-width: 2.4; marker-end: url(#arrow-dark); }
+      .flow-thin { fill: none; stroke: #52606d; stroke-width: 1.7; marker-end: url(#arrow-dark); }
+      .cloud-flow { fill: none; stroke: #9a4a36; stroke-width: 2.2; stroke-dasharray: 8 7; marker-end: url(#arrow-warn); }
+      .receipt-flow { fill: none; stroke: #b88932; stroke-width: 2; stroke-dasharray: 6 6; marker-end: url(#arrow-dark); }
+      .pill { fill: #f1f4f6; stroke: #a9b2bd; stroke-width: 1; }
+      .pill-green { fill: #dff0e7; stroke: #4f8f73; stroke-width: 1; }
+      .pill-gold { fill: #f3e5bf; stroke: #b88932; stroke-width: 1; }
+      .pill-red { fill: #f7ddd3; stroke: #b56854; stroke-width: 1; }
+      .hairline { stroke: #c2c8cf; stroke-width: 1; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1800" height="1580"/>
+
+  <text class="title" x="54" y="58">Norman local-first runtime and benchmark-governed Norllama mesh</text>
+  <text class="subtitle" x="56" y="88">The TUIs should finish work locally when possible, prove every route, and send only condensed/high-risk checks to cloud models when policy allows.</text>
+
+  <g id="status-pills">
+    <rect class="pill" x="56" y="110" width="328" height="32" rx="8"/>
+    <text class="mono-small" x="72" y="131">Uplink packet: 2026-07-06T02:07:56Z</text>
+    <rect class="pill-gold" x="398" y="110" width="274" height="32" rx="8"/>
+    <text class="mono-small" x="414" y="131">route posture: fallback_or_cloud_gate</text>
+    <rect class="pill-red" x="686" y="110" width="184" height="32" rx="8"/>
+    <text class="mono-small" x="702" y="131">residency: degraded</text>
+    <rect class="pill" x="884" y="110" width="358" height="32" rx="8"/>
+    <text class="mono-small" x="900" y="131">front door: https://llm.home.arpa</text>
+  </g>
+
+  <rect class="panel-runtime" x="48" y="166" width="1704" height="460" rx="12"/>
+  <text class="section-title" x="74" y="200">1. Runtime flow: TUI request to local mesh to proof ledger</text>
+
+  <g id="web-tui">
+    <rect class="card-green" x="74" y="238" width="250" height="150" rx="8"/>
+    <text class="card-title" x="96" y="270">Web TUIs</text>
+    <text class="text" x="96" y="302">Prompt, files, screenshots</text>
+    <text class="text" x="96" y="326">Goal id and policy mode</text>
+    <text class="text" x="96" y="350">Long-work expectation</text>
+    <rect class="pill-green" x="96" y="363" width="154" height="22" rx="6"/>
+    <text class="mono-small" x="108" y="378">Housebot / Uplink / Ranger</text>
+  </g>
+
+  <g id="kernel">
+    <rect class="card-green" x="384" y="238" width="270" height="150" rx="8"/>
+    <text class="card-title" x="406" y="270">Runtime Kernel</text>
+    <text class="text" x="406" y="302">Plan, gather, act, observe</text>
+    <text class="text" x="406" y="326">Verify, repair, final answer</text>
+    <text class="text" x="406" y="350">No plan-only completion</text>
+    <text class="mono-small" x="406" y="378">db-backed job + event stream</text>
+  </g>
+
+  <g id="experts">
+    <rect class="card-green" x="714" y="238" width="282" height="150" rx="8"/>
+    <text class="card-title" x="736" y="270">Local Expert Cascade</text>
+    <text class="text" x="736" y="302">Risk, difficulty, regret</text>
+    <text class="text" x="736" y="326">Evidence compression</text>
+    <text class="text" x="736" y="350">Non-answer + hallucination gates</text>
+    <text class="mono-small" x="736" y="378">Semgrep CodeQL pytest ruff mypy</text>
+  </g>
+
+  <g id="frontdoor">
+    <rect class="card-green" x="1056" y="238" width="270" height="150" rx="8"/>
+    <text class="card-title" x="1078" y="270">Norllama Front Door</text>
+    <text class="mono" x="1078" y="302">llm.home.arpa</text>
+    <text class="text" x="1078" y="326">One routing surface</text>
+    <text class="text" x="1078" y="350">Inventory + model reality</text>
+    <text class="text" x="1078" y="374">Direct workers only for diagnostics</text>
+  </g>
+
+  <g id="fleet">
+    <rect class="card-green" x="1386" y="238" width="320" height="150" rx="8"/>
+    <text class="card-title" x="1408" y="270">Local Norllama Mesh Fleet</text>
+    <text class="text" x="1408" y="302">Production Sparks + fallback node</text>
+    <text class="text" x="1408" y="326">Warm only if benchmarked and fit</text>
+    <text class="text" x="1408" y="350">Peer routing, failback, cooldowns</text>
+    <text class="mono-small" x="1408" y="378">resident / warm_on_demand / lab</text>
+  </g>
+
+  <path class="flow" d="M 324 313 L 384 313"/>
+  <path class="flow" d="M 654 313 L 714 313"/>
+  <path class="flow" d="M 996 313 L 1056 313"/>
+  <path class="flow" d="M 1326 313 L 1386 313"/>
+
+  <g id="receipt-ledger">
+    <rect class="card-gold" x="230" y="438" width="684" height="118" rx="8"/>
+    <text class="card-title" x="252" y="470">Route receipt and usage ledger</text>
+    <text class="text" x="252" y="501">Every phase records provider, model, fleet path, benchmark id,</text>
+    <text class="text" x="252" y="525">model state, verifier result, output shape, and fallback reason.</text>
+    <text class="text" x="252" y="549">Usage splits local, cloud_proxy, OpenAI, Bedrock, and Perplexity/web.</text>
+  </g>
+
+  <g id="cloud">
+    <rect class="card-red" x="972" y="438" width="352" height="118" rx="8"/>
+    <text class="card-title" x="994" y="470">Cloud LLM Escalation</text>
+    <text class="text" x="994" y="501">Only after local proof is insufficient,</text>
+    <text class="text" x="994" y="525">risk is high, or policy requires final authority.</text>
+    <text class="mono-small" x="994" y="549">OpenAI / Bedrock / Norllama cloud_proxy</text>
+  </g>
+
+  <g id="search">
+    <rect class="card-blue" x="1386" y="438" width="320" height="118" rx="8"/>
+    <text class="card-title" x="1408" y="470">Search and Web Research</text>
+    <text class="text" x="1408" y="501">Perplexity and browser research are</text>
+    <text class="text" x="1408" y="525">accounted separately from cloud LLM reasoning.</text>
+    <text class="mono-small" x="1408" y="549">perplexity_web != cloud_llm</text>
+  </g>
+
+  <path class="receipt-flow" d="M 518 388 L 518 438"/>
+  <path class="receipt-flow" d="M 854 388 L 854 438"/>
+  <path class="receipt-flow" d="M 1192 388 L 1192 438"/>
+  <path class="cloud-flow" d="M 1192 388 C 1210 410 1218 420 1226 438"/>
+  <path class="flow-thin" d="M 1546 388 L 1546 438"/>
+
+  <rect class="panel-bench" x="48" y="658" width="1704" height="430" rx="12"/>
+  <text class="section-title" x="74" y="692">2. Benchmark governance: Uplink evidence decides what may route, warm, or escalate</text>
+
+  <g id="evidence-inputs">
+    <rect class="card-blue" x="74" y="730" width="320" height="238" rx="8"/>
+    <text class="card-title" x="96" y="762">Evidence Inputs</text>
+    <text class="mono-small" x="96" y="792">benchmark_packet.json</text>
+    <text class="text" x="96" y="821">Uplink suite scores and role picks</text>
+    <text class="text" x="96" y="847">Norllama live inventory</text>
+    <text class="text" x="96" y="873">Worker reachability and pressure</text>
+    <text class="text" x="96" y="899">Recent route outcomes</text>
+    <text class="text" x="96" y="925">Usage ledger and verifier events</text>
+    <rect class="pill" x="96" y="940" width="200" height="22" rx="6"/>
+    <text class="mono-small" x="108" y="955">packet status: loaded</text>
+  </g>
+
+  <g id="gates">
+    <rect class="card-gold" x="466" y="730" width="372" height="238" rx="8"/>
+    <text class="card-title" x="488" y="762">Promotion Gates</text>
+    <text class="text" x="488" y="792">accepted_count and coverage ratio</text>
+    <text class="text" x="488" y="818">timeout, empty, progress-only rates</text>
+    <text class="text" x="488" y="844">verifier rejection and precision failures</text>
+    <text class="text" x="488" y="870">cold start and warm latency budgets</text>
+    <text class="text" x="488" y="896">worker memory fit and resident pressure</text>
+    <text class="text" x="488" y="922">model reality: installed, servable, benchmarked, routable</text>
+    <rect class="pill-gold" x="488" y="940" width="256" height="22" rx="6"/>
+    <text class="mono-small" x="500" y="955">default score floor currently 0.6</text>
+  </g>
+
+  <g id="decisions">
+    <rect class="card-blue" x="910" y="730" width="330" height="238" rx="8"/>
+    <text class="card-title" x="932" y="762">Routing Decisions</text>
+    <text class="text" x="932" y="792">resident: loaded at startup</text>
+    <text class="text" x="932" y="818">warm_on_demand: prefetched by task intent</text>
+    <text class="text" x="932" y="844">lab: never used by production default</text>
+    <text class="text" x="932" y="870">blocked: stale, missing, too slow, or unfit</text>
+    <text class="text" x="932" y="896">cooldown after repeated bad outcomes</text>
+    <text class="text" x="932" y="922">cloud gate if local cannot safely finish</text>
+  </g>
+
+  <g id="observed-posture">
+    <rect class="card-red" x="1312" y="730" width="394" height="238" rx="8"/>
+    <text class="card-title" x="1334" y="762">Observed Posture From Warm Policy</text>
+    <text class="text" x="1334" y="792">Current sample is degraded, not fully warm.</text>
+    <text class="text" x="1334" y="818">keep_warm=0, prefetch=0, recommendations=4</text>
+    <text class="text" x="1334" y="844">Some benchmark-backed models are blocked by fit</text>
+    <text class="text" x="1334" y="870">Some are not advertised by live mesh inventory</text>
+    <text class="text" x="1334" y="896">Fallback node should stay tiny/canary only</text>
+    <text class="text" x="1334" y="922">Production Sparks host heavy lanes when healthy</text>
+  </g>
+
+  <path class="flow" d="M 394 849 L 466 849"/>
+  <path class="flow" d="M 838 849 L 910 849"/>
+  <path class="flow" d="M 1240 849 L 1312 849"/>
+
+  <g id="packet-streams">
+    <rect class="muted-card" x="74" y="1000" width="1632" height="58" rx="8"/>
+    <text class="label" x="96" y="1023">Packet stream summary</text>
+    <text class="small" x="96" y="1047">Warm-set scope currently names four local profiles that affect routing: gemma4_local, gemma4_31_local, qwen3coder30_local, and qwen3codernext_local.</text>
+  </g>
+
+  <rect class="panel-models" x="48" y="1120" width="1704" height="344" rx="12"/>
+  <text class="section-title" x="74" y="1154">3. Current benchmark-backed capability map and model residency intent</text>
+
+  <g id="model-table-header">
+    <text class="label" x="82" y="1192">Capability stream</text>
+    <text class="label" x="488" y="1192">Current packet model</text>
+    <text class="label" x="860" y="1192">Benchmark evidence</text>
+    <text class="label" x="1240" y="1192">Runtime rule</text>
+    <line class="hairline" x1="74" y1="1206" x2="1706" y2="1206"/>
+  </g>
+
+  <g id="row1">
+    <text class="text" x="82" y="1236">General chat, workflow, session gap</text>
+    <text class="mono-small" x="488" y="1236">gemma4:26b-a4b-it-q4_K_M</text>
+    <text class="text" x="860" y="1236">benchmark-backed high; workflow 0.9705</text>
+    <text class="text" x="1240" y="1236">local first; verify exact facts and writes</text>
+  </g>
+  <line class="hairline" x1="74" y1="1254" x2="1706" y2="1254"/>
+
+  <g id="row2">
+    <text class="text" x="82" y="1284">Static web extraction, status writeups</text>
+    <text class="mono-small" x="488" y="1284">gemma4:26b-a4b-it-q4_K_M</text>
+    <text class="text" x="860" y="1284">web crawl 0.977; multi-agent 0.8804</text>
+    <text class="text" x="1240" y="1284">bounded local drafts; cloud verifier for final truth</text>
+  </g>
+  <line class="hairline" x1="74" y1="1302" x2="1706" y2="1302"/>
+
+  <g id="row3">
+    <text class="text" x="82" y="1332">Code flow and structured patch drafts</text>
+    <text class="mono-small" x="488" y="1332">qwen3-coder:30b-a3b-q4_K_M</text>
+    <text class="text" x="860" y="1332">score 0.7853; coverage 1.0</text>
+    <text class="text" x="1240" y="1332">routable only when live inventory advertises it</text>
+  </g>
+  <line class="hairline" x1="74" y1="1350" x2="1706" y2="1350"/>
+
+  <g id="row4">
+    <text class="text" x="82" y="1380">LLM prep and code-risk scout</text>
+    <text class="mono-small" x="488" y="1380">qwen3-coder-next:q4_K_M</text>
+    <text class="text" x="860" y="1380">score 0.5506; below 0.6 default warm threshold</text>
+    <text class="text" x="1240" y="1380">candidate generation only until benchmark improves</text>
+  </g>
+  <line class="hairline" x1="74" y1="1398" x2="1706" y2="1398"/>
+
+  <g id="row5">
+    <text class="text" x="82" y="1428">Document parse, safety/privacy classify</text>
+    <text class="mono-small" x="488" y="1428">gemma4:31b</text>
+    <text class="text" x="860" y="1428">benchmark-backed plus indirect doc evidence</text>
+    <text class="text" x="1240" y="1428">final verification for tables, IDs, secrets, writes</text>
+  </g>
+
+  <rect class="panel-proof" x="48" y="1492" width="1704" height="58" rx="12"/>
+  <text class="section-title" x="74" y="1528">Release gate:</text>
+  <text class="text" x="260" y="1528">a new TUI run must prove the selected live model, worker/fleet path, benchmark source, token bucket, verifier result, and whether cloud escalation was justified.</text>
+</svg>

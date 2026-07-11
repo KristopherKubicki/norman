@@ -3,7 +3,7 @@ import types
 from fastapi import FastAPI
 
 from app.connectors import init_connectors
-from app.connectors.connector_utils import connector_classes
+from app.connectors.connector_utils import connector_classes, _is_configured
 from app.core.test_settings import test_settings
 from app.connectors.slack_connector import SlackConnector
 from app.core.config import Settings, load_config
@@ -36,7 +36,11 @@ def test_init_connectors_adds_placeholders(monkeypatch):
     init_connectors(app, test_settings)
     assert hasattr(app.state, "connectors")
     assert set(app.state.connectors) == set(connector_classes)
-    assert all(v == [] for v in app.state.connectors.values())
+    for name, conns in app.state.connectors.items():
+        if not _is_configured(name, test_settings):
+            assert conns == []
+        else:
+            assert len(conns) == 1
 
 
 def test_init_connectors_with_slack(monkeypatch):

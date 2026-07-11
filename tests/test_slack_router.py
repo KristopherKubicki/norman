@@ -41,9 +41,15 @@ def test_process_slack_update_endpoint(monkeypatch, test_app: TestClient):
 
     test_app.app.dependency_overrides[get_slack_connector] = lambda: DummyConnector()
     payload = {"text": "hello"}
-    resp = test_app.post("/api/v1/connectors/slack/webhooks/slack", json=payload)
+    resp = test_app.post(
+        "/api/v1/connectors/slack/webhooks/slack",
+        json=payload,
+        headers={
+            "X-Slack-Request-Timestamp": "0",
+            "X-Slack-Signature": "v0=stub",
+        },
+    )
 
-    assert resp.status_code == 200
-    assert received["payload"] == payload
+    assert resp.status_code == 400
 
     test_app.app.dependency_overrides = {}

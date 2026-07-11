@@ -25,7 +25,7 @@ Add the following configuration to your `config.yaml` file:
 ```yaml
 connectors:
   - type: "slack"
-    bot_token: "xoxb-your-bot-token"
+    bot_token: "SLACK_BOT_TOKEN_PLACEHOLDER"
     channels:
       - "your-slack-channel"
 ```

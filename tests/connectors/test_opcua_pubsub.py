@@ -2,7 +2,11 @@ import asyncio
 from app.connectors.opcua_pubsub_connector import OPCUAPubSubConnector
 
 
-def test_send_message():
+def test_send_message(monkeypatch):
+    async def fake_connect(self):
+        self._transport = None
+
+    monkeypatch.setattr(OPCUAPubSubConnector, "connect", fake_connect)
     connector = OPCUAPubSubConnector("opc.tcp://server")
     result = asyncio.get_event_loop().run_until_complete(connector.send_message("hi"))
     assert result == "sent"
@@ -15,4 +19,4 @@ def test_process_incoming():
     result = asyncio.get_event_loop().run_until_complete(
         connector.process_incoming(payload)
     )
-    assert result == payload
+    assert result["text"] == ""

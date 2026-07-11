@@ -54,4 +54,23 @@ class AWSEventBridgeConnector(BaseConnector):
         return None
 
     async def process_incoming(self, message: Dict[str, Any]) -> Dict[str, Any]:
-        return message
+        if not isinstance(message, dict):
+            return {"text": str(message)}
+        detail = message.get("detail") or {}
+        text = (
+            detail.get("message") or message.get("detail-type") or "EventBridge event"
+        )
+        summary_parts = ["eventbridge"]
+        if message.get("detail-type"):
+            summary_parts.append(str(message.get("detail-type")))
+        if text:
+            summary_parts.append(text)
+        summary = " • ".join(part for part in summary_parts if part)
+
+        return {
+            "text": text,
+            "detail_type": message.get("detail-type"),
+            "source": message.get("source"),
+            "resources": message.get("resources"),
+            "text_summary": summary,
+        }

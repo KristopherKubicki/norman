@@ -20,6 +20,9 @@ class ChannelUpdate(BaseModel):
 
 class Channel(ChannelBase):
     id: int
+    operator_mode: Optional[str] = None
+    operator_note: Optional[str] = None
+    operator_updated_at: Optional[str] = None
 
     class Config:
         orm_mode = True

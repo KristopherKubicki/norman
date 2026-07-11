@@ -116,7 +116,14 @@ def test_listen_and_process(monkeypatch):
 
     connector = TestConnector("http://host", "TOKEN")
     asyncio.get_event_loop().run_until_complete(connector.listen_and_process())
-    assert processed == [{"event": "update", "data": {"content": "hi"}}]
+    assert processed == [
+        {
+            "event": "update",
+            "data": {"content": "hi"},
+            "text": "hi",
+            "text_summary": "mastodon • hi",
+        }
+    ]
 
 
 def test_listen_and_process_error(monkeypatch):

@@ -1,0 +1,812 @@
+principals:
+  - slug: kristopher
+    display_name: Kristopher
+    kind: person
+    notes: Personal principal and operator identity.
+  - slug: kubicki-trust
+    display_name: Kubicki Trust
+    kind: trust
+    notes: Trust-owned Evergreen assets and related operations.
+  - slug: openbrand
+    display_name: OpenBrand
+    kind: company
+    notes: Work/company operational boundary.
+  - slug: parkergale
+    display_name: PEFB
+    kind: company
+    notes: Private Equity Funbot principal. PEFB is the primary bot-facing name; ParkerGale and PEF remain compatibility aliases for the confidential finance and deal-work boundary.
+  - slug: tcg
+    display_name: TCG
+    kind: company
+    notes: Separate business boundary.
+  - slug: yhix
+    display_name: Yhix
+    kind: venture
+    notes: Studio and experiments.
+
+policy_profiles:
+  - slug: read-only
+    display_name: Read Only
+    mode: read-only
+    requires_approval: false
+    allows_outbound_send: false
+    allows_runtime_control: false
+    allows_side_effects: false
+  - slug: draft-first
+    display_name: Draft First
+    mode: draft-first
+    requires_approval: true
+    allows_outbound_send: true
+    allows_runtime_control: false
+    allows_side_effects: false
+  - slug: manual
+    display_name: Manual
+    mode: manual
+    requires_approval: true
+    allows_outbound_send: true
+    allows_runtime_control: true
+    allows_side_effects: true
+  - slug: shared
+    display_name: Shared
+    mode: shared
+    requires_approval: false
+    allows_outbound_send: true
+    allows_runtime_control: true
+    allows_side_effects: true
+  - slug: auto
+    display_name: Auto
+    mode: auto
+    requires_approval: false
+    allows_outbound_send: true
+    allows_runtime_control: true
+    allows_side_effects: true
+  - slug: panic-lock
+    display_name: Panic Lock
+    mode: manual
+    requires_approval: true
+    allows_outbound_send: false
+    allows_runtime_control: false
+    allows_side_effects: false
+
+control_classes:
+  - slug: root-controlled
+    display_name: Root Controlled
+    rank: 100
+  - slug: admin-controlled
+    display_name: Admin Controlled
+    rank: 80
+  - slug: pending-control
+    display_name: Pending Control
+    rank: 40
+  - slug: observed-only
+    display_name: Observed Only
+    rank: 10
+
+domains:
+  - slug: kristopher-household
+    principal: kristopher
+    display_name: Household
+    kind: household
+    default_policy_profile: shared
+  - slug: kristopher-security
+    principal: kristopher
+    display_name: Security
+    kind: security
+    default_policy_profile: manual
+  - slug: kristopher-health
+    principal: kristopher
+    display_name: Health
+    kind: health
+    default_policy_profile: read-only
+  - slug: kristopher-finance
+    principal: kristopher
+    display_name: Finance
+    kind: finance
+    default_policy_profile: read-only
+  - slug: kristopher-observability
+    principal: kristopher
+    display_name: Observability
+    kind: observability
+    default_policy_profile: shared
+  - slug: kristopher-radio
+    principal: kristopher
+    display_name: Radio
+    kind: radio
+    default_policy_profile: manual
+  - slug: kristopher-communications
+    principal: kristopher
+    display_name: Communications
+    kind: communications
+    default_policy_profile: draft-first
+  - slug: kristopher-scheduling
+    principal: kristopher
+    display_name: Scheduling
+    kind: scheduling
+    default_policy_profile: draft-first
+  - slug: kristopher-knowledge
+    principal: kristopher
+    display_name: Knowledge
+    kind: knowledge
+    default_policy_profile: shared
+  - slug: kubicki-evergreen
+    principal: kubicki-trust
+    display_name: Evergreen
+    kind: evergreen
+    default_policy_profile: shared
+  - slug: openbrand-ops
+    principal: openbrand
+    display_name: OpenBrand Ops
+    kind: openbrand-ops
+    default_policy_profile: shared
+  - slug: openbrand-knowledge
+    principal: openbrand
+    display_name: OpenBrand Knowledge
+    kind: knowledge
+    default_policy_profile: shared
+  - slug: openbrand-communications
+    principal: openbrand
+    display_name: OpenBrand Communications
+    kind: communications
+    default_policy_profile: draft-first
+  - slug: parkergale-private
+    principal: parkergale
+    display_name: Private
+    kind: private
+    default_policy_profile: read-only
+  - slug: yhix-studio
+    principal: yhix
+    display_name: Studio
+    kind: studio
+    default_policy_profile: manual
+
+places:
+  - slug: house
+    principal: kristopher
+    display_name: House
+    kind: home
+    notes: Legacy generic home place kept for compatibility; prefer named site places for canonical site roots.
+  - slug: knox
+    principal: kristopher
+    display_name: Knox
+    kind: home
+    site_root: knox.lollie.org
+    local_zone: home.arpa
+    shortcut_frontdoor_host: norman.home.arpa
+    shortcut_frontdoor_address: 192.168.2.241
+    notes: Primary house site. Local `*.home.arpa` shortcuts should resolve here when on the Knox LAN.
+  - slug: beach
+    principal: kubicki-trust
+    display_name: Beach
+    kind: property
+    site_root: beach.lollie.org
+    local_zone: home.arpa
+    notes: Beach-house site root. Local `*.home.arpa` should redirect to `*.beach.lollie.org` when on-site.
+  - slug: halsted
+    principal: kristopher
+    display_name: Halsted
+    kind: property
+    site_root: halsted.lollie.org
+    local_zone: home.arpa
+    notes: Halsted site root.
+  - slug: argyle
+    principal: kristopher
+    display_name: Argyle
+    kind: property
+    site_root: argyle.lollie.org
+    local_zone: home.arpa
+    notes: Argyle site root.
+  - slug: kostner
+    principal: kristopher
+    display_name: Kostner
+    kind: property
+    site_root: kostner.lollie.org
+    local_zone: home.arpa
+    notes: Kostner site root.
+  - slug: farm
+    principal: kubicki-trust
+    display_name: Farm
+    kind: property
+    site_root: farm.lollie.org
+    local_zone: home.arpa
+    notes: Farm site root.
+  - slug: evergreen-condo
+    principal: kubicki-trust
+    display_name: Evergreen Condo
+    kind: property
+    site_root: evergreen.lollie.org
+    local_zone: home.arpa
+    notes: Condo site root. This is not the Evergreen Cybernetics organization namespace.
+  - slug: waconda
+    principal: kubicki-trust
+    display_name: Waconda
+    kind: property
+  - slug: pluto-remote-networks
+    principal: kristopher
+    display_name: Pluto / Remote Networks
+    kind: remote-site
+
+site_shortcuts:
+  - slug: hubitat
+    display_name: Hubitat
+    local_host: hubitat.home.arpa
+    canonical_label: hubitat
+    places:
+      - knox
+      - beach
+      - halsted
+      - argyle
+      - kostner
+      - farm
+      - evergreen-condo
+    notes: Local site convenience alias. Redirect the local `home.arpa` origin to the site canonical host.
+  - slug: printer
+    display_name: Printer
+    local_host: printer.home.arpa
+    canonical_label: printer
+    places:
+      - knox
+      - beach
+      - halsted
+      - argyle
+      - kostner
+      - evergreen-condo
+    notes: Example of a site-local convenience alias that should resolve to the current site.
+  - slug: cameras
+    display_name: Camera Hub
+    local_host: cameras.home.arpa
+    canonical_label: cameras
+    places:
+      - knox
+      - beach
+      - halsted
+      - argyle
+      - kostner
+      - farm
+      - evergreen-condo
+    notes: Site-local camera entry point.
+  - slug: llm
+    display_name: Local LLM
+    local_host: llm.home.arpa
+    canonical_label: llm
+    places:
+      - knox
+    notes: Knox-local shortcut for the Mac mini LLM front door. Redirect the local alias to the site canonical host.
+
+bots:
+  - slug: norman
+    principal: kristopher
+    domain: kristopher-knowledge
+    display_name: Norman
+    class: manager
+    policy_profile: manual
+    notes: Cross-principal general manager; service implementation remains editable.
+  - slug: evergreen-ops
+    principal: kubicki-trust
+    domain: kubicki-evergreen
+    display_name: Evergreen Ops
+    class: operator
+    policy_profile: shared
+  - slug: household-ops
+    principal: kristopher
+    domain: kristopher-household
+    display_name: Household Ops
+    class: operator
+    policy_profile: shared
+  - slug: communications
+    principal: kristopher
+    domain: kristopher-communications
+    display_name: Communications
+    class: router
+    policy_profile: draft-first
+  - slug: cyber-advisor
+    principal: kristopher
+    domain: kristopher-security
+    display_name: Cyber Advisor
+    class: advisor
+    policy_profile: manual
+  - slug: archivist
+    principal: kristopher
+    domain: kristopher-knowledge
+    display_name: Archivist
+    class: archivist
+    policy_profile: auto
+  - slug: observability
+    principal: kristopher
+    domain: kristopher-observability
+    display_name: Observability
+    class: observer
+    policy_profile: shared
+  - slug: research-analyst
+    principal: openbrand
+    domain: openbrand-knowledge
+    display_name: Research Analyst
+    class: advisor
+    policy_profile: read-only
+  - slug: finance-reader
+    principal: kristopher
+    domain: kristopher-finance
+    display_name: Finance Reader
+    class: advisor
+    policy_profile: read-only
+  - slug: health-reader
+    principal: kristopher
+    domain: kristopher-health
+    display_name: Health Reader
+    class: advisor
+    policy_profile: read-only
+    notes: Private health monitoring by default; summarize sparingly and require deliberate entry for details.
+  - slug: parkergale-reader
+    principal: parkergale
+    domain: parkergale-private
+    display_name: PEFB
+    class: advisor
+    policy_profile: read-only
+    notes: Private Equity Funbot. PEFB is the primary bot-facing name; ParkerGale and PEF remain compatibility aliases. Confidential financial and deal-work advisor; keep hidden from ordinary fleet surfaces.
+  - slug: radio-supervisor
+    principal: kristopher
+    domain: kristopher-radio
+    display_name: Radio Supervisor
+    class: operator
+    policy_profile: manual
+  - slug: scheduler
+    principal: kristopher
+    domain: kristopher-scheduling
+    display_name: Scheduler
+    class: advisor
+    policy_profile: draft-first
+
+workers:
+  - slug: hal
+    principal: kristopher
+    display_name: Hal
+    kind: workstation
+    hostname: hal
+    place: house
+    control_class: root-controlled
+    policy_profile: shared
+  - slug: toy-box
+    principal: kristopher
+    display_name: Toy Box
+    kind: server
+    hostname: toy-box
+    place: house
+    control_class: root-controlled
+    policy_profile: shared
+  - slug: private-host
+    principal: kristopher
+    display_name: Private Host
+    kind: container
+    hostname: private
+    place: house
+    control_class: root-controlled
+    policy_profile: manual
+    notes: Dedicated Proxmox LXC enclave for finance, health, and other confidential bots. Live at 192.168.2.148. Do not mix with ordinary Personal or Shared fleet runtimes.
+  - slug: norman-host
+    principal: kristopher
+    display_name: Norman Host
+    kind: container
+    hostname: norman
+    place: house
+    control_class: root-controlled
+    policy_profile: manual
+  - slug: phobos-host
+    principal: kristopher
+    display_name: Phobos Host
+    kind: edge
+    place: house
+    control_class: root-controlled
+    policy_profile: manual
+  - slug: networking-host
+    principal: kristopher
+    display_name: Networking Host
+    kind: vm
+    hostname: networking
+    place: house
+    control_class: root-controlled
+    policy_profile: manual
+  - slug: cloud-gw-ohio
+    principal: kristopher
+    display_name: Cloud GW Ohio
+    kind: cloud-gateway
+    hostname: cloud-gw-ohio.tail94915.ts.net
+    place: pluto-remote-networks
+    control_class: admin-controlled
+    policy_profile: manual
+    notes: AWS us-east-2 seed gateway behind dohio.home.arpa. Publishes the DOHIO topology surface and Switchyard network board.
+  - slug: quaoar
+    principal: kubicki-trust
+    display_name: Quaoar
+    kind: edge
+    place: beach
+    control_class: admin-controlled
+    policy_profile: manual
+  - slug: openbrand-work-service-node
+    principal: openbrand
+    display_name: Work Special
+    kind: container
+    hostname: work-special
+    place: house
+    control_class: pending-control
+    policy_profile: shared
+
+assets:
+  - slug: phobos
+    principal: kristopher
+    display_name: Phobos
+    kind: radio-node
+    worker: phobos-host
+    place: house
+    control_class: root-controlled
+  - slug: pluto
+    principal: kristopher
+    display_name: Pluto
+    kind: radio-node
+    place: pluto-remote-networks
+    control_class: pending-control
+  - slug: hubitat-knox
+    principal: kristopher
+    display_name: Hubitat Knox
+    kind: hub
+    worker: hal
+    place: house
+    control_class: admin-controlled
+
+services:
+  - slug: norman-service
+    principal: kristopher
+    domain: kristopher-knowledge
+    bot: norman
+    worker: norman-host
+    place: house
+    display_name: Norman Prime
+    kind: web-app
+    policy_profile: manual
+    web_url: https://norman.home.arpa/
+    web_url_tailnet: https://norman.tail94915.ts.net/
+    console_url: https://norman.home.arpa/codex/
+    console_url_tailnet: https://norman.tail94915.ts.net/codex/
+  - slug: norman-home
+    principal: kristopher
+    domain: kristopher-knowledge
+    worker: norman-host
+    place: house
+    display_name: Norman Host
+    kind: host-home
+    policy_profile: manual
+    web_url: https://norman.home.arpa/
+    web_url_tailnet: https://norman.tail94915.ts.net/
+  - slug: toy-box-home
+    principal: kristopher
+    domain: kristopher-household
+    worker: toy-box
+    place: house
+    display_name: Toy Box
+    kind: host-home
+    policy_profile: shared
+    web_url: http://192.168.2.146/
+    web_url_tailnet: http://toy-box.tail94915.ts.net/
+  - slug: housebot
+    principal: kristopher
+    domain: kristopher-household
+    bot: household-ops
+    worker: toy-box
+    place: house
+    display_name: Housebot
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.2.146:8787/
+    console_url_tailnet: http://toy-box.tail94915.ts.net:8787/
+  - slug: glimpser
+    principal: kristopher
+    domain: kristopher-observability
+    bot: observability
+    worker: toy-box
+    place: house
+    display_name: Glimpser
+    kind: web-app
+    policy_profile: shared
+    web_url: http://192.168.2.145:8082/
+    web_url_tailnet: http://100.74.204.16:8082/
+    console_url: http://192.168.2.146:8788/
+    console_url_tailnet: http://toy-box.tail94915.ts.net:8788/
+  - slug: castle
+    principal: kristopher
+    domain: kristopher-household
+    bot: household-ops
+    worker: toy-box
+    place: house
+    display_name: Castle
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.2.146:8789/
+    console_url_tailnet: http://toy-box.tail94915.ts.net:8789/
+  - slug: phone-ops
+    principal: kristopher
+    domain: kristopher-communications
+    bot: communications
+    worker: toy-box
+    place: house
+    display_name: Phone Ops
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.2.146:8790/
+    console_url_tailnet: http://toy-box.tail94915.ts.net:8790/
+  - slug: uscache
+    principal: kristopher
+    domain: kristopher-knowledge
+    bot: archivist
+    worker: toy-box
+    place: house
+    display_name: USCache
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.2.146:8791/
+    console_url_tailnet: http://toy-box.tail94915.ts.net:8791/
+  - slug: autocamera
+    principal: kristopher
+    domain: kristopher-observability
+    bot: observability
+    worker: hal
+    place: house
+    display_name: Autocamera
+    kind: daemon
+    policy_profile: manual
+    web_url: http://192.168.2.137:9007/
+    web_url_tailnet: http://hal.tail94915.ts.net:9007/
+    console_url: http://192.168.2.137:8794/
+    console_url_tailnet: http://hal.tail94915.ts.net:8794/
+  - slug: hal-home
+    principal: kristopher
+    domain: kristopher-household
+    worker: hal
+    place: house
+    display_name: Hal
+    kind: host-home
+    policy_profile: manual
+    notes: Host landing page for Hal is not published yet. Use Autocamera or Theseus directly until the Hal home page is stood up.
+  - slug: theseus
+    principal: kristopher
+    domain: kristopher-observability
+    bot: observability
+    worker: hal
+    place: house
+    display_name: Theseus
+    kind: ops-console
+    policy_profile: manual
+    console_url: http://192.168.2.137:8795/
+    console_url_tailnet: http://hal.tail94915.ts.net:8795/
+  - slug: finance-reader
+    principal: kristopher
+    domain: kristopher-finance
+    bot: finance-reader
+    worker: private-host
+    place: house
+    display_name: Finance Reader
+    kind: advisor
+    policy_profile: read-only
+    is_active: false
+    notes: Planned private finance reader on the dedicated private enclave. Keep off ordinary nav until explicitly published.
+  - slug: health-reader
+    principal: kristopher
+    domain: kristopher-health
+    bot: health-reader
+    worker: private-host
+    place: house
+    display_name: Health Reader
+    kind: advisor
+    policy_profile: read-only
+    is_active: false
+    notes: Planned private health reader on the dedicated private enclave. Keep off ordinary nav until explicitly published.
+  - slug: parkergale
+    principal: parkergale
+    domain: parkergale-private
+    bot: parkergale-reader
+    worker: private-host
+    place: house
+    display_name: PEFB
+    kind: ops-console
+    policy_profile: read-only
+    is_active: true
+    console_url: http://192.168.2.148:8796/
+    console_url_tailnet: http://private.home.lollie.org:8796/
+    notes: Private Equity Funbot on the dedicated private enclave. PEFB is the primary bot-facing name; ParkerGale and PEF remain compatibility aliases. Treat all work as confidential and deliberate-entry only.
+  - slug: private-home
+    principal: kristopher
+    domain: kristopher-household
+    worker: private-host
+    place: house
+    display_name: Private Host
+    kind: host-home
+    policy_profile: manual
+    web_url: http://192.168.2.148/
+    web_url_tailnet: http://private.home.lollie.org/
+  - slug: earlybird
+    principal: openbrand
+    domain: openbrand-ops
+    worker: openbrand-work-service-node
+    display_name: Earlybird
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.2.147:8781/
+    console_url_tailnet: http://work-special.tail94915.ts.net:8781/
+  - slug: infra
+    principal: openbrand
+    domain: openbrand-ops
+    worker: openbrand-work-service-node
+    display_name: Infra
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.2.147:8782/
+    console_url_tailnet: http://work-special.tail94915.ts.net:8782/
+  - slug: control-plane
+    principal: openbrand
+    domain: openbrand-ops
+    worker: openbrand-work-service-node
+    display_name: Control Plane
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.2.147:8783/
+    console_url_tailnet: http://work-special.tail94915.ts.net:8783/
+  - slug: market-sizing
+    principal: openbrand
+    domain: openbrand-ops
+    worker: openbrand-work-service-node
+    display_name: Market Sizing
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.2.147:8784/
+    console_url_tailnet: http://work-special.tail94915.ts.net:8784/
+  - slug: tmi-dashboards
+    principal: openbrand
+    domain: openbrand-ops
+    worker: openbrand-work-service-node
+    display_name: TMI Dashboards
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.2.147:8785/
+    console_url_tailnet: http://work-special.tail94915.ts.net:8785/
+  - slug: gold-book
+    principal: openbrand
+    domain: openbrand-ops
+    worker: openbrand-work-service-node
+    display_name: Gold Book
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.2.147:8786/
+    console_url_tailnet: http://work-special.tail94915.ts.net:8786/
+  - slug: compere
+    principal: openbrand
+    domain: openbrand-ops
+    worker: openbrand-work-service-node
+    display_name: Keystone
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.2.147:8789/
+    console_url_tailnet: http://work-special.tail94915.ts.net:8789/
+  - slug: leadership-kpis
+    principal: openbrand
+    domain: openbrand-ops
+    worker: openbrand-work-service-node
+    display_name: Leadership KPIs
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.2.147:8790/
+    console_url_tailnet: http://work-special.tail94915.ts.net:8790/
+  - slug: panelbot
+    principal: openbrand
+    domain: openbrand-ops
+    worker: openbrand-work-service-node
+    display_name: Panelbot
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.2.147:8791/
+    console_url_tailnet: http://work-special.tail94915.ts.net:8791/
+  - slug: mls
+    principal: kristopher
+    domain: kristopher-household
+    bot: household-ops
+    worker: openbrand-work-service-node
+    place: house
+    display_name: MLS
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.2.147:8792/
+    console_url_tailnet: http://work-special.tail94915.ts.net:8792/
+  - slug: work-special-home
+    principal: openbrand
+    domain: openbrand-ops
+    worker: openbrand-work-service-node
+    display_name: Work Special
+    kind: host-home
+    policy_profile: shared
+    web_url: http://192.168.2.147/
+    web_url_tailnet: http://work-special.tail94915.ts.net/
+  - slug: networking
+    principal: kristopher
+    domain: kristopher-communications
+    bot: communications
+    worker: networking-host
+    place: house
+    display_name: Networking
+    kind: ops-console
+    policy_profile: manual
+    console_url: http://192.168.2.242:8791/
+    console_url_tailnet: http://networking.tail94915.ts.net:8791/
+  - slug: uplink
+    principal: kristopher
+    domain: kristopher-communications
+    bot: communications
+    worker: networking-host
+    place: house
+    display_name: Uplink
+    kind: ops-console
+    policy_profile: manual
+    console_url: http://192.168.2.242:8792/
+    console_url_tailnet: http://networking.tail94915.ts.net:8792/
+  - slug: cloudagent
+    principal: kristopher
+    domain: kristopher-knowledge
+    bot: archivist
+    worker: networking-host
+    place: house
+    display_name: CloudAgent
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.2.242:8793/
+    console_url_tailnet: http://networking.tail94915.ts.net:8793/
+  - slug: networking-home
+    principal: kristopher
+    domain: kristopher-communications
+    worker: networking-host
+    place: house
+    display_name: Networking Host
+    kind: host-home
+    policy_profile: manual
+    web_url: http://192.168.2.242/
+    web_url_tailnet: http://networking.tail94915.ts.net/
+  - slug: dohio-topology
+    principal: kristopher
+    domain: kristopher-observability
+    bot: observability
+    worker: cloud-gw-ohio
+    place: pluto-remote-networks
+    display_name: DOHIO Topology
+    kind: network-topology
+    policy_profile: manual
+    web_url: https://dohio.home.arpa/
+    web_url_tailnet: https://cloud-gw-ohio.tail94915.ts.net/
+    notes: Cloud gateway topology landing page. Cross-link this from the BBS/Directory so the route map and operator board stay aligned.
+  - slug: switchyard-network-board
+    principal: kristopher
+    domain: kristopher-observability
+    bot: observability
+    worker: cloud-gw-ohio
+    place: pluto-remote-networks
+    display_name: Switchyard Network Board
+    kind: proxy-topology
+    policy_profile: manual
+    web_url: https://dohio.home.arpa/admin
+    web_url_tailnet: https://cloud-gw-ohio.tail94915.ts.net/admin
+    notes: Runtime, current, and target proxy topology board served from DOHIO. Links back to Norman's BBS/Directory.
+  - slug: d-ace
+    principal: openbrand
+    domain: openbrand-ops
+    display_name: d.ace
+    kind: pipeline
+    policy_profile: shared
+  - slug: acast
+    principal: openbrand
+    domain: openbrand-ops
+    display_name: Acast
+    kind: pipeline
+    policy_profile: shared
+  - slug: platinum-standard
+    principal: openbrand
+    domain: openbrand-knowledge
+    bot: research-analyst
+    display_name: Platinum Standard
+    kind: batch
+    policy_profile: read-only
+
+channels: []
+people: []

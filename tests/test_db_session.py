@@ -42,7 +42,10 @@ def test_sqlite_wal_enabled():
     if settings.database_url.startswith("sqlite"):
         with db_session.engine.connect() as conn:
             mode = conn.execute(db_session.text("PRAGMA journal_mode")).scalar().lower()
-        assert mode == "wal"
+        if settings.database_url in {"sqlite://", "sqlite:///:memory:"}:
+            assert mode in {"wal", "memory"}
+        else:
+            assert mode == "wal"
 
 
 def test_sqlite_synchronous_normal():
@@ -78,7 +81,9 @@ def test_session_connection_cleanup():
     engine = db_session.engine
     start_checked_out = engine.pool.checkedout()
     session = db_session.SessionLocal()
-    session.execute("SELECT 1")
+    from sqlalchemy import text
+
+    session.execute(text("SELECT 1"))
     assert engine.pool.checkedout() == start_checked_out + 1
     session.close()
     assert engine.pool.checkedout() == start_checked_out

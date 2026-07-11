@@ -62,7 +62,8 @@ def test_process_incoming():
     result = asyncio.get_event_loop().run_until_complete(
         connector.process_incoming({"m": 1})
     )
-    assert result == {"m": 1}
+    assert result["text"] == ""
+    assert result["text_summary"] == "snapchat"
 
 
 def test_is_connected_success():
@@ -84,7 +85,8 @@ def test_listen_and_process():
     results = asyncio.get_event_loop().run_until_complete(
         connector.listen_and_process()
     )
-    assert results == [{"text": "hello"}]
+    assert results[0]["text"] == "hello"
+    assert results[0]["text_summary"] == "snapchat • hello"
 
 
 def test_listen_and_process_error():
