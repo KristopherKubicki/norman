@@ -812,6 +812,56 @@ def test_kernel_primary_model_uses_local_candidates_after_health_gate(
     )
 
 
+def test_kernel_primary_model_prefers_explicit_local_model_over_stale_cost_route(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_TUI_BACKEND", "kernel")
+    monkeypatch.setenv("NORMAN_TUI_KERNEL_EXECUTION", "1")
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    module.update_status_meta(
+        running_cost_route={
+            "selected_runtime": "localllm",
+            "selected_model": "qwen3.6:35b-a3b-q4_K_M",
+            "route_source": "local_first_policy",
+        },
+    )
+
+    assert (
+        module.console_runtime_kernel_primary_model("localllm", "qwen3.6:27b")
+        == "qwen3.6:27b"
+    )
+
+
+def test_console_runtime_turn_route_policy_preserves_route_lock_model(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_TUI_BACKEND", "kernel")
+    monkeypatch.setenv("NORMAN_TUI_KERNEL_EXECUTION", "1")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    policy = module.console_runtime_turn_route_policy(
+        prompt="Canary only. Reply exactly: DONE local visible.",
+        runtime="localllm",
+        model="qwen3.6:27b",
+        service_tier="default",
+        cost_route={
+            "route_lock": True,
+            "requested_runtime": "localllm",
+            "requested_model": "qwen3.6:27b",
+            "selected_runtime": "localllm",
+            "selected_model": "qwen3.6:27b",
+        },
+    )
+
+    assert policy["model"] == "qwen3.6:27b"
+    assert policy["preferred_model"] == "qwen3.6:27b"
+    assert policy["requested_model"] == "qwen3.6:27b"
+    assert policy["route_lock"] is True
+    assert policy["strict_route"] is True
+    assert policy["operator_model_override"] is True
+
+
 def test_kernel_primary_runtime_surfaces_model_adapter_failure(monkeypatch, tmp_path):
     monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_API_BASE", "http://norman.local/api/v1")
     monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_TOKEN", "runtime-token")

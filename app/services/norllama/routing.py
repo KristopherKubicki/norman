@@ -363,6 +363,26 @@ def _route_model_selection(
             "policy_authorization": authorization,
             "production_route_eligible": False,
         }
+    explicit_lock = any(
+        _flag(policy.get(key))
+        for key in (
+            "route_lock",
+            "strict_route",
+            "operator_model_override",
+            "operator_route_lock",
+        )
+    )
+    if explicit_lock and model:
+        return {
+            "schema": "norman.norllama.model-selection.v1",
+            "selected": True,
+            "model": model,
+            "source": "explicit_route_lock",
+            "reason": "explicit operator route lock",
+            "production_route_eligible": False,
+            "capability_route_state": "manual_route_lock",
+            "promotion_authoritative": False,
+        }
     model_selection = _clean(policy.get("model_selection")).lower()
     if model_selection in {
         "warm_policy",

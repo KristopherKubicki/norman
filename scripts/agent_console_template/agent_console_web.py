@@ -15225,6 +15225,16 @@ def console_runtime_turn_route_policy(
     normalized_runtime = normalize_runtime(runtime)
     normalized_model = normalize_runtime_model(normalized_runtime, model)
     route = dict(cost_route or {})
+    route_lock = coerce_boolish(
+        route.get("route_lock")
+        or route.get("strict_route")
+        or route.get("operator_model_override")
+    )
+    requested_runtime = normalize_runtime(route.get("requested_runtime") or runtime)
+    requested_model = normalize_runtime_model(
+        requested_runtime,
+        route.get("requested_model") or model,
+    )
     run_shape = console_runtime_kernel_primary_run_shape(prompt)
     return {
         "runtime": "kernel_shadow",
@@ -15246,6 +15256,13 @@ def console_runtime_turn_route_policy(
         "allow_cloud_tool_proxy": False,
         "use_capability_catalog": True,
         "model_selection": "warm_policy",
+        "model": normalized_model,
+        "preferred_model": normalized_model,
+        "requested_runtime": requested_runtime,
+        "requested_model": requested_model,
+        "route_lock": route_lock,
+        "strict_route": route_lock,
+        "operator_model_override": route_lock,
         "route_proof_required": bool(TUI_KERNEL_EXECUTION_ENABLED),
         "require_verifier_for_completion": bool(TUI_KERNEL_EXECUTION_ENABLED),
         "cost_posture": "local_token_first",
@@ -29480,6 +29497,8 @@ def console_runtime_kernel_owned_turn_active(skip_reason: str) -> bool:
 
 
 def console_runtime_kernel_primary_model(runtime: str, model: str) -> str:
+    if normalize_runtime(runtime) == "localllm" and model:
+        return normalize_runtime_model("localllm", model)
     meta = load_status_meta()
     cost_route = meta.get("running_cost_route") if isinstance(meta, dict) else {}
     selected_runtime = normalize_runtime(
@@ -29509,8 +29528,6 @@ def console_runtime_kernel_primary_model(runtime: str, model: str) -> str:
                     and not local_llm_model_canary(candidate)
                 ):
                     return candidate
-    if normalize_runtime(runtime) == "localllm" and model:
-        return normalize_runtime_model("localllm", model)
     return normalize_runtime_model("localllm", LOCAL_LLM_DEFAULT_MODEL)
 
 
@@ -30062,6 +30079,24 @@ def _execute_console_runtime_kernel_prompt(
             ),
         )
     kernel_model = console_runtime_kernel_primary_model(runtime, model)
+    status_meta = load_status_meta()
+    status_cost_route = (
+        status_meta.get("running_cost_route")
+        if isinstance(status_meta.get("running_cost_route"), dict)
+        else {}
+    )
+    route_lock = coerce_boolish(
+        status_cost_route.get("route_lock")
+        or status_cost_route.get("strict_route")
+        or status_cost_route.get("operator_model_override")
+    )
+    requested_runtime = normalize_runtime(
+        status_cost_route.get("requested_runtime") or runtime
+    )
+    requested_model = normalize_runtime_model(
+        requested_runtime,
+        status_cost_route.get("requested_model") or model,
+    )
     max_runtime_seconds = normalize_job_timeout_seconds(timeout_seconds, job_budget)
     run_timeout = console_runtime_kernel_primary_timeout(
         timeout_seconds,
@@ -30093,6 +30128,12 @@ def _execute_console_runtime_kernel_prompt(
             "provider": "norllama",
             "preferred_provider": "norllama",
             "model": kernel_model,
+            "preferred_model": kernel_model,
+            "requested_runtime": requested_runtime,
+            "requested_model": requested_model,
+            "route_lock": route_lock,
+            "strict_route": route_lock,
+            "operator_model_override": route_lock,
             "local_first": True,
             "allow_cloud_proxy": False,
             "allow_cloud_tool_proxy": False,
@@ -30124,6 +30165,9 @@ def _execute_console_runtime_kernel_prompt(
             "runtime": normalize_runtime(runtime),
             "model": normalize_runtime_model(runtime, model),
             "kernel_model": kernel_model,
+            "requested_runtime": requested_runtime,
+            "requested_model": requested_model,
+            "route_lock": route_lock,
             "service_tier": normalize_service_tier(service_tier),
             "job_budget": normalize_job_budget(job_budget),
             "optimization_mode": normalize_optimization_mode(optimization_mode),

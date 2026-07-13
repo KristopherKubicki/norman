@@ -124,6 +124,45 @@ def test_openai_compatible_offline_frontdoor_routes_as_local_norllama(monkeypatc
     assert route.attribution["routing_scope"] == "frontdoor"
 
 
+def test_route_lock_explicit_model_overrides_warm_policy(monkeypatch):
+    from app.services.norllama import routing
+
+    monkeypatch.setattr(
+        routing.settings, "llm_offline_provider", "openai_compatible", raising=False
+    )
+    monkeypatch.setattr(
+        routing.settings,
+        "llm_offline_base_url",
+        "https://llm.home.arpa/v1",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        routing,
+        "select_model_for_task_kind",
+        lambda *args, **kwargs: {
+            "selected": True,
+            "model": "qwen3.6:35b-a3b-q4_K_M",
+            "source": "warm_policy",
+        },
+    )
+
+    request = NorllamaTaskRequest(
+        kind="plan",
+        input_text="Honor the explicit local model lock.",
+        route_policy={
+            "provider": "norllama",
+            "model": "qwen3.6:27b",
+            "model_selection": "warm_policy",
+            "route_lock": True,
+        },
+    )
+
+    route = route_task(request)
+
+    assert route.model == "qwen3.6:27b"
+    assert route.attribution["model_selection"]["source"] == "explicit_route_lock"
+
+
 def test_cloud_planner_requires_explicit_cloud_proxy():
     request = NorllamaTaskRequest(
         kind="plan",
