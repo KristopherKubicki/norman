@@ -545,6 +545,9 @@ def test_console_runtime_turn_shadow_creates_per_turn_job(monkeypatch, tmp_path)
         if request.full_url.endswith("/console-runtime/jobs"):
             payload = json.loads(request.data.decode())
             return Response({"job_id": payload["job_id"]})
+        if "/console-runtime/jobs/" in request.full_url and request.data is None:
+            job_id = request.full_url.rsplit("/", 1)[-1]
+            return Response({"job": {"job_id": job_id, "status": "queued"}})
         if request.full_url.endswith("/planner/receipts"):
             return Response({"event_type": "planner.receipt", "sequence": 2})
         if request.full_url.endswith("/events"):
@@ -592,6 +595,7 @@ def test_console_runtime_turn_shadow_creates_per_turn_job(monkeypatch, tmp_path)
     urls = [request.full_url for request, _timeout in requests]
     assert urls == [
         "http://norman.local/api/v1/console-runtime/jobs",
+        f"http://norman.local/api/v1/console-runtime/jobs/{shadow['job_id']}",
         f"http://norman.local/api/v1/console-runtime/jobs/{shadow['job_id']}/planner/receipts",
         f"http://norman.local/api/v1/console-runtime/jobs/{shadow['job_id']}/events",
     ]
@@ -626,14 +630,74 @@ def test_console_runtime_turn_shadow_creates_per_turn_job(monkeypatch, tmp_path)
         "work",
         "verify",
     ]
-    receipt_payload = json.loads(requests[1][0].data.decode())
+    receipt_payload = json.loads(requests[2][0].data.decode())
     assert receipt_payload["include_capabilities"] is False
     assert receipt_payload["output"]["planner_role"] == "shadow_frontdoor"
-    started_event = json.loads(requests[2][0].data.decode())
+    started_event = json.loads(requests[3][0].data.decode())
     assert started_event["event_type"] == "turn.started"
     assert started_event["payload"]["session_job_id"] == "job-session"
     assert started_event["payload"]["objective"] == prompt
     assert started_event["payload"]["objective_summary"] != prompt
+
+
+def test_console_runtime_turn_shadow_does_not_return_non_durable_job_id(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_API_BASE", "http://norman.local/api/v1")
+    monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_TOKEN", "runtime-token")
+    monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_JOB_ID", "job-session")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+            self.headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode()
+
+    def fake_urlopen(request, timeout):
+        if request.full_url.endswith("/console-runtime/jobs"):
+            payload = json.loads(request.data.decode())
+            return Response({"job_id": payload["job_id"]})
+        if "/console-runtime/jobs/" in request.full_url and request.data is None:
+            raise urllib_error.HTTPError(
+                request.full_url,
+                404,
+                "not found",
+                hdrs={},
+                fp=None,
+            )
+        return Response({})
+
+    monkeypatch.setattr(module.urllib_request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+
+    shadow = module.ensure_console_runtime_turn_shadow_job(
+        prompt="Canary only. Reply exactly: DONE local visible durable-test",
+        started_at=123,
+        attachments=[],
+        runtime="localllm",
+        model="qwen3.6:27b",
+        service_tier="default",
+        job_budget="2m",
+        optimization_mode="auto",
+        timeout_seconds=120,
+        turn_plan={"goal": "durable"},
+        turn_envelope={"kind": "turn"},
+        cost_route={"selected_runtime": "localllm", "route_source": "local_first"},
+    )
+
+    assert shadow["enabled"] is True
+    assert shadow["job_id"] == ""
+    assert shadow["status"] == "pending"
+    assert shadow["intended_job_id"].startswith("turn-")
 
 
 def test_console_runtime_turn_shadow_can_mark_kernel_execution_candidate(
@@ -666,6 +730,9 @@ def test_console_runtime_turn_shadow_can_mark_kernel_execution_candidate(
         if request.full_url.endswith("/console-runtime/jobs"):
             payload = json.loads(request.data.decode())
             return Response({"job_id": payload["job_id"]})
+        if "/console-runtime/jobs/" in request.full_url and request.data is None:
+            job_id = request.full_url.rsplit("/", 1)[-1]
+            return Response({"job": {"job_id": job_id, "status": "queued"}})
         if request.full_url.endswith("/planner/receipts"):
             return Response({"event_type": "planner.receipt", "sequence": 2})
         if request.full_url.endswith("/events"):

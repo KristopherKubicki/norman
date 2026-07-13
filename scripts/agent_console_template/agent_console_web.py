@@ -14360,6 +14360,24 @@ def console_runtime_job_visibility(job_id: str) -> dict[str, Any]:
     }
 
 
+def console_runtime_wait_for_job_visibility(
+    job_id: str, *, attempts: int = 4, delay_seconds: float = 0.15
+) -> dict[str, Any]:
+    latest: dict[str, Any] = {
+        "state": "unavailable",
+        "job_id": str(job_id or "").strip(),
+        "receipt_url": "",
+        "error": "not checked",
+    }
+    for attempt in range(max(1, int(attempts or 1))):
+        latest = console_runtime_job_visibility(job_id)
+        if latest.get("state") == "visible":
+            return latest
+        if attempt < attempts - 1:
+            time.sleep(max(0.0, float(delay_seconds or 0.0)))
+    return latest
+
+
 def _console_runtime_cache_fresh(
     cache: dict[str, Any],
     *,
@@ -15408,7 +15426,10 @@ def ensure_console_runtime_turn_shadow_job(
     job_id = console_runtime_turn_job_id(prompt, started_at)
     existing = active_console_runtime_turn_job_id()
     if existing == job_id:
-        return {"enabled": True, "job_id": job_id, "status": "active"}
+        visibility = console_runtime_wait_for_job_visibility(job_id)
+        if visibility.get("state") == "visible":
+            return {"enabled": True, "job_id": job_id, "status": "active"}
+        update_status_meta(running_console_runtime_job_id="")
     session_job_id = ensure_console_runtime_job()
     normalized_attachments = normalize_attachments(attachments)
     metadata = console_runtime_turn_metadata(
@@ -15486,6 +15507,18 @@ def ensure_console_runtime_turn_shadow_job(
     except (urllib_error.URLError, TimeoutError, OSError) as exc:
         _record_console_runtime_error(exc)
         return {"enabled": True, "job_id": "", "status": "error", "error": str(exc)}
+
+    visibility = console_runtime_wait_for_job_visibility(job_id)
+    if visibility.get("state") != "visible":
+        error = str(visibility.get("error") or "runtime job was not durable").strip()
+        _record_console_runtime_error(RuntimeError(error))
+        return {
+            "enabled": True,
+            "job_id": "",
+            "status": "pending",
+            "error": error,
+            "intended_job_id": job_id,
+        }
 
     planner_output = {
         "turn_plan": normalize_turn_plan_estimate(turn_plan),
@@ -30039,12 +30072,58 @@ def _execute_console_runtime_workspace_preflight(
         "live_execution_approved": True,
         "confirm_live_execution": "ENABLE LIVE RUNTIME",
     }
-    result = _console_runtime_json_request(
-        "POST",
-        f"/console-runtime/jobs/{quote(job_id, safe='')}/runs",
-        payload,
-        timeout_seconds=run_timeout,
-    )
+    try:
+        result = _console_runtime_json_request(
+            "POST",
+            f"/console-runtime/jobs/{quote(job_id, safe='')}/runs",
+            payload,
+            timeout_seconds=run_timeout,
+        )
+    except urllib_error.HTTPError as exc:
+        if exc.code != HTTPStatus.NOT_FOUND:
+            raise
+        update_status_meta(running_console_runtime_job_id="")
+        turn_shadow = ensure_console_runtime_turn_shadow_job(
+            prompt=prompt,
+            started_at=started_at,
+            attachments=attachments,
+            runtime=runtime,
+            model=model,
+            service_tier=service_tier,
+            job_budget=job_budget,
+            optimization_mode=optimization_mode,
+            timeout_seconds=normalize_job_timeout_seconds(timeout_seconds, job_budget),
+            turn_plan=build_turn_plan_estimate(
+                prompt=prompt,
+                attachments=attachments,
+                runtime=runtime,
+                model=model,
+                service_tier=service_tier,
+                job_budget=job_budget,
+                optimization_mode=optimization_mode,
+                speed=speed,
+                detail=detail,
+                timeout_seconds=normalize_job_timeout_seconds(
+                    timeout_seconds, job_budget
+                ),
+                created_at=started_at,
+            ),
+            turn_envelope={},
+            cost_route={},
+        )
+        job_id = str(turn_shadow.get("job_id") or "").strip()
+        if not job_id:
+            raise
+        update_status_meta(
+            running_console_runtime_job_id=job_id,
+            last_console_runtime_job_id=job_id,
+        )
+        result = _console_runtime_json_request(
+            "POST",
+            f"/console-runtime/jobs/{quote(job_id, safe='')}/runs",
+            payload,
+            timeout_seconds=run_timeout,
+        )
     preflight_text = console_runtime_workspace_preflight_text(result)
     error_text = ""
     if not preflight_text:
@@ -30242,12 +30321,58 @@ def _execute_console_runtime_kernel_prompt(
         "live_execution_approved": True,
         "confirm_live_execution": "ENABLE LIVE RUNTIME",
     }
-    result = _console_runtime_json_request(
-        "POST",
-        f"/console-runtime/jobs/{quote(job_id, safe='')}/runs",
-        payload,
-        timeout_seconds=run_timeout,
-    )
+    try:
+        result = _console_runtime_json_request(
+            "POST",
+            f"/console-runtime/jobs/{quote(job_id, safe='')}/runs",
+            payload,
+            timeout_seconds=run_timeout,
+        )
+    except urllib_error.HTTPError as exc:
+        if exc.code != HTTPStatus.NOT_FOUND:
+            raise
+        update_status_meta(running_console_runtime_job_id="")
+        turn_shadow = ensure_console_runtime_turn_shadow_job(
+            prompt=prompt,
+            started_at=started_at,
+            attachments=attachments,
+            runtime=runtime,
+            model=model,
+            service_tier=service_tier,
+            job_budget=job_budget,
+            optimization_mode=optimization_mode,
+            timeout_seconds=normalize_job_timeout_seconds(timeout_seconds, job_budget),
+            turn_plan=build_turn_plan_estimate(
+                prompt=prompt,
+                attachments=attachments,
+                runtime=runtime,
+                model=model,
+                service_tier=service_tier,
+                job_budget=job_budget,
+                optimization_mode=optimization_mode,
+                speed=speed,
+                detail=detail,
+                timeout_seconds=normalize_job_timeout_seconds(
+                    timeout_seconds, job_budget
+                ),
+                created_at=started_at,
+            ),
+            turn_envelope={},
+            cost_route=status_cost_route,
+        )
+        job_id = str(turn_shadow.get("job_id") or "").strip()
+        if not job_id:
+            raise
+        update_status_meta(
+            running_console_runtime_job_id=job_id,
+            last_console_runtime_job_id=job_id,
+        )
+        result = _console_runtime_json_request(
+            "POST",
+            f"/console-runtime/jobs/{quote(job_id, safe='')}/runs",
+            payload,
+            timeout_seconds=run_timeout,
+        )
     response_text = console_runtime_kernel_primary_response_text(result, prompt=prompt)
     output_shape = visible_response_output_shape(prompt, response_text)
     error_text = ""
@@ -32782,7 +32907,6 @@ def start_web_prompt(
             )
             save_status_meta(meta)
             started_at = int(meta.get("last_started_at") or now_ts())
-            accepted_turn_shadow_job_id = console_runtime_turn_job_id(clean, started_at)
             append_audit_event(
                 event_type="chat.submitted",
                 summary="Submitted a prompt from the web TUI.",
@@ -32896,9 +33020,19 @@ def start_web_prompt(
                     turn_envelope=turn_envelope,
                     cost_route=cost_route_decision,
                 )
-                accepted_turn_shadow_job_id = str(
-                    turn_shadow.get("job_id") or accepted_turn_shadow_job_id
+                created_turn_shadow_job_id = str(
+                    turn_shadow.get("job_id") or ""
                 ).strip()
+                if created_turn_shadow_job_id:
+                    accepted_turn_shadow_job_id = created_turn_shadow_job_id
+                else:
+                    accepted_turn_shadow_job_id = ""
+                    turn_shadow_error = str(
+                        turn_shadow.get("error")
+                        or turn_shadow.get("status")
+                        or CONSOLE_RUNTIME_LAST_ERROR
+                        or ""
+                    ).strip()
             except Exception as exc:
                 _record_console_runtime_error(exc)
                 turn_shadow_error = str(exc)

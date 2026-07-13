@@ -214,6 +214,92 @@ def test_receipt_from_norman_api_poll_records_transient_404(monkeypatch):
     assert len(calls) == 2
 
 
+def test_receipt_from_norman_db_poll_waits_for_terminal_receipt(monkeypatch, tmp_path):
+    calls = []
+    receipts = [
+        {
+            "available": True,
+            "job_id": "turn-db",
+            "job_status": "running",
+            "output_shape": "",
+        },
+        {
+            "available": True,
+            "proof_source": "central_db",
+            "job_id": "turn-db",
+            "job_status": "done",
+            "output_shape": "complete",
+            "execution_mode": "live",
+            "receipt_audit": {"status": "pass", "pass": True},
+            "completion_gate": {"status": "pass", "gate_passed": True},
+        },
+    ]
+
+    def fake_db(job_id, *, repo_root):
+        calls.append((job_id, repo_root))
+        return receipts.pop(0)
+
+    monkeypatch.setattr(acceptance, "receipt_from_norman_db", fake_db)
+    monkeypatch.setattr(acceptance.time, "sleep", lambda _seconds: None)
+
+    receipt = acceptance.receipt_from_norman_db_poll(
+        "turn-db",
+        repo_root=tmp_path,
+        poll_attempts=4,
+        poll_interval=0.1,
+    )
+
+    assert receipt["job_status"] == "done"
+    assert receipt["proof_source"] == "central_db"
+    assert receipt["poll_attempts_used"] == 2
+    assert len(calls) == 2
+
+
+def test_receipt_from_norman_db_poll_can_require_terminal_state(monkeypatch, tmp_path):
+    calls = []
+    receipts = [
+        {
+            "available": True,
+            "proof_source": "central_db",
+            "job_id": "turn-db-terminal",
+            "job_status": "running",
+            "output_shape": "complete",
+            "execution_mode": "live",
+            "receipt_audit": {"status": "pass", "pass": True},
+            "completion_gate": {"status": "pass", "gate_passed": True},
+        },
+        {
+            "available": True,
+            "proof_source": "central_db",
+            "job_id": "turn-db-terminal",
+            "job_status": "done",
+            "output_shape": "complete",
+            "execution_mode": "live",
+            "receipt_audit": {"status": "pass", "pass": True},
+            "completion_gate": {"status": "pass", "gate_passed": True},
+        },
+    ]
+
+    def fake_db(job_id, *, repo_root):
+        calls.append((job_id, repo_root))
+        return receipts.pop(0)
+
+    monkeypatch.setattr(acceptance, "receipt_from_norman_db", fake_db)
+    monkeypatch.setattr(acceptance.time, "sleep", lambda _seconds: None)
+
+    receipt = acceptance.receipt_from_norman_db_poll(
+        "turn-db-terminal",
+        repo_root=tmp_path,
+        poll_attempts=4,
+        poll_interval=0.1,
+        accept_provable_running=False,
+    )
+
+    assert receipt["job_status"] == "done"
+    assert receipt["poll_attempts_used"] == 2
+    assert len(calls) == 2
+
+
 def test_auto_route_local_scenario_is_unlocked():
     target = acceptance.default_targets()["norman"]
     scenario = acceptance.default_scenarios()["auto_route_local"]
@@ -309,6 +395,214 @@ def test_live_multi_host_acceptance_requires_runtime_api_token(monkeypatch, tmp_
     assert report["runtime_api"]["token_available"] is False
     assert "refusing to send prompts" in report["preflight_failures"][0]
     assert report["results"] == []
+
+
+def test_live_multi_host_acceptance_can_use_authoritative_norman_db_fallback(
+    monkeypatch, tmp_path
+):
+    repo_root = tmp_path / "repo"
+    (repo_root / "app" / "db").mkdir(parents=True)
+    (repo_root / "app" / "models").mkdir(parents=True)
+    (repo_root / "app" / "db" / "session.py").write_text("", encoding="utf-8")
+    (repo_root / "app" / "models" / "console_runtime.py").write_text(
+        "", encoding="utf-8"
+    )
+    output = tmp_path / "acceptance.json"
+    monkeypatch.setattr(acceptance.socket, "gethostname", lambda: "norman")
+    monkeypatch.setattr(
+        acceptance,
+        "resolve_console_runtime_token_with_source",
+        lambda: (
+            "",
+            {"runtime_token_source": "none", "runtime_token_secret_name": ""},
+        ),
+    )
+
+    def fake_probe(_target, run, **_kwargs):
+        job_id = "turn-housebot-central-db"
+        return {
+            "ok": True,
+            "ask_job_id": job_id,
+            "ask": {"console_runtime_job_id": job_id},
+            "status": {
+                "pending": False,
+                "last_prompt": run.message,
+                "last_response": run.expected_response,
+                "last_error": "",
+                "last_console_runtime_job_id": job_id,
+            },
+        }
+
+    def fake_db(job_id, *, repo_root):
+        assert job_id == "turn-housebot-central-db"
+        return {
+            "available": True,
+            "proof_source": "central_db",
+            "job_id": job_id,
+            "job_status": "done",
+            "last_error": "",
+            "kernel_owned_turn": True,
+            "task_kind": "literal_response",
+            "selected_model": "qwen3.6:27b",
+            "selected_worker": "spark-151",
+            "observed_worker": "spark-151",
+            "observed_worker_source": "gateway_response",
+            "invocations": route_invocations(),
+            "execution_mode": "live",
+            "output_shape": "complete",
+            "local_tokens": 77,
+            "cloud_proxy": False,
+            "receipt_audit": {"status": "pass", "pass": True},
+            "completion_gate": {"status": "pass", "gate_passed": True},
+            "goal_local_tokens": 77,
+            "goal_cloud_tokens": 0,
+            "ledger_cloud_tokens": 0,
+            "ledger_by_provider": {"norllama": 77},
+            "local_first_status": "on_target",
+            "model_completed_count": 1,
+            "spark_evidence_count": 1,
+        }
+
+    monkeypatch.setattr(acceptance, "run_tui_probe", fake_probe)
+    monkeypatch.setattr(acceptance, "receipt_from_norman_db", fake_db)
+
+    result = acceptance.main(
+        [
+            "--live",
+            "--targets",
+            "housebot",
+            "--scenarios",
+            "canary",
+            "--run-id",
+            "central-db",
+            "--repo-root",
+            str(repo_root),
+            "--allow-local-db-fallback",
+            "--output-json",
+            str(output),
+        ]
+    )
+
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert result == 0
+    assert report["passed"] is True
+    assert report["local_db_fallback"]["authorized"] is True
+    assert report["runtime_api"]["token_available"] is False
+    assert report["results"][0]["receipt"]["proof_source"] == "central_db"
+
+
+def test_live_multi_host_acceptance_rejects_local_db_fallback_off_norman(
+    monkeypatch, tmp_path
+):
+    repo_root = tmp_path / "repo"
+    (repo_root / "app" / "db").mkdir(parents=True)
+    (repo_root / "app" / "models").mkdir(parents=True)
+    (repo_root / "app" / "db" / "session.py").write_text("", encoding="utf-8")
+    (repo_root / "app" / "models" / "console_runtime.py").write_text(
+        "", encoding="utf-8"
+    )
+    output = tmp_path / "acceptance.json"
+    monkeypatch.setattr(acceptance.socket, "gethostname", lambda: "hal")
+    monkeypatch.setattr(
+        acceptance,
+        "resolve_console_runtime_token_with_source",
+        lambda: (
+            "",
+            {"runtime_token_source": "none", "runtime_token_secret_name": ""},
+        ),
+    )
+
+    def fail_probe(*_args, **_kwargs):
+        raise AssertionError("acceptance should not send prompts from non-Norman DB")
+
+    monkeypatch.setattr(acceptance, "run_tui_probe", fail_probe)
+
+    result = acceptance.main(
+        [
+            "--live",
+            "--targets",
+            "housebot",
+            "--scenarios",
+            "canary",
+            "--run-id",
+            "central-db-denied",
+            "--repo-root",
+            str(repo_root),
+            "--allow-local-db-fallback",
+            "--output-json",
+            str(output),
+        ]
+    )
+
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert result == 2
+    assert report["preflight_failed"] is True
+    assert report["local_db_fallback"]["requested"] is True
+    assert report["local_db_fallback"]["authorized"] is False
+
+
+def test_run_tui_probe_local_waits_for_idle_before_submit(monkeypatch):
+    target = acceptance.default_targets()["norman"]
+    run = acceptance.materialize_scenario(
+        acceptance.default_scenarios()["canary"],
+        target,
+        run_id="idle-wait",
+    )
+    calls = []
+    status_payloads = [
+        {
+            "pending": True,
+            "last_console_runtime_job_id": "turn-previous",
+            "last_prompt": "old prompt",
+        },
+        {
+            "pending": True,
+            "last_console_runtime_job_id": "turn-previous",
+            "last_prompt": "old prompt",
+        },
+        {
+            "pending": False,
+            "last_console_runtime_job_id": "turn-previous",
+            "last_prompt": "old prompt",
+        },
+        {
+            "pending": False,
+            "last_console_runtime_job_id": "turn-current",
+            "last_prompt": run.message,
+            "last_response": run.expected_response,
+            "last_error": "",
+        },
+    ]
+
+    def fake_fetch(url, *, data=None, timeout=10.0, headers=None):
+        calls.append((url, data))
+        if url.endswith("/api/status"):
+            return 200, status_payloads.pop(0)
+        if url.endswith("/api/ask"):
+            return 202, {
+                "console_runtime_job_id": "turn-current",
+                "receipt_visibility": "visible",
+            }
+        raise AssertionError(url)
+
+    monkeypatch.setattr(acceptance, "_fetch_json", fake_fetch)
+    monkeypatch.setattr(acceptance.time, "sleep", lambda _seconds: None)
+
+    probe = acceptance.run_tui_probe_local(
+        target,
+        run,
+        poll_attempts=5,
+        poll_interval=0.1,
+        ask_timeout=1,
+        status_timeout=1,
+    )
+
+    assert probe["before_idle"] is True
+    assert probe["before_idle_wait_attempts"] == 2
+    assert probe["before_job_id"] == "turn-previous"
+    assert probe["ask_job_id"] == "turn-current"
+    assert calls[0][0].endswith("/api/status")
+    assert calls[3][0].endswith("/api/ask")
 
 
 def test_live_multi_host_acceptance_does_not_fall_back_to_local_db_after_api_failure(
@@ -836,6 +1130,21 @@ def test_validate_acceptance_prefers_ask_owned_job_over_stale_status():
     assert failures == []
     assert proof["job_id"] == fresh_job_id
     assert proof["status_job_id"] == stale_job_id
+
+
+def test_job_id_from_probe_uses_fresh_status_when_ask_job_is_previous_turn():
+    probe = {
+        "before_job_id": "turn-previous",
+        "ask_job_id": "turn-previous",
+        "ask": {"console_runtime_job_id": "turn-previous"},
+        "status": {
+            "last_console_runtime_job_id": "turn-current",
+            "last_prompt": "current nonce prompt",
+            "last_response": "current nonce response",
+        },
+    }
+
+    assert acceptance.job_id_from_probe(probe) == "turn-current"
 
 
 def test_validate_acceptance_allows_stale_visible_state_with_route_proof():

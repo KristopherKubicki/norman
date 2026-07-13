@@ -59,6 +59,22 @@ def acceptance_requires_runtime_api(targets: list["TuiTarget"]) -> bool:
     return any(str(target.ssh_target or "").strip() for target in targets)
 
 
+def acceptance_allows_authoritative_local_db_fallback(
+    *, targets: list["TuiTarget"], repo_root: Path, allow_local_db_fallback: bool
+) -> bool:
+    if not allow_local_db_fallback:
+        return False
+    if not acceptance_requires_runtime_api(targets):
+        return True
+    hostname = (socket.gethostname() or "").strip().lower().split(".", 1)[0]
+    if hostname != "norman":
+        return False
+    root = repo_root.resolve()
+    return (root / "app" / "db" / "session.py").exists() and (
+        root / "app" / "models" / "console_runtime.py"
+    ).exists()
+
+
 def _norman_keys_secret_get_url() -> str:
     base = _first_env("NORMAN_KEYS_URL", "NORMAN_KEYS_API_BASE").rstrip("/")
     if not base:
@@ -252,6 +268,8 @@ result = {
     "error": "",
     "before_job_id": "",
     "ask_job_id": "",
+    "before_idle": False,
+    "before_idle_wait_attempts": 0,
 }
 try:
     _before_status_code, before_status = fetch_json(
@@ -263,8 +281,27 @@ try:
         or before_status.get("running_console_runtime_job_id")
         or ""
     )
+    before_deadline = time.time() + max(poll_interval, poll_attempts * poll_interval)
+    while bool(before_status.get("pending")) and time.time() <= before_deadline:
+        result["before_idle_wait_attempts"] += 1
+        time.sleep(poll_interval)
+        _before_status_code, before_status = fetch_json(
+            base_url + "/api/status",
+            timeout=status_timeout,
+        )
+        result["before_job_id"] = str(
+            before_status.get("last_console_runtime_job_id")
+            or before_status.get("running_console_runtime_job_id")
+            or ""
+        )
+    result["before_idle"] = not bool(before_status.get("pending"))
 except Exception:
     pass
+if result["before_job_id"] and not result.get("before_idle", True):
+    result["error"] = "TUI was still pending before submit"
+    result["status"] = before_status if "before_status" in globals() else {}
+    print(json.dumps(result, sort_keys=True))
+    raise SystemExit(0)
 try:
     ask_status, ask_payload = fetch_json(
         base_url + "/api/ask",
@@ -316,8 +353,15 @@ while time.time() <= poll_deadline:
     prompt_matches = bool(nonce and nonce in prompt)
     response_ready = bool(expected and expected in response)
     desired_job = str(result.get("ask_job_id") or "")
-    fresh_job = bool(desired_job) or not result["before_job_id"] or job_id != result["before_job_id"]
-    if desired_job:
+    ask_visibility = ""
+    ask_payload = result.get("ask")
+    if isinstance(ask_payload, dict):
+        ask_visibility = str(ask_payload.get("receipt_visibility") or "")
+    desired_job_fresh = bool(desired_job) and (
+        not result["before_job_id"] or desired_job != result["before_job_id"]
+    )
+    fresh_job = desired_job_fresh or not result["before_job_id"] or job_id != result["before_job_id"]
+    if desired_job_fresh and ask_visibility == "visible":
         break
     if (
         prompt_matches
@@ -596,6 +640,8 @@ def run_tui_probe_local(
         "error": "",
         "before_job_id": "",
         "ask_job_id": "",
+        "before_idle": False,
+        "before_idle_wait_attempts": 0,
     }
     try:
         _before_status, before_payload = _fetch_json(
@@ -607,8 +653,30 @@ def run_tui_probe_local(
             or before_payload.get("running_console_runtime_job_id")
             or ""
         )
+        before_deadline = time.time() + max(
+            poll_interval, poll_attempts * poll_interval
+        )
+        while bool(before_payload.get("pending")) and time.time() <= before_deadline:
+            result["before_idle_wait_attempts"] = (
+                int(result.get("before_idle_wait_attempts") or 0) + 1
+            )
+            time.sleep(poll_interval)
+            _before_status, before_payload = _fetch_json(
+                base_url + "/api/status",
+                timeout=status_timeout,
+            )
+            result["before_job_id"] = str(
+                before_payload.get("last_console_runtime_job_id")
+                or before_payload.get("running_console_runtime_job_id")
+                or ""
+            )
+        result["before_idle"] = not bool(before_payload.get("pending"))
     except Exception:
         pass
+    if result["before_job_id"] and not result.get("before_idle", True):
+        result["error"] = "TUI was still pending before submit"
+        result["status"] = before_payload if "before_payload" in locals() else {}
+        return result
     try:
         status, payload = _fetch_json(
             base_url + "/api/ask",
@@ -656,12 +724,19 @@ def run_tui_probe_local(
             or ""
         )
         desired_job = str(result.get("ask_job_id") or "")
+        ask_visibility = ""
+        ask_payload = result.get("ask")
+        if isinstance(ask_payload, dict):
+            ask_visibility = str(ask_payload.get("receipt_visibility") or "")
+        desired_job_fresh = bool(desired_job) and (
+            not result["before_job_id"] or desired_job != result["before_job_id"]
+        )
         fresh_job = (
-            bool(desired_job)
+            desired_job_fresh
             or not result["before_job_id"]
             or job_id != result["before_job_id"]
         )
-        if desired_job:
+        if desired_job_fresh and ask_visibility == "visible":
             break
         if (
             run.nonce in prompt
@@ -1032,19 +1107,27 @@ def job_id_from_probe(probe: dict[str, Any]) -> str:
     status = _status_snapshot(probe)
     ask = _dict(probe.get("ask"))
     ask_snapshot = _ask_snapshot(probe)
-    candidates = [
+    before_job_id = str(probe.get("before_job_id") or "").strip()
+    ask_candidates = [
         probe.get("ask_job_id"),
         ask.get("console_runtime_job_id"),
         ask_snapshot.get("console_runtime_job_id"),
         _dict(ask_snapshot.get("snapshot")).get("console_runtime_job_id"),
         _dict(ask_snapshot.get("snapshot")).get("turn_shadow_job_id"),
         _dict(ask_snapshot.get("snapshot")).get("running_console_runtime_job_id"),
+    ]
+    status_candidates = [
         status.get("last_console_runtime_job_id"),
         status.get("running_console_runtime_job_id"),
         status.get("last_response_console_runtime_job_id"),
         ask_snapshot.get("last_console_runtime_job_id"),
         ask_snapshot.get("running_console_runtime_job_id"),
     ]
+    for value in ask_candidates:
+        clean = str(value or "").strip()
+        if clean and clean != before_job_id:
+            return clean
+    candidates = [*status_candidates, *ask_candidates]
     for value in candidates:
         clean = str(value or "").strip()
         if clean:
@@ -1253,8 +1336,11 @@ def receipt_from_norman_api(
         return {
             "available": False,
             "error": "runtime API status %s: %s" % (status, payload.get("detail")),
+            "proof_source": "runtime_api",
         }
-    return _receipt_from_activity_snapshot(clean_job_id, payload)
+    receipt = _receipt_from_activity_snapshot(clean_job_id, payload)
+    receipt["proof_source"] = "runtime_api"
+    return receipt
 
 
 def _receipt_is_terminal_or_provable(receipt: dict[str, Any]) -> bool:
@@ -1278,6 +1364,7 @@ def receipt_from_norman_api_poll(
     timeout: float = 10.0,
     poll_attempts: int = 1,
     poll_interval: float = 1.0,
+    accept_provable_running: bool = True,
 ) -> dict[str, Any]:
     attempts = max(1, int(poll_attempts or 1))
     interval = max(0.1, float(poll_interval or 1.0))
@@ -1302,7 +1389,10 @@ def receipt_from_norman_api_poll(
                 "error": error_text[:240],
             }
         )
-        if _receipt_is_terminal_or_provable(latest):
+        if _receipt_is_terminal_or_provable(latest) and (
+            accept_provable_running
+            or latest.get("job_status") in {"done", "failed", "canceled", "blocked"}
+        ):
             latest["poll_attempts_used"] = attempt + 1
             latest["transient_404_count"] = transient_404_count
             latest["poll_history"] = history
@@ -1462,6 +1552,7 @@ def receipt_from_norman_db(job_id: str, *, repo_root: Path) -> dict[str, Any]:
     final_invocation = invocations[-1] if invocations else {}
     return {
         "available": True,
+        "proof_source": "central_db",
         "job_id": job.job_id,
         "job_status": job.status.value,
         "last_error": job.last_error,
@@ -1510,6 +1601,50 @@ def receipt_from_norman_db(job_id: str, *, repo_root: Path) -> dict[str, Any]:
         "model_completed_count": _int(model_summary.get("completed")),
         "spark_evidence_count": spark_evidence_count,
     }
+
+
+def receipt_from_norman_db_poll(
+    job_id: str,
+    *,
+    repo_root: Path,
+    poll_attempts: int = 1,
+    poll_interval: float = 1.0,
+    accept_provable_running: bool = True,
+) -> dict[str, Any]:
+    attempts = max(1, int(poll_attempts or 1))
+    interval = max(0.1, float(poll_interval or 1.0))
+    latest: dict[str, Any] = {"available": False, "error": "not polled"}
+    history: list[dict[str, Any]] = []
+    missing_count = 0
+    for attempt in range(attempts):
+        latest = receipt_from_norman_db(job_id, repo_root=repo_root)
+        error_text = str(latest.get("error") or "")
+        if "job not found" in error_text:
+            missing_count += 1
+        history.append(
+            {
+                "attempt": attempt + 1,
+                "available": bool(latest.get("available")),
+                "job_status": str(latest.get("job_status") or ""),
+                "error": error_text[:240],
+            }
+        )
+        if _receipt_is_terminal_or_provable(latest) and (
+            accept_provable_running
+            or latest.get("job_status") in {"done", "failed", "canceled", "blocked"}
+        ):
+            latest["poll_attempts_used"] = attempt + 1
+            latest["transient_missing_count"] = missing_count
+            latest["poll_history"] = history
+            return latest
+        if attempt < attempts - 1:
+            time.sleep(interval)
+    latest["poll_attempts_used"] = attempts
+    latest["transient_missing_count"] = missing_count
+    latest["poll_history"] = history
+    if missing_count:
+        latest["receipt_visibility"] = "pending_or_wrong_scope"
+    return latest
 
 
 def validate_acceptance(
@@ -1703,6 +1838,8 @@ def validate_acceptance(
         "response_preview": response[:240],
         "probe_error": str(probe.get("error") or "")[:500],
         "before_job_id": str(probe.get("before_job_id") or ""),
+        "before_idle": bool(probe.get("before_idle")),
+        "before_idle_wait_attempts": _int(probe.get("before_idle_wait_attempts")),
         "ask_job_id": str(probe.get("ask_job_id") or ""),
         "ask_receipt_visibility": str(
             _dict(probe.get("ask")).get("receipt_visibility") or ""
@@ -1755,6 +1892,7 @@ def validate_acceptance(
                 "local_first_readiness_percent",
                 "model_completed_count",
                 "spark_evidence_count",
+                "proof_source",
             )
         },
     }
@@ -1834,6 +1972,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--poll-attempts", type=int, default=90)
     parser.add_argument("--poll-interval", type=float, default=2.0)
+    parser.add_argument(
+        "--post-scenario-settle",
+        type=float,
+        default=0.0,
+        help="Seconds to wait after each scenario so TUI status can clear.",
+    )
     parser.add_argument("--ask-timeout", type=float, default=30.0)
     parser.add_argument("--status-timeout", type=float, default=15.0)
     parser.add_argument("--ssh-timeout", type=float, default=420.0)
@@ -1842,7 +1986,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Allow proof lookup from this checkout's local DB when the runtime "
-            "API is unavailable. Do not use for multi-host release proof."
+            "API is unavailable. For multi-host proof this is accepted only when "
+            "the harness is running on Norman against the authoritative DB."
         ),
     )
     parser.add_argument("--output-json", default="")
@@ -1887,7 +2032,16 @@ def main(argv: list[str] | None = None) -> int:
     else:
         runtime_token, runtime_token_meta = resolve_console_runtime_token_with_source()
     runtime_api_required = acceptance_requires_runtime_api(targets)
-    if runtime_api_required and (not runtime_api_base or not runtime_token):
+    local_db_fallback_authorized = acceptance_allows_authoritative_local_db_fallback(
+        targets=targets,
+        repo_root=repo_root,
+        allow_local_db_fallback=bool(args.allow_local_db_fallback),
+    )
+    if (
+        runtime_api_required
+        and (not runtime_api_base or not runtime_token)
+        and not local_db_fallback_authorized
+    ):
         report = {
             "schema": "norman.tui-kernel-acceptance.v1",
             "run_id": run_id,
@@ -1907,6 +2061,11 @@ def main(argv: list[str] | None = None) -> int:
                 "base": runtime_api_base,
                 "token_available": bool(runtime_token),
                 **runtime_token_meta,
+            },
+            "local_db_fallback": {
+                "authorized": False,
+                "requested": bool(args.allow_local_db_fallback),
+                "hostname": (socket.gethostname() or "").strip(),
             },
             "results": [],
         }
@@ -1942,13 +2101,20 @@ def main(argv: list[str] | None = None) -> int:
                 timeout=args.status_timeout,
                 poll_attempts=args.poll_attempts,
                 poll_interval=args.poll_interval,
+                accept_provable_running=False,
             )
             if not receipt.get("available"):
-                if args.allow_local_db_fallback or not runtime_api_required:
-                    db_receipt = receipt_from_norman_db(job_id, repo_root=repo_root)
+                if local_db_fallback_authorized or not runtime_api_required:
+                    db_receipt = receipt_from_norman_db_poll(
+                        job_id,
+                        repo_root=repo_root,
+                        poll_attempts=args.poll_attempts,
+                        poll_interval=args.poll_interval,
+                        accept_provable_running=False,
+                    )
                     if db_receipt.get("available"):
                         receipt = db_receipt
-        elif not args.allow_local_db_fallback and runtime_api_required:
+        elif not local_db_fallback_authorized and runtime_api_required:
             receipt = {
                 "available": False,
                 "error": (
@@ -1957,7 +2123,13 @@ def main(argv: list[str] | None = None) -> int:
                 ),
             }
         else:
-            receipt = receipt_from_norman_db(job_id, repo_root=repo_root)
+            receipt = receipt_from_norman_db_poll(
+                job_id,
+                repo_root=repo_root,
+                poll_attempts=args.poll_attempts,
+                poll_interval=args.poll_interval,
+                accept_provable_running=False,
+            )
         _ok, _failures, proof = validate_acceptance(target, run, probe, receipt)
         results.append(proof)
         print(
@@ -1970,6 +2142,8 @@ def main(argv: list[str] | None = None) -> int:
             ),
             flush=True,
         )
+        if index < len(matrix) and float(args.post_scenario_settle or 0.0) > 0:
+            time.sleep(float(args.post_scenario_settle))
 
     report = {
         "schema": "norman.tui-kernel-acceptance.v1",
@@ -1982,6 +2156,11 @@ def main(argv: list[str] | None = None) -> int:
             "base": runtime_api_base,
             "token_available": bool(runtime_token),
             **runtime_token_meta,
+        },
+        "local_db_fallback": {
+            "authorized": bool(local_db_fallback_authorized),
+            "requested": bool(args.allow_local_db_fallback),
+            "hostname": (socket.gethostname() or "").strip(),
         },
         "results": results,
     }
