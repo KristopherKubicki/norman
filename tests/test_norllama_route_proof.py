@@ -59,6 +59,17 @@ def _base_receipt() -> dict[str, object]:
         "promotion_authoritative": True,
         "benchmark_score": 0.91,
         "coverage_ratio": 0.88,
+        "capability_gate_exemption": {
+            "exemption_id": "low_risk_local_text_non_mutating",
+            "scope": "request",
+            "allowed_task_risk": ["low"],
+            "mutation_allowed": False,
+            "external_side_effects_allowed": False,
+            "cloud_allowed": False,
+            "requires_transport_gate": "production",
+            "reason": "low-risk local text route",
+        },
+        "capability_gate_exemption_id": "low_risk_local_text_non_mutating",
         "input_tokens": 12,
         "output_tokens": 7,
         "total_tokens": 19,
@@ -291,6 +302,31 @@ def test_route_receipt_audit_requires_qwen_capability_gate_when_required():
 
     assert audit["pass"] is True
     assert audit["benchmark"]["capability_gate"]["gate"] == "production"
+
+
+def test_route_receipt_audit_requires_named_capability_exemption_when_not_required():
+    receipt = _base_receipt()
+    receipt["capability_gate_exemption"] = {}
+    receipt["capability_gate_exemption_id"] = ""
+
+    audit = audit_route_receipt(receipt)
+
+    assert audit["pass"] is False
+    assert (
+        "qwen_default_capability_gate_not_required_without_exemption"
+        in audit["failures"]
+    )
+
+    receipt["capability_gate_exemption"] = {
+        "exemption_id": "low_risk_local_text_non_mutating"
+    }
+    audit = audit_route_receipt(receipt)
+
+    assert audit["pass"] is True
+    assert (
+        audit["benchmark"]["capability_gate_exemption_id"]
+        == "low_risk_local_text_non_mutating"
+    )
 
 
 def test_route_receipt_audit_rejects_zero_token_generative_completion():

@@ -29,6 +29,13 @@ def test_route_policy_contract_is_versioned_compiled_authority():
     assert contract["residency"]["resident"]
     assert contract["fallbacks"]["worker_mismatch_requires_receipt_fallback"] is True
     assert contract["cloud_policy"]["cloud_proxy_counts_as_cloud"] is True
+    exemption = contract["benchmark_gates"]["capability_gate_exemptions"][
+        "low_risk_local_text_non_mutating"
+    ]
+    assert exemption["cloud_allowed"] is False
+    assert exemption["mutation_allowed"] is False
+    assert exemption["external_side_effects_allowed"] is False
+    assert exemption["requires_transport_gate"] == "production"
     assert contract["lifecycle_policy"]["expiry_enforced"] is True
     assert contract["lifecycle_policy"]["expired_state"] == "expired_blocked"
     assert contract["emergency_overlays"]["requires_expiration"] is True

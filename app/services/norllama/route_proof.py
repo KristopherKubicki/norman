@@ -301,6 +301,18 @@ def _production_route_requires_capability_gate(receipt: dict[str, Any]) -> bool:
     return isinstance(gate, dict) and bool(gate)
 
 
+def _capability_gate_exemption(receipt: dict[str, Any]) -> dict[str, Any]:
+    value = receipt.get("capability_gate_exemption")
+    return value if isinstance(value, dict) else {}
+
+
+def _capability_gate_exemption_id(receipt: dict[str, Any]) -> str:
+    exemption = _capability_gate_exemption(receipt)
+    return _clean(receipt.get("capability_gate_exemption_id")) or _clean(
+        exemption.get("exemption_id")
+    )
+
+
 def _production_route_eligible(receipt: dict[str, Any]) -> bool:
     if "production_route_eligible" in receipt:
         return _flag(receipt.get("production_route_eligible"), default=True)
@@ -529,13 +541,18 @@ def audit_route_receipt(receipt: dict[str, Any] | None) -> dict[str, Any]:
             failures.append("qwen_default_without_production_benchmark_gate")
         if not promotion_authoritative:
             failures.append("qwen_default_without_promotion_authoritative")
-        if _production_route_requires_capability_gate(receipt):
+        capability_gate_required = _production_route_requires_capability_gate(receipt)
+        if capability_gate_required:
             if capability_gate not in {"production", "production_capability_backed"}:
                 failures.append("qwen_default_without_production_capability_gate")
             if not capability_promotion_authoritative:
                 failures.append(
                     "qwen_default_without_capability_promotion_authoritative"
                 )
+        elif not _capability_gate_exemption_id(receipt):
+            failures.append(
+                "qwen_default_capability_gate_not_required_without_exemption"
+            )
         if not _flag(receipt.get("benchmark_fresh")):
             failures.append("qwen_default_without_fresh_uplink_benchmark")
         if not _clean(receipt.get("benchmark_packet_id")):
@@ -604,6 +621,8 @@ def audit_route_receipt(receipt: dict[str, Any] | None) -> dict[str, Any]:
             "production_route_requires_capability_gate": (
                 _production_route_requires_capability_gate(receipt)
             ),
+            "capability_gate_exemption": _capability_gate_exemption(receipt),
+            "capability_gate_exemption_id": _capability_gate_exemption_id(receipt),
             "production_route_eligible": bool(production_route_eligible),
         },
         "completion_gate": {

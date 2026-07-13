@@ -333,6 +333,27 @@ def _route_policy_contract_base() -> dict[str, Any]:
             "qwen_production_requires_gate": "production",
             "qwen_production_requires_promotion_authoritative": True,
             "production_route_requires_capability_gate": True,
+            "capability_gate_exemptions": {
+                "low_risk_local_text_non_mutating": {
+                    "applies_to_lanes": [
+                        "chat",
+                        "planner",
+                        "summarizer",
+                        "verifier",
+                    ],
+                    "allowed_task_risk": ["low"],
+                    "mutation_allowed": False,
+                    "external_side_effects_allowed": False,
+                    "cloud_allowed": False,
+                    "requires_transport_gate": "production",
+                    "reason": (
+                        "Low-risk local text work may use transport-backed Qwen "
+                        "routes while representative capability suites remain "
+                        "canary-only; mutating or high-authority work still "
+                        "requires explicit capability proof."
+                    ),
+                }
+            },
         },
         "capability_gates": {
             "order": dict(CAPABILITY_GATE_ORDER),

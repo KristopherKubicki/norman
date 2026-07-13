@@ -112,10 +112,49 @@ def _flag(value: Any, default: bool = False) -> bool:
     return default
 
 
+def _dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
 def _task_kind_value(task_kind: NorllamaTaskKind | str | None) -> str:
     if isinstance(task_kind, NorllamaTaskKind):
         return task_kind.value
     return _clean(task_kind).lower()
+
+
+def _low_risk_capability_gate_exemption(
+    *,
+    task_kind: str,
+    phase: str,
+    provider: str,
+) -> dict[str, Any]:
+    if _lower(provider) not in NORLLAMA_PROVIDER_ALIASES:
+        return {}
+    lane = _lower(task_kind)
+    allowed = {
+        "chat",
+        "literal_response",
+        "plan",
+        "planner",
+        "summarize",
+        "summarizer",
+        "compact",
+    }
+    if lane not in allowed:
+        return {}
+    return {
+        "exemption_id": "low_risk_local_text_non_mutating",
+        "scope": "request",
+        "allowed_task_risk": ["low"],
+        "mutation_allowed": False,
+        "external_side_effects_allowed": False,
+        "cloud_allowed": False,
+        "requires_transport_gate": "production",
+        "reason": (
+            "Low-risk local text route; capability suite remains canary-only, "
+            "so production eligibility is limited to non-mutating local work."
+        ),
+    }
 
 
 def _route_policy_value(policy: dict[str, Any], *keys: str) -> str:
@@ -1280,6 +1319,21 @@ def route_receipt_payload(
     request_production_route_eligible = bool(
         selection_production_route_eligible and policy_production_routes_allowed
     )
+    production_route_requires_capability_gate = bool(
+        quality.get("production_route_requires_capability_gate")
+        or selection.get("production_route_requires_capability_gate")
+    )
+    capability_gate_exemption = (
+        _dict(quality.get("capability_gate_exemption"))
+        or _dict(selection.get("capability_gate_exemption"))
+        or _dict(metadata.get("capability_gate_exemption"))
+    )
+    if not production_route_requires_capability_gate and not capability_gate_exemption:
+        capability_gate_exemption = _low_risk_capability_gate_exemption(
+            task_kind=_task_kind_value(request.kind),
+            phase=phase,
+            provider=route.provider,
+        )
     manual_route_lock = (
         any(
             _flag(source.get(key))
@@ -1429,9 +1483,12 @@ def route_receipt_payload(
             quality.get("capability_promotion_authoritative")
             or selection.get("capability_promotion_authoritative")
         ),
-        "production_route_requires_capability_gate": bool(
-            quality.get("production_route_requires_capability_gate")
-            or selection.get("production_route_requires_capability_gate")
+        "production_route_requires_capability_gate": (
+            production_route_requires_capability_gate
+        ),
+        "capability_gate_exemption": capability_gate_exemption,
+        "capability_gate_exemption_id": _clean(
+            capability_gate_exemption.get("exemption_id")
         ),
         "production_route_eligible": request_production_route_eligible,
         "capability_route_state": _clean(
