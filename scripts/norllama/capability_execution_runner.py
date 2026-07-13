@@ -1819,6 +1819,7 @@ def validate_result_packet(
             failures.append("packet_capability_gate_mismatch")
     for index, result in enumerate(results):
         status = clean(result.get("status"))
+        execution_mode = clean(result.get("execution_mode"))
         if status not in {
             "passed",
             "failed",
@@ -1829,11 +1830,25 @@ def validate_result_packet(
             failures.append(f"result_{index}:invalid_status")
         transport_status = clean(result.get("transport_status"))
         capability_status = clean(result.get("capability_status"))
-        if result.get("execution_mode") == "live":
+        if execution_mode == "live":
             if transport_status not in {"pass", "fail", "not_run"}:
                 failures.append(f"result_{index}:invalid_transport_status")
             if capability_status not in {"pass", "fail", "not_run"}:
                 failures.append(f"result_{index}:invalid_capability_status")
+        if transport_status == "pass" and result.get("transport_passed") is not True:
+            failures.append(f"result_{index}:transport_status_bool_mismatch")
+        if transport_status == "fail" and result.get("transport_passed") is True:
+            failures.append(f"result_{index}:transport_status_bool_mismatch")
+        if (
+            capability_status == "pass"
+            and result.get("capability_quality_passed") is not True
+        ):
+            failures.append(f"result_{index}:capability_status_bool_mismatch")
+        if (
+            capability_status == "fail"
+            and result.get("capability_quality_passed") is True
+        ):
+            failures.append(f"result_{index}:capability_status_bool_mismatch")
         if status == "passed" and (
             result.get("transport_passed") is not True
             or result.get("capability_quality_passed") is not True
@@ -1841,14 +1856,27 @@ def validate_result_packet(
             failures.append(f"result_{index}:passed_without_capability_quality")
         if status == "capability_failed" and result.get("transport_passed") is not True:
             failures.append(f"result_{index}:capability_failed_without_transport")
+        if result.get("accepted") is not (status == "passed"):
+            failures.append(f"result_{index}:accepted_status_mismatch")
+        if (
+            clean(result.get("overall_status"))
+            and clean(result.get("overall_status")) != status
+        ):
+            failures.append(f"result_{index}:overall_status_mismatch")
+        expected_row_gate = "canary_live" if status == "passed" else "failed"
+        if (
+            status in {"passed", "capability_failed", "failed"}
+            and clean(result.get("capability_gate")) != expected_row_gate
+        ):
+            failures.append(f"result_{index}:capability_gate_mismatch")
         if result.get("promotion_authoritative") is not False:
             failures.append(f"result_{index}:promotion_authoritative")
-        if result.get("execution_mode") == "dry_run" and result.get("status") in {
+        if execution_mode == "dry_run" and result.get("status") in {
             "passed",
             "failed",
         }:
             failures.append(f"result_{index}:dry_run_claimed_execution")
-        if result.get("execution_mode") == "dry_run":
+        if execution_mode == "dry_run":
             continue
         if status == "passed" and not clean(result.get("observed_worker")):
             failures.append(f"result_{index}:missing_observed_worker")
@@ -1891,6 +1919,10 @@ def validate_result_packet(
                 failures.append(f"result_{index}:missing_gateway_request_id")
             if not isinstance(result.get("observed_output"), dict):
                 failures.append(f"result_{index}:missing_observed_output")
+            if not isinstance(result.get("execution_instance"), dict):
+                failures.append(f"result_{index}:missing_execution_instance")
+            if not clean(result.get("execution_input_hash")):
+                failures.append(f"result_{index}:missing_execution_input_hash")
         case_key = (clean(result.get("suite_id")), clean(result.get("case_id")))
         expected = case_index.get(case_key)
         if expected:
@@ -1999,6 +2031,34 @@ def validate_result_packet(
                 failures.append(f"result_{index}:usage_bucket_mismatch")
             if route_receipt.get("cloud_proxy"):
                 failures.append(f"result_{index}:route_receipt_cloud_proxy_used")
+            if clean(route_receipt.get("transport_verifier_result")) != clean(
+                result.get("transport_verifier_result")
+            ):
+                failures.append(f"result_{index}:transport_verifier_mismatch")
+            if clean(route_receipt.get("capability_verifier_result")) != clean(
+                result.get("capability_verifier_result")
+            ):
+                failures.append(f"result_{index}:route_capability_verifier_mismatch")
+            route_transport_gate = route_receipt.get("transport_gate")
+            route_capability_gate = route_receipt.get("capability_gate")
+            if not isinstance(route_transport_gate, dict):
+                failures.append(f"result_{index}:route_missing_transport_gate")
+            elif (
+                clean(route_transport_gate.get("gate")) != "canary"
+                or route_transport_gate.get("promotion_authoritative") is not False
+            ):
+                failures.append(f"result_{index}:route_transport_gate_mismatch")
+            if not isinstance(route_capability_gate, dict):
+                failures.append(f"result_{index}:route_missing_capability_gate")
+            elif (
+                clean(route_capability_gate.get("gate")) != "canary"
+                or route_capability_gate.get("promotion_authoritative") is not False
+            ):
+                failures.append(f"result_{index}:route_capability_gate_mismatch")
+            if route_receipt.get("capability_promotion_authoritative") is not False:
+                failures.append(
+                    f"result_{index}:route_capability_promotion_authoritative"
+                )
             if (
                 route_receipt.get("production_route_requires_capability_gate") is True
                 and route_receipt.get("production_route_eligible") is not False

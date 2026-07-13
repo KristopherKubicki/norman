@@ -381,6 +381,16 @@ def test_result_validator_recomputes_live_packet_evidence(monkeypatch):
         "fake_production_gate": lambda p: p["capability_gate"].update(
             {"gate": "production", "promotion_authoritative": True}
         ),
+        "accepted_claim_tamper": lambda p: p["results"][0].update({"accepted": False}),
+        "missing_execution_instance": lambda p: p["results"][0].pop(
+            "execution_instance"
+        ),
+        "route_capability_gate_tamper": lambda p: p["results"][0]["route_receipt"][
+            "capability_gate"
+        ].update({"gate": "production", "promotion_authoritative": True}),
+        "route_transport_verifier_tamper": lambda p: p["results"][0][
+            "route_receipt"
+        ].update({"transport_verifier_result": "fail"}),
     }
 
     expected_failures = {
@@ -393,6 +403,10 @@ def test_result_validator_recomputes_live_packet_evidence(monkeypatch):
         "hidden_cloud_usage": "packet_usage_totals_mismatch",
         "fake_packet_count": "packet_passed_count_mismatch",
         "fake_production_gate": "packet_capability_gate_promotion_authoritative",
+        "accepted_claim_tamper": "result_0:accepted_status_mismatch",
+        "missing_execution_instance": "result_0:missing_execution_instance",
+        "route_capability_gate_tamper": "result_0:route_capability_gate_mismatch",
+        "route_transport_verifier_tamper": "result_0:transport_verifier_mismatch",
     }
     for name, mutate in mutations.items():
         mutated = copy.deepcopy(packet)
