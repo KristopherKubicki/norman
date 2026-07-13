@@ -14,6 +14,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from app.services.norllama.route_policy import (
+    route_policy_contract,
+    route_policy_lifecycle,
+)
 from ticket_token_cost_ledger import (
     DEFAULT_LEDGER_JSONL as DEFAULT_TICKET_COST_LEDGER_JSONL,
 )
@@ -2380,11 +2384,53 @@ def _historic_route_benchmark_gate(path: Path | None) -> dict[str, Any]:
     }
 
 
+def _route_policy_lifecycle_gate(
+    policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    blockers: list[str] = []
+    warnings: list[str] = []
+    try:
+        contract = dict(policy or route_policy_contract())
+        lifecycle = route_policy_lifecycle(contract)
+    except Exception as exc:
+        return {
+            "configured": True,
+            "gate": "hold",
+            "blockers": [
+                f"route policy lifecycle check failed: {type(exc).__name__}: {exc}"
+            ],
+            "warnings": [],
+            "lifecycle": {
+                "state": "refresh_failed",
+                "default_route_allowed": False,
+                "degraded": True,
+            },
+        }
+    state = str(lifecycle.get("state") or "unknown")
+    if not bool(lifecycle.get("default_route_allowed")):
+        blockers.append(
+            "route policy lifecycle blocks default routing: "
+            f"{state}; refresh the compiled policy artifact before cutover"
+        )
+    elif state == "expiring_soon":
+        warnings.append(
+            "route policy expires soon; refresh before broadening cutover scope"
+        )
+    return {
+        "configured": True,
+        "gate": "pass" if not blockers else "hold",
+        "blockers": blockers,
+        "warnings": warnings,
+        "lifecycle": lifecycle,
+    }
+
+
 def build_cutover_readiness_report(
     flow_plan: dict[str, Any],
     *,
     receipt_dir: Path = DEFAULT_ROUTE_RECEIPT_DIR,
     historic_route_benchmark_path: Path | None = None,
+    route_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if flow_plan.get("schema") != "norman.tui-flow-canary-plan.v1":
         raise ValueError("flow plan is not a TUI flow canary plan")
@@ -2403,7 +2449,10 @@ def build_cutover_readiness_report(
         if isinstance(target, dict)
     ]
     historic_gate = _historic_route_benchmark_gate(historic_route_benchmark_path)
+    policy_gate = _route_policy_lifecycle_gate(route_policy)
     global_blockers = list(historic_gate.get("blockers") or [])
+    global_blockers.extend(policy_gate.get("blockers") or [])
+    global_warnings = list(policy_gate.get("warnings") or [])
     ready_targets = [row["owner_tui"] for row in targets if row["cutover_ready"]]
     promotion_ready_targets = [
         row["owner_tui"] for row in targets if row.get("promotion_ready")
@@ -2427,7 +2476,9 @@ def build_cutover_readiness_report(
         "cutover_requires_operator_approval": True,
         "readiness": readiness,
         "global_blockers": global_blockers,
+        "global_warnings": global_warnings,
         "historic_route_benchmark": historic_gate,
+        "route_policy": policy_gate,
         "ready_targets": ready_targets,
         "promotion_ready_targets": promotion_ready_targets,
         "blocked_targets": [
@@ -2523,6 +2574,12 @@ def build_cutover_readiness_report(
             "historic_route_benchmark_five_five_share": historic_gate.get(
                 "median_five_five_token_share_vs_raw"
             ),
+            "route_policy_gate": policy_gate.get("gate"),
+            "route_policy_state": (policy_gate.get("lifecycle") or {}).get("state"),
+            "route_policy_id": (policy_gate.get("lifecycle") or {}).get("policy_id"),
+            "route_policy_hash": (policy_gate.get("lifecycle") or {}).get(
+                "policy_hash"
+            ),
         },
         "cutover_scope": {
             "allowed": [
@@ -2549,6 +2606,16 @@ def render_cutover_readiness_markdown(report: dict[str, Any]) -> str:
     historic = (
         report.get("historic_route_benchmark")
         if isinstance(report.get("historic_route_benchmark"), dict)
+        else {}
+    )
+    route_policy = (
+        report.get("route_policy")
+        if isinstance(report.get("route_policy"), dict)
+        else {}
+    )
+    route_policy_life = (
+        route_policy.get("lifecycle")
+        if isinstance(route_policy.get("lifecycle"), dict)
         else {}
     )
     historic_savings = _safe_float(historic.get("savings_vs_all_bedrock_5_5_xhigh"))
@@ -2585,8 +2652,15 @@ def render_cutover_readiness_markdown(report: dict[str, Any]) -> str:
         f"- Historic route benchmark savings: {historic_savings_label}",
         f"- Historic planner action cases/failures: {historic.get('planner_action_case_count', '-')}/{historic.get('planner_action_fail_count', '-')}",
         f"- Historic planner action score: {historic_action_score_label}",
+        f"- Route policy gate: {route_policy.get('gate', '-')}",
+        f"- Route policy lifecycle: {route_policy_life.get('state', '-')}",
+        f"- Route policy ID: {route_policy_life.get('policy_id', '-')}",
         "",
     ]
+    if report.get("global_warnings"):
+        lines.extend(["## Global Warnings", ""])
+        lines.extend(f"- {item}" for item in report.get("global_warnings") or [])
+        lines.append("")
     if report.get("global_blockers"):
         lines.extend(["## Global Blockers", ""])
         lines.extend(f"- {item}" for item in report.get("global_blockers") or [])

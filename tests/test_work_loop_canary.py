@@ -320,6 +320,9 @@ def test_cutover_readiness_promotes_clean_wave_one_receipts(
     targets = {row["owner_tui"]: row for row in report["targets"]}
 
     assert report["readiness"] == "ready_for_wave_1_limited_cutover"
+    assert report["route_policy"]["gate"] == "pass"
+    assert report["route_policy"]["lifecycle"]["default_route_allowed"] is True
+    assert report["summary"]["route_policy_gate"] == "pass"
     assert report["ready_targets"] == ["market-sizing"]
     assert targets["market-sizing"]["cutover_gate"] == (
         "ready_for_limited_guarded_cutover"
@@ -335,6 +338,48 @@ def test_cutover_readiness_promotes_clean_wave_one_receipts(
         "request operator approval for a limited guarded cutover"
     ]
     assert targets["panelbot"]["cutover_ready"] is False
+
+
+def test_cutover_readiness_blocks_expired_route_policy(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _load_work_loop_canary(monkeypatch)
+    import work_domain_skill_benchmark
+
+    receipt_dir = tmp_path / "route_receipts"
+    receipt_dir.mkdir()
+    owner = "market-sizing"
+    (receipt_dir / f"{owner}.jsonl").write_text(
+        "\n".join(
+            json.dumps(receipt)
+            for receipt in _chained_receipts(
+                [_good_route_receipt(owner, index) for index in range(50)]
+            )
+        ),
+        encoding="utf-8",
+    )
+    route_policy = module.route_policy_contract()
+    route_policy["expires_at"] = "2026-07-01T00:00:00Z"
+
+    plan = module.build_flow_canary_plan(work_domain_skill_benchmark.build_report())
+    report = module.build_cutover_readiness_report(
+        plan,
+        receipt_dir=receipt_dir,
+        route_policy=route_policy,
+    )
+    markdown = module.render_cutover_readiness_markdown(report)
+
+    assert report["readiness"] == "not_ready_for_cutover"
+    assert report["ready_targets"] == []
+    assert report["route_policy"]["gate"] == "hold"
+    assert report["route_policy"]["lifecycle"]["state"] == "expired_blocked"
+    assert report["summary"]["route_policy_state"] == "expired_blocked"
+    assert any(
+        "route policy lifecycle blocks default routing" in blocker
+        for blocker in report["global_blockers"]
+    )
+    assert "Route policy lifecycle: expired_blocked" in markdown
+    assert "## Global Blockers" in markdown
 
 
 def test_cutover_readiness_tracks_wave_two_verifier_promotion_separately(
