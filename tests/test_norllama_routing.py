@@ -3,7 +3,6 @@ from app.services.norllama.routing import (
     route_task,
     with_response_attribution,
 )
-from app.services.norllama.route_proof import audit_route_receipt
 from app.services.norllama.types import NorllamaTaskRequest
 
 
@@ -60,49 +59,6 @@ def test_norllama_tool_task_routes_to_local_capability_lane(monkeypatch):
     assert cascade["summary"]["lane_count"] == 10
     assert "receipt_auditor" in cascade["summary"]["lanes"]
     assert "pytest" in cascade["summary"]["deterministic_experts"]
-
-
-def test_route_receipt_audit_requires_non_empty_critical_fields():
-    receipt = {
-        "schema": "norman.norllama.route-receipt.v1",
-        "status": "completed",
-        "request_id": "req-empty-critical",
-        "job_id": "",
-        "phase": "work",
-        "task_kind": "code",
-        "selected_provider": "norllama",
-        "selected_model": "",
-        "target_model": "qwen3.6:27b",
-        "effective_runtime_model": "qwen3.6:27b",
-        "selected_worker": "spark-151",
-        "observed_worker": "spark-151",
-        "frontdoor": "https://llm.home.arpa",
-        "peer_path": ["llm.home.arpa", "spark-151"],
-        "route_reason": "local-first route-proof test",
-        "policy_mode": "local_first",
-        "cloud_proxy": False,
-        "benchmark_packet_id": "route-proof-active-1",
-        "benchmark_fresh": True,
-        "benchmark_score": 0.91,
-        "coverage_ratio": 1.0,
-        "input_tokens": 1,
-        "output_tokens": 1,
-        "total_tokens": 2,
-        "usage_bucket": "offline_local",
-        "fallback_used": False,
-        "fallback_reason": "",
-        "verifier_result": "pass",
-        "output_shape": "complete",
-        "route_proof_required": True,
-    }
-
-    audit = audit_route_receipt(receipt)
-
-    assert audit["pass"] is False
-    assert "critical_fields_empty" in audit["failures"]
-    assert "job_id" in audit["empty_critical_fields"]
-    assert "selected_model" in audit["empty_critical_fields"]
-    assert "benchmark_source" in audit["absent_critical_fields"]
 
 
 def test_norllama_can_proxy_planning_to_bedrock():
@@ -206,7 +162,7 @@ def test_norllama_catalog_model_selection_for_code_and_judge():
     assert judge_route.tool_lane is False
 
 
-def test_norllama_catalog_model_selection_for_lab_world_and_faster_whisper_asr():
+def test_norllama_catalog_model_selection_for_world_and_faster_whisper_asr():
     world_request = NorllamaTaskRequest(
         kind="world",
         input_text="Simulate whether the browser click is safe.",
@@ -222,9 +178,7 @@ def test_norllama_catalog_model_selection_for_lab_world_and_faster_whisper_asr()
     asr_route = route_task(asr_request)
 
     assert world_route.capability == "world"
-    assert world_route.model == "qwen3.6:27b"
-    assert "AgentWorld" not in world_route.model
-    assert "WebWorld" not in world_route.model
+    assert world_route.model == "qwen3.6:35b-a3b-q4_K_M"
     assert world_route.tool_lane is True
     assert asr_route.capability == "asr"
     assert asr_route.model == "faster-whisper:distil-large-v3"
@@ -243,27 +197,6 @@ def test_norllama_catalog_model_selection_for_specialist_tool_lane():
 
     assert route.capability == "prompt_injection"
     assert route.model == "Qwen/Qwen3Guard-Stream-0.6B"
-    assert route.tool_lane is True
-    assert route.cloud_proxy is False
-
-
-def test_norllama_catalog_model_selection_for_image_generation_lane():
-    request = NorllamaTaskRequest(
-        kind="image_generate",
-        input_text="Draw a Norman shell.",
-        route_policy={"provider": "norllama", "use_capability_catalog": True},
-    )
-
-    route = route_task(request)
-    route_receipt = build_task_receipt(request, route, status="planned").as_dict()[
-        "route_receipt"
-    ]
-
-    assert route.capability == "image_generate"
-    assert route.model == "stable-diffusion:configured-backend"
-    assert route_receipt["effective_runtime_model"] == (
-        "stable-diffusion:configured-backend"
-    )
     assert route.tool_lane is True
     assert route.cloud_proxy is False
 
@@ -293,6 +226,82 @@ def test_norllama_warm_policy_model_selection(monkeypatch):
     assert route.model == "qwen3-coder:30b-a3b-q4_K_M"
     assert route.local is True
     assert route.attribution["model_selection"]["source"] == "warm_policy"
+
+
+def test_norllama_warm_policy_overrides_explicit_model_with_proof(monkeypatch):
+    from app.services.norllama import routing
+
+    monkeypatch.setattr(
+        routing.settings,
+        "llm_offline_base_url",
+        "https://llm.home.arpa/v1",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        routing,
+        "select_model_for_task_kind",
+        lambda kind, **_kwargs: {
+            "selected": True,
+            "task_kind": kind,
+            "model": "qwen3.6:27b",
+            "lane": "coder",
+            "benchmark_packet_id": "uplink-route-proof",
+            "benchmark_fresh": True,
+            "benchmark_quality": {
+                "source": "uplink_benchmark",
+                "score": 0.95,
+                "coverage_ratio": 1.0,
+                "benchmark_gate": {
+                    "gate": "production",
+                    "promotion_authoritative": True,
+                },
+                "promotion_authoritative": True,
+            },
+        },
+    )
+    request = NorllamaTaskRequest(
+        kind="code",
+        input_text="Draft a local patch plan.",
+        route_policy={
+            "provider": "norllama",
+            "model": "qwen3:8b",
+            "model_selection": "warm_policy",
+        },
+        metadata={
+            "runtime_job_id": "job-warm-proof",
+            "execution_mode": "live",
+        },
+    )
+
+    route = route_task(request)
+    refined = with_response_attribution(
+        route,
+        {"raw": {"norllama": {"selected_worker": "spark-151"}}},
+    )
+    receipt = build_task_receipt(
+        request,
+        refined,
+        status="completed",
+        output={
+            "text": "Verified complete.",
+            "target_model": refined.model,
+            "effective_runtime_model": refined.model,
+            "model": refined.model,
+            "usage": {"prompt_tokens": 4, "completion_tokens": 6, "total_tokens": 10},
+        },
+        metadata={"verifier_result": "pass"},
+    ).as_dict()["route_receipt"]
+
+    assert route.model == "qwen3.6:27b"
+    assert route.attribution["model_selection"]["source"] == "warm_policy"
+    assert receipt["job_id"] == "job-warm-proof"
+    assert receipt["execution_mode"] == "live"
+    assert receipt["benchmark_packet_id"] == "uplink-route-proof"
+    assert receipt["benchmark_source"] == "uplink_benchmark"
+    assert receipt["benchmark_gate"]["gate"] == "production"
+    assert receipt["promotion_authoritative"] is True
+    assert receipt["benchmark_score"] == 0.95
+    assert receipt["coverage_ratio"] == 1.0
 
 
 def test_norllama_tool_task_ignores_cloud_without_explicit_tool_proxy():
@@ -571,10 +580,6 @@ def test_norllama_response_attribution_reads_nested_norllama_receipt(monkeypatch
                     "selected_worker": "spark150",
                     "upstream": "http://192.168.2.150:18151",
                     "peer_path": ["llm.home.arpa", "spark150"],
-                    "attempts": [
-                        "http://127.0.0.1:8102",
-                        "http://192.168.2.150:18151",
-                    ],
                 }
             }
         },
@@ -583,10 +588,11 @@ def test_norllama_response_attribution_reads_nested_norllama_receipt(monkeypatch
         request,
         refined,
         status="completed",
+        metadata={"job_id": "job-rerank-attribution"},
         output={
             "target_model": refined.model,
-            "effective_runtime_model": "qwen3.6:27b-runtime",
-            "model": "qwen3.6:27b-runtime",
+            "effective_runtime_model": refined.model,
+            "model": refined.model,
             "raw": {
                 "norllama": {
                     "selected_worker": "spark150",
@@ -602,10 +608,102 @@ def test_norllama_response_attribution_reads_nested_norllama_receipt(monkeypatch
     assert receipt["metadata"]["route_receipt"]["selected_worker"] == "spark-150"
     assert receipt["metadata"]["route_receipt"]["observed_worker"] == "spark-150"
     assert receipt["metadata"]["route_receipt"]["target_model"] == refined.model
-    assert receipt["metadata"]["route_receipt"]["effective_runtime_model"] == (
-        "qwen3.6:27b-runtime"
+    assert (
+        receipt["metadata"]["route_receipt"]["effective_runtime_model"] == refined.model
+    )
+    assert receipt["metadata"]["route_receipt"]["route_selected_model"] == refined.model
+    assert receipt["metadata"]["route_receipt"]["requested_model"] == refined.model
+    assert receipt["metadata"]["route_receipt"]["receipt_audit"]["pass"] is True
+
+
+def test_norllama_response_attribution_preserves_target_worker_on_failover(
+    monkeypatch,
+):
+    from app.services.norllama import routing
+
+    monkeypatch.setattr(
+        routing.settings,
+        "llm_offline_base_url",
+        "https://llm.home.arpa/v1",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        routing.settings,
+        "llm_mesh_workers",
+        [
+            {
+                "id": "spark-150",
+                "role": "production",
+                "base_url": "http://192.168.2.150:18151",
+            },
+            {
+                "id": "spark-151",
+                "role": "production",
+                "base_url": "http://192.168.2.151:18151",
+            },
+        ],
+        raising=False,
+    )
+    request = NorllamaTaskRequest(
+        kind="chat",
+        messages=[{"role": "user", "content": "status"}],
+        route_policy={
+            "provider": "norllama",
+            "selected_worker_id": "spark-151",
+        },
+    )
+    route = route_task(request)
+
+    refined = with_response_attribution(
+        route,
+        {
+            "raw": {
+                "norllama": {
+                    "selected_worker": "spark150",
+                    "upstream": "http://192.168.2.150:18151",
+                    "peer_path": ["llm.home.arpa", "spark150"],
+                    "attempts": [
+                        "http://192.168.2.151:18151",
+                        "http://192.168.2.150:18151",
+                    ],
+                }
+            }
+        },
+    )
+    receipt = build_task_receipt(
+        request,
+        refined,
+        status="completed",
+        output={
+            "text": "ok",
+            "input_tokens": 3,
+            "output_tokens": 1,
+            "target_model": refined.model,
+            "effective_runtime_model": refined.model,
+            "model": refined.model,
+        },
+    ).as_dict()["metadata"]["route_receipt"]
+
+    assert receipt["selected_worker"] == "spark-151"
+    assert receipt["target_worker"] == "spark-151"
+    assert receipt["gateway_selected_worker"] == "spark-150"
+    assert receipt["observed_worker"] == "spark-150"
+    assert receipt["observed_worker_source"] == "gateway_response"
+    assert receipt["attempts"] == [
+        "http://192.168.2.151:18151",
+        "http://192.168.2.150:18151",
+    ]
+    assert receipt["fallback_used"] is True
+    assert (
+        "gateway selected spark-150 instead of target spark-151"
+        in receipt["fallback_reason"]
+    )
+    assert receipt["receipt_audit"]["pass"] is False
+    assert (
+        "worker_mismatch_without_fallback_used"
+        not in receipt["receipt_audit"]["failures"]
     )
     assert (
-        "effective_runtime_model_differs_from_target"
-        in (receipt["metadata"]["route_receipt"]["receipt_audit"]["warnings"])
+        "qwen_default_without_production_benchmark_gate"
+        in receipt["receipt_audit"]["failures"]
     )

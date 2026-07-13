@@ -89,6 +89,117 @@ def test_agent_console_templates_default_to_gpt_55() -> None:
     )
 
 
+def test_agent_console_promotes_stale_codex_model_setting_to_floor() -> None:
+    module = _load_agent_console_web()
+    module.RUNTIME_SETTINGS_PATH.write_text(
+        json.dumps(
+            {
+                "runtime": "codex",
+                "model": "openai.gpt-5.4",
+                "service_tier": "default",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    expected_model = module.MODEL
+
+    assert module.codex_model_below_floor("openai.gpt-5.4") is True
+    assert module.normalize_runtime_model("codex", "openai.gpt-5.4") == expected_model
+    assert module.configured_chat_model() == expected_model
+    assert module.configured_runtime_model("codex") == expected_model
+
+    settings = module.save_runtime_settings(
+        {"runtime": "codex", "model": "openai.gpt-5.4", "service_tier": "default"}
+    )
+
+    assert settings["model"] == expected_model
+    assert settings["model"] != "openai.gpt-5.4"
+    assert all(
+        item["key"] not in {"codex-openai-5-4", "codex-bedrock-5-4"}
+        for item in module.model_route_presets_payload()
+    )
+
+
+def test_agent_console_can_explicitly_enable_legacy_codex_compat_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NORMAN_CODEX_ALLOW_BELOW_FLOOR_SWITCHABLE", "1")
+    module = _load_agent_console_web()
+
+    assert module.normalize_runtime_model("codex", "openai.gpt-5.4") == "openai.gpt-5.4"
+    assert any(
+        item["key"] == "codex-bedrock-5-4"
+        for item in module.model_route_presets_payload()
+    )
+
+
+def test_route_receipt_default_path_uses_tui_state_dir() -> None:
+    source = _agent_console_web_source()
+
+    assert 'str(STATE_DIR / "route_receipts")' in source
+    assert '"/var/lib/norman/route_receipts"' not in source
+
+
+def test_route_receipt_write_permission_failure_is_nonfatal(tmp_path) -> None:
+    module = _load_agent_console_web()
+    blocked_dir = tmp_path / "blocked"
+    blocked_dir.mkdir()
+    blocked_dir.chmod(0o500)
+    old_enabled = module.ROUTE_RECEIPTS_ENABLED
+    old_path = module.ROUTE_RECEIPT_PATH
+    old_error = module.ROUTE_RECEIPT_LAST_WRITE_ERROR
+    try:
+        module.ROUTE_RECEIPTS_ENABLED = True
+        module.ROUTE_RECEIPT_PATH = blocked_dir / "norman.jsonl"
+        module.ROUTE_RECEIPT_LAST_WRITE_ERROR = ""
+
+        receipt = module.append_route_receipt(
+            prompt="status?",
+            visible_response="ready",
+            error_text="",
+            started_at=1712878300,
+            finished_at=1712878302,
+            thread_id="thread-test",
+            speed="normal",
+            detail=2,
+            service_tier="default",
+            job_budget="normal",
+            optimization_mode="optimized",
+            success=True,
+            runtime="codex",
+            model="gpt-5.5",
+            usage={"input_tokens": 10, "output_tokens": 2, "total_tokens": 12},
+        )
+        snapshot = module.route_receipt_status_snapshot()
+    finally:
+        module.ROUTE_RECEIPTS_ENABLED = old_enabled
+        module.ROUTE_RECEIPT_PATH = old_path
+        module.ROUTE_RECEIPT_LAST_WRITE_ERROR = old_error
+        blocked_dir.chmod(0o700)
+
+    assert receipt is not None
+    assert receipt["mirror_status"] == "write_failed"
+    assert "Permission denied" in receipt["mirror_error"]
+    assert snapshot["status"] == "degraded"
+    assert "Permission denied" in snapshot["last_write_error"]
+
+
+def test_empty_route_receipt_mirror_is_not_failed(tmp_path) -> None:
+    module = _load_agent_console_web()
+    receipt_path = tmp_path / "route_receipts" / "norman.jsonl"
+    receipt_path.parent.mkdir()
+    receipt_path.touch()
+
+    snapshot = module.route_receipt_chain_status(receipt_path)
+
+    assert snapshot["status"] == "empty"
+    assert snapshot["receipt_count"] == 0
+    assert snapshot["issue_count"] == 0
+    assert snapshot["issues"] == []
+
+
 def _load_sync_agent_console_template():
     script_path = (
         Path(__file__).resolve().parents[1]
@@ -2262,6 +2373,117 @@ def test_template_uses_single_motion_source_for_live_worker_state() -> None:
     assert "function liveStatusBodyForSnapshot(" in source
 
 
+def test_template_animates_microtextures_with_worker_state() -> None:
+    source = _agent_console_web_source()
+
+    assert 'data-microtexture-state="idle"' in source
+    assert 'id="microtexture-thread-field"' in source
+    assert ".microtexture-thread-field {{" in source
+    assert "const MICROTEXTURE_FIELD_PROFILES = Object.freeze({{" in source
+    assert "const MICROTEXTURE_THREAD_PROFILES = Object.freeze({{" in source
+    assert "function applyMicrotextureFieldProfile(stateKey) {{" in source
+    assert "function startMicrotextureThreadField() {{" in source
+    assert "function drawMicrotextureThreadField(timestampMs = 0) {{" in source
+    assert "function microtextureFluidSquareWave(value, squareWeight) {{" in source
+    assert (
+        "function microtextureFractalSquareWave(value, squareWeight, phase = 0) {{"
+        in source
+    )
+    assert "function drawMicrotextureThreadSegment(" in source
+    assert 'function pulseMicrotextureThreadField(kind = "tick") {{' in source
+    assert (
+        "function syncMicrotextureState(snapshot, auth, humanAsk, queueDepth, bbsSignal) {{"
+        in source
+    )
+    assert (
+        'function triggerMicrotexturePulse(kind = "tick", options = {{}}) {{' in source
+    )
+    assert "function snapshotMicrotextureCounters(snapshot) {{" in source
+    assert 'body[data-microtexture-state="working"]::before,' in source
+    assert 'body[data-microtexture-state="degraded"]::before,' in source
+    assert 'body[data-microtexture-state="crashed"]::before {{' in source
+    assert 'body[data-microtexture-pulse="tool"]::after' in source
+    assert "@keyframes microtexture-click-ripple {{" in source
+    assert "@keyframes microtexture-fault-shear {{" in source
+    assert "@keyframes microtexture-field-flow {{" not in source
+    assert "@keyframes microtexture-wisp-flow {{" not in source
+    assert "linear-gradient(92deg" not in source
+    assert "linear-gradient(88deg" not in source
+    assert "860px 420px" not in source
+    assert "980px 360px" not in source
+    assert "background-repeat: no-repeat;" in source
+    assert "microtexture-field-flow var(--microtexture-drift-duration)" not in source
+    assert "microtexture-wisp-flow var(--microtexture-wisp-duration)" not in source
+    assert "--microtexture-drift-duration: 7.5s;" in source
+    assert "--microtexture-drift-x: 148px;" in source
+    assert "--microtexture-glint-duration: 7.5s;" in source
+    assert "--microtexture-thread-opacity: 0.38;" in source
+    assert '"--microtexture-drift-duration": "7.5s",' in source
+    assert '"--microtexture-thread-opacity": "0.38",' in source
+    assert '"--microtexture-drift-duration": "18s",' in source
+    assert '"--microtexture-drift-duration": "11s",' in source
+    assert "speed: 0.64, drift: 34, amplitude: 5.8" in source
+    assert "square: 0.74, shear: -0.09" in source
+    assert "meshSpacing: 54" in source
+    assert (
+        "function microtextureInterpolatedThreadProfile(targetProfile, deltaSeconds) {{"
+        in source
+    )
+    assert (
+        "function microtextureBlendNumber(currentValue, targetValue, amount) {{"
+        in source
+    )
+    assert (
+        "function microtextureThreadDomainWarp(thread, parameter, metrics) {{" in source
+    )
+    assert "function microtextureThreadEnvelope(thread, metrics) {{" in source
+    assert "const golden = 1.618033988749895;" in source
+    assert "state.microtextureThreadRenderProfile = next;" in source
+    assert 'addThread("h", index, rowCount, width);' in source
+    assert 'addThread("v", index, columnCount, height);' in source
+    assert "flowDirection: 1," in source
+    assert 'harmonicOffset: microtextureSeed(index, axis === "v" ? 13 : 17),' in source
+    assert "thread.reverse" not in source
+    assert (
+        "const oneWayFlow = Math.max(0, Number(metrics.flowOffset || 0)) * thread.flowDirection;"
+        in source
+    )
+    assert "flowOffset," in source
+    assert 'context.globalCompositeOperation = "source-over";' in source
+    assert "const gradient = context.createLinearGradient(" in source
+    assert 'thread.axis === "h" && glintStrength > 0.01' in source
+    assert "radial-gradient(circle at var(--microtexture-pulse-x)" not in source
+    assert "radial-gradient(ellipse at 12%" not in source
+    assert "radial-gradient(ellipse at 74%" not in source
+    assert 'body[data-microtexture-state="flow"]::before {{' in source
+    assert "--microtexture-drift-duration: 4.8s;" in source
+    assert "--microtexture-drift-x: 230px;" in source
+    assert "calc(var(--microtexture-drift-x) * 0.82) 0" not in source
+    assert "118vw 0" not in source
+    assert "transform: translate3d(136%, 0, 0) scaleX(1.02);" not in source
+    assert "transform: translate3d(112%, 0, 0) scaleX(1);" in source
+    assert "infinite alternate" not in source
+    assert "@keyframes microtexture-blocked-jitter {{" not in source
+    assert 'return "working";' in source
+    assert 'return "flow";' in source
+    assert 'return "degraded";' in source
+    assert 'return "crashed";' in source
+    assert "syncMicrotextureState(" in source
+    assert "document.body.dataset.microtextureState = cleanState;" in source
+    assert "syncMicrotextureThreadProfile(cleanState);" in source
+    assert (
+        "state.microtextureThreadFrame = window.requestAnimationFrame(drawMicrotextureThreadField);"
+        in source
+    )
+    assert "body.dataset.microtexturePulse = cleanKind;" in source
+    assert "pulseMicrotextureThreadField(cleanKind);" in source
+    assert (
+        "microtexturePulseKindFromDelta(counters, state.microtextureCounters, nextState)"
+        in source
+    )
+    assert 'body[data-microtexture-state="working"] .topbar.surface::before' in source
+
+
 def test_template_refines_topbar_footer_and_composer_materials() -> None:
     source = _agent_console_web_source()
 
@@ -2398,7 +2620,7 @@ def test_template_applies_subtle_per_agent_style_variants() -> None:
     assert "{style_variant_vars_css(AGENT_SLUG)}" in source
     assert "document.body.dataset.styleVariant = key;" in source
     assert "linear-gradient(var(--body-accent-angle)" in source
-    assert "opacity: var(--body-overlay-opacity);" in source
+    assert "opacity: calc(var(--body-overlay-opacity) * 0.42);" in source
     assert "border-radius: var(--brand-radius);" in source
     assert "border-radius: var(--chrome-pill-radius);" in source
     assert "font-family: var(--font-reading);" in source
@@ -4260,17 +4482,6 @@ def test_sync_template_treats_hal_as_root_managed_local_host() -> None:
     assert hal.local is True
     assert hal.read_only is False
     assert hal.root_managed_local is True
-
-
-def test_sync_template_treats_norman_as_sudo_local_host() -> None:
-    module = _load_sync_agent_console_template()
-
-    norman = module.HOSTS["norman"]
-
-    assert norman.local is True
-    assert norman.use_sudo is True
-    assert norman.root_managed_local is False
-    assert norman.ssh_target == ""
 
 
 def test_sync_template_source_skips_root_managed_local_host_in_user_sync() -> None:

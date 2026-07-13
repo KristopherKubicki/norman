@@ -17,6 +17,7 @@ from app.services.console_runtime.adapters.fake import FakeModelAdapter
 from app.services.console_runtime.adapters.norllama import NorllamaModelAdapter
 from app.services.console_runtime.adapters import norllama as norllama_adapter
 from app.services.console_runtime.streaming import event_to_sse, events_to_sse
+from app.services.norllama.types import NorllamaRoute
 
 
 def _contract(**overrides):
@@ -314,7 +315,11 @@ def test_norllama_adapter_returns_route_receipt(monkeypatch):
             "model": kwargs["model"],
             "choices": [{"message": {"content": "adapter ok"}}],
             "usage": {"prompt_tokens": 2, "completion_tokens": 5},
-            "headers": {},
+            "headers": {
+                "X-Norllama-Worker-Id": "spark-151",
+                "X-Norllama-Peer-Path": "llm.home.arpa,spark-151",
+                "X-Norllama-Request-Id": "gw-job-adapter-test",
+            },
         }
 
     monkeypatch.setattr(
@@ -331,19 +336,36 @@ def test_norllama_adapter_returns_route_receipt(monkeypatch):
                 "route_policy": {
                     "provider": "norllama",
                     "model_timeout_seconds": 75,
-                }
+                },
+                "job_id": "job-adapter-test",
+                "session_name": "norman-codex",
+                "goal_phase": "work",
+                "goal_task_kind": "chat",
+                "invocation_id": "worker:job-adapter-test:work:1:model",
             },
         )
     )
 
     assert result.text == "adapter ok"
     assert calls[0]["timeout_seconds"] == 75
+    assert calls[0]["correlation_headers"]["X-Request-Id"] == (
+        "worker:job-adapter-test:work:1:model"
+    )
+    assert calls[0]["correlation_headers"]["X-Norman-Job-Id"] == "job-adapter-test"
+    assert calls[0]["correlation_headers"]["X-Norman-Session"] == "norman-codex"
+    assert calls[0]["correlation_headers"]["X-Norman-Phase"] == "work"
+    assert calls[0]["correlation_headers"]["X-Norman-Lane"] == "chat"
     assert result.provider == "norllama"
     assert result.usage.total_tokens == 7
     assert result.metadata["norllama_route"]["provider"] == "norllama"
     assert result.metadata["norllama_receipt"]["status"] == "completed"
     route_receipt = result.metadata["norllama_receipt"]["route_receipt"]
     assert route_receipt["total_tokens"] == 7
+    assert route_receipt["client_request_id"] == (
+        "worker:job-adapter-test:work:1:model"
+    )
+    assert route_receipt["gateway_request_id"] == "gw-job-adapter-test"
+    assert route_receipt["invocation_id"] == "worker:job-adapter-test:work:1:model"
     lanes = {
         lane["lane"]: lane for lane in route_receipt["specialist_cascade"]["lanes"]
     }
@@ -352,6 +374,97 @@ def test_norllama_adapter_returns_route_receipt(monkeypatch):
     assert lanes["difficulty_estimator"]["status"] == "pass"
     assert lanes["receipt_auditor"]["live_smoke_test"]["status"] == "passed"
     assert lanes["receipt_auditor"]["proof_state"] == "production"
+
+
+def test_norllama_adapter_derives_job_header_from_invocation_id():
+    headers = norllama_adapter._correlation_headers(
+        ModelRequest(
+            messages=[{"role": "user", "content": "work"}],
+            metadata={
+                "session_name": "norman-codex",
+                "goal_phase": "work",
+                "goal_task_kind": "chat",
+                "invocation_id": "worker:job-derived-header:work:1:model",
+            },
+        ),
+        task_id="worker:job-derived-header:work:1:model",
+    )
+
+    assert headers["X-Request-Id"] == "worker:job-derived-header:work:1:model"
+    assert headers["X-Norman-Job-Id"] == "job-derived-header"
+    assert headers["X-Norman-Session"] == "norman-codex"
+
+
+def test_norllama_adapter_executes_worker_route_without_rerouting(monkeypatch):
+    route = NorllamaRoute(
+        lane="norllama_code",
+        provider="norllama",
+        provider_kind="norllama",
+        capability="code",
+        model="qwen3.6:27b",
+        endpoint="https://llm.home.arpa/v1",
+        local=True,
+        cloud_proxy=False,
+        requires_receipt=True,
+        reason="worker selected code route",
+        attribution={
+            "model_selection": {"model": "qwen3.6:27b", "source": "worker_route"},
+            "selection_source": "frontdoor_delegated",
+            "routing_scope": "frontdoor",
+        },
+    )
+    calls = []
+
+    def fail_reroute(_task):
+        raise AssertionError("adapter must not reroute worker-selected requests")
+
+    def fake_invoke_text_chat(**kwargs):
+        calls.append(kwargs)
+        return {
+            "model": kwargs["model"],
+            "choices": [{"message": {"content": "adapter ok"}}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 4},
+            "headers": {
+                "X-Norllama-Worker-Id": "spark-151",
+                "X-Norllama-Peer-Path": "llm.home.arpa,spark-151",
+                "X-Norllama-Request-Id": "gw-worker-route",
+            },
+        }
+
+    monkeypatch.setattr(norllama_adapter, "route_task", fail_reroute)
+    monkeypatch.setattr(
+        norllama_adapter.norllama_gateway,
+        "invoke_text_chat",
+        fake_invoke_text_chat,
+    )
+
+    result = NorllamaModelAdapter().invoke(
+        ModelRequest(
+            messages=[{"role": "user", "content": "patch"}],
+            model="qwen3.6:27b",
+            metadata={
+                "route_policy": {"provider": "norllama"},
+                "norllama_route": route.as_dict(),
+                "norllama_task_kind": "code",
+                "route_selected_model": "qwen3.6:27b",
+                "requested_model": "qwen3.6:27b",
+                "job_id": "job-worker-route",
+                "goal_phase": "work",
+                "goal_task_kind": "code",
+                "invocation_id": "worker:job-worker-route:work:1:model",
+            },
+        )
+    )
+
+    receipt = result.metadata["norllama_receipt"]["route_receipt"]
+    assert calls[0]["model"] == "qwen3.6:27b"
+    assert receipt["task_kind"] == "code"
+    assert receipt["phase"] == "work"
+    assert receipt["selected_model"] == "qwen3.6:27b"
+    assert receipt["route_selected_model"] == "qwen3.6:27b"
+    assert receipt["requested_model"] == "qwen3.6:27b"
+    assert receipt["effective_runtime_model"] == "qwen3.6:27b"
+    assert receipt["gateway_request_id"] == "gw-worker-route"
 
 
 def test_norllama_adapter_reports_live_capabilities(monkeypatch):

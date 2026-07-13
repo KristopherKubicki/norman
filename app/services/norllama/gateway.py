@@ -216,7 +216,7 @@ def _requests_post(
         )
 
 
-def _requests_post_data(
+def _requests_post_bytes(
     url: str, *, headers: dict[str, str], data: bytes, timeout: float
 ):
     verify = _verify_tls_for_url(url)
@@ -263,6 +263,7 @@ def invoke_text_chat(
     max_tokens: int,
     api_key: str = "",
     timeout_seconds: float | None = None,
+    correlation_headers: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Invoke a native Ollama/Norllama text lane and return OpenAI-like data."""
 
@@ -272,6 +273,14 @@ def invoke_text_chat(
         raise RuntimeError("Norllama model is not configured")
 
     headers = {"Content-Type": "application/json"}
+    for key, value in dict(correlation_headers or {}).items():
+        clean_key = _clean(key)
+        clean_value = _clean(value)
+        if (
+            clean_key.startswith(("X-Request-Id", "X-Norman-", "X-Norllama-"))
+            and clean_value
+        ):
+            headers[clean_key] = clean_value
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     request_payload: dict[str, Any] = {
@@ -412,14 +421,14 @@ def classify_safety(
 def ocr_document(
     *,
     content: bytes,
+    filename: str,
+    media_type: str,
     base_url: str,
     model: str = "",
     api_key: str = "",
-    filename: str = "upload.bin",
-    content_type: str = "application/octet-stream",
     timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
-    """Invoke the Norllama OCR/document parsing lane through the front door."""
+    """Invoke the Norllama OCR/document specialist lane through the front door."""
 
     frontdoor = _clean(base_url) or _clean(
         getattr(settings, "llm_offline_base_url", "")
@@ -427,38 +436,33 @@ def ocr_document(
     if not frontdoor:
         raise RuntimeError("Norllama base URL is not configured")
     if not content:
-        raise RuntimeError("Norllama OCR content is missing")
+        raise RuntimeError("Norllama OCR content is empty")
     headers = {
         "Accept": "application/json",
-        "Content-Type": _clean(content_type) or "application/octet-stream",
-        "X-Filename": _clean(filename) or "upload.bin",
+        "Content-Type": _clean(media_type) or "application/octet-stream",
+        "X-Filename": _clean(filename) or "document.bin",
     }
+    if _clean(model):
+        headers["X-Norllama-Model"] = _clean(model)
     key = api_key if api_key else _clean(getattr(settings, "llm_offline_api_key", ""))
     if key:
         headers["Authorization"] = f"Bearer {key}"
-    response = _requests_post_data(
+    response = _requests_post_bytes(
         _ocr_url(frontdoor),
         headers=headers,
         data=content,
         timeout=timeout_seconds
-        or max(1, min(float(settings.llm_provider_timeout_seconds), 180.0)),
+        or max(1, min(float(settings.llm_provider_timeout_seconds), 120.0)),
     )
     response.raise_for_status()
     payload = response.json()
     if not isinstance(payload, dict):
         payload = {}
-    text = _clean(payload.get("text") or payload.get("merged_text"))
-    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
-    usage.setdefault("input_tokens", int(payload.get("line_count") or 0))
-    usage.setdefault("output_tokens", 0)
-    usage.setdefault("total_tokens", usage.get("input_tokens") or 0)
-    usage.setdefault("usage_bucket", "offline_local")
     return {
         "model": _clean(payload.get("model")) or _clean(model),
-        "text": text,
-        "status": _clean(payload.get("status")),
-        "line_count": payload.get("line_count"),
-        "usage": usage,
+        "text": _clean(payload.get("text") or payload.get("merged_text")),
+        "pages": payload.get("pages") if isinstance(payload.get("pages"), list) else [],
+        "usage": payload.get("usage") if isinstance(payload.get("usage"), dict) else {},
         "headers": _routing_headers(response),
         "raw": payload,
     }
@@ -467,11 +471,11 @@ def ocr_document(
 def transcribe_audio(
     *,
     content: bytes,
+    filename: str,
+    media_type: str,
     base_url: str,
     model: str = "",
     api_key: str = "",
-    filename: str = "upload.wav",
-    content_type: str = "audio/wav",
     timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Invoke the Norllama ASR/transcription lane through the front door."""
@@ -482,41 +486,35 @@ def transcribe_audio(
     if not frontdoor:
         raise RuntimeError("Norllama base URL is not configured")
     if not content:
-        raise RuntimeError("Norllama ASR content is missing")
+        raise RuntimeError("Norllama transcription content is empty")
     headers = {
         "Accept": "application/json",
-        "Content-Type": _clean(content_type) or "audio/wav",
-        "X-Filename": _clean(filename) or "upload.wav",
+        "Content-Type": _clean(media_type) or "application/octet-stream",
+        "X-Filename": _clean(filename) or "audio.bin",
     }
+    if _clean(model):
+        headers["X-Norllama-Model"] = _clean(model)
     key = api_key if api_key else _clean(getattr(settings, "llm_offline_api_key", ""))
     if key:
         headers["Authorization"] = f"Bearer {key}"
-    response = _requests_post_data(
+    response = _requests_post_bytes(
         _transcribe_url(frontdoor),
         headers=headers,
         data=content,
         timeout=timeout_seconds
-        or max(1, min(float(settings.llm_provider_timeout_seconds), 240.0)),
+        or max(1, min(float(settings.llm_provider_timeout_seconds), 120.0)),
     )
     response.raise_for_status()
     payload = response.json()
     if not isinstance(payload, dict):
         payload = {}
-    text = _clean(payload.get("text") or payload.get("transcript"))
-    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
-    usage.setdefault("input_tokens", 1)
-    usage.setdefault("output_tokens", len(text.split()) if text else 0)
-    usage.setdefault(
-        "total_tokens",
-        int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0),
-    )
-    usage.setdefault("usage_bucket", "offline_local")
     return {
         "model": _clean(payload.get("model")) or _clean(model),
-        "text": text,
-        "status": _clean(payload.get("status")),
-        "duration_seconds": payload.get("duration_seconds"),
-        "usage": usage,
+        "text": _clean(payload.get("text") or payload.get("transcript")),
+        "segments": payload.get("segments")
+        if isinstance(payload.get("segments"), list)
+        else [],
+        "usage": payload.get("usage") if isinstance(payload.get("usage"), dict) else {},
         "headers": _routing_headers(response),
         "raw": payload,
     }
@@ -565,9 +563,10 @@ def generate_image(
         "explicit",
         "nsfw",
     }
-    rating = rating or ("adult" if nsfw_enabled else "standard")
     request_payload["allow_nsfw"] = nsfw_enabled
-    request_payload["content_rating"] = rating
+    request_payload["content_rating"] = rating or (
+        "adult" if nsfw_enabled else "standard"
+    )
     if _clean(safety_profile):
         request_payload["safety_profile"] = _clean(safety_profile)
     if _clean(model):
@@ -884,6 +883,7 @@ TOOL_ACTIVITY_CAPABILITIES = {
     "vision",
     "doc_parse",
     "gui_ground",
+    "image_generate",
     "world",
     "prefetch",
     "prompt_injection",
@@ -891,8 +891,6 @@ TOOL_ACTIVITY_CAPABILITIES = {
     "chat",
     "code",
     "plan",
-    "image_generate",
-    "stable_diffusion",
 }
 PROBE_ACTIVITY_PATHS = {
     "/",
@@ -1096,13 +1094,13 @@ def normalize_capabilities_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "doc_parse",
             "embed",
             "gui_ground",
+            "image_generate",
             "ocr",
             "prompt_injection",
             "rerank",
             "safety",
             "stt",
             "world",
-            "image_generate",
         }:
             _append_unique(tool_lanes, kind)
     task_kinds = _list_values(
@@ -1120,13 +1118,13 @@ def normalize_capabilities_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "doc_parse",
             "embed",
             "gui_ground",
+            "image_generate",
             "ocr",
             "prompt_injection",
             "stt",
             "rerank",
             "safety",
             "world",
-            "image_generate",
         }.intersection(set(task_kinds))
     )
     supports_streaming = bool(
@@ -1155,6 +1153,9 @@ def normalize_capabilities_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "capabilities": caps,
         "contracts": _contract_items(payload),
         "endpoints": _endpoint_items(payload),
+        "model_policy": dict(payload.get("model_policy"))
+        if isinstance(payload.get("model_policy"), dict)
+        else {},
         "raw": payload,
     }
 
@@ -1334,6 +1335,7 @@ def probe_mesh_worker(
                     "modalities": capabilities.get("modalities", []),
                     "endpoints": capabilities.get("endpoints", []),
                     "contracts": capabilities.get("contracts", []),
+                    "model_policy": capabilities.get("model_policy", {}),
                 },
                 "endpoints": capabilities.get("endpoints", []),
                 "contracts": capabilities.get("contracts", []),
@@ -1433,6 +1435,7 @@ def build_mesh_overview(
                     "modalities": capabilities.get("modalities", []),
                     "endpoints": capabilities.get("endpoints", []),
                     "contracts": capabilities.get("contracts", []),
+                    "model_policy": capabilities.get("model_policy", {}),
                 },
                 "endpoints": capabilities.get("endpoints", []),
                 "contracts": capabilities.get("contracts", []),

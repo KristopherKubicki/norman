@@ -31,6 +31,24 @@ def _dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
+def _bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return _clean(value).lower() in {"1", "true", "yes", "on", "pass", "passed"}
+
+
+def _audit_passes(value: Any) -> bool:
+    payload = _dict(value)
+    return _clean(payload.get("status")).lower() == "pass" or _bool(payload.get("pass"))
+
+
+def _completion_gate_passes(value: Any) -> bool:
+    payload = _dict(value)
+    return _clean(payload.get("status")).lower() == "pass" or _bool(
+        payload.get("gate_passed")
+    )
+
+
 def _results(report: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         dict(item) for item in report.get("results") or [] if isinstance(item, dict)
@@ -150,8 +168,16 @@ def acceptance_release_gate(
     receipt_failures: list[str] = []
     workerless: list[str] = []
     cloud_token_results: list[str] = []
+    cloud_proxy_results: list[str] = []
     nonlocal_kpi: list[str] = []
     missing_model_events: list[str] = []
+    missing_live_execution: list[str] = []
+    output_shape_failures: list[str] = []
+    missing_local_tokens: list[str] = []
+    receipt_audit_failures: list[str] = []
+    completion_gate_failures: list[str] = []
+    observed_workerless: list[str] = []
+    invalid_observed_worker_source: list[str] = []
     for item in results:
         label = "%s:%s" % (_result_target(item), _result_scenario(item))
         receipt = _dict(item.get("receipt"))
@@ -163,6 +189,22 @@ def acceptance_release_gate(
             receipt_failures.append(label)
         if not _clean(receipt.get("selected_worker")):
             workerless.append(label)
+        if not _clean(receipt.get("observed_worker")):
+            observed_workerless.append(label)
+        if _clean(receipt.get("observed_worker_source")) != "gateway_response":
+            invalid_observed_worker_source.append(label)
+        if _clean(receipt.get("execution_mode")).lower() != "live":
+            missing_live_execution.append(label)
+        if _clean(receipt.get("output_shape")).lower() != "complete":
+            output_shape_failures.append(label)
+        if _int(receipt.get("local_tokens")) <= 0:
+            missing_local_tokens.append(label)
+        if not _audit_passes(receipt.get("receipt_audit")):
+            receipt_audit_failures.append(label)
+        if not _completion_gate_passes(receipt.get("completion_gate")):
+            completion_gate_failures.append(label)
+        if _bool(receipt.get("cloud_proxy")):
+            cloud_proxy_results.append(label)
         if _int(receipt.get("goal_cloud_tokens")) or _int(
             receipt.get("ledger_cloud_tokens")
         ):
@@ -191,6 +233,45 @@ def acceptance_release_gate(
         )
     if workerless:
         failures.append("missing worker attribution: %s" % ", ".join(workerless))
+    if observed_workerless:
+        failures.append(
+            "missing observed worker proof: %s"
+            % ", ".join(sorted(set(observed_workerless)))
+        )
+    if invalid_observed_worker_source:
+        failures.append(
+            "observed worker source is not gateway_response: %s"
+            % ", ".join(sorted(set(invalid_observed_worker_source)))
+        )
+    if missing_live_execution:
+        failures.append(
+            "missing live execution proof: %s"
+            % ", ".join(sorted(set(missing_live_execution)))
+        )
+    if output_shape_failures:
+        failures.append(
+            "output shape is not complete: %s"
+            % ", ".join(sorted(set(output_shape_failures)))
+        )
+    if missing_local_tokens:
+        failures.append(
+            "missing positive local token proof: %s"
+            % ", ".join(sorted(set(missing_local_tokens)))
+        )
+    if receipt_audit_failures:
+        failures.append(
+            "receipt audit did not pass: %s"
+            % ", ".join(sorted(set(receipt_audit_failures)))
+        )
+    if completion_gate_failures:
+        failures.append(
+            "completion gate did not pass: %s"
+            % ", ".join(sorted(set(completion_gate_failures)))
+        )
+    if cloud_proxy_results:
+        failures.append(
+            "cloud proxy used: %s" % ", ".join(sorted(set(cloud_proxy_results)))
+        )
     if cloud_token_results:
         failures.append(
             "cloud/proxy tokens present: %s" % ", ".join(cloud_token_results)
@@ -235,6 +316,15 @@ def acceptance_release_gate(
             "all_results_passed": not failed_results and bool(results),
             "receipts_complete": not receipt_failures and bool(results),
             "worker_attribution_complete": not workerless and bool(results),
+            "observed_worker_proof": not observed_workerless
+            and not invalid_observed_worker_source
+            and bool(results),
+            "live_execution": not missing_live_execution and bool(results),
+            "complete_output_shape": not output_shape_failures and bool(results),
+            "positive_local_tokens": not missing_local_tokens and bool(results),
+            "receipt_audit_passed": not receipt_audit_failures and bool(results),
+            "completion_gate_passed": not completion_gate_failures and bool(results),
+            "no_cloud_proxy": not cloud_proxy_results and bool(results),
             "zero_cloud_tokens": not cloud_token_results and bool(results),
             "local_first_on_target": not nonlocal_kpi and bool(results),
             "model_completion_visible": not missing_model_events and bool(results),
@@ -262,6 +352,13 @@ def latest_acceptance_gate(
                 "all_results_passed": False,
                 "receipts_complete": False,
                 "worker_attribution_complete": False,
+                "observed_worker_proof": False,
+                "live_execution": False,
+                "complete_output_shape": False,
+                "positive_local_tokens": False,
+                "receipt_audit_passed": False,
+                "completion_gate_passed": False,
+                "no_cloud_proxy": False,
                 "zero_cloud_tokens": False,
                 "local_first_on_target": False,
                 "model_completion_visible": False,

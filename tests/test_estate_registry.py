@@ -31,6 +31,16 @@ places:
     principal: alpha
     display_name: Home
     kind: home
+    site_root: alpha.lollie.org
+    local_zone: home.arpa
+    shortcut_frontdoor_address: 192.168.2.10
+site_shortcuts:
+  - slug: hubitat
+    display_name: Hubitat
+    local_host: hubitat.home.arpa
+    canonical_label: hubitat
+    places:
+      - home
 bots:
   - slug: alpha-bot
     principal: alpha
@@ -46,16 +56,6 @@ workers:
     place: home
     control_class: root-controlled
     policy_profile: manual
-    bbs:
-      role: network
-      zone: network
-      receive: true
-      full_coverage: true
-      cross_zone: false
-      allow_private: false
-      channels:
-        - switchboard
-        - network/*
 assets:
   - slug: thing
     principal: alpha
@@ -91,6 +91,7 @@ def test_load_registry_normalizes_and_summarizes(tmp_path: pathlib.Path) -> None
         "control_classes": 1,
         "domains": 1,
         "places": 1,
+        "site_shortcuts": 1,
         "bots": 1,
         "workers": 1,
         "assets": 1,
@@ -100,46 +101,28 @@ def test_load_registry_normalizes_and_summarizes(tmp_path: pathlib.Path) -> None
     }
 
 
-def test_load_registry_preserves_and_projects_bbs_policy(
-    tmp_path: pathlib.Path,
-) -> None:
-    path = tmp_path / "registry.yaml"
-    path.write_text(VALID_REGISTRY, encoding="utf-8")
+def test_default_registry_publishes_dohio_topology() -> None:
+    registry = estate_registry.load_registry(estate_registry.DEFAULT_TEMPLATE_PATH)
+    workers = {item["slug"]: item for item in registry["workers"]}
+    services = {item["slug"]: item for item in registry["services"]}
 
-    registry = estate_registry.load_registry(path)
-
-    worker = registry["workers"][0]
-    assert worker["bbs"]["role"] == "network"
-    assert estate_registry.bbs_connector_config(worker) == {
-        "bbs_acl_role": "network",
-        "bbs_zone": "network",
-        "bbs_receive": True,
-        "bbs_channels": ["switchboard", "network/*"],
-        "bbs_full_coverage": True,
-        "bbs_cross_zone": False,
-        "bbs_allow_private": False,
-    }
-
-
-def test_load_registry_rejects_invalid_bbs_policy(
-    tmp_path: pathlib.Path,
-) -> None:
-    path = tmp_path / "registry.yaml"
-    path.write_text(
-        VALID_REGISTRY.replace("role: network", "role: everything", 1),
-        encoding="utf-8",
+    assert workers["cloud-gw-ohio"]["hostname"] == "cloud-gw-ohio.tail94915.ts.net"
+    assert services["dohio-topology"]["web_url"] == "https://dohio.home.arpa/"
+    assert (
+        services["dohio-topology"]["web_url_tailnet"]
+        == "https://cloud-gw-ohio.tail94915.ts.net/"
     )
-
-    with pytest.raises(estate_registry.EstateRegistryError, match="bbs role"):
-        estate_registry.load_registry(path)
+    assert services["switchyard-network-board"]["web_url"] == (
+        "https://dohio.home.arpa/admin"
+    )
 
 
 def test_load_registry_rejects_duplicate_slugs(tmp_path: pathlib.Path) -> None:
     path = tmp_path / "registry.yaml"
     path.write_text(
         "principals:\n  - slug: alpha\n  - slug: alpha\npolicy_profiles: []\n"
-        "control_classes: []\ndomains: []\nplaces: []\nbots: []\nworkers: []\n"
-        "assets: []\nservices: []\nchannels: []\npeople: []\n",
+        "control_classes: []\ndomains: []\nplaces: []\nsite_shortcuts: []\n"
+        "bots: []\nworkers: []\nassets: []\nservices: []\nchannels: []\npeople: []\n",
         encoding="utf-8",
     )
 
@@ -171,3 +154,19 @@ def test_init_registry_copies_template(
 
     assert out.exists()
     assert out.read_text(encoding="utf-8") == VALID_REGISTRY
+
+
+def test_load_registry_rejects_unknown_site_shortcut_place(
+    tmp_path: pathlib.Path,
+) -> None:
+    path = tmp_path / "registry.yaml"
+    path.write_text(
+        VALID_REGISTRY.replace("- home", "- beach", 1),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        estate_registry.EstateRegistryError,
+        match="unknown site place `beach`",
+    ):
+        estate_registry.load_registry(path)

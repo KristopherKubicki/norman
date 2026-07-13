@@ -5,6 +5,10 @@ import os
 from typing import Any, Mapping
 from urllib.parse import urlparse
 
+from app.services.norllama.route_policy import (
+    ROUTE_POLICY_VERSION,
+    route_policy_contract,
+)
 from app.services.console_runtime.types import RouteDecision, RuntimeModeState
 
 
@@ -164,13 +168,24 @@ def with_local_first_catalog_defaults(
     """
 
     policy = dict(route_policy or {})
-    policy.setdefault("local_first", True)
-    policy.setdefault("allow_cloud_proxy", False)
-    policy.setdefault("allow_cloud_tool_proxy", False)
-    policy.setdefault("escalation_policy", "explicit_cloud_only")
-    policy.setdefault("cost_posture", "local_token_first")
-    policy.setdefault("planner", "norllama")
-    policy.setdefault("model_proxy", "norllama")
+    authority = route_policy_contract()
+    policy.setdefault("route_policy_version", ROUTE_POLICY_VERSION)
+    policy.setdefault("route_policy_id", authority["policy_id"])
+    policy.setdefault("route_policy_hash", authority["policy_hash"])
+    policy.setdefault("policy_authority", authority["schema"])
+    policy.setdefault("local_first", authority["local_first"])
+    policy.setdefault("allow_cloud_proxy", authority["allow_cloud_proxy"])
+    policy.setdefault("allow_cloud_tool_proxy", authority["allow_cloud_tool_proxy"])
+    policy.setdefault("escalation_policy", authority["escalation_policy"])
+    policy.setdefault("cost_posture", authority["cost_posture"])
+    policy.setdefault("planner", authority["planner"])
+    policy.setdefault("model_proxy", authority["model_proxy"])
+    policy.setdefault("route_policy_artifact", authority)
+    policy.setdefault("benchmark_gate_policy", authority["benchmark_gates"])
+    policy.setdefault("placement_policy", authority["placement"])
+    policy.setdefault("residency_policy", authority["residency"])
+    policy.setdefault("fallback_policy", authority["fallbacks"])
+    policy.setdefault("cloud_policy", authority["cloud_policy"])
     if not _route_policy_has_runner(policy):
         policy["provider"] = "norllama"
     if route_policy_is_catalog_candidate(policy):
@@ -179,7 +194,7 @@ def with_local_first_catalog_defaults(
         policy.setdefault("use_capability_catalog", True)
         selection = _lower(policy.get("model_selection"))
         if not selection:
-            policy["model_selection"] = "warm_policy"
+            policy["model_selection"] = authority["model_selection"]
         elif selection not in LOCAL_MODEL_SELECTION_VALUES:
             policy.setdefault("fallback_model_selection", selection)
     return policy

@@ -23,6 +23,8 @@ Status:
 6. `place`, `asset`, `service`, and `channel` should be richly modeled under a
    smaller top-level bot fleet.
 7. Norman the `role` is durable. Norman the `service` is editable.
+8. `private` domains should prefer a dedicated worker/enclave over shared fleet
+   hosts like `toy-box`.
 
 ## Core Objects
 
@@ -42,8 +44,8 @@ Hard ownership and authority boundary.
 
 Seed candidates:
 
-- `operator`
-- `kubicki-trust`
+- `[REDACTED_NAME]`
+- `[REDACTED_NAME]-trust`
 - `openbrand`
 - `tcg`
 - `yhix`
@@ -135,6 +137,7 @@ Examples:
 
 - `hal`
 - `phobos-host`
+- `private-host`
 - `quaoar`
 - future work node for Earlybird
 - Hubitat hubs when modeled as edge nodes
@@ -364,8 +367,8 @@ This is the minimum useful first seed set.
 
 ### Principals
 
-- `operator`
-- `kubicki-trust`
+- `[REDACTED_NAME]`
+- `[REDACTED_NAME]-trust`
 - `openbrand`
 - `tcg`
 - `yhix`
@@ -393,7 +396,8 @@ This is the minimum useful first seed set.
 - `autocamera`
 - `control-plane`
 - `d-ace`
-- `mc`
+- `acast`
+- `acast-tester`
 - `infra`
 - `tmi-dashboards`
 - `earlybird`

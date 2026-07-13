@@ -256,15 +256,56 @@ def test_db_console_runtime_store_summarizes_route_offload_evidence(db):
         payload={
             "provider": "norllama",
             "model": "qwen3:8b",
+            "execution_mode": "live",
             "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+            "receipt_audit": {"status": "pass", "pass": True, "failures": []},
+            "completion_gate": {"status": "pass", "gate_passed": True},
             "route_receipt": {
                 "schema": "norman.norllama.route-receipt.v1",
+                "status": "completed",
+                "request_id": "req-route-summary",
+                "job_id": job_id,
                 "phase": "summarize",
+                "task_kind": "summarize",
                 "selected_provider": "norllama",
                 "selected_model": "qwen3:8b",
+                "target_model": "qwen3:8b",
+                "effective_runtime_model": "qwen3:8b",
                 "selected_worker": "spark-150",
+                "observed_worker": "spark-150",
+                "observed_worker_source": "gateway_response",
+                "frontdoor": "https://llm.home.arpa/v1",
+                "peer_path": ["https://llm.home.arpa/v1", "spark-150"],
+                "route_reason": "local first test fixture",
+                "policy_mode": "local_first",
                 "usage_bucket": "offline_local",
                 "cloud_proxy": False,
+                "benchmark_packet_id": "test-route-proof",
+                "benchmark_source": "uplink_benchmark",
+                "benchmark_fresh": True,
+                "benchmark_gate": {
+                    "gate": "production",
+                    "promotion_authoritative": True,
+                },
+                "promotion_authoritative": True,
+                "benchmark_score": 0.91,
+                "coverage_ratio": 0.88,
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "total_tokens": 15,
+                "fallback_used": False,
+                "fallback_reason": None,
+                "verifier_result": "pass",
+                "output_shape": "complete",
+                "completion_requested": True,
+                "require_verifier_for_completion": True,
+                "execution_mode": "live",
+                "receipt_audit": {
+                    "status": "pass",
+                    "pass": True,
+                    "failures": [],
+                },
+                "completion_gate": {"status": "pass", "gate_passed": True},
                 "specialist_cascade": specialist_cascade,
             },
         },
@@ -303,6 +344,7 @@ def test_db_console_runtime_store_summarizes_route_offload_evidence(db):
     assert summary["model"]["completed"] == 1
     assert summary["model"]["local"] == 1
     assert summary["model"]["tokens"] == 15
+    assert summary["model"]["by_worker"] == {"spark-150": 1}
     assert summary["usage_ledger"]["schema"] == (
         "norman.console-runtime.usage-ledger.v1"
     )
@@ -320,200 +362,40 @@ def test_db_console_runtime_store_summarizes_route_offload_evidence(db):
     assert summary["planner"]["local"] == 1
     assert summary["planner"]["spark_hint"] == 1
     assert summary["planner"]["by_worker"] == {"spark-150": 1}
-    assert summary["workers"]["by_id"] == {"spark-150": 2}
+    assert summary["workers"]["by_id"] == {"spark-150": 3}
     assert summary["local_evidence_count"] == 3
     assert summary["cloud_evidence_count"] == 1
-    assert summary["spark_evidence_count"] == 2
+    assert summary["spark_evidence_count"] == 3
     assert direct == {**summary, "job_id": job_id}
-    proof = store.local_first_proof(db, user_id=user.id, session_limit=1)
+    proof = store.local_first_proof(db, user_id=user.id, session_limit=20)
     assert proof["schema"] == "norman.console-runtime.local-first-proof.v1"
     assert proof["totals"]["local_tokens"] >= 15
-    assert proof["totals"]["spark_evidence_count"] >= 2
+    assert proof["totals"]["model_completed_count"] >= 1
+    assert proof["totals"]["fully_local_completion_count"] >= 1
+    assert proof["totals"]["spark_evidence_count"] >= 1
     assert proof["totals"]["specialist_required_count"] >= 21
     assert proof["totals"]["specialist_evidence_count"] >= 2
     assert proof["release_gate"]["proves_local_first"] is True
+    assert proof["release_gate"]["route_path_proven"] is True
+    assert proof["release_gate"]["latest_session_healthy"] is True
+    assert proof["release_gate"]["operational_local_first_ready"] is False
+    assert proof["release_gate"]["basis_session"] == job_id
+    assert proof["release_gate_basis"]["session"] == job_id
+    assert proof["release_gate_basis"]["qualified"] is True
+    assert proof["sessions"][0]["release_qualified"] is True
+    assert proof["sessions"][0]["release_disqualifiers"] == []
     assert proof["release_gate"]["has_spark_evidence"] is True
+    assert proof["release_gate"]["receipt_audit_passed"] is True
+    assert proof["release_gate"]["completion_gate_passed"] is True
+    assert proof["release_gate"]["live_execution_visible"] is True
+    assert proof["release_gate"]["observed_worker_proof"] is True
     assert proof["release_gate"]["specialist_cascade_visible"] is True
     assert proof["release_gate"]["has_specialist_evidence"] is True
+    assert proof["release_gate"]["specialist_proof_ready"] is False
     assert proof["sessions"][0]["specialist_lanes"]["receipt_auditor"] == 1
     assert proof["sessions"][0]["deterministic_experts"]["codeql"] == 1
+    assert proof["sessions"][0]["observed_workers"] == {"spark-150": 1}
     assert proof["sessions"][0]["models_by_phase"]
-
-
-def test_local_first_proof_excludes_dry_run_and_shadow_from_live_spark_proof(db):
-    user = _ensure_user(db)
-    store = DbConsoleRuntimeStore()
-    job_id = f"job-live-spark-proof-{uuid.uuid4().hex}"
-    store.create_job(
-        db,
-        user_id=user.id,
-        job_id=job_id,
-        contract=ConsoleJobContract(objective="Separate telemetry from live proof"),
-    )
-    base_payload = {
-        "selected_provider": "norllama",
-        "selected_model": "qwen3.6:27b",
-        "worker_id": "spark-151",
-        "local": True,
-        "cloud_proxy": False,
-        "egress_class": "lan",
-        "allowed": True,
-    }
-    store.append_event(
-        db,
-        user_id=user.id,
-        job_id=job_id,
-        event_type="route.decided",
-        payload={**base_payload, "dry_run": True},
-    )
-    store.append_event(
-        db,
-        user_id=user.id,
-        job_id=job_id,
-        event_type="route.decided",
-        payload={
-            **base_payload,
-            "turn_shadow": True,
-            "metadata": {
-                "source": "agent_console_web",
-                "kind": "tui_turn_shadow",
-                "kernel_execution_enabled": False,
-            },
-        },
-    )
-    store.append_event(
-        db,
-        user_id=user.id,
-        job_id=job_id,
-        event_type="route.decided",
-        payload={
-            **base_payload,
-            "turn_shadow": True,
-            "route_proof_required": True,
-            "metadata": {
-                "source": "agent_console_web",
-                "kind": "tui_turn_shadow",
-                "kernel_execution_enabled": True,
-                "kernel_execution_candidate": True,
-                "route_proof_required": True,
-            },
-        },
-    )
-
-    summary = store.route_activity_summary(db, user_id=user.id, job_id=job_id)
-    proof = store.local_first_proof(db, user_id=user.id, session_limit=1)
-
-    assert summary["spark_evidence_count"] == 3
-    assert summary["live_spark_proof_count"] == 1
-    assert proof["totals"]["spark_evidence_count"] == 3
-    assert proof["totals"]["live_spark_proof_count"] == 1
-    assert proof["release_gate"]["has_spark_evidence"] is True
-    assert proof["release_gate"]["spark_evidence_excludes_dry_run_shadow"] is True
-
-
-def test_local_first_proof_synthesizes_missing_receipt_audit(db):
-    user = _ensure_user(db)
-    store = DbConsoleRuntimeStore()
-    job_id = f"job-proof-synth-audit-{uuid.uuid4().hex}"
-    store.create_job(
-        db,
-        user_id=user.id,
-        job_id=job_id,
-        contract=ConsoleJobContract(objective="Audit complete local receipts"),
-    )
-
-    store.append_event(
-        db,
-        user_id=user.id,
-        job_id=job_id,
-        event_type="model.completed",
-        payload={
-            "provider": "norllama",
-            "model": "gemma3:1b",
-            "usage": {"input_tokens": 7, "output_tokens": 8, "total_tokens": 15},
-            "route_receipt": {
-                "request_id": "req-proof-synth",
-                "job_id": job_id,
-                "phase": "work",
-                "task_kind": "summarize",
-                "status": "completed",
-                "selected_provider": "norllama",
-                "selected_model": "gemma3:1b",
-                "target_model": "gemma3:1b",
-                "effective_runtime_model": "gemma3:1b",
-                "selected_worker": "mac-mini-133",
-                "observed_worker": "mac-mini-133",
-                "frontdoor": "https://llm.home.arpa",
-                "peer_path": ["llm.home.arpa", "mac-mini-133"],
-                "route_reason": "tiny fallback local proof",
-                "policy_mode": "local_first",
-                "cloud_proxy": False,
-                "benchmark_packet_id": "uplink-fallback-1",
-                "benchmark_source": "uplink_route_proof",
-                "benchmark_fresh": True,
-                "benchmark_score": 0.75,
-                "coverage_ratio": 1.0,
-                "input_tokens": 7,
-                "output_tokens": 8,
-                "total_tokens": 15,
-                "usage_bucket": "offline_local",
-                "fallback_used": False,
-                "fallback_reason": "",
-                "verifier_result": "pass",
-                "output_shape": "complete",
-                "completion_requested": True,
-                "routing_scope": "frontdoor_worker",
-                "route_attribution_source": "gateway_response",
-            },
-        },
-    )
-
-    proof = store.local_first_proof(db, user_id=user.id, session_limit=1)
-
-    assert proof["totals"]["route_receipt_count"] == 1
-    assert proof["totals"]["route_receipt_missing_count"] == 0
-    assert proof["totals"]["receipt_audit_synthesized_count"] == 1
-    assert proof["totals"]["receipt_audit_pass_count"] == 1
-    assert proof["release_gate"]["route_receipts_present"] is True
-    assert proof["release_gate"]["receipt_audit_covered"] is True
-    assert proof["release_gate"]["receipt_audit_passed"] is True
-
-
-def test_local_first_proof_blocks_model_completion_without_route_receipt(db):
-    user = _ensure_user(db)
-    store = DbConsoleRuntimeStore()
-    job_id = f"job-proof-missing-receipt-{uuid.uuid4().hex}"
-    store.create_job(
-        db,
-        user_id=user.id,
-        job_id=job_id,
-        contract=ConsoleJobContract(objective="Reject unproven local completions"),
-    )
-
-    store.append_event(
-        db,
-        user_id=user.id,
-        job_id=job_id,
-        event_type="model.completed",
-        payload={
-            "provider": "norllama",
-            "model": "gemma3:1b",
-            "local": True,
-            "egress_class": "lan",
-            "usage": {"input_tokens": 3, "output_tokens": 4, "total_tokens": 7},
-        },
-    )
-
-    proof = store.local_first_proof(db, user_id=user.id, session_limit=1)
-    session = proof["sessions"][0]
-
-    assert proof["totals"]["route_receipt_count"] == 0
-    assert proof["totals"]["route_receipt_missing_count"] == 1
-    assert proof["totals"]["receipt_audit_fail_count"] == 1
-    assert proof["release_gate"]["route_receipts_present"] is False
-    assert proof["release_gate"]["receipt_audit_covered"] is False
-    assert proof["release_gate"]["receipt_audit_passed"] is False
-    assert session["receipt_audit_failures"] == {"route_receipt_missing": 1}
 
 
 def test_db_console_runtime_store_breaks_out_usage_ledger_by_provider(db):
@@ -593,6 +475,376 @@ def test_db_console_runtime_store_breaks_out_usage_ledger_by_provider(db):
     assert summary["local_first_kpi"]["perplexity_tokens"] == 40
 
 
+def test_local_first_proof_excludes_synthetic_model_events(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    job_id = f"job-proof-synthetic-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(objective="Reject synthetic local proof"),
+    )
+
+    base_payload = {
+        "provider": "norllama",
+        "model": "qwen3.6:27b",
+        "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+        "route_receipt": {
+            "status": "completed",
+            "request_id": "req-synthetic",
+            "job_id": job_id,
+            "phase": "chat",
+            "selected_provider": "norllama",
+            "selected_model": "qwen3.6:27b",
+            "observed_worker": "spark-151",
+            "usage_bucket": "offline_local",
+            "cloud_proxy": False,
+            "verifier_result": "pass",
+            "output_shape": "complete",
+        },
+    }
+    store.append_event(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        event_type="model.completed",
+        payload={**base_payload, "dry_run": True},
+    )
+    store.append_event(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        event_type="model.completed",
+        payload={
+            **base_payload,
+            "metadata": {"source": "benchmark", "session_name": "benchmark"},
+        },
+    )
+    store.append_event(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        event_type="model.completed",
+        payload={**base_payload, "shadow_only": True},
+    )
+
+    proof = store.local_first_proof(db, user_id=user.id, session_limit=20)
+    synthetic_rows = [row for row in proof["sessions"] if row["job_id"] == job_id]
+
+    assert synthetic_rows == []
+
+
+def test_local_first_proof_treats_missing_execution_mode_as_unknown(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    job_id = f"job-proof-unknown-mode-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(objective="Do not infer live proof"),
+    )
+
+    store.append_event(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        event_type="model.completed",
+        payload={
+            "provider": "norllama",
+            "model": "qwen3.6:27b",
+            "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+            "receipt_audit": {"status": "pass", "pass": True, "failures": []},
+            "completion_gate": {"status": "pass", "gate_passed": True},
+            "route_receipt": {
+                "status": "completed",
+                "request_id": "req-unknown-mode",
+                "job_id": job_id,
+                "phase": "chat",
+                "selected_provider": "norllama",
+                "selected_model": "qwen3.6:27b",
+                "selected_worker": "spark-151",
+                "observed_worker": "spark-151",
+                "observed_worker_source": "gateway_response",
+                "usage_bucket": "offline_local",
+                "cloud_proxy": False,
+                "verifier_result": "pass",
+                "output_shape": "complete",
+                "receipt_audit": {"status": "pass", "pass": True, "failures": []},
+                "completion_gate": {"status": "pass", "gate_passed": True},
+            },
+        },
+    )
+
+    proof = store.local_first_proof(db, user_id=user.id, session_limit=20)
+    row = next(item for item in proof["sessions"] if item["job_id"] == job_id)
+
+    assert row["execution_modes"] == {"unknown": 1}
+    assert row["live_execution_count"] == 0
+    assert row["fully_local_completion_count"] == 0
+    assert proof["totals"]["unknown_execution_count"] >= 1
+
+
+def test_local_first_proof_dedupes_copied_receipt_events(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    job_id = f"job-proof-dedupe-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(objective="Deduplicate copied route proof"),
+    )
+    receipt = {
+        "schema": "norman.norllama.route-receipt.v1",
+        "status": "completed",
+        "request_id": "req-dedupe",
+        "client_request_id": "req-dedupe",
+        "gateway_request_id": "req-dedupe",
+        "invocation_id": "worker:job-proof-dedupe:work:1:model",
+        "job_id": job_id,
+        "phase": "work",
+        "task_kind": "chat",
+        "selected_provider": "norllama",
+        "selected_model": "qwen3.6:27b",
+        "selected_worker": "spark-151",
+        "observed_worker": "spark-151",
+        "observed_worker_source": "gateway_response",
+        "frontdoor": "https://llm.home.arpa/v1",
+        "peer_path": ["https://llm.home.arpa/v1", "spark-151"],
+        "route_reason": "benchmark-backed local route",
+        "policy_mode": "local_first",
+        "usage_bucket": "offline_local",
+        "cloud_proxy": False,
+        "benchmark_packet_id": "uplink-route-proof-test",
+        "benchmark_source": "uplink_benchmark",
+        "benchmark_fresh": True,
+        "benchmark_gate": {
+            "gate": "production",
+            "promotion_authoritative": True,
+        },
+        "promotion_authoritative": True,
+        "benchmark_score": 0.93,
+        "coverage_ratio": 0.91,
+        "input_tokens": 9,
+        "output_tokens": 6,
+        "total_tokens": 15,
+        "fallback_used": False,
+        "fallback_reason": None,
+        "verifier_result": "pass",
+        "output_shape": "complete",
+        "execution_mode": "live",
+        "receipt_audit": {"status": "pass", "pass": True, "failures": []},
+        "completion_gate": {"status": "pass", "gate_passed": True},
+    }
+    base_payload = {
+        "provider": "norllama",
+        "model": "qwen3.6:27b",
+        "execution_mode": "live",
+        "usage": {"input_tokens": 9, "output_tokens": 6, "total_tokens": 15},
+        "route_receipt": receipt,
+        "receipt_audit": receipt["receipt_audit"],
+        "completion_gate": receipt["completion_gate"],
+        "request_id": "req-dedupe",
+        "gateway_request_id": "req-dedupe",
+        "invocation_id": receipt["invocation_id"],
+    }
+    for event_type in (
+        "model.completed",
+        "route.receipt_audited",
+        "route.completion_gate",
+    ):
+        store.append_event(
+            db,
+            user_id=user.id,
+            job_id=job_id,
+            event_type=event_type,
+            payload=base_payload,
+        )
+
+    proof = store.local_first_proof(db, user_id=user.id, session_limit=20)
+    row = next(item for item in proof["sessions"] if item["job_id"] == job_id)
+
+    assert row["model_completed_count"] == 1
+    assert row["fully_local_completion_count"] == 1
+    assert row["local_tokens"] == 15
+    assert row["observed_workers"] == {"spark-151": 1}
+    assert row["observed_worker_proof_count"] == 1
+    assert row["spark_evidence_count"] == 1
+    assert row["receipt_audit_pass_count"] == 1
+    assert row["completion_gate_pass_count"] == 1
+    assert row["release_qualified"] is True
+
+
+def test_local_first_proof_uses_latest_qualified_session_as_release_basis(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+
+    def create_job(job_id: str) -> None:
+        store.create_job(
+            db,
+            user_id=user.id,
+            job_id=job_id,
+            contract=ConsoleJobContract(objective="Build local-first proof"),
+        )
+
+    old_cloud_job = f"job-proof-old-cloud-{uuid.uuid4().hex}"
+    failed_canary_job = f"job-proof-failed-canary-{uuid.uuid4().hex}"
+    good_job = f"job-proof-good-{uuid.uuid4().hex}"
+    for job_id in (old_cloud_job, failed_canary_job, good_job):
+        create_job(job_id)
+
+    store.append_event(
+        db,
+        user_id=user.id,
+        job_id=old_cloud_job,
+        event_type="model.completed",
+        payload={
+            "provider": "bedrock",
+            "model": "claude-check",
+            "execution_mode": "live",
+            "usage": {"input_tokens": 70, "output_tokens": 30, "total_tokens": 100},
+            "receipt_audit": {"status": "pass", "pass": True, "failures": []},
+            "completion_gate": {"status": "pass", "gate_passed": True},
+            "route_receipt": {
+                "status": "completed",
+                "request_id": "req-old-cloud",
+                "job_id": old_cloud_job,
+                "phase": "work",
+                "selected_provider": "bedrock",
+                "selected_model": "claude-check",
+                "usage_bucket": "bedrock_amazon",
+                "cloud_proxy": False,
+                "verifier_result": "pass",
+                "output_shape": "complete",
+                "execution_mode": "live",
+                "receipt_audit": {"status": "pass", "pass": True, "failures": []},
+                "completion_gate": {"status": "pass", "gate_passed": True},
+            },
+        },
+    )
+
+    failed_audit = {
+        "status": "fail",
+        "pass": False,
+        "failures": ["forced_canary_failure"],
+    }
+    store.append_event(
+        db,
+        user_id=user.id,
+        job_id=failed_canary_job,
+        event_type="model.completed",
+        payload={
+            "provider": "norllama",
+            "model": "qwen3.6:27b",
+            "execution_mode": "live",
+            "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+            "receipt_audit": failed_audit,
+            "completion_gate": {"status": "fail", "gate_passed": False},
+            "route_receipt": {
+                "status": "completed",
+                "request_id": "req-failed-canary",
+                "job_id": failed_canary_job,
+                "phase": "work",
+                "selected_provider": "norllama",
+                "selected_model": "qwen3.6:27b",
+                "selected_worker": "spark-151",
+                "observed_worker": "spark-151",
+                "observed_worker_source": "gateway_response",
+                "usage_bucket": "offline_local",
+                "cloud_proxy": False,
+                "verifier_result": "pass",
+                "output_shape": "complete",
+                "execution_mode": "live",
+                "receipt_audit": failed_audit,
+                "completion_gate": {"status": "fail", "gate_passed": False},
+            },
+        },
+    )
+
+    store.append_event(
+        db,
+        user_id=user.id,
+        job_id=good_job,
+        event_type="model.completed",
+        payload={
+            "provider": "norllama",
+            "model": "qwen3.6:35b-a3b-q4_K_M",
+            "execution_mode": "live",
+            "usage": {"input_tokens": 91, "output_tokens": 75, "total_tokens": 166},
+            "receipt_audit": {"status": "pass", "pass": True, "failures": []},
+            "completion_gate": {"status": "pass", "gate_passed": True},
+            "route_receipt": {
+                "schema": "norman.norllama.route-receipt.v1",
+                "status": "completed",
+                "request_id": "req-good-local",
+                "job_id": good_job,
+                "phase": "work",
+                "task_kind": "chat",
+                "selected_provider": "norllama",
+                "selected_model": "qwen3.6:35b-a3b-q4_K_M",
+                "selected_worker": "spark-151",
+                "observed_worker": "spark-151",
+                "observed_worker_source": "gateway_response",
+                "frontdoor": "https://llm.home.arpa/v1",
+                "peer_path": ["https://llm.home.arpa/v1", "spark-151"],
+                "route_reason": "benchmark-backed local route",
+                "policy_mode": "local_first",
+                "usage_bucket": "offline_local",
+                "cloud_proxy": False,
+                "benchmark_packet_id": "uplink-route-proof-test",
+                "benchmark_source": "uplink_benchmark",
+                "benchmark_fresh": True,
+                "benchmark_gate": {
+                    "gate": "production",
+                    "promotion_authoritative": True,
+                },
+                "promotion_authoritative": True,
+                "benchmark_score": 0.93,
+                "coverage_ratio": 0.91,
+                "input_tokens": 91,
+                "output_tokens": 75,
+                "total_tokens": 166,
+                "fallback_used": False,
+                "fallback_reason": None,
+                "verifier_result": "pass",
+                "output_shape": "complete",
+                "execution_mode": "live",
+                "receipt_audit": {"status": "pass", "pass": True, "failures": []},
+                "completion_gate": {"status": "pass", "gate_passed": True},
+            },
+        },
+    )
+
+    proof = store.local_first_proof(db, user_id=user.id, session_limit=20)
+    good_row = next(item for item in proof["sessions"] if item["job_id"] == good_job)
+    old_cloud_row = next(
+        item for item in proof["sessions"] if item["job_id"] == old_cloud_job
+    )
+    failed_row = next(
+        item for item in proof["sessions"] if item["job_id"] == failed_canary_job
+    )
+
+    assert proof["release_gate"]["proves_local_first"] is True
+    assert proof["release_gate"]["route_path_proven"] is True
+    assert proof["release_gate"]["latest_session_healthy"] is True
+    assert proof["release_gate"]["operational_local_first_ready"] is False
+    assert proof["release_gate"]["basis_session"] == good_job
+    assert proof["release_gate_basis"]["session"] == good_job
+    assert proof["release_gate_basis"]["observed_workers"] == {"spark-151": 1}
+    assert proof["historical_context"]["disqualified_session_count"] >= 2
+    assert proof["historical_context"]["cloud_llm_tokens"] >= 100
+    assert proof["historical_context"]["completion_gate_fail_count"] >= 1
+    assert good_row["release_qualified"] is True
+    assert good_row["release_disqualifiers"] == []
+    assert old_cloud_row["release_qualified"] is False
+    assert "cloud_llm_tokens_present" in old_cloud_row["release_disqualifiers"]
+    assert failed_row["release_qualified"] is False
+    assert "receipt_audit_not_passed" in failed_row["release_disqualifiers"]
+    assert "completion_gate_not_passed" in failed_row["release_disqualifiers"]
+
+
 def test_db_console_runtime_store_dedupes_kernel_primary_visible_echo(db):
     user = _ensure_user(db)
     store = DbConsoleRuntimeStore()
@@ -643,6 +895,8 @@ def test_db_console_runtime_store_dedupes_kernel_primary_visible_echo(db):
 
     summary = store.route_activity_summary(db, user_id=user.id, job_id=job_id)
     ledger = summary["usage_ledger"]
+    proof = store.local_first_proof(db, user_id=user.id, session_limit=5)
+    row = next(item for item in proof["sessions"] if item["job_id"] == job_id)
 
     assert summary["model"]["completed"] == 1
     assert summary["model"]["tokens"] == 77
@@ -651,6 +905,8 @@ def test_db_console_runtime_store_dedupes_kernel_primary_visible_echo(db):
     assert ledger["offline_tokens"] == 77
     assert ledger["by_provider"] == {"norllama": 77}
     assert ledger["by_model"] == {"gemma3:1b": 77}
+    assert row["model_completed_count"] == 1
+    assert row["local_tokens"] == 77
 
 
 def test_db_console_runtime_store_excludes_tui_stream_jobs_from_runnable(db):
@@ -721,9 +977,6 @@ def test_db_console_runtime_store_excludes_tui_stream_jobs_from_runnable(db):
                 "kind": "tui_turn_shadow",
                 "kernel_execution_enabled": True,
                 "kernel_execution_candidate": True,
-                "route_proof_required": True,
-                "require_route_proof": True,
-                "require_verifier_for_completion": True,
             },
             route_policy={
                 "provider": "norllama",
@@ -733,9 +986,6 @@ def test_db_console_runtime_store_excludes_tui_stream_jobs_from_runnable(db):
                 "kernel_execution_enabled": True,
                 "kernel_execution_candidate": True,
                 "continuous_goal_candidate": True,
-                "route_proof_required": True,
-                "require_route_proof": True,
-                "require_verifier_for_completion": True,
             },
             metadata={
                 "source": "agent_console_web",
@@ -743,9 +993,6 @@ def test_db_console_runtime_store_excludes_tui_stream_jobs_from_runnable(db):
                 "kernel_execution_enabled": True,
                 "kernel_execution_candidate": True,
                 "continuous_goal_candidate": True,
-                "route_proof_required": True,
-                "require_route_proof": True,
-                "require_verifier_for_completion": True,
             },
         ),
         metadata={
@@ -754,9 +1001,6 @@ def test_db_console_runtime_store_excludes_tui_stream_jobs_from_runnable(db):
             "kernel_execution_enabled": True,
             "kernel_execution_candidate": True,
             "continuous_goal_candidate": True,
-            "route_proof_required": True,
-            "require_route_proof": True,
-            "require_verifier_for_completion": True,
         },
     )
     store.create_job(

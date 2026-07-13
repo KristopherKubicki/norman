@@ -8,7 +8,6 @@ class SecretAuditEvent(Base):
     __tablename__ = "secret_audit_events"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), index=True)
     request_id = Column(Integer, ForeignKey("secret_requests.id"), index=True)
     lease_id = Column(Integer, ForeignKey("secret_leases.id"), index=True)
     event_type = Column(String, nullable=False, index=True)

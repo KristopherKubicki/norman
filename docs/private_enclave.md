@@ -21,26 +21,26 @@ The intended operator model is:
 Use one dedicated worker/host:
 
 - worker slug: `private-host`
-- DNS root: `private.home.example.test`
+- DNS root: `private.home.lollie.org`
 - host purpose: confidential bot enclave only
 
 Current live baseline:
 
 - Proxmox LXC CT `148`
 - hostname: `private`
-- LAN IP: `192.168.0.148`
+- LAN IP: `192.168.2.148`
 - current role: enclave host shell only; the private bots are not published yet
 
 Planned service names:
 
-- `health.private.home.example.test`
-- `finance.private.home.example.test`
-- `parkergale.private.home.example.test`
+- `health.private.home.lollie.org`
+- `finance.private.home.lollie.org`
+- `parkergale.private.home.lollie.org`
   PEF can keep the ParkerGale hostname for compatibility even if the bot-facing name changes.
 
 Optional root/admin entry:
 
-- `private.home.example.test`
+- `private.home.lollie.org`
 
 If the private host later needs multiple trust zones, that can happen inside
 the host boundary. The first rollout should keep the model simple: one enclave

@@ -1,7 +1,7 @@
 # Norllama Router Guidance
 
-Date: 2026-07-09
-Status: staging route-proof guidance
+Date: 2026-07-06
+Status: operator guidance and implementation target
 
 ## Summary
 
@@ -14,10 +14,8 @@ What works today:
 - Norman Caddy fails over across `2.133`, `2.150`, and `2.151`.
 - Norllama frontdoors expose capabilities, model inventory, async prefetch,
   peer failover, request ids, recent activity, and upstream route headers.
-- Norman reads `/var/lib/norman/norllama/route_proof_benchmark_packet.json` as
-  the active promotion source and treats the older broad
-  `/var/lib/norman/norllama/benchmark_packet.json` as historical comparison
-  evidence only.
+- Norman reads `/var/lib/norman/norllama/benchmark_packet.json` and builds a
+  benchmark-backed warm policy.
 - The TUI status surface can show local LLM health, mesh posture, warm posture,
   and route attribution.
 - Warm-policy prefetch results preserve gateway route evidence and flag
@@ -60,8 +58,8 @@ https://llm.home.arpa
   v
 +----------------------+     +----------------------+     +----------------------+
 | 2.133 mac-mini       | --> | 2.150 spark          | --> | 2.151 spark          |
-| front/fallback node  |     | specialist worker    |     | Qwen brain worker    |
-| tiny/canary fallback |     | OCR/ASR/rerank/safe  |     | planner/code/judge   |
+| preferred front node |     | production worker    |     | production worker    |
+| tiny/canary fallback |     | Qwen/Gemma/code      |     | Gemma/Qwen-next/120B |
 +----------------------+     +----------------------+     +----------------------+
         |                            |                            |
         +--------- Norllama peer failover, prefetch, route headers ---------+
@@ -74,13 +72,20 @@ This is frontdoor failover, not DNS multi-A failover. Clients should keep using
 
 Use current benchmark-backed defaults, not older notes.
 
-Keep warm or prefetch only when the route-proof packet, live inventory, worker
-fit, and recent route outcomes agree:
+Keep warm or prefetch for production lanes:
 
-- Qwen3.6/Qwen3.5-class planner, code, and judge brains on `spark-151`.
-- OCR, ASR, rerank, safety, prompt-injection, document, GUI, forecasting, graph,
-  and network specialists on `spark-150`.
-- Tiny canary/degraded models on `2.133`.
+- `qwen3-coder-next:q4_K_M`
+  - current automatic TUI execution default for local scout, route prep,
+    compact status answers, and code-risk drafting
+- `gemma4:26b-a4b-it-q4_K_M`
+  - general local worker for status, checkpoint, bounded synthesis, static web
+    summaries, governed drafts, and cloud-gap verifier support; currently
+    observe output-shape health before using it as first route
+- `qwen3-coder:30b-a3b-q4_K_M`
+  - code flow and structured patch/draft lane
+- `gemma4:31b`
+  - documentation, safety/privacy classification, document parse, and work
+    decomposition drafts
 
 Keep tiny models for canary/degraded mode only:
 
@@ -105,10 +110,9 @@ current promotion. A low latency average can be misleading when most attempts
 fail or reject quickly; promotion should look at accepted rows, verifier
 rejections, suite fit, and cold/warm latency separately.
 
-OpenFugu and other older broad-benchmark candidates are no longer part of the
-fallback warm set. They may still appear in historical packets, but the warm
-policy must not prefetch them unless they are promoted through the route-proof
-packet and clear lane-specific smoke or production gates.
+OpenFugu is no longer part of the fallback warm set. It may still appear in a
+benchmark packet for historical comparison, but the warm policy should not
+prefetch it unless fresh benchmark evidence clears the score and coverage gates.
 
 ## What The Router Should Know
 
@@ -206,18 +210,12 @@ The lightweight endpoint should include:
 Promotion should require:
 
 - current packet freshness
-- active `norman.norllama.route-proof-benchmark-packet.v1` evidence
 - enough accepted rows for the lane
 - acceptable verifier rejection rate
 - suite-specific fit
 - measured cold and warm latency
 - usable-content smoke results under TUI-sized caps
 - no precision veto for exact identifiers or governed final actions
-- zero empty/zero-token/default progress-only rows for production defaults
-
-Smoke gates and production gates are separate. Smoke gates can prove transport,
-schema, worker attribution, and degraded/canary behavior. Production gates are
-the only path to default routing or resident warming.
 
 No local model should be promoted to final authority from a general average
 alone.

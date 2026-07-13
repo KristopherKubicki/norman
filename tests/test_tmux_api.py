@@ -2,8 +2,10 @@ import time
 import json
 import pathlib
 import uuid
+from datetime import datetime, timezone
 
 from app import crud
+from app import models
 from app.api.api_v1.routers.tmux import _read_session_bootstrap_from_dir
 from app.core.config import settings
 from app.models import Connector
@@ -238,6 +240,57 @@ def test_tmux_send_endpoint_supports_custom_enter_count(
     assert sent["message"]["enter_count"] == 2
 
 
+def test_tmux_control_audit_endpoint_returns_centralized_events(test_app, db) -> None:
+    user = crud.user.get_user_by_email(db, "test@example.com")
+    if not user:
+        user = crud.user.create_user(
+            db,
+            user=UserCreate(
+                email="test@example.com",
+                username="test_user",
+                password="pass123",
+            ),
+        )
+    connector = crud.connector.create(
+        db,
+        obj_in=ConnectorCreate(
+            name="tmux-keystone",
+            connector_type="tmux",
+            config={"session": "keystone-codex", "target": "keystone-codex:0.0"},
+        ),
+        user_id=user.id,
+    )
+    event = models.ConsoleAuditEvent(
+        user_id=user.id,
+        connector_id=connector.id,
+        connector_name=connector.name,
+        session_name="keystone-codex",
+        agent_name="Keystone",
+        host_name="private-host",
+        source_event_id=str(uuid.uuid4()),
+        event_type="chat.completed",
+        severity="info",
+        actor_type="bot",
+        summary="Web prompt completed.",
+        detail="Completed a turn.",
+        payload_json={"speed": "balanced"},
+        event_at=datetime.now(timezone.utc),
+    )
+    db.add(event)
+    db.commit()
+
+    resp = test_app.get("/api/v1/tmux/control/audit")
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["count"] >= 1
+    assert any(
+        item["connector_id"] == connector.id
+        and item["event_type"] == "chat.completed"
+        and item["session_name"] == "keystone-codex"
+        for item in payload["items"]
+    )
+
+
 def test_tmux_control_credits_endpoint_returns_monitor_summary(
     test_app, db, monkeypatch
 ) -> None:
@@ -308,6 +361,22 @@ def test_tmux_control_credits_endpoint_returns_monitor_summary(
         auth_mode = ""
         reachable = True
         checked_at = 1234567890.0
+        usage_tracked = True
+        usage_window_seconds = 86400
+        usage_turns = 12
+        usage_successful_turns = 11
+        usage_failed_turns = 1
+        usage_input_tokens = 4200
+        usage_cached_input_tokens = 900
+        usage_output_tokens = 380
+        usage_total_tokens = 4580
+        usage_window_turns = 5
+        usage_window_input_tokens = 1800
+        usage_window_cached_input_tokens = 450
+        usage_window_output_tokens = 160
+        usage_window_total_tokens = 1960
+        usage_last_turn_at = 1234567890
+        usage_last_turn_total_tokens = 220
 
     async def _items(connector_ids=None):
         return [Snapshot()]
@@ -320,6 +389,18 @@ def test_tmux_control_credits_endpoint_returns_monitor_summary(
             "downgrade_candidates": 1,
             "reachable": 1,
             "checked": 1,
+            "usage_tracked": 1,
+            "usage_turns": 12,
+            "usage_input_tokens": 4200,
+            "usage_cached_input_tokens": 900,
+            "usage_output_tokens": 380,
+            "usage_total_tokens": 4580,
+            "usage_window_turns": 5,
+            "usage_window_input_tokens": 1800,
+            "usage_window_cached_input_tokens": 450,
+            "usage_window_output_tokens": 160,
+            "usage_window_total_tokens": 1960,
+            "usage_last_turn_at": 1234567890,
         }
 
     monkeypatch.setattr(
@@ -336,6 +417,10 @@ def test_tmux_control_credits_endpoint_returns_monitor_summary(
     assert payload["downgrade_candidates"] == 1
     assert payload["items"][0]["issue_code"] == "needs_billing"
     assert payload["items"][0]["recommended_speed"] == "balanced"
+    assert payload["usage_tracked"] == 1
+    assert payload["usage_window_total_tokens"] == 1960
+    assert payload["items"][0]["usage_total_tokens"] == 4580
+    assert payload["items"][0]["usage_window_turns"] == 5
 
 
 def test_tmux_send_endpoint_blocks_locked_connector(test_app, db, monkeypatch) -> None:
@@ -1025,17 +1110,17 @@ def test_tmux_control_web_url_endpoint_updates_connector(test_app, db) -> None:
         "/api/v1/tmux/control/web-url",
         json={
             "connector_id": connector.id,
-            "web_url": "192.168.0.137:8788",
+            "web_url": "192.168.2.137:8788",
         },
     )
     assert resp.status_code == 200
     payload = resp.json()
     assert payload["status"] == "ok"
-    assert payload["web_url"] == "http://192.168.0.137:8788"
+    assert payload["web_url"] == "http://192.168.2.137:8788"
 
     db.expire_all()
     refreshed = crud.connector.get(db, connector.id)
-    assert (refreshed.config or {}).get("web_url") == "http://192.168.0.137:8788"
+    assert (refreshed.config or {}).get("web_url") == "http://192.168.2.137:8788"
 
     clear_resp = test_app.post(
         "/api/v1/tmux/control/web-url",

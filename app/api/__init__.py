@@ -12,6 +12,7 @@ from .api_v1.routers import (
     routing_router,
     approvals_router,
     estate_router,
+    keys_compat_router,
     keys_router,
     operator_state_router,
     console_runtime_router,
@@ -43,3 +44,4 @@ router.include_router(console_runtime_router, prefix=api_prefix)
 
 def init_routers(app: FastAPI):
     app.include_router(router, prefix=settings.api_prefix)
+    app.include_router(keys_compat_router)

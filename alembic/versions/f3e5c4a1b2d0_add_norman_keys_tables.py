@@ -143,7 +143,6 @@ def upgrade():
     op.create_table(
         "secret_audit_events",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("user_id", sa.Integer(), sa.ForeignKey("users.id"), nullable=True),
         sa.Column("request_id", sa.Integer(), sa.ForeignKey("secret_requests.id"), nullable=True),
         sa.Column("lease_id", sa.Integer(), sa.ForeignKey("secret_leases.id"), nullable=True),
         sa.Column("event_type", sa.String(), nullable=False),
@@ -154,7 +153,6 @@ def upgrade():
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
     )
     op.create_index("ix_secret_audit_events_id", "secret_audit_events", ["id"])
-    op.create_index("ix_secret_audit_events_user_id", "secret_audit_events", ["user_id"])
     op.create_index("ix_secret_audit_events_request_id", "secret_audit_events", ["request_id"])
     op.create_index("ix_secret_audit_events_lease_id", "secret_audit_events", ["lease_id"])
     op.create_index("ix_secret_audit_events_event_type", "secret_audit_events", ["event_type"])
@@ -164,7 +162,6 @@ def downgrade():
     op.drop_index("ix_secret_audit_events_event_type", table_name="secret_audit_events")
     op.drop_index("ix_secret_audit_events_lease_id", table_name="secret_audit_events")
     op.drop_index("ix_secret_audit_events_request_id", table_name="secret_audit_events")
-    op.drop_index("ix_secret_audit_events_user_id", table_name="secret_audit_events")
     op.drop_index("ix_secret_audit_events_id", table_name="secret_audit_events")
     op.drop_table("secret_audit_events")
 

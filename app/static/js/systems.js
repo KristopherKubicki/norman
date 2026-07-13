@@ -1,6 +1,5 @@
 (() => {
   const summaryRow = document.getElementById('systems-summary-row');
-  const tuiFleetHealthEl = document.getElementById('tui-fleet-health');
   const directoryGroupsEl = document.getElementById('systems-directory-groups');
   const directoryCountEl = document.getElementById('systems-directory-count');
   const principalsEl = document.getElementById('systems-principals');
@@ -23,6 +22,8 @@
     parkergale: 3,
     'private-home': 4,
     'toy-box-home': 5,
+    artmonster: 6,
+    'diamond-roc': 6,
     housebot: 6,
     glimpser: 7,
     dj: 8,
@@ -30,10 +31,8 @@
     studio: 10,
     castle: 11,
     'phone-ops': 12,
-    'diamond-roc': 13,
-    uscache: 14,
-    theseus: 15,
-    artmonster: 16,
+    uscache: 13,
+    theseus: 14,
     'work-special-home': 12,
     earlybird: 13,
     infra: 14,
@@ -63,14 +62,13 @@
     Shared: 'Networking, Uplink, CloudAgent, DOHIO topology, and shared infrastructure control.',
   };
   const PRIVATE_SERVICE_SLUGS = new Set(['finance-reader', 'health-reader', 'parkergale', 'private-home']);
-  const PERSONAL_SERVICE_SLUGS = new Set(['toy-box-home', 'housebot', 'glimpser', 'dj', 'tv', 'studio', 'castle', 'phone-ops', 'diamond-roc', 'uscache', 'autocamera', 'theseus', 'artmonster']);
+  const PERSONAL_SERVICE_SLUGS = new Set(['toy-box-home', 'artmonster', 'diamond-roc', 'housebot', 'glimpser', 'dj', 'tv', 'studio', 'castle', 'phone-ops', 'uscache', 'autocamera', 'theseus']);
   const WORK_SERVICE_SLUGS = new Set(['work-special-home', 'earlybird', 'infra', 'control-plane', 'market-sizing', 'tmi-dashboards', 'gold-book', 'platinum-standard', 'publisher', 'compere', 'leadership-kpis', 'panelbot', 'd-ace']);
   const SHARED_SERVICE_SLUGS = new Set(['networking-home', 'networking', 'netops', 'uplink', 'cloudagent', 'dohio-topology', 'switchyard-network-board']);
   const BOT_PROXY_ALIASES = {
     autocamera: 'auto',
     compere: 'keystone',
     'control-plane': 'cp',
-    'diamond-roc': 'diamond',
     dj: 'yt',
     'gold-book': 'goldbook',
     housebot: 'house',
@@ -100,11 +98,9 @@
     'market-sizing': 'market.kris.openbrand.com',
     mls: 'mls.kris.openbrand.com',
     networking: 'networking.home.arpa',
-    netops: 'networking.home.arpa',
     panelbot: 'panelbot.kris.openbrand.com',
     parkergale: 'pefb.home.arpa',
     'phone-ops': 'phone.home.arpa',
-    'diamond-roc': 'diamond.home.arpa',
     'platinum-standard': 'platinum.kris.openbrand.com',
     publisher: 'publisher.kris.openbrand.com',
     scout: 'scout.kris.openbrand.com',
@@ -119,8 +115,8 @@
   };
   const FLEET_MARK_ALIASES = {
     norman: 'N',
-    autocamera: 'AC',
     artmonster: 'AM',
+    autocamera: 'AC',
     castle: 'CS',
     cloudagent: 'CA',
     compere: 'CP',
@@ -140,7 +136,6 @@
     'market sizing': 'MS',
     mls: 'ML',
     networking: 'NW',
-    netops: 'NE',
     panelbot: 'PB',
     parkergale: 'PE',
     pefb: 'PE',
@@ -240,63 +235,6 @@
             </div>
           `).join('')}
         </div>
-      </div>
-    `;
-  }
-
-  function fleetHealthTone(health) {
-    const status = String(health?.status || '').trim().toLowerCase();
-    const summary = health?.summary || {};
-    if (!health?.available || status === 'missing' || status === 'invalid') return 'idle';
-    if (status === 'fail' || Number(summary.fail || 0) > 0) return 'fail';
-    if (status === 'warn' || Number(summary.warn || 0) > 0) return 'warn';
-    return 'ok';
-  }
-
-  function fleetHealthLabel(tone) {
-    if (tone === 'fail') return 'Fail';
-    if (tone === 'warn') return 'Warn';
-    if (tone === 'ok') return 'OK';
-    return 'Unavailable';
-  }
-
-  function renderFleetHealth(health) {
-    if (!tuiFleetHealthEl) return;
-    const summary = health?.summary || {};
-    const issues = Array.isArray(health?.issues) ? health.issues : [];
-    const tone = fleetHealthTone(health);
-    const source = health?.source || {};
-    const age = Number(source.age_seconds || 0);
-    const ageLabel = health?.available && age > 0
-      ? `${Math.floor(age / 60)}m old`
-      : '';
-    const checkedAt = health?.checked_at ? String(health.checked_at).replace('T', ' ').replace('Z', ' UTC') : 'not available';
-    const topIssues = issues.slice(0, 4);
-    const issueRows = topIssues.map((issue) => `
-      <div class="systems-fleet-health-issue">
-        <span class="status-chip ${escapeHtml(issue.severity === 'fail' ? 'danger' : 'warn')}">${escapeHtml(issue.severity || 'warn')}</span>
-        <span>${escapeHtml([issue.host, issue.instance, issue.check].filter(Boolean).join(' / '))}</span>
-        <span class="text-muted">${escapeHtml(issue.detail || '')}</span>
-      </div>
-    `).join('');
-
-    tuiFleetHealthEl.innerHTML = `
-      <div class="card p-3 systems-fleet-health systems-fleet-health-${escapeHtml(tone)}">
-        <div class="systems-fleet-health-main">
-          <div>
-            <div class="systems-fleet-health-title">TUI Fleet Health</div>
-            <div class="systems-fleet-health-meta">${escapeHtml(checkedAt)}${ageLabel ? ` · ${escapeHtml(ageLabel)}` : ''}</div>
-          </div>
-          <span class="status-chip ${escapeHtml(tone === 'fail' ? 'danger' : tone === 'warn' ? 'warn' : tone === 'ok' ? 'ok' : 'idle')}">${escapeHtml(fleetHealthLabel(tone))}</span>
-        </div>
-        <div class="systems-fleet-health-stats">
-          <div><span>${Number(summary.active || 0)}</span><small>active</small></div>
-          <div><span>${Number(summary.fail || 0)}</span><small>fail</small></div>
-          <div><span>${Number(summary.warn || 0)}</span><small>warn</small></div>
-          <div><span>${Number(summary.hosts || 0)}</span><small>hosts</small></div>
-        </div>
-        ${topIssues.length ? `<div class="systems-fleet-health-issues">${issueRows}</div>` : ''}
-        ${!health?.available && health?.detail ? `<div class="systems-fleet-health-detail">${escapeHtml(health.detail)}</div>` : ''}
       </div>
     `;
   }
@@ -739,7 +677,6 @@
 
   function renderAll(payload) {
     latestPayload = payload;
-    renderFleetHealth(payload.tuiFleetHealth || null);
     renderAgentDirectory(payload);
     renderSummary(payload.summary || {});
     renderPrincipalFilters(payload.principals || []);
@@ -749,17 +686,7 @@
   async function loadSystems() {
     setStatus('Loading directory...');
     try {
-      const [payload, tuiFleetHealth] = await Promise.all([
-        fetchJson('/api/v1/estate/overview'),
-        fetchJson('/api/v1/estate/tui-fleet-health').catch((err) => ({
-          available: false,
-          status: 'error',
-          detail: err.message,
-          summary: { active: 0, fail: 0, warn: 0, hosts: 0, ok: false },
-          issues: [],
-        })),
-      ]);
-      payload.tuiFleetHealth = tuiFleetHealth;
+      const payload = await fetchJson('/api/v1/estate/overview');
       renderAll(payload);
       setStatus('');
     } catch (err) {

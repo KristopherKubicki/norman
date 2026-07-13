@@ -197,7 +197,6 @@ def update_lease(
 def create_audit_event(
     db: Session,
     *,
-    user_id: Optional[int] = None,
     request_id: Optional[int],
     lease_id: Optional[int],
     event_type: str,
@@ -207,7 +206,6 @@ def create_audit_event(
     metadata_json: Optional[dict] = None,
 ) -> SecretAuditEvent:
     obj = SecretAuditEvent(
-        user_id=user_id,
         request_id=request_id,
         lease_id=lease_id,
         event_type=event_type,
@@ -229,7 +227,7 @@ def list_audit_events(
         db.query(SecretAuditEvent)
         .outerjoin(SecretRequest, SecretRequest.id == SecretAuditEvent.request_id)
         .filter(
-            (SecretRequest.user_id == user_id) | (SecretAuditEvent.user_id == user_id)
+            (SecretRequest.user_id == user_id) | (SecretAuditEvent.request_id.is_(None))
         )
         .order_by(SecretAuditEvent.id.desc())
         .limit(limit)
@@ -247,6 +245,7 @@ def create_stash_item(
     encrypted_value: str,
     masked_preview: str,
     source: str,
+    status: str,
     expires_at: datetime,
 ) -> SecretStashItem:
     obj = SecretStashItem(
@@ -257,7 +256,7 @@ def create_stash_item(
         encrypted_value=encrypted_value,
         masked_preview=masked_preview,
         source=source,
-        status="active",
+        status=status,
         expires_at=expires_at,
     )
     db.add(obj)
@@ -266,45 +265,43 @@ def create_stash_item(
     return obj
 
 
-def get_stash_item(db: Session, *, pointer_token: str) -> Optional[SecretStashItem]:
+def get_stash_item(
+    db: Session, *, stash_id: int, user_id: int
+) -> Optional[SecretStashItem]:
     return (
         db.query(SecretStashItem)
-        .filter(SecretStashItem.pointer_token == pointer_token)
+        .filter(SecretStashItem.id == stash_id, SecretStashItem.user_id == user_id)
         .first()
     )
 
 
-def list_active_stash_items(
-    db: Session, *, user_id: int, limit: int = 100
-) -> list[SecretStashItem]:
-    return (
-        db.query(SecretStashItem)
-        .filter(
-            SecretStashItem.user_id == user_id,
-            SecretStashItem.status == "active",
-            SecretStashItem.expires_at > datetime.utcnow(),
-        )
-        .order_by(SecretStashItem.expires_at.asc())
-        .limit(limit)
-        .all()
-    )
-
-
-def update_stash_item(
+def list_stash_items(
     db: Session,
     *,
-    item: SecretStashItem,
-    status: Optional[str] = None,
-    last_used_at: Optional[datetime] = None,
-    revoked_by: Optional[int] = None,
+    user_id: int,
+    channel_id: Optional[int] = None,
+    active_only: bool = True,
+    limit: int = 100,
+) -> list[SecretStashItem]:
+    q = db.query(SecretStashItem).filter(SecretStashItem.user_id == user_id)
+    if channel_id is not None:
+        q = q.filter(SecretStashItem.channel_id == channel_id)
+    if active_only:
+        q = q.filter(
+            SecretStashItem.status == "active",
+            SecretStashItem.revoked_at.is_(None),
+            SecretStashItem.expires_at > datetime.utcnow(),
+        )
+    return q.order_by(SecretStashItem.id.desc()).limit(limit).all()
+
+
+def revoke_stash_item(
+    db: Session, *, item: SecretStashItem, revoked_by: int
 ) -> SecretStashItem:
-    if status:
-        item.status = status
-    if last_used_at is not None:
-        item.last_used_at = last_used_at
-    if revoked_by is not None:
-        item.revoked_by = revoked_by
-        item.revoked_at = datetime.utcnow()
+    item.status = "revoked"
+    item.revoked_at = datetime.utcnow()
+    item.revoked_by = revoked_by
+    item.last_used_at = datetime.utcnow()
     db.commit()
     db.refresh(item)
     return item

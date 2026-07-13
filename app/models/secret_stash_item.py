@@ -21,7 +21,3 @@ class SecretStashItem(Base):
     last_used_at = Column(DateTime(timezone=True))
     revoked_at = Column(DateTime(timezone=True))
     revoked_by = Column(Integer, ForeignKey("users.id"), index=True)
-
-    @property
-    def pointer_uri(self) -> str:
-        return f"secret://stash/{self.pointer_token}"

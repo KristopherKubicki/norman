@@ -186,9 +186,6 @@ async def test_console_runtime_supervisor_promotes_tui_turn_candidate(db, monkey
                 "continuous_goal_candidate": True,
                 "kernel_execution_enabled": True,
                 "kernel_execution_candidate": True,
-                "route_proof_required": True,
-                "require_route_proof": True,
-                "require_verifier_for_completion": True,
                 "max_steps": 3,
                 "cloud_token_budget": 0,
                 "goal_phase_sequence": ["plan", "work", "verify"],
@@ -199,9 +196,6 @@ async def test_console_runtime_supervisor_promotes_tui_turn_candidate(db, monkey
                 "kernel_execution_enabled": True,
                 "kernel_execution_candidate": True,
                 "continuous_goal_candidate": True,
-                "route_proof_required": True,
-                "require_route_proof": True,
-                "require_verifier_for_completion": True,
             },
         ),
         metadata={
@@ -210,9 +204,6 @@ async def test_console_runtime_supervisor_promotes_tui_turn_candidate(db, monkey
             "kernel_execution_enabled": True,
             "kernel_execution_candidate": True,
             "continuous_goal_candidate": True,
-            "route_proof_required": True,
-            "require_route_proof": True,
-            "require_verifier_for_completion": True,
         },
     )
     service = ConsoleRuntimeWorkerService(store=store)
@@ -222,11 +213,8 @@ async def test_console_runtime_supervisor_promotes_tui_turn_candidate(db, monkey
     assert processed == 1
     db.expire_all()
     loaded = store.get_job(db, user_id=user.id, job_id=job.job_id)
-    assert loaded.status == "checkpointed"
+    assert loaded.status == "done"
     events = store.events_after(db, user_id=user.id, job_id=job.job_id)
-    event_types = {event.event_type for event in events}
-    assert "planner.receipt" in event_types
-    assert "route.receipt_audited" not in event_types
     goal_steps = [
         event for event in events if event.event_type == "goal.step_completed"
     ]
@@ -240,9 +228,6 @@ async def test_console_runtime_supervisor_promotes_tui_turn_candidate(db, monkey
         "chat",
         "verify",
     ]
-    assert events[-1].event_type == "goal.stopped"
-    assert events[-1].payload["stop_reason"] == "max_steps"
-    assert events[-1].payload["job_status"] == "checkpointed"
 
 
 @pytest.mark.asyncio

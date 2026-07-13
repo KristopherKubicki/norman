@@ -44,7 +44,6 @@ TOOL_TASK_KINDS = {
     NorllamaTaskKind.GRAPH,
     NorllamaTaskKind.NETWORK,
     NorllamaTaskKind.WORLD,
-    NorllamaTaskKind.IMAGE_GENERATE,
 }
 TOOL_TASK_KIND_VALUES = {kind.value for kind in TOOL_TASK_KINDS}
 
@@ -72,7 +71,6 @@ _CAPABILITY_BY_KIND = {
     NorllamaTaskKind.GRAPH: "graph",
     NorllamaTaskKind.NETWORK: "network",
     NorllamaTaskKind.WORLD: "world",
-    NorllamaTaskKind.IMAGE_GENERATE: "image_generate",
 }
 
 
@@ -318,14 +316,6 @@ def _route_model_selection(
     task_kind: NorllamaTaskKind | str | None = None,
 ) -> dict[str, Any]:
     model = _route_policy_value(policy, "model", "preferred_model")
-    if model:
-        return {
-            "schema": "norman.norllama.model-selection.v1",
-            "selected": True,
-            "model": model,
-            "source": "explicit_model",
-            "reason": "explicit model from route policy",
-        }
     model_selection = _clean(policy.get("model_selection")).lower()
     if model_selection in {
         "warm_policy",
@@ -349,12 +339,37 @@ def _route_model_selection(
                 "model": _clean(selection.get("model")),
                 "source": "warm_policy",
             }
+        if model:
+            return {
+                **selection,
+                "schema": "norman.norllama.model-selection.v1",
+                "selected": True,
+                "model": model,
+                "source": "explicit_model_unproven",
+                "reason": (
+                    _clean(selection.get("reason"))
+                    or "warm-policy did not select; explicit model fallback"
+                ),
+                "fallback_used": True,
+                "fallback_reason": (
+                    _clean(selection.get("reason"))
+                    or "warm-policy did not select; explicit model fallback"
+                ),
+            }
         return {
             **selection,
             "schema": "norman.norllama.model-selection.v1",
             "selected": False,
             "model": "",
             "source": "warm_policy",
+        }
+    if model:
+        return {
+            "schema": "norman.norllama.model-selection.v1",
+            "selected": True,
+            "model": model,
+            "source": "explicit_model",
+            "reason": "explicit model from route policy",
         }
     use_catalog = _flag(policy.get("use_capability_catalog")) or model_selection in {
         "capability_catalog",
@@ -462,10 +477,14 @@ def _base_attribution(
         "frontdoor": frontdoor,
         "exact_worker": exact_worker,
         "worker_id": worker.get("id", ""),
+        "target_worker_id": worker.get("id", ""),
         "worker_name": worker.get("name", ""),
         "worker_role": worker.get("role", ""),
         "worker_endpoint": worker.get("base_url", ""),
         "worker_memory_gb": worker.get("memory_gb"),
+        "gateway_selected_worker": "",
+        "observed_worker": "",
+        "observed_worker_source": "",
         "peer_path": peer_path,
         "attempts": [],
     }
@@ -552,6 +571,7 @@ def with_response_attribution(
         or _response_field(payload, "attempts", "attempted_upstreams")
         or _response_field(raw, "attempts", "attempted_upstreams")
     )
+    gateway_request_id = _clean(headers.get("x-norllama-request-id"))
     if not peer_path and attempts:
         peer_path = [
             label
@@ -565,10 +585,26 @@ def with_response_attribution(
     worker = _worker_by_id(worker_id) if worker_id else {}
     if not worker and worker_endpoint:
         worker = _worker_by_endpoint(worker_endpoint)
-    if not worker and not worker_id and not worker_endpoint and not peer_path:
+    if (
+        not worker
+        and not worker_id
+        and not worker_endpoint
+        and not peer_path
+        and not gateway_request_id
+    ):
         return route
     attribution = dict(route.attribution or {})
+    target_worker_id = _clean(
+        attribution.get("target_worker_id")
+        or (
+            attribution.get("worker_id")
+            if _clean(attribution.get("selection_source"))
+            in {"policy_worker", "configured_worker_endpoint"}
+            else ""
+        )
+    )
     if worker:
+        response_worker_id = _clean(worker.get("id"))
         attribution.update(
             {
                 "routing_scope": "direct_worker"
@@ -576,7 +612,11 @@ def with_response_attribution(
                 else "frontdoor_worker",
                 "selection_source": "gateway_response",
                 "exact_worker": True,
-                "worker_id": worker.get("id", ""),
+                "worker_id": response_worker_id,
+                "target_worker_id": target_worker_id,
+                "gateway_selected_worker": response_worker_id,
+                "observed_worker": response_worker_id,
+                "observed_worker_source": "gateway_response",
                 "worker_name": worker.get("name", ""),
                 "worker_role": worker.get("role", ""),
                 "worker_endpoint": worker.get("base_url", ""),
@@ -584,6 +624,7 @@ def with_response_attribution(
             }
         )
     elif worker_id:
+        response_worker_id = _worker_label_for_value(worker_id)
         attribution.update(
             {
                 "routing_scope": "frontdoor_worker"
@@ -591,7 +632,11 @@ def with_response_attribution(
                 else "direct_worker",
                 "selection_source": "gateway_response",
                 "exact_worker": True,
-                "worker_id": worker_id,
+                "worker_id": response_worker_id,
+                "target_worker_id": target_worker_id,
+                "gateway_selected_worker": response_worker_id,
+                "observed_worker": response_worker_id,
+                "observed_worker_source": "gateway_response",
             }
         )
     if worker_endpoint:
@@ -600,6 +645,8 @@ def with_response_attribution(
         attribution["peer_path"] = peer_path
     if attempts:
         attribution["attempts"] = [_public_endpoint(attempt) for attempt in attempts]
+    if gateway_request_id:
+        attribution["gateway_request_id"] = gateway_request_id
     return replace(route, attribution=attribution)
 
 
@@ -915,17 +962,52 @@ def route_receipt_payload(
         else {}
     )
     worker_id = _clean(attribution.get("worker_id"))
-    selected_worker = worker_id or (
-        "cloud" if route.cloud_proxy or not route.local else ""
+    gateway_selected_worker = _clean(
+        attribution.get("gateway_selected_worker")
+        or output.get("gateway_selected_worker")
+        or metadata.get("gateway_selected_worker")
+    )
+    observed_worker = _clean(
+        attribution.get("observed_worker")
+        or output.get("observed_worker")
+        or metadata.get("observed_worker")
+        or (
+            gateway_selected_worker
+            if _clean(attribution.get("selection_source")) == "gateway_response"
+            else ""
+        )
+    )
+    target_worker = _clean(
+        output.get("target_worker")
+        or metadata.get("target_worker")
+        or request.metadata.get("target_worker")
+        or selection.get("target_worker")
+        or attribution.get("target_worker_id")
+        or (
+            worker_id
+            if _clean(attribution.get("selection_source"))
+            in {"policy_worker", "configured_worker_endpoint"}
+            else ""
+        )
+    )
+    selected_worker = (
+        target_worker
+        or observed_worker
+        or worker_id
+        or ("cloud" if route.cloud_proxy or not route.local else "")
     )
     frontdoor = _public_endpoint(getattr(settings, "llm_offline_base_url", ""))
     peer_path = _clean_list(attribution.get("peer_path"))
     if not peer_path and frontdoor:
         peer_path = [frontdoor]
-        if selected_worker and selected_worker != "cloud":
-            peer_path.append(selected_worker)
+        peer_worker = observed_worker or selected_worker
+        if peer_worker and peer_worker != "cloud":
+            peer_path.append(peer_worker)
     phase = _clean(
-        metadata.get("phase") or request.metadata.get("phase")
+        metadata.get("phase")
+        or metadata.get("goal_phase")
+        or request.metadata.get("phase")
+        or request.metadata.get("goal_phase")
     ) or _task_kind_value(request.kind)
     input_tokens = _token_count(output, "input_tokens", "prompt_tokens")
     output_tokens = _token_count(output, "output_tokens", "completion_tokens")
@@ -940,6 +1022,19 @@ def route_receipt_payload(
         or selection.get("model")
         or route.model
     )
+    route_selected_model = _clean(
+        output.get("route_selected_model")
+        or metadata.get("route_selected_model")
+        or request.metadata.get("route_selected_model")
+        or route.model
+    )
+    requested_model = _clean(
+        output.get("requested_model")
+        or metadata.get("requested_model")
+        or request.metadata.get("requested_model")
+        or target_model
+        or route_selected_model
+    )
     effective_runtime_model = _clean(
         output.get("effective_runtime_model")
         or output.get("runtime_model")
@@ -949,19 +1044,10 @@ def route_receipt_payload(
         or raw.get("model")
         or target_model
     )
-    attribution_source = _clean(attribution.get("selection_source"))
-    routing_scope = _clean(attribution.get("routing_scope"))
-    observed_worker = worker_id if attribution_source == "gateway_response" else ""
-    target_worker = _clean(
-        output.get("target_worker")
-        or metadata.get("target_worker")
-        or selection.get("target_worker")
-        or (
-            worker_id
-            if attribution_source in {"policy_worker", "configured_worker_endpoint"}
-            else ""
-        )
+    attribution_source = _clean(
+        attribution.get("observed_worker_source") or attribution.get("selection_source")
     )
+    routing_scope = _clean(attribution.get("routing_scope"))
     specialist_cascade = (
         output.get("specialist_cascade")
         if isinstance(output.get("specialist_cascade"), dict)
@@ -991,29 +1077,85 @@ def route_receipt_payload(
         output=output,
         error=error,
     )
+    headers = _headers(output)
+    client_request_id = _clean(
+        output.get("client_request_id")
+        or metadata.get("client_request_id")
+        or request.metadata.get("client_request_id")
+        or request.task_id
+    )
+    gateway_request_id = _clean(
+        output.get("gateway_request_id")
+        or metadata.get("gateway_request_id")
+        or gateway_receipt.get("gateway_request_id")
+        or headers.get("x-norllama-request-id")
+    )
+    invocation_id = _clean(
+        output.get("invocation_id")
+        or metadata.get("invocation_id")
+        or request.metadata.get("invocation_id")
+        or headers.get("x-norllama-invocation-id")
+    )
+    attempts = _clean_list(attribution.get("attempts"))
+    fallback_used = bool(selection.get("fallback_used"))
+    fallback_reason = (
+        _clean(selection.get("fallback_reason") or selection.get("reason"))
+        if not selection.get("selected", True)
+        else ""
+    )
+    if target_worker and observed_worker and target_worker != observed_worker:
+        fallback_used = True
+        fallback_reason = (
+            fallback_reason
+            or f"gateway selected {observed_worker} instead of target {target_worker}"
+        )
+    elif len(attempts) > 1:
+        fallback_used = True
+        fallback_reason = fallback_reason or "gateway reported multiple worker attempts"
+
     receipt_payload = {
         "schema": "norman.norllama.route-receipt.v1",
         "status": status,
         "request_id": request.task_id,
+        "client_request_id": client_request_id,
+        "gateway_request_id": gateway_request_id,
+        "invocation_id": invocation_id,
         "job_id": _clean(
             request.metadata.get("console_runtime_job_id")
+            or request.metadata.get("runtime_job_id")
             or request.metadata.get("job_id")
+            or metadata.get("console_runtime_job_id")
+            or metadata.get("runtime_job_id")
             or metadata.get("job_id")
         ),
         "phase": phase,
         "task_kind": _task_kind_value(request.kind),
         "selected_provider": route.provider,
         "selected_model": route.model,
+        "route_selected_model": route_selected_model,
+        "requested_model": requested_model,
         "target_model": target_model,
         "effective_runtime_model": effective_runtime_model,
+        "model_override_used": bool(
+            output.get("model_override_used")
+            or metadata.get("model_override_used")
+            or request.metadata.get("model_override_used")
+        ),
+        "model_override_reason": _clean(
+            output.get("model_override_reason")
+            or metadata.get("model_override_reason")
+            or request.metadata.get("model_override_reason")
+        ),
         "selected_worker": selected_worker,
         "target_worker": target_worker,
+        "gateway_selected_worker": gateway_selected_worker,
         "observed_worker": observed_worker,
         "observed_worker_source": attribution_source if observed_worker else "",
         "route_attribution_source": attribution_source,
         "routing_scope": routing_scope,
         "frontdoor": frontdoor,
         "peer_path": peer_path,
+        "attempts": attempts,
         "route_reason": route.reason,
         "policy_mode": _policy_mode(request.route_policy),
         "cloud_proxy": bool(route.cloud_proxy),
@@ -1034,6 +1176,54 @@ def route_receipt_payload(
         ),
         "benchmark_score": quality.get("score") or 0.0,
         "coverage_ratio": quality.get("coverage_ratio") or 0.0,
+        "benchmark_gate": quality.get("benchmark_gate")
+        if isinstance(quality.get("benchmark_gate"), dict)
+        else selection.get("benchmark_gate")
+        if isinstance(selection.get("benchmark_gate"), dict)
+        else {},
+        "transport_gate": quality.get("transport_gate")
+        if isinstance(quality.get("transport_gate"), dict)
+        else selection.get("transport_gate")
+        if isinstance(selection.get("transport_gate"), dict)
+        else {},
+        "capability_gate": quality.get("capability_gate")
+        if isinstance(quality.get("capability_gate"), dict)
+        else selection.get("capability_gate")
+        if isinstance(selection.get("capability_gate"), dict)
+        else {},
+        "capability_suite_id": _clean(
+            quality.get("capability_suite_id")
+            or selection.get("capability_suite_id")
+            or metadata.get("capability_suite_id")
+        ),
+        "capability_packet_id": _clean(
+            quality.get("capability_packet_id")
+            or selection.get("capability_packet_id")
+            or metadata.get("capability_packet_id")
+        ),
+        "capability_promotion_authoritative": bool(
+            quality.get("capability_promotion_authoritative")
+            or selection.get("capability_promotion_authoritative")
+        ),
+        "production_route_requires_capability_gate": bool(
+            quality.get("production_route_requires_capability_gate")
+            or selection.get("production_route_requires_capability_gate")
+        ),
+        "production_route_eligible": bool(
+            quality.get("production_route_eligible")
+            if "production_route_eligible" in quality
+            else selection.get("production_route_eligible")
+            if "production_route_eligible" in selection
+            else True
+        ),
+        "capability_route_state": _clean(
+            quality.get("capability_route_state")
+            or selection.get("capability_route_state")
+        ),
+        "promotion_authoritative": bool(
+            quality.get("promotion_authoritative")
+            or selection.get("promotion_authoritative")
+        ),
         "cold_start_ms": _token_count(output, "cold_start_ms"),
         "first_token_ms": _token_count(output, "first_token_ms"),
         "completion_ms": _token_count(output, "completion_ms", "latency_ms"),
@@ -1041,31 +1231,24 @@ def route_receipt_payload(
         "output_tokens": output_tokens,
         "total_tokens": total_tokens,
         "usage_bucket": usage_bucket,
-        "fallback_used": bool(selection.get("fallback_used")),
-        "fallback_reason": _clean(
-            selection.get("fallback_reason") or selection.get("reason")
-        )
-        if not selection.get("selected", True)
-        else None,
+        "fallback_used": fallback_used,
+        "fallback_reason": fallback_reason or None,
         "verifier_result": verifier_result or "skipped",
         "output_shape": output_shape,
         "completion_requested": bool(
             metadata.get("completion_requested")
             or request.metadata.get("completion_requested")
         ),
-        "route_proof_required": bool(
-            metadata.get("route_proof_required")
-            or request.metadata.get("route_proof_required")
-            or request.route_policy.get("route_proof_required")
-            or request.route_policy.get("require_route_proof")
-        ),
         "require_verifier_for_completion": bool(
             metadata.get("require_verifier_for_completion")
             or request.metadata.get("require_verifier_for_completion")
-            or request.route_policy.get("require_verifier_for_completion")
         ),
         "model_selection": selection,
         "model_reality": reality,
+        "execution_mode": _clean(
+            metadata.get("execution_mode") or request.metadata.get("execution_mode")
+        )
+        or "unknown",
     }
     receipt_payload["specialist_cascade"] = evaluate_specialist_cascade(
         specialist_cascade,

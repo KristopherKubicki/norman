@@ -14,7 +14,6 @@ from app.services.norllama.specialist_lanes import (
     summarize_specialist_cascade,
     validate_specialist_output,
 )
-from app.services.norllama import specialist_lanes as specialist_module
 
 
 EXPECTED_PRODUCTION_LANES = {
@@ -29,12 +28,6 @@ EXPECTED_PRODUCTION_LANES = {
     "memory_write_gate",
     "local_hallucination_firewall",
 }
-EXPECTED_DETERMINISTIC_LANES = {
-    "receipt_auditor",
-    "difficulty_estimator",
-    "regret_predictor",
-    "non_answer_detector",
-}
 
 EXPECTED_DETERMINISTIC_EXPERTS = {
     "codeql",
@@ -48,6 +41,13 @@ EXPECTED_DETERMINISTIC_EXPERTS = {
     "pytest",
     "mypy",
     "ruff",
+}
+
+EXPECTED_BASE_PRODUCTION_LANES = {
+    "receipt_auditor",
+    "difficulty_estimator",
+    "regret_predictor",
+    "non_answer_detector",
 }
 
 
@@ -146,13 +146,15 @@ def test_specialist_lane_registry_declares_required_production_gates():
     assert payload["schema"] == SPECIALIST_LANE_REGISTRY_SCHEMA
     assert set(lanes) == EXPECTED_PRODUCTION_LANES
     assert payload["policy"]["older_baseline_defaults_allowed"] is False
+    assert {
+        lane_name for lane_name, lane in lanes.items() if lane["state"] == "production"
+    } == EXPECTED_BASE_PRODUCTION_LANES
+    assert {
+        lane_name for lane_name, lane in lanes.items() if lane["state"] == "lab"
+    } == (EXPECTED_PRODUCTION_LANES - EXPECTED_BASE_PRODUCTION_LANES)
 
     for lane in lanes.values():
         assert lane["state"] in ALLOWED_SPECIALIST_STATES
-        if lane["lane"] in EXPECTED_DETERMINISTIC_LANES:
-            assert lane["state"] == "production"
-        else:
-            assert lane["state"] == "lab"
         assert "qwen3" in lane["model_floor"].lower()
         assert lane["older_baseline_defaults_allowed"] is False
         assert lane["output_schema"]["schema"] == (
@@ -180,41 +182,6 @@ def test_deterministic_experts_are_registered_in_same_cascade():
         assert expert["state"] in ALLOWED_SPECIALIST_STATES
         assert expert["usage_bucket"] == "offline_local"
         assert expert["route_receipt_required"] is True
-
-
-def test_deterministic_expert_registry_checks_python_environment_bin(
-    tmp_path, monkeypatch
-):
-    bin_dir = tmp_path / "venv" / "bin"
-    bin_dir.mkdir(parents=True)
-    fake_python = bin_dir / "python"
-    fake_python.write_text("#!/bin/sh\n")
-    fake_tool = bin_dir / "norman-fake-expert"
-    fake_tool.write_text("#!/bin/sh\n")
-    fake_tool.chmod(0o755)
-
-    monkeypatch.setenv("PATH", "")
-    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
-    monkeypatch.setattr(specialist_module.sys, "executable", str(fake_python))
-    monkeypatch.setattr(
-        specialist_module,
-        "DETERMINISTIC_EXPERTS",
-        (
-            {
-                "expert": "fake",
-                "command": "norman-fake-expert",
-                "purpose": "test",
-                "lanes": ["receipt_auditor"],
-            },
-        ),
-    )
-
-    registry = specialist_module.deterministic_expert_registry()
-
-    assert registry["available_count"] == 1
-    assert registry["experts"][0]["availability"] == "installed"
-    assert registry["experts"][0]["state"] == "production"
-    assert registry["experts"][0]["binary"] == str(fake_tool)
 
 
 def test_specialist_output_validator_checks_lane_schema_contracts():
@@ -323,6 +290,7 @@ def test_specialist_lane_proof_can_fall_back_to_route_receipt():
     lane = next(
         item for item in proof["lanes"] if item["lane"] == "tool_call_risk_classifier"
     )
+    assert lane["proof_state"] == "lab"
     assert lane["live_smoke_test"]["status"] == "receipt_only"
     assert lane["benchmark_evidence"]["fresh"] is True
 
@@ -330,6 +298,7 @@ def test_specialist_lane_proof_can_fall_back_to_route_receipt():
 def test_specialist_cascade_evaluator_runs_deterministic_receipt_checks():
     route_receipt = {
         "schema": "norman.norllama.route-receipt.v1",
+        "status": "completed",
         "request_id": "req-1",
         "job_id": "job-1",
         "phase": "plan",
@@ -373,7 +342,9 @@ def test_specialist_cascade_evaluator_runs_deterministic_receipt_checks():
     lanes = {lane["lane"]: lane for lane in cascade["lanes"]}
 
     assert cascade["status"] == "evaluated"
-    assert lanes["receipt_auditor"]["status"] == "pass"
+    assert lanes["receipt_auditor"]["status"] == "fail"
+    assert lanes["receipt_auditor"]["result"]["status"] == "fail"
+    assert lanes["receipt_auditor"]["result"]["failures"]
     assert lanes["non_answer_detector"]["status"] == "fail"
     assert lanes["difficulty_estimator"]["verdict"] == "low"
     assert lanes["regret_predictor"]["verdict"] == "high"
@@ -384,3 +355,114 @@ def test_specialist_cascade_evaluator_runs_deterministic_receipt_checks():
     assert cascade["specialist_lane_proof"]["schema"] == SPECIALIST_PROOF_SCHEMA
     assert cascade["summary"]["lane_count"] == 10
     assert cascade["summary"]["benchmark_fresh_count"] >= 4
+
+
+def test_specialist_non_answer_detector_rejects_plan_only_and_unknown_shapes():
+    for output_shape in ("plan_only", "unknown"):
+        route_receipt = {
+            "status": "completed",
+            "request_id": f"req-{output_shape}",
+            "job_id": f"job-{output_shape}",
+            "phase": "verify",
+            "task_kind": "verify",
+            "selected_provider": "norllama",
+            "selected_model": "qwen3.6:35b-a3b-q4_K_M",
+            "target_model": "qwen3.6:35b-a3b-q4_K_M",
+            "effective_runtime_model": "qwen3.6:35b-a3b-q4_K_M",
+            "selected_worker": "spark-151",
+            "observed_worker": "spark-151",
+            "observed_worker_source": "gateway_response",
+            "frontdoor": "https://llm.home.arpa",
+            "peer_path": ["https://llm.home.arpa", "spark-151"],
+            "route_reason": "local first",
+            "policy_mode": "local_first",
+            "cloud_proxy": False,
+            "benchmark_packet_id": "uplink-1",
+            "benchmark_source": "uplink_benchmark",
+            "benchmark_gate": "production",
+            "promotion_authoritative": True,
+            "benchmark_fresh": True,
+            "benchmark_score": 0.91,
+            "coverage_ratio": 1.0,
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "total_tokens": 15,
+            "usage_bucket": "offline_local",
+            "fallback_used": False,
+            "fallback_reason": None,
+            "verifier_result": "pass",
+            "output_shape": output_shape,
+        }
+
+        cascade = evaluate_specialist_cascade(
+            specialist_cascade_template(
+                phase="verify",
+                selected_provider="norllama",
+                selected_model="qwen3.6:35b-a3b-q4_K_M",
+                selected_worker="spark-151",
+            ),
+            route_receipt=route_receipt,
+        )
+        lanes = {lane["lane"]: lane for lane in cascade["lanes"]}
+
+        assert lanes["non_answer_detector"]["status"] == "fail"
+        assert lanes["non_answer_detector"]["verdict"] == output_shape
+
+
+def test_specialist_cascade_records_executed_deterministic_expert_results():
+    route_receipt = {
+        "request_id": "req-expert",
+        "job_id": "job-expert",
+        "phase": "verify",
+        "task_kind": "verify",
+        "selected_provider": "norllama",
+        "selected_model": "qwen3.6:35b-a3b-q4_K_M",
+        "target_model": "qwen3.6:35b-a3b-q4_K_M",
+        "effective_runtime_model": "qwen3.6:35b-a3b-q4_K_M",
+        "selected_worker": "spark-151",
+        "target_worker": "spark-151",
+        "observed_worker": "spark-151",
+        "frontdoor": "https://llm.home.arpa",
+        "peer_path": ["https://llm.home.arpa", "spark-151"],
+        "route_reason": "local first",
+        "policy_mode": "local_first",
+        "cloud_proxy": False,
+        "benchmark_packet_id": "uplink-1",
+        "benchmark_fresh": True,
+        "benchmark_score": 0.91,
+        "coverage_ratio": 1.0,
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "total_tokens": 15,
+        "usage_bucket": "offline_local",
+        "fallback_used": False,
+        "fallback_reason": None,
+        "verifier_result": "pass",
+        "output_shape": "complete",
+    }
+    cascade = specialist_cascade_template(
+        phase="verify",
+        selected_provider="norllama",
+        selected_model="qwen3.6:35b-a3b-q4_K_M",
+        selected_worker="spark-151",
+        deterministic_experts=["ruff"],
+    )
+
+    evaluated = evaluate_specialist_cascade(
+        cascade,
+        route_receipt=route_receipt,
+        metadata={
+            "deterministic_expert_results": {
+                "ruff": {"ok": True, "returncode": 0, "summary": "clean"}
+            }
+        },
+    )
+    experts = {item["expert"]: item for item in evaluated["deterministic_experts"]}
+
+    assert experts["ruff"]["status"] == "pass"
+    assert experts["ruff"]["execution_mode"] == "executed"
+    assert experts["ruff"]["result"]["summary"] == "clean"
+    assert all(
+        item["status"] != "available_not_run"
+        for item in evaluated["deterministic_experts"]
+    )

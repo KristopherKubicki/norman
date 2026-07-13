@@ -1,7 +1,11 @@
+import json
+
 from app.services.console_status import (
     classify_console_credit_assessment,
-    console_accounting_state,
-    console_storage_state,
+    console_audit_url,
+    console_status_url,
+    fetch_console_audit,
+    console_usage_state,
 )
 
 
@@ -36,48 +40,148 @@ def test_classify_console_credit_assessment_flags_fast_idle_bot() -> None:
     assert "preserve quota" in assessment.recommended_speed_reason.lower()
 
 
-def test_console_accounting_state_extracts_tui_billing_tags() -> None:
-    state = console_accounting_state(
+def test_console_usage_state_flattens_snapshot_usage() -> None:
+    usage = console_usage_state(
         {
-            "accounting": {
-                "accounting_version": "norman.tui-usage.v2",
-                "billing_scope": "work-special",
-                "billing_unit": "work-special:panelbot",
-                "billing_owner": "openbrand",
-                "billing_project": "panelbot",
-                "agent_slug": "panelbot",
-                "actor_slug": "panelbot",
-                "host_name": "work-special",
-                "workdir": "/home/kristopher/code/panelbot",
+            "usage": {
+                "tracked": True,
+                "window_seconds": 86400,
+                "totals": {
+                    "turns": 9,
+                    "successful_turns": 8,
+                    "failed_turns": 1,
+                    "input_tokens": 1200,
+                    "cached_input_tokens": 400,
+                    "output_tokens": 180,
+                    "total_tokens": 1380,
+                },
+                "last_24h": {
+                    "turns": 4,
+                    "input_tokens": 700,
+                    "cached_input_tokens": 200,
+                    "output_tokens": 90,
+                    "total_tokens": 790,
+                },
+                "last_turn": {
+                    "finished_at": 1234567890,
+                    "total_tokens": 111,
+                },
             }
         }
     )
 
-    assert state["accounting_version"] == "norman.tui-usage.v2"
-    assert state["billing_scope"] == "work-special"
-    assert state["billing_unit"] == "work-special:panelbot"
-    assert state["billing_owner"] == "openbrand"
-    assert state["billing_project"] == "panelbot"
-    assert state["agent_slug"] == "panelbot"
-    assert state["actor_slug"] == "panelbot"
-    assert state["host_name"] == "work-special"
-    assert state["workdir"] == "/home/kristopher/code/panelbot"
+    assert usage["usage_tracked"] is True
+    assert usage["usage_turns"] == 9
+    assert usage["usage_total_tokens"] == 1380
+    assert usage["usage_window_turns"] == 4
+    assert usage["usage_window_total_tokens"] == 790
+    assert usage["usage_last_turn_at"] == 1234567890
+    assert usage["usage_last_turn_total_tokens"] == 111
 
 
-def test_console_storage_state_extracts_context_pack_db_fields() -> None:
-    state = console_storage_state(
-        {
-            "context_pack_preview": {
-                "storage": {
-                    "state_db_enabled": True,
-                    "state_db_path": "/home/kristopher/.codex-scout/web-bridge/tui_state.sqlite3",
-                    "history_format": "jsonl_write_through_sqlite",
-                }
-            }
-        }
+def test_console_audit_url_preserves_token_and_since() -> None:
+    url = console_audit_url(
+        "https://keystone.home.arpa/?token=test-token",
+        since_ts=123,
+        limit=50,
+    )
+    assert (
+        url
+        == "https://keystone.home.arpa/api/audit?token=test-token&since=123&limit=50"
     )
 
-    assert state["state_db_enabled"] is True
-    assert state["history_format"] == "jsonl_write_through_sqlite"
-    assert state["state_db_path"].endswith("/web-bridge/tui_state.sqlite3")
-    assert state["storage"]["state_db_enabled"] is True
+
+def test_console_audit_url_accepts_explicit_access_token() -> None:
+    url = console_audit_url(
+        "https://keystone.home.arpa/",
+        since_ts=123,
+        limit=50,
+        access_token="collector-token",
+    )
+    assert (
+        url
+        == "https://keystone.home.arpa/api/audit?token=collector-token&since=123&limit=50"
+    )
+
+
+def test_console_status_url_accepts_explicit_access_token() -> None:
+    url = console_status_url(
+        "https://keystone.home.arpa/",
+        access_token="collector-token",
+    )
+    assert url == "https://keystone.home.arpa/api/status?token=collector-token"
+
+
+def test_fetch_console_audit_normalizes_payload(monkeypatch) -> None:
+    body = {
+        "count": 1,
+        "items": [
+            {
+                "id": "evt-1",
+                "event_type": "chat.completed",
+                "summary": "Done",
+                "event_at": 123,
+            }
+        ],
+        "session_name": "keystone-codex",
+        "agent_name": "Keystone",
+        "host_name": "private-host",
+        "ui_version": "2026.04.08.1",
+    }
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(body).encode("utf-8")
+
+    monkeypatch.setattr(
+        "app.services.console_status.urlopen", lambda *args, **kwargs: _Resp()
+    )
+
+    payload = fetch_console_audit(
+        "https://keystone.home.arpa/?token=test-token",
+        since_ts=100,
+        limit=25,
+    )
+
+    assert payload["reachable"] is True
+    assert payload["count"] == 1
+    assert payload["items"][0]["id"] == "evt-1"
+    assert payload["agent_name"] == "Keystone"
+
+
+def test_fetch_console_audit_uses_explicit_access_token(monkeypatch) -> None:
+    seen = {}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"count": 0, "items": []}).encode("utf-8")
+
+    def _fake_urlopen(request, **kwargs):
+        seen["url"] = request.full_url
+        return _Resp()
+
+    monkeypatch.setattr("app.services.console_status.urlopen", _fake_urlopen)
+
+    fetch_console_audit(
+        "https://keystone.home.arpa/",
+        since_ts=100,
+        limit=25,
+        access_token="collector-token",
+    )
+
+    assert seen["url"] == (
+        "https://keystone.home.arpa/api/audit"
+        "?token=collector-token&since=100&limit=25"
+    )

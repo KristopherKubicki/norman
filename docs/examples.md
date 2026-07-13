@@ -7,7 +7,7 @@ This page walks through a small end‑to‑end example and shows how to interact
 1. Run Norman once to generate `config.yaml` and edit the Slack section:
 
 ```yaml
-slack_token: "xoxb-your-slack-token"
+slack_token: "SLACK_BOT_TOKEN_PLACEHOLDER"
 slack_channel_id: "C01234567"
 ```
 

@@ -126,12 +126,11 @@ _console_heartbeats_lock = Lock()
 _console_heartbeats: dict[str, dict[str, Any]] = {}
 _CONSOLE_HEARTBEAT_MAX_ITEMS = 512
 _CONSOLE_HEARTBEAT_MAX_AGE_SECONDS = 60 * 60 * 24
-_SWITCHBOARD_HOSTS = {"switchboard.home.arpa", "switchboard.norman.home.arpa"}
 
 
 def _norman_chat_redirect_url(request: Request) -> str:
     request_host = (request.headers.get("host") or "").split(":", 1)[0].strip().lower()
-    if request_host in _SWITCHBOARD_HOSTS:
+    if request_host in {"switchboard.home.arpa", "switchboard.norman.home.arpa"}:
         return "/dashboard.html?view=switchboard"
     params: dict[str, str] = {}
     profile = str(request.query_params.get("profile") or "").strip()
@@ -242,18 +241,6 @@ async def index_endpoint(request: Request, db: Session = Depends(get_async_db)):
     return await home(request, db)
 
 
-@app_routes.get("/bot/norman")
-async def norman_bot_redirect_endpoint(
-    request: Request, db: Session = Depends(get_async_db)
-):
-    return RedirectResponse(url="/bot/norman/", status_code=307)
-
-
-@app_routes.get("/bot/norman/")
-async def norman_bot_endpoint(request: Request, db: Session = Depends(get_async_db)):
-    return await home(request, db)
-
-
 @app_routes.get("/dashboard")
 async def dashboard_endpoint(request: Request, db: Session = Depends(get_async_db)):
     return await home(request, db)
@@ -276,16 +263,6 @@ async def switchboard_html_endpoint(
     request: Request, db: Session = Depends(get_async_db)
 ):
     return RedirectResponse(url="/dashboard.html?view=switchboard", status_code=307)
-
-
-@app_routes.get("/bbs")
-async def bbs_endpoint(request: Request):
-    return RedirectResponse(url="/messages_log.html?view=switchboard", status_code=307)
-
-
-@app_routes.get("/bbs.html")
-async def bbs_html_endpoint(request: Request):
-    return RedirectResponse(url="/messages_log.html?view=switchboard", status_code=307)
 
 
 @app_routes.get("/connectors.html")

@@ -7,6 +7,9 @@ __pycache__/
 *.pyd
 *.pyc
 .Python
+.hypothesis/
+.pytest_cache/
+*.egg-info/
 env/
 venv/
 .venv/
@@ -30,64 +33,44 @@ venv/
 
 # Environment variables
 .env
-.env.*
-*.env
-!.env.example
-!*.env.example
-
-# Local/private security material
-docs/secrets_inventory.md
-docs/*secrets_inventory*.md
-docs/*secret*inventory*.md
-private/
-.private/
-*.credentials
-*.token
-*.key
-*.pem
-*.p12
-*.pfx
-*.jks
-*.kubeconfig
 
 # old files
 *.old
 *.dead
 *.ignore
-*.orig
-*.bak-*
-*.bak.*
 
 # logs
 logs/
+tmp/
 
 # config file
 config.yaml
 db/hypervisor/apps.yaml
 db/hypervisor/state/
 db/estate/registry.yaml
+db/tmux_profiles/
 db/tmux_profiles/*/running_now.json
-
-# local/generated artifacts
+app/static/user_media/
 node_modules/
-.pytest_cache/
-.hypothesis/
 .backup/
 .codex-backups/
 .session
-tmp/
 tmp_console_audit_stage/
 app_tmp_bundle/
 norman.egg-info/
-*.db
-*.db-shm
-*.db-wal
-db/*.db.backup-*
-db/*.db.bak-*
+norman_internal_tls/
+norman_internal_tls
+sys
+tmp_keystone_console_inline.js
 
 
 *.sw[op]
 
 # ignore user databases
 db/*.db
+*.db
+*.db-shm
+*.db-wal
+db/*.db.backup-*
+db/*.db.bak-*
 coverage.xml

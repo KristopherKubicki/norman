@@ -66,7 +66,7 @@ AUTH_COOKIE_NAME = (
 AUTH_COOKIE_MAX_AGE = int(
     os.environ.get("NORMAN_CODEX_WEB_COOKIE_MAX_AGE", str(14 * 24 * 60 * 60))
 )
-DEFAULT_UI_VERSION = "2026.07.09.02"
+DEFAULT_UI_VERSION = "2026.07.11.02"
 UI_VERSION = (
     os.environ.get("NORMAN_CODEX_UI_VERSION", DEFAULT_UI_VERSION).strip()
     or DEFAULT_UI_VERSION
@@ -359,6 +359,12 @@ CODEX_AUTH_PATH = Path(CODEX_HOME) / "auth.json"
 CODEX_MODEL_FLOOR = (
     os.environ.get("NORMAN_CODEX_MODEL_FLOOR", "gpt-5.5").strip() or "gpt-5.5"
 )
+CODEX_ALLOW_BELOW_FLOOR_SWITCHABLE = os.environ.get(
+    "NORMAN_CODEX_ALLOW_BELOW_FLOOR_SWITCHABLE", ""
+).strip().lower() in {"1", "true", "yes", "on"}
+CODEX_SWITCHABLE_MODEL_DEFAULTS = "openai.gpt-5.5,gpt-5.5"
+if CODEX_ALLOW_BELOW_FLOOR_SWITCHABLE:
+    CODEX_SWITCHABLE_MODEL_DEFAULTS += ",openai.gpt-5.4,gpt-5.4"
 
 
 def _codex_model_version(value: Any) -> tuple[int, int] | None:
@@ -396,8 +402,7 @@ def codex_model_switchable_below_floor(value: Any) -> bool:
     if not aliases:
         return False
     raw = os.environ.get(
-        "NORMAN_CODEX_SWITCHABLE_MODELS",
-        "openai.gpt-5.5,openai.gpt-5.4,gpt-5.5,gpt-5.4",
+        "NORMAN_CODEX_SWITCHABLE_MODELS", CODEX_SWITCHABLE_MODEL_DEFAULTS
     )
     for item in raw.split(","):
         if aliases & _codex_model_aliases(item):
@@ -416,7 +421,11 @@ def normalize_codex_model_name(
     if not clean:
         return "" if allow_blank else str(fallback or CODEX_MODEL_FLOOR).strip()
     if codex_model_below_floor(clean):
-        if allow_switchable and codex_model_switchable_below_floor(clean):
+        if (
+            CODEX_ALLOW_BELOW_FLOOR_SWITCHABLE
+            and allow_switchable
+            and codex_model_switchable_below_floor(clean)
+        ):
             return clean
         return str(fallback or CODEX_MODEL_FLOOR).strip() or CODEX_MODEL_FLOOR
     return clean
@@ -654,7 +663,7 @@ CODEX_SWITCHABLE_MODELS = _dedupe_models(
     normalize_codex_model_name(item, fallback=MODEL, allow_switchable=True)
     for item in os.environ.get(
         "NORMAN_CODEX_SWITCHABLE_MODELS",
-        "openai.gpt-5.5,openai.gpt-5.4,gpt-5.5,gpt-5.4",
+        CODEX_SWITCHABLE_MODEL_DEFAULTS,
     ).split(",")
     if item.strip()
 ) or [MODEL]
@@ -1770,6 +1779,7 @@ THREAD_ID_PATH = STATE_DIR / "thread_id.txt"
 THREAD_SCOPE_PATH = STATE_DIR / "thread_scope.txt"
 LAST_PROMPT_PATH = STATE_DIR / "last_prompt.txt"
 LAST_RESPONSE_PATH = STATE_DIR / "last_response.txt"
+LAST_RESPONSE_META_PATH = STATE_DIR / "last_response_meta.json"
 LAST_ERROR_PATH = STATE_DIR / "last_error.txt"
 STATUS_PATH = STATE_DIR / "status.json"
 RESOURCE_METER_PATH = Path(
@@ -1830,7 +1840,7 @@ ROUTE_RECEIPT_OWNER_TUI = (
 ROUTE_RECEIPT_DIR = Path(
     os.environ.get(
         "NORMAN_CODEX_ROUTE_RECEIPT_DIR",
-        "/var/lib/norman/route_receipts",
+        str(STATE_DIR / "route_receipts"),
     )
 )
 ROUTE_RECEIPT_PATH = Path(
@@ -1843,6 +1853,7 @@ ROUTE_RECEIPTS_ENABLED = os.environ.get(
     "NORMAN_CODEX_ROUTE_RECEIPTS_ENABLED", "0"
 ).strip().lower() in {"1", "true", "yes", "on"}
 MAX_ROUTE_RECEIPT_ITEMS = int(os.environ.get("NORMAN_CODEX_ROUTE_RECEIPT_ITEMS", "0"))
+ROUTE_RECEIPT_LAST_WRITE_ERROR = ""
 STATE_DB_PATH = Path(
     os.environ.get("NORMAN_CODEX_STATE_DB_PATH", str(STATE_DIR / "tui_state.sqlite3"))
 )
@@ -2007,6 +2018,12 @@ TUI_TURN_SHADOW_ENABLED = _early_env_flag("NORMAN_TUI_TURN_SHADOW_ENABLED", True
 
 
 CONSOLE_RUNTIME_TOKEN_RESOLUTION_ERROR = ""
+CONSOLE_RUNTIME_TOKEN_SECRET_DEFAULTS = (
+    "norman/console-runtime-token",
+    "norman/console-runtime-service-token",
+    "runtime/console-runtime-token",
+    "runtime/console-runtime-service-token",
+)
 
 
 def _first_configured_env(*names: str) -> str:
@@ -2044,6 +2061,24 @@ def _runtime_token_secret_name() -> str:
         "NORMAN_CONSOLE_RUNTIME_SECRET_NAME",
         "NORMAN_KEYS_SECRET_NAME",
     )
+
+
+def _runtime_token_secret_names() -> list[str]:
+    explicit = _runtime_token_secret_name()
+    names = [explicit] if explicit else []
+    if not explicit and (
+        _norman_keys_secret_get_url() or os.environ.get("NORMAN_SECRET_CMD", "").strip()
+    ):
+        names.extend(CONSOLE_RUNTIME_TOKEN_SECRET_DEFAULTS)
+    out: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        clean_name = str(name or "").strip()
+        if not clean_name or clean_name in seen:
+            continue
+        seen.add(clean_name)
+        out.append(clean_name)
+    return out
 
 
 def _remember_runtime_token_resolution_error(exc: BaseException) -> None:
@@ -2160,26 +2195,27 @@ def resolve_console_runtime_token() -> str:
     direct = _first_configured_env("NORMAN_CONSOLE_RUNTIME_TOKEN", "NORMAN_API_TOKEN")
     if direct:
         return direct
-    secret_name = _runtime_token_secret_name()
-    if not secret_name:
+    secret_names = _runtime_token_secret_names()
+    if not secret_names:
         return ""
-    for resolver in (
-        _resolve_runtime_token_from_norman_keys,
-        _resolve_runtime_token_from_secret_command,
-    ):
-        try:
-            token = resolver(secret_name)
-        except (
-            json.JSONDecodeError,
-            subprocess.SubprocessError,
-            TimeoutError,
-            OSError,
-            urllib_error.URLError,
-        ) as exc:
-            _remember_runtime_token_resolution_error(exc)
-            continue
-        if token:
-            return token
+    for secret_name in secret_names:
+        for resolver in (
+            _resolve_runtime_token_from_norman_keys,
+            _resolve_runtime_token_from_secret_command,
+        ):
+            try:
+                token = resolver(secret_name)
+            except (
+                json.JSONDecodeError,
+                subprocess.SubprocessError,
+                TimeoutError,
+                OSError,
+                urllib_error.URLError,
+            ) as exc:
+                _remember_runtime_token_resolution_error(exc)
+                continue
+            if token:
+                return token
     return ""
 
 
@@ -4906,7 +4942,7 @@ DEFAULT_OPTIMIZATION_MODE = normalize_optimization_mode(
 
 AUTO_TURN_CONTROL_SCHEMA = "norman.tui.auto-turn-controls.v1"
 TURN_CONTROL_ENVELOPE_SCHEMA = "norman.tui.turn-envelope.v1"
-ROUTE_RECEIPT_POLICY_VERSION = "norman.route-policy.5_4_first.v1"
+ROUTE_RECEIPT_POLICY_VERSION = "norman.route-policy.gpt55_floor.v1"
 AUTO_TURN_CONTROL_EXPLICIT_MARKERS = (
     "30 minute",
     "30 minutes",
@@ -5301,21 +5337,22 @@ def turn_control_mutation_risk(prompt: Any, *extra_text: Any) -> str:
     text = "\n".join([str(prompt or ""), *(str(item or "") for item in extra_text)])
     if prompt_is_literal_response_request(text):
         return "none"
+    if prompt_is_route_status_diagnostic(text):
+        return "none"
     lower = f" {prompt_core_request(text).lower()} "
-    if any(
-        token in lower
-        for token in (
-            " billing",
-            " credential",
-            " credentials",
-            " key ",
-            " keys ",
-            " purse",
-            " secret",
-            " secrets",
-            " token",
-        )
-    ):
+    secret_marker = re.search(
+        r"\b(?:credential|credentials|purse|secret|secrets|token)\b"
+        r"|\b(?:api|access|refresh|client|signing|webhook|private|ssh)\s+keys?\b",
+        lower,
+    )
+    billing_marker = re.search(r"\bbilling\b", lower)
+    billing_status_label = re.search(
+        r"\bbilling\s*=\s*"
+        r"(?:healthy|unhealthy|ok|down|up|timeout|timed[- ]?out|"
+        r"degraded|failed|failing|offline|online)\b",
+        lower,
+    )
+    if secret_marker or (billing_marker and not billing_status_label):
         return "billing_secret"
     if any(
         token in lower
@@ -6397,25 +6434,26 @@ def model_route_presets_payload() -> list[dict[str, Any]]:
         confidence="high",
         lane="openai-direct",
     )
-    add_preset(
-        "codex-openai-5-4",
-        "OpenAI 5.4",
-        runtime="codex",
-        model=codex_direct_model_name("gpt-5.4"),
-        service_tier="flex",
-        provider=CODEX_DIRECT_PROVIDER_LABEL,
-        can_execute=CODEX_DIRECT_TIERS_ENABLED,
-        status="Fallback" if CODEX_DIRECT_TIERS_ENABLED else "Disabled",
-        hint=(
-            "GPT-5.4 via the OpenAI direct route after Bedrock routes fail."
-            if CODEX_DIRECT_TIERS_ENABLED
-            else "OpenAI direct tiers are disabled for this TUI."
-        ),
-        role="compat fallback",
-        tools="codex",
-        confidence="medium",
-        lane="openai-direct",
-    )
+    if CODEX_ALLOW_BELOW_FLOOR_SWITCHABLE:
+        add_preset(
+            "codex-openai-5-4",
+            "OpenAI 5.4",
+            runtime="codex",
+            model=codex_direct_model_name("gpt-5.4"),
+            service_tier="flex",
+            provider=CODEX_DIRECT_PROVIDER_LABEL,
+            can_execute=CODEX_DIRECT_TIERS_ENABLED,
+            status="Emergency" if CODEX_DIRECT_TIERS_ENABLED else "Disabled",
+            hint=(
+                "GPT-5.4 via the OpenAI direct route. Compatibility route only; not a normal default."
+                if CODEX_DIRECT_TIERS_ENABLED
+                else "OpenAI direct tiers are disabled for this TUI."
+            ),
+            role="compat fallback",
+            tools="codex",
+            confidence="emergency only",
+            lane="openai-direct",
+        )
     add_preset(
         "codex-bedrock",
         "Bedrock Default",
@@ -6435,25 +6473,26 @@ def model_route_presets_payload() -> list[dict[str, Any]]:
         confidence="high",
         lane="aws-bedrock",
     )
-    add_preset(
-        "codex-bedrock-5-4",
-        "Bedrock 5.4",
-        runtime="codex",
-        model=codex_bedrock_model_name("openai.gpt-5.4"),
-        service_tier="default",
-        provider=CODEX_STANDARD_PROVIDER_LABEL,
-        can_execute=bool(CODEX_STANDARD_PROFILE_V2),
-        status="Stable" if CODEX_STANDARD_PROFILE_V2 else "Offline",
-        hint=(
-            f"GPT-5.4 via profile-v2 {CODEX_STANDARD_PROFILE_V2}. Stable default lane for normal work."
-            if CODEX_STANDARD_PROFILE_V2
-            else "Bedrock fallback needs a standard profile-v2 before it can run."
-        ),
-        role="standard lane",
-        tools="codex",
-        confidence="high",
-        lane="aws-bedrock",
-    )
+    if CODEX_ALLOW_BELOW_FLOOR_SWITCHABLE:
+        add_preset(
+            "codex-bedrock-5-4",
+            "Bedrock 5.4",
+            runtime="codex",
+            model=codex_bedrock_model_name("openai.gpt-5.4"),
+            service_tier="default",
+            provider=CODEX_STANDARD_PROVIDER_LABEL,
+            can_execute=bool(CODEX_STANDARD_PROFILE_V2),
+            status="Emergency" if CODEX_STANDARD_PROFILE_V2 else "Offline",
+            hint=(
+                f"GPT-5.4 via profile-v2 {CODEX_STANDARD_PROFILE_V2}. Compatibility route only; not a normal default."
+                if CODEX_STANDARD_PROFILE_V2
+                else "Bedrock fallback needs a standard profile-v2 before it can run."
+            ),
+            role="compat fallback",
+            tools="codex",
+            confidence="emergency only",
+            lane="aws-bedrock",
+        )
     add_preset(
         "codex-bedrock-frontier-5-5",
         "Bedrock 5.5",
@@ -13165,6 +13204,56 @@ def write_json_list(path: Path, payload: list[Any]) -> None:
     path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
 
 
+def _text_sha256(value: Any) -> str:
+    return hashlib.sha256(str(value or "").encode("utf-8", "replace")).hexdigest()
+
+
+def clear_last_response_meta() -> None:
+    try:
+        LAST_RESPONSE_META_PATH.unlink()
+    except FileNotFoundError:
+        return
+    except OSError:
+        return
+
+
+def write_last_response(
+    value: str,
+    *,
+    console_runtime_job_id: str = "",
+    prompt: str = "",
+    source: str = "",
+    updated_at: int | None = None,
+) -> None:
+    text = str(value or "")
+    write_text(LAST_RESPONSE_PATH, text)
+    clean_job_id = str(console_runtime_job_id or "").strip()
+    if not clean_job_id:
+        clear_last_response_meta()
+        return
+    write_json(
+        LAST_RESPONSE_META_PATH,
+        {
+            "console_runtime_job_id": clean_job_id,
+            "response_sha256": _text_sha256(text),
+            "response_chars": len(text),
+            "prompt_sha256": _text_sha256(prompt) if str(prompt or "") else "",
+            "source": str(source or "").strip(),
+            "updated_at": int(updated_at or now_ts()),
+        },
+    )
+
+
+def last_response_meta_for(response_text: str) -> dict[str, Any]:
+    meta = read_json(LAST_RESPONSE_META_PATH, {})
+    if not meta:
+        return {}
+    response_hash = str(meta.get("response_sha256") or "").strip()
+    if not response_hash or response_hash != _text_sha256(response_text):
+        return {}
+    return meta
+
+
 def normalize_attachment_kind(
     value: Any, *, content_type: str = "", name: str = ""
 ) -> str:
@@ -13865,7 +13954,7 @@ def unwind_latest_history_turn() -> dict[str, Any]:
 
         latest_entry = history[-1] if history else {}
         write_text(LAST_PROMPT_PATH, str(latest_entry.get("prompt") or ""))
-        write_text(LAST_RESPONSE_PATH, str(latest_entry.get("response") or ""))
+        write_last_response(str(latest_entry.get("response") or ""))
         write_text(LAST_ERROR_PATH, str(latest_entry.get("error") or ""))
         write_text(THREAD_ID_PATH, "")
         write_text(THREAD_SCOPE_PATH, "")
@@ -13930,7 +14019,7 @@ def _persist_ready_state_after_history_cleanup(
     if stale_last_turn:
         try:
             write_text(LAST_PROMPT_PATH, latest_prompt)
-            write_text(LAST_RESPONSE_PATH, latest_response)
+            write_last_response(latest_response)
         except OSError:
             pass
     if stale_state or stale_status or stale_last_turn:
@@ -15137,7 +15226,6 @@ def console_runtime_turn_route_policy(
     normalized_model = normalize_runtime_model(normalized_runtime, model)
     route = dict(cost_route or {})
     run_shape = console_runtime_kernel_primary_run_shape(prompt)
-    route_proof_required = bool(TUI_KERNEL_EXECUTION_ENABLED)
     return {
         "runtime": "kernel_shadow",
         "visible_runtime": normalized_runtime,
@@ -15152,21 +15240,22 @@ def console_runtime_turn_route_policy(
         "kernel_shadow": TUI_KERNEL_SHADOW_ENABLED,
         "kernel_execution_enabled": TUI_KERNEL_EXECUTION_ENABLED,
         "kernel_execution_candidate": TUI_KERNEL_EXECUTION_ENABLED,
-        "route_proof_required": route_proof_required,
-        "require_route_proof": route_proof_required,
-        "require_verifier_for_completion": route_proof_required,
         "kernel_owned_turn": TUI_KERNEL_OWNED_TURN_ENABLED,
         "local_first": True,
         "allow_cloud_proxy": False,
         "allow_cloud_tool_proxy": False,
         "use_capability_catalog": True,
         "model_selection": "warm_policy",
+        "route_proof_required": bool(TUI_KERNEL_EXECUTION_ENABLED),
+        "require_verifier_for_completion": bool(TUI_KERNEL_EXECUTION_ENABLED),
         "cost_posture": "local_token_first",
         "continuous_goal_candidate": True,
         "task_kind": run_shape["task_kind"],
         "planner_kind": run_shape["planner_kind"],
         "goal_phase_sequence": list(run_shape["goal_phase_sequence"]),
         "output_shape_expected": run_shape["output_shape_expected"],
+        "route_proof_required": bool(TUI_KERNEL_EXECUTION_ENABLED),
+        "require_verifier_for_completion": bool(TUI_KERNEL_EXECUTION_ENABLED),
         "cloud_token_budget": 0,
         "cloud_escalation": normalized_runtime not in {"localllm", "local"},
         "selected_runtime": route.get("selected_runtime") or normalized_runtime,
@@ -15193,7 +15282,6 @@ def console_runtime_turn_metadata(
     cost_route: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     run_shape = console_runtime_kernel_primary_run_shape(prompt)
-    route_proof_required = bool(TUI_KERNEL_EXECUTION_ENABLED)
     return {
         "source": "agent_console_web",
         "kind": "tui_turn_shadow",
@@ -15216,9 +15304,6 @@ def console_runtime_turn_metadata(
         "kernel_shadow": TUI_KERNEL_SHADOW_ENABLED,
         "kernel_execution_enabled": TUI_KERNEL_EXECUTION_ENABLED,
         "kernel_execution_candidate": TUI_KERNEL_EXECUTION_ENABLED,
-        "route_proof_required": route_proof_required,
-        "require_route_proof": route_proof_required,
-        "require_verifier_for_completion": route_proof_required,
         "kernel_owned_turn": TUI_KERNEL_OWNED_TURN_ENABLED,
         "continuous_goal_candidate": True,
         "task_kind": run_shape["task_kind"],
@@ -15276,7 +15361,8 @@ def ensure_console_runtime_turn_shadow_job(
         service_tier=service_tier,
         cost_route=cost_route,
     )
-    objective = planner_understood_task(prompt, normalized_attachments)
+    objective = console_runtime_execution_objective(prompt, normalized_attachments)
+    objective_summary = planner_understood_task(prompt, normalized_attachments)
     payload = {
         "job_id": job_id,
         "objective": objective,
@@ -15306,9 +15392,6 @@ def ensure_console_runtime_turn_shadow_job(
             "kernel_shadow": TUI_KERNEL_SHADOW_ENABLED,
             "kernel_execution_enabled": TUI_KERNEL_EXECUTION_ENABLED,
             "kernel_execution_candidate": TUI_KERNEL_EXECUTION_ENABLED,
-            "route_proof_required": bool(TUI_KERNEL_EXECUTION_ENABLED),
-            "require_route_proof": bool(TUI_KERNEL_EXECUTION_ENABLED),
-            "require_verifier_for_completion": bool(TUI_KERNEL_EXECUTION_ENABLED),
             "kernel_owned_turn": TUI_KERNEL_OWNED_TURN_ENABLED,
         },
         "route_policy": route_policy,
@@ -15378,6 +15461,7 @@ def ensure_console_runtime_turn_shadow_job(
                 **metadata,
                 "route_policy": route_policy,
                 "objective": objective,
+                "objective_summary": objective_summary,
                 "session_job_id": session_job_id,
             },
             "artifacts": [],
@@ -19371,6 +19455,17 @@ def planner_understood_task(prompt: str, attachments: list[dict[str, Any]]) -> s
     return summarize_text(f"{prefix}: {clean}", 220)
 
 
+def console_runtime_execution_objective(
+    prompt: str, attachments: list[dict[str, Any]]
+) -> str:
+    clean = prompt_core_request(prompt).strip()
+    if clean:
+        return clean
+    if attachments:
+        return "Handle the attached material."
+    return "Handle the operator request."
+
+
 def turn_plan_skill_labels(prompt: str, attachments: list[dict[str, Any]]) -> list[str]:
     lower = prompt_core_request(prompt).lower()
     labels = ["context triage"]
@@ -20035,6 +20130,8 @@ def route_receipt_text_has_any(text: Any, tokens: tuple[str, ...]) -> bool:
 def route_receipt_requires_operator_approval(prompt: Any) -> bool:
     if prompt_is_literal_response_request(prompt):
         return False
+    if prompt_is_route_status_diagnostic(prompt):
+        return False
     return route_receipt_text_has_any(
         prompt_core_request(str(prompt or "")), ROUTE_RECEIPT_APPROVAL_TOKENS
     )
@@ -20044,6 +20141,8 @@ def route_receipt_requested_action(prompt: Any) -> str:
     clean = prompt_core_request(str(prompt or ""))
     lower = clean.lower()
     if prompt_is_literal_response_request(clean):
+        return "status"
+    if prompt_is_route_status_diagnostic(clean):
         return "status"
     if any(token in lower for token in ("status", "check on", "wedged", "crashing")):
         return "status"
@@ -20480,8 +20579,14 @@ def route_receipt_chain_status(path: Path = ROUTE_RECEIPT_PATH) -> dict[str, Any
     latest_hash = (
         str(receipts[-1].get("receipt_hash") or "").strip() if receipts else ""
     )
+    if receipts and not issues:
+        status = "pass"
+    elif not receipts and not issues:
+        status = "empty"
+    else:
+        status = "fail"
     return {
-        "status": "pass" if receipts and not issues else "fail",
+        "status": status,
         "path": str(path),
         "receipt_count": len(receipts),
         "latest_hash": latest_hash,
@@ -20500,7 +20605,12 @@ def route_receipt_status_snapshot() -> dict[str, Any]:
             "issue_count": 0,
             "issues": [],
         }
-    return route_receipt_chain_status(ROUTE_RECEIPT_PATH)
+    snapshot = route_receipt_chain_status(ROUTE_RECEIPT_PATH)
+    if ROUTE_RECEIPT_LAST_WRITE_ERROR:
+        snapshot["last_write_error"] = ROUTE_RECEIPT_LAST_WRITE_ERROR
+        if snapshot.get("status") == "missing":
+            snapshot["status"] = "degraded"
+    return snapshot
 
 
 def append_route_receipt_entry(entry: dict[str, Any]) -> None:
@@ -20532,10 +20642,18 @@ def append_route_receipt_entry(entry: dict[str, Any]) -> None:
 
 
 def append_route_receipt(**kwargs: Any) -> dict[str, Any] | None:
+    global ROUTE_RECEIPT_LAST_WRITE_ERROR
     if not ROUTE_RECEIPTS_ENABLED:
         return None
     receipt = build_route_receipt(**kwargs)
-    append_route_receipt_entry(receipt)
+    try:
+        append_route_receipt_entry(receipt)
+    except OSError as exc:
+        ROUTE_RECEIPT_LAST_WRITE_ERROR = str(exc)
+        receipt["mirror_status"] = "write_failed"
+        receipt["mirror_error"] = ROUTE_RECEIPT_LAST_WRITE_ERROR
+        return receipt
+    ROUTE_RECEIPT_LAST_WRITE_ERROR = ""
     return receipt
 
 
@@ -23979,7 +24097,7 @@ def recover_stale_prompt_state() -> None:
                 return
             abandoned_message = "Web prompt was abandoned after restart; no running model process was found."
             write_text(LAST_PROMPT_PATH, running_prompt)
-            write_text(LAST_RESPONSE_PATH, abandoned_message)
+            write_last_response(abandoned_message)
             write_text(LAST_ERROR_PATH, abandoned_message)
             meta.update(
                 {
@@ -24178,7 +24296,7 @@ def start_next_queued_prompt() -> (
             else f"{AGENT_NAME} is working."
         )
         write_text(LAST_PROMPT_PATH, prompt)
-        write_text(LAST_RESPONSE_PATH, working_response_text(prompt))
+        write_last_response(working_response_text(prompt))
         write_text(LAST_ERROR_PATH, "")
         meta.update(
             {
@@ -24641,7 +24759,7 @@ def cancel_active_web_prompt(clear_queue: bool = False) -> dict[str, Any]:
             meta["stale_queue"] = False
             save_status_meta(meta)
     if not killed and not prompt_runtime_alive():
-        write_text(LAST_RESPONSE_PATH, CANCELLED_WEB_REPLY_MESSAGE)
+        write_last_response(CANCELLED_WEB_REPLY_MESSAGE)
         write_text(LAST_ERROR_PATH, CANCELLED_WEB_REPLY_MESSAGE)
         update_status_meta(
             pending=False,
@@ -28486,9 +28604,15 @@ def local_llm_execution_candidate_models(primary_model: Any) -> list[str]:
     meta = load_status_meta()
     cost_route = meta.get("running_cost_route") if isinstance(meta, dict) else {}
     if isinstance(cost_route, dict):
-        selected_runtime = normalize_runtime(cost_route.get("selected_runtime"))
-        if selected_runtime == "localllm":
-            for item in cost_route.get("local_candidates") or []:
+        for key in (
+            "local_guardrail_candidates",
+            "local_candidates",
+            "local_model",
+        ):
+            values = cost_route.get(key)
+            if isinstance(values, str):
+                values = [values]
+            for item in values or []:
                 model = normalize_runtime_model("localllm", item)
                 if model and _local_llm_model_allowed(model):
                     candidates.append(model)
@@ -29368,6 +29492,23 @@ def console_runtime_kernel_primary_model(runtime: str, model: str) -> str:
     )
     if selected_runtime == "localllm" and selected_model:
         return normalize_runtime_model("localllm", selected_model)
+    if isinstance(cost_route, dict):
+        for key in (
+            "local_guardrail_candidates",
+            "local_candidates",
+            "local_model",
+        ):
+            values = cost_route.get(key)
+            if isinstance(values, str):
+                values = [values]
+            for item in values or []:
+                candidate = normalize_runtime_model("localllm", item)
+                if (
+                    candidate
+                    and _local_llm_model_allowed(candidate)
+                    and not local_llm_model_canary(candidate)
+                ):
+                    return candidate
     if normalize_runtime(runtime) == "localllm" and model:
         return normalize_runtime_model("localllm", model)
     return normalize_runtime_model("localllm", LOCAL_LLM_DEFAULT_MODEL)
@@ -29418,6 +29559,10 @@ def console_runtime_kernel_primary_response_text(
                 if phase:
                     phases.append(phase)
     if prompt_is_literal_response_request(prompt):
+        for text in reversed(deltas):
+            if text and not response_text_is_progress_scaffold(text):
+                return text
+    if len(deltas) > 1:
         for text in reversed(deltas):
             if text and not response_text_is_progress_scaffold(text):
                 return text
@@ -29961,6 +30106,8 @@ def _execute_console_runtime_kernel_prompt(
             "kernel_primary": True,
             "kernel_owned_turn": TUI_KERNEL_OWNED_TURN_ENABLED,
             "verifier_can_stop": True,
+            "route_proof_required": True,
+            "require_verifier_for_completion": True,
             "task_kind": run_shape["task_kind"],
             "planner_kind": run_shape["planner_kind"],
             "goal_phase_sequence": list(run_shape["goal_phase_sequence"]),
@@ -29983,6 +30130,8 @@ def _execute_console_runtime_kernel_prompt(
             "kernel_primary": True,
             "kernel_owned_turn": TUI_KERNEL_OWNED_TURN_ENABLED,
             "verifier_can_stop": True,
+            "route_proof_required": True,
+            "require_verifier_for_completion": True,
             "task_kind": run_shape["task_kind"],
             "planner_kind": run_shape["planner_kind"],
             "goal_phase_sequence": list(run_shape["goal_phase_sequence"]),
@@ -30898,7 +31047,13 @@ def _prompt_worker(
                 if (timed_out or rate_limited) and not response
                 else response or "[no response returned]"
             )
-            write_text(LAST_RESPONSE_PATH, visible_response)
+            write_last_response(
+                visible_response,
+                console_runtime_job_id=turn_shadow_job_id,
+                prompt=prompt,
+                source="prompt_worker",
+                updated_at=finished_at,
+            )
             continuation_incomplete = (
                 bool(response)
                 and not cancelled
@@ -31651,7 +31806,7 @@ def _prompt_worker(
     except Exception as exc:  # pragma: no cover - defensive bridge hardening
         finished_at = now_ts()
         write_text(LAST_PROMPT_PATH, prompt)
-        write_text(LAST_RESPONSE_PATH, "")
+        write_last_response("")
         write_text(LAST_ERROR_PATH, str(exc))
         append_history_entry(
             prompt=prompt,
@@ -31909,6 +32064,86 @@ LOCAL_FIRST_WORKSPACE_NEGATION_WORDS = (
 )
 
 
+def prompt_is_route_status_diagnostic(prompt: Any) -> bool:
+    lower = f" {prompt_core_request(str(prompt or '')).lower()} "
+    if not lower.strip():
+        return False
+    route_subject = bool(
+        any(
+            token in lower
+            for token in (
+                " bedrock",
+                " cloud",
+                " cloud token",
+                " codex",
+                " configured",
+                " configuration",
+                " fallback",
+                " failover",
+                " gpt-",
+                " llm.home.arpa",
+                " local model",
+                " local token",
+                " localllm",
+                " model",
+                " norllama",
+                " openai",
+                " preflight",
+                " route",
+                " routed",
+                " routing",
+                " runtime",
+                " session",
+                " spark",
+                " tui",
+                " tuis",
+                " usage",
+            )
+        )
+        or re.search(r"\b(?:tokens?|cost|spend)\b", lower) is not None
+    )
+    if not route_subject:
+        return False
+    asks_status = bool(
+        "?" in str(prompt or "")
+        or re.search(
+            r"\b(?:are|can|could|did|does|do|how|is|should|was|were|what|which|why)\b",
+            lower,
+        )
+        or any(
+            marker in lower
+            for marker in (
+                " status",
+                " check status",
+                " check on",
+                " configured right",
+                " not configured right",
+                " wrong model",
+                " wrong runtime",
+            )
+        )
+    )
+    if not asks_status:
+        return False
+    mutating_order = re.search(
+        r"\b(?:apply|change|commit|deploy|edit|fix|implement|install|patch|push|restart|run|sync|update)\b",
+        lower,
+    )
+    diagnostic_intro = re.search(
+        r"\b(?:why|what|which|how|did|does|do|is|are|was|were|can|could|should)\b",
+        lower,
+    )
+    if mutating_order and not diagnostic_intro:
+        return False
+    if re.search(
+        r"\b(?:go ahead|proceed|do it|make it|please)\b"
+        r".{0,80}\b(?:deploy|fix|implement|install|patch|push|restart|run|sync|update)\b",
+        lower,
+    ):
+        return False
+    return True
+
+
 def local_first_workspace_marker_negated(lower: str, marker: str) -> bool:
     token = str(marker or "").strip()
     if not token:
@@ -31923,18 +32158,70 @@ def local_first_workspace_marker_negated(lower: str, marker: str) -> bool:
     )
 
 
+def local_first_workspace_marker_is_evidence_label(lower: str, marker: str) -> bool:
+    token = str(marker or "").strip().lower()
+    if token == "service":
+        if re.search(r"\bservice\s+status(?:es)?\b", lower):
+            return True
+        if re.search(
+            r"\b[a-z0-9_.:-]+\s*=\s*"
+            r"(?:healthy|unhealthy|ok|down|up|timeout|timed[- ]?out|"
+            r"degraded|failed|failing|offline|online)\b",
+            lower,
+        ):
+            return True
+    return False
+
+
+def local_first_workspace_marker_applies(lower: str, marker: str) -> bool:
+    if marker not in lower:
+        return False
+    if local_first_workspace_marker_negated(lower, marker):
+        return False
+    if local_first_workspace_marker_is_evidence_label(lower, marker):
+        return False
+    return True
+
+
+def prompt_is_self_contained_response_request(prompt: Any) -> bool:
+    lower = f" {prompt_core_request(str(prompt or '')).lower()} "
+    has_evidence = bool(
+        re.search(r"\b(?:given|using|from|based on)\s+(?:these|this|the)\b", lower)
+        or " following " in lower
+        or re.search(r"\b[a-z0-9_.:-]+\s*=\s*[^,\s.]+", lower)
+    )
+    asks_response = bool(
+        re.search(
+            r"\b(?:return|reply|answer|identify|classify|extract|summarize|summarise)\b",
+            lower,
+        )
+    )
+    avoids_tools = bool(
+        re.search(r"\b(?:do not|don't|dont|without|no)\s+(?:use\s+)?tools?\b", lower)
+        or " self-contained " in lower
+        or " local routing " in lower
+    )
+    return bool(has_evidence and asks_response and avoids_tools)
+
+
 def prompt_requires_cloud_or_tools(prompt: Any) -> bool:
     if prompt_is_literal_response_request(prompt):
         return False
+    if prompt_is_route_status_diagnostic(prompt):
+        return False
     lower = f" {prompt_core_request(str(prompt or '')).lower()} "
     return any(
-        marker in lower and not local_first_workspace_marker_negated(lower, marker)
+        local_first_workspace_marker_applies(lower, marker)
         for marker in LOCAL_FIRST_WORKSPACE_MARKERS
     )
 
 
 def prompt_is_local_first_candidate(prompt: Any) -> bool:
     if prompt_is_literal_response_request(prompt):
+        return True
+    if prompt_is_route_status_diagnostic(prompt):
+        return True
+    if prompt_is_self_contained_response_request(prompt):
         return True
     lower = f" {prompt_core_request(str(prompt or '')).lower()} "
     return any(marker in lower for marker in LOCAL_FIRST_SAFE_MARKERS)
@@ -32301,6 +32588,7 @@ def start_web_prompt(
     deduplicated_existing = False
     duplicate_state = ""
     duplicate_position = 0
+    accepted_turn_shadow_job_id = ""
     worker_args: (
         tuple[
             str,
@@ -32366,7 +32654,7 @@ def start_web_prompt(
             pass
         else:
             write_text(LAST_PROMPT_PATH, clean)
-            write_text(LAST_RESPONSE_PATH, working_response_text(clean))
+            write_last_response(working_response_text(clean))
             write_text(LAST_ERROR_PATH, "")
             meta.update(
                 {
@@ -32396,6 +32684,7 @@ def start_web_prompt(
             )
             save_status_meta(meta)
             started_at = int(meta.get("last_started_at") or now_ts())
+            accepted_turn_shadow_job_id = console_runtime_turn_job_id(clean, started_at)
             append_audit_event(
                 event_type="chat.submitted",
                 summary="Submitted a prompt from the web TUI.",
@@ -32480,6 +32769,62 @@ def start_web_prompt(
         snapshot["deduplicated_prompt"] = True
         return True, snapshot
     if not should_queue:
+        turn_shadow_error = ""
+        if worker_args is not None:
+            try:
+                turn_shadow = ensure_console_runtime_turn_shadow_job(
+                    prompt=clean,
+                    started_at=worker_args[1],
+                    attachments=normalized_attachments,
+                    runtime=normalized_runtime,
+                    model=normalized_model,
+                    service_tier=normalized_service_tier,
+                    job_budget=normalized_budget,
+                    optimization_mode=normalized_optimization_mode,
+                    timeout_seconds=normalized_timeout,
+                    turn_plan=build_turn_plan_estimate(
+                        prompt=clean,
+                        attachments=normalized_attachments,
+                        runtime=normalized_runtime,
+                        model=normalized_model,
+                        service_tier=normalized_service_tier,
+                        job_budget=normalized_budget,
+                        optimization_mode=normalized_optimization_mode,
+                        speed=normalized_speed,
+                        detail=normalized_detail,
+                        timeout_seconds=normalized_timeout,
+                        created_at=worker_args[1],
+                    ),
+                    turn_envelope=turn_envelope,
+                    cost_route=cost_route_decision,
+                )
+                accepted_turn_shadow_job_id = str(
+                    turn_shadow.get("job_id") or accepted_turn_shadow_job_id
+                ).strip()
+            except Exception as exc:
+                _record_console_runtime_error(exc)
+                turn_shadow_error = str(exc)
+            if accepted_turn_shadow_job_id:
+                update_status_meta(
+                    running_console_runtime_job_id=accepted_turn_shadow_job_id,
+                    last_console_runtime_job_id=accepted_turn_shadow_job_id,
+                )
+            elif turn_shadow_error:
+                append_audit_event(
+                    event_type="chat.turn-shadow-create-failed",
+                    summary="Console runtime turn shadow was not created.",
+                    detail=summarize_text(turn_shadow_error, 500),
+                    severity="warn",
+                    actor_type="system",
+                    thread_id=read_text(THREAD_ID_PATH),
+                    payload={
+                        "runtime": normalized_runtime,
+                        "model": normalized_model,
+                        "kernel_primary": TUI_KERNEL_PRIMARY_ENABLED,
+                        "kernel_owned_turn": TUI_KERNEL_OWNED_TURN_ENABLED,
+                        "error": summarize_text(turn_shadow_error, 700),
+                    },
+                )
         if worker_args is not None:
             if normalized_relay_callback:
                 notify_relay_callback(
@@ -32512,6 +32857,10 @@ def start_web_prompt(
                 "running_turn_control": auto_turn_controls,
                 "running_turn_envelope": turn_envelope,
                 "running_cost_route": cost_route_decision,
+                "running_console_runtime_job_id": accepted_turn_shadow_job_id,
+                "last_console_runtime_job_id": accepted_turn_shadow_job_id,
+                "console_runtime_job_id": accepted_turn_shadow_job_id,
+                "turn_shadow_job_id": accepted_turn_shadow_job_id,
             }
         )
         return True, accepted_snapshot
@@ -32661,6 +33010,15 @@ def current_snapshot() -> dict[str, Any]:
     if filtered_last_error != str(last_error or "").strip():
         last_error = filtered_last_error
         write_text(LAST_ERROR_PATH, last_error)
+    last_response_text = read_text(LAST_RESPONSE_PATH, "[no response yet]")
+    last_response_meta = last_response_meta_for(last_response_text)
+    last_response_console_runtime_job_id = str(
+        last_response_meta.get("console_runtime_job_id") or ""
+    ).strip()
+    last_console_runtime_job_id = (
+        last_response_console_runtime_job_id
+        or str(meta.get("last_console_runtime_job_id") or "").strip()
+    )
     pane = capture_pane()
     snapshot_state = str(meta.get("state") or "idle")
     snapshot_status = str(meta.get("status_message") or "Ready.")
@@ -32900,6 +33258,15 @@ def current_snapshot() -> dict[str, Any]:
             else {},
             configured_local_llm_route_outcomes,
         )
+    last_response_text = read_text(LAST_RESPONSE_PATH, "[no response yet]")
+    last_response_meta = last_response_meta_for(last_response_text)
+    last_response_console_runtime_job_id = str(
+        last_response_meta.get("console_runtime_job_id") or ""
+    ).strip()
+    last_console_runtime_job_id = (
+        last_response_console_runtime_job_id
+        or str(meta.get("last_console_runtime_job_id") or "").strip()
+    )
     snapshot = {
         "pending": pending,
         "state": snapshot_state,
@@ -33017,9 +33384,9 @@ def current_snapshot() -> dict[str, Any]:
         "last_action": str(meta.get("last_action") or ""),
         "last_action_at": int(meta.get("last_action_at") or 0),
         "last_action_detail": str(meta.get("last_action_detail") or ""),
-        "last_console_runtime_job_id": str(
-            meta.get("last_console_runtime_job_id") or ""
-        ),
+        "last_console_runtime_job_id": last_console_runtime_job_id,
+        "last_response_console_runtime_job_id": last_response_console_runtime_job_id,
+        "last_response_meta": last_response_meta,
         "restart_handoff_id": str(meta.get("restart_handoff_id") or ""),
         "restart_handoff_at": _coerce_int(meta.get("restart_handoff_at")),
         "restart_handoff_scope": str(meta.get("restart_handoff_scope") or ""),
@@ -33028,7 +33395,7 @@ def current_snapshot() -> dict[str, Any]:
         "thread_id": thread_id,
         "thread_scope": read_text(THREAD_SCOPE_PATH),
         "last_prompt": read_text(LAST_PROMPT_PATH, "[no prompt yet]"),
-        "last_response": read_text(LAST_RESPONSE_PATH, "[no response yet]"),
+        "last_response": last_response_text,
         "last_error": last_error,
         "codex_auth_mode": codex_auth_mode,
         "billing_action": billing_action,
@@ -36755,6 +37122,13 @@ class Handler(BaseHTTPRequestHandler):
             if api_path:
                 queue_depth = max(0, int(snapshot.get("queue_depth") or 0))
                 queued = bool(accepted and queue_depth > 0)
+                console_runtime_job_id = str(
+                    snapshot.get("console_runtime_job_id")
+                    or snapshot.get("turn_shadow_job_id")
+                    or snapshot.get("running_console_runtime_job_id")
+                    or snapshot.get("last_console_runtime_job_id")
+                    or ""
+                ).strip()
                 error_text = str(
                     snapshot.get("pressure_guard_error")
                     or "a web prompt is already running"
@@ -36767,6 +37141,9 @@ class Handler(BaseHTTPRequestHandler):
                             accepted and snapshot.get("pending") and not queued
                         ),
                         "deduplicated": deduplicated_prompt,
+                        "console_runtime_job_id": console_runtime_job_id,
+                        "request_nonce": route_receipt_prompt_id(message),
+                        "session": SESSION,
                         "error": "" if accepted else error_text,
                         "snapshot": snapshot,
                     },
@@ -37738,7 +38115,10 @@ class Handler(BaseHTTPRequestHandler):
             )
 
         def render_model_floor_pill(model: str) -> str:
-            title = "Model lane. GPT-5.4 is the stable default; GPT-5.5 is a frontier/tiebreaker lane."
+            title = (
+                "Model lane. GPT-5.5 is the Codex floor for normal routes; older "
+                "compatibility lanes require an explicit emergency override."
+            )
             active = " active" if model == active_model else ""
             return (
                 f'<button type="button" class="ghost setting-pill model-floor-pill{active}" '
@@ -38072,8 +38452,24 @@ class Handler(BaseHTTPRequestHandler):
       --topbar-saturate: 128%;
       --topbar-blur: 16px;
       --microtexture-drift-duration: 72s;
+      --microtexture-drift-x: 54px;
+      --microtexture-chrome-drift-x: 18px;
       --microtexture-drift-opacity: 1;
       --microtexture-drift-saturate: 102%;
+      --microtexture-glint-duration: 26s;
+      --microtexture-wave-duration: 28s;
+      --microtexture-wisp-duration: 18s;
+      --microtexture-wave-y: 0px;
+      --microtexture-skew: 0deg;
+      --microtexture-wisp-opacity: 0.22;
+      --microtexture-field-contrast: 102%;
+      --microtexture-pulse-opacity: 0;
+      --microtexture-pulse-x: 22%;
+      --microtexture-pulse-y: 28%;
+      --microtexture-pulse-color: var(--agent-accent);
+      --microtexture-thread-opacity: 0.24;
+      --microtexture-thread-saturate: 104%;
+      --microtexture-thread-blur: 0px;
 {style_variant_vars_css(AGENT_SLUG)}
 {agent_font_vars_css(AGENT_SLUG)}
       --group-norman: #5fd2c4;
@@ -38118,145 +38514,210 @@ class Handler(BaseHTTPRequestHandler):
       z-index: 0;
     }}
     body::before {{
+      inset: -18px;
       background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 14%, transparent 86%, rgba(0, 0, 0, 0.12)),
-        linear-gradient(var(--body-accent-angle), color-mix(in srgb, var(--agent-accent) 16%, transparent), transparent 30%),
-        repeating-linear-gradient(
-          var(--texture-angle),
-          color-mix(in srgb, var(--agent-accent-3) calc(var(--page-texture-opacity) * 100%), transparent) 0 1px,
-          transparent 1px var(--texture-spacing)
-        ),
-        repeating-linear-gradient(
-          var(--texture-cross-angle),
-          color-mix(in srgb, var(--agent-accent-2) calc(var(--page-cross-texture-opacity) * 100%), transparent) 0 1px,
-          transparent 1px var(--texture-cross-spacing)
-        ),
-        repeating-linear-gradient(
-          180deg,
-          color-mix(in srgb, var(--border) 28%, transparent) 0 1px,
-          transparent 1px 26px
-        );
-      opacity: var(--body-overlay-opacity);
-      animation: microtexture-proof-life var(--microtexture-drift-duration) ease-in-out infinite alternate;
-      filter: saturate(var(--microtexture-drift-saturate));
-      transform: translate3d(0, 0, 0);
+        linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent 20%, transparent 84%, rgba(0, 0, 0, 0.12)),
+        linear-gradient(var(--body-accent-angle), color-mix(in srgb, var(--agent-accent) 4.5%, transparent), transparent 42%);
+      background-size:
+        100% 100%,
+        100% 100%;
+      background-repeat: no-repeat;
+      background-position:
+        0 0,
+        0 0;
+      opacity: calc(var(--body-overlay-opacity) * 0.42);
+      animation: none;
+      filter:
+        saturate(var(--microtexture-drift-saturate))
+        contrast(var(--microtexture-field-contrast));
+      transform: translate3d(0, var(--microtexture-wave-y), 0) skewX(var(--microtexture-skew));
       transform-origin: center;
-      will-change: background-position, opacity, filter, transform;
+      transition:
+        opacity 980ms cubic-bezier(0.2, 0.74, 0.24, 1),
+        filter 980ms cubic-bezier(0.2, 0.74, 0.24, 1),
+        transform 980ms cubic-bezier(0.2, 0.74, 0.24, 1);
+      will-change: opacity, filter, transform;
     }}
     body::after {{
-      inset: 0;
+      inset: -18px;
       border-radius: 0;
       border: 0;
-      border-top: 1px solid color-mix(in srgb, var(--border) 34%, transparent);
-      border-bottom: 1px solid color-mix(in srgb, rgba(0, 0, 0, 0.44) 44%, transparent);
-      opacity: var(--body-edge-opacity);
+      background:
+        linear-gradient(90deg, transparent, color-mix(in srgb, var(--microtexture-pulse-color) calc(var(--microtexture-pulse-opacity) * 38%), transparent), transparent),
+        linear-gradient(180deg, transparent 0 70%, rgba(0, 0, 0, 0.18) 100%);
+      background-size:
+        100% 100%,
+        100% 100%;
+      background-repeat: no-repeat;
+      background-position: 0 0, 0 0;
+      box-shadow:
+        inset 0 1px 0 color-mix(in srgb, var(--border) 34%, transparent),
+        inset 0 -1px 0 color-mix(in srgb, rgba(0, 0, 0, 0.44) 44%, transparent);
+      mix-blend-mode: normal;
+      opacity: calc(var(--body-edge-opacity) * 0.34);
+      animation: none;
+      transition:
+        opacity 760ms cubic-bezier(0.2, 0.74, 0.24, 1),
+        filter 760ms cubic-bezier(0.2, 0.74, 0.24, 1);
+      will-change: opacity, filter;
+    }}
+    .microtexture-thread-field {{
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      width: 100vw;
+      height: 100dvh;
+      pointer-events: none;
+      opacity: var(--microtexture-thread-opacity);
+      mix-blend-mode: screen;
+      filter:
+        saturate(var(--microtexture-thread-saturate))
+        contrast(var(--microtexture-field-contrast))
+        blur(var(--microtexture-thread-blur));
+      transform: translate3d(0, 0, 0);
+      transition:
+        opacity 720ms cubic-bezier(0.2, 0.74, 0.24, 1),
+        filter 720ms cubic-bezier(0.2, 0.74, 0.24, 1);
+      will-change: opacity, filter;
     }}
     body[data-microtexture-state="idle"]::before {{
-      --microtexture-drift-duration: 64s;
+      --microtexture-drift-duration: 46s;
+      --microtexture-drift-x: 44px;
       --microtexture-drift-saturate: 101%;
-      opacity: calc(var(--body-overlay-opacity) * 1.02);
+      opacity: calc(var(--body-overlay-opacity) * 0.36);
+    }}
+    body[data-microtexture-state="ready"]::before {{
+      --microtexture-drift-duration: 34s;
+      --microtexture-drift-x: 68px;
+      --microtexture-drift-saturate: 103%;
+      --microtexture-wave-duration: 24s;
+      opacity: calc(var(--body-overlay-opacity) * 0.38);
     }}
     body[data-microtexture-state="active"]::before {{
-      --microtexture-drift-duration: 42s;
-      --microtexture-drift-saturate: 106%;
-      opacity: calc(var(--body-overlay-opacity) * 1.02);
+      --microtexture-drift-duration: 20s;
+      --microtexture-drift-x: 82px;
+      --microtexture-drift-saturate: 104%;
+      opacity: calc(var(--body-overlay-opacity) * 0.40);
+    }}
+    body[data-microtexture-state="working"]::before,
+    body[data-microtexture-state="thinking"]::before {{
+      --microtexture-drift-duration: 7.5s;
+      --microtexture-drift-x: 148px;
+      --microtexture-drift-saturate: 109%;
+      --microtexture-glint-duration: 7.5s;
+      --microtexture-thread-opacity: 0.34;
+      opacity: calc(var(--body-overlay-opacity) * 0.42);
     }}
     body[data-microtexture-state="flow"]::before {{
-      --microtexture-drift-duration: 34s;
+      --microtexture-drift-duration: 4.8s;
+      --microtexture-drift-x: 230px;
       --microtexture-drift-saturate: 112%;
-      animation-name: microtexture-flow;
-      animation-timing-function: cubic-bezier(0.42, 0, 0.18, 1);
-      opacity: calc(var(--body-overlay-opacity) * 1.08);
+      --microtexture-glint-duration: 4.8s;
+      --microtexture-thread-opacity: 0.38;
+      --microtexture-thread-saturate: 112%;
+      opacity: calc(var(--body-overlay-opacity) * 0.44);
     }}
     body[data-microtexture-state="watch"]::before {{
-      --microtexture-drift-duration: 88s;
+      --microtexture-drift-duration: 62s;
+      --microtexture-drift-x: 34px;
       --microtexture-drift-saturate: 96%;
-      animation-name: microtexture-watch;
-      opacity: calc(var(--body-overlay-opacity) * 0.84);
+      opacity: calc(var(--body-overlay-opacity) * 0.31);
     }}
     body[data-microtexture-state="blocked"]::before {{
-      --microtexture-drift-duration: 3.8s;
+      --microtexture-drift-duration: 14s;
+      --microtexture-drift-x: 58px;
       --microtexture-drift-saturate: 91%;
-      animation-name: microtexture-blocked-jitter;
-      animation-timing-function: steps(5, end);
-      opacity: calc(var(--body-overlay-opacity) * 0.78);
+      opacity: calc(var(--body-overlay-opacity) * 0.33);
     }}
+    body[data-microtexture-state="degraded"]::before,
     body[data-microtexture-state="stalled"]::before {{
-      animation: none;
-      filter: grayscale(0.16) saturate(74%);
-      opacity: calc(var(--body-overlay-opacity) * 0.58);
+      --microtexture-drift-duration: 18s;
+      --microtexture-drift-x: 48px;
+      --microtexture-drift-saturate: 82%;
+      --microtexture-field-contrast: 94%;
+      --microtexture-wave-y: 2px;
+      --microtexture-thread-opacity: 0.22;
+      --microtexture-thread-saturate: 82%;
+      opacity: calc(var(--body-overlay-opacity) * 0.28);
     }}
-    @keyframes microtexture-proof-life {{
-      0% {{
-        background-position:
-          0 0,
-          0 0,
-          0 0,
-          0 0,
-          0 0;
+    body[data-microtexture-state="crashed"]::before {{
+      --microtexture-drift-duration: 11s;
+      --microtexture-drift-x: 28px;
+      --microtexture-drift-saturate: 72%;
+      --microtexture-field-contrast: 88%;
+      --microtexture-skew: -0.35deg;
+      --microtexture-thread-opacity: 0.24;
+      --microtexture-thread-saturate: 76%;
+      --microtexture-thread-blur: 0.2px;
+      animation: microtexture-fault-shear 2.4s cubic-bezier(0.32, 0, 0.24, 1) infinite;
+      opacity: calc(var(--body-overlay-opacity) * 0.30);
+    }}
+    body[data-microtexture-state="crashed"]::after {{
+      --microtexture-pulse-color: var(--danger);
+      --microtexture-pulse-opacity: 0.075;
+      animation: microtexture-click-ripple 1.2s ease-out infinite;
+    }}
+    body[data-microtexture-state="degraded"]::after,
+    body[data-microtexture-state="blocked"]::after {{
+      --microtexture-pulse-color: var(--warning);
+      --microtexture-wisp-opacity: 0.18;
+    }}
+    body[data-microtexture-pulse="click"]::after,
+    body[data-microtexture-pulse="tick"]::after,
+    body[data-microtexture-pulse="send"]::after,
+    body[data-microtexture-pulse="tool"]::after,
+    body[data-microtexture-pulse="decision"]::after,
+    body[data-microtexture-pulse="accepted"]::after,
+    body[data-microtexture-pulse="error"]::after {{
+      animation: microtexture-click-ripple 620ms cubic-bezier(0.18, 0.84, 0.24, 1) 1;
+    }}
+    body[data-microtexture-pulse="send"]::after,
+    body[data-microtexture-pulse="tool"]::after,
+    body[data-microtexture-pulse="accepted"]::after {{
+      --microtexture-pulse-color: var(--agent-accent-2);
+      --microtexture-pulse-opacity: 0.095;
+    }}
+    body[data-microtexture-pulse="decision"]::after {{
+      --microtexture-pulse-color: var(--agent-accent-3);
+      --microtexture-pulse-opacity: 0.085;
+    }}
+    body[data-microtexture-pulse="error"]::after {{
+      --microtexture-pulse-color: var(--danger);
+      --microtexture-pulse-opacity: 0.13;
+    }}
+    @keyframes microtexture-field-breathe {{
+      0%,
+      100% {{
+        opacity: calc(var(--body-overlay-opacity) * 0.96);
       }}
-      48% {{
-        background-position:
-          0 0,
-          5px 0,
-          12px 6px,
-          -9px 4px,
-          0 5px;
+      45% {{
+        opacity: calc(var(--body-overlay-opacity) * 1.08);
+      }}
+    }}
+    @keyframes microtexture-click-ripple {{
+      0% {{
+        opacity: calc(var(--body-edge-opacity) * 0.30);
+        filter: brightness(1.035) saturate(1.035);
+      }}
+      42% {{
+        opacity: calc(var(--body-edge-opacity) * 0.40);
+        filter: brightness(1.025) saturate(1.03);
       }}
       100% {{
-        background-position:
-          0 0,
-          -4px 0,
-          22px 11px,
-          -16px 8px,
-          0 9px;
+        opacity: calc(var(--body-edge-opacity) * 0.28);
+        filter: brightness(1) saturate(1);
       }}
     }}
-    @keyframes microtexture-flow {{
-      0% {{
-        background-position:
-          0 0,
-          -2px 0,
-          0 0,
-          0 0,
-          0 0;
-        transform: translate3d(0, 0, 0);
-      }}
-      50% {{
-        background-position:
-          0 0,
-          5px 0,
-          18px 8px,
-          -14px 6px,
-          0 5px;
-        transform: translate3d(0.35px, -0.25px, 0);
-      }}
+    @keyframes microtexture-fault-shear {{
+      0%,
       100% {{
-        background-position:
-          0 0,
-          11px 0,
-          34px 14px,
-          -24px 10px,
-          0 9px;
-        transform: translate3d(0, 0, 0);
+        transform: translate3d(0, 0, 0) skewX(-0.25deg);
       }}
-    }}
-    @keyframes microtexture-watch {{
-      0% {{
-        background-position:
-          0 0,
-          0 0,
-          0 0,
-          0 0,
-          0 0;
+      28% {{
+        transform: translate3d(1.6px, 0.4px, 0) skewX(0.18deg);
       }}
-      100% {{
-        background-position:
-          0 0,
-          2px 0,
-          9px 4px,
-          -6px 3px,
-          0 4px;
+      62% {{
+        transform: translate3d(-1.2px, -0.4px, 0) skewX(-0.26deg);
       }}
     }}
     @keyframes microtexture-chrome-breathe {{
@@ -38267,86 +38728,45 @@ class Handler(BaseHTTPRequestHandler):
           0 0,
           0 0,
           0 0,
-          0 0;
-      }}
-      50% {{
-        background-position:
-          7px 0,
-          3px 1px,
-          10px 4px,
-          -7px 3px,
-          0 1px,
+          0 0,
           0 0;
       }}
       100% {{
         background-position:
-          14px 0,
-          6px 2px,
-          18px 8px,
-          -13px 6px,
-          0 2px,
+          var(--microtexture-chrome-drift-x) 0,
+          calc(var(--microtexture-chrome-drift-x) * 0.42) 0,
+          calc(var(--microtexture-chrome-drift-x) * 0.72) 0,
+          calc(var(--microtexture-chrome-drift-x) * 0.58) 0,
+          0 1px,
+          calc(var(--microtexture-chrome-drift-x) * 0.34) 0,
           0 0;
       }}
     }}
     @keyframes microtexture-wind-shine {{
-      0%,
-      62%,
-      100% {{
-        opacity: var(--topbar-glint-opacity);
+      0% {{
+        opacity: 0;
         filter: brightness(1) saturate(1);
-        transform: translate3d(0, 0, 0) scaleX(1);
+        transform: translate3d(-10%, 0, 0) scaleX(0.96);
       }}
-      70% {{
-        opacity: min(1, calc(var(--topbar-glint-opacity) + 0.16));
-        filter: brightness(1.12) saturate(1.08);
-        transform: translate3d(2.8%, 0, 0) scaleX(1.06);
+      16% {{
+        opacity: calc(var(--topbar-glint-opacity) * 0.28);
+        filter: brightness(1.02) saturate(1.01);
+        transform: translate3d(10%, 0, 0) scaleX(0.98);
       }}
-      78% {{
-        opacity: min(1, calc(var(--topbar-glint-opacity) + 0.08));
-        filter: brightness(1.06) saturate(1.04);
-        transform: translate3d(-1.2%, 0, 0) scaleX(1.02);
+      68% {{
+        opacity: calc(var(--topbar-glint-opacity) * 0.42);
+        filter: brightness(1.04) saturate(1.03);
+        transform: translate3d(94%, 0, 0) scaleX(1.01);
       }}
-    }}
-    @keyframes microtexture-blocked-jitter {{
-      0%, 100% {{
-        background-position:
-          0 0,
-          0 0,
-          0 0,
-          0 0,
-          0 0;
-        transform: translate3d(0, 0, 0);
-      }}
-      22% {{
-        background-position:
-          0 0,
-          0 0,
-          1px 0,
-          -1px 0,
-          0 0;
-        transform: translate3d(0.45px, -0.15px, 0);
-      }}
-      47% {{
-        background-position:
-          0 0,
-          -1px 0,
-          -1px 1px,
-          1px -1px,
-          0 1px;
-        transform: translate3d(-0.35px, 0.2px, 0);
-      }}
-      71% {{
-        background-position:
-          0 0,
-          1px 0,
-          2px 0,
-          -1px 1px,
-          0 0;
-        transform: translate3d(0.2px, 0.35px, 0);
+      100% {{
+        opacity: 0;
+        filter: brightness(1.02) saturate(1.02);
+        transform: translate3d(112%, 0, 0) scaleX(1);
       }}
     }}
     @media (prefers-reduced-motion: reduce) {{
-      body::before {{
+      body::before,
+      body::after {{
         animation: none !important;
         will-change: auto;
       }}
@@ -38466,11 +38886,17 @@ class Handler(BaseHTTPRequestHandler):
           transparent 1px calc(var(--texture-spacing) * 0.78)
         ),
         linear-gradient(180deg, color-mix(in srgb, var(--surface) 88%, transparent), color-mix(in srgb, var(--surface-2) 72%, transparent));
+      background-size:
+        220px 100%,
+        180px 120px,
+        calc(var(--texture-cross-spacing) * 4) calc(var(--texture-cross-spacing) * 4),
+        calc(var(--texture-spacing) * 4) calc(var(--texture-spacing) * 4),
+        100% 100%;
       box-shadow:
         inset 0 1px 0 color-mix(in srgb, rgba(255, 255, 255, 0.05) 48%, transparent),
         inset 0 -1px 0 color-mix(in srgb, rgba(0, 0, 0, 0.16) 36%, transparent),
         0 7px 18px rgba(8, 12, 18, 0.07);
-      animation: microtexture-chrome-breathe var(--microtexture-drift-duration) ease-in-out infinite alternate;
+      animation: microtexture-chrome-breathe var(--microtexture-drift-duration) linear infinite;
     }}
     .brand::before {{
       content: "";
@@ -38553,11 +38979,19 @@ class Handler(BaseHTTPRequestHandler):
         linear-gradient(180deg, color-mix(in srgb, rgba(255, 255, 255, 0.075) 62%, transparent), transparent 70%),
         linear-gradient(120deg, color-mix(in srgb, currentColor 13%, transparent), transparent 38%),
         var(--cartouche-fill);
+      background-size:
+        100% 100%,
+        140px 100%,
+        calc(var(--texture-spacing) * 3) calc(var(--texture-spacing) * 3),
+        calc(var(--texture-cross-spacing) * 3) calc(var(--texture-cross-spacing) * 3),
+        100% 100%,
+        160px 100%,
+        100% 100%;
       box-shadow:
         inset 0 1px 0 color-mix(in srgb, rgba(255, 255, 255, 0.08) 56%, transparent),
         inset 0 -1px 0 color-mix(in srgb, rgba(0, 0, 0, 0.18) 40%, transparent),
         0 4px 12px rgba(8, 12, 18, 0.12);
-      animation: microtexture-chrome-breathe var(--microtexture-drift-duration) ease-in-out infinite alternate;
+      animation: microtexture-chrome-breathe var(--microtexture-drift-duration) linear infinite;
     }}
     .brand-title .entity-cartouche__label {{
       max-width: min(42ch, 48vw);
@@ -38608,6 +39042,10 @@ class Handler(BaseHTTPRequestHandler):
         ),
         linear-gradient(90deg, color-mix(in srgb, var(--agent-accent) 7%, transparent), transparent 26%, transparent 74%, color-mix(in srgb, var(--agent-accent-2) 5%, transparent)),
         linear-gradient(180deg, color-mix(in srgb, var(--surface) 99%, rgba(255, 255, 255, 0.035)), color-mix(in srgb, var(--surface) 95%, rgba(0, 0, 0, 0.12)));
+      background-size:
+        calc(var(--texture-cross-spacing) * 4) calc(var(--texture-cross-spacing) * 4),
+        360px 100%,
+        100% 100%;
       border-left: 0;
       border-right: 0;
       border-top: 0;
@@ -38617,18 +39055,18 @@ class Handler(BaseHTTPRequestHandler):
         inset 0 1px 0 color-mix(in srgb, rgba(255, 255, 255, 0.05) 34%, transparent),
         inset 0 -1px 0 color-mix(in srgb, rgba(0, 0, 0, 0.2) 36%, transparent);
       backdrop-filter: saturate(var(--topbar-saturate)) blur(var(--topbar-blur));
-      animation: microtexture-chrome-breathe var(--microtexture-drift-duration) ease-in-out infinite alternate;
+      animation: microtexture-chrome-breathe var(--microtexture-drift-duration) linear infinite;
     }}
     .topbar.surface::before {{
       content: "";
       position: absolute;
       inset: 0 14px auto;
-      height: 2px;
+      height: 1px;
       background:
-        linear-gradient(90deg, transparent, color-mix(in srgb, var(--agent-accent-3) 28%, transparent), transparent),
-        linear-gradient(90deg, transparent, color-mix(in srgb, rgba(255, 255, 255, 0.12) 74%, transparent), transparent);
+        linear-gradient(90deg, transparent, color-mix(in srgb, var(--agent-accent-3) 18%, transparent), transparent),
+        linear-gradient(90deg, transparent, color-mix(in srgb, rgba(255, 255, 255, 0.09) 54%, transparent), transparent);
       pointer-events: none;
-      opacity: var(--topbar-glint-opacity);
+      opacity: calc(var(--topbar-glint-opacity) * 0.62);
       transform-origin: center;
     }}
     .topbar.surface::after {{
@@ -38828,19 +39266,31 @@ class Handler(BaseHTTPRequestHandler):
     }}
     body[data-microtexture-state="active"] .topbar.surface::before,
     body[data-microtexture-state="active"] .brand::after,
+    body[data-microtexture-state="working"] .topbar.surface::before,
+    body[data-microtexture-state="working"] .brand::after,
+    body[data-microtexture-state="thinking"] .topbar.surface::before,
+    body[data-microtexture-state="thinking"] .brand::after,
     body[data-microtexture-state="watch"] .topbar.surface::before,
     body[data-microtexture-state="watch"] .brand::after,
     body[data-microtexture-state="flow"] .topbar.surface::before,
     body[data-microtexture-state="flow"] .brand::after {{
-      animation: microtexture-wind-shine 24s ease-in-out infinite;
+      animation: microtexture-wind-shine var(--microtexture-glint-duration) linear infinite;
     }}
     body[data-microtexture-state="watch"] .topbar.surface::before,
     body[data-microtexture-state="watch"] .brand::after {{
       animation-duration: 34s;
     }}
+    body[data-microtexture-state="thinking"] .topbar.surface::before,
+    body[data-microtexture-state="thinking"] .brand::after {{
+      animation-duration: 7.5s;
+    }}
+    body[data-microtexture-state="working"] .topbar.surface::before,
+    body[data-microtexture-state="working"] .brand::after {{
+      animation-duration: 7.5s;
+    }}
     body[data-microtexture-state="flow"] .topbar.surface::before,
     body[data-microtexture-state="flow"] .brand::after {{
-      animation-duration: 15s;
+      animation-duration: 4.8s;
     }}
     @keyframes topbarSafetyPulse {{
       0%,
@@ -48998,7 +49448,8 @@ class Handler(BaseHTTPRequestHandler):
     }}
   </style>
 </head>
-<body data-agent-slug="{html.escape(AGENT_SLUG)}" data-agent-group="{html.escape(agent_brand_group)}" data-agent-variant="{html.escape(AGENT_STYLE_VARIANT)}">
+<body data-agent-slug="{html.escape(AGENT_SLUG)}" data-agent-group="{html.escape(agent_brand_group)}" data-agent-variant="{html.escape(AGENT_STYLE_VARIANT)}" data-microtexture-state="idle">
+  <canvas id="microtexture-thread-field" class="microtexture-thread-field" aria-hidden="true"></canvas>
   <div class="app-shell">
     <header id="topbar" class="topbar surface">
         <div class="brand">
@@ -49366,7 +49817,7 @@ class Handler(BaseHTTPRequestHandler):
           <div class="settings-row model-route-preset-row">{settings_model_route_presets_html}</div>
           <div class="settings-row runtime-route-row">{settings_runtime_routes_html}</div>
           <div class="settings-row model-floor-row">{settings_model_buttons_html}</div>
-          <div class="settings-note">Presets pick runtime, model, and provider lane together. Bedrock 5.4 is the stable work-special default; Bedrock 5.5 is a frontier/tiebreaker lane for rare high-judgment work. Claude is executable only where Bedrock Converse is enabled and currently uses brokered tools. Kimi, Qwen, and DeepSeek are benchmark routes until a live adapter/tool policy is wired. {"Model update available" if chat_model_update_available() else "Model current"}</div>
+          <div class="settings-note">Presets pick runtime, model, and provider lane together. GPT-5.5 is the Codex floor for normal routes; older compatibility lanes require an explicit emergency override. Claude is executable only where Bedrock Converse is enabled and currently uses brokered tools. Kimi, Qwen, and DeepSeek are benchmark routes until a live adapter/tool policy is wired. {"Model update available" if chat_model_update_available() else "Model current"}</div>
         </section>
         <section class="settings-card">
           <span class="settings-label" data-icon="{html.escape(icon_for_label("Mode"))}">Mode</span>
@@ -49687,8 +50138,8 @@ class Handler(BaseHTTPRequestHandler):
     const INTERACTION_TONES = {{
       focus: {{ frequency: 196, ratio: 1.51, duration: 0.22, peak: 0.012, wave: "sine", filter: 820 }},
       type: {{ frequency: 154, ratio: 1.34, duration: 0.055, peak: 0.0038, wave: "triangle", filter: 620 }},
-      click: {{ frequency: 174, ratio: 1.68, duration: 0.105, peak: 0.0075, wave: "sine", filter: 720 }},
-      tick: {{ frequency: 148, ratio: 1.22, duration: 0.058, peak: 0.0045, wave: "triangle", filter: 560 }},
+      click: {{ frequency: 156, ratio: 1.76, duration: 0.16, peak: 0.012, wave: "sine", filter: 640 }},
+      tick: {{ frequency: 138, ratio: 1.28, duration: 0.074, peak: 0.006, wave: "triangle", filter: 520 }},
       send: {{ frequency: 220, ratio: 1.49, duration: 0.34, peak: 0.016, wave: "sine", filter: 900 }},
       confirm: {{ frequency: 184, ratio: 1.57, duration: 0.32, peak: 0.014, wave: "triangle", filter: 840 }},
       approve: {{ frequency: 207, ratio: 2.03, duration: 0.38, peak: 0.015, wave: "sine", filter: 940 }},
@@ -49697,7 +50148,7 @@ class Handler(BaseHTTPRequestHandler):
       soft: {{ frequency: 132, ratio: 1.32, duration: 0.18, peak: 0.0065, wave: "triangle", filter: 520 }},
     }};
     const AUDIO_GAIN = {{
-      interactionMaster: 0.72,
+      interactionMaster: 0.82,
       interactionPeakMax: 0.055,
       interactionGainFloor: 0.22,
       completionMasterMin: 0.58,
@@ -49707,6 +50158,187 @@ class Handler(BaseHTTPRequestHandler):
       completionSustainFloor: 0.0028,
       completionAnswerGainFloor: 0.13,
     }};
+    const MICROTEXTURE_FIELD_PROFILES = Object.freeze({{
+      idle: Object.freeze({{
+        "--microtexture-drift-duration": "46s",
+        "--microtexture-drift-x": "44px",
+        "--microtexture-wave-duration": "30s",
+        "--microtexture-wisp-duration": "24s",
+        "--microtexture-wave-y": "0px",
+        "--microtexture-skew": "0deg",
+        "--microtexture-wisp-opacity": "0.18",
+        "--microtexture-drift-saturate": "101%",
+        "--microtexture-field-contrast": "101%",
+        "--microtexture-thread-opacity": "0.24",
+        "--microtexture-thread-saturate": "102%",
+        "--microtexture-thread-blur": "0px",
+      }}),
+      ready: Object.freeze({{
+        "--microtexture-drift-duration": "34s",
+        "--microtexture-drift-x": "68px",
+        "--microtexture-wave-duration": "24s",
+        "--microtexture-wisp-duration": "20s",
+        "--microtexture-wave-y": "0px",
+        "--microtexture-skew": "0deg",
+        "--microtexture-wisp-opacity": "0.20",
+        "--microtexture-drift-saturate": "103%",
+        "--microtexture-field-contrast": "102%",
+        "--microtexture-thread-opacity": "0.25",
+        "--microtexture-thread-saturate": "104%",
+        "--microtexture-thread-blur": "0px",
+      }}),
+      active: Object.freeze({{
+        "--microtexture-drift-duration": "20s",
+        "--microtexture-drift-x": "82px",
+        "--microtexture-wave-duration": "18s",
+        "--microtexture-wisp-duration": "15s",
+        "--microtexture-wave-y": "1px",
+        "--microtexture-skew": "0.08deg",
+        "--microtexture-wisp-opacity": "0.22",
+        "--microtexture-drift-saturate": "104%",
+        "--microtexture-field-contrast": "103%",
+        "--microtexture-thread-opacity": "0.28",
+        "--microtexture-thread-saturate": "106%",
+        "--microtexture-thread-blur": "0px",
+      }}),
+      working: Object.freeze({{
+        "--microtexture-drift-duration": "7.5s",
+        "--microtexture-drift-x": "148px",
+        "--microtexture-wave-duration": "9s",
+        "--microtexture-wisp-duration": "7.5s",
+        "--microtexture-wave-y": "2px",
+        "--microtexture-skew": "0.16deg",
+        "--microtexture-wisp-opacity": "0.18",
+        "--microtexture-drift-saturate": "105%",
+        "--microtexture-field-contrast": "102%",
+        "--microtexture-glint-duration": "7.5s",
+        "--microtexture-thread-opacity": "0.34",
+        "--microtexture-thread-saturate": "108%",
+        "--microtexture-thread-blur": "0px",
+      }}),
+      thinking: Object.freeze({{
+        "--microtexture-drift-duration": "7.5s",
+        "--microtexture-drift-x": "148px",
+        "--microtexture-wave-duration": "9s",
+        "--microtexture-wisp-duration": "7.5s",
+        "--microtexture-wave-y": "2px",
+        "--microtexture-skew": "0.16deg",
+        "--microtexture-wisp-opacity": "0.18",
+        "--microtexture-drift-saturate": "105%",
+        "--microtexture-field-contrast": "102%",
+        "--microtexture-glint-duration": "7.5s",
+        "--microtexture-thread-opacity": "0.33",
+        "--microtexture-thread-saturate": "108%",
+        "--microtexture-thread-blur": "0px",
+      }}),
+      flow: Object.freeze({{
+        "--microtexture-drift-duration": "4.8s",
+        "--microtexture-drift-x": "230px",
+        "--microtexture-wave-duration": "6s",
+        "--microtexture-wisp-duration": "4.8s",
+        "--microtexture-wave-y": "3px",
+        "--microtexture-skew": "0.24deg",
+        "--microtexture-wisp-opacity": "0.20",
+        "--microtexture-drift-saturate": "106%",
+        "--microtexture-field-contrast": "103%",
+        "--microtexture-glint-duration": "4.8s",
+        "--microtexture-thread-opacity": "0.38",
+        "--microtexture-thread-saturate": "112%",
+        "--microtexture-thread-blur": "0px",
+      }}),
+      watch: Object.freeze({{
+        "--microtexture-drift-duration": "62s",
+        "--microtexture-drift-x": "34px",
+        "--microtexture-wave-duration": "36s",
+        "--microtexture-wisp-duration": "32s",
+        "--microtexture-wave-y": "0px",
+        "--microtexture-skew": "0deg",
+        "--microtexture-wisp-opacity": "0.14",
+        "--microtexture-drift-saturate": "96%",
+        "--microtexture-field-contrast": "98%",
+        "--microtexture-thread-opacity": "0.20",
+        "--microtexture-thread-saturate": "90%",
+        "--microtexture-thread-blur": "0px",
+      }}),
+      blocked: Object.freeze({{
+        "--microtexture-drift-duration": "14s",
+        "--microtexture-drift-x": "58px",
+        "--microtexture-wave-duration": "13s",
+        "--microtexture-wisp-duration": "12s",
+        "--microtexture-wave-y": "1px",
+        "--microtexture-skew": "-0.12deg",
+        "--microtexture-wisp-opacity": "0.18",
+        "--microtexture-drift-saturate": "91%",
+        "--microtexture-field-contrast": "96%",
+        "--microtexture-thread-opacity": "0.20",
+        "--microtexture-thread-saturate": "84%",
+        "--microtexture-thread-blur": "0px",
+      }}),
+      degraded: Object.freeze({{
+        "--microtexture-drift-duration": "18s",
+        "--microtexture-drift-x": "48px",
+        "--microtexture-wave-duration": "10s",
+        "--microtexture-wisp-duration": "11s",
+        "--microtexture-wave-y": "2px",
+        "--microtexture-skew": "-0.18deg",
+        "--microtexture-wisp-opacity": "0.18",
+        "--microtexture-drift-saturate": "82%",
+        "--microtexture-field-contrast": "94%",
+        "--microtexture-thread-opacity": "0.22",
+        "--microtexture-thread-saturate": "82%",
+        "--microtexture-thread-blur": "0.1px",
+      }}),
+      stalled: Object.freeze({{
+        "--microtexture-drift-duration": "18s",
+        "--microtexture-drift-x": "48px",
+        "--microtexture-wave-duration": "10s",
+        "--microtexture-wisp-duration": "11s",
+        "--microtexture-wave-y": "2px",
+        "--microtexture-skew": "-0.18deg",
+        "--microtexture-wisp-opacity": "0.18",
+        "--microtexture-drift-saturate": "82%",
+        "--microtexture-field-contrast": "94%",
+        "--microtexture-thread-opacity": "0.20",
+        "--microtexture-thread-saturate": "82%",
+        "--microtexture-thread-blur": "0.1px",
+      }}),
+      crashed: Object.freeze({{
+        "--microtexture-drift-duration": "11s",
+        "--microtexture-drift-x": "28px",
+        "--microtexture-wave-duration": "3.2s",
+        "--microtexture-wisp-duration": "9s",
+        "--microtexture-wave-y": "0px",
+        "--microtexture-skew": "-0.35deg",
+        "--microtexture-wisp-opacity": "0.16",
+        "--microtexture-drift-saturate": "78%",
+        "--microtexture-field-contrast": "92%",
+        "--microtexture-thread-opacity": "0.24",
+        "--microtexture-thread-saturate": "76%",
+        "--microtexture-thread-blur": "0.2px",
+      }}),
+    }});
+    const MICROTEXTURE_THREAD_PROFILES = Object.freeze({{
+      idle: Object.freeze({{ speed: 0.10, drift: 7, amplitude: 1.8, frequency: 0.0086, square: 0.26, shear: 0.012, meshSpacing: 54, alpha: 0.18, glint: 0.025, transition: 1.35 }}),
+      ready: Object.freeze({{ speed: 0.15, drift: 10, amplitude: 2.3, frequency: 0.0092, square: 0.30, shear: 0.018, meshSpacing: 54, alpha: 0.22, glint: 0.035, transition: 1.15 }}),
+      active: Object.freeze({{ speed: 0.24, drift: 15, amplitude: 3.0, frequency: 0.0102, square: 0.36, shear: 0.024, meshSpacing: 54, alpha: 0.26, glint: 0.055, transition: 0.95 }}),
+      working: Object.freeze({{ speed: 0.46, drift: 26, amplitude: 4.9, frequency: 0.0124, square: 0.52, shear: 0.046, meshSpacing: 54, alpha: 0.33, glint: 0.12, transition: 0.82 }}),
+      thinking: Object.freeze({{ speed: 0.40, drift: 22, amplitude: 4.3, frequency: 0.0118, square: 0.48, shear: 0.04, meshSpacing: 54, alpha: 0.31, glint: 0.10, transition: 0.88 }}),
+      flow: Object.freeze({{ speed: 0.64, drift: 34, amplitude: 5.8, frequency: 0.0136, square: 0.58, shear: 0.062, meshSpacing: 54, alpha: 0.36, glint: 0.15, transition: 0.72 }}),
+      watch: Object.freeze({{ speed: 0.055, drift: 4, amplitude: 1.3, frequency: 0.0076, square: 0.20, shear: 0.006, meshSpacing: 54, alpha: 0.15, glint: 0.012, transition: 1.55 }}),
+      blocked: Object.freeze({{ speed: 0.22, drift: 8, amplitude: 2.6, frequency: 0.0128, square: 0.64, shear: -0.042, meshSpacing: 54, alpha: 0.20, glint: 0.026, transition: 1.05 }}),
+      degraded: Object.freeze({{ speed: 0.24, drift: 10, amplitude: 3.0, frequency: 0.0112, square: 0.56, shear: -0.038, meshSpacing: 54, alpha: 0.19, glint: 0.020, transition: 1.1 }}),
+      stalled: Object.freeze({{ speed: 0.18, drift: 6, amplitude: 2.5, frequency: 0.0102, square: 0.46, shear: -0.03, meshSpacing: 54, alpha: 0.18, glint: 0.014, transition: 1.2 }}),
+      crashed: Object.freeze({{ speed: 0.50, drift: 12, amplitude: 5.2, frequency: 0.0162, square: 0.74, shear: -0.09, meshSpacing: 54, alpha: 0.23, glint: 0.052, transition: 0.65 }}),
+    }});
+    const MICROTEXTURE_PULSE_KINDS = new Set([
+      "click",
+      "tick",
+      "send",
+      "tool",
+      "decision",
+      "accepted",
+      "error",
+    ]);
     const DEFAULT_PREFERENCES = {{
       density: "compact",
       mobileTurns: 1,
@@ -50058,6 +50690,18 @@ class Handler(BaseHTTPRequestHandler):
       lastInteractionToneAt: 0,
       lastTypingToneAt: 0,
       tactilePulseTimer: 0,
+      microtextureCounters: null,
+      microtextureLastState: "idle",
+      microtexturePulseSeq: 0,
+      microtexturePulseTimer: 0,
+      microtextureLastPulseAt: 0,
+      microtextureThreadProfileKey: "idle",
+      microtextureThreadFrame: 0,
+      microtextureThreadSize: {{ width: 0, height: 0, dpr: 1 }},
+      microtextureThreadImpulse: 0,
+      microtextureThreadLastTs: 0,
+      microtextureThreadPhase: 0,
+      microtextureThreads: [],
     }};
     const desktopLayout = window.matchMedia("(min-width: 980px)");
 
@@ -50088,6 +50732,7 @@ class Handler(BaseHTTPRequestHandler):
       contextSaveMenuButton: document.getElementById("context-save-menu-button"),
       noticeToggleButton: document.getElementById("notice-toggle-button"),
       noticeCount: document.getElementById("notice-count"),
+      microtextureThreadCanvas: document.getElementById("microtexture-thread-field"),
       appShell: document.querySelector(".app-shell"),
       workspace: document.getElementById("workspace"),
       chatShell: document.getElementById("chat-shell"),
@@ -51476,10 +52121,13 @@ class Handler(BaseHTTPRequestHandler):
     }}
 
     function playInteractionTone(kind = "click", options = {{}}) {{
+      const cleanKind = Object.prototype.hasOwnProperty.call(INTERACTION_TONES, kind) ? kind : "click";
+      if (cleanKind !== "type" || options.visualPulse) {{
+        triggerMicrotexturePulse(cleanKind, {{ throttleMs: cleanKind === "tick" ? 90 : 120 }});
+      }}
       if (!interactionToneAllowed(options)) {{
         return;
       }}
-      const cleanKind = Object.prototype.hasOwnProperty.call(INTERACTION_TONES, kind) ? kind : "click";
       const nowMs = Date.now();
       const throttleMs = Math.max(25, Number(options.throttleMs || (cleanKind === "type" ? 72 : 42)));
       if (!options.force) {{
@@ -59340,6 +59988,536 @@ class Handler(BaseHTTPRequestHandler):
       ];
     }}
 
+    function microtextureThreadProfile(stateKey) {{
+      return MICROTEXTURE_THREAD_PROFILES[String(stateKey || "").toLowerCase()]
+        || MICROTEXTURE_THREAD_PROFILES.idle;
+    }}
+
+    function microtextureParseColor(value, fallback) {{
+      const clean = String(value || "").trim();
+      if (clean.startsWith("#")) {{
+        let hex = clean.slice(1);
+        if (hex.length === 3) {{
+          hex = hex.split("").map((char) => char + char).join("");
+        }}
+        if (hex.length === 6) {{
+          const parsed = Number.parseInt(hex, 16);
+          if (Number.isFinite(parsed)) {{
+            return [
+              (parsed >> 16) & 255,
+              (parsed >> 8) & 255,
+              parsed & 255,
+            ];
+          }}
+        }}
+      }}
+      const parts = clean.startsWith("rgb") ? clean.match(/[0-9.]+/g) : null;
+      if (parts && parts.length >= 3) {{
+        return parts.slice(0, 3).map((part, index) => {{
+          const numberValue = Number(part);
+          return Number.isFinite(numberValue) ? Math.max(0, Math.min(255, numberValue)) : fallback[index];
+        }});
+      }}
+      return fallback;
+    }}
+
+    function microtextureThreadPalette() {{
+      const style = getComputedStyle(document.documentElement);
+      return [
+        microtextureParseColor(style.getPropertyValue("--agent-accent"), [95, 210, 196]),
+        microtextureParseColor(style.getPropertyValue("--agent-accent-2"), [110, 168, 255]),
+        microtextureParseColor(style.getPropertyValue("--agent-accent-3"), [216, 178, 91]),
+        microtextureParseColor(style.getPropertyValue("--border"), [155, 174, 194]),
+      ];
+    }}
+
+    function microtextureRgba(rgb, alpha) {{
+      const cleanAlpha = Math.max(0, Math.min(1, Number(alpha || 0)));
+      return `rgba(${{Math.round(rgb[0])}}, ${{Math.round(rgb[1])}}, ${{Math.round(rgb[2])}}, ${{cleanAlpha.toFixed(4)}})`;
+    }}
+
+    function microtextureSeed(index, salt = 0) {{
+      const raw = (index + 1) * 0.618033988749895 + (salt + 1) * 0.144269504088896;
+      return raw - Math.floor(raw);
+    }}
+
+    function microtextureFluidSquareWave(value, squareWeight) {{
+      const sine = Math.sin(value);
+      const softenedSquare = Math.tanh(sine * 3.4);
+      return sine * (1 - squareWeight) + softenedSquare * squareWeight;
+    }}
+
+    function microtextureFractalSquareWave(value, squareWeight, phase = 0) {{
+      const primary = microtextureFluidSquareWave(value + phase * 0.05, squareWeight);
+      const octave = microtextureFluidSquareWave(value * 1.93 + phase * 0.38, squareWeight * 0.72);
+      const filament = microtextureFluidSquareWave(value * 3.71 - phase * 0.24, squareWeight * 0.52);
+      const hairline = microtextureFluidSquareWave(value * 7.13 + phase * 0.13, squareWeight * 0.34);
+      return primary * 0.62 + octave * 0.24 + filament * 0.10 + hairline * 0.04;
+    }}
+
+    function microtextureClamp(value, minValue, maxValue) {{
+      return Math.max(minValue, Math.min(maxValue, Number(value || 0)));
+    }}
+
+    function microtextureBlendNumber(currentValue, targetValue, amount) {{
+      const currentNumber = Number(currentValue);
+      const targetNumber = Number(targetValue);
+      if (!Number.isFinite(targetNumber)) {{
+        return Number.isFinite(currentNumber) ? currentNumber : 0;
+      }}
+      if (!Number.isFinite(currentNumber)) {{
+        return targetNumber;
+      }}
+      return currentNumber + (targetNumber - currentNumber) * amount;
+    }}
+
+    function microtextureInterpolatedThreadProfile(targetProfile, deltaSeconds) {{
+      const target = targetProfile || MICROTEXTURE_THREAD_PROFILES.idle;
+      if (!state.microtextureThreadRenderProfile) {{
+        state.microtextureThreadRenderProfile = {{ ...target }};
+        return state.microtextureThreadRenderProfile;
+      }}
+      const transitionSeconds = microtextureClamp(target.transition || 1, 0.45, 1.8);
+      const amount = 1 - Math.pow(0.002, Math.max(0.001, deltaSeconds) / transitionSeconds);
+      const next = {{ ...state.microtextureThreadRenderProfile }};
+      for (const key of Object.keys(target)) {{
+        next[key] = microtextureBlendNumber(next[key], target[key], amount);
+      }}
+      state.microtextureThreadRenderProfile = next;
+      return next;
+    }}
+
+    function resizeMicrotextureThreadField() {{
+      const canvas = el.microtextureThreadCanvas;
+      if (!canvas) {{
+        return false;
+      }}
+      const dpr = Math.max(1, Math.min(2, Number(window.devicePixelRatio || 1)));
+      const width = Math.max(320, Math.ceil(window.innerWidth || document.documentElement.clientWidth || 0));
+      const height = Math.max(320, Math.ceil(window.innerHeight || document.documentElement.clientHeight || 0));
+      const size = state.microtextureThreadSize || {{}};
+      const changed = size.width !== width || size.height !== height || size.dpr !== dpr;
+      if (!changed) {{
+        return false;
+      }}
+      canvas.width = Math.ceil(width * dpr);
+      canvas.height = Math.ceil(height * dpr);
+      canvas.style.width = `${{width}}px`;
+      canvas.style.height = `${{height}}px`;
+      state.microtextureThreadSize = {{ width, height, dpr }};
+      state.microtextureThreads = [];
+      return true;
+    }}
+
+    function buildMicrotextureThreads(profile) {{
+      const size = state.microtextureThreadSize || {{}};
+      const width = Math.max(320, Number(size.width || window.innerWidth || 0));
+      const height = Math.max(320, Number(size.height || window.innerHeight || 0));
+      const spacing = microtextureClamp(profile.meshSpacing || 50, 34, 68);
+      const rowCount = Math.ceil(height / spacing) + 8;
+      const columnCount = Math.ceil(width / spacing) + 8;
+      const threads = [];
+      const addThread = (axis, index, count, span) => {{
+        const seed = microtextureSeed(index + (axis === "v" ? 101 : 0), 0);
+        const crossSeed = microtextureSeed(index + (axis === "v" ? 101 : 0), 3);
+        threads.push({{
+          axis,
+          base: (index - 4) * spacing + (seed - 0.5) * spacing * 0.08,
+          spacing,
+          slope: Number(profile.shear || 0) * (axis === "v" ? -0.58 : 0.58) + (crossSeed - 0.5) * 0.008,
+          phase: seed * Math.PI * 2,
+          phase2: microtextureSeed(index, 5) * Math.PI * 2,
+          speedMul: 0.92 + microtextureSeed(index, 1) * 0.16,
+          ampMul: 0.84 + microtextureSeed(index, 2) * 0.26,
+          freqMul: 0.9 + microtextureSeed(index, 4) * 0.18,
+          alphaMul: 0.62 + microtextureSeed(index, 6) * 0.30,
+          widthMul: 0.82 + microtextureSeed(index, 7) * 0.26,
+          paletteIndex: axis === "h" ? index % 4 : (index + 1) % 4,
+          major: index % 4 === 0,
+          flowDirection: 1,
+          harmonicOffset: microtextureSeed(index, axis === "v" ? 13 : 17),
+          span,
+          glintSeed: microtextureSeed(index, axis === "v" ? 11 : 9),
+        }});
+      }};
+      for (let index = 0; index < rowCount; index += 1) {{
+        addThread("h", index, rowCount, width);
+      }}
+      for (let index = 0; index < columnCount; index += 1) {{
+        addThread("v", index, columnCount, height);
+      }}
+      state.microtextureThreads = threads;
+      return threads;
+    }}
+
+    function microtextureThreadPoint(thread, parameter, metrics) {{
+      const profile = metrics.profile;
+      const phase = metrics.phase;
+      const baseAmplitude = metrics.baseAmplitude;
+      const baseFrequency = metrics.baseFrequency;
+      const squareWeight = metrics.squareWeight;
+      const impulse = metrics.impulse;
+      const span = thread.axis === "h" ? metrics.width : metrics.height;
+      const across = parameter - span / 2;
+      const oneWayFlow = Math.max(0, Number(metrics.flowOffset || 0)) * thread.flowDirection;
+      const local = parameter + oneWayFlow + thread.harmonicOffset * thread.spacing;
+      const domainWarp = microtextureThreadDomainWarp(thread, parameter, metrics);
+      const waveInput = local * baseFrequency * thread.freqMul
+        + phase * 2.85 * thread.speedMul
+        + thread.phase
+        + domainWarp * 0.42;
+      const threadWave = microtextureFractalSquareWave(waveInput, squareWeight, thread.phase2);
+      const slowFold = Math.sin(waveInput * 0.31 + phase * 0.72 + thread.phase2) * 0.18;
+      const cellPressure = impulse * microtextureFluidSquareWave(local * 0.010 + phase * 4.2 + thread.phase2, squareWeight * 0.66);
+      const normal = (threadWave + slowFold) * baseAmplitude * thread.ampMul
+        + cellPressure * baseAmplitude * 0.44
+        + domainWarp * baseAmplitude * 0.07;
+      const shear = thread.slope * across;
+      if (thread.axis === "h") {{
+        return {{
+          x: parameter,
+          y: thread.base + shear + normal,
+        }};
+      }}
+      return {{
+        x: thread.base + shear + normal,
+        y: parameter,
+      }};
+    }}
+
+    function microtextureThreadDomainWarp(thread, parameter, metrics) {{
+      const span = Math.max(1, thread.axis === "h" ? metrics.width : metrics.height);
+      const crossSpan = Math.max(1, thread.axis === "h" ? metrics.height : metrics.width);
+      const u = parameter / span;
+      const v = thread.base / crossSpan;
+      const phase = Number(metrics.phase || 0);
+      const tau = Math.PI * 2;
+      const golden = 1.618033988749895;
+      const silver = 2.414213562373095;
+      const primary = Math.sin((u * golden + v * 0.618033988749895 + phase * 0.035) * tau + thread.phase);
+      const secondary = Math.sin((u * silver - v * 1.272019649514069 + phase * 0.057) * tau + thread.phase2);
+      const tertiary = Math.sin(((u - v) * 0.707106781186548 + phase * 0.021) * tau + thread.phase * 0.5);
+      return primary * 0.52 + secondary * 0.30 + tertiary * 0.18;
+    }}
+
+    function microtextureThreadEnvelope(thread, metrics) {{
+      const crossSpan = Math.max(1, thread.axis === "h" ? metrics.height : metrics.width);
+      const v = thread.base / crossSpan;
+      const phase = Number(metrics.phase || 0);
+      const tau = Math.PI * 2;
+      const envelope = Math.sin((v * 1.618033988749895 + phase * 0.025) * tau + thread.phase2) * 0.5
+        + Math.sin((v * 3.23606797749979 - phase * 0.018) * tau + thread.phase) * 0.22;
+      return microtextureClamp(0.86 + envelope * 0.10, 0.72, 0.98);
+    }}
+
+    function drawMicrotextureThreadSegment(context, thread, metrics, start, end, step, strokeStyle, lineWidth) {{
+      context.strokeStyle = strokeStyle;
+      context.lineWidth = lineWidth;
+      context.beginPath();
+      let started = false;
+      for (let parameter = start; parameter <= end; parameter += step) {{
+        const point = microtextureThreadPoint(thread, parameter, metrics);
+        if (!started) {{
+          context.moveTo(point.x, point.y);
+          started = true;
+        }} else {{
+          context.lineTo(point.x, point.y);
+        }}
+      }}
+      const endPoint = microtextureThreadPoint(thread, end, metrics);
+      if (started) {{
+        context.lineTo(endPoint.x, endPoint.y);
+      }}
+      context.stroke();
+    }}
+
+    function drawMicrotextureThreadField(timestampMs = 0) {{
+      const canvas = el.microtextureThreadCanvas;
+      if (!canvas || !canvas.getContext) {{
+        return;
+      }}
+      const context = canvas.getContext("2d", {{ alpha: true }});
+      if (!context) {{
+        return;
+      }}
+      resizeMicrotextureThreadField();
+      const targetProfile = microtextureThreadProfile(state.microtextureThreadProfileKey);
+      const size = state.microtextureThreadSize || {{}};
+      const width = Math.max(320, Number(size.width || window.innerWidth || 0));
+      const height = Math.max(320, Number(size.height || window.innerHeight || 0));
+      const dpr = Math.max(1, Number(size.dpr || 1));
+      const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+      const lastTs = Number(state.microtextureThreadLastTs || timestampMs || 0);
+      const deltaSeconds = Math.max(0.001, Math.min(0.05, (Number(timestampMs || lastTs) - lastTs) / 1000));
+      state.microtextureThreadLastTs = Number(timestampMs || lastTs);
+      const profile = microtextureInterpolatedThreadProfile(targetProfile, deltaSeconds);
+      if (!reducedMotion) {{
+        state.microtextureThreadPhase += deltaSeconds * Number(profile.speed || 0.2);
+        state.microtextureThreadImpulse *= Math.pow(0.08, deltaSeconds);
+      }}
+      const phase = Number(state.microtextureThreadPhase || 0);
+      const impulse = Number(state.microtextureThreadImpulse || 0);
+      const palette = microtextureThreadPalette();
+      const threads = state.microtextureThreads.length
+        ? state.microtextureThreads
+        : buildMicrotextureThreads(targetProfile);
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      context.save();
+      context.scale(dpr, dpr);
+      context.globalCompositeOperation = "source-over";
+      context.lineCap = "round";
+      context.lineJoin = "round";
+      const baseAmplitude = Number(profile.amplitude || 4);
+      const baseFrequency = Number(profile.frequency || 0.01);
+      const squareWeight = Math.max(0, Math.min(0.85, Number(profile.square || 0)));
+      const drift = Number(profile.drift || 0);
+      const step = Math.max(12, Math.min(22, Number(profile.meshSpacing || 50) * 0.38));
+      const stateAlpha = Math.max(0.08, Math.min(0.95, Number(profile.alpha || 0.45)));
+      const glintStrength = Math.max(0, Math.min(0.28, Number(profile.glint || 0)));
+      const flowOffset = Math.max(0, phase * Math.max(0, Number(profile.drift || 0)) * 18);
+      const metrics = {{
+        profile,
+        phase,
+        impulse,
+        width,
+        height,
+        baseAmplitude,
+        baseFrequency,
+        squareWeight,
+        flowOffset,
+      }};
+      for (const thread of threads) {{
+        const axisSpan = thread.axis === "h" ? width : height;
+        const inset = Math.max(thread.spacing * 2, 96);
+        const start = -inset;
+        const end = axisSpan + inset;
+        const color = palette[thread.paletteIndex] || palette[0];
+        const axisAlpha = thread.axis === "v" ? 0.42 : 0.74;
+        const alpha = stateAlpha * thread.alphaMul * axisAlpha * microtextureThreadEnvelope(thread, metrics) * (thread.major ? 0.92 : 0.58);
+        const baseWidth = Math.max(0.28, 0.5 * thread.widthMul * (thread.major ? 1 : 0.72));
+        drawMicrotextureThreadSegment(
+          context,
+          thread,
+          metrics,
+          start,
+          end,
+          step,
+          microtextureRgba(color, alpha),
+          baseWidth,
+        );
+        if (!reducedMotion && thread.axis === "h" && glintStrength > 0.01 && (thread.major || thread.glintSeed > 0.62)) {{
+          const glintTravel = phase * Math.max(0, drift) * 0.019 * thread.speedMul + thread.glintSeed;
+          const glintCenter = ((glintTravel % 1) + 1) % 1;
+          const glintHalf = 0.034 + thread.glintSeed * 0.012;
+          const glintStart = start + (end - start) * Math.max(0, glintCenter - glintHalf);
+          const glintEnd = start + (end - start) * Math.min(1, glintCenter + glintHalf);
+          const startPoint = microtextureThreadPoint(thread, glintStart, metrics);
+          const endPoint = microtextureThreadPoint(thread, glintEnd, metrics);
+          const gradient = context.createLinearGradient(startPoint.x, startPoint.y, endPoint.x, endPoint.y);
+          gradient.addColorStop(0, microtextureRgba(color, 0));
+          gradient.addColorStop(0.45, microtextureRgba(color, Math.min(0.42, alpha + glintStrength)));
+          gradient.addColorStop(1, microtextureRgba(color, 0));
+          context.globalCompositeOperation = "lighter";
+          drawMicrotextureThreadSegment(
+            context,
+            thread,
+            metrics,
+            glintStart,
+            glintEnd,
+            Math.max(10, step * 0.62),
+            gradient,
+            baseWidth + 0.42,
+          );
+          context.globalCompositeOperation = "source-over";
+        }}
+      }}
+      context.restore();
+      if (!reducedMotion && document.visibilityState !== "hidden") {{
+        state.microtextureThreadFrame = window.requestAnimationFrame(drawMicrotextureThreadField);
+      }} else {{
+        state.microtextureThreadFrame = 0;
+      }}
+    }}
+
+    function startMicrotextureThreadField() {{
+      if (!el.microtextureThreadCanvas || window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {{
+        resizeMicrotextureThreadField();
+        drawMicrotextureThreadField(0);
+        return;
+      }}
+      resizeMicrotextureThreadField();
+      if (!state.microtextureThreadResizeBound) {{
+        state.microtextureThreadResizeBound = true;
+        window.addEventListener("resize", () => {{
+          resizeMicrotextureThreadField();
+          state.microtextureThreads = [];
+          if (!state.microtextureThreadFrame) {{
+            drawMicrotextureThreadField(performance.now());
+          }}
+        }});
+      }}
+      if (!state.microtextureThreadFrame) {{
+        state.microtextureThreadLastTs = performance.now();
+        state.microtextureThreadFrame = window.requestAnimationFrame(drawMicrotextureThreadField);
+      }}
+    }}
+
+    function syncMicrotextureThreadProfile(stateKey) {{
+      const cleanState = String(stateKey || "idle").toLowerCase();
+      const profile = microtextureThreadProfile(cleanState);
+      state.microtextureThreadProfileKey = cleanState;
+      if (!state.microtextureThreadRenderProfile) {{
+        state.microtextureThreadRenderProfile = {{ ...profile }};
+      }}
+      if (!state.microtextureThreads.length) {{
+        buildMicrotextureThreads(profile);
+      }}
+      startMicrotextureThreadField();
+    }}
+
+    function pulseMicrotextureThreadField(kind = "tick") {{
+      const weight = {{
+        click: 0.5,
+        tick: 0.38,
+        send: 0.86,
+        tool: 0.72,
+        decision: 0.66,
+        accepted: 1.05,
+        error: 1.4,
+      }}[String(kind || "tick").toLowerCase()] || 0.48;
+      state.microtextureThreadImpulse = Math.min(2.8, Number(state.microtextureThreadImpulse || 0) + weight);
+      if (!state.microtextureThreadFrame) {{
+        startMicrotextureThreadField();
+      }}
+    }}
+
+    function applyMicrotextureFieldProfile(stateKey) {{
+      const cleanState = String(stateKey || "idle").toLowerCase();
+      const profile = MICROTEXTURE_FIELD_PROFILES[cleanState] || MICROTEXTURE_FIELD_PROFILES.idle;
+      document.body.dataset.microtextureState = cleanState;
+      if (state.microtextureLastState === cleanState) {{
+        syncMicrotextureThreadProfile(cleanState);
+        return;
+      }}
+      state.microtextureLastState = cleanState;
+      for (const [token, rawValue] of Object.entries(profile)) {{
+        document.body.style.setProperty(token, String(rawValue));
+      }}
+      syncMicrotextureThreadProfile(cleanState);
+    }}
+
+    function microtextureNumber(value) {{
+      const numberValue = Number(value || 0);
+      return Number.isFinite(numberValue) ? Math.max(0, numberValue) : 0;
+    }}
+
+    function snapshotMicrotextureCounters(snapshot) {{
+      const live = snapshot?.live_turn && typeof snapshot.live_turn === "object"
+        ? snapshot.live_turn
+        : {{}};
+      return {{
+        runtimeState: String(snapshot?.state || "").toLowerCase(),
+        pending: Boolean(snapshot?.pending),
+        queueDepth: microtextureNumber(snapshot?.queue_depth),
+        interventionCount: microtextureNumber(snapshot?.human_intervention_count),
+        eventCount: microtextureNumber(live.event_count),
+        toolEventCount: microtextureNumber(live.tool_event_count),
+        toolFinishedCount: microtextureNumber(live.tool_finished_count),
+        decisionCount: microtextureNumber(live.decision_count),
+        fileInteractionCount: microtextureNumber(live.file_interaction_count),
+        tokenCount: Math.max(
+          microtextureNumber(live.observed_total_tokens),
+          microtextureNumber(live.estimated_total_tokens),
+        ),
+        lastActionAt: String(snapshot?.last_action_at || ""),
+        lastFinishedAt: String(snapshot?.last_finished_at || ""),
+        lastError: String(snapshot?.last_error || ""),
+      }};
+    }}
+
+    function microtexturePulseKindFromDelta(nextCounters, previousCounters, stateKey) {{
+      if (!previousCounters) {{
+        return "";
+      }}
+      if (nextCounters.lastError && nextCounters.lastError !== previousCounters.lastError) {{
+        return "error";
+      }}
+      if (stateKey === "crashed" && previousCounters.runtimeState !== nextCounters.runtimeState) {{
+        return "error";
+      }}
+      if (nextCounters.toolFinishedCount > previousCounters.toolFinishedCount) {{
+        return "tool";
+      }}
+      if (nextCounters.decisionCount > previousCounters.decisionCount) {{
+        return "decision";
+      }}
+      if (nextCounters.fileInteractionCount > previousCounters.fileInteractionCount) {{
+        return "accepted";
+      }}
+      if (nextCounters.lastFinishedAt && nextCounters.lastFinishedAt !== previousCounters.lastFinishedAt) {{
+        return "accepted";
+      }}
+      if (nextCounters.lastActionAt && nextCounters.lastActionAt !== previousCounters.lastActionAt) {{
+        return "click";
+      }}
+      if (nextCounters.queueDepth > previousCounters.queueDepth || nextCounters.interventionCount > previousCounters.interventionCount) {{
+        return "tick";
+      }}
+      if (
+        nextCounters.eventCount > previousCounters.eventCount
+        || nextCounters.toolEventCount > previousCounters.toolEventCount
+        || nextCounters.tokenCount > previousCounters.tokenCount + 512
+      ) {{
+        return "tool";
+      }}
+      return "";
+    }}
+
+    function triggerMicrotexturePulse(kind = "tick", options = {{}}) {{
+      const body = document.body;
+      if (!body || window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {{
+        return;
+      }}
+      const requested = String(kind || "tick").toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
+      const cleanKind = MICROTEXTURE_PULSE_KINDS.has(requested) ? requested : "click";
+      const nowMs = Date.now();
+      const throttleMs = options.force ? 0 : Math.max(60, Number(options.throttleMs || 110));
+      if (throttleMs > 0 && nowMs - Number(state.microtextureLastPulseAt || 0) < throttleMs) {{
+        return;
+      }}
+      state.microtextureLastPulseAt = nowMs;
+      state.microtexturePulseSeq = Number(state.microtexturePulseSeq || 0) + 1;
+      const sequence = state.microtexturePulseSeq;
+      const pulseX = Number.isFinite(Number(options.x))
+        ? Number(options.x)
+        : 10 + ((sequence * 17) % 78);
+      const pulseY = Number.isFinite(Number(options.y))
+        ? Number(options.y)
+        : 18 + ((sequence * 11) % 58);
+      body.style.setProperty("--microtexture-pulse-x", `${{Math.max(4, Math.min(96, pulseX))}}%`);
+      body.style.setProperty("--microtexture-pulse-y", `${{Math.max(6, Math.min(92, pulseY))}}%`);
+      body.dataset.microtexturePulse = cleanKind;
+      body.dataset.microtexturePulseSeq = String(sequence);
+      pulseMicrotextureThreadField(cleanKind);
+      window.clearTimeout(state.microtexturePulseTimer);
+      state.microtexturePulseTimer = window.setTimeout(() => {{
+        if (body.dataset.microtexturePulseSeq === String(sequence)) {{
+          delete body.dataset.microtexturePulse;
+        }}
+      }}, Math.max(220, Number(options.durationMs || 700)));
+    }}
+
+    function syncMicrotextureState(snapshot, auth, humanAsk, queueDepth, bbsSignal) {{
+      const nextState = microtextureProofState(snapshot, auth, humanAsk, queueDepth, bbsSignal);
+      applyMicrotextureFieldProfile(nextState);
+      const counters = snapshotMicrotextureCounters(snapshot);
+      const pulseKind = microtexturePulseKindFromDelta(counters, state.microtextureCounters, nextState);
+      state.microtextureCounters = counters;
+      if (pulseKind) {{
+        triggerMicrotexturePulse(pulseKind, {{ throttleMs: pulseKind === "tick" ? 120 : 180 }});
+      }}
+    }}
+
     function microtextureProofState(snapshot, auth, humanAsk, queueDepth, bbsSignal) {{
       const sentinel = snapshot?.sentinel && typeof snapshot.sentinel === "object"
         ? snapshot.sentinel
@@ -59351,6 +60529,9 @@ class Handler(BaseHTTPRequestHandler):
         ? snapshot.live_turn
         : {{}};
       const liveState = String(live.state || "").toLowerCase();
+      const modelAlive = Boolean(snapshot?.model_process_alive);
+      const runningPrompt = String(snapshot?.running_prompt || "").trim();
+      const handoffState = String(snapshot?.queue_handoff_state || "").toLowerCase();
       const liveActivity = Math.max(
         0,
         Number(live.event_count || 0),
@@ -59369,15 +60550,21 @@ class Handler(BaseHTTPRequestHandler):
       );
       if (
         lastError
-        || ["critical", "degraded", "stalled", "wedged"].includes(sentinelState)
-        || ["error", "failed", "stalled", "wedged"].includes(runtimeState)
-        || ["error", "stale"].includes(liveState)
+        || ["critical", "wedged"].includes(sentinelState)
+        || ["error", "failed", "wedged"].includes(runtimeState)
+        || liveState === "error"
       ) {{
-        return "stalled";
+        return "crashed";
+      }}
+      if (
+        ["degraded", "stalled"].includes(sentinelState)
+        || ["degraded", "stalled"].includes(runtimeState)
+        || liveState === "stale"
+      ) {{
+        return "degraded";
       }}
       if (
         Boolean(auth?.required)
-        || Boolean(humanAsk)
         || Boolean(snapshot?.rate_limit_active)
         || runtimeState === "rate_limited"
       ) {{
@@ -59387,10 +60574,25 @@ class Handler(BaseHTTPRequestHandler):
         if (liveProgress > 0 || liveActivity >= 3) {{
           return "flow";
         }}
+        if (
+          modelAlive
+          || runningPrompt
+          || liveActivity > 0
+          || ["running", "working", "streaming", "planning", "thinking"].includes(liveState)
+          || handoffState === "running"
+        ) {{
+          return "working";
+        }}
         return "active";
+      }}
+      if (Boolean(humanAsk)) {{
+        return "blocked";
       }}
       if (Number(queueDepth || 0) > 0 || Boolean(bbsSignal)) {{
         return "watch";
+      }}
+      if (runtimeState === "ok" || modelAlive) {{
+        return "ready";
       }}
       return "idle";
     }}
@@ -64388,13 +65590,73 @@ class Handler(BaseHTTPRequestHandler):
       ].filter(Boolean).join(" ");
     }}
 
+    function routeDisplayName(runtime) {{
+      const clean = normalizeRuntime(runtime);
+      if (clean === "localllm") return "Norllama";
+      if (clean === "codex") return "Codex";
+      if (clean === "claude") return "Claude";
+      return clean || "route";
+    }}
+
+    function effectiveRouteForSnapshot(snapshot = state.snapshot, live = null) {{
+      const raw = live?.raw && typeof live.raw === "object" ? live.raw : {{}};
+      const pending = Boolean(snapshot?.pending);
+      const costRoute = pending && snapshot?.running_cost_route && typeof snapshot.running_cost_route === "object"
+        ? snapshot.running_cost_route
+        : snapshot?.last_cost_route && typeof snapshot.last_cost_route === "object"
+          ? snapshot.last_cost_route
+          : snapshot?.running_cost_route && typeof snapshot.running_cost_route === "object"
+            ? snapshot.running_cost_route
+            : {{}};
+      const configuredRuntime = normalizeRuntime(snapshot?.selected_runtime || snapshot?.chat_runtime || "");
+      const configuredModel = String(snapshot?.selected_model || snapshot?.chat_model || "").trim();
+      const turnRuntime = normalizeRuntime(raw.runtime || (pending ? snapshot?.running_runtime : snapshot?.last_runtime) || "");
+      const turnModel = String(raw.model || (pending ? snapshot?.running_model : snapshot?.last_model) || "").trim();
+      const routeRuntime = normalizeRuntime(costRoute.selected_runtime || "");
+      const routeModel = String(costRoute.selected_model || "").trim();
+      const effectiveRuntime = routeRuntime || turnRuntime || configuredRuntime;
+      const effectiveModel = routeModel || turnModel || configuredModel;
+      const lane = String(costRoute.local_lane || costRoute.route_lane || "").trim();
+      const reason = String(costRoute.reason || costRoute.route_source || "").trim();
+      const configuredDifferent = Boolean(
+        configuredRuntime
+        && (configuredRuntime !== effectiveRuntime || (configuredModel && effectiveModel && configuredModel !== effectiveModel))
+      );
+      return {{
+        effectiveRuntime,
+        effectiveModel,
+        lane,
+        reason,
+        configuredRuntime,
+        configuredModel,
+        configuredDifferent,
+        source: routeRuntime ? (pending ? "active policy" : "last policy") : pending ? "active turn" : "last turn",
+      }};
+    }}
+
+    function effectiveRouteSummaryLine(snapshot = state.snapshot, live = null) {{
+      const route = effectiveRouteForSnapshot(snapshot, live);
+      const effective = [
+        "effective",
+        routeDisplayName(route.effectiveRuntime),
+        route.effectiveModel,
+        route.lane ? `lane ${{route.lane}}` : "",
+      ].filter(Boolean).join(" · ");
+      const fallback = route.configuredDifferent
+        ? [
+            "fallback",
+            routeDisplayName(route.configuredRuntime),
+            route.configuredModel,
+          ].filter(Boolean).join(" · ")
+        : "";
+      return [effective, fallback].filter(Boolean).join(" / ") || "route pending";
+    }}
+
     function responseFrameRouteCopy(snapshot = state.snapshot, live = null) {{
       const raw = live?.raw && typeof live.raw === "object" ? live.raw : {{}};
-      const runtime = String(raw.runtime || (snapshot?.pending ? snapshot?.running_runtime : snapshot?.last_runtime) || snapshot?.selected_runtime || "").trim();
       const tier = String(raw.service_tier || (snapshot?.pending ? snapshot?.running_service_tier : snapshot?.last_service_tier) || "").trim();
-      const model = String(raw.model || (snapshot?.pending ? snapshot?.running_model : snapshot?.last_model) || snapshot?.selected_model || "").trim();
       const budget = String(raw.job_budget || (snapshot?.pending ? snapshot?.running_job_budget : snapshot?.last_job_budget) || "").trim();
-      return [runtime, tier, model, budget].filter(Boolean).join(" · ") || "route pending";
+      return [effectiveRouteSummaryLine(snapshot, live), tier, budget].filter(Boolean).join(" · ") || "route pending";
     }}
 
     function runningTurnControl(snapshot = state.snapshot) {{
@@ -64894,6 +66156,10 @@ class Handler(BaseHTTPRequestHandler):
       const specialist = Number(proofTotals.specialist_evidence_count || summary.specialist_evidence_count || 0);
       const specialistReady = Number(proofTotals.specialist_production_ready_count || summary.specialist_production_ready_count || 0);
       const parts = [];
+      const effectiveRoute = snapshot ? effectiveRouteSummaryLine(snapshot) : "";
+      if (effectiveRoute && effectiveRoute !== "route pending") {{
+        parts.push(effectiveRoute);
+      }}
       if (total > 0) {{
         parts.push(`routes ${{local}}/${{total}} local`);
       }}
@@ -65574,7 +66840,7 @@ class Handler(BaseHTTPRequestHandler):
         : 0;
       const bbsSignal = bbsInlineSignal(snapshot);
       const humanAsk = humanInterventionFocus(snapshot);
-      document.body.dataset.microtextureState = microtextureProofState(
+      syncMicrotextureState(
         snapshot,
         auth,
         humanAsk,
@@ -68368,6 +69634,7 @@ class Handler(BaseHTTPRequestHandler):
       if (document.visibilityState === "visible") {{
         pingNormanPrime("visible");
         schedulePrimePing(90000);
+        startMicrotextureThreadField();
         refreshStatus();
       }}
     }});
@@ -68512,6 +69779,7 @@ class Handler(BaseHTTPRequestHandler):
     }} catch (_) {{
       state.preferences = normalizePreferences(DEFAULT_PREFERENCES);
     }}
+    startMicrotextureThreadField();
     render(INITIAL_SNAPSHOT);
     restorePromptDraft();
     try {{

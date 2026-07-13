@@ -18,15 +18,15 @@ The canonical name should match the real audience and trust boundary.
 
 | Namespace | Use | Canonical? | Notes |
 | --- | --- | --- | --- |
-| `*.kris.openbrand.com` | Work-facing bots and work apps | Yes | Best place for human-facing OpenBrand work surfaces |
-| `*.home.arpa` | LAN-local bots, infra, private, and household surfaces | Yes for non-work browser entry points | Preferred local browser namespace now that `.internal` is causing client/browser friction |
-| `*.knox.example.test` | Main-house or Knox-site family-facing services | Yes | Best for the current primary house/site |
-| `*.beach.example.test` | Beach-house family-facing services | Yes | Site-based naming for the beach location |
-| `*.halsted.example.test` | Halsted-site family-facing services | Yes | Use for services primarily tied to that site |
-| `*.argyle.example.test` | Argyle-site family-facing services | Yes | Use for services primarily tied to that site |
-| `*.home.example.test` | Family umbrella, shared landing pages, cross-site home entry | Yes, but only for umbrella/shared surfaces | Avoid using it as the canonical home for site-specific apps |
-| `*.kris.example.test` | Operator personal surfaces not tied to one site | Yes | Personal identity-owned services, not household-wide services |
-| `*.home.arpa` | LAN-local browser names | Yes for non-work local surfaces | Use for local-only naming, private surfaces, and house/shared bots |
+| `*.[REDACTED_NAME].openbrand.com` | Work-facing bots and work apps | Yes | Best place for human-facing OpenBrand work surfaces |
+| `*.[INTERNAL_DOMAIN]` | LAN-local bots, infra, private, and household surfaces | Yes for non-work browser entry points | Preferred local browser namespace now that `.internal` is causing client/browser friction |
+| `*.knox.lollie.org` | Main-house or Knox-site family-facing services | Yes | Best for the current primary house/site |
+| `*.beach.lollie.org` | Beach-house family-facing services | Yes | Site-based naming for the beach location |
+| `*.halsted.lollie.org` | Halsted-site family-facing services | Yes | Use for services primarily tied to that site |
+| `*.argyle.lollie.org` | Argyle-site family-facing services | Yes | Use for services primarily tied to that site |
+| `*.home.lollie.org` | Family umbrella, shared landing pages, cross-site home entry | Yes, but only for umbrella/shared surfaces | Avoid using it as the canonical home for site-specific apps |
+| `*.[REDACTED_NAME].lollie.org` | [REDACTED_NAME] personal surfaces not tied to one site | Yes | Personal identity-owned services, not household-wide services |
+| `*.[INTERNAL_DOMAIN]` | LAN-local browser names | Yes for non-work local surfaces | Use for local-only naming, private surfaces, and house/shared bots |
 | `*.local` | Legacy SMB / Bonjour / mDNS space | No | Avoid as canonical DNS because it conflicts with mDNS and platform discovery rules |
 | `*.test` | Temporary experiments | No | Never use as the main operator fleet namespace |
 | `*.invalid` | Explicit non-resolution / placeholders | No | Good for sentinels and docs only |
@@ -36,36 +36,62 @@ The canonical name should match the real audience and trust boundary.
 
 | Audience | Canonical namespace |
 | --- | --- |
-| OpenBrand work users | `*.kris.openbrand.com` |
-| Infra / admin / control plane | `*.home.arpa` |
-| Confidential / private bots | `*.home.arpa` |
-| Household or family users at a specific site | `*.<site>.example.test` |
-| Family/shared umbrella services spanning sites | `*.home.example.test` |
-| Operator personal surfaces spanning sites | `*.kris.example.test` |
+| OpenBrand work users | `*.[REDACTED_NAME].openbrand.com` |
+| Infra / admin / control plane | `*.[INTERNAL_DOMAIN]` |
+| Confidential / private bots | `*.[INTERNAL_DOMAIN]` |
+| Household or family users at a specific site | `*.<site>.lollie.org` |
+| Family/shared umbrella services spanning sites | `*.home.lollie.org` |
+| [REDACTED_NAME] personal surfaces spanning sites | `*.[REDACTED_NAME].lollie.org` |
 
 ## Site Rule
 
-Use site-specific `example.test` subdomains when a service belongs to a place.
+Use site-specific `lollie.org` subdomains when a service belongs to a place.
 
 Current site roots:
 
-- `knox.example.test`
-- `beach.example.test`
-- `halsted.example.test`
-- `argyle.example.test`
+- `knox.lollie.org`
+- `beach.lollie.org`
+- `halsted.lollie.org`
+- `argyle.lollie.org`
+- `kostner.lollie.org`
+- `farm.lollie.org`
+- `evergreen.lollie.org`
 
 That means:
 
-- `glimpser.knox.example.test`
-- `autocamera.knox.example.test`
-- `camera.halsted.example.test`
-- `relay.beach.example.test`
+- `glimpser.knox.lollie.org`
+- `autocamera.knox.lollie.org`
+- `llm.knox.lollie.org`
+- `camera.halsted.lollie.org`
+- `relay.beach.lollie.org`
 
-This is better than forcing everything into `home.example.test`.
+This is better than forcing everything into `home.lollie.org`.
 
-## Personal vs Shared on `example.test`
+When a service exists at multiple sites, use `*.[INTERNAL_DOMAIN]` as the local
+operator/API identity unless the service explicitly needs a public-site
+canonical. Example:
 
-### `home.example.test`
+- on Knox LAN: `hubitat.[INTERNAL_DOMAIN]` -> `hubitat.knox.lollie.org`
+- on Beach LAN: `hubitat.[INTERNAL_DOMAIN]` -> `hubitat.beach.lollie.org`
+- on Knox LAN: `llm.[INTERNAL_DOMAIN]` -> Norllama front door with worker failover
+
+That keeps `[INTERNAL_DOMAIN]` contextual and local. The `*.<site>.lollie.org`
+origin remains useful for road access and public naming, but it is not always
+the primary browser/API identity.
+
+For road access to private services, prefer split DNS over teaching every client
+LAN routes:
+
+- site DNS / pfSense: `service.<site>.lollie.org -> site LAN front door`
+- public DNS: `service.<site>.lollie.org -> Tailscale IP for the same front door`
+
+This lets phones on 5G use the same canonical hostname while still requiring the
+tailnet. Use subnet routes as a fallback when a service cannot bind directly on
+a Tailscale-reachable front door.
+
+## Personal vs Shared on `lollie.org`
+
+### `home.lollie.org`
 
 Use for:
 
@@ -76,22 +102,22 @@ Use for:
 
 Avoid using it as the canonical home for a service that is clearly tied to one site.
 
-### `kris.example.test`
+### `[REDACTED_NAME].lollie.org`
 
 Use for:
 
-- Operator personal tools
+- [REDACTED_NAME] personal tools
 - operator-facing personal surfaces
 - personal labs that are not really “the household”
 - personal bookmarks or dashboards spanning sites
 
 Examples:
 
-- `notes.kris.example.test`
-- `lab.kris.example.test`
-- `operator.kris.example.test`
+- `notes.[REDACTED_NAME].lollie.org`
+- `lab.[REDACTED_NAME].lollie.org`
+- `operator.[REDACTED_NAME].lollie.org`
 
-### `<site>.example.test`
+### `<site>.lollie.org`
 
 Use for:
 
@@ -102,11 +128,11 @@ Use for:
 
 Examples:
 
-- `glimpser.knox.example.test`
-- `housebot.knox.example.test`
-- `autocamera.knox.example.test`
-- `relay.halsted.example.test`
-- `weather.beach.example.test`
+- `glimpser.knox.lollie.org`
+- `housebot.knox.lollie.org`
+- `autocamera.knox.lollie.org`
+- `relay.halsted.lollie.org`
+- `weather.beach.lollie.org`
 
 ## Canonicalization Rule
 
@@ -114,9 +140,13 @@ Prefer browser-safe names as the real entry points.
 
 Good examples:
 
-- `mls.home.arpa` -> `mls.kris.openbrand.com`
-- `ranger.home.arpa` -> `ranger.kris.openbrand.com`
-- `control.home.arpa` -> `cp.kris.openbrand.com`
+- `mls.[INTERNAL_DOMAIN]` -> `mls.[REDACTED_NAME].openbrand.com`
+- `scout.[INTERNAL_DOMAIN]` -> `scout.[REDACTED_NAME].openbrand.com`
+- `control.[INTERNAL_DOMAIN]` -> `cp.[REDACTED_NAME].openbrand.com`
+- `keystone.[REDACTED_NAME].lollie.org` -> `keystone.[REDACTED_NAME].openbrand.com`
+
+For work bots, operator shortcut aliases may also live under `*.[REDACTED_NAME].lollie.org`,
+but they should still redirect to the `*.[REDACTED_NAME].openbrand.com` canonical host.
 
 Do not treat `.internal` as the intended browser namespace for the fleet. If it exists at all, it should be treated as a legacy or operator-only alias, not the name Prime and Directory prefer.
 
@@ -124,37 +154,34 @@ Do not treat `.internal` as the intended browser namespace for the fleet. If it 
 
 | Thing | Kind | Canonical | Alias / redirect candidates |
 | --- | --- | --- | --- |
-| Norman Prime | control plane | `norman.home.arpa` | `bots.home.arpa`, `norman.tail94915.ts.net` |
-| Norman bot proxy | control plane | `norman.home.arpa/bot/*` | `bots.home.arpa/*` |
-| MLS | work bot | `mls.kris.openbrand.com` | `mls.home.arpa`, `mlsbot.home.arpa` |
-| Ranger TUI / Scout service | work bot | `ranger.kris.openbrand.com` | `ranger.home.arpa`, `scoutbot.home.arpa`; Scout service stays on its separate service port |
-| Keystone / Compere | work bot | `keystone.kris.openbrand.com` | `keystone.home.arpa`, `compere.home.arpa` |
-| Infra | work bot | `infra.kris.openbrand.com` | `infra.home.arpa` |
-| Leadership KPIs | work bot | `kpis.kris.openbrand.com` | `leadership.kris.openbrand.com`, `leadership.home.arpa`, `kpis.home.arpa` |
-| Control Plane | work bot | `cp.kris.openbrand.com` | `control.home.arpa`, `cp.home.arpa` |
-| Earlybird | work bot | `earlybird.kris.openbrand.com` | `earlybird.home.arpa` |
-| MC / Monte Carlo | work bot | `mc.kris.openbrand.com` | `market.kris.openbrand.com`, `mc.home.arpa`, `market.home.arpa` |
-| TMI Dashboards | work bot | `dashboards.kris.openbrand.com` | `tmi.kris.openbrand.com`, `tmi.home.arpa` |
-| Gold Book | work bot | `goldbook.kris.openbrand.com` | `goldbook.home.arpa` |
-| Panelbot | work bot | `panelbot.kris.openbrand.com` | `panelbot.home.arpa` |
-| Housebot | home bot | `housebot.home.arpa` | `house.home.arpa`, `housebot.knox.example.test` |
-| Artmonster | personal-account creative bot | `artmonster.home.arpa` | Controls cloud-hosted Artbot services; Artbot remains the service/application name |
-| Phone Ops | home bot | `phone.home.arpa` | `phoneops.home.arpa` |
-| DJ Station | home media bot | `dj.home.arpa` | `yt.home.arpa` |
-| TV | retired home media bot | `tv.home.arpa` | Archived; do not promote unless re-owned and rebuilt |
-| Studio | retired home media bot | `studio.home.arpa` | Archived; `camera-studio.home.arpa` was the legacy alias |
-| Null Agent | Yhix game/TUI bot | TBD on Yhix cloud | Started as a game project; should publish only after the Yhix cloud runtime and TUI route exist |
-| Glimpser app | home app | `glimpser.home.arpa` | `glimpser.knox.example.test` |
-| Glimpser bot | home bot | `eyebat.home.arpa` | `eyeball.home.arpa` |
-| Autocamera app | home app | `autocamera.home.arpa` | `autocamera.knox.example.test` |
-| Theseus | home/shared bot | `theseus.home.arpa` | `theseus.knox.example.test` |
-| Networking | infra bot | `networking.home.arpa` | `networking-host.home.arpa` |
-| Grayhat | cyber operator | `grayhat.home.arpa` | Proposed child lane behind Networking; replaces the unfinished Logs lane when built |
-| Uplink | infra bot | `uplink.home.arpa` | `phobos.home.arpa` |
-| CloudAgent | infra bot | `cloudagent.home.arpa` | `cloud.home.arpa` |
-| PEFB / PEF | private bot | `pefb.home.arpa` | `pef.home.arpa`, `parkergale.home.arpa` |
-| Health Reader | private bot | `health.home.arpa` | `healthbot.home.arpa` |
-| Finance Reader | private bot | `finance.home.arpa` | `financebot.home.arpa` |
+| Norman Prime | control plane | `norman.[INTERNAL_DOMAIN]` | `bots.[INTERNAL_DOMAIN]`, `norman.tail94915.ts.net` |
+| Norman bot proxy | control plane | `norman.[INTERNAL_DOMAIN]/bot/*` | `bots.[INTERNAL_DOMAIN]/*` |
+| MLS | work bot | `mls.[REDACTED_NAME].openbrand.com` | `mls.[INTERNAL_DOMAIN]`, `mlsbot.[INTERNAL_DOMAIN]` |
+| Scout | work bot | `scout.[REDACTED_NAME].openbrand.com` | `scout.[INTERNAL_DOMAIN]`, `scoutbot.[INTERNAL_DOMAIN]` |
+| Keystone / Compere | work bot | `keystone.[REDACTED_NAME].openbrand.com` | `keystone.[INTERNAL_DOMAIN]`, `compere.[INTERNAL_DOMAIN]` |
+| Infra | work bot | `infra.[REDACTED_NAME].openbrand.com` | `infra.[INTERNAL_DOMAIN]` |
+| Leadership KPIs | work bot | `kpis.[REDACTED_NAME].openbrand.com` | `leadership.[REDACTED_NAME].openbrand.com`, `leadership.[INTERNAL_DOMAIN]`, `kpis.[INTERNAL_DOMAIN]` |
+| Control Plane | work bot | `cp.[REDACTED_NAME].openbrand.com` | `control.[INTERNAL_DOMAIN]`, `cp.[INTERNAL_DOMAIN]` |
+| Earlybird | work bot | `earlybird.[REDACTED_NAME].openbrand.com` | `earlybird.[INTERNAL_DOMAIN]` |
+| Market Sizing | work bot | `market.[REDACTED_NAME].openbrand.com` | `market.[INTERNAL_DOMAIN]` |
+| TMI Dashboards | work bot | `dashboards.[REDACTED_NAME].openbrand.com` | `tmi.[REDACTED_NAME].openbrand.com`, `tmi.[INTERNAL_DOMAIN]` |
+| Gold Book | work bot | `goldbook.[REDACTED_NAME].openbrand.com` | `goldbook.[INTERNAL_DOMAIN]` |
+| Panelbot | work bot | `panelbot.[REDACTED_NAME].openbrand.com` | `panelbot.[INTERNAL_DOMAIN]` |
+| Housebot | home bot | `housebot.[INTERNAL_DOMAIN]` | `house.[INTERNAL_DOMAIN]`, `housebot.knox.lollie.org` |
+| DJ Station | home media bot | `dj.[INTERNAL_DOMAIN]` | `yt.[INTERNAL_DOMAIN]` |
+| TV | home media bot | `tv.[INTERNAL_DOMAIN]` | |
+| Studio | home media bot | `studio.[INTERNAL_DOMAIN]` | `camera-studio.[INTERNAL_DOMAIN]` |
+| Glimpser app | home app | `glimpser.[INTERNAL_DOMAIN]` | `glimpser.knox.lollie.org` |
+| Eyebat / Glimpser bot | home bot | `eyebat.[INTERNAL_DOMAIN]` | manages the Glimpser code/operator session |
+| Autocamera app | home app | `autocamera.[INTERNAL_DOMAIN]` | `autocamera.knox.lollie.org` |
+| Theseus | home/shared bot | `theseus.[INTERNAL_DOMAIN]` | `theseus.knox.lollie.org` |
+| Local LLM | site-local infra | `llm.[INTERNAL_DOMAIN]` | `llm.knox.lollie.org` |
+| Networking | infra bot | `networking.[INTERNAL_DOMAIN]` | `networking-host.[INTERNAL_DOMAIN]` |
+| Uplink | infra bot | `uplink.[INTERNAL_DOMAIN]` | `phobos.[INTERNAL_DOMAIN]` |
+| CloudAgent | infra bot | `cloudagent.[INTERNAL_DOMAIN]` | `cloud.[INTERNAL_DOMAIN]` |
+| PEFB / PEF | private bot | `pefb.[INTERNAL_DOMAIN]` | `pef.[INTERNAL_DOMAIN]`, `parkergale.[INTERNAL_DOMAIN]` |
+| Health Reader | private bot | `health.[INTERNAL_DOMAIN]` | `healthbot.[INTERNAL_DOMAIN]` |
+| Finance Reader | private bot | `finance.[INTERNAL_DOMAIN]` | `financebot.[INTERNAL_DOMAIN]` |
 
 ## Transition Rule
 
@@ -170,20 +197,15 @@ Use this order:
 
 ## Operational Notes
 
-- `*.home.arpa` will usually need local CA trust for clean HTTPS.
-- `glimpser.home.arpa` is the Glimpser app/service name. Do not reuse `glimpse.home.arpa` for the bot surface.
-- `artmonster.home.arpa` is the Artmonster bot/session name. It should resolve to Norman's front door once DOHIO/split DNS is updated.
-- Artmonster currently uses a personal OpenAI account even though it controls cloud-hosted Artbot services. A dedicated evergreen OpenAI account is a possible future migration, not current state.
-- `acast` is retired from the active bot fleet. Do not recreate it unless a new owner and repo scope are named.
-- `tv` and `studio` are archived home media lanes. Keep existing compatibility routes harmless, but exclude them from active fleet promotion.
-- `null-agent` belongs to the Yhix bot class, not the household/work/shared bot lanes. It should run as a TUI on Yhix cloud once the runtime exists.
-- `MC` is the preferred label for the former Market Sizing lane. Use it for Monte Carlo, survey, demographic, and market-modeling work.
-- `*.kris.openbrand.com` is the best place for work bots if clean public-trust certificates matter.
-- Site-based `example.test` names should map to physical place or household context, not arbitrary service buckets.
-- `home.example.test` should stay the umbrella, not the dumping ground.
-- `kris.example.test` should be the personal operator namespace, not the family/shared namespace.
+- `*.[INTERNAL_DOMAIN]` will usually need local CA trust for clean HTTPS.
+- `*.[INTERNAL_DOMAIN]` should be treated as a local shortcut layer, not the durable
+  canonical identity for multi-site services.
+- `*.[REDACTED_NAME].openbrand.com` is the best place for work bots if clean public-trust certificates matter.
+- Site-based `lollie.org` names should map to physical place or household context, not arbitrary service buckets.
+- `home.lollie.org` should stay the umbrella, not the dumping ground.
+- `[REDACTED_NAME].lollie.org` should be the personal operator namespace, not the family/shared namespace.
 - Avoid making `.local` the canonical naming scheme for SAN or bot surfaces. It is better to keep:
-  - work storage on names like `work.home.arpa`
-  - personal/backup storage on names like `backup.home.arpa`
+  - work storage on names like `work.[INTERNAL_DOMAIN]`
+  - personal/backup storage on names like `backup.[INTERNAL_DOMAIN]`
   - and optionally preserve user-friendly SMB share labels like `\\WORK` and `\\BACKUP`
 - If the current habits are `\\work.local` and `\\backup.local`, treat those as migration aliases, not the long-term namespace.

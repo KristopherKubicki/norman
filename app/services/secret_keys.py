@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import subprocess
+import secrets
+import shlex
 import uuid
-import secrets as py_secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -13,13 +15,7 @@ from sqlalchemy.orm import Session
 
 from app import crud
 from app.core.encryption import EncryptionManager
-from app.models import (
-    SecretAlias,
-    SecretLease,
-    SecretPolicy,
-    SecretRequest,
-    SecretStashItem,
-)
+from app.models import SecretAlias, SecretLease, SecretPolicy, SecretRequest
 from app.schemas.secret_keys import SecretRequestCreate, SecretStashCreate
 
 
@@ -28,6 +24,9 @@ class ProviderLeaseResult:
     value: Optional[str]
     provider_lease_id: str
     renewable: bool
+
+
+SECRET_STASH_POINTER_PREFIX = "norman-secret://stash/"
 
 
 class SecretProviderBase:
@@ -65,6 +64,84 @@ class FileSecretProvider(SecretProviderBase):
         )
 
 
+def _parse_env_file_value(raw_value: str) -> str:
+    value = raw_value.strip()
+    if not value:
+        return ""
+    try:
+        parts = shlex.split(f"x={value}", comments=True, posix=True)
+    except ValueError:
+        return value.strip("'\"")
+    if not parts:
+        return ""
+    parsed = parts[0]
+    if parsed.startswith("x="):
+        return parsed[2:]
+    return value.strip("'\"")
+
+
+class EnvFileSecretProvider(SecretProviderBase):
+    def get_secret(
+        self, backend_ref: str, *, subject: str, ttl_seconds: int
+    ) -> ProviderLeaseResult:
+        path_value = str((self.config or {}).get("path") or "").strip()
+        key = str(backend_ref or "").strip()
+        if "@" in key:
+            key, path_value = key.split("@", 1)
+            key = key.strip()
+            path_value = path_value.strip()
+        if not path_value:
+            raise HTTPException(
+                status_code=400, detail="Env-file secret provider path is not set"
+            )
+        if not key:
+            raise HTTPException(
+                status_code=400, detail="Env-file secret backend ref is not set"
+            )
+        path = Path(path_value)
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            raise HTTPException(
+                status_code=404, detail="Env-file secret provider path was not found"
+            ) from None
+        for line in lines:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if stripped.startswith("export "):
+                stripped = stripped.removeprefix("export ").strip()
+            name, separator, value = stripped.partition("=")
+            if separator and name.strip() == key:
+                return ProviderLeaseResult(
+                    value=_parse_env_file_value(value),
+                    provider_lease_id=f"env_file:{path}#{key}",
+                    renewable=True,
+                )
+        raise HTTPException(status_code=404, detail="Env-file secret key was not found")
+
+
+class EnvironmentSecretProvider(SecretProviderBase):
+    def get_secret(
+        self, backend_ref: str, *, subject: str, ttl_seconds: int
+    ) -> ProviderLeaseResult:
+        key = str(backend_ref or "").strip()
+        if not key:
+            raise HTTPException(
+                status_code=400, detail="Environment secret backend ref is not set"
+            )
+        value = os.environ.get(key)
+        if value is None:
+            raise HTTPException(
+                status_code=404, detail="Environment secret key was not found"
+            )
+        return ProviderLeaseResult(
+            value=value.strip(),
+            provider_lease_id=f"env:{key}",
+            renewable=True,
+        )
+
+
 class CredSecretProvider(SecretProviderBase):
     def get_secret(
         self, backend_ref: str, *, subject: str, ttl_seconds: int
@@ -75,7 +152,6 @@ class CredSecretProvider(SecretProviderBase):
             check=True,
             capture_output=True,
             text=True,
-            stdin=subprocess.DEVNULL,
         )
         return ProviderLeaseResult(
             value=result.stdout.strip(),
@@ -87,23 +163,13 @@ class CredSecretProvider(SecretProviderBase):
 def _build_provider(kind: str, config: Optional[dict]) -> SecretProviderBase:
     if kind == "file":
         return FileSecretProvider(config=config)
+    if kind == "env_file":
+        return EnvFileSecretProvider(config=config)
+    if kind == "env":
+        return EnvironmentSecretProvider(config=config)
     if kind == "cred":
         return CredSecretProvider(config=config)
     raise HTTPException(status_code=400, detail=f"Unsupported secret provider: {kind}")
-
-
-def _mask_stash_value(value: str) -> str:
-    line_count = value.count("\n") + 1 if value else 0
-    suffix = "line" if line_count == 1 else "lines"
-    return f"{len(value)} chars, {line_count} {suffix}"
-
-
-def _generate_stash_pointer() -> str:
-    return f"sec_{py_secrets.token_urlsafe(24)}"
-
-
-def _get_encryption_manager() -> EncryptionManager:
-    return EncryptionManager()
 
 
 def _policy_score(
@@ -173,7 +239,6 @@ def _issue_lease(
     )
     crud.secret_keys.create_audit_event(
         db,
-        user_id=request.user_id,
         request_id=request.id,
         lease_id=lease.id,
         event_type="lease_issued",
@@ -228,7 +293,6 @@ def create_secret_request(
     )
     crud.secret_keys.create_audit_event(
         db,
-        user_id=user_id,
         request_id=request.id,
         lease_id=None,
         event_type="requested",
@@ -312,7 +376,6 @@ def reject_secret_request(
     )
     crud.secret_keys.create_audit_event(
         db,
-        user_id=request.user_id,
         request_id=request.id,
         lease_id=None,
         event_type="rejected",
@@ -339,7 +402,6 @@ def renew_secret_lease(
     )
     crud.secret_keys.create_audit_event(
         db,
-        user_id=None,
         request_id=lease.request_id,
         lease_id=lease.id,
         event_type="renewed",
@@ -365,7 +427,6 @@ def revoke_secret_lease(db: Session, *, lease_id: int, actor_id: int) -> SecretL
     )
     crud.secret_keys.create_audit_event(
         db,
-        user_id=None,
         request_id=lease.request_id,
         lease_id=lease.id,
         event_type="revoked",
@@ -377,112 +438,94 @@ def revoke_secret_lease(db: Session, *, lease_id: int, actor_id: int) -> SecretL
     return lease
 
 
+def _normalize_stash_label(value: str) -> str:
+    text = " ".join(str(value or "").split())
+    if text:
+        return text[:120]
+    return f"Secret {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}"
+
+
+def _normalize_stash_source(value: str) -> str:
+    text = str(value or "").strip().lower().replace(" ", "_").replace("-", "_")
+    if not text:
+        return "manual"
+    return "".join(ch for ch in text if ch.isalnum() or ch == "_")[:32] or "manual"
+
+
+def _masked_secret_preview(value: str) -> str:
+    raw = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    line_count = max(1, len(raw.split("\n")))
+    char_count = len(raw)
+    line_label = "line" if line_count == 1 else "lines"
+    char_label = "char" if char_count == 1 else "chars"
+    return f"{line_count} {line_label} · {char_count} {char_label}"
+
+
+def format_secret_stash_pointer(pointer_token: str) -> str:
+    return f"{SECRET_STASH_POINTER_PREFIX}{pointer_token}"
+
+
+def format_secret_stash_prompt_reference(*, label: str, pointer_token: str) -> str:
+    pointer = format_secret_stash_pointer(pointer_token)
+    return f"Secret pointer: {pointer}"
+
+
+def serialize_secret_stash_item(item) -> dict:
+    return {
+        "id": int(item.id),
+        "channel_id": int(item.channel_id) if item.channel_id is not None else None,
+        "label": str(item.label or "").strip(),
+        "masked_preview": str(item.masked_preview or "").strip(),
+        "source": str(item.source or "").strip(),
+        "status": str(item.status or "").strip(),
+        "pointer": format_secret_stash_pointer(str(item.pointer_token or "").strip()),
+        "prompt_reference": format_secret_stash_prompt_reference(
+            label=str(item.label or "").strip() or "secret",
+            pointer_token=str(item.pointer_token or "").strip(),
+        ),
+        "created_at": item.created_at,
+        "expires_at": item.expires_at,
+        "revoked_at": item.revoked_at,
+    }
+
+
 def create_secret_stash_item(
     db: Session,
     *,
     user_id: int,
     body: SecretStashCreate,
-) -> SecretStashItem:
-    encrypted_value = _get_encryption_manager().encrypt(body.value)
-    item = crud.secret_keys.create_stash_item(
+):
+    try:
+        manager = EncryptionManager()
+    except Exception as exc:  # pragma: no cover - surfaced in API response
+        raise HTTPException(
+            status_code=503,
+            detail="Secret stash is unavailable until encryption is configured.",
+        ) from exc
+    value = str(body.value or "")
+    label = _normalize_stash_label(body.label)
+    source = _normalize_stash_source(body.source)
+    encrypted_value = manager.encrypt(value)
+    return crud.secret_keys.create_stash_item(
         db,
-        pointer_token=_generate_stash_pointer(),
+        pointer_token=secrets.token_urlsafe(18),
         user_id=user_id,
         channel_id=body.channel_id,
-        label=body.label,
+        label=label,
         encrypted_value=encrypted_value,
-        masked_preview=_mask_stash_value(body.value),
-        source=body.source,
+        masked_preview=_masked_secret_preview(value),
+        source=source,
+        status="active",
         expires_at=datetime.utcnow() + timedelta(seconds=body.ttl_seconds),
     )
-    crud.secret_keys.create_audit_event(
-        db,
-        user_id=user_id,
-        request_id=None,
-        lease_id=None,
-        event_type="stash_created",
-        actor_type="operator",
-        actor_id=str(user_id),
-        summary="Created secret stash pointer",
-        metadata_json={
-            "pointer_token": item.pointer_token,
-            "channel_id": body.channel_id,
-            "source": body.source,
-            "ttl_seconds": body.ttl_seconds,
-        },
-    )
-    return item
-
-
-def list_secret_stash_items(
-    db: Session, *, user_id: int, limit: int = 100
-) -> list[SecretStashItem]:
-    return crud.secret_keys.list_active_stash_items(db, user_id=user_id, limit=limit)
-
-
-def resolve_secret_stash_item(
-    db: Session,
-    *,
-    pointer_token: str,
-    user_id: int,
-    requester_type: str = "agent",
-    requester_id: str = "norman-prime",
-    reason: str = "",
-) -> str:
-    item = crud.secret_keys.get_stash_item(db, pointer_token=pointer_token)
-    if not item or item.user_id != user_id:
-        raise HTTPException(status_code=404, detail="Secret stash pointer not found")
-    if item.status != "active":
-        raise HTTPException(
-            status_code=400, detail="Secret stash pointer is not active"
-        )
-    now = datetime.utcnow()
-    if item.expires_at <= now:
-        crud.secret_keys.update_stash_item(db, item=item, status="expired")
-        raise HTTPException(status_code=410, detail="Secret stash pointer expired")
-    value = _get_encryption_manager().decrypt(item.encrypted_value)
-    crud.secret_keys.update_stash_item(db, item=item, last_used_at=now)
-    crud.secret_keys.create_audit_event(
-        db,
-        user_id=user_id,
-        request_id=None,
-        lease_id=None,
-        event_type="stash_resolved",
-        actor_type=requester_type,
-        actor_id=requester_id,
-        summary="Resolved secret stash pointer",
-        metadata_json={
-            "pointer_token": pointer_token,
-            "channel_id": item.channel_id,
-            "reason": reason,
-        },
-    )
-    return value
 
 
 def revoke_secret_stash_item(
-    db: Session, *, pointer_token: str, user_id: int
-) -> SecretStashItem:
-    item = crud.secret_keys.get_stash_item(db, pointer_token=pointer_token)
-    if not item or item.user_id != user_id:
-        raise HTTPException(status_code=404, detail="Secret stash pointer not found")
-    if item.status == "revoked":
+    db: Session, *, stash_id: int, user_id: int, revoked_by: int
+):
+    item = crud.secret_keys.get_stash_item(db, stash_id=stash_id, user_id=user_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Secret stash item not found")
+    if str(item.status or "").strip().lower() == "revoked":
         return item
-    item = crud.secret_keys.update_stash_item(
-        db,
-        item=item,
-        status="revoked",
-        revoked_by=user_id,
-    )
-    crud.secret_keys.create_audit_event(
-        db,
-        user_id=user_id,
-        request_id=None,
-        lease_id=None,
-        event_type="stash_revoked",
-        actor_type="operator",
-        actor_id=str(user_id),
-        summary="Revoked secret stash pointer",
-        metadata_json={"pointer_token": pointer_token},
-    )
-    return item
+    return crud.secret_keys.revoke_stash_item(db, item=item, revoked_by=revoked_by)

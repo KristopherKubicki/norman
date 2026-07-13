@@ -15,6 +15,17 @@ from app.services.norllama.routing import (
     with_response_attribution,
 )
 from app.services.norllama.types import NorllamaTaskKind, NorllamaTaskRequest
+from app.services.norllama.types import NorllamaRoute
+
+
+TASK_KIND_ALIASES = {
+    "draft": "chat",
+    "execute": "chat",
+    "literal_response": "chat",
+    "tool": "chat",
+    "tools": "chat",
+    "work": "chat",
+}
 
 
 def _positive_float(value: object) -> float:
@@ -53,6 +64,95 @@ def _model_timeout_seconds(request: ModelRequest) -> float:
     if budget_timeout:
         timeout = min(timeout, budget_timeout)
     return max(1.0, timeout)
+
+
+def _metadata_value(metadata: dict, *keys: str) -> str:
+    for key in keys:
+        value = str(metadata.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _job_id_from_invocation_id(invocation_id: str) -> str:
+    parts = str(invocation_id or "").strip().split(":")
+    if len(parts) >= 3 and parts[0] == "worker" and parts[1].strip():
+        return parts[1].strip()
+    return ""
+
+
+def _correlation_headers(request: ModelRequest, *, task_id: str) -> dict[str, str]:
+    metadata = request.metadata if isinstance(request.metadata, dict) else {}
+    headers = {"X-Request-Id": task_id}
+    invocation_id = _metadata_value(metadata, "invocation_id")
+    job_id = _metadata_value(
+        metadata,
+        "console_runtime_job_id",
+        "runtime_job_id",
+        "job_id",
+    ) or _job_id_from_invocation_id(invocation_id)
+    session = _metadata_value(
+        metadata,
+        "console_runtime_session",
+        "session_name",
+        "session",
+    )
+    phase = _metadata_value(metadata, "goal_phase", "phase", "goal_task_kind")
+    lane = _metadata_value(metadata, "goal_task_kind", "task_kind")
+    if job_id:
+        headers["X-Norman-Job-Id"] = job_id
+    if session:
+        headers["X-Norman-Session"] = session
+    if phase:
+        headers["X-Norman-Phase"] = phase
+    if lane:
+        headers["X-Norman-Lane"] = lane
+    if invocation_id:
+        headers["X-Norllama-Invocation-Id"] = invocation_id
+    return headers
+
+
+def _lower_headers(value: object) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        str(key).strip().lower(): str(header_value or "").strip()
+        for key, header_value in value.items()
+        if str(key or "").strip()
+    }
+
+
+def _task_kind_from_metadata(metadata: dict) -> NorllamaTaskKind:
+    for key in (
+        "norllama_task_kind",
+        "goal_task_kind",
+        "task_kind",
+        "goal_phase",
+        "phase",
+    ):
+        clean = str(metadata.get(key) or "").strip().lower()
+        if not clean:
+            continue
+        clean = TASK_KIND_ALIASES.get(clean, clean)
+        try:
+            return NorllamaTaskKind(clean)
+        except ValueError:
+            continue
+    return NorllamaTaskKind.CHAT
+
+
+def _route_from_metadata(metadata: dict) -> NorllamaRoute | None:
+    value = metadata.get("norllama_route")
+    if not isinstance(value, dict):
+        value = metadata.get("route")
+    if not isinstance(value, dict):
+        return None
+    allowed = set(NorllamaRoute.__dataclass_fields__)
+    payload = {key: value.get(key) for key in allowed if key in value}
+    try:
+        return NorllamaRoute(**payload)
+    except TypeError:
+        return None
 
 
 class NorllamaModelAdapter:
@@ -110,16 +210,25 @@ class NorllamaModelAdapter:
         )
 
     def invoke(self, request: ModelRequest) -> ModelResult:
+        metadata = request.metadata if isinstance(request.metadata, dict) else {}
+        task_id = _metadata_value(metadata, "request_id", "invocation_id")
+        task_kind = _task_kind_from_metadata(metadata)
         task = NorllamaTaskRequest(
-            kind=NorllamaTaskKind.CHAT,
+            kind=task_kind,
             messages=request.messages,
             route_policy=request.metadata.get("route_policy")
             if isinstance(request.metadata.get("route_policy"), dict)
             else {"provider": "norllama"},
             metadata=request.metadata,
+            task_id=task_id,
         )
-        route = route_task(task)
-        model = request.model or route.model or str(settings.llm_offline_model)
+        route = _route_from_metadata(metadata) or route_task(task)
+        model = (
+            request.model
+            or _metadata_value(metadata, "requested_model")
+            or route.model
+            or str(settings.llm_offline_model)
+        )
         payload = norllama_gateway.invoke_text_chat(
             messages=request.messages,
             model=model,
@@ -127,9 +236,11 @@ class NorllamaModelAdapter:
             api_key=str(settings.llm_offline_api_key or ""),
             max_tokens=request.budget.max_output_tokens,
             timeout_seconds=_model_timeout_seconds(request),
+            correlation_headers=_correlation_headers(request, task_id=task.task_id),
         )
         route = with_response_attribution(route, payload)
         usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+        headers = _lower_headers(payload.get("headers"))
         text = str(payload["choices"][0]["message"]["content"])
         effective_model = str(payload.get("model") or model)
         receipt = build_task_receipt(
@@ -139,10 +250,22 @@ class NorllamaModelAdapter:
             output={
                 "text": text,
                 "response_preview": text[:200],
+                "route_selected_model": _metadata_value(
+                    metadata, "route_selected_model"
+                )
+                or route.model,
+                "requested_model": _metadata_value(metadata, "requested_model")
+                or model,
                 "target_model": model,
                 "effective_runtime_model": effective_model,
                 "model": effective_model,
+                "model_override_used": bool(metadata.get("model_override_used")),
+                "model_override_reason": _metadata_value(
+                    metadata, "model_override_reason"
+                ),
                 "usage": usage,
+                "gateway_request_id": str(headers.get("x-norllama-request-id") or ""),
+                "invocation_id": _metadata_value(metadata, "invocation_id"),
                 "raw": payload.get("raw")
                 if isinstance(payload.get("raw"), dict)
                 else {},

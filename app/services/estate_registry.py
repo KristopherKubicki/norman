@@ -25,6 +25,7 @@ _SECTION_NAMES = (
     "control_classes",
     "domains",
     "places",
+    "site_shortcuts",
     "bots",
     "workers",
     "assets",
@@ -36,6 +37,7 @@ _SECTION_NAMES = (
 _REFERENCE_FIELDS = {
     "domains": ("principal", "default_policy_profile"),
     "places": ("principal",),
+    "site_shortcuts": (),
     "bots": ("principal", "domain", "policy_profile"),
     "workers": ("principal", "place", "control_class", "policy_profile"),
     "assets": ("principal", "place", "worker", "control_class"),
@@ -168,6 +170,69 @@ def _validate_references(registry: Dict[str, list[dict[str, Any]]]) -> None:
                         f"Section `{section}` entry `{slug}` references unknown "
                         f"{field} `{value}`"
                     )
+
+
+def _site_places(
+    registry: Dict[str, list[dict[str, Any]]],
+) -> Dict[str, dict[str, Any]]:
+    site_places: Dict[str, dict[str, Any]] = {}
+    seen_roots: Dict[str, str] = {}
+    for item in registry["places"]:
+        slug = item["slug"]
+        site_root = str(item.get("site_root") or "").strip().lower()
+        if not site_root:
+            continue
+        if site_root in seen_roots:
+            raise EstateRegistryError(
+                f"Places `{slug}` and `{seen_roots[site_root]}` share site_root `{site_root}`"
+            )
+        seen_roots[site_root] = slug
+        site_places[slug] = item
+    return site_places
+
+
+def _validate_site_shortcuts(registry: Dict[str, list[dict[str, Any]]]) -> None:
+    site_places = _site_places(registry)
+    site_place_slugs = set(site_places)
+    local_hosts: Dict[str, str] = {}
+    for item in registry["site_shortcuts"]:
+        slug = item["slug"]
+        display_name = str(item.get("display_name") or "").strip()
+        local_host = str(item.get("local_host") or "").strip().lower()
+        canonical_label = str(item.get("canonical_label") or slug).strip().lower()
+        if not display_name:
+            raise EstateRegistryError(
+                f"Section `site_shortcuts` entry `{slug}` must include `display_name`"
+            )
+        if not local_host:
+            raise EstateRegistryError(
+                f"Section `site_shortcuts` entry `{slug}` must include `local_host`"
+            )
+        if not local_host.endswith(".home.arpa"):
+            raise EstateRegistryError(
+                f"Section `site_shortcuts` entry `{slug}` local_host must end with `.home.arpa`"
+            )
+        if local_host in local_hosts:
+            raise EstateRegistryError(
+                f"Section `site_shortcuts` entries `{slug}` and "
+                f"`{local_hosts[local_host]}` share local_host `{local_host}`"
+            )
+        local_hosts[local_host] = slug
+        if not canonical_label:
+            raise EstateRegistryError(
+                f"Section `site_shortcuts` entry `{slug}` must include a canonical label"
+            )
+        places = item.get("places") or []
+        if places and not isinstance(places, list):
+            raise EstateRegistryError(
+                f"Section `site_shortcuts` entry `{slug}` places must be a list"
+            )
+        for place_slug in places:
+            clean = str(place_slug or "").strip()
+            if clean not in site_place_slugs:
+                raise EstateRegistryError(
+                    f"Section `site_shortcuts` entry `{slug}` references unknown site place `{clean}`"
+                )
 
 
 def _validate_bbs_policy(registry: Dict[str, list[dict[str, Any]]]) -> None:
@@ -511,6 +576,7 @@ def load_registry(
         normalized[section] = value
 
     _validate_references(normalized)
+    _validate_site_shortcuts(normalized)
     _validate_bbs_policy(normalized)
     _validate_power_policy(normalized)
     return normalized

@@ -10,6 +10,7 @@ from .console_targets import router as console_targets_router
 from .user import router as users_router
 from .routing import router as routing_router
 from .estate import router as estate_router
+from .keys import compat_router as keys_compat_router
 from .keys import router as keys_router
 from .operator_state import router as operator_state_router
 from .console_runtime import router as console_runtime_router
@@ -28,6 +29,7 @@ __all__ = [
     "approvals_router",
     "estate_router",
     "keys_router",
+    "keys_compat_router",
     "operator_state_router",
     "console_runtime_router",
 ]

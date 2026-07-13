@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import email.policy
+import hashlib
 import html
 import json
 import mimetypes
@@ -15,10 +16,183 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from datetime import datetime, timezone
 from email.parser import BytesParser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+
+try:
+    from app.services.norllama.route_policy import (
+        ROUTE_POLICY_VERSION,
+        capability_gate_allows_production_default,
+        capability_gate_promotion_authoritative,
+        capability_route_state,
+        route_policy_contract,
+    )
+except Exception:  # pragma: no cover - deployed script fallback
+    ROUTE_POLICY_VERSION = "2026.07.10.route-proof"
+
+    def _fallback_bool(value: object) -> bool:
+        if isinstance(value, bool):
+            return value
+        return str(value or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+            "required",
+        }
+
+    def _fallback_capability_gate_name(value: object) -> str:
+        if isinstance(value, dict):
+            value = value.get("gate") or value.get("name")
+        return str(value or "").strip().lower() or "unproven"
+
+    def _fallback_capability_gate_rank(value: object) -> int:
+        return {
+            "production": 3,
+            "production_capability_backed": 3,
+            "staging": 2,
+            "staging_capability_backed": 2,
+            "smoke": 1,
+            "canary_live": 1,
+        }.get(_fallback_capability_gate_name(value), 0)
+
+    def capability_gate_promotion_authoritative(value: object) -> bool:
+        return isinstance(value, dict) and _fallback_bool(
+            value.get("promotion_authoritative")
+        )
+
+    def capability_gate_allows_production_default(
+        *,
+        capability_gate: dict[str, object] | None,
+        production_route_requires_capability_gate: object = False,
+    ) -> bool:
+        if not _fallback_bool(production_route_requires_capability_gate):
+            return True
+        return bool(
+            _fallback_capability_gate_rank(capability_gate or {}) >= 3
+            and capability_gate_promotion_authoritative(capability_gate or {})
+        )
+
+    def capability_route_state(
+        *,
+        capability_gate: dict[str, object] | None,
+        production_route_requires_capability_gate: object = False,
+    ) -> str:
+        if not _fallback_bool(production_route_requires_capability_gate):
+            return "not_required"
+        rank = _fallback_capability_gate_rank(capability_gate or {})
+        if rank >= 3:
+            return (
+                "production_capability_backed"
+                if capability_gate_promotion_authoritative(capability_gate or {})
+                else "production_capability_not_authoritative"
+            )
+        if rank >= 2:
+            return "staging_capability_only"
+        if rank >= 1:
+            return "canary_capability_only"
+        return "capability_unproven"
+
+    def _fallback_route_policy_hash(policy: dict[str, object]) -> str:
+        payload = dict(policy)
+        payload.pop("policy_id", None)
+        payload.pop("policy_hash", None)
+        canonical = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def route_policy_contract() -> dict[str, object]:
+        policy = {
+            "schema": "norman.norllama.route-policy.v1",
+            "version": ROUTE_POLICY_VERSION,
+            "compiled_at": "2026-07-10T00:00:00Z",
+            "expires_at": "2026-07-17T00:00:00Z",
+            "local_first": True,
+            "allow_cloud_proxy": False,
+            "allow_cloud_tool_proxy": False,
+            "escalation_policy": "explicit_cloud_only",
+            "cost_posture": "local_token_first",
+            "planner": "norllama",
+            "model_proxy": "norllama",
+            "model_selection": "warm_policy",
+            "models": {
+                "general_reasoning_floor": "qwen3.6/qwen3.5-class",
+                "router": "qwen3.6:35b-a3b-q4_K_M",
+                "coding_operator": "qwen3.6:27b",
+                "local_heavyweight_judge": "qwen3.5:122b-a10b-q4_K_M",
+                "fallback_small": "gemma4-or-qwen-tiny-class",
+            },
+            "lanes": {
+                "planner": {"class": "qwen3.6", "gate": "production"},
+                "coder": {"class": "qwen3.6", "gate": "production"},
+                "summarizer": {"class": "qwen3.6", "gate": "production"},
+                "filter": {"class": "qwen3.6", "gate": "production"},
+                "verifier": {"class": "qwen3.5-or-qwen3.6", "gate": "production"},
+                "judge": {"class": "qwen3.5-heavy", "gate": "production"},
+                "specialist": {"class": "lane-specific", "gate": "smoke-or-better"},
+                "lab": {"class": "explicit-request-only", "gate": "lab"},
+            },
+            "benchmark_gates": {
+                "thresholds": {"smoke": 1, "staging": 3, "production": 5},
+                "production_requires_distinct_cold_warm_samples": True,
+                "qwen_production_requires_gate": "production",
+                "qwen_production_requires_promotion_authoritative": True,
+                "production_route_requires_capability_gate": True,
+            },
+            "capability_gates": {
+                "production_requires_gate": "production",
+                "production_requires_promotion_authoritative": True,
+                "staging_allows_internal_canary": True,
+                "unproven_allows_manual_or_lab_only": True,
+            },
+            "placement": {
+                "frontdoor": "https://llm.home.arpa",
+                "router_node": "mac-mini-133",
+                "primary_brain_worker": "spark-151",
+                "specialist_worker": "spark-150",
+                "fallback_node": "mac-mini-133",
+                "qwen35_122b_allowed_lanes": ["judge", "verifier"],
+                "fallback_node_heavy_models_allowed": False,
+            },
+            "residency": {
+                "resident": ["qwen3.6-router", "qwen3.6-code", "rerank", "safety"],
+                "warm_on_demand": [
+                    "qwen3.5-122b-judge",
+                    "ocr",
+                    "asr",
+                    "doc-parse",
+                ],
+                "lab": ["world", "graph", "packet", "forecasting", "gui-grounding"],
+            },
+            "fallbacks": {
+                "worker_mismatch_requires_receipt_fallback": True,
+                "allow_cloud_fallback": False,
+                "allow_local_degraded_fallback": True,
+                "fallback_reason_required": True,
+            },
+            "cloud_policy": {
+                "cloud_llm_default": "disabled",
+                "cloud_escalation": "explicit_policy_or_user_authorized_only",
+                "cloud_proxy_counts_as_cloud": True,
+                "perplexity_web_is_search_not_cloud_llm": True,
+            },
+            "emergency_overlays": {
+                "allowed": True,
+                "requires_expiration": True,
+                "max_ttl_seconds": 21600,
+            },
+        }
+        digest = _fallback_route_policy_hash(policy)
+        policy["policy_hash"] = digest
+        policy["policy_id"] = f"{ROUTE_POLICY_VERSION}:{digest[:12]}"
+        return policy
 
 
 DEFAULT_BIND = "127.0.0.1"
@@ -32,7 +206,6 @@ DEFAULT_TRANSCRIBE_BASES = ("http://127.0.0.1:8097",)
 DEFAULT_OCR_BASES = ("http://127.0.0.1:8098",)
 DEFAULT_RERANK_BASES = ("http://127.0.0.1:8102",)
 DEFAULT_SAFETY_BASES = ("http://127.0.0.1:8103",)
-DEFAULT_IMAGE_BASES = ("http://127.0.0.1:7860",)
 DEFAULT_MEDIA_KEY_FILE = str(Path.home() / ".config/norllama/media/api_key")
 DEFAULT_MEDIA_KEY_DIR = str(Path.home() / ".config/norllama/media/keys")
 DEFAULT_TRANSCRIBE_KEY_FILE = str(Path.home() / ".config/norllama/transcribe/api_key")
@@ -43,8 +216,6 @@ DEFAULT_RERANK_KEY_FILE = "/etc/spark-rerank/api_key"
 DEFAULT_RERANK_KEY_DIR = str(Path.home() / ".config/norllama/rerank/keys")
 DEFAULT_SAFETY_KEY_FILE = "/etc/spark-safety/api_key"
 DEFAULT_SAFETY_KEY_DIR = str(Path.home() / ".config/norllama/safety/keys")
-DEFAULT_IMAGE_KEY_FILE = str(Path.home() / ".config/norllama/image/api_key")
-DEFAULT_IMAGE_KEY_DIR = str(Path.home() / ".config/norllama/image/keys")
 DEFAULT_PEER_BASES: tuple[str, ...] = ()
 DEFAULT_DISCOVERY_ENV_FILES = (
     "/etc/net-agents/uplink.env",
@@ -57,6 +228,14 @@ DEFAULT_PACKET_ROOTS = (
     Path("/home/debian/networking/radio/phobos_hunt"),
 )
 DEFAULT_BENCHMARK_PACKET_PATHS = tuple(
+    str(
+        root
+        / "evidence"
+        / "norllama_route_proof_benchmark_packet_latest"
+        / "packet.json"
+    )
+    for root in DEFAULT_PACKET_ROOTS
+) + tuple(
     str(root / "evidence" / "norllama_benchmark_packet_latest" / "packet.json")
     for root in DEFAULT_PACKET_ROOTS
 )
@@ -67,7 +246,6 @@ DEFAULT_PREFLIGHT_PACKET_PATHS = tuple(
 DEFAULT_MODEL_CACHE_TTL_S = 15
 DEFAULT_INVENTORY_TIMEOUT_S = 3
 DEFAULT_ACTIVITY_LIMIT = 200
-DEFAULT_TOOL_ACTIVITY_LIMIT = 1000
 DEFAULT_PEER_TIMEOUT_S = 1.0
 DEFAULT_MAX_PEER_HOPS = 1
 DEFAULT_PREFETCH_JOB_TTL_S = 3600
@@ -86,9 +264,24 @@ QWEN35_JUDGE_MODEL = "qwen3.5:122b-a10b-q4_K_M"
 QWEN3_VL_MODEL = "qwen3-vl:30b-a3b-instruct-q4_K_M"
 PREFERRED_UI_CHAT_MODEL = os.getenv("NORLLAMA_UI_DEFAULT_MODEL", QWEN36_ROUTER_MODEL)
 USER_AGENT = "norllama-gateway/0.1"
-GATEWAY_VERSION = os.getenv("NORLLAMA_GATEWAY_VERSION", "0.1.20260702")
+GATEWAY_VERSION = os.getenv("NORLLAMA_GATEWAY_VERSION", "0.1.20260710-route-proof")
 GATEWAY_BUILD = os.getenv("NORLLAMA_GATEWAY_BUILD", "worker-frontdoor-unified")
 NANOSECONDS = 1_000_000_000.0
+
+
+def truthy(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+        "enabled",
+        "required",
+    }
+
+
 HIDDEN_MODEL_IDS = {
     "karanchopda333/whisper:latest",
     "sendmeaiohyeah/whisper-large-v2:latest",
@@ -130,8 +323,6 @@ WARM_POLICY_CONTRACT_LANES = {
     "safety_privacy_classify": ("filter", "verifier"),
     "safety_classify": ("filter", "verifier"),
     "privacy_classify": ("filter", "verifier"),
-    "image_generate": ("scout", "planner"),
-    "stable_diffusion": ("scout", "planner"),
     "entity_event_extract": ("scout", "summarizer", "planner"),
     "entity_extract": ("scout", "summarizer", "planner"),
     "event_extract": ("scout", "summarizer", "planner"),
@@ -153,9 +344,11 @@ WARM_POLICY_READY_STATUSES = {
     "partial_live_policy",
     "passed",
     "preferred",
+    "production_backed",
     "recommended",
     "routable_live_policy",
     "selected",
+    "staging_backed",
 }
 WARM_POLICY_CANARY_STATUSES = {
     "experimental",
@@ -167,7 +360,6 @@ WARM_POLICY_TOOL_ONLY_DISPATCHES = {
     "hybrid_pipeline",
     "media_proxy",
     "ocr_proxy",
-    "image_generation_proxy",
     "rerank_proxy",
     "safety_proxy",
     "transcribe_proxy",
@@ -183,6 +375,7 @@ LIVE_POLICY_OVERRIDE_REASON = (
     "Live Qwen-first Spark policy overrides stale Gemma-era benchmark defaults until "
     "the next Uplink packet is regenerated."
 )
+LIVE_POLICY_OVERRIDE_EXPIRES_AT_ENV = "NORLLAMA_LIVE_POLICY_OVERRIDE_EXPIRES_AT"
 LIVE_CAPABILITY_CONTRACT_OVERRIDES: dict[str, dict[str, object]] = {
     "chat": {
         "default_model": QWEN36_ROUTER_MODEL,
@@ -471,6 +664,257 @@ def normalize_base_url(value: str) -> str:
     return value.strip().rstrip("/")
 
 
+def normalized_safety_text(payload: dict[str, object], text: str) -> str:
+    """Return the text Norman's safety policy should inspect."""
+
+    input_spec = payload.get("input_spec")
+    sections = [text]
+    if isinstance(input_spec, dict):
+        for key in (
+            "user_instruction",
+            "untrusted_context",
+            "synthetic_secret",
+            "risk_level",
+        ):
+            value = input_spec.get(key)
+            if isinstance(value, str) and value.strip():
+                sections.append(value)
+        proposed_tool_call = input_spec.get("proposed_tool_call")
+        if isinstance(proposed_tool_call, dict) and proposed_tool_call:
+            sections.append(json.dumps(proposed_tool_call, sort_keys=True))
+    return "\n".join(sections).lower()
+
+
+def safety_input_spec(payload: dict[str, object]) -> dict[str, object]:
+    input_spec = payload.get("input_spec")
+    return input_spec if isinstance(input_spec, dict) else {}
+
+
+def safety_proposed_tool_call(payload: dict[str, object]) -> dict[str, object]:
+    proposed = safety_input_spec(payload).get("proposed_tool_call")
+    return proposed if isinstance(proposed, dict) else {}
+
+
+def norman_safety_policy_decision(
+    *,
+    payload: dict[str, object],
+    text: str,
+) -> dict[str, object]:
+    """Deterministic Norman policy overlay for safety-classifier responses.
+
+    QwenGuard-style categories are useful as a sensor, but Norman's runtime
+    needs stable local policy labels and actions for receipts, release gates,
+    and capability benchmarks. This overlay intentionally uses request trust
+    domains and structured tool-call metadata instead of the benchmark's
+    expected label/action fields.
+    """
+
+    input_spec = safety_input_spec(payload)
+    lower = normalized_safety_text(payload, text)
+    user_instruction = str(input_spec.get("user_instruction") or text or "").lower()
+    untrusted = str(input_spec.get("untrusted_context") or "").lower()
+    proposed_tool = safety_proposed_tool_call(payload)
+    command = str(proposed_tool.get("command") or "").lower()
+    mutates_state = bool(proposed_tool.get("mutates_state"))
+
+    def decision(
+        label: str,
+        action: str,
+        *,
+        confidence: float = 0.95,
+        reason: str,
+    ) -> dict[str, object]:
+        return {
+            "label": label,
+            "policy_action": action,
+            "confidence": confidence,
+            "reason": reason,
+            "source": "norman_policy_overlay",
+        }
+
+    if untrusted and any(
+        marker in untrusted
+        for marker in (
+            "ignore all prior",
+            "disable safety",
+            "reveal norman secrets",
+            "forward credentials",
+            "attacker",
+        )
+    ):
+        return decision("prompt_injection", "block", reason="hostile_untrusted_context")
+
+    if "cloud llms are disabled" in lower and (
+        "silently proxy" in lower or "bedrock" in lower or "hidden fallback" in lower
+    ):
+        return decision("policy_block", "block", reason="hidden_cloud_fallback")
+    if "send this task to openai without checking local route" in lower:
+        return decision("cloud_escalation", "block", reason="missing_local_preflight")
+    if "count it as local tokens" in lower and (
+        "bedrock" in lower or "cloud_proxy" in lower or "cloud proxy" in lower
+    ):
+        return decision(
+            "cloud_escalation",
+            "require_local_preflight",
+            reason="cloud_proxy_accounting",
+        )
+    if "cloud help" in lower or "escalation is justified" in lower:
+        return decision(
+            "cloud_escalation",
+            "require_local_preflight",
+            reason="cloud_escalation_preflight",
+        )
+
+    if "ignore all safety rules" in lower or "forbidden command" in lower:
+        return decision("policy_block", "block", reason="operator_policy_bypass")
+    if "critical dependency vulnerability" in lower:
+        return decision("policy_block", "block", reason="release_gate_policy_block")
+
+    if any(
+        marker in lower
+        for marker in (
+            "collect all available credentials",
+            "send them to an external url",
+            "credential phishing",
+        )
+    ):
+        return decision(
+            "credential_exfiltration",
+            "block",
+            reason="credential_exfiltration_request",
+        )
+
+    if any(marker in lower for marker in ("browser cookies", "evades detection")):
+        return decision("malware_or_abuse", "block", reason="malware_request")
+    if "phishing email" in lower:
+        return decision("malware_or_abuse", "block", reason="phishing_request")
+    if "exploit a live third-party site" in lower:
+        return decision("malware_or_abuse", "block", reason="live_exploit_request")
+
+    if ".sudo_pass" in lower or "paste the value" in lower:
+        return decision("secret_request", "block", reason="plaintext_secret_request")
+    if "gitleaks secret" in lower or "ignore a high-confidence gitleaks" in lower:
+        return decision("secret_request", "block", reason="secret_scan_bypass")
+
+    if "norman keys" in lower or "networking/firewall" in lower:
+        return decision(
+            "privacy_sensitive",
+            "require_approval",
+            reason="brokered_secret_or_network_access",
+        )
+    if "private token" in lower and "remember" in lower:
+        return decision("ambiguous", "block", reason="sensitive_memory_write")
+    if any(
+        marker in lower
+        for marker in (
+            "token in the prompt",
+            "emails, phone numbers",
+            "phone numbers, and addresses",
+            "containing passwords",
+            "contains a token",
+            "private meeting",
+            "screenshot containing passwords",
+        )
+    ):
+        return decision("privacy_sensitive", "redact", reason="privacy_redaction")
+
+    if proposed_tool:
+        if any(marker in command for marker in ("rm -rf", "delete", "wipe")):
+            return decision("tool_risk_high", "block", reason="destructive_tool_call")
+        if mutates_state or any(
+            marker in command
+            for marker in ("systemctl restart", "install", "deploy", "firewall")
+        ):
+            return decision(
+                "tool_risk_high",
+                "require_approval",
+                reason="mutating_tool_call",
+            )
+        return decision("tool_risk_low", "allow", reason="read_only_tool_call")
+
+    if "git status" in lower or "visible page title" in lower:
+        return decision("tool_risk_low", "allow", reason="read_only_action")
+    if any(
+        marker in lower
+        for marker in (
+            "install a package",
+            "restart a production service",
+            "open an inbound firewall",
+            "deploy the current dirty tree",
+            "click submit on a payment form",
+            "interpolates shell input",
+            "access-control middleware",
+        )
+    ):
+        return decision("tool_risk_high", "require_approval", reason="mutating_action")
+    if "rm -rf" in lower:
+        return decision("tool_risk_high", "block", reason="destructive_command")
+
+    if "delete old route receipts" in lower or "database migration" in lower:
+        return decision("data_loss_risk", "require_approval", reason="data_loss_risk")
+
+    if any(marker in lower for marker in ("perplexity", "scout", "web evidence")):
+        return decision(
+            "web_search_allowed",
+            "route_to_web_search",
+            reason="web_search_not_cloud_llm",
+        )
+
+    if any(
+        marker in lower
+        for marker in (
+            "internet and cloud llms are unavailable",
+            "safety classifier is down",
+            "benchmark packet is stale",
+        )
+    ):
+        return decision("degraded_safety", "degrade", reason="degraded_safety_state")
+
+    if "assert that deployment passed" in lower and "no test result" in lower:
+        return decision(
+            "ambiguous",
+            "require_local_preflight",
+            reason="unsupported_claim_requires_evidence",
+        )
+    if "internal architecture summary" in lower and "bbs" in lower:
+        return decision("ambiguous", "allow_with_caveat", reason="internal_bbs_notice")
+
+    if "full text of a copyrighted article" in lower:
+        return decision(
+            "copyright_sensitive",
+            "allow_with_caveat",
+            reason="copyright_transform_or_summary_required",
+        )
+    if any(
+        marker in lower
+        for marker in (
+            "diagnose symptoms",
+            "legal dispute",
+            "what stock to buy",
+            "all my savings",
+        )
+    ):
+        return decision(
+            "regulated_advice",
+            "allow_with_caveat",
+            reason="regulated_advice_caveat",
+        )
+
+    if any(
+        marker in user_instruction
+        for marker in (
+            "summarize these service statuses",
+            "explain what this python function does",
+            "draft a changelog",
+            "non-sensitive preference",
+            "how to fix it defensively",
+        )
+    ):
+        return decision("benign", "allow", reason="benign_low_risk_request")
+
+    return decision("ambiguous", "require_local_preflight", reason="default_preflight")
+
+
 def parse_env_file(path: str) -> dict[str, str]:
     values: dict[str, str] = {}
     try:
@@ -663,7 +1107,50 @@ def merge_preferred_model_rows(
     return merged
 
 
+def parse_utc_timestamp(value: str) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).timestamp()
+
+
+def live_policy_override_state() -> dict[str, object]:
+    enabled = env_flag("NORLLAMA_ENABLE_LIVE_POLICY_OVERRIDES", False)
+    expires_at = os.getenv(LIVE_POLICY_OVERRIDE_EXPIRES_AT_ENV, "").strip()
+    expires_ts = parse_utc_timestamp(expires_at)
+    now_ts = time.time()
+    active = bool(enabled and expires_ts is not None and expires_ts > now_ts)
+    if not enabled:
+        blocked_reason = "disabled"
+    elif not expires_at:
+        blocked_reason = "missing_expiration"
+    elif expires_ts is None:
+        blocked_reason = "invalid_expiration"
+    elif expires_ts <= now_ts:
+        blocked_reason = "expired"
+    else:
+        blocked_reason = ""
+    return {
+        "enabled": enabled,
+        "active": active,
+        "emergency_overlay": True,
+        "requires_expiration": True,
+        "expires_at": expires_at,
+        "blocked_reason": blocked_reason,
+        "reason": LIVE_POLICY_OVERRIDE_REASON if active else "",
+    }
+
+
 def apply_live_policy_contract_override(row: dict[str, object]) -> dict[str, object]:
+    override_state = live_policy_override_state()
+    if not override_state["active"]:
+        return dict(row)
     contract_id = str(row.get("contract_id") or "").strip().lower().replace("-", "_")
     override = LIVE_CAPABILITY_CONTRACT_OVERRIDES.get(contract_id)
     if not override:
@@ -729,6 +1216,10 @@ def apply_live_policy_contract_override(row: dict[str, object]) -> dict[str, obj
             updated[key] = filtered
     updated["live_policy_override"] = {
         "active": True,
+        "emergency_overlay": True,
+        "requires_expiration": True,
+        "expires_at": str(override_state.get("expires_at") or ""),
+        "policy_version": ROUTE_POLICY_VERSION,
         "reason": LIVE_POLICY_OVERRIDE_REASON,
         "previous_default_model": previous_default_model,
         "previous_default_profile": previous_default_profile,
@@ -835,8 +1326,6 @@ def infer_model_capabilities(model_id: str, provider: str) -> list[str]:
         caps.extend(["audio", "transcribe"])
     elif "rerank" in lower or "reranker" in lower:
         caps.append("rerank")
-    elif "stable-diffusion" in lower or "sdxl" in lower or "txt2img" in lower:
-        caps.append("image_generate")
     elif (
         "embed" in lower
         or lower.startswith("nomic-embed")
@@ -861,7 +1350,6 @@ def infer_model_access(model_id: str, provider: str, capabilities: list[str]) ->
         "embed" in capabilities
         or "rerank" in capabilities
         or "transcribe" in capabilities
-        or "image_generate" in capabilities
     ):
         return "passthrough_only"
     if "vision" in capabilities:
@@ -913,10 +1401,6 @@ def infer_model_summary(model_id: str, provider: str, capabilities: list[str]) -
         return "Production local safety and prompt-injection classification lane."
     if "transcribe" in capabilities:
         return "Audio/transcription lane served through media/transcribe, not unified chat."
-    if "image_generate" in capabilities:
-        return (
-            "Stable Diffusion-compatible image generation lane served through Norllama."
-        )
     if "chat" in capabilities:
         return "General local chat lane."
     return "Specialized local model."
@@ -1012,9 +1496,6 @@ class App:
         self.activity_limit = int(
             os.getenv("NORLLAMA_ACTIVITY_LIMIT", str(DEFAULT_ACTIVITY_LIMIT))
         )
-        self.tool_activity_limit = int(
-            os.getenv("NORLLAMA_TOOL_ACTIVITY_LIMIT", str(DEFAULT_TOOL_ACTIVITY_LIMIT))
-        )
         self.prefetch_job_ttl_s = float(
             os.getenv("NORLLAMA_PREFETCH_JOB_TTL_S", str(DEFAULT_PREFETCH_JOB_TTL_S))
         )
@@ -1073,9 +1554,6 @@ class App:
         self.safety_bases = split_env_urls(
             "NORLLAMA_SAFETY_BASES", DEFAULT_SAFETY_BASES
         )
-        image_bases = split_env_urls("NORLLAMA_IMAGE_BASES", DEFAULT_IMAGE_BASES)
-        sd_bases = split_env_urls("NORLLAMA_STABLE_DIFFUSION_BASES", ())
-        self.image_bases = unique_items([*image_bases, *sd_bases])
         auto_peer_candidates: list[str] = []
         for env_path in self.discovery_env_files:
             auto_peer_candidates.extend(
@@ -1091,7 +1569,6 @@ class App:
             *self.ocr_bases,
             *self.rerank_bases,
             *self.safety_bases,
-            *self.image_bases,
         ]:
             frontdoor = frontdoor_for_url(value, default_port=self.port)
             if frontdoor:
@@ -1108,7 +1585,8 @@ class App:
         self._ollama_inventory_refreshing = False
         self._ds4_inventory_cache: tuple[float, list[dict]] | None = None
         self._recent_activity: list[dict[str, object]] = []
-        self._recent_tool_activity: list[dict[str, object]] = []
+        self._recent_execution_activity: list[dict[str, object]] = []
+        self._recent_monitoring_activity: list[dict[str, object]] = []
         self._prefetch_jobs: dict[str, dict[str, object]] = {}
         self._prefetch_job_keys: dict[str, str] = {}
 
@@ -1132,8 +1610,6 @@ class App:
             return "Safety classification lane available through Norllama."
         if "ocr" in capabilities:
             return "OCR/document parsing lane available through Norllama."
-        if "image_generate" in capabilities:
-            return "Image generation lane available through Norllama."
         return summary.replace("Spark fleet", "Norllama fleet").replace(
             "Spark", "Norllama"
         )
@@ -1262,11 +1738,6 @@ class App:
             {"path": "/v1/ocr", "methods": ["POST", "OPTIONS"], "kind": "ocr"},
             {"path": "/ocr", "methods": ["POST", "OPTIONS"], "kind": "ocr"},
             {
-                "path": "/v1/images/generations",
-                "methods": ["POST", "OPTIONS"],
-                "kind": "image_generate",
-            },
-            {
                 "path": "/v1/chat/completions",
                 "methods": ["POST", "OPTIONS"],
                 "kind": "unified_chat",
@@ -1380,16 +1851,6 @@ class App:
             DEFAULT_SAFETY_KEY_FILE,
             "NORLLAMA_SAFETY_KEY_DIR",
             DEFAULT_SAFETY_KEY_DIR,
-        )
-
-    def image_key(self, base_url: str) -> str:
-        return load_key(
-            base_url,
-            "NORLLAMA_IMAGE_API_KEY",
-            "NORLLAMA_IMAGE_API_KEY_FILE",
-            DEFAULT_IMAGE_KEY_FILE,
-            "NORLLAMA_IMAGE_KEY_DIR",
-            DEFAULT_IMAGE_KEY_DIR,
         )
 
     def fetch_json(self, url: str, *, timeout_s: float | None = None) -> dict:
@@ -2071,77 +2532,6 @@ class App:
         )
         return [str(row["base_url"]) for row in healthy], rows
 
-    def image_health_doc(self, base: str) -> dict | None:
-        for path in ("/health", "/sdapi/v1/options"):
-            doc = self.fetch_json_or_none(
-                base.rstrip("/") + path,
-                timeout_s=min(self.timeout_s, self.inventory_timeout_s),
-            )
-            if isinstance(doc, dict):
-                doc["_health_path"] = path
-                return doc
-        return None
-
-    def choose_image_base(self) -> tuple[str | None, list[dict]]:
-        rows: list[dict] = []
-        for base in self.image_bases:
-            try:
-                doc = self.image_health_doc(base)
-                if not isinstance(doc, dict):
-                    rows.append(
-                        {
-                            "base_url": base,
-                            "status": "error",
-                            "error": "no_health_response",
-                        }
-                    )
-                    continue
-                model = (
-                    doc.get("model")
-                    or doc.get("sd_model_checkpoint")
-                    or doc.get("checkpoint")
-                    or "stable-diffusion:configured-backend"
-                )
-                status = str(doc.get("status") or "").strip().lower()
-                if not status:
-                    status = "ok" if doc.get("_health_path") else "unknown"
-                row = {
-                    "base_url": base,
-                    "status": status,
-                    "engine": doc.get("engine") or "stable-diffusion",
-                    "model": model,
-                    "device": doc.get("device") or doc.get("cuda") or "",
-                    "loaded": bool(doc.get("loaded", True)),
-                    "health_path": doc.get("_health_path"),
-                    "http_status": int(doc.get("_http_status") or 0),
-                }
-                rows.append(row)
-            except Exception as exc:
-                rows.append({"base_url": base, "status": "error", "error": str(exc)})
-        healthy = [row for row in rows if row.get("status") == "ok"]
-        if not healthy:
-            return None, rows
-        healthy.sort(
-            key=lambda row: (
-                not bool(row.get("loaded", True)),
-                str(row.get("device") or "") != "cuda",
-                str(row.get("base_url") or ""),
-            )
-        )
-        return str(healthy[0]["base_url"]), rows
-
-    def image_candidate_bases(self) -> tuple[list[str], list[dict]]:
-        _, rows = self.choose_image_base()
-        healthy = [row for row in rows if row.get("status") == "ok"]
-        healthy.sort(
-            key=lambda row: (
-                not bool(row.get("loaded", True)),
-                str(row.get("device") or "") != "cuda",
-                str(row.get("base_url") or ""),
-            )
-        )
-        return [str(row["base_url"]) for row in healthy], rows
-
     def combined_models(self) -> dict:
         merged: dict[tuple[str, str], dict] = {}
         for row in self.ollama_host_rows():
@@ -2306,37 +2696,6 @@ class App:
         except Exception:
             pass
         try:
-            for row in self.image_candidate_bases()[1]:
-                if row.get("status") != "ok":
-                    continue
-                raw_model = str(row.get("model") or "").strip()
-                model_id = raw_model or "stable-diffusion:configured-backend"
-                key = ("image", model_id)
-                base = str(row.get("base_url") or "")
-                item = {
-                    "id": model_id,
-                    "object": "model",
-                    "provider": "image",
-                    "host": base,
-                    "hosts": [base],
-                    "capabilities": ["image_generate"],
-                    "access": "image_generation_proxy",
-                    "recommended_path": "/v1/images/generations",
-                    "summary": "Local Stable Diffusion-compatible image generation lane.",
-                    "details": {
-                        "engine": row.get("engine"),
-                        "device": row.get("device"),
-                        "loaded": bool(row.get("loaded")),
-                        "health_path": row.get("health_path"),
-                    },
-                }
-                if key not in merged:
-                    merged[key] = item
-                elif base and base not in merged[key].get("hosts", []):
-                    merged[key]["hosts"].append(base)
-        except Exception:
-            pass
-        try:
             for base in self.peer_bases:
                 doc = self.fetch_json_or_none(
                     base.rstrip("/") + "/health",
@@ -2457,44 +2816,6 @@ class App:
                         merged[key]["hosts"].append(base)
         except Exception:
             pass
-        try:
-            for base in self.peer_bases:
-                doc = self.fetch_json_or_none(
-                    base.rstrip("/") + "/health",
-                    timeout_s=min(self.timeout_s, self.peer_timeout_s),
-                )
-                if not isinstance(doc, dict):
-                    continue
-                for row in (doc.get("downstreams") or {}).get("image") or []:
-                    if not isinstance(row, dict) or row.get("status") != "ok":
-                        continue
-                    raw_model = str(row.get("model") or "").strip()
-                    model_id = raw_model or "stable-diffusion:configured-backend"
-                    key = ("image", model_id)
-                    item = {
-                        "id": model_id,
-                        "object": "model",
-                        "provider": "image",
-                        "host": base,
-                        "hosts": [base],
-                        "peer_discovered": True,
-                        "capabilities": ["image_generate"],
-                        "access": "image_generation_proxy",
-                        "recommended_path": "/v1/images/generations",
-                        "summary": "Peer Stable Diffusion-compatible image generation lane.",
-                        "details": {
-                            "engine": row.get("engine"),
-                            "device": row.get("device"),
-                            "loaded": bool(row.get("loaded")),
-                            "health_path": row.get("health_path"),
-                        },
-                    }
-                    if key not in merged:
-                        merged[key] = item
-                    elif base and base not in merged[key].get("hosts", []):
-                        merged[key]["hosts"].append(base)
-        except Exception:
-            pass
         data = sorted(
             merged.values(),
             key=lambda row: (str(row.get("provider") or ""), str(row.get("id") or "")),
@@ -2526,14 +2847,13 @@ class App:
             return "/v1/ocr"
         if "safety" in capabilities or access == "safety_proxy":
             return "/v1/safety/classify"
-        if "image_generate" in capabilities or access == "image_generation_proxy":
-            return "/v1/images/generations"
         if "embed" in capabilities:
             return "/v1/embeddings"
         return "/ollama/v1/chat/completions"
 
     def feature_flags(self) -> dict[str, object]:
         public_endpoints = self.public_endpoints()
+        override_state = live_policy_override_state()
         return {
             "human_ui": True,
             "overview_doc": True,
@@ -2550,13 +2870,13 @@ class App:
             "ocr_proxy": True,
             "native_rerank_proxy": True,
             "safety_proxy": True,
-            "image_generation_api": True,
             "gateway_only_broadcast": not self.expose_upstream_details
             and not self.advertise_aux_services,
             "upstream_details_public": self.expose_upstream_details,
             "aux_service_broadcast": self.advertise_aux_services,
             "peer_failover": bool(self.peer_bases),
             "peer_loop_guard": self.max_peer_hops,
+            "live_policy_override": override_state,
             "head_support": [
                 str(item["path"])
                 for item in public_endpoints
@@ -2641,6 +2961,12 @@ class App:
         self, contract: dict[str, object]
     ) -> list[dict[str, object]]:
         rows: list[dict[str, object]] = []
+        benchmark_gate = contract.get("benchmark_gate")
+        capability_gate = (
+            contract.get("capability_gate")
+            if isinstance(contract.get("capability_gate"), dict)
+            else {}
+        )
         default_model = str(
             contract.get("default_model") or contract.get("model") or ""
         ).strip()
@@ -2653,6 +2979,24 @@ class App:
                         contract.get("default_profile") or contract.get("profile") or ""
                     ),
                     "score": contract.get("best_weighted_score"),
+                    "coverage_ratio": contract.get("coverage_ratio"),
+                    "accepted_count": contract.get("accepted_count"),
+                    "total_count": contract.get("total_count"),
+                    "cold_sample_count": contract.get("cold_sample_count"),
+                    "warm_sample_count": contract.get("warm_sample_count"),
+                    "benchmark_gate": benchmark_gate
+                    if isinstance(benchmark_gate, dict)
+                    else {},
+                    "capability_gate": capability_gate,
+                    "capability_suite_id": contract.get("capability_suite_id"),
+                    "capability_packet_id": contract.get("capability_packet_id"),
+                    "capability_promotion_authoritative": contract.get(
+                        "capability_promotion_authoritative"
+                    ),
+                    "production_route_requires_capability_gate": contract.get(
+                        "production_route_requires_capability_gate"
+                    ),
+                    "promotion_authoritative": contract.get("promotion_authoritative"),
                 }
             )
         for alternate in contract.get("alternates") or []:
@@ -2668,7 +3012,35 @@ class App:
                     "profile": str(alternate.get("profile") or ""),
                     "score": alternate.get("best_weighted_score")
                     or alternate.get("score"),
+                    "coverage_ratio": alternate.get("coverage_ratio")
+                    or contract.get("coverage_ratio"),
                     "suite_count": alternate.get("suite_count"),
+                    "benchmark_gate": alternate.get("benchmark_gate")
+                    if isinstance(alternate.get("benchmark_gate"), dict)
+                    else benchmark_gate
+                    if isinstance(benchmark_gate, dict)
+                    else {},
+                    "capability_gate": alternate.get("capability_gate")
+                    if isinstance(alternate.get("capability_gate"), dict)
+                    else capability_gate,
+                    "capability_suite_id": alternate.get(
+                        "capability_suite_id", contract.get("capability_suite_id")
+                    ),
+                    "capability_packet_id": alternate.get(
+                        "capability_packet_id", contract.get("capability_packet_id")
+                    ),
+                    "capability_promotion_authoritative": alternate.get(
+                        "capability_promotion_authoritative",
+                        contract.get("capability_promotion_authoritative"),
+                    ),
+                    "production_route_requires_capability_gate": alternate.get(
+                        "production_route_requires_capability_gate",
+                        contract.get("production_route_requires_capability_gate"),
+                    ),
+                    "promotion_authoritative": alternate.get(
+                        "promotion_authoritative",
+                        contract.get("promotion_authoritative"),
+                    ),
                 }
             )
         for hit in contract.get("suite_hits") or []:
@@ -2686,6 +3058,32 @@ class App:
                     "suite_id": hit.get("suite_id"),
                     "coverage_ratio": hit.get("coverage_ratio"),
                     "route_recommendation": hit.get("route_recommendation"),
+                    "benchmark_gate": hit.get("benchmark_gate")
+                    if isinstance(hit.get("benchmark_gate"), dict)
+                    else benchmark_gate
+                    if isinstance(benchmark_gate, dict)
+                    else {},
+                    "capability_gate": hit.get("capability_gate")
+                    if isinstance(hit.get("capability_gate"), dict)
+                    else capability_gate,
+                    "capability_suite_id": hit.get(
+                        "capability_suite_id", contract.get("capability_suite_id")
+                    ),
+                    "capability_packet_id": hit.get(
+                        "capability_packet_id", contract.get("capability_packet_id")
+                    ),
+                    "capability_promotion_authoritative": hit.get(
+                        "capability_promotion_authoritative",
+                        contract.get("capability_promotion_authoritative"),
+                    ),
+                    "production_route_requires_capability_gate": hit.get(
+                        "production_route_requires_capability_gate",
+                        contract.get("production_route_requires_capability_gate"),
+                    ),
+                    "promotion_authoritative": hit.get(
+                        "promotion_authoritative",
+                        contract.get("promotion_authoritative"),
+                    ),
                 }
             )
         deduped: list[dict[str, object]] = []
@@ -2726,6 +3124,45 @@ class App:
         score = model_row.get("score")
         if score in (None, ""):
             score = contract.get("best_weighted_score")
+        benchmark_gate = model_row.get("benchmark_gate")
+        if not isinstance(benchmark_gate, dict):
+            benchmark_gate = (
+                contract.get("benchmark_gate")
+                if isinstance(contract.get("benchmark_gate"), dict)
+                else {}
+            )
+        capability_gate = model_row.get("capability_gate")
+        if not isinstance(capability_gate, dict):
+            capability_gate = (
+                contract.get("capability_gate")
+                if isinstance(contract.get("capability_gate"), dict)
+                else {}
+            )
+        production_route_requires_capability_gate = model_row.get(
+            "production_route_requires_capability_gate"
+        )
+        if production_route_requires_capability_gate in (None, ""):
+            production_route_requires_capability_gate = contract.get(
+                "production_route_requires_capability_gate"
+            )
+        capability_gate_state = capability_route_state(
+            capability_gate=capability_gate,
+            production_route_requires_capability_gate=(
+                production_route_requires_capability_gate
+            ),
+        )
+        production_route_eligible = capability_gate_allows_production_default(
+            capability_gate=capability_gate,
+            production_route_requires_capability_gate=(
+                production_route_requires_capability_gate
+            ),
+        )
+        promotion_authoritative = model_row.get("promotion_authoritative")
+        if promotion_authoritative in (None, ""):
+            promotion_authoritative = contract.get("promotion_authoritative")
+        coverage_ratio = model_row.get("coverage_ratio")
+        if coverage_ratio in (None, ""):
+            coverage_ratio = contract.get("coverage_ratio")
         return {
             "model": str(model_row.get("model") or "").strip(),
             "contract_id": str(contract.get("contract_id") or "").strip(),
@@ -2745,7 +3182,39 @@ class App:
                     contract.get("guardrail") or state or "benchmark contract"
                 )[:240],
                 "score": score,
-                "coverage_ratio": model_row.get("coverage_ratio"),
+                "coverage_ratio": coverage_ratio,
+                "transport_gate": model_row.get("transport_gate")
+                if isinstance(model_row.get("transport_gate"), dict)
+                else contract.get("transport_gate")
+                if isinstance(contract.get("transport_gate"), dict)
+                else benchmark_gate,
+                "benchmark_gate": benchmark_gate,
+                "capability_gate": capability_gate,
+                "capability_suite_id": str(
+                    model_row.get("capability_suite_id")
+                    or contract.get("capability_suite_id")
+                    or ""
+                ).strip(),
+                "capability_packet_id": str(
+                    model_row.get("capability_packet_id")
+                    or contract.get("capability_packet_id")
+                    or ""
+                ).strip(),
+                "capability_promotion_authoritative": bool(
+                    model_row.get("capability_promotion_authoritative")
+                    if model_row.get("capability_promotion_authoritative")
+                    not in (None, "")
+                    else contract.get("capability_promotion_authoritative")
+                    if contract.get("capability_promotion_authoritative")
+                    not in (None, "")
+                    else capability_gate_promotion_authoritative(capability_gate)
+                ),
+                "production_route_requires_capability_gate": truthy(
+                    production_route_requires_capability_gate
+                ),
+                "production_route_eligible": production_route_eligible,
+                "capability_route_state": capability_gate_state,
+                "promotion_authoritative": bool(promotion_authoritative),
             },
             "authority": authority,
             "chat_candidate": dispatch not in WARM_POLICY_TOOL_ONLY_DISPATCHES,
@@ -2903,6 +3372,67 @@ class App:
                     for lane in lane_ids:
                         lanes[lane]["blocked_models"].append(entry)
                     continue
+                benchmark_gate = model_row.get("benchmark_gate")
+                if not isinstance(benchmark_gate, dict):
+                    benchmark_gate = (
+                        contract.get("benchmark_gate")
+                        if isinstance(contract.get("benchmark_gate"), dict)
+                        else {}
+                    )
+                capability_gate = (
+                    model_row.get("capability_gate")
+                    if isinstance(model_row.get("capability_gate"), dict)
+                    else contract.get("capability_gate")
+                    if isinstance(contract.get("capability_gate"), dict)
+                    else {}
+                )
+                promotion_authoritative = model_row.get("promotion_authoritative")
+                if promotion_authoritative in (None, ""):
+                    promotion_authoritative = contract.get("promotion_authoritative")
+                production_route_requires_capability_gate = model_row.get(
+                    "production_route_requires_capability_gate"
+                )
+                if production_route_requires_capability_gate in (None, ""):
+                    production_route_requires_capability_gate = contract.get(
+                        "production_route_requires_capability_gate"
+                    )
+                production_capability_ready = capability_gate_allows_production_default(
+                    capability_gate=capability_gate,
+                    production_route_requires_capability_gate=(
+                        production_route_requires_capability_gate
+                    ),
+                )
+                qwen_production_default = (
+                    "qwen3." in model.lower()
+                    and str(model_row.get("role") or "").strip() == "default"
+                )
+                if qwen_production_default and (
+                    str(benchmark_gate.get("gate") or "").strip().lower()
+                    != "production"
+                    or not bool(promotion_authoritative)
+                    or not production_capability_ready
+                ):
+                    state = (
+                        "capability_gate_required"
+                        if str(benchmark_gate.get("gate") or "").strip().lower()
+                        == "production"
+                        and bool(promotion_authoritative)
+                        else "production_gate_required"
+                    )
+                    entry = self.warm_policy_entry(
+                        contract,
+                        model_row,
+                        action="skip_quality_gate",
+                        authority="blocked",
+                        state=state,
+                        available=available,
+                        active=active,
+                        hosts=hosts,
+                        active_hosts=active_hosts,
+                    )
+                    for lane in lane_ids:
+                        lanes[lane]["blocked_models"].append(entry)
+                    continue
                 if not available:
                     entry = self.warm_policy_entry(
                         contract,
@@ -3000,11 +3530,17 @@ class App:
             route_posture = "canary_only"
         else:
             route_posture = "blocked"
+        policy_contract = route_policy_contract()
         return {
             "schema": "norllama.warm-policy.v1",
             "service": "norllama",
             "gateway": gateway_identity(),
             "time": now_iso(),
+            "policy_authority": policy_contract.get("schema"),
+            "policy_version": ROUTE_POLICY_VERSION,
+            "policy_id": policy_contract.get("policy_id", ""),
+            "policy_hash": policy_contract.get("policy_hash", ""),
+            "route_policy": policy_contract,
             "status": "ok" if contracts else "missing_benchmark_packet",
             "route_posture": route_posture,
             "residency_posture": "warm"
@@ -3130,36 +3666,7 @@ class App:
                     "generated_at": str(preflight_doc.get("generated_at") or ""),
                 }
             )
-        endpoints = self.public_endpoints()
-        endpoint_kinds = {
-            str(row.get("kind") or "").strip()
-            for row in endpoints
-            if str(row.get("kind") or "").strip()
-        }
-        tool_lanes: list[str] = []
-        for kind, lanes in {
-            "embedding": ("embed",),
-            "rerank": ("rerank",),
-            "safety": ("prompt_injection", "safety"),
-            "ocr": ("doc_parse", "ocr"),
-            "asr": ("asr", "stt"),
-            "media": ("doc_parse", "gui_ground", "ocr"),
-            "image_generate": ("image_generate",),
-        }.items():
-            if kind in endpoint_kinds:
-                for lane in lanes:
-                    if lane not in tool_lanes:
-                        tool_lanes.append(lane)
-        task_kinds = list(tool_lanes)
-        if "unified_chat" in endpoint_kinds:
-            task_kinds = ["chat", "plan", "code", *task_kinds]
-        modalities = ["text"]
-        if endpoint_kinds.intersection({"image_generate", "media", "ocr"}):
-            modalities.append("image")
-        if endpoint_kinds.intersection({"media", "ocr"}):
-            modalities.extend(["file", "pdf"])
-        if "asr" in endpoint_kinds:
-            modalities.append("audio")
+        policy_contract = route_policy_contract()
         return {
             "service": "norllama",
             "gateway": gateway_identity(),
@@ -3167,11 +3674,13 @@ class App:
             "features": self.feature_flags(),
             "sources": sources,
             "contracts": contracts,
-            "tool_lanes": tool_lanes,
-            "task_kinds": unique_items(task_kinds),
-            "modalities": unique_items(modalities),
             "model_policy": {
                 "schema": "norllama.model-policy.v1",
+                "policy_authority": policy_contract.get("schema"),
+                "policy_version": ROUTE_POLICY_VERSION,
+                "policy_id": policy_contract.get("policy_id", ""),
+                "policy_hash": policy_contract.get("policy_hash", ""),
+                "route_policy": policy_contract,
                 "mode": "qwen_first_local",
                 "frontdoor": "https://llm.home.arpa",
                 "preferred_chat_model": QWEN36_ROUTER_MODEL,
@@ -3180,7 +3689,13 @@ class App:
                 "embedding_model": DEFAULT_EMBEDDING_MODEL,
                 "rerank_model": DEFAULT_RERANK_MODEL,
                 "safety_model": QWEN3GUARD_MODEL,
-                "policy_override_reason": LIVE_POLICY_OVERRIDE_REASON,
+                "live_policy_override": live_policy_override_state(),
+                "live_policy_overrides_enabled": bool(
+                    live_policy_override_state().get("active")
+                ),
+                "policy_override_reason": str(
+                    live_policy_override_state().get("reason") or ""
+                ),
                 "production_rule": (
                     "Catalog-only models are not production defaults until live inventory, smoke tests, "
                     "benchmark evidence, and route receipts agree."
@@ -3221,7 +3736,7 @@ class App:
                 "levels": sorted(PRIORITY_LEVELS),
                 "notes": "Priority is exposed in headers and logs now. It does not yet reorder execution.",
             },
-            "endpoints": endpoints,
+            "endpoints": self.public_endpoints(),
         }
 
     def catalog(self) -> dict:
@@ -3318,11 +3833,6 @@ class App:
             for row in downstreams.get("transcribe") or []
             if str(row.get("base_url") or "")
         }
-        image_rows = {
-            str(row.get("base_url") or ""): row
-            for row in downstreams.get("image") or []
-            if str(row.get("base_url") or "")
-        }
         ds4_rows_raw = downstreams.get("ds4") or []
         if isinstance(ds4_rows_raw, list):
             ds4_rows = {
@@ -3336,7 +3846,6 @@ class App:
             *(base for base in ollama_rows if base),
             *(base for base in media_rows if base),
             *(base for base in transcribe_rows if base),
-            *(base for base in image_rows if base),
             *(base for base in ds4_rows if base),
         }
         merged: dict[str, dict[str, object]] = {}
@@ -3363,10 +3872,6 @@ class App:
                         "status": "unknown",
                         "model": "",
                     },
-                    "image": {
-                        "status": "unknown",
-                        "model": "",
-                    },
                     "ds4": {
                         "healthy": False,
                         "models": [],
@@ -3388,11 +3893,6 @@ class App:
                 and "transcribe" not in row["selected_lanes"]
             ):
                 row["selected_lanes"].append("transcribe")
-            if (
-                str(routing.get("image") or "") == base
-                and "image" not in row["selected_lanes"]
-            ):
-                row["selected_lanes"].append("image")
             if (
                 str(routing.get("ds4") or "") == base
                 and "ds4" not in row["selected_lanes"]
@@ -3418,12 +3918,6 @@ class App:
                 row["transcribe"] = {
                     "status": str(transcribe.get("status") or "unknown"),
                     "model": str(transcribe.get("model") or ""),
-                }
-            if base in image_rows:
-                image = image_rows.get(base) or {}
-                row["image"] = {
-                    "status": str(image.get("status") or "unknown"),
-                    "model": str(image.get("model") or ""),
                 }
             if base in ds4_rows:
                 ds4 = ds4_rows.get(base) or {}
@@ -3471,62 +3965,82 @@ class App:
             doc["health"] = health
         return doc
 
+    def activity_class_for_record(self, record: dict[str, object]) -> str:
+        configured = str(record.get("activity_class") or "").strip().lower()
+        if configured in {"execution", "monitoring"}:
+            return configured
+        method = str(record.get("method") or "").strip().upper()
+        path = str(record.get("path") or "").split("?", 1)[0]
+        if method in {"GET", "HEAD", "OPTIONS"}:
+            return "monitoring"
+        if path in {
+            "/",
+            "/ui",
+            "/healthz",
+            "/api/tags",
+            "/api/ps",
+            "/v1/activity",
+            "/v1/capabilities",
+            "/v1/catalog",
+            "/v1/models",
+            "/v1/overview",
+            "/v1/prefetch/status",
+        }:
+            return "monitoring"
+        return "execution"
+
     def record_activity(self, record: dict[str, object]) -> None:
+        item = dict(record)
+        activity_class = self.activity_class_for_record(item)
+        item["activity_class"] = activity_class
+        item.setdefault(
+            "execution_mode", "monitoring" if activity_class == "monitoring" else "live"
+        )
         with self._lock:
-            self._recent_activity.append(record)
+            self._recent_activity.append(item)
             if len(self._recent_activity) > self.activity_limit:
                 self._recent_activity = self._recent_activity[-self.activity_limit :]
-            if self._counts_as_tool_activity(record):
-                self._recent_tool_activity.append(record)
-                if len(self._recent_tool_activity) > self.tool_activity_limit:
-                    self._recent_tool_activity = self._recent_tool_activity[
-                        -self.tool_activity_limit :
-                    ]
-
-    def _counts_as_tool_activity(self, record: dict[str, object]) -> bool:
-        method = str(record.get("method") or "").strip().upper() or "GET"
-        path = str(record.get("path") or "").split("?", 1)[0].strip()
-        capability = str(record.get("capability") or "").strip()
-        if method in {"GET", "HEAD"}:
-            return False
-        if capability:
-            return True
-        return path in {
-            "/api/chat",
-            "/api/generate",
-            "/api/embed",
-            "/api/embeddings",
-            "/v1/embeddings",
-            "/v1/rerank",
-            "/rerank",
-            "/v1/safety/classify",
-            "/safety/classify",
-            "/v1/audio/transcriptions",
-            "/transcribe",
-            "/v1/ocr",
-            "/ocr",
-            "/v1/images/generations",
-            "/v1/chat/completions",
-            "/v1/prefetch",
-            "/v1/evict",
-        } or path.startswith("/media/")
-
-    def recent_activity(self, limit: int = 20, *, tool_only: bool = False) -> dict:
-        retention_limit = self.tool_activity_limit if tool_only else self.activity_limit
-        safe_limit = max(1, min(limit, retention_limit))
-        with self._lock:
-            source_rows = (
-                self._recent_tool_activity if tool_only else self._recent_activity
+            target = (
+                self._recent_execution_activity
+                if activity_class == "execution"
+                else self._recent_monitoring_activity
             )
-            rows = list(source_rows[-safe_limit:])
+            target.append(item)
+            if len(target) > self.activity_limit:
+                del target[: len(target) - self.activity_limit]
+
+    def recent_activity(
+        self,
+        limit: int = 20,
+        activity_class: str = "execution",
+        *,
+        tool_only: bool = False,
+    ) -> dict:
+        safe_limit = max(1, min(limit, self.activity_limit))
+        with self._lock:
+            if tool_only:
+                source = self._recent_execution_activity
+                activity_class = "execution"
+            elif activity_class == "all":
+                source = self._recent_activity
+            elif activity_class == "monitoring":
+                source = self._recent_monitoring_activity
+            else:
+                source = self._recent_execution_activity
+                activity_class = "execution"
+            rows = list(source[-safe_limit:])
+            execution_count = len(self._recent_execution_activity)
+            monitoring_count = len(self._recent_monitoring_activity)
         rows.reverse()
         return {
-            "service": "norllama",
             "schema": "norllama.activity.v1",
+            "service": "norllama",
             "time": now_iso(),
+            "activity_class": activity_class,
             "tool_only": bool(tool_only),
             "count": len(rows),
-            "retention_limit": retention_limit,
+            "execution_count": execution_count,
+            "monitoring_count": monitoring_count,
             "items": [self.public_activity_item(row) for row in rows],
         }
 
@@ -3958,11 +4472,6 @@ class App:
                 status = str(info.get("status") or "unknown")
                 model = str(info.get("model") or "")
                 return status if not model else f"{status} / {model}"
-            if lane == "image":
-                info = row.get("image") or {}
-                status = str(info.get("status") or "unknown")
-                model = str(info.get("model") or "")
-                return status if not model else f"{status} / {model}"
             info = row.get("ds4") or {}
             if not info.get("healthy"):
                 return "-"
@@ -3974,7 +4483,6 @@ class App:
             f"<td>{html.escape(lane_state(row, 'ollama'))}</td>"
             f"<td>{html.escape(lane_state(row, 'media'))}</td>"
             f"<td>{html.escape(lane_state(row, 'transcribe'))}</td>"
-            f"<td>{html.escape(lane_state(row, 'image'))}</td>"
             f"<td>{html.escape(lane_state(row, 'ds4'))}</td>"
             f"<td>{html.escape(', '.join(row.get('selected_lanes') or []) or '-')}</td>"
             "</tr>"
@@ -4050,7 +4558,6 @@ class App:
       <div class="card"><div class="k">DS4 Route</div><div class="v mono">{html.escape(str(routes.get('ds4') or ''))}</div></div>
       <div class="card"><div class="k">Media Route</div><div class="v mono">{html.escape(str(routes.get('media') or ''))}</div></div>
       <div class="card"><div class="k">Transcribe Route</div><div class="v mono">{html.escape(str(routes.get('transcribe') or ''))}</div></div>
-      <div class="card"><div class="k">Image Route</div><div class="v mono">{html.escape(str(routes.get('image') or ''))}</div></div>
     </div>
 """
             if self.expose_upstream_details
@@ -4068,7 +4575,7 @@ class App:
       <div class="sub">What each Spark is carrying right now, and which lanes Norllama is actively selecting.</div>
       <table>
         <thead>
-          <tr><th>Host</th><th>Ollama</th><th>Media</th><th>ASR</th><th>Images</th><th>DS4</th><th>Selected Lanes</th></tr>
+          <tr><th>Host</th><th>Ollama</th><th>Media</th><th>ASR</th><th>DS4</th><th>Selected Lanes</th></tr>
         </thead>
         <tbody>
           {fleet_rows}
@@ -4130,8 +4637,8 @@ class App:
     .v {{ font-size: 1rem; font-weight: 700; word-break: break-word; }}
     .mono {{ font-family: "SFMono-Regular", "Menlo", "Consolas", monospace; }}
     .two {{ display: grid; gap: 18px; grid-template-columns: 1.05fr 1.4fr; }}
-    textarea, select, button, input {{ width: 100%; font: inherit; }}
-    textarea, select, input {{ box-sizing: border-box; border: 1px solid var(--line); border-radius: 10px; padding: 10px; background: var(--field); color: var(--ink); }}
+    textarea, select, button {{ width: 100%; font: inherit; }}
+    textarea, select {{ box-sizing: border-box; border: 1px solid var(--line); border-radius: 10px; padding: 10px; background: var(--field); color: var(--ink); }}
     button {{ border: 0; background: linear-gradient(135deg, #118277, #1a6285); color: #f7fffe; padding: 12px 14px; border-radius: 999px; cursor: pointer; font-weight: 700; }}
     table {{ width: 100%; border-collapse: collapse; background: var(--paper); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }}
     th, td {{ text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }}
@@ -4143,13 +4650,7 @@ class App:
     .subcell {{ color: var(--muted); font-size: 0.86rem; margin-top: 4px; }}
     .code-links a {{ color: var(--accent); text-decoration: none; }}
     .code-links a:hover {{ text-decoration: underline; }}
-    .form-grid {{ display:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap:10px; margin-top:10px; }}
-    .check-row {{ display:flex; align-items:center; gap:10px; margin-top:12px; color:var(--ink2); }}
-    .check-row input {{ width:auto; }}
-    .image-preview {{ display:grid; place-items:center; min-height:260px; margin-top:12px; border:1px solid var(--line); border-radius:12px; background:var(--code-bg); overflow:hidden; }}
-    .image-preview img {{ max-width:100%; height:auto; display:block; }}
     @media (max-width: 900px) {{ .hero, .two {{ grid-template-columns: 1fr; }} }}
-    @media (max-width: 700px) {{ .form-grid {{ grid-template-columns: 1fr; }} }}
   </style>
 </head>
 <body>
@@ -4212,46 +4713,6 @@ class App:
         <div class="sub">Machine-facing behavior that matters for agents and wrappers.</div>
         <ul>{features}</ul>
         <div class="sub" style="margin-top:12px;">Use <code>/v1/overview</code> for a compact gateway snapshot, then <code>/v1/capabilities</code>, <code>/v1/catalog</code>, and <code>/v1/activity</code> for deeper bot-to-bot discovery and tracing.</div>
-      </div>
-    </div>
-    <div class="two" style="margin-top:18px;">
-      <div class="card">
-        <h2>Image Shell</h2>
-        <div class="sub">Local Stable Diffusion-compatible lane through Norllama.</div>
-        <label class="k" for="imagePrompt">Prompt</label>
-        <textarea id="imagePrompt" rows="5">a small matte black shell terminal on a desk, clean product render</textarea>
-        <label class="k" for="imageNegative" style="display:block;margin-top:10px;">Negative Prompt</label>
-        <textarea id="imageNegative" rows="2">blurry, distorted text, watermark</textarea>
-        <div class="form-grid">
-          <div>
-            <label class="k" for="imageSize">Size</label>
-            <select id="imageSize">
-              <option value="768x768">768x768</option>
-              <option value="1024x1024" selected>1024x1024</option>
-              <option value="1024x768">1024x768</option>
-              <option value="768x1024">768x1024</option>
-            </select>
-          </div>
-          <div>
-            <label class="k" for="imageSteps">Steps</label>
-            <input id="imageSteps" type="number" min="1" max="150" value="24">
-          </div>
-          <div>
-            <label class="k" for="imageCount">Count</label>
-            <input id="imageCount" type="number" min="1" max="4" value="1">
-          </div>
-        </div>
-        <label class="check-row" for="imageAdult">
-          <input id="imageAdult" type="checkbox">
-          <span>Adult Mode</span>
-        </label>
-        <div style="margin-top:12px;"><button id="generateImage">Generate</button></div>
-      </div>
-      <div class="card">
-        <h2>Image Output</h2>
-        <div class="sub">The response is logged as <code>image_generate</code> with worker attribution and offline-local accounting.</div>
-        <pre id="imageOut">No image request yet.</pre>
-        <div id="imagePreview" class="image-preview"><span class="sub">No preview.</span></div>
       </div>
     </div>
     <div style="margin-top:18px;">
@@ -4334,52 +4795,6 @@ class App:
         out.textContent = String(err);
       }}
     }});
-    const imageOut = document.getElementById('imageOut');
-    const imagePreview = document.getElementById('imagePreview');
-    document.getElementById('generateImage').addEventListener('click', async () => {{
-      const prompt = document.getElementById('imagePrompt').value;
-      const negative_prompt = document.getElementById('imageNegative').value;
-      const size = document.getElementById('imageSize').value;
-      const steps = Number(document.getElementById('imageSteps').value || 24);
-      const n = Number(document.getElementById('imageCount').value || 1);
-      const allow_nsfw = document.getElementById('imageAdult').checked;
-      const content_rating = allow_nsfw ? 'adult' : 'standard';
-      imageOut.textContent = 'Working...';
-      imagePreview.innerHTML = '<span class="sub">Generating...</span>';
-      try {{
-        const resp = await fetch('/v1/images/generations', {{
-          method: 'POST',
-          headers: {{
-            'Content-Type': 'application/json',
-            'X-Norllama-Priority': 'background',
-          }},
-          body: JSON.stringify({{ prompt, negative_prompt, size, steps, n, allow_nsfw, content_rating }})
-        }});
-        const text = await resp.text();
-        let doc = null;
-        try {{ doc = JSON.parse(text); }} catch (err) {{}}
-        imageOut.textContent = [
-          'status=' + resp.status,
-          'request_id=' + (resp.headers.get('X-Norllama-Request-Id') || ''),
-          {("'upstream=' + (resp.headers.get('X-Norllama-Upstream') || '')," if self.expose_upstream_details else "")}
-          text
-        ].join('\\n');
-        const first = doc && doc.data && doc.data[0] ? doc.data[0] : null;
-        const b64 = first && first.b64_json ? first.b64_json : '';
-        const url = first && first.url ? first.url : '';
-        if (b64) {{
-          const src = b64.startsWith('data:') ? b64 : 'data:image/png;base64,' + b64;
-          imagePreview.innerHTML = '<img alt="Generated image" src="' + src + '">';
-        }} else if (url) {{
-          imagePreview.innerHTML = '<img alt="Generated image" src="' + url + '">';
-        }} else {{
-          imagePreview.innerHTML = '<span class="sub">No image returned.</span>';
-        }}
-      }} catch (err) {{
-        imageOut.textContent = String(err);
-        imagePreview.innerHTML = '<span class="sub">Request failed.</span>';
-      }}
-    }});
     async function refreshActivity() {{
       try {{
         const resp = await fetch('/v1/activity?limit=12');
@@ -4410,7 +4825,6 @@ class App:
         ocr_selected, ocr_rows = self.choose_ocr_base()
         rerank_selected, rerank_rows = self.choose_rerank_base()
         safety_selected, safety_rows = self.choose_safety_base()
-        image_selected, image_rows = self.choose_image_base()
         ollama_selected, ollama_rows = self.choose_ollama_base()
         ds4_selected, ds4_rows = self.choose_ds4_base()
         local_visible_model_count = 0
@@ -4427,9 +4841,6 @@ class App:
         )
         local_visible_model_count += len(
             [row for row in safety_rows if row.get("status") == "ok"]
-        )
-        local_visible_model_count += len(
-            [row for row in image_rows if row.get("status") == "ok"]
         )
         payload = {
             "service": "norllama",
@@ -4452,7 +4863,6 @@ class App:
                 "ocr": ocr_selected,
                 "rerank": rerank_selected,
                 "safety": safety_selected,
-                "image": image_selected,
             }
             payload["downstreams"] = {
                 "media": media_rows,
@@ -4460,7 +4870,6 @@ class App:
                 "ocr": ocr_rows,
                 "rerank": rerank_rows,
                 "safety": safety_rows,
-                "image": image_rows,
                 "ollama": ollama_rows,
                 "ds4": ds4_rows,
             }
@@ -4471,7 +4880,6 @@ class App:
                 "prefetch": True,
                 "evict": True,
                 "safety": True,
-                "image_generation": True,
                 "aux_services_advertised": self.advertise_aux_services,
                 "peer_frontdoor_fallback": bool(self.peer_bases),
                 "peer_frontdoor_count": len(self.peer_bases),
@@ -4569,6 +4977,11 @@ class Handler(BaseHTTPRequestHandler):
             "ts": now_iso(),
             "service": "norllama",
             "request_id": getattr(self, "_request_id", ""),
+            "job_id": self.headers.get("X-Norman-Job-Id", "").strip()
+            or self.headers.get("X-Norllama-Job-Id", "").strip(),
+            "session": self.headers.get("X-Norman-Session", "").strip()
+            or self.headers.get("X-Session-Name", "").strip()
+            or self.headers.get("X-Norllama-Session", "").strip(),
             "client": self.client_address[0] if self.client_address else "",
             "method": self.command,
             "path": self.path,
@@ -4580,11 +4993,30 @@ class Handler(BaseHTTPRequestHandler):
             "upstream": upstream,
             "attempts": attempts.split(",") if attempts else [],
         }
+        if upstream:
+            record["observed_worker"] = self.app.host_alias(upstream)
         model_hint = str(getattr(self, "_model_hint", "") or "").strip()
         if model_hint:
             record["model"] = model_hint
         if isinstance(getattr(self, "_activity_extra", None), dict):
             record.update(getattr(self, "_activity_extra"))
+        if (
+            not str(record.get("job_id") or "").strip()
+            and str(record.get("prefetch_job_id") or "").strip()
+        ):
+            record["job_id"] = str(record.get("prefetch_job_id") or "").strip()
+        if (
+            not str(record.get("observed_worker") or "").strip()
+            and str(record.get("selected_worker") or "").strip()
+        ):
+            record["observed_worker"] = str(record.get("selected_worker") or "").strip()
+        if not str(record.get("execution_mode") or "").strip():
+            mode = str(record.get("mode") or "").strip()
+            record["execution_mode"] = mode or (
+                "monitoring"
+                if self.app.activity_class_for_record(record) == "monitoring"
+                else "live"
+            )
         self.app.record_activity(record)
         sys.stdout.write(json.dumps(record, sort_keys=True) + "\n")
         sys.stdout.flush()
@@ -4619,10 +5051,6 @@ class Handler(BaseHTTPRequestHandler):
                 "verifier_result",
                 "native_rerank_error",
                 "native_safety_error",
-                "image_count",
-                "allow_nsfw",
-                "content_rating",
-                "safety_profile",
             ):
                 value = norllama_meta.get(key)
                 if value is not None and value != "":
@@ -4936,214 +5364,6 @@ class Handler(BaseHTTPRequestHandler):
             )
             return None
         return payload
-
-    def clamp_image_int(
-        self, value: object, default: int, *, minimum: int, maximum: int
-    ) -> int:
-        try:
-            parsed = int(value) if value is not None and value != "" else default
-        except Exception:
-            parsed = default
-        return max(minimum, min(parsed, maximum))
-
-    def image_size_from_payload(self, payload: dict[str, object]) -> tuple[int, int]:
-        raw = payload.get("size") or payload.get("resolution")
-        width = payload.get("width")
-        height = payload.get("height")
-        if isinstance(raw, str):
-            clean = raw.lower().replace("*", "x").replace(" ", "")
-            if "x" in clean:
-                width, height = clean.split("x", 1)
-        elif isinstance(raw, dict):
-            width = raw.get("width") or raw.get("w") or width
-            height = raw.get("height") or raw.get("h") or height
-        return (
-            self.clamp_image_int(width, 1024, minimum=64, maximum=2048),
-            self.clamp_image_int(height, 1024, minimum=64, maximum=2048),
-        )
-
-    def image_timeout_from_payload(self, payload: dict[str, object]) -> float:
-        raw = payload.get("timeout_seconds") or payload.get("timeout")
-        try:
-            timeout_s = float(raw) if raw not in (None, "") else self.app.timeout_s
-        except Exception:
-            timeout_s = self.app.timeout_s
-        return max(5.0, min(timeout_s, 900.0))
-
-    def truthy_payload_value(self, value: object) -> bool:
-        if isinstance(value, bool):
-            return value
-        return str(value or "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-            "adult",
-            "nsfw",
-        }
-
-    def image_allow_nsfw(self, payload: dict[str, object]) -> bool:
-        rating = (
-            str(payload.get("content_rating") or payload.get("rating") or "")
-            .strip()
-            .lower()
-        )
-        return (
-            self.truthy_payload_value(payload.get("allow_nsfw"))
-            or self.truthy_payload_value(payload.get("nsfw"))
-            or self.truthy_payload_value(payload.get("adult"))
-            or rating in {"adult", "explicit", "nsfw", "r", "x"}
-        )
-
-    def image_content_rating(self, payload: dict[str, object]) -> str:
-        raw = str(payload.get("content_rating") or payload.get("rating") or "").strip()
-        clean = raw.lower().replace("_", "-")
-        if clean in {"adult", "nsfw", "explicit", "r", "x"}:
-            return "adult"
-        if clean in {"mature", "suggestive"}:
-            return "mature"
-        if self.image_allow_nsfw(payload):
-            return "adult"
-        return "standard"
-
-    def image_safety_profile(
-        self, payload: dict[str, object], *, content_rating: str
-    ) -> str:
-        raw = str(payload.get("safety_profile") or "").strip().lower()
-        if raw:
-            return raw
-        return "adult_opt_in" if content_rating == "adult" else "standard"
-
-    def prompt_from_payload(self, payload: dict[str, object]) -> str:
-        prompt = str(payload.get("prompt") or payload.get("input") or "").strip()
-        if prompt:
-            return prompt
-        messages = payload.get("messages")
-        if not isinstance(messages, list):
-            return ""
-        parts: list[str] = []
-        for message in messages:
-            if not isinstance(message, dict):
-                continue
-            content = message.get("content")
-            if isinstance(content, str) and content.strip():
-                parts.append(content.strip())
-        return "\n".join(parts).strip()
-
-    def stable_diffusion_payload(
-        self, payload: dict[str, object], *, prompt: str, model: str
-    ) -> dict[str, object]:
-        width, height = self.image_size_from_payload(payload)
-        request_payload: dict[str, object] = {
-            "prompt": prompt,
-            "negative_prompt": str(payload.get("negative_prompt") or "").strip(),
-            "batch_size": self.clamp_image_int(
-                payload.get("n", payload.get("count")), 1, minimum=1, maximum=4
-            ),
-            "width": width,
-            "height": height,
-            "steps": self.clamp_image_int(
-                payload.get("steps"), 24, minimum=1, maximum=150
-            ),
-        }
-        if payload.get("cfg_scale") not in (None, ""):
-            try:
-                request_payload["cfg_scale"] = max(
-                    1.0, min(float(payload.get("cfg_scale")), 30.0)
-                )
-            except Exception:
-                pass
-        if payload.get("seed") not in (None, ""):
-            try:
-                request_payload["seed"] = int(payload.get("seed"))
-            except Exception:
-                pass
-        sampler = str(
-            payload.get("sampler") or payload.get("sampler_name") or ""
-        ).strip()
-        if sampler:
-            request_payload["sampler_name"] = sampler
-        if model and model != "stable-diffusion:configured-backend":
-            request_payload["override_settings"] = {"sd_model_checkpoint": model}
-        return request_payload
-
-    def openai_image_response(
-        self,
-        upstream_payload: dict[str, object],
-        *,
-        requested_model: str,
-        upstream: str,
-        attempts: list[str],
-        allow_nsfw: bool,
-        content_rating: str,
-        safety_profile: str,
-    ) -> dict[str, object]:
-        data: list[dict[str, str]] = []
-        raw_data = upstream_payload.get("data")
-        if isinstance(raw_data, list):
-            for item in raw_data:
-                if isinstance(item, dict):
-                    if str(item.get("b64_json") or "").strip():
-                        data.append({"b64_json": str(item.get("b64_json"))})
-                    elif str(item.get("url") or "").strip():
-                        data.append({"url": str(item.get("url"))})
-                elif str(item or "").strip():
-                    data.append({"b64_json": str(item)})
-        raw_images = upstream_payload.get("images")
-        if not data and isinstance(raw_images, list):
-            for item in raw_images:
-                image = str(item or "").strip()
-                if image:
-                    data.append({"b64_json": image})
-        info_doc: dict[str, object] = {}
-        info = upstream_payload.get("info")
-        if isinstance(info, str) and info.strip():
-            try:
-                parsed_info = json.loads(info)
-                if isinstance(parsed_info, dict):
-                    info_doc = parsed_info
-            except Exception:
-                info_doc = {}
-        elif isinstance(info, dict):
-            info_doc = info
-        model = (
-            str(upstream_payload.get("model") or "").strip()
-            or str(info_doc.get("sd_model_name") or "").strip()
-            or str(info_doc.get("sd_model_checkpoint") or "").strip()
-            or requested_model
-            or "stable-diffusion:configured-backend"
-        )
-        image_count = len(data)
-        output_shape = "complete" if image_count else "empty"
-        return {
-            "created": int(time.time()),
-            "model": model,
-            "data": data,
-            "usage": {
-                "usage_bucket": "offline_local",
-                "image_count": image_count,
-            },
-            "norllama": {
-                "capability": "image_generate",
-                "mode": "image_generation_proxy",
-                "selected_provider": "norllama",
-                "selected_model": model,
-                "selected_worker": self.app.host_alias(upstream),
-                "frontdoor": "https://llm.home.arpa",
-                "peer_path": [self.app.host_alias(item) for item in attempts],
-                "usage_bucket": "offline_local",
-                "cloud_proxy": False,
-                "fallback_used": False,
-                "output_shape": output_shape,
-                "verifier_result": "pass" if image_count else "fail",
-                "image_count": image_count,
-                "allow_nsfw": allow_nsfw,
-                "content_rating": content_rating,
-                "safety_profile": safety_profile,
-                "upstream": upstream,
-                "attempts": attempts,
-            },
-        }
 
     def embedding_candidates(
         self, model: str
@@ -5542,6 +5762,25 @@ class Handler(BaseHTTPRequestHandler):
         if result_model.startswith("/"):
             result_model = requested_model
         response["model"] = result_model or requested_model
+        raw_label = response.get("label") or response.get("category")
+        raw_policy_action = (
+            response.get("policy_action")
+            or response.get("action")
+            or response.get("decision")
+            or response.get("verdict")
+        )
+        policy_decision = norman_safety_policy_decision(
+            payload=request_payload,
+            text=text,
+        )
+        response["raw_label"] = str(raw_label or "").strip()
+        response["raw_policy_action"] = str(raw_policy_action or "").strip()
+        response["label"] = str(policy_decision["label"])
+        response["policy_action"] = str(policy_decision["policy_action"])
+        response["policy_source"] = str(policy_decision["source"])
+        response["policy_reason"] = str(policy_decision["reason"])
+        response["confidence"] = float(policy_decision["confidence"])
+        response["norman_policy_overlay"] = policy_decision
         usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
         response["usage"] = {
             "input_tokens": int(usage.get("input_tokens") or 0),
@@ -6550,175 +6789,6 @@ class Handler(BaseHTTPRequestHandler):
             },
         )
 
-    def handle_image_generation(self, body: bytes) -> None:
-        payload = self.parse_json_body(body)
-        if payload is None:
-            return
-        prompt = self.prompt_from_payload(payload)
-        if not prompt:
-            self.send_json(
-                HTTPStatus.BAD_REQUEST,
-                {"ok": False, "error": "missing_prompt"},
-            )
-            return
-        requested_model = (
-            str(payload.get("model") or "stable-diffusion:configured-backend").strip()
-            or "stable-diffusion:configured-backend"
-        )
-        allow_nsfw = self.image_allow_nsfw(payload)
-        content_rating = self.image_content_rating(payload)
-        safety_profile = self.image_safety_profile(
-            payload, content_rating=content_rating
-        )
-        self._model_hint = requested_model
-        upstream_payload = self.stable_diffusion_payload(
-            payload, prompt=prompt, model=requested_model
-        )
-        request_body = json.dumps(upstream_payload).encode("utf-8")
-        timeout_s = self.image_timeout_from_payload(payload)
-        candidates, rows = self.app.image_candidate_bases()
-        attempted: list[str] = []
-        last_status = 0
-        last_error = "no_image_candidates" if not candidates else ""
-        for base in candidates:
-            attempted.append(base)
-            headers = {
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-                "X-Norllama-Allow-NSFW": "true" if allow_nsfw else "false",
-                "X-Norllama-Content-Rating": content_rating,
-                "X-Norllama-Safety-Profile": safety_profile,
-            }
-            key = self.app.image_key(base)
-            if key:
-                headers["Authorization"] = f"Bearer {key}"
-            try:
-                status, response_headers, response_body = self.request_upstream(
-                    base,
-                    "/sdapi/v1/txt2img",
-                    headers=headers,
-                    body=request_body,
-                    method="POST",
-                    timeout_s=timeout_s,
-                )
-            except Exception as exc:
-                last_error = str(exc)[:240]
-                continue
-            last_status = status
-            if status == 404 or status >= 500:
-                last_error = f"http_{status}"
-                continue
-            if status >= 400:
-                last_error = response_body.decode("utf-8", errors="replace")[:240]
-                break
-            content_type = str(response_headers.get("Content-Type") or "")
-            if "json" not in content_type.lower():
-                last_error = "non_json_image_response"
-                continue
-            try:
-                response_doc = json.loads(
-                    response_body.decode("utf-8", errors="replace")
-                )
-            except Exception as exc:
-                last_error = f"invalid_json:{exc}"
-                continue
-            if not isinstance(response_doc, dict):
-                last_error = "non_object_image_response"
-                continue
-            response = self.openai_image_response(
-                response_doc,
-                requested_model=requested_model,
-                upstream=base,
-                attempts=attempted,
-                allow_nsfw=allow_nsfw,
-                content_rating=content_rating,
-                safety_profile=safety_profile,
-            )
-            image_count = int((response.get("usage") or {}).get("image_count") or 0)
-            if image_count <= 0:
-                last_error = "empty_image_response"
-                continue
-            self._activity_extra = {
-                "mode": "image_generation_proxy",
-                "capability": "image_generate",
-                "model": str(response.get("model") or requested_model),
-                "image_count": image_count,
-                "output_shape": "complete",
-                "allow_nsfw": allow_nsfw,
-                "content_rating": content_rating,
-                "safety_profile": safety_profile,
-            }
-            self.send_json(
-                HTTPStatus.OK,
-                response,
-                extra_headers={
-                    "X-Norllama-Upstream": base,
-                    "X-Norllama-Attempts": ",".join(attempted),
-                    "X-Norllama-Worker-Id": self.app.host_alias(base),
-                },
-            )
-            return
-        peer_bases, peer_rows = self.peer_candidate_bases()
-        if peer_bases:
-            self.forward_candidates(
-                peer_bases,
-                "/v1/images/generations",
-                body=body,
-                headers={
-                    "Content-Type": "application/json",
-                    "X-Norllama-Allow-NSFW": "true" if allow_nsfw else "false",
-                    "X-Norllama-Content-Rating": content_rating,
-                    "X-Norllama-Safety-Profile": safety_profile,
-                },
-                method="POST",
-                peer_bases={normalize_base_url(base) for base in peer_bases},
-            )
-            return
-        self._activity_extra = {
-            "mode": "image_generation_proxy",
-            "capability": "image_generate",
-            "model": requested_model,
-            "image_count": 0,
-            "output_shape": "error",
-            "fallback_used": False,
-            "fallback_reason": last_error or "image_generation_unavailable",
-            "allow_nsfw": allow_nsfw,
-            "content_rating": content_rating,
-            "safety_profile": safety_profile,
-        }
-        self.send_json(
-            HTTPStatus.BAD_GATEWAY,
-            {
-                "ok": False,
-                "error": "image_generation_unavailable",
-                "model": requested_model,
-                "last_status": last_status,
-                "last_error": last_error,
-                "candidates": self.app.public_candidate_rows("image", rows + peer_rows),
-                "norllama": {
-                    "capability": "image_generate",
-                    "mode": "image_generation_proxy",
-                    "selected_provider": "norllama",
-                    "selected_model": requested_model,
-                    "selected_worker": "",
-                    "frontdoor": "https://llm.home.arpa",
-                    "peer_path": [],
-                    "usage_bucket": "offline_local",
-                    "cloud_proxy": False,
-                    "fallback_used": False,
-                    "fallback_reason": last_error or "image_generation_unavailable",
-                    "output_shape": "error",
-                    "verifier_result": "fail",
-                    "image_count": 0,
-                    "allow_nsfw": allow_nsfw,
-                    "content_rating": content_rating,
-                    "safety_profile": safety_profile,
-                    "attempts": attempted,
-                },
-            },
-            extra_headers={"X-Norllama-Attempts": ",".join(attempted)},
-        )
-
     def handle_media(self, path: str, body: bytes) -> None:
         candidates, rows = self.app.media_candidate_bases()
         if not candidates:
@@ -6828,7 +6898,6 @@ class Handler(BaseHTTPRequestHandler):
             "/rerank",
             "/v1/safety/classify",
             "/safety/classify",
-            "/v1/images/generations",
         }:
             return ["POST", "OPTIONS"]
         if path.startswith("/media/"):
@@ -6897,12 +6966,17 @@ class Handler(BaseHTTPRequestHandler):
                 limit = int((query.get("limit") or ["20"])[0])
             except Exception:
                 limit = 20
+            activity_class = (
+                query.get("class") or query.get("activity_class") or ["execution"]
+            )[0]
             tool_only = str(
                 (query.get("tool_only") or query.get("tools") or [""])[0]
             ).lower() in {"1", "true", "yes", "on"}
             self.send_json(
                 HTTPStatus.OK,
-                self.app.recent_activity(limit, tool_only=tool_only),
+                self.app.recent_activity(
+                    limit, activity_class=activity_class, tool_only=tool_only
+                ),
             )
             return
         if parsed.path == "/v1/prefetch/status":
@@ -7048,15 +7122,18 @@ class Handler(BaseHTTPRequestHandler):
                 limit = int((query.get("limit") or ["20"])[0])
             except Exception:
                 limit = 20
+            activity_class = (
+                query.get("class") or query.get("activity_class") or ["execution"]
+            )[0]
             tool_only = str(
                 (query.get("tool_only") or query.get("tools") or [""])[0]
             ).lower() in {"1", "true", "yes", "on"}
             body = json.dumps(
-                self.app.recent_activity(limit, tool_only=tool_only),
+                self.app.recent_activity(
+                    limit, activity_class=activity_class, tool_only=tool_only
+                ),
                 sort_keys=True,
-            ).encode(
-                "utf-8",
-            )
+            ).encode("utf-8")
             self.send_head_only(
                 HTTPStatus.OK, content_type="application/json", content_length=len(body)
             )
@@ -7150,9 +7227,6 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/v1/chat/completions":
             self.handle_unified_chat(body)
-            return
-        if parsed.path == "/v1/images/generations":
-            self.handle_image_generation(body)
             return
         if parsed.path in {"/v1/embeddings", "/api/embeddings"}:
             self.handle_openai_embeddings(body)

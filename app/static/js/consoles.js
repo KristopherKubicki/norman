@@ -347,12 +347,6 @@
     const cloudLlmPercent = Number(localFirst.cloud_llm_token_percent || 0);
     const proofSessions = Number(proof.session_count || 0);
     const proofSpark = Number(proofTotals.spark_evidence_count || 0);
-    const proofReceipts = Number(proofTotals.route_receipt_count || 0);
-    const missingReceipts = Number(proofTotals.route_receipt_missing_count || 0);
-    const auditFailures = Number(proofTotals.receipt_audit_fail_count || 0);
-    const proofReceiptStatus = missingReceipts || auditFailures
-      ? `${missingReceipts} missing / ${auditFailures} audit fail`
-      : `${proofReceipts} receipts`;
     const workers = Array.isArray(norllama.workers) ? norllama.workers : [];
     const pressureLine = workers
       .filter((worker) => worker && typeof worker === 'object')
@@ -393,21 +387,9 @@
       ),
       metricChip(
         'proof',
-        proofSessions
-          ? `${proofSessions} sess / ${proofSpark} spark / ${proofReceipts} rcpt`
-          : 'no data',
-        missingReceipts || auditFailures
-          ? 'is-danger'
-          : proofSessions && (
-              !proofGate.proves_local_first
-              || proofGate.route_receipts_present === false
-              || proofGate.receipt_audit_passed === false
-            )
-            ? 'is-warn'
-            : '',
-        proofGate.cloud_proxy_visible
-          ? `cloud proxy visible in ledger; ${proofReceiptStatus}`
-          : `local-first proof sessions; ${proofReceiptStatus}`,
+        proofSessions ? `${proofSessions} sess / ${proofSpark} spark` : 'no data',
+        proofSessions && !proofGate.proves_local_first ? 'is-warn' : '',
+        proofGate.cloud_proxy_visible ? 'cloud proxy visible in ledger' : 'local-first proof sessions',
       ),
       metricChip(
         'mesh',

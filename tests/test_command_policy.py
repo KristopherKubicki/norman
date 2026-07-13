@@ -20,6 +20,15 @@ def test_tmux_shell_allows_ls():
     assert decision.command_class == "read"
 
 
+def test_tmux_shell_allows_ripgrep_read_only():
+    decision = evaluate_tmux_payload(
+        "rg --files -g '!node_modules/**' -g AGENTS.md",
+        mode="shell",
+    )
+    assert decision.decision == "allow"
+    assert decision.command_class == "read"
+
+
 def test_tmux_shell_requires_approval_for_unknown():
     decision = evaluate_tmux_payload("do_the_thing now", mode="shell")
     assert decision.decision == "needs_approval"

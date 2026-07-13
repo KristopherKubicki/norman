@@ -55,7 +55,7 @@ Norllama front door: https://llm.home.arpa
 | mac-mini-133         |   | spark-150            |   | spark-151            |
 | 192.168.2.133:18151  |   | 192.168.2.150:18151  |   | 192.168.2.151:18151  |
 | 16 GB fallback       |   | 128 GB production    |   | 128 GB production    |
-| tiny/canary fallback |   | specialists/services |   | Qwen planner/code/judge |
+| tiny/canary models   |   | router/code/rerank   |   | judge/perception/doc |
 +----------------------+   +----------------------+   +----------------------+
   ^
   |
@@ -156,61 +156,50 @@ The catalog currently includes the following role assignments. The auditor shoul
 
 | Lane | Model | Intended worker | Residency | Audit focus |
 | --- | --- | --- | --- | --- |
-| Fast agent/router/planner | `nvidia/Qwen3.6-35B-A3B-NVFP4` | `spark-151` | resident | Is this real/available, fast enough, and better than current benchmark-backed defaults? |
-| Coding operator | `nvidia/Qwen3.6-27B-NVFP4` | `spark-151` | resident | Validate as default local coding brain. |
+| Fast agent/router/planner | `nvidia/Qwen3.6-35B-A3B-NVFP4` | `spark-150` | resident | Is this real/available, fast enough, and better than current benchmark-backed defaults? |
+| Coding operator | `nvidia/Qwen3.6-27B-NVFP4` | `spark-150` | resident | Validate as default local coding brain. |
 | Heavy local judge | `nvidia/Qwen3.5-122B-A10B-NVFP4` | `spark-151` | warm on demand | Validate latency, memory pressure, and judge quality. |
 | Text embeddings heavy | `Qwen/Qwen3-Embedding-8B` | `spark-150` | resident | Verify embedding service support and index integration. |
 | Text embeddings fast | `Qwen/Qwen3-Embedding-0.6B` | `mac-mini-133` | resident | Fallback only; check usefulness. |
 | Text rerank heavy | `Qwen/Qwen3-Reranker-8B` | `spark-150` | resident | Should sit before expensive planner/judge/cloud calls. |
 | Text rerank fast | `Qwen/Qwen3-Reranker-0.6B` | `mac-mini-133` | resident | Fast/degraded path. |
-| Visual embedding | `Qwen/Qwen3-VL-Embedding-8B` | `spark-150` | warm on demand | Verify multimodal memory pipeline exists. |
-| Visual rerank | `Qwen/Qwen3-VL-Reranker-8B` | `spark-150` | warm on demand | Verify screenshot/PDF ranking pipeline. |
-| Visual doc retrieval | `nvidia/nemotron-colembed-vl-8b-v2` | `spark-150` | warm on demand | Audit whether installed/served anywhere. |
-| OCR | `PaddlePaddle/PaddleOCR-VL-1.6` | `spark-150` | gateway/service | Verify real OCR serving path through NormanProxy/Norllama gateway. |
-| PDF Markdown | `opendatalab/MinerU2.5-Pro-2605-1.2B` | `spark-150` | warm on demand | Verify document ingestion path. |
-| GUI grounding | `ServiceNow/GroundNext-7B-V0` | `spark-150` | warm on demand | Verify screen-coordinate action path. |
+| Visual embedding | `Qwen/Qwen3-VL-Embedding-8B` | `spark-151` | warm on demand | Verify multimodal memory pipeline exists. |
+| Visual rerank | `Qwen/Qwen3-VL-Reranker-8B` | `spark-151` | warm on demand | Verify screenshot/PDF ranking pipeline. |
+| Visual doc retrieval | `nvidia/nemotron-colembed-vl-8b-v2` | `spark-151` | warm on demand | Audit whether installed/served anywhere. |
+| OCR | `PaddlePaddle/PaddleOCR-VL-1.6` | `spark-151` | warm on demand | Verify real OCR serving path. |
+| PDF Markdown | `opendatalab/MinerU2.5-Pro-2605-1.2B` | `spark-151` | warm on demand | Verify document ingestion path. |
+| GUI grounding | `ServiceNow/GroundNext-7B-V0` | `spark-151` | warm on demand | Verify screen-coordinate action path. |
 | ASR quality | `Qwen/Qwen3-ASR-1.7B-hf` | `spark-150` | warm on demand | Verify STT service path. |
 | ASR fast | `Qwen/Qwen3-ASR-0.6B-hf` | `mac-mini-133` | resident | Verify low-latency command capture. |
 | TTS | `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` | `spark-150` | cold only | Non-critical lane. |
 | Safety generation | `Qwen/Qwen3Guard-Gen-8B` | `spark-150` | resident | Validate policy check integration. |
-| Safety streaming | `Qwen/Qwen3Guard-Stream-0.6B` | `spark-150` | resident | Validate pre-tool/browser streaming check. |
-| Prompt injection | `qualifire/prompt-injection-sentinel` | `spark-150` | resident/lab until handler proof | Validate hostile-context gate. |
-| Observability forecasting | `Datadog/Toto-2.0-1B` | `spark-150` | cold only | Lab lane unless integrated with telemetry. |
-| General forecasting | `amazon/chronos-2` | `spark-150` | cold only | Baseline/lab lane. |
-| Estate graph | `GraphPFN-1.3` | `spark-150` | cold only | Lab lane. |
-| Packet embeddings | `PacketCLIP` | `spark-150` | cold only | Lab lane. |
-| DNS model | `DNS-GT` | `spark-150` | cold only | Lab lane. |
+| Safety streaming | `Qwen/Qwen3Guard-Stream-0.6B` | `mac-mini-133` | resident | Validate pre-tool/browser streaming check. |
+| Prompt injection | `qualifire/prompt-injection-sentinel` | `mac-mini-133` | resident | Validate hostile-context gate. |
+| Observability forecasting | `Datadog/Toto-2.0-1B` | `spark-151` | cold only | Lab lane unless integrated with telemetry. |
+| General forecasting | `amazon/chronos-2` | `spark-151` | cold only | Baseline/lab lane. |
+| Estate graph | `GraphPFN-1.3` | `spark-151` | cold only | Lab lane. |
+| Packet embeddings | `PacketCLIP` | `spark-151` | cold only | Lab lane. |
+| DNS model | `DNS-GT` | `spark-151` | cold only | Lab lane. |
 
 Important caveat: this catalog is a desired capability map, not proof that every model is installed, benchmarked, or supported by the current Norllama serving layer. Audit live availability separately.
 
 ## Existing Benchmark Path
 
-Norman expects Uplink route-proof benchmark evidence through:
+Norman expects Uplink benchmark evidence through:
 
-- Active path: `/var/lib/norman/norllama/route_proof_benchmark_packet.json`
-- Active optional URL: `settings.llm_route_proof_benchmark_packet_url`
-- Historical broad path: `/var/lib/norman/norllama/benchmark_packet.json`
-- Historical broad optional URL: `settings.llm_benchmark_packet_url`
+- Path: `/var/lib/norman/norllama/benchmark_packet.json`
+- Optional URL: `settings.llm_benchmark_packet_url`
 - Reader: `app/services/norllama/warm_policy.py::load_benchmark_packet`
 - Recommendation parser: `benchmark_recommendations()`
 - Warm policy builder: `build_warm_policy()`
 
-Only packets with schema `norman.norllama.route-proof-benchmark-packet.v1` are
-promotion-authoritative. The older broad packet is copied/parsed for audit
-history but is not allowed to promote models into default routing or warm
-residency.
+Current benchmark quality gates in settings:
 
-Current benchmark quality gates in settings split smoke from production:
-
-- `llm_warm_policy_smoke_*`
-- `llm_warm_policy_production_*`
+- `llm_warm_policy_min_benchmark_score = 0.6`
+- `llm_warm_policy_min_coverage_ratio = 0.5`
 - `llm_warm_policy_fallback_prefetch = False`
 - `llm_warm_policy_prefetch_limit = 3`
 - `llm_warm_policy_prefetch_timeout_seconds = 5`
-
-Production defaults must reject timeout-heavy, empty, zero-token, and
-progress-only rows. Smoke gates prove transport/schema/worker attribution and
-are not sufficient for default TUI routing.
 
 The packet parser looks at:
 
@@ -315,9 +304,9 @@ The pro agent should run real prompts and inspect route summaries/KPIs after eac
 2. `2.133` only
    - Expected: tiny/canary/degraded notices; no heavy-model warm attempts.
 3. `2.150` only
-   - Expected: specialist lanes such as rerank/OCR/ASR/safety work; Qwen brain lanes degrade or wait.
+   - Expected: router/code/rerank lanes work; frontdoor worker attribution points at `spark-150`.
 4. `2.151` only
-   - Expected: Qwen planner/code/judge lanes work; specialist lanes degrade or wait.
+   - Expected: judge/perception/document lanes work or degrade honestly.
 5. `2.150` + `2.151`, no `2.133`
    - Expected: production local-first behavior remains healthy.
 6. All Sparks down, `2.133` up
@@ -360,8 +349,7 @@ Where to find this:
 
 1. Catalog vs benchmark conflict
    - The catalog currently contains next-gen desired models.
-   - Older broad benchmark packets may still mention stale candidates, but only
-     route-proof packets are promotion-authoritative.
+   - `docs/norllama_router_guidance.md` still mentions older benchmark-backed defaults such as `qwen3-coder-next:q4_K_M` and `gemma4:26b-a4b-it-q4_K_M`.
    - Audit should decide whether catalog entries are installed reality, future target, or wrong.
 
 2. Benchmark promotion criteria

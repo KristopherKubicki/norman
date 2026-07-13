@@ -18,8 +18,6 @@ from app.models import (
     EstateWorker,
     User,
 )
-from app.services import estate_registry, estate_sync
-from app.services.tui_fleet_health import read_tui_fleet_health
 
 
 router = APIRouter(tags=["estate"])
@@ -41,21 +39,8 @@ async def estate_summary(
         "workers": db.query(EstateWorker).count(),
         "places": db.query(EstatePlace).count(),
         "assets": db.query(EstateAsset).count(),
-        "services": db.query(EstateService)
-        .filter(EstateService.is_active.is_(True))
-        .count(),
+        "services": db.query(EstateService).count(),
     }
-
-
-@router.get("/estate/tui-fleet-health")
-async def estate_tui_fleet_health(_: User = Depends(get_current_user)):
-    return read_tui_fleet_health()
-
-
-@router.get("/estate/powers")
-async def estate_powers(_: User = Depends(get_current_user)):
-    registry = estate_sync.load_runtime_registry()
-    return estate_registry.power_manifest(registry)
 
 
 @router.get("/estate/overview")
@@ -71,12 +56,7 @@ async def estate_overview(
     workers = db.query(EstateWorker).order_by(EstateWorker.display_name.asc()).all()
     places = db.query(EstatePlace).order_by(EstatePlace.display_name.asc()).all()
     assets = db.query(EstateAsset).order_by(EstateAsset.display_name.asc()).all()
-    services = (
-        db.query(EstateService)
-        .filter(EstateService.is_active.is_(True))
-        .order_by(EstateService.display_name.asc())
-        .all()
-    )
+    services = db.query(EstateService).order_by(EstateService.display_name.asc()).all()
     control_classes = (
         db.query(EstateControlClass).order_by(EstateControlClass.rank.desc()).all()
     )
@@ -194,7 +174,6 @@ async def estate_overview(
                 "web_url_tailnet",
                 "console_url",
                 "console_url_tailnet",
-                "is_active",
             ),
         )
         row["domain_name"] = domain_names.get(item.domain_id)

@@ -349,6 +349,8 @@ document.addEventListener('DOMContentLoaded', () => {
     parkergale: 3,
     'private-home': 4,
     'toy-box-home': 5,
+    artmonster: 6,
+    'diamond-roc': 6,
     housebot: 6,
     glimpser: 7,
     dj: 8,
@@ -356,10 +358,8 @@ document.addEventListener('DOMContentLoaded', () => {
     studio: 10,
     castle: 11,
     'phone-ops': 12,
-    'diamond-roc': 13,
-    uscache: 14,
-    theseus: 15,
-    artmonster: 16,
+    uscache: 13,
+    theseus: 14,
     'work-special-home': 12,
     earlybird: 13,
     infra: 14,
@@ -383,14 +383,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const LANE_ORDER = ['Norman', 'Private', 'Personal', 'Work', 'Shared'];
   const PRIVATE_SERVICE_SLUGS = new Set(['finance-reader', 'health-reader', 'parkergale', 'private-home']);
-  const PERSONAL_SERVICE_SLUGS = new Set(['toy-box-home', 'housebot', 'glimpser', 'dj', 'tv', 'studio', 'castle', 'phone-ops', 'diamond-roc', 'uscache', 'autocamera', 'theseus', 'artmonster']);
+  const PERSONAL_SERVICE_SLUGS = new Set(['toy-box-home', 'artmonster', 'diamond-roc', 'housebot', 'glimpser', 'dj', 'tv', 'studio', 'castle', 'phone-ops', 'uscache', 'autocamera', 'theseus']);
   const WORK_SERVICE_SLUGS = new Set(['work-special-home', 'earlybird', 'infra', 'control-plane', 'market-sizing', 'tmi-dashboards', 'gold-book', 'platinum-standard', 'publisher', 'compere', 'leadership-kpis', 'panelbot', 'scout', 'd-ace']);
   const SHARED_SERVICE_SLUGS = new Set(['networking-home', 'networking', 'netops', 'uplink', 'cloudagent', 'dohio-topology', 'switchyard-network-board']);
   const BOT_PROXY_ALIASES = {
     autocamera: 'auto',
     compere: 'keystone',
     'control-plane': 'cp',
-    'diamond-roc': 'diamond',
     dj: 'yt',
     'gold-book': 'goldbook',
     housebot: 'house',
@@ -420,11 +419,9 @@ document.addEventListener('DOMContentLoaded', () => {
     'market-sizing': 'market.kris.openbrand.com',
     mls: 'mls.kris.openbrand.com',
     networking: 'networking.home.arpa',
-    netops: 'networking.home.arpa',
     panelbot: 'panelbot.kris.openbrand.com',
     parkergale: 'pefb.home.arpa',
     'phone-ops': 'phone.home.arpa',
-    'diamond-roc': 'diamond.home.arpa',
     'platinum-standard': 'platinum.kris.openbrand.com',
     publisher: 'publisher.kris.openbrand.com',
     scout: 'scout.kris.openbrand.com',
@@ -439,8 +436,8 @@ document.addEventListener('DOMContentLoaded', () => {
   };
   const FLEET_MARK_ALIASES = {
     norman: 'N',
-    autocamera: 'AC',
     artmonster: 'AM',
+    autocamera: 'AC',
     castle: 'CS',
     cloudagent: 'CA',
     compere: 'CP',
@@ -460,7 +457,6 @@ document.addEventListener('DOMContentLoaded', () => {
     'market sizing': 'MS',
     mls: 'ML',
     networking: 'NW',
-    netops: 'NE',
     panelbot: 'PB',
     parkergale: 'PE',
     pefb: 'PE',

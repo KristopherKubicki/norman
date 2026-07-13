@@ -57,31 +57,6 @@ def _upsert_section(
     return {"inserted": inserted, "updated": updated}
 
 
-def _deactivate_missing_services(
-    db: Session,
-    registry_services: list[dict[str, Any]],
-) -> int:
-    registry_slugs = {
-        str(item.get("slug") or "").strip()
-        for item in registry_services
-        if isinstance(item, dict)
-    }
-    if not registry_slugs:
-        return 0
-
-    deactivated = 0
-    for service in db.query(EstateService).all():
-        if service.slug in registry_slugs or service.is_active is False:
-            continue
-        service.is_active = False
-        if not service.notes:
-            service.notes = "Deactivated because this service is no longer present in the estate registry."
-        deactivated += 1
-    if deactivated:
-        db.flush()
-    return deactivated
-
-
 def sync_registry(
     db: Session,
     registry: dict[str, list[dict[str, Any]]] | None = None,
@@ -146,9 +121,6 @@ def sync_registry(
         EstateService,
         lambda obj, item: _apply_service(obj, item, db),
     )
-    deactivated_services = _deactivate_missing_services(db, data["services"])
-    if deactivated_services:
-        results["services"]["deactivated"] = deactivated_services
 
     db.commit()
     return results

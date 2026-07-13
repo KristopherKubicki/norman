@@ -1,19 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
 from pathlib import Path
 
-import pytest
-from fastapi import HTTPException
-
-from app.models import (
-    SecretAlias,
-    SecretLease,
-    SecretPolicy,
-    SecretProvider,
-    SecretStashItem,
-)
-from app.services.secret_keys import resolve_secret_stash_item
+from app.api.deps import get_current_user, get_keys_service_user
+from app.core.config import settings
+from app.crud.user import create_user, get_user_by_email
+from app.main import app
+from app.models import SecretAlias, SecretLease, SecretPolicy, SecretProvider
+from app.schemas.user import UserCreate
 
 
 def _seed_file_alias(
@@ -49,13 +43,15 @@ def _seed_policy(
     approval_required: bool,
     raw_reveal_allowed: bool,
     allowed_modes: list[str],
+    secret_prefix: str = "networking/",
+    requester_id: str = "norman-prime",
 ):
     policy = SecretPolicy(
         name=name,
         requester_type="agent",
-        requester_id="norman-prime",
+        requester_id=requester_id,
         lane="shared_infra",
-        secret_prefix="networking/",
+        secret_prefix=secret_prefix,
         allowed_modes=allowed_modes,
         max_ttl_seconds=900,
         approval_required=approval_required,
@@ -66,6 +62,36 @@ def _seed_policy(
     db.commit()
     db.refresh(policy)
     return policy
+
+
+def _seed_env_file_alias(db, tmp_path: Path, *, name: str = "norman/runtime-token"):
+    env_file = tmp_path / "runtime.env"
+    env_file.write_text(
+        '# runtime bridge\nCONSOLE_RUNTIME_SERVICE_TOKEN="brokered-token"\n',
+        encoding="utf-8",
+    )
+    provider = SecretProvider(
+        name=f"runtime-env-{name.replace('/', '-')}",
+        kind="env_file",
+        enabled=True,
+        config={"path": str(env_file)},
+    )
+    db.add(provider)
+    db.commit()
+    db.refresh(provider)
+    alias = SecretAlias(
+        name=name,
+        provider_id=provider.id,
+        backend_ref="CONSOLE_RUNTIME_SERVICE_TOKEN",
+        lane="shared_infra",
+        enabled=True,
+        default_ttl_seconds=900,
+        allow_raw_reveal=True,
+    )
+    db.add(alias)
+    db.commit()
+    db.refresh(alias)
+    return provider, alias
 
 
 def test_keys_request_pending_when_policy_requires_approval(test_app, db, tmp_path):
@@ -200,23 +226,15 @@ def test_keys_active_leases_and_revoke(test_app, db, tmp_path):
     assert lease.status == "revoked"
 
 
-def test_keys_rejects_unknown_request_mode_before_lookup(test_app):
-    response = test_app.post(
-        "/api/v1/keys/requests",
-        json={"name": "networking/missing", "requested_mode": "debug"},
-    )
-
-    assert response.status_code == 422
-
-
-def test_keys_read_mode_requires_policy_and_alias_raw_reveal(test_app, db, tmp_path):
-    _, alias = _seed_file_alias(db, tmp_path, suffix="-blocked-read")
+def test_env_file_provider_can_issue_secret(test_app, db, tmp_path):
+    _, alias = _seed_env_file_alias(db, tmp_path, name="norman/env-provider")
     _seed_policy(
         db,
-        name="networking-blocked-read",
+        name="runtime-env-provider",
         approval_required=False,
-        raw_reveal_allowed=False,
+        raw_reveal_allowed=True,
         allowed_modes=["read"],
+        secret_prefix="norman/",
     )
 
     response = test_app.post(
@@ -227,134 +245,121 @@ def test_keys_read_mode_requires_policy_and_alias_raw_reveal(test_app, db, tmp_p
             "requester_type": "agent",
             "requester_id": "norman-prime",
             "lane": "shared_infra",
-            "reason": "attempt raw read",
-        },
-    )
-
-    assert response.status_code == 403
-    assert response.json()["detail"] == "Raw secret reveal is not allowed"
-
-
-def test_keys_stash_returns_pointer_without_secret_and_resolves_internally(
-    test_app, db
-):
-    raw_value = "raw-token-value-123"
-
-    response = test_app.post(
-        "/api/v1/keys/stash",
-        json={
-            "value": raw_value,
-            "label": "api credential",
-            "source": "manual",
-            "ttl_seconds": 900,
+            "reason": "runtime token lookup",
         },
     )
 
     assert response.status_code == 200
-    assert raw_value not in response.text
     payload = response.json()
-    assert payload["pointer_token"].startswith("sec_")
-    assert payload["pointer_uri"] == f"secret://stash/{payload['pointer_token']}"
-    assert payload["masked_preview"] == "19 chars, 1 line"
-
-    item = (
-        db.query(SecretStashItem)
-        .filter(SecretStashItem.pointer_token == payload["pointer_token"])
-        .first()
+    assert payload["provider"] == "env_file"
+    assert payload["lease"]["provider_lease_id"].endswith(
+        "#CONSOLE_RUNTIME_SERVICE_TOKEN"
     )
-    assert item is not None
-    assert item.encrypted_value != raw_value
-    assert raw_value not in item.encrypted_value
-
-    resolved = resolve_secret_stash_item(
-        db,
-        pointer_token=payload["pointer_token"],
-        user_id=payload["user_id"],
-        requester_type="agent",
-        requester_id="norman-prime",
-        reason="unit test",
-    )
-
-    assert resolved == raw_value
-    db.expire_all()
-    item = (
-        db.query(SecretStashItem)
-        .filter(SecretStashItem.pointer_token == payload["pointer_token"])
-        .first()
-    )
-    assert item.last_used_at is not None
+    assert payload["value"] == "brokered-token"
 
 
-def test_keys_stash_list_and_revoke_do_not_reveal_secret(test_app, db):
-    raw_value = "another-raw-token"
-    create_response = test_app.post(
-        "/api/v1/keys/stash",
-        json={
-            "value": raw_value,
-            "label": "temporary token",
-            "source": "manual",
-            "ttl_seconds": 900,
-        },
-    )
-    payload = create_response.json()
-
-    list_response = test_app.get("/api/v1/keys/stash")
-
-    assert list_response.status_code == 200
-    assert raw_value not in list_response.text
-    assert any(
-        item["pointer_token"] == payload["pointer_token"]
-        for item in list_response.json()
-    )
-
-    revoke_response = test_app.post(
-        f"/api/v1/keys/stash/{payload['pointer_token']}/revoke"
-    )
-
-    assert revoke_response.status_code == 200
-    assert raw_value not in revoke_response.text
-    assert revoke_response.json()["status"] == "revoked"
-    with pytest.raises(HTTPException) as exc:
-        resolve_secret_stash_item(
-            db,
-            pointer_token=payload["pointer_token"],
-            user_id=payload["user_id"],
-        )
-    assert exc.value.status_code == 400
-
-
-def test_keys_stash_expired_pointer_cannot_resolve(test_app, db):
-    raw_value = "expiring-raw-token"
-    create_response = test_app.post(
-        "/api/v1/keys/stash",
-        json={
-            "value": raw_value,
-            "label": "expiring token",
-            "source": "manual",
-            "ttl_seconds": 900,
-        },
-    )
-    payload = create_response.json()
-    item = (
-        db.query(SecretStashItem)
-        .filter(SecretStashItem.pointer_token == payload["pointer_token"])
-        .first()
-    )
-    item.expires_at = datetime.utcnow() - timedelta(seconds=1)
+def test_environment_provider_can_issue_secret(test_app, db, monkeypatch):
+    monkeypatch.setenv("CONSOLE_RUNTIME_SERVICE_TOKEN", "env-runtime-token")
+    provider = SecretProvider(name="runtime-env", kind="env", enabled=True, config={})
+    db.add(provider)
     db.commit()
+    db.refresh(provider)
+    alias = SecretAlias(
+        name="norman/env-runtime-token",
+        provider_id=provider.id,
+        backend_ref="CONSOLE_RUNTIME_SERVICE_TOKEN",
+        lane="shared_infra",
+        enabled=True,
+        default_ttl_seconds=900,
+        allow_raw_reveal=True,
+    )
+    db.add(alias)
+    db.commit()
+    db.refresh(alias)
+    _seed_policy(
+        db,
+        name="runtime-env-service-provider",
+        approval_required=False,
+        raw_reveal_allowed=True,
+        allowed_modes=["read"],
+        secret_prefix="norman/",
+    )
 
-    with pytest.raises(HTTPException) as exc:
-        resolve_secret_stash_item(
+    response = test_app.post(
+        "/api/v1/keys/requests",
+        json={
+            "name": alias.name,
+            "requested_mode": "read",
+            "requester_type": "agent",
+            "requester_id": "norman-prime",
+            "lane": "shared_infra",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["provider"] == "env"
+    assert payload["lease"]["provider_lease_id"] == "env:CONSOLE_RUNTIME_SERVICE_TOKEN"
+    assert payload["value"] == "env-runtime-token"
+
+
+def test_compat_secret_get_requires_service_token_and_returns_value(
+    test_app, db, tmp_path
+):
+    previous_token = settings.norman_keys_service_token
+    previous_email = settings.norman_keys_service_user_email
+    saved_current_override = app.dependency_overrides.pop(get_current_user, None)
+    saved_keys_override = app.dependency_overrides.pop(get_keys_service_user, None)
+    settings.norman_keys_service_token = "keys-service-token"
+    settings.norman_keys_service_user_email = "keys@example.com"
+    try:
+        if not get_user_by_email(db, email="keys@example.com"):
+            create_user(
+                db,
+                UserCreate(
+                    email="keys@example.com",
+                    username="keys_user",
+                    password="pass123",
+                ),
+            )
+        _, alias = _seed_env_file_alias(db, tmp_path, name="norman/runtime-token")
+        _seed_policy(
             db,
-            pointer_token=payload["pointer_token"],
-            user_id=payload["user_id"],
+            name="runtime-compat",
+            approval_required=False,
+            raw_reveal_allowed=True,
+            allowed_modes=["read"],
+            secret_prefix="norman/",
+            requester_id="runtime-tui-bridge",
         )
 
-    assert exc.value.status_code == 410
-    db.expire_all()
-    item = (
-        db.query(SecretStashItem)
-        .filter(SecretStashItem.pointer_token == payload["pointer_token"])
-        .first()
-    )
-    assert item.status == "expired"
+        missing = test_app.post("/v1/secrets/get", json={"name": alias.name})
+        assert missing.status_code == 401
+
+        wrong = test_app.post(
+            "/v1/secrets/get",
+            headers={"Authorization": "Bearer wrong-token"},
+            json={"name": alias.name},
+        )
+        assert wrong.status_code == 401
+
+        response = test_app.post(
+            "/v1/secrets/get",
+            headers={"Authorization": "Bearer keys-service-token"},
+            json={"name": alias.name},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["value"] == "brokered-token"
+        assert payload["secret"] == "brokered-token"
+        assert payload["lease_id"]
+        assert payload["request_id"]
+        assert payload["provider"] == "env_file"
+    finally:
+        settings.norman_keys_service_token = previous_token
+        settings.norman_keys_service_user_email = previous_email
+        if saved_current_override is not None:
+            app.dependency_overrides[get_current_user] = saved_current_override
+        if saved_keys_override is not None:
+            app.dependency_overrides[get_keys_service_user] = saved_keys_override

@@ -131,3 +131,96 @@ async def test_routing_rule_destination_connector_is_used_for_delivery(db, monke
 
     assert calls["slack"] == 0
     assert calls["signal"] == 1
+
+
+@pytest.mark.asyncio
+async def test_reply_webhook_payload_carries_sms_reply_context(db, monkeypatch):
+    user = _ensure_user(db)
+
+    connector = crud.connector.create(
+        db,
+        obj_in=ConnectorCreate(
+            name="SMS In",
+            connector_type="sms",
+            config={"reply_webhook_url": "https://bridge.invalid/twilio/sms/send"},
+        ),
+        user_id=user.id,
+    )
+
+    bot = create_bot(
+        db,
+        bot_create=BotCreate(
+            name="SMS Bot",
+            description="sms",
+            gpt_model="gpt-5-mini",
+            session_id="sms",
+        ),
+        user_id=user.id,
+    )
+
+    routing_crud.create_rule(
+        db,
+        user_id=user.id,
+        rule_in=RoutingRuleCreate(
+            name="SMS All",
+            connector_id=connector.id,
+            connector_type=connector.connector_type,
+            bot_id=bot.id,
+            match_type="all",
+            match_value=None,
+            priority=100,
+            is_active=True,
+        ),
+    )
+
+    async def fake_reply(**kwargs):
+        return "reply text"
+
+    monkeypatch.setattr(engine, "_generate_bot_reply", fake_reply)
+
+    captured = {}
+
+    class DummyWebhookConnector:
+        def __init__(self, webhook_url, config=None):
+            captured["webhook_url"] = webhook_url
+            captured["config"] = dict(config or {})
+
+        async def send_message(self, message):
+            captured["message"] = message
+            return "ok"
+
+    monkeypatch.setattr(engine, "WebhookConnector", DummyWebhookConnector)
+
+    event = models.RoutingEvent(
+        user_id=user.id,
+        connector_id=connector.id,
+        connector_type=connector.connector_type,
+        message_text="hello",
+        payload={"Body": "hello", "From": "+15551230000", "To": "+15557654321"},
+        status="queued",
+        delivery_status="queued",
+        idempotency_key="sms_reply_k1",
+    )
+    routing_crud.create_event(db, event)
+
+    job = models.RoutingJob(
+        event_id=event.id,
+        connector_id=connector.id,
+        status="pending",
+        attempts=0,
+        max_attempts=3,
+        next_attempt_at=datetime.utcnow(),
+        payload={"Body": "hello", "From": "+15551230000", "To": "+15557654321"},
+        normalized={"text": "hello", "from": "+15551230000", "to": "+15557654321"},
+    )
+    routing_crud.create_job(db, job)
+
+    status, event_id = await engine.process_routing_job(db=db, job=job)
+    assert status == "routed"
+    assert event_id == event.id
+    assert captured["webhook_url"] == "https://bridge.invalid/twilio/sms/send"
+    assert captured["message"]["text"] == "reply text"
+    assert captured["message"]["reply_to"] == "+15551230000"
+    assert captured["message"]["reply_from"] == "+15557654321"
+    assert captured["message"]["source_connector_type"] == "sms"
+    assert captured["message"]["source_normalized"]["from"] == "+15551230000"

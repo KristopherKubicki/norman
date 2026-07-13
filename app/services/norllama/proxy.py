@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import base64
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -37,12 +36,6 @@ def _clean(value: Any) -> str:
     return str(value or "").strip()
 
 
-def _truthy(value: Any) -> bool:
-    if isinstance(value, bool):
-        return value
-    return _clean(value).lower() in {"1", "true", "yes", "on", "adult", "nsfw"}
-
-
 def _request_messages(request: NorllamaTaskRequest) -> list[dict[str, Any]]:
     if request.messages:
         return request.messages
@@ -66,48 +59,30 @@ def _candidate_text(candidate: dict[str, Any]) -> str:
     return _clean(candidate)
 
 
-def _artifact_bytes(request: NorllamaTaskRequest) -> tuple[bytes, str, str]:
-    artifact = request.artifacts[0] if request.artifacts else {}
-    if not isinstance(artifact, dict):
-        artifact = {}
-    filename = _clean(artifact.get("filename") or artifact.get("name"))
-    content_type = _clean(
-        artifact.get("content_type")
-        or artifact.get("media_type")
-        or artifact.get("mime")
-    )
-    raw = artifact.get("bytes") or artifact.get("content")
-    if isinstance(raw, bytes):
-        return raw, filename or "upload.bin", content_type or "application/octet-stream"
-    if isinstance(raw, str) and raw:
-        return (
-            raw.encode("utf-8"),
-            filename or "upload.txt",
-            content_type or "text/plain",
+def _artifact_content(request: NorllamaTaskRequest) -> tuple[bytes, str, str]:
+    for artifact in request.artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        filename = _clean(artifact.get("filename") or artifact.get("name"))
+        media_type = _clean(
+            artifact.get("media_type")
+            or artifact.get("mime")
+            or artifact.get("content_type")
         )
-    encoded = _clean(
-        artifact.get("content_base64")
-        or artifact.get("base64")
-        or artifact.get("b64")
-        or artifact.get("data_base64")
-    )
-    if encoded:
-        return (
-            base64.b64decode(encoded),
-            filename or "upload.bin",
-            content_type or "application/octet-stream",
-        )
-    path = _clean(artifact.get("path"))
-    if path:
-        candidate = Path(path).expanduser()
-        if not candidate.exists() or not candidate.is_file():
-            raise RuntimeError(f"Norllama artifact path is not readable: {path}")
-        return (
-            candidate.read_bytes(),
-            filename or candidate.name,
-            content_type or "application/octet-stream",
-        )
-    raise RuntimeError("Norllama tool lane requires a file artifact")
+        data = artifact.get("bytes") or artifact.get("content_bytes")
+        if isinstance(data, bytes) and data:
+            return data, filename or "artifact.bin", media_type
+        path = _clean(artifact.get("path"))
+        if path:
+            source = Path(path)
+            if not source.exists() or not source.is_file():
+                raise RuntimeError(f"Norllama artifact does not exist: {path}")
+            return (
+                source.read_bytes(),
+                filename or source.name,
+                media_type or "application/octet-stream",
+            )
+    raise RuntimeError("Norllama specialist lane requires an artifact payload")
 
 
 def _default_rerank_tool(
@@ -150,6 +125,38 @@ def _default_rerank_tool(
     return {**payload, "ranked_ids": ranked_ids}
 
 
+def _default_ocr_tool(
+    request: NorllamaTaskRequest, route: NorllamaRoute
+) -> dict[str, Any]:
+    content, filename, media_type = _artifact_content(request)
+    return norllama_gateway.ocr_document(
+        content=content,
+        filename=filename,
+        media_type=media_type,
+        model=route.model,
+        base_url=route.endpoint
+        or _clean(getattr(settings, "llm_offline_base_url", "")),
+        api_key=_clean(getattr(settings, "llm_offline_api_key", "")),
+        timeout_seconds=request.route_policy.get("timeout_seconds"),
+    )
+
+
+def _default_transcribe_tool(
+    request: NorllamaTaskRequest, route: NorllamaRoute
+) -> dict[str, Any]:
+    content, filename, media_type = _artifact_content(request)
+    return norllama_gateway.transcribe_audio(
+        content=content,
+        filename=filename,
+        media_type=media_type,
+        model=route.model,
+        base_url=route.endpoint
+        or _clean(getattr(settings, "llm_offline_base_url", "")),
+        api_key=_clean(getattr(settings, "llm_offline_api_key", "")),
+        timeout_seconds=request.route_policy.get("timeout_seconds"),
+    )
+
+
 def _default_safety_tool(
     request: NorllamaTaskRequest, route: NorllamaRoute
 ) -> dict[str, Any]:
@@ -175,94 +182,15 @@ def _default_safety_tool(
     return payload
 
 
-def _default_ocr_tool(
-    request: NorllamaTaskRequest, route: NorllamaRoute
-) -> dict[str, Any]:
-    content, filename, content_type = _artifact_bytes(request)
-    payload = norllama_gateway.ocr_document(
-        content=content,
-        filename=filename,
-        content_type=content_type,
-        model=route.model,
-        base_url=route.endpoint
-        or _clean(getattr(settings, "llm_offline_base_url", "")),
-        api_key=_clean(getattr(settings, "llm_offline_api_key", "")),
-        timeout_seconds=request.route_policy.get("timeout_seconds"),
-    )
-    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
-    usage.setdefault("usage_bucket", "offline_local")
-    payload["usage"] = usage
-    return payload
-
-
-def _default_asr_tool(
-    request: NorllamaTaskRequest, route: NorllamaRoute
-) -> dict[str, Any]:
-    content, filename, content_type = _artifact_bytes(request)
-    payload = norllama_gateway.transcribe_audio(
-        content=content,
-        filename=filename,
-        content_type=content_type or "audio/wav",
-        model=route.model,
-        base_url=route.endpoint
-        or _clean(getattr(settings, "llm_offline_base_url", "")),
-        api_key=_clean(getattr(settings, "llm_offline_api_key", "")),
-        timeout_seconds=request.route_policy.get("timeout_seconds"),
-    )
-    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
-    usage.setdefault("usage_bucket", "offline_local")
-    payload["usage"] = usage
-    return payload
-
-
-def _default_image_generation_tool(
-    request: NorllamaTaskRequest, route: NorllamaRoute
-) -> dict[str, Any]:
-    prompt = _clean(request.input_text or request.query)
-    if not prompt:
-        prompt = norllama_gateway.messages_to_prompt(_request_messages(request))
-    if not prompt:
-        raise RuntimeError("Norllama image generation tool requires a prompt")
-    policy = request.route_policy
-    payload = norllama_gateway.generate_image(
-        prompt=prompt,
-        model=route.model,
-        base_url=route.endpoint
-        or _clean(getattr(settings, "llm_offline_base_url", "")),
-        api_key=_clean(getattr(settings, "llm_offline_api_key", "")),
-        negative_prompt=_clean(policy.get("negative_prompt")),
-        size=_clean(policy.get("size")) or "1024x1024",
-        n=int(policy.get("n") or policy.get("count") or 1),
-        steps=int(policy["steps"]) if policy.get("steps") is not None else None,
-        cfg_scale=float(policy["cfg_scale"])
-        if policy.get("cfg_scale") is not None
-        else None,
-        seed=int(policy["seed"]) if policy.get("seed") is not None else None,
-        sampler=_clean(policy.get("sampler") or policy.get("sampler_name")),
-        allow_nsfw=_truthy(
-            policy.get("allow_nsfw") or policy.get("nsfw") or policy.get("adult")
-        ),
-        content_rating=_clean(policy.get("content_rating")),
-        safety_profile=_clean(policy.get("safety_profile")),
-        timeout_seconds=policy.get("timeout_seconds"),
-    )
-    payload["prompt"] = prompt
-    usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
-    usage.setdefault("usage_bucket", "offline_local")
-    payload["usage"] = usage
-    return payload
-
-
 def _default_tool_handlers() -> dict[str, ToolHandler]:
     return {
-        "asr": _default_asr_tool,
+        "asr": _default_transcribe_tool,
         "doc_parse": _default_ocr_tool,
-        "image_generate": _default_image_generation_tool,
         "ocr": _default_ocr_tool,
         "prompt_injection": _default_safety_tool,
         "rerank": _default_rerank_tool,
         "safety": _default_safety_tool,
-        "stt": _default_asr_tool,
+        "stt": _default_transcribe_tool,
     }
 
 

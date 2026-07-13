@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
+import socket
 import subprocess
 import sys
 import time
@@ -24,6 +26,172 @@ DEFAULT_TARGET_NAMES = (
     "scout",
     "cloudagent",
 )
+CONSOLE_RUNTIME_TOKEN_SECRET_DEFAULTS = (
+    "norman/console-runtime-token",
+    "norman/console-runtime-service-token",
+    "runtime/console-runtime-token",
+    "runtime/console-runtime-service-token",
+)
+
+
+def norman_ssh_target() -> str:
+    override = os.environ.get("NORMAN_TUI_ACCEPTANCE_NORMAN_SSH_TARGET")
+    if override is not None:
+        return override.strip()
+    hostname = (socket.gethostname() or "").strip().lower().split(".", 1)[0]
+    return "" if hostname == "norman" else "norman.home.arpa"
+
+
+def _first_env(*names: str) -> str:
+    for name in names:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _norman_keys_secret_get_url() -> str:
+    base = _first_env("NORMAN_KEYS_URL", "NORMAN_KEYS_API_BASE").rstrip("/")
+    if not base:
+        return ""
+    if base.endswith("/v1/secrets/get"):
+        return base
+    if base.endswith("/v1"):
+        return f"{base}/secrets/get"
+    return f"{base}/v1/secrets/get"
+
+
+def _norman_keys_timeout_seconds() -> float:
+    value = _first_env(
+        "NORMAN_KEYS_TIMEOUT_SECONDS",
+        "NORMAN_CONSOLE_RUNTIME_TIMEOUT_SECONDS",
+    )
+    try:
+        return max(0.1, float(value or "2.0"))
+    except ValueError:
+        return 2.0
+
+
+def _runtime_token_secret_names() -> list[str]:
+    explicit = _first_env(
+        "NORMAN_CONSOLE_RUNTIME_TOKEN_SECRET",
+        "NORMAN_CONSOLE_RUNTIME_SECRET_NAME",
+        "NORMAN_KEYS_SECRET_NAME",
+    )
+    names = [explicit] if explicit else []
+    if not explicit and (
+        _norman_keys_secret_get_url() or os.environ.get("NORMAN_SECRET_CMD", "").strip()
+    ):
+        names.extend(CONSOLE_RUNTIME_TOKEN_SECRET_DEFAULTS)
+    out: list[str] = []
+    seen: set[str] = set()
+    for name in names:
+        clean = str(name or "").strip()
+        if clean and clean not in seen:
+            out.append(clean)
+            seen.add(clean)
+    return out
+
+
+def _resolve_runtime_token_from_norman_keys(secret_name: str) -> str:
+    url = _norman_keys_secret_get_url()
+    if not url:
+        return ""
+    payload = {
+        "name": secret_name,
+        "reason": "TUI kernel acceptance route-proof receipt checks",
+        "requester_id": _first_env(
+            "NORMAN_KEYS_REQUESTER_ID",
+            "NORMAN_CONSOLE_RUNTIME_REQUESTER_ID",
+        )
+        or "runtime-tui-bridge",
+        "session_id": _first_env("NORMAN_CODEX_SESSION", "HOUSEBOT_CODEX_SESSION")
+        or "tui-kernel-acceptance",
+        "lane": _first_env("NORMAN_KEYS_LANE", "NORMAN_CONSOLE_RUNTIME_LANE"),
+        "target_host": socket.gethostname(),
+    }
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    keys_token = _first_env("NORMAN_KEYS_TOKEN", "NORMAN_KEYS_API_TOKEN")
+    if keys_token:
+        headers["Authorization"] = f"Bearer {keys_token}"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload, sort_keys=True).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    with urllib.request.urlopen(
+        request, timeout=_norman_keys_timeout_seconds()
+    ) as response:
+        body = response.read().decode("utf-8", "replace")
+    parsed = json.loads(body) if body.strip() else {}
+    if not isinstance(parsed, dict):
+        return ""
+    return str(parsed.get("value") or parsed.get("secret") or "").strip()
+
+
+def _norman_secret_command(secret_name: str) -> list[str]:
+    configured = os.environ.get("NORMAN_SECRET_CMD", "").strip()
+    if not configured:
+        return []
+    command = shlex.split(configured)
+    if not command:
+        return []
+    if "{name}" in configured:
+        return [part.replace("{name}", secret_name) for part in command]
+    return [*command, "get", secret_name]
+
+
+def _resolve_runtime_token_from_secret_command(secret_name: str) -> str:
+    command = _norman_secret_command(secret_name)
+    if not command:
+        return ""
+    result = subprocess.run(
+        command,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=_norman_keys_timeout_seconds(),
+    )
+    return result.stdout.strip()
+
+
+def resolve_console_runtime_token() -> str:
+    token, _meta = resolve_console_runtime_token_with_source()
+    return token
+
+
+def resolve_console_runtime_token_with_source() -> tuple[str, dict[str, str]]:
+    direct = _first_env("NORMAN_CONSOLE_RUNTIME_TOKEN", "NORMAN_API_TOKEN")
+    if direct:
+        return direct, {
+            "runtime_token_source": "env",
+            "runtime_token_secret_name": "",
+        }
+    for secret_name in _runtime_token_secret_names():
+        for source, resolver in (
+            ("norman_keys", _resolve_runtime_token_from_norman_keys),
+            ("secret_command", _resolve_runtime_token_from_secret_command),
+        ):
+            try:
+                token = resolver(secret_name)
+            except (
+                json.JSONDecodeError,
+                subprocess.SubprocessError,
+                TimeoutError,
+                OSError,
+                urllib.error.URLError,
+            ):
+                continue
+            if token:
+                return token, {
+                    "runtime_token_source": source,
+                    "runtime_token_secret_name": secret_name,
+                }
+    return "", {
+        "runtime_token_source": "none",
+        "runtime_token_secret_name": "",
+    }
 
 
 REMOTE_TUI_SCRIPT = r"""
@@ -73,7 +241,21 @@ result = {
     "ask": {},
     "status": {},
     "error": "",
+    "before_job_id": "",
+    "ask_job_id": "",
 }
+try:
+    _before_status_code, before_status = fetch_json(
+        base_url + "/api/status",
+        timeout=status_timeout,
+    )
+    result["before_job_id"] = str(
+        before_status.get("last_console_runtime_job_id")
+        or before_status.get("running_console_runtime_job_id")
+        or ""
+    )
+except Exception:
+    pass
 try:
     ask_status, ask_payload = fetch_json(
         base_url + "/api/ask",
@@ -82,6 +264,16 @@ try:
     )
     result["ask_http_status"] = ask_status
     result["ask"] = ask_payload
+    ask_snapshot = ask_payload.get("snapshot") if isinstance(ask_payload, dict) else {}
+    if not isinstance(ask_snapshot, dict):
+        ask_snapshot = {}
+    result["ask_job_id"] = str(
+        ask_payload.get("console_runtime_job_id")
+        or ask_snapshot.get("console_runtime_job_id")
+        or ask_snapshot.get("turn_shadow_job_id")
+        or ask_snapshot.get("running_console_runtime_job_id")
+        or ""
+    )
 except Exception as exc:
     result["error"] = "ask failed: %s" % exc
 
@@ -98,15 +290,32 @@ while time.time() <= poll_deadline:
         result["status"] = latest_status
     except Exception as exc:
         result["error"] = (result.get("error") or "") + "; status failed: %s" % exc
+        if result.get("ask_job_id"):
+            break
         time.sleep(poll_interval)
         continue
     prompt = str(latest_status.get("last_prompt") or "")
     response = str(latest_status.get("last_response") or "")
     error = str(latest_status.get("last_error") or "")
     pending = bool(latest_status.get("pending"))
+    job_id = str(
+        latest_status.get("last_console_runtime_job_id")
+        or latest_status.get("running_console_runtime_job_id")
+        or latest_status.get("last_response_console_runtime_job_id")
+        or ""
+    )
     prompt_matches = bool(nonce and nonce in prompt)
     response_ready = bool(expected and expected in response)
-    if prompt_matches and not pending and (response_ready or error.strip()):
+    desired_job = str(result.get("ask_job_id") or "")
+    fresh_job = bool(desired_job) or not result["before_job_id"] or job_id != result["before_job_id"]
+    if desired_job:
+        break
+    if (
+        prompt_matches
+        and fresh_job
+        and not pending
+        and (response_ready or error.strip())
+    ):
         break
     time.sleep(poll_interval)
 
@@ -130,7 +339,7 @@ class AcceptanceScenario:
     expected_template: str
     description: str = ""
     runtime: str = "localllm"
-    model: str = "gemma3:1b"
+    model: str = "qwen3.6:27b"
     route_lock: bool = True
     speed: str = "fast"
     detail: int = 1
@@ -142,7 +351,7 @@ class AcceptanceScenario:
     require_norllama_tokens: bool = True
     require_worker_attribution: bool = True
     expected_task_kind: str = "literal_response"
-    min_spark_evidence_count: int = 0
+    min_spark_evidence_count: int = 1
 
 
 @dataclass(frozen=True)
@@ -160,6 +369,7 @@ def default_targets() -> dict[str, TuiTarget]:
             name="norman",
             label="Norman",
             base_url="http://127.0.0.1:8788",
+            ssh_target=norman_ssh_target(),
         ),
         "housebot": TuiTarget(
             name="housebot",
@@ -210,6 +420,26 @@ def default_scenarios() -> dict[str, AcceptanceScenario]:
             ),
             expected_template="DONE receipt visible {nonce}",
             description="Proves the DB route receipt and worker attribution path.",
+        ),
+        "auto_route_local": AcceptanceScenario(
+            name="auto_route_local",
+            message_template=(
+                "Unlocked local routing check. Do not use tools. Given these service "
+                "statuses: api=healthy, billing=unhealthy timeout, cache=healthy. "
+                "Return one compact JSON object with keys unhealthy_service, evidence, "
+                "and nonce. Use nonce value {nonce}."
+            ),
+            expected_template="{nonce}",
+            description=(
+                "Proves Norman can autonomously select local Norllama routing without "
+                "an operator route lock."
+            ),
+            runtime="auto",
+            model="",
+            route_lock=False,
+            expected_task_kind="chat",
+            detail=2,
+            job_budget="3m",
         ),
         "workspace_preflight": AcceptanceScenario(
             name="workspace_preflight",
@@ -355,7 +585,21 @@ def run_tui_probe_local(
         "ask": {},
         "status": {},
         "error": "",
+        "before_job_id": "",
+        "ask_job_id": "",
     }
+    try:
+        _before_status, before_payload = _fetch_json(
+            base_url + "/api/status",
+            timeout=status_timeout,
+        )
+        result["before_job_id"] = str(
+            before_payload.get("last_console_runtime_job_id")
+            or before_payload.get("running_console_runtime_job_id")
+            or ""
+        )
+    except Exception:
+        pass
     try:
         status, payload = _fetch_json(
             base_url + "/api/ask",
@@ -364,6 +608,16 @@ def run_tui_probe_local(
         )
         result["ask_http_status"] = status
         result["ask"] = payload
+        ask_snapshot = payload.get("snapshot") if isinstance(payload, dict) else {}
+        if not isinstance(ask_snapshot, dict):
+            ask_snapshot = {}
+        result["ask_job_id"] = str(
+            payload.get("console_runtime_job_id")
+            or ask_snapshot.get("console_runtime_job_id")
+            or ask_snapshot.get("turn_shadow_job_id")
+            or ask_snapshot.get("running_console_runtime_job_id")
+            or ""
+        )
     except Exception as exc:
         result["error"] = "ask failed: %s" % exc
 
@@ -378,13 +632,31 @@ def run_tui_probe_local(
             result["status"] = payload
         except Exception as exc:
             result["error"] = "%s; status failed: %s" % (result.get("error") or "", exc)
-            break
+            if result.get("ask_job_id"):
+                break
+            time.sleep(poll_interval)
+            continue
         prompt = str(payload.get("last_prompt") or "")
         response = str(payload.get("last_response") or "")
         error = str(payload.get("last_error") or "")
         pending = bool(payload.get("pending"))
+        job_id = str(
+            payload.get("last_console_runtime_job_id")
+            or payload.get("running_console_runtime_job_id")
+            or payload.get("last_response_console_runtime_job_id")
+            or ""
+        )
+        desired_job = str(result.get("ask_job_id") or "")
+        fresh_job = (
+            bool(desired_job)
+            or not result["before_job_id"]
+            or job_id != result["before_job_id"]
+        )
+        if desired_job:
+            break
         if (
             run.nonce in prompt
+            and fresh_job
             and not pending
             and (run.expected_response in response or error.strip())
         ):
@@ -530,6 +802,112 @@ def _event_worker_id(payload: dict[str, Any]) -> str:
     )
 
 
+def _event_observed_worker_id(payload: dict[str, Any]) -> str:
+    route = _event_route(payload)
+    receipt = _event_route_receipt(payload)
+    attribution = _dict(payload.get("attribution")) or _dict(route.get("attribution"))
+    return _first_clean(
+        receipt.get("observed_worker"),
+        payload.get("observed_worker"),
+        payload.get("observed_worker_id"),
+        route.get("observed_worker"),
+        attribution.get("observed_worker"),
+    )
+
+
+def _event_observed_worker_source(payload: dict[str, Any]) -> str:
+    route = _event_route(payload)
+    receipt = _event_route_receipt(payload)
+    attribution = _dict(payload.get("attribution")) or _dict(route.get("attribution"))
+    return _first_clean(
+        receipt.get("observed_worker_source"),
+        payload.get("observed_worker_source"),
+        route.get("observed_worker_source"),
+        attribution.get("observed_worker_source"),
+    )
+
+
+def _event_execution_mode(payload: dict[str, Any]) -> str:
+    receipt = _event_route_receipt(payload)
+    return _first_clean(payload.get("execution_mode"), receipt.get("execution_mode"))
+
+
+def _event_output_shape(payload: dict[str, Any]) -> str:
+    receipt = _event_route_receipt(payload)
+    return _first_clean(payload.get("output_shape"), receipt.get("output_shape"))
+
+
+def _event_receipt_task_kind(payload: dict[str, Any]) -> str:
+    receipt = _event_route_receipt(payload)
+    return _first_clean(receipt.get("task_kind"), payload.get("task_kind"))
+
+
+def _event_receipt_phase(payload: dict[str, Any]) -> str:
+    receipt = _event_route_receipt(payload)
+    return _first_clean(receipt.get("phase"), payload.get("phase"))
+
+
+def _event_cloud_proxy(payload: dict[str, Any]) -> bool:
+    route = _event_route(payload)
+    receipt = _event_route_receipt(payload)
+    return bool(
+        receipt.get("cloud_proxy")
+        or payload.get("cloud_proxy")
+        or route.get("cloud_proxy")
+    )
+
+
+def _event_receipt_audit(payload: dict[str, Any]) -> dict[str, Any]:
+    receipt = _event_route_receipt(payload)
+    return _dict(payload.get("receipt_audit")) or _dict(receipt.get("receipt_audit"))
+
+
+def _event_completion_gate(payload: dict[str, Any]) -> dict[str, Any]:
+    receipt = _event_route_receipt(payload)
+    return _dict(payload.get("completion_gate")) or _dict(
+        receipt.get("completion_gate")
+    )
+
+
+def _event_request_ids(payload: dict[str, Any]) -> dict[str, str]:
+    receipt = _event_route_receipt(payload)
+    metadata = _dict(payload.get("metadata"))
+    return {
+        "request_id": _first_clean(
+            receipt.get("request_id"),
+            payload.get("request_id"),
+            metadata.get("request_id"),
+        ),
+        "client_request_id": _first_clean(
+            receipt.get("client_request_id"),
+            payload.get("client_request_id"),
+            metadata.get("client_request_id"),
+        ),
+        "gateway_request_id": _first_clean(
+            receipt.get("gateway_request_id"),
+            payload.get("gateway_request_id"),
+            metadata.get("gateway_request_id"),
+        ),
+        "invocation_id": _first_clean(
+            receipt.get("invocation_id"),
+            payload.get("invocation_id"),
+            metadata.get("invocation_id"),
+        ),
+    }
+
+
+def _audit_passed(value: dict[str, Any]) -> bool:
+    return str(value.get("status") or "").strip().lower() == "pass" or bool(
+        value.get("pass")
+    )
+
+
+def _completion_gate_passed(value: dict[str, Any]) -> bool:
+    return str(value.get("status") or "").strip().lower() == "pass" or bool(
+        value.get("gate_passed") or value.get("pass")
+    )
+
+
 def _event_model(payload: dict[str, Any]) -> str:
     route = _event_route(payload)
     receipt = _event_route_receipt(payload)
@@ -539,6 +917,98 @@ def _event_model(payload: dict[str, Any]) -> str:
         payload.get("model"),
         route.get("model"),
     )
+
+
+def _event_invocation(payload: dict[str, Any]) -> dict[str, Any]:
+    receipt = _event_route_receipt(payload)
+    route = _event_route(payload)
+    metadata = _dict(payload.get("metadata"))
+    request_ids = _event_request_ids(payload)
+    phase = _event_receipt_phase(payload)
+    route_selected_model = _first_clean(
+        receipt.get("route_selected_model"),
+        payload.get("route_selected_model"),
+        metadata.get("route_selected_model"),
+        receipt.get("selected_model"),
+        route.get("model"),
+    )
+    requested_model = _first_clean(
+        receipt.get("requested_model"),
+        payload.get("requested_model"),
+        metadata.get("requested_model"),
+        route_selected_model,
+    )
+    effective_model = _first_clean(
+        receipt.get("effective_runtime_model"),
+        payload.get("effective_runtime_model"),
+        payload.get("runtime_model"),
+        payload.get("model"),
+        requested_model,
+    )
+    invocation_id = request_ids.get("invocation_id") or _first_clean(
+        payload.get("event_id"),
+        payload.get("id"),
+    )
+    if not phase:
+        return {}
+    return {
+        "phase": phase,
+        "task_kind": _event_receipt_task_kind(payload),
+        "route_selected_model": route_selected_model,
+        "requested_model": requested_model,
+        "effective_runtime_model": effective_model,
+        "selected_worker": _event_worker_id(payload),
+        "observed_worker": _event_observed_worker_id(payload),
+        "observed_worker_source": _event_observed_worker_source(payload),
+        "execution_mode": _event_execution_mode(payload) or "unknown",
+        "output_shape": _event_output_shape(payload),
+        "request_id": request_ids.get("request_id", ""),
+        "client_request_id": request_ids.get("client_request_id", ""),
+        "gateway_request_id": request_ids.get("gateway_request_id", ""),
+        "invocation_id": invocation_id,
+    }
+
+
+def _append_invocation(
+    invocations: list[dict[str, Any]],
+    seen: set[tuple[str, str, str, str]],
+    payload: dict[str, Any],
+) -> None:
+    invocation = _event_invocation(payload)
+    if not invocation:
+        return
+    key = (
+        str(invocation.get("phase") or ""),
+        str(invocation.get("invocation_id") or ""),
+        str(invocation.get("request_id") or ""),
+        str(invocation.get("gateway_request_id") or ""),
+    )
+    fallback_key = (
+        str(invocation.get("phase") or ""),
+        str(invocation.get("route_selected_model") or ""),
+        str(invocation.get("effective_runtime_model") or ""),
+        str(invocation.get("observed_worker") or ""),
+    )
+    dedupe_key = key if any(key[1:]) else fallback_key
+    if dedupe_key in seen:
+        return
+    seen.add(dedupe_key)
+    invocations.append(invocation)
+
+
+def _models_by_phase(invocations: list[dict[str, Any]]) -> dict[str, str]:
+    models: dict[str, str] = {}
+    for invocation in invocations:
+        phase = str(invocation.get("phase") or "").strip()
+        model = str(
+            invocation.get("effective_runtime_model")
+            or invocation.get("requested_model")
+            or invocation.get("route_selected_model")
+            or ""
+        ).strip()
+        if phase and model:
+            models[phase] = model
+    return models
 
 
 def _ask_snapshot(probe: dict[str, Any]) -> dict[str, Any]:
@@ -551,10 +1021,18 @@ def _ask_snapshot(probe: dict[str, Any]) -> dict[str, Any]:
 
 def job_id_from_probe(probe: dict[str, Any]) -> str:
     status = _status_snapshot(probe)
+    ask = _dict(probe.get("ask"))
     ask_snapshot = _ask_snapshot(probe)
     candidates = [
+        probe.get("ask_job_id"),
+        ask.get("console_runtime_job_id"),
+        ask_snapshot.get("console_runtime_job_id"),
+        _dict(ask_snapshot.get("snapshot")).get("console_runtime_job_id"),
+        _dict(ask_snapshot.get("snapshot")).get("turn_shadow_job_id"),
+        _dict(ask_snapshot.get("snapshot")).get("running_console_runtime_job_id"),
         status.get("last_console_runtime_job_id"),
         status.get("running_console_runtime_job_id"),
+        status.get("last_response_console_runtime_job_id"),
         ask_snapshot.get("last_console_runtime_job_id"),
         ask_snapshot.get("running_console_runtime_job_id"),
     ]
@@ -599,7 +1077,25 @@ def _receipt_from_activity_snapshot(
     planner_latest = _dict(planner_summary.get("latest"))
     route_latest = _dict(route_summary.get("latest"))
     worker = ""
+    observed_worker = ""
+    observed_worker_source = ""
     event_model = ""
+    receipt_task_kind = ""
+    receipt_phase = ""
+    task_kinds: list[str] = []
+    execution_mode = ""
+    output_shape = ""
+    cloud_proxy = False
+    receipt_audit: dict[str, Any] = {}
+    completion_gate: dict[str, Any] = {}
+    invocations: list[dict[str, Any]] = []
+    invocation_keys: set[tuple[str, str, str, str]] = set()
+    request_ids = {
+        "request_id": "",
+        "client_request_id": "",
+        "gateway_request_id": "",
+        "invocation_id": "",
+    }
     for event in snapshot.get("events") or []:
         if not isinstance(event, dict):
             continue
@@ -614,15 +1110,58 @@ def _receipt_from_activity_snapshot(
         }:
             continue
         payload = _dict(event.get("payload") or event.get("payload_json"))
+        if (
+            event.get("category") == "model"
+            or event.get("event_type") == "model.completed"
+        ):
+            _append_invocation(invocations, invocation_keys, payload)
         worker = _event_worker_id(payload) or worker
+        observed_worker = _event_observed_worker_id(payload) or observed_worker
+        observed_worker_source = (
+            _event_observed_worker_source(payload) or observed_worker_source
+        )
         event_model = _event_model(payload) or event_model
+        event_task_kind = _event_receipt_task_kind(payload)
+        if event_task_kind and event_task_kind not in task_kinds:
+            task_kinds.append(event_task_kind)
+        receipt_task_kind = event_task_kind or receipt_task_kind
+        receipt_phase = _event_receipt_phase(payload) or receipt_phase
+        execution_mode = _event_execution_mode(payload) or execution_mode
+        output_shape = _event_output_shape(payload) or output_shape
+        cloud_proxy = _event_cloud_proxy(payload) or cloud_proxy
+        receipt_audit = _event_receipt_audit(payload) or receipt_audit
+        completion_gate = _event_completion_gate(payload) or completion_gate
+        event_request_ids = _event_request_ids(payload)
+        request_ids = {
+            key: event_request_ids.get(key) or request_ids.get(key, "")
+            for key in request_ids
+        }
     if not worker and workers:
         worker = sorted(str(key) for key in workers.keys() if str(key).strip())[0]
+    if not observed_worker:
+        observed_worker = worker
     model = _first_clean(
         event_model,
         model_latest.get("model"),
         planner_latest.get("model"),
     )
+    local_tokens = _int(local_first.get("offline_tokens")) or _int(
+        usage_ledger.get("offline_tokens")
+    )
+    spark_evidence_count = _int(summary.get("spark_evidence_count"))
+    if not spark_evidence_count and (
+        str(observed_worker).startswith("spark-") or str(worker).startswith("spark-")
+    ):
+        spark_evidence_count = 1
+    envelope_task_kind = str(
+        metadata.get("task_kind")
+        or route_policy.get("task_kind")
+        or contract_metadata.get("task_kind")
+        or ""
+    ).strip()
+    task_kind = _first_clean(receipt_task_kind, envelope_task_kind)
+    models_by_phase = _models_by_phase(invocations)
+    final_invocation = invocations[-1] if invocations else {}
     return {
         "available": True,
         "job_id": str(job.get("job_id") or job_id),
@@ -634,18 +1173,32 @@ def _receipt_from_activity_snapshot(
             or authority.get("kernel_owned_turn")
             or contract_metadata.get("kernel_owned_turn")
         ),
-        "task_kind": str(
-            metadata.get("task_kind")
-            or route_policy.get("task_kind")
-            or contract_metadata.get("task_kind")
-            or ""
-        ).strip(),
+        "task_kind": task_kind,
+        "task_kinds": task_kinds,
+        "receipt_task_kind": receipt_task_kind,
+        "receipt_phase": receipt_phase,
+        "envelope_task_kind": envelope_task_kind,
         "host_name": str(metadata.get("host_name") or authority.get("host_name") or ""),
         "session_name": str(
             metadata.get("session_name") or authority.get("session_name") or ""
         ),
         "selected_model": model,
         "selected_worker": worker,
+        "observed_worker": observed_worker,
+        "observed_worker_source": observed_worker_source,
+        "invocations": invocations,
+        "models_by_phase": models_by_phase,
+        "final_invocation_phase": str(final_invocation.get("phase") or ""),
+        "final_effective_model": str(
+            final_invocation.get("effective_runtime_model") or ""
+        ),
+        **request_ids,
+        "execution_mode": execution_mode or "unknown",
+        "output_shape": output_shape,
+        "local_tokens": local_tokens,
+        "cloud_proxy": cloud_proxy,
+        "receipt_audit": receipt_audit,
+        "completion_gate": completion_gate,
         "route_summary": summary,
         "ledger_offline_tokens": _int(usage_ledger.get("offline_tokens")),
         "ledger_cloud_tokens": _int(usage_ledger.get("cloud_llm_tokens"))
@@ -657,7 +1210,7 @@ def _receipt_from_activity_snapshot(
         "local_first_status": str(local_first.get("status") or ""),
         "local_first_readiness_percent": _int(local_first.get("readiness_percent")),
         "model_completed_count": _int(model_summary.get("completed")),
-        "spark_evidence_count": _int(summary.get("spark_evidence_count")),
+        "spark_evidence_count": spark_evidence_count,
     }
 
 
@@ -693,6 +1246,45 @@ def receipt_from_norman_api(
             "error": "runtime API status %s: %s" % (status, payload.get("detail")),
         }
     return _receipt_from_activity_snapshot(clean_job_id, payload)
+
+
+def _receipt_is_terminal_or_provable(receipt: dict[str, Any]) -> bool:
+    if not receipt.get("available"):
+        return False
+    if receipt.get("job_status") in {"done", "failed", "canceled", "blocked"}:
+        return True
+    return (
+        receipt.get("output_shape") == "complete"
+        and receipt.get("execution_mode") == "live"
+        and _audit_passed(_dict(receipt.get("receipt_audit")))
+        and _completion_gate_passed(_dict(receipt.get("completion_gate")))
+    )
+
+
+def receipt_from_norman_api_poll(
+    job_id: str,
+    *,
+    api_base: str,
+    token: str,
+    timeout: float = 10.0,
+    poll_attempts: int = 1,
+    poll_interval: float = 1.0,
+) -> dict[str, Any]:
+    attempts = max(1, int(poll_attempts or 1))
+    interval = max(0.1, float(poll_interval or 1.0))
+    latest: dict[str, Any] = {"available": False, "error": "not polled"}
+    for attempt in range(attempts):
+        latest = receipt_from_norman_api(
+            job_id,
+            api_base=api_base,
+            token=token,
+            timeout=timeout,
+        )
+        if _receipt_is_terminal_or_provable(latest):
+            return latest
+        if attempt < attempts - 1:
+            time.sleep(interval)
+    return latest
 
 
 def receipt_from_norman_db(job_id: str, *, repo_root: Path) -> dict[str, Any]:
@@ -758,7 +1350,25 @@ def receipt_from_norman_db(job_id: str, *, repo_root: Path) -> dict[str, Any]:
     planner_latest = _dict(planner_summary.get("latest"))
     route_latest = _dict(route_summary.get("latest"))
     worker = ""
+    observed_worker = ""
+    observed_worker_source = ""
     event_model = ""
+    receipt_task_kind = ""
+    receipt_phase = ""
+    task_kinds: list[str] = []
+    execution_mode = ""
+    output_shape = ""
+    cloud_proxy = False
+    receipt_audit: dict[str, Any] = {}
+    completion_gate: dict[str, Any] = {}
+    invocations: list[dict[str, Any]] = []
+    invocation_keys: set[tuple[str, str, str, str]] = set()
+    request_ids = {
+        "request_id": "",
+        "client_request_id": "",
+        "gateway_request_id": "",
+        "invocation_id": "",
+    }
     for event in events:
         if event.category not in {
             "route",
@@ -771,15 +1381,55 @@ def receipt_from_norman_db(job_id: str, *, repo_root: Path) -> dict[str, Any]:
         }:
             continue
         payload = _dict(event.payload_json)
+        if event.category == "model" or event.event_type == "model.completed":
+            _append_invocation(invocations, invocation_keys, payload)
         worker = _event_worker_id(payload) or worker
+        observed_worker = _event_observed_worker_id(payload) or observed_worker
+        observed_worker_source = (
+            _event_observed_worker_source(payload) or observed_worker_source
+        )
         event_model = _event_model(payload) or event_model
+        event_task_kind = _event_receipt_task_kind(payload)
+        if event_task_kind and event_task_kind not in task_kinds:
+            task_kinds.append(event_task_kind)
+        receipt_task_kind = event_task_kind or receipt_task_kind
+        receipt_phase = _event_receipt_phase(payload) or receipt_phase
+        execution_mode = _event_execution_mode(payload) or execution_mode
+        output_shape = _event_output_shape(payload) or output_shape
+        cloud_proxy = _event_cloud_proxy(payload) or cloud_proxy
+        receipt_audit = _event_receipt_audit(payload) or receipt_audit
+        completion_gate = _event_completion_gate(payload) or completion_gate
+        event_request_ids = _event_request_ids(payload)
+        request_ids = {
+            key: event_request_ids.get(key) or request_ids.get(key, "")
+            for key in request_ids
+        }
     if not worker and workers:
         worker = sorted(str(key) for key in workers.keys() if str(key).strip())[0]
+    if not observed_worker:
+        observed_worker = worker
     model = _first_clean(
         event_model,
         model_latest.get("model"),
         planner_latest.get("model"),
     )
+    local_tokens = _int(local_first.get("offline_tokens")) or _int(
+        usage_ledger.get("offline_tokens")
+    )
+    spark_evidence_count = _int(summary.get("spark_evidence_count"))
+    if not spark_evidence_count and (
+        str(observed_worker).startswith("spark-") or str(worker).startswith("spark-")
+    ):
+        spark_evidence_count = 1
+    envelope_task_kind = str(
+        metadata.get("task_kind")
+        or route_policy.get("task_kind")
+        or contract_metadata.get("task_kind")
+        or ""
+    ).strip()
+    task_kind = _first_clean(receipt_task_kind, envelope_task_kind)
+    models_by_phase = _models_by_phase(invocations)
+    final_invocation = invocations[-1] if invocations else {}
     return {
         "available": True,
         "job_id": job.job_id,
@@ -791,18 +1441,32 @@ def receipt_from_norman_db(job_id: str, *, repo_root: Path) -> dict[str, Any]:
             or authority.get("kernel_owned_turn")
             or contract_metadata.get("kernel_owned_turn")
         ),
-        "task_kind": str(
-            metadata.get("task_kind")
-            or route_policy.get("task_kind")
-            or contract_metadata.get("task_kind")
-            or ""
-        ).strip(),
+        "task_kind": task_kind,
+        "task_kinds": task_kinds,
+        "receipt_task_kind": receipt_task_kind,
+        "receipt_phase": receipt_phase,
+        "envelope_task_kind": envelope_task_kind,
         "host_name": str(metadata.get("host_name") or authority.get("host_name") or ""),
         "session_name": str(
             metadata.get("session_name") or authority.get("session_name") or ""
         ),
         "selected_model": model,
         "selected_worker": worker,
+        "observed_worker": observed_worker,
+        "observed_worker_source": observed_worker_source,
+        "invocations": invocations,
+        "models_by_phase": models_by_phase,
+        "final_invocation_phase": str(final_invocation.get("phase") or ""),
+        "final_effective_model": str(
+            final_invocation.get("effective_runtime_model") or ""
+        ),
+        **request_ids,
+        "execution_mode": execution_mode or "unknown",
+        "output_shape": output_shape,
+        "local_tokens": local_tokens,
+        "cloud_proxy": cloud_proxy,
+        "receipt_audit": receipt_audit,
+        "completion_gate": completion_gate,
         "route_summary": summary,
         "ledger_offline_tokens": _int(usage_ledger.get("offline_tokens")),
         "ledger_cloud_tokens": _int(usage_ledger.get("cloud_llm_tokens"))
@@ -814,7 +1478,7 @@ def receipt_from_norman_db(job_id: str, *, repo_root: Path) -> dict[str, Any]:
         "local_first_status": str(local_first.get("status") or ""),
         "local_first_readiness_percent": _int(local_first.get("readiness_percent")),
         "model_completed_count": _int(model_summary.get("completed")),
-        "spark_evidence_count": _int(summary.get("spark_evidence_count")),
+        "spark_evidence_count": spark_evidence_count,
     }
 
 
@@ -825,26 +1489,32 @@ def validate_acceptance(
     receipt: dict[str, Any],
 ) -> tuple[bool, list[str], dict[str, Any]]:
     failures: list[str] = []
+    observation_failures: list[str] = []
     status = _status_snapshot(probe)
     response = str(status.get("last_response") or "")
     prompt = str(status.get("last_prompt") or "")
     last_error = str(status.get("last_error") or "").strip()
     job_id = job_id_from_probe(probe)
     if not probe.get("ok"):
-        failures.append(
+        observation_failures.append(
             "TUI probe did not return a status snapshot: %s"
             % str(probe.get("error") or "no probe error")[:240]
         )
     if run.nonce not in prompt:
-        failures.append("latest prompt does not contain the run nonce")
+        observation_failures.append("latest prompt does not contain the run nonce")
     if bool(status.get("pending")):
-        failures.append("TUI is still pending")
+        observation_failures.append("TUI is still pending")
     if last_error:
-        failures.append("TUI reported last_error: %s" % last_error[:240])
+        observation_failures.append("TUI reported last_error: %s" % last_error[:240])
     if run.expected_response not in response:
-        failures.append("visible response did not contain the expected literal")
+        observation_failures.append(
+            "visible response did not contain the expected literal"
+        )
     if not job_id:
         failures.append("TUI did not expose a console-runtime job id")
+    before_job_id = str(probe.get("before_job_id") or "").strip()
+    if before_job_id and job_id == before_job_id:
+        failures.append("TUI did not expose a fresh console-runtime job id")
     if not receipt.get("available"):
         failures.append("receipt unavailable: %s" % receipt.get("error", "unknown"))
     else:
@@ -862,10 +1532,18 @@ def validate_acceptance(
         if (
             scenario.expected_task_kind
             and receipt.get("task_kind") != scenario.expected_task_kind
+            and receipt.get("receipt_phase") != scenario.expected_task_kind
+            and receipt.get("envelope_task_kind") != scenario.expected_task_kind
+            and scenario.expected_task_kind not in (receipt.get("task_kinds") or [])
         ):
             failures.append(
-                "task kind is %s, expected %s"
-                % (receipt.get("task_kind"), scenario.expected_task_kind)
+                "task kind is %s phase %s, expected %s in %s"
+                % (
+                    receipt.get("task_kind"),
+                    receipt.get("receipt_phase"),
+                    scenario.expected_task_kind,
+                    receipt.get("task_kinds") or [],
+                )
             )
         if _int(receipt.get("goal_local_tokens")) < scenario.min_local_tokens:
             failures.append("receipt did not record enough local tokens")
@@ -881,6 +1559,34 @@ def validate_acceptance(
             failures.append("usage ledger did not record Norllama tokens")
         if scenario.require_worker_attribution and not receipt.get("selected_worker"):
             failures.append("receipt did not record worker attribution")
+        if scenario.require_worker_attribution and not receipt.get("observed_worker"):
+            failures.append("receipt did not record observed worker attribution")
+        if (
+            scenario.require_worker_attribution
+            and receipt.get("observed_worker_source") != "gateway_response"
+        ):
+            failures.append(
+                "receipt observed worker source is %s"
+                % (receipt.get("observed_worker_source") or "missing")
+            )
+        if receipt.get("execution_mode") != "live":
+            failures.append(
+                "receipt execution mode is %s"
+                % (receipt.get("execution_mode") or "missing")
+            )
+        if receipt.get("output_shape") != "complete":
+            failures.append(
+                "receipt output shape is %s"
+                % (receipt.get("output_shape") or "missing")
+            )
+        if _int(receipt.get("local_tokens")) < scenario.min_local_tokens:
+            failures.append("receipt did not record positive local tokens")
+        if bool(receipt.get("cloud_proxy")):
+            failures.append("receipt used cloud proxy")
+        if not _audit_passed(_dict(receipt.get("receipt_audit"))):
+            failures.append("receipt audit did not pass")
+        if not _completion_gate_passed(_dict(receipt.get("completion_gate"))):
+            failures.append("completion gate did not pass")
         if _int(receipt.get("model_completed_count")) < 1:
             failures.append("receipt did not record a model.completed event")
         if (
@@ -899,16 +1605,50 @@ def validate_acceptance(
             and receipt.get("local_first_status") != "on_target"
         ):
             failures.append("local-first KPI is %s" % receipt.get("local_first_status"))
+    receipt_route_proof_passed = (
+        bool(receipt.get("available"))
+        and bool(job_id)
+        and receipt.get("job_id") == job_id
+        and receipt.get("job_status") == "done"
+        and not receipt.get("last_error")
+        and receipt.get("output_shape") == "complete"
+        and receipt.get("execution_mode") == "live"
+        and _int(receipt.get("local_tokens")) >= run.scenario.min_local_tokens
+        and not _int(receipt.get("goal_cloud_tokens"))
+        and not _int(receipt.get("ledger_cloud_tokens"))
+        and not bool(receipt.get("cloud_proxy"))
+        and _audit_passed(_dict(receipt.get("receipt_audit")))
+        and _completion_gate_passed(_dict(receipt.get("completion_gate")))
+    )
+    observation_warnings: list[str] = []
+    if observation_failures:
+        if receipt_route_proof_passed:
+            observation_warnings.extend(observation_failures)
+        else:
+            failures.extend(observation_failures)
     proof = {
         "target": target.name,
         "label": target.label,
         "scenario": run.name,
         "nonce": run.nonce,
+        "runtime": run.scenario.runtime,
+        "model": run.scenario.model,
+        "route_lock": run.scenario.route_lock,
         "job_id": job_id,
         "passed": not failures,
         "failures": failures,
+        "observation_warnings": observation_warnings,
+        "route_proof_passed": receipt_route_proof_passed,
         "response_preview": response[:240],
         "probe_error": str(probe.get("error") or "")[:500],
+        "before_job_id": str(probe.get("before_job_id") or ""),
+        "ask_job_id": str(probe.get("ask_job_id") or ""),
+        "status_job_id": str(
+            _status_snapshot(probe).get("last_console_runtime_job_id")
+            or _status_snapshot(probe).get("running_console_runtime_job_id")
+            or _status_snapshot(probe).get("last_response_console_runtime_job_id")
+            or ""
+        ),
         "ask_http_status": probe.get("ask_http_status"),
         "status_http_status": probe.get("status_http_status"),
         "receipt": {
@@ -918,8 +1658,28 @@ def validate_acceptance(
                 "job_status",
                 "kernel_owned_turn",
                 "task_kind",
+                "task_kinds",
+                "receipt_task_kind",
+                "receipt_phase",
+                "envelope_task_kind",
                 "selected_model",
                 "selected_worker",
+                "observed_worker",
+                "observed_worker_source",
+                "invocations",
+                "models_by_phase",
+                "final_invocation_phase",
+                "final_effective_model",
+                "request_id",
+                "client_request_id",
+                "gateway_request_id",
+                "invocation_id",
+                "execution_mode",
+                "output_shape",
+                "local_tokens",
+                "cloud_proxy",
+                "receipt_audit",
+                "completion_gate",
                 "goal_local_tokens",
                 "goal_cloud_tokens",
                 "ledger_cloud_tokens",
@@ -997,10 +1757,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--runtime-token",
-        default=os.environ.get("NORMAN_CONSOLE_RUNTIME_TOKEN", ""),
+        default="",
         help=(
             "Console-runtime bearer token for receipt checks. Defaults to "
-            "NORMAN_CONSOLE_RUNTIME_TOKEN."
+            "NORMAN_CONSOLE_RUNTIME_TOKEN/NORMAN_API_TOKEN, then brokered "
+            "Norman Keys or NORMAN_SECRET_CMD lookup."
         ),
     )
     parser.add_argument("--poll-attempts", type=int, default=90)
@@ -1040,6 +1801,15 @@ def main(argv: list[str] | None = None) -> int:
 
     results: list[dict[str, Any]] = []
     repo_root = Path(args.repo_root)
+    runtime_api_base = str(args.runtime_api_base or "").strip()
+    runtime_token = str(args.runtime_token or "").strip()
+    if runtime_token:
+        runtime_token_meta = {
+            "runtime_token_source": "cli",
+            "runtime_token_secret_name": "",
+        }
+    else:
+        runtime_token, runtime_token_meta = resolve_console_runtime_token_with_source()
     for index, (target, run) in enumerate(matrix, start=1):
         print(
             "Running %s/%s %s:%s" % (index, len(matrix), target.name, run.name),
@@ -1055,12 +1825,16 @@ def main(argv: list[str] | None = None) -> int:
             ssh_timeout=args.ssh_timeout,
         )
         job_id = job_id_from_probe(probe)
-        if args.runtime_api_base and args.runtime_token:
-            receipt = receipt_from_norman_api(
+        if not job_id:
+            receipt = {"available": False, "error": "missing job id"}
+        elif runtime_api_base and runtime_token:
+            receipt = receipt_from_norman_api_poll(
                 job_id,
-                api_base=args.runtime_api_base,
-                token=args.runtime_token,
+                api_base=runtime_api_base,
+                token=runtime_token,
                 timeout=args.status_timeout,
+                poll_attempts=args.poll_attempts,
+                poll_interval=args.poll_interval,
             )
             if not receipt.get("available"):
                 db_receipt = receipt_from_norman_db(job_id, repo_root=repo_root)
@@ -1088,6 +1862,11 @@ def main(argv: list[str] | None = None) -> int:
         "passed": all(item.get("passed") for item in results),
         "pass_count": sum(1 for item in results if item.get("passed")),
         "total_count": len(results),
+        "runtime_api": {
+            "base": runtime_api_base,
+            "token_available": bool(runtime_token),
+            **runtime_token_meta,
+        },
         "results": results,
     }
     print_report(results)

@@ -31,7 +31,6 @@ from app.services.norllama.route_outcomes import (
     route_outcome_event_payload,
     summarize_route_outcomes,
 )
-from app.services.norllama.route_proof import audit_route_receipt
 from app.services.norllama.specialist_lanes import summarize_specialist_cascade
 
 _CLOUD_ROUTE_PROVIDERS = {
@@ -264,6 +263,192 @@ def _payload_worker_id(payload: dict[str, Any]) -> str:
     )
 
 
+def _payload_observed_worker_id(payload: dict[str, Any]) -> str:
+    receipt = _payload_route_receipt(payload)
+    return _clean(
+        receipt.get("observed_worker")
+        or payload.get("observed_worker")
+        or payload.get("response_worker")
+    )
+
+
+def _payload_execution_mode(payload: dict[str, Any]) -> str:
+    metadata = _payload_metadata(payload)
+    route = _payload_route(payload)
+    receipt = _payload_route_receipt(payload)
+    return _clean(
+        payload.get("execution_mode")
+        or metadata.get("execution_mode")
+        or route.get("execution_mode")
+        or receipt.get("execution_mode")
+        or "unknown"
+    )
+
+
+def _payload_is_synthetic(payload: dict[str, Any], event: ConsoleRuntimeEvent) -> bool:
+    metadata = _payload_metadata(payload)
+    route = _payload_route(payload)
+    receipt = _payload_route_receipt(payload)
+    route_policy = _json_dict(
+        payload.get("route_policy")
+        or metadata.get("route_policy")
+        or route.get("route_policy")
+    )
+    if any(
+        _json_bool(container.get("dry_run")) or _json_bool(container.get("shadow_only"))
+        for container in (payload, metadata, route, receipt, route_policy)
+    ):
+        return True
+    kind_haystack = " ".join(
+        _lower(value)
+        for value in (
+            event.event_type,
+            event.job_id,
+            payload.get("kind"),
+            payload.get("source"),
+            payload.get("traffic_class"),
+            metadata.get("kind"),
+            metadata.get("source"),
+            route.get("kind"),
+            receipt.get("kind"),
+            receipt.get("request_kind"),
+        )
+    )
+    return any(
+        marker in kind_haystack
+        for marker in (
+            "benchmark",
+            "dry-run",
+            "dry_run",
+            "shadow-only",
+            "shadow_only",
+        )
+    )
+
+
+def _local_first_cloud_llm_tokens(row: dict[str, Any]) -> int:
+    return (
+        _json_int(row.get("openai_codex_tokens"))
+        + _json_int(row.get("bedrock_amazon_tokens"))
+        + _json_int(row.get("other_cloud_tokens"))
+        + _json_int(row.get("cloud_proxy_tokens"))
+    )
+
+
+def _local_first_row_disqualifiers(row: dict[str, Any]) -> list[str]:
+    disqualifiers: list[str] = []
+    if _json_int(row.get("model_completed_count")) <= 0:
+        disqualifiers.append("no_model_completion")
+    if _json_int(row.get("fully_local_completion_count")) <= 0:
+        disqualifiers.append("no_fully_local_completion")
+    if _json_int(row.get("local_tokens")) <= 0:
+        disqualifiers.append("no_local_tokens")
+    if _json_int(row.get("live_execution_count")) <= 0:
+        disqualifiers.append("no_live_execution")
+    if _json_int(row.get("observed_worker_proof_count")) <= 0:
+        disqualifiers.append("missing_observed_worker_proof")
+    if not (
+        _json_int(row.get("receipt_audit_pass_count")) > 0
+        and _json_int(row.get("receipt_audit_fail_count")) == 0
+    ):
+        disqualifiers.append("receipt_audit_not_passed")
+    if not (
+        _json_int(row.get("completion_gate_pass_count")) > 0
+        and _json_int(row.get("completion_gate_fail_count")) == 0
+    ):
+        disqualifiers.append("completion_gate_not_passed")
+    if _json_int(row.get("cloud_proxy_tokens")) > 0:
+        disqualifiers.append("cloud_proxy_tokens_present")
+    if _local_first_cloud_llm_tokens(row) > 0:
+        disqualifiers.append("cloud_llm_tokens_present")
+    return disqualifiers
+
+
+def _local_first_release_basis(row: dict[str, Any] | None) -> dict[str, Any]:
+    if not row:
+        return {
+            "scope": "latest_qualified_session",
+            "session": "",
+            "job_id": "",
+            "qualified": False,
+        }
+    return {
+        "scope": "latest_qualified_session",
+        "session": _clean(row.get("session")),
+        "job_id": _clean(row.get("job_id")),
+        "last_sequence": _json_int(row.get("last_sequence")),
+        "qualified": bool(row.get("release_qualified")),
+        "request_ids": list(row.get("request_ids") or []),
+        "observed_workers": dict(row.get("observed_workers") or {}),
+        "local_tokens": _json_int(row.get("local_tokens")),
+        "cloud_llm_tokens": _local_first_cloud_llm_tokens(row),
+        "fully_local_completion_count": _json_int(
+            row.get("fully_local_completion_count")
+        ),
+        "receipt_audit_pass_count": _json_int(row.get("receipt_audit_pass_count")),
+        "completion_gate_pass_count": _json_int(row.get("completion_gate_pass_count")),
+    }
+
+
+def _proof_invocation_key(
+    event: ConsoleRuntimeEvent,
+    payload: dict[str, Any],
+    receipt: dict[str, Any],
+    phase: str,
+) -> str:
+    metadata = _payload_metadata(payload)
+    request_id = _clean(
+        receipt.get("request_id")
+        or payload.get("request_id")
+        or metadata.get("request_id")
+    )
+    invocation_id = _clean(
+        receipt.get("invocation_id")
+        or payload.get("invocation_id")
+        or metadata.get("invocation_id")
+    )
+    gateway_request_id = _clean(
+        receipt.get("gateway_request_id")
+        or payload.get("gateway_request_id")
+        or metadata.get("gateway_request_id")
+    )
+    if request_id or invocation_id or gateway_request_id:
+        return "|".join(
+            (
+                event.job_id,
+                request_id or gateway_request_id,
+                _clean(phase) or "unknown",
+                invocation_id,
+            )
+        )
+    return f"{event.job_id}|event|{event.sequence}"
+
+
+def _specialist_lane_is_production_ready(item: dict[str, Any]) -> bool:
+    status = _lower(item.get("status"))
+    proof_state = _lower(item.get("proof_state"))
+    live_smoke = (
+        item.get("live_smoke_test")
+        if isinstance(item.get("live_smoke_test"), dict)
+        else {}
+    )
+    benchmark = (
+        item.get("benchmark_evidence")
+        if isinstance(item.get("benchmark_evidence"), dict)
+        else {}
+    )
+    smoke_source = _lower(live_smoke.get("source"))
+    return bool(
+        status in {"complete", "pass", "passed"}
+        and proof_state == "production"
+        and _lower(live_smoke.get("status")) == "passed"
+        and smoke_source not in {"", "route_receipt", "receipt_only"}
+        and bool(item.get("schema_valid"))
+        and bool(benchmark.get("fresh"))
+        and _clean(item.get("selected_worker") or live_smoke.get("worker"))
+    )
+
+
 def _route_is_local(payload: dict[str, Any]) -> bool:
     provider = _provider_key(_payload_provider(payload))
     runner = _provider_key(_payload_runner(payload))
@@ -318,47 +503,6 @@ def _event_has_spark_hint(payload: dict[str, Any]) -> bool:
     return any(hint in haystack for hint in _SPARK_HINTS)
 
 
-def _event_is_dry_run(payload: dict[str, Any]) -> bool:
-    metadata = _payload_metadata(payload)
-    receipt = _payload_route_receipt(payload)
-    return any(
-        _json_bool(container.get("dry_run"))
-        for container in (payload, metadata, receipt)
-        if isinstance(container, dict)
-    )
-
-
-def _event_is_shadow_only(payload: dict[str, Any]) -> bool:
-    metadata = _payload_metadata(payload)
-    route = _payload_route(payload)
-    receipt = _payload_route_receipt(payload)
-    containers = [payload, metadata, route, receipt]
-    shadow = any(
-        _json_bool(container.get("turn_shadow"))
-        or _clean(container.get("kind")) == "tui_turn_shadow"
-        for container in containers
-        if isinstance(container, dict)
-    )
-    if not shadow:
-        return False
-    promoted = any(
-        _json_bool(container.get("kernel_execution_enabled"))
-        and _json_bool(container.get("kernel_execution_candidate"))
-        and _json_bool(container.get("route_proof_required"))
-        for container in containers
-        if isinstance(container, dict)
-    )
-    return not promoted
-
-
-def _event_counts_as_live_spark_proof(payload: dict[str, Any]) -> bool:
-    return bool(
-        _event_has_spark_hint(payload)
-        and not _event_is_dry_run(payload)
-        and not _event_is_shadow_only(payload)
-    )
-
-
 def _compact_route_event(event: ConsoleRuntimeEvent) -> dict[str, Any]:
     payload = event.payload
     return {
@@ -375,8 +519,11 @@ def _compact_route_event(event: ConsoleRuntimeEvent) -> dict[str, Any]:
         "allowed": bool(payload.get("allowed", True)),
         "worker_id": _payload_worker_id(payload),
         "spark_hint": _event_has_spark_hint(payload),
-        "live_spark_proof": _event_counts_as_live_spark_proof(payload),
     }
+
+
+def _worker_is_spark(worker_id: Any) -> bool:
+    return _clean(worker_id).lower().startswith("spark-")
 
 
 def _usage_tokens(payload: dict[str, Any]) -> int:
@@ -696,17 +843,17 @@ def _route_activity_summary(events: list[ConsoleRuntimeEvent]) -> dict[str, Any]
     route_cloud_proxy = 0
     route_web = 0
     route_spark_hint = 0
-    route_live_spark_proof = 0
     route_offline_safe = 0
     model_completed = 0
     model_local = 0
     model_cloud = 0
+    model_spark_evidence = 0
     model_tokens = 0
+    model_counts_by_worker: dict[str, int] = {}
     planner_receipts = 0
     planner_local = 0
     planner_cloud_proxy = 0
     planner_spark_hint = 0
-    planner_live_spark_proof = 0
     tool_events = 0
     shell_events = 0
     latest_route: dict[str, Any] | None = None
@@ -725,7 +872,6 @@ def _route_activity_summary(events: list[ConsoleRuntimeEvent]) -> dict[str, Any]
             is_cloud_proxy = _payload_cloud_proxy(payload)
             is_allowed = bool(payload.get("allowed", True))
             has_spark_hint = _event_has_spark_hint(payload)
-            live_spark_proof = _event_counts_as_live_spark_proof(payload)
             _inc(route_counts_by_provider, provider)
             _inc(route_counts_by_lane, lane)
             if worker_id:
@@ -737,7 +883,6 @@ def _route_activity_summary(events: list[ConsoleRuntimeEvent]) -> dict[str, Any]
             route_cloud_proxy += int(is_cloud_proxy)
             route_web += int(_lower(payload.get("egress_class")) == "web_research")
             route_spark_hint += int(has_spark_hint)
-            route_live_spark_proof += int(live_spark_proof)
             route_offline_safe += int(is_allowed and is_local and not is_cloud_proxy)
             latest_route = _compact_route_event(event)
         elif event.event_type == "model.completed":
@@ -746,6 +891,10 @@ def _route_activity_summary(events: list[ConsoleRuntimeEvent]) -> dict[str, Any]
                 continue
             model_completed += 1
             _inc(model_counts_by_provider, provider)
+            observed_worker = _payload_observed_worker_id(payload)
+            if observed_worker:
+                _inc(model_counts_by_worker, observed_worker)
+                model_spark_evidence += int(_worker_is_spark(observed_worker))
             is_cloud = _route_is_cloud(payload)
             is_local = not _payload_cloud_proxy(payload) and (
                 _provider_key(provider) in _LOCAL_ROUTE_PROVIDERS
@@ -765,6 +914,7 @@ def _route_activity_summary(events: list[ConsoleRuntimeEvent]) -> dict[str, Any]
                 "sequence": event.sequence,
                 "provider": provider,
                 "model": _payload_model(payload),
+                "worker_id": observed_worker,
                 "tokens": _json_int(
                     usage.get("total_tokens")
                     or (
@@ -784,11 +934,9 @@ def _route_activity_summary(events: list[ConsoleRuntimeEvent]) -> dict[str, Any]
             is_local = _provider_key(provider) in _LOCAL_ROUTE_PROVIDERS
             is_cloud_proxy = _payload_cloud_proxy(payload)
             has_spark_hint = _event_has_spark_hint(payload)
-            live_spark_proof = _event_counts_as_live_spark_proof(payload)
             planner_local += int(is_local)
             planner_cloud_proxy += int(is_cloud_proxy)
             planner_spark_hint += int(has_spark_hint)
-            planner_live_spark_proof += int(live_spark_proof)
             latest_planner = {
                 "sequence": event.sequence,
                 "provider": provider,
@@ -808,15 +956,14 @@ def _route_activity_summary(events: list[ConsoleRuntimeEvent]) -> dict[str, Any]
     evidence_total = route_total + model_completed + planner_receipts
     local_evidence = route_offline_safe + model_local + planner_local
     cloud_evidence = route_cloud + model_cloud + route_cloud_proxy + planner_cloud_proxy
-    spark_evidence = route_spark_hint + planner_spark_hint
-    live_spark_proof = route_live_spark_proof + planner_live_spark_proof
+    spark_evidence = route_spark_hint + planner_spark_hint + model_spark_evidence
     usage_ledger = _usage_ledger_summary(events)
     local_first_kpi = _local_first_kpi(
         usage_ledger,
         evidence_total=evidence_total,
         local_evidence=local_evidence,
         cloud_evidence=cloud_evidence,
-        spark_evidence=live_spark_proof,
+        spark_evidence=spark_evidence,
     )
 
     return {
@@ -828,7 +975,6 @@ def _route_activity_summary(events: list[ConsoleRuntimeEvent]) -> dict[str, Any]
         "local_evidence_count": local_evidence,
         "cloud_evidence_count": cloud_evidence,
         "spark_evidence_count": spark_evidence,
-        "live_spark_proof_count": live_spark_proof,
         "local_evidence_percent": _pct(local_evidence, evidence_total),
         "cloud_evidence_percent": _pct(cloud_evidence, evidence_total),
         "route": {
@@ -841,7 +987,6 @@ def _route_activity_summary(events: list[ConsoleRuntimeEvent]) -> dict[str, Any]
             "cloud_proxy": route_cloud_proxy,
             "web_research": route_web,
             "spark_hint": route_spark_hint,
-            "live_spark_proof": route_live_spark_proof,
             "local_percent": _pct(route_local, route_total),
             "offline_safe_percent": _pct(route_offline_safe, route_total),
             "by_provider": route_counts_by_provider,
@@ -856,6 +1001,7 @@ def _route_activity_summary(events: list[ConsoleRuntimeEvent]) -> dict[str, Any]
             "tokens": model_tokens,
             "local_percent": _pct(model_local, model_completed),
             "by_provider": model_counts_by_provider,
+            "by_worker": model_counts_by_worker,
             "latest": latest_model,
         },
         "planner": {
@@ -863,7 +1009,6 @@ def _route_activity_summary(events: list[ConsoleRuntimeEvent]) -> dict[str, Any]
             "local": planner_local,
             "cloud_proxy": planner_cloud_proxy,
             "spark_hint": planner_spark_hint,
-            "live_spark_proof": planner_live_spark_proof,
             "local_percent": _pct(planner_local, planner_receipts),
             "by_provider": planner_counts_by_provider,
             "by_worker": planner_counts_by_worker,
@@ -872,12 +1017,16 @@ def _route_activity_summary(events: list[ConsoleRuntimeEvent]) -> dict[str, Any]
         "workers": {
             "by_id": {
                 worker_id: route_counts_by_worker.get(worker_id, 0)
+                + model_counts_by_worker.get(worker_id, 0)
                 + planner_counts_by_worker.get(worker_id, 0)
                 for worker_id in sorted(
-                    set(route_counts_by_worker) | set(planner_counts_by_worker)
+                    set(route_counts_by_worker)
+                    | set(model_counts_by_worker)
+                    | set(planner_counts_by_worker)
                 )
             },
             "route": route_counts_by_worker,
+            "model": model_counts_by_worker,
             "planner": planner_counts_by_worker,
         },
         "execution_events": {
@@ -895,12 +1044,17 @@ def _local_first_proof(
     for event in events:
         if event.event_type not in {
             "model.completed",
-            "planner.receipt",
-            "route.decision",
-            "route.local-llm-outcome",
-        } and not event.event_type.startswith("route."):
+            "route.receipt_audited",
+            "route.completion_gate",
+        }:
             continue
         payload = event.payload
+        if _payload_is_synthetic(payload, event):
+            continue
+        if event.event_type == "model.completed" and _is_kernel_primary_visible_echo(
+            payload
+        ):
+            continue
         session_id = _usage_scope(payload, event) or event.job_id
         if session_id not in sessions:
             sessions[session_id] = {
@@ -914,11 +1068,20 @@ def _local_first_proof(
                 "perplexity_web_tokens": 0,
                 "other_cloud_tokens": 0,
                 "cloud_proxy_tokens": 0,
+                "local_assist_tokens": 0,
+                "model_completed_count": 0,
+                "fully_local_completion_count": 0,
+                "local_assistance_count": 0,
                 "spark_evidence_count": 0,
-                "live_spark_proof_count": 0,
                 "providers": {},
                 "models_by_phase": {},
                 "workers": {},
+                "observed_workers": {},
+                "execution_modes": {},
+                "live_execution_count": 0,
+                "unknown_execution_count": 0,
+                "observed_worker_proof_count": 0,
+                "request_ids": [],
                 "fallbacks": [],
                 "verifier_results": {},
                 "output_shapes": {},
@@ -935,9 +1098,16 @@ def _local_first_proof(
                 "receipt_audit_failures": {},
                 "receipt_audit_pass_count": 0,
                 "receipt_audit_fail_count": 0,
-                "receipt_audit_synthesized_count": 0,
-                "route_receipt_count": 0,
-                "route_receipt_missing_count": 0,
+                "completion_gate": {},
+                "completion_gate_pass_count": 0,
+                "completion_gate_fail_count": 0,
+                "_model_invocation_keys": set(),
+                "_observed_worker_keys": set(),
+                "_worker_proof_keys": set(),
+                "_spark_evidence_keys": set(),
+                "_receipt_audit_keys": set(),
+                "_completion_gate_keys": set(),
+                "_specialist_cascade_keys": set(),
             }
             order.append(session_id)
         row = sessions[session_id]
@@ -945,21 +1115,84 @@ def _local_first_proof(
         row["last_event_at"] = event.created_at
         provider = _payload_provider(payload)
         model = _payload_model(payload)
-        worker_id = _payload_worker_id(payload)
+        worker_id = _payload_observed_worker_id(payload)
         phase = _payload_lane(payload) or event.category or event.event_type
         tokens = _usage_tokens(payload)
         bucket = _usage_bucket(payload)
-        if bucket == "offline":
+        receipt = _payload_route_receipt(payload)
+        status = _lower(receipt.get("status"))
+        shape = _clean(payload.get("output_shape") or receipt.get("output_shape"))
+        execution_mode = _payload_execution_mode(payload)
+        receipt_audit = _json_dict(
+            payload.get("receipt_audit") or receipt.get("receipt_audit")
+        )
+        receipt_audit_passed = bool(receipt_audit.get("pass"))
+        completion_gate = _json_dict(
+            payload.get("completion_gate") or receipt.get("completion_gate")
+        )
+        completion_gate_passed = bool(
+            completion_gate.get("gate_passed") or completion_gate.get("pass")
+        )
+        invocation_key = _proof_invocation_key(event, payload, receipt, phase)
+        observed_worker_proof = bool(
+            worker_id
+            and _lower(receipt.get("observed_worker_source")) == "gateway_response"
+        )
+        completed_local_model = bool(
+            event.event_type == "model.completed"
+            and bucket == "offline"
+            and tokens > 0
+            and status == "completed"
+            and _lower(shape) == "complete"
+            and not _payload_cloud_proxy(payload)
+            and execution_mode == "live"
+            and receipt_audit_passed
+            and observed_worker_proof
+        )
+        model_key_seen = invocation_key in row["_model_invocation_keys"]
+        if event.event_type == "model.completed" and not model_key_seen:
+            row["_model_invocation_keys"].add(invocation_key)
+            row["model_completed_count"] += 1
+        if (
+            bucket == "offline"
+            and event.event_type == "model.completed"
+            and not model_key_seen
+        ):
             row["local_tokens"] += tokens
-        elif bucket == "cloud_openai":
+            if completed_local_model:
+                row["fully_local_completion_count"] += 1
+            else:
+                row["local_assist_tokens"] += tokens
+                row["local_assistance_count"] += 1
+        elif (
+            bucket == "cloud_openai"
+            and event.event_type == "model.completed"
+            and not model_key_seen
+        ):
             row["openai_codex_tokens"] += tokens
-        elif bucket == "cloud_amazon":
+        elif (
+            bucket == "cloud_amazon"
+            and event.event_type == "model.completed"
+            and not model_key_seen
+        ):
             row["bedrock_amazon_tokens"] += tokens
-        elif bucket == "perplexity":
+        elif (
+            bucket == "perplexity"
+            and event.event_type == "model.completed"
+            and not model_key_seen
+        ):
             row["perplexity_web_tokens"] += tokens
-        elif bucket == "cloud_other":
+        elif (
+            bucket == "cloud_other"
+            and event.event_type == "model.completed"
+            and not model_key_seen
+        ):
             row["other_cloud_tokens"] += tokens
-        if _payload_cloud_proxy(payload):
+        if (
+            _payload_cloud_proxy(payload)
+            and event.event_type == "model.completed"
+            and not model_key_seen
+        ):
             row["cloud_proxy_tokens"] += tokens
         if provider:
             _inc(row["providers"], provider)
@@ -969,11 +1202,32 @@ def _local_first_proof(
                 models.append(model)
         if worker_id:
             _inc(row["workers"], worker_id)
-        if _event_has_spark_hint(payload):
+            if invocation_key not in row["_observed_worker_keys"]:
+                row["_observed_worker_keys"].add(invocation_key)
+                _inc(row["observed_workers"], worker_id)
+        if execution_mode:
+            _inc(row["execution_modes"], execution_mode)
+            if execution_mode == "live":
+                row["live_execution_count"] += 1
+            elif execution_mode == "unknown":
+                row["unknown_execution_count"] += 1
+        request_id = _clean(receipt.get("request_id") or payload.get("request_id"))
+        if request_id and request_id not in row["request_ids"]:
+            row["request_ids"].append(request_id)
+        if (
+            worker_id.startswith("spark-")
+            and invocation_key not in row["_spark_evidence_keys"]
+        ):
+            row["_spark_evidence_keys"].add(invocation_key)
             row["spark_evidence_count"] += 1
-        if _event_counts_as_live_spark_proof(payload):
-            row["live_spark_proof_count"] += 1
-        receipt = _payload_route_receipt(payload)
+        if observed_worker_proof and invocation_key not in row["_worker_proof_keys"]:
+            row["_worker_proof_keys"].add(invocation_key)
+            row["observed_worker_proof_count"] += 1
+        elif observed_worker_proof and invocation_key in row["_worker_proof_keys"]:
+            row["observed_worker_proof_count"] = max(
+                row["observed_worker_proof_count"],
+                len(row["_worker_proof_keys"]),
+            )
         fallback_reason = _clean(receipt.get("fallback_reason"))
         if fallback_reason and fallback_reason not in row["fallbacks"]:
             row["fallbacks"].append(fallback_reason)
@@ -982,23 +1236,10 @@ def _local_first_proof(
         )
         if verifier:
             _inc(row["verifier_results"], verifier)
-        shape = _clean(payload.get("output_shape") or receipt.get("output_shape"))
         if shape:
             _inc(row["output_shapes"], shape)
-        if receipt:
-            row["route_receipt_count"] += 1
-        elif event.event_type == "model.completed":
-            row["route_receipt_missing_count"] += 1
-            row["receipt_audit_fail_count"] += 1
-            _inc(row["receipt_audit"], "fail")
-            _inc(row["receipt_audit_failures"], "route_receipt_missing")
-        receipt_audit = _json_dict(
-            payload.get("receipt_audit") or receipt.get("receipt_audit")
-        )
-        if receipt and not receipt_audit:
-            receipt_audit = audit_route_receipt(receipt)
-            row["receipt_audit_synthesized_count"] += 1
-        if receipt_audit:
+        if receipt_audit and invocation_key not in row["_receipt_audit_keys"]:
+            row["_receipt_audit_keys"].add(invocation_key)
             audit_status = _lower(receipt_audit.get("status")) or "unknown"
             _inc(row["receipt_audit"], audit_status)
             if bool(receipt_audit.get("pass")):
@@ -1007,8 +1248,20 @@ def _local_first_proof(
                 row["receipt_audit_fail_count"] += 1
                 for failure in receipt_audit.get("failures") or []:
                     _inc(row["receipt_audit_failures"], _clean(failure))
+        if completion_gate and invocation_key not in row["_completion_gate_keys"]:
+            row["_completion_gate_keys"].add(invocation_key)
+            gate_passed = bool(
+                completion_gate.get("gate_passed") or completion_gate.get("pass")
+            )
+            gate_status = "pass" if gate_passed else "fail"
+            _inc(row["completion_gate"], gate_status)
+            if gate_passed:
+                row["completion_gate_pass_count"] += 1
+            else:
+                row["completion_gate_fail_count"] += 1
         specialist_cascade = _payload_specialist_cascade(payload)
-        if specialist_cascade:
+        if specialist_cascade and invocation_key not in row["_specialist_cascade_keys"]:
+            row["_specialist_cascade_keys"].add(invocation_key)
             specialist_summary = summarize_specialist_cascade(specialist_cascade)
             row["specialist_required_count"] += _json_int(
                 specialist_summary.get("lane_count")
@@ -1034,7 +1287,7 @@ def _local_first_proof(
                     proof_state = _lower(item.get("proof_state"))
                     if proof_state:
                         _inc(row["specialist_proof_states"], proof_state)
-                        if proof_state == "production":
+                        if _specialist_lane_is_production_ready(item):
                             row["specialist_production_ready_count"] += 1
                     benchmark = item.get("benchmark_evidence")
                     if isinstance(benchmark, dict) and benchmark.get("fresh"):
@@ -1054,6 +1307,16 @@ def _local_first_proof(
         key=lambda item: _json_int(item.get("last_sequence")),
         reverse=True,
     )[: max(1, min(int(session_limit or 20), 100))]
+    for row in rows:
+        row["cloud_llm_tokens"] = _local_first_cloud_llm_tokens(row)
+        row["release_disqualifiers"] = _local_first_row_disqualifiers(row)
+        row["release_qualified"] = not row["release_disqualifiers"]
+        for key in list(row):
+            if key.startswith("_"):
+                row.pop(key, None)
+    qualified_rows = [row for row in rows if row.get("release_qualified")]
+    release_row = qualified_rows[0] if qualified_rows else None
+    latest_row = rows[0] if rows else None
     totals = {
         "local_tokens": sum(_json_int(row.get("local_tokens")) for row in rows),
         "openai_codex_tokens": sum(
@@ -1071,11 +1334,29 @@ def _local_first_proof(
         "cloud_proxy_tokens": sum(
             _json_int(row.get("cloud_proxy_tokens")) for row in rows
         ),
+        "local_assist_tokens": sum(
+            _json_int(row.get("local_assist_tokens")) for row in rows
+        ),
+        "model_completed_count": sum(
+            _json_int(row.get("model_completed_count")) for row in rows
+        ),
+        "fully_local_completion_count": sum(
+            _json_int(row.get("fully_local_completion_count")) for row in rows
+        ),
+        "local_assistance_count": sum(
+            _json_int(row.get("local_assistance_count")) for row in rows
+        ),
         "spark_evidence_count": sum(
             _json_int(row.get("spark_evidence_count")) for row in rows
         ),
-        "live_spark_proof_count": sum(
-            _json_int(row.get("live_spark_proof_count")) for row in rows
+        "live_execution_count": sum(
+            _json_int(row.get("live_execution_count")) for row in rows
+        ),
+        "unknown_execution_count": sum(
+            _json_int(row.get("unknown_execution_count")) for row in rows
+        ),
+        "observed_worker_proof_count": sum(
+            _json_int(row.get("observed_worker_proof_count")) for row in rows
         ),
         "specialist_required_count": sum(
             _json_int(row.get("specialist_required_count")) for row in rows
@@ -1095,48 +1376,130 @@ def _local_first_proof(
         "receipt_audit_fail_count": sum(
             _json_int(row.get("receipt_audit_fail_count")) for row in rows
         ),
-        "receipt_audit_synthesized_count": sum(
-            _json_int(row.get("receipt_audit_synthesized_count")) for row in rows
+        "completion_gate_pass_count": sum(
+            _json_int(row.get("completion_gate_pass_count")) for row in rows
         ),
-        "route_receipt_count": sum(
-            _json_int(row.get("route_receipt_count")) for row in rows
-        ),
-        "route_receipt_missing_count": sum(
-            _json_int(row.get("route_receipt_missing_count")) for row in rows
+        "completion_gate_fail_count": sum(
+            _json_int(row.get("completion_gate_fail_count")) for row in rows
         ),
     }
+    totals["cloud_llm_tokens"] = (
+        totals["openai_codex_tokens"]
+        + totals["bedrock_amazon_tokens"]
+        + totals["other_cloud_tokens"]
+        + totals["cloud_proxy_tokens"]
+    )
+    receipt_audit_passed = bool(
+        release_row
+        and _json_int(release_row.get("receipt_audit_pass_count")) > 0
+        and _json_int(release_row.get("receipt_audit_fail_count")) == 0
+    )
+    completion_gate_passed = bool(
+        release_row
+        and _json_int(release_row.get("completion_gate_pass_count")) > 0
+        and _json_int(release_row.get("completion_gate_fail_count")) == 0
+    )
+    live_execution_visible = bool(
+        release_row and _json_int(release_row.get("live_execution_count")) > 0
+    )
+    observed_worker_proof = bool(
+        release_row and _json_int(release_row.get("observed_worker_proof_count")) > 0
+    )
+    has_spark_evidence = bool(
+        release_row and _json_int(release_row.get("spark_evidence_count")) > 0
+    )
+    specialist_cascade_visible = bool(
+        release_row and _json_int(release_row.get("specialist_required_count")) > 0
+    )
+    has_specialist_evidence = bool(
+        release_row and _json_int(release_row.get("specialist_evidence_count")) > 0
+    )
+    specialist_proof_ready = bool(
+        release_row
+        and _json_int(release_row.get("specialist_production_ready_count")) > 0
+    )
+    has_specialist_benchmark_evidence = bool(
+        release_row
+        and _json_int(release_row.get("specialist_benchmark_fresh_count")) > 0
+    )
+    route_path_proven = bool(
+        release_row
+        and _json_int(release_row.get("model_completed_count")) > 0
+        and _json_int(release_row.get("fully_local_completion_count")) > 0
+        and _json_int(release_row.get("local_tokens")) > 0
+        and live_execution_visible
+        and receipt_audit_passed
+        and completion_gate_passed
+        and observed_worker_proof
+        and has_spark_evidence
+        and _local_first_cloud_llm_tokens(release_row) == 0
+    )
+    latest_session_healthy = bool(
+        latest_row and latest_row.get("release_qualified") and route_path_proven
+    )
+    operational_min_sessions = 20
+    operational_local_completion_rate = _pct(
+        totals["fully_local_completion_count"],
+        totals["model_completed_count"],
+    )
+    operational_local_first_ready = bool(
+        len(rows) >= operational_min_sessions
+        and operational_local_completion_rate >= 80.0
+        and totals["receipt_audit_fail_count"] == 0
+        and totals["completion_gate_fail_count"] == 0
+        and totals["observed_worker_proof_count"]
+        >= totals["fully_local_completion_count"]
+        and totals["cloud_llm_tokens"] == 0
+        and bool(rows)
+        and len(qualified_rows) == len(rows)
+    )
     return {
         "schema": "norman.console-runtime.local-first-proof.v1",
         "session_count": len(rows),
         "sessions": rows,
         "totals": totals,
-        "release_gate": {
-            "proves_local_first": bool(rows)
-            and totals["local_tokens"]
-            >= (
-                totals["openai_codex_tokens"]
-                + totals["bedrock_amazon_tokens"]
-                + totals["other_cloud_tokens"]
+        "release_gate_basis": _local_first_release_basis(release_row),
+        "historical_context": {
+            "scope": "last_session_window",
+            "session_limit": max(1, min(int(session_limit or 20), 100)),
+            "all_sessions_release_qualified": bool(rows)
+            and len(qualified_rows) == len(rows),
+            "disqualified_session_count": len(rows) - len(qualified_rows),
+            "latest_session": _clean(latest_row.get("session")) if latest_row else "",
+            "latest_session_qualified": bool(
+                latest_row and latest_row.get("release_qualified")
             ),
-            "has_spark_evidence": totals["live_spark_proof_count"] > 0,
-            "spark_evidence_excludes_dry_run_shadow": True,
-            "specialist_cascade_visible": totals["specialist_required_count"] > 0,
-            "has_specialist_evidence": totals["specialist_evidence_count"] > 0,
-            "specialist_proof_ready": (totals["specialist_production_ready_count"] > 0),
-            "has_specialist_benchmark_evidence": (
-                totals["specialist_benchmark_fresh_count"] > 0
-            ),
-            "receipt_audit_passed": totals["receipt_audit_pass_count"] > 0
-            and totals["receipt_audit_fail_count"] == 0
-            and totals["route_receipt_missing_count"] == 0,
-            "route_receipts_present": totals["route_receipt_count"] > 0
-            and totals["route_receipt_missing_count"] == 0,
-            "receipt_audit_covered": (
-                totals["receipt_audit_pass_count"] + totals["receipt_audit_fail_count"]
+            "latest_session_disqualifiers": list(
+                latest_row.get("release_disqualifiers") or []
             )
-            >= totals["route_receipt_count"]
-            and totals["route_receipt_missing_count"] == 0,
+            if latest_row
+            else [],
+            "cloud_llm_tokens": totals["cloud_llm_tokens"],
+            "perplexity_web_tokens": totals["perplexity_web_tokens"],
+            "receipt_audit_fail_count": totals["receipt_audit_fail_count"],
+            "completion_gate_fail_count": totals["completion_gate_fail_count"],
+        },
+        "release_gate": {
+            "basis_scope": "latest_qualified_session",
+            "basis_session": _clean(release_row.get("session")) if release_row else "",
+            "basis_job_id": _clean(release_row.get("job_id")) if release_row else "",
+            "route_path_proven": route_path_proven,
+            "latest_session_healthy": latest_session_healthy,
+            "operational_local_first_ready": operational_local_first_ready,
+            "operational_min_sessions": operational_min_sessions,
+            "operational_local_completion_rate": operational_local_completion_rate,
+            "proves_local_first": route_path_proven,
+            "has_spark_evidence": has_spark_evidence,
+            "specialist_cascade_visible": specialist_cascade_visible,
+            "has_specialist_evidence": has_specialist_evidence,
+            "specialist_proof_ready": specialist_proof_ready,
+            "has_specialist_benchmark_evidence": has_specialist_benchmark_evidence,
+            "receipt_audit_passed": receipt_audit_passed,
+            "completion_gate_passed": completion_gate_passed,
+            "live_execution_visible": live_execution_visible,
+            "observed_worker_proof": observed_worker_proof,
             "cloud_proxy_visible": totals["cloud_proxy_tokens"] > 0,
+            "historical_window_clean": bool(rows) and len(qualified_rows) == len(rows),
         },
     }
 
@@ -1208,16 +1571,10 @@ def _is_executable_tui_turn_record(
         _json_bool(container.get("continuous_goal_candidate"))
         for container in (metadata, contract_metadata, authority_flags, route_policy)
     )
-    route_proof_required = any(
-        _json_bool(container.get("route_proof_required"))
-        or _json_bool(container.get("require_route_proof"))
-        for container in (metadata, contract_metadata, authority_flags, route_policy)
-    )
     if not (
         kernel_execution_enabled
         and kernel_execution_candidate
         and continuous_goal_candidate
-        and route_proof_required
     ):
         return False
     provider = _provider_key(

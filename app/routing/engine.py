@@ -352,7 +352,7 @@ async def enqueue_routing_job(
     normalized: Optional[Dict[str, Any]],
     payload: Any,
     max_attempts: int = 5,
-    defer_until: Optional[datetime] = None,
+    defer_until: datetime | None = None,
 ) -> Dict[str, Any]:
     raw_text = _extract_text(normalized, payload)
     signal_context = _extract_signal_context(

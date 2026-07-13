@@ -11,11 +11,6 @@ Status:
 - major systems and lanes still need refinement
 - the goal is a durable operating model, not a perfect taxonomy on the first pass
 
-For the Norman-specific operator split, see:
-
-- [Norman Hierarchy](norman_hierarchy.md)
-- [Norman Chat](norman_chat.md)
-
 ## Why This Exists
 
 Norman is no longer just a connector router. It is becoming:
@@ -49,7 +44,7 @@ The bot estate is useful to think about like a kingdom, but the metaphor should 
 | Kingdom Layer | Norman Meaning |
 |---|---|
 | `Sovereign / General Manager` | `Norman` as the governing control plane |
-| `Principal / Crown` | the hard ownership boundary: `Operator`, `Kubicki Trust`, `OpenBrand`, `TCG`, `Yhix` |
+| `Principal / Crown` | the hard ownership boundary: `[REDACTED_NAME]`, `[REDACTED_NAME] Trust`, `OpenBrand`, `TCG`, `Yhix` |
 | `Realm / Province` | the domain or territory inside a principal |
 | `Minister / Steward` | a top-level bot with a clean mission |
 | `Town / Site / Holding` | a place, property, or operational locus |
@@ -136,13 +131,12 @@ This is the working classification as of now. It is a control-plane view, not a 
 | `Networking` | `Household / Evergreen boundary` | `No` | `No` | `bot` | `infra_inventory` | Network discovery, topology, passive sensors, recovery, documentation |
 | `Radio / Phobos` | `Household` | `No` | `No` | `bot` | `edge_sensor` | SDR/radio/hunter box operations |
 | `Castle` | `Evergreen` | `No` | `No` | `site/service` | `site` | Evergreen site/system; operator bot should sit above the app |
-| `Diamond Roc` | `Evergreen` | `No` | `No` | `site/service` | `site` | Same pattern as Castle; canonical worker is `toy-box`, not Hal |
+| `Diamond Roc` | `Evergreen` | `No` | `No` | `site/service` | `site` | Same pattern as Castle |
 | `Cloudagent` | `Evergreen` | `No` | `No` | `service` | `infra_service` | Evergreen infra/service lane; should probably live under Evergreen Ops |
 | `Theseus` | `Evergreen / Household boundary` | `No` | `No` | `service` | `local_system` | Physical/local system tied to `hal` |
 | `Autocamera` | `Household` | `No` | `No` | `service` | `sensor/media_ingest` | Physical camera stack tied to local hardware |
 | `Glimpser` | `Household` | `No` | `No` | `service` | `observability` | Monitoring surface and signal source |
 | `Maps` | `Household` | `No` | `No` | `service` | `geo_view` | Site/location intelligence |
-| `Null Agent` | `Yhix` | `No` | `No` | `game_tui` | `yhix_bot` | Started game project; should become a Yhix cloud TUI bot rather than a household or work bot |
 | `MLS Reader` | `Household` | `No` | `No` | `service` | `property_intel` | Real-estate and property intelligence lane |
 | `Gold Book` | `Knowledge boundary` | `No` | `Mixed` | `knowledge_system` | `authority` | Strategically work-relevant but still mostly private in session ownership |
 | `d.ace` | `OpenBrand` | `Yes` | `Mixed` | `service_platform` | `production_platform` | Major OpenBrand media/ad intelligence platform |
@@ -263,7 +257,7 @@ This is a better split than treating those three lanes as roughly interchangeabl
 
 ### Identity / Recovery as Infrastructure
 
-`ROADMAP_20260322.md` treats `alerts.com` as shared infrastructure, not just a mailbox.
+`ROADMAP_20260322.md` treats `noreply.evergreen.alerts@gmail.com` as shared infrastructure, not just a mailbox.
 That supports:
 
 - `Cyber Advisor` as a first-class lane

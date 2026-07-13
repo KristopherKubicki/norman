@@ -545,10 +545,28 @@ def _benchmark_evidence(item: dict[str, Any]) -> dict[str, Any]:
     if coverage is None:
         coverage = _as_float(item.get("coverage_ratio"))
     state = _clean(quality.get("state") or item.get("benchmark_status"))
-    benchmarked = source in {"uplink_benchmark", "uplink_route_proof"} and (
+    benchmarked = source == "uplink_benchmark" and (
         bool(state) or score is not None or coverage is not None
     )
     eligible = bool(quality.get("eligible")) if quality else benchmarked
+    capability_gate = (
+        quality.get("capability_gate")
+        if isinstance(quality.get("capability_gate"), dict)
+        else item.get("capability_gate")
+        if isinstance(item.get("capability_gate"), dict)
+        else {}
+    )
+    production_requires_capability_gate = bool(
+        quality.get("production_route_requires_capability_gate")
+        or item.get("production_route_requires_capability_gate")
+    )
+    production_route_eligible = bool(
+        quality.get("production_route_eligible")
+        if "production_route_eligible" in quality
+        else item.get("production_route_eligible")
+        if "production_route_eligible" in item
+        else True
+    )
     return {
         "source": source,
         "state": state,
@@ -556,6 +574,33 @@ def _benchmark_evidence(item: dict[str, Any]) -> dict[str, Any]:
         "eligible": eligible,
         "score": score,
         "coverage_ratio": coverage,
+        "transport_gate": quality.get("transport_gate")
+        if isinstance(quality.get("transport_gate"), dict)
+        else item.get("transport_gate")
+        if isinstance(item.get("transport_gate"), dict)
+        else quality.get("benchmark_gate")
+        if isinstance(quality.get("benchmark_gate"), dict)
+        else {},
+        "benchmark_gate": quality.get("benchmark_gate")
+        if isinstance(quality.get("benchmark_gate"), dict)
+        else item.get("benchmark_gate")
+        if isinstance(item.get("benchmark_gate"), dict)
+        else {},
+        "capability_gate": capability_gate,
+        "capability_suite_id": _clean(
+            quality.get("capability_suite_id") or item.get("capability_suite_id")
+        ),
+        "capability_promotion_authoritative": bool(
+            quality.get("capability_promotion_authoritative")
+            or item.get("capability_promotion_authoritative")
+        ),
+        "production_route_requires_capability_gate": (
+            production_requires_capability_gate
+        ),
+        "production_route_eligible": production_route_eligible,
+        "capability_route_state": _clean(
+            quality.get("capability_route_state") or item.get("capability_route_state")
+        ),
         "fresh": False,
     }
 

@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodic Norman agent console template sync
+
+[Timer]
+OnBootSec=2m
+OnUnitInactiveSec=15m
+Persistent=true
+Unit=norman-agent-console-sync.service
+
+[Install]
+WantedBy=timers.target

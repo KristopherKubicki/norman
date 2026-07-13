@@ -16,23 +16,23 @@ apps:
   earlybird:
     app:
       screen: app-earlybird
-      cwd: /home/operator/code/earlybird
+      cwd: /home/kristopher/code/earlybird
       command: CONSOLE_MODE=irc RUN_FOREVER=true CONSOLE_HEIGHT=20 python eb.py
       log_file: logs/hypervisor/app-earlybird.log
     agent:
       screen: agent-earlybird
-      cwd: /home/operator/code/earlybird
+      cwd: /home/kristopher/code/earlybird
       command: CODEX_HOME=~/.codex codex --no-alt-screen resume 019c4543-948a-7950-8b2d-ac3cc3a0fc4a
       log_file: logs/hypervisor/agent-earlybird.log
 
   infra:
     app:
       screen: app-infra
-      cwd: /home/operator/code/infra
+      cwd: /home/kristopher/code/infra
       command: bash
       log_file: logs/hypervisor/app-infra.log
     agent:
       screen: agent-infra
-      cwd: /home/operator/code/infra
+      cwd: /home/kristopher/code/infra
       command: CODEX_HOME=~/.codex-work codex --no-alt-screen resume 019c8545-769b-71b0-b05a-b1167146353c
       log_file: logs/hypervisor/agent-infra.log

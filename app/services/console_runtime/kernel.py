@@ -771,6 +771,14 @@ class ConsoleRuntimeKernel:
                 completed_payload["verifier_result"] = route_receipt.get(
                     "verifier_result"
                 )
+                completed_payload["request_id"] = route_receipt.get("request_id")
+                completed_payload["client_request_id"] = route_receipt.get(
+                    "client_request_id"
+                )
+                completed_payload["gateway_request_id"] = route_receipt.get(
+                    "gateway_request_id"
+                )
+                completed_payload["invocation_id"] = route_receipt.get("invocation_id")
             if route:
                 completed_payload["route"] = route
                 completed_payload["attribution"] = attribution

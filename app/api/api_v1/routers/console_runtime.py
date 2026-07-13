@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import os
+import time
+from threading import RLock
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -42,6 +46,12 @@ from app.services.norllama.types import NorllamaTaskRequest
 
 router = APIRouter(prefix="/console-runtime", tags=["console_runtime"])
 
+_READ_CACHE_LOCK = RLock()
+_READ_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
+_READ_CACHE_REFRESHING: set[tuple[Any, ...]] = set()
+_READ_CACHE_STALE_SECONDS = 60.0
+_READ_CACHE_DISABLED_ENV = "NORMAN_CONSOLE_RUNTIME_DISABLE_READ_CACHE"
+
 RUNTIME_EVENT_CATEGORIES = [
     "job",
     "turn",
@@ -59,6 +69,150 @@ RUNTIME_EVENT_CATEGORIES = [
     "verification",
     "runtime",
 ]
+
+
+def _read_cache_enabled() -> bool:
+    if os.environ.get(_READ_CACHE_DISABLED_ENV):
+        return False
+    # Keep test clients isolated; each test builds its own DB/application state.
+    return not bool(os.environ.get("PYTEST_CURRENT_TEST"))
+
+
+def _read_cache_get(
+    key: tuple[Any, ...],
+    *,
+    ttl_seconds: float,
+    stale_seconds: float = _READ_CACHE_STALE_SECONDS,
+) -> dict[str, Any] | None:
+    if not _read_cache_enabled():
+        return None
+    now = time.time()
+    with _READ_CACHE_LOCK:
+        entry = _READ_CACHE.get(key)
+        if not entry:
+            return None
+        age = now - float(entry.get("stored_at") or 0.0)
+        if age <= ttl_seconds or age <= stale_seconds:
+            payload = copy.deepcopy(entry.get("payload") or {})
+            if isinstance(payload, dict) and age > ttl_seconds:
+                payload["_cache"] = {
+                    "state": "stale",
+                    "age_seconds": round(age, 3),
+                }
+            return payload
+    return None
+
+
+def _read_cache_set(key: tuple[Any, ...], payload: dict[str, Any]) -> None:
+    if not _read_cache_enabled():
+        return
+    with _READ_CACHE_LOCK:
+        _READ_CACHE[key] = {
+            "stored_at": time.time(),
+            "payload": copy.deepcopy(payload),
+        }
+
+
+def _cached_read(
+    key: tuple[Any, ...],
+    *,
+    ttl_seconds: float,
+    loader,
+    busy_payload,
+) -> dict[str, Any]:
+    cached = _read_cache_get(key, ttl_seconds=ttl_seconds, stale_seconds=ttl_seconds)
+    if cached is not None:
+        return cached
+    if _read_cache_enabled():
+        with _READ_CACHE_LOCK:
+            if key in _READ_CACHE_REFRESHING:
+                stale = _read_cache_get(
+                    key,
+                    ttl_seconds=ttl_seconds,
+                    stale_seconds=_READ_CACHE_STALE_SECONDS,
+                )
+                if stale is not None:
+                    return stale
+                return busy_payload()
+            _READ_CACHE_REFRESHING.add(key)
+    try:
+        payload = loader()
+        if isinstance(payload, dict):
+            _read_cache_set(key, payload)
+        return payload
+    finally:
+        if _read_cache_enabled():
+            with _READ_CACHE_LOCK:
+                _READ_CACHE_REFRESHING.discard(key)
+
+
+def _local_first_busy_payload() -> dict[str, Any]:
+    return {
+        "schema": "norman.console-runtime.local-first-proof.v1",
+        "session_count": 0,
+        "sessions": [],
+        "totals": {},
+        "release_gate": {
+            "route_path_proven": False,
+            "latest_session_healthy": False,
+            "operational_local_first_ready": False,
+        },
+        "_cache": {"state": "refresh_busy"},
+    }
+
+
+def _route_outcomes_busy_payload() -> dict[str, Any]:
+    return {
+        "schema": "norman.norllama.route-outcomes-summary.v1",
+        "count": 0,
+        "ok": 0,
+        "fail": 0,
+        "models": [],
+        "by_tui": {},
+        "by_worker": {},
+        "_cache": {"state": "refresh_busy"},
+    }
+
+
+def _kernel_capability_payload() -> dict[str, Any]:
+    return {
+        "version": "norman-kernel-v1",
+        "event_categories": RUNTIME_EVENT_CATEGORIES,
+        "adapters": ["norllama", "shell", "runtime-dry-run"],
+        "supports": {
+            "db_event_stream": True,
+            "sse": True,
+            "policy_mode": True,
+            "route_decisions": True,
+            "route_summary": True,
+            "route_outcomes": True,
+            "usage_ledger": True,
+            "usage_by_provider": True,
+            "usage_by_job": True,
+            "usage_by_day": True,
+            "local_first_kpi": True,
+            "local_first_proof": True,
+            "tui_acceptance_gate": True,
+            "dynamic_model_pool": True,
+            "route_receipt_pool": True,
+            "specialist_lane_registry": True,
+            "specialist_route_receipts": True,
+            "deterministic_expert_cascade": True,
+            "shell_events": True,
+            "codex_optional": True,
+            "cloud_llm_offline": True,
+            "local_first_default": True,
+            "explicit_cloud_escalation": True,
+            "norllama_frontdoor": True,
+            "continuous_goal_loop": True,
+            "phased_goal_loop": True,
+            "bounded_goal_runs": True,
+            "local_token_budget": True,
+            "tui_kernel_execution_promotion": True,
+            "control_only": True,
+        },
+        "mode": resolve_runtime_mode().as_dict(),
+    }
 
 
 class _BorrowedConsoleRuntimeDbSession:
@@ -338,15 +492,27 @@ async def list_console_runtime_jobs(
     current_user: User = Depends(get_console_runtime_user),
     db: Session = Depends(get_db),
 ):
-    jobs = [
-        job.as_dict()
-        for job in db_console_runtime_store.list_jobs(
-            db,
-            user_id=current_user.id,
-            limit=limit,
-        )
-    ]
-    return {"items": jobs, "count": len(jobs)}
+    def load_jobs() -> dict[str, Any]:
+        jobs = [
+            job.as_dict()
+            for job in db_console_runtime_store.list_jobs(
+                db,
+                user_id=current_user.id,
+                limit=limit,
+            )
+        ]
+        return {"items": jobs, "count": len(jobs)}
+
+    return _cached_read(
+        ("jobs", current_user.id, int(limit)),
+        ttl_seconds=1.5,
+        busy_payload=lambda: {
+            "items": [],
+            "count": 0,
+            "_cache": {"state": "refresh_busy"},
+        },
+        loader=load_jobs,
+    )
 
 
 @router.get("/capabilities")
@@ -354,47 +520,23 @@ async def get_console_runtime_capabilities(
     current_user: User = Depends(get_console_runtime_user),
 ):
     _ = current_user
-    return {
-        "kernel": {
-            "version": "norman-kernel-v1",
-            "event_categories": RUNTIME_EVENT_CATEGORIES,
-            "adapters": ["norllama", "shell", "runtime-dry-run"],
-            "supports": {
-                "db_event_stream": True,
-                "sse": True,
-                "policy_mode": True,
-                "route_decisions": True,
-                "route_summary": True,
-                "route_outcomes": True,
-                "usage_ledger": True,
-                "usage_by_provider": True,
-                "usage_by_job": True,
-                "usage_by_day": True,
-                "local_first_kpi": True,
-                "local_first_proof": True,
-                "tui_acceptance_gate": True,
-                "dynamic_model_pool": True,
-                "route_receipt_pool": True,
-                "specialist_lane_registry": True,
-                "specialist_route_receipts": True,
-                "deterministic_expert_cascade": True,
-                "shell_events": True,
-                "codex_optional": True,
-                "cloud_llm_offline": True,
-                "local_first_default": True,
-                "explicit_cloud_escalation": True,
-                "norllama_frontdoor": True,
-                "continuous_goal_loop": True,
-                "phased_goal_loop": True,
-                "bounded_goal_runs": True,
-                "local_token_budget": True,
-                "tui_kernel_execution_promotion": True,
-                "control_only": True,
+    return _cached_read(
+        ("capabilities", current_user.id),
+        ttl_seconds=8.0,
+        busy_payload=lambda: {
+            "kernel": _kernel_capability_payload(),
+            "norllama": {
+                "provider": "norllama",
+                "status": "refresh_busy",
+                "source": "server_read_cache",
             },
-            "mode": resolve_runtime_mode().as_dict(),
+            "_cache": {"state": "refresh_busy"},
         },
-        "norllama": _norllama_capability_snapshot(),
-    }
+        loader=lambda: {
+            "kernel": _kernel_capability_payload(),
+            "norllama": _norllama_capability_snapshot(),
+        },
+    )
 
 
 @router.get("/route-summary")
@@ -405,11 +547,19 @@ async def get_console_runtime_route_summary(
     db: Session = Depends(get_db),
 ):
     try:
-        return db_console_runtime_store.route_activity_summary(
-            db,
-            user_id=current_user.id,
-            job_id=job_id or None,
-            limit=limit,
+        return _cached_read(
+            ("route-summary", current_user.id, job_id or "", int(limit)),
+            ttl_seconds=2.0,
+            busy_payload=lambda: {
+                "schema": "norman.console-runtime.route-summary.v1",
+                "_cache": {"state": "refresh_busy"},
+            },
+            loader=lambda: db_console_runtime_store.route_activity_summary(
+                db,
+                user_id=current_user.id,
+                job_id=job_id or None,
+                limit=limit,
+            ),
         )
     except JobNotFoundError as exc:
         raise HTTPException(
@@ -424,11 +574,16 @@ async def get_console_runtime_local_first_proof(
     current_user: User = Depends(get_console_runtime_user),
     db: Session = Depends(get_db),
 ):
-    return db_console_runtime_store.local_first_proof(
-        db,
-        user_id=current_user.id,
-        limit=limit,
-        session_limit=session_limit,
+    return _cached_read(
+        ("local-first-proof", current_user.id, int(limit), int(session_limit)),
+        ttl_seconds=5.0,
+        busy_payload=_local_first_busy_payload,
+        loader=lambda: db_console_runtime_store.local_first_proof(
+            db,
+            user_id=current_user.id,
+            limit=limit,
+            session_limit=session_limit,
+        ),
     )
 
 
@@ -447,11 +602,16 @@ async def get_console_runtime_route_outcomes(
     current_user: User = Depends(get_console_runtime_user),
     db: Session = Depends(get_db),
 ):
-    return db_console_runtime_store.route_outcome_summary(
-        db,
-        user_id=current_user.id,
-        limit=limit,
-        cooldown_seconds=cooldown_seconds,
+    return _cached_read(
+        ("route-outcomes", current_user.id, int(limit), int(cooldown_seconds)),
+        ttl_seconds=3.0,
+        busy_payload=_route_outcomes_busy_payload,
+        loader=lambda: db_console_runtime_store.route_outcome_summary(
+            db,
+            user_id=current_user.id,
+            limit=limit,
+            cooldown_seconds=cooldown_seconds,
+        ),
     )
 
 
@@ -519,12 +679,30 @@ async def get_console_runtime_job(
     db: Session = Depends(get_db),
 ):
     try:
-        return db_console_runtime_store.activity_snapshot(
-            db,
-            user_id=current_user.id,
-            job_id=job_id,
-            after_sequence=after,
-            limit=limit,
+        if int(after or 0) > 0:
+            return db_console_runtime_store.activity_snapshot(
+                db,
+                user_id=current_user.id,
+                job_id=job_id,
+                after_sequence=after,
+                limit=limit,
+            )
+        return _cached_read(
+            ("job", current_user.id, job_id, int(limit)),
+            ttl_seconds=1.0,
+            busy_payload=lambda: {
+                "job": {"job_id": job_id, "status": "unknown"},
+                "events": [],
+                "route_summary": {},
+                "_cache": {"state": "refresh_busy"},
+            },
+            loader=lambda: db_console_runtime_store.activity_snapshot(
+                db,
+                user_id=current_user.id,
+                job_id=job_id,
+                after_sequence=after,
+                limit=limit,
+            ),
         )
     except JobNotFoundError as exc:
         raise HTTPException(
@@ -537,16 +715,42 @@ async def get_console_runtime_worker_status(
     current_user: User = Depends(get_console_runtime_user),
     db: Session = Depends(get_db),
 ):
-    status_extra = _worker_status_payload(db, user_id=current_user.id)
-    route_outcomes = status_extra.pop("_route_outcomes", [])
-    payload = await console_runtime_worker_service.status_payload(
-        runnable_count=status_extra.get("runnable_count", 0)
-    )
-    payload.update(status_extra)
-    payload["norllama"] = _norllama_runtime_status_snapshot(
-        route_outcomes=route_outcomes,
-    )
-    return payload
+    async def load_status() -> dict[str, Any]:
+        status_extra = _worker_status_payload(db, user_id=current_user.id)
+        route_outcomes = status_extra.pop("_route_outcomes", [])
+        payload = await console_runtime_worker_service.status_payload(
+            runnable_count=status_extra.get("runnable_count", 0)
+        )
+        payload.update(status_extra)
+        payload["norllama"] = _norllama_runtime_status_snapshot(
+            route_outcomes=route_outcomes,
+        )
+        return payload
+
+    cached = _read_cache_get(("worker-status", current_user.id), ttl_seconds=3.0)
+    if cached is not None:
+        return cached
+    key = ("worker-status", current_user.id)
+    if _read_cache_enabled():
+        with _READ_CACHE_LOCK:
+            if key in _READ_CACHE_REFRESHING:
+                stale = _read_cache_get(
+                    key,
+                    ttl_seconds=3.0,
+                    stale_seconds=_READ_CACHE_STALE_SECONDS,
+                )
+                if stale is not None:
+                    return stale
+                return {"status": "refresh_busy", "_cache": {"state": "refresh_busy"}}
+            _READ_CACHE_REFRESHING.add(key)
+    try:
+        payload = await load_status()
+        _read_cache_set(key, payload)
+        return payload
+    finally:
+        if _read_cache_enabled():
+            with _READ_CACHE_LOCK:
+                _READ_CACHE_REFRESHING.discard(key)
 
 
 @router.post("/worker/control")

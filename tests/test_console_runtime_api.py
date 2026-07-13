@@ -309,20 +309,57 @@ def test_console_runtime_api_exposes_route_summary(test_app):
             "payload": {
                 "provider": "norllama",
                 "model": "qwen3:8b",
+                "execution_mode": "live",
                 "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
                 "local": True,
                 "cloud_proxy": False,
                 "egress_class": "lan",
+                "receipt_audit": {"status": "pass", "pass": True, "failures": []},
+                "completion_gate": {"status": "pass", "gate_passed": True},
                 "route_receipt": {
                     "schema": "norman.norllama.route-receipt.v1",
+                    "status": "completed",
+                    "request_id": "req-visible-api-route-summary",
+                    "job_id": "job-visible-api-route-summary",
                     "phase": "summarize",
+                    "task_kind": "summarize",
                     "selected_provider": "norllama",
                     "selected_model": "qwen3:8b",
+                    "target_model": "qwen3:8b",
+                    "effective_runtime_model": "qwen3:8b",
                     "selected_worker": "spark-151",
+                    "observed_worker": "spark-151",
+                    "observed_worker_source": "gateway_response",
+                    "frontdoor": "https://llm.home.arpa/v1",
+                    "peer_path": ["https://llm.home.arpa/v1", "spark-151"],
+                    "route_reason": "API route summary fixture",
+                    "policy_mode": "local_first",
                     "usage_bucket": "offline_local",
                     "cloud_proxy": False,
+                    "benchmark_packet_id": "test-route-proof",
+                    "benchmark_source": "uplink_benchmark",
+                    "benchmark_fresh": True,
+                    "benchmark_gate": {
+                        "gate": "production",
+                        "promotion_authoritative": True,
+                    },
+                    "promotion_authoritative": True,
+                    "benchmark_score": 0.91,
+                    "coverage_ratio": 0.88,
+                    "input_tokens": 10,
+                    "output_tokens": 5,
+                    "total_tokens": 15,
+                    "fallback_used": False,
+                    "fallback_reason": None,
                     "output_shape": "complete",
                     "verifier_result": "pass",
+                    "execution_mode": "live",
+                    "receipt_audit": {
+                        "status": "pass",
+                        "pass": True,
+                        "failures": [],
+                    },
+                    "completion_gate": {"status": "pass", "gate_passed": True},
                     "specialist_cascade": specialist_cascade,
                 },
             },
@@ -339,7 +376,9 @@ def test_console_runtime_api_exposes_route_summary(test_app):
     assert embedded["route"]["offline_safe"] == 1
     assert embedded["route"]["cloud_llm"] == 1
     assert embedded["route"]["spark_hint"] == 1
-    assert embedded["workers"]["by_id"] == {"spark-151": 1}
+    assert embedded["model"]["by_worker"] == {"spark-151": 1}
+    assert embedded["workers"]["by_id"] == {"spark-151": 2}
+    assert embedded["spark_evidence_count"] == 2
     assert embedded["local_first_kpi"]["status"] == "on_target"
 
     response = test_app.get(

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 import time
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
@@ -30,6 +32,7 @@ from app.services.console_runtime.types import (
 from app.services.norllama.routing import build_task_receipt, route_task
 from app.services.norllama.route_proof import (
     audit_route_receipt,
+    normalize_route_receipt_for_completion_gate,
     receipt_completion_gate_passes,
 )
 from app.services.norllama.specialist_lanes import evaluate_specialist_cascade
@@ -158,6 +161,59 @@ def _verification_signal(text: Any) -> str:
     return ""
 
 
+def _literal_response_expected(objective: Any) -> str:
+    text = _clean(objective)
+    lower = text.lower()
+    marker = "reply exactly:"
+    index = lower.rfind(marker)
+    if index < 0:
+        return ""
+    expected = text[index + len(marker) :].strip()
+    return expected.strip("`\"'")
+
+
+def _literal_response_signal(objective: Any, text: Any) -> str:
+    expected = _literal_response_expected(objective)
+    if not expected:
+        return ""
+    return "complete" if _clean(text) == expected else "needs_more_work"
+
+
+def _structured_response_signal(objective: Any, text: Any) -> str:
+    objective_text = _clean(objective).lower()
+    response_text = _clean(text)
+    if not response_text or "json" not in objective_text:
+        return ""
+    if "return" not in objective_text and "reply" not in objective_text:
+        return ""
+    key_match = re.search(
+        r"\bkeys?\s+([a-z0-9_,\s-]+?)(?:\.|$)",
+        objective_text,
+    )
+    required_keys: list[str] = []
+    if key_match:
+        required_keys = [
+            re.sub(r"\s+value\s+.*$", "", key.strip().strip("`\"'")).strip()
+            for key in re.split(r",|\band\b", key_match.group(1))
+            if key.strip()
+        ]
+    try:
+        parsed = json.loads(response_text)
+    except json.JSONDecodeError:
+        return "needs_more_work"
+    if not isinstance(parsed, dict):
+        return "needs_more_work"
+    parsed_keys = {str(key).lower() for key in parsed}
+    if required_keys and not all(key in parsed_keys for key in required_keys):
+        return "needs_more_work"
+    nonce_match = re.search(r"\bnonce value\s+([a-z0-9_.:-]+)", objective_text)
+    if nonce_match:
+        expected_nonce = nonce_match.group(1).strip("`\"'.,;:")
+        if expected_nonce and expected_nonce not in response_text.lower():
+            return "needs_more_work"
+    return "complete"
+
+
 def _goal_phase_sequence(value: Any, planner_kind: str) -> list[str]:
     phases = [
         phase
@@ -193,22 +249,6 @@ def _route_policy_has_runner(policy: dict[str, Any]) -> bool:
     return any(
         _clean(policy.get(key))
         for key in ("provider", "preferred_provider", "provider_surface", "runtime")
-    )
-
-
-def _is_live_tui_execution_policy(
-    route_policy: dict[str, Any],
-    options: "ConsoleRuntimeRunOptions",
-) -> bool:
-    containers = (route_policy, options.metadata)
-    return any(
-        _flag(container.get("kernel_execution_enabled"))
-        and _flag(container.get("kernel_execution_candidate"))
-        for container in containers
-    ) and any(
-        _clean(container.get("kind")) == "tui_turn_shadow"
-        or _flag(container.get("turn_shadow"))
-        for container in containers
     )
 
 
@@ -250,10 +290,38 @@ def _route_proof_required(
 ) -> bool:
     return (
         not options.dry_run
-        or _is_live_tui_execution_policy(route_policy, options)
         or _flag(route_policy.get("route_proof_required"))
         or _flag(route_policy.get("require_route_proof"))
     )
+
+
+def _route_lock_enabled(
+    route_policy: dict[str, Any],
+    options: "ConsoleRuntimeRunOptions",
+) -> bool:
+    return (
+        _flag(options.metadata.get("route_lock"))
+        or _flag(options.metadata.get("strict_route"))
+        or _flag(route_policy.get("route_lock"))
+        or _flag(route_policy.get("strict_route"))
+        or _flag(route_policy.get("operator_model_override"))
+    )
+
+
+def _route_requested_model(
+    route_model: str,
+    route_policy: dict[str, Any],
+    options: "ConsoleRuntimeRunOptions",
+) -> tuple[str, bool, str]:
+    selected = _clean(route_model)
+    requested = _clean(options.model)
+    if (
+        requested
+        and requested != selected
+        and _route_lock_enabled(route_policy, options)
+    ):
+        return requested, True, "operator_route_lock"
+    return selected, False, ""
 
 
 def _verifier_required_for_completion(
@@ -312,27 +380,8 @@ def _receipt_completion_summary(
     }
 
 
-def _normalize_receipt_for_verification(
-    route_receipt: dict[str, Any],
-    *,
-    require_proof: bool,
-    require_verifier: bool,
-    verification_signal: str,
-) -> dict[str, Any]:
-    if not route_receipt:
-        return {}
-    normalized = dict(route_receipt)
-    normalized["route_proof_required"] = bool(
-        normalized.get("route_proof_required") or require_proof
-    )
-    normalized["require_verifier_for_completion"] = bool(
-        normalized.get("require_verifier_for_completion") or require_verifier
-    )
-    if require_verifier and verification_signal == "complete":
-        normalized["verifier_result"] = "pass"
-    elif require_verifier and verification_signal == "needs_more_work":
-        normalized["verifier_result"] = "fail"
-    return normalized
+def _completion_requested_for_step(options: "ConsoleRuntimeRunOptions") -> bool:
+    return bool(options.complete)
 
 
 @dataclass
@@ -468,13 +517,20 @@ class DbConsoleRuntimeWorker:
                 policy_state=policy_state,
             )
 
+        task_kind = _goal_task_kind(
+            _clean(opts.metadata.get("goal_task_kind"))
+            or _clean(opts.metadata.get("goal_phase"))
+            or opts.planner_kind,
+            opts.planner_kind,
+        )
         task = NorllamaTaskRequest(
-            kind=opts.planner_kind,
+            kind=task_kind,
             input_text=job.contract.objective,
             route_policy=route_policy,
             metadata={
                 "console_runtime_job_id": job_id,
                 "worker_id": opts.worker_id,
+                "goal_task_kind": task_kind,
                 **opts.metadata,
             },
         )
@@ -502,7 +558,7 @@ class DbConsoleRuntimeWorker:
                 }
 
         decision = route_decision(
-            task_kind=opts.planner_kind,
+            task_kind=task_kind,
             route=route,
             policy_state=policy_state,
             runner=getattr(model_adapter, "name", ""),
@@ -512,8 +568,8 @@ class DbConsoleRuntimeWorker:
                 "worker_id": opts.worker_id,
                 "goal_phase": _clean(opts.metadata.get("goal_phase")),
                 "goal_task_kind": _clean(opts.metadata.get("goal_task_kind"))
-                or opts.planner_kind,
-                "model_family": self._model_family(opts.model or route.model),
+                or task_kind,
+                "model_family": self._model_family(route.model),
             },
         )
         self.store.record_route_decision(
@@ -558,23 +614,52 @@ class DbConsoleRuntimeWorker:
             metadata={"source": "runtime_worker", "worker_id": opts.worker_id},
         )
 
+        goal_phase = _clean(opts.metadata.get("goal_phase")) or opts.planner_kind
+        goal_step = _clean(opts.metadata.get("goal_step")) or "1"
+        invocation_id = ":".join(
+            part
+            for part in (
+                opts.worker_id,
+                job_id,
+                goal_phase,
+                goal_step,
+                "model",
+            )
+            if part
+        )
+        session_name = _clean(
+            opts.metadata.get("session_name")
+            or opts.metadata.get("console_runtime_session")
+            or job.metadata.get("session_name")
+            or job.contract.metadata.get("session_name")
+            or job.contract.authority_flags.get("session_name")
+        )
+        completion_requested = _completion_requested_for_step(opts)
+        verifier_required = bool(
+            completion_requested
+            and _verifier_required_for_completion(route_policy, opts)
+        )
+        requested_model, model_override_used, model_override_reason = (
+            _route_requested_model(route.model, route_policy, opts)
+        )
+        route_payload = route.as_dict()
         request = ModelRequest(
             messages=[
                 {
                     "role": "system",
-                    "content": self._system_prompt_for_phase(
-                        _clean(opts.metadata.get("goal_phase")) or opts.planner_kind
-                    ),
+                    "content": self._system_prompt_for_phase(goal_phase),
                 },
                 {
                     "role": "user",
                     "content": self._phase_user_prompt(
-                        job,
-                        _clean(opts.metadata.get("goal_phase")) or opts.planner_kind,
+                        db,
+                        user_id=user_id,
+                        job=job,
+                        phase=goal_phase,
                     ),
                 },
             ],
-            model=opts.model or route.model,
+            model=requested_model,
             route_key=route.lane,
             budget=ModelBudget(
                 max_runtime_seconds=opts.max_runtime_seconds
@@ -583,21 +668,29 @@ class DbConsoleRuntimeWorker:
             ),
             metadata={
                 "route_policy": route_policy,
+                "norllama_route": route_payload,
+                "norllama_task_kind": task_kind,
+                "route_selected_model": route.model,
+                "requested_model": requested_model,
+                "model_override_used": model_override_used,
+                "model_override_reason": model_override_reason,
+                "route_source": "runtime_worker",
+                "route_decision_id": decision.decision_id,
                 "runtime_job_id": job_id,
+                "console_runtime_job_id": job_id,
                 "worker_id": opts.worker_id,
-                "dry_run": opts.dry_run,
-                "turn_shadow": bool(route_policy.get("turn_shadow")),
-                "route_proof_required": _route_proof_required(route_policy, opts),
+                **opts.metadata,
+                "invocation_id": invocation_id,
+                "request_id": invocation_id,
+                "console_runtime_session": session_name,
+                "session_name": session_name,
+                "execution_mode": "dry_run" if opts.dry_run else "live",
                 "model_timeout_seconds": route_policy.get("model_timeout_seconds")
                 or route_policy.get("provider_timeout_seconds"),
-                "completion_requested": opts.complete,
-                "require_verifier_for_completion": _verifier_required_for_completion(
-                    route_policy, opts
-                ),
-                **opts.metadata,
+                "completion_requested": completion_requested,
+                "require_verifier_for_completion": verifier_required,
             },
         )
-        invocation_id = f"{opts.worker_id}:{job_id}:model"
         self.store.append_event(
             db,
             user_id=user_id,
@@ -666,6 +759,35 @@ class DbConsoleRuntimeWorker:
                 "failure_class": "model_adapter_failed",
             }
 
+        goal_phase = (
+            _clean(opts.metadata.get("goal_phase")) or opts.planner_kind
+        ).lower()
+        verification_signal = ""
+        if goal_phase == "literal_response":
+            verification_signal = _literal_response_signal(
+                job.contract.objective,
+                result.text,
+            )
+        elif self._verifier_can_stop(route_policy, opts) and goal_phase == "verify":
+            verification_signal = _verification_signal(result.text)
+            structured_signal = _structured_response_signal(
+                job.contract.objective,
+                result.text,
+            )
+            if structured_signal == "needs_more_work":
+                structured_candidate = self._structured_candidate_from_history(
+                    db,
+                    user_id=user_id,
+                    job_id=job_id,
+                    objective=job.contract.objective,
+                )
+                if structured_candidate:
+                    result.text = structured_candidate
+                    verification_signal = "complete"
+                else:
+                    verification_signal = "needs_more_work"
+            elif not verification_signal:
+                verification_signal = structured_signal
         self._record_model_result(
             db,
             user_id=user_id,
@@ -673,50 +795,46 @@ class DbConsoleRuntimeWorker:
             invocation_id=invocation_id,
             adapter_name=model_adapter.name,
             result=result,
+            verification_signal=verification_signal,
         )
         route_receipt = _route_receipt_from_result(result)
         if route_receipt:
             route_receipt = {
                 **route_receipt,
+                "invocation_id": route_receipt.get("invocation_id") or invocation_id,
                 "input_tokens": result.usage.input_tokens,
                 "output_tokens": result.usage.output_tokens,
                 "total_tokens": result.usage.total_tokens,
             }
         require_proof = _route_proof_required(route_policy, opts)
-        require_verifier = _verifier_required_for_completion(route_policy, opts)
-        goal_phase = (
-            _clean(opts.metadata.get("goal_phase")) or opts.planner_kind
-        ).lower()
-        verification_signal = ""
-        if self._verifier_can_stop(route_policy, opts) and goal_phase == "verify":
-            verification_signal = _verification_signal(result.text)
-            if verification_signal:
-                self.store.append_event(
-                    db,
-                    user_id=user_id,
-                    job_id=job_id,
-                    event_type="verification.completed"
-                    if verification_signal == "complete"
-                    else "verification.needs_more_work",
-                    payload={
-                        "signal": verification_signal,
-                        "phase": goal_phase,
-                        "output_preview": _preview(result.text, 800),
-                        "worker_id": opts.worker_id,
-                    },
-                    summary="Verifier marked goal complete"
-                    if verification_signal == "complete"
-                    else "Verifier requested more local work",
-                    detail=_preview(result.text, 800),
-                )
-        route_receipt = _normalize_receipt_for_verification(
-            route_receipt,
-            require_proof=require_proof,
-            require_verifier=require_verifier,
-            verification_signal=verification_signal,
-        )
-        receipt_audit = _receipt_audit(route_receipt) if route_receipt else {}
+        require_verifier = verifier_required
+
+        if verification_signal:
+            self.store.append_event(
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                event_type="verification.completed"
+                if verification_signal == "complete"
+                else "verification.needs_more_work",
+                payload={
+                    "signal": verification_signal,
+                    "phase": goal_phase,
+                    "output_preview": _preview(result.text, 800),
+                    "worker_id": opts.worker_id,
+                },
+                summary="Verifier marked goal complete"
+                if verification_signal == "complete"
+                else "Verifier requested more local work",
+                detail=_preview(result.text, 800),
+            )
         if route_receipt:
+            route_receipt = normalize_route_receipt_for_completion_gate(
+                route_receipt,
+                verification_signal=verification_signal,
+            )
+            receipt_audit = _receipt_audit(route_receipt)
+            route_receipt["receipt_audit"] = receipt_audit
             self.store.append_event(
                 db,
                 user_id=user_id,
@@ -725,6 +843,10 @@ class DbConsoleRuntimeWorker:
                 payload={
                     "route_receipt": route_receipt,
                     "receipt_audit": receipt_audit,
+                    "request_id": route_receipt.get("request_id"),
+                    "client_request_id": route_receipt.get("client_request_id"),
+                    "gateway_request_id": route_receipt.get("gateway_request_id"),
+                    "invocation_id": route_receipt.get("invocation_id"),
                     "selected_provider": route_receipt.get("selected_provider"),
                     "selected_model": route_receipt.get("selected_model"),
                     "target_model": route_receipt.get("target_model"),
@@ -746,6 +868,8 @@ class DbConsoleRuntimeWorker:
                 ),
                 detail="; ".join(receipt_audit.get("failures") or []),
             )
+        else:
+            receipt_audit = {}
 
         refreshed = self.store.get_job(db, user_id=user_id, job_id=job_id)
         missing = [
@@ -760,6 +884,38 @@ class DbConsoleRuntimeWorker:
             require_verifier=require_verifier,
             verification_signal=verification_signal,
         )
+        if route_receipt or require_proof:
+            self.store.append_event(
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                event_type="route.completion_gate",
+                payload={
+                    "route_receipt": route_receipt,
+                    "receipt_audit": receipt_audit,
+                    "completion_gate": completion_gate,
+                    "request_id": route_receipt.get("request_id")
+                    if isinstance(route_receipt, dict)
+                    else "",
+                    "client_request_id": route_receipt.get("client_request_id")
+                    if isinstance(route_receipt, dict)
+                    else "",
+                    "gateway_request_id": route_receipt.get("gateway_request_id")
+                    if isinstance(route_receipt, dict)
+                    else "",
+                    "invocation_id": route_receipt.get("invocation_id")
+                    if isinstance(route_receipt, dict)
+                    else "",
+                    "route_proof_required": require_proof,
+                    "verifier_required": require_verifier,
+                },
+                summary=(
+                    "Route proof completion gate passed"
+                    if completion_gate.get("gate_passed")
+                    else "Route proof completion gate failed"
+                ),
+                detail=completion_gate.get("reason", ""),
+            )
         if (
             verification_signal == "complete"
             and not missing
@@ -1386,9 +1542,103 @@ class DbConsoleRuntimeWorker:
             "for this phase."
         )
 
-    def _phase_user_prompt(self, job, phase: str) -> str:
+    def _prior_model_output_context(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        job_id: str,
+        limit: int = 12,
+    ) -> str:
+        try:
+            snapshot = self.store.activity_snapshot(
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                limit=120,
+            )
+        except Exception:
+            return ""
+        events = snapshot.get("events") if isinstance(snapshot, dict) else []
+        outputs: list[str] = []
+        for event in events if isinstance(events, list) else []:
+            if not isinstance(event, dict) or event.get("event_type") != "model.delta":
+                continue
+            payload = (
+                event.get("payload") if isinstance(event.get("payload"), dict) else {}
+            )
+            text = _clean(payload.get("text") or event.get("detail"))
+            if not text:
+                continue
+            lower = " ".join(text.lower().replace("_", " ").split())
+            if lower.startswith("status: needs more work"):
+                continue
+            outputs.append(_preview(text, 1400))
+        return "\n\n".join(outputs[-limit:])
+
+    def _structured_candidate_from_history(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        job_id: str,
+        objective: str,
+        limit: int = 80,
+    ) -> str:
+        try:
+            snapshot = self.store.activity_snapshot(
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                limit=limit,
+            )
+        except Exception:
+            return ""
+        events = snapshot.get("events") if isinstance(snapshot, dict) else []
+        candidates: list[str] = []
+        for event in events if isinstance(events, list) else []:
+            if (
+                not isinstance(event, dict)
+                or event.get("event_type") != "model.completed"
+            ):
+                continue
+            payload = (
+                event.get("payload") if isinstance(event.get("payload"), dict) else {}
+            )
+            receipt = (
+                payload.get("route_receipt")
+                if isinstance(payload.get("route_receipt"), dict)
+                else {}
+            )
+            text = _clean(
+                payload.get("output_preview")
+                or payload.get("text")
+                or payload.get("response_preview")
+                or receipt.get("response_preview")
+            )
+            if not text:
+                continue
+            if _structured_response_signal(objective, text) == "complete":
+                candidates.append(text)
+        if not candidates:
+            return ""
+        latest = candidates[-1]
+        try:
+            return json.dumps(json.loads(latest), separators=(",", ":"))
+        except Exception:
+            return latest
+
+    def _phase_user_prompt(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        job,
+        phase: str,
+    ) -> str:
         contract = job.contract
-        if _clean(phase).lower() == "literal_response":
+        clean_phase = _clean(phase).lower()
+        if clean_phase == "literal_response":
             return (
                 "Return only the exact literal response requested here:\n\n"
                 f"{contract.objective}"
@@ -1405,6 +1655,35 @@ class DbConsoleRuntimeWorker:
             parts.append(
                 "Required artifacts:\n- " + "\n- ".join(contract.required_artifacts)
             )
+        if clean_phase == "verify":
+            prior_output = self._prior_model_output_context(
+                db,
+                user_id=user_id,
+                job_id=job.job_id,
+            )
+            if prior_output:
+                json_only = "json" in contract.objective.lower() and (
+                    "return" in contract.objective.lower()
+                    or "reply" in contract.objective.lower()
+                )
+                completion_instruction = (
+                    "If a candidate output satisfies the operator objective and "
+                    "done-when criteria for a JSON-only task, return only the "
+                    "final JSON document. Do not add STATUS, prose, markdown, "
+                    "or a wrapper around the JSON. If not, begin with "
+                    "STATUS: NEEDS_MORE_WORK and name the missing evidence."
+                    if json_only
+                    else "If a candidate output satisfies the operator objective and "
+                    "done-when criteria, begin with STATUS: COMPLETE and include "
+                    "the final answer with every required field and literal value. "
+                    "If not, begin with STATUS: NEEDS_MORE_WORK and name the "
+                    "missing evidence."
+                )
+                parts.append(
+                    "Prior local candidate outputs to verify:\n\n"
+                    f"{prior_output}\n\n"
+                    f"{completion_instruction}"
+                )
         return "\n\n".join(parts)
 
     def _default_adapter(
@@ -1451,6 +1730,7 @@ class DbConsoleRuntimeWorker:
         invocation_id: str,
         adapter_name: str,
         result: ModelResult,
+        verification_signal: str = "",
     ) -> None:
         preview = _preview(result.text)
         metadata = dict(result.metadata or {})
@@ -1481,17 +1761,19 @@ class DbConsoleRuntimeWorker:
             "usage": result.usage.as_dict(),
             "metadata": metadata,
             "output_preview": preview,
-            "dry_run": _flag(metadata.get("dry_run")),
-            "turn_shadow": _flag(metadata.get("turn_shadow")),
-            "route_proof_required": _flag(metadata.get("route_proof_required")),
         }
         if route_receipt:
             route_receipt = {
                 **route_receipt,
+                "invocation_id": route_receipt.get("invocation_id") or invocation_id,
                 "input_tokens": result.usage.input_tokens,
                 "output_tokens": result.usage.output_tokens,
                 "total_tokens": result.usage.total_tokens,
             }
+            route_receipt = normalize_route_receipt_for_completion_gate(
+                route_receipt,
+                verification_signal=verification_signal,
+            )
             if isinstance(route_receipt.get("specialist_cascade"), dict):
                 route_receipt["specialist_cascade"] = evaluate_specialist_cascade(
                     route_receipt["specialist_cascade"],
@@ -1507,6 +1789,10 @@ class DbConsoleRuntimeWorker:
             payload["usage_bucket"] = route_receipt.get("usage_bucket")
             payload["output_shape"] = route_receipt.get("output_shape")
             payload["verifier_result"] = route_receipt.get("verifier_result")
+            payload["request_id"] = route_receipt.get("request_id")
+            payload["client_request_id"] = route_receipt.get("client_request_id")
+            payload["gateway_request_id"] = route_receipt.get("gateway_request_id")
+            payload["invocation_id"] = route_receipt.get("invocation_id")
         if route:
             payload["route"] = route
             payload["attribution"] = attribution

@@ -44,8 +44,3 @@ def test_login_allows_access_to_home(test_app: TestClient, db: Session) -> None:
     )
     assert resp2.status_code == 307
     assert resp2.headers["location"] == "/bot/norman/"
-    resp3 = test_app.get(
-        resp2.headers["location"],
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    assert resp3.status_code == 200

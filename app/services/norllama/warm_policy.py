@@ -18,6 +18,15 @@ from app.services.norllama.model_reality import (
     build_model_reality,
     service_evidence_for_catalog_item,
 )
+from app.services.norllama.route_policy import (
+    ROUTE_POLICY_VERSION,
+    benchmark_gate_for_counts,
+    capability_gate_allows_production_default,
+    capability_gate_promotion_authoritative,
+    capability_route_state,
+    restrict_lanes_for_model,
+    route_policy_contract,
+)
 from app.services.norllama.route_outcomes import (
     local_route_cooldown,
     normalize_route_outcome,
@@ -74,8 +83,6 @@ DEFAULT_WARM_RECOMMENDATIONS: list[dict[str, Any]] = [
     },
 ]
 
-ROUTE_PROOF_BENCHMARK_SCHEMA = "norman.norllama.route-proof-benchmark-packet.v1"
-UPLINK_PROMOTION_SOURCES = {"uplink_benchmark", "uplink_route_proof"}
 PRIORITY_RANK = {"p0": 0, "p1": 1, "canary": 2, "p2": 3}
 SMALL_MODEL_MAX_B = 4
 FALLBACK_WORKER_MEMORY_GB = 32
@@ -104,6 +111,9 @@ GOOD_BENCHMARK_STATUSES = {
     "preferred",
     "recommended",
     "selected",
+    "smoke_backed",
+    "staging_backed",
+    "production_backed",
 }
 ROUTE_GUARDRAIL_LANES = (
     "planner",
@@ -125,7 +135,6 @@ ROUTE_GUARDRAIL_LANES = (
     "graph",
     "network",
     "world",
-    "image_generate",
     "canary",
 )
 NARROW_SPECIALIST_LANES = {
@@ -141,7 +150,6 @@ NARROW_SPECIALIST_LANES = {
     "graph",
     "network",
     "world",
-    "image_generate",
 }
 LANE_TEXT_MARKERS = {
     "planner": (
@@ -169,7 +177,6 @@ LANE_TEXT_MARKERS = {
     "graph": ("graph", "estate", "relational"),
     "network": ("packet", "dns", "network", "traffic"),
     "world": ("world", "simulator", "simulation", "browser rehearsal"),
-    "image_generate": ("image", "diffusion", "stable diffusion", "txt2img"),
 }
 LANE_FAMILY_DEFAULTS = {
     "qwen": ("planner", "scout", "coder", "summarizer"),
@@ -188,10 +195,6 @@ LANE_FAMILY_DEFAULTS = {
     "network": ("network",),
     "agentworld": ("world",),
     "webworld": ("world",),
-    "stable-diffusion": ("image_generate",),
-    "diffusion": ("image_generate",),
-    "sdxl": ("image_generate",),
-    "txt2img": ("image_generate",),
     "general": ("planner", "scout", "summarizer"),
 }
 TASK_KIND_ROUTE_LANES = {
@@ -220,8 +223,6 @@ TASK_KIND_ROUTE_LANES = {
     "world": ("world", "planner", "verifier"),
     "web_world": ("world", "gui_ground", "planner"),
     "browser_sim": ("world", "gui_ground", "planner"),
-    "image_generate": ("image_generate",),
-    "stable_diffusion": ("image_generate",),
 }
 ACTION_SELECTION_RANK = {
     "keep_warm": 0,
@@ -278,49 +279,6 @@ def _setting_bool(name: str, default: bool) -> bool:
     if isinstance(value, bool):
         return value
     return _clean(value).lower() in {"1", "true", "yes", "on"}
-
-
-def _packet_schema(packet: dict[str, Any]) -> str:
-    return _clean(packet.get("schema") or packet.get("packet_schema"))
-
-
-def _is_route_proof_packet(packet: dict[str, Any]) -> bool:
-    return _packet_schema(packet) == ROUTE_PROOF_BENCHMARK_SCHEMA
-
-
-def _packet_id(packet: dict[str, Any]) -> str:
-    return _clean(packet.get("packet_id") or packet.get("id")) or _clean(
-        packet.get("generated_at")
-    )
-
-
-def _packet_meta(
-    packet: dict[str, Any],
-    *,
-    status: str,
-    source: str,
-    path: str = "",
-    url: str = "",
-    historical: bool = False,
-    explicit_authoritative: bool | None = None,
-) -> dict[str, Any]:
-    route_proof = _is_route_proof_packet(packet)
-    if explicit_authoritative is None:
-        promotion_authoritative = bool(route_proof and not historical)
-    else:
-        promotion_authoritative = bool(explicit_authoritative and not historical)
-    return {
-        "status": status,
-        "source": source,
-        "path": path,
-        "url": url,
-        "packet_id": _packet_id(packet),
-        "generated_at": _clean(packet.get("generated_at")),
-        "schema": _packet_schema(packet),
-        "packet_kind": "route_proof" if route_proof else "broad_historical",
-        "promotion_authoritative": promotion_authoritative,
-        "historical": historical or not route_proof,
-    }
 
 
 def _as_float(value: Any) -> float | None:
@@ -579,100 +537,54 @@ def load_benchmark_packet(
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Load the exported Uplink benchmark packet if Norman has one."""
 
-    explicit_path = _clean(path)
-    explicit_url = _clean(url)
-    route_proof_path = explicit_path or _clean(
-        getattr(settings, "llm_route_proof_benchmark_packet_path", "")
+    configured_path = _clean(path) or _clean(
+        getattr(settings, "llm_benchmark_packet_path", "")
     )
-    route_proof_url = explicit_url or _clean(
-        getattr(settings, "llm_route_proof_benchmark_packet_url", "")
+    configured_url = _clean(url) or _clean(
+        getattr(settings, "llm_benchmark_packet_url", "")
     )
-    historical_path = (
-        ""
-        if explicit_path
-        else _clean(getattr(settings, "llm_benchmark_packet_path", ""))
-    )
-    historical_url = (
-        ""
-        if explicit_url
-        else _clean(getattr(settings, "llm_benchmark_packet_url", ""))
-    )
-    path_error = ""
-    if route_proof_path:
+    if configured_path:
         try:
-            packet = _load_json_path(route_proof_path)
+            packet = _load_json_path(configured_path)
             if packet:
-                return packet, _packet_meta(
-                    packet,
-                    status="loaded",
-                    source="path",
-                    path=route_proof_path,
-                    explicit_authoritative=True
-                    if explicit_path and _is_route_proof_packet(packet)
-                    else None,
-                )
+                return packet, {
+                    "status": "loaded",
+                    "source": "path",
+                    "path": configured_path,
+                    "packet_id": _clean(packet.get("packet_id") or packet.get("id"))
+                    or _clean(packet.get("generated_at")),
+                    "generated_at": _clean(packet.get("generated_at")),
+                }
         except Exception as exc:
             path_error = _clean(exc)
         else:
             path_error = "not found"
-    if route_proof_url:
+    else:
+        path_error = ""
+    if configured_url:
         try:
-            packet = _load_json_url(route_proof_url, timeout_seconds)
+            packet = _load_json_url(configured_url, timeout_seconds)
             if packet:
-                return packet, _packet_meta(
-                    packet,
-                    status="loaded",
-                    source="url",
-                    url=route_proof_url,
-                    explicit_authoritative=True
-                    if explicit_url and _is_route_proof_packet(packet)
-                    else None,
-                )
-        except Exception as exc:
-            path_error = _clean(exc)
-    if historical_path:
-        try:
-            packet = _load_json_path(historical_path)
-            if packet:
-                return packet, _packet_meta(
-                    packet,
-                    status="historical",
-                    source="historical_path",
-                    path=historical_path,
-                    historical=True,
-                    explicit_authoritative=False,
-                )
-        except Exception as exc:
-            path_error = _clean(exc)
-        else:
-            path_error = path_error or "route proof packet not found"
-    if historical_url:
-        try:
-            packet = _load_json_url(historical_url, timeout_seconds)
-            if packet:
-                return packet, _packet_meta(
-                    packet,
-                    status="historical",
-                    source="historical_url",
-                    url=historical_url,
-                    historical=True,
-                    explicit_authoritative=False,
-                )
+                return packet, {
+                    "status": "loaded",
+                    "source": "url",
+                    "url": configured_url,
+                    "packet_id": _clean(packet.get("packet_id") or packet.get("id"))
+                    or _clean(packet.get("generated_at")),
+                    "generated_at": _clean(packet.get("generated_at")),
+                }
         except Exception as exc:
             return {}, {
                 "status": "error",
-                "source": "historical_url",
-                "url": historical_url,
+                "source": "url",
+                "url": configured_url,
                 "error": _clean(exc)[:240],
-                "promotion_authoritative": False,
             }
     return {}, {
         "status": "fallback",
         "source": "defaults",
-        "path": route_proof_path,
-        "historical_path": historical_path,
+        "path": configured_path,
         "error": path_error[:240],
-        "promotion_authoritative": False,
     }
 
 
@@ -722,6 +634,8 @@ def _upsert_recommendation(
         "row_count",
         "sample_count",
         "count",
+        "coverage_ratio",
+        "best_weighted_score",
         "timeout_rate",
         "timeout_count",
         "timeouts",
@@ -737,9 +651,16 @@ def _upsert_recommendation(
         "output_shape_valid",
         "cold_start_p95",
         "warm_latency_p95",
+        "cold_sample_count",
+        "warm_sample_count",
+        "transport_gate",
         "benchmark_gate",
-        "gate",
-        "promotion_gate",
+        "capability_gate",
+        "capability_suite_id",
+        "capability_packet_id",
+        "capability_promotion_authoritative",
+        "production_route_requires_capability_gate",
+        "promotion_authoritative",
     )
     quality_snapshot = {
         key: metrics_source.get(key)
@@ -767,9 +688,6 @@ def _upsert_recommendation(
 
 def benchmark_recommendations(packet: dict[str, Any]) -> list[dict[str, Any]]:
     by_model: dict[str, dict[str, Any]] = {}
-    packet_source = (
-        "uplink_route_proof" if _is_route_proof_packet(packet) else "uplink_benchmark"
-    )
     shareable = packet.get("shareable_view") if isinstance(packet, dict) else {}
     if isinstance(shareable, dict):
         for role in shareable.get("recommended_roles") or []:
@@ -780,7 +698,7 @@ def benchmark_recommendations(packet: dict[str, Any]) -> list[dict[str, Any]]:
                 model=_clean(role.get("model")),
                 profile=_clean(role.get("profile")),
                 priority=_priority_for_role(role),
-                source=packet_source,
+                source="uplink_benchmark",
                 use_for=_clean(role.get("use_for")),
                 guardrail=_clean(role.get("guardrail")),
                 score=role.get("score") or role.get("score_high"),
@@ -816,7 +734,7 @@ def benchmark_recommendations(packet: dict[str, Any]) -> list[dict[str, Any]]:
                     ),
                     profile=_clean(result_item.get("profile")),
                     priority=_clean(result_item.get("priority")) or "p1",
-                    source=packet_source,
+                    source="uplink_benchmark",
                     use_for=_clean(
                         result_item.get("use_for")
                         or result_item.get("lane_id")
@@ -857,11 +775,11 @@ def benchmark_recommendations(packet: dict[str, Any]) -> list[dict[str, Any]]:
             model=model,
             profile=_clean(contract.get("default_profile")),
             priority="p1",
-            source=packet_source,
+            source="uplink_benchmark",
             use_for=_clean(contract.get("title") or contract.get("contract_id")),
             guardrail=_clean(contract.get("guardrail")),
             score=contract.get("best_weighted_score"),
-            coverage_ratio=None,
+            coverage_ratio=contract.get("coverage_ratio") or contract.get("coverage"),
             status=status,
             target_worker=_clean(
                 contract.get("target_worker") or contract.get("worker_id")
@@ -890,7 +808,7 @@ def benchmark_recommendations(packet: dict[str, Any]) -> list[dict[str, Any]]:
                 ),
                 profile=_clean(result_item.get("profile")),
                 priority=_clean(result_item.get("priority")) or "p1",
-                source=packet_source,
+                source="uplink_benchmark",
                 use_for=_clean(
                     result_item.get("use_for")
                     or result_item.get("lane_id")
@@ -980,104 +898,9 @@ def _quality_bool(item: dict[str, Any], *keys: str) -> bool | None:
     return None
 
 
-def _benchmark_gate_level(item: dict[str, Any]) -> str:
-    configured = _clean(
-        _quality_metric(item, "benchmark_gate", "gate", "promotion_gate")
-    ).lower()
-    if configured in {"smoke", "production"}:
-        return configured
-    priority = _clean(item.get("priority")).lower()
-    target_role = _clean(item.get("target_role")).lower()
-    residency = _clean(item.get("residency")).lower()
-    if priority == "canary" or target_role in {"fallback", "lab"}:
-        return "smoke"
-    if residency in {"lab", "cold_only", "aspirational"}:
-        return "smoke"
-    return "production"
-
-
-def _benchmark_gate_thresholds(item: dict[str, Any]) -> dict[str, Any]:
-    gate = _benchmark_gate_level(item)
-    prefix = (
-        "llm_warm_policy_smoke" if gate == "smoke" else "llm_warm_policy_production"
-    )
-    return {
-        "gate": gate,
-        "min_score": _setting_float(
-            f"{prefix}_min_benchmark_score",
-            _setting_float(
-                "llm_warm_policy_min_benchmark_score",
-                0.6,
-                minimum=0.0,
-                maximum=10.0,
-            ),
-            minimum=0.0,
-            maximum=10.0,
-        ),
-        "min_coverage_ratio": _setting_float(
-            f"{prefix}_min_coverage_ratio",
-            _setting_float(
-                "llm_warm_policy_min_coverage_ratio",
-                0.5,
-                minimum=0.0,
-                maximum=1.0,
-            ),
-            minimum=0.0,
-            maximum=1.0,
-        ),
-        "min_accepted_count": _setting_int(
-            f"{prefix}_min_accepted_count",
-            _setting_int(
-                "llm_warm_policy_min_accepted_count",
-                1,
-                minimum=0,
-                maximum=1000,
-            ),
-            minimum=0,
-            maximum=1000,
-        ),
-        "max_timeout_rate": _setting_float(
-            f"{prefix}_max_timeout_rate",
-            _setting_float(
-                "llm_warm_policy_max_timeout_rate",
-                0.25,
-                minimum=0.0,
-                maximum=1.0,
-            ),
-            minimum=0.0,
-            maximum=1.0,
-        ),
-        "max_progress_only_rate": _setting_float(
-            f"{prefix}_max_progress_only_rate",
-            _setting_float(
-                "llm_warm_policy_max_progress_only_rate",
-                0.10,
-                minimum=0.0,
-                maximum=1.0,
-            ),
-            minimum=0.0,
-            maximum=1.0,
-        ),
-        "max_verifier_rejection_rate": _setting_float(
-            f"{prefix}_max_verifier_rejection_rate",
-            _setting_float(
-                "llm_warm_policy_max_verifier_rejection_rate",
-                0.30,
-                minimum=0.0,
-                maximum=1.0,
-            ),
-            minimum=0.0,
-            maximum=1.0,
-        ),
-        "reject_zero_token": _setting_bool(
-            f"{prefix}_reject_zero_token",
-            _setting_bool("llm_warm_policy_reject_zero_token", True),
-        ),
-        "reject_empty_response": _setting_bool(
-            f"{prefix}_reject_empty_response",
-            _setting_bool("llm_warm_policy_reject_empty_response", True),
-        ),
-    }
+def _quality_dict(item: dict[str, Any], *keys: str) -> dict[str, Any]:
+    value = _quality_metric(item, *keys)
+    return dict(value) if isinstance(value, dict) else {}
 
 
 def _quality_total_count(item: dict[str, Any]) -> int | None:
@@ -1103,12 +926,15 @@ def _quality_rate(
     total_count: int | None,
 ) -> float | None:
     explicit = _quality_float(item, *rate_keys)
-    if explicit is not None:
-        return explicit
     count = _quality_int(item, *count_keys)
-    if count is None or not total_count:
-        return None
-    return count / max(1, total_count)
+    derived = None
+    if count is not None and total_count:
+        derived = count / max(1, total_count)
+    if explicit is None:
+        return derived
+    if derived is None:
+        return explicit
+    return max(explicit, derived)
 
 
 def _benchmark_quality_rejection(
@@ -1116,7 +942,8 @@ def _benchmark_quality_rejection(
     *,
     score: float | None,
     coverage: float | None,
-    thresholds: dict[str, Any],
+    min_score: float,
+    min_coverage: float,
 ) -> dict[str, Any] | None:
     total_count = _quality_total_count(item)
     accepted_count = _quality_int(item, "accepted_count", "accepted")
@@ -1151,14 +978,23 @@ def _benchmark_quality_rejection(
         total_count=total_count,
     )
     output_shape_valid = _quality_bool(item, "output_shape_valid")
-    min_accepted = int(thresholds.get("min_accepted_count") or 0)
-    max_timeout_rate = float(thresholds.get("max_timeout_rate") or 0.0)
-    max_progress_only_rate = float(thresholds.get("max_progress_only_rate") or 0.0)
-    max_verifier_rejection_rate = float(
-        thresholds.get("max_verifier_rejection_rate") or 0.0
+    min_accepted = _setting_int(
+        "llm_warm_policy_min_accepted_count", 1, minimum=0, maximum=1000
     )
-    reject_zero_token = bool(thresholds.get("reject_zero_token"))
-    reject_empty_response = bool(thresholds.get("reject_empty_response"))
+    max_timeout_rate = _setting_float(
+        "llm_warm_policy_max_timeout_rate", 0.25, minimum=0.0, maximum=1.0
+    )
+    max_progress_only_rate = _setting_float(
+        "llm_warm_policy_max_progress_only_rate", 0.10, minimum=0.0, maximum=1.0
+    )
+    max_verifier_rejection_rate = _setting_float(
+        "llm_warm_policy_max_verifier_rejection_rate",
+        0.30,
+        minimum=0.0,
+        maximum=1.0,
+    )
+    reject_zero_token = _setting_bool("llm_warm_policy_reject_zero_token", True)
+    reject_empty_response = _setting_bool("llm_warm_policy_reject_empty_response", True)
     metrics = {
         "accepted_count": accepted_count,
         "total_count": total_count,
@@ -1172,7 +1008,6 @@ def _benchmark_quality_rejection(
         "max_timeout_rate": max_timeout_rate,
         "max_progress_only_rate": max_progress_only_rate,
         "max_verifier_rejection_rate": max_verifier_rejection_rate,
-        "gate": _clean(thresholds.get("gate")),
     }
 
     reason = ""
@@ -1216,10 +1051,8 @@ def _benchmark_quality_rejection(
         "reason": reason,
         "score": score,
         "coverage_ratio": coverage,
-        "min_score": thresholds.get("min_score"),
-        "min_coverage_ratio": thresholds.get("min_coverage_ratio"),
-        "gate": _clean(thresholds.get("gate")),
-        "thresholds": thresholds,
+        "min_score": min_score,
+        "min_coverage_ratio": min_coverage,
         "quality_metrics": metrics,
         "source": _clean(item.get("source")),
     }
@@ -1228,11 +1061,59 @@ def _benchmark_quality_rejection(
 def _benchmark_quality(item: dict[str, Any]) -> dict[str, Any]:
     source = _clean(item.get("source"))
     status = _clean(item.get("benchmark_status")).lower()
-    score = _as_float(item.get("score"))
-    coverage = _as_float(item.get("coverage_ratio"))
-    thresholds = _benchmark_gate_thresholds(item)
-    min_score = float(thresholds.get("min_score") or 0.0)
-    min_coverage = float(thresholds.get("min_coverage_ratio") or 0.0)
+    score = _as_float(item.get("score")) or _quality_float(item, "best_weighted_score")
+    coverage = _as_float(item.get("coverage_ratio")) or _quality_float(
+        item, "coverage_ratio", "coverage"
+    )
+    explicit_benchmark_gate = _quality_metric(item, "benchmark_gate")
+    benchmark_gate = (
+        explicit_benchmark_gate
+        if isinstance(explicit_benchmark_gate, dict)
+        else benchmark_gate_for_counts(
+            accepted_count=_quality_metric(item, "accepted_count", "accepted"),
+            total_count=_quality_metric(item, "total_count", "sample_count", "count"),
+            cold_sample_count=_quality_metric(item, "cold_sample_count"),
+            warm_sample_count=_quality_metric(item, "warm_sample_count"),
+        )
+    )
+    transport_gate = _quality_dict(item, "transport_gate") or dict(benchmark_gate)
+    capability_gate = _quality_dict(item, "capability_gate")
+    production_route_requires_capability_gate = bool(
+        _quality_bool(item, "production_route_requires_capability_gate")
+    )
+    capability_gate_state = capability_route_state(
+        capability_gate=capability_gate,
+        production_route_requires_capability_gate=(
+            production_route_requires_capability_gate
+        ),
+    )
+    production_route_eligible = capability_gate_allows_production_default(
+        capability_gate=capability_gate,
+        production_route_requires_capability_gate=(
+            production_route_requires_capability_gate
+        ),
+    )
+    capability_promotion_authoritative = capability_gate_promotion_authoritative(
+        capability_gate
+    )
+    capability_snapshot = {
+        "transport_gate": transport_gate,
+        "capability_gate": capability_gate,
+        "capability_suite_id": _clean(_quality_metric(item, "capability_suite_id")),
+        "capability_packet_id": _clean(_quality_metric(item, "capability_packet_id")),
+        "capability_promotion_authoritative": capability_promotion_authoritative,
+        "production_route_requires_capability_gate": (
+            production_route_requires_capability_gate
+        ),
+        "production_route_eligible": production_route_eligible,
+        "capability_route_state": capability_gate_state,
+    }
+    min_score = _setting_float(
+        "llm_warm_policy_min_benchmark_score", 0.6, minimum=0.0, maximum=10.0
+    )
+    min_coverage = _setting_float(
+        "llm_warm_policy_min_coverage_ratio", 0.5, minimum=0.0, maximum=1.0
+    )
     if status in BAD_BENCHMARK_STATUSES:
         return {
             "eligible": False,
@@ -1242,18 +1123,23 @@ def _benchmark_quality(item: dict[str, Any]) -> dict[str, Any]:
             "coverage_ratio": coverage,
             "min_score": min_score,
             "min_coverage_ratio": min_coverage,
-            "gate": _clean(thresholds.get("gate")),
-            "thresholds": thresholds,
             "source": source,
+            "benchmark_gate": benchmark_gate,
+            **capability_snapshot,
+            "policy_version": ROUTE_POLICY_VERSION,
         }
-    if source in UPLINK_PROMOTION_SOURCES:
+    if source == "uplink_benchmark":
         quality_rejection = _benchmark_quality_rejection(
             item,
             score=score,
             coverage=coverage,
-            thresholds=thresholds,
+            min_score=min_score,
+            min_coverage=min_coverage,
         )
         if quality_rejection:
+            quality_rejection["benchmark_gate"] = benchmark_gate
+            quality_rejection.update(capability_snapshot)
+            quality_rejection["policy_version"] = ROUTE_POLICY_VERSION
             return quality_rejection
         if score is not None and score < min_score:
             return {
@@ -1264,9 +1150,10 @@ def _benchmark_quality(item: dict[str, Any]) -> dict[str, Any]:
                 "coverage_ratio": coverage,
                 "min_score": min_score,
                 "min_coverage_ratio": min_coverage,
-                "gate": _clean(thresholds.get("gate")),
-                "thresholds": thresholds,
                 "source": source,
+                "benchmark_gate": benchmark_gate,
+                **capability_snapshot,
+                "policy_version": ROUTE_POLICY_VERSION,
             }
         if coverage is not None and coverage < min_coverage:
             return {
@@ -1277,9 +1164,10 @@ def _benchmark_quality(item: dict[str, Any]) -> dict[str, Any]:
                 "coverage_ratio": coverage,
                 "min_score": min_score,
                 "min_coverage_ratio": min_coverage,
-                "gate": _clean(thresholds.get("gate")),
-                "thresholds": thresholds,
                 "source": source,
+                "benchmark_gate": benchmark_gate,
+                **capability_snapshot,
+                "policy_version": ROUTE_POLICY_VERSION,
             }
         if score is None and coverage is None and status not in GOOD_BENCHMARK_STATUSES:
             return {
@@ -1290,20 +1178,42 @@ def _benchmark_quality(item: dict[str, Any]) -> dict[str, Any]:
                 "coverage_ratio": coverage,
                 "min_score": min_score,
                 "min_coverage_ratio": min_coverage,
-                "gate": _clean(thresholds.get("gate")),
-                "thresholds": thresholds,
                 "source": source,
+                "benchmark_gate": benchmark_gate,
+                **capability_snapshot,
+                "policy_version": ROUTE_POLICY_VERSION,
             }
+        gate = _clean(benchmark_gate.get("gate"))
+        state_by_gate = {
+            "smoke": "smoke_backed",
+            "staging": "staging_backed",
+            "production": "production_backed",
+            "historical": "historical_unproven",
+        }
         return {
             "eligible": True,
-            "state": status or "benchmark_backed",
-            "reason": "benchmark-backed",
+            "state": state_by_gate.get(gate, status or "benchmark_backed"),
+            "reason": (
+                "production benchmark gate"
+                if gate == "production"
+                else "staging benchmark gate"
+                if gate == "staging"
+                else "smoke-backed; collect staging and production samples"
+                if gate == "smoke"
+                else "historical benchmark row; not promotion-authoritative"
+            ),
             "score": score,
             "coverage_ratio": coverage,
             "min_score": min_score,
             "min_coverage_ratio": min_coverage,
-            "gate": _clean(thresholds.get("gate")),
-            "thresholds": thresholds,
+            "benchmark_gate": benchmark_gate,
+            **capability_snapshot,
+            "promotion_authoritative": bool(
+                _quality_bool(item, "promotion_authoritative")
+                if _quality_bool(item, "promotion_authoritative") is not None
+                else benchmark_gate.get("promotion_authoritative")
+            ),
+            "policy_version": ROUTE_POLICY_VERSION,
             "quality_metrics": (
                 item.get("quality_metrics")
                 if isinstance(item.get("quality_metrics"), dict)
@@ -1320,9 +1230,11 @@ def _benchmark_quality(item: dict[str, Any]) -> dict[str, Any]:
             "coverage_ratio": coverage,
             "min_score": min_score,
             "min_coverage_ratio": min_coverage,
-            "gate": _clean(thresholds.get("gate")),
-            "thresholds": thresholds,
             "source": source,
+            "benchmark_gate": benchmark_gate,
+            **capability_snapshot,
+            "promotion_authoritative": False,
+            "policy_version": ROUTE_POLICY_VERSION,
         }
     fallback_prefetch = _setting_bool("llm_warm_policy_fallback_prefetch", False)
     priority = _clean(item.get("priority"))
@@ -1340,9 +1252,11 @@ def _benchmark_quality(item: dict[str, Any]) -> dict[str, Any]:
         "coverage_ratio": coverage,
         "min_score": min_score,
         "min_coverage_ratio": min_coverage,
-        "gate": _clean(thresholds.get("gate")),
-        "thresholds": thresholds,
         "source": source,
+        "benchmark_gate": benchmark_gate,
+        **capability_snapshot,
+        "promotion_authoritative": False,
+        "policy_version": ROUTE_POLICY_VERSION,
     }
 
 
@@ -1407,6 +1321,7 @@ def _recommendation_lanes(item: dict[str, Any]) -> list[str]:
         lanes.add("canary")
         lanes.discard("verifier")
         lanes.discard("coder")
+    lanes = restrict_lanes_for_model(model, lanes)
     return [lane for lane in ROUTE_GUARDRAIL_LANES if lane in lanes]
 
 
@@ -1430,6 +1345,11 @@ def _route_guardrail(
     elif canary or (size_b is not None and size_b <= SMALL_MODEL_MAX_B):
         authority = "canary_only"
         route_state = "canary"
+    elif not quality.get("production_route_eligible", True):
+        authority = "canary_only"
+        route_state = _clean(quality.get("capability_route_state")) or (
+            "capability_unproven"
+        )
     else:
         authority = "preflight_or_draft"
         route_state = "eligible"
@@ -1439,6 +1359,8 @@ def _route_guardrail(
         "authority": authority,
         "route_state": route_state,
         "final_authority": False,
+        "production_route_eligible": bool(quality.get("production_route_eligible")),
+        "capability_route_state": _clean(quality.get("capability_route_state")),
         "requires_verification": authority != "blocked",
         "cloud_escalation_required_for": [
             "workspace mutation",
@@ -1603,15 +1525,6 @@ def _preferred_worker(
             "qwen": "spark-151",
             "gemma": "spark-151",
             "openfugu": "spark-151",
-            "paddle": "spark-150",
-            "mineru": "spark-150",
-            "groundnext": "spark-150",
-            "guard": "spark-150",
-            "sentinel": "spark-150",
-            "toto": "spark-150",
-            "chronos": "spark-150",
-            "graph": "spark-150",
-            "network": "spark-150",
         }.get(family)
         if family_preference:
             for worker in production:
@@ -1761,6 +1674,25 @@ def _action_for_recommendation(
     target_reachable = bool((target_worker or {}).get("reachable"))
     target_active = bool(target_worker and _worker_active_model(target_worker, model))
     active_worker_ids = _active_worker_ids(workers, model)
+    if not target_active and active_worker_ids:
+        active_worker = next(
+            (
+                worker
+                for worker in workers
+                if _clean(worker.get("id") or worker.get("worker_id"))
+                in active_worker_ids
+                and worker.get("reachable")
+            ),
+            None,
+        )
+        if active_worker:
+            target_worker = active_worker
+            target_worker_id = _clean(
+                target_worker.get("id") or target_worker.get("worker_id")
+            )
+            target_endpoint = _worker_public_endpoint(target_worker)
+            target_reachable = bool(target_worker.get("reachable"))
+            target_active = True
     target_pressure = _worker_pressure(target_worker or {}) if target_worker else {}
     outcome_stats = _route_outcome_stats(
         route_outcomes or [],
@@ -2035,7 +1967,8 @@ def _prefetch_candidates(evaluated: list[dict[str, Any]]) -> list[dict[str, Any]
             continue
         model = _clean(item.get("model"))
         target_worker = _clean(item.get("target_worker"))
-        key = (model, target_worker)
+        target_endpoint = _clean(item.get("target_endpoint"))
+        key = (model, target_endpoint or target_worker)
         if key in seen:
             continue
         seen.add(key)
@@ -2057,29 +1990,14 @@ def build_warm_policy(
     if packet is None:
         packet, benchmark_meta = load_benchmark_packet()
     else:
-        route_proof = _is_route_proof_packet(packet)
-        explicit_authoritative = packet.get("promotion_authoritative")
-        if explicit_authoritative is None:
-            promotion_authoritative = bool(route_proof and not packet.get("historical"))
-        else:
-            promotion_authoritative = bool(
-                explicit_authoritative and not packet.get("historical")
-            )
         benchmark_meta = {
             "status": "provided",
             "source": "provided",
-            "packet_id": _packet_id(packet),
+            "packet_id": _clean(packet.get("packet_id") or packet.get("id"))
+            or _clean(packet.get("generated_at")),
             "generated_at": _clean(packet.get("generated_at")),
-            "schema": _packet_schema(packet),
-            "packet_kind": "route_proof" if route_proof else "broad_historical",
-            "promotion_authoritative": promotion_authoritative,
-            "historical": bool(packet.get("historical") or not route_proof),
         }
-    recommendations = (
-        benchmark_recommendations(packet or {})
-        if packet and benchmark_meta.get("promotion_authoritative", True)
-        else []
-    )
+    recommendations = benchmark_recommendations(packet or {}) if packet else []
     if not recommendations:
         recommendations = _fallback_recommendations()
     mesh_payload = mesh or get_mesh_overview(timeout_seconds=2)
@@ -2135,7 +2053,8 @@ def build_warm_policy(
         item
         for item in evaluated
         if item.get("priority") == "p0"
-        and item.get("route_guardrail", {}).get("authority") != "blocked"
+        and item.get("route_guardrail", {}).get("authority")
+        not in {"blocked", "canary_only"}
     ]
     p0_available = any(item.get("available") for item in p0_routable)
     p0_active = any(
@@ -2148,8 +2067,23 @@ def build_warm_policy(
         route_posture = "prefetch_or_wait"
     else:
         route_posture = "fallback_or_cloud_gate"
+    policy_contract = route_policy_contract()
     payload = {
         "schema": "norman.norllama.warm-policy.v1",
+        "policy_authority": policy_contract["schema"],
+        "policy_version": ROUTE_POLICY_VERSION,
+        "policy_id": policy_contract["policy_id"],
+        "policy_hash": policy_contract["policy_hash"],
+        "route_policy": policy_contract,
+        "benchmark_gate_policy": {
+            "smoke": "accepted_count >= 1; not promotion-authoritative",
+            "staging": "accepted_count >= 3; routeable with caution",
+            "production": (
+                "accepted_count >= 5 with distinct cold and warm samples; "
+                "promotion-authoritative"
+            ),
+            "historical": "legacy or countless packet row; not promotion-authoritative",
+        },
         "enabled": enabled,
         "status": "ok" if available_models else "mesh_unavailable",
         "route_posture": route_posture,
@@ -2254,6 +2188,26 @@ def _selection_strategy(policy: dict[str, Any] | None) -> str:
         or (policy or {}).get("selection_strategy")
     ).lower()
     return strategy if strategy in POOL_STRATEGIES else "balanced"
+
+
+def _selection_allows_canary(policy: dict[str, Any] | None) -> bool:
+    policy = policy if isinstance(policy, dict) else {}
+
+    def policy_flag(key: str) -> bool:
+        value = policy.get(key)
+        if isinstance(value, bool):
+            return value
+        return _clean(value).lower() in {"1", "true", "yes", "on", "enabled"}
+
+    return bool(
+        _setting_bool("llm_warm_policy_allow_canary_default", False)
+        or policy_flag("allow_canary_model")
+        or policy_flag("allow_canary_models")
+        or policy_flag("allow_capability_unproven_canary")
+        or policy_flag("manual_route_override")
+        or policy_flag("route_lock")
+        or _clean(policy.get("routing_scope")).lower() in {"canary", "lab", "manual"}
+    )
 
 
 def _pool_candidate_score(
@@ -2415,7 +2369,9 @@ def select_model_for_task_kind(
         or _clean((policy or {}).get("preferred_lane")),
     )
     strategy = _selection_strategy(policy)
+    allow_canary = _selection_allows_canary(policy)
     lane_presence = {lane: False for lane in lanes}
+    canary_candidates: list[dict[str, Any]] = []
     candidates: list[tuple[tuple, dict[str, Any], str, dict[str, Any]]] = []
     for item in payload.get("recommendations") or []:
         if not isinstance(item, dict):
@@ -2439,7 +2395,18 @@ def select_model_for_task_kind(
             continue
         if not item.get("available"):
             continue
-        if _clean(guardrail.get("authority")) == "blocked":
+        authority = _clean(guardrail.get("authority"))
+        if authority == "blocked":
+            continue
+        if authority == "canary_only" and not allow_canary:
+            canary_candidates.append(
+                _pool_candidate_entry(
+                    item,
+                    lane=selected_lane,
+                    lane_index=lane_index,
+                    strategy=strategy,
+                )
+            )
             continue
         pool_entry = _pool_candidate_entry(
             item,
@@ -2470,6 +2437,8 @@ def select_model_for_task_kind(
             "task_kind": _clean(kind),
             "lanes": lanes,
             "reason": f"no eligible warm-policy model for primary lane {lanes[0]}",
+            "canary_available": bool(canary_candidates),
+            "canary_pool": canary_candidates[:10],
             "pool_strategy": strategy,
             "pool": [],
             "warm_policy_status": _clean(payload.get("status")),
@@ -2482,6 +2451,8 @@ def select_model_for_task_kind(
             "task_kind": _clean(kind),
             "lanes": lanes,
             "reason": "no eligible warm-policy model for task kind",
+            "canary_available": bool(canary_candidates),
+            "canary_pool": canary_candidates[:10],
             "pool_strategy": strategy,
             "pool": [],
             "warm_policy_status": _clean(payload.get("status")),
@@ -2499,6 +2470,7 @@ def select_model_for_task_kind(
         "lane": selected_lane,
         "lanes": lanes,
         "pool_strategy": strategy,
+        "canary_allowed": allow_canary,
         "pool_size": len(candidates),
         "pool": pool,
         "selected_score": selected_pool_entry.get("score"),

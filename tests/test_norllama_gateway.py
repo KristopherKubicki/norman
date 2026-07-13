@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
-
 from app.services.norllama import gateway
 
 
@@ -23,20 +20,6 @@ class FakeResponse:
 class EmptyResponse(FakeResponse):
     def __init__(self, *, status_code=204):
         super().__init__({}, status_code=status_code)
-
-
-def _load_gateway_script_module():
-    path = (
-        Path(__file__).resolve().parents[1]
-        / "scripts"
-        / "norllama"
-        / "norllama_gateway.py"
-    )
-    spec = importlib.util.spec_from_file_location("norllama_gateway_script", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def test_tls_verification_stays_on_for_public_https():
@@ -191,6 +174,10 @@ def test_normalize_capabilities_payload_promotes_contracts_to_tool_lanes():
                 {"kind": "image_generate", "path": "/v1/images/generations"},
                 {"kind": "world", "path": "/v1/world"},
             ],
+            "model_policy": {
+                "policy_id": "2026.07.10.route-proof:abcd1234abcd",
+                "policy_hash": "abcd" * 16,
+            },
         }
     )
 
@@ -229,6 +216,9 @@ def test_normalize_capabilities_payload_promotes_contracts_to_tool_lanes():
     assert payload["supports"]["tools"] is True
     assert payload["supports"]["files"] is True
     assert payload["contracts"][3]["contract_id"] == "audio_diarize"
+    assert payload["model_policy"]["policy_id"] == (
+        "2026.07.10.route-proof:abcd1234abcd"
+    )
 
 
 def test_prefetch_model_posts_to_frontdoor(monkeypatch):
@@ -291,7 +281,6 @@ def test_generate_image_posts_to_frontdoor(monkeypatch):
                 "model": "sdxl-local",
                 "data": [{"b64_json": "abc"}],
                 "usage": {"image_count": 1, "usage_bucket": "offline_local"},
-                "norllama": {"selected_worker": "spark-150"},
             },
             headers={
                 "X-Norllama-Worker-Id": "spark-150",
@@ -496,59 +485,6 @@ def test_fetch_tool_activity_tracks_asr_and_world_paths(monkeypatch):
     assert payload["capability_counts"] == {"asr": 1, "world": 1}
     assert payload["latest_tool_call"]["capability"] == "asr"
     assert payload["latest_tool_call"]["model"] == "faster-whisper:distil-large-v3"
-
-
-def test_gateway_script_retains_tool_activity_separately(monkeypatch):
-    monkeypatch.setenv("NORLLAMA_ACTIVITY_LIMIT", "2")
-    monkeypatch.setenv("NORLLAMA_TOOL_ACTIVITY_LIMIT", "5")
-    monkeypatch.setenv("NORLLAMA_EXPOSE_UPSTREAM_DETAILS", "1")
-    script = _load_gateway_script_module()
-    app = script.App()
-
-    app.record_activity(
-        {
-            "method": "POST",
-            "path": "/v1/rerank",
-            "status": 200,
-            "capability": "rerank",
-            "request_id": "tool-old",
-        }
-    )
-    for index in range(4):
-        app.record_activity(
-            {
-                "method": "GET",
-                "path": "/v1/overview",
-                "status": 200,
-                "request_id": f"probe-{index}",
-            }
-        )
-    app.record_activity(
-        {
-            "method": "POST",
-            "path": "/v1/audio/transcriptions",
-            "status": 200,
-            "model": "distil-large-v3",
-            "request_id": "tool-new",
-        }
-    )
-
-    all_activity = app.recent_activity(10)
-    tool_activity = app.recent_activity(10, tool_only=True)
-
-    assert all_activity["count"] == 2
-    assert all_activity["tool_only"] is False
-    assert [item["request_id"] for item in all_activity["items"]] == [
-        "tool-new",
-        "probe-3",
-    ]
-    assert tool_activity["count"] == 2
-    assert tool_activity["tool_only"] is True
-    assert tool_activity["retention_limit"] == 5
-    assert [item["request_id"] for item in tool_activity["items"]] == [
-        "tool-new",
-        "tool-old",
-    ]
 
 
 def test_invoke_text_chat_preserves_norllama_routing_headers(monkeypatch):

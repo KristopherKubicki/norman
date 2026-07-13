@@ -13,6 +13,7 @@ from app.services.console_runtime.types import ModelResult, ModelUsage
 from app.services.console_runtime.worker import (
     ConsoleRuntimeRunOptions,
     DbConsoleRuntimeWorker,
+    _structured_response_signal,
 )
 
 
@@ -40,8 +41,12 @@ def _proof_model_result(job_id, text="verified complete"):
         "task_kind": "verify",
         "selected_provider": "norllama",
         "selected_model": "qwen3:8b",
+        "route_selected_model": "qwen3:8b",
+        "requested_model": "qwen3:8b",
         "target_model": "qwen3:8b",
         "effective_runtime_model": "qwen3:8b",
+        "model_override_used": False,
+        "model_override_reason": "",
         "selected_worker": "spark-151",
         "target_worker": "spark-151",
         "observed_worker": "spark-151",
@@ -160,12 +165,6 @@ def test_db_console_runtime_worker_defaults_to_local_first_norllama(db, monkeypa
         routing.settings,
         "llm_offline_model",
         "gemma4:26b-a4b-it-q4_K_M",
-        raising=False,
-    )
-    monkeypatch.setattr(
-        routing.settings,
-        "llm_route_proof_benchmark_packet_path",
-        "/tmp/norman-test-missing-route-proof-benchmark-packet.json",
         raising=False,
     )
     monkeypatch.setattr(
@@ -319,17 +318,17 @@ def test_db_console_runtime_worker_checkpoints_when_route_proof_fails(db):
     )
 
 
-def test_db_console_runtime_worker_audits_after_verifier_normalization(db):
+def test_db_console_runtime_worker_normalizes_verifier_before_audit_and_gate(db):
     user = _ensure_user(db)
     store = DbConsoleRuntimeStore()
     worker = DbConsoleRuntimeWorker(store)
-    job_id = f"job-worker-verifier-normalized-{uuid.uuid4().hex}"
+    job_id = f"job-worker-verify-normalized-{uuid.uuid4().hex}"
     store.create_job(
         db,
         user_id=user.id,
         job_id=job_id,
         contract=ConsoleJobContract(
-            objective="Verify the route proof after normalization",
+            objective="Verify the route-proof sequence completes cleanly",
             route_policy={
                 "provider": "norllama",
                 "route_proof_required": True,
@@ -338,23 +337,99 @@ def test_db_console_runtime_worker_audits_after_verifier_normalization(db):
             },
         ),
     )
-    result = _proof_model_result(job_id, "STATUS: COMPLETE\nNo remaining work.")
-    route_receipt = result.metadata["norllama_receipt"]["route_receipt"]
-    route_receipt["phase"] = "verify"
-    route_receipt["task_kind"] = "verify"
+    model_result = _proof_model_result(
+        job_id,
+        text="STATUS: COMPLETE\nNo remaining work.",
+    )
+    route_receipt = model_result.metadata["norllama_receipt"]["route_receipt"]
     route_receipt["verifier_result"] = "skipped"
-    adapter = FakeModelAdapter(responses=[result], name="norllama", model="qwen3:8b")
+    adapter = FakeModelAdapter(
+        responses=[model_result],
+        name="norllama",
+        model="qwen3:8b",
+    )
 
-    run = worker.run_once(
+    result = worker.run_once(
         db,
         user_id=user.id,
         job_id=job_id,
         options=ConsoleRuntimeRunOptions(
-            worker_id="worker-verifier-normalized",
+            worker_id="worker-verify-normalized-test",
             dry_run=True,
-            planner_kind="verify",
             include_capabilities=False,
             metadata={"goal_phase": "verify"},
+        ),
+        adapter=adapter,
+    )
+
+    events = store.events_after(db, user_id=user.id, job_id=job_id)
+    event_types = [event.event_type for event in events]
+    audit_event = next(
+        event for event in events if event.event_type == "route.receipt_audited"
+    )
+    gate_event = next(
+        event for event in events if event.event_type == "route.completion_gate"
+    )
+    model_event = next(
+        event for event in events if event.event_type == "model.completed"
+    )
+
+    assert result["job"]["status"] == "done"
+    assert result["route_proof"]["gate_passed"] is True
+    assert event_types.index("verification.completed") < event_types.index(
+        "route.receipt_audited"
+    )
+    assert event_types.index("route.receipt_audited") < event_types.index(
+        "route.completion_gate"
+    )
+    assert audit_event.payload["route_receipt"]["verifier_result"] == "pass"
+    assert audit_event.payload["receipt_audit"]["pass"] is True
+    assert model_event.payload["route_receipt"]["verifier_result"] == "pass"
+    assert model_event.payload["route_receipt"]["receipt_audit"]["pass"] is True
+    assert gate_event.payload["route_receipt"] == audit_event.payload["route_receipt"]
+    assert gate_event.payload["receipt_audit"] == audit_event.payload["receipt_audit"]
+    assert gate_event.payload["completion_gate"]["gate_passed"] is True
+
+
+def test_db_console_runtime_worker_does_not_require_verifier_on_nonfinal_step(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-nonfinal-proof-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Produce a local candidate answer before final verification",
+            route_policy={
+                "provider": "norllama",
+                "route_proof_required": True,
+                "require_verifier_for_completion": True,
+            },
+        ),
+    )
+    model_result = _proof_model_result(job_id, text='{"candidate": "answer"}')
+    route_receipt = model_result.metadata["norllama_receipt"]["route_receipt"]
+    route_receipt["phase"] = "chat"
+    route_receipt["task_kind"] = "chat"
+    route_receipt["verifier_result"] = "skipped"
+    adapter = FakeModelAdapter(
+        responses=[model_result],
+        name="norllama",
+        model="qwen3:8b",
+    )
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-nonfinal-proof-test",
+            dry_run=True,
+            complete=False,
+            include_capabilities=False,
+            metadata={"goal_phase": "work", "goal_task_kind": "chat"},
         ),
         adapter=adapter,
     )
@@ -363,12 +438,214 @@ def test_db_console_runtime_worker_audits_after_verifier_normalization(db):
     audit_event = next(
         event for event in events if event.event_type == "route.receipt_audited"
     )
+    gate_event = next(
+        event for event in events if event.event_type == "route.completion_gate"
+    )
 
-    assert run["job"]["status"] == "done"
-    assert run["route_proof"]["gate_passed"] is True
+    assert result["job"]["status"] == "checkpointed"
+    assert result["route_proof"]["gate_passed"] is True
+    assert adapter.invocations[0].metadata["completion_requested"] is False
+    assert adapter.invocations[0].metadata["require_verifier_for_completion"] is False
+    assert audit_event.payload["receipt_audit"]["pass"] is True
+    assert audit_event.payload["route_receipt"]["verifier_result"] == "skipped"
+    assert gate_event.payload["completion_gate"]["gate_passed"] is True
+
+
+def test_db_console_runtime_worker_uses_route_model_unless_route_locked(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-route-model-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Use the policy-selected route model.",
+            route_policy={
+                "provider": "norllama",
+                "model": "qwen3.6:27b",
+                "model_selection": "explicit",
+            },
+        ),
+    )
+    adapter = FakeModelAdapter(responses=["route model ok"], name="norllama")
+
+    worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-route-model-test",
+            dry_run=True,
+            include_capabilities=False,
+            model="qwen3.6:35b-a3b-q4_K_M",
+        ),
+        adapter=adapter,
+    )
+
+    invocation = adapter.invocations[0]
+    assert invocation.model == "qwen3.6:27b"
+    assert invocation.metadata["route_selected_model"] == "qwen3.6:27b"
+    assert invocation.metadata["requested_model"] == "qwen3.6:27b"
+    assert invocation.metadata["model_override_used"] is False
+
+
+def test_db_console_runtime_worker_allows_route_locked_model_override(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-route-lock-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Honor explicit operator route lock.",
+            route_policy={
+                "provider": "norllama",
+                "model": "qwen3.6:27b",
+                "model_selection": "explicit",
+            },
+        ),
+    )
+    adapter = FakeModelAdapter(responses=["route locked ok"], name="norllama")
+
+    worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-route-lock-test",
+            dry_run=True,
+            include_capabilities=False,
+            model="qwen3.6:35b-a3b-q4_K_M",
+            metadata={"route_lock": True},
+        ),
+        adapter=adapter,
+    )
+
+    invocation = adapter.invocations[0]
+    assert invocation.model == "qwen3.6:35b-a3b-q4_K_M"
+    assert invocation.metadata["route_selected_model"] == "qwen3.6:27b"
+    assert invocation.metadata["requested_model"] == "qwen3.6:35b-a3b-q4_K_M"
+    assert invocation.metadata["model_override_used"] is True
+    assert invocation.metadata["model_override_reason"] == "operator_route_lock"
+
+
+def test_db_console_runtime_worker_uses_goal_phase_as_task_kind_fallback(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-phase-task-kind-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Use the phase when no explicit task kind is provided.",
+            route_policy={"provider": "norllama", "model_selection": "explicit"},
+        ),
+    )
+    adapter = FakeModelAdapter(responses=["phase fallback ok"], name="norllama")
+
+    worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-phase-task-kind-test",
+            dry_run=True,
+            include_capabilities=False,
+            metadata={"goal_phase": "work"},
+        ),
+        adapter=adapter,
+    )
+
+    invocation = adapter.invocations[0]
+    assert invocation.metadata["norllama_task_kind"] == "chat"
+    assert invocation.metadata["route_selected_model"] != ""
+
+
+def test_structured_response_signal_requires_visible_json_document():
+    objective = (
+        "Return one compact JSON object with keys unhealthy_service, evidence "
+        "and nonce value liveproof."
+    )
+
+    assert (
+        _structured_response_signal(
+            objective,
+            'STATUS: COMPLETE\n{"unhealthy_service":"billing","evidence":"down","nonce":"liveproof"}',
+        )
+        == "needs_more_work"
+    )
+    assert (
+        _structured_response_signal(
+            objective,
+            '{"unhealthy_service":"billing","evidence":"down","nonce":"liveproof"}',
+        )
+        == "complete"
+    )
+
+
+def test_db_console_runtime_worker_deterministically_verifies_literal_response(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-literal-verified-{uuid.uuid4().hex}"
+    expected = "DONE local visible unit-test"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective=f"Canary only. Reply exactly: {expected}",
+            route_policy={
+                "provider": "norllama",
+                "route_proof_required": True,
+                "require_verifier_for_completion": True,
+            },
+        ),
+    )
+    model_result = _proof_model_result(job_id, text=expected)
+    route_receipt = model_result.metadata["norllama_receipt"]["route_receipt"]
+    route_receipt["phase"] = "chat"
+    route_receipt["task_kind"] = "chat"
+    route_receipt["verifier_result"] = "skipped"
+    adapter = FakeModelAdapter(
+        responses=[model_result],
+        name="norllama",
+        model="qwen3:8b",
+    )
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-literal-verified-test",
+            dry_run=True,
+            include_capabilities=False,
+            planner_kind="literal_response",
+        ),
+        adapter=adapter,
+    )
+
+    events = store.events_after(db, user_id=user.id, job_id=job_id)
+    audit_event = next(
+        event for event in events if event.event_type == "route.receipt_audited"
+    )
+    gate_event = next(
+        event for event in events if event.event_type == "route.completion_gate"
+    )
+
+    assert result["job"]["status"] == "done"
+    assert result["route_proof"]["gate_passed"] is True
+    assert any(event.event_type == "verification.completed" for event in events)
     assert audit_event.payload["route_receipt"]["verifier_result"] == "pass"
     assert audit_event.payload["receipt_audit"]["pass"] is True
-    assert audit_event.payload["receipt_audit"]["failures"] == []
+    assert gate_event.payload["completion_gate"]["gate_passed"] is True
 
 
 def test_db_console_runtime_worker_runs_bounded_goal_loop(db):
@@ -468,7 +745,7 @@ def test_db_console_runtime_worker_runs_literal_response_phase_as_chat(db):
     )
 
     adapter = FakeModelAdapter(
-        responses=["DONE local visible"],
+        responses=["DONE local visible."],
         name="runtime-dry-run",
         model="gemma3:1b",
     )
@@ -500,7 +777,7 @@ def test_db_console_runtime_worker_runs_literal_response_phase_as_chat(db):
     assert result["job"]["status"] == "done"
     assert result["steps_completed"] == 1
     assert result["stop_reason"] == "done"
-    assert result["last_result"]["model_result"]["text"] == "DONE local visible"
+    assert result["last_result"]["model_result"]["text"] == "DONE local visible."
     assert [event.payload["phase"] for event in goal_steps] == ["literal_response"]
     assert [event.payload["task_kind"] for event in goal_steps] == ["chat"]
     assert [event.payload["task_kind"] for event in planner_events] == ["chat"]
@@ -568,8 +845,185 @@ def test_db_console_runtime_worker_verifier_can_stop_goal_loop_early(db):
         "verify",
     ]
     assert len(adapter.invocations) == 3
+    assert (
+        "Prior local candidate outputs" in adapter.invocations[2].messages[1]["content"]
+    )
+    assert "work" in adapter.invocations[2].messages[1]["content"]
     assert verification_events
     assert verification_events[0].payload["signal"] == "complete"
+
+
+def test_db_console_runtime_worker_structured_requirements_override_complete_signal(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-structured-verify-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective=(
+                "Return one compact JSON object with keys unhealthy_service, "
+                "evidence, and nonce. Use nonce value n-123."
+            ),
+            route_policy={"provider": "norllama", "verifier_can_stop": True},
+        ),
+    )
+    adapter = FakeModelAdapter(
+        responses=[
+            (
+                "STATUS: COMPLETE\n\n"
+                '{"unhealthy_service":"billing","evidence":"timeout"}'
+            )
+        ],
+        name="runtime-dry-run",
+        model="runtime-dry-run",
+    )
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-structured-verify-test",
+            dry_run=True,
+            complete=True,
+            include_capabilities=False,
+            metadata={"goal_phase": "verify"},
+        ),
+        adapter=adapter,
+    )
+
+    events = store.events_after(db, user_id=user.id, job_id=job_id)
+    needs_work_events = [
+        event for event in events if event.event_type == "verification.needs_more_work"
+    ]
+    completed_events = [
+        event for event in events if event.event_type == "verification.completed"
+    ]
+
+    assert result["job"]["status"] == "checkpointed"
+    assert needs_work_events
+    assert needs_work_events[0].payload["signal"] == "needs_more_work"
+    assert completed_events == []
+
+
+def test_db_console_runtime_worker_structured_nonce_allows_json_complete_signal(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-structured-complete-{uuid.uuid4().hex}"
+    nonce = "67d552698d-norman-auto_route_local"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective=(
+                "Return one compact JSON object with keys unhealthy_service, "
+                f"evidence, and nonce. Use nonce value {nonce}."
+            ),
+            route_policy={"provider": "norllama", "verifier_can_stop": True},
+        ),
+    )
+    adapter = FakeModelAdapter(
+        responses=[
+            (
+                '{"unhealthy_service":"billing","evidence":"timeout",'
+                f'"nonce":"{nonce}"}}'
+            )
+        ],
+        name="runtime-dry-run",
+        model="runtime-dry-run",
+    )
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-structured-complete-test",
+            dry_run=True,
+            complete=True,
+            include_capabilities=False,
+            metadata={"goal_phase": "verify"},
+        ),
+        adapter=adapter,
+    )
+
+    events = store.events_after(db, user_id=user.id, job_id=job_id)
+    completed_events = [
+        event for event in events if event.event_type == "verification.completed"
+    ]
+
+    assert result["job"]["status"] == "done"
+    assert completed_events
+    assert completed_events[0].payload["signal"] == "complete"
+
+
+def test_db_console_runtime_worker_structured_verify_reuses_valid_prior_candidate(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-structured-prior-{uuid.uuid4().hex}"
+    nonce = "prior-json-nonce"
+    candidate = (
+        '{"unhealthy_service":"billing","evidence":"timeout",' f'"nonce":"{nonce}"}}'
+    )
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective=(
+                "Return one compact JSON object with keys unhealthy_service, "
+                f"evidence, and nonce. Use nonce value {nonce}."
+            ),
+            route_policy={"provider": "norllama", "verifier_can_stop": True},
+        ),
+    )
+    store.append_event(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        event_type="model.completed",
+        payload={
+            "provider": "norllama",
+            "model": "qwen3.6:27b",
+            "output_preview": candidate,
+            "usage": {"input_tokens": 10, "output_tokens": 10, "total_tokens": 20},
+        },
+    )
+    adapter = FakeModelAdapter(
+        responses=["STATUS: NEEDS_MORE_WORK"],
+        name="runtime-dry-run",
+        model="runtime-dry-run",
+    )
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-structured-prior-test",
+            dry_run=True,
+            complete=True,
+            include_capabilities=False,
+            metadata={"goal_phase": "verify"},
+        ),
+        adapter=adapter,
+    )
+
+    events = store.events_after(db, user_id=user.id, job_id=job_id)
+    completed_events = [
+        event for event in events if event.event_type == "verification.completed"
+    ]
+
+    assert result["job"]["status"] == "done"
+    assert result["model_result"]["text"] == candidate
+    assert completed_events
+    assert completed_events[-1].payload["signal"] == "complete"
 
 
 def test_db_console_runtime_worker_verifier_can_continue_goal_loop(db):

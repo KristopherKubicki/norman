@@ -79,7 +79,7 @@ This example demonstrates how to connect Norman to Slack and create a simple bot
 1. Run Norman once to generate `config.yaml` and edit the Slack section:
 
 ```yaml
-slack_token: "xoxb-your-slack-token"
+slack_token: "SLACK_BOT_TOKEN_PLACEHOLDER"
 slack_channel_id: "C01234567"
 ```
 

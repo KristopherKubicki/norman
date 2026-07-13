@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61", "wheel", "tomli; python_version < '3.11'"]
+requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -14,7 +14,6 @@ dependencies = [
   "psycopg2-binary",
   "pika",
   "httpx>=0.27,<0.28",
-  "anyio==4.12.1",
   "requests",
   "google-auth",
   "passlib",
@@ -34,9 +33,6 @@ dev = [
   "pre-commit==3.5.0",
   "hypothesis==6.99.0",
   "PyYAML",
-  "tomli; python_version < '3.11'",
-  "setuptools>=61",
-  "wheel",
 ]
 
 [tool.ruff]
@@ -50,6 +46,19 @@ exclude = [
   ".git",
   "db",
   "alembic/versions",
+  "tmp",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = [
+  ".git",
+  ".hypothesis",
+  ".pytest_cache",
+  ".venv",
+  "db",
+  "node_modules",
+  "tmp",
 ]
 
 [tool.ruff.lint]

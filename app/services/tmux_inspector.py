@@ -97,13 +97,7 @@ def _run_tmux(
 
     for candidate in _socket_attempts(socket_path):
         cmd = [*_tmux_base_cmd(candidate), *args]
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=False,
-            stdin=subprocess.DEVNULL,
-        )
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
         last_proc = proc
         last_cmd = cmd
         if proc.returncode == 0:

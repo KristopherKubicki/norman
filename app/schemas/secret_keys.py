@@ -3,10 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field, validator
-
-
-SECRET_REQUEST_MODES = {"inject", "env", "file", "read"}
+from pydantic import BaseModel, Field
 
 
 class SecretAliasOut(BaseModel):
@@ -32,14 +29,6 @@ class SecretRequestCreate(BaseModel):
     intent: str = ""
     reason: str = ""
     target_host: str = ""
-
-    @validator("requested_mode")
-    def validate_requested_mode(cls, value: str) -> str:
-        mode = (value or "").strip().lower()
-        if mode not in SECRET_REQUEST_MODES:
-            allowed = ", ".join(sorted(SECRET_REQUEST_MODES))
-            raise ValueError(f"requested_mode must be one of: {allowed}")
-        return mode
 
 
 class SecretRequestDecision(BaseModel):
@@ -108,44 +97,30 @@ class SecretRequestResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
-class SecretStashCreate(BaseModel):
-    value: str = Field(..., min_length=1)
-    label: str = Field("secret", min_length=1, max_length=120)
-    channel_id: Optional[int] = None
+class SecretCompatGetRequest(BaseModel):
+    name: str
     ttl_seconds: int = Field(900, ge=60, le=86400)
-    source: str = Field("manual", min_length=1, max_length=40)
+    requester_type: str = "agent"
+    requester_id: str = "runtime-tui-bridge"
+    session_id: str = ""
+    lane: str = ""
+    intent: str = "compat-secret-get"
+    reason: str = "compat secret get"
+    target_host: str = ""
 
-    @validator("label", "source")
-    def strip_text(cls, value: str) -> str:
-        cleaned = (value or "").strip()
-        if not cleaned:
-            raise ValueError("must not be blank")
-        return cleaned
 
-
-class SecretStashOut(BaseModel):
-    id: int
-    pointer_token: str
-    pointer_uri: str
-    user_id: int
-    channel_id: Optional[int] = None
-    label: str
-    masked_preview: str
-    source: str
-    status: str
-    created_at: Optional[datetime] = None
-    expires_at: datetime
-    last_used_at: Optional[datetime] = None
-    revoked_at: Optional[datetime] = None
-    revoked_by: Optional[int] = None
-
-    class Config:
-        orm_mode = True
+class SecretCompatGetResponse(BaseModel):
+    secret: str
+    value: str
+    lease_id: str = ""
+    request_id: str = ""
+    expires_at: Optional[datetime] = None
+    provider: Optional[str] = None
+    warnings: list[str] = Field(default_factory=list)
 
 
 class SecretAuditEventOut(BaseModel):
     id: int
-    user_id: Optional[int] = None
     request_id: Optional[int] = None
     lease_id: Optional[int] = None
     event_type: str
@@ -157,3 +132,25 @@ class SecretAuditEventOut(BaseModel):
 
     class Config:
         orm_mode = True
+
+
+class SecretStashCreate(BaseModel):
+    channel_id: Optional[int] = None
+    label: str = Field(default="", max_length=120)
+    value: str = Field(..., min_length=1, max_length=65535)
+    ttl_seconds: int = Field(default=86400, ge=60, le=604800)
+    source: str = Field(default="manual", max_length=32)
+
+
+class SecretStashOut(BaseModel):
+    id: int
+    channel_id: Optional[int] = None
+    label: str
+    masked_preview: str
+    source: str
+    status: str
+    pointer: str
+    prompt_reference: str
+    created_at: Optional[datetime] = None
+    expires_at: datetime
+    revoked_at: Optional[datetime] = None

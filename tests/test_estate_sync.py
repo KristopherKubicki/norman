@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import pathlib
 
-import pytest
-
 from app.models import (
     EstateAsset,
     EstateBot,
@@ -31,19 +29,6 @@ policy_profiles:
     allows_outbound_send: true
     allows_runtime_control: true
     allows_side_effects: true
-    powers:
-      mouth:
-        level: operator-approved
-        revoker: norman
-        revocation_tested_at: pending
-      purse: none
-      seal: operator-approved
-      key:
-        level: scoped
-        lease_source: Norman Keys
-        revoker: norman-keys
-        revocation_tested_at: pending
-      sword: none
 control_classes:
   - slug: root-controlled
     display_name: Root Controlled
@@ -157,7 +142,6 @@ def test_sync_registry_updates_existing_rows(db, tmp_path: pathlib.Path) -> None
     estate_sync.sync_registry(db, registry)
 
     registry["services"][0]["display_name"] = "Alpha Service Updated"
-    registry["services"][0]["is_active"] = False
     registry["workers"][0]["display_name"] = "Host Updated"
 
     summary = estate_sync.sync_registry(db, registry)
@@ -168,41 +152,7 @@ def test_sync_registry_updates_existing_rows(db, tmp_path: pathlib.Path) -> None
         db.query(EstateService).filter_by(slug="alpha-svc").one().display_name
         == "Alpha Service Updated"
     )
-    assert db.query(EstateService).filter_by(slug="alpha-svc").one().is_active is False
     assert (
         db.query(EstateWorker).filter_by(slug="host").one().display_name
         == "Host Updated"
     )
-
-
-def test_sync_registry_deactivates_services_removed_from_registry(
-    db, tmp_path: pathlib.Path
-) -> None:
-    _clear_estate(db)
-    registry = _load_registry(tmp_path)
-    stale_service = dict(registry["services"][0])
-    stale_service["slug"] = "stale-svc"
-    stale_service["display_name"] = "Stale Service"
-    registry["services"].append(stale_service)
-    estate_sync.sync_registry(db, registry)
-
-    registry["services"] = [
-        service for service in registry["services"] if service["slug"] != "stale-svc"
-    ]
-    summary = estate_sync.sync_registry(db, registry)
-
-    assert summary["services"] == {"inserted": 0, "updated": 1, "deactivated": 1}
-    stale = db.query(EstateService).filter_by(slug="stale-svc").one()
-    assert stale.is_active is False
-    assert "no longer present" in stale.notes
-
-
-def test_registry_rejects_unknown_power_class(tmp_path: pathlib.Path) -> None:
-    path = tmp_path / "registry.yaml"
-    path.write_text(
-        VALID_REGISTRY.replace("      sword: none", "      orbital: full"),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(estate_registry.EstateRegistryError, match="unsupported power"):
-        estate_registry.load_registry(path)

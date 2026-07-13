@@ -36,6 +36,7 @@ from app.core.exception_handlers import add_exception_handlers
 from app.routing.worker import start_routing_worker
 from app.services.connector_health import connector_health
 from app.services.console_audit_monitor import console_audit_monitor
+from app.services.console_runtime.supervisor import console_runtime_worker_service
 from app.services.fleet_credit_monitor import fleet_credit_monitor
 from app.services.estate_sync import sync_registry
 from app.services.passive_udp_listeners import passive_udp_listeners
@@ -46,15 +47,14 @@ from app.core.logging import setup_logger
 def run_alembic_migrations():
     if not os.path.exists("alembic/versions"):
         os.makedirs("alembic/versions", exist_ok=True)
-    logger.info("Alembic: upgrade head start")
+    logger.info("Alembic: upgrade heads start")
     try:
         # Run alembic in a subprocess to avoid abrupt exits in the main process.
         result = subprocess.run(
-            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            [sys.executable, "-m", "alembic", "upgrade", "heads"],
             check=True,
             capture_output=True,
             text=True,
-            stdin=subprocess.DEVNULL,
         )
         if result.stdout:
             logger.info("Alembic stdout: %s", result.stdout.strip())
@@ -63,7 +63,7 @@ def run_alembic_migrations():
     except subprocess.CalledProcessError as exc:
         logger.error("Alembic failed: %s", exc.stderr or exc.stdout or str(exc))
         raise
-    logger.info("Alembic: upgrade head done")
+    logger.info("Alembic: upgrade heads done")
 
 
 app = FastAPI()
@@ -148,7 +148,7 @@ async def startup_event():
             estate_db = db_session.SessionLocal()
             try:
                 summary = sync_registry(estate_db)
-                logger.info("Startup: estate registry sync summary %s", summary)
+                logger.info(f"Startup: estate registry sync summary {summary}")
             except Exception:
                 logger.exception("Startup: estate registry sync failed")
             finally:
@@ -182,6 +182,13 @@ async def startup_event():
             logger.info("Startup: starting console audit monitor")
             await console_audit_monitor.start()
             app.state.console_audit_monitor_enabled = True
+        if (
+            not os.environ.get("SKIP_CONSOLE_RUNTIME_WORKER")
+            and settings.console_runtime_worker_enabled
+        ):
+            logger.info("Startup: starting console runtime worker")
+            await console_runtime_worker_service.start()
+            app.state.console_runtime_worker_enabled = True
         try:
             await passive_udp_listeners.start()
             app.state.passive_udp_listeners_enabled = True
@@ -213,6 +220,8 @@ async def shutdown_event():
         await fleet_credit_monitor.stop()
     if getattr(app.state, "console_audit_monitor_enabled", False):
         await console_audit_monitor.stop()
+    if getattr(app.state, "console_runtime_worker_enabled", False):
+        await console_runtime_worker_service.stop()
     if getattr(app.state, "passive_udp_listeners_enabled", False):
         await passive_udp_listeners.stop()
     logger.info("Shutdown: complete")

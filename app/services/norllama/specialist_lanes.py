@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-import os
 import shutil
-import sys
 from copy import deepcopy
-from pathlib import Path
 from typing import Any
+
+from app.services.norllama.route_proof import (
+    NON_COMPLETION_OUTPUT_SHAPES,
+    audit_route_receipt,
+)
 
 SPECIALIST_LANE_REGISTRY_SCHEMA = "norman.norllama.specialist-lanes.v1"
 SPECIALIST_CASCADE_SCHEMA = "norman.norllama.specialist-cascade.v1"
@@ -39,6 +41,7 @@ DETERMINISTIC_SMOKE_LANES = {
     "non_answer_detector",
 }
 SPECIALIST_ROUTE_RECEIPT_FIELDS = (
+    "status",
     "request_id",
     "job_id",
     "phase",
@@ -117,25 +120,6 @@ def _truthy_presence(value: Any) -> bool:
 
 def _usage_template() -> dict[str, int]:
     return {bucket: 0 for bucket in USAGE_BUCKETS}
-
-
-def _which_command(command: str) -> str:
-    command = _clean(command)
-    if not command:
-        return ""
-    path_parts: list[str] = []
-    executable_dir = Path(sys.executable).resolve().parent
-    if executable_dir.exists():
-        path_parts.append(str(executable_dir))
-    virtual_env = _clean(os.environ.get("VIRTUAL_ENV"))
-    if virtual_env:
-        venv_bin = Path(virtual_env) / "bin"
-        if venv_bin.exists():
-            path_parts.append(str(venv_bin))
-    env_path = _clean(os.environ.get("PATH"))
-    if env_path:
-        path_parts.append(env_path)
-    return shutil.which(command, path=os.pathsep.join(path_parts)) or ""
 
 
 def _float(value: Any) -> float | None:
@@ -425,13 +409,13 @@ def deterministic_expert_registry() -> dict[str, Any]:
     experts: list[dict[str, Any]] = []
     for expert in DETERMINISTIC_EXPERTS:
         command = _clean(expert.get("command"))
-        binary = _which_command(command)
+        binary = shutil.which(command) if command else None
         experts.append(
             {
                 **deepcopy(expert),
                 "state": "production" if binary else "aspirational",
                 "availability": "installed" if binary else "missing",
-                "binary": binary,
+                "binary": binary or "",
                 "route_receipt_required": True,
                 "usage_bucket": "offline_local",
             }
@@ -897,6 +881,21 @@ def _has_any(payload: dict[str, Any], *keys: str) -> bool:
     return any(bool(payload.get(key)) for key in keys)
 
 
+def _deterministic_expert_result(
+    metadata: dict[str, Any],
+    expert_name: str,
+) -> dict[str, Any]:
+    raw = metadata.get("deterministic_expert_results")
+    if isinstance(raw, dict):
+        item = raw.get(expert_name)
+        return dict(item) if isinstance(item, dict) else {}
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict) and _clean(item.get("expert")) == expert_name:
+                return dict(item)
+    return {}
+
+
 def _specialist_proof_from_metadata(
     metadata: dict[str, Any],
     route_receipt: dict[str, Any],
@@ -980,20 +979,26 @@ def evaluate_specialist_cascade(
     _apply_lane_proof(lanes, lane_proof)
 
     if lane := lanes.get("receipt_auditor"):
+        receipt_audit = audit_route_receipt(route_receipt)
         _set_lane_result(
             lane,
-            status="fail" if missing_receipt_fields else "pass",
-            verdict="missing_fields" if missing_receipt_fields else "complete",
-            evidence=[{"missing_fields": missing_receipt_fields}],
-            result={"missing_fields": missing_receipt_fields},
+            status="pass" if receipt_audit.get("pass") else "fail",
+            verdict=_clean(receipt_audit.get("status")) or "unknown",
+            evidence=[
+                {
+                    "missing_fields": missing_receipt_fields,
+                    "audit_failures": list(receipt_audit.get("failures") or []),
+                    "audit_warnings": list(receipt_audit.get("warnings") or []),
+                }
+            ],
+            result=receipt_audit,
         )
 
-    output_shape = _clean(route_receipt.get("output_shape")) or "unknown"
+    output_shape = (_clean(route_receipt.get("output_shape")) or "unknown").lower()
     if lane := lanes.get("non_answer_detector"):
-        bad_shapes = {"empty", "progress_only", "timeout", "error"}
         _set_lane_result(
             lane,
-            status="fail" if output_shape in bad_shapes else "pass",
+            status="fail" if output_shape in NON_COMPLETION_OUTPUT_SHAPES else "pass",
             verdict=output_shape,
             evidence=[{"output_shape": output_shape}],
             result={"output_shape": output_shape},
@@ -1018,7 +1023,7 @@ def evaluate_specialist_cascade(
 
     regret = "low"
     regret_reasons: list[str] = []
-    if output_shape in {"empty", "progress_only", "timeout", "error"}:
+    if output_shape in NON_COMPLETION_OUTPUT_SHAPES:
         regret = "high"
         regret_reasons.append(f"output_shape={output_shape}")
     if route_receipt.get("fallback_used"):
@@ -1099,8 +1104,17 @@ def evaluate_specialist_cascade(
             continue
         if expert.get("availability") != "installed":
             expert["status"] = "unavailable"
+            expert["execution_mode"] = "missing_binary"
+            continue
+        result = _deterministic_expert_result(metadata, _clean(expert.get("expert")))
+        if result:
+            ok = bool(result.get("ok", result.get("returncode", 1) == 0))
+            expert["status"] = "pass" if ok else "fail"
+            expert["execution_mode"] = "executed"
+            expert["result"] = result
         else:
-            expert["status"] = "available_not_run"
+            expert["status"] = "skipped_no_input"
+            expert["execution_mode"] = "not_invoked_without_lane_input"
 
     cascade["status"] = "evaluated"
     cascade["specialist_lane_proof"] = lane_proof

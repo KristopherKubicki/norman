@@ -52,7 +52,6 @@ def _load_app_version() -> str:
 
 
 templates.env.globals["app_version"] = _load_app_version()
-_SWITCHBOARD_HOSTS = {"switchboard.home.arpa", "switchboard.norman.home.arpa"}
 
 
 def _sso_enabled(client_id: str, client_secret: str) -> bool:
@@ -66,12 +65,6 @@ def _sso_enabled(client_id: str, client_secret: str) -> bool:
     return True
 
 
-def _switchboard_mode(request: Request) -> bool:
-    view = str(request.query_params.get("view") or "").strip().lower()
-    request_host = (request.headers.get("host") or "").split(":", 1)[0].strip().lower()
-    return view in {"switchboard", "bbs"} or request_host in _SWITCHBOARD_HOSTS
-
-
 async def home(request: Request, db: Optional[Session] = None):
     embed_mode = str(request.query_params.get("embed") or "").strip().lower() in {
         "1",
@@ -80,7 +73,11 @@ async def home(request: Request, db: Optional[Session] = None):
         "on",
     }
     dashboard_view = str(request.query_params.get("view") or "").strip().lower()
-    switchboard_mode = dashboard_view == "switchboard" or _switchboard_mode(request)
+    request_host = (request.headers.get("host") or "").split(":", 1)[0].strip().lower()
+    switchboard_mode = dashboard_view == "switchboard" or request_host in {
+        "switchboard.home.arpa",
+        "switchboard.norman.home.arpa",
+    }
     token = request.cookies.get("access_token")
     user_email = decode_access_token(token) if token else None
     bot_count = 0
@@ -167,23 +164,16 @@ async def actions(request: Request):
 
 
 async def channels(request: Request):
-    switchboard_mode = _switchboard_mode(request)
     return templates.TemplateResponse(
         request,
         "channels.html",
-        {
-            "request": request,
-            "active_page": "channels",
-            "switchboard_mode": switchboard_mode,
-            "bbs_mode": switchboard_mode,
-        },
+        {"request": request, "active_page": "channels"},
     )
 
 
 async def messages(request: Request):
     shell_mode = str(request.query_params.get("shell") or "").strip().lower()
     super_tui_mode = shell_mode == "prime"
-    switchboard_mode = _switchboard_mode(request) and not super_tui_mode
     return templates.TemplateResponse(
         request,
         "messages_log.html",
@@ -192,8 +182,6 @@ async def messages(request: Request):
             "active_page": "messages",
             "shell_mode": shell_mode,
             "super_tui_mode": super_tui_mode,
-            "switchboard_mode": switchboard_mode,
-            "bbs_mode": switchboard_mode,
             "dashboard_embed_url": "/dashboard.html?embed=1",
         },
     )

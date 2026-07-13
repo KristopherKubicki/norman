@@ -146,33 +146,6 @@ def _response_to_dict(response: Any) -> Dict[str, Any]:
     }
 
 
-def _legacy_missing_openai_response() -> Dict[str, Any]:
-    return {
-        "model": "norman",
-        "choices": [
-            {
-                "message": {
-                    "content": (
-                        "Please add your OpenAI API key to the configuration "
-                        "before using the default chat endpoint."
-                    )
-                }
-            }
-        ],
-        "error": True,
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0},
-        "headers": {"llm_mode": "control_only"},
-    }
-
-
-def _is_default_local_fallback_attempt(attempt: _ProviderAttempt) -> bool:
-    return (
-        attempt.slot == "offline"
-        and attempt.kind in {"openai_compatible", *NORLLAMA_PROVIDER_ALIASES}
-        and attempt.base_url.rstrip("/") == "https://llm.home.arpa/v1"
-    )
-
-
 async def create_chat_interaction(
     messages: List[Dict[str, str]],
     max_tokens: int = DEFAULT_MAX_TOKENS,
@@ -198,17 +171,6 @@ async def create_chat_interaction(
         attempts = _provider_attempts(model)
         if not attempts:
             raise ValueError("No LLM providers configured.")
-        if (
-            not _clean_str(getattr(settings, "openai_api_key", ""))
-            and not _clean_str(getattr(settings, "llm_primary_api_key", ""))
-            and _clean_str(getattr(settings, "llm_primary_provider", "openai")).lower()
-            == "openai"
-            and _clean_str(getattr(settings, "llm_backup_provider", "disabled")).lower()
-            == "disabled"
-            and attempts
-            and all(_is_default_local_fallback_attempt(attempt) for attempt in attempts)
-        ):
-            return _legacy_missing_openai_response()
         errors: dict[str, str] = {"primary": "", "backup": "", "offline": ""}
         first_failure = ""
         for attempt in attempts:

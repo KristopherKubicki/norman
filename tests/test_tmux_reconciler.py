@@ -120,7 +120,7 @@ def test_reconcile_skips_launch_when_expected_command_already_running(
         tmux_reconciler,
         "_pane_child_command",
         lambda target: (
-            "node /home/operator/.nvm/versions/node/v20.19.6/bin/" f"{expected}"
+            "node /home/kristopher/.nvm/versions/node/v20.19.6/bin/" f"{expected}"
         ),
     )
 

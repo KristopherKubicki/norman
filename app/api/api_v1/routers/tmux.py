@@ -189,20 +189,6 @@ class TmuxControlCreditsItemOut(BaseModel):
     usage_window_total_tokens: int = 0
     usage_last_turn_at: int = 0
     usage_last_turn_total_tokens: int = 0
-    accounting_version: str = ""
-    billing_scope: str = ""
-    billing_unit: str = ""
-    billing_owner: str = ""
-    billing_project: str = ""
-    agent_slug: str = ""
-    actor_slug: str = ""
-    agent_name: str = ""
-    agent_group: str = ""
-    console_title: str = ""
-    host_name: str = ""
-    workdir: str = ""
-    state_dir: str = ""
-    codex_home: str = ""
 
 
 class TmuxControlCreditsResponse(BaseModel):
@@ -814,7 +800,6 @@ def _pane_child_command(target: str, socket_path: str = "") -> str:
         capture_output=True,
         text=True,
         check=False,
-        stdin=subprocess.DEVNULL,
     )
     if ps_proc.returncode != 0:
         return ""
@@ -1685,50 +1670,26 @@ async def list_control_credits(
                 auth_mode=snap.auth_mode,
                 reachable=snap.reachable,
                 checked_at=int(snap.checked_at or 0),
-                usage_tracked=bool(getattr(snap, "usage_tracked", False)),
-                usage_window_seconds=int(getattr(snap, "usage_window_seconds", 0) or 0),
-                usage_turns=int(getattr(snap, "usage_turns", 0) or 0),
-                usage_successful_turns=int(
-                    getattr(snap, "usage_successful_turns", 0) or 0
-                ),
-                usage_failed_turns=int(getattr(snap, "usage_failed_turns", 0) or 0),
-                usage_input_tokens=int(getattr(snap, "usage_input_tokens", 0) or 0),
-                usage_cached_input_tokens=int(
-                    getattr(snap, "usage_cached_input_tokens", 0) or 0
-                ),
-                usage_output_tokens=int(getattr(snap, "usage_output_tokens", 0) or 0),
-                usage_total_tokens=int(getattr(snap, "usage_total_tokens", 0) or 0),
-                usage_window_turns=int(getattr(snap, "usage_window_turns", 0) or 0),
-                usage_window_input_tokens=int(
-                    getattr(snap, "usage_window_input_tokens", 0) or 0
-                ),
+                usage_tracked=snap.usage_tracked,
+                usage_window_seconds=int(snap.usage_window_seconds or 0),
+                usage_turns=int(snap.usage_turns or 0),
+                usage_successful_turns=int(snap.usage_successful_turns or 0),
+                usage_failed_turns=int(snap.usage_failed_turns or 0),
+                usage_input_tokens=int(snap.usage_input_tokens or 0),
+                usage_cached_input_tokens=int(snap.usage_cached_input_tokens or 0),
+                usage_output_tokens=int(snap.usage_output_tokens or 0),
+                usage_total_tokens=int(snap.usage_total_tokens or 0),
+                usage_window_turns=int(snap.usage_window_turns or 0),
+                usage_window_input_tokens=int(snap.usage_window_input_tokens or 0),
                 usage_window_cached_input_tokens=int(
-                    getattr(snap, "usage_window_cached_input_tokens", 0) or 0
+                    snap.usage_window_cached_input_tokens or 0
                 ),
-                usage_window_output_tokens=int(
-                    getattr(snap, "usage_window_output_tokens", 0) or 0
-                ),
-                usage_window_total_tokens=int(
-                    getattr(snap, "usage_window_total_tokens", 0) or 0
-                ),
-                usage_last_turn_at=int(getattr(snap, "usage_last_turn_at", 0) or 0),
+                usage_window_output_tokens=int(snap.usage_window_output_tokens or 0),
+                usage_window_total_tokens=int(snap.usage_window_total_tokens or 0),
+                usage_last_turn_at=int(snap.usage_last_turn_at or 0),
                 usage_last_turn_total_tokens=int(
-                    getattr(snap, "usage_last_turn_total_tokens", 0) or 0
+                    snap.usage_last_turn_total_tokens or 0
                 ),
-                accounting_version=str(getattr(snap, "accounting_version", "") or ""),
-                billing_scope=str(getattr(snap, "billing_scope", "") or ""),
-                billing_unit=str(getattr(snap, "billing_unit", "") or ""),
-                billing_owner=str(getattr(snap, "billing_owner", "") or ""),
-                billing_project=str(getattr(snap, "billing_project", "") or ""),
-                agent_slug=str(getattr(snap, "agent_slug", "") or ""),
-                actor_slug=str(getattr(snap, "actor_slug", "") or ""),
-                agent_name=str(getattr(snap, "agent_name", "") or ""),
-                agent_group=str(getattr(snap, "agent_group", "") or ""),
-                console_title=str(getattr(snap, "console_title", "") or ""),
-                host_name=str(getattr(snap, "host_name", "") or ""),
-                workdir=str(getattr(snap, "workdir", "") or ""),
-                state_dir=str(getattr(snap, "state_dir", "") or ""),
-                codex_home=str(getattr(snap, "codex_home", "") or ""),
             )
         )
     if not items and connector_ids:

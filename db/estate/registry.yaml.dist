@@ -1,6 +1,6 @@
 principals:
-  - slug: operator
-    display_name: Operator
+  - slug: kristopher
+    display_name: Kristopher
     kind: person
     notes: Personal principal and operator identity.
   - slug: kubicki-trust
@@ -12,9 +12,9 @@ principals:
     kind: company
     notes: Work/company operational boundary.
   - slug: parkergale
-    display_name: PEF
+    display_name: PEFB
     kind: company
-    notes: Private Equity Funbot principal. ParkerGale and PEFB remain valid aliases for the confidential finance and deal-work boundary.
+    notes: Private Equity Funbot principal. PEFB is the primary bot-facing name; ParkerGale and PEF remain compatibility aliases for the confidential finance and deal-work boundary.
   - slug: tcg
     display_name: TCG
     kind: company
@@ -32,17 +32,6 @@ policy_profiles:
     allows_outbound_send: false
     allows_runtime_control: false
     allows_side_effects: false
-    powers:
-      mouth: none
-      purse: none
-      seal: none
-      key:
-        level: read
-        lease_source: Norman Keys
-        revoker: norman-keys
-        revocation_tested_at: 2026-05-31
-        revocation_test_notes: Norman Keys dummy read-only lease drill passed at 2026-05-31T01:44:03Z; issued and revoked drill alias drill.read-only.key-revocation for research-analyst without raw secret output.
-      sword: none
   - slug: draft-first
     display_name: Draft First
     mode: draft-first
@@ -50,19 +39,6 @@ policy_profiles:
     allows_outbound_send: true
     allows_runtime_control: false
     allows_side_effects: false
-    powers:
-      mouth:
-        level: draft
-        revoker: norman
-        revocation_tested_at: pending
-      purse: none
-      seal: none
-      key:
-        level: limited
-        lease_source: Norman Keys
-        revoker: norman-keys
-        revocation_tested_at: pending
-      sword: none
   - slug: manual
     display_name: Manual
     mode: manual
@@ -70,19 +46,6 @@ policy_profiles:
     allows_outbound_send: true
     allows_runtime_control: true
     allows_side_effects: true
-    powers:
-      mouth:
-        level: operator-approved
-        revoker: norman
-        revocation_tested_at: pending
-      purse: none
-      seal: none
-      key:
-        level: scoped
-        lease_source: Norman Keys
-        revoker: norman-keys
-        revocation_tested_at: pending
-      sword: none
   - slug: shared
     display_name: Shared
     mode: shared
@@ -90,20 +53,6 @@ policy_profiles:
     allows_outbound_send: true
     allows_runtime_control: true
     allows_side_effects: true
-    powers:
-      mouth:
-        level: limited
-        revoker: norman
-        revocation_tested_at: 2026-05-31
-        revocation_test_notes: Routing action-hold Mouth drill passed at 2026-05-31T11:33:18Z; L1 blocked outbound queueing for event 94336 with no job, then restored L0 queued event 94337 and parked its proof job before delivery.
-      purse: none
-      seal: none
-      key:
-        level: limited
-        lease_source: Norman Keys
-        revoker: norman-keys
-        revocation_tested_at: pending
-      sword: none
   - slug: auto
     display_name: Auto
     mode: auto
@@ -111,19 +60,6 @@ policy_profiles:
     allows_outbound_send: true
     allows_runtime_control: true
     allows_side_effects: true
-    powers:
-      mouth:
-        level: limited
-        revoker: norman
-        revocation_tested_at: pending
-      purse: none
-      seal: none
-      key:
-        level: limited
-        lease_source: Norman Keys
-        revoker: norman-keys
-        revocation_tested_at: pending
-      sword: none
   - slug: panic-lock
     display_name: Panic Lock
     mode: manual
@@ -131,12 +67,6 @@ policy_profiles:
     allows_outbound_send: false
     allows_runtime_control: false
     allows_side_effects: false
-    powers:
-      mouth: none
-      purse: none
-      seal: none
-      key: none
-      sword: none
 
 control_classes:
   - slug: root-controlled
@@ -153,48 +83,48 @@ control_classes:
     rank: 10
 
 domains:
-  - slug: operator-household
-    principal: operator
+  - slug: kristopher-household
+    principal: kristopher
     display_name: Household
     kind: household
     default_policy_profile: shared
-  - slug: operator-security
-    principal: operator
+  - slug: kristopher-security
+    principal: kristopher
     display_name: Security
     kind: security
     default_policy_profile: manual
-  - slug: operator-health
-    principal: operator
+  - slug: kristopher-health
+    principal: kristopher
     display_name: Health
     kind: health
     default_policy_profile: read-only
-  - slug: operator-finance
-    principal: operator
+  - slug: kristopher-finance
+    principal: kristopher
     display_name: Finance
     kind: finance
     default_policy_profile: read-only
-  - slug: operator-observability
-    principal: operator
+  - slug: kristopher-observability
+    principal: kristopher
     display_name: Observability
     kind: observability
     default_policy_profile: shared
-  - slug: operator-radio
-    principal: operator
+  - slug: kristopher-radio
+    principal: kristopher
     display_name: Radio
     kind: radio
     default_policy_profile: manual
-  - slug: operator-communications
-    principal: operator
+  - slug: kristopher-communications
+    principal: kristopher
     display_name: Communications
     kind: communications
     default_policy_profile: draft-first
-  - slug: operator-scheduling
-    principal: operator
+  - slug: kristopher-scheduling
+    principal: kristopher
     display_name: Scheduling
     kind: scheduling
     default_policy_profile: draft-first
-  - slug: operator-knowledge
-    principal: operator
+  - slug: kristopher-knowledge
+    principal: kristopher
     display_name: Knowledge
     kind: knowledge
     default_policy_profile: shared
@@ -228,43 +158,127 @@ domains:
     display_name: Studio
     kind: studio
     default_policy_profile: manual
-  - slug: yhix-cloud
-    principal: yhix
-    display_name: Yhix Cloud
-    kind: cloud
-    default_policy_profile: shared
 
 places:
   - slug: house
-    principal: operator
+    principal: kristopher
     display_name: House
     kind: home
+    notes: Legacy generic home place kept for compatibility; prefer named site places for canonical site roots.
+  - slug: knox
+    principal: kristopher
+    display_name: Knox
+    kind: home
+    site_root: knox.lollie.org
+    local_zone: home.arpa
+    shortcut_frontdoor_host: norman.home.arpa
+    shortcut_frontdoor_address: 192.168.2.241
+    notes: Primary house site. Local `*.home.arpa` shortcuts should resolve here when on the Knox LAN.
   - slug: beach
     principal: kubicki-trust
     display_name: Beach
     kind: property
+    site_root: beach.lollie.org
+    local_zone: home.arpa
+    notes: Beach-house site root. Local `*.home.arpa` should redirect to `*.beach.lollie.org` when on-site.
+  - slug: halsted
+    principal: kristopher
+    display_name: Halsted
+    kind: property
+    site_root: halsted.lollie.org
+    local_zone: home.arpa
+    notes: Halsted site root.
+  - slug: argyle
+    principal: kristopher
+    display_name: Argyle
+    kind: property
+    site_root: argyle.lollie.org
+    local_zone: home.arpa
+    notes: Argyle site root.
+  - slug: kostner
+    principal: kristopher
+    display_name: Kostner
+    kind: property
+    site_root: kostner.lollie.org
+    local_zone: home.arpa
+    notes: Kostner site root.
+  - slug: farm
+    principal: kubicki-trust
+    display_name: Farm
+    kind: property
+    site_root: farm.lollie.org
+    local_zone: home.arpa
+    notes: Farm site root.
+  - slug: evergreen-condo
+    principal: kubicki-trust
+    display_name: Evergreen Condo
+    kind: property
+    site_root: evergreen.lollie.org
+    local_zone: home.arpa
+    notes: Condo site root. This is not the Evergreen Cybernetics organization namespace.
   - slug: waconda
     principal: kubicki-trust
     display_name: Waconda
     kind: property
   - slug: pluto-remote-networks
-    principal: operator
+    principal: kristopher
     display_name: Pluto / Remote Networks
     kind: remote-site
 
+site_shortcuts:
+  - slug: hubitat
+    display_name: Hubitat
+    local_host: hubitat.home.arpa
+    canonical_label: hubitat
+    places:
+      - knox
+      - beach
+      - halsted
+      - argyle
+      - kostner
+      - farm
+      - evergreen-condo
+    notes: Local site convenience alias. Redirect the local `home.arpa` origin to the site canonical host.
+  - slug: printer
+    display_name: Printer
+    local_host: printer.home.arpa
+    canonical_label: printer
+    places:
+      - knox
+      - beach
+      - halsted
+      - argyle
+      - kostner
+      - evergreen-condo
+    notes: Example of a site-local convenience alias that should resolve to the current site.
+  - slug: cameras
+    display_name: Camera Hub
+    local_host: cameras.home.arpa
+    canonical_label: cameras
+    places:
+      - knox
+      - beach
+      - halsted
+      - argyle
+      - kostner
+      - farm
+      - evergreen-condo
+    notes: Site-local camera entry point.
+  - slug: llm
+    display_name: Local LLM
+    local_host: llm.home.arpa
+    canonical_label: llm
+    places:
+      - knox
+    notes: Knox-local shortcut for the Mac mini LLM front door. Redirect the local alias to the site canonical host.
+
 bots:
   - slug: norman
-    principal: operator
-    domain: operator-knowledge
+    principal: kristopher
+    domain: kristopher-knowledge
     display_name: Norman
     class: manager
     policy_profile: manual
-    powers:
-      seal:
-        level: operator-approved
-        revoker: norman
-        revocation_tested_at: 2026-05-31
-        revocation_test_notes: BBS admin grant/revoke access probe passed at 2026-05-31T01:18:13Z; created, revoked, verified, and deleted transient Switchboard thread th_revocation_probe_norman_20260531T011813Z.
     notes: Cross-principal general manager; service implementation remains editable.
   - slug: evergreen-ops
     principal: kubicki-trust
@@ -273,32 +287,32 @@ bots:
     class: operator
     policy_profile: shared
   - slug: household-ops
-    principal: operator
-    domain: operator-household
+    principal: kristopher
+    domain: kristopher-household
     display_name: Household Ops
     class: operator
     policy_profile: shared
   - slug: communications
-    principal: operator
-    domain: operator-communications
+    principal: kristopher
+    domain: kristopher-communications
     display_name: Communications
     class: router
     policy_profile: draft-first
   - slug: cyber-advisor
-    principal: operator
-    domain: operator-security
+    principal: kristopher
+    domain: kristopher-security
     display_name: Cyber Advisor
     class: advisor
     policy_profile: manual
   - slug: archivist
-    principal: operator
-    domain: operator-knowledge
+    principal: kristopher
+    domain: kristopher-knowledge
     display_name: Archivist
     class: archivist
     policy_profile: auto
   - slug: observability
-    principal: operator
-    domain: operator-observability
+    principal: kristopher
+    domain: kristopher-observability
     display_name: Observability
     class: observer
     policy_profile: shared
@@ -309,14 +323,14 @@ bots:
     class: advisor
     policy_profile: read-only
   - slug: finance-reader
-    principal: operator
-    domain: operator-finance
+    principal: kristopher
+    domain: kristopher-finance
     display_name: Finance Reader
     class: advisor
     policy_profile: read-only
   - slug: health-reader
-    principal: operator
-    domain: operator-health
+    principal: kristopher
+    domain: kristopher-health
     display_name: Health Reader
     class: advisor
     policy_profile: read-only
@@ -324,33 +338,26 @@ bots:
   - slug: parkergale-reader
     principal: parkergale
     domain: parkergale-private
-    display_name: PEF
+    display_name: PEFB
     class: advisor
     policy_profile: read-only
-    notes: Private Equity Funbot. Aliases ParkerGale, PEF, and PEFB. Confidential financial and deal-work advisor; keep hidden from ordinary fleet surfaces.
+    notes: Private Equity Funbot. PEFB is the primary bot-facing name; ParkerGale and PEF remain compatibility aliases. Confidential financial and deal-work advisor; keep hidden from ordinary fleet surfaces.
   - slug: radio-supervisor
-    principal: operator
-    domain: operator-radio
+    principal: kristopher
+    domain: kristopher-radio
     display_name: Radio Supervisor
     class: operator
     policy_profile: manual
   - slug: scheduler
-    principal: operator
-    domain: operator-scheduling
+    principal: kristopher
+    domain: kristopher-scheduling
     display_name: Scheduler
     class: advisor
     policy_profile: draft-first
-  - slug: null-agent
-    principal: yhix
-    domain: yhix-cloud
-    display_name: Null Agent
-    class: yhix
-    policy_profile: shared
-    notes: Game/TUI bot lane for the Null Agent project. Treat Yhix bots as a separate class from household, work, and shared infrastructure bots.
 
 workers:
   - slug: hal
-    principal: operator
+    principal: kristopher
     display_name: Hal
     kind: workstation
     hostname: hal
@@ -358,95 +365,47 @@ workers:
     control_class: root-controlled
     policy_profile: shared
   - slug: toy-box
-    principal: operator
+    principal: kristopher
     display_name: Toy Box
     kind: server
     hostname: toy-box
     place: house
     control_class: root-controlled
     policy_profile: shared
-    bbs:
-      role: personal
-      zone: personal
-      receive: true
-      full_coverage: false
-      cross_zone: false
-      allow_private: false
-      channels:
-        - switchboard
-        - personal
-        - personal/*
   - slug: private-host
-    principal: operator
+    principal: kristopher
     display_name: Private Host
     kind: container
     hostname: private
     place: house
     control_class: root-controlled
     policy_profile: manual
-    bbs:
-      role: private
-      zone: private
-      receive: true
-      full_coverage: true
-      cross_zone: true
-      allow_private: true
-      channels:
-        - switchboard
-        - private
-        - private/*
-        - personal/*
-        - work/*
-        - network/*
     notes: Dedicated Proxmox LXC enclave for finance, health, and other confidential bots. Live at 192.168.2.148. Do not mix with ordinary Personal or Shared fleet runtimes.
   - slug: norman-host
-    principal: operator
+    principal: kristopher
     display_name: Norman Host
     kind: container
     hostname: norman
     place: house
     control_class: root-controlled
     policy_profile: manual
-    bbs:
-      role: broker
-      zone: root
-      receive: true
-      full_coverage: true
-      cross_zone: true
-      allow_private: true
-      channels:
-        - "*"
   - slug: phobos-host
-    principal: operator
+    principal: kristopher
     display_name: Phobos Host
     kind: edge
     place: house
     control_class: root-controlled
     policy_profile: manual
   - slug: networking-host
-    principal: operator
+    principal: kristopher
     display_name: Networking Host
     kind: vm
     hostname: networking
     place: house
     control_class: root-controlled
     policy_profile: manual
-    bbs:
-      role: network
-      zone: network
-      receive: true
-      full_coverage: true
-      cross_zone: false
-      allow_private: false
-      channels:
-        - switchboard
-        - network
-        - network/*
-        - dns
-        - caddy
-        - tailnet
   - slug: cloud-gw-ohio
-    principal: operator
+    principal: kristopher
     display_name: Cloud GW Ohio
     kind: cloud-gateway
     hostname: cloud-gw-ohio.tail94915.ts.net
@@ -469,52 +428,23 @@ workers:
     place: house
     control_class: pending-control
     policy_profile: shared
-    bbs:
-      role: work
-      zone: work
-      receive: true
-      full_coverage: false
-      cross_zone: false
-      allow_private: false
-      channels:
-        - switchboard
-        - work
-        - work/*
-  - slug: yhix-cloud
-    principal: yhix
-    display_name: Yhix Cloud
-    kind: cloud
-    hostname: yhix-cloud
-    control_class: pending-control
-    policy_profile: shared
-    bbs:
-      role: yhix
-      zone: yhix
-      receive: true
-      full_coverage: false
-      cross_zone: false
-      allow_private: false
-      channels:
-        - switchboard
-        - yhix
-        - yhix/*
 
 assets:
   - slug: phobos
-    principal: operator
+    principal: kristopher
     display_name: Phobos
     kind: radio-node
     worker: phobos-host
     place: house
     control_class: root-controlled
   - slug: pluto
-    principal: operator
+    principal: kristopher
     display_name: Pluto
     kind: radio-node
     place: pluto-remote-networks
     control_class: pending-control
   - slug: hubitat-knox
-    principal: operator
+    principal: kristopher
     display_name: Hubitat Knox
     kind: hub
     worker: hal
@@ -523,61 +453,31 @@ assets:
 
 services:
   - slug: norman-service
-    principal: operator
-    domain: operator-knowledge
+    principal: kristopher
+    domain: kristopher-knowledge
     bot: norman
     worker: norman-host
     place: house
-    display_name: Norman
+    display_name: Norman Prime
     kind: web-app
     policy_profile: manual
-    powers:
-      seal:
-        level: operator-approved
-        revoker: norman
-        revocation_tested_at: pending
-    web_url: http://192.168.2.241:8000/
-    web_url_tailnet: http://norman.tail94915.ts.net:8000/
-    console_url: http://192.168.2.241:8788/
-    console_url_tailnet: http://norman.tail94915.ts.net:8788/
-  - slug: switchboard
-    principal: operator
-    domain: operator-knowledge
-    bot: norman
-    worker: norman-host
-    place: house
-    display_name: Switchboard
-    kind: coordination-service
-    policy_profile: shared
-    console_url: http://192.168.2.241:8796/
-    console_url_tailnet: http://norman.tail94915.ts.net:8796/
-    notes: Canonical Norman BBS and coordination lane; legacy subprime/bot-prime routes remain compatibility aliases only.
-  - slug: norman-ops
-    principal: operator
-    domain: operator-knowledge
-    bot: norman
-    worker: norman-host
-    place: house
-    display_name: Retired Legacy Alias
-    kind: retired-console
-    policy_profile: shared
-    is_active: false
-    console_url: http://192.168.2.241:8797/
-    console_url_tailnet: http://norman.tail94915.ts.net:8797/
-    notes: Retired redundant sidecar; use Switchboard for Norman coordination.
+    web_url: https://norman.home.arpa/
+    web_url_tailnet: https://norman.tail94915.ts.net/
+    console_url: https://norman.home.arpa/codex/
+    console_url_tailnet: https://norman.tail94915.ts.net/codex/
   - slug: norman-home
-    principal: operator
-    domain: operator-knowledge
+    principal: kristopher
+    domain: kristopher-knowledge
     worker: norman-host
     place: house
     display_name: Norman Host
     kind: host-home
     policy_profile: manual
-    web_url: http://192.168.2.241/
-    web_url_tailnet: http://norman.tail94915.ts.net/
+    web_url: https://norman.home.arpa/
+    web_url_tailnet: https://norman.tail94915.ts.net/
   - slug: toy-box-home
-    principal: operator
-    domain: operator-household
+    principal: kristopher
+    domain: kristopher-household
     worker: toy-box
     place: house
     display_name: Toy Box
@@ -586,8 +486,8 @@ services:
     web_url: http://192.168.2.146/
     web_url_tailnet: http://toy-box.tail94915.ts.net/
   - slug: housebot
-    principal: operator
-    domain: operator-household
+    principal: kristopher
+    domain: kristopher-household
     bot: household-ops
     worker: toy-box
     place: house
@@ -597,8 +497,8 @@ services:
     console_url: http://192.168.2.146:8787/
     console_url_tailnet: http://toy-box.tail94915.ts.net:8787/
   - slug: glimpser
-    principal: operator
-    domain: operator-observability
+    principal: kristopher
+    domain: kristopher-observability
     bot: observability
     worker: toy-box
     place: house
@@ -606,12 +506,12 @@ services:
     kind: web-app
     policy_profile: shared
     web_url: http://192.168.2.145:8082/
-    web_url_tailnet: http://100.64.0.16:8082/
+    web_url_tailnet: http://100.74.204.16:8082/
     console_url: http://192.168.2.146:8788/
     console_url_tailnet: http://toy-box.tail94915.ts.net:8788/
   - slug: castle
-    principal: operator
-    domain: operator-household
+    principal: kristopher
+    domain: kristopher-household
     bot: household-ops
     worker: toy-box
     place: house
@@ -620,33 +520,20 @@ services:
     policy_profile: shared
     console_url: http://192.168.2.146:8789/
     console_url_tailnet: http://toy-box.tail94915.ts.net:8789/
-  - slug: diamond-roc
-    principal: operator
-    domain: kubicki-evergreen
-    bot: evergreen-ops
-    worker: toy-box
-    place: house
-    display_name: Diamond Roc
-    kind: ops-console
-    policy_profile: shared
-    console_url: http://192.168.2.146:8796/
-    console_url_tailnet: http://toy-box.tail94915.ts.net:8796/
-    notes: Canonical home is toy-box. Retired the stale Hal tmux connector/runtime; publish only the Toy Box runtime.
   - slug: phone-ops
-    principal: operator
-    domain: operator-communications
+    principal: kristopher
+    domain: kristopher-communications
     bot: communications
     worker: toy-box
     place: house
     display_name: Phone Ops
     kind: ops-console
     policy_profile: shared
-    console_url: https://phone.home.arpa/
+    console_url: http://192.168.2.146:8790/
     console_url_tailnet: http://toy-box.tail94915.ts.net:8790/
-    notes: Switchboard/BBS fold participant for phone and tailnet operations; canonical browser route is phone.home.arpa, with phoneops.home.arpa retained as a local alias.
   - slug: uscache
-    principal: operator
-    domain: operator-knowledge
+    principal: kristopher
+    domain: kristopher-knowledge
     bot: archivist
     worker: toy-box
     place: house
@@ -655,45 +542,9 @@ services:
     policy_profile: shared
     console_url: http://192.168.2.146:8791/
     console_url_tailnet: http://toy-box.tail94915.ts.net:8791/
-  - slug: tv
-    principal: operator
-    domain: operator-observability
-    bot: observability
-    worker: toy-box
-    place: house
-    display_name: TV
-    kind: retired-console
-    policy_profile: shared
-    is_active: false
-    console_url: http://192.168.2.146:8794/
-    console_url_tailnet: http://toy-box.tail94915.ts.net:8794/
-    notes: Archived home media lane. It never fully materialized; do not promote in the active fleet unless it is re-owned and rebuilt.
-  - slug: studio
-    principal: operator
-    domain: operator-observability
-    bot: observability
-    worker: toy-box
-    place: house
-    display_name: Studio
-    kind: retired-console
-    policy_profile: shared
-    is_active: false
-    console_url: http://192.168.2.146:8795/
-    console_url_tailnet: http://toy-box.tail94915.ts.net:8795/
-    notes: Archived home media/control-room lane. It never fully materialized; do not promote in the active fleet unless it is re-owned and rebuilt.
-  - slug: null-agent
-    principal: yhix
-    domain: yhix-cloud
-    bot: null-agent
-    worker: yhix-cloud
-    display_name: Null Agent
-    kind: game-tui
-    policy_profile: shared
-    is_active: false
-    notes: Started game project intended to run as a Yhix bot through a TUI on Yhix cloud. Add the cloud host, console URL, and deployment route before publishing.
   - slug: autocamera
-    principal: operator
-    domain: operator-observability
+    principal: kristopher
+    domain: kristopher-observability
     bot: observability
     worker: hal
     place: house
@@ -705,8 +556,8 @@ services:
     console_url: http://192.168.2.137:8794/
     console_url_tailnet: http://hal.tail94915.ts.net:8794/
   - slug: hal-home
-    principal: operator
-    domain: operator-household
+    principal: kristopher
+    domain: kristopher-household
     worker: hal
     place: house
     display_name: Hal
@@ -714,8 +565,8 @@ services:
     policy_profile: manual
     notes: Host landing page for Hal is not published yet. Use Autocamera or Theseus directly until the Hal home page is stood up.
   - slug: theseus
-    principal: operator
-    domain: operator-observability
+    principal: kristopher
+    domain: kristopher-observability
     bot: observability
     worker: hal
     place: house
@@ -725,8 +576,8 @@ services:
     console_url: http://192.168.2.137:8795/
     console_url_tailnet: http://hal.tail94915.ts.net:8795/
   - slug: finance-reader
-    principal: operator
-    domain: operator-finance
+    principal: kristopher
+    domain: kristopher-finance
     bot: finance-reader
     worker: private-host
     place: house
@@ -736,8 +587,8 @@ services:
     is_active: false
     notes: Planned private finance reader on the dedicated private enclave. Keep off ordinary nav until explicitly published.
   - slug: health-reader
-    principal: operator
-    domain: operator-health
+    principal: kristopher
+    domain: kristopher-health
     bot: health-reader
     worker: private-host
     place: house
@@ -752,22 +603,16 @@ services:
     bot: parkergale-reader
     worker: private-host
     place: house
-    display_name: PEF
+    display_name: PEFB
     kind: ops-console
     policy_profile: read-only
     is_active: true
-    powers:
-      purse:
-        level: draft
-        spend_cap: No live spend, trade, refund, invoice, subscription, or deal-system write without explicit operator approval; latent finance/deal workflow design is treated as Purse.
-        revoker: norman
-        revocation_tested_at: pending
     console_url: http://192.168.2.148:8796/
     console_url_tailnet: http://private.home.lollie.org:8796/
-    notes: Private Equity Funbot on the dedicated private enclave. Aliases ParkerGale, PEF, and PEFB. Treat all work as confidential and deliberate-entry only.
+    notes: Private Equity Funbot on the dedicated private enclave. PEFB is the primary bot-facing name; ParkerGale and PEF remain compatibility aliases. Treat all work as confidential and deliberate-entry only.
   - slug: private-home
-    principal: operator
-    domain: operator-household
+    principal: kristopher
+    domain: kristopher-household
     worker: private-host
     place: house
     display_name: Private Host
@@ -782,13 +627,7 @@ services:
     display_name: Earlybird
     kind: ops-console
     policy_profile: shared
-    powers:
-      purse:
-        level: draft
-        spend_cap: No autonomous campaign, vendor, subscription, or budget action; business-growth recommendations only until operator approval.
-        revoker: norman
-        revocation_tested_at: pending
-    console_url: https://earlybird.kris.openbrand.com/
+    console_url: http://192.168.2.147:8781/
     console_url_tailnet: http://work-special.tail94915.ts.net:8781/
   - slug: infra
     principal: openbrand
@@ -797,24 +636,7 @@ services:
     display_name: Infra
     kind: ops-console
     policy_profile: shared
-    powers:
-      purse:
-        level: operator-approved
-        spend_cap: No autonomous paid infrastructure creation, scale-up, subscription, or vendor change; cost-increasing infra actions require operator approval.
-        revoker: norman
-        revocation_tested_at: pending
-      sword:
-        level: operator-approved
-        responsible_human: operator or designated HR/account owner
-        accountable_purpose: Ticketed employee offboarding, lockout, account-risk containment, and access-revocation execution only.
-        constraints:
-          - Explicit operator command required.
-          - Ticket or accountable request context required.
-          - No autonomous termination, lockout, offboarding, notice, or employment-impacting action.
-          - Report every affected account, command, system, and rollback/reopen path.
-        revoker: norman
-        revocation_tested_at: pending
-    console_url: https://infra.kris.openbrand.com/
+    console_url: http://192.168.2.147:8782/
     console_url_tailnet: http://work-special.tail94915.ts.net:8782/
   - slug: control-plane
     principal: openbrand
@@ -823,13 +645,7 @@ services:
     display_name: Control Plane
     kind: ops-console
     policy_profile: shared
-    powers:
-      purse:
-        level: operator-approved
-        spend_cap: No autonomous paid resource, seat, quota, or workflow-cost change; control-plane cost changes require operator approval.
-        revoker: norman
-        revocation_tested_at: pending
-    console_url: https://cp.kris.openbrand.com/
+    console_url: http://192.168.2.147:8783/
     console_url_tailnet: http://work-special.tail94915.ts.net:8783/
   - slug: market-sizing
     principal: openbrand
@@ -838,13 +654,7 @@ services:
     display_name: Market Sizing
     kind: ops-console
     policy_profile: shared
-    powers:
-      purse:
-        level: draft
-        spend_cap: No autonomous market-data purchase, subscription, vendor contact, or budget action; recommendations only until operator approval.
-        revoker: norman
-        revocation_tested_at: pending
-    console_url: https://market.kris.openbrand.com/
+    console_url: http://192.168.2.147:8784/
     console_url_tailnet: http://work-special.tail94915.ts.net:8784/
   - slug: tmi-dashboards
     principal: openbrand
@@ -853,13 +663,7 @@ services:
     display_name: TMI Dashboards
     kind: ops-console
     policy_profile: shared
-    powers:
-      purse:
-        level: draft
-        spend_cap: No autonomous paid dashboarding, warehouse, vendor, or reporting-cost change; budget-impacting recommendations only.
-        revoker: norman
-        revocation_tested_at: pending
-    console_url: https://dashboards.kris.openbrand.com/
+    console_url: http://192.168.2.147:8785/
     console_url_tailnet: http://work-special.tail94915.ts.net:8785/
   - slug: gold-book
     principal: openbrand
@@ -868,13 +672,7 @@ services:
     display_name: Gold Book
     kind: ops-console
     policy_profile: shared
-    powers:
-      purse:
-        level: draft
-        spend_cap: No autonomous paid research, enrichment, data-vendor, or publication-cost action; recommendations only until operator approval.
-        revoker: norman
-        revocation_tested_at: pending
-    console_url: https://goldbook.kris.openbrand.com/
+    console_url: http://192.168.2.147:8786/
     console_url_tailnet: http://work-special.tail94915.ts.net:8786/
   - slug: compere
     principal: openbrand
@@ -883,13 +681,7 @@ services:
     display_name: Keystone
     kind: ops-console
     policy_profile: shared
-    powers:
-      purse:
-        level: draft
-        spend_cap: No autonomous paid workflow, vendor, seat, or subscription action; operator approval required for cost-bearing execution.
-        revoker: norman
-        revocation_tested_at: pending
-    console_url: https://keystone.kris.openbrand.com/
+    console_url: http://192.168.2.147:8789/
     console_url_tailnet: http://work-special.tail94915.ts.net:8789/
   - slug: leadership-kpis
     principal: openbrand
@@ -898,13 +690,7 @@ services:
     display_name: Leadership KPIs
     kind: ops-console
     policy_profile: shared
-    powers:
-      purse:
-        level: draft
-        spend_cap: No autonomous budget, compensation, vendor, or resource-allocation action; KPI output can influence spend and must stay advisory until approval.
-        revoker: norman
-        revocation_tested_at: pending
-    console_url: https://kpis.kris.openbrand.com/
+    console_url: http://192.168.2.147:8790/
     console_url_tailnet: http://work-special.tail94915.ts.net:8790/
   - slug: panelbot
     principal: openbrand
@@ -913,14 +699,19 @@ services:
     display_name: Panelbot
     kind: ops-console
     policy_profile: shared
-    powers:
-      purse:
-        level: draft
-        spend_cap: No autonomous panel purchase, respondent incentive, vendor, or paid survey action; drafts and analysis only until operator approval.
-        revoker: norman
-        revocation_tested_at: pending
-    console_url: https://panelbot.kris.openbrand.com/
+    console_url: http://192.168.2.147:8791/
     console_url_tailnet: http://work-special.tail94915.ts.net:8791/
+  - slug: mls
+    principal: kristopher
+    domain: kristopher-household
+    bot: household-ops
+    worker: openbrand-work-service-node
+    place: house
+    display_name: MLS
+    kind: ops-console
+    policy_profile: shared
+    console_url: http://192.168.2.147:8792/
+    console_url_tailnet: http://work-special.tail94915.ts.net:8792/
   - slug: work-special-home
     principal: openbrand
     domain: openbrand-ops
@@ -928,90 +719,44 @@ services:
     display_name: Work Special
     kind: host-home
     policy_profile: shared
-    powers:
-      purse:
-        level: operator-approved
-        spend_cap: No autonomous host scale-up, paid service creation, subscription, or vendor change; cost-bearing host actions require operator approval.
-        revoker: norman
-        revocation_tested_at: pending
     web_url: http://192.168.2.147/
     web_url_tailnet: http://work-special.tail94915.ts.net/
   - slug: networking
-    principal: operator
-    domain: operator-communications
+    principal: kristopher
+    domain: kristopher-communications
     bot: communications
     worker: networking-host
     place: house
-    display_name: NetOps
+    display_name: Networking
     kind: ops-console
     policy_profile: manual
-    powers:
-      purse:
-        level: limited
-        spend_cap: No autonomous ISP, DNS registrar, cloud network, certificate vendor, subscription, or paid networking change; incidental diagnostics only.
-        revoker: norman
-        revocation_tested_at: pending
-      sword:
-        level: operator-approved
-        responsible_human: operator or designated incident owner
-        accountable_purpose: Ticketed network isolation, VPN/tailnet/headscale/firewall containment, and access shutoff only.
-        constraints:
-          - Explicit operator command required.
-          - Ticket, incident, or accountable request context required.
-          - No autonomous lockout, punitive blocking, or employee-status decision.
-          - Report affected identities, hosts, routes, firewall rules, rollback path, and verification.
-        revoker: norman
-        revocation_tested_at: pending
     console_url: http://192.168.2.242:8791/
     console_url_tailnet: http://networking.tail94915.ts.net:8791/
   - slug: uplink
-    principal: operator
-    domain: operator-communications
+    principal: kristopher
+    domain: kristopher-communications
     bot: communications
     worker: networking-host
     place: house
     display_name: Uplink
     kind: ops-console
     policy_profile: manual
-    powers:
-      purse:
-        level: limited
-        spend_cap: No autonomous ISP, carrier, DNS, relay, tunnel, or paid connectivity change; operator approval required for cost-bearing changes.
-        revoker: norman
-        revocation_tested_at: pending
     console_url: http://192.168.2.242:8792/
     console_url_tailnet: http://networking.tail94915.ts.net:8792/
   - slug: cloudagent
-    principal: operator
-    domain: operator-knowledge
+    principal: kristopher
+    domain: kristopher-knowledge
     bot: archivist
     worker: networking-host
     place: house
     display_name: CloudAgent
     kind: ops-console
     policy_profile: shared
-    powers:
-      purse:
-        level: operator-approved
-        spend_cap: No autonomous cloud resource, quota, paid API, SaaS subscription, or public-route cost change; operator approval required.
-        revoker: norman
-        revocation_tested_at: pending
-      sword:
-        level: operator-approved
-        responsible_human: operator or designated cloud/account owner
-        accountable_purpose: Ticketed cloud/IAM containment, credential rotation, workload isolation, and account-risk protection only.
-        constraints:
-          - Explicit operator command required.
-          - Ticket, incident, or accountable request context required.
-          - No autonomous account disablement, public exposure, destructive cloud action, or employment-status decision.
-          - Report affected accounts, roles, resources, commands, rollback path, and verification.
-        revoker: norman
-        revocation_tested_at: pending
     console_url: http://192.168.2.242:8793/
     console_url_tailnet: http://networking.tail94915.ts.net:8793/
   - slug: networking-home
-    principal: operator
-    domain: operator-communications
+    principal: kristopher
+    domain: kristopher-communications
     worker: networking-host
     place: house
     display_name: Networking Host
@@ -1020,8 +765,8 @@ services:
     web_url: http://192.168.2.242/
     web_url_tailnet: http://networking.tail94915.ts.net/
   - slug: dohio-topology
-    principal: operator
-    domain: operator-observability
+    principal: kristopher
+    domain: kristopher-observability
     bot: observability
     worker: cloud-gw-ohio
     place: pluto-remote-networks
@@ -1032,8 +777,8 @@ services:
     web_url_tailnet: https://cloud-gw-ohio.tail94915.ts.net/
     notes: Cloud gateway topology landing page. Cross-link this from the BBS/Directory so the route map and operator board stay aligned.
   - slug: switchyard-network-board
-    principal: operator
-    domain: operator-observability
+    principal: kristopher
+    domain: kristopher-observability
     bot: observability
     worker: cloud-gw-ohio
     place: pluto-remote-networks
