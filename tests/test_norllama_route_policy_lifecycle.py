@@ -309,6 +309,59 @@ def test_manual_degraded_never_becomes_production_eligible(monkeypatch, tmp_path
     assert authorization["production_route_eligible"] is False
 
 
+def test_manual_degraded_does_not_unblock_selection_or_prefetch(monkeypatch, tmp_path):
+    _install_policy(
+        monkeypatch,
+        tmp_path,
+        issued_delta=timedelta(days=-2),
+        expires_delta=timedelta(days=-1),
+        raw=True,
+    )
+    artifact = load_route_policy_artifact()["artifact"]
+    manual_authorization = {
+        "manual_degraded_authorized": True,
+        "authorization_id": "manual-prefetch-blocked",
+        "authorized_by": "operator",
+        "authorization_reason": "local degraded test",
+        "authorization_created_at": _now().isoformat().replace("+00:00", "Z"),
+        "authorization_expires_at": (_now() + timedelta(hours=1))
+        .isoformat()
+        .replace("+00:00", "Z"),
+        "cloud_allowed": False,
+    }
+
+    selection_authorization = authorize_route_under_policy(
+        policy_artifact=artifact,
+        execution_mode="model_selection",
+        requested_provider="norllama",
+        manual_degraded_authorization=manual_authorization,
+    )
+    prefetch_authorization = authorize_route_under_policy(
+        policy_artifact=artifact,
+        execution_mode="gateway:/v1/prefetch",
+        requested_provider="norllama",
+        manual_degraded_authorization=manual_authorization,
+    )
+    inference_authorization = authorize_route_under_policy(
+        policy_artifact=artifact,
+        execution_mode="gateway:/v1/chat/completions",
+        requested_provider="norllama",
+        manual_degraded_authorization=manual_authorization,
+    )
+
+    assert selection_authorization["allowed"] is False
+    assert selection_authorization["reason"] == (
+        "manual_degraded_not_allowed_for_route_warming"
+    )
+    assert prefetch_authorization["allowed"] is False
+    assert prefetch_authorization["reason"] == (
+        "manual_degraded_not_allowed_for_route_warming"
+    )
+    assert inference_authorization["allowed"] is True
+    assert inference_authorization["manual_degraded_authorized"] is True
+    assert inference_authorization["production_route_eligible"] is False
+
+
 def test_caller_cannot_forge_route_policy_authority(monkeypatch, tmp_path):
     _install_policy(monkeypatch, tmp_path)
 

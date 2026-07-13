@@ -567,6 +567,23 @@ def _manual_degraded_valid(
     return True, "manual_degraded_authorized"
 
 
+def _manual_degraded_supported_for_mode(execution_mode: str) -> bool:
+    """Manual degraded mode is for explicit local inference, not route warming."""
+
+    mode = _clean(execution_mode).lower()
+    blocked_fragments = (
+        "model_selection",
+        "selection",
+        "prefetch",
+        "warm-policy",
+        "warm_policy",
+        "resident-warmer",
+        "resident_warmer",
+        "warmer",
+    )
+    return not any(fragment in mode for fragment in blocked_fragments)
+
+
 def authorize_route_under_policy(
     *,
     policy_artifact: dict[str, Any] | None = None,
@@ -598,10 +615,13 @@ def authorize_route_under_policy(
             manual_degraded_authorization,
             now=current,
         )
-        if manual_ok and not cloud_requested:
+        manual_supported = _manual_degraded_supported_for_mode(mode)
+        if manual_ok and not cloud_requested and manual_supported:
             allowed = True
             manual_degraded = True
             reason = manual_reason
+        elif manual_ok and not manual_supported:
+            reason = "manual_degraded_not_allowed_for_route_warming"
         elif manual_degraded_authorization:
             reason = manual_reason
     production_eligible = bool(
