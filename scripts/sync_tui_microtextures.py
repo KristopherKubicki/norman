@@ -306,7 +306,7 @@ def replace_js_block(source: str, block: str) -> str:
         flags=re.DOTALL,
     )
     if not legacy_pattern.search(source):
-        raise ValueError("Could not locate NAMED_TUI_TEXTURES block")
+        return source
     return legacy_pattern.sub(block + "\n", source, count=1)
 
 

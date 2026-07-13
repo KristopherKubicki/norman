@@ -32,6 +32,7 @@ CONSOLE_RUNTIME_TOKEN_SECRET_DEFAULTS = (
     "runtime/console-runtime-token",
     "runtime/console-runtime-service-token",
 )
+DEFAULT_RUNTIME_API_BASE = "http://192.168.2.241:8000/api/v1/console-runtime"
 
 
 def norman_ssh_target() -> str:
@@ -48,6 +49,14 @@ def _first_env(*names: str) -> str:
         if value:
             return value
     return ""
+
+
+def default_runtime_api_base() -> str:
+    return _first_env("NORMAN_CONSOLE_RUNTIME_API_BASE") or DEFAULT_RUNTIME_API_BASE
+
+
+def acceptance_requires_runtime_api(targets: list["TuiTarget"]) -> bool:
+    return any(str(target.ssh_target or "").strip() for target in targets)
 
 
 def _norman_keys_secret_get_url() -> str:
@@ -1489,6 +1498,7 @@ def validate_acceptance(
     receipt: dict[str, Any],
 ) -> tuple[bool, list[str], dict[str, Any]]:
     failures: list[str] = []
+    locked_model_failures: list[str] = []
     observation_failures: list[str] = []
     status = _status_snapshot(probe)
     response = str(status.get("last_response") or "")
@@ -1589,6 +1599,35 @@ def validate_acceptance(
             failures.append("completion gate did not pass")
         if _int(receipt.get("model_completed_count")) < 1:
             failures.append("receipt did not record a model.completed event")
+        expected_locked_model = str(
+            scenario.model if scenario.route_lock else ""
+        ).strip()
+        if expected_locked_model:
+            invocations = receipt.get("invocations")
+            if not isinstance(invocations, list) or not invocations:
+                locked_model_failures.append(
+                    "locked route did not record model invocations"
+                )
+            for invocation in invocations if isinstance(invocations, list) else []:
+                if not isinstance(invocation, dict):
+                    continue
+                phase = str(invocation.get("phase") or "unknown")
+                for field in (
+                    "route_selected_model",
+                    "requested_model",
+                    "effective_runtime_model",
+                ):
+                    observed = str(invocation.get(field) or "").strip()
+                    if not observed:
+                        locked_model_failures.append(
+                            "locked route %s %s is missing" % (phase, field)
+                        )
+                    elif observed != expected_locked_model:
+                        locked_model_failures.append(
+                            "locked route %s %s is %s, expected %s"
+                            % (phase, field, observed, expected_locked_model)
+                        )
+            failures.extend(locked_model_failures)
         if (
             _int(receipt.get("spark_evidence_count"))
             < scenario.min_spark_evidence_count
@@ -1619,6 +1658,7 @@ def validate_acceptance(
         and not bool(receipt.get("cloud_proxy"))
         and _audit_passed(_dict(receipt.get("receipt_audit")))
         and _completion_gate_passed(_dict(receipt.get("completion_gate")))
+        and not locked_model_failures
     )
     observation_warnings: list[str] = []
     if observation_failures:
@@ -1749,7 +1789,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--runtime-api-base",
-        default=os.environ.get("NORMAN_CONSOLE_RUNTIME_API_BASE", ""),
+        default=default_runtime_api_base(),
         help=(
             "Console-runtime API base for receipt checks. Defaults to "
             "NORMAN_CONSOLE_RUNTIME_API_BASE."
@@ -1769,6 +1809,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ask-timeout", type=float, default=30.0)
     parser.add_argument("--status-timeout", type=float, default=15.0)
     parser.add_argument("--ssh-timeout", type=float, default=420.0)
+    parser.add_argument(
+        "--allow-local-db-fallback",
+        action="store_true",
+        help=(
+            "Allow proof lookup from this checkout's local DB when the runtime "
+            "API is unavailable. Do not use for multi-host release proof."
+        ),
+    )
     parser.add_argument("--output-json", default="")
     return parser
 
@@ -1810,6 +1858,37 @@ def main(argv: list[str] | None = None) -> int:
         }
     else:
         runtime_token, runtime_token_meta = resolve_console_runtime_token_with_source()
+    runtime_api_required = acceptance_requires_runtime_api(targets)
+    if runtime_api_required and (not runtime_api_base or not runtime_token):
+        report = {
+            "schema": "norman.tui-kernel-acceptance.v1",
+            "run_id": run_id,
+            "generated_at": int(time.time()),
+            "passed": False,
+            "pass_count": 0,
+            "total_count": len(matrix),
+            "preflight_failed": True,
+            "preflight_failures": [
+                (
+                    "live multi-host acceptance requires console-runtime API "
+                    "base and token; refusing to send prompts without receipt "
+                    "proof"
+                )
+            ],
+            "runtime_api": {
+                "base": runtime_api_base,
+                "token_available": bool(runtime_token),
+                **runtime_token_meta,
+            },
+            "results": [],
+        }
+        print(report["preflight_failures"][0], file=sys.stderr)
+        if args.output_json:
+            Path(args.output_json).write_text(
+                json.dumps(report, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        return 2
     for index, (target, run) in enumerate(matrix, start=1):
         print(
             "Running %s/%s %s:%s" % (index, len(matrix), target.name, run.name),
@@ -1837,9 +1916,18 @@ def main(argv: list[str] | None = None) -> int:
                 poll_interval=args.poll_interval,
             )
             if not receipt.get("available"):
-                db_receipt = receipt_from_norman_db(job_id, repo_root=repo_root)
-                if db_receipt.get("available"):
-                    receipt = db_receipt
+                if args.allow_local_db_fallback or not runtime_api_required:
+                    db_receipt = receipt_from_norman_db(job_id, repo_root=repo_root)
+                    if db_receipt.get("available"):
+                        receipt = db_receipt
+        elif not args.allow_local_db_fallback and runtime_api_required:
+            receipt = {
+                "available": False,
+                "error": (
+                    "runtime API proof unavailable and local DB fallback is "
+                    "disabled for multi-host acceptance"
+                ),
+            }
         else:
             receipt = receipt_from_norman_db(job_id, repo_root=repo_root)
         _ok, _failures, proof = validate_acceptance(target, run, probe, receipt)

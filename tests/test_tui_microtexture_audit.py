@@ -41,6 +41,14 @@ def test_web_app_texture_audit_only_requires_directory_generated_entries():
     assert targets == module.JS_GENERATED_TARGETS
 
 
+def test_js_microtexture_sync_skips_files_without_generated_block():
+    module = _load_audit()
+    source = "const FLEET_PRIORITY = { norman: 0 };\n"
+    rendered = module.texture_sync.render_js_block(module.load_cards())
+
+    assert module.texture_sync.replace_js_block(source, rendered) == source
+
+
 def test_live_microtexture_audit_has_no_required_coverage_gaps():
     module = _load_audit()
 

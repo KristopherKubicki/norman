@@ -1,6 +1,34 @@
 from __future__ import annotations
 
+import json
+
 from scripts import tui_kernel_acceptance as acceptance
+
+
+def route_invocations(
+    model: str = "qwen3.6:27b",
+    *,
+    worker: str = "spark-151",
+    phase: str = "literal_response",
+) -> list[dict[str, str]]:
+    return [
+        {
+            "phase": phase,
+            "task_kind": "chat",
+            "route_selected_model": model,
+            "requested_model": model,
+            "effective_runtime_model": model,
+            "selected_worker": worker,
+            "observed_worker": worker,
+            "observed_worker_source": "gateway_response",
+            "execution_mode": "live",
+            "output_shape": "complete",
+            "request_id": f"req-{phase}",
+            "client_request_id": f"req-{phase}",
+            "gateway_request_id": f"gw-{phase}",
+            "invocation_id": f"worker:turn-test:{phase}:1:model",
+        }
+    ]
 
 
 def test_form_payload_uses_locked_local_llm_route():
@@ -207,6 +235,100 @@ def test_runtime_api_url_normalizes_api_bases():
     )
 
 
+def test_live_multi_host_acceptance_requires_runtime_api_token(monkeypatch, tmp_path):
+    output = tmp_path / "acceptance.json"
+    monkeypatch.setattr(
+        acceptance,
+        "resolve_console_runtime_token_with_source",
+        lambda: (
+            "",
+            {"runtime_token_source": "none", "runtime_token_secret_name": ""},
+        ),
+    )
+
+    def fail_probe(*_args, **_kwargs):
+        raise AssertionError("acceptance should not send prompts without proof token")
+
+    monkeypatch.setattr(acceptance, "run_tui_probe", fail_probe)
+
+    result = acceptance.main(
+        [
+            "--live",
+            "--targets",
+            "housebot",
+            "--scenarios",
+            "canary",
+            "--run-id",
+            "preflight",
+            "--output-json",
+            str(output),
+        ]
+    )
+
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert result == 2
+    assert report["preflight_failed"] is True
+    assert report["runtime_api"]["base"] == acceptance.DEFAULT_RUNTIME_API_BASE
+    assert report["runtime_api"]["token_available"] is False
+    assert "refusing to send prompts" in report["preflight_failures"][0]
+    assert report["results"] == []
+
+
+def test_live_multi_host_acceptance_does_not_fall_back_to_local_db_after_api_failure(
+    monkeypatch,
+):
+    target = acceptance.default_targets()["housebot"]
+    scenario = acceptance.default_scenarios()["canary"]
+    run = acceptance.materialize_scenario(scenario, target, run_id="api-fail")
+    job_id = "turn-housebot-api-fail"
+
+    monkeypatch.setattr(
+        acceptance,
+        "run_tui_probe",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "ask_job_id": job_id,
+            "ask": {"console_runtime_job_id": job_id},
+            "status": {
+                "pending": False,
+                "last_prompt": run.message,
+                "last_response": run.expected_response,
+                "last_error": "",
+                "last_console_runtime_job_id": job_id,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        acceptance,
+        "receipt_from_norman_api_poll",
+        lambda *_args, **_kwargs: {
+            "available": False,
+            "error": "runtime API failed",
+        },
+    )
+
+    def fail_db(*_args, **_kwargs):
+        raise AssertionError("multi-host proof must not use local DB fallback")
+
+    monkeypatch.setattr(acceptance, "receipt_from_norman_db", fail_db)
+
+    result = acceptance.main(
+        [
+            "--live",
+            "--targets",
+            "housebot",
+            "--scenarios",
+            "canary",
+            "--run-id",
+            "api-fail",
+            "--runtime-token",
+            "token",
+        ]
+    )
+
+    assert result == 1
+
+
 def test_receipt_from_activity_snapshot_maps_route_summary():
     snapshot = {
         "job": {
@@ -345,6 +467,7 @@ def test_validate_acceptance_passes_complete_local_receipt():
         "client_request_id": "req-acceptance",
         "gateway_request_id": "gw-acceptance",
         "invocation_id": "worker:turn-norman-test:work:1:model",
+        "invocations": route_invocations(),
         "execution_mode": "live",
         "output_shape": "complete",
         "local_tokens": 77,
@@ -410,6 +533,7 @@ def test_validate_acceptance_accepts_literal_phase_with_chat_task_kind():
         "client_request_id": "req-phase",
         "gateway_request_id": "gw-phase",
         "invocation_id": "worker:turn-norman-test-phase:literal_response:1:model",
+        "invocations": route_invocations(phase="literal_response"),
         "execution_mode": "live",
         "output_shape": "complete",
         "local_tokens": 77,
@@ -436,6 +560,67 @@ def test_validate_acceptance_accepts_literal_phase_with_chat_task_kind():
     assert failures == []
     assert proof["receipt"]["task_kind"] == "chat"
     assert proof["receipt"]["receipt_phase"] == "literal_response"
+
+
+def test_validate_acceptance_rejects_locked_route_model_mismatch():
+    target = acceptance.default_targets()["norman"]
+    run = acceptance.materialize_scenario(
+        acceptance.default_scenarios()["canary"],
+        target,
+        run_id="r2-mismatch",
+    )
+    job_id = "turn-norman-test-mismatch"
+    probe = {
+        "ok": True,
+        "status": {
+            "pending": False,
+            "last_prompt": run.message,
+            "last_response": run.expected_response,
+            "last_error": "",
+            "last_console_runtime_job_id": job_id,
+        },
+    }
+    receipt = {
+        "available": True,
+        "job_id": job_id,
+        "job_status": "done",
+        "last_error": "",
+        "kernel_owned_turn": True,
+        "task_kind": "literal_response",
+        "selected_model": "qwen3.6:27b",
+        "selected_worker": "spark-151",
+        "observed_worker": "spark-151",
+        "observed_worker_source": "gateway_response",
+        "invocations": route_invocations("qwen3.6:35b-a3b-q4_K_M"),
+        "execution_mode": "live",
+        "output_shape": "complete",
+        "local_tokens": 77,
+        "cloud_proxy": False,
+        "receipt_audit": {"status": "pass", "pass": True},
+        "completion_gate": {"status": "pass", "gate_passed": True},
+        "goal_local_tokens": 77,
+        "goal_cloud_tokens": 0,
+        "ledger_cloud_tokens": 0,
+        "ledger_by_provider": {"norllama": 77},
+        "local_first_status": "on_target",
+        "model_completed_count": 1,
+        "spark_evidence_count": 1,
+    }
+
+    passed, failures, proof = acceptance.validate_acceptance(
+        target,
+        run,
+        probe,
+        receipt,
+    )
+
+    assert passed is False
+    assert proof["route_proof_passed"] is False
+    assert any(
+        "locked route literal_response effective_runtime_model is "
+        "qwen3.6:35b-a3b-q4_K_M, expected qwen3.6:27b" == failure
+        for failure in failures
+    )
 
 
 def test_validate_acceptance_rejects_cloud_tokens_and_missing_worker():
@@ -526,6 +711,7 @@ def test_validate_acceptance_rejects_stale_status_job_id():
         "selected_worker": "spark-151",
         "observed_worker": "spark-151",
         "observed_worker_source": "gateway_response",
+        "invocations": route_invocations(),
         "execution_mode": "live",
         "output_shape": "complete",
         "local_tokens": 77,
@@ -586,6 +772,7 @@ def test_validate_acceptance_prefers_ask_owned_job_over_stale_status():
         "selected_worker": "spark-151",
         "observed_worker": "spark-151",
         "observed_worker_source": "gateway_response",
+        "invocations": route_invocations(),
         "execution_mode": "live",
         "output_shape": "complete",
         "local_tokens": 77,
@@ -645,6 +832,7 @@ def test_validate_acceptance_allows_stale_visible_state_with_route_proof():
         "selected_worker": "spark-151",
         "observed_worker": "spark-151",
         "observed_worker_source": "gateway_response",
+        "invocations": route_invocations(),
         "execution_mode": "live",
         "output_shape": "complete",
         "local_tokens": 77,
