@@ -377,6 +377,68 @@ print(json.dumps(result, sort_keys=True))
 """
 
 
+REMOTE_VISIBLE_SCRIPT = r"""
+import json
+import time
+import urllib.error
+import urllib.request
+
+
+def fetch_json(url, *, timeout=10.0):
+    request = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            text = response.read().decode("utf-8", "replace")
+            status = int(response.status)
+    except urllib.error.HTTPError as exc:
+        text = exc.read().decode("utf-8", "replace")
+        status = int(exc.code)
+    payload = json.loads(text) if text.strip() else {}
+    return status, payload
+
+
+config = json.loads(CONFIG_JSON)
+base_url = str(config["base_url"]).rstrip("/")
+job_id = str(config.get("job_id") or "")
+nonce = str(config.get("nonce") or "")
+expected = str(config.get("expected_response") or "")
+poll_attempts = max(1, int(config.get("poll_attempts") or 1))
+poll_interval = max(0.1, float(config.get("poll_interval") or 1.0))
+status_timeout = max(1.0, float(config.get("status_timeout") or 10.0))
+result = {
+    "ok": False,
+    "status_http_status": 0,
+    "status": {},
+    "error": "",
+    "poll_attempts_used": 0,
+}
+for attempt in range(poll_attempts):
+    result["poll_attempts_used"] = attempt + 1
+    try:
+        status, payload = fetch_json(base_url + "/api/status", timeout=status_timeout)
+        result["status_http_status"] = status
+        result["status"] = payload
+    except Exception as exc:
+        result["error"] = "status failed: %s" % exc
+        time.sleep(poll_interval)
+        continue
+    response_job = str(payload.get("last_response_console_runtime_job_id") or "")
+    prompt = str(payload.get("last_prompt") or "")
+    response = str(payload.get("last_response") or "")
+    pending = bool(payload.get("pending"))
+    if (
+        response_job == job_id
+        and not pending
+        and nonce in prompt
+        and expected in response
+    ):
+        result["ok"] = True
+        break
+    time.sleep(poll_interval)
+print(json.dumps(result, sort_keys=True))
+"""
+
+
 @dataclass(frozen=True)
 class TuiTarget:
     name: str
@@ -403,6 +465,7 @@ class AcceptanceScenario:
     require_local_first_on_target: bool = True
     require_norllama_tokens: bool = True
     require_worker_attribution: bool = True
+    require_exact_ask_job_id: bool = True
     expected_task_kind: str = "literal_response"
     min_spark_evidence_count: int = 1
 
@@ -822,6 +885,121 @@ def run_tui_probe(
     return payload
 
 
+def poll_visible_delivery_local(
+    target: TuiTarget,
+    run: ScenarioRun,
+    *,
+    job_id: str,
+    poll_attempts: int,
+    poll_interval: float,
+    status_timeout: float,
+) -> dict[str, Any]:
+    base_url = target.base_url.rstrip("/")
+    result: dict[str, Any] = {
+        "ok": False,
+        "status_http_status": 0,
+        "status": {},
+        "error": "",
+        "poll_attempts_used": 0,
+    }
+    for attempt in range(max(1, int(poll_attempts or 1))):
+        result["poll_attempts_used"] = attempt + 1
+        try:
+            status, payload = _fetch_json(
+                base_url + "/api/status",
+                timeout=status_timeout,
+            )
+            result["status_http_status"] = status
+            result["status"] = payload
+        except Exception as exc:
+            result["error"] = "status failed: %s" % exc
+            time.sleep(poll_interval)
+            continue
+        response_job = str(payload.get("last_response_console_runtime_job_id") or "")
+        prompt = str(payload.get("last_prompt") or "")
+        response = str(payload.get("last_response") or "")
+        if (
+            response_job == job_id
+            and not bool(payload.get("pending"))
+            and run.nonce in prompt
+            and run.expected_response in response
+        ):
+            result["ok"] = True
+            return result
+        time.sleep(poll_interval)
+    return result
+
+
+def poll_visible_delivery(
+    target: TuiTarget,
+    run: ScenarioRun,
+    *,
+    job_id: str,
+    poll_attempts: int,
+    poll_interval: float,
+    status_timeout: float,
+    ssh_timeout: float,
+) -> dict[str, Any]:
+    if not target.ssh_target:
+        return poll_visible_delivery_local(
+            target,
+            run,
+            job_id=job_id,
+            poll_attempts=poll_attempts,
+            poll_interval=poll_interval,
+            status_timeout=status_timeout,
+        )
+    config = {
+        "base_url": target.base_url,
+        "job_id": job_id,
+        "expected_response": run.expected_response,
+        "nonce": run.nonce,
+        "poll_attempts": poll_attempts,
+        "poll_interval": poll_interval,
+        "status_timeout": status_timeout,
+    }
+    remote_program = "CONFIG_JSON = %r\n%s" % (
+        json.dumps(config),
+        REMOTE_VISIBLE_SCRIPT,
+    )
+    try:
+        completed = subprocess.run(
+            ["ssh", target.ssh_target, "python3", "-"],
+            input=remote_program,
+            text=True,
+            capture_output=True,
+            timeout=ssh_timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return {
+            "ok": False,
+            "status": {},
+            "error": "ssh visible poll timed out after %.1fs for %s"
+            % (ssh_timeout, target.name),
+            "ssh_returncode": None,
+            "raw_stdout": (exc.stdout or "")[:2000],
+            "raw_stderr": (exc.stderr or "")[:2000],
+        }
+    if completed.returncode != 0:
+        return {
+            "ok": False,
+            "status": {},
+            "error": (completed.stderr or completed.stdout or "").strip(),
+            "ssh_returncode": completed.returncode,
+        }
+    try:
+        return json.loads(completed.stdout.strip() or "{}")
+    except json.JSONDecodeError as exc:
+        return {
+            "ok": False,
+            "status": {},
+            "error": "invalid ssh visible poll JSON: %s" % exc,
+            "raw_stdout": completed.stdout,
+            "raw_stderr": completed.stderr,
+        }
+
+
 def _dict(value: Any) -> dict[str, Any]:
     return dict(value or {}) if isinstance(value or {}, dict) else {}
 
@@ -1042,6 +1220,21 @@ def _event_invocation(payload: dict[str, Any]) -> dict[str, Any]:
         "requested_model": requested_model,
         "effective_runtime_model": effective_model,
         "selected_worker": _event_worker_id(payload),
+        "target_worker": _first_clean(
+            receipt.get("target_worker"),
+            payload.get("target_worker"),
+            metadata.get("target_worker"),
+        ),
+        "target_worker_mode": _first_clean(
+            receipt.get("target_worker_mode"),
+            payload.get("target_worker_mode"),
+            metadata.get("target_worker_mode"),
+        ),
+        "gateway_selected_worker": _first_clean(
+            receipt.get("gateway_selected_worker"),
+            payload.get("gateway_selected_worker"),
+            metadata.get("gateway_selected_worker"),
+        ),
         "observed_worker": _event_observed_worker_id(payload),
         "observed_worker_source": _event_observed_worker_source(payload),
         "execution_mode": _event_execution_mode(payload) or "unknown",
@@ -1254,6 +1447,11 @@ def _receipt_from_activity_snapshot(
     task_kind = _first_clean(receipt_task_kind, envelope_task_kind)
     models_by_phase = _models_by_phase(invocations)
     final_invocation = invocations[-1] if invocations else {}
+    target_worker = str(final_invocation.get("target_worker") or "").strip()
+    target_worker_mode = str(final_invocation.get("target_worker_mode") or "").strip()
+    gateway_selected_worker = str(
+        final_invocation.get("gateway_selected_worker") or ""
+    ).strip()
     return {
         "available": True,
         "job_id": str(job.get("job_id") or job_id),
@@ -1276,6 +1474,9 @@ def _receipt_from_activity_snapshot(
         ),
         "selected_model": model,
         "selected_worker": worker,
+        "target_worker": target_worker,
+        "target_worker_mode": target_worker_mode,
+        "gateway_selected_worker": gateway_selected_worker,
         "observed_worker": observed_worker,
         "observed_worker_source": observed_worker_source,
         "invocations": invocations,
@@ -1550,6 +1751,11 @@ def receipt_from_norman_db(job_id: str, *, repo_root: Path) -> dict[str, Any]:
     task_kind = _first_clean(receipt_task_kind, envelope_task_kind)
     models_by_phase = _models_by_phase(invocations)
     final_invocation = invocations[-1] if invocations else {}
+    target_worker = str(final_invocation.get("target_worker") or "").strip()
+    target_worker_mode = str(final_invocation.get("target_worker_mode") or "").strip()
+    gateway_selected_worker = str(
+        final_invocation.get("gateway_selected_worker") or ""
+    ).strip()
     return {
         "available": True,
         "proof_source": "central_db",
@@ -1573,6 +1779,9 @@ def receipt_from_norman_db(job_id: str, *, repo_root: Path) -> dict[str, Any]:
         ),
         "selected_model": model,
         "selected_worker": worker,
+        "target_worker": target_worker,
+        "target_worker_mode": target_worker_mode,
+        "gateway_selected_worker": gateway_selected_worker,
         "observed_worker": observed_worker,
         "observed_worker_source": observed_worker_source,
         "invocations": invocations,
@@ -1661,15 +1870,33 @@ def validate_acceptance(
     prompt = str(status.get("last_prompt") or "")
     last_error = str(status.get("last_error") or "").strip()
     job_id = job_id_from_probe(probe)
+    ask_job_id = str(probe.get("ask_job_id") or "").strip()
+    last_response_job_id = str(
+        status.get("last_response_console_runtime_job_id") or ""
+    ).strip()
+    status_job_id = str(
+        status.get("last_console_runtime_job_id")
+        or status.get("running_console_runtime_job_id")
+        or last_response_job_id
+        or ""
+    ).strip()
     if not probe.get("ok"):
         observation_failures.append(
             "TUI probe did not return a status snapshot: %s"
             % str(probe.get("error") or "no probe error")[:240]
         )
+    if run.scenario.require_exact_ask_job_id and not ask_job_id:
+        failures.append("POST /api/ask did not return a console-runtime job id")
+    if ask_job_id and job_id != ask_job_id:
+        failures.append("selected proof job id did not match ask-owned job id")
     if run.nonce not in prompt:
         observation_failures.append("latest prompt does not contain the run nonce")
     if bool(status.get("pending")):
         observation_failures.append("TUI is still pending")
+    if ask_job_id and last_response_job_id != ask_job_id:
+        observation_failures.append(
+            "visible response job id did not match ask-owned job id"
+        )
     if last_error:
         observation_failures.append("TUI reported last_error: %s" % last_error[:240])
     if run.expected_response not in response:
@@ -1735,6 +1962,29 @@ def validate_acceptance(
                 "receipt observed worker source is %s"
                 % (receipt.get("observed_worker_source") or "missing")
             )
+        if scenario.require_worker_attribution:
+            invocations = receipt.get("invocations")
+            final_invocation = (
+                invocations[-1]
+                if isinstance(invocations, list)
+                and invocations
+                and isinstance(invocations[-1], dict)
+                else {}
+            )
+            target_worker = str(
+                receipt.get("target_worker")
+                or final_invocation.get("target_worker")
+                or ""
+            ).strip()
+            target_worker_mode = str(
+                receipt.get("target_worker_mode")
+                or final_invocation.get("target_worker_mode")
+                or ""
+            ).strip()
+            if not target_worker and target_worker_mode != "gateway_delegated":
+                failures.append(
+                    "receipt did not record target_worker or gateway_delegated mode"
+                )
         if receipt.get("execution_mode") != "live":
             failures.append(
                 "receipt execution mode is %s"
@@ -1816,12 +2066,9 @@ def validate_acceptance(
         and _completion_gate_passed(_dict(receipt.get("completion_gate")))
         and not locked_model_failures
     )
-    observation_warnings: list[str] = []
+    visible_delivery_passed = not observation_failures
     if observation_failures:
-        if receipt_route_proof_passed:
-            observation_warnings.extend(observation_failures)
-        else:
-            failures.extend(observation_failures)
+        failures.extend(observation_failures)
     proof = {
         "target": target.name,
         "label": target.label,
@@ -1833,14 +2080,26 @@ def validate_acceptance(
         "job_id": job_id,
         "passed": not failures,
         "failures": failures,
-        "observation_warnings": observation_warnings,
+        "observation_warnings": [],
+        "visible_delivery_passed": visible_delivery_passed,
         "route_proof_passed": receipt_route_proof_passed,
+        "scenario_passed": receipt_route_proof_passed and visible_delivery_passed,
         "response_preview": response[:240],
         "probe_error": str(probe.get("error") or "")[:500],
         "before_job_id": str(probe.get("before_job_id") or ""),
         "before_idle": bool(probe.get("before_idle")),
         "before_idle_wait_attempts": _int(probe.get("before_idle_wait_attempts")),
-        "ask_job_id": str(probe.get("ask_job_id") or ""),
+        "visible_delivery_poll": {
+            key: _dict(probe.get("visible_delivery_poll")).get(key)
+            for key in (
+                "ok",
+                "status_http_status",
+                "poll_attempts_used",
+                "error",
+                "ssh_returncode",
+            )
+        },
+        "ask_job_id": ask_job_id,
         "ask_receipt_visibility": str(
             _dict(probe.get("ask")).get("receipt_visibility") or ""
         ),
@@ -1848,12 +2107,8 @@ def validate_acceptance(
         "ask_receipt_visibility_detail": _dict(
             _dict(probe.get("ask")).get("receipt_visibility_detail")
         ),
-        "status_job_id": str(
-            _status_snapshot(probe).get("last_console_runtime_job_id")
-            or _status_snapshot(probe).get("running_console_runtime_job_id")
-            or _status_snapshot(probe).get("last_response_console_runtime_job_id")
-            or ""
-        ),
+        "status_job_id": status_job_id,
+        "last_response_job_id": last_response_job_id,
         "ask_http_status": probe.get("ask_http_status"),
         "status_http_status": probe.get("status_http_status"),
         "receipt": {
@@ -1869,6 +2124,9 @@ def validate_acceptance(
                 "envelope_task_kind",
                 "selected_model",
                 "selected_worker",
+                "target_worker",
+                "target_worker_mode",
+                "gateway_selected_worker",
                 "observed_worker",
                 "observed_worker_source",
                 "invocations",
@@ -2130,6 +2388,22 @@ def main(argv: list[str] | None = None) -> int:
                 poll_interval=args.poll_interval,
                 accept_provable_running=False,
             )
+        if job_id and receipt.get("available") and receipt.get("job_status") == "done":
+            visible = poll_visible_delivery(
+                target,
+                run,
+                job_id=job_id,
+                poll_attempts=args.poll_attempts,
+                poll_interval=args.poll_interval,
+                status_timeout=args.status_timeout,
+                ssh_timeout=args.ssh_timeout,
+            )
+            probe["visible_delivery_poll"] = visible
+            if isinstance(visible.get("status"), dict) and visible.get("status"):
+                probe["status"] = visible["status"]
+                probe["status_http_status"] = visible.get(
+                    "status_http_status", probe.get("status_http_status", 0)
+                )
         _ok, _failures, proof = validate_acceptance(target, run, probe, receipt)
         results.append(proof)
         print(

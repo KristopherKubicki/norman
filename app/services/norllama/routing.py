@@ -1120,6 +1120,13 @@ def route_receipt_payload(
         or worker_id
         or ("cloud" if route.cloud_proxy or not route.local else "")
     )
+    target_worker_mode = (
+        "explicit"
+        if target_worker
+        else "gateway_delegated"
+        if route.local and not route.cloud_proxy
+        else ""
+    )
     frontdoor = _public_endpoint(getattr(settings, "llm_offline_base_url", ""))
     peer_path = _clean_list(attribution.get("peer_path"))
     if not peer_path and frontdoor:
@@ -1321,6 +1328,7 @@ def route_receipt_payload(
         ),
         "selected_worker": selected_worker,
         "target_worker": target_worker,
+        "target_worker_mode": target_worker_mode,
         "gateway_selected_worker": gateway_selected_worker,
         "observed_worker": observed_worker,
         "observed_worker_source": attribution_source if observed_worker else "",

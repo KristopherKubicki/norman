@@ -84,6 +84,25 @@ def test_gateway_activity_keeps_execution_history_separate_from_monitoring(monke
     assert all_activity["count"] == 2
 
 
+def test_gateway_activity_defaults_missing_execution_mode_to_unknown(monkeypatch):
+    module = load_gateway_module()
+    app = module.App()
+
+    app.record_activity(
+        {
+            "request_id": "req-anon",
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "model": "qwen3.6:27b",
+        }
+    )
+
+    execution = app.recent_activity(1)
+
+    assert execution["items"][0]["execution_mode"] == "unknown"
+    assert execution["items"][0]["activity_class"] == "execution"
+
+
 def test_gateway_manual_degraded_activity_keeps_policy_receipt_fields(
     monkeypatch, tmp_path
 ):
@@ -127,7 +146,7 @@ def test_gateway_manual_degraded_activity_keeps_policy_receipt_fields(
     assert handler._activity_extra["manual_degraded_authorized"] is True
     assert handler._activity_extra["manual_degraded_authorization_id"] == "manual-test"
     assert handler._activity_extra["policy_production_routes_allowed"] is False
-    assert handler._activity_extra["production_route_eligible"] is False
+    assert "production_route_eligible" not in handler._activity_extra
     assert handler._activity_extra["mode"] == "native_qwen_bridge"
     assert handler._activity_extra["model"] == "qwen3.6:27b"
 

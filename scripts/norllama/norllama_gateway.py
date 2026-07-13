@@ -135,7 +135,8 @@ except (
             "policy_lifecycle_state": str(
                 authorization.get("lifecycle_state") or "refresh_failed"
             ),
-            "production_route_eligible": False,
+            "policy_production_routes_allowed": False,
+            "request_production_route_eligible": False,
         }
 
 
@@ -3967,7 +3968,8 @@ class App:
         activity_class = self.activity_class_for_record(item)
         item["activity_class"] = activity_class
         item.setdefault(
-            "execution_mode", "monitoring" if activity_class == "monitoring" else "live"
+            "execution_mode",
+            "monitoring" if activity_class == "monitoring" else "unknown",
         )
         with self._lock:
             self._recent_activity.append(item)
@@ -5018,7 +5020,7 @@ class Handler(BaseHTTPRequestHandler):
             record["execution_mode"] = mode or (
                 "monitoring"
                 if self.app.activity_class_for_record(record) == "monitoring"
-                else "live"
+                else "unknown"
             )
         self.app.record_activity(record)
         sys.stdout.write(json.dumps(record, sort_keys=True) + "\n")
@@ -7312,9 +7314,6 @@ class Handler(BaseHTTPRequestHandler):
                         authorization.get("default_route_allowed")
                     ),
                     "policy_production_routes_allowed": bool(
-                        authorization.get("production_route_eligible")
-                    ),
-                    "production_route_eligible": bool(
                         authorization.get("production_route_eligible")
                     ),
                     "manual_degraded_authorized": bool(

@@ -477,7 +477,8 @@ def audit_route_receipt(receipt: dict[str, Any] | None) -> dict[str, Any]:
 
     if status == "completed" and _local_frontdoor_requires_worker(receipt):
         selected_worker = _clean(receipt.get("selected_worker"))
-        target_worker = _clean(receipt.get("target_worker") or selected_worker)
+        target_worker = _clean(receipt.get("target_worker"))
+        target_worker_mode = _lower(receipt.get("target_worker_mode"))
         observed_worker = _clean(receipt.get("observed_worker"))
         observed_worker_source = _lower(receipt.get("observed_worker_source"))
         peer_path = (
@@ -490,6 +491,8 @@ def audit_route_receipt(receipt: dict[str, Any] | None) -> dict[str, Any]:
         )
         if not selected_worker:
             failures.append("selected_worker_missing_for_frontdoor_route")
+        if not target_worker and target_worker_mode != "gateway_delegated":
+            failures.append("target_worker_or_gateway_delegated_missing")
         if not _clean(receipt.get("observed_worker")):
             failures.append("observed_worker_missing_for_frontdoor_route")
         if observed_worker_source != "gateway_response":

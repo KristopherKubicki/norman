@@ -19,6 +19,9 @@ def route_invocations(
             "requested_model": model,
             "effective_runtime_model": model,
             "selected_worker": worker,
+            "target_worker": worker,
+            "target_worker_mode": "explicit",
+            "gateway_selected_worker": worker,
             "observed_worker": worker,
             "observed_worker_source": "gateway_response",
             "execution_mode": "live",
@@ -430,6 +433,7 @@ def test_live_multi_host_acceptance_can_use_authoritative_norman_db_fallback(
                 "last_response": run.expected_response,
                 "last_error": "",
                 "last_console_runtime_job_id": job_id,
+                "last_response_console_runtime_job_id": job_id,
             },
         }
 
@@ -465,6 +469,23 @@ def test_live_multi_host_acceptance_can_use_authoritative_norman_db_fallback(
 
     monkeypatch.setattr(acceptance, "run_tui_probe", fake_probe)
     monkeypatch.setattr(acceptance, "receipt_from_norman_db", fake_db)
+    monkeypatch.setattr(
+        acceptance,
+        "poll_visible_delivery",
+        lambda _target, run, *, job_id, **_kwargs: {
+            "ok": True,
+            "status_http_status": 200,
+            "poll_attempts_used": 1,
+            "status": {
+                "pending": False,
+                "last_prompt": run.message,
+                "last_response": run.expected_response,
+                "last_error": "",
+                "last_console_runtime_job_id": job_id,
+                "last_response_console_runtime_job_id": job_id,
+            },
+        },
+    )
 
     result = acceptance.main(
         [
@@ -775,12 +796,15 @@ def test_validate_acceptance_passes_complete_local_receipt():
     job_id = "turn-norman-test"
     probe = {
         "ok": True,
+        "ask_job_id": job_id,
+        "ask": {"console_runtime_job_id": job_id},
         "status": {
             "pending": False,
             "last_prompt": run.message,
             "last_response": run.expected_response,
             "last_error": "",
             "last_console_runtime_job_id": job_id,
+            "last_response_console_runtime_job_id": job_id,
         },
     }
     receipt = {
@@ -792,6 +816,9 @@ def test_validate_acceptance_passes_complete_local_receipt():
         "task_kind": "literal_response",
         "selected_model": "qwen3.6:27b",
         "selected_worker": "spark-151",
+        "target_worker": "spark-151",
+        "target_worker_mode": "explicit",
+        "gateway_selected_worker": "spark-151",
         "observed_worker": "spark-151",
         "observed_worker_source": "gateway_response",
         "request_id": "req-acceptance",
@@ -838,12 +865,15 @@ def test_validate_acceptance_accepts_literal_phase_with_chat_task_kind():
     job_id = "turn-norman-test-phase"
     probe = {
         "ok": True,
+        "ask_job_id": job_id,
+        "ask": {"console_runtime_job_id": job_id},
         "status": {
             "pending": False,
             "last_prompt": run.message,
             "last_response": run.expected_response,
             "last_error": "",
             "last_console_runtime_job_id": job_id,
+            "last_response_console_runtime_job_id": job_id,
         },
     }
     receipt = {
@@ -1090,6 +1120,7 @@ def test_validate_acceptance_prefers_ask_owned_job_over_stale_status():
             "last_response": run.expected_response,
             "last_error": "",
             "last_console_runtime_job_id": stale_job_id,
+            "last_response_console_runtime_job_id": fresh_job_id,
         },
     }
     receipt = {
@@ -1147,7 +1178,7 @@ def test_job_id_from_probe_uses_fresh_status_when_ask_job_is_previous_turn():
     assert acceptance.job_id_from_probe(probe) == "turn-current"
 
 
-def test_validate_acceptance_allows_stale_visible_state_with_route_proof():
+def test_validate_acceptance_rejects_stale_visible_state_despite_route_proof():
     target = acceptance.default_targets()["norman"]
     run = acceptance.materialize_scenario(
         acceptance.default_scenarios()["canary"],
@@ -1201,16 +1232,11 @@ def test_validate_acceptance_allows_stale_visible_state_with_route_proof():
         receipt,
     )
 
-    assert passed is True
-    assert failures == []
+    assert passed is False
     assert proof["route_proof_passed"] is True
-    assert (
-        "latest prompt does not contain the run nonce" in proof["observation_warnings"]
-    )
-    assert (
-        "visible response did not contain the expected literal"
-        in proof["observation_warnings"]
-    )
+    assert proof["visible_delivery_passed"] is False
+    assert "latest prompt does not contain the run nonce" in failures
+    assert "visible response did not contain the expected literal" in failures
 
 
 def test_validate_acceptance_can_require_spark_evidence():
@@ -1280,6 +1306,8 @@ def test_validate_acceptance_uses_model_receipt_task_kind_for_unlocked_route():
     job_id = "turn-norman-auto"
     probe = {
         "ok": True,
+        "ask_job_id": job_id,
+        "ask": {"console_runtime_job_id": job_id},
         "status": {
             "pending": False,
             "last_prompt": run.message,
@@ -1289,6 +1317,7 @@ def test_validate_acceptance_uses_model_receipt_task_kind_for_unlocked_route():
             ),
             "last_error": "",
             "last_console_runtime_job_id": job_id,
+            "last_response_console_runtime_job_id": job_id,
         },
     }
     receipt = {
@@ -1302,6 +1331,9 @@ def test_validate_acceptance_uses_model_receipt_task_kind_for_unlocked_route():
         "envelope_task_kind": "visible_response",
         "selected_model": "qwen3.6:27b",
         "selected_worker": "spark-151",
+        "target_worker": "spark-151",
+        "target_worker_mode": "explicit",
+        "gateway_selected_worker": "spark-151",
         "observed_worker": "spark-151",
         "observed_worker_source": "gateway_response",
         "request_id": "req-auto",
