@@ -80,6 +80,19 @@ def _metadata_value(metadata: dict, *keys: str) -> str:
     return ""
 
 
+def _flag(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+        "enabled",
+        "required",
+    }
+
+
 def _job_id_from_invocation_id(invocation_id: str) -> str:
     parts = str(invocation_id or "").strip().split(":")
     if len(parts) >= 3 and parts[0] == "worker" and parts[1].strip():
@@ -116,6 +129,51 @@ def _correlation_headers(request: ModelRequest, *, task_id: str) -> dict[str, st
     if invocation_id:
         headers["X-Norllama-Invocation-Id"] = invocation_id
     return headers
+
+
+def _route_authority_headers(
+    request: ModelRequest,
+    route: NorllamaRoute,
+    authorization: dict,
+) -> dict[str, str]:
+    metadata = request.metadata if isinstance(request.metadata, dict) else {}
+    route_policy = (
+        metadata.get("route_policy")
+        if isinstance(metadata.get("route_policy"), dict)
+        else {}
+    )
+    selection = (
+        route.attribution.get("model_selection")
+        if isinstance(route.attribution, dict)
+        and isinstance(route.attribution.get("model_selection"), dict)
+        else {}
+    )
+    manual_route_lock = (
+        _flag(metadata.get("route_lock"))
+        or _flag(metadata.get("strict_route"))
+        or _flag(route_policy.get("route_lock"))
+        or _flag(route_policy.get("strict_route"))
+        or _flag(route_policy.get("operator_model_override"))
+        or str(selection.get("source") or "").strip() == "explicit_route_lock"
+    )
+    if "production_route_eligible" in selection:
+        request_eligible = bool(
+            selection.get("production_route_eligible")
+            and authorization.get("production_route_eligible")
+        )
+    else:
+        request_eligible = bool(authorization.get("production_route_eligible"))
+    route_authority = str(selection.get("source") or "").strip()
+    if manual_route_lock:
+        route_authority = route_authority or "explicit_operator_lock"
+    return {
+        "X-Norman-Route-Lock": "1" if manual_route_lock else "0",
+        "X-Norman-Route-Authority": route_authority or "route_task",
+        "X-Norman-Request-Production-Eligible": "1" if request_eligible else "0",
+        "X-Norman-Policy-Production-Routes-Allowed": "1"
+        if authorization.get("production_route_eligible")
+        else "0",
+    }
 
 
 def _lower_headers(value: object) -> dict[str, str]:
@@ -289,7 +347,10 @@ class NorllamaModelAdapter:
             api_key=str(settings.llm_offline_api_key or ""),
             max_tokens=request.budget.max_output_tokens,
             timeout_seconds=_model_timeout_seconds(request),
-            correlation_headers=_correlation_headers(request, task_id=task.task_id),
+            correlation_headers={
+                **_correlation_headers(request, task_id=task.task_id),
+                **_route_authority_headers(request, route, authorization),
+            },
         )
         route = with_response_attribution(route, payload)
         usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}

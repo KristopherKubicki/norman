@@ -177,6 +177,43 @@ def test_receipt_from_norman_api_poll_waits_for_terminal_proof(monkeypatch):
     assert calls[0] == ("turn-running", "http://norman/api/v1", "token", 3.0)
 
 
+def test_receipt_from_norman_api_poll_records_transient_404(monkeypatch):
+    calls = []
+    receipts = [
+        {
+            "available": False,
+            "error": "runtime API status 404: Console runtime job not found",
+        },
+        {
+            "available": True,
+            "job_id": "turn-visible",
+            "job_status": "done",
+        },
+    ]
+
+    def fake_receipt(job_id, *, api_base, token, timeout):
+        calls.append((job_id, api_base, token, timeout))
+        return receipts.pop(0)
+
+    monkeypatch.setattr(acceptance, "receipt_from_norman_api", fake_receipt)
+    monkeypatch.setattr(acceptance.time, "sleep", lambda _seconds: None)
+
+    receipt = acceptance.receipt_from_norman_api_poll(
+        "turn-visible",
+        api_base="http://norman/api/v1",
+        token="token",
+        timeout=3.0,
+        poll_attempts=4,
+        poll_interval=0.1,
+    )
+
+    assert receipt["job_status"] == "done"
+    assert receipt["transient_404_count"] == 1
+    assert receipt["poll_attempts_used"] == 2
+    assert receipt["poll_history"][0]["available"] is False
+    assert len(calls) == 2
+
+
 def test_auto_route_local_scenario_is_unlocked():
     target = acceptance.default_targets()["norman"]
     scenario = acceptance.default_scenarios()["auto_route_local"]

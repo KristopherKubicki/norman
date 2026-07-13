@@ -1282,6 +1282,8 @@ def receipt_from_norman_api_poll(
     attempts = max(1, int(poll_attempts or 1))
     interval = max(0.1, float(poll_interval or 1.0))
     latest: dict[str, Any] = {"available": False, "error": "not polled"}
+    history: list[dict[str, Any]] = []
+    transient_404_count = 0
     for attempt in range(attempts):
         latest = receipt_from_norman_api(
             job_id,
@@ -1289,10 +1291,29 @@ def receipt_from_norman_api_poll(
             token=token,
             timeout=timeout,
         )
+        error_text = str(latest.get("error") or "")
+        if "runtime API status 404" in error_text:
+            transient_404_count += 1
+        history.append(
+            {
+                "attempt": attempt + 1,
+                "available": bool(latest.get("available")),
+                "job_status": str(latest.get("job_status") or ""),
+                "error": error_text[:240],
+            }
+        )
         if _receipt_is_terminal_or_provable(latest):
+            latest["poll_attempts_used"] = attempt + 1
+            latest["transient_404_count"] = transient_404_count
+            latest["poll_history"] = history
             return latest
         if attempt < attempts - 1:
             time.sleep(interval)
+    latest["poll_attempts_used"] = attempts
+    latest["transient_404_count"] = transient_404_count
+    latest["poll_history"] = history
+    if transient_404_count:
+        latest["receipt_visibility"] = "pending_or_wrong_scope"
     return latest
 
 
@@ -1683,6 +1704,13 @@ def validate_acceptance(
         "probe_error": str(probe.get("error") or "")[:500],
         "before_job_id": str(probe.get("before_job_id") or ""),
         "ask_job_id": str(probe.get("ask_job_id") or ""),
+        "ask_receipt_visibility": str(
+            _dict(probe.get("ask")).get("receipt_visibility") or ""
+        ),
+        "ask_receipt_url": str(_dict(probe.get("ask")).get("receipt_url") or ""),
+        "ask_receipt_visibility_detail": _dict(
+            _dict(probe.get("ask")).get("receipt_visibility_detail")
+        ),
         "status_job_id": str(
             _status_snapshot(probe).get("last_console_runtime_job_id")
             or _status_snapshot(probe).get("running_console_runtime_job_id")

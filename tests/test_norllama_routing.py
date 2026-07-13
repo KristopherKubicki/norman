@@ -161,6 +161,22 @@ def test_route_lock_explicit_model_overrides_warm_policy(monkeypatch):
 
     assert route.model == "qwen3.6:27b"
     assert route.attribution["model_selection"]["source"] == "explicit_route_lock"
+    receipt = build_task_receipt(
+        request,
+        route,
+        status="completed",
+        output={
+            "text": "ok",
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "target_model": route.model,
+            "effective_runtime_model": route.model,
+            "model": route.model,
+        },
+    ).as_dict()["metadata"]["route_receipt"]
+    assert receipt["manual_route_lock"] is True
+    assert receipt["request_production_route_eligible"] is False
+    assert receipt["production_route_eligible"] is False
 
 
 def test_cloud_planner_requires_explicit_cloud_proxy():

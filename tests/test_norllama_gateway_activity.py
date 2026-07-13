@@ -126,6 +126,7 @@ def test_gateway_manual_degraded_activity_keeps_policy_receipt_fields(
     assert handler._activity_extra["policy_lifecycle_state"] == "expired_blocked"
     assert handler._activity_extra["manual_degraded_authorized"] is True
     assert handler._activity_extra["manual_degraded_authorization_id"] == "manual-test"
+    assert handler._activity_extra["policy_production_routes_allowed"] is False
     assert handler._activity_extra["production_route_eligible"] is False
     assert handler._activity_extra["mode"] == "native_qwen_bridge"
     assert handler._activity_extra["model"] == "qwen3.6:27b"

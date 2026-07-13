@@ -788,6 +788,24 @@ def _local_route(
         policy=policy,
         cloud_proxy=False,
     )
+    model_target_worker = _clean(
+        model_selection.get("target_worker")
+        or model_selection.get("worker_id")
+        or model_selection.get("selected_worker_id")
+    )
+    if model_target_worker and not _clean(attribution.get("target_worker_id")):
+        target_worker = _worker_by_id(model_target_worker)
+        attribution["target_worker_id"] = _clean(
+            target_worker.get("id") or model_target_worker
+        )
+        attribution["worker_id"] = attribution["target_worker_id"]
+        attribution["worker_name"] = _clean(target_worker.get("name"))
+        attribution["worker_role"] = _clean(target_worker.get("role"))
+        attribution["worker_endpoint"] = _clean(target_worker.get("base_url"))
+        attribution["worker_memory_gb"] = target_worker.get("memory_gb")
+        attribution["selection_source"] = "policy_worker"
+        attribution["routing_scope"] = "policy_worker"
+        attribution["exact_worker"] = True
     attribution["model_selection"] = model_selection
     return NorllamaRoute(
         lane=_route_policy_value(policy, "lane", "preferred_lane")
@@ -1242,6 +1260,31 @@ def route_receipt_payload(
         policy_authorization.get("manual_degraded")
         or policy_authorization.get("manual_degraded_authorized")
     )
+    policy_production_routes_allowed = bool(
+        policy_authorization.get("production_route_eligible")
+    )
+    selection_production_route_eligible = (
+        quality.get("production_route_eligible")
+        if "production_route_eligible" in quality
+        else selection.get("production_route_eligible")
+        if "production_route_eligible" in selection
+        else True
+    )
+    request_production_route_eligible = bool(
+        selection_production_route_eligible and policy_production_routes_allowed
+    )
+    manual_route_lock = (
+        any(
+            _flag(source.get(key))
+            for source in (request.route_policy, request.metadata, metadata)
+            if isinstance(source, dict)
+            for key in ("route_lock", "strict_route", "operator_model_override")
+        )
+        or _clean(selection.get("source")) == "explicit_route_lock"
+    )
+    route_authority = _clean(selection.get("source")) or (
+        "explicit_operator_lock" if manual_route_lock else "route_task"
+    )
 
     receipt_payload = {
         "schema": "norman.norllama.route-receipt.v1",
@@ -1307,6 +1350,10 @@ def route_receipt_payload(
             policy_authorization.get("default_route_allowed")
             or policy_validation.get("default_route_allowed")
         ),
+        "policy_production_routes_allowed": policy_production_routes_allowed,
+        "request_production_route_eligible": request_production_route_eligible,
+        "manual_route_lock": manual_route_lock,
+        "route_authority": route_authority,
         "policy_issued_at": _clean(
             policy_authorization.get("policy_issued_at")
             or policy_artifact.get("issued_at")
@@ -1378,16 +1425,7 @@ def route_receipt_payload(
             quality.get("production_route_requires_capability_gate")
             or selection.get("production_route_requires_capability_gate")
         ),
-        "production_route_eligible": bool(
-            (
-                quality.get("production_route_eligible")
-                if "production_route_eligible" in quality
-                else selection.get("production_route_eligible")
-                if "production_route_eligible" in selection
-                else True
-            )
-            and policy_authorization.get("production_route_eligible")
-        ),
+        "production_route_eligible": request_production_route_eligible,
         "capability_route_state": _clean(
             quality.get("capability_route_state")
             or selection.get("capability_route_state")

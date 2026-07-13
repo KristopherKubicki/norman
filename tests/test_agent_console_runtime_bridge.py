@@ -149,6 +149,26 @@ def test_console_runtime_bridge_posts_audit_events(monkeypatch, tmp_path):
     assert payload["payload"]["audit_event"]["payload"]["message_preview"] == "ls -la"
 
 
+def test_console_runtime_job_visibility_reports_exact_job(monkeypatch, tmp_path):
+    monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_API_BASE", "http://norman.local/api/v1")
+    monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_TOKEN", "runtime-token")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    def fake_json_request(method, path, payload=None, timeout_seconds=None):
+        assert method == "GET"
+        assert path == "/console-runtime/jobs/turn-visible"
+        return {"job": {"job_id": "turn-visible", "status": "running"}}
+
+    monkeypatch.setattr(module, "_console_runtime_json_request", fake_json_request)
+
+    visibility = module.console_runtime_job_visibility("turn-visible")
+
+    assert visibility["state"] == "visible"
+    assert visibility["job_id"] == "turn-visible"
+    assert visibility["receipt_url"].endswith("/console-runtime/jobs/turn-visible")
+    assert visibility["error"] == ""
+
+
 def test_console_runtime_token_can_resolve_from_norman_keys(monkeypatch, tmp_path):
     monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_API_BASE", "http://norman.local/api/v1")
     monkeypatch.delenv("NORMAN_CONSOLE_RUNTIME_TOKEN", raising=False)

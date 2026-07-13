@@ -14306,6 +14306,60 @@ def _record_console_runtime_error(exc: BaseException) -> None:
     CONSOLE_RUNTIME_LAST_ERROR_AT = time.time()
 
 
+def console_runtime_job_visibility(job_id: str) -> dict[str, Any]:
+    clean_job_id = str(job_id or "").strip()
+    if not clean_job_id or not console_runtime_bridge_enabled():
+        return {
+            "state": "unavailable",
+            "job_id": clean_job_id,
+            "receipt_url": "",
+            "error": "console runtime bridge disabled or missing job id",
+        }
+    receipt_url = f"/api/v1/console-runtime/jobs/{quote(clean_job_id, safe='')}"
+    try:
+        payload = _console_runtime_json_request(
+            "GET",
+            f"/console-runtime/jobs/{quote(clean_job_id, safe='')}",
+            timeout_seconds=CONSOLE_RUNTIME_JOB_CREATE_TIMEOUT_SECONDS,
+        )
+    except urllib_error.HTTPError as exc:
+        if exc.code == HTTPStatus.NOT_FOUND:
+            return {
+                "state": "pending",
+                "job_id": clean_job_id,
+                "receipt_url": receipt_url,
+                "error": "runtime job is accepted but not visible yet",
+            }
+        _record_console_runtime_error(exc)
+        return {
+            "state": "error",
+            "job_id": clean_job_id,
+            "receipt_url": receipt_url,
+            "error": summarize_text(str(exc), 300),
+        }
+    except (urllib_error.URLError, TimeoutError, OSError) as exc:
+        _record_console_runtime_error(exc)
+        return {
+            "state": "error",
+            "job_id": clean_job_id,
+            "receipt_url": receipt_url,
+            "error": summarize_text(str(exc), 300),
+        }
+    returned_job = ""
+    job_payload = payload.get("job") if isinstance(payload.get("job"), dict) else {}
+    if isinstance(job_payload, dict):
+        returned_job = str(job_payload.get("job_id") or "").strip()
+    return {
+        "state": "visible" if returned_job == clean_job_id else "pending",
+        "job_id": clean_job_id,
+        "receipt_url": receipt_url,
+        "returned_job_id": returned_job,
+        "error": ""
+        if returned_job == clean_job_id
+        else "runtime job payload did not match requested job",
+    }
+
+
 def _console_runtime_cache_fresh(
     cache: dict[str, Any],
     *,
@@ -37173,6 +37227,9 @@ class Handler(BaseHTTPRequestHandler):
                     or snapshot.get("last_console_runtime_job_id")
                     or ""
                 ).strip()
+                receipt_visibility = console_runtime_job_visibility(
+                    console_runtime_job_id
+                )
                 error_text = str(
                     snapshot.get("pressure_guard_error")
                     or "a web prompt is already running"
@@ -37186,6 +37243,9 @@ class Handler(BaseHTTPRequestHandler):
                         ),
                         "deduplicated": deduplicated_prompt,
                         "console_runtime_job_id": console_runtime_job_id,
+                        "receipt_visibility": receipt_visibility.get("state"),
+                        "receipt_url": receipt_visibility.get("receipt_url", ""),
+                        "receipt_visibility_detail": receipt_visibility,
                         "request_nonce": route_receipt_prompt_id(message),
                         "session": SESSION,
                         "error": "" if accepted else error_text,

@@ -4987,6 +4987,14 @@ class Handler(BaseHTTPRequestHandler):
             "content_length": int(content_length),
             "upstream": upstream,
             "attempts": attempts.split(",") if attempts else [],
+            "manual_route_lock": truthy(self.headers.get("X-Norman-Route-Lock", "")),
+            "route_authority": self.headers.get("X-Norman-Route-Authority", "").strip(),
+            "request_production_route_eligible": truthy(
+                self.headers.get("X-Norman-Request-Production-Eligible", "")
+            ),
+            "policy_production_routes_allowed": truthy(
+                self.headers.get("X-Norman-Policy-Production-Routes-Allowed", "")
+            ),
         }
         if upstream:
             record["observed_worker"] = self.app.host_alias(upstream)
@@ -7302,6 +7310,9 @@ class Handler(BaseHTTPRequestHandler):
                     ),
                     "policy_default_route_allowed": bool(
                         authorization.get("default_route_allowed")
+                    ),
+                    "policy_production_routes_allowed": bool(
+                        authorization.get("production_route_eligible")
                     ),
                     "production_route_eligible": bool(
                         authorization.get("production_route_eligible")
