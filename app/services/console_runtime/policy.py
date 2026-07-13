@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 from app.services.norllama.route_policy import (
     ROUTE_POLICY_VERSION,
     route_policy_contract,
+    route_policy_lifecycle,
 )
 from app.services.console_runtime.types import RouteDecision, RuntimeModeState
 
@@ -173,6 +174,7 @@ def with_local_first_catalog_defaults(
     policy.setdefault("route_policy_id", authority["policy_id"])
     policy.setdefault("route_policy_hash", authority["policy_hash"])
     policy.setdefault("policy_authority", authority["schema"])
+    policy.setdefault("route_policy_lifecycle", route_policy_lifecycle(authority))
     policy.setdefault("local_first", authority["local_first"])
     policy.setdefault("allow_cloud_proxy", authority["allow_cloud_proxy"])
     policy.setdefault("allow_cloud_tool_proxy", authority["allow_cloud_tool_proxy"])

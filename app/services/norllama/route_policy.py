@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timezone
 from typing import Any
 
 ROUTE_POLICY_SCHEMA = "norman.norllama.route-policy.v1"
 ROUTE_POLICY_VERSION = "2026.07.10.route-proof"
 ROUTE_POLICY_COMPILED_AT = "2026-07-10T00:00:00Z"
 ROUTE_POLICY_EXPIRES_AT = "2026-07-17T00:00:00Z"
+ROUTE_POLICY_EXPIRY_WARN_SECONDS = 72 * 60 * 60
+ROUTE_POLICY_EXPIRED_STATE = "expired_blocked"
 
 BENCHMARK_GATE_THRESHOLDS = {
     "smoke": 1,
@@ -89,6 +92,16 @@ ROUTE_POLICY_CLOUD_POLICY = {
     "perplexity_web_is_search_not_cloud_llm": True,
 }
 
+ROUTE_POLICY_LIFECYCLE_POLICY = {
+    "expiry_enforced": True,
+    "warn_before_seconds": ROUTE_POLICY_EXPIRY_WARN_SECONDS,
+    "expired_state": ROUTE_POLICY_EXPIRED_STATE,
+    "expired_default_route_allowed": False,
+    "expired_manual_degraded_allowed": True,
+    "refresh_required": True,
+    "refresh_source": "compiled_route_policy_artifact",
+}
+
 
 def _clean(value: Any) -> str:
     return str(value or "").strip()
@@ -163,6 +176,21 @@ def gate_rank(value: Any, *, capability: bool = False) -> int:
     return 0
 
 
+def parse_route_policy_timestamp(value: Any) -> datetime | None:
+    clean = _clean(value)
+    if not clean:
+        return None
+    if clean.endswith("Z"):
+        clean = f"{clean[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(clean)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def capability_gate_name(value: Any) -> str:
     if isinstance(value, dict):
         value = value.get("gate") or value.get("name")
@@ -223,6 +251,87 @@ def capability_route_state(
     return "capability_unproven"
 
 
+def route_policy_lifecycle(
+    policy: dict[str, Any] | None = None,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Return runtime lifecycle state for a compiled route-policy artifact."""
+
+    artifact = dict(policy or _route_policy_contract_base())
+    lifecycle_policy = (
+        artifact.get("lifecycle_policy")
+        if isinstance(artifact.get("lifecycle_policy"), dict)
+        else ROUTE_POLICY_LIFECYCLE_POLICY
+    )
+    expires_at = parse_route_policy_timestamp(artifact.get("expires_at"))
+    current_time = now or datetime.now(timezone.utc)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=timezone.utc)
+    current_time = current_time.astimezone(timezone.utc)
+    warn_before_seconds = _int(
+        lifecycle_policy.get("warn_before_seconds") or ROUTE_POLICY_EXPIRY_WARN_SECONDS
+    )
+    policy_id = _clean(artifact.get("policy_id"))
+    if not policy_id:
+        digest = route_policy_hash(artifact)
+        policy_id = (
+            f"{_clean(artifact.get('version')) or ROUTE_POLICY_VERSION}:{digest[:12]}"
+        )
+
+    if expires_at is None:
+        state = "refresh_failed"
+        seconds_to_expiry = None
+        severity = "critical"
+        default_route_allowed = False
+        degraded = True
+        reason = "invalid_or_missing_expires_at"
+    else:
+        seconds_to_expiry = int((expires_at - current_time).total_seconds())
+        if seconds_to_expiry <= 0:
+            state = _clean(lifecycle_policy.get("expired_state")) or "expired_blocked"
+            severity = "critical"
+            default_route_allowed = bool(
+                lifecycle_policy.get("expired_default_route_allowed")
+            )
+            degraded = True
+            reason = "policy_expired"
+        elif seconds_to_expiry <= warn_before_seconds:
+            state = "expiring_soon"
+            severity = "warning"
+            default_route_allowed = True
+            degraded = False
+            reason = "policy_near_expiry"
+        else:
+            state = "valid"
+            severity = "ok"
+            default_route_allowed = True
+            degraded = False
+            reason = "policy_valid"
+
+    return {
+        "schema": f"{ROUTE_POLICY_SCHEMA}.lifecycle",
+        "policy_version": _clean(artifact.get("version")) or ROUTE_POLICY_VERSION,
+        "policy_id": policy_id,
+        "policy_hash": _clean(artifact.get("policy_hash"))
+        or route_policy_hash(artifact),
+        "compiled_at": _clean(artifact.get("compiled_at")),
+        "expires_at": _clean(artifact.get("expires_at")),
+        "state": state,
+        "severity": severity,
+        "reason": reason,
+        "seconds_to_expiry": seconds_to_expiry,
+        "warn_before_seconds": warn_before_seconds,
+        "expiry_enforced": bool(lifecycle_policy.get("expiry_enforced", True)),
+        "default_route_allowed": default_route_allowed,
+        "manual_degraded_allowed": bool(
+            lifecycle_policy.get("expired_manual_degraded_allowed", True)
+        ),
+        "refresh_required": bool(lifecycle_policy.get("refresh_required", True)),
+        "degraded": degraded,
+    }
+
+
 def _route_policy_contract_base() -> dict[str, Any]:
     return {
         "schema": ROUTE_POLICY_SCHEMA,
@@ -259,6 +368,7 @@ def _route_policy_contract_base() -> dict[str, Any]:
         },
         "fallbacks": dict(ROUTE_POLICY_FALLBACKS),
         "cloud_policy": dict(ROUTE_POLICY_CLOUD_POLICY),
+        "lifecycle_policy": dict(ROUTE_POLICY_LIFECYCLE_POLICY),
         "emergency_overlays": {
             "allowed": True,
             "requires_expiration": True,

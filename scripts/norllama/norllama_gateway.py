@@ -29,6 +29,7 @@ try:
         capability_gate_promotion_authoritative,
         capability_route_state,
         route_policy_contract,
+        route_policy_lifecycle,
     )
 except Exception:  # pragma: no cover - deployed script fallback
     ROUTE_POLICY_VERSION = "2026.07.10.route-proof"
@@ -183,6 +184,15 @@ except Exception:  # pragma: no cover - deployed script fallback
                 "cloud_proxy_counts_as_cloud": True,
                 "perplexity_web_is_search_not_cloud_llm": True,
             },
+            "lifecycle_policy": {
+                "expiry_enforced": True,
+                "warn_before_seconds": 259200,
+                "expired_state": "expired_blocked",
+                "expired_default_route_allowed": False,
+                "expired_manual_degraded_allowed": True,
+                "refresh_required": True,
+                "refresh_source": "compiled_route_policy_artifact",
+            },
             "emergency_overlays": {
                 "allowed": True,
                 "requires_expiration": True,
@@ -193,6 +203,52 @@ except Exception:  # pragma: no cover - deployed script fallback
         policy["policy_hash"] = digest
         policy["policy_id"] = f"{ROUTE_POLICY_VERSION}:{digest[:12]}"
         return policy
+
+    def route_policy_lifecycle(
+        policy: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        artifact = policy or route_policy_contract()
+        expires_at = str(artifact.get("expires_at") or "")
+        now = datetime.now(timezone.utc)
+        if expires_at.endswith("Z"):
+            parseable = f"{expires_at[:-1]}+00:00"
+        else:
+            parseable = expires_at
+        try:
+            expires = datetime.fromisoformat(parseable).astimezone(timezone.utc)
+        except Exception:
+            expires = None
+        if expires is None:
+            state = "refresh_failed"
+            seconds_to_expiry = None
+            default_route_allowed = False
+        else:
+            seconds_to_expiry = int((expires - now).total_seconds())
+            if seconds_to_expiry <= 0:
+                state = "expired_blocked"
+                default_route_allowed = False
+            elif seconds_to_expiry <= 259200:
+                state = "expiring_soon"
+                default_route_allowed = True
+            else:
+                state = "valid"
+                default_route_allowed = True
+        return {
+            "schema": "norman.norllama.route-policy.v1.lifecycle",
+            "policy_version": str(artifact.get("version") or ROUTE_POLICY_VERSION),
+            "policy_id": str(artifact.get("policy_id") or ""),
+            "policy_hash": str(artifact.get("policy_hash") or ""),
+            "compiled_at": str(artifact.get("compiled_at") or ""),
+            "expires_at": expires_at,
+            "state": state,
+            "seconds_to_expiry": seconds_to_expiry,
+            "warn_before_seconds": 259200,
+            "expiry_enforced": True,
+            "default_route_allowed": default_route_allowed,
+            "manual_degraded_allowed": True,
+            "refresh_required": True,
+            "degraded": not default_route_allowed,
+        }
 
 
 DEFAULT_BIND = "127.0.0.1"
@@ -3531,6 +3587,7 @@ class App:
         else:
             route_posture = "blocked"
         policy_contract = route_policy_contract()
+        policy_lifecycle = route_policy_lifecycle(policy_contract)
         return {
             "schema": "norllama.warm-policy.v1",
             "service": "norllama",
@@ -3541,8 +3598,15 @@ class App:
             "policy_id": policy_contract.get("policy_id", ""),
             "policy_hash": policy_contract.get("policy_hash", ""),
             "route_policy": policy_contract,
-            "status": "ok" if contracts else "missing_benchmark_packet",
-            "route_posture": route_posture,
+            "policy_lifecycle": policy_lifecycle,
+            "status": "route_policy_expired"
+            if not policy_lifecycle.get("default_route_allowed")
+            else "ok"
+            if contracts
+            else "missing_benchmark_packet",
+            "route_posture": "blocked"
+            if not policy_lifecycle.get("default_route_allowed")
+            else route_posture,
             "residency_posture": "warm"
             if active_models
             else "warming"
@@ -3667,6 +3731,7 @@ class App:
                 }
             )
         policy_contract = route_policy_contract()
+        policy_lifecycle = route_policy_lifecycle(policy_contract)
         return {
             "service": "norllama",
             "gateway": gateway_identity(),
@@ -3681,6 +3746,7 @@ class App:
                 "policy_id": policy_contract.get("policy_id", ""),
                 "policy_hash": policy_contract.get("policy_hash", ""),
                 "route_policy": policy_contract,
+                "policy_lifecycle": policy_lifecycle,
                 "mode": "qwen_first_local",
                 "frontdoor": "https://llm.home.arpa",
                 "preferred_chat_model": QWEN36_ROUTER_MODEL,

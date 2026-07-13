@@ -26,6 +26,7 @@ from app.services.norllama.route_policy import (
     capability_route_state,
     restrict_lanes_for_model,
     route_policy_contract,
+    route_policy_lifecycle,
 )
 from app.services.norllama.route_outcomes import (
     local_route_cooldown,
@@ -2068,6 +2069,7 @@ def build_warm_policy(
     else:
         route_posture = "fallback_or_cloud_gate"
     policy_contract = route_policy_contract()
+    policy_lifecycle = route_policy_lifecycle(policy_contract)
     payload = {
         "schema": "norman.norllama.warm-policy.v1",
         "policy_authority": policy_contract["schema"],
@@ -2075,6 +2077,7 @@ def build_warm_policy(
         "policy_id": policy_contract["policy_id"],
         "policy_hash": policy_contract["policy_hash"],
         "route_policy": policy_contract,
+        "policy_lifecycle": policy_lifecycle,
         "benchmark_gate_policy": {
             "smoke": "accepted_count >= 1; not promotion-authoritative",
             "staging": "accepted_count >= 3; routeable with caution",
@@ -2085,8 +2088,14 @@ def build_warm_policy(
             "historical": "legacy or countless packet row; not promotion-authoritative",
         },
         "enabled": enabled,
-        "status": "ok" if available_models else "mesh_unavailable",
-        "route_posture": route_posture,
+        "status": "route_policy_expired"
+        if not policy_lifecycle["default_route_allowed"]
+        else "ok"
+        if available_models
+        else "mesh_unavailable",
+        "route_posture": "blocked"
+        if not policy_lifecycle["default_route_allowed"]
+        else route_posture,
         "residency_posture": "warm"
         if residency["warm"]
         else "warming"
