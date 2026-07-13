@@ -476,19 +476,60 @@ def refresh_route_policy_artifact(
     *,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    current = load_route_policy_artifact(path, now=now)
+    refresh_started = (now or _now()).astimezone(timezone.utc)
+    current = load_route_policy_artifact(path, now=refresh_started)
     current_artifact = (
         current.get("artifact") if isinstance(current.get("artifact"), dict) else {}
     )
+    current_validation = (
+        current.get("validation") if isinstance(current.get("validation"), dict) else {}
+    )
     generation = int(current_artifact.get("refresh_generation") or 0) + 1
-    artifact = generate_route_policy_artifact(now=now, generation=generation)
-    write_result = write_route_policy_artifact(artifact, path)
+    artifact = generate_route_policy_artifact(
+        now=refresh_started,
+        generation=generation,
+    )
+    try:
+        write_result = write_route_policy_artifact(artifact, path)
+    except Exception as exc:
+        preserved = load_route_policy_artifact(path, now=refresh_started)
+        preserved_artifact = (
+            preserved.get("artifact")
+            if isinstance(preserved.get("artifact"), dict)
+            else current_artifact
+        )
+        preserved_validation = (
+            preserved.get("validation")
+            if isinstance(preserved.get("validation"), dict)
+            else current_validation
+        )
+        preserved_expiry = _coerce_datetime(preserved_artifact.get("expires_at"))
+        return {
+            "schema": "norman.norllama.route-policy-refresh.v1",
+            "active_generation": int(preserved_artifact.get("refresh_generation") or 0),
+            "previous_generation": int(current_artifact.get("refresh_generation") or 0),
+            "last_refresh_attempt": _iso(refresh_started),
+            "last_refresh_success": "",
+            "last_refresh_error": f"{type(exc).__name__}: {exc}",
+            "next_refresh_at": _iso(
+                (preserved_expiry or refresh_started)
+                - timedelta(seconds=EXPIRING_SOON_SECONDS)
+            ),
+            "write": {
+                "schema": "norman.norllama.route-policy-write.v1",
+                "ok": False,
+                "path": str(_artifact_path(path)),
+                "error": f"{type(exc).__name__}: {exc}",
+            },
+            "policy": preserved_artifact,
+            "validation": preserved_validation,
+        }
     return {
         "schema": "norman.norllama.route-policy-refresh.v1",
         "active_generation": artifact.get("refresh_generation"),
         "previous_generation": int(current_artifact.get("refresh_generation") or 0),
-        "last_refresh_attempt": _iso(now or _now()),
-        "last_refresh_success": _iso(now or _now()),
+        "last_refresh_attempt": _iso(refresh_started),
+        "last_refresh_success": _iso(refresh_started),
         "last_refresh_error": "",
         "next_refresh_at": _iso(
             (_coerce_datetime(artifact.get("expires_at")) or _now())
@@ -496,6 +537,7 @@ def refresh_route_policy_artifact(
         ),
         "write": write_result,
         "policy": artifact,
+        "validation": write_result.get("validation", {}),
     }
 
 

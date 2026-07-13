@@ -241,6 +241,41 @@ def test_policy_refresh_atomically_restores_readiness(monkeypatch, tmp_path):
     assert loaded["validation"]["default_route_allowed"] is True
 
 
+def test_policy_refresh_failure_preserves_last_valid_policy_until_expiry(
+    monkeypatch, tmp_path
+):
+    path, artifact = _install_policy(monkeypatch, tmp_path, raw=False)
+
+    from app.services.norllama import route_policy_artifact as artifact_module
+
+    def fail_write(*_args, **_kwargs):
+        raise OSError("simulated write failure")
+
+    monkeypatch.setattr(artifact_module, "write_route_policy_artifact", fail_write)
+
+    refresh = refresh_route_policy_artifact(path)
+    loaded = load_route_policy_artifact(path)
+    authorization = authorize_route_under_policy(
+        policy_artifact=loaded["artifact"],
+        execution_mode="route_task",
+        requested_provider="norllama",
+        requested_model="qwen3.6:27b",
+        requested_lane="coder",
+    )
+
+    assert refresh["active_generation"] == artifact["refresh_generation"]
+    assert refresh["previous_generation"] == artifact["refresh_generation"]
+    assert refresh["last_refresh_success"] == ""
+    assert "simulated write failure" in refresh["last_refresh_error"]
+    assert refresh["write"]["ok"] is False
+    assert refresh["policy"]["policy_id"] == artifact["policy_id"]
+    assert loaded["artifact"]["policy_id"] == artifact["policy_id"]
+    assert loaded["artifact"]["policy_hash"] == artifact["policy_hash"]
+    assert loaded["validation"]["state"] == "valid"
+    assert authorization["allowed"] is True
+    assert authorization["production_route_eligible"] is True
+
+
 def test_manual_degraded_requires_valid_authorization(monkeypatch, tmp_path):
     _install_policy(
         monkeypatch,
