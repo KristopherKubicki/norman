@@ -22,6 +22,11 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+if not os.getenv("NORMAN_NORLLAMA_ROUTE_POLICY_PATH"):
+    local_policy_artifact = Path(__file__).with_name("route_policy.json")
+    if local_policy_artifact.exists():
+        os.environ["NORMAN_NORLLAMA_ROUTE_POLICY_PATH"] = str(local_policy_artifact)
+
 try:
     from app.services.norllama.route_policy import (
         ROUTE_POLICY_VERSION,
