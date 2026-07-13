@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import sys
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -80,6 +82,53 @@ def test_gateway_activity_keeps_execution_history_separate_from_monitoring(monke
     assert monitoring["activity_class"] == "monitoring"
     assert monitoring["count"] == 2
     assert all_activity["count"] == 2
+
+
+def test_gateway_manual_degraded_activity_keeps_policy_receipt_fields(
+    monkeypatch, tmp_path
+):
+    now = datetime.now(timezone.utc)
+    artifact = generate_route_policy_artifact(
+        now=now - timedelta(days=2),
+        expires_at=now - timedelta(days=1),
+        generation=808,
+    )
+    policy_path = tmp_path / "expired-route-policy.json"
+    policy_path.write_text(json.dumps(artifact, sort_keys=True))
+    monkeypatch.setenv(ROUTE_POLICY_ARTIFACT_PATH_ENV, str(policy_path))
+    module = load_gateway_module()
+    handler = object.__new__(module.Handler)
+    handler._activity_extra = {}
+    manual = {
+        "manual_degraded_authorized": True,
+        "authorization_id": "manual-test",
+        "authorized_by": "operator",
+        "authorization_reason": "unit test",
+        "authorization_created_at": now.isoformat().replace("+00:00", "Z"),
+        "authorization_expires_at": (now + timedelta(hours=1))
+        .isoformat()
+        .replace("+00:00", "Z"),
+        "cloud_allowed": False,
+    }
+    body = json.dumps({"manual_degraded_authorization": manual}).encode("utf-8")
+
+    assert handler.enforce_policy_for_request("/v1/chat/completions", body) is True
+    handler.merge_activity_extra(
+        {
+            "mode": "native_qwen_bridge",
+            "model": "qwen3.6:27b",
+            "output_shape": "complete",
+        }
+    )
+
+    assert handler._activity_extra["policy_id"] == artifact["policy_id"]
+    assert handler._activity_extra["policy_hash"] == artifact["policy_hash"]
+    assert handler._activity_extra["policy_lifecycle_state"] == "expired_blocked"
+    assert handler._activity_extra["manual_degraded_authorized"] is True
+    assert handler._activity_extra["manual_degraded_authorization_id"] == "manual-test"
+    assert handler._activity_extra["production_route_eligible"] is False
+    assert handler._activity_extra["mode"] == "native_qwen_bridge"
+    assert handler._activity_extra["model"] == "qwen3.6:27b"
 
 
 def test_gateway_live_policy_override_requires_expiration(monkeypatch):

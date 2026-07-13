@@ -4947,6 +4947,11 @@ class Handler(BaseHTTPRequestHandler):
             outgoing["X-Norllama-Via"] = ",".join(unique_preserve(chain))
         return outgoing
 
+    def merge_activity_extra(self, values: dict[str, object]) -> None:
+        current = dict(getattr(self, "_activity_extra", {}) or {})
+        current.update(values)
+        self._activity_extra = current
+
     def emit_request_log(
         self,
         *,
@@ -6131,14 +6136,16 @@ class Handler(BaseHTTPRequestHandler):
                     priority=getattr(self, "_priority", "normal"),
                     request_id=getattr(self, "_request_id", ""),
                 )
-                self._activity_extra = {
-                    "mode": "prefetch_submit",
-                    "model": model,
-                    "prefetch_upstream": peer_base,
-                    "prefetch_job_id": str(job.get("job_id") or ""),
-                    "prefetch_job_status": str(job.get("status") or ""),
-                    **({"prefetch_timeout_s": timeout_s} if timeout_s else {}),
-                }
+                self.merge_activity_extra(
+                    {
+                        "mode": "prefetch_submit",
+                        "model": model,
+                        "prefetch_upstream": peer_base,
+                        "prefetch_job_id": str(job.get("job_id") or ""),
+                        "prefetch_job_status": str(job.get("status") or ""),
+                        **({"prefetch_timeout_s": timeout_s} if timeout_s else {}),
+                    }
+                )
                 self.send_json(
                     HTTPStatus.ACCEPTED,
                     {
@@ -6200,14 +6207,16 @@ class Handler(BaseHTTPRequestHandler):
             priority=getattr(self, "_priority", "normal"),
             request_id=getattr(self, "_request_id", ""),
         )
-        self._activity_extra = {
-            "mode": "prefetch_submit",
-            "model": model,
-            "prefetch_upstream": base,
-            "prefetch_job_id": str(job.get("job_id") or ""),
-            "prefetch_job_status": str(job.get("status") or ""),
-            **({"prefetch_timeout_s": timeout_s} if timeout_s else {}),
-        }
+        self.merge_activity_extra(
+            {
+                "mode": "prefetch_submit",
+                "model": model,
+                "prefetch_upstream": base,
+                "prefetch_job_id": str(job.get("job_id") or ""),
+                "prefetch_job_status": str(job.get("status") or ""),
+                **({"prefetch_timeout_s": timeout_s} if timeout_s else {}),
+            }
+        )
         self.send_json(
             HTTPStatus.ACCEPTED,
             {
@@ -6291,12 +6300,14 @@ class Handler(BaseHTTPRequestHandler):
                     **({"upstream": base} if self.app.expose_upstream_details else {}),
                 }
             )
-        self._activity_extra = {
-            "mode": "evict",
-            "model": model,
-            "evict_hosts": [item["upstream"] for item in results],
-            **({"evict_timeout_s": timeout_s} if timeout_s else {}),
-        }
+        self.merge_activity_extra(
+            {
+                "mode": "evict",
+                "model": model,
+                "evict_hosts": [item["upstream"] for item in results],
+                **({"evict_timeout_s": timeout_s} if timeout_s else {}),
+            }
+        )
         self.send_json(
             worst_status,
             {
@@ -6446,13 +6457,15 @@ class Handler(BaseHTTPRequestHandler):
             response = ollama_chat_payload_to_openai(upstream_payload, model=model)
             response["norllama"]["upstream"] = base
             response["norllama"]["attempts"] = list(attempted)
-            self._activity_extra = {
-                "mode": "native_qwen_bridge",
-                "model": model,
-                "think_disabled": True,
-                "upstream_path": "/api/chat",
-                "output_shape": response["norllama"].get("output_shape"),
-            }
+            self.merge_activity_extra(
+                {
+                    "mode": "native_qwen_bridge",
+                    "model": model,
+                    "think_disabled": True,
+                    "upstream_path": "/api/chat",
+                    "output_shape": response["norllama"].get("output_shape"),
+                }
+            )
             self.send_json(
                 HTTPStatus.OK,
                 response,
@@ -6734,7 +6747,7 @@ class Handler(BaseHTTPRequestHandler):
                         )
                 except Exception:
                     pass
-            self._activity_extra = activity_extra
+            self.merge_activity_extra(activity_extra)
             self.send_upstream(
                 result[0],
                 result[1],
@@ -7275,14 +7288,38 @@ class Handler(BaseHTTPRequestHandler):
     def enforce_policy_for_request(self, path: str, body: bytes) -> bool:
         authorization = self.policy_authorization_for_request(path, body)
         if authorization.get("allowed"):
-            self._activity_extra = {
-                **dict(getattr(self, "_activity_extra", {}) or {}),
-                "policy_id": str(authorization.get("policy_id") or ""),
-                "policy_hash": str(authorization.get("policy_hash") or ""),
-                "policy_lifecycle_state": str(
-                    authorization.get("lifecycle_state") or ""
-                ),
-            }
+            manual = authorization.get("manual_degraded_authorization")
+            manual_authorization = manual if isinstance(manual, dict) else {}
+            self.merge_activity_extra(
+                {
+                    "policy_id": str(authorization.get("policy_id") or ""),
+                    "policy_hash": str(authorization.get("policy_hash") or ""),
+                    "policy_lifecycle_state": str(
+                        authorization.get("lifecycle_state") or ""
+                    ),
+                    "policy_integrity_valid": bool(
+                        authorization.get("integrity_valid")
+                    ),
+                    "policy_default_route_allowed": bool(
+                        authorization.get("default_route_allowed")
+                    ),
+                    "production_route_eligible": bool(
+                        authorization.get("production_route_eligible")
+                    ),
+                    "manual_degraded_authorized": bool(
+                        authorization.get("manual_degraded_authorized")
+                    ),
+                    "manual_degraded_authorization_id": str(
+                        manual_authorization.get("authorization_id") or ""
+                    ),
+                    "manual_degraded_authorized_by": str(
+                        manual_authorization.get("authorized_by") or ""
+                    ),
+                    "manual_degraded_authorization_expires_at": str(
+                        manual_authorization.get("authorization_expires_at") or ""
+                    ),
+                }
+            )
             return True
         self.send_json(
             HTTPStatus.SERVICE_UNAVAILABLE,
