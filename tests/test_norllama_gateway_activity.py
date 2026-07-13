@@ -1,13 +1,25 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
 
+from app.services.norllama.route_policy_artifact import (
+    ROUTE_POLICY_ARTIFACT_PATH_ENV,
+    generate_route_policy_artifact,
+    write_route_policy_artifact,
+)
+
 
 def load_gateway_module():
+    if not os.environ.get(ROUTE_POLICY_ARTIFACT_PATH_ENV):
+        policy_path = Path(tempfile.gettempdir()) / "norman-test-route-policy.json"
+        write_route_policy_artifact(generate_route_policy_artifact(), policy_path)
+        os.environ[ROUTE_POLICY_ARTIFACT_PATH_ENV] = str(policy_path)
     script = (
         Path(__file__).resolve().parents[1]
         / "scripts"

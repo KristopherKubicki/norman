@@ -10,6 +10,10 @@ from app.services.norllama.route_policy import (
     route_policy_contract,
     route_policy_lifecycle,
 )
+from app.services.norllama.route_policy_artifact import (
+    AUTHORITY_FIELD_NAMES,
+    authorize_route_under_policy,
+)
 from app.services.console_runtime.types import RouteDecision, RuntimeModeState
 
 
@@ -168,26 +172,47 @@ def with_local_first_catalog_defaults(
     models before any cloud escalation path is considered.
     """
 
-    policy = dict(route_policy or {})
+    incoming = dict(route_policy or {})
+    operator_preferences = {
+        key: value
+        for key, value in incoming.items()
+        if key not in AUTHORITY_FIELD_NAMES
+    }
+    policy = dict(incoming)
     authority = route_policy_contract()
-    policy.setdefault("route_policy_version", ROUTE_POLICY_VERSION)
-    policy.setdefault("route_policy_id", authority["policy_id"])
-    policy.setdefault("route_policy_hash", authority["policy_hash"])
-    policy.setdefault("policy_authority", authority["schema"])
-    policy.setdefault("route_policy_lifecycle", route_policy_lifecycle(authority))
-    policy.setdefault("local_first", authority["local_first"])
-    policy.setdefault("allow_cloud_proxy", authority["allow_cloud_proxy"])
-    policy.setdefault("allow_cloud_tool_proxy", authority["allow_cloud_tool_proxy"])
-    policy.setdefault("escalation_policy", authority["escalation_policy"])
-    policy.setdefault("cost_posture", authority["cost_posture"])
-    policy.setdefault("planner", authority["planner"])
-    policy.setdefault("model_proxy", authority["model_proxy"])
-    policy.setdefault("route_policy_artifact", authority)
-    policy.setdefault("benchmark_gate_policy", authority["benchmark_gates"])
-    policy.setdefault("placement_policy", authority["placement"])
-    policy.setdefault("residency_policy", authority["residency"])
-    policy.setdefault("fallback_policy", authority["fallbacks"])
-    policy.setdefault("cloud_policy", authority["cloud_policy"])
+    lifecycle = route_policy_lifecycle(authority)
+    policy["operator_route_preferences"] = operator_preferences
+    policy["server_route_authority"] = {
+        "policy_id": authority["policy_id"],
+        "policy_hash": authority["policy_hash"],
+        "lifecycle_state": lifecycle["state"],
+        "integrity_valid": bool(lifecycle.get("integrity_valid")),
+        "default_route_allowed": bool(lifecycle.get("default_route_allowed")),
+    }
+    policy["route_policy_version"] = ROUTE_POLICY_VERSION
+    policy["route_policy_id"] = authority["policy_id"]
+    policy["route_policy_hash"] = authority["policy_hash"]
+    policy["policy_authority"] = authority["schema"]
+    policy["route_policy_lifecycle"] = lifecycle
+    policy["local_first"] = authority["local_first"]
+    policy["allow_cloud_proxy"] = incoming.get(
+        "allow_cloud_proxy",
+        authority["allow_cloud_proxy"],
+    )
+    policy["allow_cloud_tool_proxy"] = incoming.get(
+        "allow_cloud_tool_proxy",
+        authority["allow_cloud_tool_proxy"],
+    )
+    policy["escalation_policy"] = authority["escalation_policy"]
+    policy["cost_posture"] = authority["cost_posture"]
+    policy["planner"] = authority["planner"]
+    policy["model_proxy"] = authority["model_proxy"]
+    policy["route_policy_artifact"] = authority
+    policy["benchmark_gate_policy"] = authority["benchmark_gates"]
+    policy["placement_policy"] = authority["placement"]
+    policy["residency_policy"] = authority["residency"]
+    policy["fallback_policy"] = authority["fallbacks"]
+    policy["cloud_policy"] = authority["cloud_policy"]
     if not _route_policy_has_runner(policy):
         policy["provider"] = "norllama"
     if route_policy_is_catalog_candidate(policy):
@@ -483,6 +508,27 @@ def route_decision(
         blocked.append("shell execution blocked by policy")
     if policy_state.llm_plane == "no_inference" and _lower(selected_runner) != "shell":
         blocked.append("inference disabled by control-only mode")
+    route_policy = _dict(
+        metadata.get("route_policy") if isinstance(metadata, Mapping) else {}
+    )
+    policy_artifact = _dict(route_policy.get("route_policy_artifact")) or _dict(
+        route_policy_contract()
+    )
+    authorization = authorize_route_under_policy(
+        policy_artifact=policy_artifact,
+        execution_mode=_clean(route_dict.get("mode")) or "console_runtime",
+        requested_provider=provider,
+        requested_model=_clean(route_dict.get("model")),
+        requested_lane=_clean(route_dict.get("lane") or route_dict.get("capability")),
+        manual_degraded_authorization=_dict(
+            route_policy.get("manual_degraded_authorization")
+        ),
+    )
+    if not authorization.get("allowed"):
+        blocked.append(
+            "route policy blocked execution: "
+            f"{_clean(authorization.get('reason')) or 'not authorized'}"
+        )
 
     local = bool(route_dict.get("local")) or egress_class in {"local", "lan"}
     cloud_proxy = bool(route_dict.get("cloud_proxy"))
@@ -521,5 +567,8 @@ def route_decision(
         fallback_order=fallback_order or [],
         capability_snapshot=dict(capabilities or {}),
         policy_state=policy_state.as_dict(),
-        metadata=dict(metadata or {}),
+        metadata={
+            **dict(metadata or {}),
+            "route_policy_authorization": authorization,
+        },
     )

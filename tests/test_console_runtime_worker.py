@@ -15,6 +15,7 @@ from app.services.console_runtime.worker import (
     DbConsoleRuntimeWorker,
     _structured_response_signal,
 )
+from app.services.norllama.route_policy import route_policy_contract
 
 
 def _ensure_user(db):
@@ -32,6 +33,7 @@ def _ensure_user(db):
 
 
 def _proof_model_result(job_id, text="verified complete"):
+    policy = route_policy_contract()
     route_receipt = {
         "schema": "norman.norllama.route-receipt.v1",
         "status": "completed",
@@ -57,6 +59,15 @@ def _proof_model_result(job_id, text="verified complete"):
         "peer_path": ["https://llm.home.arpa/v1", "spark-151"],
         "route_reason": "local first",
         "policy_mode": "local_first",
+        "policy_id": policy["policy_id"],
+        "policy_hash": policy["policy_hash"],
+        "policy_integrity_valid": True,
+        "policy_lifecycle_state": "valid",
+        "policy_default_route_allowed": True,
+        "policy_issued_at": policy["issued_at"],
+        "policy_expires_at": policy["expires_at"],
+        "policy_refresh_generation": policy["refresh_generation"],
+        "manual_degraded_authorized": False,
         "cloud_proxy": False,
         "benchmark_packet_id": "uplink-1",
         "benchmark_source": "uplink_benchmark",

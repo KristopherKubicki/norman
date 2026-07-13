@@ -24,6 +24,15 @@ REQUIRED_ROUTE_RECEIPT_FIELDS = (
     "peer_path",
     "route_reason",
     "policy_mode",
+    "policy_id",
+    "policy_hash",
+    "policy_integrity_valid",
+    "policy_lifecycle_state",
+    "policy_default_route_allowed",
+    "policy_issued_at",
+    "policy_expires_at",
+    "policy_refresh_generation",
+    "manual_degraded_authorized",
     "cloud_proxy",
     "benchmark_packet_id",
     "benchmark_fresh",
@@ -114,6 +123,11 @@ CRITICAL_STRING_FIELDS = {
     "frontdoor",
     "route_reason",
     "policy_mode",
+    "policy_id",
+    "policy_hash",
+    "policy_lifecycle_state",
+    "policy_issued_at",
+    "policy_expires_at",
     "usage_bucket",
     "verifier_result",
     "output_shape",
@@ -123,6 +137,9 @@ STRICT_BOOL_FIELDS = {
     "benchmark_fresh",
     "fallback_used",
     "model_override_used",
+    "policy_integrity_valid",
+    "policy_default_route_allowed",
+    "manual_degraded_authorized",
 }
 STRICT_NUMERIC_FIELDS = {
     "benchmark_score",
@@ -133,6 +150,7 @@ STRICT_NUMERIC_FIELDS = {
     "input_tokens",
     "output_tokens",
     "total_tokens",
+    "policy_refresh_generation",
 }
 
 
@@ -339,9 +357,69 @@ def audit_route_receipt(receipt: dict[str, Any] | None) -> dict[str, Any]:
     require_verifier = completion_requested or _flag(
         receipt.get("require_verifier_for_completion")
     )
+    policy_id = _clean(receipt.get("policy_id"))
+    policy_hash = _clean(receipt.get("policy_hash"))
+    policy_state = _lower(receipt.get("policy_lifecycle_state"))
+    policy_integrity_valid = _flag(receipt.get("policy_integrity_valid"))
+    policy_default_route_allowed = _flag(receipt.get("policy_default_route_allowed"))
+    manual_degraded_authorized = _flag(receipt.get("manual_degraded_authorized"))
+    policy_production_eligible = _production_route_eligible(receipt)
 
     if status and status not in VALID_ROUTE_RECEIPT_STATUSES:
         failures.append(f"invalid_status:{status}")
+    if status == "completed":
+        active_policy = {}
+        try:
+            from app.services.norllama.route_policy_artifact import (
+                active_route_policy_identity,
+            )
+
+            active_policy = active_route_policy_identity()
+        except Exception as exc:  # pragma: no cover - defensive for standalone audits
+            warnings.append(f"active_policy_identity_unavailable:{_clean(exc)[:80]}")
+        if not policy_id:
+            failures.append("policy_id_missing")
+        if not policy_hash:
+            failures.append("policy_hash_missing")
+        if not policy_integrity_valid:
+            failures.append("policy_integrity_invalid")
+        if not manual_degraded_authorized and policy_state not in {
+            "valid",
+            "expiring_soon",
+        }:
+            failures.append(f"policy_lifecycle_not_allowed:{policy_state or 'blank'}")
+        if not manual_degraded_authorized and not policy_default_route_allowed:
+            failures.append("policy_default_route_not_allowed")
+        if active_policy:
+            if policy_id != _clean(active_policy.get("policy_id")):
+                failures.append("policy_id_differs_from_active_authority")
+            if policy_hash != _clean(active_policy.get("policy_hash")):
+                failures.append("policy_hash_differs_from_active_authority")
+        if manual_degraded_authorized:
+            if policy_production_eligible:
+                failures.append("manual_degraded_marked_production_eligible")
+            if _flag(receipt.get("cloud_proxy")):
+                failures.append("manual_degraded_used_cloud_proxy")
+            authorization = receipt.get("manual_degraded_authorization")
+            if not isinstance(authorization, dict) or not authorization:
+                failures.append("manual_degraded_missing_authorization")
+            else:
+                for field in (
+                    "authorization_id",
+                    "authorized_by",
+                    "authorization_reason",
+                    "authorization_created_at",
+                    "authorization_expires_at",
+                ):
+                    if not _clean(authorization.get(field)):
+                        failures.append(f"manual_degraded_missing_{field}")
+                if authorization.get("cloud_allowed"):
+                    failures.append("manual_degraded_authorization_allows_cloud")
+        elif policy_production_eligible is False and policy_state not in {
+            "valid",
+            "expiring_soon",
+        }:
+            failures.append("nonproduction_completion_without_valid_policy")
     if status == "completed" and not target_model:
         failures.append("target_model_missing")
     if status == "completed" and not route_selected_model:

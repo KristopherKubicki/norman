@@ -28,6 +28,7 @@ from app.services.norllama.route_policy import (
     route_policy_contract,
     route_policy_lifecycle,
 )
+from app.services.norllama.route_policy_artifact import authorize_route_under_policy
 from app.services.norllama.route_outcomes import (
     local_route_cooldown,
     normalize_route_outcome,
@@ -2070,6 +2071,15 @@ def build_warm_policy(
         route_posture = "fallback_or_cloud_gate"
     policy_contract = route_policy_contract()
     policy_lifecycle = route_policy_lifecycle(policy_contract)
+    policy_authorization = authorize_route_under_policy(
+        policy_artifact=policy_contract,
+        execution_mode="warm_policy",
+        requested_provider="norllama",
+        requested_lane="prefetch",
+    )
+    if not policy_authorization.get("allowed"):
+        prefetch_candidates = []
+        route_posture = "blocked"
     payload = {
         "schema": "norman.norllama.warm-policy.v1",
         "policy_authority": policy_contract["schema"],
@@ -2078,6 +2088,7 @@ def build_warm_policy(
         "policy_hash": policy_contract["policy_hash"],
         "route_policy": policy_contract,
         "policy_lifecycle": policy_lifecycle,
+        "policy_authorization": policy_authorization,
         "benchmark_gate_policy": {
             "smoke": "accepted_count >= 1; not promotion-authoritative",
             "staging": "accepted_count >= 3; routeable with caution",
@@ -2088,13 +2099,13 @@ def build_warm_policy(
             "historical": "legacy or countless packet row; not promotion-authoritative",
         },
         "enabled": enabled,
-        "status": "route_policy_expired"
-        if not policy_lifecycle["default_route_allowed"]
+        "status": "route_policy_blocked"
+        if not policy_authorization.get("allowed")
         else "ok"
         if available_models
         else "mesh_unavailable",
         "route_posture": "blocked"
-        if not policy_lifecycle["default_route_allowed"]
+        if not policy_authorization.get("allowed")
         else route_posture,
         "residency_posture": "warm"
         if residency["warm"]
@@ -2371,6 +2382,11 @@ def select_model_for_task_kind(
         packet=packet,
         route_outcomes=route_outcomes or [],
     )
+    policy_authorization = (
+        payload.get("policy_authorization")
+        if isinstance(payload.get("policy_authorization"), dict)
+        else {}
+    )
     lanes = _selection_lanes_for_task_kind(
         kind,
         preferred_lane=preferred_lane
@@ -2379,6 +2395,23 @@ def select_model_for_task_kind(
     )
     strategy = _selection_strategy(policy)
     allow_canary = _selection_allows_canary(policy)
+    if policy_authorization and not policy_authorization.get("allowed"):
+        return {
+            "schema": "norman.norllama.warm-policy-selection.v1",
+            "selected": False,
+            "model": "",
+            "task_kind": _clean(kind),
+            "lanes": lanes,
+            "reason": _clean(policy_authorization.get("reason"))
+            or "route policy blocked default model selection",
+            "policy_authorization": policy_authorization,
+            "canary_available": False,
+            "canary_pool": [],
+            "pool_strategy": strategy,
+            "pool": [],
+            "warm_policy_status": _clean(payload.get("status")),
+            "route_posture": _clean(payload.get("route_posture")) or "blocked",
+        }
     lane_presence = {lane: False for lane in lanes}
     canary_candidates: list[dict[str, Any]] = []
     candidates: list[tuple[tuple, dict[str, Any], str, dict[str, Any]]] = []
@@ -2515,6 +2548,11 @@ def apply_warm_policy(
     """Apply the warm policy through bounded Norllama prefetch calls."""
 
     policy = build_warm_policy()
+    policy_authorization = (
+        policy.get("policy_authorization")
+        if isinstance(policy.get("policy_authorization"), dict)
+        else {}
+    )
     limit = (
         int(prefetch_limit)
         if prefetch_limit is not None
@@ -2523,6 +2561,18 @@ def apply_warm_policy(
     timeout = _setting_int(
         "llm_warm_policy_prefetch_timeout_seconds", 30, minimum=1, maximum=120
     )
+    if policy_authorization and not policy_authorization.get("allowed"):
+        return {
+            "schema": "norman.norllama.warm-apply.v1",
+            "dry_run": dry_run,
+            "prefetch_limit": limit,
+            "attempted": 0,
+            "results": [],
+            "policy": policy,
+            "policy_authorization": policy_authorization,
+            "status": "route_policy_blocked",
+            "checked_at": time.time(),
+        }
     candidates = list(policy.get("prefetch_candidates") or [])[:limit]
     results: list[dict[str, Any]] = []
     for item in candidates:

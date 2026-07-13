@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from app.core.config import settings
 from app.services.console_runtime.types import (
     ModelCapabilities,
@@ -13,6 +15,10 @@ from app.services.norllama.routing import (
     build_task_receipt,
     route_task,
     with_response_attribution,
+)
+from app.services.norllama.route_policy_artifact import (
+    authorize_route_under_policy,
+    policy_block_response,
 )
 from app.services.norllama.types import NorllamaTaskKind, NorllamaTaskRequest
 from app.services.norllama.types import NorllamaRoute
@@ -223,6 +229,53 @@ class NorllamaModelAdapter:
             task_id=task_id,
         )
         route = _route_from_metadata(metadata) or route_task(task)
+        authorization = (
+            route.attribution.get("route_policy_authorization")
+            if isinstance(route.attribution, dict)
+            and isinstance(route.attribution.get("route_policy_authorization"), dict)
+            else authorize_route_under_policy(
+                policy_artifact=task.route_policy.get("route_policy_artifact")
+                if isinstance(task.route_policy.get("route_policy_artifact"), dict)
+                else None,
+                execution_mode="norllama_adapter",
+                requested_provider=route.provider,
+                requested_model=route.model,
+                requested_lane=route.lane,
+                manual_degraded_authorization=task.route_policy.get(
+                    "manual_degraded_authorization"
+                )
+                if isinstance(
+                    task.route_policy.get("manual_degraded_authorization"), dict
+                )
+                else None,
+            )
+        )
+        if not authorization.get("allowed"):
+            block = policy_block_response(authorization)
+            receipt = build_task_receipt(
+                task,
+                route,
+                status="blocked",
+                output={
+                    "text": json.dumps(block, sort_keys=True),
+                    "output_shape": "error",
+                    "verifier_result": "fail",
+                },
+                error="route_policy_blocked",
+            )
+            return ModelResult(
+                provider=self.name,
+                model=route.model,
+                text=json.dumps(block, sort_keys=True),
+                stop_reason="policy_blocked",
+                usage=ModelUsage(),
+                metadata={
+                    "norllama_route": route.as_dict(),
+                    "norllama_receipt": receipt.as_dict(),
+                    "policy_authorization": authorization,
+                },
+                raw=block,
+            )
         model = (
             request.model
             or _metadata_value(metadata, "requested_model")

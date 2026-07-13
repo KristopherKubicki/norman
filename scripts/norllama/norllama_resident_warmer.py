@@ -9,6 +9,42 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+try:
+    from app.services.norllama.route_policy_artifact import (
+        authorize_route_under_policy,
+        load_route_policy_artifact,
+        policy_block_response,
+    )
+except Exception as route_policy_import_error:  # pragma: no cover - standalone guard
+    _ROUTE_POLICY_IMPORT_ERROR = str(route_policy_import_error)
+
+    def load_route_policy_artifact(*args: object, **kwargs: object) -> dict[str, Any]:
+        return {
+            "artifact": {},
+            "validation": {
+                "state": "refresh_failed",
+                "reason": "route_policy_import_failed",
+                "load_error": _ROUTE_POLICY_IMPORT_ERROR,
+            },
+        }
+
+    def authorize_route_under_policy(**kwargs: object) -> dict[str, Any]:
+        return {
+            "allowed": False,
+            "production_route_eligible": False,
+            "reason": "route_policy_import_failed",
+            "lifecycle_state": "refresh_failed",
+            "load_error": _ROUTE_POLICY_IMPORT_ERROR,
+        }
+
+    def policy_block_response(authorization: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "schema": "norman.norllama.policy-block.v1",
+            "status": "blocked",
+            "error": "route_policy_blocked",
+            "message": str(authorization.get("reason") or "policy unavailable"),
+        }
+
 
 def _split_env(name: str) -> list[str]:
     raw = os.getenv(name, "")
@@ -188,6 +224,33 @@ def main() -> int:
     chat_models = _split_env("NORLLAMA_WARM_CHAT_MODELS")
     embed_models = _split_env("NORLLAMA_WARM_EMBED_MODELS")
     results: list[dict[str, Any]] = []
+    loaded_policy = load_route_policy_artifact(allow_missing_default=False)
+    artifact = loaded_policy.get("artifact") if isinstance(loaded_policy, dict) else {}
+    authorization = authorize_route_under_policy(
+        policy_artifact=artifact if isinstance(artifact, dict) else {},
+        execution_mode="resident_warmer",
+        requested_provider="norllama",
+        requested_lane="resident",
+    )
+    if not authorization.get("allowed"):
+        print(
+            json.dumps(
+                {
+                    "schema": "norllama.resident-warmer.v1",
+                    "host": os.uname().nodename,
+                    "base_url": base_url,
+                    "status": "route_policy_blocked",
+                    "attempted": 0,
+                    "policy_authorization": authorization,
+                    "policy_block": policy_block_response(authorization),
+                    "chat_models": chat_models,
+                    "embed_models": embed_models,
+                    "results": [],
+                },
+                sort_keys=True,
+            )
+        )
+        return 2
 
     for model in chat_models:
         free_mib = _free_mib(media_health_url, health_timeout_s)

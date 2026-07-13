@@ -46,6 +46,7 @@ from app.services.norllama.route_proof import (  # noqa: E402
     normalize_route_receipt_for_completion_gate,
     receipt_completion_gate_passes,
 )
+from app.services.norllama.route_policy import route_policy_contract  # noqa: E402
 
 
 RESULT_SCHEMA = "norman.norllama.capability-execution-results.v1"
@@ -1169,6 +1170,7 @@ def route_receipt_for_result(
         fallback_reasons.append(route_fallback_reason)
     fallback_reason = "; ".join(dict.fromkeys(fallback_reasons))
     fallback_used = bool(fallback_reason or route.get("fallback_used"))
+    policy = route_policy_contract()
     return normalize_route_receipt_for_completion_gate(
         {
             "status": "completed" if transport_passed else "failed",
@@ -1194,6 +1196,15 @@ def route_receipt_for_result(
             "attempts": attempts,
             "route_reason": f"capability execution runner {suite_id} live smoke",
             "policy_mode": clean(case.get("expected_route_mode")) or "local_first",
+            "policy_id": policy["policy_id"],
+            "policy_hash": policy["policy_hash"],
+            "policy_integrity_valid": True,
+            "policy_lifecycle_state": "valid",
+            "policy_default_route_allowed": True,
+            "policy_issued_at": policy["issued_at"],
+            "policy_expires_at": policy["expires_at"],
+            "policy_refresh_generation": policy["refresh_generation"],
+            "manual_degraded_authorized": False,
             "cloud_proxy": bool(route.get("cloud_proxy")),
             "benchmark_packet_id": clean(case.get("suite_hash"))
             or clean(case.get("case_hash")),

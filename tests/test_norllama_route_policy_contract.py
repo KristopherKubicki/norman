@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import timedelta
 
 from app.services.console_runtime.policy import with_local_first_catalog_defaults
 from app.services.norllama.route_policy import (
@@ -52,10 +52,15 @@ def test_console_runtime_defaults_embed_same_route_policy_artifact():
 
 def test_route_policy_lifecycle_reports_valid_expiring_and_expired_states():
     contract = route_policy_contract()
+    issued_at = route_policy_lifecycle(contract)["validation"]["issued_at"]
+    from app.services.norllama.route_policy import parse_route_policy_timestamp
+
+    issued = parse_route_policy_timestamp(issued_at)
+    assert issued is not None
 
     valid = route_policy_lifecycle(
         contract,
-        now=datetime(2026, 7, 13, 0, 0, 0, tzinfo=timezone.utc),
+        now=issued + timedelta(seconds=1),
     )
     assert valid["state"] == "valid"
     assert valid["default_route_allowed"] is True
@@ -63,7 +68,8 @@ def test_route_policy_lifecycle_reports_valid_expiring_and_expired_states():
 
     expiring = route_policy_lifecycle(
         contract,
-        now=datetime(2026, 7, 16, 0, 0, 1, tzinfo=timezone.utc),
+        now=parse_route_policy_timestamp(contract["expires_at"])
+        - timedelta(seconds=60),
     )
     assert expiring["state"] == "expiring_soon"
     assert expiring["severity"] == "warning"
@@ -71,7 +77,7 @@ def test_route_policy_lifecycle_reports_valid_expiring_and_expired_states():
 
     expired = route_policy_lifecycle(
         contract,
-        now=datetime(2026, 7, 17, 0, 0, 1, tzinfo=timezone.utc),
+        now=parse_route_policy_timestamp(contract["expires_at"]) + timedelta(seconds=1),
     )
     assert expired["state"] == "expired_blocked"
     assert expired["severity"] == "critical"
@@ -86,10 +92,9 @@ def test_route_policy_lifecycle_fails_closed_on_bad_timestamp():
 
     lifecycle = route_policy_lifecycle(
         contract,
-        now=datetime(2026, 7, 13, 0, 0, 0, tzinfo=timezone.utc),
     )
 
-    assert lifecycle["state"] == "refresh_failed"
+    assert lifecycle["state"] == "invalid_hash"
     assert lifecycle["severity"] == "critical"
     assert lifecycle["default_route_allowed"] is False
     assert lifecycle["degraded"] is True

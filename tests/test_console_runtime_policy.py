@@ -243,7 +243,7 @@ def test_codex_quarantine_blocks_codex_runner_but_not_norllama():
     assert codex.allowed is False
     assert "Codex runner blocked by policy" in codex.blocked_reasons
     assert local.allowed is True
-    assert local.metadata == {}
+    assert local.metadata["route_policy_authorization"]["allowed"] is True
 
 
 def test_control_only_blocks_inference_routes():

@@ -12,6 +12,8 @@ from app.services.norllama.specialist_lanes import (
     specialist_cascade_template,
 )
 from app.services.norllama.warm_policy import select_model_for_task_kind
+from app.services.norllama.route_policy import route_policy_contract
+from app.services.norllama.route_policy_artifact import authorize_route_under_policy
 from app.services.norllama.types import (
     NorllamaReceipt,
     NorllamaRoute,
@@ -122,6 +124,32 @@ def _route_policy_value(policy: dict[str, Any], *keys: str) -> str:
         if value:
             return value
     return ""
+
+
+def _route_policy_artifact(policy: dict[str, Any]) -> dict[str, Any]:
+    artifact = policy.get("route_policy_artifact")
+    if isinstance(artifact, dict) and artifact:
+        return artifact
+    return route_policy_contract()
+
+
+def _route_policy_authorization(
+    policy: dict[str, Any],
+    *,
+    execution_mode: str,
+    provider: str,
+    model: str = "",
+    lane: str = "",
+) -> dict[str, Any]:
+    manual = policy.get("manual_degraded_authorization")
+    return authorize_route_under_policy(
+        policy_artifact=_route_policy_artifact(policy),
+        execution_mode=execution_mode,
+        requested_provider=provider,
+        requested_model=model,
+        requested_lane=lane,
+        manual_degraded_authorization=manual if isinstance(manual, dict) else None,
+    )
 
 
 def _normalize_provider(provider: str) -> str:
@@ -316,6 +344,25 @@ def _route_model_selection(
     task_kind: NorllamaTaskKind | str | None = None,
 ) -> dict[str, Any]:
     model = _route_policy_value(policy, "model", "preferred_model")
+    authorization = _route_policy_authorization(
+        policy,
+        execution_mode="model_selection",
+        provider=provider,
+        model=model,
+        lane=_route_policy_value(policy, "lane", "preferred_lane")
+        or _task_kind_value(task_kind),
+    )
+    if not authorization.get("allowed"):
+        return {
+            "schema": "norman.norllama.model-selection.v1",
+            "selected": False,
+            "model": "",
+            "source": "route_policy_blocked",
+            "reason": _clean(authorization.get("reason"))
+            or "route policy blocked model selection",
+            "policy_authorization": authorization,
+            "production_route_eligible": False,
+        }
     model_selection = _clean(policy.get("model_selection")).lower()
     if model_selection in {
         "warm_policy",
@@ -432,6 +479,13 @@ def _base_attribution(
     cloud_proxy: bool,
 ) -> dict[str, Any]:
     public_endpoint = _public_endpoint(endpoint)
+    authorization = _route_policy_authorization(
+        policy,
+        execution_mode="route_attribution",
+        provider=provider,
+        model=_route_policy_value(policy, "model", "preferred_model"),
+        lane=_route_policy_value(policy, "lane", "preferred_lane"),
+    )
     explicit_worker = _policy_worker(policy)
     direct_worker = _worker_by_endpoint(public_endpoint)
     peer_path = _clean_list(
@@ -485,6 +539,10 @@ def _base_attribution(
         "gateway_selected_worker": "",
         "observed_worker": "",
         "observed_worker_source": "",
+        "route_policy_authorization": authorization,
+        "policy_id": authorization.get("policy_id", ""),
+        "policy_hash": authorization.get("policy_hash", ""),
+        "policy_lifecycle_state": authorization.get("lifecycle_state", ""),
         "peer_path": peer_path,
         "attempts": [],
     }
@@ -796,6 +854,34 @@ def route_task(request: NorllamaTaskRequest) -> NorllamaRoute:
     )
     provider = preferred_provider or offline_provider or "norllama"
     uses_offline_slot = not preferred_provider or provider == offline_provider
+    route_authorization = _route_policy_authorization(
+        policy,
+        execution_mode="route_task",
+        provider=provider,
+        model=_route_policy_value(policy, "model", "preferred_model"),
+        lane=_route_policy_value(policy, "lane", "preferred_lane")
+        or _task_kind_value(request.kind),
+    )
+    if not route_authorization.get("allowed"):
+        blocked_selection = {
+            "schema": "norman.norllama.model-selection.v1",
+            "selected": False,
+            "model": "",
+            "source": "route_policy_blocked",
+            "reason": _clean(route_authorization.get("reason"))
+            or "route policy blocked route selection",
+            "policy_authorization": route_authorization,
+            "production_route_eligible": False,
+        }
+        return _local_route(
+            request,
+            provider="norllama",
+            reason="route policy blocked production route selection",
+            endpoint="",
+            model="",
+            model_selection=blocked_selection,
+            provider_kind="norllama",
+        )
     endpoint = _route_endpoint(
         request.route_policy, provider, offline_slot=uses_offline_slot
     )
@@ -1112,6 +1198,30 @@ def route_receipt_payload(
     elif len(attempts) > 1:
         fallback_used = True
         fallback_reason = fallback_reason or "gateway reported multiple worker attempts"
+    policy_authorization = (
+        attribution.get("route_policy_authorization")
+        if isinstance(attribution.get("route_policy_authorization"), dict)
+        else _route_policy_authorization(
+            request.route_policy,
+            execution_mode=_clean(
+                metadata.get("execution_mode") or request.metadata.get("execution_mode")
+            )
+            or "route_receipt",
+            provider=route.provider,
+            model=target_model or route.model,
+            lane=phase,
+        )
+    )
+    policy_validation = (
+        policy_authorization.get("validation")
+        if isinstance(policy_authorization.get("validation"), dict)
+        else {}
+    )
+    policy_artifact = _route_policy_artifact(request.route_policy)
+    policy_manual_degraded = bool(
+        policy_authorization.get("manual_degraded")
+        or policy_authorization.get("manual_degraded_authorized")
+    )
 
     receipt_payload = {
         "schema": "norman.norllama.route-receipt.v1",
@@ -1158,6 +1268,45 @@ def route_receipt_payload(
         "attempts": attempts,
         "route_reason": route.reason,
         "policy_mode": _policy_mode(request.route_policy),
+        "policy_id": _clean(
+            policy_authorization.get("policy_id") or policy_artifact.get("policy_id")
+        ),
+        "policy_hash": _clean(
+            policy_authorization.get("policy_hash")
+            or policy_artifact.get("policy_hash")
+        ),
+        "policy_integrity_valid": bool(
+            policy_authorization.get("integrity_valid")
+            or policy_validation.get("integrity_valid")
+        ),
+        "policy_lifecycle_state": _clean(
+            policy_authorization.get("lifecycle_state")
+            or policy_validation.get("state")
+        ),
+        "policy_default_route_allowed": bool(
+            policy_authorization.get("default_route_allowed")
+            or policy_validation.get("default_route_allowed")
+        ),
+        "policy_issued_at": _clean(
+            policy_authorization.get("policy_issued_at")
+            or policy_artifact.get("issued_at")
+        ),
+        "policy_expires_at": _clean(
+            policy_authorization.get("policy_expires_at")
+            or policy_artifact.get("expires_at")
+        ),
+        "policy_refresh_generation": int(
+            policy_authorization.get("policy_refresh_generation")
+            or policy_artifact.get("refresh_generation")
+            or 0
+        ),
+        "manual_degraded_authorized": policy_manual_degraded,
+        "manual_degraded_authorization": policy_authorization.get(
+            "manual_degraded_authorization"
+        )
+        if policy_manual_degraded
+        else {},
+        "policy_authorization": policy_authorization,
         "cloud_proxy": bool(route.cloud_proxy),
         "benchmark_packet_id": _clean(
             selection.get("benchmark_packet_id")
@@ -1210,11 +1359,14 @@ def route_receipt_payload(
             or selection.get("production_route_requires_capability_gate")
         ),
         "production_route_eligible": bool(
-            quality.get("production_route_eligible")
-            if "production_route_eligible" in quality
-            else selection.get("production_route_eligible")
-            if "production_route_eligible" in selection
-            else True
+            (
+                quality.get("production_route_eligible")
+                if "production_route_eligible" in quality
+                else selection.get("production_route_eligible")
+                if "production_route_eligible" in selection
+                else True
+            )
+            and policy_authorization.get("production_route_eligible")
         ),
         "capability_route_state": _clean(
             quality.get("capability_route_state")

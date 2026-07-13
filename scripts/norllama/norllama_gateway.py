@@ -31,223 +31,106 @@ try:
         route_policy_contract,
         route_policy_lifecycle,
     )
-except Exception:  # pragma: no cover - deployed script fallback
-    ROUTE_POLICY_VERSION = "2026.07.10.route-proof"
-
-    def _fallback_bool(value: object) -> bool:
-        if isinstance(value, bool):
-            return value
-        return str(value or "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-            "required",
-        }
-
-    def _fallback_capability_gate_name(value: object) -> str:
-        if isinstance(value, dict):
-            value = value.get("gate") or value.get("name")
-        return str(value or "").strip().lower() or "unproven"
-
-    def _fallback_capability_gate_rank(value: object) -> int:
-        return {
-            "production": 3,
-            "production_capability_backed": 3,
-            "staging": 2,
-            "staging_capability_backed": 2,
-            "smoke": 1,
-            "canary_live": 1,
-        }.get(_fallback_capability_gate_name(value), 0)
+    from app.services.norllama.route_policy_artifact import (
+        active_route_policy_identity,
+        authorize_route_under_policy,
+        load_route_policy_artifact,
+        policy_block_response,
+    )
+except (
+    Exception
+) as route_policy_import_error:  # pragma: no cover - deployed script guard
+    ROUTE_POLICY_VERSION = "unavailable"
+    _ROUTE_POLICY_IMPORT_ERROR = str(route_policy_import_error)
 
     def capability_gate_promotion_authoritative(value: object) -> bool:
-        return isinstance(value, dict) and _fallback_bool(
-            value.get("promotion_authoritative")
-        )
+        return False
 
     def capability_gate_allows_production_default(
         *,
         capability_gate: dict[str, object] | None,
         production_route_requires_capability_gate: object = False,
     ) -> bool:
-        if not _fallback_bool(production_route_requires_capability_gate):
-            return True
-        return bool(
-            _fallback_capability_gate_rank(capability_gate or {}) >= 3
-            and capability_gate_promotion_authoritative(capability_gate or {})
-        )
+        return False
 
     def capability_route_state(
         *,
         capability_gate: dict[str, object] | None,
         production_route_requires_capability_gate: object = False,
     ) -> str:
-        if not _fallback_bool(production_route_requires_capability_gate):
-            return "not_required"
-        rank = _fallback_capability_gate_rank(capability_gate or {})
-        if rank >= 3:
-            return (
-                "production_capability_backed"
-                if capability_gate_promotion_authoritative(capability_gate or {})
-                else "production_capability_not_authoritative"
-            )
-        if rank >= 2:
-            return "staging_capability_only"
-        if rank >= 1:
-            return "canary_capability_only"
-        return "capability_unproven"
-
-    def _fallback_route_policy_hash(policy: dict[str, object]) -> str:
-        payload = dict(policy)
-        payload.pop("policy_id", None)
-        payload.pop("policy_hash", None)
-        canonical = json.dumps(
-            payload,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=True,
-        )
-        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        return "policy_unavailable"
 
     def route_policy_contract() -> dict[str, object]:
-        policy = {
+        return {
             "schema": "norman.norllama.route-policy.v1",
             "version": ROUTE_POLICY_VERSION,
-            "compiled_at": "2026-07-10T00:00:00Z",
-            "expires_at": "2026-07-17T00:00:00Z",
-            "local_first": True,
-            "allow_cloud_proxy": False,
-            "allow_cloud_tool_proxy": False,
-            "escalation_policy": "explicit_cloud_only",
-            "cost_posture": "local_token_first",
-            "planner": "norllama",
-            "model_proxy": "norllama",
-            "model_selection": "warm_policy",
-            "models": {
-                "general_reasoning_floor": "qwen3.6/qwen3.5-class",
-                "router": "qwen3.6:35b-a3b-q4_K_M",
-                "coding_operator": "qwen3.6:27b",
-                "local_heavyweight_judge": "qwen3.5:122b-a10b-q4_K_M",
-                "fallback_small": "gemma4-or-qwen-tiny-class",
-            },
-            "lanes": {
-                "planner": {"class": "qwen3.6", "gate": "production"},
-                "coder": {"class": "qwen3.6", "gate": "production"},
-                "summarizer": {"class": "qwen3.6", "gate": "production"},
-                "filter": {"class": "qwen3.6", "gate": "production"},
-                "verifier": {"class": "qwen3.5-or-qwen3.6", "gate": "production"},
-                "judge": {"class": "qwen3.5-heavy", "gate": "production"},
-                "specialist": {"class": "lane-specific", "gate": "smoke-or-better"},
-                "lab": {"class": "explicit-request-only", "gate": "lab"},
-            },
-            "benchmark_gates": {
-                "thresholds": {"smoke": 1, "staging": 3, "production": 5},
-                "production_requires_distinct_cold_warm_samples": True,
-                "qwen_production_requires_gate": "production",
-                "qwen_production_requires_promotion_authoritative": True,
-                "production_route_requires_capability_gate": True,
-            },
-            "capability_gates": {
-                "production_requires_gate": "production",
-                "production_requires_promotion_authoritative": True,
-                "staging_allows_internal_canary": True,
-                "unproven_allows_manual_or_lab_only": True,
-            },
-            "placement": {
-                "frontdoor": "https://llm.home.arpa",
-                "router_node": "mac-mini-133",
-                "primary_brain_worker": "spark-151",
-                "specialist_worker": "spark-150",
-                "fallback_node": "mac-mini-133",
-                "qwen35_122b_allowed_lanes": ["judge", "verifier"],
-                "fallback_node_heavy_models_allowed": False,
-            },
-            "residency": {
-                "resident": ["qwen3.6-router", "qwen3.6-code", "rerank", "safety"],
-                "warm_on_demand": [
-                    "qwen3.5-122b-judge",
-                    "ocr",
-                    "asr",
-                    "doc-parse",
-                ],
-                "lab": ["world", "graph", "packet", "forecasting", "gui-grounding"],
-            },
-            "fallbacks": {
-                "worker_mismatch_requires_receipt_fallback": True,
-                "allow_cloud_fallback": False,
-                "allow_local_degraded_fallback": True,
-                "fallback_reason_required": True,
-            },
-            "cloud_policy": {
-                "cloud_llm_default": "disabled",
-                "cloud_escalation": "explicit_policy_or_user_authorized_only",
-                "cloud_proxy_counts_as_cloud": True,
-                "perplexity_web_is_search_not_cloud_llm": True,
-            },
-            "lifecycle_policy": {
-                "expiry_enforced": True,
-                "warn_before_seconds": 259200,
-                "expired_state": "expired_blocked",
-                "expired_default_route_allowed": False,
-                "expired_manual_degraded_allowed": True,
-                "refresh_required": True,
-                "refresh_source": "compiled_route_policy_artifact",
-            },
-            "emergency_overlays": {
-                "allowed": True,
-                "requires_expiration": True,
-                "max_ttl_seconds": 21600,
-            },
+            "policy_id": "",
+            "policy_hash": "",
+            "load_error": _ROUTE_POLICY_IMPORT_ERROR,
         }
-        digest = _fallback_route_policy_hash(policy)
-        policy["policy_hash"] = digest
-        policy["policy_id"] = f"{ROUTE_POLICY_VERSION}:{digest[:12]}"
-        return policy
 
     def route_policy_lifecycle(
         policy: dict[str, object] | None = None,
     ) -> dict[str, object]:
-        artifact = policy or route_policy_contract()
-        expires_at = str(artifact.get("expires_at") or "")
-        now = datetime.now(timezone.utc)
-        if expires_at.endswith("Z"):
-            parseable = f"{expires_at[:-1]}+00:00"
-        else:
-            parseable = expires_at
-        try:
-            expires = datetime.fromisoformat(parseable).astimezone(timezone.utc)
-        except Exception:
-            expires = None
-        if expires is None:
-            state = "refresh_failed"
-            seconds_to_expiry = None
-            default_route_allowed = False
-        else:
-            seconds_to_expiry = int((expires - now).total_seconds())
-            if seconds_to_expiry <= 0:
-                state = "expired_blocked"
-                default_route_allowed = False
-            elif seconds_to_expiry <= 259200:
-                state = "expiring_soon"
-                default_route_allowed = True
-            else:
-                state = "valid"
-                default_route_allowed = True
         return {
             "schema": "norman.norllama.route-policy.v1.lifecycle",
-            "policy_version": str(artifact.get("version") or ROUTE_POLICY_VERSION),
-            "policy_id": str(artifact.get("policy_id") or ""),
-            "policy_hash": str(artifact.get("policy_hash") or ""),
-            "compiled_at": str(artifact.get("compiled_at") or ""),
-            "expires_at": expires_at,
-            "state": state,
-            "seconds_to_expiry": seconds_to_expiry,
-            "warn_before_seconds": 259200,
-            "expiry_enforced": True,
-            "default_route_allowed": default_route_allowed,
-            "manual_degraded_allowed": True,
-            "refresh_required": True,
-            "degraded": not default_route_allowed,
+            "policy_version": ROUTE_POLICY_VERSION,
+            "policy_id": "",
+            "policy_hash": "",
+            "state": "refresh_failed",
+            "reason": "route_policy_import_failed",
+            "default_route_allowed": False,
+            "degraded": True,
+            "load_error": _ROUTE_POLICY_IMPORT_ERROR,
+        }
+
+    def active_route_policy_identity(
+        *args: object, **kwargs: object
+    ) -> dict[str, object]:
+        return {
+            "schema": "norman.norllama.route-policy-identity.v1",
+            "policy_id": "",
+            "policy_hash": "",
+            "lifecycle_state": "refresh_failed",
+            "integrity_valid": False,
+            "default_route_allowed": False,
+            "load_error": _ROUTE_POLICY_IMPORT_ERROR,
+        }
+
+    def authorize_route_under_policy(**kwargs: object) -> dict[str, object]:
+        return {
+            "schema": "norman.norllama.route-policy-authorization.v1",
+            "allowed": False,
+            "production_route_eligible": False,
+            "manual_degraded": False,
+            "policy_id": "",
+            "policy_hash": "",
+            "lifecycle_state": "refresh_failed",
+            "integrity_valid": False,
+            "default_route_allowed": False,
+            "reason": "route_policy_import_failed",
+            "load_error": _ROUTE_POLICY_IMPORT_ERROR,
+        }
+
+    def load_route_policy_artifact(
+        *args: object, **kwargs: object
+    ) -> dict[str, object]:
+        return {
+            "artifact": route_policy_contract(),
+            "validation": route_policy_lifecycle(),
+            "source": "import_failed",
+        }
+
+    def policy_block_response(authorization: dict[str, object]) -> dict[str, object]:
+        return {
+            "schema": "norman.norllama.policy-block.v1",
+            "status": "blocked",
+            "error": "route_policy_blocked",
+            "message": str(authorization.get("reason") or "route policy unavailable"),
+            "policy_lifecycle_state": str(
+                authorization.get("lifecycle_state") or "refresh_failed"
+            ),
+            "production_route_eligible": False,
         }
 
 
@@ -3586,8 +3469,21 @@ class App:
             route_posture = "canary_only"
         else:
             route_posture = "blocked"
-        policy_contract = route_policy_contract()
+        loaded_policy = load_route_policy_artifact(allow_missing_default=False)
+        policy_contract = (
+            loaded_policy.get("artifact")
+            if isinstance(loaded_policy.get("artifact"), dict)
+            else route_policy_contract()
+        )
         policy_lifecycle = route_policy_lifecycle(policy_contract)
+        policy_authorization = authorize_route_under_policy(
+            policy_artifact=policy_contract,
+            execution_mode="gateway:warm-policy",
+            requested_provider="norllama",
+            requested_lane="prefetch",
+        )
+        if not policy_authorization.get("allowed"):
+            prefetch_candidates = []
         return {
             "schema": "norllama.warm-policy.v1",
             "service": "norllama",
@@ -3599,13 +3495,14 @@ class App:
             "policy_hash": policy_contract.get("policy_hash", ""),
             "route_policy": policy_contract,
             "policy_lifecycle": policy_lifecycle,
-            "status": "route_policy_expired"
-            if not policy_lifecycle.get("default_route_allowed")
+            "policy_authorization": policy_authorization,
+            "status": "route_policy_blocked"
+            if not policy_authorization.get("allowed")
             else "ok"
             if contracts
             else "missing_benchmark_packet",
             "route_posture": "blocked"
-            if not policy_lifecycle.get("default_route_allowed")
+            if not policy_authorization.get("allowed")
             else route_posture,
             "residency_posture": "warm"
             if active_models
@@ -3730,7 +3627,12 @@ class App:
                     "generated_at": str(preflight_doc.get("generated_at") or ""),
                 }
             )
-        policy_contract = route_policy_contract()
+        loaded_policy = load_route_policy_artifact(allow_missing_default=False)
+        policy_contract = (
+            loaded_policy.get("artifact")
+            if isinstance(loaded_policy.get("artifact"), dict)
+            else route_policy_contract()
+        )
         policy_lifecycle = route_policy_lifecycle(policy_contract)
         return {
             "service": "norllama",
@@ -4958,6 +4860,23 @@ class App:
             "gateway": gateway_identity(),
             "status": "ok",
             "time": now_iso(),
+            "features": self.feature_flags(),
+        }
+
+    def readyz(self) -> dict:
+        identity = active_route_policy_identity(allow_missing_default=False)
+        ready = bool(
+            identity.get("integrity_valid")
+            and identity.get("default_route_allowed")
+            and identity.get("lifecycle_state") in {"valid", "expiring_soon"}
+        )
+        return {
+            "service": "norllama",
+            "gateway": gateway_identity(),
+            "status": "ok" if ready else "policy_blocked",
+            "ready": ready,
+            "time": now_iso(),
+            "policy": identity,
             "features": self.feature_flags(),
         }
 
@@ -6984,6 +6903,15 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/healthz":
             self.send_json(HTTPStatus.OK, self.app.healthz())
             return
+        if parsed.path == "/readyz":
+            payload = self.app.readyz()
+            self.send_json(
+                HTTPStatus.OK
+                if bool(payload.get("ready"))
+                else HTTPStatus.SERVICE_UNAVAILABLE,
+                payload,
+            )
+            return
         if parsed.path == "/api/version":
             self.send_json(HTTPStatus.OK, gateway_version_doc())
             return
@@ -7122,6 +7050,17 @@ class Handler(BaseHTTPRequestHandler):
             body = json.dumps(self.app.healthz(), sort_keys=True).encode("utf-8")
             self.send_head_only(
                 HTTPStatus.OK, content_type="application/json", content_length=len(body)
+            )
+            return
+        if parsed.path == "/readyz":
+            payload = self.app.readyz()
+            body = json.dumps(payload, sort_keys=True).encode("utf-8")
+            self.send_head_only(
+                HTTPStatus.OK
+                if bool(payload.get("ready"))
+                else HTTPStatus.SERVICE_UNAVAILABLE,
+                content_type="application/json",
+                content_length=len(body),
             )
             return
         if parsed.path == "/api/version":
@@ -7281,37 +7220,121 @@ class Handler(BaseHTTPRequestHandler):
             },
         )
 
+    def policy_authorization_for_request(
+        self,
+        path: str,
+        body: bytes,
+    ) -> dict[str, object]:
+        lane_by_path = {
+            "/v1/prefetch": "prefetch",
+            "/v1/chat/completions": "chat",
+            "/api/chat": "chat",
+            "/api/generate": "chat",
+            "/api/embed": "embed",
+            "/v1/embeddings": "embed",
+            "/api/embeddings": "embed",
+            "/v1/rerank": "rerank",
+            "/rerank": "rerank",
+            "/v1/safety/classify": "safety",
+            "/safety/classify": "safety",
+            "/v1/ocr": "ocr",
+            "/ocr": "ocr",
+            "/transcribe": "asr",
+            "/v1/audio/transcriptions": "asr",
+        }
+        lane = lane_by_path.get(path, "gateway")
+        payload: dict[str, object] = {}
+        if body and not path.startswith(
+            ("/transcribe", "/v1/audio", "/v1/ocr", "/ocr")
+        ):
+            try:
+                parsed = json.loads(body.decode("utf-8"))
+                if isinstance(parsed, dict):
+                    payload = parsed
+            except Exception:
+                payload = {}
+        manual_degraded = payload.get("manual_degraded_authorization")
+        loaded = load_route_policy_artifact(allow_missing_default=False)
+        artifact = loaded.get("artifact") if isinstance(loaded, dict) else {}
+        return authorize_route_under_policy(
+            policy_artifact=artifact if isinstance(artifact, dict) else {},
+            execution_mode=f"gateway:{path}",
+            requested_provider="norllama",
+            requested_model=str(payload.get("model") or "").strip(),
+            requested_lane=lane,
+            manual_degraded_authorization=manual_degraded
+            if isinstance(manual_degraded, dict)
+            else None,
+        )
+
+    def enforce_policy_for_request(self, path: str, body: bytes) -> bool:
+        authorization = self.policy_authorization_for_request(path, body)
+        if authorization.get("allowed"):
+            self._activity_extra = {
+                **dict(getattr(self, "_activity_extra", {}) or {}),
+                "policy_id": str(authorization.get("policy_id") or ""),
+                "policy_hash": str(authorization.get("policy_hash") or ""),
+                "policy_lifecycle_state": str(
+                    authorization.get("lifecycle_state") or ""
+                ),
+            }
+            return True
+        self.send_json(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            policy_block_response(authorization),
+        )
+        return False
+
     def do_POST(self) -> None:
         self.begin_request()
         parsed = urllib.parse.urlsplit(self.path)
         body = self.read_body()
         if parsed.path == "/v1/prefetch":
+            if not self.enforce_policy_for_request(parsed.path, body):
+                return
             self.handle_prefetch(body)
             return
         if parsed.path == "/v1/evict":
             self.handle_evict(body)
             return
         if parsed.path == "/v1/chat/completions":
+            if not self.enforce_policy_for_request(parsed.path, body):
+                return
             self.handle_unified_chat(body)
             return
         if parsed.path in {"/v1/embeddings", "/api/embeddings"}:
+            if not self.enforce_policy_for_request(parsed.path, body):
+                return
             self.handle_openai_embeddings(body)
             return
         if parsed.path in {"/v1/rerank", "/rerank"}:
+            if not self.enforce_policy_for_request(parsed.path, body):
+                return
             self.handle_rerank(body)
             return
         if parsed.path in {"/v1/safety/classify", "/safety/classify"}:
+            if not self.enforce_policy_for_request(parsed.path, body):
+                return
             self.handle_safety_classify(body)
             return
         if parsed.path in {"/v1/ocr", "/ocr"}:
+            if not self.enforce_policy_for_request(parsed.path, body):
+                return
             self.handle_ocr(
                 parsed.path + (f"?{parsed.query}" if parsed.query else ""), body
             )
             return
         if parsed.path in {"/api/chat", "/api/generate", "/api/show", "/api/embed"}:
+            if parsed.path != "/api/show" and not self.enforce_policy_for_request(
+                parsed.path,
+                body,
+            ):
+                return
             self.handle_ollama_compat_post(parsed.path, body)
             return
         if parsed.path in {"/transcribe", "/v1/audio/transcriptions"}:
+            if not self.enforce_policy_for_request(parsed.path, body):
+                return
             self.handle_unified_transcribe(body)
             return
         if parsed.path.startswith("/media/"):

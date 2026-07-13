@@ -9,9 +9,11 @@ from app.services.norllama.route_proof import (
     normalize_route_receipt_for_completion_gate,
     receipt_completion_gate_passes,
 )
+from app.services.norllama.route_policy import route_policy_contract
 
 
 def _base_receipt() -> dict[str, object]:
+    policy = route_policy_contract()
     return {
         "schema": "norman.norllama.route-receipt.v1",
         "status": "completed",
@@ -37,6 +39,15 @@ def _base_receipt() -> dict[str, object]:
         "peer_path": ["https://llm.home.arpa/v1", "spark-151"],
         "route_reason": "local first",
         "policy_mode": "local_first",
+        "policy_id": policy["policy_id"],
+        "policy_hash": policy["policy_hash"],
+        "policy_integrity_valid": True,
+        "policy_lifecycle_state": "valid",
+        "policy_default_route_allowed": True,
+        "policy_issued_at": policy["issued_at"],
+        "policy_expires_at": policy["expires_at"],
+        "policy_refresh_generation": policy["refresh_generation"],
+        "manual_degraded_authorized": False,
         "cloud_proxy": False,
         "benchmark_packet_id": "uplink-route-proof-1",
         "benchmark_source": "uplink_benchmark",
@@ -322,3 +333,65 @@ def test_route_receipt_normalizer_runs_before_completion_gate():
     assert receipt_completion_gate_passes(
         normalized, audit=audit, require_verifier=True
     )
+
+
+def test_route_receipt_audit_rejects_expired_policy_for_production_completion():
+    receipt = _base_receipt()
+    receipt["policy_lifecycle_state"] = "expired_blocked"
+    receipt["policy_default_route_allowed"] = False
+
+    audit = audit_route_receipt(receipt)
+
+    assert audit["pass"] is False
+    assert "policy_lifecycle_not_allowed:expired_blocked" in audit["failures"]
+    assert "policy_default_route_not_allowed" in audit["failures"]
+
+
+def test_route_receipt_audit_rejects_wrong_policy_hash():
+    receipt = _base_receipt()
+    receipt["policy_hash"] = "0" * 64
+
+    audit = audit_route_receipt(receipt)
+
+    assert audit["pass"] is False
+    assert "policy_hash_differs_from_active_authority" in audit["failures"]
+
+
+def test_route_receipt_records_manual_degraded_authorization():
+    receipt = _base_receipt()
+    receipt["policy_lifecycle_state"] = "expired_blocked"
+    receipt["policy_default_route_allowed"] = False
+    receipt["production_route_eligible"] = False
+    receipt["manual_degraded_authorized"] = True
+    receipt["manual_degraded_authorization"] = {
+        "manual_degraded_authorized": True,
+        "authorization_id": "manual-1",
+        "authorized_by": "operator",
+        "authorization_reason": "policy refresh drill",
+        "authorization_created_at": "2026-07-13T12:00:00Z",
+        "authorization_expires_at": "2026-07-13T13:00:00Z",
+        "cloud_allowed": False,
+    }
+
+    audit = audit_route_receipt(receipt)
+
+    assert audit["pass"] is True
+
+
+def test_route_receipt_rejects_manual_degraded_as_production():
+    receipt = _base_receipt()
+    receipt["manual_degraded_authorized"] = True
+    receipt["manual_degraded_authorization"] = {
+        "manual_degraded_authorized": True,
+        "authorization_id": "manual-1",
+        "authorized_by": "operator",
+        "authorization_reason": "policy refresh drill",
+        "authorization_created_at": "2026-07-13T12:00:00Z",
+        "authorization_expires_at": "2026-07-13T13:00:00Z",
+        "cloud_allowed": False,
+    }
+
+    audit = audit_route_receipt(receipt)
+
+    assert audit["pass"] is False
+    assert "manual_degraded_marked_production_eligible" in audit["failures"]

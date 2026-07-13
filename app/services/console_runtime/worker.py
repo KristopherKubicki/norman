@@ -566,6 +566,7 @@ class DbConsoleRuntimeWorker:
             metadata={
                 "source": "runtime_worker",
                 "worker_id": opts.worker_id,
+                "route_policy": route_policy,
                 "goal_phase": _clean(opts.metadata.get("goal_phase")),
                 "goal_task_kind": _clean(opts.metadata.get("goal_task_kind"))
                 or task_kind,

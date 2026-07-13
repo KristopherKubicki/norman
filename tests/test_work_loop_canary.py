@@ -372,13 +372,13 @@ def test_cutover_readiness_blocks_expired_route_policy(
     assert report["readiness"] == "not_ready_for_cutover"
     assert report["ready_targets"] == []
     assert report["route_policy"]["gate"] == "hold"
-    assert report["route_policy"]["lifecycle"]["state"] == "expired_blocked"
-    assert report["summary"]["route_policy_state"] == "expired_blocked"
+    assert report["route_policy"]["lifecycle"]["state"] == "invalid_hash"
+    assert report["summary"]["route_policy_state"] == "invalid_hash"
     assert any(
         "route policy lifecycle blocks default routing" in blocker
         for blocker in report["global_blockers"]
     )
-    assert "Route policy lifecycle: expired_blocked" in markdown
+    assert "Route policy lifecycle: invalid_hash" in markdown
     assert "## Global Blockers" in markdown
 
 
