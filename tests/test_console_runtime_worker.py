@@ -491,6 +491,11 @@ def test_db_console_runtime_worker_uses_route_model_unless_route_locked(db):
             dry_run=True,
             include_capabilities=False,
             model="qwen3.6:35b-a3b-q4_K_M",
+            metadata={
+                "requested_model": "gpt-5.4",
+                "route_selected_model": "gpt-5.4",
+                "target_model": "gpt-5.4",
+            },
         ),
         adapter=adapter,
     )

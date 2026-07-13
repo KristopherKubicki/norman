@@ -668,6 +668,7 @@ class DbConsoleRuntimeWorker:
                 max_output_tokens=opts.max_output_tokens,
             ),
             metadata={
+                **opts.metadata,
                 "route_policy": route_policy,
                 "norllama_route": route_payload,
                 "norllama_task_kind": task_kind,
@@ -680,7 +681,6 @@ class DbConsoleRuntimeWorker:
                 "runtime_job_id": job_id,
                 "console_runtime_job_id": job_id,
                 "worker_id": opts.worker_id,
-                **opts.metadata,
                 "invocation_id": invocation_id,
                 "request_id": invocation_id,
                 "console_runtime_session": session_name,
