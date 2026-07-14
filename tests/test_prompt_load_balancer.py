@@ -518,11 +518,11 @@ def test_openai_compat_rejects_unsupported_tool_parameters(test_app, monkeypatch
     headers = _proxy_headers(monkeypatch)
 
     response = test_app.post(
-        "/v1/responses",
+        "/v1/chat/completions",
         headers=headers,
         json={
             "model": "gpt-5.5",
-            "input": "status?",
+            "messages": [{"role": "user", "content": "status?"}],
             "tools": [{"type": "function", "name": "shell"}],
         },
     )
@@ -658,6 +658,106 @@ def test_openai_compat_responses_routes_once_and_preserves_instructions(
     ]
 
 
+def test_openai_compat_responses_can_return_explicit_tool_call(monkeypatch):
+    import app.services.prompt_provider_facade as facade
+
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: _mock_local_chat(
+            kwargs["messages"],
+            kwargs["model"],
+        )
+        | {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"tool_call":{"name":"shell","arguments":{"cmd":"pwd"}}}'
+                        )
+                    }
+                }
+            ]
+        },
+    )
+
+    response = execute_openai_responses_facade(
+        {
+            "model": "gpt-5.5",
+            "input": "check the repo",
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "shell",
+                        "description": "Run a shell command.",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+        }
+    )
+
+    assert response["output_text"] == ""
+    assert response["output"][0]["type"] == "function_call"
+    assert response["output"][0]["name"] == "shell"
+    assert response["output"][0]["arguments"] == '{"cmd":"pwd"}'
+    compat = response["norman"]["responses_compatibility"]
+    assert compat["tools_declared"] == 1
+    assert compat["tool_calls_returned"] == 1
+    assert response["norman"]["route_receipt"]["schema"] == (
+        "norman.norllama.route-receipt.v1"
+    )
+
+
+def test_openai_compat_responses_replays_previous_response_and_tool_output(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    facade.reset_facade_response_state()
+    invocations = []
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+
+    def fake_chat(**kwargs):
+        invocations.append(kwargs)
+        return _mock_local_chat(kwargs["messages"], kwargs["model"])
+
+    monkeypatch.setattr(facade.norllama_gateway, "invoke_text_chat", fake_chat)
+
+    first = execute_openai_responses_facade(
+        {"model": "gpt-5.5", "input": "remember alpha"}
+    )
+    second = execute_openai_responses_facade(
+        {
+            "model": "gpt-5.5",
+            "previous_response_id": first["id"],
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_shell",
+                    "output": "tool says beta",
+                },
+                {"role": "user", "content": "continue"},
+            ],
+        }
+    )
+
+    assert second["norman"]["responses_compatibility"]["history_replayed"] is True
+    replayed = invocations[-1]["messages"]
+    assert {"role": "assistant", "content": "local ok"} in replayed
+    assert {
+        "role": "tool",
+        "content": "Tool output for call_shell: tool says beta",
+    } in replayed
+    assert {"role": "user", "content": "continue"} in replayed
+
+
 def test_openai_compat_proxy_observability_records_success_without_prompt_leak(
     test_app,
     monkeypatch,
@@ -719,7 +819,7 @@ def test_openai_compat_proxy_observability_reports_auth_and_unsupported_alerts(
         json={
             "model": "gpt-5.5",
             "input": "status?",
-            "tools": [{"type": "function", "name": "shell"}],
+            "background": True,
         },
     )
     assert unsupported.status_code == 501
