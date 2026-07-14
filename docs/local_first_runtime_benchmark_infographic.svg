@@ -1,223 +1,214 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1480" viewBox="0 0 1800 1480" role="img" aria-labelledby="title desc">
-<title id="title">Norman local-first runtime and Bedrock fallback benchmark</title>
-<desc id="desc">Updated infographic showing Norman local-first prompt routing, Norllama mesh execution, policy proof, and live Bedrock OpenAI GPT-5.4, GPT-5.5, and GPT-5.6 benchmark results.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1800" height="2240" viewBox="0 0 1800 2240" role="img" aria-labelledby="title desc">
+<title id="title">Norman local-first runtime, Norllama benchmark matrix, and Bedrock cloud fallback canary</title>
+<desc id="desc">Infographic combining the Uplink Norllama benchmark matrix with the compact Bedrock GPT-5.4, GPT-5.5, and GPT-5.6 transport canary. It shows local-first routing and cloud fallback roles without changing production defaults.</desc>
 <defs>
 <marker id="arrow" viewBox="0 0 10 10" refX="8.4" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#24313a"/></marker>
+<clipPath id="norclip"><rect x="74" y="624" width="982" height="590" rx="10"/></clipPath>
 <style>
-.bg{fill:#f6f7f3}.title{font:700 34px DejaVu Sans,Arial,sans-serif;fill:#1f2933}.subtitle{font:500 16px DejaVu Sans,Arial,sans-serif;fill:#52606d}.section{font:700 21px DejaVu Sans,Arial,sans-serif;fill:#1f2933}.card-title{font:700 17px DejaVu Sans,Arial,sans-serif;fill:#1f2933}.label{font:700 11px DejaVu Sans,Arial,sans-serif;fill:#39444e;text-transform:uppercase;letter-spacing:.4px}.text{font:500 14px DejaVu Sans,Arial,sans-serif;fill:#34414d}.small{font:500 12px DejaVu Sans,Arial,sans-serif;fill:#586474}.mono{font:600 12px DejaVu Sans Mono,Consolas,monospace;fill:#24313a}.tiny{font:600 10px DejaVu Sans Mono,Consolas,monospace;fill:#24313a}.panel{fill:#fff;stroke:#2f3b46;stroke-width:1.4}.green{fill:#e7f4ec;stroke:#4c8b6f;stroke-width:1.6}.blue{fill:#eaf1fb;stroke:#55749d;stroke-width:1.6}.gold{fill:#f8efd8;stroke:#b88932;stroke-width:1.6}.red{fill:#f9e7df;stroke:#b56854;stroke-width:1.6}.card{fill:#fff;stroke:#8d99a6;stroke-width:1.1}.pill{fill:#eef2f5;stroke:#a5b0bb;stroke-width:1}.pill-green{fill:#dcefe5;stroke:#4c8b6f;stroke-width:1}.pill-gold{fill:#f2e2b7;stroke:#b88932;stroke-width:1}.pill-red{fill:#f5d9cf;stroke:#b56854;stroke-width:1}.line{stroke:#c2c8cf;stroke-width:1}.flow{fill:none;stroke:#24313a;stroke-width:2.2;marker-end:url(#arrow)}.flow-dash{fill:none;stroke:#9a4a36;stroke-width:2;stroke-dasharray:7 7;marker-end:url(#arrow)}
+.bg{fill:#f6f7f3}.title{font:700 34px DejaVu Sans,Arial,sans-serif;fill:#1f2933}.subtitle{font:500 16px DejaVu Sans,Arial,sans-serif;fill:#52606d}.section{font:700 21px DejaVu Sans,Arial,sans-serif;fill:#1f2933}.card-title{font:700 17px DejaVu Sans,Arial,sans-serif;fill:#1f2933}.label{font:700 11px DejaVu Sans,Arial,sans-serif;fill:#39444e;text-transform:uppercase;letter-spacing:.4px}.text{font:500 14px DejaVu Sans,Arial,sans-serif;fill:#34414d}.small{font:500 12px DejaVu Sans,Arial,sans-serif;fill:#586474}.mono{font:600 12px DejaVu Sans Mono,Consolas,monospace;fill:#24313a}.tiny{font:600 10px DejaVu Sans Mono,Consolas,monospace;fill:#24313a}.panel{fill:#fff;stroke:#2f3b46;stroke-width:1.4}.green{fill:#e7f4ec;stroke:#4c8b6f;stroke-width:1.6}.blue{fill:#eaf1fb;stroke:#55749d;stroke-width:1.6}.gold{fill:#f8efd8;stroke:#b88932;stroke-width:1.6}.red{fill:#f9e7df;stroke:#b56854;stroke-width:1.6}.card{fill:#fff;stroke:#8d99a6;stroke-width:1.1}.dark-card{fill:#17212b;stroke:#53606c;stroke-width:1.2}.pill{fill:#eef2f5;stroke:#a5b0bb;stroke-width:1}.pill-green{fill:#dcefe5;stroke:#4c8b6f;stroke-width:1}.pill-gold{fill:#f2e2b7;stroke:#b88932;stroke-width:1}.pill-red{fill:#f5d9cf;stroke:#b56854;stroke-width:1}.line{stroke:#c2c8cf;stroke-width:1}.flow{fill:none;stroke:#24313a;stroke-width:2.2;marker-end:url(#arrow)}.flow-dash{fill:none;stroke:#9a4a36;stroke-width:2;stroke-dasharray:7 7;marker-end:url(#arrow)}
 </style>
 </defs>
-<rect class="bg" x="0" y="0" width="1800" height="1480"/>
-
-<text x="54" y="58" class="title">Norman local-first runtime and Bedrock fallback benchmark</text>
-<text x="56" y="88" class="subtitle">Updated 2026-07-14 from live Codex amazon-bedrock artifacts. Local/Norllama stays first; cloud is a policy-governed fallback.</text>
-<rect x="56" y="112" width="390" height="32" rx="10" class="pill"/>
-<text x="72" y="133" class="mono">Run: gpt56_bedrock_matrix_20260714T190821Z</text>
-<rect x="462" y="112" width="274" height="32" rx="10" class="pill-green"/>
-<text x="478" y="133" class="mono">Profile: ob-traqline-admin us-east-2</text>
-<rect x="752" y="112" width="244" height="32" rx="10" class="pill-gold"/>
-<text x="768" y="133" class="mono">Per-call cap: 120 seconds</text>
-<rect x="1012" y="112" width="324" height="32" rx="10" class="pill"/>
-<text x="1028" y="133" class="mono">Scored cells: 29/30 compact matrix</text>
-<rect x="48" y="170" width="1704" height="328" rx="14" class="green"/>
-<text x="74" y="204" class="section">1. Prompt load-balancer flow</text>
-<rect x="76" y="242" width="250" height="158" rx="8" class="card"/>
-<text x="96" y="274" class="card-title">TUI / Codex Client</text>
-<text x="96" y="306" class="text">status? / task / tool call</text>
-<text x="96" y="330" class="text">OpenAI-style facade or native TUI</text>
-<text x="96" y="354" class="text">exact job id + session</text>
-<rect x="380" y="242" width="270" height="158" rx="8" class="card"/>
-<text x="400" y="274" class="card-title">Norman Prompt Layer</text>
-<text x="400" y="306" class="text">intent prefilter</text>
-<text x="400" y="330" class="text">risk + difficulty + regret</text>
-<text x="400" y="354" class="text">structured route envelope</text>
-<rect x="704" y="242" width="280" height="158" rx="8" class="card"/>
-<text x="724" y="274" class="card-title">Local Fast Path</text>
-<text x="724" y="306" class="text">no-model status where possible</text>
-<text x="724" y="330" class="text">deterministic experts</text>
-<text x="724" y="354" class="text">schema and non-answer gates</text>
-<rect x="1038" y="242" width="270" height="158" rx="8" class="card"/>
-<text x="1058" y="274" class="card-title">Norllama Mesh</text>
-<text x="1058" y="306" class="text">llm.home.arpa front door</text>
-<text x="1058" y="330" class="text">Spark workers + fallback node</text>
-<text x="1058" y="354" class="text">target/gateway/observed worker</text>
-<rect x="1360" y="242" width="322" height="158" rx="8" class="card"/>
-<text x="1380" y="274" class="card-title">Cloud Last Resort</text>
-<text x="1380" y="306" class="text">Bedrock/OpenAI only if allowed</text>
-<text x="1380" y="330" class="text">5.4 default cloud baseline</text>
-<text x="1380" y="354" class="text">5.5/5.6 as judged challengers</text>
-<path class="flow" d="M 326 320 L 380 320"/>
-<path class="flow" d="M 650 320 L 704 320"/>
-<path class="flow" d="M 984 320 L 1038 320"/>
-<path class="flow" d="M 1308 320 L 1360 320"/>
-<rect x="232" y="430" width="672" height="44" rx="8" class="pill-green"/>
-<text x="250" y="457" class="text">Receipts prove policy ID/hash, route authority, local/cloud bucket, output shape, and worker attribution.</text>
-<rect x="930" y="430" width="560" height="44" rx="8" class="pill-gold"/>
-<text x="948" y="457" class="text">Fast status and simple facts should often answer locally before any paid model call.</text>
-<rect x="48" y="530" width="1704" height="548" rx="14" class="blue"/>
-<text x="74" y="564" class="section">2. Live compact Bedrock matrix</text>
-<text x="74" y="592" class="subtitle">Cases: status fast-path, route gate, revenue math, numeric compaction, bounded-code route, cost caveat.</text>
-<text x="74" y="630" class="label">Model</text>
-<text x="332" y="630" class="label">Role</text>
-<text x="634" y="630" class="label">Scored</text>
-<text x="794" y="630" class="label">Format</text>
-<text x="919" y="630" class="label">Oper.</text>
-<text x="1046" y="630" class="label">Exact</text>
-<text x="1164" y="630" class="label">Avg</text>
-<text x="1292" y="630" class="label">Median/Max</text>
-<text x="1429" y="630" class="label">Est. cost</text>
-<text x="1564" y="630" class="label">Verdict</text>
-<line x1="74" y1="644" x2="1706" y2="644" class="line"/>
-<line x1="74" y1="654" x2="1706" y2="654" class="line"/>
-<text x="74" y="678" class="text">Bedrock Codex 5.4</text>
-<text x="74" y="698" class="mono">openai.gpt-5.4</text>
-<text x="332" y="678" class="small">Default cloud fallback</text>
-<text x="634" y="678" class="mono">6/6</text>
-<text x="794" y="678" class="mono">6/6</text>
-<text x="919" y="678" class="mono">4/6</text>
-<text x="1046" y="678" class="mono">4/6</text>
-<text x="1164" y="678" class="mono">92.5</text>
-<text x="1292" y="678" class="mono">39s/142s</text>
-<text x="1429" y="678" class="mono">$0.163</text>
-<rect x="1556" y="658" width="184" height="28" rx="7" class="pill-gold"/>
-<text x="1568" y="678" class="mono">keep default</text>
-<line x1="74" y1="726" x2="1706" y2="726" class="line"/>
-<text x="74" y="750" class="text">Bedrock Codex 5.5</text>
-<text x="74" y="770" class="mono">openai.gpt-5.5</text>
-<text x="332" y="750" class="small">Final authority / tiebreaker</text>
-<text x="634" y="750" class="mono">5/6</text>
-<text x="794" y="750" class="mono">5/6</text>
-<text x="919" y="750" class="mono">3/6</text>
-<text x="1046" y="750" class="mono">3/6</text>
-<text x="1164" y="750" class="mono">91.0</text>
-<text x="1292" y="750" class="mono">22s/120s</text>
-<text x="1429" y="750" class="mono">$0.310</text>
-<rect x="1556" y="730" width="184" height="28" rx="7" class="pill-red"/>
-<text x="1568" y="750" class="mono">route timeout</text>
-<line x1="74" y1="798" x2="1706" y2="798" class="line"/>
-<text x="74" y="822" class="text">Bedrock GPT-5.6 Luna</text>
-<text x="74" y="842" class="mono">openai.gpt-5.6-luna</text>
-<text x="332" y="822" class="small">Cheap cloud fallback challenger</text>
-<text x="634" y="822" class="mono">6/6</text>
-<text x="794" y="822" class="mono">6/6</text>
-<text x="919" y="822" class="mono">4/6</text>
-<text x="1046" y="822" class="mono">4/6</text>
-<text x="1164" y="822" class="mono">92.5</text>
-<text x="1292" y="822" class="mono">8s/12s</text>
-<text x="1429" y="822" class="mono">$0.075</text>
-<rect x="1556" y="802" width="184" height="28" rx="7" class="pill-green"/>
-<text x="1568" y="822" class="mono">fast challenger</text>
-<line x1="74" y1="870" x2="1706" y2="870" class="line"/>
-<text x="74" y="894" class="text">Bedrock GPT-5.6 Terra</text>
-<text x="74" y="914" class="mono">openai.gpt-5.6-terra</text>
-<text x="332" y="894" class="small">Default challenger</text>
-<text x="634" y="894" class="mono">6/6</text>
-<text x="794" y="894" class="mono">6/6</text>
-<text x="919" y="894" class="mono">4/6</text>
-<text x="1046" y="894" class="mono">4/6</text>
-<text x="1164" y="894" class="mono">92.5</text>
-<text x="1292" y="894" class="mono">6s/12s</text>
-<text x="1429" y="894" class="mono">$0.185</text>
-<rect x="1556" y="874" width="184" height="28" rx="7" class="pill-green"/>
-<text x="1568" y="894" class="mono">fast challenger</text>
-<line x1="74" y1="942" x2="1706" y2="942" class="line"/>
-<text x="74" y="966" class="text">Bedrock GPT-5.6 Sol</text>
-<text x="74" y="986" class="mono">openai.gpt-5.6-sol</text>
-<text x="332" y="966" class="small">Frontier challenger</text>
-<text x="634" y="966" class="mono">6/6</text>
-<text x="794" y="966" class="mono">6/6</text>
-<text x="919" y="966" class="mono">4/6</text>
-<text x="1046" y="966" class="mono">4/6</text>
-<text x="1164" y="966" class="mono">89.2</text>
-<text x="1292" y="966" class="mono">13s/21s</text>
-<text x="1429" y="966" class="mono">$0.372</text>
-<rect x="1556" y="946" width="184" height="28" rx="7" class="pill-gold"/>
-<text x="1568" y="966" class="mono">fast challenger</text>
-<text x="74" y="1018" class="section">Cell-level findings</text>
-<text x="310" y="1018" class="small">Green = operational pass. Gold = scorable but missed strict wording. Red = timeout/route failure.</text>
-<text x="324" y="1034" class="tiny">Status fast path</text>
-<text x="538" y="1034" class="tiny">Route gate</text>
-<text x="752" y="1034" class="tiny">Revenue math</text>
-<text x="966" y="1034" class="tiny">Context compaction</text>
-<text x="1180" y="1034" class="tiny">Bounded code route</text>
-<text x="1394" y="1034" class="tiny">Cost caveat</text>
-<text x="74" y="1064" class="mono">openai.gpt-5.4</text>
-<rect x="324" y="1044" width="170" height="28" rx="6" class="pill-gold"/>
-<text x="376" y="1063" class="mono">75</text>
-<rect x="538" y="1044" width="170" height="28" rx="6" class="pill-gold"/>
-<text x="590" y="1063" class="mono">80</text>
-<rect x="752" y="1044" width="170" height="28" rx="6" class="pill-green"/>
-<text x="804" y="1063" class="mono">100</text>
-<rect x="966" y="1044" width="170" height="28" rx="6" class="pill-green"/>
-<text x="1018" y="1063" class="mono">100</text>
-<rect x="1180" y="1044" width="170" height="28" rx="6" class="pill-green"/>
-<text x="1232" y="1063" class="mono">100</text>
-<rect x="1394" y="1044" width="170" height="28" rx="6" class="pill-green"/>
-<text x="1446" y="1063" class="mono">100</text>
-<text x="74" y="1102" class="mono">openai.gpt-5.5</text>
-<rect x="324" y="1082" width="170" height="28" rx="6" class="pill-gold"/>
-<text x="376" y="1101" class="mono">75</text>
-<rect x="538" y="1082" width="170" height="28" rx="6" class="pill-gold"/>
-<text x="590" y="1101" class="mono">80</text>
-<rect x="752" y="1082" width="170" height="28" rx="6" class="pill-red"/>
-<text x="804" y="1101" class="mono">timeout</text>
-<rect x="966" y="1082" width="170" height="28" rx="6" class="pill-green"/>
-<text x="1018" y="1101" class="mono">100</text>
-<rect x="1180" y="1082" width="170" height="28" rx="6" class="pill-green"/>
-<text x="1232" y="1101" class="mono">100</text>
-<rect x="1394" y="1082" width="170" height="28" rx="6" class="pill-green"/>
-<text x="1446" y="1101" class="mono">100</text>
-<text x="74" y="1140" class="mono">openai.gpt-5.6-luna</text>
-<rect x="324" y="1120" width="170" height="28" rx="6" class="pill-gold"/>
-<text x="376" y="1139" class="mono">75</text>
-<rect x="538" y="1120" width="170" height="28" rx="6" class="pill-gold"/>
-<text x="590" y="1139" class="mono">80</text>
-<rect x="752" y="1120" width="170" height="28" rx="6" class="pill-green"/>
-<text x="804" y="1139" class="mono">100</text>
-<rect x="966" y="1120" width="170" height="28" rx="6" class="pill-green"/>
-<text x="1018" y="1139" class="mono">100</text>
-<rect x="1180" y="1120" width="170" height="28" rx="6" class="pill-green"/>
-<text x="1232" y="1139" class="mono">100</text>
-<rect x="1394" y="1120" width="170" height="28" rx="6" class="pill-green"/>
-<text x="1446" y="1139" class="mono">100</text>
-<text x="74" y="1178" class="mono">openai.gpt-5.6-terra</text>
-<rect x="324" y="1158" width="170" height="28" rx="6" class="pill-gold"/>
-<text x="376" y="1177" class="mono">75</text>
-<rect x="538" y="1158" width="170" height="28" rx="6" class="pill-gold"/>
-<text x="590" y="1177" class="mono">80</text>
-<rect x="752" y="1158" width="170" height="28" rx="6" class="pill-green"/>
-<text x="804" y="1177" class="mono">100</text>
-<rect x="966" y="1158" width="170" height="28" rx="6" class="pill-green"/>
-<text x="1018" y="1177" class="mono">100</text>
-<rect x="1180" y="1158" width="170" height="28" rx="6" class="pill-green"/>
-<text x="1232" y="1177" class="mono">100</text>
-<rect x="1394" y="1158" width="170" height="28" rx="6" class="pill-green"/>
-<text x="1446" y="1177" class="mono">100</text>
-<text x="74" y="1216" class="mono">openai.gpt-5.6-sol</text>
-<rect x="324" y="1196" width="170" height="28" rx="6" class="pill-gold"/>
-<text x="376" y="1215" class="mono">75</text>
-<rect x="538" y="1196" width="170" height="28" rx="6" class="pill-gold"/>
-<text x="590" y="1215" class="mono">80</text>
-<rect x="752" y="1196" width="170" height="28" rx="6" class="pill-green"/>
-<text x="804" y="1215" class="mono">100</text>
-<rect x="966" y="1196" width="170" height="28" rx="6" class="pill-green"/>
-<text x="1018" y="1215" class="mono">80</text>
-<rect x="1180" y="1196" width="170" height="28" rx="6" class="pill-green"/>
-<text x="1232" y="1215" class="mono">100</text>
-<rect x="1394" y="1196" width="170" height="28" rx="6" class="pill-green"/>
-<text x="1446" y="1215" class="mono">100</text>
-<rect x="48" y="1110" width="1704" height="250" rx="14" class="gold"/>
-<text x="74" y="1144" class="section">3. Routing guidance from this run</text>
-<text x="84" y="1182" class="card-title">Keep Bedrock GPT-5.4 as the default cloud fallback</text>
-<text x="470" y="1182" class="text">It completed all six compact cases with strict JSON and no route failure. Two semantic misses are prompt/rubric wording, not model availability.</text>
-<text x="84" y="1216" class="card-title">Do not promote GPT-5.5 as default</text>
-<text x="470" y="1216" class="text">The xhigh run timed out on the revenue arithmetic cell under the 120s cap. Keep it as final authority/tiebreaker, not routine fallback.</text>
-<text x="84" y="1250" class="card-title">Benchmark GPT-5.6 Luna and Terra harder</text>
-<text x="470" y="1250" class="text">Both were much faster than 5.4/5.5 on this compact set with the same score profile as 5.4. Luna is the lowest-cost challenger; Terra is the same price class as 5.4.</text>
-<text x="84" y="1284" class="card-title">Treat GPT-5.6 Sol as frontier challenger only</text>
-<text x="470" y="1284" class="text">It completed the suite but had the lowest compact avg and costs the same class as 5.5. Use only where quality beats cost in larger gates.</text>
-<text x="84" y="1318" class="card-title">Local/Norllama still owns the first pass</text>
-<text x="470" y="1318" class="text">Status, supplied-state summaries, deterministic routing, and preprocessing should be answered locally before any cloud model is considered.</text>
-<rect x="48" y="1392" width="1704" height="50" rx="8" class="panel"/>
-<text x="68" y="1422" class="mono">Source artifacts: /tmp/norman_tui_benchmarks/gpt56_bedrock_matrix_20260714T190821Z/provider_readiness.json and per-cell Codex JSONL. Pricing uses Bedrock published OpenAI token rates current in this repo note.</text>
+<rect class="bg" x="0" y="0" width="1800" height="2240"/>
+<text x="54" y="58" class="title">Norman local-first runtime, Norllama benchmarks, and cloud fallback canary</text>
+<text x="56" y="88" class="subtitle">Uplink Norllama packet plus Bedrock GPT-5.4/5.5/5.6 transport canary. Defaults stay local-first until stronger promotion evidence exists.</text>
+<rect x="56" y="112" width="344" height="32" rx="8" class="pill"/>
+<text x="72" y="133" class="mono">Norllama packet: 2026-07-08T20:55:11Z</text>
+<rect x="416" y="112" width="296" height="32" rx="8" class="pill-green"/>
+<text x="432" y="133" class="mono">Source: Uplink benchmark matrix</text>
+<rect x="728" y="112" width="300" height="32" rx="8" class="pill-gold"/>
+<text x="744" y="133" class="mono">Bedrock run: 20260714T190821Z</text>
+<rect x="1044" y="112" width="330" height="32" rx="8" class="pill"/>
+<text x="1060" y="133" class="mono">Policy: canary evidence, not promotion</text>
+<rect x="48" y="168" width="1704" height="366" rx="14" class="green"/>
+<text x="74" y="204" class="section">1. Overlay architecture to test next</text>
+<rect x="76" y="242" width="220" height="154" rx="8" class="card"/>
+<text x="94" y="274" class="card-title">TUI / Codex Client</text>
+<text x="94" y="306" class="text">status? / task / tool call</text>
+<text x="94" y="330" class="text">OpenAI-style facade or native TUI</text>
+<text x="94" y="354" class="text">exact job id + session</text>
+<rect x="352" y="242" width="220" height="154" rx="8" class="card"/>
+<text x="370" y="274" class="card-title">Norman Prompt Layer</text>
+<text x="370" y="306" class="text">intent prefilter</text>
+<text x="370" y="330" class="text">risk + difficulty + regret</text>
+<text x="370" y="354" class="text">single route envelope</text>
+<rect x="628" y="242" width="220" height="154" rx="8" class="card"/>
+<text x="646" y="274" class="card-title">Local Deterministic</text>
+<text x="646" y="306" class="text">status fast path</text>
+<text x="646" y="330" class="text">logs, counts, compaction</text>
+<text x="646" y="354" class="text">no paid model when facts suffice</text>
+<rect x="904" y="242" width="220" height="154" rx="8" class="card"/>
+<text x="922" y="274" class="card-title">Norllama Mesh</text>
+<text x="922" y="306" class="text">llm.home.arpa front door</text>
+<text x="922" y="330" class="text">Spark workers + fallback node</text>
+<text x="922" y="354" class="text">benchmark-backed local lanes</text>
+<rect x="1180" y="242" width="220" height="154" rx="8" class="card"/>
+<text x="1198" y="274" class="card-title">Bedrock Residue</text>
+<text x="1198" y="306" class="text">Luna: narrow structured</text>
+<text x="1198" y="330" class="text">Terra: normal cloud planning</text>
+<text x="1198" y="354" class="text">Sol: high-regret ambiguity</text>
+<rect x="1456" y="242" width="220" height="154" rx="8" class="card"/>
+<text x="1474" y="274" class="card-title">Human Approval</text>
+<text x="1474" y="306" class="text">external writes</text>
+<text x="1474" y="330" class="text">irreversible action</text>
+<text x="1474" y="354" class="text">authority boundary</text>
+<path class="flow" d="M 296 320 L 352 320"/>
+<path class="flow" d="M 572 320 L 628 320"/>
+<path class="flow" d="M 848 320 L 904 320"/>
+<path class="flow" d="M 1124 320 L 1180 320"/>
+<path class="flow" d="M 1400 320 L 1456 320"/>
+<rect x="232" y="426" width="520" height="54" rx="8" class="pill-green"/>
+<text x="250" y="450" class="text">Rule: local deterministic and Norllama own first pass. Cloud</text>
+<text x="250" y="468" class="text">must be justified by policy, quality, or regret.</text>
+<rect x="782" y="426" width="640" height="54" rx="8" class="pill-gold"/>
+<text x="800" y="450" class="text">Audit overlay: GPT-5.6 Luna/Terra/Sol are promising shadow canaries, not enough</text>
+<text x="800" y="468" class="text">evidence to change production defaults.</text>
+<rect x="48" y="566" width="1704" height="720" rx="14" class="blue"/>
+<text x="74" y="600" class="section">2. Uplink Norllama benchmark matrix</text>
+<text x="74" y="626" class="subtitle">The matrix is the actual Uplink-rendered benchmark board; the summary values below come from the same benchmark packet.</text>
+<rect x="70" y="650" width="990" height="570" rx="8" class="dark-card"/>
+<image href="norllama_benchmark_matrix_latest.png" xlink:href="norllama_benchmark_matrix_latest.png" x="74" y="654" width="982" height="562" preserveAspectRatio="xMidYMid meet" clip-path="url(#norclip)"/>
+<text x="82" y="1238" class="tiny">Embedded repo asset: docs/norllama_benchmark_matrix_latest.png</text>
+<rect x="1094" y="650" width="270" height="62" rx="8" class="card"/>
+<text x="1110" y="672" class="label">Attempts</text>
+<text x="1110" y="698" class="mono">15,365</text>
+<rect x="1394" y="650" width="270" height="62" rx="8" class="card"/>
+<text x="1410" y="672" class="label">Answers</text>
+<text x="1410" y="698" class="mono">5,473</text>
+<rect x="1094" y="736" width="270" height="62" rx="8" class="card"/>
+<text x="1110" y="758" class="label">Tokens</text>
+<text x="1110" y="784" class="mono">32,793,652</text>
+<rect x="1394" y="736" width="270" height="62" rx="8" class="card"/>
+<text x="1410" y="758" class="label">Suites / profiles</text>
+<text x="1410" y="784" class="mono">19 / 34</text>
+<rect x="1094" y="822" width="270" height="62" rx="8" class="card"/>
+<text x="1110" y="844" class="label">Runtime failures</text>
+<text x="1110" y="870" class="mono">9,892</text>
+<rect x="1394" y="822" width="270" height="62" rx="8" class="card"/>
+<text x="1410" y="844" class="label">Zero-token rows</text>
+<text x="1410" y="870" class="mono">9,970</text>
+<text x="1094" y="936" class="card-title">Retained warm set</text>
+<text x="1100" y="966" class="mono">gemma4:31b</text>
+<text x="1100" y="986" class="small">Multi Agent. indirect_benchmark, benchmark_backed.</text>
+<text x="1100" y="1010" class="mono">qwen3-coder-next:q4_K_M</text>
+<text x="1100" y="1030" class="small">Code Flow. benchmark_backed.</text>
+<text x="1100" y="1054" class="mono">gemma4:26b-a4b-it-q4_K_M</text>
+<text x="1100" y="1074" class="small">LLM Prep, Web Crawl Static, Governed Drafts. benchmark_backed,</text>
+<text x="1100" y="1090" class="small">indirect_benchmark.</text>
+<text x="1100" y="1114" class="mono">bge-m3:latest</text>
+<text x="1100" y="1134" class="small">Specialist dispatch: embedding_proxy, rerank_proxy,</text>
+<text x="1100" y="1150" class="small">hybrid_pipeline; keep-alive 30m</text>
+<text x="1094" y="1182" class="card-title">Packet guidance</text>
+<text x="1100" y="1210" class="text">Use local benchmark winners for draft, prep, retrieval, and status</text>
+<text x="1100" y="1228" class="text">work. Keep exact publishable facts, external actions, and promotions</text>
+<text x="1100" y="1246" class="text">behind verifier or approval gates.</text>
+<rect x="48" y="1320" width="1704" height="450" rx="14" class="gold"/>
+<text x="74" y="1354" class="section">3. Bedrock compact cloud canary overlaid with Norllama</text>
+<text x="74" y="1382" class="subtitle">Completed rows prove access, transport, and strict JSON behavior. They do not prove production promotion or real hybrid tool safety.</text>
+<text x="74" y="1424" class="label">Model</text>
+<text x="300" y="1424" class="label">Role to test</text>
+<text x="710" y="1424" class="label">Scored</text>
+<text x="805" y="1424" class="label">Fmt</text>
+<text x="890" y="1424" class="label">Oper</text>
+<text x="975" y="1424" class="label">Exact</text>
+<text x="1065" y="1424" class="label">Avg</text>
+<text x="1150" y="1424" class="label">Median/Max</text>
+<text x="1280" y="1424" class="label">Failures</text>
+<text x="1450" y="1424" class="label">Verdict</text>
+<line x1="74" y1="1438" x2="1706" y2="1438" class="line"/>
+<text x="74" y="1472" class="text">Bedrock Codex 5.4</text>
+<text x="74" y="1492" class="mono">openai.gpt-5.4</text>
+<text x="300" y="1472" class="small">Current cloud baseline</text>
+<text x="710" y="1472" class="mono">6/6</text>
+<text x="805" y="1472" class="mono">6/6</text>
+<text x="890" y="1472" class="mono">4/6</text>
+<text x="975" y="1472" class="mono">4/6</text>
+<text x="1065" y="1472" class="mono">92.5</text>
+<text x="1150" y="1472" class="mono">39s/142s</text>
+<text x="1280" y="1472" class="mono">-</text>
+<rect x="1442" y="1452" width="168" height="28" rx="7" class="pill-gold"/>
+<text x="1454" y="1472" class="mono">hold default</text>
+<line x1="74" y1="1512" x2="1706" y2="1512" class="line"/>
+<text x="74" y="1540" class="text">Bedrock Codex 5.5</text>
+<text x="74" y="1560" class="mono">openai.gpt-5.5</text>
+<text x="300" y="1540" class="small">Authority fallback while timeout is</text>
+<text x="300" y="1556" class="small">understood</text>
+<text x="710" y="1540" class="mono">5/6</text>
+<text x="805" y="1540" class="mono">5/6</text>
+<text x="890" y="1540" class="mono">3/6</text>
+<text x="975" y="1540" class="mono">3/6</text>
+<text x="1065" y="1540" class="mono">91.0</text>
+<text x="1150" y="1540" class="mono">22s/120s</text>
+<text x="1280" y="1540" class="mono">timeout</text>
+<rect x="1442" y="1520" width="168" height="28" rx="7" class="pill-red"/>
+<text x="1454" y="1540" class="mono">timeout risk</text>
+<line x1="74" y1="1580" x2="1706" y2="1580" class="line"/>
+<text x="74" y="1608" class="text">Bedrock GPT-5.6 Luna</text>
+<text x="74" y="1628" class="mono">openai.gpt-5.6-luna</text>
+<text x="300" y="1608" class="small">Narrow structured residue candidate</text>
+<text x="710" y="1608" class="mono">6/6</text>
+<text x="805" y="1608" class="mono">6/6</text>
+<text x="890" y="1608" class="mono">4/6</text>
+<text x="975" y="1608" class="mono">4/6</text>
+<text x="1065" y="1608" class="mono">92.5</text>
+<text x="1150" y="1608" class="mono">8s/12s</text>
+<text x="1280" y="1608" class="mono">-</text>
+<rect x="1442" y="1588" width="168" height="28" rx="7" class="pill-green"/>
+<text x="1454" y="1608" class="mono">shadow canary</text>
+<line x1="74" y1="1648" x2="1706" y2="1648" class="line"/>
+<text x="74" y="1676" class="text">Bedrock GPT-5.6 Terra</text>
+<text x="74" y="1696" class="mono">openai.gpt-5.6-terra</text>
+<text x="300" y="1676" class="small">Normal cloud planner/verifier challenger</text>
+<text x="710" y="1676" class="mono">6/6</text>
+<text x="805" y="1676" class="mono">6/6</text>
+<text x="890" y="1676" class="mono">4/6</text>
+<text x="975" y="1676" class="mono">4/6</text>
+<text x="1065" y="1676" class="mono">92.5</text>
+<text x="1150" y="1676" class="mono">6s/12s</text>
+<text x="1280" y="1676" class="mono">-</text>
+<rect x="1442" y="1656" width="168" height="28" rx="7" class="pill-green"/>
+<text x="1454" y="1676" class="mono">shadow canary</text>
+<line x1="74" y1="1716" x2="1706" y2="1716" class="line"/>
+<text x="74" y="1744" class="text">Bedrock GPT-5.6 Sol</text>
+<text x="74" y="1764" class="mono">openai.gpt-5.6-sol</text>
+<text x="300" y="1744" class="small">High-regret ambiguity challenger</text>
+<text x="710" y="1744" class="mono">6/6</text>
+<text x="805" y="1744" class="mono">6/6</text>
+<text x="890" y="1744" class="mono">4/6</text>
+<text x="975" y="1744" class="mono">4/6</text>
+<text x="1065" y="1744" class="mono">89.2</text>
+<text x="1150" y="1744" class="mono">13s/21s</text>
+<text x="1280" y="1744" class="mono">-</text>
+<rect x="1442" y="1724" width="168" height="28" rx="7" class="pill-green"/>
+<text x="1454" y="1744" class="mono">shadow only</text>
+<line x1="74" y1="1784" x2="1706" y2="1784" class="line"/>
+<rect x="48" y="1806" width="1704" height="330" rx="14" class="red"/>
+<text x="74" y="1840" class="section">4. Incorporated audit caveats before promotion</text>
+<text x="74" y="1878" class="card-title">Scorer repairs</text>
+<text x="244" y="1878" class="text">Fix false negatives for escalate_only_if wording, release_route_gate exact</text>
+<text x="244" y="1896" class="text">comparison, and aggregate/dedupe detection; rescore all completed rows.</text>
+<text x="74" y="1930" class="card-title">Reproducibility</text>
+<text x="244" y="1930" class="text">Packet must include runner/scorer source, source commit, exact commands,</text>
+<text x="244" y="1948" class="text">Codex version, Bedrock profile/config hash, archive SHA256SUMS, and every</text>
+<text x="74" y="1982" class="card-title">Provider truth</text>
+<text x="244" y="1982" class="text">Capture requested and effective model, region, Bedrock request ID, response</text>
+<text x="244" y="2000" class="text">ID, service tier, cache status, and route receipt.</text>
+<text x="74" y="2034" class="card-title">Neutral prompts</text>
+<text x="244" y="2034" class="text">Remove answers embedded in prompts. Cases must not assume 5.4 default or</text>
+<text x="244" y="2052" class="text">5.5 final authority.</text>
+<text x="920" y="1878" class="card-title">Separate gates</text>
+<text x="1156" y="1878" class="text">Track transport, strict-format, capability, policy-safety,</text>
+<text x="1156" y="1896" class="text">latency, and economic gates separately.</text>
+<text x="920" y="1930" class="card-title">Fair matrix</text>
+<text x="1156" y="1930" class="text">Run matched roles: Luna low, Terra medium, Sol high/xhigh,</text>
+<text x="1156" y="1948" class="text">GPT-5.4 medium, GPT-5.5 high/xhigh, and direct OpenAI</text>
+<text x="1156" y="1966" class="text">GPT-5.6 Flex where available.</text>
+<text x="920" y="1982" class="card-title">Repetition and cache</text>
+<text x="1156" y="1982" class="text">Randomize order, run at least three repetitions per case,</text>
+<text x="1156" y="2000" class="text">and report cold, warm, and cached behavior.</text>
+<text x="920" y="2034" class="card-title">Real hybrid flows</text>
+<text x="1156" y="2034" class="text">Planner contract, sandboxed worker, tests, verifier,</text>
+<text x="1156" y="2052" class="text">escalation, brokered tool calls, cancellation, timeout,</text>
+<text x="1156" y="2070" class="text">and scope-violation cases.</text>
+<text x="74" y="2180" class="subtitle">Bottom line: Norllama benchmark matrix now sits in the same release graphic as the Bedrock canary. Cloud model roles are candidates to test, not defaults to promote.</text>
+<text x="74" y="2210" class="tiny">Source image SHA256: d5eb916c98f4ba881235fe7db043cb3406c7e11ab75500c1915fc4dfca98e59c</text>
 </svg>
