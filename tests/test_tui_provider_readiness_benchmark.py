@@ -30,6 +30,9 @@ def test_candidate_registry_keeps_future_model_watch_slots(monkeypatch) -> None:
     candidates = {candidate.id: candidate for candidate in module.CANDIDATES}
 
     assert candidates["codex_openai_5_6_flex_xhigh"].status == "future-watch"
+    assert candidates["codex_bedrock_5_4_low"].model == "openai.gpt-5.4"
+    assert candidates["codex_bedrock_5_4_low"].status == "ready"
+    assert candidates["codex_bedrock_5_4_low"].runbook_role.startswith("Default cloud")
     assert candidates["codex_bedrock_5_6_luna_low"].model == "openai.gpt-5.6-luna"
     assert candidates["codex_bedrock_5_6_luna_low"].status == "canary-ready"
     assert candidates["codex_bedrock_5_6_terra_low"].model == "openai.gpt-5.6-terra"
@@ -358,7 +361,7 @@ def test_cli_writes_provider_readiness_report(tmp_path: Path, monkeypatch) -> No
 
     assert report["schema"] == "norman.tui.provider-readiness-benchmark.v1"
     assert report["summary"]["case_count"] == 28
-    assert report["summary"]["candidate_count"] == 25
+    assert report["summary"]["candidate_count"] == 26
     assert report["promotion_criteria"]["required_operational_passes"] == 28
     assert report["promotion_criteria"]["minimum_exact_passes"] == 26
     assert report["hybrid_strategies"][0]["id"] == "cheap_executor_with_escalation"

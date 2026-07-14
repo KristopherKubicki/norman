@@ -1663,6 +1663,18 @@ CANDIDATES = [
         activation_signals=["direct OpenAI auth smoke passes", "no usage-limit error"],
     ),
     Candidate(
+        id="codex_bedrock_5_4_low",
+        label="Bedrock Codex 5.4",
+        runtime="codex-bedrock",
+        model="openai.gpt-5.4",
+        provider="aws-bedrock",
+        effort="low",
+        notes="Desired default cloud fallback after local/Norllama; use GPT-5.5 only for final authority or failed evidence gates.",
+        access_class="bedrock-serverless",
+        smoke_step="Run profile-v2 Codex smoke through the work-special route picker, then the compact readiness suite.",
+        runbook_role="Default cloud planner/verifier when local/Norllama cannot safely finish.",
+    ),
+    Candidate(
         id="codex_bedrock_5_5_xhigh",
         label="Bedrock Codex 5.5",
         runtime="codex-bedrock",
