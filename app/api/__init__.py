@@ -18,6 +18,7 @@ from .api_v1.routers import (
     console_runtime_router,
     prompt_router_router,
 )
+from .openai_compat import router as openai_compat_router
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -47,3 +48,4 @@ router.include_router(prompt_router_router, prefix=api_prefix)
 def init_routers(app: FastAPI):
     app.include_router(router, prefix=settings.api_prefix)
     app.include_router(keys_compat_router)
+    app.include_router(openai_compat_router)

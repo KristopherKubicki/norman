@@ -345,3 +345,96 @@ def test_prompt_router_openai_chat_adapter_rejects_missing_prompt(test_app):
     )
 
     assert response.status_code == 400
+
+
+def _mock_local_chat(messages, model, **kwargs):
+    return {
+        "model": model,
+        "choices": [{"message": {"content": "local ok"}}],
+        "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6},
+        "headers": {"x-norllama-observed-worker": "spark-151"},
+        "raw": {"messages": messages, "kwargs": kwargs},
+    }
+
+
+def test_openai_compat_chat_completions_routes_local_first(test_app, monkeypatch):
+    from app.services.prompt_provider_facade import norllama_gateway
+
+    monkeypatch.setattr(norllama_gateway, "invoke_text_chat", _mock_local_chat)
+
+    response = test_app.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-5.5",
+            "messages": [{"role": "user", "content": "status?"}],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["object"] == "chat.completion"
+    assert payload["choices"][0]["message"]["content"] == "local ok"
+    assert payload["model"].startswith("qwen3.6")
+    assert payload["usage"]["total_tokens"] == 6
+    assert payload["norman"]["local_execution"] is True
+    assert payload["norman"]["cloud_forwarding"] is False
+    assert payload["norman"]["route"]["selected_runtime"] == "localllm"
+    assert payload["norman"]["route"]["selected_provider"] == "norllama"
+
+
+def test_openai_compat_chat_completions_streams_sse(test_app, monkeypatch):
+    from app.services.prompt_provider_facade import norllama_gateway
+
+    monkeypatch.setattr(norllama_gateway, "invoke_text_chat", _mock_local_chat)
+
+    response = test_app.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-5.5",
+            "messages": [{"role": "user", "content": "status?"}],
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert "data:" in response.text
+    assert "local ok" in response.text
+    assert "data: [DONE]" in response.text
+
+
+def test_openai_compat_responses_routes_local_first(test_app, monkeypatch):
+    from app.services.prompt_provider_facade import norllama_gateway
+
+    monkeypatch.setattr(norllama_gateway, "invoke_text_chat", _mock_local_chat)
+
+    response = test_app.post(
+        "/v1/responses",
+        json={"model": "gpt-5.5", "input": "status?"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["object"] == "response"
+    assert payload["status"] == "completed"
+    assert payload["output_text"] == "local ok"
+    assert payload["usage"]["total_tokens"] == 6
+    assert payload["norman"]["local_execution"] is True
+
+
+def test_openai_compat_models_requires_proxy_token_when_configured(
+    test_app,
+    monkeypatch,
+):
+    monkeypatch.setenv("NORMAN_PROMPT_PROXY_TOKEN", "proxy-token")
+
+    denied = test_app.get("/v1/models")
+    assert denied.status_code == 401
+
+    allowed = test_app.get(
+        "/v1/models",
+        headers={"Authorization": "Bearer proxy-token"},
+    )
+    assert allowed.status_code == 200
+    payload = allowed.json()
+    assert payload["object"] == "list"
+    assert payload["norman"]["base_url"] == "/v1"
