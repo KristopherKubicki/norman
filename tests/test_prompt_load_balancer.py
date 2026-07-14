@@ -3,6 +3,11 @@ from app.services.prompt_load_balancer import (
     prompt_load_balancer_capabilities,
     provider_adapter_decision,
 )
+from app.services.prompt_provider_facade import (
+    FacadeError,
+    execute_openai_chat_facade,
+    execute_openai_responses_facade,
+)
 
 
 def test_prompt_load_balancer_routes_typo_status_prompts_local_first():
@@ -357,13 +362,57 @@ def _mock_local_chat(messages, model, **kwargs):
     }
 
 
+def _proxy_headers(monkeypatch):
+    monkeypatch.setenv("NORMAN_PROMPT_PROXY_TOKEN", "proxy-token")
+    return {"Authorization": "Bearer proxy-token"}
+
+
+def _local_route_envelope(**overrides):
+    route = {
+        "local": True,
+        "cloud_proxy": False,
+        "attribution": {
+            "route_policy_authorization": {
+                "allowed": True,
+                "integrity_valid": True,
+                "lifecycle_state": "valid",
+                "default_route_allowed": True,
+            }
+        },
+    }
+    recommendation = {
+        "execution_allowed": True,
+        "requires_approval": False,
+        "task_kind": "summarize",
+        "reasoning_tier": "simple",
+    }
+    decision = {"allowed": True}
+    route.update(overrides.pop("route", {}))
+    recommendation.update(overrides.pop("recommendation", {}))
+    decision.update(overrides.pop("decision", {}))
+    envelope = {
+        "selected_runtime": "localllm",
+        "selected_provider": "norllama",
+        "selected_model": "qwen3.6:35b-a3b-q4_K_M",
+        "norman_route": {
+            "route": route,
+            "recommendation": recommendation,
+            "decision": decision,
+        },
+    }
+    envelope.update(overrides)
+    return envelope
+
+
 def test_openai_compat_chat_completions_routes_local_first(test_app, monkeypatch):
     from app.services.prompt_provider_facade import norllama_gateway
 
+    headers = _proxy_headers(monkeypatch)
     monkeypatch.setattr(norllama_gateway, "invoke_text_chat", _mock_local_chat)
 
     response = test_app.post(
         "/v1/chat/completions",
+        headers=headers,
         json={
             "model": "gpt-5.5",
             "messages": [{"role": "user", "content": "status?"}],
@@ -385,10 +434,12 @@ def test_openai_compat_chat_completions_routes_local_first(test_app, monkeypatch
 def test_openai_compat_chat_completions_streams_sse(test_app, monkeypatch):
     from app.services.prompt_provider_facade import norllama_gateway
 
+    headers = _proxy_headers(monkeypatch)
     monkeypatch.setattr(norllama_gateway, "invoke_text_chat", _mock_local_chat)
 
     response = test_app.post(
         "/v1/chat/completions",
+        headers=headers,
         json={
             "model": "gpt-5.5",
             "messages": [{"role": "user", "content": "status?"}],
@@ -405,10 +456,12 @@ def test_openai_compat_chat_completions_streams_sse(test_app, monkeypatch):
 def test_openai_compat_responses_routes_local_first(test_app, monkeypatch):
     from app.services.prompt_provider_facade import norllama_gateway
 
+    headers = _proxy_headers(monkeypatch)
     monkeypatch.setattr(norllama_gateway, "invoke_text_chat", _mock_local_chat)
 
     response = test_app.post(
         "/v1/responses",
+        headers=headers,
         json={"model": "gpt-5.5", "input": "status?"},
     )
 
@@ -425,16 +478,179 @@ def test_openai_compat_models_requires_proxy_token_when_configured(
     test_app,
     monkeypatch,
 ):
-    monkeypatch.setenv("NORMAN_PROMPT_PROXY_TOKEN", "proxy-token")
+    headers = _proxy_headers(monkeypatch)
 
     denied = test_app.get("/v1/models")
     assert denied.status_code == 401
+    assert denied.json()["error"]["type"] == "authentication_error"
 
     allowed = test_app.get(
         "/v1/models",
-        headers={"Authorization": "Bearer proxy-token"},
+        headers=headers,
     )
     assert allowed.status_code == 200
     payload = allowed.json()
     assert payload["object"] == "list"
     assert payload["norman"]["base_url"] == "/v1"
+
+
+def test_openai_compat_auth_fails_closed_without_facade_token(test_app, monkeypatch):
+    monkeypatch.delenv("NORMAN_PROMPT_PROXY_TOKEN", raising=False)
+
+    for method, path, body in [
+        ("get", "/v1/models", None),
+        (
+            "post",
+            "/v1/chat/completions",
+            {"model": "gpt-5.5", "messages": [{"role": "user", "content": "status?"}]},
+        ),
+        ("post", "/v1/responses", {"model": "gpt-5.5", "input": "status?"}),
+    ]:
+        request = getattr(test_app, method)
+        response = request(path, json=body) if body is not None else request(path)
+        assert response.status_code == 503
+        assert response.json()["error"]["code"] == "proxy_token_not_configured"
+
+
+def test_openai_compat_rejects_unsupported_tool_parameters(test_app, monkeypatch):
+    headers = _proxy_headers(monkeypatch)
+
+    response = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={
+            "model": "gpt-5.5",
+            "input": "status?",
+            "tools": [{"type": "function", "name": "shell"}],
+        },
+    )
+
+    assert response.status_code == 501
+    error = response.json()["error"]
+    assert error["type"] == "unsupported_parameter"
+    assert error["param"] == "tools"
+
+
+def test_openai_compat_blocks_requires_approval_before_model_call(monkeypatch):
+    import app.services.prompt_provider_facade as facade
+
+    calls = []
+    monkeypatch.setattr(
+        facade,
+        "provider_adapter_decision",
+        lambda **kwargs: _local_route_envelope(
+            recommendation={"execution_allowed": False, "requires_approval": True}
+        ),
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: calls.append(kwargs) or _mock_local_chat([], "qwen3.6:27b"),
+    )
+
+    try:
+        execute_openai_chat_facade(
+            {"model": "gpt-5.5", "messages": [{"role": "user", "content": "restart"}]}
+        )
+    except FacadeError as exc:
+        assert exc.code == "facade_policy_blocked"
+    else:
+        raise AssertionError("expected facade policy block")
+
+    assert calls == []
+
+
+def test_openai_compat_rejects_inconsistent_or_cloud_proxy_routes(monkeypatch):
+    import app.services.prompt_provider_facade as facade
+
+    variants = [
+        _local_route_envelope(selected_runtime="openai", selected_provider="norllama"),
+        _local_route_envelope(selected_runtime="localllm", selected_provider="openai"),
+        _local_route_envelope(route={"local": False, "cloud_proxy": True}),
+    ]
+    calls = []
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: calls.append(kwargs) or _mock_local_chat([], "qwen3.6:27b"),
+    )
+
+    for route in variants:
+        monkeypatch.setattr(facade, "provider_adapter_decision", lambda **_: route)
+        try:
+            execute_openai_chat_facade(
+                {
+                    "model": "gpt-5.5",
+                    "messages": [{"role": "user", "content": "status?"}],
+                }
+            )
+        except FacadeError as exc:
+            assert exc.code == "facade_policy_blocked"
+        else:
+            raise AssertionError("expected local-only predicate failure")
+
+    assert calls == []
+
+
+def test_openai_compat_rejects_unprivileged_raw_backend_model(monkeypatch):
+    import app.services.prompt_provider_facade as facade
+
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+
+    try:
+        execute_openai_chat_facade(
+            {
+                "model": "qwen3.6:35b-a3b-q4_K_M",
+                "messages": [{"role": "user", "content": "status?"}],
+            }
+        )
+    except FacadeError as exc:
+        assert exc.code == "raw_model_not_allowed"
+    else:
+        raise AssertionError("expected raw model rejection")
+
+
+def test_openai_compat_responses_routes_once_and_preserves_instructions(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    decisions = []
+    invocations = []
+
+    def fake_decision(**kwargs):
+        decisions.append(kwargs)
+        return _local_route_envelope(selected_model="qwen3.6:27b")
+
+    def fake_chat(**kwargs):
+        invocations.append(kwargs)
+        return _mock_local_chat(kwargs["messages"], kwargs["model"])
+
+    monkeypatch.setattr(facade, "provider_adapter_decision", fake_decision)
+    monkeypatch.setattr(facade.norllama_gateway, "invoke_text_chat", fake_chat)
+
+    response = execute_openai_responses_facade(
+        {
+            "model": "gpt-5.5",
+            "instructions": "Answer briefly.",
+            "input": [
+                {
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": "Preserve this role."}],
+                },
+                {"role": "user", "content": "status?"},
+            ],
+        }
+    )
+
+    assert response["object"] == "response"
+    assert len(decisions) == 1
+    assert len(invocations) == 1
+    assert invocations[0]["model"] == "qwen3.6:27b"
+    assert invocations[0]["messages"] == [
+        {"role": "system", "content": "Answer briefly."},
+        {"role": "developer", "content": "Preserve this role."},
+        {"role": "user", "content": "status?"},
+    ]
