@@ -14,6 +14,7 @@ from .keys import compat_router as keys_compat_router
 from .keys import router as keys_router
 from .operator_state import router as operator_state_router
 from .console_runtime import router as console_runtime_router
+from .prompt_router import router as prompt_router_router
 
 __all__ = [
     "actions_router",
@@ -32,4 +33,5 @@ __all__ = [
     "keys_compat_router",
     "operator_state_router",
     "console_runtime_router",
+    "prompt_router_router",
 ]

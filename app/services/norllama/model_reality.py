@@ -156,7 +156,7 @@ def _service_model_matches(model: str, candidate: Any) -> bool:
 def _mesh_workers(mesh: dict[str, Any] | None) -> list[dict[str, Any]]:
     if not isinstance(mesh, dict):
         return []
-    workers = mesh.get("workers")
+    workers = mesh.get("workers") or []
     return [dict(worker) for worker in workers if isinstance(worker, dict)]
 
 
