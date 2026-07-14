@@ -14,9 +14,9 @@ from typing import Any
 
 DEFAULT_OUTPUT_JSON = Path("/tmp/norman_tui_benchmarks/bedrock_region_smoke.json")
 DEFAULT_SINCE_HOURS = 24
-DEFAULT_PROFILE_V2 = "traqline-bedrock-us-west-2"
-DEFAULT_MODEL = "openai.gpt-5.5"
-DEFAULT_AWS_REGION = "us-west-2"
+DEFAULT_PROFILE_V2 = "traqline-bedrock"
+DEFAULT_MODEL = "openai.gpt-5.4"
+DEFAULT_AWS_REGION = "us-east-2"
 DEFAULT_LIVE_TIMEOUT_SECONDS = 180
 WORK_SPECIAL_DB_PATHS = {
     "compere": "/home/kristopher/.codex-compere/web-bridge/tui_state.sqlite3",
