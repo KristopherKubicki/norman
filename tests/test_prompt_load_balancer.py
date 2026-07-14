@@ -429,6 +429,8 @@ def test_openai_compat_chat_completions_routes_local_first(test_app, monkeypatch
     assert payload["norman"]["cloud_forwarding"] is False
     assert payload["norman"]["route"]["selected_runtime"] == "localllm"
     assert payload["norman"]["route"]["selected_provider"] == "norllama"
+    assert payload["norman"]["norllama"]["observed_worker"] == "spark-151"
+    assert payload["norman"]["norllama"]["observed_worker_source"] == "gateway_headers"
 
 
 def test_openai_compat_chat_completions_streams_sse(test_app, monkeypatch):

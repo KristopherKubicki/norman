@@ -157,6 +157,56 @@ def _usage(payload: Mapping[str, Any]) -> dict[str, int]:
     }
 
 
+def _header_value(headers: Mapping[str, Any], *names: str) -> str:
+    normalized = {_lower(key): _clean(value) for key, value in headers.items()}
+    for name in names:
+        value = normalized.get(_lower(name))
+        if value:
+            return value
+    return ""
+
+
+def _planned_attribution(route_envelope: Mapping[str, Any]) -> dict[str, Any]:
+    return _nested_dict(route_envelope, "norman_route", "route", "attribution")
+
+
+def _gateway_attribution(
+    *,
+    result: Mapping[str, Any],
+    route_envelope: Mapping[str, Any],
+) -> dict[str, Any]:
+    headers = result.get("headers") if isinstance(result.get("headers"), dict) else {}
+    planned = _planned_attribution(route_envelope)
+    target_worker = _clean(
+        planned.get("target_worker_id")
+        or planned.get("worker_id")
+        or planned.get("target_worker")
+    )
+    observed_worker = _header_value(
+        headers,
+        "x-norllama-observed-worker",
+        "x-norllama-worker",
+        "x-norllama-worker-id",
+    ) or _clean(planned.get("observed_worker"))
+    gateway_selected_worker = (
+        _header_value(
+            headers,
+            "x-norllama-gateway-selected-worker",
+            "x-norllama-selected-worker",
+            "x-norllama-worker",
+            "x-norllama-worker-id",
+        )
+        or observed_worker
+    )
+    return {
+        "target_worker": target_worker,
+        "gateway_selected_worker": gateway_selected_worker,
+        "observed_worker": observed_worker,
+        "observed_worker_source": "gateway_headers" if observed_worker else "",
+        "headers": dict(headers),
+    }
+
+
 def _choice_text(payload: Mapping[str, Any]) -> str:
     choices = payload.get("choices") if isinstance(payload.get("choices"), list) else []
     if not choices:
@@ -450,6 +500,10 @@ def _execute_authorized_chat(
             code="empty_local_response",
         )
     usage = _usage(result)
+    gateway_attribution = _gateway_attribution(
+        result=result,
+        route_envelope=route_envelope,
+    )
     response_id = f"chatcmpl-norman-{uuid.uuid4().hex}"
     created = int(time.time())
     return {
@@ -475,9 +529,8 @@ def _execute_authorized_chat(
             "streaming_mode": "buffered_sse"
             if provider_payload.get("stream")
             else "none",
-            "gateway_headers": result.get("headers")
-            if isinstance(result.get("headers"), dict)
-            else {},
+            "norllama": gateway_attribution,
+            "gateway_headers": gateway_attribution["headers"],
         },
     }
 
