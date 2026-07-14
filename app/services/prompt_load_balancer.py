@@ -141,6 +141,31 @@ _LOCAL_MUTATION_WORDS = {
     "write",
 }
 _SECRET_WORDS = {"credential", "key", "password", "secret", "token"}
+_HIGH_REASONING_WORDS = {
+    "architecture",
+    "audit",
+    "benchmark",
+    "degraded",
+    "design",
+    "failover",
+    "judge",
+    "migration",
+    "outlier",
+    "policy",
+    "proof",
+    "release",
+    "rollback",
+    "routing",
+    "security",
+    "verify",
+}
+_DETERMINISTIC_INTENTS = {"continue_work", "next_steps", "quick_status"}
+_SPECIALIST_TASK_KINDS = {
+    NorllamaTaskKind.ASR.value,
+    NorllamaTaskKind.DOC_PARSE.value,
+    NorllamaTaskKind.OCR.value,
+    NorllamaTaskKind.RERANK.value,
+}
 
 
 def _clean(value: Any) -> str:
@@ -347,6 +372,113 @@ def classify_prompt(
     }
 
 
+def _reasoning_profile(
+    classification: Mapping[str, Any],
+    *,
+    prompt: str,
+) -> dict[str, Any]:
+    tokens = set(_word_tokens(prompt))
+    intent = _clean(classification.get("intent"))
+    task_kind = _clean(classification.get("task_kind"))
+    risk_level = _clean(classification.get("risk_level"))
+    word_count = len(_word_tokens(prompt))
+    high_reasoning_signals = sorted(tokens & _HIGH_REASONING_WORDS)
+    if intent in _DETERMINISTIC_INTENTS and risk_level == "low":
+        tier = "simple"
+        effort = "deterministic_or_tiny_local"
+        reason = "prompt matches a short operator-control/status intent"
+    elif task_kind in _SPECIALIST_TASK_KINDS:
+        tier = "specialist"
+        effort = "local_specialist"
+        reason = "prompt or artifacts select a specialist lane"
+    elif risk_level in {"high", "critical"}:
+        tier = "high_reasoning"
+        effort = "local_high_reasoning_then_approval"
+        reason = "prompt may mutate external state or needs approval"
+    elif (
+        high_reasoning_signals
+        or word_count >= 80
+        or task_kind
+        in {
+            NorllamaTaskKind.CODE.value,
+            NorllamaTaskKind.VERIFY.value,
+            NorllamaTaskKind.JUDGE.value,
+        }
+    ):
+        tier = "high_reasoning"
+        effort = "spark_high_reasoning"
+        reason = "prompt needs planning, verification, code, or policy reasoning"
+    else:
+        tier = "standard_local_llm"
+        effort = "spark_local_llm"
+        reason = "prompt is local-eligible and needs normal language reasoning"
+    return {
+        "schema": "norman.prompt-reasoning-profile.v1",
+        "tier": tier,
+        "effort": effort,
+        "word_count": word_count,
+        "high_reasoning_signals": high_reasoning_signals,
+        "reason": reason,
+    }
+
+
+def _strategy_for_prompt(
+    classification: Mapping[str, Any],
+    reasoning: Mapping[str, Any],
+    *,
+    allow_cloud_escalation: bool,
+) -> dict[str, Any]:
+    tier = _clean(reasoning.get("tier"))
+    intent = _clean(classification.get("intent"))
+    task_kind = _clean(classification.get("task_kind"))
+    risk_level = _clean(classification.get("risk_level"))
+    if tier == "simple":
+        strategy = "simple_local"
+        primary = "deterministic_prompt_gate"
+        fallback = "norllama_tiny_or_status_summarizer"
+    elif tier == "specialist":
+        strategy = "local_specialist"
+        primary = f"norllama_{task_kind}"
+        fallback = "spark_local_llm"
+    elif tier == "high_reasoning":
+        strategy = "local_high_reasoning"
+        primary = "spark_high_reasoning_local"
+        fallback = "cloud_llm_receipted_tiebreaker"
+    else:
+        strategy = "standard_local_llm"
+        primary = "spark_local_llm"
+        fallback = "spark_high_reasoning_local"
+    if intent == "research_or_scout":
+        fallback = "web_search_or_perplexity_then_local_synthesis"
+    cloud_position = (
+        "disabled"
+        if not allow_cloud_escalation
+        else "last_resort_after_local_receipt"
+        if risk_level in {"high", "critical"} or strategy == "local_high_reasoning"
+        else "tie_breaker_only"
+    )
+    return {
+        "schema": "norman.prompt-routing-strategy.v1",
+        "strategy": strategy,
+        "primary_executor": primary,
+        "fallback_executor": fallback,
+        "cloud_position": cloud_position,
+        "cloud_requires_receipt": True,
+        "local_prefilter_required": True,
+        "autosense_local_runtime": True,
+        "proxy_safe": True,
+        "client_integration_mode": "provider_adapter_or_sdk_wrapper",
+        "ordered_cascade": [
+            "deterministic_prompt_gate",
+            "local_specialists_if_applicable",
+            "spark_local_llm",
+            "spark_high_reasoning_local",
+            "web_search_if_task_requires_fresh_external_data",
+            "cloud_llm_receipted_tiebreaker",
+        ],
+    }
+
+
 def _runtime_provider(requested_runtime: str) -> str:
     runtime = _lower(requested_runtime).replace("_", "-")
     if runtime in _CLOUD_RUNTIMES:
@@ -415,6 +547,12 @@ def balance_prompt(
 
     prompt_route_id = f"prompt_route_{uuid.uuid4().hex}"
     classification = classify_prompt(clean_prompt, artifacts=artifacts)
+    reasoning = _reasoning_profile(classification, prompt=clean_prompt)
+    strategy = _strategy_for_prompt(
+        classification,
+        reasoning,
+        allow_cloud_escalation=allow_cloud_escalation,
+    )
     policy = _route_policy_for_prompt(
         base_policy=route_policy,
         classification=classification,
@@ -491,6 +629,8 @@ def balance_prompt(
         "source": source,
         "session": session,
         "classification": classification,
+        "reasoning_profile": reasoning,
+        "routing_strategy": strategy,
         "prompt_preprocessor": {
             "schema": "norman.prompt-preprocessor.v1",
             "stages": [
@@ -505,6 +645,12 @@ def balance_prompt(
                     "local": True,
                     "route": route.lane,
                 },
+                {
+                    "name": "network_local_runtime_autosense",
+                    "status": "handled_by_norllama_policy",
+                    "local": True,
+                    "route": route.provider,
+                },
             ],
             "normalization": "trim_lower_token_fuzzy_intent",
         },
@@ -517,6 +663,10 @@ def balance_prompt(
             "selected_model": route.model,
             "selected_lane": route.lane,
             "task_kind": task_kind,
+            "reasoning_tier": reasoning["tier"],
+            "routing_strategy": strategy["strategy"],
+            "primary_executor": strategy["primary_executor"],
+            "fallback_executor": strategy["fallback_executor"],
             "local_first": local_first,
             "cloud_last_resort": True,
             "cloud_llm_allowed_by_mode": runtime_state.cloud_llm_allowed,
@@ -532,11 +682,7 @@ def balance_prompt(
             if execution_allowed
             else "local_preflight_or_approval",
             "escalation_order": [
-                "deterministic_prompt_gate",
-                "norllama_specialists",
-                "norllama_local_llm",
-                "web_search_if_needed",
-                "cloud_llm_only_with_policy_receipt",
+                *strategy["ordered_cascade"],
             ],
         },
         "route_receipt_preview": {
@@ -555,12 +701,37 @@ def prompt_load_balancer_capabilities() -> dict[str, Any]:
         "execution_performed": False,
         "supports": {
             "deterministic_prefilter": True,
+            "reasoning_tier_selection": True,
             "local_first": True,
             "cloud_last_resort": True,
             "policy_authority": True,
             "route_receipt_preview": True,
             "cross_tui_client": True,
+            "provider_adapter_mode": True,
+            "sdk_wrapper_mode": True,
+            "transparent_mitm_required": False,
+            "local_runtime_autosense": True,
         },
+        "integration_modes": [
+            {
+                "mode": "advisory",
+                "description": "Client asks Norman for a decision, then executes the selected route.",
+            },
+            {
+                "mode": "provider_adapter",
+                "description": "Client sends provider-shaped requests to Norman; Norman applies policy before forwarding or rerouting.",
+            },
+            {
+                "mode": "sdk_wrapper",
+                "description": "Client library wraps Bedrock/OpenAI/Ollama calls with Norman route decisions.",
+            },
+        ],
+        "reasoning_tiers": [
+            "simple",
+            "specialist",
+            "standard_local_llm",
+            "high_reasoning",
+        ],
         "quick_intents": [
             "quick_status",
             "next_steps",
@@ -580,9 +751,10 @@ def prompt_load_balancer_capabilities() -> dict[str, Any]:
         ],
         "escalation_order": [
             "deterministic_prompt_gate",
-            "norllama_specialists",
-            "norllama_local_llm",
-            "web_search_if_needed",
-            "cloud_llm_only_with_policy_receipt",
+            "local_specialists_if_applicable",
+            "spark_local_llm",
+            "spark_high_reasoning_local",
+            "web_search_if_task_requires_fresh_external_data",
+            "cloud_llm_receipted_tiebreaker",
         ],
     }

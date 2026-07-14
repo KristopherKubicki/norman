@@ -849,6 +849,10 @@ def test_direct_usage_limit_recovers_stale_flex_to_bedrock_default(
         NORMAN_CODEX_SERVICE_TIER="default",
         NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
         NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_DIRECT_TIERS_ENABLED="1",
+        NORMAN_CODEX_DIRECT_MODEL="gpt-5.5",
+        NORMAN_CODEX_FLEX_MODEL="gpt-5.5",
+        NORMAN_CODEX_PRIORITY_MODEL="gpt-5.5",
         NORMAN_CODEX_STANDARD_AWS_PROFILE="ob-traqline-admin",
         NORMAN_CODEX_STANDARD_AWS_REGION="us-east-2",
     )
