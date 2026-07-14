@@ -191,6 +191,67 @@ def test_openai_chat_adapter_does_not_trust_caller_route_policy():
     assert result["selected_provider"] == "norllama"
 
 
+def test_openai_chat_adapter_transparent_log_only_is_advisory():
+    result = provider_adapter_decision(
+        provider="openai",
+        endpoint="openai.chat.completions",
+        payload={
+            "model": "gpt-5.5",
+            "messages": [{"role": "user", "content": "status?"}],
+            "norman": {"adapter_mode": "transparent_log_only"},
+        },
+    )
+
+    assert result["adapter_mode"] == "transparent_log_only"
+    assert result["adapter_mode_policy"]["enforcement_level"] == "observe_only"
+    assert result["adapter_mode_policy"]["mutates_request"] is False
+    assert result["adapter_mode_policy"]["blocks_request"] is False
+    assert result["advisory_only"] is True
+    assert result["integration_contract"]["transparent_network_interception"] is False
+    assert result["integration_contract"]["client_action"] == (
+        "forward_original_provider_request_after_recording_route_receipt"
+    )
+
+
+def test_openai_chat_adapter_guardrail_mode_can_hold_risky_prompts():
+    result = provider_adapter_decision(
+        provider="openai",
+        endpoint="openai.chat.completions",
+        payload={
+            "model": "gpt-5.5",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "restart uplink and push the deployment",
+                }
+            ],
+            "norman": {"adapter_mode": "guardrail"},
+        },
+    )
+
+    assert result["adapter_mode"] == "guardrail"
+    assert result["adapter_mode_policy"]["blocks_request"] is True
+    assert result["norman_route"]["recommendation"]["requires_approval"] is True
+    assert result["next_hop"] == "local_preflight_or_approval"
+
+
+def test_openai_chat_adapter_strict_local_disables_cloud_escalation():
+    result = provider_adapter_decision(
+        provider="openai",
+        endpoint="openai.chat.completions",
+        payload={
+            "model": "gpt-5.5",
+            "messages": [{"role": "user", "content": "review release policy proof"}],
+            "norman": {"adapter_mode": "strict_local"},
+        },
+    )
+
+    assert result["adapter_mode"] == "strict_local"
+    assert result["adapter_mode_policy"]["cloud_allowed"] is False
+    assert result["cloud_position"] == "disabled"
+    assert result["selected_runtime"] == "localllm"
+
+
 def test_openai_responses_adapter_extracts_structured_input():
     result = provider_adapter_decision(
         provider="openai",
@@ -228,6 +289,12 @@ def test_prompt_load_balancer_capabilities_document_intermediary_mode():
     assert capabilities["supports"]["provider_adapter_mode"] is True
     assert capabilities["supports"]["transparent_mitm_required"] is False
     assert capabilities["supports"]["openai_chat_completions_adapter"] is True
+    assert "intelligence" in {
+        item["mode"] for item in capabilities["intermediary_modes"]
+    }
+    assert "transparent_log_only" in {
+        item["mode"] for item in capabilities["intermediary_modes"]
+    }
     assert "high_reasoning" in capabilities["reasoning_tiers"]
     assert "provider_adapter" in {
         item["mode"] for item in capabilities["integration_modes"]

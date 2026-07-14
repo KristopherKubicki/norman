@@ -167,6 +167,68 @@ _SPECIALIST_TASK_KINDS = {
     NorllamaTaskKind.OCR.value,
     NorllamaTaskKind.RERANK.value,
 }
+_ADAPTER_MODES = {
+    "route_only": {
+        "label": "Route Only",
+        "enforcement_level": "decision_only",
+        "client_action": "execute_selected_route_or_call_norman_execution_endpoint",
+        "mutates_request": False,
+        "blocks_request": False,
+        "uses_local_intelligence": True,
+    },
+    "transparent_log_only": {
+        "label": "Transparent Log Only",
+        "enforcement_level": "observe_only",
+        "client_action": "forward_original_provider_request_after_recording_route_receipt",
+        "mutates_request": False,
+        "blocks_request": False,
+        "uses_local_intelligence": False,
+    },
+    "guardrail": {
+        "label": "Guardrail",
+        "enforcement_level": "policy_block_or_approval",
+        "client_action": "block_or_hold_policy_violations_else_forward_selected_route",
+        "mutates_request": False,
+        "blocks_request": True,
+        "uses_local_intelligence": True,
+    },
+    "intelligence": {
+        "label": "Intelligence",
+        "enforcement_level": "active_route_optimization",
+        "client_action": "execute_norman_selected_local_first_route",
+        "mutates_request": True,
+        "blocks_request": True,
+        "uses_local_intelligence": True,
+    },
+    "shadow_compare": {
+        "label": "Shadow Compare",
+        "enforcement_level": "observe_plus_shadow",
+        "client_action": "forward_original_request_and_run_local_shadow_when_available",
+        "mutates_request": False,
+        "blocks_request": False,
+        "uses_local_intelligence": True,
+    },
+    "strict_local": {
+        "label": "Strict Local",
+        "enforcement_level": "cloud_blocked",
+        "client_action": "execute_local_route_or_return_explicit_degraded_block",
+        "mutates_request": True,
+        "blocks_request": True,
+        "uses_local_intelligence": True,
+    },
+}
+_ADAPTER_MODE_ALIASES = {
+    "audit": "transparent_log_only",
+    "intelligent": "intelligence",
+    "log": "transparent_log_only",
+    "log_only": "transparent_log_only",
+    "monitor": "transparent_log_only",
+    "observe": "transparent_log_only",
+    "observe_only": "transparent_log_only",
+    "shadow": "shadow_compare",
+    "strict": "strict_local",
+    "transparent": "transparent_log_only",
+}
 
 
 def _clean(value: Any) -> str:
@@ -321,6 +383,12 @@ def _provider_runtime(provider: str) -> str:
     if clean in _LOCAL_RUNTIMES:
         return "localllm"
     return "auto"
+
+
+def _adapter_mode(value: Any) -> str:
+    clean = _lower(value).replace("-", "_").replace(" ", "_")
+    clean = _ADAPTER_MODE_ALIASES.get(clean, clean)
+    return clean if clean in _ADAPTER_MODES else "route_only"
 
 
 def classify_prompt(
@@ -768,6 +836,12 @@ def provider_adapter_decision(
 ) -> dict[str, Any]:
     provider_payload = dict(payload)
     options = _provider_options(provider_payload)
+    adapter_mode = _adapter_mode(
+        options.get("adapter_mode")
+        or options.get("intermediary_mode")
+        or options.get("mode")
+    )
+    mode_policy = _ADAPTER_MODES[adapter_mode]
     prompt = ""
     if endpoint == "openai.chat.completions":
         prompt = _messages_prompt(provider_payload.get("messages"))
@@ -794,10 +868,15 @@ def provider_adapter_decision(
     route_policy["provider_adapter"] = True
     route_policy["provider_adapter_provider"] = provider
     route_policy["provider_adapter_endpoint"] = endpoint
-    route_policy["provider_adapter_mode"] = "route_only"
+    route_policy["provider_adapter_mode"] = adapter_mode
     route_policy["caller_requested_model"] = requested_model
     route_policy["caller_route_policy_supplied"] = bool(caller_route_policy)
     route_policy["caller_route_policy_trusted"] = False
+    route_policy["intermediary_mode"] = adapter_mode
+    route_policy["intermediary_enforcement_level"] = mode_policy["enforcement_level"]
+    allow_cloud = _flag(options.get("allow_cloud_escalation"), True)
+    if adapter_mode == "strict_local":
+        allow_cloud = False
     decision = balance_prompt(
         prompt=prompt,
         source=_clean(options.get("source")) or _clean(provider),
@@ -805,7 +884,7 @@ def provider_adapter_decision(
         requested_runtime=requested_runtime,
         requested_model=requested_model,
         force_requested_runtime=force_requested_runtime,
-        allow_cloud_escalation=_flag(options.get("allow_cloud_escalation"), True),
+        allow_cloud_escalation=allow_cloud,
         route_policy=route_policy,
         context={
             "provider_adapter": {
@@ -813,6 +892,7 @@ def provider_adapter_decision(
                 "endpoint": endpoint,
                 "request_model": provider_payload.get("model"),
                 "stream": bool(provider_payload.get("stream")),
+                "adapter_mode": adapter_mode,
             }
         },
         artifacts=[dict(item) for item in _list(options.get("artifacts"))],
@@ -822,7 +902,16 @@ def provider_adapter_decision(
         "mode": "provider_adapter",
         "provider": provider,
         "endpoint": endpoint,
-        "adapter_mode": "route_only",
+        "adapter_mode": adapter_mode,
+        "adapter_mode_policy": {
+            "schema": "norman.prompt-provider-adapter.mode-policy.v1",
+            "label": mode_policy["label"],
+            "enforcement_level": mode_policy["enforcement_level"],
+            "mutates_request": mode_policy["mutates_request"],
+            "blocks_request": mode_policy["blocks_request"],
+            "uses_local_intelligence": mode_policy["uses_local_intelligence"],
+            "cloud_allowed": allow_cloud,
+        },
         "execution_performed": False,
         "forwarding_performed": False,
         "proxy_safe": True,
@@ -843,12 +932,14 @@ def provider_adapter_decision(
         "selected_provider": decision["recommendation"]["selected_provider"],
         "cloud_position": decision["routing_strategy"]["cloud_position"],
         "cloud_requires_receipt": True,
+        "advisory_only": adapter_mode in {"transparent_log_only", "shadow_compare"},
         "integration_contract": {
             "schema": "norman.prompt-provider-adapter.contract.v1",
-            "client_action": "execute_selected_route_or_call_norman_execution_endpoint",
+            "client_action": mode_policy["client_action"],
             "openai_compatible_response": False,
             "route_receipt_required_before_cloud": True,
             "local_runtime_autosense": True,
+            "transparent_network_interception": False,
         },
     }
 
@@ -874,6 +965,14 @@ def prompt_load_balancer_capabilities() -> dict[str, Any]:
             "openai_chat_completions_adapter": True,
             "openai_responses_adapter": True,
         },
+        "intermediary_modes": [
+            {
+                "mode": mode,
+                **policy,
+                "transparent_network_interception": False,
+            }
+            for mode, policy in _ADAPTER_MODES.items()
+        ],
         "integration_modes": [
             {
                 "mode": "advisory",
