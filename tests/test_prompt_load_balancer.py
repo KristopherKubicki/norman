@@ -357,7 +357,7 @@ def _mock_local_chat(messages, model, **kwargs):
         "model": model,
         "choices": [{"message": {"content": "local ok"}}],
         "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6},
-        "headers": {"x-norllama-observed-worker": "spark-151"},
+        "headers": {"x-norllama-worker-endpoint": "http://192.168.2.151:18151"},
         "raw": {"messages": messages, "kwargs": kwargs},
     }
 

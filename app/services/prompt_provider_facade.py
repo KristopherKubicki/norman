@@ -170,6 +170,19 @@ def _planned_attribution(route_envelope: Mapping[str, Any]) -> dict[str, Any]:
     return _nested_dict(route_envelope, "norman_route", "route", "attribution")
 
 
+def _worker_from_endpoint(value: str) -> str:
+    clean = _clean(value).lower()
+    if not clean:
+        return ""
+    if "192.168.2.151" in clean or "spark-151" in clean:
+        return "spark-151"
+    if "192.168.2.150" in clean or "spark-150" in clean:
+        return "spark-150"
+    if "192.168.2.133" in clean or "mac-mini-133" in clean or "2.133" in clean:
+        return "mac-mini-133"
+    return ""
+
+
 def _gateway_attribution(
     *,
     result: Mapping[str, Any],
@@ -188,6 +201,14 @@ def _gateway_attribution(
         "x-norllama-worker",
         "x-norllama-worker-id",
     ) or _clean(planned.get("observed_worker"))
+    if not observed_worker:
+        observed_worker = _worker_from_endpoint(
+            _header_value(
+                headers,
+                "x-norllama-worker-endpoint",
+                "x-norllama-upstream",
+            )
+        )
     gateway_selected_worker = (
         _header_value(
             headers,
