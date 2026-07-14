@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from secrets import compare_digest
 from typing import Any, Iterable
 
@@ -15,6 +16,13 @@ from app.services.prompt_provider_facade import (
     chat_completion_stream_chunks,
     execute_openai_chat_facade,
     execute_openai_responses_facade,
+)
+from app.services.proxy_observability import (
+    proxy_alerts,
+    proxy_dashboard,
+    proxy_events_snapshot,
+    proxy_observability_summary,
+    record_proxy_event,
 )
 
 router = APIRouter(tags=["openai_compat"])
@@ -101,6 +109,23 @@ def _facade_error_response(exc: FacadeError) -> JSONResponse:
     )
 
 
+def _facade_error_payload(exc: FacadeError) -> dict[str, Any]:
+    return {
+        "message": exc.message,
+        "type": exc.error_type,
+        "param": exc.param,
+        "code": exc.code,
+    }
+
+
+def _facade_error_status(exc: FacadeError) -> str:
+    if exc.error_type == "unsupported_parameter" or exc.code.startswith("unsupported"):
+        return "unsupported"
+    if exc.error_type == "policy_blocked" or "blocked" in exc.code:
+        return "blocked"
+    return "error"
+
+
 def _request_id(request: Request) -> str:
     return (
         _clean(request.headers.get("x-request-id"))
@@ -113,6 +138,37 @@ def _request_payload(request_body: OpenAICompatRequest) -> dict[str, Any]:
     return request_body.dict(exclude_none=True, exclude_defaults=True)
 
 
+def _request_headers(request: Request) -> dict[str, str]:
+    return {key: value for key, value in request.headers.items()}
+
+
+def _record_auth_failure(
+    *,
+    request: Request,
+    endpoint: str,
+    started_at: float,
+    response: JSONResponse,
+) -> None:
+    error_payload: dict[str, Any] = {"type": "authentication_error"}
+    try:
+        raw = json.loads(response.body.decode("utf-8")) if response.body else {}
+        error_payload = (
+            raw.get("error", error_payload) if isinstance(raw, dict) else error_payload
+        )
+    except (TypeError, ValueError):
+        pass
+    record_proxy_event(
+        endpoint=endpoint,
+        method=request.method,
+        request_id=_request_id(request),
+        status="auth_failed",
+        http_status=response.status_code,
+        headers=_request_headers(request),
+        latency_ms=(time.time() - started_at) * 1000.0,
+        error=error_payload,
+    )
+
+
 def _sse(lines: Iterable[dict[str, Any]]) -> Iterable[str]:
     for line in lines:
         yield f"data: {json.dumps(line, separators=(',', ':'))}\n\n"
@@ -121,11 +177,18 @@ def _sse(lines: Iterable[dict[str, Any]]) -> Iterable[str]:
 
 @router.get("/v1/models", response_model=None)
 async def openai_compat_models(request: Request):
+    started_at = time.time()
     auth_error = _verify_proxy_token(request)
     if auth_error is not None:
+        _record_auth_failure(
+            request=request,
+            endpoint="/v1/models",
+            started_at=started_at,
+            response=auth_error,
+        )
         return auth_error
     capabilities = prompt_load_balancer_capabilities()
-    return {
+    response = {
         "object": "list",
         "data": [
             {
@@ -143,6 +206,17 @@ async def openai_compat_models(request: Request):
             "capabilities": capabilities,
         },
     }
+    record_proxy_event(
+        endpoint="/v1/models",
+        method=request.method,
+        request_id=_request_id(request),
+        status="metadata",
+        http_status=200,
+        headers=_request_headers(request),
+        response={"norman": {"local_execution": False, "cloud_forwarding": False}},
+        latency_ms=(time.time() - started_at) * 1000.0,
+    )
+    return response
 
 
 @router.post("/v1/chat/completions", response_model=None)
@@ -150,16 +224,46 @@ async def openai_compat_chat_completions(
     request_body: OpenAICompatRequest,
     request: Request,
 ):
+    started_at = time.time()
     auth_error = _verify_proxy_token(request)
     if auth_error is not None:
+        _record_auth_failure(
+            request=request,
+            endpoint="/v1/chat/completions",
+            started_at=started_at,
+            response=auth_error,
+        )
         return auth_error
+    request_payload = _request_payload(request_body)
     try:
         response = execute_openai_chat_facade(
-            _request_payload(request_body),
+            request_payload,
             request_id=_request_id(request),
         )
     except FacadeError as exc:
+        record_proxy_event(
+            endpoint="/v1/chat/completions",
+            method=request.method,
+            request_id=_request_id(request),
+            status=_facade_error_status(exc),
+            http_status=exc.status_code,
+            payload=request_payload,
+            headers=_request_headers(request),
+            error=_facade_error_payload(exc),
+            latency_ms=(time.time() - started_at) * 1000.0,
+        )
         return _facade_error_response(exc)
+    record_proxy_event(
+        endpoint="/v1/chat/completions",
+        method=request.method,
+        request_id=_request_id(request),
+        status="success",
+        http_status=200,
+        payload=request_payload,
+        response=response,
+        headers=_request_headers(request),
+        latency_ms=(time.time() - started_at) * 1000.0,
+    )
     if request_body.stream:
         return StreamingResponse(
             _sse(chat_completion_stream_chunks(response)),
@@ -191,18 +295,84 @@ async def openai_compat_responses(
     request_body: OpenAICompatRequest,
     request: Request,
 ):
+    started_at = time.time()
     auth_error = _verify_proxy_token(request)
     if auth_error is not None:
+        _record_auth_failure(
+            request=request,
+            endpoint="/v1/responses",
+            started_at=started_at,
+            response=auth_error,
+        )
         return auth_error
+    request_payload = _request_payload(request_body)
     try:
         response = execute_openai_responses_facade(
-            _request_payload(request_body),
+            request_payload,
             request_id=_request_id(request),
         )
     except FacadeError as exc:
+        record_proxy_event(
+            endpoint="/v1/responses",
+            method=request.method,
+            request_id=_request_id(request),
+            status=_facade_error_status(exc),
+            http_status=exc.status_code,
+            payload=request_payload,
+            headers=_request_headers(request),
+            error=_facade_error_payload(exc),
+            latency_ms=(time.time() - started_at) * 1000.0,
+        )
         return _facade_error_response(exc)
+    record_proxy_event(
+        endpoint="/v1/responses",
+        method=request.method,
+        request_id=_request_id(request),
+        status="success",
+        http_status=200,
+        payload=request_payload,
+        response=response,
+        headers=_request_headers(request),
+        latency_ms=(time.time() - started_at) * 1000.0,
+    )
     if request_body.stream:
         return StreamingResponse(
             _response_sse(response), media_type="text/event-stream"
         )
     return response
+
+
+@router.get("/v1/norman/proxy/events", response_model=None)
+async def openai_compat_proxy_events(request: Request, limit: int = 100):
+    auth_error = _verify_proxy_token(request)
+    if auth_error is not None:
+        return auth_error
+    return {
+        "schema": "norman.proxy.events.v1",
+        "events": proxy_events_snapshot(limit=limit),
+    }
+
+
+@router.get("/v1/norman/proxy/summary", response_model=None)
+async def openai_compat_proxy_summary(request: Request, limit: int = 100):
+    auth_error = _verify_proxy_token(request)
+    if auth_error is not None:
+        return auth_error
+    return proxy_observability_summary(limit=limit)
+
+
+@router.get("/v1/norman/proxy/alerts", response_model=None)
+async def openai_compat_proxy_alerts(request: Request, limit: int = 100):
+    auth_error = _verify_proxy_token(request)
+    if auth_error is not None:
+        return auth_error
+    summary = proxy_observability_summary(limit=limit)
+    return proxy_alerts(summary=summary)
+
+
+@router.get("/v1/norman/proxy/dashboard", response_model=None)
+async def openai_compat_proxy_dashboard(request: Request, limit: int = 100):
+    auth_error = _verify_proxy_token(request)
+    if auth_error is not None:
+        return auth_error
+    return proxy_dashboard(limit=limit)

@@ -656,3 +656,134 @@ def test_openai_compat_responses_routes_once_and_preserves_instructions(
         {"role": "developer", "content": "Preserve this role."},
         {"role": "user", "content": "status?"},
     ]
+
+
+def test_openai_compat_proxy_observability_records_success_without_prompt_leak(
+    test_app,
+    monkeypatch,
+):
+    from app.services.prompt_provider_facade import norllama_gateway
+    from app.services.proxy_observability import reset_proxy_events
+
+    reset_proxy_events()
+    headers = {
+        **_proxy_headers(monkeypatch),
+        "X-Norman-Client": "codex-work",
+        "X-Norman-Team": "platform",
+    }
+    monkeypatch.setattr(norllama_gateway, "invoke_text_chat", _mock_local_chat)
+
+    response = test_app.post(
+        "/v1/chat/completions",
+        headers=headers,
+        json={
+            "model": "gpt-5.5",
+            "messages": [{"role": "user", "content": "status? secret-value"}],
+        },
+    )
+
+    assert response.status_code == 200
+    summary = test_app.get("/v1/norman/proxy/summary", headers=headers).json()
+    assert summary["schema"] == "norman.proxy.observability-summary.v1"
+    assert summary["event_count"] == 1
+    assert summary["local_execution_count"] == 1
+    assert summary["local_route_rate_pct"] == 100.0
+    assert summary["usage_totals"]["local_tokens"] == 6
+    assert summary["usage_totals"]["cloud_llm_tokens"] == 0
+    assert summary["by_client"]["codex-work"] == 1
+    assert summary["by_worker"]["spark-151"] == 1
+    assert summary["alerts"] == []
+
+    events = test_app.get("/v1/norman/proxy/events", headers=headers).json()["events"]
+    assert len(events) == 1
+    assert events[0]["prompt_sha256"]
+    assert events[0]["prompt_chars"] == len("status? secret-value")
+    assert "secret-value" not in str(events[0])
+
+
+def test_openai_compat_proxy_observability_reports_auth_and_unsupported_alerts(
+    test_app,
+    monkeypatch,
+):
+    from app.services.proxy_observability import reset_proxy_events
+
+    reset_proxy_events()
+    headers = _proxy_headers(monkeypatch)
+
+    denied = test_app.get("/v1/models")
+    assert denied.status_code == 401
+
+    unsupported = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={
+            "model": "gpt-5.5",
+            "input": "status?",
+            "tools": [{"type": "function", "name": "shell"}],
+        },
+    )
+    assert unsupported.status_code == 501
+
+    alerts = test_app.get("/v1/norman/proxy/alerts", headers=headers).json()
+    kinds = {item["kind"] for item in alerts["alerts"]}
+    assert "proxy_auth_failures" in kinds
+    assert "proxy_unsupported_client_semantics" in kinds
+
+    dashboard = test_app.get("/v1/norman/proxy/dashboard", headers=headers).json()
+    assert dashboard["schema"] == "norman.proxy.dashboard.v1"
+    assert any(widget["id"] == "alerts" for widget in dashboard["widgets"])
+
+
+def test_proxy_observability_flags_cloud_forwarding_and_missing_worker():
+    from app.services.proxy_observability import (
+        proxy_observability_summary,
+        record_proxy_event,
+        reset_proxy_events,
+    )
+
+    reset_proxy_events()
+    record_proxy_event(
+        endpoint="/v1/chat/completions",
+        method="POST",
+        request_id="cloud-test",
+        status="success",
+        http_status=200,
+        payload={"model": "gpt-5.5", "messages": [{"content": "status?"}]},
+        response={
+            "model": "gpt-5.5",
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            "norman": {
+                "local_execution": False,
+                "cloud_forwarding": True,
+                "route": {
+                    "selected_runtime": "openai",
+                    "selected_provider": "openai",
+                    "norman_route": {"route": {"cloud_proxy": True}},
+                },
+            },
+        },
+    )
+    record_proxy_event(
+        endpoint="/v1/chat/completions",
+        method="POST",
+        request_id="workerless-test",
+        status="success",
+        http_status=200,
+        payload={"model": "norman-local", "messages": [{"content": "status?"}]},
+        response={
+            "model": "qwen3.6:27b",
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            "norman": {
+                "local_execution": True,
+                "cloud_forwarding": False,
+                "norllama": {},
+            },
+        },
+    )
+
+    summary = proxy_observability_summary()
+    kinds = {item["kind"] for item in summary["alerts"]}
+    assert summary["cloud_tokens"] == 15
+    assert summary["workerless_local_success_count"] == 1
+    assert "proxy_cloud_route_observed" in kinds
+    assert "proxy_missing_worker_attribution" in kinds
