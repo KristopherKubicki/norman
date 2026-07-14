@@ -118,6 +118,7 @@ def _correlation_headers(request: ModelRequest, *, task_id: str) -> dict[str, st
     )
     phase = _metadata_value(metadata, "goal_phase", "phase", "goal_task_kind")
     lane = _metadata_value(metadata, "goal_task_kind", "task_kind")
+    execution_mode = _metadata_value(metadata, "execution_mode")
     if job_id:
         headers["X-Norman-Job-Id"] = job_id
     if session:
@@ -126,6 +127,8 @@ def _correlation_headers(request: ModelRequest, *, task_id: str) -> dict[str, st
         headers["X-Norman-Phase"] = phase
     if lane:
         headers["X-Norman-Lane"] = lane
+    if execution_mode:
+        headers["X-Norman-Execution-Mode"] = execution_mode
     if invocation_id:
         headers["X-Norllama-Invocation-Id"] = invocation_id
     return headers

@@ -4991,6 +4991,7 @@ class Handler(BaseHTTPRequestHandler):
             "attempts": attempts.split(",") if attempts else [],
             "manual_route_lock": truthy(self.headers.get("X-Norman-Route-Lock", "")),
             "route_authority": self.headers.get("X-Norman-Route-Authority", "").strip(),
+            "execution_mode": self.headers.get("X-Norman-Execution-Mode", "").strip(),
             "request_production_route_eligible": truthy(
                 self.headers.get("X-Norman-Request-Production-Eligible", "")
             ),

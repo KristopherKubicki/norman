@@ -384,6 +384,7 @@ def test_norllama_adapter_derives_job_header_from_invocation_id():
                 "session_name": "norman-codex",
                 "goal_phase": "work",
                 "goal_task_kind": "chat",
+                "execution_mode": "live",
                 "invocation_id": "worker:job-derived-header:work:1:model",
             },
         ),
@@ -393,6 +394,7 @@ def test_norllama_adapter_derives_job_header_from_invocation_id():
     assert headers["X-Request-Id"] == "worker:job-derived-header:work:1:model"
     assert headers["X-Norman-Job-Id"] == "job-derived-header"
     assert headers["X-Norman-Session"] == "norman-codex"
+    assert headers["X-Norman-Execution-Mode"] == "live"
 
 
 def test_norllama_adapter_executes_worker_route_without_rerouting(monkeypatch):

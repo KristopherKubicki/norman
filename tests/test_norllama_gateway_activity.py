@@ -103,6 +103,38 @@ def test_gateway_activity_defaults_missing_execution_mode_to_unknown(monkeypatch
     assert execution["items"][0]["activity_class"] == "execution"
 
 
+def test_gateway_request_log_uses_execution_mode_header(capsys):
+    module = load_gateway_module()
+    app = module.App()
+    handler = object.__new__(module.Handler)
+    handler.server = type("Server", (), {"app": app})()
+    handler.headers = {
+        "X-Request-Id": "req-live-header",
+        "X-Norman-Job-Id": "job-live-header",
+        "X-Norman-Session": "norman-codex",
+        "X-Norman-Execution-Mode": "live",
+    }
+    handler.client_address = ("127.0.0.1", 12345)
+    handler.command = "POST"
+    handler.path = "/api/generate"
+    handler._request_id = "req-live-header"
+    handler._model_hint = "qwen3.6:35b-a3b-q4_K_M"
+
+    handler.emit_request_log(
+        status=200,
+        content_length=123,
+        content_type="application/json",
+        upstream="http://192.168.2.151:18151",
+    )
+
+    capsys.readouterr()
+    execution = app.recent_activity(1)
+    assert execution["items"][0]["request_id"] == "req-live-header"
+    assert execution["items"][0]["job_id"] == "job-live-header"
+    assert execution["items"][0]["session"] == "norman-codex"
+    assert execution["items"][0]["execution_mode"] == "live"
+
+
 def test_gateway_manual_degraded_activity_keeps_policy_receipt_fields(
     monkeypatch, tmp_path
 ):
