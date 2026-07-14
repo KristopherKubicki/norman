@@ -1923,6 +1923,55 @@ def test_cost_route_keeps_service_status_matrix_local(monkeypatch, tmp_path):
     assert decision["mutation_risk"] == "none"
 
 
+def test_cost_route_keeps_typo_status_update_prompt_local(monkeypatch, tmp_path):
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_MODELS", "qwen3.6:27b")
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_ENDPOINTS", "http://local-llm:11434")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        module,
+        "local_llm_health_snapshot",
+        lambda model: {
+            "ok": True,
+            "model": model,
+            "endpoint": "http://local-llm:11434",
+            "reason": "model advertised",
+        },
+    )
+    prompt = "stauts? updates?"
+
+    assert module.prompt_is_quick_status_request(prompt) is True
+    assert module.route_receipt_requested_action(prompt) == "status"
+    assert module.turn_control_operator_intent_class(prompt) == "status"
+    assert module.prompt_requires_cloud_or_tools(prompt) is False
+    assert module.prompt_is_local_first_candidate(prompt) is True
+
+    decision = module.cost_route_decision_for_prompt(
+        prompt=prompt,
+        attachments=[],
+        relay_callback=None,
+        runtime="codex",
+        model=module.MODEL,
+        service_tier="default",
+        job_budget="normal",
+        optimization_mode="auto",
+        route_lock=False,
+        requested_runtime="codex",
+        requested_model=module.MODEL,
+        requested_service_tier="default",
+    )
+
+    assert decision["selected_runtime"] == "localllm"
+    assert decision["selected_model"] in {
+        "qwen3.6:27b",
+        "qwen3.6:35b-a3b-q4_K_M",
+    }
+    assert decision["requested_action"] == "status"
+    assert decision["operator_intent_class"] == "status"
+    assert decision["route_source"] == "local_first_policy"
+    assert decision["charge_basis"] == "local_token_estimate"
+
+
 def test_cost_route_keeps_route_diagnostic_local(monkeypatch, tmp_path):
     monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_API_BASE", "http://norman.local/api/v1")
     monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_TOKEN", "runtime-token")

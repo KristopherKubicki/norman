@@ -5078,6 +5078,12 @@ def prompt_has_any_marker(prompt: str, markers: tuple[str, ...]) -> bool:
 
 def prompt_is_quick_status_request(prompt: str) -> bool:
     lower = prompt_core_request(prompt).lower().strip()
+    words = re.findall(r"[a-z0-9]+", lower)
+    if words and all(
+        word in {"status", "stauts", "stuats", "stats", "update", "updates"}
+        for word in words
+    ):
+        return True
     if prompt_has_any_marker(lower, AUTO_TURN_CONTROL_QUICK_MARKERS):
         return True
     return lower.startswith(
@@ -20248,6 +20254,8 @@ def route_receipt_requested_action(prompt: Any) -> str:
         return "status"
     if prompt_is_route_status_diagnostic(clean):
         return "status"
+    if prompt_is_quick_status_request(clean):
+        return "status"
     if any(token in lower for token in ("status", "check on", "wedged", "crashing")):
         return "status"
     if any(
@@ -32443,6 +32451,8 @@ def prompt_is_local_first_candidate(prompt: Any) -> bool:
     if prompt_is_literal_response_request(prompt):
         return True
     if prompt_is_route_status_diagnostic(prompt):
+        return True
+    if prompt_is_quick_status_request(str(prompt or "")):
         return True
     if prompt_is_self_contained_response_request(prompt):
         return True
