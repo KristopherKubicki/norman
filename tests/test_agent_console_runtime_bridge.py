@@ -1941,6 +1941,7 @@ def test_cost_route_keeps_typo_status_update_prompt_local(monkeypatch, tmp_path)
     prompt = "stauts? updates?"
 
     assert module.prompt_is_quick_status_request(prompt) is True
+    assert module.prompt_is_quick_status_request("any update on this?") is True
     assert module.route_receipt_requested_action(prompt) == "status"
     assert module.turn_control_operator_intent_class(prompt) == "status"
     assert module.prompt_requires_cloud_or_tools(prompt) is False
@@ -1970,6 +1971,138 @@ def test_cost_route_keeps_typo_status_update_prompt_local(monkeypatch, tmp_path)
     assert decision["operator_intent_class"] == "status"
     assert decision["route_source"] == "local_first_policy"
     assert decision["charge_basis"] == "local_token_estimate"
+
+
+def test_cost_route_uses_local_intent_classifier_for_ambiguous_status(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_MODELS", "qwen3.6:27b")
+    monkeypatch.setenv("NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MODELS", "qwen3.6:27b")
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_ENDPOINTS", "http://local-llm:11434")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    def fake_health(model):
+        return {
+            "ok": True,
+            "model": model,
+            "endpoint": "http://local-llm:11434",
+            "reason": "model advertised",
+            "warm_policy": {
+                "schema": "norllama.warm-policy.v1",
+                "source": "/v1/warm-policy",
+                "route_guardrails": {
+                    "schema": "norman.norllama.route-guardrails.v1",
+                    "lanes": {
+                        "filter": {"status": "ready"},
+                        "scout": {"status": "ready"},
+                    },
+                },
+            },
+        }
+
+    def fake_generate(endpoint, model, prompt, **kwargs):
+        assert "local route intent classifier" in prompt.lower()
+        return (
+            {
+                "response": json.dumps(
+                    {
+                        "requested_action": "status",
+                        "operator_intent_class": "status",
+                        "lane": "summarizer",
+                        "local_eligible": True,
+                        "cloud_needed": False,
+                        "risk": "none",
+                        "confidence": 0.94,
+                        "reason": "short status/update check-in",
+                    }
+                ),
+                "prompt_eval_count": 9,
+                "eval_count": 8,
+                "headers": {
+                    "x-norllama-worker-endpoint": "spark151",
+                    "x-norllama-upstream": "http://spark151:11434",
+                    "x-norllama-attempts": "1",
+                },
+            },
+            f"{endpoint}/api/chat",
+            "norllama-chat",
+        )
+
+    monkeypatch.setattr(module, "local_llm_health_snapshot", fake_health)
+    monkeypatch.setattr(module, "local_llm_generate_once", fake_generate)
+
+    prompt = "how are things looking?"
+    assert module.route_receipt_requested_action(prompt) == "operator_prompt"
+    assert module.turn_control_operator_intent_class(prompt) == "operator_prompt"
+    assert module.prompt_requires_cloud_or_tools(prompt) is False
+    assert module.prompt_is_local_first_candidate(prompt) is False
+
+    decision = module.cost_route_decision_for_prompt(
+        prompt=prompt,
+        attachments=[],
+        relay_callback=None,
+        runtime="codex",
+        model=module.MODEL,
+        service_tier="default",
+        job_budget="normal",
+        optimization_mode="auto",
+        route_lock=False,
+        requested_runtime="codex",
+        requested_model=module.MODEL,
+        requested_service_tier="default",
+    )
+
+    assert decision["selected_runtime"] == "localllm"
+    assert decision["selected_model"] in {
+        "qwen3.6:27b",
+        "qwen3.6:35b-a3b-q4_K_M",
+    }
+    assert decision["requested_action"] == "status"
+    assert decision["operator_intent_class"] == "status"
+    assert decision["local_lane"] == "scout"
+    assert decision["route_source"] == "local_first_intent_classifier"
+    assert decision["charge_basis"] == "local_token_estimate"
+    assert decision["local_intent_classifier"]["used"] is True
+    assert decision["local_intent_classifier"]["promoted_local"] is True
+    assert decision["local_intent_classifier"]["confidence"] == 0.94
+    assert decision["local_intent_classifier"]["worker_endpoint"] == "spark151"
+
+
+def test_cost_route_does_not_run_classifier_for_mutating_prompt(monkeypatch, tmp_path):
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_MODELS", "qwen3.6:27b")
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_ENDPOINTS", "http://local-llm:11434")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    def fail_generate(*args, **kwargs):
+        raise AssertionError("classifier should not run for mutating prompts")
+
+    monkeypatch.setattr(module, "local_llm_generate_once", fail_generate)
+    prompt = "update the firewall config"
+
+    decision = module.cost_route_decision_for_prompt(
+        prompt=prompt,
+        attachments=[],
+        relay_callback=None,
+        runtime="codex",
+        model=module.MODEL,
+        service_tier="default",
+        job_budget="normal",
+        optimization_mode="auto",
+        route_lock=False,
+        requested_runtime="codex",
+        requested_model=module.MODEL,
+        requested_service_tier="default",
+    )
+
+    assert decision["selected_runtime"] == "codex"
+    assert decision["mutation_risk"] == "external_write"
+    assert "local_intent_classifier" not in decision
+    assert (
+        decision["reason"]
+        == "mutation risk external_write requires tool-capable runtime"
+    )
 
 
 def test_cost_route_keeps_route_diagnostic_local(monkeypatch, tmp_path):

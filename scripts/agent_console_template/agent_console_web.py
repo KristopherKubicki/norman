@@ -572,6 +572,24 @@ LOCAL_PLANNER_PREFLIGHT_PROMPT_CHARS = _early_env_int(
 LOCAL_PLANNER_PREFLIGHT_MAX_CANDIDATES = _early_env_int(
     "NORMAN_LOCAL_PLANNER_PREFLIGHT_MAX_CANDIDATES", 2, minimum=1
 )
+LOCAL_ROUTE_INTENT_CLASSIFIER_ENABLED = _early_env_flag(
+    "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_ENABLED", True
+)
+LOCAL_ROUTE_INTENT_CLASSIFIER_TIMEOUT_SECONDS = _early_env_int(
+    "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_TIMEOUT_SECONDS", 8, minimum=2
+)
+LOCAL_ROUTE_INTENT_CLASSIFIER_MAX_OUTPUT_TOKENS = _early_env_int(
+    "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MAX_OUTPUT_TOKENS", 96, minimum=32
+)
+LOCAL_ROUTE_INTENT_CLASSIFIER_PROMPT_CHARS = _early_env_int(
+    "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_PROMPT_CHARS", 700, minimum=160
+)
+LOCAL_ROUTE_INTENT_CLASSIFIER_MIN_CONFIDENCE = min(
+    1.0,
+    _early_env_float(
+        "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MIN_CONFIDENCE", 0.72, minimum=0.0
+    ),
+)
 LOCAL_SPECIALIST_PIPELINE_ENABLED = _early_env_flag(
     "NORMAN_LOCAL_SPECIALIST_PIPELINE_ENABLED", True
 )
@@ -5079,9 +5097,33 @@ def prompt_has_any_marker(prompt: str, markers: tuple[str, ...]) -> bool:
 def prompt_is_quick_status_request(prompt: str) -> bool:
     lower = prompt_core_request(prompt).lower().strip()
     words = re.findall(r"[a-z0-9]+", lower)
-    if words and all(
-        word in {"status", "stauts", "stuats", "stats", "update", "updates"}
-        for word in words
+    status_words = {"status", "stauts", "stuats", "stats", "update", "updates"}
+    status_fillers = {
+        "a",
+        "an",
+        "any",
+        "brief",
+        "current",
+        "me",
+        "on",
+        "please",
+        "pls",
+        "quick",
+        "session",
+        "system",
+        "that",
+        "the",
+        "things",
+        "this",
+        "tui",
+        "tuis",
+        "us",
+    }
+    if (
+        words
+        and len(words) <= 8
+        and any(word in status_words for word in words)
+        and all(word in status_words or word in status_fillers for word in words)
     ):
         return True
     if prompt_has_any_marker(lower, AUTO_TURN_CONTROL_QUICK_MARKERS):
@@ -11011,6 +11053,345 @@ def local_planner_advice_summary(text: str) -> str:
             continue
         parts.append(f"{label}={local_planner_value_summary(value)}")
     return summarize_text("; ".join(parts) or clean, 700)
+
+
+LOCAL_ROUTE_INTENT_CLASSIFIER_SAFE_ACTIONS = {"status"}
+LOCAL_ROUTE_INTENT_CLASSIFIER_SAFE_INTENTS = {"status"}
+LOCAL_ROUTE_INTENT_CLASSIFIER_SAFE_LANES = {"planner", "scout"}
+
+
+def local_route_intent_classifier_models() -> list[str]:
+    raw_model = os.environ.get("NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MODEL", "").strip()
+    raw_models = os.environ.get(
+        "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MODELS", ""
+    ).strip()
+    configured = _dedupe_models(
+        model for model in [raw_model, *raw_models.split(",")] if model.strip()
+    )
+    return _dedupe_models(
+        model for model in configured if _local_llm_model_allowed(str(model))
+    )
+
+
+def local_route_intent_classifier_should_run(prompt: Any) -> bool:
+    if not LOCAL_ROUTE_INTENT_CLASSIFIER_ENABLED:
+        return False
+    if not LOCAL_LLM_CAN_EXECUTE:
+        return False
+    core = prompt_core_request(str(prompt or "")).strip()
+    if not core:
+        return False
+    if len(core) > LOCAL_ROUTE_INTENT_CLASSIFIER_PROMPT_CHARS:
+        return False
+    if prompt_is_literal_response_request(core) or prompt_is_route_status_diagnostic(
+        core
+    ):
+        return False
+    return True
+
+
+def local_route_intent_classifier_prompt(
+    prompt: Any,
+    *,
+    requested_action: str,
+    intent_class: str,
+) -> str:
+    compact = {
+        "prompt": summarize_text(
+            prompt_core_request(str(prompt or "")),
+            LOCAL_ROUTE_INTENT_CLASSIFIER_PROMPT_CHARS,
+        ),
+        "deterministic_requested_action": str(requested_action or "").strip(),
+        "deterministic_intent_class": str(intent_class or "").strip(),
+        "allowed_actions": [
+            "status",
+            "proceed_or_next",
+            "undo_or_back",
+            "approval_boundary",
+            "benchmark_or_optimizer",
+            "operator_prompt",
+        ],
+        "allowed_intents": [
+            "status",
+            "continue",
+            "what_next",
+            "proceed",
+            "debug",
+            "bounded_edit",
+            "benchmark",
+            "approval_gate",
+            "deploy_gate",
+            "undo_gate",
+            "operator_prompt",
+        ],
+        "allowed_lanes": ["planner", "scout", "summarizer", "filter", "verifier"],
+    }
+    return "\n".join(
+        [
+            "You are Norman's local route intent classifier.",
+            "Return compact JSON only. Do not include private reasoning.",
+            (
+                "Classify the operator prompt before cloud routing. Correct obvious "
+                "typos. Treat short status/update/check-in prompts as status even when "
+                "misspelled."
+            ),
+            (
+                "Only set local_eligible=true when the prompt can be answered from the "
+                "current TUI/session state or supplied prompt text without tools, files, "
+                "network, secrets, deployment, restart, shell, or external writes."
+            ),
+            (
+                "Use local_eligible=false and cloud_needed=true for proceed/continue, "
+                "undo/rollback, deployment, tests, repo edits, current web facts, prices, "
+                "secrets, credentials, or anything requiring live tools."
+            ),
+            (
+                "Required keys: requested_action, operator_intent_class, lane, "
+                "local_eligible, cloud_needed, risk, confidence, reason."
+            ),
+            json.dumps(compact, sort_keys=True, ensure_ascii=True),
+        ]
+    )
+
+
+def normalize_local_route_intent_classifier_payload(payload: Any) -> dict[str, Any]:
+    parsed = payload if isinstance(payload, dict) else {}
+    requested_action = str(parsed.get("requested_action") or "").strip().lower()
+    intent_class = str(parsed.get("operator_intent_class") or "").strip().lower()
+    lane = str(parsed.get("lane") or "").strip().lower().replace("-", "_")
+    risk = str(parsed.get("risk") or "").strip().lower()
+    confidence = max(0.0, min(1.0, _coerce_float(parsed.get("confidence"))))
+    local_eligible = coerce_boolish(parsed.get("local_eligible"))
+    cloud_needed = coerce_boolish(parsed.get("cloud_needed"))
+    if requested_action not in {
+        "status",
+        "proceed_or_next",
+        "undo_or_back",
+        "approval_boundary",
+        "benchmark_or_optimizer",
+        "operator_prompt",
+    }:
+        requested_action = "operator_prompt"
+    if intent_class not in {
+        "status",
+        "continue",
+        "what_next",
+        "proceed",
+        "debug",
+        "bounded_edit",
+        "benchmark",
+        "approval_gate",
+        "deploy_gate",
+        "undo_gate",
+        "operator_prompt",
+    }:
+        intent_class = "operator_prompt"
+    if lane not in {"planner", "scout", "summarizer", "filter", "verifier"}:
+        lane = "planner"
+    if requested_action == "status" or intent_class == "status":
+        lane = "scout" if lane not in {"planner", "scout"} else lane
+    if risk not in {"none", "low", "medium", "high"}:
+        risk = "medium"
+    return {
+        "requested_action": requested_action,
+        "operator_intent_class": intent_class,
+        "lane": lane,
+        "local_eligible": local_eligible,
+        "cloud_needed": cloud_needed,
+        "risk": risk,
+        "confidence": confidence,
+        "reason": summarize_text(str(parsed.get("reason") or ""), 220),
+    }
+
+
+def local_route_intent_classifier_promotes_local(result: dict[str, Any]) -> bool:
+    if not result.get("local_eligible"):
+        return False
+    if result.get("cloud_needed"):
+        return False
+    if str(result.get("risk") or "") not in {"none", "low"}:
+        return False
+    if (
+        _coerce_float(result.get("confidence"))
+        < LOCAL_ROUTE_INTENT_CLASSIFIER_MIN_CONFIDENCE
+    ):
+        return False
+    if (
+        str(result.get("requested_action") or "")
+        not in LOCAL_ROUTE_INTENT_CLASSIFIER_SAFE_ACTIONS
+    ):
+        return False
+    if (
+        str(result.get("operator_intent_class") or "")
+        not in LOCAL_ROUTE_INTENT_CLASSIFIER_SAFE_INTENTS
+    ):
+        return False
+    if str(result.get("lane") or "") not in LOCAL_ROUTE_INTENT_CLASSIFIER_SAFE_LANES:
+        return False
+    return True
+
+
+def local_route_intent_classifier_failure(
+    *,
+    status: str,
+    reason: Any = "",
+    model: Any = "",
+    endpoint: Any = "",
+    candidate_count: int = 0,
+    candidate_policy: Any = "",
+) -> dict[str, Any]:
+    return {
+        "schema": "norman.tui.local-route-intent-classifier.v1",
+        "enabled": bool(LOCAL_ROUTE_INTENT_CLASSIFIER_ENABLED),
+        "used": False,
+        "status": status,
+        "promoted_local": False,
+        "model": str(model or "").strip(),
+        "endpoint": str(endpoint or "").strip(),
+        "candidate_count": max(0, int(candidate_count or 0)),
+        "candidate_policy": str(candidate_policy or "").strip(),
+        "reason": summarize_text(str(reason or ""), 220),
+    }
+
+
+def run_local_route_intent_classifier(
+    prompt: Any,
+    *,
+    requested_action: str,
+    intent_class: str,
+) -> dict[str, Any]:
+    if not local_route_intent_classifier_should_run(prompt):
+        return local_route_intent_classifier_failure(
+            status="not-needed",
+            reason="deterministic routing or local runtime state does not need classifier",
+        )
+    guardrail_health = local_llm_health_snapshot("local-llm")
+    if not local_specialist_warm_policy_available(guardrail_health):
+        return local_route_intent_classifier_failure(
+            status="no-warm-policy",
+            reason="Norllama warm-policy endpoint is not available",
+        )
+    candidates = local_route_intent_classifier_models()
+    candidate_policy = "explicit_route_intent_classifier_models"
+    if not candidates:
+        return local_route_intent_classifier_failure(
+            status="no-configured-classifier",
+            reason=(
+                "set NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MODEL(S) to enable "
+                "the local LLM route classifier"
+            ),
+            candidate_policy=candidate_policy,
+        )
+    classifier_prompt = local_route_intent_classifier_prompt(
+        prompt,
+        requested_action=requested_action,
+        intent_class=intent_class,
+    )
+    failures: list[dict[str, Any]] = []
+    for model in candidates[: max(1, LOCAL_PLANNER_PREFLIGHT_MAX_CANDIDATES)]:
+        cooldown = local_llm_route_cooldown(model)
+        if cooldown:
+            failures.append(
+                local_planner_failure(
+                    model=model,
+                    endpoint=cooldown.get("endpoint"),
+                    status="cooldown",
+                    reason=(
+                        f"recent local route failure {cooldown.get('status')}; "
+                        f"retry in {cooldown.get('remaining_seconds')}s"
+                    ),
+                )
+            )
+            continue
+        health = local_llm_health_snapshot(model)
+        if not health.get("ok"):
+            failures.append(
+                local_planner_failure(
+                    model=model,
+                    endpoint=health.get("endpoint"),
+                    status="unhealthy",
+                    reason=health.get("reason"),
+                )
+            )
+            continue
+        endpoint = str(health.get("endpoint") or "").strip()
+        try:
+            response_payload, url, adapter = local_llm_generate_once(
+                endpoint,
+                model,
+                classifier_prompt,
+                timeout_seconds=LOCAL_ROUTE_INTENT_CLASSIFIER_TIMEOUT_SECONDS,
+                max_output_tokens=LOCAL_ROUTE_INTENT_CLASSIFIER_MAX_OUTPUT_TOKENS,
+            )
+        except (urllib_error.URLError, TimeoutError, OSError, ValueError) as exc:
+            failures.append(
+                local_planner_failure(
+                    model=model,
+                    endpoint=endpoint,
+                    status=local_llm_route_failure_status(exc),
+                    reason=f"{type(exc).__name__}: {summarize_text(str(exc), 180)}",
+                )
+            )
+            continue
+        raw_text = local_llm_response_text(response_payload)
+        usage_counts = local_llm_usage_counts(response_payload)
+        route_headers = local_llm_route_headers(response_payload)
+        parsed = parse_local_planner_json(raw_text)
+        result = normalize_local_route_intent_classifier_payload(parsed)
+        promoted = local_route_intent_classifier_promotes_local(result)
+        append_local_llm_route_outcome(
+            source="route-intent-classifier",
+            status="ok" if parsed else "invalid-response",
+            ok=bool(parsed),
+            model=model,
+            endpoint=endpoint,
+            adapter=adapter,
+            url=url,
+            worker_endpoint=route_headers.get("x-norllama-worker-endpoint", ""),
+            upstream=route_headers.get("x-norllama-upstream", ""),
+            attempts=route_headers.get("x-norllama-attempts", ""),
+            response_chars=len(raw_text),
+            reason=(
+                "classifier promoted local route"
+                if promoted
+                else "classifier did not authorize local promotion"
+            ),
+            thread_id=read_text(THREAD_ID_PATH),
+            **usage_counts,
+        )
+        return {
+            "schema": "norman.tui.local-route-intent-classifier.v1",
+            "enabled": True,
+            "used": True,
+            "status": "ok" if parsed else "invalid-response",
+            "promoted_local": promoted,
+            "requested_action": result["requested_action"],
+            "operator_intent_class": result["operator_intent_class"],
+            "lane": result["lane"],
+            "local_eligible": result["local_eligible"],
+            "cloud_needed": result["cloud_needed"],
+            "risk": result["risk"],
+            "confidence": result["confidence"],
+            "reason": result["reason"],
+            "model": str(model or "").strip(),
+            "endpoint": endpoint,
+            "adapter": adapter,
+            "candidate_policy": candidate_policy,
+            "candidate_count": len(candidates),
+            "local_tokens": context_preflight_local_tokens({"usage": usage_counts}),
+            "worker_endpoint": route_headers.get("x-norllama-worker-endpoint", ""),
+            "upstream": route_headers.get("x-norllama-upstream", ""),
+            "attempts": route_headers.get("x-norllama-attempts", ""),
+        }
+    return local_route_intent_classifier_failure(
+        status="unavailable",
+        reason="; ".join(item.get("reason", "") for item in failures[-2:])
+        or "no local classifier candidate completed",
+        model=failures[-1].get("model") if failures else candidates[0],
+        endpoint=failures[-1].get("endpoint") if failures else "",
+        candidate_count=len(candidates),
+        candidate_policy=candidate_policy,
+    )
 
 
 def local_llm_guardrail_candidate_policy(
@@ -32548,14 +32929,43 @@ def cost_route_decision_for_prompt(
     if prompt_requires_cloud_or_tools(prompt):
         decision["reason"] = "prompt appears to require tools or workspace context"
         return decision
+    classifier_promoted = False
+    classifier_lane = ""
     if not prompt_is_local_first_candidate(prompt):
-        decision["reason"] = "prompt is not a local-first self-contained task"
-        return decision
+        classifier = run_local_route_intent_classifier(
+            prompt,
+            requested_action=requested_action,
+            intent_class=intent_class,
+        )
+        decision["local_intent_classifier"] = classifier
+        if classifier.get("promoted_local"):
+            classifier_promoted = True
+            requested_action = str(
+                classifier.get("requested_action") or requested_action
+            ).strip()
+            intent_class = str(
+                classifier.get("operator_intent_class") or intent_class
+            ).strip()
+            classifier_lane = str(classifier.get("lane") or "").strip()
+            decision["requested_action"] = requested_action
+            decision["operator_intent_class"] = intent_class
+        else:
+            reason = str(classifier.get("reason") or "").strip()
+            status = str(classifier.get("status") or "").strip()
+            decision["reason"] = "prompt is not a local-first self-contained task" + (
+                f"; classifier {status}: {reason}" if status or reason else ""
+            )
+            return decision
     local_lane = local_llm_prompt_lane(
         prompt,
         requested_action=requested_action,
         intent_class=intent_class,
     )
+    if (
+        classifier_promoted
+        and classifier_lane in LOCAL_ROUTE_INTENT_CLASSIFIER_SAFE_LANES
+    ):
+        local_lane = classifier_lane
     guardrail_health = local_llm_health_snapshot("local-llm")
     guardrail_candidates = local_llm_lane_models_from_health(
         guardrail_health,
@@ -32648,9 +33058,15 @@ def cost_route_decision_for_prompt(
             "selected_runtime": "localllm",
             "selected_model": local_model,
             "selected_service_tier": normalized_service_tier,
-            "route_source": "local_first_policy",
+            "route_source": "local_first_intent_classifier"
+            if classifier_promoted
+            else "local_first_policy",
             "reason": (
-                "safe self-contained prompt routed to Norllama " f"{local_lane} lane"
+                "local intent classifier promoted safe prompt to Norllama "
+                f"{local_lane} lane"
+                if classifier_promoted
+                else "safe self-contained prompt routed to Norllama "
+                f"{local_lane} lane"
             ),
             "charge_basis": "local_token_estimate",
             "local_endpoint": str(health.get("endpoint") or ""),
