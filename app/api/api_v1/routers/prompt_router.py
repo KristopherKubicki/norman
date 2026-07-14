@@ -10,6 +10,7 @@ from app.models import User
 from app.services.prompt_load_balancer import (
     balance_prompt,
     prompt_load_balancer_capabilities,
+    provider_adapter_decision,
 )
 
 router = APIRouter(prefix="/prompt-router", tags=["prompt_router"])
@@ -26,6 +27,19 @@ class PromptRouteRequest(BaseModel):
     route_policy: dict[str, Any] = Field(default_factory=dict)
     context: dict[str, Any] = Field(default_factory=dict)
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ProviderAdapterRequest(BaseModel):
+    model: str = ""
+    messages: list[dict[str, Any]] = Field(default_factory=list)
+    input: Any = None
+    prompt: Any = None
+    stream: bool = False
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    norman: dict[str, Any] = Field(default_factory=dict)
+
+    class Config:
+        extra = "allow"
 
 
 @router.get("/capabilities")
@@ -52,6 +66,36 @@ async def route_prompt(
             route_policy=request.route_policy,
             context=request.context,
             artifacts=request.artifacts,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/adapters/openai/chat/completions")
+async def route_openai_chat_completion(
+    request: ProviderAdapterRequest,
+    current_user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    try:
+        return provider_adapter_decision(
+            provider="openai",
+            endpoint="openai.chat.completions",
+            payload=request.dict(),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/adapters/openai/responses")
+async def route_openai_response(
+    request: ProviderAdapterRequest,
+    current_user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    try:
+        return provider_adapter_decision(
+            provider="openai",
+            endpoint="openai.responses",
+            payload=request.dict(),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

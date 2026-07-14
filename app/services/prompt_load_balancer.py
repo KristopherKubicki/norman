@@ -15,6 +15,7 @@ from app.services.norllama.types import NorllamaTaskKind, NorllamaTaskRequest
 
 PROMPT_LOAD_BALANCER_SCHEMA = "norman.prompt-load-balancer.v1"
 PROMPT_ROUTE_RECEIPT_SCHEMA = "norman.prompt-load-balancer.receipt.v1"
+PROMPT_PROVIDER_ADAPTER_SCHEMA = "norman.prompt-provider-adapter.v1"
 
 _TRUE_VALUES = {"1", "true", "yes", "on", "enabled", "force"}
 _CLOUD_RUNTIMES = {"aws-bedrock", "bedrock", "codex", "openai", "openai-direct"}
@@ -193,6 +194,10 @@ def _dict(value: Any) -> dict[str, Any]:
     return dict(value or {}) if isinstance(value or {}, Mapping) else {}
 
 
+def _list(value: Any) -> list[Any]:
+    return list(value) if isinstance(value, list) else []
+
+
 def _word_tokens(text: str) -> list[str]:
     return re.findall(r"[a-z0-9][a-z0-9._-]*", text.lower())
 
@@ -254,6 +259,68 @@ def _artifact_task_kind(artifacts: list[dict[str, Any]]) -> str:
         if any(marker in value for marker in ("pdf", ".pdf", "document")):
             return NorllamaTaskKind.DOC_PARSE.value
     return ""
+
+
+def _content_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, Mapping):
+                text = item.get("text") or item.get("input_text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(part.strip() for part in parts if part and part.strip())
+    if isinstance(value, Mapping):
+        text = value.get("text") or value.get("input_text")
+        return str(text or "").strip()
+    return ""
+
+
+def _messages_prompt(messages: Any) -> str:
+    lines: list[str] = []
+    for message in _list(messages):
+        if not isinstance(message, Mapping):
+            continue
+        role = _clean(message.get("role") or "message")
+        content = _content_text(message.get("content"))
+        if content:
+            lines.append(f"{role}: {content}")
+    return "\n".join(lines).strip()
+
+
+def _responses_input_prompt(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list):
+        message_prompt = _messages_prompt(value)
+        if message_prompt:
+            return message_prompt
+        parts = [_content_text(item) for item in value]
+        return "\n".join(part for part in parts if part).strip()
+    return _content_text(value)
+
+
+def _provider_options(payload: Mapping[str, Any]) -> dict[str, Any]:
+    options = _dict(payload.get("norman"))
+    if not options:
+        metadata = _dict(payload.get("metadata"))
+        options = _dict(metadata.get("norman"))
+    return options
+
+
+def _provider_runtime(provider: str) -> str:
+    clean = _lower(provider).replace("_", "-")
+    if clean in {"openai", "openai-chat-completions", "openai-responses"}:
+        return "openai"
+    if clean in {"bedrock", "aws-bedrock"}:
+        return "bedrock"
+    if clean in _LOCAL_RUNTIMES:
+        return "localllm"
+    return "auto"
 
 
 def classify_prompt(
@@ -693,6 +760,99 @@ def balance_prompt(
     }
 
 
+def provider_adapter_decision(
+    *,
+    provider: str,
+    endpoint: str,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    provider_payload = dict(payload)
+    options = _provider_options(provider_payload)
+    prompt = ""
+    if endpoint == "openai.chat.completions":
+        prompt = _messages_prompt(provider_payload.get("messages"))
+    elif endpoint == "openai.responses":
+        prompt = _responses_input_prompt(provider_payload.get("input"))
+    else:
+        prompt = _responses_input_prompt(
+            provider_payload.get("input")
+            or provider_payload.get("prompt")
+            or provider_payload.get("messages")
+        )
+    if not prompt:
+        raise ValueError("provider request does not contain prompt text")
+
+    force_requested_runtime = _flag(options.get("force_requested_runtime"), False)
+    requested_runtime = _clean(options.get("requested_runtime")) or _provider_runtime(
+        provider
+    )
+    requested_model = _clean(options.get("requested_model")) or _clean(
+        provider_payload.get("model")
+    )
+    caller_route_policy = _dict(options.get("route_policy"))
+    route_policy: dict[str, Any] = {}
+    route_policy["provider_adapter"] = True
+    route_policy["provider_adapter_provider"] = provider
+    route_policy["provider_adapter_endpoint"] = endpoint
+    route_policy["provider_adapter_mode"] = "route_only"
+    route_policy["caller_requested_model"] = requested_model
+    route_policy["caller_route_policy_supplied"] = bool(caller_route_policy)
+    route_policy["caller_route_policy_trusted"] = False
+    decision = balance_prompt(
+        prompt=prompt,
+        source=_clean(options.get("source")) or _clean(provider),
+        session=_clean(options.get("session")),
+        requested_runtime=requested_runtime,
+        requested_model=requested_model,
+        force_requested_runtime=force_requested_runtime,
+        allow_cloud_escalation=_flag(options.get("allow_cloud_escalation"), True),
+        route_policy=route_policy,
+        context={
+            "provider_adapter": {
+                "provider": provider,
+                "endpoint": endpoint,
+                "request_model": provider_payload.get("model"),
+                "stream": bool(provider_payload.get("stream")),
+            }
+        },
+        artifacts=[dict(item) for item in _list(options.get("artifacts"))],
+    )
+    return {
+        "schema": PROMPT_PROVIDER_ADAPTER_SCHEMA,
+        "mode": "provider_adapter",
+        "provider": provider,
+        "endpoint": endpoint,
+        "adapter_mode": "route_only",
+        "execution_performed": False,
+        "forwarding_performed": False,
+        "proxy_safe": True,
+        "transparent_mitm": False,
+        "normalized_prompt": prompt,
+        "caller_request": {
+            "model": provider_payload.get("model"),
+            "stream": bool(provider_payload.get("stream")),
+            "has_messages": bool(provider_payload.get("messages")),
+            "has_input": provider_payload.get("input") is not None,
+            "route_policy_supplied": bool(caller_route_policy),
+            "route_policy_trusted": False,
+        },
+        "norman_route": decision,
+        "next_hop": decision["recommendation"]["next_hop"],
+        "selected_runtime": decision["recommendation"]["selected_runtime"],
+        "selected_model": decision["recommendation"]["selected_model"],
+        "selected_provider": decision["recommendation"]["selected_provider"],
+        "cloud_position": decision["routing_strategy"]["cloud_position"],
+        "cloud_requires_receipt": True,
+        "integration_contract": {
+            "schema": "norman.prompt-provider-adapter.contract.v1",
+            "client_action": "execute_selected_route_or_call_norman_execution_endpoint",
+            "openai_compatible_response": False,
+            "route_receipt_required_before_cloud": True,
+            "local_runtime_autosense": True,
+        },
+    }
+
+
 def prompt_load_balancer_capabilities() -> dict[str, Any]:
     return {
         "schema": "norman.prompt-load-balancer.capabilities.v1",
@@ -711,6 +871,8 @@ def prompt_load_balancer_capabilities() -> dict[str, Any]:
             "sdk_wrapper_mode": True,
             "transparent_mitm_required": False,
             "local_runtime_autosense": True,
+            "openai_chat_completions_adapter": True,
+            "openai_responses_adapter": True,
         },
         "integration_modes": [
             {
