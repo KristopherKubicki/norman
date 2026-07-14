@@ -20,6 +20,23 @@ def load_matrix():
     return module
 
 
+def load_drill():
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "norllama"
+        / "degraded_estate_drill_evidence.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "degraded_estate_drill_evidence", script
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def snapshots_fixture() -> dict:
     route_policy = {
         "allow_cloud_proxy": False,
@@ -116,12 +133,29 @@ def test_degraded_matrix_passes_non_disruptive_scenarios_and_marks_outages_open(
 
 def test_degraded_matrix_accepts_external_outage_evidence():
     matrix = load_matrix()
+    drill = load_drill()
+    receipt = drill.base_receipt(
+        policy=drill.active_policy(),
+        request_id="test:spark-151-unavailable",
+        task_kind="chat",
+        model="qwen3.6:27b",
+        target_worker="spark-151",
+        observed_worker="spark-150",
+        fallback_reason="test fallback",
+    )
     external = {
         "scenarios": {
             "spark_151_unavailable": {
                 "status": "pass",
                 "summary": "spark-151 isolated; gateway failed over honestly",
-                "evidence": {"fallback_used": True},
+                "evidence": {
+                    "evidence_kind": "test_route_receipt_drill",
+                    "captured_at": "2026-07-13T00:00:00Z",
+                    "non_disruptive_drill": True,
+                    "hidden_cloud_fallback": False,
+                    "cloud_proxy_counted_as_local": False,
+                    "route_receipt": receipt,
+                },
             }
         }
     }
@@ -130,7 +164,45 @@ def test_degraded_matrix_accepts_external_outage_evidence():
 
     by_id = {item["scenario_id"]: item for item in packet["scenarios"]}
     assert by_id["spark_151_unavailable"]["status"] == "pass"
-    assert by_id["spark_151_unavailable"]["evidence"]["fallback_used"] is True
+    assert (
+        by_id["spark_151_unavailable"]["evidence"]["route_receipt"]["fallback_used"]
+        is True
+    )
+
+
+def test_degraded_matrix_rejects_unvalidated_external_pass_evidence():
+    matrix = load_matrix()
+    external = {
+        "scenarios": {
+            "spark_151_unavailable": {
+                "status": "pass",
+                "summary": "trust me",
+                "evidence": {"fallback_used": True},
+            }
+        }
+    }
+
+    packet = matrix.evaluate_matrix(snapshots_fixture(), external_evidence=external)
+
+    by_id = {item["scenario_id"]: item for item in packet["scenarios"]}
+    assert by_id["spark_151_unavailable"]["status"] == "fail"
+    assert "route_receipt_missing" in by_id["spark_151_unavailable"]["failures"]
+
+
+def test_degraded_matrix_accepts_generated_drill_evidence():
+    matrix = load_matrix()
+    drill = load_drill()
+
+    packet = matrix.evaluate_matrix(
+        snapshots_fixture(),
+        external_evidence=drill.build_packet(),
+    )
+
+    by_id = {item["scenario_id"]: item for item in packet["scenarios"]}
+    assert packet["passed"] is True
+    assert packet["not_exercised_count"] == 0
+    assert by_id["worker_substitution"]["evidence"]["route_receipt_audit"]["pass"]
+    assert by_id["policy_refresh_failure"]["status"] == "pass"
 
 
 def test_degraded_matrix_fails_hidden_cloud_policy():

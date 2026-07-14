@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import ssl
 import sys
 import time
@@ -22,6 +23,7 @@ from typing import Any
 
 
 SCHEMA = "norman.norllama.degraded-estate-matrix.v1"
+EXTERNAL_EVIDENCE_SCHEMA = "norman.norllama.degraded-estate-external-evidence.v1"
 DEFAULT_FRONTDOOR = "https://llm.home.arpa"
 DESTRUCTIVE_SCENARIOS = {
     "spark_151_unavailable",
@@ -33,6 +35,25 @@ DESTRUCTIVE_SCENARIOS = {
     "policy_refresh_failure",
     "worker_substitution",
 }
+EXTERNAL_STATUSES = {"pass", "fail", "not_exercised"}
+WORKER_ISOLATION_SCENARIOS = {
+    "spark_151_unavailable",
+    "spark_150_unavailable",
+    "worker_substitution",
+}
+
+
+def _audit_route_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
+    try:
+        from app.services.norllama.route_proof import audit_route_receipt
+    except Exception as exc:  # pragma: no cover - import guard for packet audits
+        return {
+            "schema": "norman.norllama.route-receipt-audit.v1",
+            "status": "fail",
+            "pass": False,
+            "failures": [f"route_auditor_unavailable:{clean(exc)[:120]}"],
+        }
+    return audit_route_receipt(receipt)
 
 
 @dataclass(frozen=True)
@@ -385,14 +406,160 @@ def external_evidence_result(
     if not isinstance(item, dict):
         return None
     status = clean(item.get("status")) or "not_exercised"
+    evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+    item_failures = (
+        list(item.get("failures")) if isinstance(item.get("failures"), list) else []
+    )
+    validation_failures = validate_external_evidence_item(
+        scenario_id,
+        status,
+        evidence,
+    )
+    failures = item_failures + validation_failures
+    if failures and status == "pass":
+        status = "fail"
     return scenario(
         scenario_id,
         status,
         summary=clean(item.get("summary")) or "External outage-drill evidence.",
-        evidence=item.get("evidence") if isinstance(item.get("evidence"), dict) else {},
-        failures=item.get("failures") if isinstance(item.get("failures"), list) else [],
+        evidence=evidence,
+        failures=failures,
         destructive_required=bool(item.get("destructive_required", True)),
     )
+
+
+def _common_external_evidence_failures(
+    scenario_id: str,
+    status: str,
+    evidence: dict[str, Any],
+) -> list[str]:
+    failures: list[str] = []
+    if status not in EXTERNAL_STATUSES:
+        failures.append(f"invalid_external_status:{status}")
+    if status != "pass":
+        return failures
+    if not clean(evidence.get("evidence_kind")):
+        failures.append("external_evidence_kind_missing")
+    if not clean(evidence.get("captured_at")):
+        failures.append("external_captured_at_missing")
+    if evidence.get("hidden_cloud_fallback") is not False:
+        failures.append("hidden_cloud_fallback_not_false")
+    if evidence.get("cloud_proxy_counted_as_local") is True:
+        failures.append("cloud_proxy_counted_as_local")
+    if scenario_id in DESTRUCTIVE_SCENARIOS and not (
+        evidence.get("operator_approved_drill") is True
+        or evidence.get("non_disruptive_drill") is True
+    ):
+        failures.append("operator_or_non_disruptive_drill_flag_missing")
+    return failures
+
+
+def _validate_receipt_evidence(
+    evidence: dict[str, Any],
+    *,
+    require_fallback: bool,
+) -> list[str]:
+    failures: list[str] = []
+    receipt = evidence.get("route_receipt")
+    if not isinstance(receipt, dict):
+        return ["route_receipt_missing"]
+    audit = _audit_route_receipt(receipt)
+    evidence["route_receipt_audit"] = audit
+    if not audit.get("pass"):
+        failures.append("route_receipt_audit_failed")
+        failures.extend(f"receipt:{failure}" for failure in audit.get("failures", []))
+    if receipt.get("cloud_proxy"):
+        failures.append("receipt_cloud_proxy_true")
+    if clean(receipt.get("usage_bucket")) in {
+        "openai_codex",
+        "bedrock_amazon",
+        "cloud_openai",
+        "cloud_amazon",
+        "cloud_other",
+        "other_cloud",
+    }:
+        failures.append("worker_drill_used_cloud_usage_bucket")
+    if require_fallback:
+        if receipt.get("fallback_used") is not True:
+            failures.append("fallback_used_not_true")
+        if not clean(receipt.get("fallback_reason")):
+            failures.append("fallback_reason_missing")
+        attempts = (
+            receipt.get("attempts") if isinstance(receipt.get("attempts"), list) else []
+        )
+        if len(attempts) < 2:
+            failures.append("fallback_attempts_missing")
+        target_worker = clean(receipt.get("target_worker"))
+        observed_worker = clean(receipt.get("observed_worker"))
+        if target_worker and observed_worker and target_worker == observed_worker:
+            failures.append("target_worker_matches_observed_worker")
+    return failures
+
+
+def validate_external_evidence_item(
+    scenario_id: str,
+    status: str,
+    evidence: dict[str, Any],
+) -> list[str]:
+    """Validate supplied outage/drill evidence before it can close a matrix row."""
+
+    failures = _common_external_evidence_failures(scenario_id, status, evidence)
+    if status != "pass":
+        return failures
+    if scenario_id == "spark_150_unavailable":
+        if evidence.get("specialist_fallback_visible") is not True:
+            failures.append("specialist_fallback_not_visible")
+        failures.extend(_validate_receipt_evidence(evidence, require_fallback=True))
+    elif scenario_id in WORKER_ISOLATION_SCENARIOS:
+        failures.extend(_validate_receipt_evidence(evidence, require_fallback=True))
+    elif scenario_id == "both_sparks_unavailable_2_133_available":
+        if evidence.get("heavy_models_routed_to_2_133") is not False:
+            failures.append("heavy_models_routed_to_2_133_not_false")
+        if evidence.get("local_degraded_block_or_tiny_only") is not True:
+            failures.append("local_degraded_block_or_tiny_only_missing")
+        if evidence.get("production_inference_rejected") is not True:
+            failures.append("production_inference_not_rejected")
+    elif scenario_id == "all_local_inference_unavailable":
+        if evidence.get("production_inference_rejected") is not True:
+            failures.append("production_inference_not_rejected")
+        if evidence.get("cloud_escalated") is True:
+            failures.append("local_unavailable_hidden_cloud_escalation")
+        if (
+            clean(evidence.get("policy_block_schema"))
+            != "norman.norllama.policy-block.v1"
+        ):
+            failures.append("policy_block_schema_missing")
+    elif scenario_id == "explicit_cloud_escalation":
+        if evidence.get("local_preflight_ran") is not True:
+            failures.append("local_preflight_not_recorded")
+        if evidence.get("explicit_cloud_authorization") is not True:
+            failures.append("explicit_cloud_authorization_missing")
+        if evidence.get("cloud_escalated") is not True:
+            failures.append("cloud_escalation_not_recorded")
+        if clean(evidence.get("usage_bucket")) not in {
+            "openai_codex",
+            "bedrock_amazon",
+            "cloud_openai",
+            "cloud_amazon",
+            "cloud_other",
+            "other_cloud",
+        }:
+            failures.append("explicit_cloud_usage_bucket_missing")
+    elif scenario_id == "stale_benchmark_packet":
+        if evidence.get("benchmark_fresh") is not False:
+            failures.append("benchmark_fresh_not_false")
+        if evidence.get("production_route_eligible") is not False:
+            failures.append("stale_benchmark_production_route_not_blocked")
+        if evidence.get("selection_blocked") is not True:
+            failures.append("stale_benchmark_selection_not_blocked")
+    elif scenario_id == "policy_refresh_failure":
+        if clean(evidence.get("lifecycle_state")) != "refresh_failed":
+            failures.append("policy_refresh_failure_state_missing")
+        if evidence.get("default_route_allowed") is not False:
+            failures.append("refresh_failure_default_route_not_blocked")
+        if evidence.get("previous_valid_policy_preserved_until_expiry") is not True:
+            failures.append("previous_valid_policy_not_preserved")
+    return failures
 
 
 def destructive_placeholder(scenario_id: str) -> dict[str, Any]:
@@ -461,6 +628,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frontdoor", default=DEFAULT_FRONTDOOR)
     parser.add_argument("--fixture-dir", type=Path)
     parser.add_argument("--external-evidence", type=Path)
+    parser.add_argument("--policy-artifact", type=Path)
     parser.add_argument(
         "--output-json", type=Path, default=Path("tmp/degraded-estate-matrix.json")
     )
@@ -469,6 +637,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if args.policy_artifact:
+        os.environ["NORMAN_NORLLAMA_ROUTE_POLICY_PATH"] = str(args.policy_artifact)
     snapshots = (
         fixture_snapshots(args.fixture_dir)
         if args.fixture_dir
