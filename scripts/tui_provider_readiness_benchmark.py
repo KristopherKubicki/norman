@@ -18,6 +18,48 @@ DEFAULT_OUTPUT_MD = Path("/tmp/norman_tui_benchmarks/provider_readiness.md")
 STRICT_PASS_THRESHOLD = 85
 OPERATIONAL_PASS_THRESHOLD = 80
 
+EXTERNAL_AUDIT_READINESS = [
+    {
+        "scope": "Bedrock model-access and transport proof",
+        "readiness": 86,
+    },
+    {
+        "scope": "Strict JSON smoke coverage",
+        "readiness": 88,
+    },
+    {
+        "scope": "Latency and token-usage canary",
+        "readiness": 72,
+    },
+    {
+        "scope": "Comparative model-quality evidence",
+        "readiness": 45,
+    },
+    {
+        "scope": "Architecture recommendation evidence",
+        "readiness": 30,
+    },
+    {
+        "scope": "Packet integrity and reproducibility",
+        "readiness": 38,
+    },
+    {
+        "scope": "Overall matrix readiness",
+        "readiness": 56,
+    },
+    {
+        "scope": "Norman core, unchanged",
+        "readiness": 97,
+    },
+]
+
+EXTERNAL_AUDIT_SUMMARY = (
+    "The GPT-5.6 Bedrock rows are useful canary evidence, especially for Terra "
+    "and Luna, but they are transport and strict-JSON smoke proof rather than "
+    "promotion-grade model-selection evidence. Do not change Norman production "
+    "defaults from this packet alone."
+)
+
 
 @dataclass(frozen=True)
 class Candidate:
@@ -1692,11 +1734,12 @@ CANDIDATES = [
         model="gpt-5.6",
         provider="openai",
         service_tier="flex",
-        status="future-watch",
-        notes="Add immediately when available; compare against 5.5 Flex and Bedrock 5.5.",
+        status="access-tested",
+        notes="Direct OpenAI GPT-5.6 candidate; compare against 5.5 Flex and Bedrock 5.6 after account-level smoke evidence is attached.",
         activation_signals=[
-            "model accepted by Codex direct",
+            "direct OpenAI model access is smoke-tested",
             "same baseline suite reaches model execution",
+            "compare Sol, Terra, and Luna role variants where supported",
         ],
     ),
     Candidate(
@@ -4344,6 +4387,20 @@ def build_report(rows: list[dict[str, Any]], artifact_dir: Path) -> dict[str, An
                 1 for candidate in CANDIDATES if candidate.status == "future-watch"
             ),
         },
+        "external_audit": {
+            "summary": EXTERNAL_AUDIT_SUMMARY,
+            "scorecard": EXTERNAL_AUDIT_READINESS,
+            "promotion_authoritative": False,
+            "required_before_promotion": [
+                "scorer false negatives fixed and current artifacts rescored",
+                "runner/scorer source, source commit, exact commands, Codex version, and profile/config hash included",
+                "requested/effective model, Bedrock region, AWS request ID, response ID, service tier, cache status, and route receipt captured",
+                "model-neutral prompts without baked-in architecture answers",
+                "transport, strict-format, capability, policy-safety, latency, and economic gates reported separately",
+                "matched role comparisons with randomized candidate order and at least three repetitions",
+                "real hybrid planner, worker, verifier, final-authority, brokered-tool, timeout, cancellation, and scope-violation flows",
+            ],
+        },
         "candidates": candidates,
         "cases": [asdict(case) for case in CASES],
         "session_pattern_findings": SESSION_PATTERN_FINDINGS,
@@ -4401,11 +4458,34 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Cases: {report['summary']['case_count']}",
         f"- Candidates: {report['summary']['candidate_count']}",
         "",
-        "## Candidate Board",
+        "## External Audit Readiness",
         "",
-        "| Candidate | Status | Scored | Exact | Operational | Format | Avg | Readiness | Route failures |",
-        "|---|---|---:|---:|---:|---:|---:|---|---|",
+        report["external_audit"]["summary"],
+        "",
+        "| Scope | Readiness |",
+        "|---|---:|",
     ]
+    for row in report["external_audit"]["scorecard"]:
+        lines.append(f"| {row['scope']} | {row['readiness']}% |")
+    lines.extend(
+        [
+            "",
+            "Promotion authority: no. The canary rows may inform shadow routing and follow-up experiments, but production defaults require the additional evidence below.",
+            "",
+            "Required before promotion:",
+        ]
+    )
+    for item in report["external_audit"]["required_before_promotion"]:
+        lines.append(f"- {item}")
+    lines.extend(
+        [
+            "",
+            "## Candidate Board",
+            "",
+            "| Candidate | Status | Scored | Exact | Operational | Format | Avg | Readiness | Route failures |",
+            "|---|---|---:|---:|---:|---:|---:|---|---|",
+        ]
+    )
     for candidate in report["candidates"]:
         lines.append(
             "| {label} | {status} | {scored} | {exact} | {operational} | {fmt} | {avg} | {ready} | {failures} |".format(
@@ -4802,7 +4882,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         ]
     )
     for candidate in report["candidates"]:
-        if candidate["status"] not in {"access-check", "experiment"}:
+        if candidate["status"] not in {"access-check", "access-tested", "experiment"}:
             continue
         signals = "; ".join(candidate.get("activation_signals") or [])
         lines.append(

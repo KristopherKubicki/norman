@@ -29,7 +29,11 @@ def test_candidate_registry_keeps_future_model_watch_slots(monkeypatch) -> None:
 
     candidates = {candidate.id: candidate for candidate in module.CANDIDATES}
 
-    assert candidates["codex_openai_5_6_flex_xhigh"].status == "future-watch"
+    assert candidates["codex_openai_5_6_flex_xhigh"].status == "access-tested"
+    assert (
+        "Direct OpenAI GPT-5.6 candidate"
+        in candidates["codex_openai_5_6_flex_xhigh"].notes
+    )
     assert candidates["codex_bedrock_5_4_low"].model == "openai.gpt-5.4"
     assert candidates["codex_bedrock_5_4_low"].status == "ready"
     assert candidates["codex_bedrock_5_4_low"].runbook_role.startswith("Default cloud")
@@ -362,6 +366,19 @@ def test_cli_writes_provider_readiness_report(tmp_path: Path, monkeypatch) -> No
     assert report["schema"] == "norman.tui.provider-readiness-benchmark.v1"
     assert report["summary"]["case_count"] == 28
     assert report["summary"]["candidate_count"] == 26
+    assert report["summary"]["future_watch_count"] == 1
+    assert report["external_audit"]["promotion_authoritative"] is False
+    audit_scores = {
+        row["scope"]: row["readiness"] for row in report["external_audit"]["scorecard"]
+    }
+    assert audit_scores["Bedrock model-access and transport proof"] == 86
+    assert audit_scores["Strict JSON smoke coverage"] == 88
+    assert audit_scores["Latency and token-usage canary"] == 72
+    assert audit_scores["Comparative model-quality evidence"] == 45
+    assert audit_scores["Architecture recommendation evidence"] == 30
+    assert audit_scores["Packet integrity and reproducibility"] == 38
+    assert audit_scores["Overall matrix readiness"] == 56
+    assert audit_scores["Norman core, unchanged"] == 97
     assert report["promotion_criteria"]["required_operational_passes"] == 28
     assert report["promotion_criteria"]["minimum_exact_passes"] == 26
     assert report["hybrid_strategies"][0]["id"] == "cheap_executor_with_escalation"
@@ -474,6 +491,9 @@ def test_cli_writes_provider_readiness_report(tmp_path: Path, monkeypatch) -> No
         "credential inspection" in handoffs["ticket_evidence_scout"]["blocked_actions"]
     )
     assert "OpenAI Codex 5.6 Flex" in markdown
+    assert "## External Audit Readiness" in markdown
+    assert "| Overall matrix readiness | 56% |" in markdown
+    assert "production defaults require the additional evidence below" in markdown
     assert "Kimi 2.6" in markdown
     assert "Promotion Playbook" in markdown
     assert "Observed Session Patterns" in markdown

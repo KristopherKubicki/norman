@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1800" height="2240" viewBox="0 0 1800 2240" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1800" height="2300" viewBox="0 0 1800 2300" role="img" aria-labelledby="title desc">
 <title id="title">Norman local-first runtime, Norllama benchmark matrix, and Bedrock cloud fallback canary</title>
 <desc id="desc">Infographic combining the Uplink Norllama benchmark matrix with the compact Bedrock GPT-5.4, GPT-5.5, and GPT-5.6 transport canary. It shows local-first routing and cloud fallback roles without changing production defaults.</desc>
 <defs>
@@ -8,7 +8,7 @@
 .bg{fill:#f6f7f3}.title{font:700 34px DejaVu Sans,Arial,sans-serif;fill:#1f2933}.subtitle{font:500 16px DejaVu Sans,Arial,sans-serif;fill:#52606d}.section{font:700 21px DejaVu Sans,Arial,sans-serif;fill:#1f2933}.card-title{font:700 17px DejaVu Sans,Arial,sans-serif;fill:#1f2933}.label{font:700 11px DejaVu Sans,Arial,sans-serif;fill:#39444e;text-transform:uppercase;letter-spacing:.4px}.text{font:500 14px DejaVu Sans,Arial,sans-serif;fill:#34414d}.small{font:500 12px DejaVu Sans,Arial,sans-serif;fill:#586474}.mono{font:600 12px DejaVu Sans Mono,Consolas,monospace;fill:#24313a}.tiny{font:600 10px DejaVu Sans Mono,Consolas,monospace;fill:#24313a}.panel{fill:#fff;stroke:#2f3b46;stroke-width:1.4}.green{fill:#e7f4ec;stroke:#4c8b6f;stroke-width:1.6}.blue{fill:#eaf1fb;stroke:#55749d;stroke-width:1.6}.gold{fill:#f8efd8;stroke:#b88932;stroke-width:1.6}.red{fill:#f9e7df;stroke:#b56854;stroke-width:1.6}.card{fill:#fff;stroke:#8d99a6;stroke-width:1.1}.dark-card{fill:#17212b;stroke:#53606c;stroke-width:1.2}.pill{fill:#eef2f5;stroke:#a5b0bb;stroke-width:1}.pill-green{fill:#dcefe5;stroke:#4c8b6f;stroke-width:1}.pill-gold{fill:#f2e2b7;stroke:#b88932;stroke-width:1}.pill-red{fill:#f5d9cf;stroke:#b56854;stroke-width:1}.line{stroke:#c2c8cf;stroke-width:1}.flow{fill:none;stroke:#24313a;stroke-width:2.2;marker-end:url(#arrow)}.flow-dash{fill:none;stroke:#9a4a36;stroke-width:2;stroke-dasharray:7 7;marker-end:url(#arrow)}
 </style>
 </defs>
-<rect class="bg" x="0" y="0" width="1800" height="2240"/>
+<rect class="bg" x="0" y="0" width="1800" height="2300"/>
 <text x="54" y="58" class="title">Norman local-first runtime, Norllama benchmarks, and cloud fallback canary</text>
 <text x="56" y="88" class="subtitle">Uplink Norllama packet plus Bedrock GPT-5.4/5.5/5.6 transport canary. Defaults stay local-first until stronger promotion evidence exists.</text>
 <rect x="56" y="112" width="344" height="32" rx="8" class="pill"/>
@@ -181,34 +181,50 @@
 <rect x="1442" y="1724" width="168" height="28" rx="7" class="pill-green"/>
 <text x="1454" y="1744" class="mono">shadow only</text>
 <line x1="74" y1="1784" x2="1706" y2="1784" class="line"/>
-<rect x="48" y="1806" width="1704" height="330" rx="14" class="red"/>
+<rect x="48" y="1806" width="1704" height="390" rx="14" class="red"/>
 <text x="74" y="1840" class="section">4. Incorporated audit caveats before promotion</text>
-<text x="74" y="1878" class="card-title">Scorer repairs</text>
-<text x="244" y="1878" class="text">Fix false negatives for escalate_only_if wording, release_route_gate exact</text>
-<text x="244" y="1896" class="text">comparison, and aggregate/dedupe detection; rescore all completed rows.</text>
-<text x="74" y="1930" class="card-title">Reproducibility</text>
-<text x="244" y="1930" class="text">Packet must include runner/scorer source, source commit, exact commands,</text>
-<text x="244" y="1948" class="text">Codex version, Bedrock profile/config hash, archive SHA256SUMS, and every</text>
-<text x="74" y="1982" class="card-title">Provider truth</text>
-<text x="244" y="1982" class="text">Capture requested and effective model, region, Bedrock request ID, response</text>
-<text x="244" y="2000" class="text">ID, service tier, cache status, and route receipt.</text>
-<text x="74" y="2034" class="card-title">Neutral prompts</text>
-<text x="244" y="2034" class="text">Remove answers embedded in prompts. Cases must not assume 5.4 default or</text>
-<text x="244" y="2052" class="text">5.5 final authority.</text>
-<text x="920" y="1878" class="card-title">Separate gates</text>
-<text x="1156" y="1878" class="text">Track transport, strict-format, capability, policy-safety,</text>
-<text x="1156" y="1896" class="text">latency, and economic gates separately.</text>
-<text x="920" y="1930" class="card-title">Fair matrix</text>
-<text x="1156" y="1930" class="text">Run matched roles: Luna low, Terra medium, Sol high/xhigh,</text>
-<text x="1156" y="1948" class="text">GPT-5.4 medium, GPT-5.5 high/xhigh, and direct OpenAI</text>
-<text x="1156" y="1966" class="text">GPT-5.6 Flex where available.</text>
-<text x="920" y="1982" class="card-title">Repetition and cache</text>
-<text x="1156" y="1982" class="text">Randomize order, run at least three repetitions per case,</text>
-<text x="1156" y="2000" class="text">and report cold, warm, and cached behavior.</text>
-<text x="920" y="2034" class="card-title">Real hybrid flows</text>
-<text x="1156" y="2034" class="text">Planner contract, sandboxed worker, tests, verifier,</text>
-<text x="1156" y="2052" class="text">escalation, brokered tool calls, cancellation, timeout,</text>
-<text x="1156" y="2070" class="text">and scope-violation cases.</text>
-<text x="74" y="2180" class="subtitle">Bottom line: Norllama benchmark matrix now sits in the same release graphic as the Bedrock canary. Cloud model roles are candidates to test, not defaults to promote.</text>
-<text x="74" y="2210" class="tiny">Source image SHA256: d5eb916c98f4ba881235fe7db043cb3406c7e11ab75500c1915fc4dfca98e59c</text>
+<rect x="74" y="1860" width="190" height="28" rx="7" class="pill-green"/>
+<text x="86" y="1879" class="mono">transport 86%</text>
+<rect x="278" y="1860" width="190" height="28" rx="7" class="pill-green"/>
+<text x="290" y="1879" class="mono">strict JSON 88%</text>
+<rect x="482" y="1860" width="190" height="28" rx="7" class="pill-gold"/>
+<text x="494" y="1879" class="mono">latency 72%</text>
+<rect x="686" y="1860" width="190" height="28" rx="7" class="pill-red"/>
+<text x="698" y="1879" class="mono">quality 45%</text>
+<rect x="890" y="1860" width="190" height="28" rx="7" class="pill-red"/>
+<text x="902" y="1879" class="mono">architecture 30%</text>
+<rect x="1094" y="1860" width="190" height="28" rx="7" class="pill-red"/>
+<text x="1106" y="1879" class="mono">packet 38%</text>
+<rect x="1298" y="1860" width="190" height="28" rx="7" class="pill-gold"/>
+<text x="1310" y="1879" class="mono">matrix 56%</text>
+<rect x="1502" y="1860" width="190" height="28" rx="7" class="pill-green"/>
+<text x="1514" y="1879" class="mono">Norman 97%</text>
+<text x="74" y="1948" class="card-title">Scorer repairs</text>
+<text x="244" y="1948" class="text">Fix false negatives for escalate_only_if wording, release_route_gate exact</text>
+<text x="244" y="1966" class="text">comparison, and aggregate/dedupe detection; rescore all completed rows.</text>
+<text x="74" y="2000" class="card-title">Reproducibility</text>
+<text x="244" y="2000" class="text">Packet must include runner/scorer source, source commit, exact commands,</text>
+<text x="244" y="2018" class="text">Codex version, Bedrock profile/config hash, archive SHA256SUMS, and every</text>
+<text x="74" y="2052" class="card-title">Provider truth</text>
+<text x="244" y="2052" class="text">Capture requested and effective model, region, Bedrock request ID, response</text>
+<text x="244" y="2070" class="text">ID, service tier, cache status, and route receipt.</text>
+<text x="74" y="2104" class="card-title">Neutral prompts</text>
+<text x="244" y="2104" class="text">Remove answers embedded in prompts. Cases must not assume 5.4 default or</text>
+<text x="244" y="2122" class="text">5.5 final authority.</text>
+<text x="920" y="1948" class="card-title">Separate gates</text>
+<text x="1156" y="1948" class="text">Track transport, strict-format, capability, policy-safety,</text>
+<text x="1156" y="1966" class="text">latency, and economic gates separately.</text>
+<text x="920" y="2000" class="card-title">Fair matrix</text>
+<text x="1156" y="2000" class="text">Run matched roles: Luna low, Terra medium, Sol high/xhigh,</text>
+<text x="1156" y="2018" class="text">GPT-5.4 medium, GPT-5.5 high/xhigh, and direct OpenAI</text>
+<text x="1156" y="2036" class="text">GPT-5.6 Flex where available.</text>
+<text x="920" y="2052" class="card-title">Repetition and cache</text>
+<text x="1156" y="2052" class="text">Randomize order, run at least three repetitions per case,</text>
+<text x="1156" y="2070" class="text">and report cold, warm, and cached behavior.</text>
+<text x="920" y="2104" class="card-title">Real hybrid flows</text>
+<text x="1156" y="2104" class="text">Planner contract, sandboxed worker, tests, verifier,</text>
+<text x="1156" y="2122" class="text">escalation, brokered tool calls, cancellation, timeout,</text>
+<text x="1156" y="2140" class="text">and scope-violation cases.</text>
+<text x="74" y="2240" class="subtitle">Bottom line: Norllama benchmark matrix now sits in the same release graphic as the Bedrock canary. Cloud model roles are candidates to test, not defaults to promote.</text>
+<text x="74" y="2270" class="tiny">Source image SHA256: d5eb916c98f4ba881235fe7db043cb3406c7e11ab75500c1915fc4dfca98e59c</text>
 </svg>
