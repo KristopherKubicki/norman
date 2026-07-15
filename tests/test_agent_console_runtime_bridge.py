@@ -2089,6 +2089,81 @@ def test_cost_route_uses_local_intent_classifier_for_ambiguous_status(
     assert decision["local_intent_classifier"]["worker_endpoint"] == "spark151"
 
 
+def test_cost_route_keeps_broad_planning_on_local_planner_lane(monkeypatch, tmp_path):
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_MODELS", "qwen3.6:27b")
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_ENDPOINTS", "http://local-llm:11434")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        module,
+        "local_llm_health_snapshot",
+        lambda model: {
+            "ok": True,
+            "model": model,
+            "endpoint": "http://local-llm:11434",
+            "reason": "model advertised",
+        },
+    )
+
+    prompt = "what happened with the plan for forking TUIs into multiple sessions?"
+    assert module.prompt_is_broad_planning_request(prompt) is True
+    assert module.prompt_is_local_first_candidate(prompt) is True
+
+    decision = module.cost_route_decision_for_prompt(
+        prompt=prompt,
+        attachments=[],
+        relay_callback=None,
+        runtime="codex",
+        model=module.MODEL,
+        service_tier="default",
+        job_budget="normal",
+        optimization_mode="auto",
+        route_lock=False,
+        requested_runtime="codex",
+        requested_model=module.MODEL,
+        requested_service_tier="default",
+    )
+
+    assert decision["selected_runtime"] == "localllm"
+    assert decision["local_lane"] == "planner"
+    assert decision["requested_action"] == "operator_prompt"
+    assert decision["operator_intent_class"] == "operator_prompt"
+    assert decision["route_source"] == "local_first_policy"
+
+
+def test_local_intent_classifier_cannot_downgrade_broad_planning_to_status(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    prompt = "what happened with the plan for forking TUIs into multiple sessions?"
+
+    assert (
+        module.local_route_intent_classifier_deterministic_block(
+            prompt,
+            requested_action="operator_prompt",
+            intent_class="operator_prompt",
+        )
+        == "broad_planning_request"
+    )
+    assert (
+        module.local_route_intent_classifier_promotes_local(
+            {
+                "requested_action": "status",
+                "operator_intent_class": "status",
+                "lane": "scout",
+                "local_eligible": True,
+                "cloud_needed": False,
+                "risk": "none",
+                "confidence": 0.99,
+            },
+            prompt=prompt,
+            requested_action="operator_prompt",
+            intent_class="operator_prompt",
+        )
+        is False
+    )
+
+
 def test_cost_route_does_not_run_classifier_for_mutating_prompt(monkeypatch, tmp_path):
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODELS", "qwen3.6:27b")

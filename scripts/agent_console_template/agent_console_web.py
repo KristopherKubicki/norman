@@ -11334,6 +11334,11 @@ def local_route_intent_classifier_prompt(
                 "misspelled."
             ),
             (
+                "Do not relabel architecture, forking, roadmap, subagent, or multi-session "
+                "planning prompts as status; those are planning/operator prompts even when "
+                "they contain status-like words."
+            ),
+            (
                 "Only set local_eligible=true when the prompt can be answered from the "
                 "current TUI/session state or supplied prompt text without tools, files, "
                 "network, secrets, deployment, restart, shell, or external writes."
@@ -11402,7 +11407,48 @@ def normalize_local_route_intent_classifier_payload(payload: Any) -> dict[str, A
     }
 
 
-def local_route_intent_classifier_promotes_local(result: dict[str, Any]) -> bool:
+def local_route_intent_classifier_deterministic_block(
+    prompt: Any,
+    *,
+    requested_action: str = "",
+    intent_class: str = "",
+) -> str:
+    if prompt_is_broad_planning_request(str(prompt or "")):
+        return "broad_planning_request"
+    if str(requested_action or "") in {
+        "approval_boundary",
+        "benchmark_or_optimizer",
+        "proceed_or_next",
+        "undo_or_back",
+    }:
+        return f"deterministic_action_{requested_action}"
+    if str(intent_class or "") in {
+        "approval_gate",
+        "benchmark",
+        "bounded_edit",
+        "continue",
+        "deploy_gate",
+        "proceed",
+        "undo_gate",
+        "what_next",
+    }:
+        return f"deterministic_intent_{intent_class}"
+    return ""
+
+
+def local_route_intent_classifier_promotes_local(
+    result: dict[str, Any],
+    *,
+    prompt: Any = "",
+    requested_action: str = "",
+    intent_class: str = "",
+) -> bool:
+    if local_route_intent_classifier_deterministic_block(
+        prompt,
+        requested_action=requested_action,
+        intent_class=intent_class,
+    ):
+        return False
     if not result.get("local_eligible"):
         return False
     if result.get("cloud_needed"):
@@ -11536,7 +11582,17 @@ def run_local_route_intent_classifier(
         route_headers = local_llm_route_headers(response_payload)
         parsed = parse_local_planner_json(raw_text)
         result = normalize_local_route_intent_classifier_payload(parsed)
-        promoted = local_route_intent_classifier_promotes_local(result)
+        deterministic_block = local_route_intent_classifier_deterministic_block(
+            prompt,
+            requested_action=requested_action,
+            intent_class=intent_class,
+        )
+        promoted = local_route_intent_classifier_promotes_local(
+            result,
+            prompt=prompt,
+            requested_action=requested_action,
+            intent_class=intent_class,
+        )
         append_local_llm_route_outcome(
             source="route-intent-classifier",
             status="ok" if parsed else "invalid-response",
@@ -11571,6 +11627,7 @@ def run_local_route_intent_classifier(
             "risk": result["risk"],
             "confidence": result["confidence"],
             "reason": result["reason"],
+            "deterministic_block": deterministic_block,
             "model": str(model or "").strip(),
             "endpoint": endpoint,
             "adapter": adapter,
@@ -33295,6 +33352,8 @@ def prompt_is_route_status_diagnostic(prompt: Any) -> bool:
     lower = f" {prompt_core_request(str(prompt or '')).lower()} "
     if not lower.strip():
         return False
+    if prompt_is_broad_planning_request(str(prompt or "")):
+        return False
     route_subject = bool(
         any(
             token in lower
@@ -33436,6 +33495,11 @@ def prompt_requires_cloud_or_tools(prompt: Any) -> bool:
         return False
     if prompt_is_route_status_diagnostic(prompt):
         return False
+    if (
+        prompt_is_broad_planning_request(str(prompt or ""))
+        and turn_control_mutation_risk(prompt) == "none"
+    ):
+        return False
     lower = f" {prompt_core_request(str(prompt or '')).lower()} "
     return any(
         local_first_workspace_marker_applies(lower, marker)
@@ -33449,6 +33513,8 @@ def prompt_is_local_first_candidate(prompt: Any) -> bool:
     if prompt_is_route_status_diagnostic(prompt):
         return True
     if prompt_is_quick_status_request(str(prompt or "")):
+        return True
+    if prompt_is_broad_planning_request(str(prompt or "")):
         return True
     if prompt_is_self_contained_response_request(prompt):
         return True
