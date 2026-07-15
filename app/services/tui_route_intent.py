@@ -110,6 +110,7 @@ PROCEED_PHRASES = (
     "resume",
     "go ahead",
     "do it",
+    "make it so",
     "keep going",
 )
 
@@ -119,6 +120,28 @@ UNDO_PHRASES = ("undo", "go back", "rollback", "roll back", "revert")
 RESTART_PHRASES = ("restart", "recover")
 SHIP_PHRASES = ("ship it", "ship", "release it")
 BENCHMARK_PHRASES = ("benchmark", "hybrid", "optimizer", "metric", "test")
+DIG_PHRASES = ("dig", "dig in", "dig into", "deep dive", "go deeper", "look deeper")
+SIMPLER_PHRASES = (
+    "simpler",
+    "simplify",
+    "make simpler",
+    "make it simpler",
+    "plain english",
+    "eli5",
+)
+VERIFY_PHRASES = ("verify", "check this", "validate", "audit this", "double check")
+COPY_PHRASES = ("copy", "copy this", "copy response", "copy text")
+HANDOFF_PHRASES = (
+    "handoff",
+    "hand off",
+    "relay",
+    "send to",
+    "pass to",
+    "ask scout",
+    "ask uplink",
+    "ask cloudagent",
+    "ask housebot",
+)
 
 ROUTE_STATUS_SUBJECTS = (
     " bedrock",
@@ -264,6 +287,16 @@ def requested_action(value: Any) -> str:
         return "status"
     if any(token in lower for token in ("status", "check on", "wedged", "crashing")):
         return "status"
+    if contains_any(lower, COPY_PHRASES):
+        return "copy_response"
+    if contains_any(lower, SIMPLER_PHRASES):
+        return "simplify_response"
+    if contains_any(lower, VERIFY_PHRASES):
+        return "verify_response"
+    if contains_any(lower, DIG_PHRASES):
+        return "dig_deeper"
+    if contains_any(lower, HANDOFF_PHRASES):
+        return "handoff_or_relay"
     if contains_any(lower, PROCEED_PHRASES):
         return "proceed_or_next"
     if contains_any(lower, UNDO_PHRASES):
@@ -273,11 +306,51 @@ def requested_action(value: Any) -> str:
     return "operator_prompt"
 
 
+def button_intent(value: Any) -> str:
+    lower = clean_prompt(value).lower()
+    if is_route_status_diagnostic(lower) or is_quick_status(lower):
+        return "status"
+    if contains_any(lower, COPY_PHRASES):
+        return "copy_response"
+    if contains_any(lower, SIMPLER_PHRASES):
+        return "simplify_response"
+    if contains_any(lower, VERIFY_PHRASES):
+        return "verify_response"
+    if contains_any(lower, DIG_PHRASES):
+        return "dig_deeper"
+    if contains_any(lower, HANDOFF_PHRASES):
+        return "handoff_or_relay"
+    if contains_any(lower, PROCEED_PHRASES):
+        return "make_it_so"
+    if contains_any(lower, RETRY_PHRASES):
+        return "retry"
+    if contains_any(lower, STOP_PHRASES):
+        return "stop"
+    if contains_any(lower, UNDO_PHRASES):
+        return "undo"
+    if contains_any(lower, RESTART_PHRASES):
+        return "restart"
+    if contains_any(lower, SHIP_PHRASES):
+        return "ship"
+    return ""
+
+
 def operator_intent_class(value: Any, *, action: str | None = None) -> str:
     lower = clean_prompt(value).lower()
     requested = action or requested_action(lower)
+    button = button_intent(lower)
     if requested == "status":
         return "status"
+    if button == "copy_response":
+        return "copy_response"
+    if button == "simplify_response":
+        return "simplify_response"
+    if button == "verify_response":
+        return "verify_or_audit"
+    if button == "dig_deeper":
+        return "deep_dive"
+    if button == "handoff_or_relay":
+        return "handoff_or_relay"
     if requested == "proceed_or_next":
         if any(phrase in lower for phrase in ("continue", "resume")):
             return "continue"
@@ -315,20 +388,30 @@ def deterministic_local_verifier_block(
     if action in {
         "approval_boundary",
         "benchmark_or_optimizer",
+        "copy_response",
+        "dig_deeper",
+        "handoff_or_relay",
         "proceed_or_next",
+        "simplify_response",
         "undo_or_back",
+        "verify_response",
     }:
         return f"deterministic_action_{action}"
     if intent_class in {
         "approval_gate",
         "benchmark",
         "bounded_edit",
+        "copy_response",
         "continue",
+        "deep_dive",
         "deploy_gate",
+        "handoff_or_relay",
         "proceed",
         "retry",
+        "simplify_response",
         "stop",
         "undo_gate",
+        "verify_or_audit",
         "what_next",
     }:
         return f"deterministic_intent_{intent_class}"
@@ -343,6 +426,7 @@ def classify_key_terms(value: Any) -> dict[str, Any]:
         "broad_planning": is_broad_planning(value),
         "quick_status": is_quick_status(value),
         "route_status_diagnostic": is_route_status_diagnostic(value),
+        "button_intent": button_intent(value),
         "requested_action": action,
         "operator_intent_class": intent,
         "deterministic_block": deterministic_local_verifier_block(

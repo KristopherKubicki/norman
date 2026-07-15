@@ -66,6 +66,45 @@ def test_prompt_load_balancer_routes_broad_tui_planning_to_local_reasoning():
     assert result["recommendation"]["cloud_last_resort"] is True
 
 
+def test_prompt_load_balancer_routes_reply_tail_buttons() -> None:
+    simpler = balance_prompt(prompt="simpler")
+    verify = balance_prompt(prompt="verify")
+    dig = balance_prompt(prompt="dig")
+    copy = balance_prompt(prompt="copy")
+
+    assert simpler["classification"]["intent"] == "simplify_response"
+    assert simpler["reasoning_profile"]["tier"] == "simple"
+    assert simpler["recommendation"]["selected_runtime"] == "localllm"
+
+    assert verify["classification"]["intent"] == "verify_or_audit"
+    assert verify["reasoning_profile"]["tier"] == "high_reasoning"
+    assert verify["routing_strategy"]["strategy"] == "local_high_reasoning"
+    assert verify["recommendation"]["selected_runtime"] == "localllm"
+
+    assert dig["classification"]["intent"] == "deep_dive"
+    assert dig["reasoning_profile"]["tier"] == "high_reasoning"
+    assert dig["recommendation"]["selected_runtime"] == "localllm"
+
+    assert copy["classification"]["intent"] == "copy_response"
+    assert copy["stateful_control"]["applies"] is True
+    assert copy["recommendation"]["selected_action"] == (
+        "deterministic_copy_latest_response"
+    )
+    assert copy["recommendation"]["execution_allowed"] is True
+
+
+def test_prompt_load_balancer_blocks_unbound_handoff_button() -> None:
+    result = balance_prompt(prompt="handoff this to scout")
+
+    assert result["classification"]["intent"] == "handoff_or_relay"
+    assert result["stateful_control"]["applies"] is True
+    assert result["recommendation"]["tool_selection"] == "relay_broker"
+    assert result["recommendation"]["execution_allowed"] is False
+    assert (
+        "no_active_job_bound_to_terse_command" in result["stateful_control"]["blockers"]
+    )
+
+
 def test_prompt_load_balancer_bad_route_corpus_stays_local_first():
     corpus_path = (
         Path(__file__).resolve().parents[1] / "db" / "prompt_bad_route_corpus.json"

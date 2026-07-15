@@ -121,9 +121,11 @@ _HIGH_REASONING_WORDS = {
 }
 _DETERMINISTIC_INTENTS = {
     "continue_work",
+    "copy_response",
     "next_steps",
     "quick_status",
     "retry_last_step",
+    "simplify_response",
     "stop_or_pause",
 }
 _SPECIALIST_TASK_KINDS = {
@@ -279,6 +281,8 @@ def _stateful_terse_control(
         "undo_or_rollback",
         "restart_or_recover",
         "ship_or_release",
+        "copy_response",
+        "handoff_or_relay",
     }
     risky_pending = pending_action_risk in {
         "prod_write",
@@ -298,10 +302,16 @@ def _stateful_terse_control(
     if intent == "stop_or_pause":
         selected_action = "deterministic_stop_current_job"
         tool_selection = "console_control"
+    elif intent == "copy_response":
+        selected_action = "deterministic_copy_latest_response"
+        tool_selection = "browser_ui"
+    elif intent == "handoff_or_relay":
+        selected_action = pending_action_kind or "prepare_bound_handoff"
+        tool_selection = "relay_broker"
     elif terse_control:
         selected_action = pending_action_kind or intent
         tool_selection = "console_runtime_kernel"
-    if terse_control and intent != "stop_or_pause":
+    if terse_control and intent not in {"stop_or_pause", "copy_response"}:
         if active_job_count <= 0:
             blockers.append("no_active_job_bound_to_terse_command")
         elif active_job_count > 1:
@@ -485,6 +495,8 @@ def classify_prompt(
     clean = _clean(prompt)
     lowered = clean.lower()
     tokens = set(_word_tokens(clean))
+    key_terms = tui_route_intent.classify_key_terms(clean)
+    button_intent = str(key_terms.get("button_intent") or "")
     artifacts = [dict(item) for item in artifacts or [] if isinstance(item, Mapping)]
     artifact_kind = _artifact_task_kind(artifacts)
 
@@ -498,6 +510,31 @@ def classify_prompt(
         task_kind = artifact_kind
         intent_confidence = 0.92
         reasons.append("artifact type selects specialist lane")
+    elif button_intent == "copy_response":
+        intent = "copy_response"
+        task_kind = NorllamaTaskKind.SUMMARIZE.value
+        intent_confidence = 0.95
+        reasons.append("reply control button: copy")
+    elif button_intent == "simplify_response":
+        intent = "simplify_response"
+        task_kind = NorllamaTaskKind.SUMMARIZE.value
+        intent_confidence = 0.9
+        reasons.append("reply control button: simpler")
+    elif button_intent == "verify_response":
+        intent = "verify_or_audit"
+        task_kind = NorllamaTaskKind.VERIFY.value
+        intent_confidence = 0.88
+        reasons.append("reply control button: verify")
+    elif button_intent == "dig_deeper":
+        intent = "deep_dive"
+        task_kind = NorllamaTaskKind.PLAN.value
+        intent_confidence = 0.88
+        reasons.append("reply control button: dig deeper")
+    elif button_intent == "handoff_or_relay":
+        intent = "handoff_or_relay"
+        task_kind = NorllamaTaskKind.PLAN.value
+        intent_confidence = 0.88
+        reasons.append("reply control button: handoff/relay")
     elif _quick_status(lowered):
         intent = "quick_status"
         task_kind = NorllamaTaskKind.SUMMARIZE.value
@@ -615,6 +652,7 @@ def classify_prompt(
         "reasons": reasons or ["fallback prompt classification"],
         "signals": {
             "status": _has_status_signal(lowered),
+            "button_intent": button_intent,
             "web_research": intent == "research_or_scout",
             "code": intent == "code_or_patch",
             "mutation": risk_class != "read_only",
@@ -638,10 +676,10 @@ def _reasoning_profile(
         tier = "simple"
         effort = "deterministic_or_tiny_local"
         reason = "prompt matches a short operator-control/status intent"
-    elif intent == "planning_or_architecture":
+    elif intent in {"deep_dive", "planning_or_architecture"}:
         tier = "high_reasoning"
         effort = "spark_high_reasoning"
-        reason = "prompt asks for architecture, routing, or multi-session planning"
+        reason = "prompt asks for deeper reasoning, architecture, routing, or planning"
     elif task_kind in _SPECIALIST_TASK_KINDS:
         tier = "specialist"
         effort = "local_specialist"

@@ -1,4 +1,5 @@
 from app.services.tui_route_intent import (
+    button_intent,
     classify_key_terms,
     deterministic_local_verifier_block,
     is_broad_planning,
@@ -46,7 +47,32 @@ def test_route_status_diagnostic_stays_status() -> None:
 
 def test_terse_commands_have_control_intents() -> None:
     assert requested_action("go ahead") == "proceed_or_next"
+    assert requested_action("make it so") == "proceed_or_next"
     assert operator_intent_class("go ahead") == "proceed"
+    assert operator_intent_class("make it so") == "proceed"
     assert operator_intent_class("retry") == "retry"
     assert operator_intent_class("stop") == "stop"
     assert operator_intent_class("undo the last thing") == "undo_gate"
+
+
+def test_reply_tail_button_intents_are_explicit() -> None:
+    cases = {
+        "dig": ("dig_deeper", "deep_dive"),
+        "go deeper on that": ("dig_deeper", "deep_dive"),
+        "simpler": ("simplify_response", "simplify_response"),
+        "make this plain english": ("simplify_response", "simplify_response"),
+        "verify": ("verify_response", "verify_or_audit"),
+        "double check this": ("verify_response", "verify_or_audit"),
+        "copy": ("copy_response", "copy_response"),
+        "handoff this to scout": ("handoff_or_relay", "handoff_or_relay"),
+    }
+
+    for prompt, (expected_button, expected_intent) in cases.items():
+        assert button_intent(prompt) == expected_button
+        assert requested_action(prompt) == expected_button
+        assert operator_intent_class(prompt) == expected_intent
+        assert classify_key_terms(prompt)["button_intent"] == expected_button
+        assert classify_key_terms(prompt)["requested_action"] == expected_button
+        assert classify_key_terms(prompt)["deterministic_block"] == (
+            f"deterministic_action_{expected_button}"
+        )

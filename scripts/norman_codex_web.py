@@ -4148,6 +4148,16 @@ def turn_control_operator_intent_class(prompt: Any) -> str:
         if any(token in lower for token in ("deploy", "restart", "systemctl", "caddy")):
             return "deploy_gate"
         return "approval_gate"
+    if SHARED_TUI_ROUTE_INTENT is not None:
+        shared_intent = str(
+            SHARED_TUI_ROUTE_INTENT.operator_intent_class(
+                clean,
+                action=requested_action,
+            )
+            or ""
+        ).strip()
+        if shared_intent and shared_intent != "operator_prompt":
+            return shared_intent
     if requested_action == "status":
         return "status"
     if requested_action == "proceed_or_next":
@@ -14967,6 +14977,14 @@ def route_receipt_requested_action(prompt: Any) -> str:
     lower = clean.lower()
     if prompt_is_broad_planning_request(clean):
         return "operator_prompt"
+    if route_receipt_requires_operator_approval(clean):
+        return "approval_boundary"
+    if SHARED_TUI_ROUTE_INTENT is not None:
+        shared_action = str(
+            SHARED_TUI_ROUTE_INTENT.requested_action(clean) or ""
+        ).strip()
+        if shared_action and shared_action != "operator_prompt":
+            return shared_action
     if any(token in lower for token in ("status", "check on", "wedged", "crashing")):
         return "status"
     if any(
@@ -14976,8 +14994,6 @@ def route_receipt_requested_action(prompt: Any) -> str:
         return "proceed_or_next"
     if any(token in lower for token in ("undo", "go back", "rollback", "revert")):
         return "undo_or_back"
-    if route_receipt_requires_operator_approval(clean):
-        return "approval_boundary"
     if any(
         token in lower
         for token in ("benchmark", "hybrid", "optimizer", "metric", "test")
