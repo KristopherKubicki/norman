@@ -583,6 +583,9 @@ def test_origin_sync_exports_bbs_env_file_without_raw_token(monkeypatch) -> None
     assert '"NORMAN_CODEX_SERVICE_TIER":"default"' in script
     assert "NORMAN_CODEX_STANDARD_PROFILE_V2" in script
     assert "NORMAN_CODEX_STANDARD_MODEL" in script
+    assert "NORMAN_CODEX_ROLE_POLICY_ID" in script
+    assert "NORMAN_CODEX_ROLE_POLICY_HASH" in script
+    assert module.CODEX_ROLE_POLICY_IDENTITY["policy_id"] in script
     assert "NORMAN_CODEX_BEDROCK_FAILOVER_PROFILE_V2" in script
     assert "NORMAN_CODEX_BEDROCK_FAILOVER_MODEL" in script
     assert "NORMAN_CODEX_BEDROCK_FAILOVER_AWS_REGION" in script
@@ -602,6 +605,8 @@ def test_origin_sync_exports_bbs_env_file_without_raw_token(monkeypatch) -> None
     assert module.WORK_SWITCHABLE_MODELS == (
         "openai.gpt-5.4,openai.gpt-5.5,gpt-5.4,gpt-5.5"
     )
+    assert module.WORK_STANDARD_MODEL == "openai.gpt-5.4"
+    assert module.WORK_DIRECT_MODEL == "openai.gpt-5.4"
     assert '"NORMAN_CODEX_DIRECT_TIERS_ENABLED":"1"' in script
     assert "ob-traqline-admin" in script
     assert "SWITCHBOARD_URL" in script

@@ -155,17 +155,22 @@ def test_flow_canary_plan_selects_first_targets_and_route_receipt_contract(
 
 
 def _good_route_receipt(owner: str, index: int) -> dict:
+    task_classes = ("status", "continue", "read_only_code", "log_triage", "summary")
     return {
         "receipt_id": f"{owner}-{index}",
         "receipt_source": "live_shadow_canary",
         "previous_receipt_hash": "",
         "receipt_hash": "",
         "synthetic": False,
-        "created_at": 1_786_000_000 + index,
+        "created_at": 1_786_000_000 + index * 1800,
         "owner_tui": owner,
         "prompt_id": f"prompt-{index}",
+        "task_class": task_classes[index % len(task_classes)],
+        "operator_intent_class": task_classes[index % len(task_classes)],
         "benchmark_skill_id": "common-status-next-action",
         "requested_action": "draft next-action packet",
+        "selected_provider": "openai",
+        "observed_provider": "openai",
         "selected_model_tier": "medium_worker",
         "selected_model": "gpt-5.4-mini",
         "routing_score": 0.94,
@@ -176,6 +181,14 @@ def _good_route_receipt(owner: str, index: int) -> dict:
         "fallback_used": "",
         "estimated_cost_usd": 0.40,
         "baseline_all_5_5_cost_usd": 1.00,
+        "workflow_cost_usd": 0.40,
+        "counterfactual_workflow_cost_usd": 1.00,
+        "cloud_accounted": True,
+        "cloud_proxy": False,
+        "usage_bucket": "openai_codex",
+        "output_shape": "complete",
+        "visible_delivery_passed": True,
+        "policy_lifecycle_state": "valid",
         "validator_passed": True,
         "manual_override": False,
         "boundary_violation": False,
@@ -334,6 +347,11 @@ def test_cutover_readiness_promotes_clean_wave_one_receipts(
     assert targets["market-sizing"]["metrics"]["manual_override_rate"] == 0.0
     assert targets["market-sizing"]["metrics"]["fallback_rate"] == 0.0
     assert targets["market-sizing"]["metrics"]["cost_savings_vs_all_5_5"] == 0.6
+    assert targets["market-sizing"]["metrics"]["evidence_span_seconds"] >= 24 * 60 * 60
+    assert targets["market-sizing"]["metrics"]["task_class_quota_passed"] is True
+    assert targets["market-sizing"]["metrics"]["visible_completion_count"] == 50
+    assert targets["market-sizing"]["metrics"]["policy_fresh_count"] == 50
+    assert targets["market-sizing"]["metrics"]["hidden_cloud_count"] == 0
     assert targets["market-sizing"]["next_actions"] == [
         "request operator approval for a limited guarded cutover"
     ]

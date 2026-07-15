@@ -8,10 +8,24 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
 
+from app.services.codex_role_policy import (
+    codex_role_policy_identity,
+    codex_role_value,
+    load_codex_role_policy,
+)
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_JSON = Path("/tmp/norman_tui_benchmarks/route_policy_drift_lint.json")
 DEFAULT_OUTPUT_MD = Path("/tmp/norman_tui_benchmarks/route_policy_drift_lint.md")
+CODEX_ROLE_POLICY = load_codex_role_policy()
+CODEX_ROLE_POLICY_IDENTITY = codex_role_policy_identity(policy=CODEX_ROLE_POLICY)
+CODEX_CLOUD_DEFAULT_MODEL = codex_role_value(
+    "work_standard", "model", policy=CODEX_ROLE_POLICY
+)
+CODEX_FINAL_AUTHORITY_MODEL = codex_role_value(
+    "work_final_authority", "model", policy=CODEX_ROLE_POLICY
+)
 
 
 @dataclass(frozen=True)
@@ -41,7 +55,8 @@ DRIFT_RULES = (
             re.I,
         ),
         suggestion=(
-            "Use GPT-5.4-first wording; reserve GPT-5.5 for final authority, "
+            f"Use the role-policy cloud default ({CODEX_CLOUD_DEFAULT_MODEL}); "
+            f"reserve {CODEX_FINAL_AUTHORITY_MODEL} for final authority, "
             "tiebreaker, safety boundary, or failed evidence gates."
         ),
     ),
@@ -54,8 +69,8 @@ DRIFT_RULES = (
             re.I,
         ),
         suggestion=(
-            "Do not describe GPT-5.5 as the default route unless the policy "
-            "explicitly marks that lane as final-authority only."
+            f"Do not describe {CODEX_FINAL_AUTHORITY_MODEL} as the default route. "
+            "The role policy marks that lane as final-authority only."
         ),
     ),
     DriftRule(
@@ -67,7 +82,8 @@ DRIFT_RULES = (
         ),
         suggestion=(
             "Replace 5.5-planner/verifier flows with local/cheap worker -> "
-            "GPT-5.4 verifier -> GPT-5.5 final authority only when needed."
+            f"{CODEX_CLOUD_DEFAULT_MODEL} verifier -> "
+            f"{CODEX_FINAL_AUTHORITY_MODEL} final authority only when needed."
         ),
     ),
     DriftRule(
@@ -78,8 +94,8 @@ DRIFT_RULES = (
             re.I,
         ),
         suggestion=(
-            "Make GPT-5.4 the normal verifier and GPT-5.5 the rare final "
-            "authority/escalation lane."
+            f"Make {CODEX_CLOUD_DEFAULT_MODEL} the normal verifier and "
+            f"{CODEX_FINAL_AUTHORITY_MODEL} the rare final authority/escalation lane."
         ),
     ),
 )
@@ -142,6 +158,9 @@ def build_report(paths: Iterable[Path], *, root: Path = REPO_ROOT) -> dict[str, 
     return {
         "schema": "norman.route-policy-drift-lint.v1",
         "root": str(root),
+        "codex_role_policy": CODEX_ROLE_POLICY_IDENTITY,
+        "cloud_default_model": CODEX_CLOUD_DEFAULT_MODEL,
+        "final_authority_model": CODEX_FINAL_AUTHORITY_MODEL,
         "scanned_files": [
             str(path.resolve().relative_to(root.resolve())) for path in scanned
         ],

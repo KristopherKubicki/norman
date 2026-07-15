@@ -11,6 +11,8 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.services.codex_role_policy import load_codex_role_policy
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PACK_DIR = REPO_ROOT / "tmp" / "pro_agent_norman_harness_pack"
@@ -19,10 +21,48 @@ DEFAULT_SOURCE_PROMPT = (
     DEFAULT_PACK_DIR / "source_prompt" / "codex_5_4_vs_5_5_xhigh_notes.txt"
 )
 
+SOURCE_DIRS = ("app", "projects", "scripts", "tests")
+SAFE_DB_SUFFIXES = {".dist", ".json", ".jsonl", ".yaml", ".yml", ".md", ".txt"}
+EXCLUDED_SOURCE_PARTS = {
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".hypothesis",
+    "node_modules",
+}
+
 SCRIPT_FILES = (
     "AGENTS.md",
+    "config.yaml.dist",
     "Makefile",
+    "main.py",
+    "package-lock.json",
+    "pyproject.toml",
+    "requirements.txt",
+    "setup.py",
+    "uv.lock",
     "app/app_routes.py",
+    "app/core/config.py",
+    "app/services/codex_role_policy.py",
+    "app/services/console_runtime/events.py",
+    "app/services/console_runtime/policy.py",
+    "app/services/console_runtime/types.py",
+    "app/services/norllama/capability_catalog.py",
+    "app/services/norllama/gateway.py",
+    "app/services/norllama/mesh_cache.py",
+    "app/services/norllama/model_reality.py",
+    "app/services/norllama/proxy.py",
+    "app/services/norllama/route_outcomes.py",
+    "app/services/prompt_load_balancer.py",
+    "app/services/prompt_provider_facade.py",
+    "app/services/norllama/route_policy.py",
+    "app/services/norllama/route_policy_artifact.py",
+    "app/services/norllama/route_proof.py",
+    "app/services/norllama/routing.py",
+    "app/services/norllama/specialist_lanes.py",
+    "app/services/norllama/types.py",
+    "app/services/norllama/warm_policy.py",
     "app/static/css/styles.css",
     "app/static/js/home.js",
     "app/static/js/messages_log.js",
@@ -31,6 +71,8 @@ SCRIPT_FILES = (
     "app/templates/base.html",
     "app/templates/index.html",
     "app/templates/messages_log.html",
+    "db/policies/codex_role_policy.json",
+    "db/prompt_bad_route_corpus.json",
     "docs/work_bot_system_access.md",
     "scripts/agent_console_template/agent_console_launch.sh",
     "scripts/agent_console_template/agent_console_supervisor.sh",
@@ -45,6 +87,8 @@ SCRIPT_FILES = (
     "scripts/norman_bot_prime_start.sh",
     "scripts/norman_codex_launch.sh",
     "scripts/norman_codex_web.py",
+    "scripts/norllama/norllama_gateway.py",
+    "scripts/norllama/norllama_resident_warmer.py",
     "scripts/agent_console_template/agent_console_web.py",
     "scripts/render_norman_bot_proxy_caddy.py",
     "scripts/runbook_hybrid_architecture_audit.py",
@@ -85,6 +129,9 @@ TEST_FILES = (
     "tests/test_gaphelp_ticket_loop_shadow.py",
     "tests/test_ticket_token_cost_ledger.py",
     "tests/test_route_policy_drift_lint.py",
+    "tests/test_prompt_load_balancer.py",
+    "tests/test_norllama_route_policy_lifecycle.py",
+    "tmp/switchboard_bbs_service.py",
 )
 
 FIXTURE_FILES = (
@@ -103,6 +150,14 @@ FIXTURE_FILES = (
     (
         "db/tui_quality_shadow_answers.example.json",
         "data/fixtures/tui_quality_shadow_answers.example.json",
+    ),
+    (
+        "db/policies/codex_role_policy.json",
+        "data/policies/codex_role_policy.json",
+    ),
+    (
+        "db/prompt_bad_route_corpus.json",
+        "data/fixtures/prompt_bad_route_corpus.json",
     ),
 )
 
@@ -160,6 +215,43 @@ def _copy_file(source_rel: str, dest_rel: str, pack_dir: Path) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, dest)
     return dest
+
+
+def _safe_source_file(path: Path) -> bool:
+    parts = set(path.parts)
+    if parts & EXCLUDED_SOURCE_PARTS:
+        return False
+    if path.suffix in {".pyc", ".pyo", ".sqlite", ".sqlite3", ".db"}:
+        return False
+    return path.is_file()
+
+
+def _safe_db_file(path: Path) -> bool:
+    if "tmux_profiles" in path.parts:
+        return False
+    return _safe_source_file(path) and path.suffix.lower() in SAFE_DB_SUFFIXES
+
+
+def _copy_tree(
+    source_rel: str,
+    dest_rel: str,
+    pack_dir: Path,
+    *,
+    include_file,
+) -> list[Path]:
+    source_root = REPO_ROOT / source_rel
+    if not source_root.exists():
+        raise FileNotFoundError(source_root)
+    written: list[Path] = []
+    for source in sorted(source_root.rglob("*")):
+        if not include_file(source):
+            continue
+        rel = source.relative_to(source_root)
+        dest = pack_dir / dest_rel / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, dest)
+        written.append(dest)
+    return written
 
 
 def _write_text(pack_dir: Path, rel: str, body: str) -> Path:
@@ -221,30 +313,48 @@ def copy_live_evidence(pack_dir: Path, evidence_root: Path) -> list[Path]:
 
 
 def route_policy(generated_at: str) -> dict[str, object]:
+    codex_policy = load_codex_role_policy()
+    work_standard = codex_policy["roles"]["work_standard"]
+    work_direct = codex_policy["roles"]["work_direct"]
+    work_final = codex_policy["roles"]["work_final_authority"]
+    personal_default = codex_policy["roles"]["personal_default"]
     return {
         "schema": "norman.pro-agent-route-policy.v1",
         "generated_at": generated_at,
+        "source_policy": {
+            "schema": codex_policy["schema"],
+            "version": codex_policy["version"],
+            "policy_id": codex_policy["policy_id"],
+            "policy_hash": codex_policy["policy_hash"],
+        },
         "operator_goal": (
             "Make GPT-5.4 carry long workflows with stability close to GPT-5.5, "
             "reserving GPT-5.5 for rare final-authority/tiebreaker work."
         ),
         "work_special_default": {
-            "model": "openai.gpt-5.4",
-            "service_tier": "default",
-            "provider": "Bedrock",
+            "model": work_standard["model"],
+            "service_tier": work_standard["service_tier"],
+            "provider": work_standard["provider"],
+            "profile_v2": work_standard["profile_v2"],
             "failover_order": [
                 "Bedrock openai.gpt-5.4 primary region",
                 "Bedrock openai.gpt-5.4 secondary region",
                 "Bedrock openai.gpt-5.4 tertiary region",
-                "OpenAI direct gpt-5.4",
+                f"OpenAI direct {work_direct['model']}",
             ],
         },
         "netops_non_work_default": {
-            "model": "gpt-5.4",
-            "service_tier": "flex",
-            "provider": "OpenAI direct",
-            "switchable_models": ["gpt-5.4", "gpt-5.5"],
+            "model": personal_default["model"],
+            "service_tier": personal_default["service_tier"],
+            "provider": personal_default["provider"],
+            "switchable_models": codex_policy["switchable_models"]["personal"],
             "bedrock_default_allowed": False,
+        },
+        "final_authority": {
+            "model": work_final["model"],
+            "service_tier": work_final["service_tier"],
+            "provider": work_final["provider"],
+            "production_default": False,
         },
         "use_gpt_5_5_when": [
             "high-authority final decision",
@@ -419,6 +529,8 @@ def live_handoff(generated_at: str, evidence_root: Path) -> str:
     proof_gate = (
         proof.get("release_gate") if isinstance(proof.get("release_gate"), dict) else {}
     )
+    live_evidence_available = bool(cutover or proof or receipt)
+    evidence_status = "available" if live_evidence_available else "incomplete_missing"
 
     return f"""# Live Handoff
 
@@ -426,6 +538,7 @@ Generated: {generated_at}
 
 ## Current State
 
+- Live evidence status: {evidence_status}
 - Work-special target policy: GPT-5.4-first; GPT-5.5 only for final authority,
   tiebreaker, safety boundary, or failed 5.4 evidence gate.
 - Receipt storage target: `/var/lib/norman/route_receipts/<owner>.jsonl`, with
@@ -730,6 +843,23 @@ def build_pack(
     pack_dir.mkdir(parents=True, exist_ok=True)
 
     written: list[Path] = []
+    for source_dir in SOURCE_DIRS:
+        written.extend(
+            _copy_tree(
+                source_dir,
+                f"code/{source_dir}",
+                pack_dir,
+                include_file=_safe_source_file,
+            )
+        )
+    written.extend(
+        _copy_tree(
+            "db",
+            "code/db",
+            pack_dir,
+            include_file=_safe_db_file,
+        )
+    )
     for rel in SCRIPT_FILES:
         written.append(_copy_file(rel, f"code/{rel}", pack_dir))
     for rel in TEST_FILES:

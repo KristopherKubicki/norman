@@ -36,19 +36,39 @@ def test_pack_builder_includes_replay_dependencies_and_fixture(tmp_path, monkeyp
 
     assert result["zip_path"] == str(zip_path)
     assert (pack_dir / "code/scripts/norman_codex_web.py").exists()
+    assert (pack_dir / "code/config.yaml.dist").exists()
+    assert (pack_dir / "code/main.py").exists()
+    assert (pack_dir / "code/setup.py").exists()
     assert (
         pack_dir / "code/scripts/agent_console_template/agent_console_web.py"
     ).exists()
     assert (pack_dir / "code/tests/test_norman_codex_model_settings.py").exists()
     assert (pack_dir / "code/scripts/gaphelp_ticket_loop_shadow.py").exists()
     assert (pack_dir / "code/scripts/ticket_token_cost_ledger.py").exists()
+    assert (pack_dir / "code/scripts/norllama/norllama_gateway.py").exists()
     assert (pack_dir / "code/scripts/route_policy_drift_lint.py").exists()
     assert (pack_dir / "code/scripts/runbook_hybrid_architecture_audit.py").exists()
     assert (pack_dir / "code/scripts/tui_bedrock_shortstop_benchmark.py").exists()
     assert (pack_dir / "code/scripts/local_model_skill_floor.py").exists()
+    assert (pack_dir / "code/app/services/codex_role_policy.py").exists()
+    assert (pack_dir / "code/app/services/console_runtime/policy.py").exists()
+    assert (pack_dir / "code/app/services/prompt_load_balancer.py").exists()
+    assert (pack_dir / "code/app/services/prompt_provider_facade.py").exists()
+    assert (pack_dir / "code/app/services/norllama/routing.py").exists()
+    assert (pack_dir / "code/app/services/norllama/warm_policy.py").exists()
+    assert (pack_dir / "code/app/services/norllama/route_policy.py").exists()
+    assert (pack_dir / "code/app/services/norllama/route_policy_artifact.py").exists()
+    assert (pack_dir / "code/app/services/norllama/route_proof.py").exists()
+    assert (pack_dir / "code/db/policies/codex_role_policy.json").exists()
+    assert (pack_dir / "code/db/prompt_bad_route_corpus.json").exists()
+    assert (pack_dir / "code/requirements.txt").exists()
+    assert (pack_dir / "code/uv.lock").exists()
     assert (pack_dir / "code/scripts/bbs_janitor.py").exists()
     assert (pack_dir / "code/tests/test_tui_bedrock_shortstop_benchmark.py").exists()
     assert (pack_dir / "code/tests/test_local_model_skill_floor.py").exists()
+    assert (pack_dir / "code/tests/test_prompt_load_balancer.py").exists()
+    assert (pack_dir / "data/policies/codex_role_policy.json").exists()
+    assert (pack_dir / "data/fixtures/prompt_bad_route_corpus.json").exists()
     assert (
         pack_dir / "code/scripts/agent_console_template/prompts/control-plane.txt"
     ).exists()
@@ -59,13 +79,31 @@ def test_pack_builder_includes_replay_dependencies_and_fixture(tmp_path, monkeyp
     assert (pack_dir / "brief/LIVE_HANDOFF.md").exists()
     assert (pack_dir / "brief/FAILURE_PACKET.md").exists()
     assert (pack_dir / "SHA256SUMS.txt").exists()
+    route_policy = (pack_dir / "brief/ROUTE_POLICY.json").read_text(encoding="utf-8")
+    handoff = (pack_dir / "brief/LIVE_HANDOFF.md").read_text(encoding="utf-8")
+    assert "norman.codex-role-policy.v1" in route_policy
+    assert "Live evidence status: incomplete_missing" in handoff
 
     with zipfile.ZipFile(zip_path) as archive:
         names = set(archive.namelist())
     assert "pack/code/scripts/ticket_token_cost_ledger.py" in names
+    assert "pack/code/config.yaml.dist" in names
+    assert "pack/code/main.py" in names
+    assert "pack/code/setup.py" in names
+    assert "pack/code/scripts/norllama/norllama_gateway.py" in names
     assert "pack/code/scripts/runbook_hybrid_architecture_audit.py" in names
     assert "pack/code/scripts/tui_bedrock_shortstop_benchmark.py" in names
     assert "pack/code/scripts/local_model_skill_floor.py" in names
+    assert "pack/code/app/services/codex_role_policy.py" in names
+    assert "pack/code/app/services/console_runtime/policy.py" in names
+    assert "pack/code/app/services/prompt_provider_facade.py" in names
+    assert "pack/code/app/services/norllama/routing.py" in names
+    assert "pack/code/app/services/norllama/route_policy_artifact.py" in names
+    assert "pack/code/db/policies/codex_role_policy.json" in names
+    assert "pack/code/db/prompt_bad_route_corpus.json" in names
+    assert "pack/code/tests/test_prompt_load_balancer.py" in names
+    assert "pack/data/policies/codex_role_policy.json" in names
+    assert "pack/data/fixtures/prompt_bad_route_corpus.json" in names
     assert "pack/code/scripts/agent_console_template/prompts/control-plane.txt" in names
     assert "pack/code/tests/test_tui_bedrock_shortstop_benchmark.py" in names
     assert "pack/code/tests/test_local_model_skill_floor.py" in names

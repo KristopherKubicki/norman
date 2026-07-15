@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import fcntl
 import hashlib
 import html
 import importlib.util
@@ -1866,6 +1867,9 @@ ROUTE_RECEIPT_PATH = Path(
         "NORMAN_CODEX_ROUTE_RECEIPT_PATH",
         str(ROUTE_RECEIPT_DIR / f"{ROUTE_RECEIPT_OWNER_TUI}.jsonl"),
     )
+)
+ROUTE_RECEIPT_LOCK_PATH = ROUTE_RECEIPT_PATH.with_name(
+    f"{ROUTE_RECEIPT_PATH.name}.lock"
 )
 ROUTE_RECEIPTS_ENABLED = os.environ.get(
     "NORMAN_CODEX_ROUTE_RECEIPTS_ENABLED", "0"
@@ -21107,31 +21111,47 @@ def route_receipt_status_snapshot() -> dict[str, Any]:
 
 
 def append_route_receipt_entry(entry: dict[str, Any]) -> None:
-    prepare_route_receipt_for_append(entry, ROUTE_RECEIPT_PATH)
-    missing = [field for field in ROUTE_RECEIPT_REQUIRED_FIELDS if field not in entry]
-    if missing:
-        raise ValueError(f"route receipt missing required fields: {', '.join(missing)}")
     ROUTE_RECEIPT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    serialized = json.dumps(entry, sort_keys=True)
-    with ROUTE_RECEIPT_PATH.open("a", encoding="utf-8") as handle:
-        handle.write(serialized + "\n")
-    try:
-        os.chmod(ROUTE_RECEIPT_PATH, 0o640)
-    except OSError:
-        pass
-    if MAX_ROUTE_RECEIPT_ITEMS <= 0:
-        return
-    try:
-        lines = [
-            line
-            for line in ROUTE_RECEIPT_PATH.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-    except OSError:
-        return
-    trimmed = lines[-MAX_ROUTE_RECEIPT_ITEMS:]
-    if len(trimmed) != len(lines):
-        ROUTE_RECEIPT_PATH.write_text("\n".join(trimmed) + "\n", encoding="utf-8")
+    ROUTE_RECEIPT_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with ROUTE_RECEIPT_LOCK_PATH.open("a+", encoding="utf-8") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        try:
+            prepare_route_receipt_for_append(entry, ROUTE_RECEIPT_PATH)
+            missing = [
+                field for field in ROUTE_RECEIPT_REQUIRED_FIELDS if field not in entry
+            ]
+            if missing:
+                raise ValueError(
+                    f"route receipt missing required fields: {', '.join(missing)}"
+                )
+            serialized = json.dumps(entry, sort_keys=True)
+            with ROUTE_RECEIPT_PATH.open("a", encoding="utf-8") as handle:
+                handle.write(serialized + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            try:
+                os.chmod(ROUTE_RECEIPT_PATH, 0o640)
+            except OSError:
+                pass
+            if MAX_ROUTE_RECEIPT_ITEMS <= 0:
+                return
+            try:
+                lines = [
+                    line
+                    for line in ROUTE_RECEIPT_PATH.read_text(
+                        encoding="utf-8"
+                    ).splitlines()
+                    if line.strip()
+                ]
+            except OSError:
+                return
+            trimmed = lines[-MAX_ROUTE_RECEIPT_ITEMS:]
+            if len(trimmed) != len(lines):
+                ROUTE_RECEIPT_PATH.write_text(
+                    "\n".join(trimmed) + "\n", encoding="utf-8"
+                )
+        finally:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
 
 def append_route_receipt(**kwargs: Any) -> dict[str, Any] | None:

@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 from app.services.prompt_load_balancer import (
     balance_prompt,
     prompt_load_balancer_capabilities,
@@ -33,6 +36,31 @@ def test_prompt_load_balancer_routes_typo_status_prompts_local_first():
     assert result["recommendation"]["primary_executor"] == "deterministic_prompt_gate"
     assert result["recommendation"]["next_hop"] == "console_runtime_kernel"
     assert result["route_receipt_preview"]["execution_performed"] is False
+
+
+def test_prompt_load_balancer_bad_route_corpus_stays_local_first():
+    corpus_path = (
+        Path(__file__).resolve().parents[1] / "db" / "prompt_bad_route_corpus.json"
+    )
+    corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
+
+    assert corpus["schema"] == "norman.prompt-bad-route-corpus.v1"
+    for case in corpus["cases"]:
+        result = balance_prompt(
+            prompt=case["prompt"],
+            requested_runtime="codex",
+            requested_model="gpt-5.5",
+            force_requested_runtime=False,
+        )
+
+        assert result["classification"]["intent"] == case["expected_intent"]
+        assert result["recommendation"]["selected_runtime"] == case["expected_runtime"]
+        assert result["route"]["provider"] == "norllama"
+        assert result["route"]["local"] is True
+        assert result["route"]["cloud_proxy"] is False
+        assert result["recommendation"]["requires_approval"] is bool(
+            case["requires_approval"]
+        )
 
 
 def test_prompt_load_balancer_keeps_requested_cloud_as_preference_until_forced():

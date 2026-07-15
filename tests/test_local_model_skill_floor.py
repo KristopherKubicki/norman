@@ -170,6 +170,46 @@ def test_local_model_skill_floor_merges_vllm_inventory() -> None:
     assert report["summary"]["spark_vllm_selected_skill_count"] == 1
 
 
+def test_local_model_skill_floor_uses_norllama_inventory_and_benchmark_packet() -> None:
+    module = _load_module()
+    matrix = {
+        "schema": "norman.work-domain-skill-benchmark.v1",
+        "rows": [_skill("planner_case", tier="medium_bedrock_worker")],
+    }
+    capabilities = {
+        "schema": "norman.norllama.capabilities.v1",
+        "frontdoor": "https://llm.home.arpa",
+        "models": [{"model": "qwen3.6:27b"}],
+    }
+    packet = {
+        "schema": "norman.norllama.route-proof-benchmark-packet.v1",
+        "rows": [
+            {
+                "model": "qwen3.6:27b",
+                "benchmark_status": "production_backed",
+            }
+        ],
+    }
+
+    report = module.build_report(
+        matrix,
+        {},
+        norllama_capabilities=capabilities,
+        benchmark_packet=packet,
+    )
+    row = report["rows"][0]
+
+    assert "norman.norllama-capabilities-sense.v1" in report["source_sense_schemas"]
+    assert report["norllama_inventory"]["connected"] is True
+    assert report["benchmark_packet"]["connected"] is True
+    assert report["summary"]["norllama_inventory_model_count"] == 1
+    assert report["summary"]["benchmark_packet_model_count"] == 1
+    assert row["selected_local_model"] == "qwen3.6:27b"
+    assert row["selected_local_provider"] == "norllama"
+    assert row["selected_local_benchmark_state"] == "production_backed"
+    assert row["selected_local_benchmark_backed"] is True
+
+
 def test_local_model_skill_floor_prefers_spark_vllm_over_same_class_ollama() -> None:
     module = _load_module()
     ollama = {

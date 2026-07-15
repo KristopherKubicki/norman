@@ -16,6 +16,13 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.services.codex_role_policy import (
+    codex_role_policy_identity,
+    codex_role_value,
+    codex_switchable_models,
+    load_codex_role_policy,
+)
+
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 TEMPLATE_ROOT = SCRIPT_DIR / "agent_console_template"
@@ -294,14 +301,28 @@ WORK_BEDROCK_DEFAULT_INSTANCES: tuple[str, ...] = (
     "scout",
     "tmi-dashboards",
 )
-WORK_SWITCHABLE_MODELS = "openai.gpt-5.4,openai.gpt-5.5,gpt-5.4,gpt-5.5"
-PERSONAL_SWITCHABLE_MODELS = "gpt-5.4,gpt-5.5"
-WORK_STANDARD_PROFILE_V2 = "traqline-bedrock"
-WORK_STANDARD_AWS_PROFILE = "ob-traqline-admin"
-WORK_STANDARD_MODEL = "openai.gpt-5.4"
-WORK_DIRECT_MODEL = "openai.gpt-5.4"
-PERSONAL_DEFAULT_MODEL = "gpt-5.4"
-NON_WORK_BEDROCK_PROFILE_V2 = "personal-bedrock"
+CODEX_ROLE_POLICY = load_codex_role_policy()
+CODEX_ROLE_POLICY_IDENTITY = codex_role_policy_identity(policy=CODEX_ROLE_POLICY)
+WORK_SWITCHABLE_MODELS = codex_switchable_models("work", policy=CODEX_ROLE_POLICY)
+PERSONAL_SWITCHABLE_MODELS = codex_switchable_models(
+    "personal", policy=CODEX_ROLE_POLICY
+)
+WORK_STANDARD_PROFILE_V2 = codex_role_value(
+    "work_standard", "profile_v2", policy=CODEX_ROLE_POLICY
+)
+WORK_STANDARD_AWS_PROFILE = codex_role_value(
+    "work_standard", "aws_profile", policy=CODEX_ROLE_POLICY
+)
+WORK_STANDARD_MODEL = codex_role_value(
+    "work_standard", "model", policy=CODEX_ROLE_POLICY
+)
+WORK_DIRECT_MODEL = codex_role_value("work_direct", "model", policy=CODEX_ROLE_POLICY)
+PERSONAL_DEFAULT_MODEL = codex_role_value(
+    "personal_default", "model", policy=CODEX_ROLE_POLICY
+)
+NON_WORK_BEDROCK_PROFILE_V2 = codex_role_value(
+    "personal_default", "profile_v2", policy=CODEX_ROLE_POLICY
+)
 NON_WORK_BEDROCK_AWS_PROFILE = os.environ.get(
     "NORMAN_SYNC_NON_WORK_BEDROCK_AWS_PROFILE", "kk-personal"
 )
@@ -1328,10 +1349,16 @@ def _origin_model_updates(
     work_enabled = (
         os.environ.get("NORMAN_SYNC_WORK_BEDROCK_DEFAULT_ENABLED", "1") != "0"
     )
+    role_policy_env = {
+        "NORMAN_CODEX_ROLE_POLICY_ID": CODEX_ROLE_POLICY_IDENTITY["policy_id"],
+        "NORMAN_CODEX_ROLE_POLICY_HASH": CODEX_ROLE_POLICY_IDENTITY["policy_hash"],
+        "NORMAN_CODEX_ROLE_POLICY_VERSION": CODEX_ROLE_POLICY_IDENTITY["version"],
+    }
     if use_work and work_enabled:
         direct_tiers = os.environ.get("NORMAN_SYNC_WORK_DIRECT_TIERS_ENABLED", "1")
         failovers = _work_bedrock_failover_profiles()
         updates = {
+            **role_policy_env,
             "NORMAN_CODEX_BILLING_SCOPE": "work-special",
             "NORMAN_CODEX_BILLING_OWNER": "openbrand",
             "NORMAN_CODEX_SERVICE_TIER": "default",
@@ -1383,6 +1410,7 @@ def _origin_model_updates(
     if instance_uses_non_work_bedrock(host, instance):
         return (
             {
+                **role_policy_env,
                 "NORMAN_CODEX_BILLING_SCOPE": host.name,
                 "NORMAN_CODEX_BILLING_OWNER": "kristopher",
                 "NORMAN_CODEX_SERVICE_TIER": "default",
@@ -1404,6 +1432,7 @@ def _origin_model_updates(
 
     service_tier = "auto" if use_work else "flex"
     updates = {
+        **role_policy_env,
         "NORMAN_CODEX_BILLING_SCOPE": host.name,
         "NORMAN_CODEX_BILLING_OWNER": "kristopher",
         "NORMAN_CODEX_SERVICE_TIER": service_tier,

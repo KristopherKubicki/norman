@@ -17,6 +17,10 @@ from typing import Any
 SCHEMA = "norman.local-model-skill-floor.v1"
 DEFAULT_OLLAMA_SENSE_JSON = Path("tmp/ollama_sense_live.json")
 DEFAULT_VLLM_SENSE_JSON = Path("tmp/vllm_sense_live.json")
+DEFAULT_NORLLAMA_CAPABILITIES_JSON = Path("tmp/norllama_capabilities_live.json")
+DEFAULT_NORLLAMA_BENCHMARK_PACKET_JSON = Path(
+    "scripts/norllama/evidence/norllama_route_proof_benchmark_packet_latest/packet.json"
+)
 DEFAULT_SKILL_MATRIX_JSON = Path("tmp/work_domain_skill_matrix.json")
 DEFAULT_OUTPUT_JSON = Path("tmp/local_model_skill_floors.json")
 DEFAULT_OUTPUT_MD = Path("tmp/local_model_skill_floors.md")
@@ -220,6 +224,8 @@ def _model_capacity(model: str) -> tuple[int, str]:
         return 3, "coder"
     if "coder" in name and "30b" in name:
         return 2, "coder"
+    if "27b" in name:
+        return 3, "large_local_worker"
     if "gpt-oss:20b" in name or "30b" in name:
         return 2, "small_local_worker"
     if any(token in name for token in ("120b", "122b", "235b")):
@@ -317,6 +323,80 @@ def local_model_inventory(*sense_reports: dict[str, Any]) -> list[LocalModel]:
     )
 
 
+def norllama_capabilities_as_sense_report(report: dict[str, Any]) -> dict[str, Any]:
+    """Normalize Norllama capability/model inventory into the existing sense shape."""
+
+    if not isinstance(report, dict):
+        return {}
+    models: set[str] = set()
+
+    def visit(value: Any, *, key: str = "") -> None:
+        if isinstance(value, dict):
+            for child_key, child_value in value.items():
+                visit(child_value, key=str(child_key))
+            return
+        if isinstance(value, list):
+            for item in value:
+                visit(item, key=key)
+            return
+        if key in {"model", "model_name", "runtime_model"}:
+            model = str(value or "").strip()
+            if model:
+                models.add(model)
+
+    visit(report)
+    endpoint = str(
+        report.get("frontdoor") or report.get("endpoint") or "https://llm.home.arpa"
+    ).strip()
+    if not models:
+        return {}
+    return {
+        "schema": "norman.norllama-capabilities-sense.v1",
+        "provider": "norllama",
+        "endpoints": [
+            {
+                "endpoint": endpoint,
+                "ok": True,
+                "scope": "norllama_live_inventory",
+                "models": sorted(models),
+            }
+        ],
+    }
+
+
+def benchmark_packet_model_states(packet: dict[str, Any]) -> dict[str, str]:
+    states: dict[str, str] = {}
+
+    def maybe_add(row: dict[str, Any]) -> None:
+        model = str(
+            row.get("model")
+            or row.get("runtime_model")
+            or row.get("requested_model")
+            or row.get("selected_model")
+            or ""
+        ).strip()
+        if not model:
+            return
+        state = str(
+            row.get("benchmark_status") or row.get("status") or row.get("state") or ""
+        ).strip()
+        if state:
+            states[model] = state
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            maybe_add(value)
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+
+    if isinstance(packet, dict):
+        visit(packet)
+    return dict(sorted(states.items()))
+
+
 def _requires_final_authority(row: dict[str, Any]) -> bool:
     decision = row.get("model_routing_decision")
     if not isinstance(decision, dict):
@@ -378,7 +458,12 @@ def _eligible_local_candidates(
     return candidates
 
 
-def floor_for_skill(row: dict[str, Any], inventory: list[LocalModel]) -> dict[str, Any]:
+def floor_for_skill(
+    row: dict[str, Any],
+    inventory: list[LocalModel],
+    *,
+    benchmark_model_states: dict[str, str] | None = None,
+) -> dict[str, Any]:
     decision = row.get("model_routing_decision")
     if not isinstance(decision, dict):
         decision = {}
@@ -410,6 +495,8 @@ def floor_for_skill(row: dict[str, Any], inventory: list[LocalModel]) -> dict[st
         required_capacity=required_capacity,
         prefer_vision=prefer_vision,
     )
+    benchmark_states = benchmark_model_states or {}
+    selected_benchmark_state = benchmark_states.get(selected.model) if selected else ""
     spark_vllm_candidate_count = sum(
         1 for item in candidates if item.runtime_class == "spark_vllm"
     )
@@ -467,6 +554,9 @@ def floor_for_skill(row: dict[str, Any], inventory: list[LocalModel]) -> dict[st
         "selected_local_source_schema": selected.source_schema if selected else "",
         "selected_local_endpoint_scope": selected.endpoint_scope if selected else "",
         "selected_local_runtime_class": selected.runtime_class if selected else "",
+        "selected_local_benchmark_state": selected_benchmark_state,
+        "selected_local_benchmark_backed": selected_benchmark_state
+        in {"production_backed", "staging_backed", "smoke_backed"},
         "spark_vllm_candidate_count": spark_vllm_candidate_count,
         "ollama_candidate_count": ollama_candidate_count,
         "offline_optimizer_state": offline_optimizer_state,
@@ -872,11 +962,23 @@ def build_report(
     ollama_report: dict[str, Any],
     *,
     extra_sense_reports: list[dict[str, Any]] | None = None,
+    norllama_capabilities: dict[str, Any] | None = None,
+    benchmark_packet: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    sense_reports = [ollama_report, *(extra_sense_reports or [])]
+    norllama_sense = norllama_capabilities_as_sense_report(norllama_capabilities or {})
+    sense_reports = [
+        ollama_report,
+        *(extra_sense_reports or []),
+        *([norllama_sense] if norllama_sense else []),
+    ]
     inventory = local_model_inventory(*sense_reports)
+    benchmark_model_states = benchmark_packet_model_states(benchmark_packet or {})
     rows = [
-        floor_for_skill(row, inventory)
+        floor_for_skill(
+            row,
+            inventory,
+            benchmark_model_states=benchmark_model_states,
+        )
         for row in skill_matrix.get("rows") or []
         if isinstance(row, dict)
     ]
@@ -918,11 +1020,37 @@ def build_report(
             for report in sense_reports
             if isinstance(report, dict) and report.get("schema")
         ],
+        "norllama_inventory": {
+            "schema": "norman.local-model-skill-floor.norllama-inventory.v1",
+            "source_schema": str((norllama_capabilities or {}).get("schema") or ""),
+            "connected": bool(norllama_sense),
+            "model_count": len(
+                norllama_sense.get("endpoints", [{}])[0].get("models", [])
+            )
+            if norllama_sense
+            else 0,
+        },
+        "benchmark_packet": {
+            "schema": "norman.local-model-skill-floor.benchmark-packet.v1",
+            "source_schema": str((benchmark_packet or {}).get("schema") or ""),
+            "connected": bool(benchmark_model_states),
+            "model_count": len(benchmark_model_states),
+            "states": benchmark_model_states,
+        },
         "summary": {
             "skill_count": len(rows),
             "online_local_model_count": len(inventory),
             "online_spark_vllm_model_count": spark_vllm_inventory_count,
             "online_ollama_model_count": ollama_inventory_count,
+            "norllama_inventory_model_count": len(
+                norllama_sense.get("endpoints", [{}])[0].get("models", [])
+            )
+            if norllama_sense
+            else 0,
+            "benchmark_packet_model_count": len(benchmark_model_states),
+            "benchmark_backed_selected_skill_count": sum(
+                1 for row in rows if row.get("selected_local_benchmark_backed")
+            ),
             "local_candidate_skill_count": sum(
                 1 for row in rows if row.get("selected_local_model")
             ),
@@ -1116,6 +1244,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--ollama-sense-json", type=Path, default=DEFAULT_OLLAMA_SENSE_JSON
     )
     parser.add_argument("--vllm-sense-json", type=Path, default=DEFAULT_VLLM_SENSE_JSON)
+    parser.add_argument(
+        "--norllama-capabilities-json",
+        type=Path,
+        default=DEFAULT_NORLLAMA_CAPABILITIES_JSON,
+    )
+    parser.add_argument(
+        "--benchmark-packet-json",
+        type=Path,
+        default=DEFAULT_NORLLAMA_BENCHMARK_PACKET_JSON,
+    )
     parser.add_argument("--output-json", type=Path, default=DEFAULT_OUTPUT_JSON)
     parser.add_argument("--output-md", type=Path, default=DEFAULT_OUTPUT_MD)
     return parser.parse_args(argv)
@@ -1127,6 +1265,8 @@ def main(argv: list[str] | None = None) -> int:
         load_json(args.skill_matrix_json),
         load_optional_json(args.ollama_sense_json),
         extra_sense_reports=[load_optional_json(args.vllm_sense_json)],
+        norllama_capabilities=load_optional_json(args.norllama_capabilities_json),
+        benchmark_packet=load_optional_json(args.benchmark_packet_json),
     )
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
     args.output_json.write_text(

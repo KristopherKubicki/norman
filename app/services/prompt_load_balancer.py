@@ -66,6 +66,7 @@ _FILLER_WORDS = {
     "you",
 }
 _CONTINUE_PHRASES = (
+    "continue",
     "go ahead",
     "keep going",
     "keep working",
@@ -73,7 +74,13 @@ _CONTINUE_PHRASES = (
     "do it",
     "lets go",
     "let's go",
+    "resume",
 )
+_RETRY_PHRASES = ("retry", "try again", "rerun")
+_STOP_PHRASES = ("stop", "pause", "halt", "cancel")
+_UNDO_PHRASES = ("undo", "revert", "roll back", "rollback")
+_SHIP_PHRASES = ("ship it", "ship", "release it")
+_RESTART_PHRASES = ("restart", "recover")
 _NEXT_PHRASES = (
     "what is next",
     "what's next",
@@ -139,6 +146,8 @@ _LOCAL_MUTATION_WORDS = {
     "implement",
     "patch",
     "refactor",
+    "rollback",
+    "undo",
     "write",
 }
 _SECRET_WORDS = {"credential", "key", "password", "secret", "token"}
@@ -160,7 +169,13 @@ _HIGH_REASONING_WORDS = {
     "security",
     "verify",
 }
-_DETERMINISTIC_INTENTS = {"continue_work", "next_steps", "quick_status"}
+_DETERMINISTIC_INTENTS = {
+    "continue_work",
+    "next_steps",
+    "quick_status",
+    "retry_last_step",
+    "stop_or_pause",
+}
 _SPECIALIST_TASK_KINDS = {
     NorllamaTaskKind.ASR.value,
     NorllamaTaskKind.DOC_PARSE.value,
@@ -429,6 +444,31 @@ def classify_prompt(
         task_kind = NorllamaTaskKind.PLAN.value
         intent_confidence = 0.9
         reasons.append("operator continuation prompt")
+    elif _contains_any(lowered, _RETRY_PHRASES):
+        intent = "retry_last_step"
+        task_kind = NorllamaTaskKind.PLAN.value
+        intent_confidence = 0.88
+        reasons.append("operator asks to retry the previous step")
+    elif _contains_any(lowered, _STOP_PHRASES):
+        intent = "stop_or_pause"
+        task_kind = NorllamaTaskKind.PLAN.value
+        intent_confidence = 0.88
+        reasons.append("operator asks to stop or pause current work")
+    elif _contains_any(lowered, _UNDO_PHRASES):
+        intent = "undo_or_rollback"
+        task_kind = NorllamaTaskKind.VERIFY.value
+        intent_confidence = 0.86
+        reasons.append("operator asks to undo or rollback state")
+    elif _contains_any(lowered, _RESTART_PHRASES):
+        intent = "restart_or_recover"
+        task_kind = NorllamaTaskKind.VERIFY.value
+        intent_confidence = 0.86
+        reasons.append("operator asks to restart or recover a service")
+    elif _contains_any(lowered, _SHIP_PHRASES):
+        intent = "ship_or_release"
+        task_kind = NorllamaTaskKind.VERIFY.value
+        intent_confidence = 0.86
+        reasons.append("operator asks to ship or release")
     elif "rerank" in tokens or "rank" in tokens or "sort" in tokens:
         intent = "rerank_or_filter"
         task_kind = NorllamaTaskKind.RERANK.value
@@ -462,10 +502,10 @@ def classify_prompt(
     if destructive:
         risk_class = "destructive"
         risk_level = "critical"
-    elif external_mutation:
+    elif external_mutation or intent in {"restart_or_recover", "ship_or_release"}:
         risk_class = "external_mutation"
         risk_level = "high"
-    elif local_mutation:
+    elif local_mutation or intent == "undo_or_rollback":
         risk_class = "local_mutation"
         risk_level = "medium"
     elif secret_sensitive:
@@ -475,7 +515,9 @@ def classify_prompt(
         risk_class = "read_only"
         risk_level = "low"
 
-    requires_approval = risk_level in {"high", "critical"}
+    requires_approval = risk_level in {"high", "critical"} or intent in {
+        "undo_or_rollback"
+    }
     cloud_escalation_candidate = risk_level in {"high", "critical"} or intent in {
         "research_or_scout",
         "verify_or_audit",
@@ -997,6 +1039,11 @@ def prompt_load_balancer_capabilities() -> dict[str, Any]:
             "quick_status",
             "next_steps",
             "continue_work",
+            "retry_last_step",
+            "stop_or_pause",
+            "undo_or_rollback",
+            "restart_or_recover",
+            "ship_or_release",
             "summarize",
             "verify_or_audit",
             "code_or_patch",

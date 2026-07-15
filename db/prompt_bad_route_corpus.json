@@ -1,0 +1,87 @@
+{
+  "schema": "norman.prompt-bad-route-corpus.v1",
+  "version": "2026.07.15.terse-operator-commands",
+  "description": "Stateful terse prompts that previously risked drifting to cloud/default routes. These are regression fixtures for the Norman prompt load balancer.",
+  "cases": [
+    {
+      "id": "terse-status",
+      "prompt": "status?",
+      "expected_intent": "quick_status",
+      "expected_runtime": "localllm",
+      "must_stay_local": true,
+      "requires_approval": false
+    },
+    {
+      "id": "typo-status",
+      "prompt": "stuats?",
+      "expected_intent": "quick_status",
+      "expected_runtime": "localllm",
+      "must_stay_local": true,
+      "requires_approval": false
+    },
+    {
+      "id": "continue",
+      "prompt": "continue",
+      "expected_intent": "continue_work",
+      "expected_runtime": "localllm",
+      "must_stay_local": true,
+      "requires_approval": false
+    },
+    {
+      "id": "go-ahead",
+      "prompt": "go ahead",
+      "expected_intent": "continue_work",
+      "expected_runtime": "localllm",
+      "must_stay_local": true,
+      "requires_approval": false
+    },
+    {
+      "id": "resume",
+      "prompt": "resume",
+      "expected_intent": "continue_work",
+      "expected_runtime": "localllm",
+      "must_stay_local": true,
+      "requires_approval": false
+    },
+    {
+      "id": "retry",
+      "prompt": "retry",
+      "expected_intent": "retry_last_step",
+      "expected_runtime": "localllm",
+      "must_stay_local": true,
+      "requires_approval": false
+    },
+    {
+      "id": "stop",
+      "prompt": "stop",
+      "expected_intent": "stop_or_pause",
+      "expected_runtime": "localllm",
+      "must_stay_local": true,
+      "requires_approval": false
+    },
+    {
+      "id": "undo",
+      "prompt": "undo",
+      "expected_intent": "undo_or_rollback",
+      "expected_runtime": "localllm",
+      "must_stay_local": true,
+      "requires_approval": true
+    },
+    {
+      "id": "restart",
+      "prompt": "restart",
+      "expected_intent": "restart_or_recover",
+      "expected_runtime": "localllm",
+      "must_stay_local": true,
+      "requires_approval": true
+    },
+    {
+      "id": "ship-it",
+      "prompt": "ship it",
+      "expected_intent": "ship_or_release",
+      "expected_runtime": "localllm",
+      "must_stay_local": true,
+      "requires_approval": true
+    }
+  ]
+}

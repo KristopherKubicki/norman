@@ -77,10 +77,14 @@ DEFAULT_FAST_LOOP_INTERVAL_SECONDS = 300
 DEFAULT_MAX_CHANGED_TICKETS_PER_CYCLE = 3
 DEFAULT_DAILY_BUDGET_USD = 10.0
 MIN_CUTOVER_ROUTE_RECEIPTS = 50
+MIN_CUTOVER_OBSERVATION_SECONDS = 24 * 60 * 60
+MIN_CUTOVER_TASK_CLASS_QUOTA = 5
+MIN_CUTOVER_TASK_CLASS_COUNT = 3
 MIN_CUTOVER_VALIDATOR_PASS_RATE = 0.98
 MAX_CUTOVER_MANUAL_OVERRIDE_RATE = 0.05
 MAX_CUTOVER_FALLBACK_RATE = 0.15
 MIN_CUTOVER_COST_SAVINGS = 0.25
+MAX_CUTOVER_P95_LATENCY_MS = 120_000
 MIN_HISTORIC_ROUTE_BENCHMARK_SAVINGS = 0.50
 REQUIRED_HISTORIC_ROUTE_POLICY_VERSION = "work-special-hybrid-routing-policy.v1"
 REQUIRED_HISTORIC_ROUTE_PLANNER_ACTION_POLICY_VERSION = "planner-action-contract.v1"
@@ -1862,8 +1866,13 @@ def _receipt_cost_savings(receipts: list[dict[str, Any]]) -> tuple[float | None,
     baseline_total = 0.0
     sample_count = 0
     for receipt in receipts:
-        estimated = _safe_float(receipt.get("estimated_cost_usd"))
-        baseline = _safe_float(receipt.get("baseline_all_5_5_cost_usd"))
+        estimated = _safe_float(
+            receipt.get("workflow_cost_usd") or receipt.get("estimated_cost_usd")
+        )
+        baseline = _safe_float(
+            receipt.get("counterfactual_workflow_cost_usd")
+            or receipt.get("baseline_all_5_5_cost_usd")
+        )
         if estimated is None or baseline is None or baseline <= 0:
             continue
         estimated_total += max(0.0, estimated)
@@ -1872,6 +1881,119 @@ def _receipt_cost_savings(receipts: list[dict[str, Any]]) -> tuple[float | None,
     if sample_count == 0 or baseline_total <= 0:
         return None, sample_count
     return round(1.0 - (estimated_total / baseline_total), 4), sample_count
+
+
+def _receipt_created_at_seconds(receipt: dict[str, Any]) -> int | None:
+    raw = receipt.get("created_at")
+    if isinstance(raw, int | float):
+        return int(raw)
+    clean = str(raw or "").strip()
+    if not clean:
+        return None
+    if clean.isdigit():
+        return int(clean)
+    try:
+        from datetime import datetime
+
+        parsed = datetime.fromisoformat(clean.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return int(parsed.timestamp())
+
+
+def _receipt_evidence_span_seconds(receipts: list[dict[str, Any]]) -> int:
+    times = [
+        value
+        for value in (_receipt_created_at_seconds(receipt) for receipt in receipts)
+        if value is not None
+    ]
+    if len(times) < 2:
+        return 0
+    return max(times) - min(times)
+
+
+def _receipt_task_class(receipt: dict[str, Any]) -> str:
+    for field in (
+        "task_class",
+        "operator_intent_class",
+        "requested_action",
+        "benchmark_skill_id",
+    ):
+        value = str(receipt.get(field) or "").strip().lower()
+        if value:
+            return value
+    return "unknown"
+
+
+def _task_class_counts(receipts: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for receipt in receipts:
+        label = _receipt_task_class(receipt)
+        counts[label] = counts.get(label, 0) + 1
+    return dict(sorted(counts.items()))
+
+
+def _task_class_quota_passed(counts: dict[str, int]) -> bool:
+    qualified = [
+        label
+        for label, count in counts.items()
+        if label != "unknown" and count >= MIN_CUTOVER_TASK_CLASS_QUOTA
+    ]
+    return len(qualified) >= MIN_CUTOVER_TASK_CLASS_COUNT
+
+
+def _receipt_visible_complete(receipt: dict[str, Any]) -> bool:
+    if _safe_bool(receipt.get("visible_delivery_passed")):
+        return True
+    shape = str(receipt.get("output_shape") or "").strip().lower()
+    return shape == "complete"
+
+
+def _receipt_policy_fresh(receipt: dict[str, Any]) -> bool:
+    state = (
+        str(
+            receipt.get("policy_lifecycle_state")
+            or receipt.get("route_policy_lifecycle")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
+    if state in {"valid", "expiring_soon"}:
+        return True
+    freshness = str(receipt.get("policy_freshness") or "").strip().lower()
+    return freshness in {"fresh", "valid"}
+
+
+def _receipt_hidden_cloud(receipt: dict[str, Any]) -> bool:
+    if _safe_bool(receipt.get("cloud_proxy")):
+        return True
+    bucket = str(receipt.get("usage_bucket") or "").strip().lower()
+    provider = (
+        str(
+            receipt.get("observed_provider")
+            or receipt.get("selected_provider")
+            or receipt.get("provider")
+            or ""
+        )
+        .strip()
+        .lower()
+    )
+    cloudish = any(
+        token in f"{bucket} {provider}"
+        for token in ("openai", "bedrock", "cloud_llm", "amazon")
+    )
+    if not cloudish:
+        return False
+    return not _safe_bool(receipt.get("cloud_accounted"))
+
+
+def _p95(values: list[int]) -> int:
+    if not values:
+        return 0
+    ordered = sorted(values)
+    index = max(0, min(len(ordered) - 1, int((len(ordered) - 1) * 0.95)))
+    return ordered[index]
 
 
 def _receipt_is_5_4_verifier(receipt: dict[str, Any]) -> bool:
@@ -2052,6 +2174,20 @@ def _target_cutover_metrics(
         1 for item in receipts if _safe_bool(item.get("live_write_attempted"))
     )
     receipt_count = len(receipts)
+    evidence_span_seconds = _receipt_evidence_span_seconds(receipts)
+    task_class_counts = _task_class_counts(receipts)
+    task_class_quota_passed = _task_class_quota_passed(task_class_counts)
+    visible_completion_count = sum(
+        1 for item in receipts if _receipt_visible_complete(item)
+    )
+    policy_fresh_count = sum(1 for item in receipts if _receipt_policy_fresh(item))
+    hidden_cloud_count = sum(1 for item in receipts if _receipt_hidden_cloud(item))
+    latency_values = [
+        value
+        for value in (_coerce_int(item.get("latency_ms")) for item in receipts)
+        if value > 0
+    ]
+    p95_latency_ms = _p95(latency_values)
     validator_pass_rate = (
         round(validator_pass_count / receipt_count, 4) if receipt_count else 0.0
     )
@@ -2070,6 +2206,18 @@ def _target_cutover_metrics(
     if min_receipts > 0 and receipt_count < min_receipts:
         blockers.append(
             f"needs at least {min_receipts} {contract.get('receipt_label')}; found {receipt_count}"
+        )
+    if min_receipts > 0 and evidence_span_seconds < MIN_CUTOVER_OBSERVATION_SECONDS:
+        blockers.append(
+            "receipt evidence must span at least "
+            f"{MIN_CUTOVER_OBSERVATION_SECONDS // 3600} hours; "
+            f"found {round(evidence_span_seconds / 3600, 2)} hours"
+        )
+    if min_receipts > 0 and not task_class_quota_passed:
+        blockers.append(
+            "receipt cohort lacks representative task-class quotas "
+            f"({MIN_CUTOVER_TASK_CLASS_COUNT} classes with "
+            f"{MIN_CUTOVER_TASK_CLASS_QUOTA}+ receipts required)"
         )
     if load_errors:
         blockers.append("route receipt sink has malformed or unreadable records")
@@ -2100,6 +2248,20 @@ def _target_cutover_metrics(
         blockers.append(f"{synthetic_receipt_count} synthetic receipts found")
     if live_write_attempt_count:
         blockers.append(f"{live_write_attempt_count} live-write attempts found")
+    if visible_completion_count < receipt_count:
+        blockers.append(
+            f"{receipt_count - visible_completion_count} receipts lack visible complete output proof"
+        )
+    if policy_fresh_count < receipt_count:
+        blockers.append(
+            f"{receipt_count - policy_fresh_count} receipts lack fresh policy identity"
+        )
+    if hidden_cloud_count:
+        blockers.append(f"{hidden_cloud_count} hidden cloud/proxy usages found")
+    if p95_latency_ms > MAX_CUTOVER_P95_LATENCY_MS:
+        blockers.append(
+            f"p95 latency {p95_latency_ms}ms exceeds {MAX_CUTOVER_P95_LATENCY_MS}ms"
+        )
     if route_drift_count:
         blockers.append(
             f"{route_drift_count} receipts drifted from {target_row.get('flow_mode')}"
@@ -2126,8 +2288,13 @@ def _target_cutover_metrics(
         blockers.append(
             f"{receipt_count - verifier_decision_count} receipts are missing explicit 5.4 verifier accept/reject evidence"
         )
-    if contract.get("require_cost_savings") and cost_savings is None:
-        blockers.append("missing per-receipt all-5.5 baseline cost evidence")
+    if contract.get("require_cost_savings") and cost_sample_count < receipt_count:
+        blockers.append(
+            "missing full workflow counterfactual cost evidence on "
+            f"{receipt_count - cost_sample_count} receipts"
+        )
+    elif contract.get("require_cost_savings") and cost_savings is None:
+        blockers.append("missing full workflow counterfactual cost evidence")
     elif (
         contract.get("require_cost_savings") and cost_savings < MIN_CUTOVER_COST_SAVINGS
     ):
@@ -2175,7 +2342,7 @@ def _target_cutover_metrics(
         )
     if contract.get("require_cost_savings") and cost_savings is None:
         next_actions.append(
-            "ensure each receipt includes all-5.5 baseline cost evidence"
+            "ensure each receipt includes workflow_cost_usd and counterfactual_workflow_cost_usd"
         )
     elif (
         contract.get("require_cost_savings") and cost_savings < MIN_CUTOVER_COST_SAVINGS
@@ -2215,6 +2382,15 @@ def _target_cutover_metrics(
         "chain_issues": chain_issues,
         "metrics": {
             "receipt_count": receipt_count,
+            "minimum_receipts_required": min_receipts,
+            "minimum_observation_seconds_required": MIN_CUTOVER_OBSERVATION_SECONDS,
+            "evidence_span_seconds": evidence_span_seconds,
+            "task_class_counts": task_class_counts,
+            "task_class_quota_passed": task_class_quota_passed,
+            "visible_completion_count": visible_completion_count,
+            "policy_fresh_count": policy_fresh_count,
+            "hidden_cloud_count": hidden_cloud_count,
+            "p95_latency_ms": p95_latency_ms,
             "missing_required_count": missing_required_count,
             "chain_issue_count": len(chain_issues),
             "validator_pass_rate": validator_pass_rate,
