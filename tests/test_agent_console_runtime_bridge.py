@@ -1790,6 +1790,25 @@ def test_literal_response_canary_stays_fast_read_only(monkeypatch, tmp_path):
     assert module.local_llm_prompt_lane(prompt) == "canary"
 
 
+def test_template_does_not_downshift_fork_strategy_prompt_to_status(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    recommendation = module.turn_control_recommendation(
+        "what happened with the plan for forking TUIs into multiple sessions?",
+        [],
+        speed="careful",
+        detail=5,
+        job_budget="60m",
+        optimization_mode="auto",
+    )
+
+    assert recommendation["workload"] == "analysis"
+    assert recommendation["effective_job_budget"] == "60m"
+    assert "Answer now" not in recommendation["steering_chips"]
+
+
 def test_literal_canary_allows_tiny_canary_model_without_lowering_general_floor(
     monkeypatch, tmp_path
 ):

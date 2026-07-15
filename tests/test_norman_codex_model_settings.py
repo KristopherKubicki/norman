@@ -231,6 +231,46 @@ def test_auto_turn_controls_do_not_downshift_tui_fork_strategy_to_status(
     assert "Answer now" not in recommendation["steering_chips"]
 
 
+def test_auto_turn_controls_keep_plain_status_fast(monkeypatch, tmp_path) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+
+    recommendation = module.turn_control_recommendation(
+        "status?",
+        [],
+        speed="careful",
+        detail=5,
+        job_budget="60m",
+        optimization_mode="auto",
+    )
+
+    assert recommendation["workload"] == "status"
+    assert recommendation["effective_job_budget"] == "5m"
+    assert recommendation["steering_chips"] == [
+        "Answer now",
+        "One check",
+        "No broad audit",
+    ]
+
+
+def test_auto_turn_controls_do_not_treat_fork_plan_question_as_status(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+
+    recommendation = module.turn_control_recommendation(
+        "what happened with the plan for forking TUIs into multiple sessions?",
+        [],
+        speed="balanced",
+        detail=3,
+        job_budget="30m",
+        optimization_mode="auto",
+    )
+
+    assert recommendation["workload"] == "analysis"
+    assert recommendation["effective_job_budget"] == "30m"
+    assert "Answer now" not in recommendation["steering_chips"]
+
+
 def test_auto_turn_controls_preserve_explicit_deep(monkeypatch, tmp_path) -> None:
     module = _load_norman_codex_web(monkeypatch, tmp_path)
 
