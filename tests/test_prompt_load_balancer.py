@@ -47,6 +47,25 @@ def test_prompt_load_balancer_routes_typo_status_prompts_local_first():
     )
 
 
+def test_prompt_load_balancer_routes_broad_tui_planning_to_local_reasoning():
+    result = balance_prompt(
+        prompt="what happened with the plan for forking TUIs into multiple sessions?",
+        source="uplink",
+        session="uplink-codex",
+    )
+
+    assert result["classification"]["intent"] == "planning_or_architecture"
+    assert result["classification"]["task_kind"] == "plan"
+    assert result["classification"]["signals"]["status"] is False
+    assert result["reasoning_profile"]["tier"] == "high_reasoning"
+    assert result["routing_strategy"]["strategy"] == "local_high_reasoning"
+    assert result["route"]["provider"] == "norllama"
+    assert result["route"]["local"] is True
+    assert result["route"]["cloud_proxy"] is False
+    assert result["recommendation"]["selected_runtime"] == "localllm"
+    assert result["recommendation"]["cloud_last_resort"] is True
+
+
 def test_prompt_load_balancer_bad_route_corpus_stays_local_first():
     corpus_path = (
         Path(__file__).resolve().parents[1] / "db" / "prompt_bad_route_corpus.json"

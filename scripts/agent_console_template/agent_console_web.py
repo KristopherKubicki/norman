@@ -34,6 +34,11 @@ from typing import Any, Callable, Iterable
 from urllib import error as urllib_error, request as urllib_request
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 
+try:
+    from app.services import tui_route_intent as SHARED_TUI_ROUTE_INTENT
+except Exception:
+    SHARED_TUI_ROUTE_INTENT = None
+
 
 CANONICAL_CONSOLE_ENV_PREFIX = "NORMAN_CODEX_"
 LEGACY_CONSOLE_ENV_PREFIX = "HOUSEBOT_CODEX_"
@@ -5151,6 +5156,8 @@ def prompt_has_any_marker(prompt: str, markers: tuple[str, ...]) -> bool:
 
 
 def prompt_is_broad_planning_request(prompt: str) -> bool:
+    if SHARED_TUI_ROUTE_INTENT is not None:
+        return bool(SHARED_TUI_ROUTE_INTENT.is_broad_planning(prompt))
     lower = prompt_core_request(prompt).lower().strip()
     if not lower:
         return False
@@ -5200,6 +5207,11 @@ def prompt_is_broad_planning_request(prompt: str) -> bool:
 
 def prompt_is_quick_status_request(prompt: str) -> bool:
     lower = prompt_core_request(prompt).lower().strip()
+    if SHARED_TUI_ROUTE_INTENT is not None:
+        if SHARED_TUI_ROUTE_INTENT.is_broad_planning(lower):
+            return False
+        if SHARED_TUI_ROUTE_INTENT.is_quick_status(lower):
+            return True
     if prompt_is_broad_planning_request(lower):
         return False
     words = re.findall(r"[a-z0-9]+", lower)
@@ -20981,6 +20993,8 @@ def route_receipt_requested_action(prompt: Any) -> str:
         return "status"
     if prompt_is_quick_status_request(clean):
         return "status"
+    if prompt_is_broad_planning_request(clean):
+        return "operator_prompt"
     if any(token in lower for token in ("status", "check on", "wedged", "crashing")):
         return "status"
     if any(

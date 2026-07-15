@@ -1,9 +1,6 @@
-from __future__ import annotations
-
 import re
 import uuid
 from datetime import datetime, timezone
-from difflib import SequenceMatcher
 from typing import Any, Mapping
 
 from app.services.console_runtime.policy import (
@@ -19,6 +16,7 @@ from app.services.reasoning_orchestrator import (
     kpi_background_loop_plan,
     plan_reasoning_turn,
 )
+from app.services import tui_route_intent
 
 PROMPT_LOAD_BALANCER_SCHEMA = "norman.prompt-load-balancer.v1"
 PROMPT_ROUTE_RECEIPT_SCHEMA = "norman.prompt-load-balancer.receipt.v1"
@@ -27,67 +25,17 @@ PROMPT_PROVIDER_ADAPTER_SCHEMA = "norman.prompt-provider-adapter.v1"
 _TRUE_VALUES = {"1", "true", "yes", "on", "enabled", "force"}
 _CLOUD_RUNTIMES = {"aws-bedrock", "bedrock", "codex", "openai", "openai-direct"}
 _LOCAL_RUNTIMES = {"local", "localllm", "norllama", "ollama", "openai-compatible"}
-_STATUS_WORDS = {
-    "health",
-    "progress",
-    "state",
-    "status",
-    "stauts",
-    "stats",
-    "stuats",
-    "sutats",
-    "update",
-    "updates",
-}
-_FILLER_WORDS = {
-    "a",
-    "about",
-    "any",
-    "are",
-    "can",
-    "could",
-    "do",
-    "give",
-    "got",
-    "have",
-    "hey",
-    "how",
-    "hows",
-    "i",
-    "is",
-    "it",
-    "just",
-    "me",
-    "on",
-    "please",
-    "pls",
-    "quick",
-    "quickly",
-    "the",
-    "there",
-    "this",
-    "we",
-    "what",
-    "whats",
-    "where",
-    "you",
-}
 _CONTINUE_PHRASES = (
-    "continue",
-    "go ahead",
-    "keep going",
+    *tui_route_intent.PROCEED_PHRASES,
     "keep working",
-    "proceed",
-    "do it",
     "lets go",
     "let's go",
-    "resume",
 )
-_RETRY_PHRASES = ("retry", "try again", "rerun")
-_STOP_PHRASES = ("stop", "pause", "halt", "cancel")
-_UNDO_PHRASES = ("undo", "revert", "roll back", "rollback")
-_SHIP_PHRASES = ("ship it", "ship", "release it")
-_RESTART_PHRASES = ("restart", "recover")
+_RETRY_PHRASES = tui_route_intent.RETRY_PHRASES
+_STOP_PHRASES = tui_route_intent.STOP_PHRASES
+_UNDO_PHRASES = tui_route_intent.UNDO_PHRASES
+_SHIP_PHRASES = tui_route_intent.SHIP_PHRASES
+_RESTART_PHRASES = tui_route_intent.RESTART_PHRASES
 _NEXT_PHRASES = (
     "what is next",
     "what's next",
@@ -410,41 +358,23 @@ def _list(value: Any) -> list[Any]:
 
 
 def _word_tokens(text: str) -> list[str]:
-    return re.findall(r"[a-z0-9][a-z0-9._-]*", text.lower())
+    return tui_route_intent.word_tokens(text)
 
 
 def _contains_any(text: str, needles: set[str] | tuple[str, ...]) -> bool:
-    return any(needle in text for needle in needles)
+    return tui_route_intent.contains_any(text, needles)
 
 
 def _looks_like_status_word(token: str) -> bool:
-    if token in _STATUS_WORDS:
-        return True
-    return any(
-        SequenceMatcher(None, token, word).ratio() >= 0.8 for word in _STATUS_WORDS
-    )
+    return tui_route_intent.looks_like_status_word(token)
 
 
 def _has_status_signal(text: str) -> bool:
-    tokens = _word_tokens(text)
-    if any(_looks_like_status_word(token) for token in tokens):
-        return True
-    return any(
-        phrase in text
-        for phrase in (
-            "how are things",
-            "how is it going",
-            "how's it going",
-            "where are we",
-            "where do we stand",
-        )
-    )
+    return tui_route_intent.has_status_signal(text)
 
 
 def _quick_status(text: str) -> bool:
-    tokens = _word_tokens(text)
-    meaningful = [token for token in tokens if token not in _FILLER_WORDS]
-    return _has_status_signal(text) and len(meaningful) <= 8
+    return tui_route_intent.is_quick_status(text)
 
 
 def _artifact_task_kind(artifacts: list[dict[str, Any]]) -> str:
@@ -623,6 +553,11 @@ def classify_prompt(
         task_kind = NorllamaTaskKind.CODE.value
         intent_confidence = 0.76
         reasons.append("code/repo signal")
+    elif tui_route_intent.is_broad_planning(lowered):
+        intent = "planning_or_architecture"
+        task_kind = NorllamaTaskKind.PLAN.value
+        intent_confidence = 0.86
+        reasons.append("broad architecture/planning prompt")
     elif "summarize" in tokens or "summary" in tokens:
         intent = "summarize"
         task_kind = NorllamaTaskKind.SUMMARIZE.value
@@ -698,6 +633,10 @@ def _reasoning_profile(
         tier = "simple"
         effort = "deterministic_or_tiny_local"
         reason = "prompt matches a short operator-control/status intent"
+    elif intent == "planning_or_architecture":
+        tier = "high_reasoning"
+        effort = "spark_high_reasoning"
+        reason = "prompt asks for architecture, routing, or multi-session planning"
     elif task_kind in _SPECIALIST_TASK_KINDS:
         tier = "specialist"
         effort = "local_specialist"
