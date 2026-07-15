@@ -66,7 +66,7 @@ AUTH_COOKIE_NAME = (
 AUTH_COOKIE_MAX_AGE = int(
     os.environ.get("NORMAN_CODEX_WEB_COOKIE_MAX_AGE", str(14 * 24 * 60 * 60))
 )
-DEFAULT_UI_VERSION = "2026.07.11.02"
+DEFAULT_UI_VERSION = "2026.07.15.01"
 UI_VERSION = (
     os.environ.get("NORMAN_CODEX_UI_VERSION", DEFAULT_UI_VERSION).strip()
     or DEFAULT_UI_VERSION
@@ -39102,9 +39102,11 @@ class Handler(BaseHTTPRequestHandler):
       --type-reading-size: 0.94rem;
       --assistant-reading-size: 0.96rem;
       --assistant-reading-line-height: 1.58;
-      --assistant-reading-measure: min(68ch, 100%);
+      --assistant-reading-measure: min(74ch, 100%);
       --user-reading-size: 0.84rem;
       --user-reading-line-height: 1.44;
+      --workspace-edge-pad: clamp(2px, 0.45vw, 8px);
+      --mobile-edge-pad: 2px;
       --composer-input-size: 1rem;
       --brand-radius: 16px;
       --chrome-pill-radius: 999px;
@@ -41284,9 +41286,9 @@ class Handler(BaseHTTPRequestHandler):
       flex: 1;
       min-height: 0;
       display: grid;
-      gap: 1px;
+      gap: 0;
       position: relative;
-      padding: 0 10px 10px;
+      padding: 0 var(--workspace-edge-pad) var(--workspace-edge-pad);
       background:
         linear-gradient(
           180deg,
@@ -41324,14 +41326,14 @@ class Handler(BaseHTTPRequestHandler):
       background: transparent;
     }}
     .chat-shell {{
-      --reading-lane: 760px;
-      --conversation-lane: 860px;
+      --reading-lane: 980px;
+      --conversation-lane: 1180px;
       min-height: 0;
       min-height: 100%;
       display: flex;
       flex-direction: column;
-      gap: 4px;
-      padding: 8px clamp(6px, 1vw, 14px) 10px;
+      gap: 3px;
+      padding: 6px clamp(3px, 0.65vw, 10px) 6px;
       position: relative;
       overflow: visible;
       isolation: isolate;
@@ -41354,7 +41356,7 @@ class Handler(BaseHTTPRequestHandler):
       gap: 2px;
       padding-right: 0;
       touch-action: pan-y;
-      padding-bottom: calc(28px + var(--composer-reserve));
+      padding-bottom: calc(20px + var(--composer-reserve));
     }}
     .chat-main:focus {{
       outline: none;
@@ -42454,13 +42456,13 @@ class Handler(BaseHTTPRequestHandler):
       justify-content: flex-end;
       flex: 0 0 auto;
       gap: 2px;
-      padding: 2px 2px calc(88px + var(--composer-reserve));
+      padding: 1px 1px calc(76px + var(--composer-reserve));
       border-radius: 0;
       border: 0;
       background: transparent;
       box-shadow: none;
       overflow: clip;
-      min-height: clamp(180px, 40vh, 460px);
+      min-height: clamp(180px, 44vh, 540px);
       touch-action: pan-y;
     }}
     .conversation::before {{
@@ -42494,9 +42496,9 @@ class Handler(BaseHTTPRequestHandler):
       box-shadow: none;
     }}
     body[data-view-mode="stage"] .app-shell {{
-      max-width: 1480px;
-      gap: 4px;
-      padding: 8px;
+      max-width: none;
+      gap: 0;
+      padding: 0;
     }}
     body[data-view-mode="stage"] .console-nav {{
       display: none;
@@ -42519,7 +42521,7 @@ class Handler(BaseHTTPRequestHandler):
       max-width: 48rem;
     }}
     body[data-view-mode="stage"] .chat-shell {{
-      padding: 10px;
+      padding: 4px;
     }}
     body[data-view-mode="stage"] .chat-summary-bar {{
       gap: 5px;
@@ -48377,16 +48379,16 @@ class Handler(BaseHTTPRequestHandler):
       }}
       .workspace {{
         grid-template-columns: minmax(0, 1fr);
-        padding: 0 14px 14px;
+        padding: 0 8px 8px;
       }}
       .chat-shell,
       .system-panel {{
         min-height: calc(100dvh - 74px);
       }}
       .chat-shell {{
-        --reading-lane: 820px;
-        --conversation-lane: 980px;
-        padding-inline: clamp(8px, 1.4vw, 18px);
+        --reading-lane: 1080px;
+        --conversation-lane: 1280px;
+        padding-inline: clamp(4px, 0.8vw, 12px);
       }}
       .chat-main {{
         gap: 1px;
@@ -48404,7 +48406,7 @@ class Handler(BaseHTTPRequestHandler):
       .chat-main > .notice-rail,
       .chat-main > .history-toolbar,
       .chat-shell > .activity-strip {{
-        width: min(100%, calc(var(--reading-lane) - 12px));
+        width: min(100%, calc(var(--reading-lane) - 4px));
       }}
       .chat-main > .conversation {{
         width: min(100%, var(--conversation-lane));
@@ -48414,8 +48416,8 @@ class Handler(BaseHTTPRequestHandler):
       }}
       .conversation {{
         gap: 3px;
-        padding: 2px 1px calc(76px + var(--composer-reserve));
-        min-height: clamp(180px, 38vh, 440px);
+        padding: 1px 0 calc(68px + var(--composer-reserve));
+        min-height: clamp(180px, 42vh, 520px);
       }}
       .message {{
         padding: 5px 7px 6px;
@@ -48440,7 +48442,7 @@ class Handler(BaseHTTPRequestHandler):
       .message.assistant .message-body > .kv-list,
       .message.assistant .message-body > .task-list,
       .message.assistant .message-body > hr {{
-        max-width: min(70ch, 100%);
+        max-width: var(--assistant-reading-measure, min(74ch, 100%));
       }}
       textarea {{
         min-height: 44px;
@@ -48523,7 +48525,7 @@ class Handler(BaseHTTPRequestHandler):
       }}
       .workspace {{
         display: block;
-        padding: 0 6px 8px;
+        padding: 0 3px 5px;
       }}
       .chat-shell {{
         min-height: calc(100dvh - 64px);
@@ -48537,9 +48539,9 @@ class Handler(BaseHTTPRequestHandler):
       }}
       .system-panel {{
         position: fixed;
-        left: 10px;
-        right: 10px;
-        bottom: 10px;
+        left: 4px;
+        right: 4px;
+        bottom: 4px;
         max-height: min(84dvh, 820px);
         transform: translateY(calc(100% + 18px));
         opacity: 0;
@@ -48553,10 +48555,10 @@ class Handler(BaseHTTPRequestHandler):
         z-index: 72;
       }}
       .switcher-panel {{
-        left: 10px;
-        right: 10px;
+        left: 4px;
+        right: 4px;
         top: auto;
-        bottom: 10px;
+        bottom: 4px;
         width: auto;
         max-height: min(84dvh, 820px);
         transform: translateY(calc(100% + 18px));
@@ -48565,18 +48567,18 @@ class Handler(BaseHTTPRequestHandler):
         transform: translateY(0);
       }}
       .settings-panel {{
-        left: 10px;
-        right: 10px;
+        left: 4px;
+        right: 4px;
         top: auto;
-        bottom: 10px;
+        bottom: 4px;
         width: auto;
         transform: translateY(calc(100% + 18px));
       }}
       .notices-panel {{
-        left: 10px;
-        right: 10px;
+        left: 4px;
+        right: 4px;
         top: auto;
-        bottom: 10px;
+        bottom: 4px;
         width: auto;
         transform: translateY(calc(100% + 18px));
       }}
@@ -48599,12 +48601,12 @@ class Handler(BaseHTTPRequestHandler):
       }}
       .topbar,
       .console-nav {{
-        width: min(100%, 1480px);
+        width: 100%;
         margin-inline: auto;
       }}
       .chat-shell {{
-        --reading-lane: 980px;
-        --conversation-lane: 1120px;
+        --reading-lane: 1280px;
+        --conversation-lane: 1480px;
       }}
       .message.assistant .message-body,
       .raw-view {{
@@ -48623,31 +48625,31 @@ class Handler(BaseHTTPRequestHandler):
     @media (min-width: 1800px) {{
       .topbar,
       .console-nav {{
-        width: min(100%, 1720px);
+        width: 100%;
       }}
       .chat-shell {{
-        --reading-lane: 1160px;
-        --conversation-lane: 1320px;
-        padding-inline: clamp(16px, 1.8vw, 34px);
+        --reading-lane: 1560px;
+        --conversation-lane: 1780px;
+        padding-inline: clamp(8px, 1.1vw, 22px);
       }}
     }}
     @media (max-width: 640px) {{
       body::after {{
-        inset: 4px;
-        border-radius: 18px;
-        opacity: 0.48;
+        inset: 0;
+        border-radius: 0;
+        opacity: 0.38;
       }}
       body {{
         overscroll-behavior-y: auto;
       }}
       .app-shell {{
         padding:
-          max(3px, env(safe-area-inset-top))
-          4px
-          calc(6px + env(safe-area-inset-bottom));
+          env(safe-area-inset-top)
+          0
+          env(safe-area-inset-bottom);
       }}
       .chat-shell {{
-        padding: 5px;
+        padding: 2px var(--mobile-edge-pad) 3px;
       }}
       .topbar {{
         top: 0;
@@ -48655,10 +48657,10 @@ class Handler(BaseHTTPRequestHandler):
         align-items: center;
         gap: 4px;
         min-height: 34px;
-        padding: 3px 4px;
+        padding: 2px 3px;
       }}
       .topbar.surface {{
-        border-radius: 10px;
+        border-radius: 0;
         box-shadow:
           0 6px 16px rgba(8, 12, 18, 0.065),
           inset 0 1px 0 color-mix(in srgb, rgba(255, 255, 255, 0.04) 30%, transparent),
@@ -48723,15 +48725,15 @@ class Handler(BaseHTTPRequestHandler):
       }}
       .status-action-panel {{
         position: fixed;
-        left: 8px;
-        right: 8px;
+        left: 2px;
+        right: 2px;
         top: auto;
-        bottom: calc(8px + env(safe-area-inset-bottom));
+        bottom: calc(2px + env(safe-area-inset-bottom));
         width: auto;
-        max-height: min(58dvh, 360px);
+        max-height: min(64dvh, 420px);
         overflow: auto;
-        padding: 8px;
-        border-radius: 14px;
+        padding: 7px;
+        border-radius: 10px 10px 0 0;
         z-index: 80;
         box-shadow: 0 -18px 42px rgba(8, 12, 18, 0.24);
       }}
@@ -48785,9 +48787,9 @@ class Handler(BaseHTTPRequestHandler):
       }}
       .topbar-actions .utility-button,
       .topbar-actions .button-link {{
-        min-width: 28px;
-        min-height: 28px;
-        padding: 0 6px;
+        min-width: 27px;
+        min-height: 27px;
+        padding: 0 5px;
       }}
       #prime-home-button,
       #directory-home-button {{
@@ -48795,9 +48797,9 @@ class Handler(BaseHTTPRequestHandler):
       }}
       .switcher-toggle-button,
       .topbar-menu-button {{
-        min-width: 30px;
-        min-height: 28px;
-        padding: 0 7px;
+        min-width: 28px;
+        min-height: 27px;
+        padding: 0 6px;
         font-size: 0;
       }}
       .switcher-toggle-label,
@@ -48971,8 +48973,8 @@ class Handler(BaseHTTPRequestHandler):
         right: 0;
         bottom: 0;
         width: auto;
-        max-height: min(90dvh, 920px);
-        border-radius: 18px 18px 0 0;
+        max-height: min(94dvh, 980px);
+        border-radius: 10px 10px 0 0;
         box-shadow:
           0 -18px 42px rgba(10, 14, 20, 0.22),
           inset 0 1px 0 rgba(255, 255, 255, 0.03);
@@ -49118,15 +49120,15 @@ class Handler(BaseHTTPRequestHandler):
         max-height: min(190px, 28vh);
       }}
       .jump-latest {{
-        right: 8px;
-        bottom: calc(92px + env(safe-area-inset-bottom));
+        right: 4px;
+        bottom: calc(78px + env(safe-area-inset-bottom));
         min-height: 32px;
         padding: 5px 10px;
         box-shadow: 0 10px 22px rgba(0, 0, 0, 0.18);
       }}
       .toast-stack {{
-        left: 8px;
-        right: 8px;
+        left: 4px;
+        right: 4px;
         top: calc(env(safe-area-inset-top) + 62px);
         width: auto;
         align-items: stretch;
@@ -49333,7 +49335,7 @@ class Handler(BaseHTTPRequestHandler):
         bottom: 0;
         z-index: 6;
         margin-inline: 0;
-        padding: 4px 0 calc(4px + env(safe-area-inset-bottom));
+        padding: 2px 0 calc(2px + env(safe-area-inset-bottom));
         background:
           linear-gradient(
             180deg,
@@ -49434,17 +49436,17 @@ class Handler(BaseHTTPRequestHandler):
       }}
       body.mobile-compose-mode .composer-input-shell {{
         grid-template-rows: auto auto auto minmax(54px, auto);
-        border-radius: 16px;
-        padding: 9px;
-        gap: 7px 8px;
+        border-radius: 10px 10px 0 0;
+        padding: 7px;
+        gap: 6px;
         box-shadow:
           0 14px 30px rgba(8, 12, 18, 0.12),
           inset 0 1px 0 color-mix(in srgb, rgba(255, 255, 255, 0.05) 44%, transparent),
           inset 0 -1px 0 color-mix(in srgb, rgba(0, 0, 0, 0.10) 30%, transparent);
       }}
       body.mobile-compose-mode .composer-toolbar {{
-        width: calc(100vw - 16px);
-        max-width: calc(100vw - 16px);
+        width: calc(100vw - 4px);
+        max-width: calc(100vw - 4px);
         align-self: center;
       }}
       body.mobile-compose-mode .composer-upload-menu {{
@@ -49468,17 +49470,25 @@ class Handler(BaseHTTPRequestHandler):
         gap: 6px;
       }}
       .chat-main {{
-        padding-bottom: calc(24px + var(--composer-reserve));
+        padding-bottom: calc(16px + var(--composer-reserve));
       }}
       .conversation {{
-        padding: 2px 0 calc(74px + var(--composer-reserve));
+        padding: 1px 0 calc(62px + var(--composer-reserve));
         border-radius: 0;
-        gap: 3px;
-        min-height: clamp(168px, 32vh, 340px);
+        gap: 2px;
+        min-height: clamp(172px, 36vh, 380px);
       }}
       .message {{
-        padding: 5px 6px 6px;
-        border-radius: 8px;
+        padding: 5px 5px 6px;
+        border-radius: 7px;
+        max-width: 100%;
+      }}
+      .message.user {{
+        max-width: min(94%, 520px);
+      }}
+      .message.assistant {{
+        max-width: 100%;
+        padding-left: 8px;
       }}
       .message.assistant .message-body,
       .raw-view {{

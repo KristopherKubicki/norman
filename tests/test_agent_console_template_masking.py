@@ -2303,13 +2303,15 @@ def test_cert_workflow_errors_are_classified_cleanly() -> None:
     ) == ("error", "Cert issue")
 
 
-def test_template_uses_window_owned_shell_frame() -> None:
+def test_template_uses_edge_to_edge_shell_frame() -> None:
     source = _agent_console_web_source()
 
     assert "max-width: none;" in source
     assert "width: 100%;" in source
-    assert "padding: 0 10px 10px;" in source
-    assert "padding: 8px 12px 7px;" in source
+    assert "--workspace-edge-pad: clamp(2px, 0.45vw, 8px);" in source
+    assert "padding: 0 var(--workspace-edge-pad) var(--workspace-edge-pad);" in source
+    assert "padding: 2px var(--mobile-edge-pad) 3px;" in source
+    assert "width: calc(100vw - 4px);" in source
 
 
 def test_template_makes_inline_code_urls_clickable() -> None:

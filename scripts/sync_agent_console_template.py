@@ -212,7 +212,7 @@ HOSTS: dict[str, DiscoveryHost] = {
     ),
     "norman": DiscoveryHost(
         name="norman",
-        ssh_target="",
+        ssh_target="192.168.2.241",
         use_sudo=True,
         env_globs=("/etc/norman/codex-web.env",),
         public_host="norman.home.arpa",
@@ -220,7 +220,6 @@ HOSTS: dict[str, DiscoveryHost] = {
         lan_host="192.168.2.241",
         frontdoor_alias_hosts=("norman.home.lollie.org",),
         host_home_path="/var/www/host-home/index.html",
-        local=True,
     ),
     "networking-host": DiscoveryHost(
         name="networking-host",
