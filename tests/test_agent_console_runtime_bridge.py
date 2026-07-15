@@ -3345,6 +3345,139 @@ def test_context_preflight_cloud_gate_warns_without_local_reduction(
     assert gate_event["payload"]["accounting"]["local_preflight_used"] is False
 
 
+def test_agent_template_bedrock_pack_forces_hard_cloud_context_cap(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_CODEX_SERVICE_TIER", "default")
+    monkeypatch.setenv("NORMAN_CODEX_STANDARD_PROFILE_V2", "personal-bedrock")
+    monkeypatch.setenv("NORMAN_CODEX_STANDARD_MODEL", "openai.gpt-5.6-terra")
+    monkeypatch.setenv("NORMAN_CODEX_BEDROCK_CONTEXT_PACK_MIN_THREAD_TOKENS", "80000")
+    monkeypatch.setenv("NORMAN_CODEX_BEDROCK_CONTEXT_PACK_HARD_THREAD_TOKENS", "200000")
+    monkeypatch.setenv("NORMAN_CODEX_BEDROCK_CONTEXT_PACK_MIN_SAVED_TOKENS", "4000")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    module.ensure_state_dir()
+    old_thread_id = "template-million-token-thread"
+    old_scope = "profile-v2:personal-bedrock:model:openai.gpt-5.6-terra"
+    module.append_usage_entry(
+        started_at=100,
+        finished_at=212,
+        thread_id=old_thread_id,
+        speed="careful",
+        detail=5,
+        service_tier="default",
+        success=True,
+        runtime="codex",
+        model="openai.gpt-5.6-terra",
+        usage={
+            "input_tokens": 1_161_817,
+            "cached_input_tokens": 954_558,
+            "output_tokens": 6_365,
+        },
+    )
+
+    plan = module.bedrock_context_pack_plan(
+        service_tier="default",
+        model="openai.gpt-5.6-terra",
+        session_id=old_thread_id,
+        thread_scope=old_scope,
+    )
+
+    assert plan["thread_tokens"] >= 1_000_000
+    assert plan["hard_cap_exceeded"] is True
+    assert plan["should_pack"] is True
+    assert plan["reason"] == "hard-cloud-context-cap"
+
+
+def test_agent_template_personal_bedrock_usage_displays_usd_not_plan_credits(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    usage = module.normalize_usage_entry(
+        {
+            "runtime": "codex",
+            "model": "openai.gpt-5.6-terra",
+            "provider_surface": "aws-bedrock",
+            "billing_owner": "kristopher",
+            "agent_group": "home",
+            "input_tokens": 1_000,
+            "output_tokens": 100,
+        }
+    )
+
+    assert usage["charge_ledger_kind"] == "provider_invoice_estimate"
+    assert usage["charge_display_unit"] == "usd_equivalent"
+    assert usage["route_charge_basis"] == "provider_invoice"
+
+
+def test_agent_template_stale_personal_bedrock_usage_reprices_as_usd(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    estimate = module.estimate_usage_entries_cost(
+        [
+            {
+                "runtime": "codex",
+                "model": "openai.gpt-5.6-terra",
+                "provider_surface": "aws-bedrock",
+                "billing_owner": "kristopher",
+                "agent_group": "home",
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+                "charge_ledger_kind": "chatgpt_codex_credit_estimate",
+                "charge_display_unit": "credits",
+            }
+        ]
+    )
+
+    assert estimate["ledger_kind"] == "provider_invoice_estimate"
+    assert estimate["display_unit"] == "usd_equivalent"
+    assert estimate["by_charge_display_unit"] == {"usd_equivalent": 1}
+    assert estimate["usd"] > 0
+
+
+def test_agent_template_mixed_unpriced_direct_and_bedrock_history_prefers_usd_display(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    estimate = module.estimate_usage_entries_cost(
+        [
+            {
+                "runtime": "codex",
+                "model": "openai.gpt-5.6-terra",
+                "provider_surface": "openai-direct",
+                "billing_owner": "kristopher",
+                "agent_group": "home",
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+                "charge_ledger_kind": "chatgpt_codex_credit_estimate",
+                "charge_display_unit": "credits",
+            },
+            {
+                "runtime": "codex",
+                "model": "openai.gpt-5.6-terra",
+                "provider_surface": "aws-bedrock",
+                "billing_owner": "kristopher",
+                "agent_group": "home",
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+                "charge_ledger_kind": "chatgpt_codex_credit_estimate",
+                "charge_display_unit": "credits",
+            },
+        ]
+    )
+
+    assert estimate["ledger_kind"] == "mixed"
+    assert estimate["display_unit"] == "usd_equivalent"
+    assert estimate["by_charge_display_unit"] == {
+        "credits": 1,
+        "usd_equivalent": 1,
+    }
+    assert estimate["usd"] > 0
+
+
 def test_context_preflight_limits_norllama_planner_candidate_timeouts(
     monkeypatch, tmp_path
 ):

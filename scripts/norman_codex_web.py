@@ -119,6 +119,15 @@ BEDROCK_CONTEXT_PACK_MIN_SAVED_TOKENS = max(
 BEDROCK_CONTEXT_PACK_MIN_SAVED_PCT = max(
     0.0, float(os.environ.get("NORMAN_CODEX_BEDROCK_CONTEXT_PACK_MIN_SAVED_PCT", "25"))
 )
+BEDROCK_CONTEXT_PACK_HARD_THREAD_TOKENS = max(
+    0,
+    int(
+        os.environ.get("NORMAN_CODEX_BEDROCK_CONTEXT_PACK_HARD_THREAD_TOKENS", "200000")
+    ),
+)
+BEDROCK_CONTEXT_PACK_LOW_YIELD_ENABLED = os.environ.get(
+    "NORMAN_CODEX_BEDROCK_CONTEXT_PACK_LOW_YIELD_ENABLED", "1"
+).strip().lower() not in {"0", "false", "no", "off"}
 CONTEXT_PREFLIGHT_ENABLED = os.environ.get(
     "NORMAN_CODEX_CONTEXT_PREFLIGHT_ENABLED", "1"
 ).strip().lower() not in {"0", "false", "no", "off"}
@@ -12894,12 +12903,12 @@ def usage_charge_ledger_kind(entry: dict[str, Any]) -> str:
         .strip()
         .lower()
     )
-    if runtime == "codex" and owner == "kristopher" and group != "work":
-        return "chatgpt_codex_credit_estimate"
-    if runtime in {"claude", "kimi", "qwen"}:
-        return "provider_invoice_estimate"
     if provider_surface == "aws-bedrock":
         return "provider_invoice_estimate"
+    if runtime in {"claude", "kimi", "qwen"}:
+        return "provider_invoice_estimate"
+    if runtime == "codex" and owner == "kristopher" and group != "work":
+        return "chatgpt_codex_credit_estimate"
     if provider_surface == "openai-direct":
         return "api_rate_card_estimate"
     return "local_token_estimate"
@@ -13039,12 +13048,19 @@ def normalize_usage_entry(value: Any) -> dict[str, Any]:
         for reason in payload.get("provider_yield_reasons", [])
         if str(reason).strip()
     ]
-    payload["charge_ledger_kind"] = str(
-        payload.get("charge_ledger_kind") or ""
-    ).strip() or usage_charge_ledger_kind(payload)
-    payload["charge_display_unit"] = str(
-        payload.get("charge_display_unit") or ""
-    ).strip() or usage_charge_display_unit(payload["charge_ledger_kind"])
+    derived_ledger_kind = usage_charge_ledger_kind(payload)
+    stored_ledger_kind = str(payload.get("charge_ledger_kind") or "").strip()
+    if (
+        str(payload.get("provider_surface") or "").strip().lower() == "aws-bedrock"
+        and derived_ledger_kind == "provider_invoice_estimate"
+    ):
+        payload["charge_ledger_kind"] = derived_ledger_kind
+        payload["charge_display_unit"] = usage_charge_display_unit(derived_ledger_kind)
+    else:
+        payload["charge_ledger_kind"] = stored_ledger_kind or derived_ledger_kind
+        payload["charge_display_unit"] = str(
+            payload.get("charge_display_unit") or ""
+        ).strip() or usage_charge_display_unit(payload["charge_ledger_kind"])
     payload["charge_status"] = usage_charge_status(payload)
     return payload
 
@@ -14482,6 +14498,16 @@ def estimate_usage_entries_cost(
         confidence = "approximate_rate_card" if approximate else "configured_local_rate"
     elif configured_entries:
         confidence = "partial_rate_card"
+    if configured_entries and not credit_configured_entries:
+        display_unit = "usd_equivalent"
+    elif credit_configured_entries and not configured_entries:
+        display_unit = "credits"
+    else:
+        display_unit = (
+            "mixed"
+            if len(by_charge_display_unit) > 1
+            else next(iter(by_charge_display_unit), "tokens")
+        )
     return {
         "configured": configured,
         "credits_configured": credit_configured,
@@ -14494,11 +14520,7 @@ def estimate_usage_entries_cost(
             if len(by_charge_ledger_kind) > 1
             else next(iter(by_charge_ledger_kind), "unknown")
         ),
-        "display_unit": (
-            "mixed"
-            if len(by_charge_display_unit) > 1
-            else next(iter(by_charge_display_unit), "tokens")
-        ),
+        "display_unit": display_unit,
         "usd": round(total_usd, 6) if configured_entries else 0.0,
         "credits": round(total_credits, 6) if credit_configured_entries else 0.0,
         "long_context": long_context,
@@ -20416,13 +20438,33 @@ def _compact_token_label(value: Any) -> str:
 
 
 def _thread_usage_token_ceiling(thread_id: str) -> int:
+    return _thread_usage_budget_snapshot(thread_id).get("thread_tokens", 0)
+
+
+def _thread_usage_budget_snapshot(thread_id: str) -> dict[str, Any]:
     clean_thread_id = str(thread_id or "").strip()
     if not clean_thread_id:
-        return 0
+        return {
+            "thread_tokens": 0,
+            "hard_cap_tokens": BEDROCK_CONTEXT_PACK_HARD_THREAD_TOKENS,
+            "hard_cap_exceeded": False,
+            "low_yield_thread": False,
+            "latest_provider_yield_kind": "",
+            "latest_provider_yield_reasons": [],
+        }
     candidates: list[int] = []
-    for entry in load_usage_history(limit=0):
-        if str(entry.get("thread_id") or "").strip() != clean_thread_id:
-            continue
+
+    low_yield_thread = False
+    latest_provider_yield_kind = ""
+    latest_provider_yield_reasons: list[str] = []
+
+    def _observe_entry(raw_entry: Any) -> None:
+        nonlocal low_yield_thread
+        nonlocal latest_provider_yield_kind
+        nonlocal latest_provider_yield_reasons
+        if not isinstance(raw_entry, dict):
+            return
+        entry = normalize_usage_entry(raw_entry)
         candidates.extend(
             [
                 _coerce_int(entry.get("total_tokens")),
@@ -20431,19 +20473,43 @@ def _thread_usage_token_ceiling(thread_id: str) -> int:
                 + _coerce_int(entry.get("input_tokens")),
             ]
         )
+        kind = str(entry.get("provider_yield_kind") or "").strip()
+        if kind:
+            latest_provider_yield_kind = kind
+            reasons = entry.get("provider_yield_reasons")
+            latest_provider_yield_reasons = (
+                [str(item) for item in reasons if str(item).strip()]
+                if isinstance(reasons, list)
+                else []
+            )
+        if kind == "low_yield":
+            low_yield_thread = True
+
+    for entry in load_usage_history(limit=0):
+        if str(entry.get("thread_id") or "").strip() != clean_thread_id:
+            continue
+        _observe_entry(entry)
     usage = usage_snapshot(thread_id=clean_thread_id)
     current_thread = (
         usage.get("current_thread")
         if isinstance(usage.get("current_thread"), dict)
         else {}
     )
-    candidates.extend(
-        [
-            _coerce_int(current_thread.get("total_tokens")),
-            _coerce_int(current_thread.get("input_tokens")),
-        ]
-    )
-    return max(candidates or [0])
+    _observe_entry(current_thread)
+    thread_tokens = max(candidates or [0])
+    hard_cap_tokens = BEDROCK_CONTEXT_PACK_HARD_THREAD_TOKENS
+    return {
+        "thread_tokens": thread_tokens,
+        "hard_cap_tokens": hard_cap_tokens,
+        "hard_cap_exceeded": bool(
+            hard_cap_tokens > 0 and thread_tokens >= hard_cap_tokens
+        ),
+        "low_yield_thread": bool(
+            BEDROCK_CONTEXT_PACK_LOW_YIELD_ENABLED and low_yield_thread
+        ),
+        "latest_provider_yield_kind": latest_provider_yield_kind,
+        "latest_provider_yield_reasons": latest_provider_yield_reasons,
+    }
 
 
 def bedrock_context_pack_plan(
@@ -20496,8 +20562,15 @@ def bedrock_context_pack_plan(
     packed_tokens = _coerce_int(packed.get("tokens"))
     saved_tokens = _coerce_int(savings.get("tokens"))
     saved_pct = _coerce_float(savings.get("pct"))
-    thread_tokens = _thread_usage_token_ceiling(clean_session_id)
-    thread_heavy_enough = thread_tokens >= BEDROCK_CONTEXT_PACK_MIN_THREAD_TOKENS
+    budget = _thread_usage_budget_snapshot(clean_session_id)
+    thread_tokens = _coerce_int(budget.get("thread_tokens"))
+    hard_cap_exceeded = bool(budget.get("hard_cap_exceeded"))
+    low_yield_thread = bool(budget.get("low_yield_thread"))
+    thread_heavy_enough = bool(
+        thread_tokens >= BEDROCK_CONTEXT_PACK_MIN_THREAD_TOKENS
+        or hard_cap_exceeded
+        or low_yield_thread
+    )
     current_heavy_enough = current_tokens >= BEDROCK_CONTEXT_PACK_MIN_THREAD_TOKENS
     visible_context_worthwhile = (
         saved_tokens >= BEDROCK_CONTEXT_PACK_MIN_SAVED_TOKENS
@@ -20507,9 +20580,16 @@ def bedrock_context_pack_plan(
         thread_heavy_enough or (current_heavy_enough and visible_context_worthwhile)
     )
     if should_pack:
-        reason = (
-            "heavy-bedrock-thread" if thread_heavy_enough else "heavy-visible-context"
-        )
+        if hard_cap_exceeded:
+            reason = "hard-cloud-context-cap"
+        elif low_yield_thread:
+            reason = "low-yield-cloud-thread"
+        else:
+            reason = (
+                "heavy-bedrock-thread"
+                if thread_heavy_enough
+                else "heavy-visible-context"
+            )
     else:
         reason = "below-threshold"
     return {
@@ -20524,6 +20604,11 @@ def bedrock_context_pack_plan(
         "usage": usage,
         "preview": preview,
         "thread_tokens": thread_tokens,
+        "hard_cap_tokens": budget.get("hard_cap_tokens"),
+        "hard_cap_exceeded": hard_cap_exceeded,
+        "low_yield_thread": low_yield_thread,
+        "latest_provider_yield_kind": budget.get("latest_provider_yield_kind"),
+        "latest_provider_yield_reasons": budget.get("latest_provider_yield_reasons"),
         "current_tokens": current_tokens,
         "packed_tokens": packed_tokens,
         "saved_tokens": saved_tokens,
@@ -20676,6 +20761,16 @@ def _execute_codex_prompt(
                     "model": normalized_model,
                     "profile_v2": context_pack_plan.get("profile_v2"),
                     "thread_tokens": context_pack_plan.get("thread_tokens"),
+                    "hard_cap_tokens": context_pack_plan.get("hard_cap_tokens"),
+                    "hard_cap_exceeded": context_pack_plan.get("hard_cap_exceeded"),
+                    "low_yield_thread": context_pack_plan.get("low_yield_thread"),
+                    "context_pack_reason": context_pack_plan.get("reason"),
+                    "latest_provider_yield_kind": context_pack_plan.get(
+                        "latest_provider_yield_kind"
+                    ),
+                    "latest_provider_yield_reasons": context_pack_plan.get(
+                        "latest_provider_yield_reasons"
+                    ),
                     "current_tokens": context_pack_plan.get("current_tokens"),
                     "packed_tokens": context_pack_plan.get("packed_tokens"),
                     "saved_tokens": context_pack_plan.get("saved_tokens"),
@@ -25607,7 +25702,22 @@ def _public_usage_cost_rates_for_model(
 ) -> dict[str, Any]:
     clean = str(model or configured_chat_model() or "").strip().lower()
     tier = normalize_service_tier(service_tier or DEFAULT_SERVICE_TIER)
-    if clean.startswith(("gpt-5.4", "openai.gpt-5.4")):
+    if clean.startswith(("gpt-5.6-luna", "openai.gpt-5.6-luna")):
+        base_input = 1.0
+        base_cached_input = 0.1
+        base_output = 6.0
+        model_label = "GPT-5.6 Luna"
+    elif clean.startswith(("gpt-5.6-terra", "openai.gpt-5.6-terra")):
+        base_input = 2.5
+        base_cached_input = 0.25
+        base_output = 15.0
+        model_label = "GPT-5.6 Terra"
+    elif clean.startswith(("gpt-5.6-sol", "openai.gpt-5.6-sol")):
+        base_input = 5.0
+        base_cached_input = 0.5
+        base_output = 30.0
+        model_label = "GPT-5.6 Sol"
+    elif clean.startswith(("gpt-5.4", "openai.gpt-5.4")):
         base_input = 2.5
         base_cached_input = 0.25
         base_output = 15.0
@@ -45943,7 +46053,22 @@ class Handler(BaseHTTPRequestHandler):
       let baseCachedInput = 0;
       let baseOutput = 0;
       let modelLabel = "";
-      if (clean.startsWith("gpt-5.4") || clean.startsWith("openai.gpt-5.4")) {{
+      if (clean.startsWith("gpt-5.6-luna") || clean.startsWith("openai.gpt-5.6-luna")) {{
+        baseInput = 1;
+        baseCachedInput = 0.1;
+        baseOutput = 6;
+        modelLabel = "GPT-5.6 Luna";
+      }} else if (clean.startsWith("gpt-5.6-terra") || clean.startsWith("openai.gpt-5.6-terra")) {{
+        baseInput = 2.5;
+        baseCachedInput = 0.25;
+        baseOutput = 15;
+        modelLabel = "GPT-5.6 Terra";
+      }} else if (clean.startsWith("gpt-5.6-sol") || clean.startsWith("openai.gpt-5.6-sol")) {{
+        baseInput = 5;
+        baseCachedInput = 0.5;
+        baseOutput = 30;
+        modelLabel = "GPT-5.6 Sol";
+      }} else if (clean.startsWith("gpt-5.4") || clean.startsWith("openai.gpt-5.4")) {{
         baseInput = 2.5;
         baseCachedInput = 0.25;
         baseOutput = 15;
@@ -46119,11 +46244,14 @@ class Handler(BaseHTTPRequestHandler):
       const owner = String(usage?.billing_owner || tags.billing_owner || "").trim().toLowerCase();
       const group = String(usage?.agent_group || tags.agent_group || "").trim().toLowerCase();
       const providerSurface = String(usage?.provider_surface || "").trim().toLowerCase();
+      if (providerSurface === "aws-bedrock") {{
+        return "provider_invoice_estimate";
+      }}
+      if (["claude", "deepseek", "kimi", "qwen"].includes(runtime)) {{
+        return "provider_invoice_estimate";
+      }}
       if (runtime === "codex" && owner === "kristopher" && group !== "work") {{
         return "chatgpt_codex_credit_estimate";
-      }}
-      if (["claude", "deepseek", "kimi", "qwen"].includes(runtime) || providerSurface === "aws-bedrock") {{
-        return "provider_invoice_estimate";
       }}
       if (providerSurface === "openai-direct") {{
         return "api_rate_card_estimate";
