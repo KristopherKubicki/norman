@@ -128,6 +128,38 @@ BEDROCK_CONTEXT_PACK_HARD_THREAD_TOKENS = max(
 BEDROCK_CONTEXT_PACK_LOW_YIELD_ENABLED = os.environ.get(
     "NORMAN_CODEX_BEDROCK_CONTEXT_PACK_LOW_YIELD_ENABLED", "1"
 ).strip().lower() not in {"0", "false", "no", "off"}
+BEDROCK_CONTEXT_PACK_MIN_UNCACHED_INPUT_TOKENS = max(
+    0,
+    int(
+        os.environ.get(
+            "NORMAN_CODEX_BEDROCK_CONTEXT_PACK_MIN_UNCACHED_INPUT_TOKENS", "80000"
+        )
+    ),
+)
+BEDROCK_CONTEXT_PACK_MIN_ESTIMATED_COST_USD = max(
+    0.0,
+    float(
+        os.environ.get(
+            "NORMAN_CODEX_BEDROCK_CONTEXT_PACK_MIN_ESTIMATED_COST_USD", "0.25"
+        )
+    ),
+)
+BEDROCK_CONTEXT_PACK_LOW_YIELD_MIN_INPUT_TOKENS = max(
+    0,
+    int(
+        os.environ.get(
+            "NORMAN_CODEX_BEDROCK_CONTEXT_PACK_LOW_YIELD_MIN_INPUT_TOKENS", "50000"
+        )
+    ),
+)
+BEDROCK_CONTEXT_PACK_LOW_YIELD_MAX_OUTPUT_RATIO = max(
+    0.0,
+    float(
+        os.environ.get(
+            "NORMAN_CODEX_BEDROCK_CONTEXT_PACK_LOW_YIELD_MAX_OUTPUT_RATIO", "0.02"
+        )
+    ),
+)
 CONTEXT_PREFLIGHT_ENABLED = os.environ.get(
     "NORMAN_CODEX_CONTEXT_PREFLIGHT_ENABLED", "1"
 ).strip().lower() not in {"0", "false", "no", "off"}
@@ -3807,17 +3839,28 @@ AUTO_TURN_CONTROL_HOUR_RE = re.compile(
     re.IGNORECASE,
 )
 AUTO_TURN_CONTROL_LONG_MARKERS = (
+    "/fork",
     "audit",
+    "architecture",
+    "autonomous",
+    "autonomously",
     "benchmark",
+    "clone a tui",
+    "control plane",
     "deep dive",
+    "design",
     "full pass",
     "hybridizer",
     "long run",
     "matrix",
     "optimizer",
     "overnight",
+    "prompt middle layer",
     "quality pass",
+    "roadmap",
     "shadow",
+    "subagent",
+    "subagents",
 )
 AUTO_TURN_CONTROL_IMPLEMENT_MARKERS = (
     "add ",
@@ -3859,8 +3902,52 @@ def prompt_has_any_marker(prompt: str, markers: tuple[str, ...]) -> bool:
     return any(marker in lower for marker in markers)
 
 
+def prompt_is_broad_planning_request(prompt: str) -> bool:
+    lower = prompt_core_request(prompt).lower().strip()
+    if not lower:
+        return False
+    architecture_markers = (
+        "/fork",
+        "architecture",
+        "autonomous",
+        "autonomously",
+        "clone a tui",
+        "control plane",
+        "how do we",
+        "how should",
+        "proposal",
+        "propose",
+        "roadmap",
+        "same tui",
+        "strategy",
+        "subagent",
+        "subagents",
+    )
+    if not any(marker in lower for marker in architecture_markers):
+        return False
+    return any(
+        marker in lower
+        for marker in (
+            "architecture",
+            "autonomous",
+            "autonomously",
+            "clone",
+            "control plane",
+            "different tasks",
+            "fork",
+            "many sessions",
+            "roadmap",
+            "same tui",
+            "subagent",
+            "subagents",
+        )
+    )
+
+
 def prompt_is_quick_status_request(prompt: str) -> bool:
     lower = prompt_core_request(prompt).lower().strip()
+    if prompt_is_broad_planning_request(lower):
+        return False
     if prompt_has_any_marker(lower, AUTO_TURN_CONTROL_QUICK_MARKERS):
         return True
     return lower.startswith(
@@ -3994,6 +4081,7 @@ def classify_prompt_workload(
     lower = core.lower()
     attachment_count = len(normalize_attachments(attachments or []))
     time_hint = prompt_time_budget_hint(core)
+    broad_planning = prompt_is_broad_planning_request(core)
     if prompt_has_any_marker(core, AUTO_TURN_CONTROL_EXPLICIT_MARKERS):
         return "explicit"
     if time_hint.get("approval_required") and not time_hint.get("approval_granted"):
@@ -4004,6 +4092,8 @@ def classify_prompt_workload(
         "overnight",
     }:
         return "long_work"
+    if broad_planning:
+        return "analysis"
     if prompt_has_any_marker(core, AUTO_TURN_CONTROL_LONG_MARKERS):
         return "long_work"
     if prompt_is_quick_status_request(core):
@@ -4016,10 +4106,14 @@ def classify_prompt_workload(
         return "verification"
     requested_action = route_receipt_requested_action(core)
     if requested_action == "status":
+        if broad_planning:
+            return "analysis"
         return "status"
     if requested_action in {"proceed_or_next", "undo_or_back"}:
         return "quick_decision"
-    if any(token in lower for token in ("explain", "why", "how should", "how do")):
+    if broad_planning or any(
+        token in lower for token in ("explain", "why", "how should", "how do")
+    ):
         return "analysis"
     if attachment_count:
         return "verification"
@@ -20446,13 +20540,27 @@ def _thread_usage_budget_snapshot(thread_id: str) -> dict[str, Any]:
     if not clean_thread_id:
         return {
             "thread_tokens": 0,
+            "thread_input_tokens": 0,
+            "thread_cached_input_tokens": 0,
+            "thread_uncached_input_tokens": 0,
+            "thread_output_tokens": 0,
+            "thread_cache_ratio": 0.0,
+            "thread_output_ratio": 0.0,
             "hard_cap_tokens": BEDROCK_CONTEXT_PACK_HARD_THREAD_TOKENS,
             "hard_cap_exceeded": False,
+            "uncached_input_pressure": False,
+            "estimated_thread_cost_usd": 0.0,
+            "estimated_thread_cost": {},
+            "costly_thread": False,
             "low_yield_thread": False,
             "latest_provider_yield_kind": "",
             "latest_provider_yield_reasons": [],
         }
     candidates: list[int] = []
+    max_input_tokens = 0
+    max_cached_input_tokens = 0
+    max_output_tokens = 0
+    latest_model = ""
 
     low_yield_thread = False
     latest_provider_yield_kind = ""
@@ -20462,15 +20570,30 @@ def _thread_usage_budget_snapshot(thread_id: str) -> dict[str, Any]:
         nonlocal low_yield_thread
         nonlocal latest_provider_yield_kind
         nonlocal latest_provider_yield_reasons
+        nonlocal max_input_tokens
+        nonlocal max_cached_input_tokens
+        nonlocal max_output_tokens
+        nonlocal latest_model
         if not isinstance(raw_entry, dict):
             return
         entry = normalize_usage_entry(raw_entry)
+        entry_model = str(entry.get("model") or "").strip()
+        if entry_model:
+            latest_model = entry_model
+        input_tokens = _coerce_int(entry.get("input_tokens"))
+        cached_input_tokens = _coerce_int(entry.get("cached_input_tokens"))
+        output_tokens = max(
+            _coerce_int(entry.get("output_tokens")),
+            _coerce_int(entry.get("reasoning_output_tokens")),
+        )
+        max_input_tokens = max(max_input_tokens, input_tokens)
+        max_cached_input_tokens = max(max_cached_input_tokens, cached_input_tokens)
+        max_output_tokens = max(max_output_tokens, output_tokens)
         candidates.extend(
             [
                 _coerce_int(entry.get("total_tokens")),
-                _coerce_int(entry.get("input_tokens")),
-                _coerce_int(entry.get("cached_input_tokens"))
-                + _coerce_int(entry.get("input_tokens")),
+                input_tokens,
+                cached_input_tokens + input_tokens,
             ]
         )
         kind = str(entry.get("provider_yield_kind") or "").strip()
@@ -20497,15 +20620,53 @@ def _thread_usage_budget_snapshot(thread_id: str) -> dict[str, Any]:
     )
     _observe_entry(current_thread)
     thread_tokens = max(candidates or [0])
+    uncached_input_tokens = max(0, max_input_tokens - max_cached_input_tokens)
+    cache_ratio = (
+        max_cached_input_tokens / max_input_tokens if max_input_tokens > 0 else 0.0
+    )
+    output_ratio = max_output_tokens / max_input_tokens if max_input_tokens > 0 else 0.0
+    estimated_cost = _estimate_usage_cost_with_rates(
+        {
+            "input_tokens": max_input_tokens,
+            "cached_input_tokens": max_cached_input_tokens,
+            "output_tokens": max_output_tokens,
+        },
+        _public_usage_cost_rates_for_model(current_thread.get("model") or latest_model),
+    )
+    estimated_cost_usd = _coerce_float(estimated_cost.get("usd"))
     hard_cap_tokens = BEDROCK_CONTEXT_PACK_HARD_THREAD_TOKENS
     return {
         "thread_tokens": thread_tokens,
+        "thread_input_tokens": max_input_tokens,
+        "thread_cached_input_tokens": max_cached_input_tokens,
+        "thread_uncached_input_tokens": uncached_input_tokens,
+        "thread_output_tokens": max_output_tokens,
+        "thread_model": str(current_thread.get("model") or latest_model or ""),
+        "thread_cache_ratio": round(cache_ratio, 6),
+        "thread_output_ratio": round(output_ratio, 6),
         "hard_cap_tokens": hard_cap_tokens,
         "hard_cap_exceeded": bool(
             hard_cap_tokens > 0 and thread_tokens >= hard_cap_tokens
         ),
+        "uncached_input_pressure": bool(
+            BEDROCK_CONTEXT_PACK_MIN_UNCACHED_INPUT_TOKENS > 0
+            and uncached_input_tokens >= BEDROCK_CONTEXT_PACK_MIN_UNCACHED_INPUT_TOKENS
+        ),
+        "estimated_thread_cost_usd": estimated_cost_usd,
+        "estimated_thread_cost": estimated_cost,
+        "costly_thread": bool(
+            BEDROCK_CONTEXT_PACK_MIN_ESTIMATED_COST_USD > 0
+            and estimated_cost_usd >= BEDROCK_CONTEXT_PACK_MIN_ESTIMATED_COST_USD
+        ),
         "low_yield_thread": bool(
-            BEDROCK_CONTEXT_PACK_LOW_YIELD_ENABLED and low_yield_thread
+            BEDROCK_CONTEXT_PACK_LOW_YIELD_ENABLED
+            and (
+                low_yield_thread
+                or (
+                    max_input_tokens >= BEDROCK_CONTEXT_PACK_LOW_YIELD_MIN_INPUT_TOKENS
+                    and output_ratio <= BEDROCK_CONTEXT_PACK_LOW_YIELD_MAX_OUTPUT_RATIO
+                )
+            )
         ),
         "latest_provider_yield_kind": latest_provider_yield_kind,
         "latest_provider_yield_reasons": latest_provider_yield_reasons,
@@ -20564,12 +20725,24 @@ def bedrock_context_pack_plan(
     saved_pct = _coerce_float(savings.get("pct"))
     budget = _thread_usage_budget_snapshot(clean_session_id)
     thread_tokens = _coerce_int(budget.get("thread_tokens"))
+    thread_input_tokens = _coerce_int(budget.get("thread_input_tokens"))
+    thread_cached_input_tokens = _coerce_int(budget.get("thread_cached_input_tokens"))
+    thread_uncached_input_tokens = _coerce_int(
+        budget.get("thread_uncached_input_tokens")
+    )
+    thread_output_tokens = _coerce_int(budget.get("thread_output_tokens"))
+    thread_cache_ratio = _coerce_float(budget.get("thread_cache_ratio"))
+    thread_output_ratio = _coerce_float(budget.get("thread_output_ratio"))
+    uncached_input_pressure = bool(budget.get("uncached_input_pressure"))
+    costly_thread = bool(budget.get("costly_thread"))
     hard_cap_exceeded = bool(budget.get("hard_cap_exceeded"))
     low_yield_thread = bool(budget.get("low_yield_thread"))
     thread_heavy_enough = bool(
         thread_tokens >= BEDROCK_CONTEXT_PACK_MIN_THREAD_TOKENS
         or hard_cap_exceeded
         or low_yield_thread
+        or uncached_input_pressure
+        or costly_thread
     )
     current_heavy_enough = current_tokens >= BEDROCK_CONTEXT_PACK_MIN_THREAD_TOKENS
     visible_context_worthwhile = (
@@ -20584,6 +20757,10 @@ def bedrock_context_pack_plan(
             reason = "hard-cloud-context-cap"
         elif low_yield_thread:
             reason = "low-yield-cloud-thread"
+        elif uncached_input_pressure:
+            reason = "uncached-cloud-context-pressure"
+        elif costly_thread:
+            reason = "costly-cloud-context"
         else:
             reason = (
                 "heavy-bedrock-thread"
@@ -20604,8 +20781,19 @@ def bedrock_context_pack_plan(
         "usage": usage,
         "preview": preview,
         "thread_tokens": thread_tokens,
+        "thread_model": budget.get("thread_model"),
+        "thread_input_tokens": thread_input_tokens,
+        "thread_cached_input_tokens": thread_cached_input_tokens,
+        "thread_uncached_input_tokens": thread_uncached_input_tokens,
+        "thread_output_tokens": thread_output_tokens,
+        "thread_cache_ratio": thread_cache_ratio,
+        "thread_output_ratio": thread_output_ratio,
         "hard_cap_tokens": budget.get("hard_cap_tokens"),
         "hard_cap_exceeded": hard_cap_exceeded,
+        "uncached_input_pressure": uncached_input_pressure,
+        "estimated_thread_cost_usd": budget.get("estimated_thread_cost_usd"),
+        "estimated_thread_cost": budget.get("estimated_thread_cost"),
+        "costly_thread": costly_thread,
         "low_yield_thread": low_yield_thread,
         "latest_provider_yield_kind": budget.get("latest_provider_yield_kind"),
         "latest_provider_yield_reasons": budget.get("latest_provider_yield_reasons"),
@@ -20761,8 +20949,24 @@ def _execute_codex_prompt(
                     "model": normalized_model,
                     "profile_v2": context_pack_plan.get("profile_v2"),
                     "thread_tokens": context_pack_plan.get("thread_tokens"),
+                    "thread_input_tokens": context_pack_plan.get("thread_input_tokens"),
+                    "thread_cached_input_tokens": context_pack_plan.get(
+                        "thread_cached_input_tokens"
+                    ),
+                    "thread_uncached_input_tokens": context_pack_plan.get(
+                        "thread_uncached_input_tokens"
+                    ),
+                    "thread_cache_ratio": context_pack_plan.get("thread_cache_ratio"),
+                    "thread_output_ratio": context_pack_plan.get("thread_output_ratio"),
                     "hard_cap_tokens": context_pack_plan.get("hard_cap_tokens"),
                     "hard_cap_exceeded": context_pack_plan.get("hard_cap_exceeded"),
+                    "uncached_input_pressure": context_pack_plan.get(
+                        "uncached_input_pressure"
+                    ),
+                    "estimated_thread_cost_usd": context_pack_plan.get(
+                        "estimated_thread_cost_usd"
+                    ),
+                    "costly_thread": context_pack_plan.get("costly_thread"),
                     "low_yield_thread": context_pack_plan.get("low_yield_thread"),
                     "context_pack_reason": context_pack_plan.get("reason"),
                     "latest_provider_yield_kind": context_pack_plan.get(

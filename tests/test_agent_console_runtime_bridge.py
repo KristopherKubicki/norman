@@ -863,8 +863,8 @@ def test_kernel_primary_runtime_can_return_visible_response(monkeypatch, tmp_pat
     assert requests[0][2]["cloud_token_budget"] == 0
     assert requests[0][2]["model"] == "qwen3.5:32b-q4_K_M"
     assert requests[0][2]["route_policy"]["verifier_can_stop"] is True
-    assert requests[0][2]["route_policy"]["model_timeout_seconds"] == 175.0
-    assert requests[0][2]["metadata"]["provider_timeout_seconds"] == 175.0
+    assert requests[0][2]["route_policy"]["model_timeout_seconds"] == 595.0
+    assert requests[0][2]["metadata"]["provider_timeout_seconds"] == 595.0
     assert requests[0][2]["confirm_live_execution"] == "ENABLE LIVE RUNTIME"
 
 
@@ -1178,6 +1178,7 @@ def test_kernel_owned_turn_blocks_codex_fallback(monkeypatch, tmp_path):
     assert usage["runtime"] == "localllm"
     assert usage["route_execution"] == "console_runtime_kernel"
     assert usage["kernel_owned_turn"] is True
+    assert usage["kernel_job_id"] == "turn-kernel-primary"
     assert usage["kernel_failure_class"] == "URLError"
     assert usage["success"] is False
 
@@ -3776,6 +3777,8 @@ def test_localllm_foreground_timeout_is_budget_capped(monkeypatch, tmp_path):
     assert module.local_llm_max_output_tokens_for_budget("quick") == 384
     assert module.local_llm_max_output_tokens_for_budget("short") == 800
     assert module.console_runtime_kernel_primary_timeout(4800, "quick") == 120
+    assert module.console_runtime_kernel_primary_timeout(4800, "short") == 600
+    assert module.console_runtime_kernel_model_timeout(4800, "short") == 595
 
     response, error, _thread_id, usage = module._execute_local_llm_prompt(
         "Canary check only: reply with two bullets.",

@@ -206,6 +206,31 @@ def test_auto_turn_controls_downshift_status_from_xhigh(monkeypatch, tmp_path) -
     assert recommendation["decision_budget_max"] == 3
 
 
+def test_auto_turn_controls_do_not_downshift_tui_fork_strategy_to_status(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+
+    recommendation = module.turn_control_recommendation(
+        (
+            "status? when I want to /fork or clone a TUI for different tasks, "
+            "maybe 50 sessions grinding autonomously with subagents, how do "
+            "you propose we solve that?"
+        ),
+        [],
+        speed="careful",
+        detail=5,
+        job_budget="60m",
+        optimization_mode="auto",
+    )
+
+    assert recommendation["workload"] == "analysis"
+    assert recommendation["auto_applied"] is True
+    assert recommendation["effective_job_budget"] == "60m"
+    assert recommendation["effective_reasoning_effort"] == "medium"
+    assert "Answer now" not in recommendation["steering_chips"]
+
+
 def test_auto_turn_controls_preserve_explicit_deep(monkeypatch, tmp_path) -> None:
     module = _load_norman_codex_web(monkeypatch, tmp_path)
 
@@ -1225,7 +1250,10 @@ def test_bedrock_pack_treats_heavy_thread_as_resume_risk(monkeypatch, tmp_path) 
     assert plan["saved_tokens"] < 4_000
     assert plan["visible_context_worthwhile"] is False
     assert plan["should_pack"] is True
-    assert plan["reason"] == "heavy-bedrock-thread"
+    assert plan["thread_uncached_input_tokens"] >= 80_000
+    assert plan["thread_output_ratio"] < 0.02
+    assert plan["uncached_input_pressure"] is True
+    assert plan["reason"] == "low-yield-cloud-thread"
 
 
 def test_bedrock_pack_forces_hard_cloud_context_cap(monkeypatch, tmp_path) -> None:
@@ -1319,6 +1347,51 @@ def test_bedrock_pack_forces_low_yield_cloud_thread(monkeypatch, tmp_path) -> No
     assert plan["latest_provider_yield_kind"] == "low_yield"
     assert plan["should_pack"] is True
     assert plan["reason"] == "low-yield-cloud-thread"
+
+
+def test_bedrock_pack_forces_costly_cloud_thread_below_token_threshold(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_SERVICE_TIER="default",
+        NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_BEDROCK_CONTEXT_PACK_MIN_THREAD_TOKENS="80000",
+        NORMAN_CODEX_BEDROCK_CONTEXT_PACK_HARD_THREAD_TOKENS="200000",
+        NORMAN_CODEX_BEDROCK_CONTEXT_PACK_MIN_UNCACHED_INPUT_TOKENS="80000",
+        NORMAN_CODEX_BEDROCK_CONTEXT_PACK_MIN_ESTIMATED_COST_USD="0.25",
+    )
+    module.ensure_state_dir()
+    old_thread_id = "costly-thread-under-hard-cap"
+    old_scope = "profile-v2:traqline-bedrock:model:openai.gpt-5.5"
+    module.append_usage_entry(
+        started_at=100,
+        finished_at=170,
+        thread_id=old_thread_id,
+        speed="careful",
+        detail=5,
+        service_tier="default",
+        success=True,
+        runtime="codex",
+        model="openai.gpt-5.5",
+        usage={"input_tokens": 70_000, "output_tokens": 2_000},
+    )
+
+    plan = module.bedrock_context_pack_plan(
+        service_tier="default",
+        model="openai.gpt-5.5",
+        session_id=old_thread_id,
+        thread_scope=old_scope,
+    )
+
+    assert plan["thread_tokens"] < 80_000
+    assert plan["uncached_input_pressure"] is False
+    assert plan["estimated_thread_cost_usd"] >= 0.25
+    assert plan["costly_thread"] is True
+    assert plan["should_pack"] is True
+    assert plan["reason"] == "costly-cloud-context"
 
 
 def test_public_usage_rates_include_gpt56_bedrock_models(monkeypatch, tmp_path) -> None:
