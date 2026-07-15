@@ -1,8 +1,8 @@
 {
   "schema": "norman.codex-role-policy.v1",
   "version": "2026.07.15.role-v1",
-  "policy_id": "2026.07.15.role-v1:90014a805cc7",
-  "policy_hash": "90014a805cc73210c8e1cd42a50dc46511ba74e7d1e4c8eead311df66775b26b",
+  "policy_id": "2026.07.15.role-v1:920a24c51eaf",
+  "policy_hash": "920a24c51eaf48fabc7a07cec5b916b3b163d9391ab107c0b6b5ffbdaf6ed972",
   "issued_at": "2026-07-15T00:00:00Z",
   "default_policy": "local-first, GPT-5.4 cloud baseline, GPT-5.5 final-authority only",
   "roles": {
@@ -36,14 +36,14 @@
       "profile_v2": "personal-bedrock",
       "aws_profile_env": "NORMAN_SYNC_NON_WORK_BEDROCK_AWS_PROFILE",
       "aws_region_env": "NORMAN_SYNC_NON_WORK_BEDROCK_AWS_REGION",
-      "model": "openai.gpt-5.6-terra",
+      "model": "openai.gpt-5.4",
       "service_tier": "default",
-      "allowed_use": "personal/non-work cloud fallback after local-first routing; Terra is the balanced GPT-5.6 default",
+      "allowed_use": "personal/non-work cloud fallback after local-first routing; GPT-5.6 stays opt-in until the deployed Codex runtime supports it",
       "production_default": true
     },
     "personal_direct": {
       "provider": "openai",
-      "model": "gpt-5.6-terra",
+      "model": "gpt-5.4",
       "service_tier": "default",
       "allowed_use": "direct compatibility route when personal Bedrock is unavailable or disabled",
       "production_default": true
@@ -67,9 +67,13 @@
       "gpt-5.5"
     ],
     "personal": [
+      "openai.gpt-5.4",
+      "openai.gpt-5.5",
       "openai.gpt-5.6-luna",
       "openai.gpt-5.6-terra",
       "openai.gpt-5.6-sol",
+      "gpt-5.4",
+      "gpt-5.5",
       "gpt-5.6-luna",
       "gpt-5.6-terra",
       "gpt-5.6-sol"

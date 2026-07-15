@@ -1702,10 +1702,9 @@ def test_localllm_lane_models_keep_benchmark_guardrails(monkeypatch, tmp_path):
         "qwen3.6:27b",
         "qwen3.6:35b-a3b-q4_K_M",
     ]
-    assert module.local_llm_lane_models("canary")[:2] == [
-        "gemma3:4b",
-        "llama3.2:3b",
-    ]
+    assert module.local_llm_lane_models("canary")[:1] == ["qwen3.6:27b"]
+    assert "llama3.2:3b" not in module.local_llm_lane_models("canary")
+    assert module._local_llm_model_disabled("llama3.2:3b") is True
 
 
 def test_localllm_health_defaults_to_benchmark_route_model(monkeypatch, tmp_path):
@@ -2049,6 +2048,47 @@ def test_cost_route_keeps_typo_status_update_prompt_local(monkeypatch, tmp_path)
     assert decision["operator_intent_class"] == "status"
     assert decision["route_source"] == "local_first_policy"
     assert decision["charge_basis"] == "local_token_estimate"
+
+
+def test_deterministic_status_prompt_completes_without_model_call(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_CODEX_ROUTE_RECEIPTS_ENABLED", "1")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    def fail_execute(*_args, **_kwargs):
+        raise AssertionError("status snapshot should not call a model")
+
+    monkeypatch.setattr(module, "_execute_prompt_runtime", fail_execute)
+
+    prompt = "status? whats next?"
+    assert module.deterministic_status_prompt_allowed(prompt, [], route_lock=False)
+
+    snapshot = module.complete_deterministic_status_prompt(
+        prompt,
+        speed="fast",
+        detail=2,
+        service_tier="default",
+        job_budget="quick",
+        optimization_mode="auto",
+        actor_ip="127.0.0.1",
+    )
+
+    assert snapshot["pending"] is False
+    assert snapshot["state"] == "ok"
+    assert "deterministic TUI state" in snapshot["last_response"]
+    history = module.load_history(limit=1)
+    assert history[-1]["runtime"] == "localllm"
+    assert history[-1]["model"] == "deterministic-status"
+    assert history[-1]["usage"]["route_execution"] == "deterministic_tui_status"
+    assert history[-1]["usage"]["total_tokens"] == 0
+    receipts = [
+        json.loads(line)
+        for line in module.ROUTE_RECEIPT_PATH.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert receipts[-1]["requested_action"] == "status"
+    assert receipts[-1]["validator_passed"] is True
 
 
 def test_cost_route_uses_local_intent_classifier_for_ambiguous_status(
@@ -3157,12 +3197,12 @@ def test_context_preflight_specialists_try_fallback_candidate(monkeypatch, tmp_p
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODELS", "qwen3.6:27b")
     monkeypatch.setenv("NORMAN_LOCAL_LLM_ENDPOINTS", "http://local-llm:18151")
-    monkeypatch.setenv("NORMAN_LOCAL_PLANNER_PREFLIGHT_MODELS", "llama3.2:3b")
+    monkeypatch.setenv("NORMAN_LOCAL_PLANNER_PREFLIGHT_MODELS", "qwen3.6:27b")
     monkeypatch.setenv(
-        "NORMAN_LOCAL_LLM_FILTER_MODELS", "qwen3-coder-next:q4_K_M,llama3.2:3b"
+        "NORMAN_LOCAL_LLM_FILTER_MODELS", "qwen3-coder-next:q4_K_M,qwen3.6:27b"
     )
     monkeypatch.setenv(
-        "NORMAN_LOCAL_LLM_PLANNER_MODELS", "qwen3-coder-next:q4_K_M,llama3.2:3b"
+        "NORMAN_LOCAL_LLM_PLANNER_MODELS", "qwen3-coder-next:q4_K_M,qwen3.6:27b"
     )
     monkeypatch.setenv("NORMAN_LOCAL_LLM_ROUTE_COOLDOWN_SECONDS", "0")
     monkeypatch.setenv("NORMAN_LOCAL_SPECIALIST_PIPELINE_MAX_EXECUTIONS", "2")
@@ -3225,17 +3265,17 @@ def test_context_preflight_specialists_try_fallback_candidate(monkeypatch, tmp_p
     receipt = accounting["local_specialist_receipt"]
     assert calls == [
         "qwen3-coder-next:q4_K_M",
-        "llama3.2:3b",
+        "qwen3.6:27b",
         "qwen3-coder-next:q4_K_M",
-        "llama3.2:3b",
+        "qwen3.6:27b",
         "qwen3-coder-next:q4_K_M",
-        "llama3.2:3b",
+        "qwen3.6:27b",
     ]
     assert accounting["local_specialist_status"] == "ok"
     assert accounting["local_specialist_executed_count"] == 2
     assert [stage["model"] for stage in receipt["stages"] if stage.get("executed")] == [
-        "llama3.2:3b",
-        "llama3.2:3b",
+        "qwen3.6:27b",
+        "qwen3.6:27b",
     ]
     outcomes = module.load_local_llm_route_outcomes(limit=10)
     assert [

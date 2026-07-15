@@ -706,6 +706,7 @@ def test_origin_sync_exports_discovered_local_llm_inventory(
     assert module.sync_instance_origin_settings(_host(module), panelbot) is True
 
     script = captured["script"]
+    assert '"NORMAN_LOCAL_LLM_DISABLED_MODELS":"llama3.2,llama3.2:*"' in script
     assert '"NORMAN_LOCAL_LLM_MODEL":"gpt-oss:120b"' in script
     assert '"NORMAN_LOCAL_LLM_MODELS":"' in script
     assert (
@@ -744,8 +745,11 @@ def test_work_runtime_default_model_reset_migrates_old_default(
 
     script = captured["script"]
     assert "runtime_settings.json" in script
-    assert "openai.gpt-5.5" in script
-    assert "openai.gpt-5.4" in script
+    assert "desired_model = 'openai.gpt-5.4'" in script
+    assert (
+        "switchable_models = ['openai.gpt-5.4', 'openai.gpt-5.5', 'gpt-5.4', 'gpt-5.5']"
+        in script
+    )
     assert 'payload["service_tier"] = "default"' in script
 
 
@@ -1013,22 +1017,23 @@ def test_work_bedrock_defaults_can_be_disabled_and_cleaned(monkeypatch) -> None:
     assert "NORMAN_CODEX_BEDROCK_FAILOVER_AWS_REGION" in script
     assert "NORMAN_CODEX_DIRECT_TIERS_ENABLED" in script
     assert "traqline-bedrock" not in script
-    assert '"NORMAN_CODEX_MODEL":"gpt-5.6-terra"' in script
-    assert '"NORMAN_CODEX_MODEL_FLOOR":"gpt-5.6-terra"' in script
-    assert '"NORMAN_CODEX_DIRECT_MODEL":"gpt-5.6-terra"' in script
-    assert '"NORMAN_CODEX_FLEX_MODEL":"gpt-5.6-terra"' in script
-    assert '"NORMAN_CODEX_PRIORITY_MODEL":"gpt-5.6-terra"' in script
+    assert '"NORMAN_CODEX_MODEL":"gpt-5.4"' in script
+    assert '"NORMAN_CODEX_MODEL_FLOOR":"gpt-5.4"' in script
+    assert '"NORMAN_CODEX_DIRECT_MODEL":"gpt-5.4"' in script
+    assert '"NORMAN_CODEX_FLEX_MODEL":"gpt-5.4"' in script
+    assert '"NORMAN_CODEX_PRIORITY_MODEL":"gpt-5.4"' in script
     assert (
         '"NORMAN_CODEX_SWITCHABLE_MODELS":"'
+        "openai.gpt-5.4,openai.gpt-5.5,"
         "openai.gpt-5.6-luna,openai.gpt-5.6-terra,openai.gpt-5.6-sol,"
-        'gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol"'
+        'gpt-5.4,gpt-5.5,gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol"'
     ) in script
     assert (
         '"NORMAN_CODEX_AVAILABLE_MODELS":"'
+        "openai.gpt-5.4,openai.gpt-5.5,"
         "openai.gpt-5.6-luna,openai.gpt-5.6-terra,openai.gpt-5.6-sol,"
-        'gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol"'
+        'gpt-5.4,gpt-5.5,gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol"'
     ) in script
-    assert "openai.gpt-5.5" not in script
     assert "ob-traqline-admin" not in script
 
 
@@ -1154,8 +1159,8 @@ def test_work_named_tui_on_norman_stays_personal_without_test_override(
     assert '"NORMAN_CODEX_BILLING_SCOPE":"norman"' in script
     assert '"NORMAN_CODEX_BILLING_OWNER":"kristopher"' in script
     assert '"NORMAN_CODEX_SERVICE_TIER":"flex"' in script
-    assert '"NORMAN_CODEX_MODEL":"gpt-5.6-terra"' in script
-    assert '"NORMAN_CODEX_DIRECT_MODEL":"gpt-5.6-terra"' in script
+    assert '"NORMAN_CODEX_MODEL":"gpt-5.4"' in script
+    assert '"NORMAN_CODEX_DIRECT_MODEL":"gpt-5.4"' in script
     assert "NORMAN_CODEX_STANDARD_PROFILE_V2" in script
     assert "traqline-bedrock" not in script
     assert "ob-traqline-admin" not in script
@@ -1217,8 +1222,8 @@ def test_personal_tui_does_not_receive_work_bedrock_defaults(monkeypatch) -> Non
     script = captured["script"]
     assert '"NORMAN_CODEX_SERVICE_TIER":"flex"' in script
     assert "remove_keys" in script
-    assert '"NORMAN_CODEX_MODEL":"gpt-5.6-terra"' in script
-    assert '"NORMAN_CODEX_DIRECT_MODEL":"gpt-5.6-terra"' in script
+    assert '"NORMAN_CODEX_MODEL":"gpt-5.4"' in script
+    assert '"NORMAN_CODEX_DIRECT_MODEL":"gpt-5.4"' in script
     assert "NORMAN_CODEX_STANDARD_PROFILE_V2" in script
     assert "traqline-bedrock" not in script
     assert "NORMAN_CODEX_DIRECT_TIERS_ENABLED" in script
@@ -1254,22 +1259,23 @@ def test_non_work_bedrock_defaults_can_be_disabled_and_cleaned(
     assert "NORMAN_CODEX_STANDARD_PROFILE_V2" in script
     assert "NORMAN_CODEX_STANDARD_PROFILE_V2" in script
     assert "traqline-bedrock" not in script
-    assert '"NORMAN_CODEX_MODEL":"gpt-5.6-terra"' in script
-    assert '"NORMAN_CODEX_MODEL_FLOOR":"gpt-5.6-terra"' in script
-    assert '"NORMAN_CODEX_DIRECT_MODEL":"gpt-5.6-terra"' in script
-    assert '"NORMAN_CODEX_FLEX_MODEL":"gpt-5.6-terra"' in script
-    assert '"NORMAN_CODEX_PRIORITY_MODEL":"gpt-5.6-terra"' in script
+    assert '"NORMAN_CODEX_MODEL":"gpt-5.4"' in script
+    assert '"NORMAN_CODEX_MODEL_FLOOR":"gpt-5.4"' in script
+    assert '"NORMAN_CODEX_DIRECT_MODEL":"gpt-5.4"' in script
+    assert '"NORMAN_CODEX_FLEX_MODEL":"gpt-5.4"' in script
+    assert '"NORMAN_CODEX_PRIORITY_MODEL":"gpt-5.4"' in script
     assert (
         '"NORMAN_CODEX_SWITCHABLE_MODELS":"'
+        "openai.gpt-5.4,openai.gpt-5.5,"
         "openai.gpt-5.6-luna,openai.gpt-5.6-terra,openai.gpt-5.6-sol,"
-        'gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol"'
+        'gpt-5.4,gpt-5.5,gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol"'
     ) in script
     assert (
         '"NORMAN_CODEX_AVAILABLE_MODELS":"'
+        "openai.gpt-5.4,openai.gpt-5.5,"
         "openai.gpt-5.6-luna,openai.gpt-5.6-terra,openai.gpt-5.6-sol,"
-        'gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol"'
+        'gpt-5.4,gpt-5.5,gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol"'
     ) in script
-    assert "openai.gpt-5.5" not in script
 
 
 def test_non_work_bedrock_profile_sync_requires_explicit_source(
@@ -1443,24 +1449,25 @@ def test_netops_defaults_to_direct_5_4_and_removes_bedrock(
 
     script = captured["script"]
     assert '"NORMAN_CODEX_SERVICE_TIER":"flex"' in script
-    assert '"NORMAN_CODEX_MODEL":"gpt-5.6-terra"' in script
-    assert '"NORMAN_CODEX_MODEL_FLOOR":"gpt-5.6-terra"' in script
-    assert '"NORMAN_CODEX_DIRECT_MODEL":"gpt-5.6-terra"' in script
-    assert '"NORMAN_CODEX_FLEX_MODEL":"gpt-5.6-terra"' in script
-    assert '"NORMAN_CODEX_PRIORITY_MODEL":"gpt-5.6-terra"' in script
+    assert '"NORMAN_CODEX_MODEL":"gpt-5.4"' in script
+    assert '"NORMAN_CODEX_MODEL_FLOOR":"gpt-5.4"' in script
+    assert '"NORMAN_CODEX_DIRECT_MODEL":"gpt-5.4"' in script
+    assert '"NORMAN_CODEX_FLEX_MODEL":"gpt-5.4"' in script
+    assert '"NORMAN_CODEX_PRIORITY_MODEL":"gpt-5.4"' in script
     assert (
         '"NORMAN_CODEX_SWITCHABLE_MODELS":"'
+        "openai.gpt-5.4,openai.gpt-5.5,"
         "openai.gpt-5.6-luna,openai.gpt-5.6-terra,openai.gpt-5.6-sol,"
-        'gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol"'
+        'gpt-5.4,gpt-5.5,gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol"'
     ) in script
     assert (
         '"NORMAN_CODEX_AVAILABLE_MODELS":"'
+        "openai.gpt-5.4,openai.gpt-5.5,"
         "openai.gpt-5.6-luna,openai.gpt-5.6-terra,openai.gpt-5.6-sol,"
-        'gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol"'
+        'gpt-5.4,gpt-5.5,gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol"'
     ) in script
     assert "NORMAN_CODEX_STANDARD_PROFILE_V2" in script
     assert "traqline-bedrock" not in script
-    assert "openai.gpt-5.5" not in script
 
 
 def test_console_files_include_soul_support_scripts(monkeypatch) -> None:

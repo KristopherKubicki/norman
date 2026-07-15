@@ -506,6 +506,10 @@ NON_TEXT_LOCAL_LLM_MODEL_NEEDLES = (
     "-vl",
     ":vl",
 )
+DEFAULT_LOCAL_LLM_DISABLED_MODEL_PATTERNS = (
+    "llama3.2",
+    "llama3.2:*",
+)
 
 
 def _early_env_flag(name: str, default: bool = False) -> bool:
@@ -658,6 +662,14 @@ LOCAL_SPECIALIST_PIPELINE_RUN_COLD = _early_env_flag(
 LOCAL_LLM_ALLOW_TINY_FOREGROUND_FALLBACK = _early_env_flag(
     "NORMAN_LOCAL_LLM_ALLOW_TINY_FOREGROUND_FALLBACK", False
 )
+LOCAL_LLM_DISABLED_MODEL_PATTERNS = tuple(
+    item.strip().lower()
+    for item in os.environ.get(
+        "NORMAN_LOCAL_LLM_DISABLED_MODELS",
+        ",".join(DEFAULT_LOCAL_LLM_DISABLED_MODEL_PATTERNS),
+    ).split(",")
+    if item.strip()
+)
 
 
 def _qwen_version(model: str) -> tuple[int, int] | None:
@@ -694,18 +706,44 @@ def _local_llm_model_too_small(model: str) -> bool:
     return max(sizes) < LOCAL_LLM_MIN_TEXT_B
 
 
+def _local_llm_model_disabled(model: str) -> bool:
+    name = str(model or "").strip().lower()
+    if not name:
+        return False
+    short = name.rsplit("/", 1)[-1]
+    for raw_pattern in LOCAL_LLM_DISABLED_MODEL_PATTERNS:
+        pattern = str(raw_pattern or "").strip().lower()
+        if not pattern:
+            continue
+        if pattern.endswith("*"):
+            prefix = pattern[:-1]
+            if name.startswith(prefix) or short.startswith(prefix):
+                return True
+            continue
+        if name == pattern or short == pattern:
+            return True
+        if ":" not in pattern and (
+            name.startswith(f"{pattern}:") or short.startswith(f"{pattern}:")
+        ):
+            return True
+    return False
+
+
 def _local_llm_model_allowed(model: str) -> bool:
     return (
-        not _qwen_below_floor(model, LOCAL_LLM_QWEN_MINIMUM_VERSION)
+        not _local_llm_model_disabled(model)
+        and not _qwen_below_floor(model, LOCAL_LLM_QWEN_MINIMUM_VERSION)
         and not _local_llm_model_non_text(model)
         and not _local_llm_model_too_small(model)
     )
 
 
 def _local_llm_canary_model_allowed(model: str) -> bool:
-    return not _qwen_below_floor(
-        model, LOCAL_LLM_QWEN_MINIMUM_VERSION
-    ) and not _local_llm_model_non_text(model)
+    return (
+        not _local_llm_model_disabled(model)
+        and not _qwen_below_floor(model, LOCAL_LLM_QWEN_MINIMUM_VERSION)
+        and not _local_llm_model_non_text(model)
+    )
 
 
 def _local_llm_model_allowed_for_lane(lane: str, model: str) -> bool:
@@ -748,12 +786,7 @@ DEFAULT_LOCAL_LLM_BENCHMARK_MODELS = (
     "qwen3.6:35b-a3b-q4_K_M",
     "qwen3.5:122b-a10b-q4_K_M",
 )
-DEFAULT_LOCAL_LLM_CANARY_MODELS = (
-    "gemma3:4b",
-    "gemma3:1b",
-    "llama3.2:3b",
-    "llama3.2:1b",
-)
+DEFAULT_LOCAL_LLM_CANARY_MODELS: tuple[str, ...] = ()
 DEFAULT_LOCAL_LLM_FALLBACK_MODELS: tuple[str, ...] = ()
 DEFAULT_LOCAL_LLM_LANE_MODELS = {
     "planner": (
@@ -781,12 +814,7 @@ DEFAULT_LOCAL_LLM_LANE_MODELS = {
         "qwen3.6:35b-a3b-q4_K_M",
         "qwen3.6:27b",
     ),
-    "canary": (
-        "gemma3:4b",
-        "llama3.2:3b",
-        "gemma3:1b",
-        "llama3.2:1b",
-    ),
+    "canary": ("qwen3.6:27b",),
 }
 LOCAL_LLM_ROUTE_GUARDRAIL_LANES = (
     "planner",
@@ -24769,6 +24797,219 @@ def working_response_text(prompt: str) -> str:
     return f"Working on: {summarize_text(prompt, 180)}. New messages will be queued."
 
 
+def deterministic_status_prompt_allowed(
+    prompt: str, attachments: list[dict[str, Any]], *, route_lock: bool = False
+) -> bool:
+    if route_lock or normalize_attachments(attachments):
+        return False
+    core = prompt_core_request(prompt)
+    if not core:
+        return False
+    if turn_control_mutation_risk(core) != "none":
+        return False
+    if prompt_is_broad_planning_request(core):
+        return False
+    return route_receipt_requested_action(core) == "status"
+
+
+def deterministic_status_response(prompt: str) -> str:
+    snapshot = current_snapshot()
+    state = str(snapshot.get("state") or "unknown").strip() or "unknown"
+    pending = "yes" if snapshot.get("pending") else "no"
+    status_message = summarize_text(snapshot.get("status_message"), 180) or "n/a"
+    selected_runtime = str(snapshot.get("selected_runtime") or "").strip() or "unknown"
+    selected_model = str(snapshot.get("selected_model") or "").strip() or "unknown"
+    last_runtime = str(snapshot.get("last_runtime") or "").strip() or "unknown"
+    last_model = str(snapshot.get("last_model") or "").strip() or "unknown"
+    last_error = summarize_text(snapshot.get("last_error"), 220)
+    last_response = summarize_text(snapshot.get("last_response"), 220)
+    response_note = last_error or last_response or "no visible response recorded"
+    route_receipts = snapshot.get("route_receipts")
+    if isinstance(route_receipts, dict):
+        receipt_status = str(route_receipts.get("status") or "unknown").strip()
+        receipt_count = _coerce_int(route_receipts.get("receipt_count"))
+        receipt_note = f"{receipt_status}, {receipt_count} receipts"
+    else:
+        receipt_note = "not reported"
+    local_route = snapshot.get("local_llm_health")
+    if isinstance(local_route, dict):
+        local_note = summarize_text(
+            local_route.get("reason")
+            or local_route.get("status")
+            or local_route.get("model")
+            or "",
+            180,
+        )
+    else:
+        local_note = ""
+    if not local_note:
+        local_note = "local route telemetry not loaded in this snapshot"
+    requested = summarize_text(prompt, 120)
+    return "\n".join(
+        [
+            f"- State: {state}; pending: {pending}; status: {status_message}.",
+            f"- Selected route: {selected_runtime}/{selected_model}; last turn: {last_runtime}/{last_model}.",
+            f"- Last visible result: {response_note}.",
+            f"- Local proof: {local_note}; route receipts: {receipt_note}.",
+            f"- Next: continue from `{requested}` with a scoped prompt if more work is needed; this status used deterministic TUI state, not a cloud/model call.",
+        ]
+    )
+
+
+def complete_deterministic_status_prompt(
+    prompt: str,
+    *,
+    speed: str,
+    detail: int,
+    service_tier: str,
+    job_budget: str,
+    optimization_mode: str,
+    actor_ip: str = "",
+) -> dict[str, Any]:
+    started_at = now_ts()
+    finished_at = started_at
+    thread_id = read_text(THREAD_ID_PATH)
+    normalized_speed = normalize_response_speed(speed)
+    normalized_detail = normalize_response_detail(detail)
+    normalized_service_tier = normalize_service_tier(service_tier)
+    normalized_budget = normalize_job_budget(job_budget)
+    normalized_optimization_mode = normalize_optimization_mode(optimization_mode)
+    runtime = "localllm"
+    model = "deterministic-status"
+    response = deterministic_status_response(prompt)
+    usage = normalize_usage_entry(
+        {
+            **local_llm_provider_tags(),
+            "runtime": runtime,
+            "model": model,
+            "service_tier": normalized_service_tier,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "thread_id": thread_id,
+            "speed": normalized_speed,
+            "detail": normalized_detail,
+            "success": True,
+            "route_class": "local",
+            "route_execution": "deterministic_tui_status",
+            "route_verifier": "deterministic_tui_status",
+            "output_shape": "complete",
+            "input_tokens": 0,
+            "cached_input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+        }
+    )
+    write_text(LAST_PROMPT_PATH, prompt)
+    write_last_response(
+        response,
+        prompt=prompt,
+        source="deterministic_status",
+        updated_at=finished_at,
+    )
+    write_text(LAST_ERROR_PATH, "")
+    append_history_entry(
+        prompt=prompt,
+        response=response,
+        error_text="",
+        started_at=started_at,
+        finished_at=finished_at,
+        thread_id=thread_id,
+        speed=normalized_speed,
+        detail=normalized_detail,
+        service_tier=normalized_service_tier,
+        job_budget=normalized_budget,
+        optimization_mode=normalized_optimization_mode,
+        timeout_seconds=job_budget_timeout_seconds(normalized_budget),
+        runtime=runtime,
+        model=model,
+        attachments=[],
+        usage=usage,
+    )
+    append_usage_entry(
+        started_at=started_at,
+        finished_at=finished_at,
+        thread_id=thread_id,
+        speed=normalized_speed,
+        detail=normalized_detail,
+        service_tier=normalized_service_tier,
+        success=True,
+        runtime=runtime,
+        model=model,
+        usage=usage,
+    )
+    append_route_receipt(
+        prompt=prompt,
+        visible_response=response,
+        error_text="",
+        started_at=started_at,
+        finished_at=finished_at,
+        thread_id=thread_id,
+        speed=normalized_speed,
+        detail=normalized_detail,
+        service_tier=normalized_service_tier,
+        job_budget=normalized_budget,
+        optimization_mode=normalized_optimization_mode,
+        success=True,
+        runtime=runtime,
+        model=model,
+        usage=usage,
+        outcome="done",
+        requested_model=model,
+        requested_service_tier=normalized_service_tier,
+    )
+    update_status_meta(
+        pending=False,
+        state="ok",
+        status_message="Deterministic TUI status completed.",
+        running_prompt="",
+        running_attachments=[],
+        running_runtime=runtime,
+        running_model=model,
+        running_speed=normalized_speed,
+        running_detail=normalized_detail,
+        running_service_tier=normalized_service_tier,
+        running_job_budget=normalized_budget,
+        running_optimization_mode=normalized_optimization_mode,
+        running_timeout_seconds=job_budget_timeout_seconds(DEFAULT_JOB_BUDGET),
+        active_child_pid=0,
+        active_child_pgid=0,
+        active_child_started_at=0,
+        cancel_requested_at=0,
+        last_speed=normalized_speed,
+        last_detail=normalized_detail,
+        last_service_tier=normalized_service_tier,
+        last_job_budget=normalized_budget,
+        last_optimization_mode=normalized_optimization_mode,
+        last_runtime=runtime,
+        last_model=model,
+        last_timeout_seconds=job_budget_timeout_seconds(normalized_budget),
+        last_started_at=started_at,
+        last_finished_at=finished_at,
+        last_action="deterministic-status",
+        last_action_at=finished_at,
+        last_action_detail="Answered from TUI state without a model call.",
+        running_console_runtime_job_id="",
+        running_cost_route={},
+    )
+    append_audit_event(
+        event_type="chat.deterministic-status",
+        summary="Answered a status prompt from TUI state.",
+        detail=summarize_text(response, 300),
+        severity="info",
+        actor_type="operator",
+        actor_ip=actor_ip,
+        thread_id=thread_id,
+        payload={
+            "prompt_preview": summarize_text(prompt, 240),
+            "runtime": runtime,
+            "model": model,
+            "usage": usage,
+        },
+        event_at=finished_at,
+    )
+    return current_snapshot()
+
+
 def set_active_codex_process(proc: subprocess.Popen[str] | None) -> None:
     global ACTIVE_CODEX_PROC
     with ACTIVE_CODEX_LOCK:
@@ -38586,6 +38827,42 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if not message:
                 message = build_attachment_lead_message(attachments)
+            if deterministic_status_prompt_allowed(
+                message, attachments, route_lock=route_lock
+            ):
+                snapshot = complete_deterministic_status_prompt(
+                    message,
+                    speed=speed,
+                    detail=detail,
+                    service_tier=service_tier,
+                    job_budget=job_budget,
+                    optimization_mode=optimization_mode,
+                    actor_ip=actor_ip,
+                )
+                if api_path:
+                    self.json_response(
+                        {
+                            "accepted": True,
+                            "queued": False,
+                            "running": False,
+                            "deduplicated": False,
+                            "console_runtime_job_id": "",
+                            "receipt_visibility": "not_applicable",
+                            "receipt_url": "",
+                            "receipt_visibility_detail": {
+                                "state": "not_applicable",
+                                "reason": "deterministic_status",
+                            },
+                            "request_nonce": route_receipt_prompt_id(message),
+                            "session": SESSION,
+                            "error": "",
+                            "snapshot": snapshot,
+                        },
+                        status=HTTPStatus.OK,
+                    )
+                else:
+                    self.redirect_root(params)
+                return
             service_tier_recovery = direct_service_tier_usage_limit_recovery(
                 service_tier,
                 route_lock=route_lock,

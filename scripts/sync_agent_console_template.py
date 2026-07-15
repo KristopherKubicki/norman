@@ -287,6 +287,7 @@ RUNTIME_BRIDGE_ROUTE_OUTCOME_LIMIT = "200"
 RUNTIME_BRIDGE_RECENT_ITEMS = "12"
 RUNTIME_BRIDGE_LOCAL_FIRST_PROOF_LIMIT = "250"
 RUNTIME_BRIDGE_LOCAL_FIRST_SESSION_LIMIT = "20"
+LOCAL_LLM_DISABLED_MODEL_PATTERNS = "llama3.2,llama3.2:*"
 WORK_BEDROCK_DEFAULT_INSTANCES: tuple[str, ...] = (
     "compere",
     "control-plane",
@@ -1321,9 +1322,13 @@ def _work_bedrock_failover_profiles() -> list[dict[str, str]]:
 
 
 def _local_llm_env_updates() -> dict[str, str]:
+    disabled_update = {
+        "NORMAN_LOCAL_LLM_DISABLED_MODELS": LOCAL_LLM_DISABLED_MODEL_PATTERNS
+    }
     if not LOCAL_LLM_MODELS and not LOCAL_LLM_ENDPOINTS:
-        return {}
+        return disabled_update
     return {
+        **disabled_update,
         "NORMAN_LOCAL_LLM_MODEL": LOCAL_LLM_DEFAULT_MODEL,
         "NORMAN_LOCAL_LLM_MODELS": ",".join(LOCAL_LLM_MODELS),
         "NORMAN_LOCAL_LLM_ENDPOINTS": ",".join(LOCAL_LLM_ENDPOINTS),
@@ -1607,31 +1612,73 @@ PY
 def sync_instance_runtime_settings(
     host: DiscoveryHost, instance: ConsoleInstance
 ) -> bool:
+    if instance_uses_work_config(host, instance):
+        desired_model = WORK_DIRECT_MODEL
+        switchable_models = [
+            item.strip() for item in WORK_SWITCHABLE_MODELS.split(",") if item.strip()
+        ]
+    else:
+        desired_model = PERSONAL_DIRECT_MODEL
+        switchable_models = [
+            item.strip()
+            for item in PERSONAL_SWITCHABLE_MODELS.split(",")
+            if item.strip()
+        ]
     script = f"""
 python3 - <<'PY'
 from pathlib import Path
 import json
 
-runtime_path = Path({instance.codex_home!r}) / "runtime_settings.json"
+legacy_runtime_path = Path({instance.codex_home!r}) / "runtime_settings.json"
+runtime_path = Path({instance.codex_home!r}) / "web-bridge" / "runtime_settings.json"
+desired_model = {desired_model!r}
+switchable_models = {switchable_models!r}
+stale_default_models = {{
+    "",
+    "gpt-5.5",
+    "openai.gpt-5.5",
+    "gpt-5.6-terra",
+    "openai.gpt-5.6-terra",
+}}
 payload = {{}}
 if runtime_path.exists():
     try:
         payload = json.loads(runtime_path.read_text(encoding="utf-8") or "{{}}")
     except json.JSONDecodeError:
         payload = {{}}
-if payload.get("model") == "openai.gpt-5.5":
-    payload["model"] = "openai.gpt-5.4"
+payload["model"] = desired_model
 payload["service_tier"] = "default"
-payload["model_floor"] = "openai.gpt-5.4"
-payload["switchable_models"] = ["openai.gpt-5.4", "openai.gpt-5.5"]
+payload["model_floor"] = desired_model
+payload["switchable_models"] = switchable_models
 runtime_path.parent.mkdir(parents=True, exist_ok=True)
 rendered = json.dumps(payload, sort_keys=True, indent=2) + "\\n"
 old = runtime_path.read_text(encoding="utf-8") if runtime_path.exists() else ""
 if old != rendered:
     runtime_path.write_text(rendered, encoding="utf-8")
-    print("changed")
+    changed = True
 else:
-    print("unchanged")
+    changed = False
+legacy_runtime_path.parent.mkdir(parents=True, exist_ok=True)
+old_legacy = (
+    legacy_runtime_path.read_text(encoding="utf-8")
+    if legacy_runtime_path.exists()
+    else ""
+)
+if old_legacy != rendered:
+    legacy_runtime_path.write_text(rendered, encoding="utf-8")
+    changed = True
+status_path = Path({instance.codex_home!r}) / "web-bridge" / "status.json"
+if status_path.exists():
+    try:
+        status = json.loads(status_path.read_text(encoding="utf-8") or "{{}}")
+    except json.JSONDecodeError:
+        status = {{}}
+    if isinstance(status, dict) and str(status.get("selected_model") or "").strip() in stale_default_models:
+        status["selected_model"] = desired_model
+        status["selected_runtime"] = status.get("selected_runtime") or "codex"
+        status_path.write_text(json.dumps(status, sort_keys=True) + "\\n", encoding="utf-8")
+        changed = True
+print("changed" if changed else "unchanged")
 PY
 """
     return capture(ssh_command(host, script)).strip() == "changed"
@@ -2923,6 +2970,9 @@ def main() -> int:
             if sync_instance_origin_settings(host, instance):
                 changed_instances[instance.name] = instance
                 print(f"  - origin -> {instance.env_file}", flush=True)
+            if sync_instance_runtime_settings(host, instance):
+                changed_instances[instance.name] = instance
+                print(f"  - runtime settings -> {instance.codex_home}", flush=True)
             if sync_instance_bedrock_profile(host, instance):
                 changed_instances[instance.name] = instance
                 print(f"  - bedrock profile -> {instance.codex_home}", flush=True)
