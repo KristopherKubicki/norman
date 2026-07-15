@@ -155,6 +155,115 @@ def test_gateway_disables_qwen_thinking_for_generate_payloads():
     assert explicit_payload["think"] is True
 
 
+def test_gateway_load_pressure_guard_evicts_heavy_judge_for_interactive_peer():
+    module = load_gateway_module()
+    app = module.App()
+    handler = object.__new__(module.Handler)
+    handler.server = type("Server", (), {"app": app})()
+    handler.headers = {}
+    handler._peer_hop = 0
+    handler._activity_extra = {}
+    calls = []
+
+    def fake_request_upstream(
+        base,
+        upstream_path,
+        *,
+        headers=None,
+        body=None,
+        method=None,
+        timeout_s=None,
+    ):
+        calls.append(
+            {
+                "base": base,
+                "path": upstream_path,
+                "headers": dict(headers or {}),
+                "body": body,
+                "method": method,
+                "timeout_s": timeout_s,
+            }
+        )
+        if upstream_path.startswith("/api/ps"):
+            return (
+                200,
+                {"Content-Type": "application/json"},
+                json.dumps({"models": [{"model": module.QWEN35_JUDGE_MODEL}]}).encode(
+                    "utf-8"
+                ),
+            )
+        return 200, {"Content-Type": "application/json"}, b'{"ok": true}'
+
+    handler.request_upstream = fake_request_upstream
+
+    handler.maybe_evict_heavy_judge_for_interactive_load(
+        "http://192.168.2.151:18151",
+        requested_model=module.QWEN36_ROUTER_MODEL,
+        is_peer=True,
+    )
+
+    assert [call["path"] for call in calls] == ["/api/ps?scope=local", "/v1/evict"]
+    evict_payload = json.loads(calls[1]["body"].decode("utf-8"))
+    assert evict_payload["model"] == module.QWEN35_JUDGE_MODEL
+    assert evict_payload["reason"] == "interactive_qwen36_load_pressure"
+    assert calls[1]["headers"]["X-Norllama-Peer-Hop"] == "1"
+    assert handler._activity_extra["load_pressure_guard"] == "evicted_heavy_judge"
+    assert handler._activity_extra["load_pressure_requested_model"] == (
+        module.QWEN36_ROUTER_MODEL
+    )
+
+
+def test_gateway_load_pressure_guard_skips_when_requested_model_is_resident():
+    module = load_gateway_module()
+
+    resident = {module.QWEN35_JUDGE_MODEL, module.QWEN36_ROUTER_MODEL}
+
+    assert (
+        module.should_evict_heavy_judge_for_interactive_load(
+            module.QWEN36_ROUTER_MODEL,
+            resident,
+        )
+        is False
+    )
+    assert (
+        module.should_evict_heavy_judge_for_interactive_load(
+            module.QWEN36_CODE_MODEL,
+            {module.QWEN35_JUDGE_MODEL},
+        )
+        is True
+    )
+    assert (
+        module.should_evict_heavy_judge_for_interactive_load(
+            module.QWEN35_JUDGE_MODEL,
+            {module.QWEN35_JUDGE_MODEL},
+        )
+        is False
+    )
+
+
+def test_gateway_load_pressure_guard_does_not_probe_noninteractive_models():
+    module = load_gateway_module()
+    app = module.App()
+    handler = object.__new__(module.Handler)
+    handler.server = type("Server", (), {"app": app})()
+    handler.headers = {}
+    handler._peer_hop = 0
+    handler._activity_extra = {}
+
+    def fail_request_upstream(*_args, **_kwargs):
+        raise AssertionError("noninteractive traffic should not probe residency")
+
+    handler.request_upstream = fail_request_upstream
+
+    handler.maybe_evict_heavy_judge_for_interactive_load(
+        "http://192.168.2.151:18151",
+        requested_model=module.QWEN35_JUDGE_MODEL,
+        is_peer=True,
+    )
+
+    assert handler._activity_extra == {}
+
+
 def test_gateway_evict_target_bases_are_limited_to_known_workers():
     module = load_gateway_module()
 

@@ -1271,6 +1271,28 @@ def target_bases_from_payload(
     return accepted, rejected
 
 
+def resident_model_ids_from_ps(ps_doc: dict[str, object] | None) -> set[str]:
+    rows = []
+    if isinstance(ps_doc, dict):
+        rows = list(ps_doc.get("models") or [])
+    return {
+        str(item.get("model") or item.get("name") or "").strip()
+        for item in rows
+        if isinstance(item, dict)
+        and str(item.get("model") or item.get("name") or "").strip()
+    }
+
+
+def should_evict_heavy_judge_for_interactive_load(
+    requested_model: str,
+    resident_models: set[str],
+) -> bool:
+    clean_model = str(requested_model or "").strip()
+    if clean_model not in {QWEN36_ROUTER_MODEL, QWEN36_CODE_MODEL}:
+        return False
+    return QWEN35_JUDGE_MODEL in resident_models and clean_model not in resident_models
+
+
 def ollama_chat_payload_to_openai(
     payload: dict[str, object], *, model: str
 ) -> dict[str, object]:
@@ -5294,6 +5316,7 @@ class Handler(BaseHTTPRequestHandler):
         body: bytes | None = None,
         method: str | None = None,
         peer_bases: set[str] | None = None,
+        model_hint: str | None = None,
     ) -> None:
         attempted: list[str] = []
         last: tuple[int, dict[str, str], bytes] | None = None
@@ -5302,8 +5325,14 @@ class Handler(BaseHTTPRequestHandler):
             attempted.append(base)
             try:
                 request_headers = dict(headers or {})
-                if peer_bases and normalize_base_url(base) in peer_bases:
+                is_peer = bool(peer_bases and normalize_base_url(base) in peer_bases)
+                if is_peer:
                     request_headers = self.peer_forward_headers(request_headers)
+                self.maybe_evict_heavy_judge_for_interactive_load(
+                    base,
+                    requested_model=model_hint or "",
+                    is_peer=is_peer,
+                )
                 result = self.request_upstream(
                     base,
                     upstream_path,
@@ -5352,6 +5381,94 @@ class Handler(BaseHTTPRequestHandler):
                 "X-Norllama-Upstream": last_base,
                 "X-Norllama-Attempts": ",".join(attempted),
             },
+        )
+
+    def resident_models_for_base(self, base: str, *, is_peer: bool) -> set[str]:
+        path = "/api/ps?scope=local" if is_peer else "/api/ps"
+        headers = self.peer_forward_headers({}) if is_peer else {}
+        status, response_headers, response_body = self.request_upstream(
+            base,
+            path,
+            headers=headers or None,
+            method="GET",
+            timeout_s=min(self.app.timeout_s, self.app.inventory_timeout_s),
+        )
+        content_type = response_headers.get("Content-Type", "application/json")
+        if not (200 <= int(status) < 300) or "json" not in content_type.lower():
+            return set()
+        try:
+            ps_doc = json.loads(response_body.decode("utf-8"))
+        except Exception:
+            return set()
+        if not isinstance(ps_doc, dict):
+            return set()
+        return resident_model_ids_from_ps(ps_doc)
+
+    def maybe_evict_heavy_judge_for_interactive_load(
+        self,
+        base: str,
+        *,
+        requested_model: str,
+        is_peer: bool,
+    ) -> None:
+        clean_model = str(requested_model or "").strip()
+        if clean_model not in {QWEN36_ROUTER_MODEL, QWEN36_CODE_MODEL}:
+            return
+        try:
+            resident_models = self.resident_models_for_base(base, is_peer=is_peer)
+        except Exception as exc:
+            self.merge_activity_extra(
+                {
+                    "load_pressure_guard": "ps_probe_failed",
+                    "load_pressure_guard_error": str(exc)[:200],
+                    "load_pressure_requested_model": clean_model,
+                }
+            )
+            return
+        if not should_evict_heavy_judge_for_interactive_load(
+            clean_model, resident_models
+        ):
+            return
+        evict_body = json.dumps(
+            {
+                "model": QWEN35_JUDGE_MODEL,
+                "timeout_s": 30,
+                "reason": "interactive_qwen36_load_pressure",
+            }
+        ).encode("utf-8")
+        evict_path = "/v1/evict" if is_peer else "/api/generate"
+        evict_headers = {"Content-Type": "application/json"}
+        if is_peer:
+            evict_headers = self.peer_forward_headers(evict_headers)
+        if not is_peer:
+            evict_body = json.dumps(
+                {
+                    "model": QWEN35_JUDGE_MODEL,
+                    "prompt": "",
+                    "stream": False,
+                    "keep_alive": 0,
+                }
+            ).encode("utf-8")
+        started = time.perf_counter()
+        status, _response_headers, _response_body = self.request_upstream(
+            base,
+            evict_path,
+            headers=evict_headers,
+            body=evict_body,
+            method="POST",
+            timeout_s=30,
+        )
+        self.merge_activity_extra(
+            {
+                "load_pressure_guard": "evicted_heavy_judge",
+                "load_pressure_requested_model": clean_model,
+                "load_pressure_evicted_model": QWEN35_JUDGE_MODEL,
+                "load_pressure_evict_status": int(status),
+                "load_pressure_evict_duration_ms": round(
+                    (time.perf_counter() - started) * 1000, 3
+                ),
+                "load_pressure_worker": self.app.host_alias(base),
+            }
         )
 
     def request_upstream(
@@ -6457,6 +6574,7 @@ class Handler(BaseHTTPRequestHandler):
             headers={"Content-Type": content_type},
             method="POST",
             peer_bases={normalize_base_url(base) for base in peer_bases},
+            model_hint=model or "",
         )
 
     def handle_native_qwen_openai_chat(
@@ -6475,9 +6593,15 @@ class Handler(BaseHTTPRequestHandler):
         for base in candidates:
             attempted.append(base)
             headers = {"Content-Type": "application/json"}
-            if normalize_base_url(base) in peer_bases:
+            is_peer = normalize_base_url(base) in peer_bases
+            if is_peer:
                 headers = self.peer_forward_headers(headers)
             try:
+                self.maybe_evict_heavy_judge_for_interactive_load(
+                    base,
+                    requested_model=model,
+                    is_peer=is_peer,
+                )
                 status, response_headers, response_body = self.request_upstream(
                     base,
                     "/api/chat",
@@ -6628,6 +6752,7 @@ class Handler(BaseHTTPRequestHandler):
                 headers={"Content-Type": "application/json"},
                 method="POST",
                 peer_bases={normalize_base_url(base) for base in peer_bases},
+                model_hint=model or "",
             )
             return
         bases, rows = self.app.ollama_candidate_bases(model or None)
@@ -6662,6 +6787,7 @@ class Handler(BaseHTTPRequestHandler):
             headers={"Content-Type": "application/json"},
             method="POST",
             peer_bases={normalize_base_url(base) for base in peer_bases},
+            model_hint=model or "",
         )
 
     def parse_audio_upload(self, body: bytes) -> tuple[bytes, str, str]:
