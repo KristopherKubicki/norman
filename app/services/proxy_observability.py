@@ -59,6 +59,41 @@ def _nested(payload: Mapping[str, Any], *keys: str) -> dict[str, Any]:
     return dict(current) if isinstance(current, Mapping) else {}
 
 
+def _route_receipt(response: Mapping[str, Any]) -> dict[str, Any]:
+    norman = _mapping(response.get("norman"))
+    direct = _mapping(norman.get("route_receipt"))
+    if direct:
+        return direct
+    return _nested(norman, "facade_receipt", "route_receipt")
+
+
+def _receipt_audit_passed(receipt: Mapping[str, Any]) -> bool:
+    audit = _mapping(receipt.get("receipt_audit"))
+    return _flag(audit.get("pass")) and _lower(audit.get("status")) == "pass"
+
+
+def _completion_gate_passed(receipt: Mapping[str, Any]) -> bool:
+    gate = _mapping(receipt.get("completion_gate"))
+    return _flag(gate.get("gate_passed"))
+
+
+def _release_proof_passed(event: Mapping[str, Any]) -> bool:
+    return (
+        event.get("status") == "success"
+        and _flag(event.get("local_execution"))
+        and not _flag(event.get("cloud_forwarding"))
+        and not _flag(event.get("cloud_proxy"))
+        and bool(_clean(event.get("request_id")))
+        and bool(_clean(event.get("observed_worker")))
+        and bool(_clean(event.get("route_receipt_present")))
+        and _flag(event.get("receipt_audit_passed"))
+        and _flag(event.get("completion_gate_passed"))
+        and _clean(event.get("execution_mode")) != "unknown"
+        and _clean(event.get("usage_bucket")) == "offline_local"
+        and _flag(event.get("policy_integrity_valid"))
+    )
+
+
 def _prompt_text(payload: Mapping[str, Any]) -> str:
     messages = payload.get("messages")
     if isinstance(messages, list):
@@ -173,6 +208,9 @@ def record_proxy_event(
     classification = _nested(route_envelope, "norman_route", "classification")
     strategy = _nested(route_envelope, "norman_route", "routing_strategy")
     norllama = _mapping(norman.get("norllama"))
+    receipt = _route_receipt(response)
+    receipt_audit = _mapping(receipt.get("receipt_audit"))
+    completion_gate = _mapping(receipt.get("completion_gate"))
     usage = _usage_from_response(response)
     now = time.time()
     event = {
@@ -183,6 +221,9 @@ def record_proxy_event(
         "endpoint": endpoint,
         "method": method.upper(),
         "request_id": request_id or _clean(norman.get("request_id")),
+        "gateway_request_id": _clean(receipt.get("gateway_request_id")),
+        "invocation_id": _clean(receipt.get("invocation_id")),
+        "job_id": _clean(receipt.get("job_id")),
         "status": status,
         "http_status": int(http_status),
         **_client_from_headers(headers),
@@ -194,6 +235,7 @@ def record_proxy_event(
         "intent": _clean(classification.get("intent")),
         "task_kind": _clean(classification.get("task_kind")),
         "routing_strategy": _clean(strategy.get("strategy")),
+        "execution_mode": _clean(receipt.get("execution_mode")) or "unknown",
         "local_execution": _flag(norman.get("local_execution")),
         "cloud_forwarding": _flag(norman.get("cloud_forwarding")),
         "cloud_proxy": _flag(route.get("cloud_proxy")),
@@ -201,6 +243,30 @@ def record_proxy_event(
         "gateway_selected_worker": _clean(norllama.get("gateway_selected_worker")),
         "observed_worker": _clean(norllama.get("observed_worker")),
         "observed_worker_source": _clean(norllama.get("observed_worker_source")),
+        "route_receipt_present": bool(receipt),
+        "receipt_audit_passed": _receipt_audit_passed(receipt),
+        "receipt_audit_status": _clean(receipt_audit.get("status")),
+        "receipt_audit_failures": list(receipt_audit.get("failures") or [])
+        if isinstance(receipt_audit.get("failures"), list)
+        else [],
+        "completion_gate_passed": _completion_gate_passed(receipt),
+        "output_shape": _clean(receipt.get("output_shape")),
+        "verifier_result": _clean(receipt.get("verifier_result")),
+        "usage_bucket": _clean(receipt.get("usage_bucket")),
+        "policy_id": _clean(receipt.get("policy_id")),
+        "policy_hash": _clean(receipt.get("policy_hash")),
+        "policy_lifecycle_state": _clean(receipt.get("policy_lifecycle_state")),
+        "policy_integrity_valid": _flag(receipt.get("policy_integrity_valid")),
+        "policy_default_route_allowed": _flag(
+            receipt.get("policy_default_route_allowed")
+        ),
+        "policy_production_routes_allowed": _flag(
+            receipt.get("policy_production_routes_allowed")
+        ),
+        "request_production_route_eligible": _flag(
+            receipt.get("request_production_route_eligible")
+        ),
+        "route_authority": _clean(receipt.get("route_authority")),
         "usage": usage,
         "latency_ms": round(float(latency_ms or 0), 3),
         "error": dict(error or {}),
@@ -250,6 +316,47 @@ def proxy_observability_summary(limit: int = 100) -> dict[str, Any]:
         and _flag(event.get("local_execution"))
         and not _clean(event.get("observed_worker"))
     )
+    release_proof_count = sum(1 for event in events if _release_proof_passed(event))
+    route_receipt_count = sum(
+        1 for event in events if _flag(event.get("route_receipt_present"))
+    )
+    receipt_audit_pass_count = sum(
+        1 for event in events if _flag(event.get("receipt_audit_passed"))
+    )
+    completion_gate_pass_count = sum(
+        1 for event in events if _flag(event.get("completion_gate_passed"))
+    )
+    receiptless_success_count = sum(
+        1
+        for event in events
+        if event.get("status") == "success"
+        and not _flag(event.get("route_receipt_present"))
+    )
+    audit_failed_success_count = sum(
+        1
+        for event in events
+        if event.get("status") == "success"
+        and _flag(event.get("route_receipt_present"))
+        and not _flag(event.get("receipt_audit_passed"))
+    )
+    completion_gate_failed_success_count = sum(
+        1
+        for event in events
+        if event.get("status") == "success"
+        and _flag(event.get("route_receipt_present"))
+        and not _flag(event.get("completion_gate_passed"))
+    )
+    unknown_execution_mode_success_count = sum(
+        1
+        for event in events
+        if event.get("status") == "success"
+        and _clean(event.get("execution_mode")) == "unknown"
+    )
+    request_id_missing_success_count = sum(
+        1
+        for event in events
+        if event.get("status") == "success" and not _clean(event.get("request_id"))
+    )
     usage_totals = {
         "local_tokens": sum(
             _int(_mapping(event.get("usage")).get("local_tokens")) for event in events
@@ -280,10 +387,22 @@ def proxy_observability_summary(limit: int = 100) -> dict[str, Any]:
         "by_client": dict(by_client),
         "by_worker": dict(by_worker),
         "local_execution_count": local_count,
+        "release_proof_success_count": release_proof_count,
+        "route_receipt_count": route_receipt_count,
+        "receipt_audit_pass_count": receipt_audit_pass_count,
+        "completion_gate_pass_count": completion_gate_pass_count,
+        "receiptless_success_count": receiptless_success_count,
+        "audit_failed_success_count": audit_failed_success_count,
+        "completion_gate_failed_success_count": completion_gate_failed_success_count,
+        "unknown_execution_mode_success_count": unknown_execution_mode_success_count,
+        "request_id_missing_success_count": request_id_missing_success_count,
         "cloud_forward_count": cloud_forward_count,
         "cloud_proxy_count": cloud_proxy_count,
         "workerless_local_success_count": workerless_count,
         "local_route_rate_pct": _pct(local_count, successful),
+        "release_proof_rate_pct": _pct(release_proof_count, successful),
+        "receipt_audit_coverage_pct": _pct(receipt_audit_pass_count, successful),
+        "completion_gate_coverage_pct": _pct(completion_gate_pass_count, successful),
         "cloud_forward_rate_pct": _pct(cloud_forward_count, total),
         "blocked_count": statuses.get("blocked", 0)
         + statuses.get("auth_failed", 0)
@@ -348,6 +467,51 @@ def proxy_alerts(
                 "message": f"{workerless} successful local proxy request(s) missed observed worker attribution.",
             }
         )
+    receiptless = int(summary.get("receiptless_success_count") or 0)
+    if receiptless:
+        alerts.append(
+            {
+                "severity": "critical",
+                "kind": "proxy_missing_route_receipt",
+                "message": f"{receiptless} successful proxy request(s) missed canonical route receipts.",
+            }
+        )
+    audit_failed = int(summary.get("audit_failed_success_count") or 0)
+    if audit_failed:
+        alerts.append(
+            {
+                "severity": "critical",
+                "kind": "proxy_receipt_audit_failed",
+                "message": f"{audit_failed} successful proxy request(s) failed receipt audit.",
+            }
+        )
+    gate_failed = int(summary.get("completion_gate_failed_success_count") or 0)
+    if gate_failed:
+        alerts.append(
+            {
+                "severity": "critical",
+                "kind": "proxy_completion_gate_failed",
+                "message": f"{gate_failed} successful proxy request(s) failed completion gate.",
+            }
+        )
+    unknown_mode = int(summary.get("unknown_execution_mode_success_count") or 0)
+    if unknown_mode:
+        alerts.append(
+            {
+                "severity": "warn",
+                "kind": "proxy_unknown_execution_mode",
+                "message": f"{unknown_mode} successful proxy request(s) had unknown execution mode.",
+            }
+        )
+    missing_request_id = int(summary.get("request_id_missing_success_count") or 0)
+    if missing_request_id:
+        alerts.append(
+            {
+                "severity": "warn",
+                "kind": "proxy_missing_request_id",
+                "message": f"{missing_request_id} successful proxy request(s) missed request IDs.",
+            }
+        )
     auth_failures = sum(1 for event in events if event.get("status") == "auth_failed")
     if auth_failures:
         alerts.append(
@@ -399,11 +563,30 @@ def proxy_dashboard(limit: int = 100) -> dict[str, Any]:
                 else "warn",
             },
             {
+                "id": "release-proof-rate",
+                "label": "Release-proof rate",
+                "value": summary["release_proof_rate_pct"],
+                "unit": "%",
+                "tone": "ok"
+                if summary["release_proof_rate_pct"] >= 90 or not summary["event_count"]
+                else "warn",
+            },
+            {
                 "id": "cloud-tokens",
                 "label": "Cloud/proxy tokens",
                 "value": summary["cloud_tokens"],
                 "unit": "tokens",
                 "tone": "alert" if summary["cloud_tokens"] else "ok",
+            },
+            {
+                "id": "receipt-audit",
+                "label": "Receipt audit coverage",
+                "value": summary["receipt_audit_coverage_pct"],
+                "unit": "%",
+                "tone": "ok"
+                if summary["receipt_audit_coverage_pct"] >= 90
+                or not summary["event_count"]
+                else "alert",
             },
             {
                 "id": "observed-workers",

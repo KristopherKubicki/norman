@@ -499,7 +499,7 @@ def test_gateway_asr_service_attributes_upstream_worker_not_gateway():
 
 def test_benchmark_backed_asr_service_can_be_prefetch_eligible():
     packet = {
-        "generated_at": "2026-07-08T00:00:00Z",
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "results": [
             {
                 "model": "faster-whisper:base",

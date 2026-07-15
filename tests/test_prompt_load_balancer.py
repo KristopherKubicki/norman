@@ -788,6 +788,15 @@ def test_openai_compat_proxy_observability_records_success_without_prompt_leak(
     assert summary["event_count"] == 1
     assert summary["local_execution_count"] == 1
     assert summary["local_route_rate_pct"] == 100.0
+    assert summary["release_proof_success_count"] == 1
+    assert summary["release_proof_rate_pct"] == 100.0
+    assert summary["route_receipt_count"] == 1
+    assert summary["receipt_audit_pass_count"] == 1
+    assert summary["completion_gate_pass_count"] == 1
+    assert summary["receiptless_success_count"] == 0
+    assert summary["audit_failed_success_count"] == 0
+    assert summary["completion_gate_failed_success_count"] == 0
+    assert summary["unknown_execution_mode_success_count"] == 0
     assert summary["usage_totals"]["local_tokens"] == 6
     assert summary["usage_totals"]["cloud_llm_tokens"] == 0
     assert summary["by_client"]["codex-work"] == 1
@@ -798,6 +807,11 @@ def test_openai_compat_proxy_observability_records_success_without_prompt_leak(
     assert len(events) == 1
     assert events[0]["prompt_sha256"]
     assert events[0]["prompt_chars"] == len("status? secret-value")
+    assert events[0]["route_receipt_present"] is True
+    assert events[0]["receipt_audit_passed"] is True
+    assert events[0]["completion_gate_passed"] is True
+    assert events[0]["execution_mode"] == "prompt_intermediary_openai_facade"
+    assert events[0]["policy_id"]
     assert "secret-value" not in str(events[0])
 
 
@@ -885,5 +899,62 @@ def test_proxy_observability_flags_cloud_forwarding_and_missing_worker():
     kinds = {item["kind"] for item in summary["alerts"]}
     assert summary["cloud_tokens"] == 15
     assert summary["workerless_local_success_count"] == 1
+    assert summary["receiptless_success_count"] == 2
+    assert summary["release_proof_success_count"] == 0
+    assert summary["unknown_execution_mode_success_count"] == 2
     assert "proxy_cloud_route_observed" in kinds
     assert "proxy_missing_worker_attribution" in kinds
+    assert "proxy_missing_route_receipt" in kinds
+    assert "proxy_unknown_execution_mode" in kinds
+
+
+def test_proxy_observability_flags_failed_receipts_and_completion_gates():
+    from app.services.proxy_observability import (
+        proxy_observability_summary,
+        record_proxy_event,
+        reset_proxy_events,
+    )
+
+    reset_proxy_events()
+    record_proxy_event(
+        endpoint="/v1/chat/completions",
+        method="POST",
+        request_id="audit-test",
+        status="success",
+        http_status=200,
+        payload={"model": "norman-local", "messages": [{"content": "status?"}]},
+        response={
+            "model": "qwen3.6:27b",
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            "norman": {
+                "local_execution": True,
+                "cloud_forwarding": False,
+                "norllama": {"observed_worker": "spark-151"},
+                "route_receipt": {
+                    "request_id": "audit-test",
+                    "job_id": "audit-test",
+                    "invocation_id": "audit-test",
+                    "execution_mode": "prompt_intermediary_openai_facade",
+                    "observed_worker": "spark-151",
+                    "usage_bucket": "offline_local",
+                    "receipt_audit": {
+                        "status": "fail",
+                        "pass": False,
+                        "failures": ["bad policy"],
+                    },
+                    "completion_gate": {"gate_passed": False},
+                },
+            },
+        },
+    )
+
+    summary = proxy_observability_summary()
+    kinds = {item["kind"] for item in summary["alerts"]}
+    assert summary["route_receipt_count"] == 1
+    assert summary["receipt_audit_pass_count"] == 0
+    assert summary["completion_gate_pass_count"] == 0
+    assert summary["audit_failed_success_count"] == 1
+    assert summary["completion_gate_failed_success_count"] == 1
+    assert summary["release_proof_success_count"] == 0
+    assert "proxy_receipt_audit_failed" in kinds
+    assert "proxy_completion_gate_failed" in kinds
