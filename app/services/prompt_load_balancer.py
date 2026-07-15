@@ -3,11 +3,6 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
-from app.services.console_runtime.policy import (
-    resolve_runtime_mode,
-    route_decision,
-    with_local_first_catalog_defaults,
-)
 from app.services.norllama.routing import build_task_receipt, route_task
 from app.services.norllama.types import NorllamaTaskKind, NorllamaTaskRequest
 from app.services.reasoning_orchestrator import (
@@ -199,6 +194,16 @@ _ADAPTER_MODE_ALIASES = {
     "strict": "strict_local",
     "transparent": "transparent_log_only",
 }
+
+
+def _console_runtime_policy_helpers():
+    from app.services.console_runtime.policy import (
+        resolve_runtime_mode,
+        route_decision,
+        with_local_first_catalog_defaults,
+    )
+
+    return resolve_runtime_mode, route_decision, with_local_first_catalog_defaults
 
 
 def _clean(value: Any) -> str:
@@ -775,6 +780,7 @@ def _route_policy_for_prompt(
     incoming["prompt_risk_level"] = classification.get("risk_level")
     incoming["prompt_risk_class"] = classification.get("risk_class")
     incoming["cloud_escalation_allowed_by_prompt_router"] = bool(allow_cloud_escalation)
+    _, _, with_local_first_catalog_defaults = _console_runtime_policy_helpers()
     return with_local_first_catalog_defaults(incoming)
 
 
@@ -858,6 +864,7 @@ def balance_prompt(
         task_id=prompt_route_id,
     )
     route = route_task(task_request)
+    resolve_runtime_mode, route_decision, _ = _console_runtime_policy_helpers()
     runtime_state = resolve_runtime_mode(policy)
     decision = route_decision(
         task_kind=task_kind,
