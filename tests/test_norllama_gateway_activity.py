@@ -103,6 +103,82 @@ def test_gateway_activity_defaults_missing_execution_mode_to_unknown(monkeypatch
     assert execution["items"][0]["activity_class"] == "execution"
 
 
+def test_gateway_applies_short_keep_alive_to_heavy_judge_by_default():
+    module = load_gateway_module()
+
+    payload, changed = module.apply_model_keep_alive_default(
+        {"model": module.QWEN35_JUDGE_MODEL, "prompt": "verify"}
+    )
+    explicit_payload, explicit_changed = module.apply_model_keep_alive_default(
+        {
+            "model": module.QWEN35_JUDGE_MODEL,
+            "prompt": "verify",
+            "keep_alive": "5m",
+        }
+    )
+    chat_payload = module.openai_chat_payload_to_ollama(
+        {
+            "model": module.QWEN35_JUDGE_MODEL,
+            "messages": [{"role": "user", "content": "verify"}],
+        }
+    )
+    router_payload, router_changed = module.apply_model_keep_alive_default(
+        {"model": module.QWEN36_ROUTER_MODEL, "prompt": "plan"}
+    )
+
+    assert changed is True
+    assert payload["keep_alive"] == module.QWEN35_JUDGE_KEEP_ALIVE
+    assert explicit_changed is False
+    assert explicit_payload["keep_alive"] == "5m"
+    assert chat_payload["keep_alive"] == module.QWEN35_JUDGE_KEEP_ALIVE
+    assert router_changed is False
+    assert "keep_alive" not in router_payload
+
+
+def test_gateway_disables_qwen_thinking_for_generate_payloads():
+    module = load_gateway_module()
+
+    payload, changed = module.normalize_chat_payload_for_local_qwen(
+        {"model": module.QWEN36_ROUTER_MODEL, "prompt": "Reply exactly OK"}
+    )
+    explicit_payload, explicit_changed = module.normalize_chat_payload_for_local_qwen(
+        {
+            "model": module.QWEN36_ROUTER_MODEL,
+            "prompt": "Reply exactly OK",
+            "think": True,
+        }
+    )
+
+    assert changed is True
+    assert payload["think"] is False
+    assert explicit_changed is False
+    assert explicit_payload["think"] is True
+
+
+def test_gateway_evict_target_bases_are_limited_to_known_workers():
+    module = load_gateway_module()
+
+    accepted, rejected = module.target_bases_from_payload(
+        {
+            "target": "http://192.168.2.151:18151/",
+            "hosts": [
+                "http://192.168.2.150:18151",
+                "http://203.0.113.10:18151",
+            ],
+        },
+        allowed_bases=[
+            "http://192.168.2.151:18151",
+            "http://192.168.2.150:18151",
+        ],
+    )
+
+    assert accepted == [
+        "http://192.168.2.151:18151",
+        "http://192.168.2.150:18151",
+    ]
+    assert rejected == ["http://203.0.113.10:18151"]
+
+
 def test_gateway_request_log_uses_execution_mode_header(capsys):
     module = load_gateway_module()
     app = module.App()

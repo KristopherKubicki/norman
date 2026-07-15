@@ -207,6 +207,9 @@ QWEN36_ROUTER_MODEL = "qwen3.6:35b-a3b-q4_K_M"
 QWEN36_CODE_MODEL = "qwen3.6:27b"
 QWEN35_JUDGE_MODEL = "qwen3.5:122b-a10b-q4_K_M"
 QWEN3_VL_MODEL = "qwen3-vl:30b-a3b-instruct-q4_K_M"
+QWEN35_JUDGE_KEEP_ALIVE = (
+    os.getenv("NORLLAMA_QWEN35_JUDGE_KEEP_ALIVE", "30s").strip() or "30s"
+)
 PREFERRED_UI_CHAT_MODEL = os.getenv("NORLLAMA_UI_DEFAULT_MODEL", QWEN36_ROUTER_MODEL)
 USER_AGENT = "norllama-gateway/0.1"
 GATEWAY_VERSION = os.getenv("NORLLAMA_GATEWAY_VERSION", "0.1.20260710-route-proof")
@@ -1191,6 +1194,26 @@ def normalize_chat_payload_for_local_qwen(
     return normalized, True
 
 
+def default_keep_alive_for_model(model_id: str) -> str:
+    if str(model_id or "").strip() == QWEN35_JUDGE_MODEL:
+        return QWEN35_JUDGE_KEEP_ALIVE
+    return ""
+
+
+def apply_model_keep_alive_default(
+    payload: dict[str, object],
+) -> tuple[dict[str, object], bool]:
+    model = str(payload.get("model") or "").strip()
+    default_keep_alive = default_keep_alive_for_model(model)
+    if not default_keep_alive:
+        return payload, False
+    if payload.get("keep_alive") not in (None, ""):
+        return payload, False
+    normalized = dict(payload)
+    normalized["keep_alive"] = default_keep_alive
+    return normalized, True
+
+
 def openai_chat_payload_to_ollama(payload: dict[str, object]) -> dict[str, object]:
     model = str(payload.get("model") or "").strip()
     native: dict[str, object] = {
@@ -1201,6 +1224,10 @@ def openai_chat_payload_to_ollama(payload: dict[str, object]) -> dict[str, objec
     }
     if payload.get("keep_alive") is not None:
         native["keep_alive"] = payload.get("keep_alive")
+    else:
+        default_keep_alive = default_keep_alive_for_model(model)
+        if default_keep_alive:
+            native["keep_alive"] = default_keep_alive
     options: dict[str, object] = {}
     existing_options = payload.get("options")
     if isinstance(existing_options, dict):
@@ -1221,6 +1248,27 @@ def openai_chat_payload_to_ollama(payload: dict[str, object]) -> dict[str, objec
     if options:
         native["options"] = options
     return native
+
+
+def target_bases_from_payload(
+    payload: dict[str, object],
+    *,
+    allowed_bases: list[str],
+) -> tuple[list[str], list[str]]:
+    allowed = {normalize_base_url(base) for base in allowed_bases if str(base).strip()}
+    requested: list[str] = []
+    for key in ("target", "upstream", "base_url", "base"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            requested.append(value)
+    for key in ("targets", "hosts"):
+        values = payload.get(key)
+        if isinstance(values, list):
+            requested.extend(str(item) for item in values if str(item).strip())
+    normalized = unique_items([normalize_base_url(item) for item in requested])
+    accepted = [base for base in normalized if base in allowed]
+    rejected = [base for base in normalized if base not in allowed]
+    return accepted, rejected
 
 
 def ollama_chat_payload_to_openai(
@@ -6267,7 +6315,32 @@ class Handler(BaseHTTPRequestHandler):
             if isinstance(timeout_raw, (int, float)) and float(timeout_raw) > 0
             else None
         )
-        bases, rows = self.app.choose_ollama_bases_for_model(model)
+        allowed_targets = unique_items([*self.app.ollama_bases, *self.app.peer_bases])
+        target_bases, rejected_targets = target_bases_from_payload(
+            payload,
+            allowed_bases=allowed_targets,
+        )
+        if rejected_targets:
+            self.send_json(
+                HTTPStatus.BAD_REQUEST,
+                {
+                    "ok": False,
+                    "error": "unknown_evict_target",
+                    "model": model,
+                    "rejected_targets": rejected_targets,
+                    **(
+                        {"allowed_targets": allowed_targets}
+                        if self.app.expose_upstream_details
+                        else {}
+                    ),
+                },
+            )
+            return
+        if target_bases:
+            bases = target_bases
+            rows: list[dict] = []
+        else:
+            bases, rows = self.app.choose_ollama_bases_for_model(model)
         if not bases:
             self.send_json(
                 HTTPStatus.BAD_GATEWAY,
@@ -6276,6 +6349,7 @@ class Handler(BaseHTTPRequestHandler):
                     "error": "ollama_model_unavailable",
                     "model": model,
                     "candidates": self.app.public_candidate_rows("ollama", rows),
+                    **({"targeted": bool(target_bases)} if target_bases else {}),
                 },
             )
             return
@@ -6315,6 +6389,7 @@ class Handler(BaseHTTPRequestHandler):
             {
                 "mode": "evict",
                 "model": model,
+                "targeted": bool(target_bases),
                 "evict_hosts": [item["upstream"] for item in results],
                 **({"evict_timeout_s": timeout_s} if timeout_s else {}),
             }
@@ -6325,6 +6400,7 @@ class Handler(BaseHTTPRequestHandler):
                 "ok": all(200 <= int(item["status"]) < 300 for item in results),
                 "mode": "evict",
                 "model": model,
+                "targeted": bool(target_bases),
                 "results": results,
             },
         )
@@ -6338,6 +6414,7 @@ class Handler(BaseHTTPRequestHandler):
             self._model_hint = model
         if content_type.startswith("application/json") and upstream_path in {
             "/api/chat",
+            "/api/generate",
             "/v1/chat/completions",
         }:
             try:
@@ -6345,9 +6422,14 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 payload = {}
             if isinstance(payload, dict):
+                normalized_payload = dict(payload)
                 normalized_payload, changed = normalize_chat_payload_for_local_qwen(
-                    payload
+                    normalized_payload
                 )
+                normalized_payload, keep_alive_changed = apply_model_keep_alive_default(
+                    normalized_payload
+                )
+                changed = changed or keep_alive_changed
                 if changed:
                     body = json.dumps(normalized_payload).encode("utf-8")
         bases, rows = self.app.ollama_candidate_bases(model)
