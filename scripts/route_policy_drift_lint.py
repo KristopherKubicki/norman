@@ -48,6 +48,48 @@ class DriftIssue:
 
 DRIFT_RULES = (
     DriftRule(
+        id="hardcoded_expected_model_final_authority",
+        severity="error",
+        pattern=re.compile(
+            r"\bEXPECTED_MODEL\s*=\s*[\"'](?:openai\.)?gpt-5\.5[\"']",
+            re.I,
+        ),
+        suggestion=(
+            "Resolve EXPECTED_MODEL from the compiled Codex role policy "
+            f"({CODEX_CLOUD_DEFAULT_MODEL}) instead of hardcoding final authority."
+        ),
+    ),
+    DriftRule(
+        id="auto_mode_final_authority_default",
+        severity="error",
+        pattern=re.compile(r"\bauto_bedrock_5_5\b", re.I),
+        suggestion=(
+            "Rename or resolve auto mode through the role policy; 5.5 may be "
+            "final-authority only, not the generic auto default."
+        ),
+    ),
+    DriftRule(
+        id="gpt55_floor_policy_generation",
+        severity="error",
+        pattern=re.compile(r"\bgpt55_floor\b", re.I),
+        suggestion=(
+            "Use the compiled role-policy identity instead of the stale "
+            "gpt55_floor receipt policy generation."
+        ),
+    ),
+    DriftRule(
+        id="route_policy_version_not_role_based",
+        severity="error",
+        pattern=re.compile(
+            r"\bROUTE_RECEIPT_POLICY_VERSION\s*=\s*[\"'](?!.*role-policy).*?[\"']",
+            re.I,
+        ),
+        suggestion=(
+            "Route receipts must record the active Codex role-policy ID/hash, "
+            "not an independent hardcoded policy-version string."
+        ),
+    ),
+    DriftRule(
         id="five_five_desired_default",
         severity="error",
         pattern=re.compile(
@@ -102,6 +144,8 @@ DRIFT_RULES = (
 
 
 DEFAULT_SCAN_GLOBS = (
+    "scripts/agent_console_template/agent_console_web.py",
+    "scripts/norman_codex_web.py",
     "scripts/tui_provider_readiness_benchmark.py",
     "scripts/tui_auto_mode_benchmark.py",
     "scripts/work_loop_canary.py",

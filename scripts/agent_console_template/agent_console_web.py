@@ -4964,7 +4964,7 @@ DEFAULT_OPTIMIZATION_MODE = normalize_optimization_mode(
 
 AUTO_TURN_CONTROL_SCHEMA = "norman.tui.auto-turn-controls.v1"
 TURN_CONTROL_ENVELOPE_SCHEMA = "norman.tui.turn-envelope.v1"
-ROUTE_RECEIPT_POLICY_VERSION = "norman.route-policy.gpt55_floor.v1"
+ROUTE_RECEIPT_POLICY_VERSION = "norman.role-policy.2026.07.15.role-v1"
 AUTO_TURN_CONTROL_EXPLICIT_MARKERS = (
     "30 minute",
     "30 minutes",
@@ -9010,6 +9010,7 @@ def _state_db_connect() -> sqlite3.Connection | None:
     if not STATE_DB_ENABLED:
         return None
     ensure_state_dir()
+    STATE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     try:
         conn = sqlite3.connect(str(STATE_DB_PATH), timeout=2)
         conn.row_factory = sqlite3.Row
@@ -9162,6 +9163,30 @@ def _state_db_connect() -> sqlite3.Connection | None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS route_receipts (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                receipt_id TEXT NOT NULL UNIQUE,
+                receipt_hash TEXT,
+                previous_receipt_hash TEXT,
+                owner_tui TEXT,
+                created_at INTEGER,
+                thread_id TEXT,
+                prompt_id TEXT,
+                requested_action TEXT,
+                selected_model TEXT,
+                effective_model TEXT,
+                requested_provider TEXT,
+                effective_provider TEXT,
+                effective_service_tier TEXT,
+                validator_gate TEXT,
+                outcome TEXT,
+                synthetic INTEGER NOT NULL DEFAULT 0,
+                payload_json TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS human_interventions (
                 id TEXT PRIMARY KEY,
                 fingerprint TEXT NOT NULL,
@@ -9198,6 +9223,18 @@ def _state_db_connect() -> sqlite3.Connection | None:
             """
             CREATE INDEX IF NOT EXISTS idx_audit_events_type_at
             ON audit_events(event_type, event_at)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_route_receipts_owner_sequence
+            ON route_receipts(owner_tui, sequence)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_route_receipts_hash
+            ON route_receipts(receipt_hash)
             """
         )
         conn.execute(
@@ -9425,6 +9462,54 @@ def mirror_audit_event_to_state_db(entry: dict[str, Any]) -> None:
         conn.commit()
     except sqlite3.Error:
         pass
+    finally:
+        conn.close()
+
+
+def mirror_route_receipt_to_state_db(entry: dict[str, Any]) -> bool:
+    if not STATE_DB_ENABLED or not isinstance(entry, dict):
+        return False
+    conn = _state_db_connect()
+    if conn is None:
+        return False
+    receipt_id = str(entry.get("receipt_id") or "").strip()
+    if not receipt_id:
+        receipt_id = _state_db_id("route_receipt", entry)
+    try:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO route_receipts(
+                receipt_id, receipt_hash, previous_receipt_hash, owner_tui,
+                created_at, thread_id, prompt_id, requested_action, selected_model,
+                effective_model, requested_provider, effective_provider,
+                effective_service_tier, validator_gate, outcome, synthetic,
+                payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                receipt_id,
+                str(entry.get("receipt_hash") or ""),
+                str(entry.get("previous_receipt_hash") or ""),
+                str(entry.get("owner_tui") or ROUTE_RECEIPT_OWNER_TUI),
+                _coerce_int(entry.get("created_at")),
+                str(entry.get("thread_id") or ""),
+                str(entry.get("prompt_id") or ""),
+                str(entry.get("requested_action") or ""),
+                str(entry.get("selected_model") or ""),
+                str(entry.get("effective_model") or ""),
+                str(entry.get("requested_provider") or ""),
+                str(entry.get("effective_provider") or ""),
+                str(entry.get("effective_service_tier") or ""),
+                str(entry.get("validator_gate") or ""),
+                str(entry.get("outcome") or ""),
+                1 if entry.get("synthetic") else 0,
+                _state_db_json(entry),
+            ),
+        )
+        conn.commit()
+        return True
+    except sqlite3.Error:
+        return False
     finally:
         conn.close()
 
@@ -14050,7 +14135,88 @@ def remove_draft_attachment(token: str) -> list[dict[str, Any]]:
     return save_draft_attachments(kept)
 
 
-def load_history(limit: int = MAX_HISTORY_ITEMS) -> list[dict[str, Any]]:
+def normalize_history_entry(payload: Any) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    entry = dict(payload)
+    entry["attachments"] = normalize_attachments(entry.get("attachments"))
+    entry["runtime"] = normalize_runtime(entry.get("runtime"))
+    entry["model"] = normalize_runtime_model(entry["runtime"], entry.get("model"))
+    entry["usage"] = normalize_usage_entry(
+        {
+            **(entry.get("usage") if isinstance(entry.get("usage"), dict) else {}),
+            "started_at": entry.get("started_at"),
+            "finished_at": entry.get("finished_at"),
+            "thread_id": entry.get("thread_id"),
+            "runtime": entry["runtime"],
+            "model": entry["model"],
+            "service_tier": entry.get("service_tier"),
+        }
+    )
+    entry["error"] = strip_codex_empty_last_message_warning(
+        str(entry.get("error") or "")
+    )
+    return entry
+
+
+def finalize_history_entries(
+    entries: list[dict[str, Any]], *, limit: int = MAX_HISTORY_ITEMS
+) -> list[dict[str, Any]]:
+    if limit and len(entries) > limit:
+        entries = entries[-limit:]
+    usage_entries = usage_entries_with_effective_deltas(
+        [entry.get("usage") or {} for entry in entries]
+    )
+    for index, usage_entry in enumerate(usage_entries):
+        entries[index]["usage"] = usage_entry
+    return entries
+
+
+def load_history_from_state_db(limit: int = MAX_HISTORY_ITEMS) -> list[dict[str, Any]]:
+    conn = _state_db_connect()
+    if conn is None:
+        return []
+    try:
+        params: tuple[Any, ...] = ()
+        if limit and limit > 0:
+            rows = conn.execute(
+                """
+                SELECT payload_json
+                FROM (
+                    SELECT finished_at, started_at, id, payload_json
+                    FROM turns
+                    ORDER BY COALESCE(finished_at, started_at, 0) DESC, id DESC
+                    LIMIT ?
+                )
+                ORDER BY COALESCE(finished_at, started_at, 0) ASC, id ASC
+                """,
+                (int(limit),),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT payload_json
+                FROM turns
+                ORDER BY COALESCE(finished_at, started_at, 0) ASC, id ASC
+                """,
+                params,
+            ).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+    entries: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            normalized = normalize_history_entry(json.loads(row["payload_json"]))
+        except (json.JSONDecodeError, KeyError, TypeError):
+            continue
+        if normalized:
+            entries.append(normalized)
+    return finalize_history_entries(entries, limit=limit)
+
+
+def load_history_from_jsonl(limit: int = MAX_HISTORY_ITEMS) -> list[dict[str, Any]]:
     ensure_state_dir()
     entries: list[dict[str, Any]] = []
     try:
@@ -14062,42 +14228,36 @@ def load_history(limit: int = MAX_HISTORY_ITEMS) -> list[dict[str, Any]]:
         if not stripped:
             continue
         try:
-            payload = json.loads(stripped)
+            normalized = normalize_history_entry(json.loads(stripped))
         except json.JSONDecodeError:
             continue
-        if isinstance(payload, dict):
-            payload["attachments"] = normalize_attachments(payload.get("attachments"))
-            payload["runtime"] = normalize_runtime(payload.get("runtime"))
-            payload["model"] = normalize_runtime_model(
-                payload["runtime"], payload.get("model")
-            )
-            payload["usage"] = normalize_usage_entry(
-                {
-                    **(
-                        payload.get("usage")
-                        if isinstance(payload.get("usage"), dict)
-                        else {}
-                    ),
-                    "started_at": payload.get("started_at"),
-                    "finished_at": payload.get("finished_at"),
-                    "thread_id": payload.get("thread_id"),
-                    "runtime": payload["runtime"],
-                    "model": payload["model"],
-                    "service_tier": payload.get("service_tier"),
-                }
-            )
-            payload["error"] = strip_codex_empty_last_message_warning(
-                str(payload.get("error") or "")
-            )
-            entries.append(payload)
-    if limit and len(entries) > limit:
-        entries = entries[-limit:]
-    usage_entries = usage_entries_with_effective_deltas(
-        [entry.get("usage") or {} for entry in entries]
-    )
-    for index, usage_entry in enumerate(usage_entries):
-        entries[index]["usage"] = usage_entry
-    return entries
+        if normalized:
+            entries.append(normalized)
+    return finalize_history_entries(entries, limit=limit)
+
+
+def load_history(limit: int = MAX_HISTORY_ITEMS) -> list[dict[str, Any]]:
+    entries = load_history_from_state_db(limit=limit)
+    if entries:
+        return entries
+    return load_history_from_jsonl(limit=limit)
+
+
+def replace_history_entries_in_state_db(entries: list[dict[str, Any]]) -> None:
+    if not STATE_DB_ENABLED:
+        return
+    conn = _state_db_connect()
+    if conn is None:
+        return
+    try:
+        conn.execute("DELETE FROM turns")
+        conn.commit()
+    except sqlite3.Error:
+        pass
+    finally:
+        conn.close()
+    for entry in entries:
+        mirror_history_entry_to_state_db(entry)
 
 
 def write_history_entries(
@@ -14111,6 +14271,7 @@ def write_history_entries(
     if payload:
         payload += "\n"
     HISTORY_PATH.write_text(payload, encoding="utf-8")
+    replace_history_entries_in_state_db(trimmed)
     return trimmed
 
 
@@ -20991,7 +21152,85 @@ def route_receipt_compute_hash(entry: dict[str, Any]) -> str:
     return hashlib.sha256(f"{previous}\n{payload}".encode("utf-8")).hexdigest()
 
 
+def route_receipts_from_state_db(
+    *, owner_tui: str = ROUTE_RECEIPT_OWNER_TUI, limit: int = 0
+) -> list[dict[str, Any]]:
+    conn = _state_db_connect()
+    if conn is None:
+        return []
+    clean_owner = str(owner_tui or "").strip()
+    rows: list[sqlite3.Row]
+    try:
+        params: list[Any] = []
+        where = ""
+        if clean_owner:
+            where = "WHERE owner_tui = ?"
+            params.append(clean_owner)
+        if limit and limit > 0:
+            query = f"""
+                SELECT payload_json
+                FROM (
+                    SELECT sequence, payload_json
+                    FROM route_receipts
+                    {where}
+                    ORDER BY sequence DESC
+                    LIMIT ?
+                )
+                ORDER BY sequence ASC
+            """
+            params.append(int(limit))
+        else:
+            query = f"""
+                SELECT payload_json
+                FROM route_receipts
+                {where}
+                ORDER BY sequence ASC
+            """
+        rows = conn.execute(query, tuple(params)).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+    receipts: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"])
+        except (json.JSONDecodeError, KeyError, TypeError):
+            continue
+        if isinstance(payload, dict):
+            receipts.append(payload)
+    return receipts
+
+
+def route_receipt_last_hash_from_state_db(
+    *, owner_tui: str = ROUTE_RECEIPT_OWNER_TUI
+) -> str:
+    conn = _state_db_connect()
+    if conn is None:
+        return ""
+    try:
+        row = conn.execute(
+            """
+            SELECT receipt_hash
+            FROM route_receipts
+            WHERE owner_tui = ? AND receipt_hash != ''
+            ORDER BY sequence DESC
+            LIMIT 1
+            """,
+            (str(owner_tui or "").strip(),),
+        ).fetchone()
+    except sqlite3.Error:
+        return ""
+    finally:
+        conn.close()
+    return str(row["receipt_hash"] or "").strip() if row else ""
+
+
 def route_receipt_last_hash(path: Path = ROUTE_RECEIPT_PATH) -> str:
+    if Path(path) == ROUTE_RECEIPT_PATH:
+        state_hash = route_receipt_last_hash_from_state_db()
+        if state_hash:
+            return state_hash
     try:
         lines = [
             line
@@ -21045,6 +21284,10 @@ def route_receipt_chain_issues(receipts: list[dict[str, Any]]) -> list[str]:
 
 
 def route_receipt_chain_status(path: Path = ROUTE_RECEIPT_PATH) -> dict[str, Any]:
+    if Path(path) == ROUTE_RECEIPT_PATH:
+        state_snapshot = route_receipt_chain_status_from_state_db()
+        if state_snapshot and state_snapshot.get("receipt_count"):
+            return state_snapshot
     receipts: list[dict[str, Any]] = []
     load_errors: list[str] = []
     try:
@@ -21092,11 +21335,40 @@ def route_receipt_chain_status(path: Path = ROUTE_RECEIPT_PATH) -> dict[str, Any
     }
 
 
+def route_receipt_chain_status_from_state_db() -> dict[str, Any]:
+    receipts = route_receipts_from_state_db()
+    if not receipts:
+        return {
+            "status": "empty",
+            "path": str(ROUTE_RECEIPT_PATH),
+            "state_db_path": str(STATE_DB_PATH),
+            "storage_source": "state_db",
+            "receipt_count": 0,
+            "latest_hash": "",
+            "issue_count": 0,
+            "issues": [],
+        }
+    issues = route_receipt_chain_issues(receipts)
+    latest_hash = str(receipts[-1].get("receipt_hash") or "").strip()
+    return {
+        "status": "pass" if not issues else "fail",
+        "path": str(ROUTE_RECEIPT_PATH),
+        "state_db_path": str(STATE_DB_PATH),
+        "storage_source": "state_db",
+        "receipt_count": len(receipts),
+        "latest_hash": latest_hash,
+        "issue_count": len(issues),
+        "issues": issues,
+    }
+
+
 def route_receipt_status_snapshot() -> dict[str, Any]:
     if not ROUTE_RECEIPTS_ENABLED:
         return {
             "status": "disabled",
             "path": str(ROUTE_RECEIPT_PATH),
+            "state_db_path": str(STATE_DB_PATH),
+            "storage_source": "disabled",
             "receipt_count": 0,
             "latest_hash": "",
             "issue_count": 0,
@@ -21105,8 +21377,11 @@ def route_receipt_status_snapshot() -> dict[str, Any]:
     snapshot = route_receipt_chain_status(ROUTE_RECEIPT_PATH)
     if ROUTE_RECEIPT_LAST_WRITE_ERROR:
         snapshot["last_write_error"] = ROUTE_RECEIPT_LAST_WRITE_ERROR
-        if snapshot.get("status") == "missing":
+        snapshot["jsonl_mirror_status"] = "write_failed"
+        if snapshot.get("status") in {"missing", "pass", "empty"}:
             snapshot["status"] = "degraded"
+    else:
+        snapshot.setdefault("jsonl_mirror_status", "ok")
     return snapshot
 
 
@@ -21124,32 +21399,38 @@ def append_route_receipt_entry(entry: dict[str, Any]) -> None:
                 raise ValueError(
                     f"route receipt missing required fields: {', '.join(missing)}"
                 )
+            state_db_written = mirror_route_receipt_to_state_db(entry)
             serialized = json.dumps(entry, sort_keys=True)
-            with ROUTE_RECEIPT_PATH.open("a", encoding="utf-8") as handle:
-                handle.write(serialized + "\n")
-                handle.flush()
-                os.fsync(handle.fileno())
             try:
-                os.chmod(ROUTE_RECEIPT_PATH, 0o640)
+                with ROUTE_RECEIPT_PATH.open("a", encoding="utf-8") as handle:
+                    handle.write(serialized + "\n")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                try:
+                    os.chmod(ROUTE_RECEIPT_PATH, 0o640)
+                except OSError:
+                    pass
+                if MAX_ROUTE_RECEIPT_ITEMS <= 0:
+                    return
+                try:
+                    lines = [
+                        line
+                        for line in ROUTE_RECEIPT_PATH.read_text(
+                            encoding="utf-8"
+                        ).splitlines()
+                        if line.strip()
+                    ]
+                except OSError:
+                    return
+                trimmed = lines[-MAX_ROUTE_RECEIPT_ITEMS:]
+                if len(trimmed) != len(lines):
+                    ROUTE_RECEIPT_PATH.write_text(
+                        "\n".join(trimmed) + "\n", encoding="utf-8"
+                    )
             except OSError:
-                pass
-            if MAX_ROUTE_RECEIPT_ITEMS <= 0:
-                return
-            try:
-                lines = [
-                    line
-                    for line in ROUTE_RECEIPT_PATH.read_text(
-                        encoding="utf-8"
-                    ).splitlines()
-                    if line.strip()
-                ]
-            except OSError:
-                return
-            trimmed = lines[-MAX_ROUTE_RECEIPT_ITEMS:]
-            if len(trimmed) != len(lines):
-                ROUTE_RECEIPT_PATH.write_text(
-                    "\n".join(trimmed) + "\n", encoding="utf-8"
-                )
+                if state_db_written:
+                    raise
+                raise
         finally:
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
@@ -38685,16 +38966,78 @@ class Handler(BaseHTTPRequestHandler):
         )
         theme_toggle_target = profile_for_mode(active_profile, opposite_mode)
         theme_toggle_label = opposite_mode.title()
+
+        def render_settings_link(
+            *,
+            label: str,
+            icon: str,
+            href: str,
+            active: bool,
+            tooltip: str,
+        ) -> str:
+            active_class = " active" if active else ""
+            escaped_tooltip = html.escape(tooltip)
+            return (
+                f'<a class="profile-chip setting-pill{active_class}" '
+                f'data-icon="{html.escape(icon)}" href="{html.escape(href)}" '
+                f'aria-label="{escaped_tooltip}" title="{escaped_tooltip}" '
+                f'data-tooltip="{escaped_tooltip}">{html.escape(label)}</a>'
+            )
+
+        def route_mode_label(mode: str) -> str:
+            return (
+                "Auto"
+                if mode == "auto"
+                else "LAN"
+                if mode == "lan"
+                else "Tail"
+                if mode == "tail"
+                else "Host"
+            )
+
         settings_mode_links_html = "".join(
-            f'<a class="profile-chip setting-pill{" active" if mode == active_mode else ""}" data-icon="{html.escape(icon_for_label(mode))}" href="{html.escape(build_console_href(token=local_token_value, profile=profile_for_mode(active_profile, mode), route=route_preference, prefix=path_prefix))}">{html.escape(mode.title())}</a>'
+            render_settings_link(
+                label=mode.title(),
+                icon=icon_for_label(mode),
+                href=build_console_href(
+                    token=local_token_value,
+                    profile=profile_for_mode(active_profile, mode),
+                    route=route_preference,
+                    prefix=path_prefix,
+                ),
+                active=mode == active_mode,
+                tooltip=f"Switch to {mode.title()} mode",
+            )
             for mode in PROFILE_MODE_ORDER
         )
         settings_profile_links_html = "".join(
-            f'<a class="profile-chip setting-pill{" active" if slug == active_profile else ""}" data-icon="{html.escape(entity_mark_for_label(data["label"], "•"))}" href="{html.escape(build_console_href(token=local_token_value, profile=slug, route=route_preference, prefix=path_prefix))}">{html.escape(data["label"])}</a>'
+            render_settings_link(
+                label=str(data["label"]),
+                icon=entity_mark_for_label(str(data["label"]), "•"),
+                href=build_console_href(
+                    token=local_token_value,
+                    profile=slug,
+                    route=route_preference,
+                    prefix=path_prefix,
+                ),
+                active=slug == active_profile,
+                tooltip=f'Use {str(data["label"])} palette',
+            )
             for slug, data in profiles_for_mode(active_mode)
         )
         settings_route_links_html = "".join(
-            f'<a class="profile-chip setting-pill{" active" if mode == route_preference else ""}" data-icon="{html.escape(icon_for_label(mode, "⇄"))}" href="{html.escape(build_console_href(token=local_token_value, profile=active_profile, route=mode, prefix=path_prefix))}">{html.escape("Auto" if mode == "auto" else "LAN" if mode == "lan" else "Tail" if mode == "tail" else "Host")}</a>'
+            render_settings_link(
+                label=route_mode_label(mode),
+                icon=icon_for_label(mode, "⇄"),
+                href=build_console_href(
+                    token=local_token_value,
+                    profile=active_profile,
+                    route=mode,
+                    prefix=path_prefix,
+                ),
+                active=mode == route_preference,
+                tooltip=f"Use {route_mode_label(mode)} route",
+            )
             for mode in ROUTE_MODE_ORDER
         )
         active_runtime = configured_runtime()
@@ -38733,6 +39076,8 @@ class Handler(BaseHTTPRequestHandler):
                 f'data-service-tier="{html.escape(service_tier)}"',
                 f'data-route-lane="{html.escape(lane)}"',
                 f'title="{html.escape(str(item.get("hint") or ""))}"',
+                f'data-tooltip="{html.escape(str(item.get("hint") or label))}"',
+                f'aria-label="{html.escape(label)} route preset"',
             ]
             if not can_execute:
                 attrs.extend(["disabled", 'aria-disabled="true"'])
@@ -38786,6 +39131,8 @@ class Handler(BaseHTTPRequestHandler):
                     preview += f", +{model_count - 3} more"
                 title = f"{title} Available models: {preview}"
             attrs.append(f'title="{html.escape(title)}"')
+            attrs.append(f'data-tooltip="{html.escape(title)}"')
+            attrs.append(f'aria-label="{html.escape(title)}"')
             status = "Live" if can_execute else "Offline plan"
             model = str(item.get("default_model") or "").strip()
             if model_count > 1 and model:
@@ -38807,7 +39154,8 @@ class Handler(BaseHTTPRequestHandler):
             return (
                 f'<button type="button" class="ghost setting-pill model-floor-pill{active}" '
                 f'data-setting="model" data-value="{html.escape(model)}" '
-                f'title="{html.escape(title)}">{html.escape(model)}</button>'
+                f'aria-label="{html.escape(title)}" title="{html.escape(title)}" '
+                f'data-tooltip="{html.escape(title)}">{html.escape(model)}</button>'
             )
 
         settings_runtime_routes_html = "".join(
@@ -38930,7 +39278,7 @@ class Handler(BaseHTTPRequestHandler):
             else ""
         )
         topbar_context_links_html = "".join(
-            f'<a class="ghost utility-button button-link" data-icon="{html.escape(str(item["icon"]))}" data-label="{html.escape(str(item["label"]))}" href="{html.escape(str(item["url"]))}"{console_link_anchor_attrs(str(item["url"]))} title="{html.escape(str(item.get("note") or item["label"]))}">'
+            f'<a class="ghost utility-button button-link" data-icon="{html.escape(str(item["icon"]))}" data-label="{html.escape(str(item["label"]))}" href="{html.escape(str(item["url"]))}"{console_link_anchor_attrs(str(item["url"]))} aria-label="{html.escape(str(item.get("note") or item["label"]))}" title="{html.escape(str(item.get("note") or item["label"]))}" data-tooltip="{html.escape(str(item.get("note") or item["label"]))}">'
             f'{_render_name_cartouche(str(item["label"]), kind="bot", tone="bot", group=str(item["tone_group"]))}</a>'
             for group in console_groups
             if str(group.get("slug") or "") in {"norman", "pipeline"}
@@ -40505,12 +40853,34 @@ class Handler(BaseHTTPRequestHandler):
       display: flex;
       flex-direction: column;
       gap: 10px;
+      border: 1px solid color-mix(in srgb, var(--agent-accent) 16%, var(--border));
+      background:
+        repeating-linear-gradient(
+          96deg,
+          color-mix(in srgb, var(--agent-accent-3) 3%, transparent) 0 1px,
+          transparent 1px 18px
+        ),
+        linear-gradient(180deg, color-mix(in srgb, var(--surface) 98%, rgba(255, 255, 255, 0.025)), color-mix(in srgb, var(--surface-2) 92%, rgba(0, 0, 0, 0.16)));
+      box-shadow:
+        0 18px 42px rgba(8, 12, 18, 0.21),
+        inset 0 1px 0 color-mix(in srgb, rgba(255, 255, 255, 0.05) 44%, transparent),
+        inset 0 -1px 0 color-mix(in srgb, var(--agent-accent-2) 10%, transparent);
+      backdrop-filter: blur(18px) saturate(124%);
       opacity: 0;
       pointer-events: none;
       transform: translateY(-6px) scale(0.985);
       transform-origin: top right;
       transition: opacity 0.18s ease, transform 0.18s ease;
       z-index: 33;
+    }}
+    .topbar-menu::before {{
+      content: "";
+      height: 1px;
+      margin: 0 2px -2px;
+      background:
+        linear-gradient(90deg, transparent, color-mix(in srgb, var(--agent-accent) 32%, transparent), transparent);
+      opacity: 0.82;
+      pointer-events: none;
     }}
     body.topbar-menu-open .topbar-menu {{
       opacity: 1;
@@ -40532,7 +40902,12 @@ class Handler(BaseHTTPRequestHandler):
     .topbar-menu-links {{
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-auto-rows: minmax(31px, auto);
       gap: 6px;
+    }}
+    .topbar-menu-links--context {{
+      padding-top: 8px;
+      border-top: 1px solid color-mix(in srgb, var(--border) 34%, transparent);
     }}
     .topbar-menu-links .utility-button,
     .topbar-menu-links .button-link {{
@@ -40540,6 +40915,9 @@ class Handler(BaseHTTPRequestHandler):
       justify-content: flex-start;
       padding: 5px 10px;
       font-size: 0.72rem;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }}
     .topbar-menu-links .utility-button {{
       min-width: 0;
@@ -40579,7 +40957,8 @@ class Handler(BaseHTTPRequestHandler):
       display: flex;
       flex-wrap: wrap;
       gap: 6px;
-      padding-top: 2px;
+      border-top: 1px solid color-mix(in srgb, var(--border) 28%, transparent);
+      padding-top: 8px;
     }}
     .shortcut-chip {{
       display: inline-flex;
@@ -40618,6 +40997,73 @@ class Handler(BaseHTTPRequestHandler):
       color: var(--text);
       opacity: 0.88;
     }}
+    [data-tooltip]:not([data-governance-action]) {{
+      position: relative;
+    }}
+    [data-tooltip]:not([data-governance-action])::after {{
+      content: attr(data-tooltip);
+      position: absolute;
+      left: 50%;
+      bottom: calc(100% + 8px);
+      z-index: 120;
+      width: max-content;
+      max-width: min(19rem, calc(100vw - 24px));
+      padding: 5px 7px;
+      border: 1px solid color-mix(in srgb, var(--agent-accent) 22%, var(--border-strong));
+      border-radius: 7px;
+      background:
+        linear-gradient(180deg, color-mix(in srgb, var(--surface) 98%, rgba(255, 255, 255, 0.035)), color-mix(in srgb, var(--surface-2) 94%, rgba(0, 0, 0, 0.16)));
+      color: color-mix(in srgb, var(--text) 94%, var(--agent-accent) 6%);
+      box-shadow:
+        0 10px 24px rgba(8, 12, 18, 0.18),
+        inset 0 1px 0 color-mix(in srgb, rgba(255, 255, 255, 0.055) 46%, transparent);
+      font: 680 0.62rem/1.18 var(--font-ui);
+      text-align: center;
+      white-space: normal;
+      opacity: 0;
+      pointer-events: none;
+      transform: translate(-50%, 3px);
+      transition: opacity 0.12s ease, transform 0.12s ease;
+      backdrop-filter: blur(12px) saturate(116%);
+    }}
+    [data-tooltip]:not([data-governance-action]):hover::after,
+    [data-tooltip]:not([data-governance-action]):focus-visible::after {{
+      opacity: 1;
+      transform: translate(-50%, 0);
+    }}
+    [data-tooltip-side="left"]:not([data-governance-action])::after {{
+      left: auto;
+      right: 0;
+      transform: translate(0, 3px);
+      text-align: right;
+    }}
+    [data-tooltip-side="left"]:not([data-governance-action]):hover::after,
+    [data-tooltip-side="left"]:not([data-governance-action]):focus-visible::after {{
+      transform: translate(0, 0);
+    }}
+    [data-tooltip-side="right"]:not([data-governance-action])::after {{
+      left: 0;
+      transform: translate(0, 3px);
+      text-align: left;
+    }}
+    [data-tooltip-side="right"]:not([data-governance-action]):hover::after,
+    [data-tooltip-side="right"]:not([data-governance-action]):focus-visible::after {{
+      transform: translate(0, 0);
+    }}
+    [data-tooltip-side="bottom"]:not([data-governance-action])::after {{
+      top: calc(100% + 8px);
+      bottom: auto;
+      transform: translate(-50%, -3px);
+    }}
+    [data-tooltip-side="bottom"]:not([data-governance-action]):hover::after,
+    [data-tooltip-side="bottom"]:not([data-governance-action]):focus-visible::after {{
+      transform: translate(-50%, 0);
+    }}
+    @media (hover: none), (pointer: coarse) {{
+      [data-tooltip]:not([data-governance-action])::after {{
+        display: none;
+      }}
+    }}
     .topbar-actions .utility-button[data-icon]::before,
     .low-ui-action[data-icon]::before,
     .button-link[data-icon]::before,
@@ -40629,6 +41075,7 @@ class Handler(BaseHTTPRequestHandler):
     .jump-latest[data-icon]::before,
     .composer-send[data-icon]::before,
     .composer-inline-action[data-icon]::before,
+    .composer-upload-item[data-icon]::before,
     .copy-button[data-icon]::before,
     .relay-target[data-icon]::before,
     .link-copy-button[data-icon]::before,
@@ -46344,25 +46791,38 @@ class Handler(BaseHTTPRequestHandler):
       position: absolute;
       left: 0;
       bottom: calc(100% + 8px);
-      min-width: 210px;
-      max-width: min(86vw, 260px);
+      min-width: 248px;
+      max-width: min(88vw, 310px);
       display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 3px;
       padding: 6px;
       border-radius: 10px;
       border: 1px solid color-mix(in srgb, var(--border) 84%, transparent);
-      background: color-mix(in srgb, var(--surface) 96%, var(--bg-soft));
-      box-shadow: 0 12px 30px rgba(9, 12, 18, 0.18);
-      backdrop-filter: blur(14px) saturate(112%);
+      background:
+        repeating-linear-gradient(
+          96deg,
+          color-mix(in srgb, var(--agent-accent-3) 3%, transparent) 0 1px,
+          transparent 1px 18px
+        ),
+        linear-gradient(180deg, color-mix(in srgb, var(--surface) 96%, var(--bg-soft)), color-mix(in srgb, var(--surface-2) 90%, rgba(0, 0, 0, 0.12)));
+      box-shadow:
+        0 12px 30px rgba(9, 12, 18, 0.18),
+        inset 0 1px 0 color-mix(in srgb, rgba(255, 255, 255, 0.045) 42%, transparent);
+      backdrop-filter: blur(14px) saturate(118%);
       z-index: 8;
     }}
     .composer-upload-menu[hidden] {{
       display: none;
     }}
     .composer-upload-item {{
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
       justify-content: flex-start;
       min-height: 36px;
-      padding: 7px 10px;
+      min-width: 0;
+      padding: 7px 8px;
       border-radius: 7px;
       border-color: transparent;
       background: transparent;
@@ -46370,6 +46830,9 @@ class Handler(BaseHTTPRequestHandler):
       font-size: 0.68rem;
       line-height: 1.18;
       text-align: left;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }}
     .composer-upload-item:hover,
     .composer-upload-item:focus-visible {{
@@ -47863,6 +48326,15 @@ class Handler(BaseHTTPRequestHandler):
       color: var(--muted);
       font-size: 0.72rem;
       font-weight: 650;
+      transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease, transform 0.12s ease;
+    }}
+    .switcher-chip:hover,
+    .switcher-chip:focus-visible {{
+      color: var(--text);
+      border-color: color-mix(in srgb, var(--agent-accent) 28%, var(--border-strong));
+      background: color-mix(in srgb, var(--surface-3) 48%, transparent);
+      transform: translateY(-1px);
+      outline: none;
     }}
     .switcher-chip.active {{
       color: var(--text);
@@ -48027,6 +48499,16 @@ class Handler(BaseHTTPRequestHandler):
         inset 0 1px 0 color-mix(in srgb, rgba(255, 255, 255, 0.035) 36%, transparent),
         0 8px 18px rgba(8, 12, 18, 0.055);
     }}
+    .settings-card:hover,
+    .settings-card:focus-within {{
+      border-color: color-mix(in srgb, var(--agent-accent) 20%, var(--border));
+      background:
+        linear-gradient(180deg, color-mix(in srgb, var(--surface) 18%, transparent), transparent 76%),
+        color-mix(in srgb, var(--surface-2) 34%, transparent);
+      box-shadow:
+        inset 0 1px 0 color-mix(in srgb, rgba(255, 255, 255, 0.045) 40%, transparent),
+        0 10px 22px rgba(8, 12, 18, 0.07);
+    }}
     .settings-label {{
       display: inline-flex;
       align-items: center;
@@ -48057,6 +48539,17 @@ class Handler(BaseHTTPRequestHandler):
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease, transform 0.12s ease, box-shadow 0.12s ease;
+    }}
+    .setting-pill:hover,
+    .setting-pill:focus-visible {{
+      color: var(--text);
+      border-color: color-mix(in srgb, var(--agent-accent) 30%, var(--border-strong));
+      background: color-mix(in srgb, var(--agent-accent) 8%, var(--surface-2));
+      transform: translateY(-1px);
+      box-shadow:
+        inset 0 1px 0 color-mix(in srgb, rgba(255, 255, 255, 0.045) 42%, transparent),
+        0 6px 16px rgba(8, 12, 18, 0.07);
     }}
     .setting-pill.active {{
       background: var(--surface-3);
@@ -48880,6 +49373,10 @@ class Handler(BaseHTTPRequestHandler):
       }}
       .topbar-menu-shortcuts {{
         display: none;
+      }}
+      .composer-upload-menu {{
+        grid-template-columns: 1fr;
+        min-width: min(88vw, 240px);
       }}
       .low-ui-rail {{
         top: var(--low-ui-rail-top, 34px);
@@ -50152,7 +50649,7 @@ class Handler(BaseHTTPRequestHandler):
           <span id="run-state" class="pill {html.escape(initial_tone)}">{html.escape(initial_run_label)}</span>
           <span id="bedrock-health-badge" class="bedrock-health-badge idle" title="Bedrock health has not been checked yet." hidden>Bedrock</span>
           <span class="topbar-version" title="Console UI version">v{html.escape(UI_VERSION)}</span>
-          <button id="status-action-button" type="button" class="ghost status-action-button" data-icon="?" data-tone="idle" aria-expanded="false" title="Status and actions">Status</button>
+          <button id="status-action-button" type="button" class="ghost status-action-button" data-icon="?" data-tone="idle" aria-expanded="false" aria-label="Status and actions" title="Status and actions" data-tooltip="Status and actions" data-tooltip-side="bottom">Status</button>
         </div>
         <p id="status-message" class="status-copy">{html.escape(initial_status_message)}</p>
         <div id="status-action-panel" class="status-action-panel surface" aria-hidden="true" hidden>
@@ -50163,30 +50660,30 @@ class Handler(BaseHTTPRequestHandler):
           <p id="status-action-summary" class="status-action-summary">Loading current status…</p>
           <div id="status-action-meta" class="status-action-meta"></div>
           <div class="status-action-controls">
-            <button id="status-refresh-button" type="button" class="ghost utility-button" data-icon="↻" data-governance-action="read" data-governance-power="none" data-governance-label="">Refresh</button>
-            <button id="status-ask-button" type="button" class="ghost utility-button" data-icon="?" data-governance-action="mouth" data-governance-power="mouth" data-governance-label="Mouth">Ask status</button>
-            <button id="status-handle-button" type="button" class="ghost utility-button" data-icon=">" data-governance-action="approval" data-governance-power="none" data-governance-label="">Handle it</button>
+            <button id="status-refresh-button" type="button" class="ghost utility-button" data-icon="↻" data-governance-action="read" data-governance-power="none" data-governance-label="" aria-label="Refresh status snapshot" title="Refresh status snapshot">Refresh</button>
+            <button id="status-ask-button" type="button" class="ghost utility-button" data-icon="?" data-governance-action="mouth" data-governance-power="mouth" data-governance-label="Mouth" aria-label="Ask the local route for status" title="Ask the local route for status">Ask status</button>
+            <button id="status-handle-button" type="button" class="ghost utility-button" data-icon=">" data-governance-action="approval" data-governance-power="none" data-governance-label="" aria-label="Queue a safe recovery prompt" title="Queue a safe recovery prompt">Handle it</button>
           </div>
         </div>
       </div>
       <div class="topbar-actions">
-        <a id="prime-home-button" class="ghost utility-button button-link prime-home-button" data-icon="{html.escape(icon_for_label('Prime', '⌂'))}" href="{html.escape(norman_prime_href)}" title="Back to Norman Prime">
+        <a id="prime-home-button" class="ghost utility-button button-link prime-home-button" data-icon="{html.escape(icon_for_label('Prime', '⌂'))}" href="{html.escape(norman_prime_href)}" aria-label="Back to Norman Prime" title="Back to Norman Prime" data-tooltip="Back to Norman Prime" data-tooltip-side="left">
           <span class="prime-home-label">Prime</span>
         </a>
-        <a id="directory-home-button" class="ghost utility-button button-link directory-home-button" data-icon="{html.escape(icon_for_label('Directory', '≡'))}" href="{html.escape(norman_directory_href)}" title="Open Norman Directory">
+        <a id="directory-home-button" class="ghost utility-button button-link directory-home-button" data-icon="{html.escape(icon_for_label('Directory', '≡'))}" href="{html.escape(norman_directory_href)}" aria-label="Open Norman Directory" title="Open Norman Directory" data-tooltip="Open Norman Directory" data-tooltip-side="left">
           <span class="directory-home-label">Dir</span>
         </a>
-        <button id="switcher-toggle-button" type="button" class="ghost utility-button switcher-toggle-button" data-icon="{html.escape(icon_for_label("Switch", "⇆"))}" title="Switch agents (Ctrl/Cmd+K)">
+        <button id="switcher-toggle-button" type="button" class="ghost utility-button switcher-toggle-button" data-icon="{html.escape(icon_for_label("Switch", "⇆"))}" aria-label="Switch agents (Ctrl/Cmd+K)" title="Switch agents (Ctrl/Cmd+K)" data-tooltip="Switch agents (Ctrl/Cmd+K)" data-tooltip-side="left">
           <span class="switcher-toggle-label">Switch</span>
         </button>
-        <button id="topbar-menu-button" type="button" class="ghost utility-button topbar-menu-button" data-icon="{html.escape(icon_for_label("Settings", "⚙"))}" aria-expanded="false" title="Console controls">
+        <button id="topbar-menu-button" type="button" class="ghost utility-button topbar-menu-button" data-icon="{html.escape(icon_for_label("Settings", "⚙"))}" aria-expanded="false" aria-label="Console controls" title="Console controls" data-tooltip="Console controls" data-tooltip-side="left">
           <span class="topbar-menu-button-label">Menu</span>
           <span id="topbar-menu-count" class="topbar-menu-count" hidden>0</span>
         </button>
       </div>
     </header>
     <nav id="low-ui-rail" class="low-ui-rail" aria-label="Low UI navigation">
-      <button id="low-ui-mode-button" type="button" class="ghost low-ui-action low-ui-mode-toggle" data-icon="{html.escape(icon_for_label("Remote", "▣"))}" data-low-ui-action="mode" data-voice-label="Remote" aria-pressed="false" title="Toggle remote-friendly controls">Remote</button>
+      <button id="low-ui-mode-button" type="button" class="ghost low-ui-action low-ui-mode-toggle" data-icon="{html.escape(icon_for_label("Remote", "▣"))}" data-low-ui-action="mode" data-voice-label="Remote" aria-pressed="false" title="Toggle remote-friendly controls" data-tooltip="Toggle remote-friendly controls">Remote</button>
       <button type="button" class="ghost low-ui-action" data-icon="{html.escape(icon_for_label("Prompt", "/"))}" data-low-ui-action="prompt" data-voice-label="Prompt" title="Focus prompt">Prompt</button>
       <button type="button" class="ghost low-ui-action" data-icon="{html.escape(icon_for_label("Send", "→"))}" data-low-ui-action="send" data-voice-label="Send" title="Queue prompt">Send</button>
       <button type="button" class="ghost low-ui-action" data-icon="{html.escape(icon_for_label("Latest"))}" data-low-ui-action="latest" data-voice-label="Latest" title="Jump to latest">Latest</button>
@@ -50234,20 +50731,20 @@ class Handler(BaseHTTPRequestHandler):
             <span id="transport-state-menu" class="topbar-menu-status">Connecting live updates…</span>
           </div>
           <div class="topbar-menu-links">
-            <a class="ghost utility-button button-link" data-icon="{html.escape(icon_for_label('Prime', '⌂'))}" href="{html.escape(norman_prime_href)}" title="Back to Norman Prime">Prime</a>
-            <a class="ghost utility-button button-link" data-icon="{html.escape(icon_for_label('Directory', '≡'))}" href="{html.escape(norman_directory_href)}" title="Open Norman Directory">Directory</a>
-            <button id="context-save-menu-button" type="button" class="ghost utility-button context-save-button" data-icon="{html.escape(icon_for_label('Save', '↓'))}" hidden>Save</button>
-            <a id="theme-toggle-button" class="ghost utility-button button-link" data-icon="{html.escape(icon_for_label(theme_toggle_label, "◐"))}" href="{html.escape(build_console_href(token=local_token_value, profile=theme_toggle_target, route=route_preference, prefix=path_prefix))}" title="Switch to {html.escape(theme_toggle_label)} mode">{html.escape(theme_toggle_label)}</a>
-            <button id="auth-browser-button" type="button" class="ghost utility-button" data-icon="{html.escape(icon_for_label('Sign In', '↗'))}" hidden>Sign in</button>
-            <button id="auth-device-button" type="button" class="ghost utility-button" data-icon="{html.escape(icon_for_label('Device Code', '#'))}" hidden>Device code</button>
-            <a id="auth-helper-link" class="ghost utility-button button-link" data-icon="{html.escape(icon_for_label('Auth Helper', '⌁'))}" href="{html.escape(prefixed_path('/auth/browser/callback', path_prefix))}" hidden>Auth Helper</a>
-            <button id="notice-toggle-button" type="button" class="ghost utility-button notice-toggle" title="Recent notifications">
+            <a class="ghost utility-button button-link" data-icon="{html.escape(icon_for_label('Prime', '⌂'))}" href="{html.escape(norman_prime_href)}" aria-label="Back to Norman Prime" title="Back to Norman Prime" data-tooltip="Back to Norman Prime">Prime</a>
+            <a class="ghost utility-button button-link" data-icon="{html.escape(icon_for_label('Directory', '≡'))}" href="{html.escape(norman_directory_href)}" aria-label="Open Norman Directory" title="Open Norman Directory" data-tooltip="Open Norman Directory">Directory</a>
+            <button id="context-save-menu-button" type="button" class="ghost utility-button context-save-button" data-icon="{html.escape(icon_for_label('Save', '↓'))}" aria-label="Save or compact this thread" title="Save or compact this thread" data-tooltip="Save or compact this thread" hidden>Save</button>
+            <a id="theme-toggle-button" class="ghost utility-button button-link" data-icon="{html.escape(icon_for_label(theme_toggle_label, "◐"))}" href="{html.escape(build_console_href(token=local_token_value, profile=theme_toggle_target, route=route_preference, prefix=path_prefix))}" aria-label="Switch to {html.escape(theme_toggle_label)} mode" title="Switch to {html.escape(theme_toggle_label)} mode" data-tooltip="Switch to {html.escape(theme_toggle_label)} mode">{html.escape(theme_toggle_label)}</a>
+            <button id="auth-browser-button" type="button" class="ghost utility-button" data-icon="{html.escape(icon_for_label('Sign In', '↗'))}" aria-label="Sign in through browser" title="Sign in through browser" data-tooltip="Sign in through browser" hidden>Sign in</button>
+            <button id="auth-device-button" type="button" class="ghost utility-button" data-icon="{html.escape(icon_for_label('Device Code', '#'))}" aria-label="Use device code sign-in" title="Use device code sign-in" data-tooltip="Use device code sign-in" hidden>Device code</button>
+            <a id="auth-helper-link" class="ghost utility-button button-link" data-icon="{html.escape(icon_for_label('Auth Helper', '⌁'))}" href="{html.escape(prefixed_path('/auth/browser/callback', path_prefix))}" aria-label="Open auth helper callback" title="Open auth helper callback" data-tooltip="Open auth helper callback" hidden>Auth Helper</a>
+            <button id="notice-toggle-button" type="button" class="ghost utility-button notice-toggle" aria-label="Recent notifications" title="Recent notifications" data-tooltip="Recent notifications">
               <span class="notice-toggle-label"><span>✺</span><span>Alerts</span></span>
               <span id="notice-count" class="notice-count" hidden>0</span>
             </button>
-            <button id="refresh-button" type="button" class="ghost utility-button" data-icon="{html.escape(icon_for_label("Refresh"))}">Refresh</button>
-            <button id="settings-toggle-button" type="button" class="ghost utility-button" data-icon="{html.escape(icon_for_label("View"))}">View</button>
-            <button id="system-toggle-button" type="button" class="ghost utility-button system-toggle" data-icon="{html.escape(icon_for_label("System"))}">System</button>
+            <button id="refresh-button" type="button" class="ghost utility-button" data-icon="{html.escape(icon_for_label("Refresh"))}" aria-label="Refresh live status" title="Refresh live status" data-tooltip="Refresh live status">Refresh</button>
+            <button id="settings-toggle-button" type="button" class="ghost utility-button" data-icon="{html.escape(icon_for_label("View"))}" aria-label="Open view controls" title="Open view controls" data-tooltip="Open view controls">View</button>
+            <button id="system-toggle-button" type="button" class="ghost utility-button system-toggle" data-icon="{html.escape(icon_for_label("System"))}" aria-label="Open system panel" title="Open system panel" data-tooltip="Open system panel">System</button>
           </div>
           {f'<div class="topbar-menu-links topbar-menu-links--context">{topbar_context_links_html}</div>' if topbar_context_links_html else ''}
           <div class="topbar-menu-shortcuts" aria-label="Quick shortcuts">
@@ -50281,13 +50778,13 @@ class Handler(BaseHTTPRequestHandler):
           <div id="notice-rail" class="notice-rail" hidden></div>
           <div id="history-toolbar" class="history-toolbar">
             <span id="history-window-note" class="history-note"></span>
-            <button id="history-toggle-button" type="button" class="ghost history-toggle" data-icon="{html.escape(icon_for_label("History"))}" title="Show older turns">Timeline</button>
+            <button id="history-toggle-button" type="button" class="ghost history-toggle" data-icon="{html.escape(icon_for_label("History"))}" aria-label="Show older turns" title="Show older turns" data-tooltip="Show older turns">Timeline</button>
           </div>
           <div id="conversation" class="conversation">
             {initial_conversation_html}
           </div>
         </div>
-        <button id="jump-latest-button" type="button" class="ghost jump-latest" data-icon="{html.escape(icon_for_label("Latest"))}" title="Jump to latest (End)">Latest</button>
+        <button id="jump-latest-button" type="button" class="ghost jump-latest" data-icon="{html.escape(icon_for_label("Latest"))}" aria-label="Jump to latest (End)" title="Jump to latest (End)" data-tooltip="Jump to latest (End)" data-tooltip-side="left">Latest</button>
         <div class="composer-wrap">
           <div id="activity-strip" class="activity-strip">
             <div id="activity-icon" class="activity-icon"></div>
@@ -50298,15 +50795,15 @@ class Handler(BaseHTTPRequestHandler):
             </div>
             <div id="activity-track" class="activity-track" hidden></div>
             <div id="activity-actions" class="activity-actions">
-              <button id="activity-peek-toggle" type="button" class="ghost activity-peek-toggle" hidden>Peek</button>
+              <button id="activity-peek-toggle" type="button" class="ghost activity-peek-toggle" aria-label="Peek at background activity" title="Peek at background activity" data-tooltip="Peek at background activity" hidden>Peek</button>
             </div>
           </div>
           <div id="activity-peek" class="activity-peek" hidden>
             <div class="activity-peek-head">
               <div id="activity-peek-title" class="activity-peek-title">Background</div>
               <div class="activity-peek-head-actions">
-                <button id="activity-log-link" type="button" class="ghost activity-log-link">System</button>
-                <button id="activity-peek-close" type="button" class="ghost activity-peek-close">Hide</button>
+                <button id="activity-log-link" type="button" class="ghost activity-log-link" aria-label="Open system activity" title="Open system activity" data-tooltip="Open system activity">System</button>
+                <button id="activity-peek-close" type="button" class="ghost activity-peek-close" aria-label="Hide background activity" title="Hide background activity" data-tooltip="Hide background activity">Hide</button>
               </div>
             </div>
             <div id="activity-sim-line" class="activity-sim-line"></div>
@@ -50443,28 +50940,28 @@ class Handler(BaseHTTPRequestHandler):
               </div>
               <div class="composer-inline-actions">
                 <div class="composer-upload-shell">
-                  <button id="composer-upload-button" type="button" class="ghost composer-inline-action composer-upload-button" data-icon="+" title="Add file, screenshot, or context" aria-label="Add file, screenshot, or context" aria-expanded="false">
+                  <button id="composer-upload-button" type="button" class="ghost composer-inline-action composer-upload-button" data-icon="+" title="Add file, screenshot, or context" data-tooltip="Add file, screenshot, or context" aria-label="Add file, screenshot, or context" aria-expanded="false">
                     <span class="composer-upload-label">Add</span>
                     <span class="visually-hidden">Add file, screenshot, or context</span>
                   </button>
                   <div id="composer-upload-menu" class="composer-upload-menu" hidden>
-                    <button type="button" class="ghost composer-upload-item" data-upload-action="file" data-icon="+">Files</button>
-                    <button type="button" class="ghost composer-upload-item" data-upload-action="capture-console" data-icon="◧">Capture console</button>
-                    <button type="button" class="ghost composer-upload-item" data-upload-action="capture-link" data-icon="↗">Capture link</button>
-                    <button type="button" class="ghost composer-upload-item" data-upload-action="logs" data-icon="⌘">Attach logs</button>
-                    <button type="button" class="ghost composer-upload-item" data-upload-action="history" data-icon="◴">Attach history</button>
-                    <button type="button" class="ghost composer-upload-item" data-upload-action="pane" data-icon="▤">Attach pane</button>
+                    <button type="button" class="ghost composer-upload-item" data-upload-action="file" data-icon="+" aria-label="Attach files" title="Attach files" data-tooltip="Attach files">Files</button>
+                    <button type="button" class="ghost composer-upload-item" data-upload-action="capture-console" data-icon="◧" aria-label="Capture console output" title="Capture console output" data-tooltip="Capture console output">Capture console</button>
+                    <button type="button" class="ghost composer-upload-item" data-upload-action="capture-link" data-icon="↗" aria-label="Capture a link" title="Capture a link" data-tooltip="Capture a link">Capture link</button>
+                    <button type="button" class="ghost composer-upload-item" data-upload-action="logs" data-icon="⌘" aria-label="Attach recent logs" title="Attach recent logs" data-tooltip="Attach recent logs">Attach logs</button>
+                    <button type="button" class="ghost composer-upload-item" data-upload-action="history" data-icon="◴" aria-label="Attach conversation history" title="Attach conversation history" data-tooltip="Attach conversation history">Attach history</button>
+                    <button type="button" class="ghost composer-upload-item" data-upload-action="pane" data-icon="▤" aria-label="Attach live pane" title="Attach live pane" data-tooltip="Attach live pane">Attach pane</button>
                   </div>
                 </div>
-                <button id="composer-tools-toggle" type="button" class="ghost composer-tools-toggle composer-inline-action composer-tools-inline" data-icon="⚙" aria-expanded="false" title="Tune prompt">
+                <button id="composer-tools-toggle" type="button" class="ghost composer-tools-toggle composer-inline-action composer-tools-inline" data-icon="⚙" aria-expanded="false" aria-label="Tune prompt" title="Tune prompt" data-tooltip="Tune prompt">
                   <span class="visually-hidden">Tune prompt</span>
                 </button>
               </div>
               <textarea id="prompt-input" name="message" rows="1" autocomplete="off" autocapitalize="sentences" spellcheck="true" enterkeyhint="send" aria-label="Prompt" placeholder="{html.escape(PROMPT_PLACEHOLDER)}"></textarea>
               <span id="response-summary" class="response-summary visually-hidden">Think Std · Reply Balanced</span>
               <div class="composer-send-cluster" aria-label="Prompt submit controls">
-                <button id="ask-button" type="submit" class="primary composer-send composer-send-queue" data-icon="→" title="Queue prompt. Press Enter to queue and Shift+Enter for a new line." aria-label="Queue prompt"><span id="ask-button-label" class="composer-send-label">Queue</span></button>
-                <button id="interrupt-submit-button" type="button" class="ghost composer-send composer-send-interrupt" data-icon="↑" title="Interrupt at the next safe checkpoint" aria-label="Interrupt at the next safe checkpoint"><span class="composer-send-label">Interrupt</span></button>
+                <button id="ask-button" type="submit" class="primary composer-send composer-send-queue" data-icon="→" title="Queue prompt. Press Enter to queue and Shift+Enter for a new line." data-tooltip="Queue prompt. Enter queues; Shift+Enter inserts a new line." aria-label="Queue prompt"><span id="ask-button-label" class="composer-send-label">Queue</span></button>
+                <button id="interrupt-submit-button" type="button" class="ghost composer-send composer-send-interrupt" data-icon="↑" title="Interrupt at the next safe checkpoint" data-tooltip="Interrupt at the next safe checkpoint" aria-label="Interrupt at the next safe checkpoint"><span class="composer-send-label">Interrupt</span></button>
               </div>
             </div>
             <div id="composer-feedback" class="composer-feedback" role="status" aria-live="polite" hidden></div>
@@ -52736,6 +53233,26 @@ class Handler(BaseHTTPRequestHandler):
       }}
     }}
 
+    function hydrateControlTooltips(root = document) {{
+      const scope = root && typeof root.querySelectorAll === "function" ? root : document;
+      scope.querySelectorAll("button[title], a[title], [role='button'][title], .meta-chip[title]").forEach((control) => {{
+        const title = String(control.getAttribute("title") || "").trim();
+        if (!title) {{
+          return;
+        }}
+        if (!control.dataset.tooltip || control.dataset.tooltipFromTitle === "true") {{
+          control.dataset.tooltip = title;
+          control.dataset.tooltipFromTitle = "true";
+        }}
+        if (
+          !control.getAttribute("aria-label")
+          && (control.matches("button") || control.matches("a") || control.getAttribute("role") === "button")
+        ) {{
+          control.setAttribute("aria-label", title);
+        }}
+      }});
+    }}
+
     function defaultCompletionBell() {{
       if (AGENT_COMPLETION_BELL_PROFILE) {{
         return "agent";
@@ -54613,6 +55130,7 @@ class Handler(BaseHTTPRequestHandler):
       if (!items.length) {{
         el.switcherList.innerHTML = '<div class="switcher-empty">Nothing matches this view. Clear the search or switch groups.</div>';
         refreshConsoleNavLinkHrefs();
+        hydrateControlTooltips(el.switcherPanel);
         return;
       }}
       el.switcherList.innerHTML = items.map((item) => `
@@ -54629,6 +55147,7 @@ class Handler(BaseHTTPRequestHandler):
         </article>
       `).join("");
       refreshConsoleNavLinkHrefs();
+      hydrateControlTooltips(el.switcherPanel);
     }}
 
     function refreshConsoleNavLinkHrefs() {{
@@ -67721,6 +68240,7 @@ class Handler(BaseHTTPRequestHandler):
       }}
       renderSystemRuntimeMetrics(snapshot);
 
+      hydrateControlTooltips();
       scheduleComposerReserve();
       setBusyButtons(false);
     }}

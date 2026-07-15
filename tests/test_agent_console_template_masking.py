@@ -200,6 +200,63 @@ def test_empty_route_receipt_mirror_is_not_failed(tmp_path) -> None:
     assert snapshot["issues"] == []
 
 
+def test_route_receipt_status_prefers_state_db_over_jsonl(tmp_path) -> None:
+    module = _load_agent_console_web()
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    receipt_path = state_dir / "route_receipts" / "norman.jsonl"
+    old_enabled = module.ROUTE_RECEIPTS_ENABLED
+    old_path = module.ROUTE_RECEIPT_PATH
+    old_lock_path = module.ROUTE_RECEIPT_LOCK_PATH
+    old_db_path = module.STATE_DB_PATH
+    old_state_db_enabled = module.STATE_DB_ENABLED
+    old_error = module.ROUTE_RECEIPT_LAST_WRITE_ERROR
+    try:
+        module.ROUTE_RECEIPTS_ENABLED = True
+        module.STATE_DB_ENABLED = True
+        module.ROUTE_RECEIPT_PATH = receipt_path
+        module.ROUTE_RECEIPT_LOCK_PATH = receipt_path.with_name(
+            f"{receipt_path.name}.lock"
+        )
+        module.STATE_DB_PATH = state_dir / "tui_state.sqlite3"
+        module.ROUTE_RECEIPT_LAST_WRITE_ERROR = ""
+
+        receipt = module.append_route_receipt(
+            prompt="status?",
+            visible_response="ready",
+            error_text="",
+            started_at=1712878300,
+            finished_at=1712878302,
+            thread_id="thread-test",
+            speed="normal",
+            detail=2,
+            service_tier="default",
+            job_budget="normal",
+            optimization_mode="optimized",
+            success=True,
+            runtime="codex",
+            model="gpt-5.5",
+            usage={"input_tokens": 10, "output_tokens": 2, "total_tokens": 12},
+        )
+        receipt_path.write_text("{not-json}\n", encoding="utf-8")
+
+        snapshot = module.route_receipt_status_snapshot()
+    finally:
+        module.ROUTE_RECEIPTS_ENABLED = old_enabled
+        module.ROUTE_RECEIPT_PATH = old_path
+        module.ROUTE_RECEIPT_LOCK_PATH = old_lock_path
+        module.STATE_DB_PATH = old_db_path
+        module.STATE_DB_ENABLED = old_state_db_enabled
+        module.ROUTE_RECEIPT_LAST_WRITE_ERROR = old_error
+
+    assert receipt is not None
+    assert snapshot["status"] == "pass"
+    assert snapshot["storage_source"] == "state_db"
+    assert snapshot["receipt_count"] == 1
+    assert snapshot["latest_hash"] == receipt["receipt_hash"]
+    assert snapshot["issue_count"] == 0
+
+
 def _load_sync_agent_console_template():
     script_path = (
         Path(__file__).resolve().parents[1]
@@ -2512,6 +2569,23 @@ def test_template_refines_topbar_footer_and_composer_materials() -> None:
     assert ".system-runtime-metrics {" in source
     assert "body.mobile-compose-mode .message-tools," in source
     assert "body.mobile-compose-mode #switcher-toggle-button {" in source
+
+
+def test_template_adds_dense_menu_tooltips_and_icon_choices() -> None:
+    source = _agent_console_web_source()
+
+    assert "[data-tooltip]:not([data-governance-action])::after {" in source
+    assert 'data-tooltip="Console controls"' in source
+    assert 'data-tooltip="Add file, screenshot, or context"' in source
+    assert 'data-tooltip-side="left"' in source
+    assert "function hydrateControlTooltips(root = document) {" in source
+    assert 'control.dataset.tooltipFromTitle = "true";' in source
+    assert "hydrateControlTooltips();" in source
+    assert ".topbar-menu::before {" in source
+    assert ".topbar-menu-links--context {" in source
+    assert ".composer-upload-item[data-icon]::before," in source
+    assert 'aria-label="Refresh live status"' in source
+    assert 'data-tooltip="Attach recent logs"' in source
 
 
 def test_template_uses_agent_marks_and_orbit_tab_chrome() -> None:

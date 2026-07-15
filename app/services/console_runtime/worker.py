@@ -29,6 +29,11 @@ from app.services.console_runtime.types import (
     ModelRequest,
     ModelResult,
 )
+from app.services.prompt_load_balancer import classify_prompt
+from app.services.reasoning_orchestrator import (
+    build_reasoning_receipt,
+    plan_reasoning_turn,
+)
 from app.services.norllama.routing import build_task_receipt, route_task
 from app.services.norllama.route_proof import (
     audit_route_receipt,
@@ -280,6 +285,44 @@ def _route_receipt_from_result(result: ModelResult | None) -> dict[str, Any]:
     return dict(route_receipt)
 
 
+def _runtime_reasoning_plan(
+    *,
+    job,
+    route_policy: dict[str, Any],
+    options: "ConsoleRuntimeRunOptions",
+    task_kind: str = "",
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    classification = classify_prompt(job.contract.objective)
+    if task_kind:
+        classification = {**classification, "task_kind": task_kind}
+    context = _merge_dicts(
+        job.metadata,
+        job.contract.metadata,
+        options.metadata,
+        {
+            "console_runtime_job_id": job.job_id,
+            "worker_id": options.worker_id,
+            "dry_run": options.dry_run,
+            "runtime": route_policy.get("runtime"),
+            "provider": route_policy.get("provider"),
+            "route_proof_required": route_policy.get("route_proof_required"),
+            "background_loop": route_policy.get("background_loop"),
+        },
+    )
+    plan = plan_reasoning_turn(
+        prompt=job.contract.objective,
+        classification=classification,
+        context=context,
+        source=_clean(context.get("source")) or "console_runtime",
+        session=_clean(
+            context.get("session")
+            or context.get("session_name")
+            or context.get("console_runtime_session")
+        ),
+    )
+    return classification, plan, build_reasoning_receipt(plan)
+
+
 def _receipt_audit(route_receipt: dict[str, Any]) -> dict[str, Any]:
     return audit_route_receipt(route_receipt)
 
@@ -380,6 +423,127 @@ def _receipt_completion_summary(
     }
 
 
+def _reasoning_tool_gate_required(
+    route_policy: dict[str, Any],
+    options: "ConsoleRuntimeRunOptions",
+) -> bool:
+    return (
+        _flag(route_policy.get("reasoning_tool_gate_required"))
+        or _flag(route_policy.get("require_reasoning_tool_gate"))
+        or _flag(options.metadata.get("reasoning_tool_gate_required"))
+        or _flag(options.metadata.get("require_reasoning_tool_gate"))
+    )
+
+
+def _reasoning_tool_gate_summary(
+    *,
+    reasoning_plan: dict[str, Any],
+    route_policy: dict[str, Any],
+    options: "ConsoleRuntimeRunOptions",
+    invocation_id: str,
+    adapter_name: str,
+    model: str,
+    route_receipt: dict[str, Any],
+    receipt_audit: dict[str, Any],
+    completion_gate: dict[str, Any],
+    verification_signal: str,
+) -> dict[str, Any]:
+    tool_plan = (
+        dict(reasoning_plan.get("tool_plan"))
+        if isinstance(reasoning_plan.get("tool_plan"), dict)
+        else {}
+    )
+    required_tools = [
+        _clean(tool) for tool in list(tool_plan.get("required_tools") or []) if tool
+    ]
+    observed: list[dict[str, Any]] = [
+        {
+            "tool": "model_adapter.invoke",
+            "status": "pass",
+            "provider": adapter_name,
+            "model": model,
+            "invocation_id": invocation_id,
+        }
+    ]
+    if route_receipt:
+        observed.append(
+            {
+                "tool": "route_receipt_ledger",
+                "status": "pass",
+                "request_id": route_receipt.get("request_id"),
+                "invocation_id": route_receipt.get("invocation_id") or invocation_id,
+            }
+        )
+        if route_receipt.get("output_shape"):
+            observed.append(
+                {
+                    "tool": "output_shape_validator",
+                    "status": "pass"
+                    if route_receipt.get("output_shape") == "complete"
+                    else "fail",
+                    "output_shape": route_receipt.get("output_shape"),
+                }
+            )
+        if route_receipt.get("verifier_result") or verification_signal:
+            observed.append(
+                {
+                    "tool": "verifier_result_normalizer",
+                    "status": "pass",
+                    "verifier_result": route_receipt.get("verifier_result"),
+                    "verification_signal": verification_signal,
+                }
+            )
+    if receipt_audit:
+        observed.append(
+            {
+                "tool": "route_receipt_auditor",
+                "status": "pass" if receipt_audit.get("pass") else "fail",
+                "audit_status": receipt_audit.get("status"),
+            }
+        )
+    if completion_gate:
+        observed.append(
+            {
+                "tool": "completion_gate",
+                "status": "pass" if completion_gate.get("gate_passed") else "fail",
+                "reason": completion_gate.get("reason"),
+            }
+        )
+    observed_names = {_clean(item.get("tool")) for item in observed}
+    missing_required = [
+        tool for tool in required_tools if tool and tool not in observed_names
+    ]
+    enforcement_required = _reasoning_tool_gate_required(route_policy, options)
+    gate_passed = not missing_required
+    completion_allowed = gate_passed or not enforcement_required
+    verifier_result = "pass" if gate_passed else "missing_required_tools"
+    return {
+        "schema": "norman.reasoning-tool-gate.v1",
+        "plan_id": reasoning_plan.get("plan_id"),
+        "registry_version": reasoning_plan.get("registry_version"),
+        "selected_skill_ids": list(reasoning_plan.get("selected_skill_ids") or []),
+        "required_tools": required_tools,
+        "observed_tools": observed,
+        "observed_tool_names": sorted(observed_names),
+        "missing_required_tools": missing_required,
+        "enforcement_required": enforcement_required,
+        "gate_passed": gate_passed,
+        "completion_allowed": completion_allowed,
+        "reason": "pass"
+        if gate_passed
+        else "missing_required_tools_required"
+        if enforcement_required
+        else "missing_required_tools_advisory",
+        "reasoning_receipt": build_reasoning_receipt(
+            reasoning_plan,
+            executed_tools=observed,
+            verifier_result=verifier_result,
+        )
+        if reasoning_plan
+        else {},
+    }
+
+
 def _completion_requested_for_step(options: "ConsoleRuntimeRunOptions") -> bool:
     return bool(options.complete)
 
@@ -450,6 +614,23 @@ class DbConsoleRuntimeWorker:
         if job.status in {ConsoleJobStatus.LEASED, ConsoleJobStatus.CHECKPOINTED}:
             job = self.store.start_job(db, user_id=user_id, job_id=job_id)
 
+        route_policy = _local_first_route_policy(
+            _merge_dicts(job.contract.route_policy, opts.route_policy)
+        )
+        initial_task_kind = _goal_task_kind(
+            _clean(opts.metadata.get("goal_task_kind"))
+            or _clean(opts.metadata.get("goal_phase"))
+            or opts.planner_kind,
+            opts.planner_kind,
+        )
+        reasoning_classification, reasoning_plan, reasoning_receipt = (
+            _runtime_reasoning_plan(
+                job=job,
+                route_policy=route_policy,
+                options=opts,
+                task_kind=initial_task_kind,
+            )
+        )
         self.store.append_event(
             db,
             user_id=user_id,
@@ -462,14 +643,14 @@ class DbConsoleRuntimeWorker:
                 or opts.planner_kind,
                 "worker_id": opts.worker_id,
                 "dry_run": opts.dry_run,
+                "reasoning_classification": reasoning_classification,
+                "reasoning_orchestration": reasoning_plan,
+                "reasoning_receipt": reasoning_receipt,
             },
             summary="Runtime worker accepted job.",
             detail=job.contract.objective,
         )
 
-        route_policy = _local_first_route_policy(
-            _merge_dicts(job.contract.route_policy, opts.route_policy)
-        )
         if "recent_route_outcomes" not in route_policy:
             route_policy["recent_route_outcomes"] = self.store.route_outcomes(
                 db,
@@ -517,12 +698,7 @@ class DbConsoleRuntimeWorker:
                 policy_state=policy_state,
             )
 
-        task_kind = _goal_task_kind(
-            _clean(opts.metadata.get("goal_task_kind"))
-            or _clean(opts.metadata.get("goal_phase"))
-            or opts.planner_kind,
-            opts.planner_kind,
-        )
+        task_kind = initial_task_kind
         task = NorllamaTaskRequest(
             kind=task_kind,
             input_text=job.contract.objective,
@@ -571,6 +747,11 @@ class DbConsoleRuntimeWorker:
                 "goal_task_kind": _clean(opts.metadata.get("goal_task_kind"))
                 or task_kind,
                 "model_family": self._model_family(route.model),
+                "reasoning_plan_id": reasoning_plan.get("plan_id"),
+                "selected_skill_ids": list(
+                    reasoning_plan.get("selected_skill_ids") or []
+                ),
+                "tool_plan": reasoning_plan.get("tool_plan") or {},
             },
         )
         self.store.record_route_decision(
@@ -678,6 +859,18 @@ class DbConsoleRuntimeWorker:
                 "model_override_reason": model_override_reason,
                 "route_source": "runtime_worker",
                 "route_decision_id": decision.decision_id,
+                "reasoning_plan_id": reasoning_plan.get("plan_id"),
+                "reasoning_orchestration": reasoning_plan,
+                "selected_skill_ids": list(
+                    reasoning_plan.get("selected_skill_ids") or []
+                ),
+                "required_tools": list(
+                    (reasoning_plan.get("tool_plan") or {}).get("required_tools") or []
+                ),
+                "verification_tools": list(
+                    (reasoning_plan.get("tool_plan") or {}).get("verification_tools")
+                    or []
+                ),
                 "runtime_job_id": job_id,
                 "console_runtime_job_id": job_id,
                 "worker_id": opts.worker_id,
@@ -702,6 +895,17 @@ class DbConsoleRuntimeWorker:
                 "tool_name": "model_adapter.invoke",
                 "provider": model_adapter.name,
                 "model": request.model,
+                "reasoning_plan_id": reasoning_plan.get("plan_id"),
+                "selected_skill_ids": list(
+                    reasoning_plan.get("selected_skill_ids") or []
+                ),
+                "required_tools": list(
+                    (reasoning_plan.get("tool_plan") or {}).get("required_tools") or []
+                ),
+                "verification_tools": list(
+                    (reasoning_plan.get("tool_plan") or {}).get("verification_tools")
+                    or []
+                ),
             },
             summary=f"Started {model_adapter.name}",
             detail=request.route_key,
@@ -715,6 +919,13 @@ class DbConsoleRuntimeWorker:
                 "provider": model_adapter.name,
                 "model": request.model,
                 "route_key": request.route_key,
+                "reasoning_plan_id": reasoning_plan.get("plan_id"),
+                "selected_skill_ids": list(
+                    reasoning_plan.get("selected_skill_ids") or []
+                ),
+                "max_tool_iterations": (reasoning_plan.get("tool_plan") or {}).get(
+                    "max_tool_iterations"
+                ),
             },
             summary=f"Requested {model_adapter.name}",
         )
@@ -797,6 +1008,7 @@ class DbConsoleRuntimeWorker:
             adapter_name=model_adapter.name,
             result=result,
             verification_signal=verification_signal,
+            reasoning_plan=reasoning_plan,
         )
         route_receipt = _route_receipt_from_result(result)
         if route_receipt:
@@ -917,10 +1129,36 @@ class DbConsoleRuntimeWorker:
                 ),
                 detail=completion_gate.get("reason", ""),
             )
+        reasoning_tool_gate = _reasoning_tool_gate_summary(
+            reasoning_plan=reasoning_plan,
+            route_policy=route_policy,
+            options=opts,
+            invocation_id=invocation_id,
+            adapter_name=model_adapter.name,
+            model=result.model,
+            route_receipt=route_receipt if isinstance(route_receipt, dict) else {},
+            receipt_audit=receipt_audit,
+            completion_gate=completion_gate,
+            verification_signal=verification_signal,
+        )
+        self.store.append_event(
+            db,
+            user_id=user_id,
+            job_id=job_id,
+            event_type="reasoning.tool_gate",
+            payload=reasoning_tool_gate,
+            summary=(
+                "Reasoning tool gate passed"
+                if reasoning_tool_gate["gate_passed"]
+                else "Reasoning tool gate missing required evidence"
+            ),
+            detail=reasoning_tool_gate["reason"],
+        )
         if (
             verification_signal == "complete"
             and not missing
             and completion_gate["gate_passed"]
+            and reasoning_tool_gate["completion_allowed"]
         ):
             final_job = self.store.complete_job(
                 db,
@@ -933,6 +1171,7 @@ class DbConsoleRuntimeWorker:
             and not missing
             and verification_signal != "needs_more_work"
             and completion_gate["gate_passed"]
+            and reasoning_tool_gate["completion_allowed"]
         ):
             final_job = self.store.complete_job(
                 db,
@@ -941,12 +1180,18 @@ class DbConsoleRuntimeWorker:
                 summary="Runtime worker completed one model step.",
             )
         else:
-            checkpoint_reason = (
-                "Runtime worker checkpointed after route-proof gate."
-                if not completion_gate["gate_passed"]
-                and (require_proof or route_receipt)
-                else "Runtime worker checkpointed after one model step."
-            )
+            if not reasoning_tool_gate["completion_allowed"]:
+                checkpoint_reason = (
+                    "Runtime worker checkpointed after reasoning tool gate."
+                )
+            elif not completion_gate["gate_passed"] and (
+                require_proof or route_receipt
+            ):
+                checkpoint_reason = (
+                    "Runtime worker checkpointed after route-proof gate."
+                )
+            else:
+                checkpoint_reason = "Runtime worker checkpointed after one model step."
             final_job = self.store.checkpoint_job(
                 db,
                 user_id=user_id,
@@ -962,6 +1207,9 @@ class DbConsoleRuntimeWorker:
             "dry_run": opts.dry_run,
             "worker_id": opts.worker_id,
             "route_proof": completion_gate,
+            "reasoning_orchestration": reasoning_plan,
+            "reasoning_receipt": reasoning_receipt,
+            "reasoning_tool_gate": reasoning_tool_gate,
         }
 
     def run_continuous(
@@ -1732,9 +1980,28 @@ class DbConsoleRuntimeWorker:
         adapter_name: str,
         result: ModelResult,
         verification_signal: str = "",
+        reasoning_plan: dict[str, Any] | None = None,
     ) -> None:
         preview = _preview(result.text)
         metadata = dict(result.metadata or {})
+        reasoning_plan = dict(reasoning_plan or {})
+        reasoning_receipt = (
+            build_reasoning_receipt(
+                reasoning_plan,
+                executed_tools=[
+                    {
+                        "tool": "model_adapter.invoke",
+                        "status": "pass",
+                        "provider": adapter_name,
+                        "model": result.model,
+                        "invocation_id": invocation_id,
+                    }
+                ],
+                verifier_result=verification_signal or "observed",
+            )
+            if reasoning_plan
+            else {}
+        )
         route = (
             dict(metadata.get("norllama_route"))
             if isinstance(metadata.get("norllama_route"), dict)
@@ -1763,6 +2030,18 @@ class DbConsoleRuntimeWorker:
             "metadata": metadata,
             "output_preview": preview,
         }
+        if reasoning_plan:
+            payload["reasoning_plan_id"] = reasoning_plan.get("plan_id")
+            payload["selected_skill_ids"] = list(
+                reasoning_plan.get("selected_skill_ids") or []
+            )
+            payload["required_tools"] = list(
+                (reasoning_plan.get("tool_plan") or {}).get("required_tools") or []
+            )
+            payload["verification_tools"] = list(
+                (reasoning_plan.get("tool_plan") or {}).get("verification_tools") or []
+            )
+            payload["reasoning_receipt"] = reasoning_receipt
         if route_receipt:
             route_receipt = {
                 **route_receipt,
@@ -1819,6 +2098,9 @@ class DbConsoleRuntimeWorker:
                     "text": preview,
                     "provider": result.provider,
                     "model": result.model,
+                    "reasoning_plan_id": reasoning_plan.get("plan_id")
+                    if reasoning_plan
+                    else "",
                 },
                 summary="Model output",
                 detail=preview,
@@ -1834,6 +2116,10 @@ class DbConsoleRuntimeWorker:
                 "tool_name": "model_adapter.invoke",
                 "provider": adapter_name,
                 "output_preview": preview,
+                "reasoning_plan_id": reasoning_plan.get("plan_id")
+                if reasoning_plan
+                else "",
+                "reasoning_receipt": reasoning_receipt,
             },
             summary="Model adapter completed",
             detail=preview,

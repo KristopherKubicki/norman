@@ -3745,7 +3745,7 @@ DEFAULT_OPTIMIZATION_MODE = normalize_optimization_mode(
 
 AUTO_TURN_CONTROL_SCHEMA = "norman.tui.auto-turn-controls.v1"
 TURN_CONTROL_ENVELOPE_SCHEMA = "norman.tui.turn-envelope.v1"
-ROUTE_RECEIPT_POLICY_VERSION = "norman.route-policy.5_4_first.v1"
+ROUTE_RECEIPT_POLICY_VERSION = "norman.role-policy.2026.07.15.role-v1"
 AUTO_TURN_CONTROL_EXPLICIT_MARKERS = (
     "deep dive",
     "high impact",
@@ -7598,6 +7598,7 @@ def _state_db_connect() -> sqlite3.Connection | None:
     if not STATE_DB_ENABLED:
         return None
     ensure_state_dir()
+    STATE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     try:
         conn = sqlite3.connect(str(STATE_DB_PATH), timeout=2)
         conn.row_factory = sqlite3.Row
@@ -7724,6 +7725,30 @@ def _state_db_connect() -> sqlite3.Connection | None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS route_receipts (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                receipt_id TEXT NOT NULL UNIQUE,
+                receipt_hash TEXT,
+                previous_receipt_hash TEXT,
+                owner_tui TEXT,
+                created_at INTEGER,
+                thread_id TEXT,
+                prompt_id TEXT,
+                requested_action TEXT,
+                selected_model TEXT,
+                effective_model TEXT,
+                requested_provider TEXT,
+                effective_provider TEXT,
+                effective_service_tier TEXT,
+                validator_gate TEXT,
+                outcome TEXT,
+                synthetic INTEGER NOT NULL DEFAULT 0,
+                payload_json TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS human_interventions (
                 id TEXT PRIMARY KEY,
                 fingerprint TEXT NOT NULL,
@@ -7760,6 +7785,18 @@ def _state_db_connect() -> sqlite3.Connection | None:
             """
             CREATE INDEX IF NOT EXISTS idx_audit_events_type_at
             ON audit_events(event_type, event_at)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_route_receipts_owner_sequence
+            ON route_receipts(owner_tui, sequence)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_route_receipts_hash
+            ON route_receipts(receipt_hash)
             """
         )
         conn.execute(
@@ -7963,6 +8000,54 @@ def mirror_audit_event_to_state_db(entry: dict[str, Any]) -> None:
         conn.commit()
     except sqlite3.Error:
         pass
+    finally:
+        conn.close()
+
+
+def mirror_route_receipt_to_state_db(entry: dict[str, Any]) -> bool:
+    if not STATE_DB_ENABLED or not isinstance(entry, dict):
+        return False
+    conn = _state_db_connect()
+    if conn is None:
+        return False
+    receipt_id = str(entry.get("receipt_id") or "").strip()
+    if not receipt_id:
+        receipt_id = _state_db_id("route_receipt", entry)
+    try:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO route_receipts(
+                receipt_id, receipt_hash, previous_receipt_hash, owner_tui,
+                created_at, thread_id, prompt_id, requested_action, selected_model,
+                effective_model, requested_provider, effective_provider,
+                effective_service_tier, validator_gate, outcome, synthetic,
+                payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                receipt_id,
+                str(entry.get("receipt_hash") or ""),
+                str(entry.get("previous_receipt_hash") or ""),
+                str(entry.get("owner_tui") or ROUTE_RECEIPT_OWNER_TUI),
+                _coerce_int(entry.get("created_at")),
+                str(entry.get("thread_id") or ""),
+                str(entry.get("prompt_id") or ""),
+                str(entry.get("requested_action") or ""),
+                str(entry.get("selected_model") or ""),
+                str(entry.get("effective_model") or ""),
+                str(entry.get("requested_provider") or ""),
+                str(entry.get("effective_provider") or ""),
+                str(entry.get("effective_service_tier") or ""),
+                str(entry.get("validator_gate") or ""),
+                str(entry.get("outcome") or ""),
+                1 if entry.get("synthetic") else 0,
+                _state_db_json(entry),
+            ),
+        )
+        conn.commit()
+        return True
+    except sqlite3.Error:
+        return False
     finally:
         conn.close()
 
@@ -10279,7 +10364,88 @@ def remove_draft_attachment(token: str) -> list[dict[str, Any]]:
     return save_draft_attachments(kept)
 
 
-def load_history(limit: int = MAX_HISTORY_ITEMS) -> list[dict[str, Any]]:
+def normalize_history_entry(payload: Any) -> dict[str, Any] | None:
+    if not isinstance(payload, dict):
+        return None
+    entry = dict(payload)
+    entry["attachments"] = normalize_attachments(entry.get("attachments"))
+    entry["runtime"] = normalize_runtime(entry.get("runtime"))
+    entry["model"] = normalize_runtime_model(entry["runtime"], entry.get("model"))
+    entry["usage"] = normalize_usage_entry(
+        {
+            **(entry.get("usage") if isinstance(entry.get("usage"), dict) else {}),
+            "started_at": entry.get("started_at"),
+            "finished_at": entry.get("finished_at"),
+            "thread_id": entry.get("thread_id"),
+            "runtime": entry["runtime"],
+            "model": entry["model"],
+            "service_tier": entry.get("service_tier"),
+        }
+    )
+    entry["error"] = strip_codex_empty_last_message_warning(
+        str(entry.get("error") or "")
+    )
+    return entry
+
+
+def finalize_history_entries(
+    entries: list[dict[str, Any]], *, limit: int = MAX_HISTORY_ITEMS
+) -> list[dict[str, Any]]:
+    if limit and len(entries) > limit:
+        entries = entries[-limit:]
+    usage_entries = usage_entries_with_effective_deltas(
+        [entry.get("usage") or {} for entry in entries]
+    )
+    for index, usage_entry in enumerate(usage_entries):
+        entries[index]["usage"] = usage_entry
+    return entries
+
+
+def load_history_from_state_db(limit: int = MAX_HISTORY_ITEMS) -> list[dict[str, Any]]:
+    conn = _state_db_connect()
+    if conn is None:
+        return []
+    try:
+        params: tuple[Any, ...] = ()
+        if limit and limit > 0:
+            rows = conn.execute(
+                """
+                SELECT payload_json
+                FROM (
+                    SELECT finished_at, started_at, id, payload_json
+                    FROM turns
+                    ORDER BY COALESCE(finished_at, started_at, 0) DESC, id DESC
+                    LIMIT ?
+                )
+                ORDER BY COALESCE(finished_at, started_at, 0) ASC, id ASC
+                """,
+                (int(limit),),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT payload_json
+                FROM turns
+                ORDER BY COALESCE(finished_at, started_at, 0) ASC, id ASC
+                """,
+                params,
+            ).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+    entries: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            normalized = normalize_history_entry(json.loads(row["payload_json"]))
+        except (json.JSONDecodeError, KeyError, TypeError):
+            continue
+        if normalized:
+            entries.append(normalized)
+    return finalize_history_entries(entries, limit=limit)
+
+
+def load_history_from_jsonl(limit: int = MAX_HISTORY_ITEMS) -> list[dict[str, Any]]:
     ensure_state_dir()
     entries: list[dict[str, Any]] = []
     try:
@@ -10291,42 +10457,36 @@ def load_history(limit: int = MAX_HISTORY_ITEMS) -> list[dict[str, Any]]:
         if not stripped:
             continue
         try:
-            payload = json.loads(stripped)
+            normalized = normalize_history_entry(json.loads(stripped))
         except json.JSONDecodeError:
             continue
-        if isinstance(payload, dict):
-            payload["attachments"] = normalize_attachments(payload.get("attachments"))
-            payload["runtime"] = normalize_runtime(payload.get("runtime"))
-            payload["model"] = normalize_runtime_model(
-                payload["runtime"], payload.get("model")
-            )
-            payload["usage"] = normalize_usage_entry(
-                {
-                    **(
-                        payload.get("usage")
-                        if isinstance(payload.get("usage"), dict)
-                        else {}
-                    ),
-                    "started_at": payload.get("started_at"),
-                    "finished_at": payload.get("finished_at"),
-                    "thread_id": payload.get("thread_id"),
-                    "runtime": payload["runtime"],
-                    "model": payload["model"],
-                    "service_tier": payload.get("service_tier"),
-                }
-            )
-            payload["error"] = strip_codex_empty_last_message_warning(
-                str(payload.get("error") or "")
-            )
-            entries.append(payload)
-    if limit and len(entries) > limit:
-        entries = entries[-limit:]
-    usage_entries = usage_entries_with_effective_deltas(
-        [entry.get("usage") or {} for entry in entries]
-    )
-    for index, usage_entry in enumerate(usage_entries):
-        entries[index]["usage"] = usage_entry
-    return entries
+        if normalized:
+            entries.append(normalized)
+    return finalize_history_entries(entries, limit=limit)
+
+
+def load_history(limit: int = MAX_HISTORY_ITEMS) -> list[dict[str, Any]]:
+    entries = load_history_from_state_db(limit=limit)
+    if entries:
+        return entries
+    return load_history_from_jsonl(limit=limit)
+
+
+def replace_history_entries_in_state_db(entries: list[dict[str, Any]]) -> None:
+    if not STATE_DB_ENABLED:
+        return
+    conn = _state_db_connect()
+    if conn is None:
+        return
+    try:
+        conn.execute("DELETE FROM turns")
+        conn.commit()
+    except sqlite3.Error:
+        pass
+    finally:
+        conn.close()
+    for entry in entries:
+        mirror_history_entry_to_state_db(entry)
 
 
 def write_history_entries(
@@ -10340,6 +10500,7 @@ def write_history_entries(
     if payload:
         payload += "\n"
     HISTORY_PATH.write_text(payload, encoding="utf-8")
+    replace_history_entries_in_state_db(trimmed)
     return trimmed
 
 
@@ -15014,7 +15175,85 @@ def route_receipt_compute_hash(entry: dict[str, Any]) -> str:
     return hashlib.sha256(f"{previous}\n{payload}".encode("utf-8")).hexdigest()
 
 
+def route_receipts_from_state_db(
+    *, owner_tui: str = ROUTE_RECEIPT_OWNER_TUI, limit: int = 0
+) -> list[dict[str, Any]]:
+    conn = _state_db_connect()
+    if conn is None:
+        return []
+    clean_owner = str(owner_tui or "").strip()
+    rows: list[sqlite3.Row]
+    try:
+        params: list[Any] = []
+        where = ""
+        if clean_owner:
+            where = "WHERE owner_tui = ?"
+            params.append(clean_owner)
+        if limit and limit > 0:
+            query = f"""
+                SELECT payload_json
+                FROM (
+                    SELECT sequence, payload_json
+                    FROM route_receipts
+                    {where}
+                    ORDER BY sequence DESC
+                    LIMIT ?
+                )
+                ORDER BY sequence ASC
+            """
+            params.append(int(limit))
+        else:
+            query = f"""
+                SELECT payload_json
+                FROM route_receipts
+                {where}
+                ORDER BY sequence ASC
+            """
+        rows = conn.execute(query, tuple(params)).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+    receipts: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"])
+        except (json.JSONDecodeError, KeyError, TypeError):
+            continue
+        if isinstance(payload, dict):
+            receipts.append(payload)
+    return receipts
+
+
+def route_receipt_last_hash_from_state_db(
+    *, owner_tui: str = ROUTE_RECEIPT_OWNER_TUI
+) -> str:
+    conn = _state_db_connect()
+    if conn is None:
+        return ""
+    try:
+        row = conn.execute(
+            """
+            SELECT receipt_hash
+            FROM route_receipts
+            WHERE owner_tui = ? AND receipt_hash != ''
+            ORDER BY sequence DESC
+            LIMIT 1
+            """,
+            (str(owner_tui or "").strip(),),
+        ).fetchone()
+    except sqlite3.Error:
+        return ""
+    finally:
+        conn.close()
+    return str(row["receipt_hash"] or "").strip() if row else ""
+
+
 def route_receipt_last_hash(path: Path = ROUTE_RECEIPT_PATH) -> str:
+    if Path(path) == ROUTE_RECEIPT_PATH:
+        state_hash = route_receipt_last_hash_from_state_db()
+        if state_hash:
+            return state_hash
     try:
         lines = [
             line
@@ -15068,6 +15307,10 @@ def route_receipt_chain_issues(receipts: list[dict[str, Any]]) -> list[str]:
 
 
 def route_receipt_chain_status(path: Path = ROUTE_RECEIPT_PATH) -> dict[str, Any]:
+    if Path(path) == ROUTE_RECEIPT_PATH:
+        state_snapshot = route_receipt_chain_status_from_state_db()
+        if state_snapshot and state_snapshot.get("receipt_count"):
+            return state_snapshot
     receipts: list[dict[str, Any]] = []
     load_errors: list[str] = []
     try:
@@ -15100,8 +15343,39 @@ def route_receipt_chain_status(path: Path = ROUTE_RECEIPT_PATH) -> dict[str, Any
         str(receipts[-1].get("receipt_hash") or "").strip() if receipts else ""
     )
     return {
-        "status": "pass" if receipts and not issues else "fail",
+        "status": "pass"
+        if receipts and not issues
+        else "empty"
+        if not receipts and not issues
+        else "fail",
         "path": str(path),
+        "receipt_count": len(receipts),
+        "latest_hash": latest_hash,
+        "issue_count": len(issues),
+        "issues": issues,
+    }
+
+
+def route_receipt_chain_status_from_state_db() -> dict[str, Any]:
+    receipts = route_receipts_from_state_db()
+    if not receipts:
+        return {
+            "status": "empty",
+            "path": str(ROUTE_RECEIPT_PATH),
+            "state_db_path": str(STATE_DB_PATH),
+            "storage_source": "state_db",
+            "receipt_count": 0,
+            "latest_hash": "",
+            "issue_count": 0,
+            "issues": [],
+        }
+    issues = route_receipt_chain_issues(receipts)
+    latest_hash = str(receipts[-1].get("receipt_hash") or "").strip()
+    return {
+        "status": "pass" if not issues else "fail",
+        "path": str(ROUTE_RECEIPT_PATH),
+        "state_db_path": str(STATE_DB_PATH),
+        "storage_source": "state_db",
         "receipt_count": len(receipts),
         "latest_hash": latest_hash,
         "issue_count": len(issues),
@@ -15114,6 +15388,8 @@ def route_receipt_status_snapshot() -> dict[str, Any]:
         return {
             "status": "disabled",
             "path": str(ROUTE_RECEIPT_PATH),
+            "state_db_path": str(STATE_DB_PATH),
+            "storage_source": "disabled",
             "receipt_count": 0,
             "latest_hash": "",
             "issue_count": 0,
@@ -15127,6 +15403,7 @@ def append_route_receipt_entry(entry: dict[str, Any]) -> None:
     missing = [field for field in ROUTE_RECEIPT_REQUIRED_FIELDS if field not in entry]
     if missing:
         raise ValueError(f"route receipt missing required fields: {', '.join(missing)}")
+    mirror_route_receipt_to_state_db(entry)
     ROUTE_RECEIPT_PATH.parent.mkdir(parents=True, exist_ok=True)
     serialized = json.dumps(entry, sort_keys=True)
     with ROUTE_RECEIPT_PATH.open("a", encoding="utf-8") as handle:

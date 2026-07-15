@@ -1,87 +1,171 @@
 {
-  "schema": "norman.prompt-bad-route-corpus.v1",
-  "version": "2026.07.15.terse-operator-commands",
-  "description": "Stateful terse prompts that previously risked drifting to cloud/default routes. These are regression fixtures for the Norman prompt load balancer.",
+  "schema": "norman.prompt-bad-route-corpus.v2",
+  "version": "2026.07.15.stateful-terse-operator-commands",
+  "description": "Stateful terse prompts that previously risked drifting to cloud/default routes or authorizing hidden pending actions.",
+  "score_fields": [
+    "selected_action",
+    "execution_permission",
+    "approval_binding",
+    "target_identity",
+    "tool_selection",
+    "route",
+    "visible_response",
+    "receipt"
+  ],
   "cases": [
     {
-      "id": "terse-status",
+      "id": "terse-status-no-job",
       "prompt": "status?",
+      "context": {"active_job_count": 0},
       "expected_intent": "quick_status",
       "expected_runtime": "localllm",
-      "must_stay_local": true,
+      "expected_action": "quick_status",
+      "expected_execution_permission": "allowed",
       "requires_approval": false
     },
     {
-      "id": "typo-status",
+      "id": "typo-status-no-job",
       "prompt": "stuats?",
+      "context": {"active_job_count": 0},
       "expected_intent": "quick_status",
       "expected_runtime": "localllm",
-      "must_stay_local": true,
+      "expected_action": "quick_status",
+      "expected_execution_permission": "allowed",
       "requires_approval": false
     },
     {
-      "id": "continue",
+      "id": "continue-safe-bound-job",
       "prompt": "continue",
+      "context": {
+        "active_job_count": 1,
+        "active_job_id": "job-safe-1",
+        "target_identity": "job-safe-1",
+        "pending_action_kind": "continue_read_only_analysis",
+        "pending_action_risk": "read_only"
+      },
       "expected_intent": "continue_work",
       "expected_runtime": "localllm",
-      "must_stay_local": true,
+      "expected_action": "continue_read_only_analysis",
+      "expected_execution_permission": "allowed",
       "requires_approval": false
     },
     {
-      "id": "go-ahead",
+      "id": "go-ahead-prod-write-unapproved",
       "prompt": "go ahead",
+      "context": {
+        "active_job_count": 1,
+        "active_job_id": "deploy-42",
+        "target_identity": "deploy-42",
+        "pending_action_kind": "deploy_release",
+        "pending_action_risk": "prod_write",
+        "pending_action_digest": "sha256:deploy42"
+      },
       "expected_intent": "continue_work",
       "expected_runtime": "localllm",
-      "must_stay_local": true,
+      "expected_action": "deploy_release",
+      "expected_execution_permission": "blocked",
+      "requires_approval": true
+    },
+    {
+      "id": "go-ahead-prod-write-approved",
+      "prompt": "go ahead",
+      "context": {
+        "active_job_count": 1,
+        "active_job_id": "deploy-42",
+        "target_identity": "deploy-42",
+        "pending_action_kind": "deploy_release",
+        "pending_action_risk": "prod_write",
+        "pending_action_digest": "sha256:deploy42",
+        "approval_id": "approval-42",
+        "approval_expires_at": "2099-01-01T00:00:00Z"
+      },
+      "expected_intent": "continue_work",
+      "expected_runtime": "localllm",
+      "expected_action": "deploy_release",
+      "expected_execution_permission": "allowed",
       "requires_approval": false
     },
     {
-      "id": "resume",
-      "prompt": "resume",
-      "expected_intent": "continue_work",
-      "expected_runtime": "localllm",
-      "must_stay_local": true,
-      "requires_approval": false
-    },
-    {
-      "id": "retry",
+      "id": "retry-multiple-jobs",
       "prompt": "retry",
+      "context": {
+        "active_job_count": 2,
+        "pending_action_kind": "retry_last_step",
+        "pending_action_risk": "read_only"
+      },
       "expected_intent": "retry_last_step",
       "expected_runtime": "localllm",
-      "must_stay_local": true,
-      "requires_approval": false
+      "expected_action": "retry_last_step",
+      "expected_execution_permission": "blocked",
+      "requires_approval": true
     },
     {
-      "id": "stop",
+      "id": "stop-safe-control",
       "prompt": "stop",
+      "context": {
+        "active_job_count": 1,
+        "active_job_id": "job-safe-1",
+        "target_identity": "job-safe-1"
+      },
       "expected_intent": "stop_or_pause",
       "expected_runtime": "localllm",
-      "must_stay_local": true,
+      "expected_action": "deterministic_stop_current_job",
+      "expected_execution_permission": "allowed",
       "requires_approval": false
     },
     {
-      "id": "undo",
+      "id": "undo-requires-digest-and-approval",
       "prompt": "undo",
+      "context": {
+        "active_job_count": 1,
+        "active_job_id": "patch-7",
+        "target_identity": "patch-7",
+        "pending_action_kind": "rollback_patch",
+        "pending_action_risk": "external_mutation"
+      },
       "expected_intent": "undo_or_rollback",
       "expected_runtime": "localllm",
-      "must_stay_local": true,
+      "expected_action": "rollback_patch",
+      "expected_execution_permission": "blocked",
       "requires_approval": true
     },
     {
-      "id": "restart",
+      "id": "restart-expired-approval",
       "prompt": "restart",
+      "context": {
+        "active_job_count": 1,
+        "active_job_id": "svc-uplink",
+        "target_identity": "svc-uplink",
+        "pending_action_kind": "restart_service",
+        "pending_action_risk": "external_mutation",
+        "pending_action_digest": "sha256:restart-uplink",
+        "approval_id": "approval-expired",
+        "approval_expires_at": "2000-01-01T00:00:00Z"
+      },
       "expected_intent": "restart_or_recover",
       "expected_runtime": "localllm",
-      "must_stay_local": true,
+      "expected_action": "restart_service",
+      "expected_execution_permission": "blocked",
       "requires_approval": true
     },
     {
-      "id": "ship-it",
+      "id": "ship-it-approved",
       "prompt": "ship it",
+      "context": {
+        "active_job_count": 1,
+        "active_job_id": "release-9",
+        "target_identity": "release-9",
+        "pending_action_kind": "ship_release_candidate",
+        "pending_action_risk": "prod_write",
+        "pending_action_digest": "sha256:ship-release-9",
+        "approval_id": "approval-ship-9",
+        "approval_expires_at": "2099-01-01T00:00:00Z"
+      },
       "expected_intent": "ship_or_release",
       "expected_runtime": "localllm",
-      "must_stay_local": true,
-      "requires_approval": true
+      "expected_action": "ship_release_candidate",
+      "expected_execution_permission": "allowed",
+      "requires_approval": false
     }
   ]
 }

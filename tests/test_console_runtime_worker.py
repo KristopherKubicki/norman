@@ -147,6 +147,7 @@ def test_db_console_runtime_worker_completes_one_dry_run_step(db):
         "model.completed",
         "model.delta",
         "tool.completed",
+        "reasoning.tool_gate",
         "job.completed",
     ]
     assert result["snapshot"]["category_counts"] == {
@@ -157,7 +158,87 @@ def test_db_console_runtime_worker_completes_one_dry_run_step(db):
         "planner": 1,
         "tool": 2,
         "model": 3,
+        "reasoning": 1,
     }
+    events = store.events_after(db, user_id=user.id, job_id=job_id)
+    behavior = next(
+        event for event in events if event.event_type == "behavior.observed"
+    )
+    model_requested = next(
+        event for event in events if event.event_type == "model.requested"
+    )
+    model_completed = next(
+        event for event in events if event.event_type == "model.completed"
+    )
+    tool_completed = next(
+        event for event in events if event.event_type == "tool.completed"
+    )
+
+    plan = behavior.payload["reasoning_orchestration"]
+    assert plan["schema"] == "norman.reasoning-orchestrator.plan.v1"
+    assert plan["plan_id"]
+    assert result["reasoning_orchestration"]["plan_id"] == plan["plan_id"]
+    assert model_requested.payload["reasoning_plan_id"] == plan["plan_id"]
+    assert model_completed.payload["reasoning_plan_id"] == plan["plan_id"]
+    assert tool_completed.payload["reasoning_plan_id"] == plan["plan_id"]
+    assert model_completed.payload["reasoning_receipt"]["schema"] == (
+        "norman.reasoning-orchestrator.receipt.v1"
+    )
+    assert isinstance(
+        model_completed.payload["reasoning_receipt"]["skipped_required_tools"],
+        list,
+    )
+    tool_gate = next(
+        event for event in events if event.event_type == "reasoning.tool_gate"
+    )
+    assert tool_gate.payload["schema"] == "norman.reasoning-tool-gate.v1"
+    assert tool_gate.payload["enforcement_required"] is False
+    assert tool_gate.payload["completion_allowed"] is True
+    assert result["reasoning_tool_gate"]["plan_id"] == plan["plan_id"]
+
+
+def test_db_console_runtime_worker_checkpoints_when_reasoning_tool_gate_required(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-reasoning-gate-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="status?",
+            route_policy={
+                "provider": "norllama",
+                "reasoning_tool_gate_required": True,
+            },
+        ),
+    )
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-test",
+            dry_run=True,
+            include_capabilities=False,
+        ),
+    )
+
+    assert result["job"]["status"] == "checkpointed"
+    gate = result["reasoning_tool_gate"]
+    assert gate["enforcement_required"] is True
+    assert gate["gate_passed"] is False
+    assert gate["completion_allowed"] is False
+    assert "tui_status_api" in gate["missing_required_tools"]
+    assert "route_receipt_ledger" in gate["missing_required_tools"]
+    events = store.events_after(db, user_id=user.id, job_id=job_id)
+    assert events[-2].event_type == "reasoning.tool_gate"
+    assert events[-1].event_type == "job.checkpointed"
+    assert (
+        events[-1].summary == "Runtime worker checkpointed after reasoning tool gate."
+    )
 
 
 def test_db_console_runtime_worker_defaults_to_local_first_norllama(db, monkeypatch):

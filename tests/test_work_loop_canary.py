@@ -32,7 +32,7 @@ def test_build_report_marks_cp_and_gold_book_loop_ready(monkeypatch) -> None:
             "queue_depth": 0,
             "ui_version": "2026.06.11.1",
             "selected_runtime": "codex",
-            "selected_model": "openai.gpt-5.5",
+            "selected_model": "openai.gpt-5.4",
             "status_message": "Ready.",
             "last_error": "",
         },
@@ -44,7 +44,7 @@ def test_build_report_marks_cp_and_gold_book_loop_ready(monkeypatch) -> None:
             "queue_depth": 0,
             "ui_version": "2026.06.11.1",
             "selected_runtime": "codex",
-            "selected_model": "openai.gpt-5.5",
+            "selected_model": "openai.gpt-5.4",
             "status_message": "Ready.",
             "last_error": "",
         },
@@ -156,11 +156,18 @@ def test_flow_canary_plan_selects_first_targets_and_route_receipt_contract(
 
 def _good_route_receipt(owner: str, index: int) -> dict:
     task_classes = ("status", "continue", "read_only_code", "log_triage", "summary")
+    policy_hash = "a" * 64
+    segment_root = "b" * 64
     return {
         "receipt_id": f"{owner}-{index}",
         "receipt_source": "live_shadow_canary",
         "previous_receipt_hash": "",
         "receipt_hash": "",
+        "receipt_sequence": index + 1,
+        "receipt_key_id": "test-ledger-key-v1",
+        "receipt_signature": f"sig-{owner}-{index}",
+        "receipt_signature_algorithm": "hmac-sha256",
+        "segment_root": segment_root,
         "synthetic": False,
         "created_at": 1_786_000_000 + index * 1800,
         "owner_tui": owner,
@@ -173,21 +180,28 @@ def _good_route_receipt(owner: str, index: int) -> dict:
         "observed_provider": "openai",
         "selected_model_tier": "medium_worker",
         "selected_model": "gpt-5.4-mini",
+        "observed_model": "gpt-5.4-mini",
+        "provider_request_id": f"req-{owner}-{index}",
         "routing_score": 0.94,
         "routing_bands": {"worker": "medium", "verifier": "5.5"},
         "allowed_role": "worker_draft",
         "validator_gate": "pass",
+        "independent_validator_id": "fixture-validator-v1",
         "escalation_trigger": "",
         "fallback_used": "",
         "estimated_cost_usd": 0.40,
         "baseline_all_5_5_cost_usd": 1.00,
         "workflow_cost_usd": 0.40,
         "counterfactual_workflow_cost_usd": 1.00,
+        "cost_evidence_ref": f"cost:{owner}:{index}",
         "cloud_accounted": True,
         "cloud_proxy": False,
         "usage_bucket": "openai_codex",
         "output_shape": "complete",
         "visible_delivery_passed": True,
+        "visible_response_ref": f"visible:{owner}:{index}",
+        "policy_id": f"test-policy:{policy_hash[:12]}",
+        "policy_hash": policy_hash,
         "policy_lifecycle_state": "valid",
         "validator_passed": True,
         "manual_override": False,
@@ -206,6 +220,7 @@ def _good_verifier_route_receipt(owner: str, index: int) -> dict:
     receipt["selected_model_tier"] = "bedrock_5_4_verifier"
     receipt["allowed_role"] = "verifier"
     receipt["selected_model"] = "openai.gpt-5.4"
+    receipt["observed_model"] = "openai.gpt-5.4"
     receipt["validator_gate"] = "pass"
     return receipt
 
@@ -646,6 +661,62 @@ def test_cutover_readiness_rejects_synthetic_receipts(
     assert "synthetic receipts found" in "; ".join(target["blockers"])
 
 
+def test_cutover_readiness_rejects_forged_blank_receipts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _load_work_loop_canary(monkeypatch)
+    import work_domain_skill_benchmark
+
+    receipt_dir = tmp_path / "route_receipts"
+    receipt_dir.mkdir()
+    owner = "market-sizing"
+    forged_receipts = []
+    for index in range(50):
+        receipt = _good_route_receipt(owner, index)
+        receipt.update(
+            {
+                "receipt_source": "",
+                "owner_tui": "",
+                "prompt_id": "",
+                "selected_provider": "",
+                "observed_provider": "",
+                "observed_model": "",
+                "provider_request_id": "",
+                "policy_id": "",
+                "policy_hash": "",
+                "independent_validator_id": "",
+                "visible_response_ref": "",
+                "cost_evidence_ref": "",
+                "receipt_key_id": "",
+                "receipt_signature": "",
+                "receipt_signature_algorithm": "",
+                "segment_root": "",
+                "evidence_refs": [],
+                "validator_passed": True,
+                "visible_delivery_passed": True,
+                "policy_lifecycle_state": "valid",
+                "cloud_accounted": True,
+            }
+        )
+        forged_receipts.append(receipt)
+    (receipt_dir / f"{owner}.jsonl").write_text(
+        "\n".join(
+            json.dumps(receipt) for receipt in _chained_receipts(forged_receipts)
+        ),
+        encoding="utf-8",
+    )
+
+    plan = module.build_flow_canary_plan(work_domain_skill_benchmark.build_report())
+    report = module.build_cutover_readiness_report(plan, receipt_dir=receipt_dir)
+    target = {row["owner_tui"]: row for row in report["targets"]}[owner]
+
+    assert report["readiness"] == "not_ready_for_cutover"
+    assert target["cutover_ready"] is False
+    assert target["metrics"]["strict_invalid_receipt_count"] == 50
+    assert target["metrics"]["strict_issue_count"] > 0
+    assert "strict evidence validation" in "; ".join(target["blockers"])
+
+
 def test_cutover_readiness_rejects_broken_route_receipt_chain(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -763,7 +834,7 @@ def test_bbs_missing_context_holds_optimizer_for_netops(monkeypatch) -> None:
                 "pending": False,
                 "queue_depth": 0,
                 "selected_runtime": "codex",
-                "selected_model": "gpt-5.5",
+                "selected_model": "openai.gpt-5.4",
                 "_bbs_summary": {
                     "actor": "netops",
                     "state": "watch",
@@ -810,7 +881,7 @@ def test_bbs_waiting_pickup_holds_until_owner_intends_pickup(monkeypatch) -> Non
                 "pending": False,
                 "queue_depth": 0,
                 "selected_runtime": "codex",
-                "selected_model": "gpt-5.5",
+                "selected_model": "openai.gpt-5.4",
                 "_bbs_summary": {
                     "actor": "phoneops",
                     "state": "watch",
@@ -850,7 +921,7 @@ def test_build_report_can_select_full_5_5_mode(monkeypatch) -> None:
                 "pending": False,
                 "queue_depth": 0,
                 "selected_runtime": "codex",
-                "selected_model": "openai.gpt-5.5",
+                "selected_model": "openai.gpt-5.4",
             }
         ],
         source="fixture",
@@ -880,7 +951,7 @@ def test_always_on_budget_gate_holds_when_p95_cycle_exceeds_budget(
                 "pending": False,
                 "queue_depth": 0,
                 "selected_runtime": "codex",
-                "selected_model": "openai.gpt-5.5",
+                "selected_model": "openai.gpt-5.4",
             }
         ],
         source="fixture",
@@ -907,7 +978,7 @@ def test_route_mismatch_requires_approval(monkeypatch) -> None:
                 "pending": False,
                 "queue_depth": 0,
                 "selected_runtime": "openai",
-                "selected_model": "gpt-5.5",
+                "selected_model": "openai.gpt-5.4",
             }
         ],
         source="fixture",
@@ -930,7 +1001,7 @@ def test_queue_pressure_blocks_new_loop_work(monkeypatch) -> None:
                 "pending": True,
                 "queue_depth": 3,
                 "selected_runtime": "codex",
-                "selected_model": "openai.gpt-5.5",
+                "selected_model": "openai.gpt-5.4",
             }
         ],
         source="fixture",
@@ -952,7 +1023,7 @@ def test_usage_error_gets_classified_without_restart(monkeypatch) -> None:
                 "pending": False,
                 "queue_depth": 0,
                 "selected_runtime": "codex",
-                "selected_model": "openai.gpt-5.5",
+                "selected_model": "openai.gpt-5.4",
                 "last_error": "OpenAI Flex usage limit reached",
             }
         ],
@@ -1001,7 +1072,7 @@ def test_cli_writes_report_from_source_json(tmp_path: Path, monkeypatch) -> None
                         "pending": False,
                         "queue_depth": 0,
                         "selected_runtime": "codex",
-                        "selected_model": "openai.gpt-5.5",
+                        "selected_model": "openai.gpt-5.4",
                     }
                 ]
             }
@@ -1301,7 +1372,7 @@ def test_cli_loop_mode_writes_cp_journal(tmp_path: Path, monkeypatch) -> None:
                 "pending": False,
                 "queue_depth": 0,
                 "selected_runtime": "codex",
-                "selected_model": "openai.gpt-5.5",
+                "selected_model": "openai.gpt-5.4",
             }
         ]
 
@@ -1356,7 +1427,7 @@ def test_cli_ticket_id_writes_internal_cost_ledger(tmp_path: Path, monkeypatch) 
                         "pending": False,
                         "queue_depth": 0,
                         "selected_runtime": "codex",
-                        "selected_model": "openai.gpt-5.5",
+                        "selected_model": "openai.gpt-5.4",
                     }
                 ]
             }

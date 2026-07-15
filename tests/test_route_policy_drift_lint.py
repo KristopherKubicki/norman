@@ -50,3 +50,28 @@ def test_route_policy_drift_lint_accepts_five_four_first_policy(tmp_path, monkey
 
     assert report["status"] == "pass"
     assert report["issues"] == []
+
+
+def test_route_policy_drift_lint_flags_semantic_stale_assignments(
+    tmp_path, monkeypatch
+):
+    module = _load_lint(monkeypatch)
+    sample = tmp_path / "runtime.py"
+    sample.write_text(
+        "\n".join(
+            [
+                'EXPECTED_MODEL = "openai.gpt-5.5"',
+                'ROUTE_RECEIPT_POLICY_VERSION = "norman.route-policy.gpt55_floor.v1"',
+                '{"default_live_mode": "auto_bedrock_5_5"}',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    report = module.build_report([sample], root=tmp_path)
+    rule_ids = {issue["rule_id"] for issue in report["issues"]}
+
+    assert report["status"] == "fail"
+    assert "hardcoded_expected_model_final_authority" in rule_ids
+    assert "gpt55_floor_policy_generation" in rule_ids
+    assert "auto_mode_final_authority_default" in rule_ids

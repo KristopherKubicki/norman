@@ -14,6 +14,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from app.services.codex_role_policy import (
+    codex_role_policy_identity,
+    codex_role_value,
+    load_codex_role_policy,
+)
 from app.services.norllama.route_policy import (
     route_policy_contract,
     route_policy_lifecycle,
@@ -25,8 +30,13 @@ from ticket_token_cost_ledger import append_record as append_ticket_cost_record
 from ticket_token_cost_ledger import build_record as build_ticket_cost_record
 
 
+CODEX_ROLE_POLICY = load_codex_role_policy()
+CODEX_ROLE_POLICY_IDENTITY = codex_role_policy_identity(policy=CODEX_ROLE_POLICY)
 EXPECTED_RUNTIME = "codex"
-EXPECTED_MODEL = "openai.gpt-5.5"
+EXPECTED_MODEL = codex_role_value("work_standard", "model", policy=CODEX_ROLE_POLICY)
+FINAL_AUTHORITY_MODEL = codex_role_value(
+    "work_final_authority", "model", policy=CODEX_ROLE_POLICY
+)
 DEFAULT_MODE = "hybrid"
 
 DEFAULT_OUTPUT_JSON = Path("/tmp/norman_tui_benchmarks/work_loop_canary.json")
@@ -85,6 +95,7 @@ MAX_CUTOVER_MANUAL_OVERRIDE_RATE = 0.05
 MAX_CUTOVER_FALLBACK_RATE = 0.15
 MIN_CUTOVER_COST_SAVINGS = 0.25
 MAX_CUTOVER_P95_LATENCY_MS = 120_000
+RECEIPT_SIGNATURE_ALGORITHMS = {"hmac-sha256", "ed25519"}
 MIN_HISTORIC_ROUTE_BENCHMARK_SAVINGS = 0.50
 REQUIRED_HISTORIC_ROUTE_POLICY_VERSION = "work-special-hybrid-routing-policy.v1"
 REQUIRED_HISTORIC_ROUTE_PLANNER_ACTION_POLICY_VERSION = "planner-action-contract.v1"
@@ -138,6 +149,33 @@ ROUTE_RECEIPT_REQUIRED_FIELDS = (
     "evidence_refs",
 )
 
+ROUTE_RECEIPT_STRICT_NONEMPTY_FIELDS = (
+    "receipt_id",
+    "receipt_source",
+    "owner_tui",
+    "prompt_id",
+    "task_class",
+    "requested_action",
+    "selected_provider",
+    "observed_provider",
+    "selected_model",
+    "observed_model",
+    "selected_model_tier",
+    "allowed_role",
+    "validator_gate",
+    "policy_id",
+    "policy_hash",
+    "policy_lifecycle_state",
+    "provider_request_id",
+    "independent_validator_id",
+    "visible_response_ref",
+    "cost_evidence_ref",
+    "receipt_key_id",
+    "receipt_signature",
+    "receipt_signature_algorithm",
+    "segment_root",
+)
+
 ROUTE_RECEIPT_REMOTE_OWNER_HOSTS = {
     "market-sizing": "work-special",
     "panelbot": "work-special",
@@ -174,17 +212,18 @@ ARCHITECTURE_MODES = {
         "label": "Hybrid guarded loop",
         "description": (
             "Local deterministic checks first; mini/cheap worker only for bounded "
-            "background cleanup; GPT-5.5 owns verifier/final/authority gates."
+            "background cleanup; GPT-5.4 owns normal verifier gates and GPT-5.5 "
+            "is reserved for final-authority escalation."
         ),
         "token_split": {
             "local": 0.0,
-            "planner_5_5": 0.25,
+            "planner_5_4": 0.25,
             "worker_mini": 0.60,
-            "verifier_5_5": 0.15,
+            "verifier_5_4": 0.15,
         },
         "estimated_cost_ratio_vs_direct_5_5_flex": 0.49,
         "user_selectable": True,
-        "mode_guard": "Worker output is draft-only unless the 5.5 verifier accepts it.",
+        "mode_guard": "Worker output is draft-only unless the 5.4 verifier accepts it; 5.5 is final authority only.",
     },
     "full-5-5": {
         "label": "Full GPT-5.5 loop",
@@ -359,7 +398,7 @@ LOOP_TARGETS: dict[str, LoopTarget] = {
             "Keep NetOps handoffs triaged quickly while preventing blind ACKs, "
             "unsafe cleanup, and connectivity mutations without approval."
         ),
-        expected_model="gpt-5.5",
+        expected_model=EXPECTED_MODEL,
     ),
     "phone-ops": LoopTarget(
         slug="phone-ops",
@@ -394,7 +433,7 @@ LOOP_TARGETS: dict[str, LoopTarget] = {
             "Keep phone/device tickets moving through clear evidence packets and "
             "handoffs without performing account, install, or network mutations."
         ),
-        expected_model="gpt-5.5",
+        expected_model=EXPECTED_MODEL,
     ),
 }
 
@@ -865,9 +904,9 @@ def build_loop_architecture() -> list[dict[str, Any]]:
         },
         {
             "tier": "L2",
-            "name": "5.5 verifier",
+            "name": "5.4 verifier",
             "cadence": "when action has blast radius or ambiguity",
-            "model": "Bedrock Codex 5.5 high/xhigh",
+            "model": "Bedrock Codex 5.4 high/xhigh",
             "purpose": (
                 "Review cheap-lane output for authority, missing evidence, unsafe "
                 "HAL usage, deploy/restart risk, and runbook fit."
@@ -1577,6 +1616,19 @@ def _safe_float(value: Any) -> float | None:
     return None
 
 
+def _nonempty_string(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _nonempty_sequence(value: Any) -> bool:
+    return isinstance(value, list) and bool(value)
+
+
+def _hex_digest(value: Any, *, length: int = 64) -> bool:
+    clean = str(value or "").strip().lower()
+    return len(clean) == length and all(char in "0123456789abcdef" for char in clean)
+
+
 def _blankish(value: Any) -> bool:
     if value is None:
         return True
@@ -1830,10 +1882,11 @@ def render_route_receipt_harvest_markdown(report: dict[str, Any]) -> str:
 
 
 def _receipt_validator_passed(receipt: dict[str, Any]) -> bool:
-    if "validator_passed" in receipt:
-        return _safe_bool(receipt.get("validator_passed"))
     gate = str(receipt.get("validator_gate") or "").strip().lower()
-    return gate in {"pass", "passed", "accept", "accepted", "ok", "green"}
+    return gate in {"pass", "passed", "accept", "accepted", "ok", "green"} and (
+        _nonempty_string(receipt.get("independent_validator_id"))
+        and _nonempty_sequence(receipt.get("evidence_refs"))
+    )
 
 
 def _receipt_manual_override(receipt: dict[str, Any]) -> bool:
@@ -1943,10 +1996,12 @@ def _task_class_quota_passed(counts: dict[str, int]) -> bool:
 
 
 def _receipt_visible_complete(receipt: dict[str, Any]) -> bool:
-    if _safe_bool(receipt.get("visible_delivery_passed")):
-        return True
     shape = str(receipt.get("output_shape") or "").strip().lower()
-    return shape == "complete"
+    return (
+        shape == "complete"
+        and _safe_bool(receipt.get("visible_delivery_passed"))
+        and _nonempty_string(receipt.get("visible_response_ref"))
+    )
 
 
 def _receipt_policy_fresh(receipt: dict[str, Any]) -> bool:
@@ -1959,7 +2014,11 @@ def _receipt_policy_fresh(receipt: dict[str, Any]) -> bool:
         .strip()
         .lower()
     )
-    if state in {"valid", "expiring_soon"}:
+    if (
+        state in {"valid", "expiring_soon"}
+        and _nonempty_string(receipt.get("policy_id"))
+        and _nonempty_string(receipt.get("policy_hash"))
+    ):
         return True
     freshness = str(receipt.get("policy_freshness") or "").strip().lower()
     return freshness in {"fresh", "valid"}
@@ -1986,6 +2045,88 @@ def _receipt_hidden_cloud(receipt: dict[str, Any]) -> bool:
     if not cloudish:
         return False
     return not _safe_bool(receipt.get("cloud_accounted"))
+
+
+def route_receipt_strict_issues(
+    receipt: dict[str, Any],
+    *,
+    index: int,
+    required_fields: list[str],
+    blocked_actions: list[str],
+) -> list[str]:
+    issues: list[str] = []
+    for field in required_fields:
+        if field not in receipt:
+            issues.append(f"receipt {index} missing required field: {field}")
+    for field in ROUTE_RECEIPT_STRICT_NONEMPTY_FIELDS:
+        if not _nonempty_string(receipt.get(field)):
+            issues.append(f"receipt {index} has blank trusted field: {field}")
+    if not _nonempty_sequence(receipt.get("evidence_refs")):
+        issues.append(f"receipt {index} has no evidence_refs")
+    for field in (
+        "synthetic",
+        "cloud_accounted",
+        "visible_delivery_passed",
+        "manual_override",
+        "boundary_violation",
+        "live_write_attempted",
+    ):
+        if not isinstance(receipt.get(field), bool):
+            issues.append(f"receipt {index} {field} is not a boolean")
+    if _safe_bool(receipt.get("synthetic")):
+        issues.append(f"receipt {index} is synthetic")
+    source = str(receipt.get("receipt_source") or "").strip()
+    if source not in {
+        "live_shadow_canary",
+        "live_operator",
+        "live_acceptance",
+        "live_operator_cohort",
+    }:
+        issues.append(f"receipt {index} receipt_source is not live evidence")
+    if _receipt_created_at_seconds(receipt) is None:
+        issues.append(f"receipt {index} has invalid created_at")
+    if _coerce_int(receipt.get("receipt_sequence")) <= 0:
+        issues.append(f"receipt {index} has invalid receipt_sequence")
+    algorithm = str(receipt.get("receipt_signature_algorithm") or "").strip().lower()
+    if algorithm not in RECEIPT_SIGNATURE_ALGORITHMS:
+        issues.append(f"receipt {index} uses unsupported signature algorithm")
+    if not _hex_digest(receipt.get("segment_root")):
+        issues.append(f"receipt {index} has invalid segment_root")
+    if not _receipt_validator_passed(receipt):
+        issues.append(f"receipt {index} lacks independent validator pass evidence")
+    if not _receipt_visible_complete(receipt):
+        issues.append(f"receipt {index} lacks visible completion proof")
+    if not _receipt_policy_fresh(receipt):
+        issues.append(f"receipt {index} lacks fresh policy identity")
+    if _receipt_hidden_cloud(receipt):
+        issues.append(f"receipt {index} has hidden cloud/proxy usage")
+    if _receipt_boundary_violation(receipt, blocked_actions):
+        issues.append(f"receipt {index} has boundary violation evidence")
+    selected_provider = str(receipt.get("selected_provider") or "").strip()
+    observed_provider = str(receipt.get("observed_provider") or "").strip()
+    selected_model = str(receipt.get("selected_model") or "").strip()
+    observed_model = str(receipt.get("observed_model") or "").strip()
+    if (
+        selected_provider
+        and observed_provider
+        and selected_provider != observed_provider
+    ):
+        issues.append(f"receipt {index} selected/observed provider mismatch")
+    if selected_model and observed_model and selected_model != observed_model:
+        issues.append(f"receipt {index} selected/observed model mismatch")
+    usage_bucket = str(receipt.get("usage_bucket") or "").strip().lower()
+    if usage_bucket in {"offline_local", "local", "norllama"} and not _nonempty_string(
+        receipt.get("observed_worker")
+    ):
+        issues.append(f"receipt {index} local route lacks observed_worker")
+    if _safe_bool(receipt.get("operator_approval_required")):
+        if not _nonempty_string(receipt.get("approval_id")):
+            issues.append(f"receipt {index} requires approval without approval_id")
+        if not _nonempty_string(receipt.get("pending_action_digest")):
+            issues.append(
+                f"receipt {index} requires approval without pending_action_digest"
+            )
+    return issues
 
 
 def _p95(values: list[int]) -> int:
@@ -2137,6 +2278,20 @@ def _target_cutover_metrics(
         for receipt in receipts
         if any(field not in receipt for field in required_fields)
     )
+    strict_issue_lists = [
+        route_receipt_strict_issues(
+            receipt,
+            index=index,
+            required_fields=required_fields,
+            blocked_actions=blocked_actions,
+        )
+        for index, receipt in enumerate(receipts, 1)
+    ]
+    strict_issue_count = sum(len(issues) for issues in strict_issue_lists)
+    strict_invalid_receipt_count = sum(1 for issues in strict_issue_lists if issues)
+    strict_issue_examples = [
+        issue for issues in strict_issue_lists for issue in issues[:2]
+    ][:8]
     validator_pass_count = sum(
         1 for item in receipts if _receipt_validator_passed(item)
     )
@@ -2226,6 +2381,10 @@ def _target_cutover_metrics(
     if missing_required_count:
         blockers.append(
             f"{missing_required_count} route receipts are missing required fields"
+        )
+    if strict_issue_count:
+        blockers.append(
+            f"{strict_invalid_receipt_count} route receipts failed strict evidence validation"
         )
     if (
         contract.get("require_validator_pass_rate")
@@ -2391,6 +2550,9 @@ def _target_cutover_metrics(
             "policy_fresh_count": policy_fresh_count,
             "hidden_cloud_count": hidden_cloud_count,
             "p95_latency_ms": p95_latency_ms,
+            "strict_invalid_receipt_count": strict_invalid_receipt_count,
+            "strict_issue_count": strict_issue_count,
+            "strict_issue_examples": strict_issue_examples,
             "missing_required_count": missing_required_count,
             "chain_issue_count": len(chain_issues),
             "validator_pass_rate": validator_pass_rate,
@@ -2719,6 +2881,10 @@ def build_cutover_readiness_report(
                 _coerce_int(row.get("metrics", {}).get("chain_issue_count"))
                 for row in targets
             ),
+            "strict_receipt_issue_count": sum(
+                _coerce_int(row.get("metrics", {}).get("strict_issue_count"))
+                for row in targets
+            ),
             "historic_route_benchmark_gate": historic_gate.get("gate"),
             "historic_route_benchmark_savings": historic_gate.get(
                 "savings_vs_all_bedrock_5_5_xhigh"
@@ -2760,9 +2926,9 @@ def build_cutover_readiness_report(
         "cutover_scope": {
             "allowed": [
                 "route bounded worker/draft tasks through the selected hybrid lane",
-                "keep 5.5 verifier/final authority gates active",
+                "keep 5.4 verifier and 5.5 final-authority gates active",
                 "emit route receipts for every decision",
-                "fall back to all-5.5 immediately on validator or operator signal",
+                "fall back to 5.5 final authority only on validator or operator signal",
             ],
             "blocked": [
                 "autonomous live writes",

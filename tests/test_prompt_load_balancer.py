@@ -35,7 +35,16 @@ def test_prompt_load_balancer_routes_typo_status_prompts_local_first():
     assert result["recommendation"]["reasoning_tier"] == "simple"
     assert result["recommendation"]["primary_executor"] == "deterministic_prompt_gate"
     assert result["recommendation"]["next_hop"] == "console_runtime_kernel"
+    assert result["reasoning_orchestration"]["reasoning_tier"]["tier"] == "instant"
+    assert (
+        "kpi.status_snapshot" in result["reasoning_orchestration"]["selected_skill_ids"]
+    )
+    assert result["recommendation"]["max_tool_iterations"] == 1
+    assert result["recommendation"]["continuous_tool_use"] is False
     assert result["route_receipt_preview"]["execution_performed"] is False
+    assert result["route_receipt_preview"]["reasoning_receipt"]["schema"] == (
+        "norman.reasoning-orchestrator.receipt.v1"
+    )
 
 
 def test_prompt_load_balancer_bad_route_corpus_stays_local_first():
@@ -44,13 +53,14 @@ def test_prompt_load_balancer_bad_route_corpus_stays_local_first():
     )
     corpus = json.loads(corpus_path.read_text(encoding="utf-8"))
 
-    assert corpus["schema"] == "norman.prompt-bad-route-corpus.v1"
+    assert corpus["schema"] == "norman.prompt-bad-route-corpus.v2"
     for case in corpus["cases"]:
         result = balance_prompt(
             prompt=case["prompt"],
             requested_runtime="codex",
             requested_model="gpt-5.5",
             force_requested_runtime=False,
+            context=case.get("context", {}),
         )
 
         assert result["classification"]["intent"] == case["expected_intent"]
@@ -61,6 +71,36 @@ def test_prompt_load_balancer_bad_route_corpus_stays_local_first():
         assert result["recommendation"]["requires_approval"] is bool(
             case["requires_approval"]
         )
+        assert result["recommendation"]["selected_action"] == case["expected_action"]
+        assert (
+            result["recommendation"]["execution_permission"]
+            == case["expected_execution_permission"]
+        )
+        assert result["recommendation"]["tool_selection"]
+        assert result["recommendation"]["control_route"] == "local_control_prefilter"
+        assert result["recommendation"]["visible_response"]
+        assert result["stateful_control"]["receipt"]["required"] is True
+
+
+def test_prompt_load_balancer_blocks_unbound_go_ahead_for_risky_pending_action():
+    result = balance_prompt(
+        prompt="go ahead",
+        context={
+            "active_job_count": 1,
+            "active_job_id": "deploy-42",
+            "target_identity": "deploy-42",
+            "pending_action_kind": "deploy_release",
+            "pending_action_risk": "prod_write",
+            "pending_action_digest": "sha256:deploy42",
+        },
+    )
+
+    assert result["classification"]["intent"] == "continue_work"
+    assert result["stateful_control"]["execution_permission"] == "blocked"
+    assert "missing_valid_bound_approval" in result["stateful_control"]["blockers"]
+    assert result["recommendation"]["execution_allowed"] is False
+    assert result["recommendation"]["requires_approval"] is True
+    assert result["recommendation"]["next_hop"] == "local_preflight_or_approval"
 
 
 def test_prompt_load_balancer_keeps_requested_cloud_as_preference_until_forced():
@@ -132,6 +172,36 @@ def test_prompt_load_balancer_marks_policy_work_as_high_reasoning_local_first():
         "spark_high_reasoning_local"
     )
     assert result["recommendation"]["selected_runtime"] == "localllm"
+    assert (
+        "kpi.release_packet" in result["reasoning_orchestration"]["selected_skill_ids"]
+    )
+    assert result["recommendation"]["continuous_tool_use"] is True
+    assert result["recommendation"]["max_tool_iterations"] >= 8
+
+
+def test_prompt_load_balancer_adds_kpi_skill_orchestration_for_cutover_work():
+    result = balance_prompt(
+        prompt=(
+            "Build the cutover KPI packet: signed receipts, local/cloud/search "
+            "ledger, benchmark freshness, and 20 operator turns."
+        ),
+        source="norman",
+        session="norman-codex",
+    )
+
+    plan = result["reasoning_orchestration"]
+    assert plan["schema"] == "norman.reasoning-orchestrator.plan.v1"
+    assert "kpi.receipt_integrity" in plan["selected_skill_ids"]
+    assert "kpi.operator_cohort" in plan["selected_skill_ids"]
+    assert "kpi.cost_counterfactual" in plan["selected_skill_ids"]
+    assert plan["tool_plan"]["continuous_tool_use"] is True
+    assert "signed_receipt_ledger" in plan["tool_plan"]["required_tools"]
+    assert "usage_bucket_validator" in plan["tool_plan"]["verification_tools"]
+    assert result["recommendation"]["cloud_last_resort"] is True
+    assert (
+        result["route_receipt_preview"]["reasoning_receipt"]["plan_id"]
+        == (plan["plan_id"])
+    )
 
 
 def test_prompt_load_balancer_only_uses_cloud_when_explicitly_forced():
@@ -322,6 +392,10 @@ def test_prompt_load_balancer_capabilities_document_intermediary_mode():
     assert capabilities["supports"]["provider_adapter_mode"] is True
     assert capabilities["supports"]["transparent_mitm_required"] is False
     assert capabilities["supports"]["openai_chat_completions_adapter"] is True
+    assert capabilities["supports"]["reasoning_orchestration"] is True
+    assert capabilities["supports"]["skill_registry"] is True
+    assert capabilities["supports"]["kpi_background_skills"] is True
+    assert capabilities["supports"]["continuous_tool_use_plan"] is True
     assert "intelligence" in {
         item["mode"] for item in capabilities["intermediary_modes"]
     }
@@ -333,6 +407,8 @@ def test_prompt_load_balancer_capabilities_document_intermediary_mode():
         item["mode"] for item in capabilities["integration_modes"]
     }
     assert "quick_status" in capabilities["quick_intents"]
+    assert "kpi.status_snapshot" in capabilities["skill_registry"]["skill_ids"]
+    assert capabilities["kpi_background_loop"]["cloud_allowed"] is False
 
 
 def test_prompt_router_api_returns_load_balancer_decision(test_app):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from typing import Any, Mapping
 
@@ -12,6 +13,12 @@ from app.services.console_runtime.policy import (
 )
 from app.services.norllama.routing import build_task_receipt, route_task
 from app.services.norllama.types import NorllamaTaskKind, NorllamaTaskRequest
+from app.services.reasoning_orchestrator import (
+    build_reasoning_receipt,
+    build_skill_registry,
+    kpi_background_loop_plan,
+    plan_reasoning_turn,
+)
 
 PROMPT_LOAD_BALANCER_SCHEMA = "norman.prompt-load-balancer.v1"
 PROMPT_ROUTE_RECEIPT_SCHEMA = "norman.prompt-load-balancer.receipt.v1"
@@ -265,6 +272,133 @@ def _flag(value: Any, default: bool = False) -> bool:
     if clean in {"0", "false", "no", "off", "disabled"}:
         return False
     return default
+
+
+def _integer(value: Any) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return int(float(value.strip()))
+        except ValueError:
+            return 0
+    return 0
+
+
+def _future_timestamp(value: Any) -> bool:
+    clean = _clean(value)
+    if not clean:
+        return False
+    try:
+        if clean.isdigit():
+            return int(clean) > int(datetime.now(timezone.utc).timestamp())
+        parsed = datetime.fromisoformat(clean.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed > datetime.now(timezone.utc)
+
+
+def _stateful_terse_control(
+    *,
+    classification: Mapping[str, Any],
+    context: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    ctx = dict(context or {})
+    intent = _clean(classification.get("intent"))
+    active_job_count = _integer(ctx.get("active_job_count"))
+    pending_action_digest = _clean(ctx.get("pending_action_digest"))
+    pending_action_risk = _lower(ctx.get("pending_action_risk"))
+    pending_action_kind = _clean(ctx.get("pending_action_kind"))
+    target_identity = _clean(ctx.get("target_identity") or ctx.get("active_job_id"))
+    approval_id = _clean(ctx.get("approval_id"))
+    approval_expires_at = _clean(ctx.get("approval_expires_at"))
+    approval_valid = bool(approval_id and _future_timestamp(approval_expires_at))
+    terse_control = intent in {
+        "continue_work",
+        "retry_last_step",
+        "stop_or_pause",
+        "undo_or_rollback",
+        "restart_or_recover",
+        "ship_or_release",
+    }
+    risky_pending = pending_action_risk in {
+        "prod_write",
+        "external_mutation",
+        "destructive",
+        "critical",
+        "high",
+    }
+    mutating_intent = intent in {
+        "undo_or_rollback",
+        "restart_or_recover",
+        "ship_or_release",
+    }
+    blockers: list[str] = []
+    selected_action = intent or "general_prompt"
+    tool_selection = "none"
+    if intent == "stop_or_pause":
+        selected_action = "deterministic_stop_current_job"
+        tool_selection = "console_control"
+    elif terse_control:
+        selected_action = pending_action_kind or intent
+        tool_selection = "console_runtime_kernel"
+    if terse_control and intent != "stop_or_pause":
+        if active_job_count <= 0:
+            blockers.append("no_active_job_bound_to_terse_command")
+        elif active_job_count > 1:
+            blockers.append("multiple_active_jobs_require_target_selection")
+        if not target_identity:
+            blockers.append("missing_target_identity")
+        if (risky_pending or mutating_intent) and not pending_action_digest:
+            blockers.append("missing_pending_action_digest")
+        if (risky_pending or mutating_intent) and not approval_valid:
+            blockers.append("missing_valid_bound_approval")
+    execution_allowed = not blockers
+    requires_approval = bool(blockers and (risky_pending or mutating_intent))
+    if terse_control and blockers and not requires_approval:
+        requires_approval = True
+    return {
+        "schema": "norman.prompt-load-balancer.stateful-control.v1",
+        "applies": terse_control,
+        "selected_action": selected_action,
+        "execution_allowed": execution_allowed,
+        "execution_permission": "allowed" if execution_allowed else "blocked",
+        "requires_approval": requires_approval,
+        "approval_binding": {
+            "approval_id": approval_id,
+            "approval_valid": approval_valid,
+            "approval_expires_at": approval_expires_at,
+            "pending_action_digest": pending_action_digest,
+            "pending_action_risk": pending_action_risk,
+        },
+        "target_identity": target_identity,
+        "tool_selection": tool_selection,
+        "route": "local_control_prefilter",
+        "visible_response": (
+            "blocked_until_bound_approval"
+            if blockers
+            else "terse_command_bound_to_current_state"
+        ),
+        "receipt": {
+            "required": True,
+            "fields": [
+                "selected_action",
+                "execution_permission",
+                "approval_binding",
+                "target_identity",
+                "tool_selection",
+                "route",
+                "visible_response",
+            ],
+        },
+        "blockers": blockers,
+    }
 
 
 def _dict(value: Any) -> dict[str, Any]:
@@ -724,7 +858,35 @@ def balance_prompt(
 
     prompt_route_id = f"prompt_route_{uuid.uuid4().hex}"
     classification = classify_prompt(clean_prompt, artifacts=artifacts)
+    stateful_control = _stateful_terse_control(
+        classification=classification,
+        context=context,
+    )
+    if stateful_control["applies"]:
+        classification = dict(classification)
+        classification["stateful_control"] = stateful_control
+        if stateful_control["requires_approval"]:
+            classification["requires_approval"] = True
+        if not stateful_control["execution_allowed"]:
+            classification["risk_level"] = (
+                "high"
+                if stateful_control["requires_approval"]
+                else classification.get("risk_level", "medium")
+            )
+            classification["reasons"] = [
+                *list(classification.get("reasons") or []),
+                *stateful_control["blockers"],
+            ]
     reasoning = _reasoning_profile(classification, prompt=clean_prompt)
+    orchestration_plan = plan_reasoning_turn(
+        prompt=clean_prompt,
+        classification=classification,
+        context=context,
+        artifacts=[dict(item) for item in artifacts or [] if isinstance(item, Mapping)],
+        source=source,
+        session=session,
+    )
+    reasoning_receipt = build_reasoning_receipt(orchestration_plan)
     strategy = _strategy_for_prompt(
         classification,
         reasoning,
@@ -794,7 +956,11 @@ def balance_prompt(
     local_first = bool(route.local and not route.cloud_proxy and decision.allowed)
     cloud_llm_allowed = bool(runtime_state.cloud_llm_allowed and allow_cloud_escalation)
     requires_approval = bool(classification["requires_approval"])
+    if stateful_control["applies"]:
+        requires_approval = bool(stateful_control["requires_approval"])
     execution_allowed = bool(decision.allowed and not requires_approval)
+    if stateful_control["applies"] and not stateful_control["execution_allowed"]:
+        execution_allowed = False
     cloud_escalation_reason = ""
     if classification["cloud_escalation_candidate"]:
         cloud_escalation_reason = "eligible only after local preflight, risk classification, and receipt proof"
@@ -806,7 +972,9 @@ def balance_prompt(
         "source": source,
         "session": session,
         "classification": classification,
+        "stateful_control": stateful_control,
         "reasoning_profile": reasoning,
+        "reasoning_orchestration": orchestration_plan,
         "routing_strategy": strategy,
         "prompt_preprocessor": {
             "schema": "norman.prompt-preprocessor.v1",
@@ -855,17 +1023,34 @@ def balance_prompt(
             "external_side_effects_possible": classification[
                 "external_side_effects_possible"
             ],
+            "selected_action": stateful_control["selected_action"],
+            "execution_permission": stateful_control["execution_permission"],
+            "approval_binding": stateful_control["approval_binding"],
+            "target_identity": stateful_control["target_identity"],
+            "tool_selection": stateful_control["tool_selection"],
+            "control_route": stateful_control["route"],
+            "visible_response": stateful_control["visible_response"],
+            "stateful_blockers": stateful_control["blockers"],
             "next_hop": "console_runtime_kernel"
             if execution_allowed
             else "local_preflight_or_approval",
             "escalation_order": [
                 *strategy["ordered_cascade"],
             ],
+            "selected_skill_ids": orchestration_plan["selected_skill_ids"],
+            "max_tool_iterations": orchestration_plan["tool_plan"][
+                "max_tool_iterations"
+            ],
+            "continuous_tool_use": orchestration_plan["tool_plan"][
+                "continuous_tool_use"
+            ],
+            "verification_tools": orchestration_plan["tool_plan"]["verification_tools"],
         },
         "route_receipt_preview": {
             "schema": PROMPT_ROUTE_RECEIPT_SCHEMA,
             "execution_performed": False,
             "norllama_route_receipt": receipt.get("route_receipt", {}),
+            "reasoning_receipt": reasoning_receipt,
         },
     }
 
@@ -987,6 +1172,8 @@ def provider_adapter_decision(
 
 
 def prompt_load_balancer_capabilities() -> dict[str, Any]:
+    skill_registry = build_skill_registry()
+    background_loop = kpi_background_loop_plan()
     return {
         "schema": "norman.prompt-load-balancer.capabilities.v1",
         "mode": "prompt_load_balancer",
@@ -1006,6 +1193,11 @@ def prompt_load_balancer_capabilities() -> dict[str, Any]:
             "local_runtime_autosense": True,
             "openai_chat_completions_adapter": True,
             "openai_responses_adapter": True,
+            "reasoning_orchestration": True,
+            "skill_registry": True,
+            "kpi_background_skills": True,
+            "continuous_tool_use_plan": True,
+            "tool_required_verification": True,
         },
         "intermediary_modes": [
             {
@@ -1065,4 +1257,16 @@ def prompt_load_balancer_capabilities() -> dict[str, Any]:
             "web_search_if_task_requires_fresh_external_data",
             "cloud_llm_receipted_tiebreaker",
         ],
+        "skill_registry": {
+            "schema": skill_registry["schema"],
+            "version": skill_registry["version"],
+            "skill_count": skill_registry["skill_count"],
+            "skill_ids": [skill["skill_id"] for skill in skill_registry["skills"]],
+        },
+        "kpi_background_loop": {
+            "schema": background_loop["schema"],
+            "registry_version": background_loop["registry_version"],
+            "candidate_count": background_loop["candidate_count"],
+            "cloud_allowed": background_loop["loop_policy"]["cloud_allowed"],
+        },
     }

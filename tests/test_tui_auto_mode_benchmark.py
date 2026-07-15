@@ -8,9 +8,9 @@ def _sample_kpi_benchmark(path: Path) -> None:
     payload = {
         "runs": [
             {
-                "run_id": "kpi-weekly-1-codex_bedrock_5_5",
+                "run_id": "kpi-weekly-1-codex_bedrock_5_4",
                 "runtime": "codex",
-                "model": "openai.gpt-5.5",
+                "model": "openai.gpt-5.4",
                 "service_tier": "default",
                 "state": "ok",
                 "response": (
@@ -135,6 +135,13 @@ def _sample_cutover_readiness(path: Path) -> None:
 def _sample_invoice_reconciled_ledger(path: Path) -> None:
     rows = [
         {
+            "usage": {"model": "openai.gpt-5.4"},
+            "billing": {
+                "price_basis": "bedrock-us-east-2",
+                "charge_status": "invoice_reconciled",
+            },
+        },
+        {
             "usage": {"model": "openai.gpt-5.5"},
             "billing": {
                 "price_basis": "bedrock-us-east-2",
@@ -176,7 +183,7 @@ def test_auto_mode_benchmark_projects_auto_cheaper_than_raw(tmp_path) -> None:
     )
 
     rows = {(row["operation_id"], row["mode_id"]): row for row in report["kpi_matrix"]}
-    auto = rows[("kpi_weekly_3_bullet_quick", "auto_bedrock_5_5")]
+    auto = rows[("kpi_weekly_3_bullet_quick", "auto_bedrock_role_default")]
     raw = rows[("kpi_weekly_3_bullet_quick", "bedrock_raw_5_5")]
     watch = rows[("kpi_weekly_3_bullet_quick", "watch_only")]
 

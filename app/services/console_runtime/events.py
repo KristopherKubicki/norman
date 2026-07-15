@@ -20,6 +20,7 @@ def event_category(event_type: str) -> str:
         "model",
         "planner",
         "policy",
+        "reasoning",
         "route",
         "shell",
         "tool",

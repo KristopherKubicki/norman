@@ -13,6 +13,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+from app.services.codex_role_policy import codex_role_value, load_codex_role_policy
 from gaphelp_ticket_loop_shadow import build_report as build_gaphelp_report
 from ticket_token_cost_ledger import (
     DEFAULT_LEDGER_JSONL as DEFAULT_TICKET_COST_LEDGER_JSONL,
@@ -27,6 +28,10 @@ DEFAULT_KPI_BENCHMARK_JSON = (
 DEFAULT_KPI_STATUS_JSON = Path("/tmp/kpis_status_fresh.json")
 DEFAULT_SKILL_MATRIX_JSON = DEFAULT_ARTIFACT_DIR / "work_domain_skill_matrix.json"
 DEFAULT_CUTOVER_READINESS_JSON = DEFAULT_ARTIFACT_DIR / "tui_cutover_readiness.json"
+CODEX_ROLE_POLICY = load_codex_role_policy()
+CODEX_CLOUD_DEFAULT_MODEL = codex_role_value(
+    "work_standard", "model", policy=CODEX_ROLE_POLICY
+)
 
 
 @dataclass(frozen=True)
@@ -169,10 +174,10 @@ MODE_SPECS: tuple[ModeSpec, ...] = (
         "Zero model spend; useful for freshness, not enough to generate the executive summary.",
     ),
     ModeSpec(
-        "auto_bedrock_5_5",
-        "Auto route -> Bedrock 5.5, optimized",
+        "auto_bedrock_role_default",
+        "Auto route -> role-policy cloud default, optimized",
         "codex",
-        "openai.gpt-5.5",
+        "openai.gpt-5.4",
         "auto",
         "auto",
         "Auto resolves to Bedrock profile when configured",
@@ -556,16 +561,22 @@ def _invoice_reconciliation_summary(
 
 
 def _route_proof_summary(observed_checks: list[dict[str, Any]]) -> dict[str, Any]:
+    default_aliases = {
+        CODEX_CLOUD_DEFAULT_MODEL,
+        CODEX_CLOUD_DEFAULT_MODEL.removeprefix("openai."),
+    }
     qualifying_passes = [
         row
         for row in observed_checks
         if _clean_str(row.get("effective_runtime")) == "codex"
-        and _clean_str(row.get("effective_model")) in {"openai.gpt-5.5", "gpt-5.5"}
+        and _clean_str(row.get("effective_model")) in default_aliases
         and bool(row.get("did_right_thing"))
     ]
     blockers: list[str] = []
     if not qualifying_passes:
-        blockers.append("no observed codex 5.5 route-proof KPI pass is recorded yet")
+        blockers.append(
+            f"no observed codex {CODEX_CLOUD_DEFAULT_MODEL} route-proof KPI pass is recorded yet"
+        )
     return {
         "pass_count": len(qualifying_passes),
         "ready": bool(qualifying_passes),
@@ -941,7 +952,7 @@ def _build_kpi_matrix(
             )
     if kpi_status:
         for row in rows:
-            if row["mode_id"] == "auto_bedrock_5_5":
+            if row["mode_id"] == "auto_bedrock_role_default":
                 row["live_auto_route_check"] = {
                     "ui_version": kpi_status.get("ui_version"),
                     "default_optimization_mode": kpi_status.get(
@@ -1073,13 +1084,13 @@ def _optimizer_efficiency_gate(
     for operation in KPI_OPERATIONS:
         operation_id = operation.operation_id
         raw = _row_by_mode(kpi_matrix, operation_id, "bedrock_raw_5_5")
-        auto = _row_by_mode(kpi_matrix, operation_id, "auto_bedrock_5_5")
+        auto = _row_by_mode(kpi_matrix, operation_id, "auto_bedrock_role_default")
         hybrid = _row_by_mode(kpi_matrix, operation_id, "hybrid_auto_bedrock")
         if raw and auto:
             kpi_rows.append(
                 {
                     "operation_id": operation_id,
-                    "candidate_mode_id": "auto_bedrock_5_5",
+                    "candidate_mode_id": "auto_bedrock_role_default",
                     "baseline_mode_id": "bedrock_raw_5_5",
                     "expected_savings_rate": _pct_savings(
                         raw.get("expected_usd"), auto.get("expected_usd")
@@ -1321,13 +1332,13 @@ def build_report(
     for operation in KPI_OPERATIONS:
         operation_id = operation.operation_id
         raw = _row_by_mode(kpi_matrix, operation_id, "bedrock_raw_5_5")
-        auto = _row_by_mode(kpi_matrix, operation_id, "auto_bedrock_5_5")
+        auto = _row_by_mode(kpi_matrix, operation_id, "auto_bedrock_role_default")
         hybrid = _row_by_mode(kpi_matrix, operation_id, "hybrid_auto_bedrock")
         if raw and auto:
             baseline_kpi_rows.append(
                 {
                     "operation_id": operation_id,
-                    "candidate_mode_id": "auto_bedrock_5_5",
+                    "candidate_mode_id": "auto_bedrock_role_default",
                 }
             )
         if raw and hybrid:
@@ -1399,7 +1410,7 @@ def build_report(
         "gaphelp_easy": easy_gaphelp,
         "gaphelp_backlog": backlog_gaphelp,
         "summary": {
-            "default_live_mode": "auto_bedrock_5_5",
+            "default_live_mode": "auto_bedrock_role_default",
             "best_interactive_ticket_policy": easy_gaphelp["recommendation"],
             "best_backlog_policy": backlog_gaphelp["recommendation"],
             "optimizer_status": optimizer_gate["status"],
