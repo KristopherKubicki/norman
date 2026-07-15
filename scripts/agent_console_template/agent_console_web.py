@@ -2050,10 +2050,17 @@ TUI_KERNEL_PRIMARY_ENABLED = TUI_KERNEL_EXECUTION_ENABLED and (
     _early_env_flag("NORMAN_TUI_KERNEL_PRIMARY_ENABLED", True)
     and _early_env_flag("NORMAN_TUI_KERNEL_PRIMARY", True)
 )
+TUI_KERNEL_PRIMARY_STRICT_ENABLED = TUI_KERNEL_EXECUTION_ENABLED and _early_env_flag(
+    "NORMAN_TUI_KERNEL_PRIMARY_STRICT", False
+)
 TUI_KERNEL_OWNED_TURN_ENABLED = TUI_KERNEL_EXECUTION_ENABLED and (
     _early_env_flag("NORMAN_TUI_KERNEL_OWNED_TURN_ENABLED", False)
     or _early_env_flag("NORMAN_TUI_KERNEL_OWNED_TURN", False)
-    or _early_env_flag("NORMAN_TUI_KERNEL_PRIMARY_STRICT", False)
+    or TUI_KERNEL_PRIMARY_STRICT_ENABLED
+)
+TUI_KERNEL_CLOUD_FALLBACK_ENABLED = TUI_KERNEL_EXECUTION_ENABLED and (
+    _early_env_flag("NORMAN_TUI_KERNEL_CLOUD_FALLBACK_ENABLED", True)
+    and _early_env_flag("NORMAN_TUI_KERNEL_CLOUD_FALLBACK", True)
 )
 TUI_KERNEL_WORKSPACE_PREFLIGHT_ENABLED = TUI_KERNEL_EXECUTION_ENABLED and (
     _early_env_flag("NORMAN_TUI_KERNEL_WORKSPACE_PREFLIGHT_ENABLED", True)
@@ -30424,7 +30431,9 @@ def _execute_prompt_runtime(
             if response:
                 return response, error_text, thread_id, usage
             if kernel_owned_turn:
-                return console_runtime_kernel_owned_failure_result(
+                return console_runtime_kernel_owned_failure_or_cloud_fallback_result(
+                    prompt=prompt,
+                    attachments=attachments,
                     reason=error_text or "Kernel primary returned no visible response.",
                     failure_class=str(
                         usage.get("kernel_failure_class") or "empty_response"
@@ -30436,6 +30445,8 @@ def _execute_prompt_runtime(
                     speed=speed,
                     detail=detail,
                     job_budget=job_budget,
+                    timeout_seconds=timeout_seconds,
+                    optimization_mode=optimization_mode,
                     job_id=str(usage.get("kernel_job_id") or ""),
                     output_shape=str(usage.get("output_shape") or "empty"),
                 )
@@ -30456,7 +30467,9 @@ def _execute_prompt_runtime(
             _record_console_runtime_error(exc)
             if kernel_owned_turn:
                 failed_job_id = active_console_runtime_turn_job_id()
-                return console_runtime_kernel_owned_failure_result(
+                return console_runtime_kernel_owned_failure_or_cloud_fallback_result(
+                    prompt=prompt,
+                    attachments=attachments,
                     reason=str(exc),
                     failure_class=type(exc).__name__,
                     started_at=kernel_started_at,
@@ -30466,6 +30479,8 @@ def _execute_prompt_runtime(
                     speed=speed,
                     detail=detail,
                     job_budget=job_budget,
+                    timeout_seconds=timeout_seconds,
+                    optimization_mode=optimization_mode,
                     job_id=failed_job_id,
                 )
             append_audit_event(
@@ -30904,6 +30919,133 @@ def console_runtime_kernel_owned_failure_result(
         },
     )
     return "", message, read_text(THREAD_ID_PATH), usage
+
+
+def console_runtime_kernel_cloud_fallback_allowed(
+    *,
+    prompt: str,
+    runtime: str,
+) -> bool:
+    if not TUI_KERNEL_CLOUD_FALLBACK_ENABLED:
+        return False
+    if TUI_KERNEL_PRIMARY_STRICT_ENABLED:
+        return False
+    if _early_env_flag("NORMAN_CLOUD_LLM_DISABLED", False):
+        return False
+    if prompt_is_literal_response_request(prompt):
+        return False
+    return normalize_runtime(runtime) == "codex"
+
+
+def console_runtime_kernel_owned_failure_or_cloud_fallback_result(
+    *,
+    prompt: str,
+    attachments: list[dict[str, Any]],
+    reason: str,
+    failure_class: str,
+    started_at: int,
+    runtime: str,
+    model: str,
+    service_tier: str,
+    speed: str,
+    detail: int,
+    job_budget: str,
+    timeout_seconds: int | None,
+    optimization_mode: str,
+    job_id: str = "",
+    output_shape: str = "error",
+) -> tuple[str, str, str, dict[str, Any]]:
+    if not console_runtime_kernel_cloud_fallback_allowed(
+        prompt=prompt,
+        runtime=runtime,
+    ):
+        return console_runtime_kernel_owned_failure_result(
+            reason=reason,
+            failure_class=failure_class,
+            started_at=started_at,
+            runtime=runtime,
+            model=model,
+            service_tier=service_tier,
+            speed=speed,
+            detail=detail,
+            job_budget=job_budget,
+            job_id=job_id,
+            output_shape=output_shape,
+        )
+    clean_reason = summarize_text(str(reason or "unknown kernel failure"), 700)
+    codex_kwargs: dict[str, Any] = {}
+    normalized_service_tier = normalize_service_tier(service_tier)
+    if normalized_service_tier != "auto":
+        codex_kwargs["service_tier"] = normalized_service_tier
+    try:
+        response, error_text, thread_id, fallback_usage = (
+            _call_with_optional_optimization_mode(
+                _execute_codex_prompt,
+                prompt,
+                speed,
+                detail,
+                attachments,
+                timeout_seconds=timeout_seconds,
+                model=normalize_runtime_model("codex", model),
+                job_budget=job_budget,
+                optimization_mode=optimization_mode,
+                **codex_kwargs,
+            )
+        )
+    except Exception as exc:
+        return console_runtime_kernel_owned_failure_result(
+            reason=f"{clean_reason}; cloud fallback failed: {type(exc).__name__}: {exc}",
+            failure_class=failure_class,
+            started_at=started_at,
+            runtime=runtime,
+            model=model,
+            service_tier=service_tier,
+            speed=speed,
+            detail=detail,
+            job_budget=job_budget,
+            job_id=job_id,
+            output_shape=output_shape,
+        )
+    usage = normalize_usage_entry(
+        {
+            **(fallback_usage if isinstance(fallback_usage, dict) else {}),
+            "route_execution": "codex_after_kernel_fallback",
+            "kernel_primary": True,
+            "kernel_owned_turn": TUI_KERNEL_OWNED_TURN_ENABLED,
+            "kernel_fallback_used": True,
+            "kernel_fallback_kind": "cloud_after_local_failure",
+            "kernel_fallback_visible": True,
+            "hidden_cloud_fallback": False,
+            "kernel_job_id": job_id,
+            "kernel_failure_class": failure_class,
+            "kernel_failure_reason": clean_reason,
+            "kernel_failure_output_shape": output_shape,
+        }
+    )
+    append_audit_event(
+        event_type="chat.kernel-owned-turn-cloud-fallback",
+        summary="Kernel-owned local turn fell back to the selected cloud runtime.",
+        detail=summarize_text(error_text or response or clean_reason, 500),
+        severity="warn" if response else "error",
+        actor_type="system",
+        thread_id=thread_id or read_text(THREAD_ID_PATH),
+        payload={
+            "runtime": normalize_runtime(runtime),
+            "model": normalize_runtime_model(runtime, model),
+            "kernel_job_id": job_id,
+            "failure_class": failure_class,
+            "output_shape": output_shape,
+            "kernel_owned_turn": TUI_KERNEL_OWNED_TURN_ENABLED,
+            "kernel_strict": TUI_KERNEL_PRIMARY_STRICT_ENABLED,
+            "fallback_used": True,
+            "fallback_kind": "cloud_after_local_failure",
+            "hidden_cloud_fallback": False,
+            "kernel_error": clean_reason,
+            "fallback_error": summarize_text(error_text, 700),
+            "usage": usage,
+        },
+    )
+    return response, error_text, thread_id, usage
 
 
 def console_runtime_kernel_primary_usage(

@@ -4677,13 +4677,15 @@ def test_sync_template_rolls_kernel_primary_to_canary_instances() -> None:
     assert canary_settings["NORMAN_TUI_KERNEL_EXECUTION"] == "1"
     assert canary_settings["NORMAN_TUI_KERNEL_PRIMARY"] == "1"
     assert canary_settings["NORMAN_TUI_KERNEL_OWNED_TURN"] == "1"
-    assert canary_settings["NORMAN_TUI_KERNEL_PRIMARY_STRICT"] == "1"
+    assert canary_settings["NORMAN_TUI_KERNEL_PRIMARY_STRICT"] == "0"
+    assert canary_settings["NORMAN_TUI_KERNEL_CLOUD_FALLBACK"] == "1"
     assert canary_settings["NORMAN_TUI_KERNEL_WORKSPACE_PREFLIGHT"] == "1"
     assert canary_settings["NORMAN_TUI_KERNEL_PRIMARY_MAX_STEPS"] == "5"
     assert shadow_settings["NORMAN_TUI_BACKEND"] == "kernel-shadow"
     assert shadow_settings["NORMAN_TUI_KERNEL_EXECUTION"] == "0"
     assert shadow_settings["NORMAN_TUI_KERNEL_PRIMARY"] == "0"
     assert shadow_settings["NORMAN_TUI_KERNEL_OWNED_TURN"] == "0"
+    assert shadow_settings["NORMAN_TUI_KERNEL_CLOUD_FALLBACK"] == "0"
 
     for name in ("cloudagent", "networking", "norman", "scout", "uplink"):
         promoted = module.ConsoleInstance(
@@ -4710,7 +4712,8 @@ def test_sync_template_rolls_kernel_primary_to_canary_instances() -> None:
         assert settings["NORMAN_TUI_BACKEND"] == "kernel"
         assert settings["NORMAN_TUI_KERNEL_EXECUTION"] == "1"
         assert settings["NORMAN_TUI_KERNEL_OWNED_TURN"] == "1"
-        assert settings["NORMAN_TUI_KERNEL_PRIMARY_STRICT"] == "1"
+        assert settings["NORMAN_TUI_KERNEL_PRIMARY_STRICT"] == "0"
+        assert settings["NORMAN_TUI_KERNEL_CLOUD_FALLBACK"] == "1"
 
 
 def test_runtime_bridge_settings_prefers_broker_reference(monkeypatch) -> None:

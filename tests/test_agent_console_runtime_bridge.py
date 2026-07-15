@@ -1147,6 +1147,7 @@ def test_kernel_owned_turn_blocks_codex_fallback(monkeypatch, tmp_path):
     monkeypatch.setenv("NORMAN_TUI_BACKEND", "kernel")
     monkeypatch.setenv("NORMAN_TUI_KERNEL_EXECUTION", "1")
     monkeypatch.setenv("NORMAN_TUI_KERNEL_OWNED_TURN", "1")
+    monkeypatch.setenv("NORMAN_TUI_KERNEL_PRIMARY_STRICT", "1")
     module = _load_agent_console_web(monkeypatch, tmp_path)
     module.update_status_meta(running_console_runtime_job_id="turn-kernel-primary")
 
@@ -1181,6 +1182,63 @@ def test_kernel_owned_turn_blocks_codex_fallback(monkeypatch, tmp_path):
     assert usage["kernel_job_id"] == "turn-kernel-primary"
     assert usage["kernel_failure_class"] == "URLError"
     assert usage["success"] is False
+
+
+def test_kernel_owned_turn_can_fall_back_to_codex_when_not_strict(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_API_BASE", "http://norman.local/api/v1")
+    monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_TOKEN", "runtime-token")
+    monkeypatch.setenv("NORMAN_TUI_BACKEND", "kernel")
+    monkeypatch.setenv("NORMAN_TUI_KERNEL_EXECUTION", "1")
+    monkeypatch.setenv("NORMAN_TUI_KERNEL_OWNED_TURN", "1")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    module.update_status_meta(running_console_runtime_job_id="turn-kernel-primary")
+
+    def fake_json_request(*_args, **_kwargs):
+        raise module.urllib_error.URLError("runtime offline")
+
+    def fake_codex(*_args, **_kwargs):
+        return (
+            "Cloud fallback answer.",
+            "",
+            "thread-fallback",
+            {"runtime": "codex", "model": "gpt-test", "total_tokens": 9},
+        )
+
+    events = []
+    monkeypatch.setattr(module, "_console_runtime_json_request", fake_json_request)
+    monkeypatch.setattr(module, "_execute_codex_prompt", fake_codex)
+    monkeypatch.setattr(
+        module, "append_audit_event", lambda **kwargs: events.append(kwargs) or {}
+    )
+
+    response, error, thread_id, usage = module._execute_prompt_runtime(
+        "Summarize these notes locally.",
+        "balanced",
+        2,
+        [],
+        "codex",
+        "gpt-test",
+        300,
+        service_tier="default",
+        job_budget="5m",
+    )
+
+    assert response == "Cloud fallback answer."
+    assert error == ""
+    assert thread_id == "thread-fallback"
+    assert usage["runtime"] == "codex"
+    assert usage["route_execution"] == "codex_after_kernel_fallback"
+    assert usage["kernel_owned_turn"] is True
+    assert usage["kernel_fallback_used"] is True
+    assert usage["kernel_fallback_kind"] == "cloud_after_local_failure"
+    assert usage["hidden_cloud_fallback"] is False
+    assert usage["kernel_failure_class"] == "URLError"
+    assert any(
+        event["event_type"] == "chat.kernel-owned-turn-cloud-fallback"
+        for event in events
+    )
 
 
 def test_kernel_primary_reports_turn_job_create_failure(monkeypatch, tmp_path):
