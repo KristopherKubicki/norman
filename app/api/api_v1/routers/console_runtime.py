@@ -877,7 +877,7 @@ async def run_console_runtime_job_once(
             planner_kind=payload.planner_kind,
             model=payload.model,
             max_output_tokens=payload.max_output_tokens,
-            route_policy=with_local_first_catalog_defaults(payload.route_policy),
+            route_policy=dict(payload.route_policy),
             metadata=payload.metadata,
             include_capabilities=payload.include_capabilities,
             live_execution_approved=payload.live_execution_approved,

@@ -587,6 +587,43 @@ def test_console_runtime_api_runs_one_dry_run_worker_step(test_app):
     assert payload["snapshot"]["category_counts"]["tool"] == 2
 
 
+def test_console_runtime_api_preserves_explicit_cloud_policy_for_denial(test_app):
+    job_id = "job-api-cloud-policy-denied"
+    created = test_app.post(
+        "/api/v1/console-runtime/jobs",
+        json={
+            "job_id": job_id,
+            "objective": "Verify cloud policy denial before model invocation",
+            "route_policy": {
+                "provider": "bedrock",
+                "model": "anthropic.claude-test",
+                "allow_cloud_proxy": True,
+                "cloud_llm_disabled": True,
+            },
+        },
+    )
+    assert created.status_code == 200
+
+    response = test_app.post(
+        f"/api/v1/console-runtime/jobs/{job_id}/runs",
+        json={
+            "worker_id": "api-cloud-policy-test",
+            "dry_run": True,
+            "include_capabilities": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["route_blocked"] is True
+    assert payload["model_result"] is None
+    assert payload["job"]["status"] == "blocked"
+    assert "cloud LLM provider blocked by policy" in payload["blocked_reason"]
+    event_types = {event["event_type"] for event in payload["snapshot"]["events"]}
+    assert "policy.egress_blocked" in event_types
+    assert "model.requested" not in event_types
+
+
 @pytest.mark.asyncio
 async def test_console_runtime_api_run_endpoint_offloads_worker_to_thread(monkeypatch):
     from app.api.api_v1.routers import console_runtime
