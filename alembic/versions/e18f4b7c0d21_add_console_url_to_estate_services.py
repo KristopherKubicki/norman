@@ -19,6 +19,8 @@ depends_on = None
 def upgrade() -> None:
     bind = op.get_bind()
     inspector = inspect(bind)
+    if not inspector.has_table("estate_services"):
+        return
     columns = {column["name"] for column in inspector.get_columns("estate_services")}
     if "console_url" not in columns:
         op.add_column("estate_services", sa.Column("console_url", sa.String(), nullable=True))
@@ -27,6 +29,8 @@ def upgrade() -> None:
 def downgrade() -> None:
     bind = op.get_bind()
     inspector = inspect(bind)
+    if not inspector.has_table("estate_services"):
+        return
     columns = {column["name"] for column in inspector.get_columns("estate_services")}
     if "console_url" in columns:
         op.drop_column("estate_services", "console_url")
