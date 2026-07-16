@@ -105,6 +105,52 @@ sudo systemctl stop norman-release@<release-sha>
 The release checkout must contain `.venv-3.10` and the managed configuration
 environment before starting this unit.
 
+### Production Credential Wrapper
+
+Use `scripts/systemd/norman-production@.service` and
+`scripts/systemd/norman-production-launch` for a SHA-pinned production release.
+Install the launcher at `/usr/local/libexec/norman-production-launch` with mode
+`0755`, and install the unit at
+`/etc/systemd/system/norman-production@.service`. The unit is deliberately
+separate from the loopback canary and from the legacy `norman.service`.
+
+The unit reads only non-secret identities from
+`/etc/norman/runtime-identities.env`. Store the following logical aliases in
+the approved Norman Keys resolver or the encrypted `cred` migration vault:
+
+```text
+norman/prompt-proxy-token
+norman/console-runtime-service-token
+norman/keys-service-token
+```
+
+The unit loads a systemd encrypted credential containing the vault passphrase
+and the launcher resolves the aliases only into the child process. Do not add
+the token values to an environment file, a unit drop-in, a release checkout,
+or shell history. The machine-local `cred` bridge is a migration fallback;
+move these aliases to a networked Norman Keys backend with short-lived leases
+when that backend is available.
+
+For each production deployment, confirm the unit resolves to the expected
+release and that the front door and local model lane remain healthy:
+
+```bash
+systemctl is-active norman-production@<release-sha>
+curl -fsS http://127.0.0.1:8000/health
+curl -fsS https://norman.home.arpa/health
+curl -fsS https://llm.home.arpa/v1/models
+```
+
+To roll back a bad production release, stop and disable the SHA-specific unit,
+then re-enable and start the prior known-good unit. Keep the legacy service
+disabled unless it is the intentionally selected rollback target:
+
+```bash
+sudo systemctl stop norman-production@<bad-sha>
+sudo systemctl disable norman-production@<bad-sha>
+sudo systemctl enable --now norman-production@<known-good-sha>
+```
+
 ## Running the Application
 
 1. Start the Norman application:
