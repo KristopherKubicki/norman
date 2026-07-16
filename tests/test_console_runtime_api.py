@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from app.api.deps import get_console_runtime_user, get_current_user
+from app.core.auth_cache import clear_auth_caches
 from app.core.config import settings
 from app.crud.user import create_user, get_user_by_email
 from app.main import app
@@ -891,6 +892,7 @@ def test_console_runtime_api_approval_resumes_waiting_job(test_app):
 
 
 def test_console_runtime_api_accepts_configured_service_token(test_app, db):
+    clear_auth_caches()
     previous_token = settings.console_runtime_service_token
     previous_email = settings.console_runtime_service_user_email
     saved_current_override = app.dependency_overrides.pop(get_current_user, None)
@@ -933,6 +935,7 @@ def test_console_runtime_api_accepts_configured_service_token(test_app, db):
             item["job_id"] == "job-service-token" for item in listed.json()["items"]
         )
     finally:
+        clear_auth_caches()
         settings.console_runtime_service_token = previous_token
         settings.console_runtime_service_user_email = previous_email
         if saved_current_override is not None:
