@@ -110,10 +110,22 @@ def console_usage_state(payload: dict[str, Any]) -> dict[str, Any]:
             "usage_window_total_tokens": 0,
             "usage_last_turn_at": 0,
             "usage_last_turn_total_tokens": 0,
+            "codex_subscription_capacity_state": "unknown",
+            "codex_subscription_capacity_fresh": False,
+            "codex_subscription_capacity_observed_at": 0,
+            "codex_subscription_capacity_percent_left": -1,
+            "codex_subscription_capacity_reset_hint": "",
+            "codex_subscription_capacity_eligible": False,
+            "codex_subscription_capacity_tokens_per_hour": 0,
+            "codex_subscription_capacity_projected_tokens_to_reset": 0,
         }
     totals = usage.get("totals")
     window = usage.get("last_24h")
     last_turn = usage.get("last_turn")
+    capacity = usage.get("codex_account_capacity")
+    capacity = capacity if isinstance(capacity, dict) else {}
+    forecast = capacity.get("forecast")
+    forecast = forecast if isinstance(forecast, dict) else {}
     try:
         window_seconds = int(
             usage.get("window_seconds") or DEFAULT_USAGE_WINDOW_SECONDS
@@ -141,6 +153,30 @@ def console_usage_state(payload: dict[str, Any]) -> dict[str, Any]:
         "usage_window_total_tokens": _usage_summary_value(window, "total_tokens"),
         "usage_last_turn_at": _usage_summary_value(last_turn, "finished_at"),
         "usage_last_turn_total_tokens": _usage_summary_value(last_turn, "total_tokens"),
+        "codex_subscription_capacity_state": str(
+            capacity.get("state") or "unknown"
+        ).strip(),
+        "codex_subscription_capacity_fresh": bool(capacity.get("fresh")),
+        "codex_subscription_capacity_observed_at": _usage_summary_value(
+            capacity, "observed_at"
+        ),
+        "codex_subscription_capacity_percent_left": (
+            _usage_summary_value(capacity, "minimum_window_percent_left")
+            if capacity.get("minimum_window_percent_left") is not None
+            else -1
+        ),
+        "codex_subscription_capacity_reset_hint": str(
+            capacity.get("reset_hint") or ""
+        ).strip(),
+        "codex_subscription_capacity_eligible": bool(
+            capacity.get("eligible_for_subscription_route")
+        ),
+        "codex_subscription_capacity_tokens_per_hour": _usage_summary_value(
+            forecast, "tokens_per_hour"
+        ),
+        "codex_subscription_capacity_projected_tokens_to_reset": _usage_summary_value(
+            forecast, "projected_tokens_to_earliest_reset"
+        ),
     }
 
 

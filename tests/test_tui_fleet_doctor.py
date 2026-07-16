@@ -75,6 +75,10 @@ def test_doctor_remote_scan_accepts_canonical_norman_env(monkeypatch) -> None:
     assert "NORMAN_CODEX_" in source
     assert 'key.startswith(("NORMAN_CODEX", "HOUSEBOT_CODEX"))' in source
     assert 'env_get(env, "NORMAN_CODEX_WEB_PORT")' in source
+    assert "/api/restart-readiness" in source
+    assert "readiness_url, timeout=4" in source
+    assert "status_url, timeout=4" in source
+    assert "/api/version" in source
 
 
 def test_doctor_compacts_failed_ssh_scan_detail(monkeypatch) -> None:

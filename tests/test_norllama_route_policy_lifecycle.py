@@ -6,6 +6,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from app.services.console_runtime.policy import with_local_first_catalog_defaults
 from app.services.norllama import warm_policy
 from app.services.norllama.route_policy_artifact import (
@@ -342,6 +344,41 @@ def test_manual_degraded_never_becomes_production_eligible(monkeypatch, tmp_path
 
     assert authorization["allowed"] is True
     assert authorization["production_route_eligible"] is False
+
+
+@pytest.mark.parametrize("provider", ["aws-bedrock", "codex"])
+def test_manual_degraded_never_unblocks_cloud_provider_aliases(
+    monkeypatch, tmp_path, provider
+):
+    _install_policy(
+        monkeypatch,
+        tmp_path,
+        issued_delta=timedelta(days=-2),
+        expires_delta=timedelta(days=-1),
+        raw=True,
+    )
+    artifact = load_route_policy_artifact()["artifact"]
+
+    authorization = authorize_route_under_policy(
+        policy_artifact=artifact,
+        execution_mode="bedrock_adapter",
+        requested_provider=provider,
+        manual_degraded_authorization={
+            "manual_degraded_authorized": True,
+            "authorization_id": f"manual-{provider}",
+            "authorized_by": "operator",
+            "authorization_reason": "local degraded test",
+            "authorization_created_at": _now().isoformat().replace("+00:00", "Z"),
+            "authorization_expires_at": (_now() + timedelta(hours=1))
+            .isoformat()
+            .replace("+00:00", "Z"),
+            "cloud_allowed": False,
+        },
+    )
+
+    assert authorization["cloud_requested"] is True
+    assert authorization["allowed"] is False
+    assert authorization["manual_degraded_authorized"] is False
 
 
 def test_manual_degraded_does_not_unblock_selection_or_prefetch(monkeypatch, tmp_path):

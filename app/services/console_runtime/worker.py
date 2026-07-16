@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.services.console_runtime.adapters.base import ModelAdapter
+from app.services.console_runtime.adapters.bedrock import BedrockModelAdapter
 from app.services.console_runtime.adapters.fake import FakeModelAdapter
 from app.services.console_runtime.adapters.norllama import NorllamaModelAdapter
 from app.services.console_runtime.adapters.shell import (
@@ -722,7 +723,11 @@ class DbConsoleRuntimeWorker:
             },
         )
 
-        model_adapter = adapter or self._default_adapter(opts, job.contract.objective)
+        model_adapter = adapter or self._default_adapter(
+            opts,
+            job.contract.objective,
+            route=route,
+        )
         capabilities = {}
         if opts.include_capabilities:
             try:
@@ -934,12 +939,29 @@ class DbConsoleRuntimeWorker:
             result = model_adapter.invoke(request)
         except Exception as exc:
             error = str(exc)
+            failed_receipt = build_task_receipt(
+                task,
+                route,
+                status="failed",
+                error=error,
+                metadata={
+                    "invocation_id": invocation_id,
+                    "worker_id": opts.worker_id,
+                    "failure_class": "model_adapter_failed",
+                },
+            )
+            failed_route_receipt = failed_receipt.metadata["route_receipt"]
             self.store.append_event(
                 db,
                 user_id=user_id,
                 job_id=job_id,
                 event_type="model.failed",
-                payload={"provider": model_adapter.name, "error": error},
+                payload={
+                    "provider": model_adapter.name,
+                    "error": error,
+                    "route": route_payload,
+                    "route_receipt": failed_route_receipt,
+                },
                 summary=f"{model_adapter.name} failed",
                 detail=error,
             )
@@ -969,6 +991,7 @@ class DbConsoleRuntimeWorker:
                 "model_failed": True,
                 "error": error,
                 "failure_class": "model_adapter_failed",
+                "route_receipt": failed_route_receipt,
             }
 
         goal_phase = (
@@ -1936,7 +1959,11 @@ class DbConsoleRuntimeWorker:
         return "\n\n".join(parts)
 
     def _default_adapter(
-        self, options: ConsoleRuntimeRunOptions, objective: str
+        self,
+        options: ConsoleRuntimeRunOptions,
+        objective: str,
+        *,
+        route: Any | None = None,
     ) -> ModelAdapter:
         if options.dry_run:
             return FakeModelAdapter(
@@ -1947,6 +1974,22 @@ class DbConsoleRuntimeWorker:
                 name="runtime-dry-run",
                 model=options.model or "runtime-dry-run",
             )
+        route_payload = (
+            route.as_dict()
+            if hasattr(route, "as_dict")
+            else route
+            if isinstance(route, dict)
+            else {}
+        )
+        provider = _clean(route_payload.get("provider")).lower().replace("_", "-")
+        cloud_proxy = _flag(route_payload.get("cloud_proxy"))
+        if (
+            provider in {"bedrock", "aws-bedrock"}
+            and cloud_proxy
+            and not _flag(route_payload.get("local"))
+            and not _flag(route_payload.get("tool_lane"))
+        ):
+            return BedrockModelAdapter()
         return NorllamaModelAdapter()
 
     def _live_execution_allowed(self, options: ConsoleRuntimeRunOptions) -> bool:

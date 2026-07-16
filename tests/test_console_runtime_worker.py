@@ -7,6 +7,7 @@ import pytest
 from app import crud
 from app.schemas.user import UserCreate
 from app.services.console_runtime import ConsoleJobContract
+from app.services.console_runtime.adapters.bedrock import BedrockModelAdapter
 from app.services.console_runtime.adapters.fake import FakeModelAdapter
 from app.services.console_runtime.store import DbConsoleRuntimeStore
 from app.services.console_runtime.types import ModelResult, ModelUsage
@@ -15,6 +16,7 @@ from app.services.console_runtime.worker import (
     DbConsoleRuntimeWorker,
     _structured_response_signal,
 )
+from app.services.console_runtime import worker as worker_module
 from app.services.norllama.route_policy import route_policy_contract
 
 
@@ -1328,6 +1330,161 @@ def test_db_console_runtime_worker_allows_explicitly_approved_live_execution(db)
     assert result["job"]["status"] == "done"
     assert result["model_result"]["provider"] == "norllama"
     assert adapter.invocations
+
+
+def test_db_console_runtime_worker_uses_native_bedrock_for_explicit_cloud_route(
+    db, monkeypatch
+):
+    class FakeBedrockClient:
+        def __init__(self):
+            self.calls = []
+
+        def converse(self, **kwargs):
+            self.calls.append(kwargs)
+            return {
+                "stopReason": "end_turn",
+                "usage": {
+                    "inputTokens": 7,
+                    "outputTokens": 5,
+                    "totalTokens": 12,
+                },
+                "output": {
+                    "message": {
+                        "content": [{"text": "Native Bedrock route completed."}]
+                    }
+                },
+            }
+
+    client = FakeBedrockClient()
+    adapter = BedrockModelAdapter(client_factory=lambda **kwargs: client)
+    monkeypatch.setattr(worker_module, "BedrockModelAdapter", lambda: adapter)
+
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-bedrock-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Produce a release plan through the explicit cloud route.",
+            route_policy={
+                "provider": "bedrock",
+                "model": "anthropic.claude-test",
+                "allow_cloud_proxy": True,
+                "aws_region": "us-east-2",
+                "aws_profile": "norman-bedrock",
+            },
+        ),
+    )
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-test",
+            dry_run=False,
+            complete=False,
+            live_execution_approved=True,
+        ),
+    )
+
+    events = store.events_after(db, user_id=user.id, job_id=job_id)
+    model_event = next(
+        event for event in events if event.event_type == "model.completed"
+    )
+    route_event = next(event for event in events if event.event_type == "route.decided")
+
+    assert client.calls
+    assert result["model_result"]["provider"] == "bedrock"
+    assert result["model_result"]["usage"]["total_tokens"] == 12
+    assert route_event.payload["selected_provider"] == "bedrock"
+    assert route_event.payload["selected_runner"] == "bedrock"
+    assert model_event.payload["provider"] == "bedrock"
+    assert model_event.payload["route"]["provider"] == "bedrock"
+    assert model_event.payload["route_receipt"]["usage_bucket"] == "bedrock_amazon"
+    assert model_event.payload["route_receipt"]["total_tokens"] == 12
+
+
+def test_db_console_runtime_worker_fails_native_bedrock_without_fallback(
+    db, monkeypatch
+):
+    class FailingBedrockAdapter:
+        name = "bedrock"
+
+        def __init__(self):
+            self.invocations = 0
+
+        def invoke(self, request):
+            self.invocations += 1
+            raise RuntimeError("Bedrock Converse AccessDeniedException")
+
+    adapter = FailingBedrockAdapter()
+    monkeypatch.setattr(worker_module, "BedrockModelAdapter", lambda: adapter)
+
+    def unexpected_norllama_fallback():
+        raise AssertionError("native Bedrock failure must not select Norllama")
+
+    monkeypatch.setattr(
+        worker_module,
+        "NorllamaModelAdapter",
+        unexpected_norllama_fallback,
+    )
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-bedrock-failure-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Exercise native Bedrock terminal failure handling.",
+            route_policy={
+                "provider": "bedrock",
+                "model": "anthropic.claude-test",
+                "allow_cloud_proxy": True,
+            },
+        ),
+    )
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-test",
+            dry_run=False,
+            complete=False,
+            include_capabilities=False,
+            live_execution_approved=True,
+        ),
+    )
+
+    events = store.events_after(db, user_id=user.id, job_id=job_id)
+    event_types = [event.event_type for event in events]
+    failed_event = next(event for event in events if event.event_type == "model.failed")
+    requested_events = [
+        event for event in events if event.event_type == "model.requested"
+    ]
+
+    assert adapter.invocations == 1
+    assert result["job"]["status"] == "failed"
+    assert result["model_failed"] is True
+    assert result["failure_class"] == "model_adapter_failed"
+    assert "AccessDeniedException" in result["error"]
+    assert event_types[-3:] == ["model.failed", "tool.failed", "job.failed"]
+    assert len(requested_events) == 1
+    assert requested_events[0].payload["provider"] == "bedrock"
+    assert failed_event.payload["provider"] == "bedrock"
+    assert failed_event.payload["route"]["provider"] == "bedrock"
+    assert failed_event.payload["route_receipt"]["status"] == "failed"
+    assert failed_event.payload["route_receipt"]["selected_provider"] == "bedrock"
+    assert failed_event.payload["route_receipt"]["cloud_proxy"] is True
+    assert "model.completed" not in event_types
+    assert result["route_receipt"]["status"] == "failed"
 
 
 def test_db_console_runtime_worker_blocks_cloud_route_when_cloud_llms_disabled(db):

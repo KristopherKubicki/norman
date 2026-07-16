@@ -31,6 +31,22 @@ def test_send_message_no_boto3(monkeypatch):
         asyncio.get_event_loop().run_until_complete(connector.send_message("hi"))
 
 
+def test_placeholder_region_does_not_create_client(monkeypatch):
+    calls = []
+    stub = types.SimpleNamespace(
+        client=lambda *args, **kwargs: calls.append((args, kwargs))
+    )
+    monkeypatch.setattr(mod, "boto3", stub)
+
+    connector = mod.AWSIoTCoreConnector(region="your_aws_iot_core_region", topic="t")
+
+    assert connector.client is None
+    assert not calls
+    assert not connector.is_connected()
+    with pytest.raises(RuntimeError, match="region is not configured"):
+        asyncio.get_event_loop().run_until_complete(connector.send_message("hi"))
+
+
 def test_listen_requires_mqtt(monkeypatch):
     monkeypatch.setattr(mod, "mqtt", None)
     connector = mod.AWSIoTCoreConnector(region="us", topic="t", endpoint="https://e")

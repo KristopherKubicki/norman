@@ -4,4 +4,5 @@ Description=Sync local Norman agent console template writes
 [Service]
 Type=oneshot
 WorkingDirectory=/home/kristopher/code/norman
-ExecStart=/usr/bin/flock -n /run/norman-agent-console-sync-local.lock /usr/bin/python3 /home/kristopher/code/norman/scripts/sync_agent_console_template.py --targets hal
+Environment=PYTHONPATH=/home/kristopher/code/norman
+ExecStart=/usr/bin/flock -n /run/norman-agent-console-sync-local.lock /home/kristopher/code/norman/.venv/bin/python /home/kristopher/code/norman/scripts/sync_agent_console_template.py --targets hal

@@ -610,13 +610,29 @@ def fetch_status(port, token):
     if not port:
         return {{}}, "missing web port"
     query = "?" + urllib.parse.urlencode({{"token": token}}) if token else ""
+    readiness_url = f"http://127.0.0.1:{{port}}/api/restart-readiness{{query}}"
+    status_url = f"http://127.0.0.1:{{port}}/api/status{{query}}"
     try:
         with urllib.request.urlopen(
-            f"http://127.0.0.1:{{port}}/api/status{{query}}", timeout=4
+            readiness_url, timeout=4
         ) as response:
             return json.loads(response.read().decode("utf-8") or "{{}}"), ""
-    except Exception as exc:
-        return {{}}, type(exc).__name__ + ": " + str(exc)
+    except Exception as readiness_exc:
+        try:
+            with urllib.request.urlopen(status_url, timeout=4) as response:
+                return json.loads(response.read().decode("utf-8") or "{{}}"), ""
+        except Exception as status_exc:
+            detail = (
+                "readiness "
+                + type(readiness_exc).__name__
+                + ": "
+                + str(readiness_exc)
+                + "; status "
+                + type(status_exc).__name__
+                + ": "
+                + str(status_exc)
+            )
+            return {{}}, detail
 
 
 def fetch_ui_version(port, token, status):
@@ -626,6 +642,16 @@ def fetch_ui_version(port, token, status):
     if not port:
         return ""
     query = "?" + urllib.parse.urlencode({{"token": token}}) if token else ""
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{{port}}/api/version{{query}}", timeout=4
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8") or "{{}}")
+        version = str(payload.get("ui_version") or "").strip()
+        if version:
+            return version
+    except Exception:
+        pass
     try:
         opener = urllib.request.build_opener()
         with opener.open(f"http://127.0.0.1:{{port}}/{{query}}", timeout=4) as response:

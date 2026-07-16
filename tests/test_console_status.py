@@ -66,6 +66,18 @@ def test_console_usage_state_flattens_snapshot_usage() -> None:
                     "finished_at": 1234567890,
                     "total_tokens": 111,
                 },
+                "codex_account_capacity": {
+                    "state": "available",
+                    "fresh": True,
+                    "observed_at": 1234567800,
+                    "minimum_window_percent_left": 84,
+                    "reset_hint": "2h 10m",
+                    "eligible_for_subscription_route": True,
+                    "forecast": {
+                        "tokens_per_hour": 4321,
+                        "projected_tokens_to_earliest_reset": 9362,
+                    },
+                },
             }
         }
     )
@@ -77,6 +89,11 @@ def test_console_usage_state_flattens_snapshot_usage() -> None:
     assert usage["usage_window_total_tokens"] == 790
     assert usage["usage_last_turn_at"] == 1234567890
     assert usage["usage_last_turn_total_tokens"] == 111
+    assert usage["codex_subscription_capacity_state"] == "available"
+    assert usage["codex_subscription_capacity_fresh"] is True
+    assert usage["codex_subscription_capacity_percent_left"] == 84
+    assert usage["codex_subscription_capacity_eligible"] is True
+    assert usage["codex_subscription_capacity_tokens_per_hour"] == 4321
 
 
 def test_console_audit_url_preserves_token_and_since() -> None:

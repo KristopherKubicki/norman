@@ -71,7 +71,7 @@ AUTH_COOKIE_NAME = (
 AUTH_COOKIE_MAX_AGE = int(
     os.environ.get("NORMAN_CODEX_WEB_COOKIE_MAX_AGE", str(14 * 24 * 60 * 60))
 )
-DEFAULT_UI_VERSION = "2026.06.20.1"
+DEFAULT_UI_VERSION = "2026.07.16.07"
 UI_VERSION = (
     os.environ.get("NORMAN_CODEX_UI_VERSION", DEFAULT_UI_VERSION).strip()
     or DEFAULT_UI_VERSION
@@ -1159,6 +1159,75 @@ USAGE_LEDGER_PATH = Path(
         "NORMAN_CODEX_USAGE_LEDGER_PATH", str(STATE_DIR / "usage-ledger.jsonl")
     )
 )
+CODEX_ACCOUNT_CAPACITY_PATH = Path(
+    os.environ.get(
+        "NORMAN_CODEX_ACCOUNT_CAPACITY_PATH",
+        str(STATE_DIR / "codex_account_capacity.json"),
+    )
+)
+CODEX_ACCOUNT_CAPACITY_HISTORY_PATH = Path(
+    os.environ.get(
+        "NORMAN_CODEX_ACCOUNT_CAPACITY_HISTORY_PATH",
+        str(STATE_DIR / "codex_account_capacity.jsonl"),
+    )
+)
+CODEX_ACCOUNT_CAPACITY_POLL_ENABLED = os.environ.get(
+    "NORMAN_CODEX_ACCOUNT_CAPACITY_POLL_ENABLED", "1"
+).strip().lower() not in {"0", "false", "no", "off"}
+CODEX_ACCOUNT_CAPACITY_POLL_INTERVAL_SECONDS = max(
+    300,
+    int(os.environ.get("NORMAN_CODEX_ACCOUNT_CAPACITY_POLL_INTERVAL_SECONDS", "900")),
+)
+CODEX_ACCOUNT_CAPACITY_UNSUPPORTED_BACKOFF_SECONDS = max(
+    CODEX_ACCOUNT_CAPACITY_POLL_INTERVAL_SECONDS,
+    int(
+        os.environ.get(
+            "NORMAN_CODEX_ACCOUNT_CAPACITY_UNSUPPORTED_BACKOFF_SECONDS", "86400"
+        )
+    ),
+)
+CODEX_ACCOUNT_CAPACITY_FRESH_SECONDS = max(
+    CODEX_ACCOUNT_CAPACITY_POLL_INTERVAL_SECONDS,
+    int(os.environ.get("NORMAN_CODEX_ACCOUNT_CAPACITY_FRESH_SECONDS", "1800")),
+)
+CODEX_ACCOUNT_CAPACITY_PROBE_TIMEOUT_SECONDS = min(
+    30,
+    max(
+        2,
+        int(os.environ.get("NORMAN_CODEX_ACCOUNT_CAPACITY_PROBE_TIMEOUT_SECONDS", "8")),
+    ),
+)
+CODEX_ACCOUNT_CAPACITY_PROBE_POLL_SECONDS = min(
+    2.0,
+    max(
+        0.1,
+        float(
+            os.environ.get("NORMAN_CODEX_ACCOUNT_CAPACITY_PROBE_POLL_SECONDS", "0.5")
+        ),
+    ),
+)
+CODEX_ACCOUNT_CAPACITY_HISTORY_ITEMS = max(
+    20, int(os.environ.get("NORMAN_CODEX_ACCOUNT_CAPACITY_HISTORY_ITEMS", "2880"))
+)
+CODEX_ACCOUNT_CAPACITY_COMMAND = (
+    os.environ.get("NORMAN_CODEX_ACCOUNT_CAPACITY_COMMAND", "/usage").strip()
+    or "/usage"
+)
+CODEX_ACCOUNT_CAPACITY_FALLBACK_COMMAND = os.environ.get(
+    "NORMAN_CODEX_ACCOUNT_CAPACITY_FALLBACK_COMMAND", ""
+).strip()
+CODEX_SUBSCRIPTION_ROUTE_PREFERENCE_ENABLED = os.environ.get(
+    "NORMAN_CODEX_SUBSCRIPTION_ROUTE_PREFERENCE_ENABLED", "1"
+).strip().lower() not in {"0", "false", "no", "off"}
+CODEX_SUBSCRIPTION_ROUTE_MIN_PERCENT_LEFT = min(
+    100,
+    max(
+        1,
+        int(os.environ.get("NORMAN_CODEX_SUBSCRIPTION_ROUTE_MIN_PERCENT_LEFT", "10")),
+    ),
+)
+CODEX_ACCOUNT_CAPACITY_PROBE_LOCK = threading.Lock()
+CODEX_ACCOUNT_CAPACITY_PROBE_THREAD: threading.Thread | None = None
 BEDROCK_HEALTH_SMOKE_PATH = Path(
     os.environ.get(
         "NORMAN_CODEX_BEDROCK_HEALTH_PATH", str(STATE_DIR / "bedrock_health.json")
@@ -1232,6 +1301,7 @@ RESTART_HANDOFF_PATH = Path(
 )
 KPI_PATH = STATE_DIR / "kpis.json"
 AUDIT_PATH = STATE_DIR / "audit.jsonl"
+AUDIT_LOCK = threading.RLock()
 DRAFT_ATTACHMENTS_PATH = STATE_DIR / "draft_attachments.json"
 RUNTIME_SETTINGS_PATH = STATE_DIR / "runtime_settings.json"
 ATTACHMENTS_DIR = STATE_DIR / "attachments"
@@ -11016,29 +11086,30 @@ def load_audit_events(
     *, limit: int = MAX_AUDIT_ITEMS, since_ts: int = 0, event_type: str = ""
 ) -> list[dict[str, Any]]:
     ensure_state_dir()
-    entries: list[dict[str, Any]] = []
-    try:
-        lines = AUDIT_PATH.read_text(encoding="utf-8").splitlines()
-    except FileNotFoundError:
-        return entries
-    wanted_type = str(event_type or "").strip().lower()
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            continue
+    with AUDIT_LOCK:
+        entries: list[dict[str, Any]] = []
         try:
-            payload = json.loads(stripped)
-        except json.JSONDecodeError:
-            continue
-        entry = normalize_audit_event(payload)
-        if since_ts and int(entry.get("event_at") or 0) < since_ts:
-            continue
-        if wanted_type and entry["event_type"] != wanted_type:
-            continue
-        entries.append(entry)
-    if limit and len(entries) > limit:
-        return entries[-limit:]
-    return entries
+            lines = AUDIT_PATH.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            return entries
+        wanted_type = str(event_type or "").strip().lower()
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                payload = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+            entry = normalize_audit_event(payload)
+            if since_ts and int(entry.get("event_at") or 0) < since_ts:
+                continue
+            if wanted_type and entry["event_type"] != wanted_type:
+                continue
+            entries.append(entry)
+        if limit and len(entries) > limit:
+            return entries[-limit:]
+        return entries
 
 
 def append_audit_event(
@@ -11066,15 +11137,16 @@ def append_audit_event(
             "event_at": event_at,
         }
     )
-    entries = load_audit_events(limit=0)
-    entries.append(entry)
-    trimmed = entries[-MAX_AUDIT_ITEMS:]
-    ensure_state_dir()
-    serialized = "\n".join(json.dumps(item, sort_keys=True) for item in trimmed)
-    if serialized:
-        serialized += "\n"
-    AUDIT_PATH.write_text(serialized, encoding="utf-8")
-    mirror_audit_event_to_state_db(entry)
+    with AUDIT_LOCK:
+        entries = load_audit_events(limit=0)
+        entries.append(entry)
+        trimmed = entries[-MAX_AUDIT_ITEMS:]
+        ensure_state_dir()
+        serialized = "\n".join(json.dumps(item, sort_keys=True) for item in trimmed)
+        if serialized:
+            serialized += "\n"
+        AUDIT_PATH.write_text(serialized, encoding="utf-8")
+        mirror_audit_event_to_state_db(entry)
     return entry
 
 
@@ -12967,6 +13039,7 @@ def usage_accounting_tags() -> dict[str, str]:
         "workdir": WORKDIR,
         "state_dir": str(STATE_DIR),
         "codex_home": CODEX_HOME,
+        "codex_auth_mode": stored_codex_auth_mode(),
     }
 
 
@@ -13020,6 +13093,7 @@ def usage_charge_ledger_kind(entry: dict[str, Any]) -> str:
     runtime = normalize_runtime(entry.get("runtime"))
     owner = str(entry.get("billing_owner") or usage_billing_owner()).strip().lower()
     provider_surface = str(entry.get("provider_surface") or "").strip().lower()
+    auth_mode = str(entry.get("codex_auth_mode") or "").strip().lower()
     group = (
         str(entry.get("agent_group") or semantic_agent_group(AGENT_SLUG, AGENT_GROUP))
         .strip()
@@ -13029,7 +13103,12 @@ def usage_charge_ledger_kind(entry: dict[str, Any]) -> str:
         return "provider_invoice_estimate"
     if runtime in {"claude", "kimi", "qwen"}:
         return "provider_invoice_estimate"
-    if runtime == "codex" and owner == "kristopher" and group != "work":
+    if (
+        runtime == "codex"
+        and owner == "kristopher"
+        and group != "work"
+        and auth_mode == "chatgpt"
+    ):
         return "chatgpt_codex_credit_estimate"
     if provider_surface == "openai-direct":
         return "api_rate_card_estimate"
@@ -13072,6 +13151,7 @@ def normalize_usage_entry(value: Any) -> dict[str, Any]:
         "workdir",
         "state_dir",
         "codex_home",
+        "codex_auth_mode",
         "provider_label",
         "provider_surface",
         "profile_v2",
@@ -15587,6 +15667,656 @@ def append_route_receipt(**kwargs: Any) -> dict[str, Any] | None:
     return receipt
 
 
+def default_codex_account_capacity() -> dict[str, Any]:
+    return {
+        "schema": "norman.codex-account-capacity.v1",
+        "source": "unavailable",
+        "observed_at": 0,
+        "last_probe_at": 0,
+        "auth_mode": "",
+        "state": "unknown",
+        "fresh": False,
+        "freshness_seconds": 0,
+        "capacity_percent_left": None,
+        "minimum_window_percent_left": None,
+        "windows": [],
+        "reset_hint": "",
+        "last_error": "",
+        "eligible_for_subscription_route": False,
+        "forecast": {},
+    }
+
+
+def _capacity_reset_seconds(value: Any) -> int:
+    total = 0
+    for amount, unit in re.findall(
+        r"\b(\d+)\s*(days?|d|hours?|hrs?|hr|h|minutes?|mins?|min|m)\b",
+        str(value or "").lower(),
+    ):
+        if unit.startswith("d"):
+            total += _coerce_int(amount) * 24 * 60 * 60
+        elif unit.startswith("h"):
+            total += _coerce_int(amount) * 60 * 60
+        else:
+            total += _coerce_int(amount) * 60
+    return total
+
+
+def _capacity_window_label(prefix: Any, line: Any) -> str:
+    clean_prefix = re.sub(r"\s+", " ", str(prefix or "")).strip(" \t:|-")
+    lower = f" {clean_prefix.lower()} {str(line or '').lower()} "
+    if re.search(r"\b(?:daily|day)\b", lower):
+        return "Daily"
+    if re.search(r"\b(?:weekly|week)\b", lower):
+        return "Weekly"
+    if re.search(r"\b(?:monthly|month)\b", lower):
+        return "Monthly"
+    if re.search(r"\b(?:\d+\s*h|\d+-hour|hourly|short window)\b", lower):
+        return "Short window"
+    clean_prefix = re.sub(r"(?i)\b(?:limit|usage|remaining)\b", "", clean_prefix)
+    clean_prefix = re.sub(r"\s+", " ", clean_prefix).strip(" \t:|-")
+    return clean_prefix[:48] if clean_prefix and len(clean_prefix) <= 48 else "Current"
+
+
+def _capacity_reset_hint(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    match = re.search(
+        r"\breset(?:s|ting)?\s*(?:in|at|:)?\s*([^|]{1,96})",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return summarize_text(match.group(1).strip(" .,:;-"), 96) if match else ""
+
+
+def parse_codex_account_capacity_pane(
+    value: Any, *, observed_at: int | None = None, auth_mode: str = ""
+) -> dict[str, Any]:
+    """Extract aggregate plan-capacity data without retaining terminal text."""
+    text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", str(value or ""))
+    if not text.strip():
+        return {}
+    payload = default_codex_account_capacity()
+    observed = _coerce_int(observed_at) or now_ts()
+    payload.update(
+        {
+            "source": "interactive_usage",
+            "observed_at": observed,
+            "last_probe_at": observed,
+            "auth_mode": str(auth_mode or "").strip().lower(),
+        }
+    )
+    windows: list[dict[str, Any]] = []
+    seen: set[tuple[str, int, str]] = set()
+    patterns = (
+        (r"\b(?P<percent>\d{1,3})\s*%\s*(?:left|remaining|available)\b", True),
+        (
+            r"\b(?P<percent>\d{1,3})\s*%\s*"
+            r"(?:(?:of\s+)?(?:the\s+)?(?:[\w-]+\s+){0,4})?"
+            r"(?:used|consumed|utili[sz]ed)\b",
+            False,
+        ),
+    )
+    for raw_line in text.splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        if not line:
+            continue
+        reset_hint = _capacity_reset_hint(line)
+        for pattern, reports_left in patterns:
+            for match in re.finditer(pattern, line, flags=re.IGNORECASE):
+                observed_percent = min(100, max(0, _coerce_int(match.group("percent"))))
+                percent_left = (
+                    observed_percent if reports_left else 100 - observed_percent
+                )
+                label = _capacity_window_label(line[: match.start()], line)
+                key = (label.lower(), percent_left, reset_hint.lower())
+                if key not in seen:
+                    seen.add(key)
+                    windows.append(
+                        {
+                            "label": label,
+                            "percent_left": percent_left,
+                            "reset_hint": reset_hint,
+                            "reset_seconds": _capacity_reset_seconds(reset_hint),
+                        }
+                    )
+    lower = text.lower()
+    explicit_limit = any(
+        marker in lower
+        for marker in (
+            "usage limit",
+            "rate limit",
+            "no capacity remaining",
+            "limit reached",
+            "capacity exhausted",
+        )
+    )
+    if not windows and not explicit_limit:
+        return {}
+    payload["windows"] = windows
+    payload["state"] = (
+        "blocked"
+        if not windows or any(item["percent_left"] <= 0 for item in windows)
+        else "available"
+    )
+    if windows:
+        payload["minimum_window_percent_left"] = min(
+            item["percent_left"] for item in windows
+        )
+        payload["capacity_percent_left"] = payload["minimum_window_percent_left"]
+        payload["reset_hint"] = next(
+            (item["reset_hint"] for item in windows if item["reset_hint"]),
+            "",
+        )
+    return payload
+
+
+def normalize_codex_account_capacity(
+    value: Any, *, now: int | None = None
+) -> dict[str, Any]:
+    payload = default_codex_account_capacity()
+    if isinstance(value, dict):
+        payload.update(value)
+    payload["schema"] = "norman.codex-account-capacity.v1"
+    payload["source"] = str(payload.get("source") or "unavailable").strip().lower()
+    payload["observed_at"] = max(0, _coerce_int(payload.get("observed_at")))
+    payload["last_probe_at"] = max(0, _coerce_int(payload.get("last_probe_at")))
+    payload["auth_mode"] = str(payload.get("auth_mode") or "").strip().lower()
+    payload["state"] = (
+        str(payload.get("state") or "unknown").strip().lower()
+        if str(payload.get("state") or "").strip().lower()
+        in {"available", "blocked", "unknown"}
+        else "unknown"
+    )
+    clean_windows: list[dict[str, Any]] = []
+    for raw_window in (
+        payload.get("windows") if isinstance(payload.get("windows"), list) else []
+    ):
+        if not isinstance(raw_window, dict):
+            continue
+        clean_windows.append(
+            {
+                "label": summarize_text(raw_window.get("label"), 48).strip()
+                or "Current",
+                "percent_left": min(
+                    100, max(0, _coerce_int(raw_window.get("percent_left")))
+                ),
+                "reset_hint": summarize_text(raw_window.get("reset_hint"), 96).strip(),
+                "reset_seconds": max(
+                    0,
+                    _coerce_int(raw_window.get("reset_seconds"))
+                    or _capacity_reset_seconds(raw_window.get("reset_hint")),
+                ),
+            }
+        )
+    payload["windows"] = clean_windows
+    minimum = min((item["percent_left"] for item in clean_windows), default=None)
+    payload["minimum_window_percent_left"] = minimum
+    payload["capacity_percent_left"] = minimum
+    if minimum is not None and minimum <= 0:
+        payload["state"] = "blocked"
+    observed_now = _coerce_int(now) or now_ts()
+    payload["freshness_seconds"] = (
+        max(0, observed_now - payload["observed_at"]) if payload["observed_at"] else 0
+    )
+    payload["fresh"] = bool(
+        payload["source"] == "interactive_usage"
+        and payload["observed_at"]
+        and payload["freshness_seconds"] <= CODEX_ACCOUNT_CAPACITY_FRESH_SECONDS
+        and payload["state"] in {"available", "blocked"}
+    )
+    payload["reset_hint"] = summarize_text(payload.get("reset_hint"), 96).strip()
+    if not payload["reset_hint"]:
+        payload["reset_hint"] = next(
+            (item["reset_hint"] for item in clean_windows if item["reset_hint"]),
+            "",
+        )
+    payload["last_error"] = summarize_text(payload.get("last_error"), 160).strip()
+    payload["eligible_for_subscription_route"] = False
+    payload["forecast"] = (
+        payload["forecast"] if isinstance(payload.get("forecast"), dict) else {}
+    )
+    return payload
+
+
+def codex_account_capacity_forecast(
+    entries: list[dict[str, Any]] | None = None,
+    *,
+    now: int | None = None,
+    windows: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    observed_now = _coerce_int(now) or now_ts()
+    items = usage_entries_with_effective_deltas(
+        [normalize_usage_entry(item) for item in (entries or [])]
+    )
+    recent_items = [
+        item
+        for item in items
+        if normalize_runtime(item.get("runtime")) == "codex"
+        and str(item.get("provider_surface") or "").strip().lower() == "openai-direct"
+        and str(item.get("charge_ledger_kind") or "").strip()
+        == "chatgpt_codex_credit_estimate"
+        and _coerce_int(item.get("finished_at"))
+        >= max(0, observed_now - USAGE_WINDOW_SECONDS)
+    ]
+    summary = summarize_usage_entries(recent_items)
+    timestamps = [
+        _coerce_int(item.get("finished_at"))
+        for item in recent_items
+        if _coerce_int(item.get("finished_at"))
+    ]
+    sample_window_seconds = (
+        min(USAGE_WINDOW_SECONDS, max(1, observed_now - min(timestamps)))
+        if timestamps
+        else 0
+    )
+    total_tokens = _coerce_int(summary.get("total_tokens"))
+    turns = _coerce_int(summary.get("turns"))
+    tokens_per_hour = (
+        int(round(total_tokens * 3600 / sample_window_seconds))
+        if sample_window_seconds
+        else 0
+    )
+    earliest_reset_seconds = min(
+        (
+            max(0, _coerce_int(item.get("reset_seconds")))
+            for item in (windows or [])
+            if _coerce_int(item.get("reset_seconds")) > 0
+        ),
+        default=0,
+    )
+    return {
+        "schema": "norman.codex-account-capacity-forecast.v1",
+        "sample_window_seconds": sample_window_seconds,
+        "sample_count": len(recent_items),
+        "usage_window_tokens": total_tokens,
+        "usage_window_turns": turns,
+        "subscription_usage_window_tokens": total_tokens,
+        "subscription_usage_window_turns": turns,
+        "tokens_per_hour": tokens_per_hour,
+        "turns_per_hour": (
+            round(turns * 3600 / sample_window_seconds, 2)
+            if sample_window_seconds
+            else 0.0
+        ),
+        "earliest_reset_seconds": earliest_reset_seconds,
+        "projected_tokens_to_earliest_reset": (
+            int(round(tokens_per_hour * earliest_reset_seconds / 3600))
+            if earliest_reset_seconds
+            else 0
+        ),
+        "capacity_credit_equivalent_unknown": True,
+    }
+
+
+def codex_subscription_capacity_personal_lane() -> bool:
+    return (
+        str(usage_billing_owner() or "").strip().lower() == "kristopher"
+        and semantic_agent_group(AGENT_SLUG, AGENT_GROUP) != "work"
+    )
+
+
+def codex_account_capacity_history(limit: int = 48) -> list[dict[str, Any]]:
+    try:
+        lines = CODEX_ACCOUNT_CAPACITY_HISTORY_PATH.read_text(
+            encoding="utf-8"
+        ).splitlines()
+    except (FileNotFoundError, OSError):
+        return []
+    history: list[dict[str, Any]] = []
+    for line in lines:
+        try:
+            item = normalize_codex_account_capacity(json.loads(line))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        history.append(
+            {
+                "observed_at": _coerce_int(item.get("observed_at")),
+                "state": item.get("state"),
+                "capacity_percent_left": item.get("capacity_percent_left"),
+                "minimum_window_percent_left": item.get("minimum_window_percent_left"),
+                "reset_hint": item.get("reset_hint"),
+                "auth_mode": item.get("auth_mode"),
+            }
+        )
+    return history[-max(0, min(CODEX_ACCOUNT_CAPACITY_HISTORY_ITEMS, limit)) :]
+
+
+def codex_account_capacity_snapshot(
+    entries: list[dict[str, Any]] | None = None,
+    *,
+    auth_mode: str = "",
+    now: int | None = None,
+) -> dict[str, Any]:
+    observed_now = _coerce_int(now) or now_ts()
+    payload = normalize_codex_account_capacity(
+        read_json(CODEX_ACCOUNT_CAPACITY_PATH, default_codex_account_capacity()),
+        now=observed_now,
+    )
+    observed_auth_mode = payload["auth_mode"]
+    configured_auth_mode = str(auth_mode or stored_codex_auth_mode()).strip().lower()
+    if (
+        configured_auth_mode
+        and observed_auth_mode
+        and observed_auth_mode != configured_auth_mode
+    ):
+        payload["state"] = "unknown"
+        payload["fresh"] = False
+        payload["last_error"] = "observed capacity belongs to a different auth mode"
+    if configured_auth_mode:
+        payload["auth_mode"] = configured_auth_mode
+    payload["forecast"] = codex_account_capacity_forecast(
+        entries, now=observed_now, windows=payload["windows"]
+    )
+    payload["eligible_for_subscription_route"] = bool(
+        CODEX_SUBSCRIPTION_ROUTE_PREFERENCE_ENABLED
+        and codex_subscription_capacity_personal_lane()
+        and payload["auth_mode"] == "chatgpt"
+        and payload["fresh"]
+        and payload["state"] == "available"
+        and _coerce_int(payload.get("minimum_window_percent_left"))
+        >= CODEX_SUBSCRIPTION_ROUTE_MIN_PERCENT_LEFT
+    )
+    payload["history"] = codex_account_capacity_history()
+    return payload
+
+
+def _persist_codex_account_capacity(payload: dict[str, Any]) -> None:
+    clean = normalize_codex_account_capacity(payload)
+    write_json(CODEX_ACCOUNT_CAPACITY_PATH, clean)
+    serialized = json.dumps(
+        {
+            "observed_at": clean["observed_at"],
+            "state": clean["state"],
+            "capacity_percent_left": clean["capacity_percent_left"],
+            "minimum_window_percent_left": clean["minimum_window_percent_left"],
+            "reset_hint": clean["reset_hint"],
+            "auth_mode": clean["auth_mode"],
+        },
+        sort_keys=True,
+    )
+    ensure_state_dir()
+    with CODEX_ACCOUNT_CAPACITY_HISTORY_PATH.open("a", encoding="utf-8") as handle:
+        handle.write(serialized + "\n")
+    try:
+        lines = CODEX_ACCOUNT_CAPACITY_HISTORY_PATH.read_text(
+            encoding="utf-8"
+        ).splitlines()
+    except OSError:
+        return
+    trimmed = lines[-CODEX_ACCOUNT_CAPACITY_HISTORY_ITEMS:]
+    if len(trimmed) != len(lines):
+        CODEX_ACCOUNT_CAPACITY_HISTORY_PATH.write_text(
+            "\n".join(trimmed) + "\n", encoding="utf-8"
+        )
+
+
+def _codex_account_capacity_probe_idle(
+    *, pane: Any = "", auth_mode: str = "", pending: bool = False
+) -> bool:
+    return bool(
+        CODEX_ACCOUNT_CAPACITY_POLL_ENABLED
+        and str(auth_mode or "").strip().lower() == "chatgpt"
+        and not pending
+        and not prompt_runtime_alive()
+        and not prompt_thread_alive()
+        and _pane_prompt_visible(pane)
+        and not _pane_waiting_visible(pane)
+    )
+
+
+def _capture_codex_account_capacity_command(
+    command: str, *, observed_at: int, auth_mode: str, baseline_pane: str
+) -> dict[str, Any]:
+    baseline_hash = _pane_hash(baseline_pane)
+    send_text(command)
+    deadline = time.monotonic() + CODEX_ACCOUNT_CAPACITY_PROBE_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        time.sleep(CODEX_ACCOUNT_CAPACITY_PROBE_POLL_SECONDS)
+        pane = capture_pane()
+        if _pane_hash(pane) == baseline_hash:
+            continue
+        payload = parse_codex_account_capacity_pane(
+            pane, observed_at=observed_at, auth_mode=auth_mode
+        )
+        if payload:
+            return payload
+    return {}
+
+
+def _codex_account_capacity_command_unsupported(value: Any, command: str) -> bool:
+    text = str(value or "").lower()
+    clean_command = str(command or "").strip().lower()
+    return bool(
+        clean_command
+        and clean_command in text
+        and (
+            "unrecognized command" in text
+            or "unknown command" in text
+            or "not a supported command" in text
+        )
+    )
+
+
+def _clear_codex_account_capacity_command() -> None:
+    send_keys("Escape")
+    send_keys("C-u")
+    send_keys("C-a", "C-k")
+    send_keys("C-l")
+
+
+def _run_codex_account_capacity_probe() -> None:
+    observed_at = now_ts()
+    auth_mode = stored_codex_auth_mode()
+    payload: dict[str, Any] = {}
+    sent_command = False
+    try:
+        pane = capture_pane()
+        if not _codex_account_capacity_probe_idle(
+            pane=pane, auth_mode=auth_mode, pending=False
+        ):
+            return
+        sent_command = True
+        payload = _capture_codex_account_capacity_command(
+            CODEX_ACCOUNT_CAPACITY_COMMAND,
+            observed_at=observed_at,
+            auth_mode=auth_mode,
+            baseline_pane=pane,
+        )
+        unsupported_command = (
+            not payload
+            and _codex_account_capacity_command_unsupported(
+                capture_pane(), CODEX_ACCOUNT_CAPACITY_COMMAND
+            )
+        )
+        if (
+            not payload
+            and not unsupported_command
+            and CODEX_ACCOUNT_CAPACITY_FALLBACK_COMMAND
+            and CODEX_ACCOUNT_CAPACITY_FALLBACK_COMMAND
+            != CODEX_ACCOUNT_CAPACITY_COMMAND
+        ):
+            _clear_codex_account_capacity_command()
+            payload = _capture_codex_account_capacity_command(
+                CODEX_ACCOUNT_CAPACITY_FALLBACK_COMMAND,
+                observed_at=observed_at,
+                auth_mode=auth_mode,
+                baseline_pane=capture_pane(),
+            )
+            unsupported_command = (
+                not payload
+                and _codex_account_capacity_command_unsupported(
+                    capture_pane(), CODEX_ACCOUNT_CAPACITY_FALLBACK_COMMAND
+                )
+            )
+        if not payload:
+            payload = default_codex_account_capacity()
+            payload.update(
+                {
+                    "source": (
+                        "unsupported_command" if unsupported_command else "probe_failed"
+                    ),
+                    "observed_at": observed_at,
+                    "last_probe_at": observed_at,
+                    "auth_mode": auth_mode,
+                    "last_error": (
+                        "configured capacity command is unsupported by this Codex CLI"
+                        if unsupported_command
+                        else "interactive capacity command returned no aggregate limit"
+                    ),
+                }
+            )
+    except Exception as exc:
+        payload = default_codex_account_capacity()
+        payload.update(
+            {
+                "source": "probe_failed",
+                "observed_at": observed_at,
+                "last_probe_at": observed_at,
+                "auth_mode": auth_mode,
+                "last_error": f"interactive capacity probe failed: {type(exc).__name__}",
+            }
+        )
+    finally:
+        if sent_command:
+            try:
+                _clear_codex_account_capacity_command()
+            except Exception:
+                pass
+    _persist_codex_account_capacity(payload)
+    append_audit_event(
+        event_type="codex.subscription-capacity-observed"
+        if payload.get("source") == "interactive_usage"
+        else "codex.subscription-capacity-probe-failed",
+        summary=(
+            f"Observed ChatGPT subscription capacity: {payload['capacity_percent_left']}% remaining."
+            if payload.get("capacity_percent_left") is not None
+            else "Codex subscription-capacity probe did not return an aggregate limit."
+        ),
+        detail=summarize_text(
+            payload.get("last_error") or payload.get("reset_hint"), 160
+        ),
+        severity="info" if payload.get("source") == "interactive_usage" else "warn",
+        actor_type="system",
+        thread_id=read_text(THREAD_ID_PATH),
+        payload={
+            "state": payload.get("state"),
+            "capacity_percent_left": payload.get("capacity_percent_left"),
+            "minimum_window_percent_left": payload.get("minimum_window_percent_left"),
+            "reset_hint": payload.get("reset_hint"),
+            "auth_mode": payload.get("auth_mode"),
+        },
+    )
+
+
+def maybe_schedule_codex_account_capacity_probe(
+    *, pane: Any = "", auth_mode: str = "", pending: bool = False
+) -> bool:
+    global CODEX_ACCOUNT_CAPACITY_PROBE_THREAD
+    configured_auth_mode = str(auth_mode or stored_codex_auth_mode()).strip().lower()
+    if not _codex_account_capacity_probe_idle(
+        pane=pane, auth_mode=configured_auth_mode, pending=pending
+    ):
+        return False
+    capacity = codex_account_capacity_snapshot(auth_mode=configured_auth_mode)
+    interval_seconds = CODEX_ACCOUNT_CAPACITY_POLL_INTERVAL_SECONDS
+    if str(capacity.get("source") or "").strip().lower() == "unsupported_command":
+        interval_seconds = CODEX_ACCOUNT_CAPACITY_UNSUPPORTED_BACKOFF_SECONDS
+    if (
+        capacity["last_probe_at"]
+        and now_ts() - capacity["last_probe_at"] < interval_seconds
+    ):
+        return False
+    with CODEX_ACCOUNT_CAPACITY_PROBE_LOCK:
+        if (
+            CODEX_ACCOUNT_CAPACITY_PROBE_THREAD
+            and CODEX_ACCOUNT_CAPACITY_PROBE_THREAD.is_alive()
+        ):
+            return False
+        worker = threading.Thread(
+            target=_run_codex_account_capacity_probe,
+            name="codex-account-capacity-probe",
+            daemon=True,
+        )
+        CODEX_ACCOUNT_CAPACITY_PROBE_THREAD = worker
+        worker.start()
+    return True
+
+
+def codex_subscription_capacity_route_decision(
+    *,
+    runtime: Any,
+    model: Any,
+    service_tier: Any,
+    route_lock: bool = False,
+    service_tier_recovery: dict[str, Any] | None = None,
+    capacity: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    normalized_runtime = normalize_runtime(runtime)
+    normalized_model = normalize_runtime_model(normalized_runtime, model)
+    normalized_tier = normalize_service_tier(service_tier)
+    snapshot = (
+        codex_account_capacity_snapshot()
+        if capacity is None
+        else normalize_codex_account_capacity(capacity)
+    )
+    decision = {
+        "enabled": CODEX_SUBSCRIPTION_ROUTE_PREFERENCE_ENABLED,
+        "selected": False,
+        "reason": "subscription capacity did not change the selected route",
+        "selected_runtime": normalized_runtime,
+        "selected_model": normalized_model,
+        "selected_service_tier": normalized_tier,
+        "capacity": {
+            "state": snapshot.get("state"),
+            "fresh": bool(snapshot.get("fresh")),
+            "observed_at": _coerce_int(snapshot.get("observed_at")),
+            "minimum_window_percent_left": snapshot.get("minimum_window_percent_left"),
+            "reset_hint": snapshot.get("reset_hint"),
+        },
+    }
+    if not CODEX_SUBSCRIPTION_ROUTE_PREFERENCE_ENABLED:
+        decision["reason"] = "subscription capacity preference disabled"
+    elif route_lock:
+        decision["reason"] = "operator route lock"
+    elif service_tier_recovery:
+        decision["reason"] = "recent direct-tier limit recovery keeps Bedrock route"
+    elif normalized_runtime != "codex":
+        decision["reason"] = "non-Codex runtime selected"
+    elif not codex_subscription_capacity_personal_lane():
+        decision["reason"] = "console is not a personal subscription lane"
+    elif snapshot.get("auth_mode") != "chatgpt":
+        decision["reason"] = "Codex is not signed in with ChatGPT"
+    elif stored_codex_auth_mode() != "chatgpt":
+        decision["reason"] = "Codex auth changed before subscription route selection"
+    elif not snapshot.get("fresh") or snapshot.get("state") != "available":
+        decision["reason"] = "subscription capacity is unavailable or stale"
+    elif (
+        _coerce_int(snapshot.get("minimum_window_percent_left"))
+        < CODEX_SUBSCRIPTION_ROUTE_MIN_PERCENT_LEFT
+    ):
+        decision["reason"] = "subscription capacity is below the routing reserve"
+    elif service_tier_execution_tier(
+        normalized_tier
+    ) != "default" or not codex_profile_v2_for_service_tier(normalized_tier):
+        decision["reason"] = "selected route is not the default Bedrock lane"
+    elif "flex" not in SERVICE_TIER_OPTIONS or codex_profile_v2_for_service_tier(
+        "flex"
+    ):
+        decision["reason"] = "direct Flex is not configured"
+    else:
+        decision.update(
+            {
+                "selected": True,
+                "reason": "fresh ChatGPT subscription capacity preferred over Bedrock",
+                "selected_model": normalize_runtime_model(
+                    "codex", codex_model_for_service_tier("flex", normalized_model)
+                ),
+                "selected_service_tier": "flex",
+            }
+        )
+    return decision
+
+
 def usage_snapshot(
     entries: list[dict[str, Any]] | None = None, *, thread_id: str = ""
 ) -> dict[str, Any]:
@@ -15604,7 +16334,7 @@ def usage_snapshot(
         if clean_thread_id
         else []
     )
-    return {
+    payload = {
         "tracked": bool(normalized_items),
         "window_seconds": USAGE_WINDOW_SECONDS,
         "totals": summarize_usage_entries(normalized_items),
@@ -15620,6 +16350,10 @@ def usage_snapshot(
         "recent": list(normalized_items[-USAGE_RECENT_ITEMS:]),
         "billing": usage_billing_report(normalized_items),
     }
+    payload["codex_account_capacity"] = codex_account_capacity_snapshot(
+        normalized_items
+    )
+    return payload
 
 
 BEDROCK_HEALTH_FAILURE_KINDS = {
@@ -21044,6 +21778,12 @@ def _execute_codex_prompt(
 
     env = dict(os.environ)
     env["CODEX_HOME"] = CODEX_HOME
+    if (
+        execution_service_tier in DIRECT_SERVICE_TIERS
+        and stored_codex_auth_mode() == "chatgpt"
+    ):
+        # A subscription-preferred launch must not inherit an ambient API key.
+        env.pop("OPENAI_API_KEY", None)
     apply_codex_provider_environment(env, normalized_service_tier)
     checkpoint_interrupted = False
     deadline_checkpoint_interrupted = False
@@ -24113,6 +24853,42 @@ def start_web_prompt(
         normalized_service_tier = normalize_service_tier(
             service_tier_recovery.get("service_tier")
         )
+    subscription_capacity_decision = codex_subscription_capacity_route_decision(
+        runtime=normalized_runtime,
+        model=normalized_model,
+        service_tier=normalized_service_tier,
+        route_lock=route_lock,
+        service_tier_recovery=service_tier_recovery,
+    )
+    if subscription_capacity_decision.get("selected"):
+        normalized_runtime = normalize_runtime(
+            subscription_capacity_decision.get("selected_runtime")
+        )
+        normalized_model = normalize_runtime_model(
+            normalized_runtime,
+            subscription_capacity_decision.get("selected_model"),
+        )
+        normalized_service_tier = normalize_service_tier(
+            subscription_capacity_decision.get("selected_service_tier")
+        )
+        append_audit_event(
+            event_type="chat.subscription-capacity-preferred",
+            summary="Fresh ChatGPT subscription capacity preferred over Bedrock.",
+            detail=(
+                "A default Bedrock Codex turn was moved to direct Flex after an "
+                "idle interactive capacity observation."
+            ),
+            severity="info",
+            actor_type="system",
+            thread_id=read_text(THREAD_ID_PATH),
+            payload={
+                "route_lock": route_lock,
+                "requested_service_tier": requested_service_tier,
+                "selected_service_tier": normalized_service_tier,
+                "capacity": subscription_capacity_decision.get("capacity"),
+                "prompt_preview": summarize_text(clean, 240),
+            },
+        )
     turn_envelope = build_turn_control_envelope(
         prompt=clean,
         attachments=normalized_attachments,
@@ -24618,6 +25394,14 @@ def current_snapshot() -> dict[str, Any]:
     configured_chat_runtime = configured_runtime()
     configured_chat_model = configured_runtime_model(configured_chat_runtime)
     codex_auth_mode = stored_codex_auth_mode()
+    try:
+        maybe_schedule_codex_account_capacity_probe(
+            pane=pane,
+            auth_mode=codex_auth_mode,
+            pending=pending,
+        )
+    except Exception:
+        pass
     billing_error_text = _current_usage_limit_error_text(
         {
             "last_error": last_error,
@@ -24630,6 +25414,9 @@ def current_snapshot() -> dict[str, Any]:
     billing_action = usage_limit_billing_action(
         billing_error_text, auth_mode=codex_auth_mode
     )
+    codex_account_capacity = usage.get("codex_account_capacity")
+    if not isinstance(codex_account_capacity, dict):
+        codex_account_capacity = codex_account_capacity_snapshot()
     snapshot = {
         "pending": pending,
         "state": snapshot_state,
@@ -24751,6 +25538,7 @@ def current_snapshot() -> dict[str, Any]:
         "billing_link": billing_action.get("billing_url", ""),
         "history": history,
         "usage": usage,
+        "codex_account_capacity": codex_account_capacity,
         "route_receipts": route_receipt_status_snapshot(),
         "bedrock_health": bedrock_health_snapshot(snapshot_at=snapshot_at),
         "pressure_guard": host_pressure_guard_snapshot(snapshot_at=snapshot_at),
@@ -27638,6 +28426,18 @@ class Handler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/restart-readiness":
             self.json_response(restart_readiness_snapshot())
+            return
+
+        if parsed.path == "/api/version":
+            self.json_response(
+                {
+                    "ok": True,
+                    "ui_version": UI_VERSION,
+                    "agent_name": AGENT_NAME,
+                    "host_name": HOST_NAME,
+                    "session_name": SESSION,
+                }
+            )
             return
 
         if parsed.path == "/api/status":

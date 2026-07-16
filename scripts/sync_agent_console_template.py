@@ -6,6 +6,7 @@ import html
 import hashlib
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -29,12 +30,21 @@ TEMPLATE_ROOT = SCRIPT_DIR / "agent_console_template"
 PROMPT_TEMPLATE_ROOT = TEMPLATE_ROOT / "prompts"
 SOURCE_FILES = {
     "web": TEMPLATE_ROOT / "agent_console_web.py",
+    "norman-switchboard": SCRIPT_DIR / "norman_codex_web.py",
     "launch": TEMPLATE_ROOT / "agent_console_launch.sh",
     "supervisor": TEMPLATE_ROOT / "agent_console_supervisor.sh",
     "vector-preflight": SCRIPT_DIR / "tui_vector_preflight.py",
     "soul-loader": SCRIPT_DIR / "compose_soul_context.py",
     "soul-validator": SCRIPT_DIR / "validate_soul_md.py",
 }
+WEB_SOURCE_KEYS = frozenset({"web", "norman-switchboard"})
+NORMAN_FLEET_DOCTOR_TEMPLATE_PATH = (
+    os.environ.get(
+        "NORMAN_SYNC_FLEET_DOCTOR_TEMPLATE_PATH",
+        "/home/kristopher/code/norman/scripts/agent_console_template/agent_console_web.py",
+    ).strip()
+    or "/home/kristopher/code/norman/scripts/agent_console_template/agent_console_web.py"
+)
 PROMPT_TEMPLATES = {
     "compere": PROMPT_TEMPLATE_ROOT / "compere.txt",
     "control-plane": PROMPT_TEMPLATE_ROOT / "control-plane.txt",
@@ -83,6 +93,9 @@ INSTANCE_PUBLIC_HOST_OVERRIDES: dict[str, str] = {
 }
 DEFAULT_LAUNCHERS = {
     "housebot": "/opt/housebot/scripts/housebot_codex_launch.sh",
+}
+DISABLED_CODEX_PLUGINS_BY_INSTANCE: dict[str, tuple[str, ...]] = {
+    "uplink": ("figma@openai-curated",),
 }
 RESTART_READINESS_TIMEOUT_SECONDS = int(
     os.environ.get("NORMAN_SYNC_RESTART_READINESS_TIMEOUT_SECONDS", "3")
@@ -146,8 +159,13 @@ class ConsoleInstance:
 
     @property
     def files(self) -> tuple[tuple[str, str], ...]:
+        web_source = (
+            "norman-switchboard"
+            if self.host_name == "norman" and self.name == "norman"
+            else "web"
+        )
         return (
-            ("web", self.web_path),
+            (web_source, self.web_path),
             ("launch", self.launch_path),
             ("supervisor", self.supervisor_path),
             ("vector-preflight", f"/opt/{self.name}/tui_vector_preflight.py"),
@@ -1640,6 +1658,22 @@ stale_default_models = {{
     "gpt-5.6-terra",
     "openai.gpt-5.6-terra",
 }}
+stale_model_markers = tuple(
+    model for model in stale_default_models if model
+)
+
+def is_stale_model(value):
+    return str(value or "").strip().lower() in stale_default_models
+
+def has_stale_model_scope(value):
+    scope = str(value or "").strip().lower()
+    return any(marker in scope for marker in stale_model_markers)
+
+def is_pending(value):
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {{"1", "true", "yes", "on"}}
+
 payload = {{}}
 if runtime_path.exists():
     try:
@@ -1668,17 +1702,87 @@ if old_legacy != rendered:
     legacy_runtime_path.write_text(rendered, encoding="utf-8")
     changed = True
 status_path = Path({instance.codex_home!r}) / "web-bridge" / "status.json"
+thread_id_path = Path({instance.codex_home!r}) / "web-bridge" / "thread_id.txt"
+thread_scope_path = Path({instance.codex_home!r}) / "web-bridge" / "thread_scope.txt"
 if status_path.exists():
     try:
         status = json.loads(status_path.read_text(encoding="utf-8") or "{{}}")
     except json.JSONDecodeError:
         status = {{}}
-    if isinstance(status, dict) and str(status.get("selected_model") or "").strip() in stale_default_models:
-        status["selected_model"] = desired_model
-        status["selected_runtime"] = status.get("selected_runtime") or "codex"
+    model_keys = ("selected_model", "running_model", "last_model")
+    stale_status_model = isinstance(status, dict) and any(
+        is_stale_model(status.get(key)) for key in model_keys
+    )
+    stale_scope = has_stale_model_scope(
+        thread_scope_path.read_text(encoding="utf-8")
+        if thread_scope_path.exists()
+        else ""
+    )
+    stale_scope = stale_scope or (
+        isinstance(status, dict)
+        and has_stale_model_scope(status.get("thread_scope"))
+    )
+    if (
+        isinstance(status, dict)
+        and not is_pending(status.get("pending"))
+        and (stale_status_model or stale_scope)
+    ):
+        for key in model_keys:
+            status[key] = desired_model
+        for key in ("selected_runtime", "running_runtime", "last_runtime"):
+            status[key] = "codex"
+        status["thread_id"] = ""
+        status["thread_scope"] = ""
+        for key in (
+            "running_cost_route",
+            "last_cost_route",
+            "running_turn_envelope",
+        ):
+            status[key] = {{}}
         status_path.write_text(json.dumps(status, sort_keys=True) + "\\n", encoding="utf-8")
+        thread_id_path.write_text("", encoding="utf-8")
+        thread_scope_path.write_text("", encoding="utf-8")
         changed = True
 print("changed" if changed else "unchanged")
+PY
+"""
+    return capture(ssh_command(host, script)).strip() == "changed"
+
+
+def sync_instance_disabled_plugin_settings(
+    host: DiscoveryHost, instance: ConsoleInstance
+) -> bool:
+    disabled_plugins = DISABLED_CODEX_PLUGINS_BY_INSTANCE.get(instance.name, ())
+    if not disabled_plugins:
+        return False
+
+    payload = json.dumps(disabled_plugins)
+    script = f"""
+python3 - <<'PY'
+from pathlib import Path
+import json
+import re
+
+config_path = Path({instance.codex_home!r}) / "config.toml"
+disabled_plugins = json.loads({payload!r})
+if not config_path.exists():
+    print("unchanged")
+    raise SystemExit(0)
+
+original = config_path.read_text(encoding="utf-8")
+updated = original
+for plugin in disabled_plugins:
+    pattern = re.compile(
+        r'^\\[plugins\\."' + re.escape(plugin) + r'"\\]\\n.*?(?=^\\[|\\Z)',
+        re.MULTILINE | re.DOTALL,
+    )
+    updated = pattern.sub("", updated)
+updated = re.sub(r"\\n{{3,}}", "\\n\\n", updated)
+if updated != original:
+    config_path.write_text(updated, encoding="utf-8")
+    print("changed")
+else:
+    print("unchanged")
 PY
 """
     return capture(ssh_command(host, script)).strip() == "changed"
@@ -2366,6 +2470,44 @@ def install_source_path(
     return True
 
 
+def source_ui_version(source: Path) -> str:
+    match = re.search(
+        r'^DEFAULT_UI_VERSION\s*=\s*["\']([^"\']+)["\']',
+        source.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    if not match:
+        raise RuntimeError(f"DEFAULT_UI_VERSION not found in {source}")
+    return match.group(1).strip()
+
+
+def validate_web_source_versions() -> str:
+    versions = {
+        source_key: source_ui_version(SOURCE_FILES[source_key])
+        for source_key in WEB_SOURCE_KEYS
+    }
+    if len(set(versions.values())) != 1:
+        rendered = ", ".join(
+            f"{source_key}=v{version}"
+            for source_key, version in sorted(versions.items())
+        )
+        raise RuntimeError(f"Web UI source versions must match: {rendered}")
+    return next(iter(versions.values()))
+
+
+def sync_norman_fleet_doctor_template(
+    host: DiscoveryHost, source_sha256: dict[str, str]
+) -> bool:
+    if host.name != "norman":
+        return False
+    return install_source_path(
+        host,
+        remote_path=NORMAN_FLEET_DOCTOR_TEMPLATE_PATH,
+        source=SOURCE_FILES["web"],
+        source_sha256=source_sha256["web"],
+    )
+
+
 def sync_soul_identity_tree(host: DiscoveryHost) -> list[str]:
     if not LOCAL_SOUL_IDENTITY_ROOT.exists():
         return []
@@ -2448,7 +2590,7 @@ def restart_scope_for_instance(
     if instance.web_path in changed_paths:
         return "web"
     for source_key, remote_path in instance.files:
-        if source_key != "web" and remote_path in changed_paths:
+        if source_key not in WEB_SOURCE_KEYS and remote_path in changed_paths:
             return "full"
     return ""
 
@@ -2885,6 +3027,7 @@ def main() -> int:
     for source in PROMPT_TEMPLATES.values():
         if not source.exists():
             raise FileNotFoundError(source)
+    validate_web_source_versions()
 
     discovered_by_host, discovered_by_name = discover_all_instances(
         host_filter=requested_host_filter(args.targets)
@@ -2940,6 +3083,12 @@ def main() -> int:
         for remote_path in soul_changes:
             changed_static_paths.add(remote_path)
             print(f"  - soul identity -> {remote_path}", flush=True)
+        if sync_norman_fleet_doctor_template(host, source_sha256):
+            changed_static_paths.add(NORMAN_FLEET_DOCTOR_TEMPLATE_PATH)
+            print(
+                "  - fleet-doctor template -> " f"{NORMAN_FLEET_DOCTOR_TEMPLATE_PATH}",
+                flush=True,
+            )
 
         for instance in selected_instances:
             if sync_instance_codex_home_seed(
@@ -2957,6 +3106,12 @@ def main() -> int:
                 changed_instances[instance.name] = instance
                 print(
                     f"  - codex profile files -> {instance.codex_home}",
+                    flush=True,
+                )
+            if sync_instance_disabled_plugin_settings(host, instance):
+                changed_instances[instance.name] = instance
+                print(
+                    f"  - disabled plugins -> {instance.codex_home}",
                     flush=True,
                 )
             desired_links = desired_console_links(

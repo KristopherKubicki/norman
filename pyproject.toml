@@ -8,6 +8,7 @@ version = "0.2.0"
 dependencies = [
   "fastapi",
   "uvicorn",
+  "boto3",
   "pydantic==1.10.13",
   "sqlalchemy",
   "alembic",
@@ -28,6 +29,7 @@ dependencies = [
 dev = [
   "pytest==6.2.5",
   "pytest-asyncio==0.16.0",
+  "setuptools>=61,<81",
   "coverage==7.4.4",
   "ruff==0.5.2",
   "pre-commit==3.5.0",

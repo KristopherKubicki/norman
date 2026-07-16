@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -13,6 +14,28 @@ from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _clean_agent_console_test_temp_dirs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Remove every temporary directory this legacy integration module creates."""
+    created_dirs: list[Path] = []
+    original_mkdtemp = tempfile.mkdtemp
+
+    def tracked_mkdtemp(*args, **kwargs) -> str:
+        directory = Path(original_mkdtemp(*args, **kwargs))
+        created_dirs.append(directory)
+        return str(directory)
+
+    monkeypatch.setattr(tempfile, "mkdtemp", tracked_mkdtemp)
+    yield
+
+    for directory in reversed(created_dirs):
+        shutil.rmtree(directory, ignore_errors=True)
+    leftovers = [str(directory) for directory in created_dirs if directory.exists()]
+    assert not leftovers, f"test temporary directories were not removed: {leftovers}"
 
 
 def _load_agent_console_web():
@@ -5129,3 +5152,448 @@ def test_render_console_link_url_keeps_sibling_service_hostnames() -> None:
 
     assert same_service.startswith("http://dj.home.arpa:8793/")
     assert sibling_service.startswith("http://toy-box.home.arpa:8787/")
+
+
+def test_codex_account_capacity_parser_and_forecast_are_aggregate_only() -> None:
+    module = _load_agent_console_web()
+    observed_at = 1_789_000_000
+
+    parsed = module.parse_codex_account_capacity_pane(
+        """
+        5h limit: 84% left · resets in 2h 30m
+        Weekly limit: 63% remaining · resets in 6d 4h
+        """,
+        observed_at=observed_at,
+        auth_mode="chatgpt",
+    )
+    forecast = module.codex_account_capacity_forecast(
+        [
+            module.normalize_usage_entry(
+                {
+                    "started_at": observed_at - 7200,
+                    "finished_at": observed_at - 3600,
+                    "success": True,
+                    "runtime": "codex",
+                    "provider_surface": "openai-direct",
+                    "codex_auth_mode": "chatgpt",
+                    "total_tokens": 1200,
+                }
+            )
+        ],
+        now=observed_at,
+        windows=parsed["windows"],
+    )
+
+    assert parsed["source"] == "interactive_usage"
+    assert parsed["state"] == "available"
+    assert parsed["minimum_window_percent_left"] == 63
+    assert parsed["windows"][0]["label"] == "Short window"
+    assert parsed["windows"][0]["reset_seconds"] == 9000
+    assert parsed["windows"][1]["label"] == "Weekly"
+    assert forecast["tokens_per_hour"] > 0
+    assert forecast["earliest_reset_seconds"] == 9000
+    assert forecast["capacity_credit_equivalent_unknown"] is True
+    assert "limit:" not in json.dumps(parsed)
+
+
+def test_codex_account_capacity_forecast_excludes_api_and_bedrock_usage() -> None:
+    module = _load_agent_console_web()
+    observed_at = 1_789_000_000
+    entries = [
+        module.normalize_usage_entry(
+            {
+                "started_at": observed_at - 3600,
+                "finished_at": observed_at - 1800,
+                "success": True,
+                "runtime": "codex",
+                "provider_surface": "openai-direct",
+                "codex_auth_mode": "chatgpt",
+                "total_tokens": 1200,
+            }
+        ),
+        module.normalize_usage_entry(
+            {
+                "started_at": observed_at - 3600,
+                "finished_at": observed_at - 1800,
+                "success": True,
+                "runtime": "codex",
+                "provider_surface": "openai-direct",
+                "codex_auth_mode": "api_key",
+                "total_tokens": 34_000,
+            }
+        ),
+        module.normalize_usage_entry(
+            {
+                "started_at": observed_at - 3600,
+                "finished_at": observed_at - 1800,
+                "success": True,
+                "runtime": "codex",
+                "provider_surface": "aws-bedrock",
+                "total_tokens": 56_000,
+            }
+        ),
+    ]
+
+    forecast = module.codex_account_capacity_forecast(
+        entries,
+        now=observed_at,
+        windows=[{"reset_seconds": 7200}],
+    )
+
+    assert entries[0]["charge_ledger_kind"] == "chatgpt_codex_credit_estimate"
+    assert entries[1]["charge_ledger_kind"] == "api_rate_card_estimate"
+    assert forecast["sample_count"] == 1
+    assert forecast["usage_window_tokens"] == 1200
+    assert forecast["subscription_usage_window_tokens"] == 1200
+    assert forecast["projected_tokens_to_earliest_reset"] == 4800
+
+
+def test_codex_account_capacity_invalidates_on_auth_mode_change(
+    tmp_path: Path,
+) -> None:
+    module = _load_agent_console_web()
+    module.CODEX_ACCOUNT_CAPACITY_PATH = tmp_path / "capacity.json"
+    module.CODEX_ACCOUNT_CAPACITY_HISTORY_PATH = tmp_path / "capacity.jsonl"
+    observed_at = module.now_ts()
+    module._persist_codex_account_capacity(
+        {
+            **module.default_codex_account_capacity(),
+            "source": "interactive_usage",
+            "observed_at": observed_at,
+            "last_probe_at": observed_at,
+            "auth_mode": "api_key",
+            "state": "available",
+            "windows": [{"label": "Current", "percent_left": 84}],
+        }
+    )
+
+    snapshot = module.codex_account_capacity_snapshot(auth_mode="chatgpt")
+
+    assert snapshot["auth_mode"] == "chatgpt"
+    assert snapshot["state"] == "unknown"
+    assert snapshot["fresh"] is False
+    assert snapshot["eligible_for_subscription_route"] is False
+
+
+def test_codex_account_capacity_parser_marks_limit_and_unknown_safely() -> None:
+    module = _load_agent_console_web()
+
+    blocked = module.parse_codex_account_capacity_pane(
+        "You've hit your usage limit. Try again at 5:28 PM.",
+        observed_at=1_789_000_000,
+        auth_mode="chatgpt",
+    )
+
+    assert blocked["state"] == "blocked"
+    assert blocked["windows"] == []
+    fresh = module.parse_codex_account_capacity_pane(
+        """
+        You've hit your usage limit. Try again at 5:28 PM.
+        5h limit: 84% left · resets in 2h
+        """,
+        observed_at=1_789_000_000,
+        auth_mode="chatgpt",
+    )
+    assert fresh["state"] == "available"
+    assert fresh["minimum_window_percent_left"] == 84
+    assert module.parse_codex_account_capacity_pane("normal terminal output") == {}
+
+
+def test_codex_account_capacity_parser_normalizes_percent_used_without_pane_text() -> (
+    None
+):
+    module = _load_agent_console_web()
+
+    parsed = module.parse_codex_account_capacity_pane(
+        """
+        5h limit: 16% used · resets in 2h
+        Weekly limit: 40% consumed · resets in 6d
+        """
+    )
+
+    assert parsed["state"] == "available"
+    assert [item["percent_left"] for item in parsed["windows"]] == [84, 60]
+    assert "used" not in json.dumps(parsed)
+    assert "consumed" not in json.dumps(parsed)
+
+
+def test_codex_account_capacity_probe_requires_changed_pane(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_agent_console_web()
+    module.CODEX_ACCOUNT_CAPACITY_PROBE_POLL_SECONDS = 0.01
+    prompt_pane = "OpenAI Codex (v0.144.5)\n\n› "
+    panes = iter(
+        [
+            prompt_pane,
+            "5h limit: 84% left · resets in 2h\n\n› ",
+        ]
+    )
+    sent: list[str] = []
+    monkeypatch.setattr(module, "capture_pane", lambda: next(panes))
+    monkeypatch.setattr(module, "send_text", lambda value: sent.append(value))
+
+    payload = module._capture_codex_account_capacity_command(
+        "/usage",
+        observed_at=1_789_000_000,
+        auth_mode="chatgpt",
+        baseline_pane=prompt_pane,
+    )
+
+    assert sent == ["/usage"]
+    assert payload["state"] == "available"
+    assert payload["minimum_window_percent_left"] == 84
+
+
+def test_codex_subscription_capacity_prefers_flex_only_for_fresh_personal_bedrock(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("NORMAN_CODEX_STANDARD_PROFILE_V2", "personal-bedrock")
+    monkeypatch.setenv("NORMAN_CODEX_STANDARD_AWS_PROFILE", "norman-bedrock")
+    monkeypatch.setenv("NORMAN_CODEX_AGENT_GROUP", "personal")
+    monkeypatch.setenv("NORMAN_CODEX_BILLING_OWNER", "kristopher")
+    module = _load_agent_console_web()
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "chatgpt")
+    module.CODEX_ACCOUNT_CAPACITY_PATH = tmp_path / "capacity.json"
+    module.CODEX_ACCOUNT_CAPACITY_HISTORY_PATH = tmp_path / "capacity.jsonl"
+    observed_at = module.now_ts()
+    capacity = module.default_codex_account_capacity()
+    capacity.update(
+        {
+            "source": "interactive_usage",
+            "observed_at": observed_at,
+            "last_probe_at": observed_at,
+            "auth_mode": "chatgpt",
+            "state": "available",
+            "windows": [
+                {
+                    "label": "Short window",
+                    "percent_left": 84,
+                    "reset_hint": "2h",
+                    "reset_seconds": 7200,
+                }
+            ],
+        }
+    )
+    module._persist_codex_account_capacity(capacity)
+    snapshot = module.codex_account_capacity_snapshot(auth_mode="chatgpt")
+
+    decision = module.codex_subscription_capacity_route_decision(
+        runtime="codex",
+        model=module.MODEL,
+        service_tier="default",
+        capacity=snapshot,
+    )
+
+    assert snapshot["eligible_for_subscription_route"] is True
+    assert decision["selected"] is True
+    assert decision["selected_service_tier"] == "flex"
+    assert (
+        module.codex_subscription_capacity_route_decision(
+            runtime="codex",
+            model=module.MODEL,
+            service_tier="default",
+            route_lock=True,
+            capacity=snapshot,
+        )["selected"]
+        is False
+    )
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "api_key")
+    assert (
+        module.codex_subscription_capacity_route_decision(
+            runtime="codex",
+            model=module.MODEL,
+            service_tier="default",
+            capacity=snapshot,
+        )["selected"]
+        is False
+    )
+    assert (
+        module.codex_subscription_capacity_route_decision(
+            runtime="codex",
+            model=module.MODEL,
+            service_tier="default",
+            service_tier_recovery={"service_tier": "default"},
+            capacity=snapshot,
+        )["selected"]
+        is False
+    )
+
+
+def test_codex_account_capacity_probe_only_runs_at_idle_prompt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _load_agent_console_web()
+    module.CODEX_ACCOUNT_CAPACITY_PATH = tmp_path / "capacity.json"
+    module.CODEX_ACCOUNT_CAPACITY_HISTORY_PATH = tmp_path / "capacity.jsonl"
+    module.CODEX_ACCOUNT_CAPACITY_PROBE_POLL_SECONDS = 0.01
+    module.CODEX_ACCOUNT_CAPACITY_PROBE_THREAD = None
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "chatgpt")
+    monkeypatch.setattr(module, "prompt_runtime_alive", lambda: False)
+    monkeypatch.setattr(module, "prompt_thread_alive", lambda: False)
+    prompt_pane = "OpenAI Codex (v0.118.0)\n\n› "
+    panes = iter(
+        [
+            prompt_pane,
+            "5h limit: 84% left · resets in 2h\n\n› ",
+        ]
+    )
+    sent: list[str] = []
+    keys: list[tuple[str, ...]] = []
+    monkeypatch.setattr(module, "capture_pane", lambda: next(panes))
+    monkeypatch.setattr(module, "send_text", lambda value: sent.append(value))
+    monkeypatch.setattr(module, "send_keys", lambda *value: keys.append(value))
+
+    assert (
+        module.maybe_schedule_codex_account_capacity_probe(
+            pane=prompt_pane,
+            auth_mode="chatgpt",
+        )
+        is True
+    )
+    worker = module.CODEX_ACCOUNT_CAPACITY_PROBE_THREAD
+    assert worker is not None
+    worker.join(timeout=1)
+
+    persisted = module.codex_account_capacity_snapshot(auth_mode="chatgpt")
+    history_text = module.CODEX_ACCOUNT_CAPACITY_HISTORY_PATH.read_text(
+        encoding="utf-8"
+    )
+    assert sent == ["/usage"]
+    assert keys == [("Escape",), ("C-u",), ("C-a", "C-k"), ("C-l",)]
+    assert persisted["state"] == "available"
+    assert persisted["minimum_window_percent_left"] == 84
+    assert "OpenAI Codex" not in history_text
+    assert "5h limit" not in history_text
+
+    monkeypatch.setattr(module, "prompt_runtime_alive", lambda: True)
+    assert (
+        module.maybe_schedule_codex_account_capacity_probe(
+            pane=prompt_pane,
+            auth_mode="chatgpt",
+        )
+        is False
+    )
+
+    monkeypatch.setattr(module, "prompt_runtime_alive", lambda: False)
+    assert (
+        module.maybe_schedule_codex_account_capacity_probe(
+            pane="OpenAI Codex (v0.118.0)\n\n› unfinished draft",
+            auth_mode="chatgpt",
+        )
+        is False
+    )
+
+
+def test_codex_account_capacity_probe_uses_configured_fallback_without_pane_persistence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _load_agent_console_web()
+    module.CODEX_ACCOUNT_CAPACITY_PATH = tmp_path / "capacity.json"
+    module.CODEX_ACCOUNT_CAPACITY_HISTORY_PATH = tmp_path / "capacity.jsonl"
+    module.CODEX_ACCOUNT_CAPACITY_PROBE_TIMEOUT_SECONDS = 0.001
+    module.CODEX_ACCOUNT_CAPACITY_PROBE_POLL_SECONDS = 0.01
+    module.CODEX_ACCOUNT_CAPACITY_PROBE_THREAD = None
+    module.CODEX_ACCOUNT_CAPACITY_COMMAND = "/usage"
+    module.CODEX_ACCOUNT_CAPACITY_FALLBACK_COMMAND = "/plan-limits"
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "chatgpt")
+    monkeypatch.setattr(module, "prompt_runtime_alive", lambda: False)
+    monkeypatch.setattr(module, "prompt_thread_alive", lambda: False)
+    prompt_pane = "OpenAI Codex (v0.118.0)\n\n› "
+    panes = iter(
+        [
+            prompt_pane,
+            "Account token usage is available for this account.\n\n› ",
+            "No aggregate capacity was returned.\n\n› ",
+            "5h limit: 72% remaining · resets in 1h\n\n› ",
+        ]
+    )
+    sent: list[str] = []
+    keys: list[tuple[str, ...]] = []
+    monkeypatch.setattr(module, "capture_pane", lambda: next(panes))
+    monkeypatch.setattr(module, "send_text", lambda value: sent.append(value))
+    monkeypatch.setattr(module, "send_keys", lambda *value: keys.append(value))
+
+    assert (
+        module.maybe_schedule_codex_account_capacity_probe(
+            pane=prompt_pane,
+            auth_mode="chatgpt",
+        )
+        is True
+    )
+    worker = module.CODEX_ACCOUNT_CAPACITY_PROBE_THREAD
+    assert worker is not None
+    worker.join(timeout=1)
+
+    persisted = module.codex_account_capacity_snapshot(auth_mode="chatgpt")
+    history_text = module.CODEX_ACCOUNT_CAPACITY_HISTORY_PATH.read_text(
+        encoding="utf-8"
+    )
+    assert sent == ["/usage", "/plan-limits"]
+    assert keys == [
+        ("Escape",),
+        ("C-u",),
+        ("C-a", "C-k"),
+        ("C-l",),
+        ("Escape",),
+        ("C-u",),
+        ("C-a", "C-k"),
+        ("C-l",),
+    ]
+    assert persisted["minimum_window_percent_left"] == 72
+    assert "Account token usage" not in history_text
+    assert "5h limit" not in history_text
+
+
+def test_codex_account_capacity_unsupported_usage_command_is_sanitized_and_backed_off(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _load_agent_console_web()
+    module.CODEX_ACCOUNT_CAPACITY_PATH = tmp_path / "capacity.json"
+    module.CODEX_ACCOUNT_CAPACITY_HISTORY_PATH = tmp_path / "capacity.jsonl"
+    module.CODEX_ACCOUNT_CAPACITY_PROBE_TIMEOUT_SECONDS = 0.001
+    module.CODEX_ACCOUNT_CAPACITY_PROBE_POLL_SECONDS = 0.01
+    module.CODEX_ACCOUNT_CAPACITY_PROBE_THREAD = None
+    module.CODEX_ACCOUNT_CAPACITY_COMMAND = "/usage"
+    module.CODEX_ACCOUNT_CAPACITY_FALLBACK_COMMAND = ""
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "chatgpt")
+    monkeypatch.setattr(module, "prompt_runtime_alive", lambda: False)
+    monkeypatch.setattr(module, "prompt_thread_alive", lambda: False)
+    prompt_pane = "OpenAI Codex (v0.144.4)\n\n› "
+    unsupported_pane = "Unrecognized command '/usage'. Type \"/\" for a list of supported commands.\n\n› "
+    panes = iter([prompt_pane, unsupported_pane, unsupported_pane])
+    sent: list[str] = []
+    keys: list[tuple[str, ...]] = []
+    monkeypatch.setattr(module, "capture_pane", lambda: next(panes))
+    monkeypatch.setattr(module, "send_text", lambda value: sent.append(value))
+    monkeypatch.setattr(module, "send_keys", lambda *value: keys.append(value))
+
+    assert (
+        module.maybe_schedule_codex_account_capacity_probe(
+            pane=prompt_pane,
+            auth_mode="chatgpt",
+        )
+        is True
+    )
+    worker = module.CODEX_ACCOUNT_CAPACITY_PROBE_THREAD
+    assert worker is not None
+    worker.join(timeout=1)
+
+    persisted = module.codex_account_capacity_snapshot(auth_mode="chatgpt")
+    history_text = module.CODEX_ACCOUNT_CAPACITY_HISTORY_PATH.read_text(
+        encoding="utf-8"
+    )
+    assert sent == ["/usage"]
+    assert keys == [("Escape",), ("C-u",), ("C-a", "C-k"), ("C-l",)]
+    assert persisted["source"] == "unsupported_command"
+    assert persisted["state"] == "unknown"
+    assert persisted["eligible_for_subscription_route"] is False
+    assert "Unrecognized command" not in history_text
+    assert "/usage" not in history_text
+    assert (
+        module.maybe_schedule_codex_account_capacity_probe(
+            pane=prompt_pane,
+            auth_mode="chatgpt",
+        )
+        is False
+    )

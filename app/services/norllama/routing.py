@@ -1296,6 +1296,18 @@ def route_receipt_payload(
             lane=phase,
         )
     )
+    cloud_credentials = (
+        output.get("cloud_credentials")
+        if isinstance(output.get("cloud_credentials"), dict)
+        else attribution.get("cloud_credentials")
+        if isinstance(attribution.get("cloud_credentials"), dict)
+        else {}
+    )
+    cloud_credentials = {
+        key: _clean(cloud_credentials.get(key))
+        for key in ("source", "secret_name", "lease_id", "request_id", "expires_at")
+        if _clean(cloud_credentials.get(key))
+    }
     policy_validation = (
         policy_authorization.get("validation")
         if isinstance(policy_authorization.get("validation"), dict)
@@ -1525,6 +1537,8 @@ def route_receipt_payload(
         )
         or "unknown",
     }
+    if cloud_credentials:
+        receipt_payload["cloud_credentials"] = cloud_credentials
     receipt_payload["specialist_cascade"] = evaluate_specialist_cascade(
         specialist_cascade,
         route_receipt=receipt_payload,

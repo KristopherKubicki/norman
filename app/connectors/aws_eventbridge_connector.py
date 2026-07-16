@@ -11,6 +11,12 @@ except ImportError:  # pragma: no cover - optional dependency
 from .base_connector import BaseConnector
 
 
+def _is_configured_value(value: Optional[str]) -> bool:
+    """Return whether an AWS setting is a real configured value."""
+
+    return bool(value and value.strip() and not value.strip().startswith("your_"))
+
+
 class AWSEventBridgeConnector(BaseConnector):
     """Simple connector using boto3's EventBridge client."""
 
@@ -23,7 +29,7 @@ class AWSEventBridgeConnector(BaseConnector):
         super().__init__(config)
         self.region = region
         self.event_bus_name = event_bus_name
-        if boto3:
+        if boto3 and _is_configured_value(self.region):
             self.client = boto3.client("events", region_name=self.region)
         else:  # pragma: no cover - dependency may be missing
             self.client = None
@@ -31,6 +37,8 @@ class AWSEventBridgeConnector(BaseConnector):
     async def send_message(self, message: Dict[str, Any]) -> Any:
         if not boto3:
             raise RuntimeError("boto3 not installed")
+        if self.client is None:
+            raise RuntimeError("AWS EventBridge region is not configured")
         entry = {
             "Source": "norman",
             "DetailType": "message",
@@ -41,7 +49,7 @@ class AWSEventBridgeConnector(BaseConnector):
 
     def is_connected(self) -> bool:
         """Return ``True`` if the configured event bus is reachable."""
-        if not boto3:
+        if not boto3 or self.client is None:
             return False
         try:
             self.client.describe_event_bus(Name=self.event_bus_name)

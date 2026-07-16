@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 
@@ -753,6 +754,147 @@ def test_work_runtime_default_model_reset_migrates_old_default(
     assert 'payload["service_tier"] = "default"' in script
 
 
+def test_runtime_settings_migrate_idle_stale_thread_state(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_sync_script(monkeypatch)
+    codex_home = tmp_path / "codex"
+    state_dir = codex_home / "web-bridge"
+    state_dir.mkdir(parents=True)
+    status_path = state_dir / "status.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "pending": False,
+                "selected_model": "gpt-5.4",
+                "running_model": "gpt-5.6-terra",
+                "last_model": "gpt-5.6-terra",
+                "thread_id": "old-thread",
+                "thread_scope": "direct:model:gpt-5.6-terra",
+                "running_cost_route": {"selected_model": "gpt-5.6-terra"},
+                "last_cost_route": {"selected_model": "gpt-5.6-terra"},
+                "running_turn_envelope": {"effective_model": "gpt-5.6-terra"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (state_dir / "thread_id.txt").write_text("old-thread", encoding="utf-8")
+    (state_dir / "thread_scope.txt").write_text(
+        "direct:model:gpt-5.6-terra",
+        encoding="utf-8",
+    )
+    networking = replace(
+        _instance(module, "networking", host_name="networking-host"),
+        codex_home=str(codex_home),
+    )
+    monkeypatch.setattr(
+        module,
+        "ssh_command",
+        lambda host, script: ["bash", "-lc", script],
+    )
+
+    assert module.sync_instance_runtime_settings(
+        _named_host(module, "networking-host"),
+        networking,
+    )
+
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status["selected_model"] == module.PERSONAL_DIRECT_MODEL
+    assert status["running_model"] == module.PERSONAL_DIRECT_MODEL
+    assert status["last_model"] == module.PERSONAL_DIRECT_MODEL
+    assert status["thread_id"] == ""
+    assert status["thread_scope"] == ""
+    assert status["running_cost_route"] == {}
+    assert status["last_cost_route"] == {}
+    assert status["running_turn_envelope"] == {}
+    assert (state_dir / "thread_id.txt").read_text(encoding="utf-8") == ""
+    assert (state_dir / "thread_scope.txt").read_text(encoding="utf-8") == ""
+
+
+def test_runtime_settings_preserve_active_stale_thread_state(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_sync_script(monkeypatch)
+    codex_home = tmp_path / "codex"
+    state_dir = codex_home / "web-bridge"
+    state_dir.mkdir(parents=True)
+    status_path = state_dir / "status.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "pending": True,
+                "selected_model": "gpt-5.6-terra",
+                "running_model": "gpt-5.6-terra",
+                "last_model": "gpt-5.6-terra",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (state_dir / "thread_scope.txt").write_text(
+        "direct:model:gpt-5.6-terra",
+        encoding="utf-8",
+    )
+    networking = replace(
+        _instance(module, "networking", host_name="networking-host"),
+        codex_home=str(codex_home),
+    )
+    monkeypatch.setattr(
+        module,
+        "ssh_command",
+        lambda host, script: ["bash", "-lc", script],
+    )
+
+    module.sync_instance_runtime_settings(
+        _named_host(module, "networking-host"),
+        networking,
+    )
+
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    assert status["selected_model"] == "gpt-5.6-terra"
+    assert status["running_model"] == "gpt-5.6-terra"
+    assert status["last_model"] == "gpt-5.6-terra"
+    assert (state_dir / "thread_scope.txt").read_text(encoding="utf-8") == (
+        "direct:model:gpt-5.6-terra"
+    )
+
+
+def test_uplink_sync_removes_disabled_figma_plugin(monkeypatch, tmp_path) -> None:
+    module = _load_sync_script(monkeypatch)
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir()
+    config_path = codex_home / "config.toml"
+    config_path.write_text(
+        (
+            '[plugins."google-calendar@openai-curated"]\n'
+            "enabled = true\n\n"
+            '[plugins."figma@openai-curated"]\n'
+            "enabled = false\n\n"
+            '[plugins."github@openai-curated"]\n'
+            "enabled = true\n"
+        ),
+        encoding="utf-8",
+    )
+    uplink = replace(
+        _instance(module, "uplink", host_name="networking-host"),
+        codex_home=str(codex_home),
+    )
+    monkeypatch.setattr(
+        module,
+        "ssh_command",
+        lambda host, script: ["bash", "-lc", script],
+    )
+
+    assert module.sync_instance_disabled_plugin_settings(
+        _named_host(module, "networking-host"),
+        uplink,
+    )
+
+    config = config_path.read_text(encoding="utf-8")
+    assert 'plugins."figma@openai-curated"' not in config
+    assert 'plugins."google-calendar@openai-curated"' in config
+    assert 'plugins."github@openai-curated"' in config
+
+
 def test_work_bedrock_secondary_failover_requires_explicit_enablement(
     monkeypatch,
 ) -> None:
@@ -1482,6 +1624,83 @@ def test_console_files_include_soul_support_scripts(monkeypatch) -> None:
     assert module.SOURCE_FILES["vector-preflight"].name == "tui_vector_preflight.py"
     assert module.SOURCE_FILES["soul-loader"].name == "compose_soul_context.py"
     assert module.SOURCE_FILES["soul-validator"].name == "validate_soul_md.py"
+
+
+def test_norman_switchboard_uses_its_dedicated_web_source(monkeypatch) -> None:
+    module = _load_sync_script(monkeypatch)
+    norman = _instance(module, "norman", host_name="norman")
+
+    files = dict(norman.files)
+
+    assert files["norman-switchboard"] == norman.web_path
+    assert "web" not in files
+    assert module.SOURCE_FILES["norman-switchboard"].name == "norman_codex_web.py"
+    assert (
+        module.restart_scope_for_instance(
+            norman,
+            changed_paths={norman.web_path},
+            changed_instances={},
+        )
+        == "web"
+    )
+
+
+def test_web_sources_must_share_ui_version(monkeypatch, tmp_path: Path) -> None:
+    module = _load_sync_script(monkeypatch)
+
+    assert module.validate_web_source_versions() == "2026.07.16.07"
+
+    stale_switchboard = tmp_path / "norman_codex_web.py"
+    stale_switchboard.write_text(
+        'DEFAULT_UI_VERSION = "2026.07.16.06"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setitem(module.SOURCE_FILES, "norman-switchboard", stale_switchboard)
+
+    try:
+        module.validate_web_source_versions()
+    except RuntimeError as exc:
+        assert str(exc) == (
+            "Web UI source versions must match: "
+            "norman-switchboard=v2026.07.16.06, web=v2026.07.16.07"
+        )
+    else:
+        raise AssertionError("expected mismatched web sources to be rejected")
+
+
+def test_norman_sync_updates_fleet_doctor_template_reference(monkeypatch) -> None:
+    module = _load_sync_script(monkeypatch)
+    installed: dict[str, object] = {}
+
+    def fake_install_source_path(host, *, remote_path, source, source_sha256):
+        installed.update(
+            {
+                "host": host,
+                "remote_path": remote_path,
+                "source": source,
+                "source_sha256": source_sha256,
+            }
+        )
+        return True
+
+    monkeypatch.setattr(module, "install_source_path", fake_install_source_path)
+    source_sha256 = {"web": "shared-template-sha"}
+    norman_host = _named_host(module, "norman")
+
+    assert module.sync_norman_fleet_doctor_template(norman_host, source_sha256) is True
+    assert installed == {
+        "host": norman_host,
+        "remote_path": module.NORMAN_FLEET_DOCTOR_TEMPLATE_PATH,
+        "source": module.SOURCE_FILES["web"],
+        "source_sha256": "shared-template-sha",
+    }
+    assert (
+        module.sync_norman_fleet_doctor_template(
+            _named_host(module, "toy-box"),
+            source_sha256,
+        )
+        is False
+    )
 
 
 def test_origin_sync_enables_soul_context(monkeypatch) -> None:

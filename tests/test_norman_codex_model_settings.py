@@ -80,6 +80,15 @@ def test_runtime_model_enforces_gpt55_floor(monkeypatch, tmp_path) -> None:
     assert module.chat_model_update_available() is False
 
 
+def test_switchboard_exposes_lightweight_version_endpoint() -> None:
+    source = WEB_SCRIPT_PATH.read_text(encoding="utf-8")
+
+    assert 'if parsed.path == "/api/version":' in source
+    assert '"ui_version": UI_VERSION' in source
+    assert '"agent_name": AGENT_NAME' in source
+    assert '"session_name": SESSION' in source
+
+
 def test_careful_response_speed_uses_xhigh_reasoning(monkeypatch, tmp_path) -> None:
     module = _load_norman_codex_web(monkeypatch, tmp_path)
 
@@ -606,6 +615,7 @@ def test_bedrock_standard_profile_routes_standard_and_keeps_flex_direct(
 ) -> None:
     monkeypatch.delenv("AWS_PROFILE", raising=False)
     monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "should-not-reach-chatgpt-codex")
     module = _load_norman_codex_web(
         monkeypatch,
         tmp_path,
@@ -617,6 +627,11 @@ def test_bedrock_standard_profile_routes_standard_and_keeps_flex_direct(
         NORMAN_CODEX_PRIORITY_MODEL="gpt-5.5",
         NORMAN_CODEX_STANDARD_AWS_PROFILE="ob-traqline-admin",
         NORMAN_CODEX_STANDARD_AWS_REGION="us-east-2",
+    )
+    module.CODEX_AUTH_PATH.parent.mkdir(parents=True, exist_ok=True)
+    module.CODEX_AUTH_PATH.write_text(
+        json.dumps({"auth_mode": "chatgpt"}) + "\n",
+        encoding="utf-8",
     )
 
     assert module.DEFAULT_SERVICE_TIER == "default"
@@ -688,6 +703,7 @@ def test_bedrock_standard_profile_routes_standard_and_keeps_flex_direct(
     assert 'service_tier="flex"' in flex_cmd
     assert flex_env.get("AWS_PROFILE") is None
     assert flex_env.get("AWS_REGION") is None
+    assert "OPENAI_API_KEY" not in flex_env
 
     module._execute_codex_prompt(
         "status?",
@@ -1061,6 +1077,173 @@ def test_start_web_prompt_recovers_stale_direct_tier_before_worker(
     assert events
     assert events[0]["payload"]["requested_service_tier"] == "flex"
     assert events[0]["payload"]["service_tier"] == "default"
+
+
+def test_start_web_prompt_prefers_fresh_chatgpt_capacity_over_bedrock(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_SERVICE_TIER="default",
+        NORMAN_CODEX_STANDARD_PROFILE_V2="personal-bedrock",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_STANDARD_AWS_PROFILE="norman-bedrock",
+        NORMAN_CODEX_STANDARD_AWS_REGION="us-east-2",
+        NORMAN_CODEX_BILLING_OWNER="kristopher",
+        NORMAN_CODEX_AGENT_GROUP="personal",
+    )
+    module.ensure_state_dir()
+    module.CODEX_AUTH_PATH.parent.mkdir(parents=True, exist_ok=True)
+    module.CODEX_AUTH_PATH.write_text(
+        json.dumps({"auth_mode": "chatgpt"}) + "\n",
+        encoding="utf-8",
+    )
+    observed_at = module.now_ts()
+    module._persist_codex_account_capacity(
+        {
+            **module.default_codex_account_capacity(),
+            "source": "interactive_usage",
+            "observed_at": observed_at,
+            "last_probe_at": observed_at,
+            "auth_mode": "chatgpt",
+            "state": "available",
+            "windows": [
+                {
+                    "label": "Short window",
+                    "percent_left": 84,
+                    "reset_hint": "2h",
+                    "reset_seconds": 7200,
+                }
+            ],
+        }
+    )
+    calls = []
+
+    def fake_execute_runtime(
+        prompt,
+        speed,
+        detail,
+        attachments,
+        runtime,
+        model,
+        timeout_seconds=None,
+        service_tier="",
+        job_budget="",
+        optimization_mode="",
+    ):
+        calls.append(
+            {
+                "prompt": prompt,
+                "runtime": runtime,
+                "model": model,
+                "service_tier": service_tier,
+            }
+        )
+        return (
+            "Completed through the subscription lane.",
+            "",
+            "thread-subscription",
+            module.normalize_usage_entry(
+                {
+                    "service_tier": service_tier,
+                    "provider_surface": "openai-direct",
+                    "codex_auth_mode": "chatgpt",
+                    "total_tokens": 10,
+                }
+            ),
+        )
+
+    monkeypatch.setattr(module, "_execute_prompt_runtime", fake_execute_runtime)
+
+    accepted, snapshot = module.start_web_prompt(
+        "Implement the targeted patch and run make test.",
+        "careful",
+        5,
+        "normal",
+        service_tier="default",
+    )
+
+    assert accepted is True
+    assert snapshot["pending"] is True
+    for _ in range(20):
+        worker = module.ACTIVE_PROMPT_THREAD
+        if worker is not None:
+            worker.join(timeout=0.2)
+        final_snapshot = module.current_snapshot()
+        if not final_snapshot["pending"] and calls:
+            break
+
+    assert calls
+    assert calls[0]["runtime"] == "codex"
+    assert calls[0]["service_tier"] == "flex"
+    assert (
+        final_snapshot["codex_account_capacity"]
+        == (final_snapshot["usage"]["codex_account_capacity"])
+    )
+    assert (
+        final_snapshot["codex_account_capacity"]["eligible_for_subscription_route"]
+        is True
+    )
+    events = module.load_audit_events(
+        limit=20, event_type="chat.subscription-capacity-preferred"
+    )
+    assert events
+    assert events[0]["payload"]["selected_service_tier"] == "flex"
+
+
+def test_switchboard_unsupported_usage_command_is_sanitized_and_backed_off(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    module.CODEX_ACCOUNT_CAPACITY_PATH = tmp_path / "capacity.json"
+    module.CODEX_ACCOUNT_CAPACITY_HISTORY_PATH = tmp_path / "capacity.jsonl"
+    module.CODEX_ACCOUNT_CAPACITY_PROBE_TIMEOUT_SECONDS = 0.001
+    module.CODEX_ACCOUNT_CAPACITY_PROBE_POLL_SECONDS = 0.01
+    module.CODEX_ACCOUNT_CAPACITY_PROBE_THREAD = None
+    module.CODEX_ACCOUNT_CAPACITY_COMMAND = "/usage"
+    module.CODEX_ACCOUNT_CAPACITY_FALLBACK_COMMAND = ""
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "chatgpt")
+    monkeypatch.setattr(module, "prompt_runtime_alive", lambda: False)
+    monkeypatch.setattr(module, "prompt_thread_alive", lambda: False)
+    prompt_pane = "OpenAI Codex (v0.144.4)\n\n› "
+    unsupported_pane = "Unrecognized command '/usage'. Type \"/\" for a list of supported commands.\n\n› "
+    panes = iter([prompt_pane, unsupported_pane, unsupported_pane])
+    sent: list[str] = []
+    keys: list[tuple[str, ...]] = []
+    monkeypatch.setattr(module, "capture_pane", lambda: next(panes))
+    monkeypatch.setattr(module, "send_text", lambda value: sent.append(value))
+    monkeypatch.setattr(module, "send_keys", lambda *value: keys.append(value))
+
+    assert (
+        module.maybe_schedule_codex_account_capacity_probe(
+            pane=prompt_pane,
+            auth_mode="chatgpt",
+        )
+        is True
+    )
+    worker = module.CODEX_ACCOUNT_CAPACITY_PROBE_THREAD
+    assert worker is not None
+    worker.join(timeout=1)
+
+    persisted = module.codex_account_capacity_snapshot(auth_mode="chatgpt")
+    history_text = module.CODEX_ACCOUNT_CAPACITY_HISTORY_PATH.read_text(
+        encoding="utf-8"
+    )
+    assert sent == ["/usage"]
+    assert keys == [("Escape",), ("C-u",), ("C-a", "C-k"), ("C-l",)]
+    assert persisted["source"] == "unsupported_command"
+    assert persisted["state"] == "unknown"
+    assert persisted["eligible_for_subscription_route"] is False
+    assert "Unrecognized command" not in history_text
+    assert "/usage" not in history_text
+    assert (
+        module.maybe_schedule_codex_account_capacity_probe(
+            pane=prompt_pane,
+            auth_mode="chatgpt",
+        )
+        is False
+    )
 
 
 def test_bedrock_standard_can_disable_direct_openai_tiers(

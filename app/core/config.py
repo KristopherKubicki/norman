@@ -234,6 +234,7 @@ class Settings(BaseSettings):
     llm_offline_model: str = "qwen3.6:27b"
     llm_provider_timeout_seconds: int = 45
     console_runtime_norllama_timeout_seconds: int = 180
+    console_runtime_bedrock_timeout_seconds: int = 300
     llm_mesh_cache_ttl_seconds: int = 15
     llm_mesh_cache_stale_seconds: int = 300
     llm_mesh_workers: List[Dict[str, Any]] = [

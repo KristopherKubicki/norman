@@ -643,7 +643,20 @@ def authorize_route_under_policy(
     validation = validate_route_policy_artifact(artifact, now=current)
     provider = _clean(requested_provider).lower()
     mode = _clean(execution_mode).lower()
-    cloud_requested = provider in {"openai", "bedrock", "anthropic"} or "cloud" in mode
+    cloud_requested = (
+        provider
+        in {
+            "anthropic",
+            "aws-bedrock",
+            "aws_bedrock",
+            "bedrock",
+            "codex",
+            "openai",
+            "openai-direct",
+            "openai_direct",
+        }
+        or "cloud" in mode
+    )
     state = _clean(validation.get("state"))
     allowed = bool(
         validation.get("integrity_valid")
