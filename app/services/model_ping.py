@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import os
 import re
+import ssl
 import time
 from dataclasses import asdict, dataclass
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import anyio
+import httpx
 import requests
 from openai import OpenAI
 
@@ -226,7 +228,22 @@ def _all_targets() -> list[ModelPingTarget]:
     return targets
 
 
-def _openai_client(target: ModelPingTarget) -> OpenAI:
+def _uses_system_tls_bundle(target: ModelPingTarget) -> bool:
+    if target.provider.lower() != "openai_compatible":
+        return False
+    try:
+        parsed = urlsplit(target.base_url)
+    except ValueError:
+        return False
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    return parsed.scheme.lower() == "https" and (
+        hostname == "home.arpa" or hostname.endswith(".home.arpa")
+    )
+
+
+def _openai_client(
+    target: ModelPingTarget, *, http_client: httpx.Client | None = None
+) -> OpenAI:
     api_key = _target_api_key(target)
     if not api_key and target.provider == "openai":
         api_key = _clean_str(getattr(settings, "openai_api_key", ""))
@@ -240,15 +257,29 @@ def _openai_client(target: ModelPingTarget) -> OpenAI:
     }
     if target.base_url:
         kwargs["base_url"] = target.base_url
+    if http_client is not None:
+        kwargs["http_client"] = http_client
     return OpenAI(**kwargs)
 
 
 def _ping_openai_chat(target: ModelPingTarget) -> str:
-    response = _openai_client(target).chat.completions.create(
-        model=target.model,
-        messages=[{"role": "user", "content": PING_PROMPT}],
-        max_tokens=target.max_tokens,
-    )
+    http_client = None
+    if _uses_system_tls_bundle(target):
+        http_client = httpx.Client(
+            verify=ssl.create_default_context(),
+            timeout=target.timeout_seconds,
+        )
+    try:
+        response = _openai_client(
+            target, http_client=http_client
+        ).chat.completions.create(
+            model=target.model,
+            messages=[{"role": "user", "content": PING_PROMPT}],
+            max_tokens=target.max_tokens,
+        )
+    finally:
+        if http_client is not None:
+            http_client.close()
     choices = getattr(response, "choices", None) or []
     if not choices:
         return ""
