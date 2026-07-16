@@ -1,0 +1,27 @@
+[Unit]
+Description=Norman production release %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kristopher
+Group=kristopher
+WorkingDirectory=/home/kristopher/releases/norman-%i
+EnvironmentFile=-/etc/norman/runtime-identities.env
+EnvironmentFile=-/etc/norman/release.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=NORMAN_CONFIG_REQUESTER_ID=norman-production
+LoadCredentialEncrypted=norman-cred-passphrase:/etc/norman/credentials/norman-cred-passphrase.cred
+ExecStartPre=/bin/sh -c 'test -n "$NORMAN_CONFIG_SECRET"'
+ExecStartPre=/bin/sh -c 'test -n "$NORMAN_CONFIG_SECRET_CMD" || test -n "$NORMAN_SECRET_CMD" || test -n "$NORMAN_KEYS_URL" || test -n "$NORMAN_KEYS_API_BASE"'
+ExecStart=/usr/local/libexec/norman-production-launch /home/kristopher/releases/norman-%i/.venv-3.10/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --limit-concurrency 192 --backlog 256 --timeout-keep-alive 5
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+
+: "${CREDENTIALS_DIRECTORY:?systemd credentials directory is required}"
+
+credential() {
+  /usr/local/bin/cred \
+    --passphrase-file "$CREDENTIALS_DIRECTORY/norman-cred-passphrase" \
+    get "$1"
+}
+
+export NORMAN_PROMPT_PROXY_TOKEN="$(credential norman/prompt-proxy-token)"
+export CONSOLE_RUNTIME_SERVICE_TOKEN="$(credential norman/console-runtime-service-token)"
+export NORMAN_KEYS_SERVICE_TOKEN="$(credential norman/keys-service-token)"
+
+exec "$@"

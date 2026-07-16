@@ -2,7 +2,7 @@
 
 Date: 2026-07-16
 Scope: Norman Kernel native Bedrock adapter, local-first routing, and Codex plan-capacity monitoring
-Status: console fleet deployed; backend rollout staged pending a brokered-configuration canary
+Status: production deployed with brokered configuration and local-first routing
 
 ## Released Console Surface
 
@@ -42,20 +42,27 @@ current dirty checkout to the Norman backend host.
 
 ## Managed Release Configuration
 
-The clean release candidate must receive its settings through a brokered
+The clean production release receives its settings through a brokered
 `NORMAN_CONFIG_SECRET` and an approved command or HTTP resolver. On this path
 Norman reads the YAML mapping in memory, does not create a release-local
 `config.yaml`, and fails closed if `admin_setup_key` is missing.
 
-`scripts/systemd/norman-release@.service` runs the release candidate only on
+`scripts/systemd/norman-release@.service` runs an isolated candidate only on
 `127.0.0.1:18000` and requires both the logical config secret name and a
 configured resolver before it starts. It is separate from the active
-`norman.service`; use it for the clean loopback canary first.
+`norman-production@<release-sha>.service`; use it for the clean loopback canary
+first.
 
-The live host does not currently expose a confirmed brokered configuration
-alias for this purpose. Leave `norman.service` on its existing healthy checkout
-until that alias and resolver are provisioned. Do not copy its repo-local
-config into the clean release checkout.
+The deployed production unit is SHA-pinned and resolves the runtime
+configuration from `norman/runtime-config`. It uses the encrypted `cred` vault
+only as a migration bridge. The release has no repo-local configuration or
+plaintext prompt-proxy token. Do not copy a legacy checkout configuration into
+a release checkout.
+
+The remaining runtime service tokens are resolved through the same encrypted
+credential path by `scripts/systemd/norman-production-launch`; their only
+plaintext host file contains non-secret service identities. A networked Norman
+Keys backend with short-lived leases remains the follow-up hardening target.
 
 ## Backend Rollout Gate
 
@@ -96,14 +103,17 @@ NORMAN_SECRET_CMD=<broker command with {name}>
 Use a logical secret such as `networking/bedrock`; do not create a repo-local
 plaintext credential file.
 
-## Restart And Smoke
+## Production Smoke
 
-Restart only the backend service after the dependency and source checks succeed:
+The production host runs `norman-production@57685d38.service`; the legacy
+`norman.service` is disabled. The active service, Caddy front door, and
+Norllama model metadata were verified:
 
 ```bash
-sudo systemctl restart norman.service
-sudo systemctl is-active norman.service
+sudo systemctl is-active norman-production@57685d38.service
 curl -fsS http://127.0.0.1:8000/health
+curl -fsS https://norman.home.arpa/health
+curl -fsS https://llm.home.arpa/v1/models
 ```
 
 Then run the authenticated Console Runtime dry-run and route-policy rejection smokes.
@@ -124,12 +134,14 @@ and require an explicit cloud policy for every Bedrock turn.
 
 ## Rollback
 
-Rollback is source-revision based:
+Rollback is unit and source-revision based:
 
-1. Return the host to the prior known-good release commit.
-2. Reinstall that revision's dependency set.
-3. Restart `norman.service` and verify `/health`.
-4. Set `allow_cloud_proxy=false` in the active route policy or disable the runtime
+1. Stop and disable the failing SHA-specific production unit.
+2. Enable and start the prior known-good SHA-specific production unit.
+3. Verify the direct and Caddy `/health` endpoints.
+4. Use legacy `norman.service` only if its credential wrapper is the intentionally
+   selected rollback target.
+5. Set `allow_cloud_proxy=false` in the active route policy or disable the runtime
    worker until the issue is diagnosed.
 
 The console fleet can remain on `2026.07.16.07`; its capacity monitor fails closed
