@@ -16,6 +16,7 @@ import sync_agent_console_template as sync
 
 
 DEFAULT_MIN_TIMEOUT_SECONDS = 3600
+DEFAULT_NO_CONSOLE_SCAN_HOSTS = {"private-host"}
 BAD_WRAPPER_NEEDLES = (
     "earlybird_codex",
     "housebot_codex",
@@ -776,17 +777,44 @@ def build_reports(
     min_timeout_seconds: int,
     ui_version: str,
 ) -> list[HostReport]:
-    discovered_by_host, _ = sync.discover_all_instances(targets)
-    selected_hosts = [
-        host_name
-        for host_name in (targets or list(sync.HOSTS))
-        if host_name in discovered_by_host
-    ]
+    requested_targets = targets or list(sync.HOSTS)
+    discovery_targets = requested_targets
+    if targets is None:
+        # The private enclave is registered in the estate but does not yet
+        # host a managed console. Avoid an unsolicited SSH probe there; an
+        # explicit --targets private-host request still performs the scan.
+        discovery_targets = [
+            target
+            for target in requested_targets
+            if target not in DEFAULT_NO_CONSOLE_SCAN_HOSTS
+        ]
+    discovered_by_host, _ = sync.discover_all_instances(discovery_targets)
+    selected_hosts = (
+        list(sync.HOSTS)
+        if targets is None
+        else [host_name for host_name in discovered_by_host if host_name in sync.HOSTS]
+    )
 
     reports: list[HostReport] = []
     for host_name in selected_hosts:
+        if (
+            targets is None
+            and host_name in DEFAULT_NO_CONSOLE_SCAN_HOSTS
+            and host_name not in discovered_by_host
+        ):
+            reports.append(
+                HostReport(
+                    host=host_name,
+                    active_count=0,
+                    expected_count=0,
+                    issues=[],
+                )
+            )
+            continue
         host = sync.HOSTS[host_name]
-        expected_names = {instance.name for instance in discovered_by_host[host_name]}
+        expected_names = {
+            instance.name for instance in discovered_by_host.get(host_name, [])
+        }
         try:
             active_rows = scan_host(host)
         except Exception as exc:
