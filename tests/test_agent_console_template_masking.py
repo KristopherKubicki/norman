@@ -4840,6 +4840,10 @@ def test_runtime_bridge_sync_writes_broker_env_without_direct_token(
     rendered_command = " ".join(captured[0])
     assert "NORMAN_KEYS_TOKEN" in rendered_command
     assert "NORMAN_CONSOLE_RUNTIME_TOKEN_SECRET" in rendered_command
+    assert "remove_keys = json.loads" in rendered_command
+    assert "for key in remove_keys" in rendered_command
+    for key in module.RUNTIME_BRIDGE_LEGACY_TOKEN_KEYS:
+        assert key in rendered_command
     assert '"NORMAN_CONSOLE_RUNTIME_TOKEN":' not in rendered_command
     assert '"NORMAN_API_TOKEN":' not in rendered_command
 

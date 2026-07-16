@@ -508,6 +508,10 @@ RUNTIME_BRIDGE_ENV_KEYS: tuple[str, ...] = (
     "NORMAN_CONSOLE_RUNTIME_TOKEN_SECRET",
     "NORMAN_CONSOLE_RUNTIME_SECRET_NAME",
 )
+RUNTIME_BRIDGE_LEGACY_TOKEN_KEYS: tuple[str, ...] = (
+    "NORMAN_CONSOLE_RUNTIME_TOKEN",
+    "NORMAN_API_TOKEN",
+)
 
 INSTANCE_LABEL_OVERRIDES = {
     "autocamera": "Autocamera",
@@ -2152,6 +2156,7 @@ def sync_instance_runtime_bridge_settings(
     if not bridge_settings:
         return False
     payload = json.dumps(bridge_settings, separators=(",", ":"))
+    remove_payload = json.dumps(RUNTIME_BRIDGE_LEGACY_TOKEN_KEYS, separators=(",", ":"))
     script = f"""
 python3 - <<'PY'
 from pathlib import Path
@@ -2160,8 +2165,15 @@ import re
 
 path = Path({instance.env_file!r})
 updates = json.loads({payload!r})
+remove_keys = json.loads({remove_payload!r})
 text = path.read_text(encoding="utf-8")
 changed = False
+for key in remove_keys:
+    pattern = re.compile(rf"^{{re.escape(key)}}=.*\\n?", re.M)
+    updated = pattern.sub("", text)
+    if updated != text:
+        text = updated
+        changed = True
 for key, value in updates.items():
     line = f"{{key}}={{value}}"
     pattern = re.compile(rf"^{{re.escape(key)}}=.*$", re.M)
