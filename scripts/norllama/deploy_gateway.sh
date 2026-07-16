@@ -14,6 +14,7 @@ spark_service="${NORLLAMA_SPARK_SERVICE:-norllama-gateway.service}"
 
 deploy_mac=1
 deploy_sparks=0
+spark_restart_failed=0
 
 usage() {
   cat <<'EOF'
@@ -71,9 +72,19 @@ if [[ "$deploy_sparks" == "1" ]]; then
   for target in $spark_targets; do
     echo "Deploying Spark peer: ${target}:${spark_path}"
     scp -q "$source_path" "${target}:${spark_path}"
-    ssh "$target" \
-      "python3 -m py_compile '$spark_path' && sudo -n systemctl restart '$spark_service' && sleep 2 && curl -fsS --max-time 5 http://127.0.0.1:18151/healthz >/dev/null"
+    ssh "$target" "python3 -m py_compile '$spark_path'"
+    if ! ssh "$target" \
+      "sudo -n systemctl restart '$spark_service' && sleep 2 && curl -fsS --max-time 5 http://127.0.0.1:18151/healthz >/dev/null"; then
+      echo \
+        "Gateway source copied to ${target}, but ${spark_service} requires an operator-approved sudo restart." \
+        >&2
+      spark_restart_failed=1
+    fi
   done
+fi
+
+if [[ "$spark_restart_failed" == "1" ]]; then
+  exit 1
 fi
 
 echo "Norllama gateway deploy complete."
