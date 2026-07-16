@@ -25,7 +25,7 @@ def test_isolated_release_unit_requires_managed_configuration() -> None:
     ).read_text(encoding="utf-8")
 
     assert "WorkingDirectory=/home/kristopher/releases/norman-%i" in source
-    assert "EnvironmentFile=-/etc/norman/runtime.env" in source
+    assert "EnvironmentFile=-/etc/norman/release.env" in source
     assert "NORMAN_CONFIG_REQUESTER_ID=norman-release" in source
     assert 'test -n "$NORMAN_CONFIG_SECRET"' in source
     assert "NORMAN_CONFIG_SECRET_CMD" in source
