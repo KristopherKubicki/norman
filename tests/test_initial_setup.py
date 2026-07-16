@@ -1,3 +1,4 @@
+import json
 import logging
 from pathlib import Path
 
@@ -150,6 +151,43 @@ def test_load_config_uses_brokered_secret_without_creating_local_config(
     ]
     assert not (tmp_path / "config.yaml").exists()
     assert config.active_config_file_path() is None
+
+
+def test_brokered_config_secret_uses_explicit_target_host(monkeypatch):
+    monkeypatch.delenv("NORMAN_CONFIG_SECRET_CMD", raising=False)
+    monkeypatch.delenv("NORMAN_SECRET_CMD", raising=False)
+    monkeypatch.setenv("NORMAN_KEYS_URL", "http://keys.norman.test")
+    monkeypatch.setenv("NORMAN_CONFIG_REQUESTER_ID", "norman-release")
+    monkeypatch.setenv("NORMAN_CONFIG_TARGET_HOST", "norman.lollie.org")
+    monkeypatch.setenv("HOSTNAME", "untrusted-host")
+    requests = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"value":"admin_setup_key: brokered-key"}'
+
+    def fake_urlopen(request, timeout):
+        requests.append((request, timeout))
+        return Response()
+
+    monkeypatch.setattr(config.urllib_request, "urlopen", fake_urlopen)
+
+    assert config._brokered_config_secret("norman/runtime-config") == (
+        "admin_setup_key: brokered-key"
+    )
+    assert len(requests) == 1
+    request, timeout = requests[0]
+    assert request.full_url == "http://keys.norman.test/v1/secrets/get"
+    assert timeout == 5.0
+    assert json.loads(request.data.decode("utf-8"))["target_host"] == (
+        "norman.lollie.org"
+    )
 
 
 def test_load_config_uses_external_path_without_creating_local_config(

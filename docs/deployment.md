@@ -67,6 +67,7 @@ one approved resolver:
 NORMAN_CONFIG_SECRET=norman/runtime-config
 NORMAN_CONFIG_SECRET_CMD=<approved broker command using {name}>
 NORMAN_CONFIG_REQUESTER_ID=norman-release
+NORMAN_CONFIG_TARGET_HOST=norman.lollie.org
 ```
 
 `NORMAN_CONFIG_SECRET_CMD` is preferred for the temporary machine-local `cred`
@@ -80,6 +81,10 @@ YAML. It does not log the returned contents, generate a replacement
 `config.yaml`, or silently fall back to a repo-local config file. The optional
 `NORMAN_CONFIG_PATH` migration setting must be an absolute path outside the
 application working tree; do not use it to point back at a release checkout.
+When the secret policy has `allowed_hosts`, set
+`NORMAN_CONFIG_TARGET_HOST` to the exact approved hostname. Hostname matching
+is case-insensitive and ignores a trailing dot; an unset or unapproved host is
+denied.
 
 The repository includes `scripts/systemd/norman-release@.service` for a
 loopback-only canary. It is intentionally separate from `norman.service`, so a
