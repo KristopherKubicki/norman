@@ -85,6 +85,11 @@ The repository includes `scripts/systemd/norman-release@.service` for a
 loopback-only canary. It is intentionally separate from `norman.service`, so a
 candidate can be validated without replacing the active service:
 
+The canary reads its resolver settings only from `/etc/norman/release.env`;
+do not reuse the live service's `/etc/norman/runtime.env`. Keep
+`release.env` root-owned and mode `0600`, and limit it to
+`NORMAN_CONFIG_SECRET` plus the selected broker resolver and token settings.
+
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl start norman-release@<release-sha>

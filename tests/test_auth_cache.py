@@ -1,6 +1,8 @@
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from app.api import deps
 from app.core.auth_cache import (
     cache_admin_exists,
@@ -13,8 +15,14 @@ from app.core.auth_cache import (
 from app.models.user import User
 
 
-def test_user_cache_round_trips_detached_snapshot():
+@pytest.fixture(autouse=True)
+def _clear_auth_cache_between_tests():
     clear_auth_caches()
+    yield
+    clear_auth_caches()
+
+
+def test_user_cache_round_trips_detached_snapshot():
     user = User(
         id=7,
         username="normal",
@@ -34,7 +42,6 @@ def test_user_cache_round_trips_detached_snapshot():
 
 
 def test_auth_cache_invalidation_and_admin_cache():
-    clear_auth_caches()
     user = User(
         id=9,
         username="operator",
@@ -53,7 +60,6 @@ def test_auth_cache_invalidation_and_admin_cache():
 
 
 def test_console_runtime_service_token_auth_uses_cached_user(monkeypatch):
-    clear_auth_caches()
     user = User(
         id=11,
         username="runtime",

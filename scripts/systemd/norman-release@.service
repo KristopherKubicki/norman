@@ -8,7 +8,7 @@ Type=simple
 User=kristopher
 Group=kristopher
 WorkingDirectory=/home/kristopher/releases/norman-%i
-EnvironmentFile=-/etc/norman/runtime.env
+EnvironmentFile=-/etc/norman/release.env
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=NORMAN_CONFIG_REQUESTER_ID=norman-release
