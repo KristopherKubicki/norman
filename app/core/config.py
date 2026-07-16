@@ -597,7 +597,8 @@ def _brokered_config_secret(secret_name: str) -> str:
         "requester_id": _clean_env("NORMAN_CONFIG_REQUESTER_ID") or "norman-service",
         "session_id": "startup",
         "lane": "backend",
-        "target_host": _clean_env("HOSTNAME"),
+        "target_host": _clean_env("NORMAN_CONFIG_TARGET_HOST")
+        or _clean_env("HOSTNAME"),
     }
     headers = {"Accept": "application/json", "Content-Type": "application/json"}
     token = _clean_env("NORMAN_KEYS_TOKEN") or _clean_env("NORMAN_KEYS_API_TOKEN")

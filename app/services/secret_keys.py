@@ -192,6 +192,21 @@ def _policy_score(
     return score
 
 
+def _normalized_host(value: object) -> str:
+    return str(value or "").strip().lower().rstrip(".")
+
+
+def _host_allowed(policy: SecretPolicy, target_host: str) -> bool:
+    allowed_hosts = {
+        _normalized_host(host)
+        for host in (policy.allowed_hosts or [])
+        if _normalized_host(host)
+    }
+    if not allowed_hosts:
+        return True
+    return _normalized_host(target_host) in allowed_hosts
+
+
 def _match_policy(
     db: Session, *, alias: SecretAlias, body: SecretRequestCreate
 ) -> Optional[SecretPolicy]:
@@ -205,7 +220,10 @@ def _match_policy(
     if not matches:
         return None
     matches.sort(key=lambda item: (item[0], item[1].id), reverse=True)
-    return matches[0][1]
+    selected = matches[0][1]
+    if not _host_allowed(selected, body.target_host):
+        return None
+    return selected
 
 
 def _issue_lease(
