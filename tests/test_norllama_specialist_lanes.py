@@ -1,3 +1,4 @@
+import app.services.norllama.specialist_lanes as specialist_lanes
 from app.services.norllama.specialist_lanes import (
     ALLOWED_SPECIALIST_STATES,
     SPECIALIST_CASCADE_SCHEMA,
@@ -409,7 +410,12 @@ def test_specialist_non_answer_detector_rejects_plan_only_and_unknown_shapes():
         assert lanes["non_answer_detector"]["verdict"] == output_shape
 
 
-def test_specialist_cascade_records_executed_deterministic_expert_results():
+def test_specialist_cascade_records_executed_deterministic_expert_results(monkeypatch):
+    monkeypatch.setattr(
+        specialist_lanes.shutil,
+        "which",
+        lambda command: "/usr/bin/ruff" if command == "ruff" else None,
+    )
     route_receipt = {
         "request_id": "req-expert",
         "job_id": "job-expert",

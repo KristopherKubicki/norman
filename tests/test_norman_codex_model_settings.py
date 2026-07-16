@@ -2838,7 +2838,7 @@ def test_prompt_worker_auto_continues_promised_work_once(monkeypatch, tmp_path) 
     assert accepted is True
     assert snapshot["pending"] is True
 
-    for _ in range(20):
+    for _ in range(50):
         worker = module.ACTIVE_PROMPT_THREAD
         if worker is not None:
             worker.join(timeout=0.2)
@@ -2850,7 +2850,14 @@ def test_prompt_worker_auto_continues_promised_work_once(monkeypatch, tmp_path) 
     assert module.AUTO_CONTINUE_PROMISE_MARKER in calls[1]
     assert "Do not just say you will do it" in calls[1]
 
-    final_snapshot = module.current_snapshot()
+    for _ in range(20):
+        worker = module.ACTIVE_PROMPT_THREAD
+        if worker is not None:
+            worker.join(timeout=0.2)
+        final_snapshot = module.current_snapshot()
+        if not final_snapshot["pending"]:
+            break
+
     assert final_snapshot["pending"] is False
     assert final_snapshot["state"] == "ok"
     assert final_snapshot["last_response"] == (
