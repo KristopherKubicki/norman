@@ -63,6 +63,8 @@ The remaining runtime service tokens are resolved through the same encrypted
 credential path by `scripts/systemd/norman-production-launch`; their only
 plaintext host file contains non-secret service identities. A networked Norman
 Keys backend with short-lived leases remains the follow-up hardening target.
+The disabled legacy rollback unit has the same identity-file compatibility
+drop-in and credential launcher.
 
 ## Backend Rollout Gate
 
