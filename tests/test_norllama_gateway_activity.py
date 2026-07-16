@@ -264,6 +264,92 @@ def test_gateway_load_pressure_guard_does_not_probe_noninteractive_models():
     assert handler._activity_extra == {}
 
 
+@pytest.mark.parametrize(
+    ("candidate_method", "base_attribute"),
+    [
+        ("native_rerank_candidates", "rerank"),
+        ("safety_candidates", "safety"),
+    ],
+)
+def test_gateway_specialist_candidates_skip_unhealthy_local_sidecars(
+    candidate_method, base_attribute
+):
+    module = load_gateway_module()
+    app = module.App()
+    local_base = "http://127.0.0.1:8102"
+    peer_base = "http://192.168.2.150:18151"
+    setattr(app, f"{base_attribute}_bases", [local_base])
+    setattr(app, "peer_bases", [peer_base])
+    setattr(
+        app,
+        f"{base_attribute}_candidate_bases",
+        lambda: (
+            [],
+            [
+                {
+                    "base_url": local_base,
+                    "status": "error",
+                    "error": "connection refused",
+                }
+            ],
+        ),
+    )
+    handler = object.__new__(module.Handler)
+    handler.server = type("Server", (), {"app": app})()
+    handler._peer_hop = 0
+
+    candidates, rows, peer_bases = getattr(handler, candidate_method)()
+
+    assert candidates == [peer_base]
+    assert peer_bases == {peer_base}
+    assert rows[0]["base_url"] == local_base
+    assert rows[0]["status"] == "error"
+    assert rows[1] == {
+        "base_url": peer_base,
+        "status": "configured_peer",
+        "source": "peer_bases",
+    }
+
+
+@pytest.mark.parametrize(
+    ("candidate_method", "base_attribute"),
+    [
+        ("native_rerank_candidates", "rerank"),
+        ("safety_candidates", "safety"),
+    ],
+)
+def test_gateway_specialist_candidates_prefer_healthy_local_sidecars(
+    candidate_method, base_attribute
+):
+    module = load_gateway_module()
+    app = module.App()
+    local_base = "http://127.0.0.1:8102"
+    peer_base = "http://192.168.2.150:18151"
+    setattr(app, f"{base_attribute}_bases", [local_base])
+    setattr(app, "peer_bases", [peer_base])
+    setattr(
+        app,
+        f"{base_attribute}_candidate_bases",
+        lambda: ([local_base], [{"base_url": local_base, "status": "ok"}]),
+    )
+    handler = object.__new__(module.Handler)
+    handler.server = type("Server", (), {"app": app})()
+    handler._peer_hop = 0
+
+    candidates, rows, peer_bases = getattr(handler, candidate_method)()
+
+    assert candidates == [local_base, peer_base]
+    assert peer_bases == {peer_base}
+    assert rows == [
+        {"base_url": local_base, "status": "ok"},
+        {
+            "base_url": peer_base,
+            "status": "configured_peer",
+            "source": "peer_bases",
+        },
+    ]
+
+
 def test_gateway_evict_target_bases_are_limited_to_known_workers():
     module = load_gateway_module()
 

@@ -5696,12 +5696,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def native_rerank_candidates(self) -> tuple[list[str], list[dict], set[str]]:
         health_bases, health_rows = self.app.rerank_candidate_bases()
-        configured_local = [
-            normalize_base_url(base)
-            for base in self.app.rerank_bases
-            if normalize_base_url(base)
-        ]
-        ordered_local = unique_items([*health_bases, *configured_local])
+        ordered_local = unique_items(
+            [
+                normalize_base_url(base)
+                for base in health_bases
+                if normalize_base_url(base)
+            ]
+        )
         static_peer_bases: list[str] = []
         if int(getattr(self, "_peer_hop", 0)) < self.app.max_peer_hops:
             static_peer_bases = [
@@ -5750,12 +5751,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def safety_candidates(self) -> tuple[list[str], list[dict], set[str]]:
         health_bases, health_rows = self.app.safety_candidate_bases()
-        configured_local = [
-            normalize_base_url(base)
-            for base in self.app.safety_bases
-            if normalize_base_url(base)
-        ]
-        ordered_local = unique_items([*health_bases, *configured_local])
+        ordered_local = unique_items(
+            [
+                normalize_base_url(base)
+                for base in health_bases
+                if normalize_base_url(base)
+            ]
+        )
         static_peer_bases: list[str] = []
         if int(getattr(self, "_peer_hop", 0)) < self.app.max_peer_hops:
             static_peer_bases = [
