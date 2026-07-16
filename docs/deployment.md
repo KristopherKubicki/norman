@@ -57,6 +57,44 @@ Before deploying Norman, ensure that your server meets the following requirement
 1. Run Norman once to automatically create `config.yaml` with secure defaults.
    Edit this file to configure the required settings, such as the database connection string and API keys.
 
+### Managed Service Configuration
+
+Production services should not generate or keep `config.yaml` in a release
+checkout. Set `NORMAN_CONFIG_SECRET` to a logical Norman Keys name and provide
+one approved resolver:
+
+```text
+NORMAN_CONFIG_SECRET=norman/runtime-config
+NORMAN_CONFIG_SECRET_CMD=<approved broker command using {name}>
+NORMAN_CONFIG_REQUESTER_ID=norman-release
+```
+
+`NORMAN_CONFIG_SECRET_CMD` is preferred for the temporary machine-local `cred`
+vault bridge. An external Norman Keys endpoint can instead be configured with
+`NORMAN_KEYS_URL` and its short-lived service token. The secret value must be
+a YAML mapping containing the normal `config.yaml` overrides, including a real
+`admin_setup_key`.
+
+Norman fails closed when a configured secret cannot be read or has invalid
+YAML. It does not log the returned contents, generate a replacement
+`config.yaml`, or silently fall back to a repo-local config file. The optional
+`NORMAN_CONFIG_PATH` migration setting must be an absolute path outside the
+application working tree; do not use it to point back at a release checkout.
+
+The repository includes `scripts/systemd/norman-release@.service` for a
+loopback-only canary. It is intentionally separate from `norman.service`, so a
+candidate can be validated without replacing the active service:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl start norman-release@<release-sha>
+curl -fsS http://127.0.0.1:18000/health
+sudo systemctl stop norman-release@<release-sha>
+```
+
+The release checkout must contain `.venv-3.10` and the managed configuration
+environment before starting this unit.
+
 ## Running the Application
 
 1. Start the Norman application:

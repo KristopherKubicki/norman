@@ -1,0 +1,25 @@
+[Unit]
+Description=Norman isolated release candidate %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kristopher
+Group=kristopher
+WorkingDirectory=/home/kristopher/releases/norman-%i
+EnvironmentFile=-/etc/norman/runtime.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=NORMAN_CONFIG_REQUESTER_ID=norman-release
+ExecStartPre=/bin/sh -c 'test -n "$NORMAN_CONFIG_SECRET"'
+ExecStartPre=/bin/sh -c 'test -n "$NORMAN_CONFIG_SECRET_CMD" || test -n "$NORMAN_SECRET_CMD" || test -n "$NORMAN_KEYS_URL" || test -n "$NORMAN_KEYS_API_BASE"'
+ExecStart=/usr/bin/env /home/kristopher/releases/norman-%i/.venv-3.10/bin/uvicorn app.main:app --host 127.0.0.1 --port 18000 --limit-concurrency 192 --backlog 256 --timeout-keep-alive 5
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

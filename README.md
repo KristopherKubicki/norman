@@ -86,8 +86,8 @@ npm install
 ```
 
 5. Run Norman once to automatically generate `config.yaml` with secure defaults.
-   The admin username, email and password will be printed to the console.
-   Take note of these values, edit `config.yaml` to configure connectors and
+   The generated bootstrap credentials are stored only in that protected file,
+   not printed to the console. Edit `config.yaml` to configure connectors and
    add your OpenAI API key, then start Norman again.
 
 6. (Optional) Regenerate the secrets in `config.yaml` using the provided script:

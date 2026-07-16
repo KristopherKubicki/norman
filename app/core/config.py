@@ -1,6 +1,17 @@
+from pathlib import Path
 from typing import Any, Dict, Optional, List
 from pydantic import BaseSettings, validator
 import logging
+import json
+import os
+import secrets
+import shlex
+import shutil
+import subprocess
+from urllib import error as urllib_error
+from urllib import request as urllib_request
+
+import yaml
 
 
 # should this move to schemas?
@@ -452,18 +463,197 @@ class Settings(BaseSettings):
         env_file_encoding = "utf-8"
 
 
-import os
-import shutil
-import secrets
-import yaml
+logger = logging.getLogger(__name__)
+
+_DEFAULT_CONFIG_PATH = Path("config.yaml")
+_CONFIG_PATH_ENV = "NORMAN_CONFIG_PATH"
+_CONFIG_SECRET_ENV = "NORMAN_CONFIG_SECRET"
+
+
+class ConfigSourceError(RuntimeError):
+    """Raised when Norman cannot safely load its configured settings source."""
+
+
+def _clean_env(name: str) -> str:
+    return str(os.environ.get(name) or "").strip()
+
+
+def _configured_config_path() -> Optional[Path]:
+    raw_path = _clean_env(_CONFIG_PATH_ENV)
+    if not raw_path:
+        return None
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        raise ConfigSourceError(f"{_CONFIG_PATH_ENV} must be an absolute path")
+    path = path.resolve()
+    try:
+        path.relative_to(Path.cwd().resolve())
+    except ValueError:
+        pass
+    else:
+        raise ConfigSourceError(
+            f"{_CONFIG_PATH_ENV} must point outside the application working tree"
+        )
+    return path
+
+
+def _configured_config_secret() -> str:
+    return _clean_env(_CONFIG_SECRET_ENV)
+
+
+def active_config_file_path() -> Optional[Path]:
+    """Return a writable file-backed config path, if this source has one."""
+
+    if _configured_config_secret():
+        return None
+    return _configured_config_path() or _DEFAULT_CONFIG_PATH
+
+
+def _read_yaml_mapping(source: str, *, label: str) -> Dict[str, Any]:
+    try:
+        config = yaml.safe_load(source)
+    except yaml.YAMLError as exc:
+        raise ConfigSourceError(f"{label} does not contain valid YAML") from exc
+    if config is None:
+        return {}
+    if not isinstance(config, dict):
+        raise ConfigSourceError(f"{label} must contain a YAML mapping")
+    return config
+
+
+def _read_yaml_file(path: Path, *, label: str) -> Dict[str, Any]:
+    try:
+        return _read_yaml_mapping(path.read_text(encoding="utf-8"), label=label)
+    except FileNotFoundError:
+        raise ConfigSourceError(f"{label} was not found") from None
+
+
+def _config_secret_timeout_seconds() -> float:
+    try:
+        timeout = float(_clean_env("NORMAN_CONFIG_SECRET_TIMEOUT_SECONDS") or "5")
+    except ValueError:
+        return 5.0
+    return min(max(timeout, 0.1), 30.0)
+
+
+def _secret_command(secret_name: str) -> list[str]:
+    command_text = _clean_env("NORMAN_CONFIG_SECRET_CMD") or _clean_env(
+        "NORMAN_SECRET_CMD"
+    )
+    if not command_text:
+        return []
+    command = shlex.split(command_text)
+    if not command:
+        return []
+    if "{name}" in command_text:
+        return [part.replace("{name}", secret_name) for part in command]
+    return [*command, "get", secret_name]
+
+
+def _keys_secret_get_url() -> str:
+    base = (_clean_env("NORMAN_KEYS_URL") or _clean_env("NORMAN_KEYS_API_BASE")).rstrip(
+        "/"
+    )
+    if not base:
+        return ""
+    if base.endswith("/v1/secrets/get"):
+        return base
+    if base.endswith("/v1"):
+        return f"{base}/secrets/get"
+    return f"{base}/v1/secrets/get"
+
+
+def _brokered_config_secret(secret_name: str) -> str:
+    timeout = _config_secret_timeout_seconds()
+    command = _secret_command(secret_name)
+    if command:
+        try:
+            result = subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise ConfigSourceError(
+                "Configured configuration-secret command did not complete"
+            ) from exc
+        value = str(result.stdout or "").strip()
+        if value:
+            return value
+        raise ConfigSourceError("Configured configuration-secret command was empty")
+
+    url = _keys_secret_get_url()
+    if not url:
+        raise ConfigSourceError(
+            "NORMAN_CONFIG_SECRET requires NORMAN_CONFIG_SECRET_CMD, "
+            "NORMAN_SECRET_CMD, or NORMAN_KEYS_URL"
+        )
+
+    payload = {
+        "name": secret_name,
+        "reason": "Norman service configuration",
+        "requester_id": _clean_env("NORMAN_CONFIG_REQUESTER_ID") or "norman-service",
+        "session_id": "startup",
+        "lane": "backend",
+        "target_host": _clean_env("HOSTNAME"),
+    }
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    token = _clean_env("NORMAN_KEYS_TOKEN") or _clean_env("NORMAN_KEYS_API_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib_request.Request(
+        url,
+        data=json.dumps(payload, sort_keys=True).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib_request.urlopen(request, timeout=timeout) as response:
+            raw_response = response.read().decode("utf-8", errors="replace")
+        response_payload = json.loads(raw_response) if raw_response else {}
+    except (OSError, urllib_error.URLError, json.JSONDecodeError) as exc:
+        raise ConfigSourceError(
+            "Norman Keys did not return a usable configuration secret"
+        ) from exc
+    if not isinstance(response_payload, dict):
+        raise ConfigSourceError("Norman Keys returned an invalid configuration secret")
+    value = str(
+        response_payload.get("value") or response_payload.get("secret") or ""
+    ).strip()
+    if not value:
+        raise ConfigSourceError("Norman Keys returned an empty configuration secret")
+    return value
+
+
+def _custom_config() -> Dict[str, Any]:
+    config_path = _configured_config_path()
+    secret_name = _configured_config_secret()
+    if config_path and secret_name:
+        raise ConfigSourceError(
+            f"Set only one of {_CONFIG_PATH_ENV} or {_CONFIG_SECRET_ENV}"
+        )
+    if secret_name:
+        return _read_yaml_mapping(
+            _brokered_config_secret(secret_name),
+            label="brokered Norman configuration",
+        )
+    if config_path:
+        return _read_yaml_file(config_path, label=_CONFIG_PATH_ENV)
+
+    ensure_user_config()
+    return _read_yaml_file(_DEFAULT_CONFIG_PATH, label="config.yaml")
 
 
 def ensure_user_config():
     """Create config.yaml with random credentials on first run."""
-    if not os.path.exists("config.yaml"):
-        shutil.copyfile("config.yaml.dist", "config.yaml")
-        with open("config.yaml", "r") as f:
-            cfg = yaml.safe_load(f)
+    if _configured_config_path() or _configured_config_secret():
+        return
+    if not _DEFAULT_CONFIG_PATH.exists():
+        shutil.copyfile("config.yaml.dist", _DEFAULT_CONFIG_PATH)
+        with _DEFAULT_CONFIG_PATH.open("r", encoding="utf-8") as config_file:
+            cfg = yaml.safe_load(config_file)
         cfg["secret_key"] = secrets.token_urlsafe(32)
         cfg["admin_setup_key"] = secrets.token_urlsafe(16)
         cfg["initial_admin_password"] = secrets.token_urlsafe(12)
@@ -471,31 +661,20 @@ def ensure_user_config():
         cfg["initial_admin_username"] = f"admin_{secrets.token_hex(4)}"
         cfg["encryption_key"] = secrets.token_urlsafe(32)
         cfg["encryption_salt"] = secrets.token_urlsafe(16)
-        with open("config.yaml", "w") as f:
-            yaml.safe_dump(cfg, f)
-        print("Generated config.yaml with admin credentials:")
-        print(f"  username: {cfg['initial_admin_username']}")
-        print(f"  email: {cfg['initial_admin_email']}")
-        print(f"  password: {cfg['initial_admin_password']}")
-        print("Edit config.yaml to customize settings, including your OpenAI API key.")
-        print(
-            "Restart Norman and visit http://localhost:8000 to sign in with these credentials."
+        with _DEFAULT_CONFIG_PATH.open("w", encoding="utf-8") as config_file:
+            yaml.safe_dump(cfg, config_file)
+        logger.warning(
+            "Generated config.yaml with bootstrap credentials. "
+            "Read them from the protected config file; they are not logged."
         )
 
 
 def load_config():
-    ensure_user_config()
-    # Read the config from the dist file
-    with open("config.yaml.dist", "r") as dist_file:
-        config = yaml.safe_load(dist_file)
+    config = _read_yaml_file(Path("config.yaml.dist"), label="config.yaml.dist")
     if "connectors" not in config:
         config["connectors"] = []
 
-    # If the config.yaml file exists, merge its contents with the dist config
-    if os.path.exists("config.yaml"):
-        with open("config.yaml", "r") as custom_file:
-            custom_config = yaml.safe_load(custom_file)
-            config.update(custom_config)
+    config.update(_custom_config())
     if "connectors" not in config:
         config["connectors"] = []
 
@@ -503,13 +682,22 @@ def load_config():
         not config.get("admin_setup_key")
         or config.get("admin_setup_key") == "change_me_setup_key"
     ):
+        if _configured_config_path() or _configured_config_secret():
+            raise ConfigSourceError(
+                "Managed Norman configuration must provide admin_setup_key"
+            )
+        config_path = active_config_file_path()
+        if config_path is None:
+            raise ConfigSourceError("No writable configuration file is configured")
         config["admin_setup_key"] = secrets.token_urlsafe(16)
-        with open("config.yaml", "r") as f:
-            custom_config = yaml.safe_load(f)
+        custom_config = _read_yaml_file(config_path, label=str(config_path))
         custom_config["admin_setup_key"] = config["admin_setup_key"]
-        with open("config.yaml", "w") as f:
-            yaml.safe_dump(custom_config, f)
-        print("Generated admin_setup_key in config.yaml")
+        with config_path.open("w", encoding="utf-8") as config_file:
+            yaml.safe_dump(custom_config, config_file)
+        logger.warning(
+            "Generated an admin setup key in the protected configuration file; "
+            "the value is not logged."
+        )
 
     return config
 

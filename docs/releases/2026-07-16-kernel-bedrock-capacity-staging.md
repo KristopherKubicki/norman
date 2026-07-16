@@ -2,7 +2,7 @@
 
 Date: 2026-07-16
 Scope: Norman Kernel native Bedrock adapter, local-first routing, and Codex plan-capacity monitoring
-Status: console fleet deployed; backend rollout staged pending a clean release commit
+Status: console fleet deployed; backend rollout staged pending a brokered-configuration canary
 
 ## Released Console Surface
 
@@ -39,6 +39,23 @@ The adapter:
 
 The source change requires the newly locked `boto3` dependency. Do not copy the
 current dirty checkout to the Norman backend host.
+
+## Managed Release Configuration
+
+The clean release candidate must receive its settings through a brokered
+`NORMAN_CONFIG_SECRET` and an approved command or HTTP resolver. On this path
+Norman reads the YAML mapping in memory, does not create a release-local
+`config.yaml`, and fails closed if `admin_setup_key` is missing.
+
+`scripts/systemd/norman-release@.service` runs the release candidate only on
+`127.0.0.1:18000` and requires both the logical config secret name and a
+configured resolver before it starts. It is separate from the active
+`norman.service`; use it for the clean loopback canary first.
+
+The live host does not currently expose a confirmed brokered configuration
+alias for this purpose. Leave `norman.service` on its existing healthy checkout
+until that alias and resolver are provisioned. Do not copy its repo-local
+config into the clean release checkout.
 
 ## Backend Rollout Gate
 
@@ -133,4 +150,6 @@ make test
 
 Results before the tmux-profile isolation follow-up were `1899 passed, 6 warnings`.
 The focused tmux profile test rerun completed `32 passed, 4 warnings` without mutating
-the tracked profile pack.
+the tracked profile pack. The managed configuration and bootstrap-log follow-up passed
+`1904 passed, 6 warnings`; its focused configuration, app, and systemd checks passed
+`18 passed, 5 warnings`.

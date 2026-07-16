@@ -15,7 +15,7 @@ from app.schemas.user import UserAuthenticate, UserCreate
 from app.schemas.bot import Bot, BotCreate, BotOut, BotUpdate
 from app.schemas.message import Message, MessageUpdate
 from app.schemas.interaction import InteractionCreate
-from app.core.config import settings
+from app.core.config import active_config_file_path, settings
 from app.core.safety_controls import (
     clamp_kill_switch_level,
     current_kill_switch_level,
@@ -822,18 +822,15 @@ async def update_openai_settings(
             status_code=303,
         )
 
-    # Update config.yaml
-    config_path = "config.yaml"
-    if not os.path.exists(config_path):
+    try:
+        cfg = _load_config()
+    except FileNotFoundError:
         return RedirectResponse(
             url="/settings.html?status=warning&message=config.yaml%20not%20found",
             status_code=303,
         )
-    with open(config_path, "r") as f:
-        cfg = yaml.safe_load(f) or {}
     cfg["openai_api_key"] = key
-    with open(config_path, "w") as f:
-        yaml.safe_dump(cfg, f)
+    _save_config(cfg)
 
     settings.openai_api_key = key
     return RedirectResponse(
@@ -863,17 +860,15 @@ async def update_theme_settings(
             status_code=303,
         )
 
-    config_path = "config.yaml"
-    if not os.path.exists(config_path):
+    try:
+        cfg = _load_config()
+    except FileNotFoundError:
         return RedirectResponse(
             url="/settings.html?status=warning&message=config.yaml%20not%20found",
             status_code=303,
         )
-    with open(config_path, "r") as f:
-        cfg = yaml.safe_load(f) or {}
     cfg["ui_theme"] = theme
-    with open(config_path, "w") as f:
-        yaml.safe_dump(cfg, f)
+    _save_config(cfg)
 
     settings.ui_theme = theme
     return RedirectResponse(
@@ -883,16 +878,18 @@ async def update_theme_settings(
 
 
 def _load_config():
-    config_path = "config.yaml"
-    if not os.path.exists(config_path):
+    config_path = active_config_file_path()
+    if config_path is None or not config_path.exists():
         raise FileNotFoundError("config.yaml not found")
-    with open(config_path, "r") as f:
+    with config_path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
 
 def _save_config(cfg: dict):
-    config_path = "config.yaml"
-    with open(config_path, "w") as f:
+    config_path = active_config_file_path()
+    if config_path is None:
+        raise FileNotFoundError("config.yaml not found")
+    with config_path.open("w", encoding="utf-8") as f:
         yaml.safe_dump(cfg, f)
 
 
