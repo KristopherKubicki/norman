@@ -131,6 +131,10 @@ or shell history. The machine-local `cred` bridge is a migration fallback;
 move these aliases to a networked Norman Keys backend with short-lived leases
 when that backend is available.
 
+The legacy `norman.service` rollback path must use the same identity file.
+Install `scripts/systemd/norman.service.d/10-runtime-env.conf` before removing
+the legacy plaintext token file.
+
 For each production deployment, confirm the unit resolves to the expected
 release and that the front door and local model lane remain healthy:
 
