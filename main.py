@@ -49,12 +49,15 @@ def run_alembic_migrations():
         os.makedirs("alembic/versions", exist_ok=True)
     logger.info("Alembic: upgrade heads start")
     try:
+        migration_env = dict(os.environ)
+        migration_env["NORMAN_ALEMBIC_DATABASE_URL"] = settings.database_url
         # Run alembic in a subprocess to avoid abrupt exits in the main process.
         result = subprocess.run(
             [sys.executable, "-m", "alembic", "upgrade", "heads"],
             check=True,
             capture_output=True,
             text=True,
+            env=migration_env,
         )
         if result.stdout:
             logger.info("Alembic stdout: %s", result.stdout.strip())
