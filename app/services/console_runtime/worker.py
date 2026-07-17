@@ -57,6 +57,7 @@ DEFAULT_WORKSPACE_PREFLIGHT_COMMANDS = [
     "git status --short",
     "git branch --show-current",
 ]
+CLOUD_TOKEN_REQUEST_OVERHEAD = 32
 GOAL_PHASE_TASK_KIND = {
     "chat": "chat",
     "compact": "compact",
@@ -549,6 +550,55 @@ def _completion_requested_for_step(options: "ConsoleRuntimeRunOptions") -> bool:
     return bool(options.complete)
 
 
+def _cloud_input_token_reserve(messages: list[dict[str, Any]]) -> int:
+    """Return a conservative upper bound for text sent to a cloud provider."""
+
+    text = "\n".join(str(message.get("content") or "") for message in messages)
+    return len(text.encode("utf-8")) + CLOUD_TOKEN_REQUEST_OVERHEAD
+
+
+def _cloud_budget_plan(
+    *,
+    route: Any,
+    options: "ConsoleRuntimeRunOptions",
+    messages: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if options.dry_run or not bool(getattr(route, "cloud_proxy", False)):
+        return {}
+
+    configured_total = max(0, int(options.cloud_token_budget or 0))
+    input_reserve = _cloud_input_token_reserve(messages)
+    remaining_output = configured_total - input_reserve
+    plan = {
+        "configured_total_tokens": configured_total,
+        "input_reserve_tokens": input_reserve,
+        "request_overhead_tokens": CLOUD_TOKEN_REQUEST_OVERHEAD,
+        "reserve_strategy": "utf8_bytes_plus_request_overhead",
+    }
+    if configured_total <= 0:
+        return {
+            **plan,
+            "blocked": True,
+            "reason": "cloud_token_budget_zero",
+        }
+    if remaining_output <= 0:
+        return {
+            **plan,
+            "blocked": True,
+            "reason": "cloud_token_budget_below_input_reserve",
+            "remaining_output_tokens": 0,
+        }
+    return {
+        **plan,
+        "blocked": False,
+        "remaining_output_tokens": remaining_output,
+        "max_output_tokens": min(
+            max(1, int(options.max_output_tokens or 1)),
+            remaining_output,
+        ),
+    }
+
+
 @dataclass
 class ConsoleRuntimeRunOptions:
     worker_id: str = "runtime-api-worker"
@@ -830,28 +880,80 @@ class DbConsoleRuntimeWorker:
             _route_requested_model(route.model, route_policy, opts)
         )
         route_payload = route.as_dict()
+        messages = [
+            {
+                "role": "system",
+                "content": self._system_prompt_for_phase(goal_phase),
+            },
+            {
+                "role": "user",
+                "content": self._phase_user_prompt(
+                    db,
+                    user_id=user_id,
+                    job=job,
+                    phase=goal_phase,
+                ),
+            },
+        ]
+        cloud_budget = _cloud_budget_plan(
+            route=route,
+            options=opts,
+            messages=messages,
+        )
+        if cloud_budget.get("blocked"):
+            reason = (
+                "Cloud token budget blocked provider invocation: "
+                f"{cloud_budget['reason']}"
+            )
+            self.store.record_policy_block(
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                reason=reason,
+                policy_state=policy_state,
+                metadata={
+                    "decision_id": decision.decision_id,
+                    "cloud_budget": cloud_budget,
+                },
+            )
+            self.store.append_event(
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                event_type="policy.cloud_budget_blocked",
+                payload={
+                    "reason": cloud_budget["reason"],
+                    "cloud_budget": cloud_budget,
+                    "route": route_payload,
+                },
+                summary="Cloud token budget blocked provider invocation.",
+                detail=reason,
+            )
+            blocked = self.store.block_job(
+                db, user_id=user_id, job_id=job_id, reason=reason
+            )
+            snapshot = self.store.activity_snapshot(db, user_id=user_id, job_id=job_id)
+            return {
+                "job": blocked.as_dict(),
+                "model_result": None,
+                "snapshot": snapshot,
+                "dry_run": opts.dry_run,
+                "worker_id": opts.worker_id,
+                "route_blocked": True,
+                "blocked_reason": reason,
+                "cloud_budget": cloud_budget,
+            }
+
         request = ModelRequest(
-            messages=[
-                {
-                    "role": "system",
-                    "content": self._system_prompt_for_phase(goal_phase),
-                },
-                {
-                    "role": "user",
-                    "content": self._phase_user_prompt(
-                        db,
-                        user_id=user_id,
-                        job=job,
-                        phase=goal_phase,
-                    ),
-                },
-            ],
+            messages=messages,
             model=requested_model,
             route_key=route.lane,
             budget=ModelBudget(
                 max_runtime_seconds=opts.max_runtime_seconds
                 or job.contract.max_runtime_seconds,
-                max_output_tokens=opts.max_output_tokens,
+                max_output_tokens=cloud_budget.get(
+                    "max_output_tokens", opts.max_output_tokens
+                ),
             ),
             metadata={
                 **opts.metadata,
@@ -888,6 +990,7 @@ class DbConsoleRuntimeWorker:
                 or route_policy.get("provider_timeout_seconds"),
                 "completion_requested": completion_requested,
                 "require_verifier_for_completion": verifier_required,
+                "cloud_budget": cloud_budget,
             },
         )
         self.store.append_event(
@@ -924,6 +1027,7 @@ class DbConsoleRuntimeWorker:
                 "provider": model_adapter.name,
                 "model": request.model,
                 "route_key": request.route_key,
+                "cloud_budget": cloud_budget,
                 "reasoning_plan_id": reasoning_plan.get("plan_id"),
                 "selected_skill_ids": list(
                     reasoning_plan.get("selected_skill_ids") or []
@@ -1298,11 +1402,17 @@ class DbConsoleRuntimeWorker:
                 opts.goal_phase_sequence, step_index, opts.max_steps
             )
             goal_task_kind = _goal_task_kind(goal_phase, opts.planner_kind)
+            remaining_cloud_budget = (
+                max(0, opts.cloud_token_budget - cloud_tokens)
+                if opts.cloud_token_budget
+                else 0
+            )
             step_options = replace(
                 opts,
                 complete=bool(opts.complete and step_index >= opts.max_steps),
                 continuous=False,
                 planner_kind=goal_task_kind,
+                cloud_token_budget=remaining_cloud_budget,
                 metadata={
                     **opts.metadata,
                     "goal_loop": True,

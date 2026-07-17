@@ -1388,6 +1388,7 @@ def test_db_console_runtime_worker_uses_native_bedrock_for_explicit_cloud_route(
             dry_run=False,
             complete=False,
             live_execution_approved=True,
+            cloud_token_budget=4096,
         ),
     )
 
@@ -1406,6 +1407,156 @@ def test_db_console_runtime_worker_uses_native_bedrock_for_explicit_cloud_route(
     assert model_event.payload["route"]["provider"] == "bedrock"
     assert model_event.payload["route_receipt"]["usage_bucket"] == "bedrock_amazon"
     assert model_event.payload["route_receipt"]["total_tokens"] == 12
+
+
+@pytest.mark.parametrize(
+    ("cloud_token_budget", "reason"),
+    [
+        (0, "cloud_token_budget_zero"),
+        (1, "cloud_token_budget_below_input_reserve"),
+    ],
+)
+def test_db_console_runtime_worker_blocks_cloud_route_without_budget(
+    db, monkeypatch, cloud_token_budget, reason
+):
+    class UnexpectedBedrockAdapter:
+        name = "bedrock"
+
+        def __init__(self):
+            self.invocations = 0
+
+        def invoke(self, request):
+            self.invocations += 1
+            raise AssertionError("cloud adapter must not run without a budget")
+
+    adapter = UnexpectedBedrockAdapter()
+    monkeypatch.setattr(worker_module, "BedrockModelAdapter", lambda: adapter)
+
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-cloud-budget-{cloud_token_budget}-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Do not spend cloud tokens without an explicit budget.",
+            route_policy={
+                "provider": "bedrock",
+                "model": "anthropic.claude-test",
+                "allow_cloud_proxy": True,
+            },
+        ),
+    )
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-test",
+            dry_run=False,
+            complete=False,
+            include_capabilities=False,
+            live_execution_approved=True,
+            cloud_token_budget=cloud_token_budget,
+        ),
+    )
+
+    events = store.events_after(db, user_id=user.id, job_id=job_id)
+    event_types = [event.event_type for event in events]
+    budget_event = next(
+        event for event in events if event.event_type == "policy.cloud_budget_blocked"
+    )
+
+    assert adapter.invocations == 0
+    assert result["job"]["status"] == "blocked"
+    assert result["route_blocked"] is True
+    assert result["cloud_budget"]["reason"] == reason
+    assert (
+        budget_event.payload["cloud_budget"]["configured_total_tokens"]
+        == cloud_token_budget
+    )
+    assert "model.requested" not in event_types
+
+
+def test_db_console_runtime_worker_reserves_cloud_input_before_invocation(
+    db, monkeypatch
+):
+    class FakeBedrockAdapter:
+        name = "bedrock"
+
+        def __init__(self):
+            self.requests = []
+
+        def invoke(self, request):
+            self.requests.append(request)
+            return ModelResult(
+                provider="bedrock",
+                model=request.model,
+                text="bounded",
+                usage=ModelUsage(input_tokens=1, output_tokens=1),
+                metadata={
+                    "norllama_route": {
+                        "provider": "bedrock",
+                        "local": False,
+                        "cloud_proxy": True,
+                    },
+                    "norllama_receipt": {
+                        "route_receipt": {
+                            "selected_provider": "bedrock",
+                            "selected_model": request.model,
+                            "usage_bucket": "bedrock_amazon",
+                            "cloud_proxy": True,
+                        }
+                    },
+                },
+            )
+
+    adapter = FakeBedrockAdapter()
+    monkeypatch.setattr(worker_module, "BedrockModelAdapter", lambda: adapter)
+
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-cloud-budget-cap-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Bound this native Bedrock response.",
+            route_policy={
+                "provider": "bedrock",
+                "model": "anthropic.claude-test",
+                "allow_cloud_proxy": True,
+            },
+        ),
+    )
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-test",
+            dry_run=False,
+            complete=False,
+            include_capabilities=False,
+            live_execution_approved=True,
+            cloud_token_budget=2048,
+            max_output_tokens=4096,
+        ),
+    )
+
+    assert result["job"]["status"] == "checkpointed"
+    assert adapter.requests
+    budget = adapter.requests[0].metadata["cloud_budget"]
+    assert budget["blocked"] is False
+    assert budget["input_reserve_tokens"] > 0
+    assert adapter.requests[0].budget.max_output_tokens == budget["max_output_tokens"]
+    assert adapter.requests[0].budget.max_output_tokens < 4096
 
 
 def test_db_console_runtime_worker_fails_native_bedrock_without_fallback(
@@ -1460,6 +1611,7 @@ def test_db_console_runtime_worker_fails_native_bedrock_without_fallback(
             complete=False,
             include_capabilities=False,
             live_execution_approved=True,
+            cloud_token_budget=4096,
         ),
     )
 
