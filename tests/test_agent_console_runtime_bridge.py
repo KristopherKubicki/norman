@@ -102,6 +102,187 @@ def test_response_owner_meta_ignores_stale_response_hash(monkeypatch, tmp_path):
     assert module.last_response_meta_for("second answer") == {}
 
 
+def test_working_recap_redacts_sensitive_text_and_uses_bounded_history(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    recap = module.normalize_working_recap(
+        {
+            "turn_key": "turn-1",
+            "status": "running",
+            "headline": "Inspect api_key=super-secret",
+            "now": "Using Bearer top-secret-token to check progress.",
+            "milestones": [
+                "Found token=another-secret.",
+                "First safe milestone.",
+                "Second safe milestone.",
+                "This item is beyond the panel limit.",
+            ],
+            "next": "Do not expose password: no-thanks.",
+            "history": [
+                {
+                    "at": 10,
+                    "now": "First api_key=old-secret update.",
+                    "milestones": [],
+                    "next": "Continue.",
+                }
+                for _ in range(module.WORKING_RECAP_HISTORY_ITEMS + 2)
+            ],
+        }
+    )
+
+    visible_text = " ".join(
+        [
+            recap["headline"],
+            recap["now"],
+            *recap["milestones"],
+            recap["next"],
+            *[
+                " ".join(
+                    [
+                        item["now"],
+                        *item["milestones"],
+                        item["next"],
+                    ]
+                )
+                for item in recap["history"]
+            ],
+        ]
+    )
+
+    assert "super-secret" not in visible_text
+    assert "top-secret-token" not in visible_text
+    assert "another-secret" not in visible_text
+    assert "no-thanks" not in visible_text
+    assert "[redacted]" in visible_text
+    assert len(recap["milestones"]) == 3
+    assert len(recap["history"]) <= module.WORKING_RECAP_HISTORY_ITEMS
+
+
+def test_working_recap_local_llm_uses_sanitized_packet_and_normalizes_json(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_EXECUTION_ENABLED", "1")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    module.WORKING_RECAP_ENABLED = True
+    module.LOCAL_LLM_EXECUTION_ENABLED = True
+    captured: dict[str, object] = {}
+
+    def fake_generate(endpoint, model, prompt, **kwargs):
+        captured.update(
+            {
+                "endpoint": endpoint,
+                "model": model,
+                "prompt": prompt,
+                "kwargs": kwargs,
+            }
+        )
+        return (
+            {
+                "response": (
+                    '{"now":"A tool result is being reviewed.",'
+                    '"milestones":["One checkpoint completed.",'
+                    '"api_key=must-not-leak"],'
+                    '"next":"Choose the next safe action."}'
+                )
+            },
+            "http://norllama.invalid/api/chat",
+            "norllama-chat",
+        )
+
+    monkeypatch.setattr(
+        module, "local_llm_candidate_endpoints", lambda _model, foreground: ["local"]
+    )
+    monkeypatch.setattr(module, "local_llm_generate_once", fake_generate)
+    meta = {
+        "last_started_at": 1712878300,
+        "running_prompt": "Deploy with api_key=prompt-secret and Bearer prompt-token",
+        "running_runtime": "localllm",
+        "running_model": "norllama",
+        "turn_plan": {
+            "understood_task": "Deploy api_key=plan-secret",
+            "skill_labels": ["code edit", "verification"],
+            "plan_steps": ["Check the running worker.", "Report the result."],
+        },
+        "live_turn": {
+            "event_count": 3,
+            "tool_started_count": 2,
+            "tool_finished_count": 1,
+            "last_tool_status": "tool-finished",
+        },
+    }
+    deterministic = module.deterministic_working_recap(meta, observed_at=1712878350)
+
+    recap, model = module.working_recap_local_llm(meta, deterministic, queue_depth=1)
+
+    prompt = str(captured["prompt"])
+    assert "prompt-secret" not in prompt
+    assert "prompt-token" not in prompt
+    assert "plan-secret" not in prompt
+    assert captured["endpoint"] == "local"
+    assert (
+        captured["kwargs"]["timeout_seconds"]
+        == module.WORKING_RECAP_LLM_TIMEOUT_SECONDS
+    )
+    assert captured["kwargs"]["max_output_tokens"] == (
+        module.WORKING_RECAP_LLM_MAX_OUTPUT_TOKENS
+    )
+    assert model == module.normalize_runtime_model(
+        "localllm", module.LOCAL_LLM_ROUTE_DEFAULT_MODEL
+    )
+    assert recap["source"] == "local_llm"
+    assert recap["now"] == "A tool result is being reviewed."
+    assert recap["milestones"] == ["One checkpoint completed.", "api_key=[redacted]"]
+
+
+def test_status_snapshot_exposes_working_recap(monkeypatch, tmp_path):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    expected = module.normalize_working_recap(
+        {
+            "turn_key": "turn-1",
+            "status": "running",
+            "headline": "Review the active change.",
+            "now": "A local recap is available.",
+            "milestones": ["One checkpoint is complete."],
+            "next": "Verify the result.",
+            "source": "local_llm",
+            "model": "norllama",
+        }
+    )
+    module.update_status_meta(
+        pending=False,
+        state="ok",
+        status_message="Ready.",
+        working_recap=expected,
+    )
+
+    monkeypatch.setattr(module, "recover_stale_prompt_state", lambda: None)
+    monkeypatch.setattr(module, "capture_pane", lambda: "")
+    monkeypatch.setattr(module, "service_status", lambda names: [])
+    monkeypatch.setattr(module, "usage_snapshot", lambda thread_id="": {"totals": {}})
+    monkeypatch.setattr(module, "load_draft_attachments", lambda: [])
+    monkeypatch.setattr(module, "prompt_thread_alive", lambda: False)
+    monkeypatch.setattr(module, "active_codex_process_alive", lambda: False)
+    monkeypatch.setattr(module, "console_runtime_activity_snapshot", lambda: {})
+    monkeypatch.setattr(module, "console_runtime_capabilities_snapshot", lambda: {})
+    monkeypatch.setattr(
+        module, "console_runtime_local_first_proof_snapshot", lambda: {}
+    )
+    monkeypatch.setattr(module, "local_llm_health_snapshot", lambda _model: {})
+    monkeypatch.setattr(module, "local_llm_route_outcome_summary", lambda: {})
+    monkeypatch.setattr(module, "bedrock_health_snapshot", lambda snapshot_at=0: {})
+    monkeypatch.setattr(
+        module, "host_pressure_guard_snapshot", lambda snapshot_at=0: {}
+    )
+    monkeypatch.setattr(module, "usage_accounting_tags", lambda: {})
+
+    snapshot = module.current_snapshot()
+
+    assert snapshot["working_recap"]["headline"] == "Review the active change."
+    assert snapshot["working_recap"]["source"] == "local_llm"
+    assert snapshot["working_recap"]["next"] == "Verify the result."
+
+
 def test_console_runtime_bridge_posts_audit_events(monkeypatch, tmp_path):
     monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_API_BASE", "http://norman.local/api/v1")
     monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_TOKEN", "runtime-token")
@@ -839,7 +1020,7 @@ def test_kernel_primary_runtime_can_return_visible_response(monkeypatch, tmp_pat
     monkeypatch.setattr(module, "append_audit_event", lambda **_kwargs: {})
 
     response, error, _thread_id, usage = module._execute_prompt_runtime(
-        "Summarize these notes locally.",
+        "Summarize the following notes locally: alpha beta gamma.",
         "balanced",
         2,
         [],
@@ -860,7 +1041,15 @@ def test_kernel_primary_runtime_can_return_visible_response(monkeypatch, tmp_pat
     assert requests[0][2]["dry_run"] is False
     assert requests[0][2]["continuous"] is True
     assert requests[0][2]["max_steps"] == 5
+    assert requests[0][2]["local_token_budget"] > 0
     assert requests[0][2]["cloud_token_budget"] == 0
+    assert (
+        requests[0][2]["route_policy"]["token_capacity_plan"]["provider_class"]
+        == "norllama"
+    )
+    assert requests[0][2]["metadata"]["token_capacity_plan"]["enforcement"] == (
+        "kernel_hard"
+    )
     assert requests[0][2]["model"] == "qwen3.5:32b-q4_K_M"
     assert requests[0][2]["route_policy"]["verifier_can_stop"] is True
     assert requests[0][2]["route_policy"]["model_timeout_seconds"] == 595.0
@@ -1124,7 +1313,7 @@ def test_kernel_primary_runtime_falls_back_to_codex(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "append_audit_event", lambda **_kwargs: {})
 
     response, error, thread_id, usage = module._execute_prompt_runtime(
-        "Summarize these notes locally.",
+        "Summarize the following notes locally: alpha beta gamma.",
         "balanced",
         2,
         [],
@@ -1162,7 +1351,7 @@ def test_kernel_owned_turn_blocks_codex_fallback(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "append_audit_event", lambda **_kwargs: {})
 
     response, error, _thread_id, usage = module._execute_prompt_runtime(
-        "Summarize these notes locally.",
+        "Summarize the following notes locally: alpha beta gamma.",
         "balanced",
         2,
         [],
@@ -1214,7 +1403,7 @@ def test_kernel_owned_turn_can_fall_back_to_codex_when_not_strict(
     )
 
     response, error, thread_id, usage = module._execute_prompt_runtime(
-        "Summarize these notes locally.",
+        "Summarize the following notes locally: alpha beta gamma.",
         "balanced",
         2,
         [],
@@ -1950,6 +2139,7 @@ def test_cost_route_prefers_local_for_safe_self_contained_prompt(monkeypatch, tm
     assert decision["local_candidate_policy"] == "benchmark_lane_guardrail"
     assert decision["route_source"] == "local_first_policy"
     assert decision["charge_basis"] == "local_token_estimate"
+    assert decision["local_final_authority"] is True
     assert decision["local_mesh"]["healthy_worker_count"] == 1
 
 
@@ -2000,7 +2190,7 @@ def test_cost_route_keeps_service_status_matrix_local(monkeypatch, tmp_path):
     assert decision["mutation_risk"] == "none"
 
 
-def test_cost_route_keeps_typo_status_update_prompt_local(monkeypatch, tmp_path):
+def test_cost_route_keeps_typo_status_update_on_cloud_authority(monkeypatch, tmp_path):
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODELS", "qwen3.6:27b")
     monkeypatch.setenv("NORMAN_LOCAL_LLM_ENDPOINTS", "http://local-llm:11434")
@@ -2039,15 +2229,13 @@ def test_cost_route_keeps_typo_status_update_prompt_local(monkeypatch, tmp_path)
         requested_service_tier="default",
     )
 
-    assert decision["selected_runtime"] == "localllm"
-    assert decision["selected_model"] in {
-        "qwen3.6:27b",
-        "qwen3.6:35b-a3b-q4_K_M",
-    }
+    assert decision["selected_runtime"] == "codex"
+    assert decision["selected_model"] == module.MODEL
     assert decision["requested_action"] == "status"
     assert decision["operator_intent_class"] == "status"
-    assert decision["route_source"] == "local_first_policy"
-    assert decision["charge_basis"] == "local_token_estimate"
+    assert decision["local_final_authority"] is False
+    assert decision["route_source"] == "local_preflight_cloud_authority"
+    assert "selected cloud runtime is final authority" in decision["reason"]
 
 
 def test_deterministic_status_prompt_completes_without_model_call(
@@ -2171,23 +2359,37 @@ def test_cost_route_uses_local_intent_classifier_for_ambiguous_status(
         requested_service_tier="default",
     )
 
-    assert decision["selected_runtime"] == "localllm"
-    assert decision["selected_model"] in {
-        "qwen3.6:27b",
-        "qwen3.6:35b-a3b-q4_K_M",
-    }
+    assert decision["selected_runtime"] == "codex"
+    assert decision["selected_model"] == module.MODEL
     assert decision["requested_action"] == "status"
     assert decision["operator_intent_class"] == "status"
-    assert decision["local_lane"] == "scout"
-    assert decision["route_source"] == "local_first_intent_classifier"
-    assert decision["charge_basis"] == "local_token_estimate"
+    assert decision["local_final_authority"] is False
+    assert decision["route_source"] == "local_preflight_cloud_authority"
     assert decision["local_intent_classifier"]["used"] is True
     assert decision["local_intent_classifier"]["promoted_local"] is True
     assert decision["local_intent_classifier"]["confidence"] == 0.94
     assert decision["local_intent_classifier"]["worker_endpoint"] == "spark151"
 
 
-def test_cost_route_keeps_broad_planning_on_local_planner_lane(monkeypatch, tmp_path):
+def test_local_route_intent_classifier_prompt_enforces_bounded_status_values(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    prompt = module.local_route_intent_classifier_prompt(
+        "How are things looking?",
+        requested_action="operator_prompt",
+        intent_class="operator_prompt",
+    )
+
+    assert module.LOCAL_ROUTE_INTENT_CLASSIFIER_MAX_OUTPUT_TOKENS == 192
+    assert "do not invent aliases such as status_check" in prompt.lower()
+    assert "requested_action=status" in prompt
+    assert "operator_intent_class=status" in prompt
+    assert "lane=scout" in prompt
+
+
+def test_cost_route_keeps_broad_planning_on_cloud_authority(monkeypatch, tmp_path):
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODELS", "qwen3.6:27b")
     monkeypatch.setenv("NORMAN_LOCAL_LLM_ENDPOINTS", "http://local-llm:11434")
@@ -2206,6 +2408,7 @@ def test_cost_route_keeps_broad_planning_on_local_planner_lane(monkeypatch, tmp_
     prompt = "what happened with the plan for forking TUIs into multiple sessions?"
     assert module.prompt_is_broad_planning_request(prompt) is True
     assert module.prompt_is_local_first_candidate(prompt) is True
+    assert module.prompt_is_local_final_response_candidate(prompt) is False
 
     decision = module.cost_route_decision_for_prompt(
         prompt=prompt,
@@ -2222,11 +2425,11 @@ def test_cost_route_keeps_broad_planning_on_local_planner_lane(monkeypatch, tmp_
         requested_service_tier="default",
     )
 
-    assert decision["selected_runtime"] == "localllm"
-    assert decision["local_lane"] == "planner"
+    assert decision["selected_runtime"] == "codex"
     assert decision["requested_action"] == "operator_prompt"
     assert decision["operator_intent_class"] == "operator_prompt"
-    assert decision["route_source"] == "local_first_policy"
+    assert decision["local_final_authority"] is False
+    assert decision["route_source"] == "local_preflight_cloud_authority"
 
 
 def test_local_intent_classifier_cannot_downgrade_broad_planning_to_status(
@@ -2328,7 +2531,11 @@ def test_cost_route_keeps_route_diagnostic_local(monkeypatch, tmp_path):
     assert module.turn_control_mutation_risk(prompt) == "none"
     assert module.prompt_requires_cloud_or_tools(prompt) is False
     assert module.prompt_is_local_first_candidate(prompt) is True
-    assert module.console_runtime_kernel_primary_skip_reason(prompt, [], "codex") == ""
+    assert module.prompt_is_local_final_response_candidate(prompt) is False
+    assert (
+        module.console_runtime_kernel_primary_skip_reason(prompt, [], "codex")
+        == "Norllama is advisory preflight; selected cloud runtime is final authority"
+    )
 
     decision = module.cost_route_decision_for_prompt(
         prompt=prompt,
@@ -2345,10 +2552,10 @@ def test_cost_route_keeps_route_diagnostic_local(monkeypatch, tmp_path):
         requested_service_tier="default",
     )
 
-    assert decision["selected_runtime"] == "localllm"
-    assert decision["selected_model"] == "qwen3.6:35b-a3b-q4_K_M"
-    assert decision["local_lane"] == "planner"
-    assert decision["route_source"] == "local_first_policy"
+    assert decision["selected_runtime"] == "codex"
+    assert decision["selected_model"] == module.MODEL
+    assert decision["local_final_authority"] is False
+    assert decision["route_source"] == "local_preflight_cloud_authority"
     assert decision["requested_action"] == "status"
     assert decision["mutation_risk"] == "none"
 
@@ -2360,6 +2567,42 @@ def test_route_diagnostic_does_not_mask_mutating_order(monkeypatch, tmp_path):
     assert module.prompt_is_route_status_diagnostic(prompt) is False
     assert module.prompt_requires_cloud_or_tools(prompt) is True
     assert module.turn_control_mutation_risk(prompt) == "deploy_restart"
+
+
+def test_route_diagnostic_does_not_misclassify_declarative_route_prompt(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    prompt = (
+        "Draft a short three-step plan for documenting the differences between a "
+        "local reasoning pass and a final cloud review in a new internal "
+        "engineering guide. The response should be suitable for a release note."
+    )
+
+    assert module.prompt_is_route_status_diagnostic(prompt) is False
+    assert module.deterministic_status_prompt_allowed(prompt, []) is False
+    assert module.route_receipt_requested_action(prompt) == "approval_boundary"
+    assert module.prompt_is_local_first_candidate(prompt) is True
+    assert module.prompt_is_local_final_response_candidate(prompt) is False
+
+    decision = module.cost_route_decision_for_prompt(
+        prompt=prompt,
+        attachments=[],
+        relay_callback=None,
+        runtime="codex",
+        model=module.MODEL,
+        service_tier="default",
+        job_budget="quick",
+        optimization_mode="auto",
+        route_lock=False,
+        requested_runtime="codex",
+        requested_model=module.MODEL,
+        requested_service_tier="default",
+    )
+
+    assert decision["selected_runtime"] == "codex"
+    assert decision["local_final_authority"] is False
+    assert decision["route_source"] == "existing_selection"
 
 
 def test_cost_route_does_not_treat_negated_tools_as_tool_requirement(
@@ -3581,6 +3824,49 @@ def test_agent_template_bedrock_pack_forces_hard_cloud_context_cap(
     assert plan["reason"] == "hard-cloud-context-cap"
 
 
+def test_agent_template_direct_codex_pack_forces_hard_cloud_context_cap(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_CODEX_SERVICE_TIER", "flex")
+    monkeypatch.setenv("NORMAN_CODEX_FLEX_PROFILE_V2", "")
+    monkeypatch.setenv("NORMAN_CODEX_BEDROCK_CONTEXT_PACK_MIN_THREAD_TOKENS", "80000")
+    monkeypatch.setenv("NORMAN_CODEX_BEDROCK_CONTEXT_PACK_HARD_THREAD_TOKENS", "200000")
+    monkeypatch.setenv("NORMAN_CODEX_BEDROCK_CONTEXT_PACK_MIN_SAVED_TOKENS", "4000")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    module.ensure_state_dir()
+    old_thread_id = "template-direct-million-token-thread"
+    old_scope = "direct:default:model:gpt-5.4"
+    module.append_usage_entry(
+        started_at=100,
+        finished_at=212,
+        thread_id=old_thread_id,
+        speed="careful",
+        detail=5,
+        service_tier="flex",
+        success=True,
+        runtime="codex",
+        model="gpt-5.4",
+        usage={
+            "input_tokens": 1_161_817,
+            "cached_input_tokens": 954_558,
+            "output_tokens": 6_365,
+        },
+    )
+
+    plan = module.bedrock_context_pack_plan(
+        service_tier="flex",
+        model="gpt-5.4",
+        session_id=old_thread_id,
+        thread_scope=old_scope,
+    )
+
+    assert plan["profile_v2"] == ""
+    assert plan["hard_cap_exceeded"] is True
+    assert plan["should_pack"] is True
+    assert plan["reason"] == "hard-cloud-context-cap"
+    assert "fresh Codex thread" in module.bedrock_context_pack_prompt_context(plan)
+
+
 def test_agent_template_personal_bedrock_usage_displays_usd_not_plan_credits(
     monkeypatch, tmp_path
 ):
@@ -3914,7 +4200,7 @@ def test_localllm_execution_adapter_records_local_usage(monkeypatch, tmp_path):
     assert payload["keep_alive"] == module.LOCAL_LLM_KEEP_ALIVE
     assert payload["think"] is False
     assert payload["options"]["num_ctx"] == 8192
-    assert payload["options"]["num_predict"] == module.LOCAL_LLM_SHORT_MAX_OUTPUT_TOKENS
+    assert payload["options"]["num_predict"] == 1200
     assert usage["provider_surface"] == "norllama"
     assert usage["route_class"] == "local"
     assert usage["route_execution"] == "local_worker"
@@ -3966,8 +4252,8 @@ def test_localllm_foreground_timeout_is_budget_capped(monkeypatch, tmp_path):
     assert module.local_llm_foreground_timeout_seconds(4800, "normal") == 240
     assert module.local_llm_num_ctx_for_budget("quick") == 4096
     assert module.local_llm_num_ctx_for_budget("short") == 8192
-    assert module.local_llm_max_output_tokens_for_budget("quick") == 384
-    assert module.local_llm_max_output_tokens_for_budget("short") == 800
+    assert module.local_llm_max_output_tokens_for_budget("quick") == 1200
+    assert module.local_llm_max_output_tokens_for_budget("short") == 1200
     assert module.console_runtime_kernel_primary_timeout(4800, "quick") == 120
     assert module.console_runtime_kernel_primary_timeout(4800, "short") == 600
     assert module.console_runtime_kernel_model_timeout(4800, "short") == 595
@@ -3987,11 +4273,142 @@ def test_localllm_foreground_timeout_is_budget_capped(monkeypatch, tmp_path):
     assert error == ""
     payload = json.loads(requests[0][0].data.decode())
     assert payload["options"]["num_ctx"] == 8192
-    assert payload["options"]["num_predict"] == 800
+    assert payload["options"]["num_predict"] == 96
     assert requests[0][1] == 180
     assert usage["provider_timeout_seconds"] == 180
     assert usage["provider_num_ctx"] == 8192
-    assert usage["provider_max_output_tokens"] == 800
+    assert usage["provider_max_output_tokens"] == 96
+    assert usage["token_capacity_plan"]["provider_class"] == "norllama"
+    assert usage["token_capacity_plan"]["execution_output_cap"] == 96
+
+
+def test_provider_token_budget_plan_scales_two_minute_norllama_execution(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    plan = module.provider_token_budget_plan(
+        prompt="Implement the focused routing fix and verify it.",
+        runtime="localllm",
+        model="qwen3.6:35b-a3b-q4_K_M",
+        job_budget="2m",
+        detail=2,
+        entries=[],
+        now=1_700_000_000,
+    )
+
+    assert plan["provider_class"] == "norllama"
+    assert plan["target_seconds"] == 120
+    assert plan["soft_output_tokens_per_hour"] == 48_000
+    assert plan["time_window_output_cap"] == 1600
+    assert plan["estimated_output_tokens"] > 1600
+    assert plan["execution_output_cap"] == 1600
+    assert plan["local_token_budget"] == 3200
+    assert plan["cloud_token_budget"] == 0
+    assert plan["enforcement"] == "request_hard"
+    assert plan["recent_window_seconds"] == 3600
+
+
+def test_provider_token_budget_uses_observed_rate_as_advisory_not_quota(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    now = 1_700_000_000
+    entries = [
+        {
+            **module.local_llm_provider_tags(),
+            "runtime": "localllm",
+            "model": "qwen3.6:35b-a3b-q4_K_M",
+            "finished_at": now - 1,
+            "success": True,
+            "output_tokens": 750,
+            "total_tokens": 800,
+        }
+    ]
+
+    plan = module.provider_token_budget_plan(
+        prompt="Implement the focused routing fix and verify it.",
+        runtime="localllm",
+        job_budget="2m",
+        detail=2,
+        entries=entries,
+        now=now,
+    )
+
+    assert plan["recent_observed_output_tokens_per_hour"] == 9000
+    assert plan["capacity_source"] == "configured_policy+observed_ledger"
+    assert plan["soft_output_tokens_per_hour"] == 48_000
+    assert plan["execution_output_cap"] == 1600
+
+
+def test_provider_token_budget_uses_rolling_hour_not_usage_report_window(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    now = 1_700_000_000
+    entries = [
+        {
+            **module.local_llm_provider_tags(),
+            "runtime": "localllm",
+            "finished_at": now - 3601,
+            "success": True,
+            "output_tokens": 48_000,
+            "total_tokens": 48_100,
+        },
+        {
+            **module.local_llm_provider_tags(),
+            "runtime": "localllm",
+            "finished_at": now - 60,
+            "success": True,
+            "output_tokens": 47_600,
+            "total_tokens": 47_700,
+        },
+    ]
+
+    plan = module.provider_token_budget_plan(
+        prompt="Implement the focused routing fix and verify it.",
+        runtime="localllm",
+        job_budget="2m",
+        detail=2,
+        entries=entries,
+        now=now,
+    )
+
+    assert plan["recent_window_seconds"] == 300
+    assert plan["recent_sample_count"] == 1
+    assert plan["recent_output_tokens"] == 47_600
+    assert plan["remaining_soft_output_tokens"] == 400
+    assert plan["time_window_output_cap"] == 400
+    assert plan["execution_output_cap"] == 400
+
+
+def test_provider_token_budget_bounds_cloud_only_when_cloud_is_authorized(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    authorized = module.provider_token_budget_plan(
+        prompt="Verify the Bedrock fallback route.",
+        runtime="claude",
+        job_budget="2m",
+        detail=2,
+        entries=[],
+        cloud_authorized=True,
+    )
+    blocked = module.provider_token_budget_plan(
+        prompt="Verify the Bedrock fallback route.",
+        runtime="claude",
+        job_budget="2m",
+        detail=2,
+        entries=[],
+        cloud_authorized=False,
+    )
+
+    assert authorized["provider_class"] == "bedrock"
+    assert authorized["cloud_token_budget"] > 0
+    assert authorized["local_token_budget"] == 0
+    assert blocked["execution_output_cap"] == authorized["execution_output_cap"]
+    assert blocked["cloud_token_budget"] == 0
 
 
 def test_localllm_execution_preserves_cancel_request(monkeypatch, tmp_path):

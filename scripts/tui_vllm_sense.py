@@ -20,10 +20,10 @@ from urllib import error, request
 SCHEMA = "norman.tui.vllm-sense.v1"
 DEFAULT_VLLM_PORT = 8000
 DEFAULT_ENDPOINTS = (
-    "http://127.0.0.1:8000",
-    "http://localhost:8000",
     "https://llm.home.arpa",
     "http://llm.home.arpa",
+    "http://127.0.0.1:8000",
+    "http://localhost:8000",
 )
 DEFAULT_LAN_SUFFIXES = ("home.arpa", "local")
 urlopen = request.urlopen
@@ -223,7 +223,7 @@ def configured_endpoints(
         if should_autosense
         else []
     )
-    return _dedupe([*default_items, *env_items, *lan_items, *(extra or [])])
+    return _dedupe([*(extra or []), *env_items, *default_items, *lan_items])
 
 
 def _model_names(payload: dict[str, Any]) -> list[str]:
@@ -385,12 +385,23 @@ def probe_endpoint(
 
 
 def build_report(
-    endpoints: list[str], *, timeout: float, preferred_model: str = ""
+    endpoints: list[str],
+    *,
+    timeout: float,
+    preferred_model: str = "",
+    stop_after_usable: bool = False,
 ) -> dict[str, Any]:
-    results = [
-        probe_endpoint(endpoint, timeout=timeout, preferred_model=preferred_model)
-        for endpoint in _dedupe(endpoints)
-    ]
+    candidate_endpoints = _dedupe(endpoints)
+    results: list[ProbeResult] = []
+    for endpoint in candidate_endpoints:
+        result = probe_endpoint(
+            endpoint,
+            timeout=timeout,
+            preferred_model=preferred_model,
+        )
+        results.append(result)
+        if stop_after_usable and result.usable:
+            break
     usable = [result for result in results if result.usable]
     online = [result for result in results if result.ok]
     reachable = [result for result in results if result.ok or result.health_ok]
@@ -398,6 +409,7 @@ def build_report(
         "schema": SCHEMA,
         "generated_at": int(time.time()),
         "summary": {
+            "candidate_endpoint_count": len(candidate_endpoints),
             "total_endpoints": len(results),
             "reachable_endpoints": len(reachable),
             "online_endpoints": len(online),
@@ -499,6 +511,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="Exit non-zero when no usable endpoint is found.",
     )
+    parser.add_argument(
+        "--probe-all",
+        action="store_true",
+        help="Probe every candidate even after a usable endpoint is found.",
+    )
     return parser.parse_args(argv)
 
 
@@ -513,6 +530,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
         timeout=max(0.1, args.timeout),
         preferred_model=args.preferred_model.strip(),
+        stop_after_usable=not args.probe_all,
     )
     output = json.dumps(report, indent=2, sort_keys=True) + "\n"
     if args.output:

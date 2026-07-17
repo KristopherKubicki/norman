@@ -49,12 +49,17 @@ def _load_agent_console_web():
     env_snapshot = {
         key: value for key, value in os.environ.items() if key.startswith(env_prefixes)
     }
-    if "NORMAN_CODEX_WEB_STATE_DIR" not in os.environ:
-        os.environ["NORMAN_CODEX_WEB_STATE_DIR"] = tempfile.mkdtemp(
-            prefix="norman-agent-console-test-"
-        )
+    os.environ["NORMAN_CODEX_WEB_STATE_DIR"] = tempfile.mkdtemp(
+        prefix="norman-agent-console-test-"
+    )
+    if "NORMAN_CODEX_ALLOW_OPENAI_API_SPEND" not in env_snapshot:
+        # This integration fixture does not create an auth.json file for the
+        # synthetic Codex process exercised by legacy executor tests.
+        os.environ["NORMAN_CODEX_ALLOW_OPENAI_API_SPEND"] = "1"
     for key, value in list(os.environ.items()):
         if key.startswith("HOUSEBOT_CODEX_"):
+            if key == "HOUSEBOT_CODEX_WEB_STATE_DIR":
+                continue
             suffix = key.removeprefix("HOUSEBOT_CODEX_")
             os.environ[f"NORMAN_CODEX_{suffix}"] = value
     spec = importlib.util.spec_from_file_location("agent_console_web", script_path)
@@ -2886,6 +2891,35 @@ def test_template_exposes_status_capsule_strip() -> None:
     assert "const backgroundItems = background && !background.intervention" in source
 
 
+def test_template_surfaces_turn_spend_feedback() -> None:
+    source = _agent_console_web_source()
+
+    assert (
+        "function turnCostFeedbackDescriptor(usage, snapshot = state.snapshot)"
+        in source
+    )
+    assert "function spendFeedbackCapsuleState(snapshot)" in source
+    assert 'className = "message-value-chip"' in source
+    assert "Big save" in source
+    assert "no cloud bill" in source
+    assert "Plan credits" in source
+
+
+def test_template_exposes_dynamic_working_on_recap_panel() -> None:
+    source = _agent_console_web_source()
+
+    assert "NORMAN_CODEX_WORKING_RECAP_REFRESH_SECONDS" in source
+    assert "def working_recap_local_llm(" in source
+    assert "Use only this sanitized status packet." in source
+    assert '"working_recap": working_recap' in source
+    assert "function workingRecapForSnapshot(" in source
+    assert "function buildWorkingOnPanel(" in source
+    assert 'panel.setAttribute("aria-label", "Working on");' in source
+    assert "working-on-timeline" in source
+    assert "Local recap" in source
+    assert "working-recap-pulse" in source
+
+
 def test_template_exposes_lightweight_version_endpoint() -> None:
     source = _agent_console_web_source()
 
@@ -4656,6 +4690,9 @@ def test_sync_template_rolls_kernel_primary_to_canary_instances() -> None:
     assert '"NORMAN_LOCAL_LLM_SHORT_NUM_CTX": "4096"' in source
     assert '"NORMAN_LOCAL_LLM_FALLBACK_MODELS": ""' in source
     assert '"NORMAN_LOCAL_LLM_ALLOW_TINY_FOREGROUND_FALLBACK": "0"' in source
+    assert "LOCAL_ROUTE_INTENT_CLASSIFIER_MODEL = (" in source
+    assert '"NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MODEL": (' in source
+    assert '"NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MAX_OUTPUT_TOKENS": "192"' in source
 
     housebot = module.ConsoleInstance(
         name="housebot",
@@ -4888,10 +4925,23 @@ def test_kernel_rollout_sync_writes_backend_env(monkeypatch) -> None:
 
 def test_local_sync_systemd_units_target_hal() -> None:
     service = _systemd_unit_source("norman-agent-console-sync-local.service")
+    user_service = _systemd_unit_source("norman-agent-console-sync.service")
+    bedrock_dropin = _systemd_unit_source(
+        "norman-agent-console-sync-personal-bedrock.conf"
+    )
     path = _systemd_unit_source("norman-agent-console-sync-local.path")
     timer = _systemd_unit_source("norman-agent-console-sync-local.timer")
 
     assert "sync_agent_console_template.py --targets hal" in service
+    profile_source = (
+        "NORMAN_SYNC_NON_WORK_BEDROCK_PROFILE_SOURCE="
+        "/home/kristopher/.codex-nonwork/personal-bedrock.config.toml"
+    )
+    assert profile_source in service
+    assert profile_source in bedrock_dropin
+    assert "NORMAN_SYNC_NON_WORK_BEDROCK_PROFILE_SOURCE=%h/.codex-nonwork/" in (
+        user_service
+    )
     assert (
         "/home/kristopher/code/norman/scripts/agent_console_template/agent_console_web.py"
         in path
@@ -5200,6 +5250,33 @@ def test_codex_account_capacity_parser_and_forecast_are_aggregate_only() -> None
     assert "limit:" not in json.dumps(parsed)
 
 
+def test_codex_status_capacity_parser_records_credit_metadata_without_resetting() -> (
+    None
+):
+    module = _load_agent_console_web()
+    observed_at = int(time.mktime((2026, 7, 16, 12, 0, 0, 0, 0, -1)))
+
+    parsed = module.parse_codex_account_capacity_pane(
+        """
+        You have 4 usage limit resets available. Run /usage to use one.
+        Weekly limit: 100% left
+        (resets 12:12 on 23 Jul)
+        Context window: 92% left
+        Credits: 6,907 credits
+        """,
+        observed_at=observed_at,
+        auth_mode="chatgpt",
+    )
+
+    assert parsed["state"] == "available"
+    assert parsed["minimum_window_percent_left"] == 100
+    assert [window["label"] for window in parsed["windows"]] == ["Weekly"]
+    assert parsed["windows"][0]["reset_seconds"] > 6 * 24 * 60 * 60
+    assert parsed["credits_available"] == 6907
+    assert parsed["usage_limit_resets_available"] == 4
+    assert "/usage" not in json.dumps(parsed)
+
+
 def test_codex_account_capacity_forecast_excludes_api_and_bedrock_usage() -> None:
     module = _load_agent_console_web()
     observed_at = 1_789_000_000
@@ -5335,16 +5412,18 @@ def test_codex_account_capacity_probe_requires_changed_pane(
     )
     sent: list[str] = []
     monkeypatch.setattr(module, "capture_pane", lambda: next(panes))
-    monkeypatch.setattr(module, "send_text", lambda value: sent.append(value))
+    monkeypatch.setattr(
+        module, "send_codex_status_probe", lambda: sent.append("/status")
+    )
 
     payload = module._capture_codex_account_capacity_command(
-        "/usage",
+        "/status",
         observed_at=1_789_000_000,
         auth_mode="chatgpt",
         baseline_pane=prompt_pane,
     )
 
-    assert sent == ["/usage"]
+    assert sent == ["/status"]
     assert payload["state"] == "available"
     assert payload["minimum_window_percent_left"] == 84
 
@@ -5424,6 +5503,105 @@ def test_codex_subscription_capacity_prefers_flex_only_for_fresh_personal_bedroc
     )
 
 
+def test_codex_subscription_route_stays_on_bedrock_without_a_reset_forecast(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NORMAN_CODEX_STANDARD_PROFILE_V2", "personal-bedrock")
+    monkeypatch.setenv("NORMAN_CODEX_STANDARD_AWS_PROFILE", "norman-bedrock")
+    monkeypatch.setenv("NORMAN_CODEX_AGENT_GROUP", "personal")
+    monkeypatch.setenv("NORMAN_CODEX_BILLING_OWNER", "kristopher")
+    module = _load_agent_console_web()
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "chatgpt")
+    observed_at = module.now_ts()
+    capacity = {
+        **module.default_codex_account_capacity(),
+        "source": "interactive_usage",
+        "observed_at": observed_at,
+        "last_probe_at": observed_at,
+        "auth_mode": "chatgpt",
+        "state": "available",
+        "credits_available": 6907,
+        "windows": [
+            {
+                "label": "Weekly",
+                "percent_left": 84,
+                "reset_hint": "",
+                "reset_seconds": 0,
+            }
+        ],
+    }
+
+    decision = module.codex_subscription_capacity_route_decision(
+        runtime="codex",
+        model=module.MODEL,
+        service_tier="default",
+        prompt="Implement the focused fix and verify it.",
+        job_budget="normal",
+        detail=2,
+        capacity=capacity,
+    )
+
+    assert decision["selected"] is False
+    assert "reset window" in decision["reason"]
+    assert decision["capacity"]["forecast"]["credits_available_informational"] == 6907
+
+
+def test_chatgpt_direct_credit_extension_guard_requires_fresh_plan_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_agent_console_web()
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "chatgpt")
+
+    guarded = module.codex_openai_direct_execution_decision("flex")
+
+    assert guarded["allowed"] is False
+    assert guarded["reason_code"] == "chatgpt_credit_extension_guard"
+
+    monkeypatch.setattr(
+        module,
+        "codex_account_capacity_snapshot",
+        lambda **_kwargs: {
+            "fresh": True,
+            "state": "available",
+            "minimum_window_percent_left": 25,
+            "windows": [{"reset_seconds": 7200}],
+        },
+    )
+
+    allowed = module.codex_openai_direct_execution_decision("flex")
+
+    assert allowed["allowed"] is True
+    assert allowed["reason_code"] == "chatgpt_plan_capacity_verified"
+
+
+def test_template_direct_chatgpt_launch_requires_turn_to_fit_reset_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_agent_console_web()
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "chatgpt")
+    monkeypatch.setattr(
+        module,
+        "codex_account_capacity_snapshot",
+        lambda **_kwargs: {
+            "fresh": True,
+            "state": "available",
+            "minimum_window_percent_left": 75,
+            "windows": [{"reset_seconds": 300}],
+        },
+    )
+
+    decision = module.codex_openai_direct_execution_decision(
+        "flex",
+        prompt="Implement the focused fix and verify it.",
+        job_budget="normal",
+        detail=3,
+    )
+
+    assert decision["allowed"] is False
+    assert decision["reason_code"] == "chatgpt_credit_extension_guard"
+    assert decision["capacity"]["forecast"]["turn_fits_reset"] is False
+
+
 def test_codex_account_capacity_probe_only_runs_at_idle_prompt(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -5445,7 +5623,9 @@ def test_codex_account_capacity_probe_only_runs_at_idle_prompt(
     sent: list[str] = []
     keys: list[tuple[str, ...]] = []
     monkeypatch.setattr(module, "capture_pane", lambda: next(panes))
-    monkeypatch.setattr(module, "send_text", lambda value: sent.append(value))
+    monkeypatch.setattr(
+        module, "send_codex_status_probe", lambda: sent.append("/status")
+    )
     monkeypatch.setattr(module, "send_keys", lambda *value: keys.append(value))
 
     assert (
@@ -5463,7 +5643,7 @@ def test_codex_account_capacity_probe_only_runs_at_idle_prompt(
     history_text = module.CODEX_ACCOUNT_CAPACITY_HISTORY_PATH.read_text(
         encoding="utf-8"
     )
-    assert sent == ["/usage"]
+    assert sent == ["/status"]
     assert keys == [("Escape",), ("C-u",), ("C-a", "C-k"), ("C-l",)]
     assert persisted["state"] == "available"
     assert persisted["minimum_window_percent_left"] == 84
@@ -5489,7 +5669,7 @@ def test_codex_account_capacity_probe_only_runs_at_idle_prompt(
     )
 
 
-def test_codex_account_capacity_probe_uses_configured_fallback_without_pane_persistence(
+def test_codex_account_capacity_probe_rejects_unsafe_configured_command(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     module = _load_agent_console_web()
@@ -5499,23 +5679,17 @@ def test_codex_account_capacity_probe_uses_configured_fallback_without_pane_pers
     module.CODEX_ACCOUNT_CAPACITY_PROBE_POLL_SECONDS = 0.01
     module.CODEX_ACCOUNT_CAPACITY_PROBE_THREAD = None
     module.CODEX_ACCOUNT_CAPACITY_COMMAND = "/usage"
-    module.CODEX_ACCOUNT_CAPACITY_FALLBACK_COMMAND = "/plan-limits"
+    module.CODEX_ACCOUNT_CAPACITY_FALLBACK_COMMAND = "/status"
     monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "chatgpt")
     monkeypatch.setattr(module, "prompt_runtime_alive", lambda: False)
     monkeypatch.setattr(module, "prompt_thread_alive", lambda: False)
     prompt_pane = "OpenAI Codex (v0.118.0)\n\n› "
-    panes = iter(
-        [
-            prompt_pane,
-            "Account token usage is available for this account.\n\n› ",
-            "No aggregate capacity was returned.\n\n› ",
-            "5h limit: 72% remaining · resets in 1h\n\n› ",
-        ]
-    )
     sent: list[str] = []
     keys: list[tuple[str, ...]] = []
-    monkeypatch.setattr(module, "capture_pane", lambda: next(panes))
-    monkeypatch.setattr(module, "send_text", lambda value: sent.append(value))
+    monkeypatch.setattr(module, "capture_pane", lambda: prompt_pane)
+    monkeypatch.setattr(
+        module, "send_codex_status_probe", lambda: sent.append("/status")
+    )
     monkeypatch.setattr(module, "send_keys", lambda *value: keys.append(value))
 
     assert (
@@ -5533,23 +5707,14 @@ def test_codex_account_capacity_probe_uses_configured_fallback_without_pane_pers
     history_text = module.CODEX_ACCOUNT_CAPACITY_HISTORY_PATH.read_text(
         encoding="utf-8"
     )
-    assert sent == ["/usage", "/plan-limits"]
-    assert keys == [
-        ("Escape",),
-        ("C-u",),
-        ("C-a", "C-k"),
-        ("C-l",),
-        ("Escape",),
-        ("C-u",),
-        ("C-a", "C-k"),
-        ("C-l",),
-    ]
-    assert persisted["minimum_window_percent_left"] == 72
-    assert "Account token usage" not in history_text
-    assert "5h limit" not in history_text
+    assert sent == []
+    assert keys == []
+    assert persisted["source"] == "probe_command_rejected"
+    assert persisted["state"] == "unknown"
+    assert "/usage can consume an account limit reset" in history_text
 
 
-def test_codex_account_capacity_unsupported_usage_command_is_sanitized_and_backed_off(
+def test_codex_account_capacity_probe_never_sends_usage_command(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     module = _load_agent_console_web()
@@ -5564,12 +5729,12 @@ def test_codex_account_capacity_unsupported_usage_command_is_sanitized_and_backe
     monkeypatch.setattr(module, "prompt_runtime_alive", lambda: False)
     monkeypatch.setattr(module, "prompt_thread_alive", lambda: False)
     prompt_pane = "OpenAI Codex (v0.144.4)\n\n› "
-    unsupported_pane = "Unrecognized command '/usage'. Type \"/\" for a list of supported commands.\n\n› "
-    panes = iter([prompt_pane, unsupported_pane, unsupported_pane])
     sent: list[str] = []
     keys: list[tuple[str, ...]] = []
-    monkeypatch.setattr(module, "capture_pane", lambda: next(panes))
-    monkeypatch.setattr(module, "send_text", lambda value: sent.append(value))
+    monkeypatch.setattr(module, "capture_pane", lambda: prompt_pane)
+    monkeypatch.setattr(
+        module, "send_codex_status_probe", lambda: sent.append("/status")
+    )
     monkeypatch.setattr(module, "send_keys", lambda *value: keys.append(value))
 
     assert (
@@ -5587,13 +5752,12 @@ def test_codex_account_capacity_unsupported_usage_command_is_sanitized_and_backe
     history_text = module.CODEX_ACCOUNT_CAPACITY_HISTORY_PATH.read_text(
         encoding="utf-8"
     )
-    assert sent == ["/usage"]
-    assert keys == [("Escape",), ("C-u",), ("C-a", "C-k"), ("C-l",)]
-    assert persisted["source"] == "unsupported_command"
+    assert sent == []
+    assert keys == []
+    assert persisted["source"] == "probe_command_rejected"
     assert persisted["state"] == "unknown"
     assert persisted["eligible_for_subscription_route"] is False
     assert "Unrecognized command" not in history_text
-    assert "/usage" not in history_text
     assert (
         module.maybe_schedule_codex_account_capacity_probe(
             pane=prompt_pane,

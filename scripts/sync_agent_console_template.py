@@ -306,6 +306,13 @@ RUNTIME_BRIDGE_RECENT_ITEMS = "12"
 RUNTIME_BRIDGE_LOCAL_FIRST_PROOF_LIMIT = "250"
 RUNTIME_BRIDGE_LOCAL_FIRST_SESSION_LIMIT = "20"
 LOCAL_LLM_DISABLED_MODEL_PATTERNS = "llama3.2,llama3.2:*"
+LOCAL_ROUTE_INTENT_CLASSIFIER_MODEL = (
+    os.environ.get(
+        "NORMAN_SYNC_LOCAL_ROUTE_INTENT_CLASSIFIER_MODEL",
+        "qwen3.6:35b-a3b-q4_K_M",
+    ).strip()
+    or "qwen3.6:35b-a3b-q4_K_M"
+)
 WORK_BEDROCK_DEFAULT_INSTANCES: tuple[str, ...] = (
     "compere",
     "control-plane",
@@ -1298,8 +1305,6 @@ def instance_uses_non_work_bedrock(
         return False
     if instance_uses_work_config(host, instance):
         return False
-    if host.name in {"norman", "networking-host", "work-special"}:
-        return False
     return non_work_bedrock_profile_source_ready()
 
 
@@ -1448,6 +1453,32 @@ def _origin_model_updates(
                 "NORMAN_CODEX_STANDARD_AWS_PROFILE": NON_WORK_BEDROCK_AWS_PROFILE,
                 "NORMAN_CODEX_STANDARD_AWS_REGION": NON_WORK_BEDROCK_AWS_REGION,
                 "NORMAN_CODEX_STANDARD_MODEL": PERSONAL_DEFAULT_MODEL,
+                "NORMAN_CODEX_MODEL": PERSONAL_DEFAULT_MODEL,
+                "NORMAN_CODEX_MODEL_FLOOR": PERSONAL_DEFAULT_MODEL,
+                "NORMAN_CODEX_DIRECT_MODEL": PERSONAL_DEFAULT_MODEL,
+                "NORMAN_CODEX_FLEX_MODEL": PERSONAL_DEFAULT_MODEL,
+                "NORMAN_CODEX_PRIORITY_MODEL": PERSONAL_DEFAULT_MODEL,
+                "NORMAN_CODEX_SWITCHABLE_MODELS": PERSONAL_SWITCHABLE_MODELS,
+                "NORMAN_CODEX_AVAILABLE_MODELS": PERSONAL_SWITCHABLE_MODELS,
+                "NORMAN_CODEX_ZERO_TOKEN_PROVIDER_MAX_RETRIES": "1",
+            },
+            [],
+        )
+
+    non_work_bedrock_enabled = (
+        os.environ.get("NORMAN_SYNC_NON_WORK_BEDROCK_DEFAULT_ENABLED", "1") != "0"
+    )
+    if not use_work and non_work_bedrock_enabled:
+        # The non-secret profile source is unavailable in this invocation. Do not
+        # erase an already-deployed Bedrock profile and fall back to direct Flex.
+        # A missing profile then fails closed to the default tier rather than
+        # silently spending through a direct route.
+        return (
+            {
+                **role_policy_env,
+                "NORMAN_CODEX_BILLING_SCOPE": host.name,
+                "NORMAN_CODEX_BILLING_OWNER": "kristopher",
+                "NORMAN_CODEX_SERVICE_TIER": "default",
                 "NORMAN_CODEX_MODEL": PERSONAL_DEFAULT_MODEL,
                 "NORMAN_CODEX_MODEL_FLOOR": PERSONAL_DEFAULT_MODEL,
                 "NORMAN_CODEX_DIRECT_MODEL": PERSONAL_DEFAULT_MODEL,
@@ -1940,6 +1971,33 @@ def sync_instance_local_llm_foreground_settings(
         "NORMAN_LOCAL_LLM_SHORT_NUM_CTX": "4096",
         "NORMAN_LOCAL_LLM_FALLBACK_MODELS": "",
         "NORMAN_LOCAL_LLM_ALLOW_TINY_FOREGROUND_FALLBACK": "0",
+        "NORMAN_TUI_TOKEN_CAPACITY_PLAN_ENABLED": "1",
+        "NORMAN_TUI_TOKEN_CAPACITY_USAGE_WINDOW_SECONDS": "3600",
+        "NORMAN_TUI_NORLLAMA_OUTPUT_TOKENS_PER_HOUR": "48000",
+        "NORMAN_TUI_BEDROCK_OUTPUT_TOKENS_PER_HOUR": "72000",
+        "NORMAN_TUI_CODEX_OUTPUT_TOKENS_PER_HOUR": "60000",
+        "NORMAN_TUI_OPENAI_OUTPUT_TOKENS_PER_HOUR": "60000",
+        "NORMAN_CODEX_ACCOUNT_CAPACITY_COMMAND": "/status",
+        "NORMAN_CODEX_ACCOUNT_CAPACITY_FALLBACK_COMMAND": "",
+        "NORMAN_CODEX_SUBSCRIPTION_ROUTE_PREFERENCE_ENABLED": "1",
+        "NORMAN_CODEX_SUBSCRIPTION_ROUTE_WORK_ENABLED": (
+            "1" if instance_uses_work_config(host, instance) else "0"
+        ),
+        "NORMAN_CODEX_SUBSCRIPTION_ROUTE_MIN_PERCENT_LEFT": "25",
+        "NORMAN_CODEX_SUBSCRIPTION_ROUTE_MIN_RESET_SECONDS": "300",
+        "NORMAN_CODEX_SUBSCRIPTION_ROUTE_FORECAST_CAP_FRACTION": "0.5",
+        "NORMAN_CODEX_ALLOW_OPENAI_API_SPEND": "0",
+        "NORMAN_CODEX_CHATGPT_CREDIT_EXTENSION_ALLOWED": "0",
+        "NORMAN_CODEX_SUBSCRIPTION_SELF_IMPROVEMENT_ENABLED": (
+            "1" if instance.name == "norman" else "0"
+        ),
+        "NORMAN_CODEX_SUBSCRIPTION_SELF_IMPROVEMENT_MIN_PERCENT_LEFT": "70",
+        "NORMAN_CODEX_SUBSCRIPTION_SELF_IMPROVEMENT_MIN_RESET_SECONDS": "240",
+        "NORMAN_CODEX_SUBSCRIPTION_SELF_IMPROVEMENT_MAX_RESET_SECONDS": "1200",
+        "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MODEL": (
+            LOCAL_ROUTE_INTENT_CLASSIFIER_MODEL
+        ),
+        "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MAX_OUTPUT_TOKENS": "192",
     }
     remove_keys = [
         "NORMAN_LOCAL_PLANNER_PREFLIGHT_MODELS",

@@ -96,6 +96,7 @@ SCRIPT_FILES = (
     "scripts/sync_tui_microtextures.py",
     "scripts/systemd/norman-agent-console-sync-local.path",
     "scripts/systemd/norman-agent-console-sync-local.service",
+    "scripts/systemd/norman-agent-console-sync-personal-bedrock.conf",
     "scripts/systemd/norman-agent-console-sync-local.timer",
     "scripts/systemd/norman-bbs-doctor.path",
     "scripts/systemd/norman-bbs-doctor.service",

@@ -895,6 +895,67 @@ def test_uplink_sync_removes_disabled_figma_plugin(monkeypatch, tmp_path) -> Non
     assert 'plugins."github@openai-curated"' in config
 
 
+def test_local_llm_foreground_sync_configures_intent_classifier(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_sync_script(monkeypatch)
+    env_path = tmp_path / "uplink.env"
+    env_path.write_text(
+        "NORMAN_LOCAL_LLM_FILTER_MODELS=qwen3.6:27b\n",
+        encoding="utf-8",
+    )
+    uplink = replace(
+        _instance(module, "uplink", host_name="networking-host"),
+        env_file=str(env_path),
+    )
+    monkeypatch.setattr(
+        module,
+        "ssh_command",
+        lambda host, script: ["bash", "-lc", script],
+    )
+
+    assert module.sync_instance_local_llm_foreground_settings(
+        _named_host(module, "networking-host"),
+        uplink,
+    )
+
+    synced = env_path.read_text(encoding="utf-8")
+    assert "NORMAN_LOCAL_LLM_FILTER_MODELS" not in synced
+    assert (
+        "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MODEL=" "qwen3.6:35b-a3b-q4_K_M"
+    ) in synced
+    assert "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MAX_OUTPUT_TOKENS=192" in synced
+    assert "NORMAN_TUI_TOKEN_CAPACITY_USAGE_WINDOW_SECONDS=3600" in synced
+    assert "NORMAN_CODEX_SUBSCRIPTION_ROUTE_PREFERENCE_ENABLED=1" in synced
+    assert "NORMAN_CODEX_SUBSCRIPTION_ROUTE_WORK_ENABLED=0" in synced
+    assert "NORMAN_CODEX_SUBSCRIPTION_ROUTE_MIN_PERCENT_LEFT=25" in synced
+    assert "NORMAN_CODEX_SUBSCRIPTION_ROUTE_MIN_RESET_SECONDS=300" in synced
+    assert "NORMAN_CODEX_SUBSCRIPTION_ROUTE_FORECAST_CAP_FRACTION=0.5" in synced
+    assert "NORMAN_CODEX_CHATGPT_CREDIT_EXTENSION_ALLOWED=0" in synced
+
+
+def test_local_llm_foreground_sync_enables_work_subscription_scope(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_sync_script(monkeypatch)
+    env_path = tmp_path / "panelbot.env"
+    env_path.write_text("", encoding="utf-8")
+    panelbot = replace(_instance(module, "panelbot"), env_file=str(env_path))
+    monkeypatch.setattr(
+        module,
+        "ssh_command",
+        lambda host, script: ["bash", "-lc", script],
+    )
+
+    assert module.sync_instance_local_llm_foreground_settings(
+        _named_host(module, "work-special"),
+        panelbot,
+    )
+
+    synced = env_path.read_text(encoding="utf-8")
+    assert "NORMAN_CODEX_SUBSCRIPTION_ROUTE_WORK_ENABLED=1" in synced
+
+
 def test_work_bedrock_secondary_failover_requires_explicit_enablement(
     monkeypatch,
 ) -> None:
@@ -1300,10 +1361,10 @@ def test_work_named_tui_on_norman_stays_personal_without_test_override(
     script = captured["script"]
     assert '"NORMAN_CODEX_BILLING_SCOPE":"norman"' in script
     assert '"NORMAN_CODEX_BILLING_OWNER":"kristopher"' in script
-    assert '"NORMAN_CODEX_SERVICE_TIER":"flex"' in script
-    assert '"NORMAN_CODEX_MODEL":"gpt-5.4"' in script
-    assert '"NORMAN_CODEX_DIRECT_MODEL":"gpt-5.4"' in script
-    assert "NORMAN_CODEX_STANDARD_PROFILE_V2" in script
+    assert '"NORMAN_CODEX_SERVICE_TIER":"default"' in script
+    assert '"NORMAN_CODEX_MODEL":"openai.gpt-5.4"' in script
+    assert '"NORMAN_CODEX_DIRECT_MODEL":"openai.gpt-5.4"' in script
+    assert "NORMAN_CODEX_STANDARD_PROFILE_V2" not in script
     assert "traqline-bedrock" not in script
     assert "ob-traqline-admin" not in script
 
@@ -1362,13 +1423,13 @@ def test_personal_tui_does_not_receive_work_bedrock_defaults(monkeypatch) -> Non
     assert module.sync_instance_origin_settings(toy_box, housebot) is False
 
     script = captured["script"]
-    assert '"NORMAN_CODEX_SERVICE_TIER":"flex"' in script
-    assert "remove_keys" in script
-    assert '"NORMAN_CODEX_MODEL":"gpt-5.4"' in script
-    assert '"NORMAN_CODEX_DIRECT_MODEL":"gpt-5.4"' in script
-    assert "NORMAN_CODEX_STANDARD_PROFILE_V2" in script
+    assert '"NORMAN_CODEX_SERVICE_TIER":"default"' in script
+    assert "remove_keys = json.loads('[]')" in script
+    assert '"NORMAN_CODEX_MODEL":"openai.gpt-5.4"' in script
+    assert '"NORMAN_CODEX_DIRECT_MODEL":"openai.gpt-5.4"' in script
+    assert "NORMAN_CODEX_STANDARD_PROFILE_V2" not in script
     assert "traqline-bedrock" not in script
-    assert "NORMAN_CODEX_DIRECT_TIERS_ENABLED" in script
+    assert "NORMAN_CODEX_DIRECT_TIERS_ENABLED" not in script
     assert "ob-traqline-admin" not in script
 
 
@@ -1564,7 +1625,7 @@ def test_personal_bedrock_source_falls_back_when_sync_runs_as_root(
     assert module.non_work_bedrock_profile_source_ready() is True
 
 
-def test_netops_defaults_to_direct_5_4_and_removes_bedrock(
+def test_netops_preserves_bedrock_when_profile_source_is_unavailable(
     monkeypatch,
 ) -> None:
     module = _load_sync_script(monkeypatch)
@@ -1590,12 +1651,12 @@ def test_netops_defaults_to_direct_5_4_and_removes_bedrock(
     assert module.sync_instance_origin_settings(netops_host, networking) is True
 
     script = captured["script"]
-    assert '"NORMAN_CODEX_SERVICE_TIER":"flex"' in script
-    assert '"NORMAN_CODEX_MODEL":"gpt-5.4"' in script
-    assert '"NORMAN_CODEX_MODEL_FLOOR":"gpt-5.4"' in script
-    assert '"NORMAN_CODEX_DIRECT_MODEL":"gpt-5.4"' in script
-    assert '"NORMAN_CODEX_FLEX_MODEL":"gpt-5.4"' in script
-    assert '"NORMAN_CODEX_PRIORITY_MODEL":"gpt-5.4"' in script
+    assert '"NORMAN_CODEX_SERVICE_TIER":"default"' in script
+    assert '"NORMAN_CODEX_MODEL":"openai.gpt-5.4"' in script
+    assert '"NORMAN_CODEX_MODEL_FLOOR":"openai.gpt-5.4"' in script
+    assert '"NORMAN_CODEX_DIRECT_MODEL":"openai.gpt-5.4"' in script
+    assert '"NORMAN_CODEX_FLEX_MODEL":"openai.gpt-5.4"' in script
+    assert '"NORMAN_CODEX_PRIORITY_MODEL":"openai.gpt-5.4"' in script
     assert (
         '"NORMAN_CODEX_SWITCHABLE_MODELS":"'
         "openai.gpt-5.4,openai.gpt-5.5,"
@@ -1608,8 +1669,49 @@ def test_netops_defaults_to_direct_5_4_and_removes_bedrock(
         "openai.gpt-5.6-luna,openai.gpt-5.6-terra,openai.gpt-5.6-sol,"
         'gpt-5.4,gpt-5.5,gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol"'
     ) in script
-    assert "NORMAN_CODEX_STANDARD_PROFILE_V2" in script
+    assert "NORMAN_CODEX_STANDARD_PROFILE_V2" not in script
     assert "traqline-bedrock" not in script
+
+
+def test_shared_and_norman_instances_use_non_work_bedrock(
+    monkeypatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "personal-bedrock.config.toml"
+    source.write_text('model = "openai.gpt-5.4"\n', encoding="utf-8")
+    monkeypatch.setenv("NORMAN_SYNC_NON_WORK_BEDROCK_PROFILE_SOURCE", str(source))
+    module = _load_sync_script(monkeypatch)
+    netops_host = _named_host(module, "networking-host")
+    norman_host = _named_host(module, "norman")
+    captured: dict[str, str] = {}
+
+    monkeypatch.setattr(
+        module,
+        "ssh_command",
+        lambda host, script: ["ssh", script],
+    )
+
+    def fake_capture(cmd):
+        captured["script"] = cmd[1]
+        return "changed\n"
+
+    monkeypatch.setattr(module, "capture", fake_capture)
+
+    for name in ("cloudagent", "networking", "uplink"):
+        instance = _instance(module, name, host_name="networking-host")
+        assert module.instance_uses_non_work_bedrock(netops_host, instance) is True
+
+    norman = _instance(module, "norman", host_name="norman")
+    assert module.instance_uses_non_work_bedrock(norman_host, norman) is True
+    assert (
+        module.sync_instance_origin_settings(
+            netops_host, _instance(module, "networking", host_name="networking-host")
+        )
+        is True
+    )
+
+    script = captured["script"]
+    assert '"NORMAN_CODEX_SERVICE_TIER":"default"' in script
+    assert '"NORMAN_CODEX_STANDARD_PROFILE_V2":"personal-bedrock"' in script
 
 
 def test_console_files_include_soul_support_scripts(monkeypatch) -> None:
@@ -1648,7 +1750,7 @@ def test_norman_switchboard_uses_its_dedicated_web_source(monkeypatch) -> None:
 def test_web_sources_must_share_ui_version(monkeypatch, tmp_path: Path) -> None:
     module = _load_sync_script(monkeypatch)
 
-    assert module.validate_web_source_versions() == "2026.07.16.07"
+    assert module.validate_web_source_versions() == "2026.07.16.14"
 
     stale_switchboard = tmp_path / "norman_codex_web.py"
     stale_switchboard.write_text(
@@ -1662,7 +1764,7 @@ def test_web_sources_must_share_ui_version(monkeypatch, tmp_path: Path) -> None:
     except RuntimeError as exc:
         assert str(exc) == (
             "Web UI source versions must match: "
-            "norman-switchboard=v2026.07.16.06, web=v2026.07.16.07"
+            "norman-switchboard=v2026.07.16.06, web=v2026.07.16.14"
         )
     else:
         raise AssertionError("expected mismatched web sources to be rejected")

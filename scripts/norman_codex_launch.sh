@@ -125,11 +125,36 @@ STANDARD_AWS_PROFILE="${NORMAN_CODEX_STANDARD_AWS_PROFILE:-}"
 STANDARD_AWS_REGION="${NORMAN_CODEX_STANDARD_AWS_REGION:-}"
 CODEX_PROFILE_ARGS=()
 CODEX_SERVICE_TIER_ARGS=()
+CODEX_PROFILE_FLAG="${NORMAN_CODEX_PROFILE_CONFIG_FLAG:-}"
+if [[ -z "$CODEX_PROFILE_FLAG" ]]; then
+    CODEX_PROFILE_HELP="$("$CODEX_BIN" --help 2>&1 || true)"
+    HAS_PROFILE=0
+    HAS_PROFILE_V2=0
+    grep -Eq -- '(^|[[:space:],])--profile($|[[:space:],])' <<<"$CODEX_PROFILE_HELP" && HAS_PROFILE=1
+    grep -Eq -- '(^|[[:space:],])--profile-v2($|[[:space:],])' <<<"$CODEX_PROFILE_HELP" && HAS_PROFILE_V2=1
+    if [[ "$HAS_PROFILE" == "1" && "$HAS_PROFILE_V2" == "1" ]]; then
+        CODEX_VERSION="$("$CODEX_BIN" --version 2>/dev/null | awk '{print $2; exit}')"
+        IFS=. read -r CODEX_VERSION_MAJOR CODEX_VERSION_MINOR _ <<<"$CODEX_VERSION"
+        CODEX_VERSION_MAJOR="${CODEX_VERSION_MAJOR:-0}"
+        CODEX_VERSION_MINOR="${CODEX_VERSION_MINOR:-0}"
+        if (( CODEX_VERSION_MAJOR > 0 || CODEX_VERSION_MINOR >= 134 )); then
+            CODEX_PROFILE_FLAG="--profile"
+        else
+            CODEX_PROFILE_FLAG="--profile-v2"
+        fi
+    elif [[ "$HAS_PROFILE" == "1" ]]; then
+        CODEX_PROFILE_FLAG="--profile"
+    elif [[ "$HAS_PROFILE_V2" == "1" ]]; then
+        CODEX_PROFILE_FLAG="--profile-v2"
+    else
+        CODEX_PROFILE_FLAG="--profile"
+    fi
+fi
 
 case "${SERVICE_TIER,,}" in
 auto)
     if [[ -n "$STANDARD_PROFILE_V2" ]]; then
-        CODEX_PROFILE_ARGS=(--profile-v2 "$STANDARD_PROFILE_V2")
+        CODEX_PROFILE_ARGS=("$CODEX_PROFILE_FLAG" "$STANDARD_PROFILE_V2")
         MODEL="${STANDARD_MODEL:-$MODEL}"
         [[ -z "$STANDARD_AWS_PROFILE" ]] || export AWS_PROFILE="$STANDARD_AWS_PROFILE"
         [[ -z "$STANDARD_AWS_REGION" ]] || export AWS_REGION="$STANDARD_AWS_REGION"
@@ -137,7 +162,7 @@ auto)
     ;;
 default | standard | "")
     if [[ -n "$STANDARD_PROFILE_V2" ]]; then
-        CODEX_PROFILE_ARGS=(--profile-v2 "$STANDARD_PROFILE_V2")
+        CODEX_PROFILE_ARGS=("$CODEX_PROFILE_FLAG" "$STANDARD_PROFILE_V2")
         MODEL="${STANDARD_MODEL:-$MODEL}"
         [[ -z "$STANDARD_AWS_PROFILE" ]] || export AWS_PROFILE="$STANDARD_AWS_PROFILE"
         [[ -z "$STANDARD_AWS_REGION" ]] || export AWS_REGION="$STANDARD_AWS_REGION"

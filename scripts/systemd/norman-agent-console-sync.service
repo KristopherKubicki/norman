@@ -4,4 +4,5 @@ Description=Sync Norman agent console template
 [Service]
 Type=oneshot
 WorkingDirectory=%h/code/norman
+Environment=NORMAN_SYNC_NON_WORK_BEDROCK_PROFILE_SOURCE=%h/.codex-nonwork/personal-bedrock.config.toml
 ExecStart=/usr/bin/flock -n %t/norman-agent-console-sync.lock /usr/bin/python3 %h/code/norman/scripts/sync_agent_console_template.py

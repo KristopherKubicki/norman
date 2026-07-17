@@ -5,4 +5,5 @@ Description=Sync local Norman agent console template writes
 Type=oneshot
 WorkingDirectory=/home/kristopher/code/norman
 Environment=PYTHONPATH=/home/kristopher/code/norman
+Environment=NORMAN_SYNC_NON_WORK_BEDROCK_PROFILE_SOURCE=/home/kristopher/.codex-nonwork/personal-bedrock.config.toml
 ExecStart=/usr/bin/flock -n /run/norman-agent-console-sync-local.lock /home/kristopher/code/norman/.venv/bin/python /home/kristopher/code/norman/scripts/sync_agent_console_template.py --targets hal

@@ -6,22 +6,26 @@ Status: production deployed with brokered configuration and local-first routing
 
 ## Released Console Surface
 
-The shared console fleet is on `UI v2026.07.16.07`. The fleet doctor reported 15
-active consoles with no failures or warnings after the web-console rollout.
+The shared console fleet is on `UI v2026.07.16.14`. The web-console rollout
+covers the reachable fleet.
 
 The console now:
 
-- polls the Codex `/usage` surface only while its ChatGPT-authenticated terminal is idle;
+- polls the Codex `/status` surface only while its ChatGPT-authenticated terminal is idle;
+- never sends `/usage` automatically, because it can consume a usage-limit reset;
 - retains aggregate capacity, reset, and forecast data without retaining terminal contents;
 - keeps ChatGPT plan, API, and Bedrock usage in separate ledgers;
 - prefers direct Codex Flex over the default Bedrock lane only for fresh personal
-  ChatGPT capacity above the configured reserve;
+  ChatGPT capacity above the configured reserve when the entire requested turn
+  fits the reset-aware forecast;
 - rechecks ChatGPT auth before making that automatic route choice and removes an
-  inherited `OPENAI_API_KEY` from ChatGPT-authenticated direct child processes.
+  inherited `OPENAI_API_KEY` from plan-authenticated or Bedrock child processes
+  whenever OpenAI API spending is disabled;
+- blocks OpenAI API spending and paid ChatGPT credit extensions by default, falling
+  back to Bedrock when the plan capacity cannot be verified.
 
 No capacity probe runs while a prompt, worker, or unfinished terminal draft is active.
-An unsupported `/usage` command is recorded as unavailable and retried only after a
-long backoff.
+An unsafe configured capacity command is recorded as unavailable and never sent.
 
 ## Backend Candidate
 

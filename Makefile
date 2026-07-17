@@ -4,6 +4,7 @@ PYTEST_ARGS ?= -vv --ignore=tmp/pro_agent_norman_harness_pack
 TUI_BENCHMARK_DIR ?= /tmp/norman_tui_benchmarks
 TUI_BENCHMARK_SAMPLE ?= db/tui_context_shadow_benchmark_sample.json
 TUI_STATE_DB ?= $(HOME)/.codex-work/web-bridge/tui_state.sqlite3
+TUI_VLLM_SENSE_ENDPOINT ?= https://llm.home.arpa
 HISTORIC_SESSION_REPORT ?= $(TUI_BENCHMARK_DIR)/work_session_runbook_miner.json
 HISTORIC_SHADOW_PLANNER_HOLDOUT_AFTER ?= 2026-06-14
 ROUTE_RECEIPT_HARVEST_OWNERS ?=
@@ -33,7 +34,8 @@ tui-benchmarks:
 	./.venv/bin/python scripts/tui_capability_inventory.py --output-json $(TUI_BENCHMARK_DIR)/capability_inventory.json --output-md $(TUI_BENCHMARK_DIR)/capability_inventory.md
 	./.venv/bin/python scripts/tui_microtexture_audit.py --output-json $(TUI_BENCHMARK_DIR)/microtexture_audit.json --output-md $(TUI_BENCHMARK_DIR)/microtexture_audit.md
 	./.venv/bin/python scripts/work_domain_skill_benchmark.py --output-json $(TUI_BENCHMARK_DIR)/work_domain_skill_matrix.json --output-md $(TUI_BENCHMARK_DIR)/work_domain_skill_matrix.md
-	./.venv/bin/python scripts/local_runtime_health.py --output-json $(TUI_BENCHMARK_DIR)/local_runtime_health.json --output-md $(TUI_BENCHMARK_DIR)/local_runtime_health.md
+	./.venv/bin/python scripts/tui_vllm_sense.py --endpoint $(TUI_VLLM_SENSE_ENDPOINT) --no-autosense-lan --output $(TUI_BENCHMARK_DIR)/vllm_sense_live.json --markdown $(TUI_BENCHMARK_DIR)/vllm_sense_live.md
+	./.venv/bin/python scripts/local_runtime_health.py --vllm-sense-json $(TUI_BENCHMARK_DIR)/vllm_sense_live.json --output-json $(TUI_BENCHMARK_DIR)/local_runtime_health.json --output-md $(TUI_BENCHMARK_DIR)/local_runtime_health.md
 	./.venv/bin/python scripts/local_model_skill_floor.py --skill-matrix-json $(TUI_BENCHMARK_DIR)/work_domain_skill_matrix.json --ollama-sense-json $(TUI_BENCHMARK_DIR)/ollama_sense_live.json --vllm-sense-json $(TUI_BENCHMARK_DIR)/vllm_sense_live.json --output-json $(TUI_BENCHMARK_DIR)/local_model_skill_floors.json --output-md $(TUI_BENCHMARK_DIR)/local_model_skill_floors.md
 	./.venv/bin/python scripts/local_model_route_policy.py --skill-floors-json $(TUI_BENCHMARK_DIR)/local_model_skill_floors.json --skill-matrix-json $(TUI_BENCHMARK_DIR)/work_domain_skill_matrix.json --runtime-health-json $(TUI_BENCHMARK_DIR)/local_runtime_health.json --output-json $(TUI_BENCHMARK_DIR)/local_model_route_policy.json --output-md $(TUI_BENCHMARK_DIR)/local_model_route_policy.md
 	./.venv/bin/python scripts/planner_preroute_policy.py --route-policy-json $(TUI_BENCHMARK_DIR)/local_model_route_policy.json --output-json $(TUI_BENCHMARK_DIR)/planner_preroute_policy.json --output-md $(TUI_BENCHMARK_DIR)/planner_preroute_policy.md
