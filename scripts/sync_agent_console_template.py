@@ -33,6 +33,7 @@ SOURCE_FILES = {
     "norman-switchboard": SCRIPT_DIR / "norman_codex_web.py",
     "launch": TEMPLATE_ROOT / "agent_console_launch.sh",
     "supervisor": TEMPLATE_ROOT / "agent_console_supervisor.sh",
+    "release-readiness": SCRIPT_DIR / "tui_release_readiness.py",
     "vector-preflight": SCRIPT_DIR / "tui_vector_preflight.py",
     "soul-loader": SCRIPT_DIR / "compose_soul_context.py",
     "soul-validator": SCRIPT_DIR / "validate_soul_md.py",
@@ -168,6 +169,7 @@ class ConsoleInstance:
             (web_source, self.web_path),
             ("launch", self.launch_path),
             ("supervisor", self.supervisor_path),
+            ("release-readiness", f"/opt/{self.name}/tui_release_readiness.py"),
             ("vector-preflight", f"/opt/{self.name}/tui_vector_preflight.py"),
             ("soul-loader", f"/opt/{self.name}/compose_soul_context.py"),
             ("soul-validator", f"/opt/{self.name}/validate_soul_md.py"),
@@ -1979,6 +1981,13 @@ def sync_instance_local_llm_foreground_settings(
         "NORMAN_TUI_OPENAI_OUTPUT_TOKENS_PER_HOUR": "60000",
         "NORMAN_CODEX_ACCOUNT_CAPACITY_COMMAND": "/status",
         "NORMAN_CODEX_ACCOUNT_CAPACITY_FALLBACK_COMMAND": "",
+        "NORMAN_CODEX_PREFLIGHT_MODE": "required",
+        "NORMAN_CODEX_PREFLIGHT_SCRIPT": (
+            f"/opt/{instance.name}/tui_release_readiness.py"
+        ),
+        "NORMAN_CODEX_PREFLIGHT_TIMEOUT_SECONDS": "2",
+        "NORMAN_CODEX_PREFLIGHT_TTL_SECONDS": "300",
+        "NORMAN_CODEX_PREFLIGHT_COMMAND_TIMEOUT_SECONDS": "20",
         "NORMAN_CODEX_SUBSCRIPTION_ROUTE_PREFERENCE_ENABLED": "1",
         "NORMAN_CODEX_SUBSCRIPTION_ROUTE_WORK_ENABLED": (
             "1" if instance_uses_work_config(host, instance) else "0"

@@ -182,6 +182,55 @@ priority | fast)
     ;;
 esac
 
+PREFLIGHT_MODE="${NORMAN_CODEX_PREFLIGHT_MODE:-required}"
+PREFLIGHT_SCRIPT="${NORMAN_CODEX_PREFLIGHT_SCRIPT:-$(dirname "${BASH_SOURCE[0]}")/tui_release_readiness.py}"
+PREFLIGHT_TIMEOUT_SECONDS="${NORMAN_CODEX_PREFLIGHT_TIMEOUT_SECONDS:-4}"
+PREFLIGHT_STATE_DIR="${NORMAN_CODEX_WEB_STATE_DIR:-${CODEX_HOME}/web-bridge}"
+
+run_release_preflight() {
+    case "${PREFLIGHT_MODE,,}" in
+    off | 0 | false | no)
+        return 0
+        ;;
+    required | observe)
+        ;;
+    *)
+        printf 'Unknown NORMAN_CODEX_PREFLIGHT_MODE=%s; using observe mode.\\n' "$PREFLIGHT_MODE" >&2
+        PREFLIGHT_MODE="observe"
+        ;;
+    esac
+
+    if [[ ! -r "$PREFLIGHT_SCRIPT" ]]; then
+        printf 'TUI preflight helper is unavailable at %s.\\n' "$PREFLIGHT_SCRIPT" >&2
+        [[ "${PREFLIGHT_MODE,,}" != "required" ]] && return 0
+        return 1
+    fi
+
+    local args=(
+        "$PREFLIGHT_SCRIPT"
+        --codex-bin "$CODEX_BIN"
+        --codex-home "$CODEX_HOME"
+        --service-tier "$SERVICE_TIER"
+        --timeout-seconds "$PREFLIGHT_TIMEOUT_SECONDS"
+        --json-output "${PREFLIGHT_STATE_DIR}/release_readiness.json"
+        --markdown-output "${PREFLIGHT_STATE_DIR}/release_readiness.md"
+        --summary
+    )
+    if [[ "${PREFLIGHT_MODE,,}" == "required" ]]; then
+        args+=(--fail-on-blocker)
+    fi
+
+    if python3 "${args[@]}"; then
+        return 0
+    fi
+
+    printf 'TUI preflight blocked this launch. Read %s/release_readiness.md for recovery.\\n' \
+        "$PREFLIGHT_STATE_DIR" >&2
+    return 1
+}
+
+run_release_preflight
+
 run_codex() {
     "$CODEX_BIN" \
         --no-alt-screen \
