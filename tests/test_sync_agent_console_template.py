@@ -1721,8 +1721,10 @@ def test_console_files_include_soul_support_scripts(monkeypatch) -> None:
     files = dict(panelbot.files)
 
     assert files["vector-preflight"] == "/opt/panelbot/tui_vector_preflight.py"
+    assert files["release-readiness"] == "/opt/panelbot/tui_release_readiness.py"
     assert files["soul-loader"] == "/opt/panelbot/compose_soul_context.py"
     assert files["soul-validator"] == "/opt/panelbot/validate_soul_md.py"
+    assert module.SOURCE_FILES["release-readiness"].name == "tui_release_readiness.py"
     assert module.SOURCE_FILES["vector-preflight"].name == "tui_vector_preflight.py"
     assert module.SOURCE_FILES["soul-loader"].name == "compose_soul_context.py"
     assert module.SOURCE_FILES["soul-validator"].name == "validate_soul_md.py"
@@ -1750,7 +1752,7 @@ def test_norman_switchboard_uses_its_dedicated_web_source(monkeypatch) -> None:
 def test_web_sources_must_share_ui_version(monkeypatch, tmp_path: Path) -> None:
     module = _load_sync_script(monkeypatch)
 
-    assert module.validate_web_source_versions() == "2026.07.16.14"
+    assert module.validate_web_source_versions() == "2026.07.17.1"
 
     stale_switchboard = tmp_path / "norman_codex_web.py"
     stale_switchboard.write_text(
@@ -1764,7 +1766,7 @@ def test_web_sources_must_share_ui_version(monkeypatch, tmp_path: Path) -> None:
     except RuntimeError as exc:
         assert str(exc) == (
             "Web UI source versions must match: "
-            "norman-switchboard=v2026.07.16.06, web=v2026.07.16.14"
+            "norman-switchboard=v2026.07.16.06, web=v2026.07.17.1"
         )
     else:
         raise AssertionError("expected mismatched web sources to be rejected")

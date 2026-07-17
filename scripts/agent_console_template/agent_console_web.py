@@ -21,6 +21,7 @@ import signal
 import socket
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -72,7 +73,7 @@ AUTH_COOKIE_NAME = (
 AUTH_COOKIE_MAX_AGE = int(
     os.environ.get("NORMAN_CODEX_WEB_COOKIE_MAX_AGE", str(14 * 24 * 60 * 60))
 )
-DEFAULT_UI_VERSION = "2026.07.16.14"
+DEFAULT_UI_VERSION = "2026.07.17.1"
 UI_VERSION = (
     os.environ.get("NORMAN_CODEX_UI_VERSION", DEFAULT_UI_VERSION).strip()
     or DEFAULT_UI_VERSION
@@ -1853,6 +1854,100 @@ def resolve_codex_bin() -> str:
 
 
 CODEX_BIN = resolve_codex_bin()
+
+CODEX_PREFLIGHT_MODE = (
+    os.environ.get("NORMAN_CODEX_PREFLIGHT_MODE", "off").strip().lower() or "off"
+)
+CODEX_PREFLIGHT_TTL_SECONDS = max(
+    0, int(os.environ.get("NORMAN_CODEX_PREFLIGHT_TTL_SECONDS", "300"))
+)
+CODEX_PREFLIGHT_COMMAND_TIMEOUT_SECONDS = max(
+    5, int(os.environ.get("NORMAN_CODEX_PREFLIGHT_COMMAND_TIMEOUT_SECONDS", "20"))
+)
+CODEX_PREFLIGHT_CACHE_LOCK = threading.Lock()
+CODEX_PREFLIGHT_SUCCESS_AT: dict[str, float] = {}
+
+
+def _tui_release_readiness_script() -> Path:
+    configured = os.environ.get("NORMAN_CODEX_PREFLIGHT_SCRIPT", "").strip()
+    candidates = [
+        Path(configured) if configured else None,
+        WEB_SCRIPT_PATH.with_name("tui_release_readiness.py"),
+        WEB_SCRIPT_PATH.parent.parent / "tui_release_readiness.py",
+    ]
+    return next(
+        (candidate for candidate in candidates if candidate and candidate.is_file()),
+        Path(configured)
+        if configured
+        else WEB_SCRIPT_PATH.with_name("tui_release_readiness.py"),
+    )
+
+
+def codex_launch_preflight(service_tier: str) -> dict[str, Any]:
+    if CODEX_PREFLIGHT_MODE in {"off", "0", "false", "no"}:
+        return {"allowed": True, "mode": "off"}
+    required = CODEX_PREFLIGHT_MODE == "required"
+    script = _tui_release_readiness_script()
+    if not script.is_file():
+        message = "TUI release preflight helper is unavailable."
+        return {
+            "allowed": not required,
+            "mode": CODEX_PREFLIGHT_MODE,
+            "message": message,
+        }
+
+    now = time.time()
+    with CODEX_PREFLIGHT_CACHE_LOCK:
+        previous = CODEX_PREFLIGHT_SUCCESS_AT.get(service_tier, 0.0)
+        if now - previous <= CODEX_PREFLIGHT_TTL_SECONDS:
+            return {"allowed": True, "mode": CODEX_PREFLIGHT_MODE, "cached": True}
+
+    command = [
+        sys.executable,
+        str(script),
+        "--codex-bin",
+        CODEX_BIN,
+        "--codex-home",
+        CODEX_HOME,
+        "--service-tier",
+        service_tier,
+        "--json-output",
+        str(STATE_DIR / "release_readiness.json"),
+        "--markdown-output",
+        str(STATE_DIR / "release_readiness.md"),
+        "--quiet",
+    ]
+    if required:
+        command.append("--fail-on-blocker")
+    env = dict(os.environ)
+    env["CODEX_HOME"] = CODEX_HOME
+    try:
+        completed = subprocess.run(
+            command,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            timeout=CODEX_PREFLIGHT_COMMAND_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        message = "TUI release preflight could not complete."
+        return {
+            "allowed": not required,
+            "mode": CODEX_PREFLIGHT_MODE,
+            "message": message,
+        }
+    if completed.returncode != 0:
+        message = (
+            "TUI release preflight blocked this route before Codex started. "
+            f"Read {STATE_DIR / 'release_readiness.md'} for recovery."
+        )
+        return {"allowed": False, "mode": CODEX_PREFLIGHT_MODE, "message": message}
+    with CODEX_PREFLIGHT_CACHE_LOCK:
+        CODEX_PREFLIGHT_SUCCESS_AT[service_tier] = now
+    return {"allowed": True, "mode": CODEX_PREFLIGHT_MODE}
 
 
 def resolve_codex_profile_config_flag() -> str:
@@ -29368,6 +29463,26 @@ def _execute_codex_prompt(
                     "model": model,
                     "service_tier": normalized_service_tier,
                     "provider_error_kind": "openai_api_spend_blocked",
+                    "provider_error_text": blocked_message,
+                }
+            ),
+        )
+    release_preflight = codex_launch_preflight(normalized_service_tier)
+    if not release_preflight["allowed"]:
+        blocked_message = str(
+            release_preflight.get("message")
+            or "TUI release preflight blocked this route before Codex started."
+        )
+        return (
+            "",
+            blocked_message,
+            read_text(THREAD_ID_PATH),
+            normalize_usage_entry(
+                {
+                    "runtime": "codex",
+                    "model": model,
+                    "service_tier": normalized_service_tier,
+                    "provider_error_kind": "tui_preflight_blocked",
                     "provider_error_text": blocked_message,
                 }
             ),
