@@ -135,8 +135,8 @@ if [[ -z "$CODEX_PROFILE_FLAG" ]]; then
     CODEX_PROFILE_HELP="$("$CODEX_BIN" --help 2>&1 || true)"
     HAS_PROFILE=0
     HAS_PROFILE_V2=0
-    grep -q -- "--profile" <<<"$CODEX_PROFILE_HELP" && HAS_PROFILE=1
-    grep -q -- "--profile-v2" <<<"$CODEX_PROFILE_HELP" && HAS_PROFILE_V2=1
+    grep -Eq -- '(^|[[:space:],])--profile($|[[:space:],])' <<<"$CODEX_PROFILE_HELP" && HAS_PROFILE=1
+    grep -Eq -- '(^|[[:space:],])--profile-v2($|[[:space:],])' <<<"$CODEX_PROFILE_HELP" && HAS_PROFILE_V2=1
     if [[ "$HAS_PROFILE" == "1" && "$HAS_PROFILE_V2" == "1" ]]; then
         CODEX_VERSION="$("$CODEX_BIN" --version 2>/dev/null | awk '{print $2; exit}')"
         IFS=. read -r CODEX_VERSION_MAJOR CODEX_VERSION_MINOR _ <<<"$CODEX_VERSION"

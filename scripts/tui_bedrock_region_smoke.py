@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import tempfile
 import sqlite3
@@ -314,6 +315,44 @@ def _event_types(stdout_text: str) -> list[str]:
     return event_types
 
 
+def resolve_codex_profile_config_flag(codex_bin: str) -> str:
+    try:
+        completed = subprocess.run(
+            [codex_bin, "exec", "--help"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "--profile"
+    help_text = f"{completed.stdout}\n{completed.stderr}"
+    has_profile = bool(re.search(r"(?<![\w-])--profile(?![\w-])", help_text))
+    has_profile_v2 = bool(re.search(r"(?<![\w-])--profile-v2(?![\w-])", help_text))
+    if has_profile and has_profile_v2:
+        try:
+            version = subprocess.run(
+                [codex_bin, "--version"],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=2,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return "--profile-v2"
+        match = re.search(r"(\d+)\.(\d+)\.(\d+)", f"{version.stdout} {version.stderr}")
+        if match and tuple(int(part) for part in match.groups()) < (0, 134, 0):
+            return "--profile-v2"
+        return "--profile"
+    if has_profile:
+        return "--profile"
+    if has_profile_v2:
+        return "--profile-v2"
+    return "--profile"
+
+
 def run_live_candidate(
     *,
     codex_bin: str,
@@ -325,6 +364,7 @@ def run_live_candidate(
     timeout_seconds: int,
 ) -> dict[str, Any]:
     started_at = int(time.time())
+    profile_flag = resolve_codex_profile_config_flag(codex_bin)
     sentinel = "BEDROCK_SMOKE_OK_" + "".join(
         ch if ch.isalnum() else "_" for ch in f"{profile_v2}_{aws_region}"
     )
@@ -339,14 +379,14 @@ def run_live_candidate(
             "--ignore-rules",
             "-C",
             workdir,
-            "--profile-v2",
+            profile_flag,
             profile_v2,
             "-m",
             model,
             "-c",
             'service_tier="default"',
             "-c",
-            'model_reasoning_effort="minimal"',
+            'model_reasoning_effort="low"',
             "-o",
             str(output_path),
             f"Reply exactly: {sentinel}",

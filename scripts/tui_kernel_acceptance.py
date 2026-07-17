@@ -2182,6 +2182,45 @@ def print_report(results: list[dict[str, Any]]) -> None:
             print("  - %s" % failure)
 
 
+def dry_run_report(
+    matrix: list[tuple[TuiTarget, ScenarioRun]], *, run_id: str
+) -> dict[str, Any]:
+    plans: list[dict[str, Any]] = []
+    for target, run in matrix:
+        plans.append(
+            {
+                "target": target.name,
+                "scenario": run.name,
+                "transport": (
+                    f"ssh:{target.ssh_target}" if target.ssh_target else "local"
+                ),
+                "planned_message": run.message,
+                "expected_response": run.expected_response,
+                "execution_status": "not_executed",
+            }
+        )
+    return {
+        "schema": "norman.tui-kernel-acceptance.v1",
+        "run_id": run_id,
+        "generated_at": int(time.time()),
+        "dry_run_only": True,
+        "model_calls_executed": 0,
+        "execution_status": "not_executed",
+        "passed": None,
+        "total_count": len(plans),
+        "plans": plans,
+    }
+
+
+def write_json_report(path: str, report: dict[str, Any]) -> None:
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run Norman TUI kernel local-first acceptance canaries."
@@ -2270,12 +2309,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.live:
         print("Dry run. Add --live to send prompts.")
+        report = dry_run_report(matrix, run_id=run_id)
         for target, run in matrix:
             transport = "ssh:%s" % target.ssh_target if target.ssh_target else "local"
             print(
-                "%-11s %-7s %s %s"
+                "%-11s %-7s %s expected response (not executed): %s"
                 % (target.name, run.name, transport, run.expected_response)
             )
+        if args.output_json:
+            write_json_report(args.output_json, report)
         return 0
 
     results: list[dict[str, Any]] = []
@@ -2329,10 +2371,7 @@ def main(argv: list[str] | None = None) -> int:
         }
         print(report["preflight_failures"][0], file=sys.stderr)
         if args.output_json:
-            Path(args.output_json).write_text(
-                json.dumps(report, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
+            write_json_report(args.output_json, report)
         return 2
     for index, (target, run) in enumerate(matrix, start=1):
         print(
@@ -2440,10 +2479,7 @@ def main(argv: list[str] | None = None) -> int:
     }
     print_report(results)
     if args.output_json:
-        Path(args.output_json).write_text(
-            json.dumps(report, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        write_json_report(args.output_json, report)
     return 0 if report["passed"] else 1
 
 

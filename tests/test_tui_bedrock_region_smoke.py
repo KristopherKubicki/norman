@@ -203,7 +203,11 @@ def test_live_smoke_report_runs_codex_candidate(monkeypatch) -> None:
     module = _load_module()
     calls = []
 
-    def fake_run(cmd, text, stdout, stderr, env, timeout, check):
+    def fake_run(cmd, text, stdout, stderr, timeout, check, env=None):
+        if cmd == ["/usr/local/bin/codex", "exec", "--help"]:
+            return module.subprocess.CompletedProcess(
+                cmd, 0, stdout="--profile", stderr=""
+            )
         calls.append((cmd, env, timeout))
         output_path = Path(cmd[cmd.index("-o") + 1])
         output_path.write_text("BEDROCK_SMOKE_OK_profile_us_east_1", encoding="utf-8")
@@ -230,17 +234,50 @@ def test_live_smoke_report_runs_codex_candidate(monkeypatch) -> None:
     assert profile["status"] == "ok"
     assert profile["event_types"] == ["thread.started", "turn.completed"]
     cmd, env, timeout = calls[0]
-    assert cmd[cmd.index("--profile-v2") + 1] == "profile"
+    assert cmd[cmd.index("--profile") + 1] == "profile"
     assert cmd[cmd.index("-m") + 1] == "openai.gpt-5.5"
+    assert 'model_reasoning_effort="low"' in cmd
     assert env["CODEX_HOME"] == "/tmp/codex-home"
     assert env["AWS_REGION"] == "us-east-1"
     assert timeout == 90
 
 
+def test_live_smoke_uses_legacy_profile_flag_when_required(monkeypatch) -> None:
+    module = _load_module()
+    calls = []
+
+    def fake_run(cmd, text, stdout, stderr, timeout, check, env=None):
+        if cmd == ["codex", "exec", "--help"]:
+            return module.subprocess.CompletedProcess(
+                cmd, 0, stdout="--profile-v2", stderr=""
+            )
+        calls.append((cmd, env, timeout))
+        output_path = Path(cmd[cmd.index("-o") + 1])
+        output_path.write_text("BEDROCK_SMOKE_OK_profile_us_east_1", encoding="utf-8")
+        return module.subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    report = module.build_live_smoke_report(
+        candidates=[("profile", "us-east-1")],
+        model="openai.gpt-5.5",
+        codex_bin="codex",
+        codex_home="",
+        workdir="/tmp",
+        timeout_seconds=90,
+    )
+
+    assert report["profiles"]["profile"]["ok"] is True
+    assert calls[0][0][calls[0][0].index("--profile-v2") + 1] == "profile"
+
+
 def test_live_smoke_report_classifies_stream_disconnect(monkeypatch) -> None:
     module = _load_module()
 
-    def fake_run(cmd, text, stdout, stderr, env, timeout, check):
+    def fake_run(cmd, text, stdout, stderr, timeout, check, env=None):
+        if cmd == ["codex", "exec", "--help"]:
+            return module.subprocess.CompletedProcess(
+                cmd, 0, stdout="--profile", stderr=""
+            )
         return module.subprocess.CompletedProcess(
             cmd,
             1,

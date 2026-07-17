@@ -72,7 +72,7 @@ AUTH_COOKIE_NAME = (
 AUTH_COOKIE_MAX_AGE = int(
     os.environ.get("NORMAN_CODEX_WEB_COOKIE_MAX_AGE", str(14 * 24 * 60 * 60))
 )
-DEFAULT_UI_VERSION = "2026.07.16.07"
+DEFAULT_UI_VERSION = "2026.07.16.14"
 UI_VERSION = (
     os.environ.get("NORMAN_CODEX_UI_VERSION", DEFAULT_UI_VERSION).strip()
     or DEFAULT_UI_VERSION
@@ -599,6 +599,37 @@ LOCAL_LLM_QUICK_MAX_OUTPUT_TOKENS = _early_env_int(
 LOCAL_LLM_SHORT_MAX_OUTPUT_TOKENS = _early_env_int(
     "NORMAN_LOCAL_LLM_SHORT_MAX_OUTPUT_TOKENS", 800, minimum=128
 )
+TUI_TOKEN_CAPACITY_PLAN_ENABLED = _early_env_flag(
+    "NORMAN_TUI_TOKEN_CAPACITY_PLAN_ENABLED", True
+)
+TUI_TOKEN_CAPACITY_MIN_OUTPUT_TOKENS = _early_env_int(
+    "NORMAN_TUI_TOKEN_CAPACITY_MIN_OUTPUT_TOKENS", 256, minimum=32
+)
+TUI_TOKEN_CAPACITY_CLOUD_MAX_OUTPUT_TOKENS = _early_env_int(
+    "NORMAN_TUI_TOKEN_CAPACITY_CLOUD_MAX_OUTPUT_TOKENS", 8192, minimum=256
+)
+TUI_TOKEN_CAPACITY_TOTAL_BUDGET_FACTOR = _early_env_float(
+    "NORMAN_TUI_TOKEN_CAPACITY_TOTAL_BUDGET_FACTOR", 2.0, minimum=1.0
+)
+TUI_TOKEN_CAPACITY_WINDOW_FRACTION = min(
+    1.0,
+    _early_env_float("NORMAN_TUI_TOKEN_CAPACITY_WINDOW_FRACTION", 1.0, minimum=0.1),
+)
+TUI_TOKEN_CAPACITY_USAGE_WINDOW_SECONDS = _early_env_int(
+    "NORMAN_TUI_TOKEN_CAPACITY_USAGE_WINDOW_SECONDS", 60 * 60, minimum=60
+)
+TUI_NORLLAMA_OUTPUT_TOKENS_PER_HOUR = _early_env_int(
+    "NORMAN_TUI_NORLLAMA_OUTPUT_TOKENS_PER_HOUR", 48_000, minimum=1_000
+)
+TUI_BEDROCK_OUTPUT_TOKENS_PER_HOUR = _early_env_int(
+    "NORMAN_TUI_BEDROCK_OUTPUT_TOKENS_PER_HOUR", 72_000, minimum=1_000
+)
+TUI_CODEX_OUTPUT_TOKENS_PER_HOUR = _early_env_int(
+    "NORMAN_TUI_CODEX_OUTPUT_TOKENS_PER_HOUR", 60_000, minimum=1_000
+)
+TUI_OPENAI_OUTPUT_TOKENS_PER_HOUR = _early_env_int(
+    "NORMAN_TUI_OPENAI_OUTPUT_TOKENS_PER_HOUR", 60_000, minimum=1_000
+)
 LOCAL_LLM_NUM_CTX = _early_env_int("NORMAN_LOCAL_LLM_NUM_CTX", 8192, minimum=512)
 LOCAL_LLM_SHORT_NUM_CTX = _early_env_int(
     "NORMAN_LOCAL_LLM_SHORT_NUM_CTX", 4096, minimum=512
@@ -623,6 +654,19 @@ LOCAL_PLANNER_PREFLIGHT_PROMPT_CHARS = _early_env_int(
 LOCAL_PLANNER_PREFLIGHT_MAX_CANDIDATES = _early_env_int(
     "NORMAN_LOCAL_PLANNER_PREFLIGHT_MAX_CANDIDATES", 2, minimum=1
 )
+WORKING_RECAP_ENABLED = _early_env_flag("NORMAN_CODEX_WORKING_RECAP_ENABLED", True)
+WORKING_RECAP_REFRESH_SECONDS = _early_env_int(
+    "NORMAN_CODEX_WORKING_RECAP_REFRESH_SECONDS", 120, minimum=60
+)
+WORKING_RECAP_LLM_TIMEOUT_SECONDS = _early_env_int(
+    "NORMAN_CODEX_WORKING_RECAP_LLM_TIMEOUT_SECONDS", 20, minimum=5
+)
+WORKING_RECAP_LLM_MAX_OUTPUT_TOKENS = _early_env_int(
+    "NORMAN_CODEX_WORKING_RECAP_LLM_MAX_OUTPUT_TOKENS", 220, minimum=64
+)
+WORKING_RECAP_HISTORY_ITEMS = _early_env_int(
+    "NORMAN_CODEX_WORKING_RECAP_HISTORY_ITEMS", 6, minimum=2
+)
 LOCAL_ROUTE_INTENT_CLASSIFIER_ENABLED = _early_env_flag(
     "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_ENABLED", True
 )
@@ -630,7 +674,7 @@ LOCAL_ROUTE_INTENT_CLASSIFIER_TIMEOUT_SECONDS = _early_env_int(
     "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_TIMEOUT_SECONDS", 8, minimum=2
 )
 LOCAL_ROUTE_INTENT_CLASSIFIER_MAX_OUTPUT_TOKENS = _early_env_int(
-    "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MAX_OUTPUT_TOKENS", 96, minimum=32
+    "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MAX_OUTPUT_TOKENS", 192, minimum=32
 )
 LOCAL_ROUTE_INTENT_CLASSIFIER_PROMPT_CHARS = _early_env_int(
     "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_PROMPT_CHARS", 700, minimum=160
@@ -1827,8 +1871,8 @@ def resolve_codex_profile_config_flag() -> str:
     except (OSError, subprocess.TimeoutExpired):
         return "--profile"
     help_text = f"{completed.stdout}\n{completed.stderr}"
-    has_profile = "--profile" in help_text
-    has_profile_v2 = "--profile-v2" in help_text
+    has_profile = bool(re.search(r"(?<![\w-])--profile(?![\w-])", help_text))
+    has_profile_v2 = bool(re.search(r"(?<![\w-])--profile-v2(?![\w-])", help_text))
     if has_profile and has_profile_v2:
         try:
             version = subprocess.run(
@@ -1950,12 +1994,24 @@ CODEX_ACCOUNT_CAPACITY_PROBE_POLL_SECONDS = min(
         ),
     ),
 )
+CODEX_ACCOUNT_CAPACITY_STATUS_SUBMIT_SETTLE_SECONDS = min(
+    3.0,
+    max(
+        0.1,
+        float(
+            os.environ.get(
+                "NORMAN_CODEX_ACCOUNT_CAPACITY_STATUS_SUBMIT_SETTLE_SECONDS",
+                "0.6",
+            )
+        ),
+    ),
+)
 CODEX_ACCOUNT_CAPACITY_HISTORY_ITEMS = max(
     20, int(os.environ.get("NORMAN_CODEX_ACCOUNT_CAPACITY_HISTORY_ITEMS", "2880"))
 )
 CODEX_ACCOUNT_CAPACITY_COMMAND = (
-    os.environ.get("NORMAN_CODEX_ACCOUNT_CAPACITY_COMMAND", "/usage").strip()
-    or "/usage"
+    os.environ.get("NORMAN_CODEX_ACCOUNT_CAPACITY_COMMAND", "/status").strip()
+    or "/status"
 )
 CODEX_ACCOUNT_CAPACITY_FALLBACK_COMMAND = os.environ.get(
     "NORMAN_CODEX_ACCOUNT_CAPACITY_FALLBACK_COMMAND", ""
@@ -1967,9 +2023,72 @@ CODEX_SUBSCRIPTION_ROUTE_MIN_PERCENT_LEFT = min(
     100,
     max(
         1,
-        int(os.environ.get("NORMAN_CODEX_SUBSCRIPTION_ROUTE_MIN_PERCENT_LEFT", "10")),
+        int(os.environ.get("NORMAN_CODEX_SUBSCRIPTION_ROUTE_MIN_PERCENT_LEFT", "25")),
     ),
 )
+CODEX_SUBSCRIPTION_ROUTE_WORK_ENABLED = _early_env_flag(
+    "NORMAN_CODEX_SUBSCRIPTION_ROUTE_WORK_ENABLED"
+)
+CODEX_SUBSCRIPTION_ROUTE_MIN_RESET_SECONDS = _early_env_int(
+    "NORMAN_CODEX_SUBSCRIPTION_ROUTE_MIN_RESET_SECONDS", 300, minimum=60
+)
+CODEX_SUBSCRIPTION_ROUTE_FORECAST_CAP_FRACTION = min(
+    1.0,
+    _early_env_float(
+        "NORMAN_CODEX_SUBSCRIPTION_ROUTE_FORECAST_CAP_FRACTION",
+        0.5,
+        minimum=0.1,
+    ),
+)
+CODEX_ALLOW_OPENAI_API_SPEND = os.environ.get(
+    "NORMAN_CODEX_ALLOW_OPENAI_API_SPEND", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
+CODEX_CHATGPT_CREDIT_EXTENSION_ALLOWED = os.environ.get(
+    "NORMAN_CODEX_CHATGPT_CREDIT_EXTENSION_ALLOWED", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
+CODEX_SUBSCRIPTION_SELF_IMPROVEMENT_ENABLED = os.environ.get(
+    "NORMAN_CODEX_SUBSCRIPTION_SELF_IMPROVEMENT_ENABLED", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
+CODEX_SUBSCRIPTION_SELF_IMPROVEMENT_MIN_PERCENT_LEFT = min(
+    100,
+    max(
+        CODEX_SUBSCRIPTION_ROUTE_MIN_PERCENT_LEFT,
+        int(
+            os.environ.get(
+                "NORMAN_CODEX_SUBSCRIPTION_SELF_IMPROVEMENT_MIN_PERCENT_LEFT",
+                "70",
+            )
+        ),
+    ),
+)
+CODEX_SUBSCRIPTION_SELF_IMPROVEMENT_MIN_RESET_SECONDS = max(
+    30,
+    int(
+        os.environ.get(
+            "NORMAN_CODEX_SUBSCRIPTION_SELF_IMPROVEMENT_MIN_RESET_SECONDS", "240"
+        )
+    ),
+)
+CODEX_SUBSCRIPTION_SELF_IMPROVEMENT_MAX_RESET_SECONDS = max(
+    CODEX_SUBSCRIPTION_SELF_IMPROVEMENT_MIN_RESET_SECONDS,
+    int(
+        os.environ.get(
+            "NORMAN_CODEX_SUBSCRIPTION_SELF_IMPROVEMENT_MAX_RESET_SECONDS", "1200"
+        )
+    ),
+)
+CODEX_SUBSCRIPTION_SELF_IMPROVEMENT_ESTIMATED_OUTPUT_TOKENS = _early_env_int(
+    "NORMAN_CODEX_SUBSCRIPTION_SELF_IMPROVEMENT_ESTIMATED_OUTPUT_TOKENS",
+    1200,
+    minimum=128,
+)
+CODEX_SUBSCRIPTION_SELF_IMPROVEMENT_STATE_PATH = Path(
+    os.environ.get(
+        "NORMAN_CODEX_SUBSCRIPTION_SELF_IMPROVEMENT_STATE_PATH",
+        str(STATE_DIR / "subscription_self_improvement.json"),
+    )
+)
+SUBSCRIPTION_SELF_IMPROVEMENT_MARKER = "[norman-subscription-capacity-review-v1]"
 CODEX_ACCOUNT_CAPACITY_PROBE_LOCK = threading.Lock()
 CODEX_ACCOUNT_CAPACITY_PROBE_THREAD: threading.Thread | None = None
 BEDROCK_HEALTH_SMOKE_PATH = Path(
@@ -2518,6 +2637,7 @@ CONSOLE_RUNTIME_SNAPSHOT_LOCK = threading.Lock()
 CONSOLE_RUNTIME_ROUTE_OUTCOME_LOCK = threading.Lock()
 CONSOLE_RUNTIME_CAPABILITIES_LOCK = threading.Lock()
 CONSOLE_RUNTIME_LOCAL_FIRST_PROOF_LOCK = threading.Lock()
+WORKING_RECAP_LOCK = threading.Lock()
 KPI_LOCK = threading.RLock()
 KPI_COLLECTOR_STARTED = False
 ACTIVE_PROMPT_THREAD: threading.Thread | None = None
@@ -2545,6 +2665,7 @@ CONSOLE_RUNTIME_LAST_ERROR = CONSOLE_RUNTIME_TOKEN_RESOLUTION_ERROR
 CONSOLE_RUNTIME_LAST_ERROR_AT = (
     time.time() if CONSOLE_RUNTIME_TOKEN_RESOLUTION_ERROR else 0.0
 )
+WORKING_RECAP_ACTIVE_TURNS: set[str] = set()
 
 
 def _console_runtime_startup_defer_until() -> float:
@@ -6229,7 +6350,30 @@ def local_llm_num_ctx_for_budget(job_budget: Any = "") -> int:
     return max(512, LOCAL_LLM_NUM_CTX)
 
 
-def local_llm_max_output_tokens_for_budget(job_budget: Any = "") -> int:
+def local_llm_max_output_tokens_for_budget(
+    job_budget: Any = "",
+    *,
+    prompt: str = "",
+    detail: int = 2,
+    attachments: list[dict[str, Any]] | None = None,
+    model: str = "",
+    service_tier: str = "",
+    capacity_plan: dict[str, Any] | None = None,
+) -> int:
+    if TUI_TOKEN_CAPACITY_PLAN_ENABLED:
+        plan = normalize_provider_token_budget_plan(
+            capacity_plan
+            or provider_token_budget_plan(
+                prompt=prompt,
+                runtime="localllm",
+                model=model,
+                service_tier=service_tier,
+                job_budget=job_budget,
+                detail=detail,
+                attachments=attachments or [],
+            )
+        )
+        return max(1, _coerce_int(plan.get("execution_output_cap")))
     target = job_budget_timeout_seconds(normalize_job_budget(job_budget))
     if target <= 2 * 60:
         return max(
@@ -9245,9 +9389,9 @@ def _state_db_id(kind: str, payload: dict[str, Any]) -> str:
 def _state_db_connect() -> sqlite3.Connection | None:
     if not STATE_DB_ENABLED:
         return None
-    ensure_state_dir()
-    STATE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     try:
+        ensure_state_dir()
+        STATE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(STATE_DB_PATH), timeout=2)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
@@ -9491,7 +9635,7 @@ def _state_db_connect() -> sqlite3.Connection | None:
         )
         conn.commit()
         return conn
-    except sqlite3.Error:
+    except (OSError, sqlite3.Error):
         try:
             conn.close()  # type: ignore[name-defined]
         except Exception:
@@ -11478,6 +11622,12 @@ def local_route_intent_classifier_prompt(
             (
                 "Required keys: requested_action, operator_intent_class, lane, "
                 "local_eligible, cloud_needed, risk, confidence, reason."
+            ),
+            (
+                "Use only literal values from the allowed_* arrays below; do not "
+                "invent aliases such as status_check, non_mutating_inquiry, or "
+                "general_conversation. For a short status/update/check-in, use "
+                "requested_action=status, operator_intent_class=status, lane=scout."
             ),
             json.dumps(compact, sort_keys=True, ensure_ascii=True),
         ]
@@ -16104,14 +16254,26 @@ def console_runtime_kernel_primary_run_shape(
     detail: int = 0,
     job_budget: str = "",
 ) -> dict[str, Any]:
+    normalized_detail = normalize_response_detail(detail)
+    normalized_budget = normalize_job_budget(job_budget)
+    token_capacity_plan = provider_token_budget_plan(
+        prompt=str(prompt or ""),
+        runtime="localllm",
+        model=LOCAL_LLM_DEFAULT_MODEL,
+        job_budget=normalized_budget,
+        detail=normalized_detail,
+        cloud_authorized=False,
+        enforcement="kernel_hard",
+    )
     if prompt_is_literal_response_request(prompt):
         return {
             "task_kind": "literal_response",
             "planner_kind": "literal_response",
             "goal_phase_sequence": ["literal_response"],
             "max_steps": 1,
-            "max_output_tokens": 96,
+            "max_output_tokens": token_capacity_plan["execution_output_cap"],
             "output_shape_expected": "literal_response",
+            "token_capacity_plan": token_capacity_plan,
         }
     return {
         "task_kind": "visible_response",
@@ -16124,12 +16286,9 @@ def console_runtime_kernel_primary_run_shape(
                 10,
             ),
         ),
-        "max_output_tokens": estimate_turn_output_tokens(
-            normalize_response_detail(detail),
-            normalize_job_budget(job_budget),
-            str(prompt or ""),
-        ),
+        "max_output_tokens": token_capacity_plan["execution_output_cap"],
         "output_shape_expected": "complete",
+        "token_capacity_plan": token_capacity_plan,
     }
 
 
@@ -16140,6 +16299,9 @@ def console_runtime_turn_route_policy(
     model: str,
     service_tier: str,
     cost_route: dict[str, Any] | None = None,
+    detail: int = 0,
+    job_budget: str = "",
+    turn_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_runtime = normalize_runtime(runtime)
     normalized_model = normalize_runtime_model(normalized_runtime, model)
@@ -16154,7 +16316,16 @@ def console_runtime_turn_route_policy(
         requested_runtime,
         route.get("requested_model") or model,
     )
-    run_shape = console_runtime_kernel_primary_run_shape(prompt)
+    run_shape = console_runtime_kernel_primary_run_shape(
+        prompt,
+        detail=detail,
+        job_budget=job_budget,
+    )
+    token_capacity_plan = normalize_provider_token_budget_plan(
+        turn_plan.get("token_capacity_plan")
+        if isinstance(turn_plan, dict)
+        else run_shape.get("token_capacity_plan")
+    )
     return {
         "runtime": "kernel_shadow",
         "visible_runtime": normalized_runtime,
@@ -16192,7 +16363,9 @@ def console_runtime_turn_route_policy(
         "output_shape_expected": run_shape["output_shape_expected"],
         "route_proof_required": bool(TUI_KERNEL_EXECUTION_ENABLED),
         "require_verifier_for_completion": bool(TUI_KERNEL_EXECUTION_ENABLED),
+        "local_token_budget": token_capacity_plan["local_token_budget"],
         "cloud_token_budget": 0,
+        "token_capacity_plan": token_capacity_plan,
         "cloud_escalation": normalized_runtime not in {"localllm", "local"},
         "selected_runtime": route.get("selected_runtime") or normalized_runtime,
         "selected_model": route.get("selected_model") or normalized_model,
@@ -16213,11 +16386,21 @@ def console_runtime_turn_metadata(
     job_budget: str,
     optimization_mode: str,
     timeout_seconds: int,
+    detail: int = 0,
     turn_plan: dict[str, Any] | None = None,
     turn_envelope: dict[str, Any] | None = None,
     cost_route: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    run_shape = console_runtime_kernel_primary_run_shape(prompt)
+    run_shape = console_runtime_kernel_primary_run_shape(
+        prompt,
+        detail=detail,
+        job_budget=job_budget,
+    )
+    token_capacity_plan = normalize_provider_token_budget_plan(
+        turn_plan.get("token_capacity_plan")
+        if isinstance(turn_plan, dict)
+        else run_shape.get("token_capacity_plan")
+    )
     return {
         "source": "agent_console_web",
         "kind": "tui_turn_shadow",
@@ -16246,7 +16429,9 @@ def console_runtime_turn_metadata(
         "planner_kind": run_shape["planner_kind"],
         "goal_phase_sequence": list(run_shape["goal_phase_sequence"]),
         "output_shape_expected": run_shape["output_shape_expected"],
+        "local_token_budget": token_capacity_plan["local_token_budget"],
         "cloud_token_budget": 0,
+        "token_capacity_plan": token_capacity_plan,
         "turn_plan": normalize_turn_plan_estimate(turn_plan),
         "turn_envelope": dict(turn_envelope or {}),
         "cost_route": dict(cost_route or {}),
@@ -16289,6 +16474,9 @@ def ensure_console_runtime_turn_shadow_job(
         job_budget=job_budget,
         optimization_mode=optimization_mode,
         timeout_seconds=timeout_seconds,
+        detail=(
+            _coerce_int(turn_plan.get("detail")) if isinstance(turn_plan, dict) else 0
+        ),
         turn_plan=turn_plan,
         turn_envelope=turn_envelope,
         cost_route=cost_route,
@@ -16299,6 +16487,15 @@ def ensure_console_runtime_turn_shadow_job(
         model=model,
         service_tier=service_tier,
         cost_route=cost_route,
+        detail=(
+            _coerce_int(turn_plan.get("detail")) if isinstance(turn_plan, dict) else 0
+        ),
+        job_budget=(
+            str(turn_plan.get("job_budget") or "")
+            if isinstance(turn_plan, dict)
+            else job_budget
+        ),
+        turn_plan=turn_plan,
     )
     objective = console_runtime_execution_objective(prompt, normalized_attachments)
     objective_summary = planner_understood_task(prompt, normalized_attachments)
@@ -16610,6 +16807,7 @@ def default_status_meta() -> dict[str, Any]:
         "resource_meter": {},
         "live_turn": default_live_turn(),
         "turn_plan": default_turn_plan_estimate(),
+        "working_recap": default_working_recap(),
     }
 
 
@@ -18511,6 +18709,9 @@ def default_usage_entry() -> dict[str, Any]:
         "broker_tool_rounds": 0,
         "broker_model_calls": 0,
         "broker_tool_budget_exhausted": False,
+        "broker_output_token_budget": 0,
+        "broker_output_budget_exhausted": False,
+        "token_capacity_plan": {},
         "zero_token_provider_failure": False,
         "context_preflight_accounting": {},
         "preflight_accounting_schema": "",
@@ -18925,10 +19126,17 @@ def normalize_usage_entry(value: Any) -> dict[str, Any]:
         "broker_tool_calls",
         "broker_tool_rounds",
         "broker_model_calls",
+        "broker_output_token_budget",
     ):
         payload[key] = _coerce_int(payload.get(key))
     payload["broker_tool_budget_exhausted"] = bool(
         payload.get("broker_tool_budget_exhausted")
+    )
+    payload["broker_output_budget_exhausted"] = bool(
+        payload.get("broker_output_budget_exhausted")
+    )
+    payload["token_capacity_plan"] = normalize_provider_token_budget_plan(
+        payload.get("token_capacity_plan")
     )
     if isinstance(payload.get("context_preflight_accounting"), dict):
         context_preflight_fields = usage_fields_from_context_preflight_accounting(
@@ -20285,6 +20493,354 @@ TURN_PLAN_PROMPT_MARKERS = (
 )
 
 
+TOKEN_CAPACITY_PROVIDER_CLASSES = {
+    "norllama",
+    "bedrock",
+    "codex_subscription",
+    "openai_direct",
+}
+
+
+def default_provider_token_budget_plan() -> dict[str, Any]:
+    return {
+        "schema": "norman.tui.token-capacity-plan.v1",
+        "provider_class": "",
+        "target_seconds": 0,
+        "estimated_input_tokens": 0,
+        "estimated_output_tokens": 0,
+        "soft_output_tokens_per_hour": 0,
+        "recent_output_tokens": 0,
+        "recent_observed_output_tokens_per_hour": 0,
+        "recent_sample_count": 0,
+        "recent_window_seconds": TUI_TOKEN_CAPACITY_USAGE_WINDOW_SECONDS,
+        "remaining_soft_output_tokens": 0,
+        "time_window_output_cap": 0,
+        "execution_output_cap": 0,
+        "execution_total_token_budget": 0,
+        "local_token_budget": 0,
+        "cloud_token_budget": 0,
+        "cloud_authorized": False,
+        "capacity_source": "unavailable",
+        "confidence": "unknown",
+        "enforcement": "none",
+        "subscription_capacity_state": "",
+        "subscription_capacity_percent_left": None,
+        "subscription_capacity_fresh": False,
+        "subscription_reset_seconds": 0,
+    }
+
+
+def normalize_provider_token_budget_plan(value: Any) -> dict[str, Any]:
+    payload = dict(default_provider_token_budget_plan())
+    if isinstance(value, dict):
+        payload.update(value)
+    provider_class = str(payload.get("provider_class") or "").strip().lower()
+    payload["provider_class"] = (
+        provider_class if provider_class in TOKEN_CAPACITY_PROVIDER_CLASSES else ""
+    )
+    for key in (
+        "target_seconds",
+        "estimated_input_tokens",
+        "estimated_output_tokens",
+        "soft_output_tokens_per_hour",
+        "recent_output_tokens",
+        "recent_observed_output_tokens_per_hour",
+        "recent_sample_count",
+        "recent_window_seconds",
+        "remaining_soft_output_tokens",
+        "time_window_output_cap",
+        "execution_output_cap",
+        "execution_total_token_budget",
+        "local_token_budget",
+        "cloud_token_budget",
+        "subscription_reset_seconds",
+    ):
+        payload[key] = max(0, _coerce_int(payload.get(key)))
+    payload["cloud_authorized"] = bool(payload.get("cloud_authorized"))
+    payload["subscription_capacity_fresh"] = bool(
+        payload.get("subscription_capacity_fresh")
+    )
+    capacity_percent = payload.get("subscription_capacity_percent_left")
+    payload["subscription_capacity_percent_left"] = (
+        min(100, max(0, _coerce_int(capacity_percent)))
+        if capacity_percent is not None
+        else None
+    )
+    payload["capacity_source"] = (
+        str(payload.get("capacity_source") or "unavailable").strip() or "unavailable"
+    )
+    payload["confidence"] = (
+        str(payload.get("confidence") or "unknown").strip().lower() or "unknown"
+    )
+    payload["enforcement"] = (
+        str(payload.get("enforcement") or "none").strip().lower() or "none"
+    )
+    payload["subscription_capacity_state"] = str(
+        payload.get("subscription_capacity_state") or ""
+    ).strip()
+    return payload
+
+
+def token_capacity_provider_class(
+    runtime: Any,
+    service_tier: Any = "",
+    *,
+    cost_route: dict[str, Any] | None = None,
+) -> str:
+    normalized_runtime = normalize_runtime(runtime)
+    route = dict(cost_route or {})
+    charge_basis = str(route.get("charge_basis") or "").strip().lower()
+    if normalized_runtime == "localllm":
+        return "norllama"
+    provider_surface = (
+        str(usage_provider_tags(service_tier).get("provider_surface") or "")
+        .strip()
+        .lower()
+    )
+    if provider_surface == "aws-bedrock" or normalized_runtime in {
+        "claude",
+        "deepseek",
+        "gptoss",
+        "kimi",
+        "qwen",
+    }:
+        return "bedrock"
+    if (normalized_runtime == "codex" and charge_basis == "codex_credits") or (
+        normalized_runtime == "codex"
+        and usage_charge_ledger_kind(
+            {
+                "runtime": normalized_runtime,
+                "service_tier": service_tier,
+            }
+        )
+        == "chatgpt_codex_credit_estimate"
+    ):
+        return "codex_subscription"
+    return "openai_direct"
+
+
+def token_capacity_policy_output_tokens_per_hour(provider_class: str) -> int:
+    return {
+        "norllama": TUI_NORLLAMA_OUTPUT_TOKENS_PER_HOUR,
+        "bedrock": TUI_BEDROCK_OUTPUT_TOKENS_PER_HOUR,
+        "codex_subscription": TUI_CODEX_OUTPUT_TOKENS_PER_HOUR,
+        "openai_direct": TUI_OPENAI_OUTPUT_TOKENS_PER_HOUR,
+    }.get(provider_class, TUI_OPENAI_OUTPUT_TOKENS_PER_HOUR)
+
+
+def token_capacity_provider_request_ceiling(provider_class: str) -> int:
+    if provider_class == "norllama":
+        return max(1, LOCAL_LLM_MAX_OUTPUT_TOKENS)
+    if provider_class == "bedrock":
+        return max(1, BEDROCK_CONVERSE_MAX_OUTPUT_TOKENS)
+    return TUI_TOKEN_CAPACITY_CLOUD_MAX_OUTPUT_TOKENS
+
+
+def token_capacity_usage_matches_provider(
+    entry: dict[str, Any], provider_class: str
+) -> bool:
+    normalized = normalize_usage_entry(entry)
+    runtime = normalize_runtime(normalized.get("runtime"))
+    surface = str(normalized.get("provider_surface") or "").strip().lower()
+    ledger_kind = str(normalized.get("charge_ledger_kind") or "").strip()
+    if provider_class == "norllama":
+        return runtime == "localllm" or surface in {"local", "norllama", "ollama"}
+    if provider_class == "bedrock":
+        return surface == "aws-bedrock" or runtime in {
+            "claude",
+            "deepseek",
+            "gptoss",
+            "kimi",
+            "qwen",
+        }
+    if provider_class == "codex_subscription":
+        return (
+            runtime == "codex"
+            and surface == "openai-direct"
+            and ledger_kind == "chatgpt_codex_credit_estimate"
+        )
+    return surface == "openai-direct" and ledger_kind != "chatgpt_codex_credit_estimate"
+
+
+def provider_token_budget_plan(
+    *,
+    prompt: str = "",
+    runtime: str,
+    model: str = "",
+    service_tier: str = "",
+    job_budget: str = "",
+    detail: int = 2,
+    attachments: list[dict[str, Any]] | None = None,
+    estimated_input_tokens: int | None = None,
+    estimated_output_tokens: int | None = None,
+    entries: list[dict[str, Any]] | None = None,
+    cost_route: dict[str, Any] | None = None,
+    cloud_authorized: bool | None = None,
+    enforcement: str = "",
+    now: int | None = None,
+) -> dict[str, Any]:
+    observed_now = _coerce_int(now) or now_ts()
+    normalized_runtime = normalize_runtime(runtime)
+    normalized_budget = normalize_job_budget(job_budget)
+    provider_class = token_capacity_provider_class(
+        normalized_runtime,
+        service_tier,
+        cost_route=cost_route,
+    )
+    target_seconds = job_budget_timeout_seconds(normalized_budget)
+    normalized_attachments = normalize_attachments(attachments or [])
+    input_tokens = (
+        max(0, int(estimated_input_tokens))
+        if estimated_input_tokens is not None
+        else _estimated_text_tokens(prompt)
+        + _estimated_attachment_tokens(normalized_attachments)
+    )
+    output_tokens = (
+        max(0, int(estimated_output_tokens))
+        if estimated_output_tokens is not None
+        else estimate_turn_output_tokens(
+            normalize_response_detail(detail), normalized_budget, prompt
+        )
+    )
+    literal_response = prompt_is_literal_response_request(prompt)
+    if literal_response:
+        output_tokens = min(96, output_tokens or 96)
+
+    all_entries = (
+        usage_entries_with_effective_deltas(
+            [normalize_usage_entry(item) for item in entries]
+        )
+        if entries is not None
+        else usage_entries_with_effective_deltas(load_usage_history())
+    )
+    recent_since = max(0, observed_now - TUI_TOKEN_CAPACITY_USAGE_WINDOW_SECONDS)
+    recent_entries = [
+        item
+        for item in all_entries
+        if token_capacity_usage_matches_provider(item, provider_class)
+        and _coerce_int(item.get("finished_at")) >= recent_since
+        and bool(item.get("success"))
+    ]
+    recent_output_tokens = sum(
+        max(0, _coerce_int(item.get("output_tokens"))) for item in recent_entries
+    )
+    timestamps = [
+        _coerce_int(item.get("finished_at"))
+        for item in recent_entries
+        if _coerce_int(item.get("finished_at"))
+    ]
+    observed_window_seconds = (
+        min(
+            TUI_TOKEN_CAPACITY_USAGE_WINDOW_SECONDS,
+            max(300, observed_now - min(timestamps)),
+        )
+        if timestamps
+        else 0
+    )
+    observed_output_tokens_per_hour = (
+        int(round(recent_output_tokens * 3600 / observed_window_seconds))
+        if observed_window_seconds
+        else 0
+    )
+    policy_output_tokens_per_hour = token_capacity_policy_output_tokens_per_hour(
+        provider_class
+    )
+    planned_window_cap = int(
+        policy_output_tokens_per_hour
+        * target_seconds
+        / 3600
+        * TUI_TOKEN_CAPACITY_WINDOW_FRACTION
+    )
+    remaining_soft_output_tokens = max(
+        0, policy_output_tokens_per_hour - recent_output_tokens
+    )
+    time_window_output_cap = min(planned_window_cap, remaining_soft_output_tokens)
+    provider_request_ceiling = token_capacity_provider_request_ceiling(provider_class)
+    minimum_output_tokens = (
+        96
+        if literal_response
+        else min(TUI_TOKEN_CAPACITY_MIN_OUTPUT_TOKENS, provider_request_ceiling)
+    )
+    bounded_window_cap = max(minimum_output_tokens, time_window_output_cap)
+    execution_output_cap = min(
+        provider_request_ceiling,
+        max(minimum_output_tokens, output_tokens or minimum_output_tokens),
+        bounded_window_cap,
+    )
+    execution_total_token_budget = max(
+        execution_output_cap,
+        int(math.ceil(execution_output_cap * TUI_TOKEN_CAPACITY_TOTAL_BUDGET_FACTOR)),
+    )
+    if cloud_authorized is None:
+        cloud_authorized = provider_class != "norllama"
+
+    capacity_source = "configured_policy"
+    confidence = "policy"
+    subscription_capacity: dict[str, Any] = {}
+    if provider_class == "codex_subscription":
+        subscription_capacity = codex_account_capacity_snapshot(
+            all_entries,
+            now=observed_now,
+        )
+        capacity_source = "configured_policy+subscription_forecast"
+        confidence = (
+            "subscription_observed"
+            if subscription_capacity.get("fresh")
+            else "subscription_stale"
+        )
+    elif recent_entries:
+        capacity_source = "configured_policy+observed_ledger"
+        confidence = "policy_with_observations"
+
+    if not enforcement:
+        enforcement = (
+            "request_hard" if provider_class in {"norllama", "bedrock"} else "advisory"
+        )
+    return normalize_provider_token_budget_plan(
+        {
+            "provider_class": provider_class,
+            "target_seconds": target_seconds,
+            "estimated_input_tokens": input_tokens,
+            "estimated_output_tokens": output_tokens,
+            "soft_output_tokens_per_hour": policy_output_tokens_per_hour,
+            "recent_output_tokens": recent_output_tokens,
+            "recent_observed_output_tokens_per_hour": observed_output_tokens_per_hour,
+            "recent_sample_count": len(recent_entries),
+            "recent_window_seconds": (
+                observed_window_seconds or TUI_TOKEN_CAPACITY_USAGE_WINDOW_SECONDS
+            ),
+            "remaining_soft_output_tokens": remaining_soft_output_tokens,
+            "time_window_output_cap": time_window_output_cap,
+            "execution_output_cap": execution_output_cap,
+            "execution_total_token_budget": execution_total_token_budget,
+            "local_token_budget": (
+                execution_total_token_budget if provider_class == "norllama" else 0
+            ),
+            "cloud_token_budget": (
+                execution_total_token_budget
+                if provider_class != "norllama" and cloud_authorized
+                else 0
+            ),
+            "cloud_authorized": bool(cloud_authorized),
+            "capacity_source": capacity_source,
+            "confidence": confidence,
+            "enforcement": enforcement,
+            "subscription_capacity_state": str(
+                subscription_capacity.get("state") or ""
+            ),
+            "subscription_capacity_percent_left": subscription_capacity.get(
+                "minimum_window_percent_left"
+            ),
+            "subscription_capacity_fresh": bool(subscription_capacity.get("fresh")),
+            "subscription_reset_seconds": _coerce_int(
+                (subscription_capacity.get("forecast") or {}).get(
+                    "earliest_reset_seconds"
+                )
+            ),
+        }
+    )
+
+
 def default_turn_plan_estimate() -> dict[str, Any]:
     return {
         "schema": "norman.tui.turn-plan-estimate.v1",
@@ -20317,6 +20873,7 @@ def default_turn_plan_estimate() -> dict[str, Any]:
         "timeout_seconds": 0,
         "attachment_count": 0,
         "success": False,
+        "token_capacity_plan": default_provider_token_budget_plan(),
     }
 
 
@@ -20348,6 +20905,9 @@ def normalize_turn_plan_estimate(value: Any) -> dict[str, Any]:
     )
     payload["cost_configured"] = bool(payload.get("cost_configured"))
     payload["success"] = bool(payload.get("success"))
+    payload["token_capacity_plan"] = normalize_provider_token_budget_plan(
+        payload.get("token_capacity_plan")
+    )
     for key in (
         "understood_task",
         "plan_summary",
@@ -20582,6 +21142,17 @@ def build_turn_plan_estimate(
     output_tokens = estimate_turn_output_tokens(
         normalized_detail, normalized_budget, prompt
     )
+    token_capacity_plan = provider_token_budget_plan(
+        prompt=prompt,
+        runtime=normalized_runtime,
+        model=normalized_model,
+        service_tier=normalized_tier,
+        job_budget=normalized_budget,
+        detail=normalized_detail,
+        attachments=normalized_attachments,
+        estimated_input_tokens=input_tokens,
+        estimated_output_tokens=output_tokens,
+    )
     cost = estimate_usage_cost(
         {
             "input_tokens": input_tokens,
@@ -20631,6 +21202,7 @@ def build_turn_plan_estimate(
                 timeout_seconds, normalized_budget
             ),
             "attachment_count": len(normalized_attachments),
+            "token_capacity_plan": token_capacity_plan,
         }
     )
 
@@ -21779,6 +22351,7 @@ def default_codex_account_capacity() -> dict[str, Any]:
     return {
         "schema": "norman.codex-account-capacity.v1",
         "source": "unavailable",
+        "observed_command": "",
         "observed_at": 0,
         "last_probe_at": 0,
         "auth_mode": "",
@@ -21789,6 +22362,8 @@ def default_codex_account_capacity() -> dict[str, Any]:
         "minimum_window_percent_left": None,
         "windows": [],
         "reset_hint": "",
+        "credits_available": None,
+        "usage_limit_resets_available": None,
         "last_error": "",
         "eligible_for_subscription_route": False,
         "forecast": {
@@ -21808,7 +22383,9 @@ def default_codex_account_capacity() -> dict[str, Any]:
     }
 
 
-def _codex_account_capacity_reset_seconds(value: Any) -> int:
+def _codex_account_capacity_reset_seconds(
+    value: Any, *, observed_at: int | None = None
+) -> int:
     text = str(value or "").strip().lower()
     if not text:
         return 0
@@ -21826,7 +22403,37 @@ def _codex_account_capacity_reset_seconds(value: Any) -> int:
             total += numeric * 60 * 60
         else:
             total += numeric * 60
-    return total
+    if total:
+        return total
+    match = re.search(
+        r"\b(?P<hour>\d{1,2}):(?P<minute>\d{2})\s+on\s+"
+        r"(?P<day>\d{1,2})\s+(?P<month>[A-Za-z]{3,9})\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return 0
+    observed = _coerce_int(observed_at) or now_ts()
+    observed_dt = datetime.fromtimestamp(observed)
+    stamp = (
+        f"{match.group('day')} {match.group('month').title()} "
+        f"{observed_dt.year} {match.group('hour')}:{match.group('minute')}"
+    )
+    candidate: datetime | None = None
+    for pattern in ("%d %b %Y %H:%M", "%d %B %Y %H:%M"):
+        try:
+            candidate = datetime.strptime(stamp, pattern)
+            break
+        except ValueError:
+            continue
+    if candidate is None:
+        return 0
+    if candidate < observed_dt:
+        try:
+            candidate = candidate.replace(year=candidate.year + 1)
+        except ValueError:
+            return 0
+    return max(0, int(candidate.timestamp() - observed))
 
 
 def _codex_account_capacity_window_label(prefix: Any, line: Any) -> str:
@@ -21883,6 +22490,7 @@ def parse_codex_account_capacity_pane(
     )
     windows: list[dict[str, Any]] = []
     seen: set[tuple[str, int, str]] = set()
+    latest_window_index: int | None = None
     percentage_patterns = (
         (
             r"\b(?P<percent>\d{1,3})\s*%\s*(?:left|remaining|available)\b",
@@ -21899,10 +22507,16 @@ def parse_codex_account_capacity_pane(
         line = re.sub(r"\s+", " ", raw_line).strip()
         if not line:
             continue
+        if re.search(r"\bcontext(?:\s+window)?\b", line, flags=re.IGNORECASE):
+            continue
         reset_hint = _codex_account_capacity_reset_hint(line)
-        reset_seconds = _codex_account_capacity_reset_seconds(reset_hint)
+        reset_seconds = _codex_account_capacity_reset_seconds(
+            reset_hint, observed_at=observed
+        )
+        matched_capacity = False
         for pattern, reports_capacity_left in percentage_patterns:
             for match in re.finditer(pattern, line, flags=re.IGNORECASE):
+                matched_capacity = True
                 observed_percent = min(100, max(0, _coerce_int(match.group("percent"))))
                 percent_left = (
                     observed_percent
@@ -21924,6 +22538,35 @@ def parse_codex_account_capacity_pane(
                         "reset_seconds": reset_seconds,
                     }
                 )
+                latest_window_index = len(windows) - 1
+        if (
+            reset_hint
+            and not matched_capacity
+            and latest_window_index is not None
+            and not windows[latest_window_index]["reset_hint"]
+        ):
+            windows[latest_window_index]["reset_hint"] = reset_hint
+            windows[latest_window_index]["reset_seconds"] = (
+                _codex_account_capacity_reset_seconds(reset_hint, observed_at=observed)
+            )
+    credits_match = re.search(
+        r"\bcredits?\s*:\s*(?P<credits>[\d,]+)\s+credits?\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    resets_match = re.search(
+        r"\byou have\s+(?P<resets>\d+)\s+usage limit resets?\s+available\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if credits_match:
+        payload["credits_available"] = max(
+            0, _coerce_int(credits_match.group("credits").replace(",", ""))
+        )
+    if resets_match:
+        payload["usage_limit_resets_available"] = max(
+            0, _coerce_int(resets_match.group("resets"))
+        )
     lower = text.lower()
     explicit_limit = (
         "usage limit" in lower
@@ -21963,6 +22606,9 @@ def normalize_codex_account_capacity(
         payload.update(value)
     payload["schema"] = "norman.codex-account-capacity.v1"
     payload["source"] = str(payload.get("source") or "unavailable").strip().lower()
+    payload["observed_command"] = (
+        str(payload.get("observed_command") or "").strip().lower()
+    )
     payload["observed_at"] = max(0, _coerce_int(payload.get("observed_at")))
     payload["last_probe_at"] = max(0, _coerce_int(payload.get("last_probe_at")))
     payload["auth_mode"] = str(payload.get("auth_mode") or "").strip().lower()
@@ -21992,11 +22638,23 @@ def normalize_codex_account_capacity(
                     "reset_seconds": max(
                         0,
                         _coerce_int(raw_window.get("reset_seconds"))
-                        or _codex_account_capacity_reset_seconds(reset_hint),
+                        or _codex_account_capacity_reset_seconds(
+                            reset_hint, observed_at=payload["observed_at"]
+                        ),
                     ),
                 }
             )
     payload["windows"] = clean_windows
+    credits_available = payload.get("credits_available")
+    payload["credits_available"] = (
+        max(0, _coerce_int(credits_available))
+        if credits_available is not None
+        else None
+    )
+    resets_available = payload.get("usage_limit_resets_available")
+    payload["usage_limit_resets_available"] = (
+        max(0, _coerce_int(resets_available)) if resets_available is not None else None
+    )
     minimum = min((item["percent_left"] for item in clean_windows), default=None)
     payload["minimum_window_percent_left"] = minimum
     payload["capacity_percent_left"] = minimum
@@ -22113,6 +22771,103 @@ def codex_subscription_capacity_personal_lane() -> bool:
     )
 
 
+def codex_subscription_capacity_route_lane() -> bool:
+    if codex_subscription_capacity_personal_lane():
+        return True
+    return bool(
+        CODEX_SUBSCRIPTION_ROUTE_WORK_ENABLED
+        and semantic_agent_group(AGENT_SLUG, AGENT_GROUP) == "work"
+        and str(usage_billing_owner() or "").strip()
+    )
+
+
+def codex_subscription_capacity_reset_seconds(value: Any) -> int:
+    return min(
+        (
+            max(0, _coerce_int(item.get("reset_seconds")))
+            for item in (value.get("windows") if isinstance(value, dict) else [])
+            if isinstance(item, dict) and _coerce_int(item.get("reset_seconds")) > 0
+        ),
+        default=0,
+    )
+
+
+def codex_subscription_capacity_route_forecast(
+    capacity: dict[str, Any],
+    *,
+    prompt: Any = "",
+    job_budget: Any = "",
+    detail: Any = 2,
+    estimated_output_tokens: int | None = None,
+) -> dict[str, Any]:
+    """Build a conservative plan-capacity envelope, never a provider credit quote."""
+    snapshot = normalize_codex_account_capacity(capacity)
+    reset_seconds = codex_subscription_capacity_reset_seconds(snapshot)
+    normalized_budget = normalize_job_budget(job_budget)
+    target_seconds = job_budget_timeout_seconds(normalized_budget)
+    planned_output_tokens = (
+        max(0, _coerce_int(estimated_output_tokens))
+        if estimated_output_tokens is not None
+        else estimate_turn_output_tokens(
+            normalize_response_detail(detail),
+            normalized_budget,
+            str(prompt or ""),
+        )
+    )
+    policy_output_tokens_to_reset = (
+        int(
+            TUI_CODEX_OUTPUT_TOKENS_PER_HOUR
+            * reset_seconds
+            / 3600
+            * CODEX_SUBSCRIPTION_ROUTE_FORECAST_CAP_FRACTION
+        )
+        if reset_seconds
+        else 0
+    )
+    if policy_output_tokens_to_reset:
+        policy_output_tokens_to_reset = max(
+            TUI_TOKEN_CAPACITY_MIN_OUTPUT_TOKENS,
+            policy_output_tokens_to_reset,
+        )
+    observed_forecast = (
+        snapshot.get("forecast") if isinstance(snapshot.get("forecast"), dict) else {}
+    )
+    projected_tokens = max(
+        0,
+        _coerce_int(observed_forecast.get("projected_tokens_to_earliest_reset")),
+    )
+    projected_with_turn = projected_tokens + planned_output_tokens
+    reset_known = reset_seconds > 0
+    turn_fits_reset = reset_known and target_seconds <= reset_seconds
+    fits_policy_envelope = (
+        reset_known
+        and planned_output_tokens <= policy_output_tokens_to_reset
+        and projected_with_turn <= policy_output_tokens_to_reset
+    )
+    if not reset_known:
+        reason = "no subscription reset time was observed"
+    elif not turn_fits_reset:
+        reason = "planned turn extends beyond the subscription reset window"
+    elif not fits_policy_envelope:
+        reason = "planned turn exceeds the conservative subscription forecast"
+    else:
+        reason = "planned turn fits the conservative subscription reset forecast"
+    return {
+        "schema": "norman.codex-subscription-route-forecast.v1",
+        "reset_seconds": reset_seconds,
+        "target_seconds": target_seconds,
+        "estimated_output_tokens": planned_output_tokens,
+        "policy_output_tokens_to_reset": policy_output_tokens_to_reset,
+        "observed_projected_tokens_to_reset": projected_tokens,
+        "projected_tokens_to_reset_with_turn": projected_with_turn,
+        "reset_known": reset_known,
+        "turn_fits_reset": turn_fits_reset,
+        "fits_policy_envelope": fits_policy_envelope,
+        "reason": reason,
+        "credits_available_informational": snapshot.get("credits_available"),
+    }
+
+
 def codex_account_capacity_history(limit: int = 48) -> list[dict[str, Any]]:
     clean_limit = max(0, min(2880, _coerce_int(limit)))
     if clean_limit <= 0:
@@ -22143,6 +22898,10 @@ def codex_account_capacity_history(limit: int = 48) -> list[dict[str, Any]]:
                 "state": item.get("state"),
                 "minimum_window_percent_left": item.get("minimum_window_percent_left"),
                 "reset_hint": item.get("reset_hint"),
+                "credits_available": item.get("credits_available"),
+                "usage_limit_resets_available": item.get(
+                    "usage_limit_resets_available"
+                ),
                 "windows": item.get("windows"),
             }
         )
@@ -22177,12 +22936,21 @@ def codex_account_capacity_snapshot(
     )
     payload["eligible_for_subscription_route"] = bool(
         CODEX_SUBSCRIPTION_ROUTE_PREFERENCE_ENABLED
-        and codex_subscription_capacity_personal_lane()
+        and codex_subscription_capacity_route_lane()
         and payload["auth_mode"] == "chatgpt"
         and payload["fresh"]
         and payload["state"] == "available"
         and _coerce_int(payload.get("minimum_window_percent_left"))
         >= CODEX_SUBSCRIPTION_ROUTE_MIN_PERCENT_LEFT
+        and codex_subscription_capacity_reset_seconds(payload)
+        >= CODEX_SUBSCRIPTION_ROUTE_MIN_RESET_SECONDS
+    )
+    payload["credit_extension_allowed"] = CODEX_CHATGPT_CREDIT_EXTENSION_ALLOWED
+    payload["plan_reserve_percent_left"] = CODEX_SUBSCRIPTION_ROUTE_MIN_PERCENT_LEFT
+    payload["credit_extension_guard"] = (
+        "allowed"
+        if CODEX_CHATGPT_CREDIT_EXTENSION_ALLOWED
+        else "plan-capacity-required"
     )
     payload["history"] = codex_account_capacity_history()
     return payload
@@ -22223,7 +22991,13 @@ def _codex_account_capacity_probe_due(
         _coerce_int(capacity.get("observed_at")),
     )
     interval_seconds = CODEX_ACCOUNT_CAPACITY_POLL_INTERVAL_SECONDS
-    if str(capacity.get("source") or "").strip().lower() == "unsupported_command":
+    probe_command = _safe_codex_account_capacity_probe_command(
+        CODEX_ACCOUNT_CAPACITY_COMMAND
+    )
+    if (
+        str(capacity.get("source") or "").strip().lower() == "unsupported_command"
+        and str(capacity.get("observed_command") or "").strip().lower() == probe_command
+    ):
         interval_seconds = CODEX_ACCOUNT_CAPACITY_UNSUPPORTED_BACKOFF_SECONDS
     return not last_probe_at or (observed_now - last_probe_at >= interval_seconds)
 
@@ -22291,7 +23065,9 @@ def _capture_codex_account_capacity_command(
     baseline_pane: Any = "",
 ) -> dict[str, Any]:
     baseline_hash = _pane_hash(baseline_pane)
-    send_text(command)
+    if str(command or "").strip().lower() != "/status":
+        return {}
+    send_codex_status_probe()
     deadline = time.time() + CODEX_ACCOUNT_CAPACITY_PROBE_TIMEOUT_SECONDS
     while time.time() < deadline:
         time.sleep(CODEX_ACCOUNT_CAPACITY_PROBE_POLL_SECONDS)
@@ -22322,6 +23098,12 @@ def _codex_account_capacity_command_unsupported(value: Any, command: str) -> boo
     )
 
 
+def _safe_codex_account_capacity_probe_command(command: Any) -> str:
+    """Permit the read-only inspection command, never an account reset command."""
+    clean_command = str(command or "").strip().lower()
+    return "/status" if clean_command == "/status" else ""
+
+
 def _clear_codex_account_capacity_command() -> None:
     send_keys("Escape")
     send_keys("C-u")
@@ -22343,29 +23125,28 @@ def _run_codex_account_capacity_probe() -> None:
             pane=pane, auth_mode=auth_mode, pending=False
         ):
             return
-        sent_command = True
-        payload = _capture_codex_account_capacity_command(
-            CODEX_ACCOUNT_CAPACITY_COMMAND,
-            observed_at=observed_at,
-            auth_mode=auth_mode,
-            baseline_pane=pane,
+        probe_command = _safe_codex_account_capacity_probe_command(
+            CODEX_ACCOUNT_CAPACITY_COMMAND
         )
-        unsupported_command = (
-            not payload
-            and _codex_account_capacity_command_unsupported(
-                capture_pane(), CODEX_ACCOUNT_CAPACITY_COMMAND
+        if not probe_command:
+            failure = True
+            payload = default_codex_account_capacity()
+            payload.update(
+                {
+                    "source": "probe_command_rejected",
+                    "observed_at": observed_at,
+                    "last_probe_at": observed_at,
+                    "auth_mode": auth_mode,
+                    "last_error": (
+                        "automatic capacity probing only permits /status; "
+                        "/usage can consume an account limit reset"
+                    ),
+                }
             )
-        )
-        fallback_command = CODEX_ACCOUNT_CAPACITY_FALLBACK_COMMAND
-        if (
-            not payload
-            and not unsupported_command
-            and fallback_command
-            and fallback_command != CODEX_ACCOUNT_CAPACITY_COMMAND
-        ):
-            _clear_codex_account_capacity_command()
+        else:
+            sent_command = True
             payload = _capture_codex_account_capacity_command(
-                fallback_command,
+                probe_command,
                 observed_at=observed_at,
                 auth_mode=auth_mode,
                 baseline_pane=pane,
@@ -22373,27 +23154,32 @@ def _run_codex_account_capacity_probe() -> None:
             unsupported_command = (
                 not payload
                 and _codex_account_capacity_command_unsupported(
-                    capture_pane(), fallback_command
+                    capture_pane(), probe_command
                 )
             )
-        if not payload:
-            failure = True
-            payload = default_codex_account_capacity()
-            payload.update(
-                {
-                    "source": (
-                        "unsupported_command" if unsupported_command else "probe_failed"
-                    ),
-                    "observed_at": observed_at,
-                    "last_probe_at": observed_at,
-                    "auth_mode": auth_mode,
-                    "last_error": (
-                        "configured capacity command is unsupported by this Codex CLI"
-                        if unsupported_command
-                        else "interactive capacity command returned no aggregate limit"
-                    ),
-                }
-            )
+            if not payload:
+                failure = True
+                payload = default_codex_account_capacity()
+                payload.update(
+                    {
+                        "source": (
+                            "unsupported_command"
+                            if unsupported_command
+                            else "probe_failed"
+                        ),
+                        "observed_command": probe_command,
+                        "observed_at": observed_at,
+                        "last_probe_at": observed_at,
+                        "auth_mode": auth_mode,
+                        "last_error": (
+                            "configured capacity command is unsupported by this Codex CLI"
+                            if unsupported_command
+                            else "interactive capacity command returned no aggregate limit"
+                        ),
+                    }
+                )
+            else:
+                payload["observed_command"] = probe_command
     except Exception as exc:
         failure = True
         payload = default_codex_account_capacity()
@@ -22414,6 +23200,20 @@ def _run_codex_account_capacity_probe() -> None:
                 pass
     _persist_codex_account_capacity(payload)
     _record_codex_account_capacity_probe(payload, failed=failure)
+    if payload.get("source") == "interactive_usage":
+        try:
+            maybe_start_subscription_capacity_self_improvement(
+                codex_account_capacity_snapshot(auth_mode=auth_mode)
+            )
+        except Exception as exc:
+            append_audit_event(
+                event_type="chat.subscription-self-improvement-skipped",
+                summary="Could not evaluate subscription self-improvement work.",
+                detail=type(exc).__name__,
+                severity="warn",
+                actor_type="system",
+                thread_id=read_text(THREAD_ID_PATH),
+            )
 
 
 def maybe_schedule_codex_account_capacity_probe(
@@ -22454,6 +23254,9 @@ def codex_subscription_capacity_route_decision(
     runtime: Any,
     model: Any,
     service_tier: Any,
+    prompt: Any = "",
+    job_budget: Any = "",
+    detail: Any = 2,
     route_lock: bool = False,
     service_tier_recovery: dict[str, Any] | None = None,
     capacity: dict[str, Any] | None = None,
@@ -22466,12 +23269,19 @@ def codex_subscription_capacity_route_decision(
         if capacity is None
         else normalize_codex_account_capacity(capacity)
     )
+    route_forecast = codex_subscription_capacity_route_forecast(
+        snapshot,
+        prompt=prompt,
+        job_budget=job_budget,
+        detail=detail,
+    )
     summary = {
         "state": snapshot.get("state"),
         "fresh": bool(snapshot.get("fresh")),
         "observed_at": _coerce_int(snapshot.get("observed_at")),
         "minimum_window_percent_left": snapshot.get("minimum_window_percent_left"),
         "reset_hint": snapshot.get("reset_hint"),
+        "forecast": route_forecast,
     }
     decision = {
         "enabled": CODEX_SUBSCRIPTION_ROUTE_PREFERENCE_ENABLED,
@@ -22494,8 +23304,8 @@ def codex_subscription_capacity_route_decision(
     if normalized_runtime != "codex":
         decision["reason"] = "non-Codex runtime selected"
         return decision
-    if not codex_subscription_capacity_personal_lane():
-        decision["reason"] = "console is not a personal subscription lane"
+    if not codex_subscription_capacity_route_lane():
+        decision["reason"] = "console is not an enabled subscription lane"
         return decision
     if snapshot.get("auth_mode") != "chatgpt":
         decision["reason"] = "Codex is not signed in with ChatGPT"
@@ -22510,6 +23320,18 @@ def codex_subscription_capacity_route_decision(
         CODEX_SUBSCRIPTION_ROUTE_MIN_PERCENT_LEFT
     ):
         decision["reason"] = "subscription capacity is below the routing reserve"
+        return decision
+    if (
+        _coerce_int(route_forecast.get("reset_seconds"))
+        < CODEX_SUBSCRIPTION_ROUTE_MIN_RESET_SECONDS
+    ):
+        decision["reason"] = "subscription reset window is unavailable or too near"
+        return decision
+    if not route_forecast.get("turn_fits_reset"):
+        decision["reason"] = str(route_forecast.get("reason") or "")
+        return decision
+    if not route_forecast.get("fits_policy_envelope"):
+        decision["reason"] = str(route_forecast.get("reason") or "")
         return decision
     execution_tier = service_tier_execution_tier(normalized_tier)
     if execution_tier != "default" or not codex_profile_v2_for_service_tier(
@@ -22526,12 +23348,284 @@ def codex_subscription_capacity_route_decision(
     decision.update(
         {
             "selected": True,
-            "reason": "fresh ChatGPT subscription capacity preferred over Bedrock",
+            "reason": (
+                "fresh ChatGPT subscription capacity fits the reset-aware "
+                "forecast and is preferred over Bedrock"
+            ),
             "selected_model": direct_model,
             "selected_service_tier": "flex",
         }
     )
     return decision
+
+
+def codex_openai_direct_execution_decision(
+    service_tier: Any,
+    *,
+    auth_mode: Any = "",
+    prompt: Any = "",
+    job_budget: Any = "",
+    detail: Any = 2,
+    estimated_output_tokens: int | None = None,
+) -> dict[str, Any]:
+    normalized_tier = normalize_service_tier(service_tier)
+    provider_surface = (
+        str(usage_provider_tags(normalized_tier).get("provider_surface") or "")
+        .strip()
+        .lower()
+    )
+    observed_auth_mode = str(auth_mode or stored_codex_auth_mode()).strip().lower()
+    decision = {
+        "allowed": True,
+        "provider_surface": provider_surface,
+        "auth_mode": observed_auth_mode,
+        "api_spend_override": CODEX_ALLOW_OPENAI_API_SPEND,
+        "credit_extension_allowed": CODEX_CHATGPT_CREDIT_EXTENSION_ALLOWED,
+        "reason_code": "not_applicable",
+        "reason": "selected route does not use OpenAI direct",
+    }
+    if provider_surface != "openai-direct":
+        return decision
+    if observed_auth_mode == "chatgpt":
+        if CODEX_CHATGPT_CREDIT_EXTENSION_ALLOWED:
+            decision.update(
+                {
+                    "reason_code": "chatgpt_credit_extension_allowed",
+                    "reason": "verified ChatGPT subscription authentication",
+                }
+            )
+            return decision
+        capacity = codex_account_capacity_snapshot(auth_mode=observed_auth_mode)
+        minimum_percent_left = _coerce_int(capacity.get("minimum_window_percent_left"))
+        reset_seconds = codex_subscription_capacity_reset_seconds(capacity)
+        route_forecast = codex_subscription_capacity_route_forecast(
+            capacity,
+            prompt=prompt,
+            job_budget=job_budget,
+            detail=detail,
+            estimated_output_tokens=estimated_output_tokens,
+        )
+        decision["capacity"] = {
+            "state": capacity.get("state"),
+            "fresh": bool(capacity.get("fresh")),
+            "minimum_window_percent_left": capacity.get("minimum_window_percent_left"),
+            "reset_seconds": reset_seconds,
+            "plan_reserve_percent_left": CODEX_SUBSCRIPTION_ROUTE_MIN_PERCENT_LEFT,
+            "forecast": route_forecast,
+        }
+        if (
+            bool(capacity.get("fresh"))
+            and capacity.get("state") == "available"
+            and minimum_percent_left >= CODEX_SUBSCRIPTION_ROUTE_MIN_PERCENT_LEFT
+            and reset_seconds >= CODEX_SUBSCRIPTION_ROUTE_MIN_RESET_SECONDS
+            and bool(route_forecast.get("turn_fits_reset"))
+            and bool(route_forecast.get("fits_policy_envelope"))
+        ):
+            decision.update(
+                {
+                    "reason_code": "chatgpt_plan_capacity_verified",
+                    "reason": (
+                        "verified ChatGPT plan capacity is above the no-credit "
+                        "extension reserve"
+                    ),
+                }
+            )
+            return decision
+        decision.update(
+            {
+                "allowed": False,
+                "reason_code": "chatgpt_credit_extension_guard",
+                "reason": (
+                    "paid ChatGPT credit extension is disabled and fresh "
+                    "above-reserve plan capacity or a reset-aware turn forecast "
+                    "was not verified"
+                ),
+            }
+        )
+        return decision
+    if CODEX_ALLOW_OPENAI_API_SPEND:
+        decision.update(
+            {
+                "reason_code": "api_spend_override",
+                "reason": "explicit OpenAI API spend override",
+            }
+        )
+        return decision
+    decision.update(
+        {
+            "allowed": False,
+            "reason_code": "api_spend_disabled",
+            "reason": (
+                "OpenAI direct is blocked because Codex is not authenticated with "
+                "ChatGPT and API spending is disabled."
+            ),
+        }
+    )
+    return decision
+
+
+def codex_openai_direct_execution_block_message(decision: dict[str, Any]) -> str:
+    if decision.get("reason_code") == "chatgpt_credit_extension_guard":
+        return (
+            "OpenAI direct request blocked before launch: paid ChatGPT credit "
+            "extension is disabled and fresh subscription plan capacity above the "
+            "reserve or reset-aware turn forecast was not verified. No OpenAI API "
+            "request was sent. No paid ChatGPT credit extension was sent. Use "
+            "Norllama or Bedrock."
+        )
+    auth_mode = str(decision.get("auth_mode") or "unknown").strip() or "unknown"
+    return (
+        "OpenAI direct request blocked before launch: this console is authenticated "
+        f"as {auth_mode}, not ChatGPT, and API spending is disabled. "
+        "No OpenAI API request was sent. Use Norllama or Bedrock, sign in with "
+        "ChatGPT, or explicitly enable NORMAN_CODEX_ALLOW_OPENAI_API_SPEND."
+    )
+
+
+def is_subscription_capacity_self_improvement_prompt(prompt: Any) -> bool:
+    return SUBSCRIPTION_SELF_IMPROVEMENT_MARKER in str(prompt or "")
+
+
+def subscription_capacity_self_improvement_prompt() -> str:
+    return "\n".join(
+        [
+            SUBSCRIPTION_SELF_IMPROVEMENT_MARKER,
+            "Run one bounded, read-only self-improvement review of this Norman "
+            "workspace.",
+            "Inspect code, tests, and current local state only. Do not edit files, "
+            "run networked commands, use connectors, restart services, deploy, or "
+            "access secrets.",
+            "Return a concise ranked packet: the most valuable verified improvement, "
+            "supporting evidence with file references, a safe next implementation "
+            "step, and the focused verification command.",
+        ]
+    )
+
+
+def codex_subscription_self_improvement_decision(
+    capacity: dict[str, Any] | None = None,
+    *,
+    require_idle: bool = True,
+    now: int | None = None,
+) -> dict[str, Any]:
+    observed_now = _coerce_int(now) or now_ts()
+    snapshot = (
+        codex_account_capacity_snapshot(now=observed_now)
+        if capacity is None
+        else normalize_codex_account_capacity(capacity, now=observed_now)
+    )
+    route_forecast = codex_subscription_capacity_route_forecast(
+        snapshot,
+        prompt=subscription_capacity_self_improvement_prompt(),
+        job_budget="2m",
+        detail=2,
+        estimated_output_tokens=CODEX_SUBSCRIPTION_SELF_IMPROVEMENT_ESTIMATED_OUTPUT_TOKENS,
+    )
+    reset_seconds = _coerce_int(route_forecast.get("reset_seconds"))
+    decision = {
+        "eligible": False,
+        "reason": "subscription self-improvement is disabled",
+        "auth_mode": str(snapshot.get("auth_mode") or "").strip().lower(),
+        "capacity_percent_left": snapshot.get("minimum_window_percent_left"),
+        "reset_seconds": reset_seconds,
+        "reset_window_id": (
+            str((observed_now + reset_seconds) // 300) if reset_seconds else ""
+        ),
+        "forecast": route_forecast,
+    }
+    if not CODEX_SUBSCRIPTION_SELF_IMPROVEMENT_ENABLED:
+        return decision
+    if not codex_subscription_capacity_personal_lane():
+        decision["reason"] = "console is not a personal subscription lane"
+        return decision
+    if decision["auth_mode"] != "chatgpt" or stored_codex_auth_mode() != "chatgpt":
+        decision["reason"] = "ChatGPT authentication is not currently verified"
+        return decision
+    if not snapshot.get("fresh") or snapshot.get("state") != "available":
+        decision["reason"] = "subscription capacity is unavailable or stale"
+        return decision
+    if (
+        _coerce_int(snapshot.get("minimum_window_percent_left"))
+        < CODEX_SUBSCRIPTION_SELF_IMPROVEMENT_MIN_PERCENT_LEFT
+    ):
+        decision["reason"] = (
+            "subscription capacity is below the self-improvement reserve"
+        )
+        return decision
+    if not (
+        CODEX_SUBSCRIPTION_SELF_IMPROVEMENT_MIN_RESET_SECONDS
+        <= reset_seconds
+        <= CODEX_SUBSCRIPTION_SELF_IMPROVEMENT_MAX_RESET_SECONDS
+    ):
+        decision["reason"] = "subscription reset is outside the opportunistic window"
+        return decision
+    if not route_forecast.get("turn_fits_reset") or not route_forecast.get(
+        "fits_policy_envelope"
+    ):
+        decision["reason"] = str(route_forecast.get("reason") or "")
+        return decision
+    if require_idle:
+        meta = load_status_meta()
+        if (
+            bool(meta.get("pending"))
+            or bool(normalize_queue(meta.get("queued_prompts")))
+            or prompt_runtime_alive()
+            or prompt_thread_alive()
+        ):
+            decision["reason"] = "console is not idle"
+            return decision
+    decision.update(
+        {
+            "eligible": True,
+            "reason": "fresh subscription capacity is available near reset",
+        }
+    )
+    return decision
+
+
+def maybe_start_subscription_capacity_self_improvement(
+    capacity: dict[str, Any] | None = None,
+) -> bool:
+    decision = codex_subscription_self_improvement_decision(capacity)
+    if not decision["eligible"]:
+        return False
+    state = read_json(CODEX_SUBSCRIPTION_SELF_IMPROVEMENT_STATE_PATH, {})
+    reset_window_id = str(decision["reset_window_id"])
+    if str(state.get("last_reset_window_id") or "") == reset_window_id:
+        return False
+    accepted, _snapshot = start_web_prompt(
+        subscription_capacity_self_improvement_prompt(),
+        "balanced",
+        2,
+        "2m",
+        runtime="codex",
+        service_tier="flex",
+        route_lock=True,
+        optimization_mode="raw",
+        source="system",
+    )
+    if not accepted:
+        return False
+    payload = {
+        "last_reset_window_id": reset_window_id,
+        "last_started_at": now_ts(),
+        "capacity_percent_left": decision["capacity_percent_left"],
+        "reset_seconds": decision["reset_seconds"],
+    }
+    write_json(CODEX_SUBSCRIPTION_SELF_IMPROVEMENT_STATE_PATH, payload)
+    append_audit_event(
+        event_type="chat.subscription-self-improvement-started",
+        summary="Started a read-only self-improvement review before subscription reset.",
+        detail=(
+            f"{decision['capacity_percent_left']}% capacity remained with "
+            f"{decision['reset_seconds']} seconds to reset."
+        ),
+        severity="info",
+        actor_type="system",
+        thread_id=read_text(THREAD_ID_PATH),
+        payload=payload,
+    )
+    return True
 
 
 def usage_snapshot(
@@ -25563,6 +26657,7 @@ def save_status_meta(meta: dict[str, Any]) -> dict[str, Any]:
         )
     payload["live_turn"] = normalize_live_turn(payload.get("live_turn"))
     payload["turn_plan"] = normalize_turn_plan_estimate(payload.get("turn_plan"))
+    payload["working_recap"] = normalize_working_recap(payload.get("working_recap"))
     payload["updated_at"] = now_ts()
     write_json(STATUS_PATH, payload)
     return payload
@@ -25970,6 +27065,7 @@ def queue_prompt(
     interlace_mode: str = "",
     optimization_mode: str = "",
     cost_route: dict[str, Any] | None = None,
+    source: str = "",
 ) -> dict[str, Any]:
     duplicate_queue_position = 0
     duplicate_queue_state = ""
@@ -25977,7 +27073,7 @@ def queue_prompt(
         meta = load_status_meta()
         queue = normalize_queue(meta.get("queued_prompts"))
         normalized_relay = normalize_relay_callback(relay_callback)
-        source = normalize_queue_source("", normalized_relay, prompt)
+        source = normalize_queue_source(source, normalized_relay, prompt)
         position = len(queue) + 1
         normalized_attachments = normalize_attachments(attachments)
         normalized_service_tier = normalize_service_tier(service_tier)
@@ -26552,6 +27648,27 @@ def send_text(text: str) -> None:
     finally:
         run(tmux_cmd("delete-buffer", "-b", buffer_name))
     record_action("tmux-send", f"Sent raw text to tmux: {summarize_text(text, 140)}")
+
+
+def send_codex_status_probe() -> None:
+    """Submit /status after its paste has settled in older Codex TUI builds."""
+    if not ensure_session():
+        raise RuntimeError(f"{WORKER_SESSION_LABEL.capitalize()} could not be started.")
+    buffer_name = f"{SESSION}-status-{int(time.time() * 1000)}"
+    try:
+        run(
+            tmux_cmd("load-buffer", "-b", buffer_name, "-"),
+            input_text="/status",
+            check=True,
+        )
+        run(
+            tmux_cmd("paste-buffer", "-d", "-b", buffer_name, "-t", f"{SESSION}:0.0"),
+            check=True,
+        )
+        time.sleep(CODEX_ACCOUNT_CAPACITY_STATUS_SUBMIT_SETTLE_SECONDS)
+        run(tmux_cmd("send-keys", "-t", f"{SESSION}:0.0", "Enter"), check=True)
+    finally:
+        run(tmux_cmd("delete-buffer", "-b", buffer_name))
 
 
 def send_keys(*keys: str) -> None:
@@ -28039,7 +29156,7 @@ def bedrock_context_pack_plan(
         requested_model = normalized_model
     profile_v2 = codex_profile_v2_for_service_tier(normalized_service_tier)
     clean_session_id = str(session_id or "").strip()
-    if not BEDROCK_CONTEXT_PACK_ENABLED or not profile_v2 or not clean_session_id:
+    if not BEDROCK_CONTEXT_PACK_ENABLED or not clean_session_id:
         return {"should_pack": False, "reason": "not-applicable"}
 
     history = load_history(limit=MAX_HISTORY_ITEMS)
@@ -28160,6 +29277,7 @@ def bedrock_context_pack_plan(
 def bedrock_context_pack_prompt_context(plan: dict[str, Any]) -> str:
     if not plan or not plan.get("should_pack"):
         return ""
+    runtime_label = "Bedrock" if plan.get("profile_v2") else "Codex"
     history = [item for item in plan.get("history") or [] if isinstance(item, dict)]
     recent = history[-CONTEXT_PACK_RECENT_TURNS:]
     older_count = max(0, len(history) - len(recent))
@@ -28167,8 +29285,11 @@ def bedrock_context_pack_prompt_context(plan: dict[str, Any]) -> str:
     thread_scope = str(plan.get("thread_scope") or "")
     lines = [
         "",
-        "Bedrock compact-context handoff:",
-        "- This turn starts a fresh Bedrock thread because the previous Bedrock thread is high-context and low-yield risk.",
+        "Cloud compact-context handoff:",
+        (
+            f"- This turn starts a fresh {runtime_label} thread because the previous "
+            f"{runtime_label} thread is high-context and low-yield risk."
+        ),
         f"- Previous thread: {session_id or 'unknown'}"
         + (f" · scope: {thread_scope}" if thread_scope else ""),
         (
@@ -28229,7 +29350,62 @@ def _execute_codex_prompt(
     normalized_optimization_mode = normalize_optimization_mode(optimization_mode)
     normalized_budget = normalize_job_budget(job_budget)
     normalized_timeout = normalize_job_timeout_seconds(timeout_seconds, job_budget)
+    direct_execution = codex_openai_direct_execution_decision(
+        normalized_service_tier,
+        prompt=prompt,
+        job_budget=normalized_budget,
+        detail=normalized_detail,
+    )
+    if not direct_execution["allowed"]:
+        blocked_message = codex_openai_direct_execution_block_message(direct_execution)
+        return (
+            "",
+            blocked_message,
+            read_text(THREAD_ID_PATH),
+            normalize_usage_entry(
+                {
+                    "runtime": "codex",
+                    "model": model,
+                    "service_tier": normalized_service_tier,
+                    "provider_error_kind": "openai_api_spend_blocked",
+                    "provider_error_text": blocked_message,
+                }
+            ),
+        )
+    if is_subscription_capacity_self_improvement_prompt(prompt):
+        self_improvement = codex_subscription_self_improvement_decision(
+            require_idle=False
+        )
+        if not self_improvement["eligible"]:
+            blocked_message = (
+                "Subscription self-improvement review skipped before launch: "
+                f"{self_improvement['reason']}."
+            )
+            return (
+                "",
+                blocked_message,
+                read_text(THREAD_ID_PATH),
+                normalize_usage_entry(
+                    {
+                        "runtime": "codex",
+                        "model": model,
+                        "service_tier": normalized_service_tier,
+                        "provider_error_kind": "subscription_capacity_unavailable",
+                        "provider_error_text": blocked_message,
+                    }
+                ),
+            )
     target_timeout = job_budget_timeout_seconds(normalized_budget)
+    token_capacity_plan = provider_token_budget_plan(
+        prompt=prompt,
+        runtime="codex",
+        model=model,
+        service_tier=normalized_service_tier,
+        job_budget=normalized_budget,
+        detail=normalized_detail,
+        attachments=attachments,
+        enforcement="advisory",
+    )
     warning_checkpoints = deadline_warning_checkpoints(
         target_timeout, normalized_timeout
     )
@@ -28255,11 +29431,19 @@ def _execute_codex_prompt(
         if normalized_optimization_mode != "raw"
         else {"should_pack": False, "mode": "raw"}
     )
+    read_only_self_improvement = is_subscription_capacity_self_improvement_prompt(
+        prompt
+    )
+    sandbox_args = (
+        ["--sandbox", "read-only", "--ask-for-approval", "never"]
+        if read_only_self_improvement
+        else ["--dangerously-bypass-approvals-and-sandbox"]
+    )
     cmd = [
         CODEX_BIN,
         "exec",
         "--json",
-        "--dangerously-bypass-approvals-and-sandbox",
+        *sandbox_args,
         *codex_profile_v2_config_args(normalized_service_tier),
         "-m",
         normalized_model,
@@ -28276,16 +29460,28 @@ def _execute_codex_prompt(
         compact_context = bedrock_context_pack_prompt_context(context_pack_plan)
         if compact_context:
             old_session_id = session_id
+            context_pack_event_type = (
+                "chat.bedrock-context-packed"
+                if context_pack_plan.get("profile_v2")
+                else "chat.codex-context-packed"
+            )
+            context_pack_runtime_label = (
+                "Bedrock" if context_pack_plan.get("profile_v2") else "Codex"
+            )
             execution_prompt = f"{execution_prompt}\n{compact_context}".strip()
             session_id = ""
             write_text(THREAD_ID_PATH, "")
             write_text(THREAD_SCOPE_PATH, "")
             append_audit_event(
-                event_type="chat.bedrock-context-packed",
-                summary="Starting a fresh Bedrock thread with compact context handoff.",
+                event_type=context_pack_event_type,
+                summary=(
+                    f"Starting a fresh {context_pack_runtime_label} thread with "
+                    "compact context handoff."
+                ),
                 detail=(
                     f"Previous thread {old_session_id} exceeded context pack threshold; "
-                    "resume was skipped to reduce low-yield Bedrock turns."
+                    f"resume was skipped to reduce low-yield {context_pack_runtime_label} "
+                    "turns."
                 ),
                 severity="warn",
                 actor_type="system",
@@ -28364,12 +29560,39 @@ def _execute_codex_prompt(
 
     env = dict(os.environ)
     env["CODEX_HOME"] = CODEX_HOME
+    launch_direct_execution = codex_openai_direct_execution_decision(
+        normalized_service_tier,
+        prompt=prompt,
+        job_budget=normalized_budget,
+        detail=normalized_detail,
+    )
+    if not launch_direct_execution["allowed"]:
+        blocked_message = codex_openai_direct_execution_block_message(
+            launch_direct_execution
+        )
+        return (
+            "",
+            blocked_message,
+            read_text(THREAD_ID_PATH),
+            normalize_usage_entry(
+                {
+                    "runtime": "codex",
+                    "model": normalized_model,
+                    "service_tier": normalized_service_tier,
+                    "provider_error_kind": "openai_api_spend_blocked",
+                    "provider_error_text": blocked_message,
+                    "token_capacity_plan": token_capacity_plan,
+                }
+            ),
+        )
     if (
-        execution_service_tier in DIRECT_SERVICE_TIERS
-        and stored_codex_auth_mode() == "chatgpt"
+        not CODEX_ALLOW_OPENAI_API_SPEND
+        or launch_direct_execution["auth_mode"] == "chatgpt"
     ):
-        # A subscription-preferred launch must not inherit an ambient API key.
+        # Never let an inherited API key turn a Bedrock or plan-authenticated
+        # process into an OpenAI Platform charge.
         env.pop("OPENAI_API_KEY", None)
+        env.pop("CODEX_API_KEY", None)
     apply_codex_provider_environment(env, normalized_service_tier)
     checkpoint_interrupted = False
     deadline_checkpoint_interrupted = False
@@ -28527,6 +29750,7 @@ def _execute_codex_prompt(
         {
             **usage,
             **preflight_usage_fields,
+            "token_capacity_plan": token_capacity_plan,
             **codex_provider_diagnostics(
                 proc=proc,
                 events=codex_events,
@@ -29354,6 +30578,18 @@ def _execute_bedrock_converse_prompt(
     normalized_budget = normalize_job_budget(job_budget)
     normalized_timeout = normalize_job_timeout_seconds(timeout_seconds, job_budget)
     normalized_model = normalize_runtime_model("claude", model)
+    token_capacity_plan = provider_token_budget_plan(
+        prompt=prompt,
+        runtime="claude",
+        model=normalized_model,
+        service_tier=service_tier,
+        job_budget=normalized_budget,
+        detail=normalized_detail,
+        attachments=attachments,
+        cloud_authorized=True,
+        enforcement="request_hard",
+    )
+    execution_output_cap = token_capacity_plan["execution_output_cap"]
     thread_id = read_text(THREAD_ID_PATH) or f"bedrock-converse-{started_at}"
     tuned_prompt = build_prompt_with_attachments(
         prompt,
@@ -29409,7 +30645,7 @@ def _execute_bedrock_converse_prompt(
         {"role": "user", "content": [{"text": execution_prompt}]}
     ]
     tool_config = {"tools": bedrock_converse_tool_specs()}
-    inference_config = {"maxTokens": BEDROCK_CONVERSE_MAX_OUTPUT_TOKENS}
+    inference_config = {"maxTokens": execution_output_cap}
     response_text = ""
     error_text = ""
     usage = normalize_usage_entry(
@@ -29421,6 +30657,8 @@ def _execute_bedrock_converse_prompt(
             "service_tier": service_tier,
             "started_at": started_at,
             "thread_id": thread_id,
+            "provider_max_output_tokens": execution_output_cap,
+            "token_capacity_plan": token_capacity_plan,
         }
     )
     total_input = 0
@@ -29430,8 +30668,21 @@ def _execute_bedrock_converse_prompt(
     tool_rounds = 0
     model_calls = 0
     tool_budget_exhausted = False
+    output_budget_exhausted = False
     try:
         for _ in range(max(1, tool_budget + 1)):
+            remaining_output_tokens = execution_output_cap - total_output
+            if remaining_output_tokens <= 0:
+                output_budget_exhausted = True
+                response_text = (
+                    "BLOCKED — output-token capacity budget reached before the "
+                    "brokered runtime completed. Continue with the recorded "
+                    "evidence in a new turn or choose a longer job budget."
+                )
+                break
+            inference_config = {
+                "maxTokens": min(execution_output_cap, remaining_output_tokens)
+            }
             model_calls += 1
             response = call_bedrock_converse(
                 model_id=normalized_model,
@@ -29577,11 +30828,17 @@ def _execute_bedrock_converse_prompt(
             "broker_tool_rounds": tool_rounds,
             "broker_model_calls": model_calls,
             "broker_tool_budget_exhausted": tool_budget_exhausted,
+            "broker_output_token_budget": execution_output_cap,
+            "broker_output_budget_exhausted": output_budget_exhausted,
             "provider_yield_kind": "broker_tool_budget_checkpoint"
             if tool_budget_exhausted
+            else "broker_output_budget_checkpoint"
+            if output_budget_exhausted
             else "",
             "provider_yield_reasons": [f"broker tool budget reached: {tool_budget}"]
             if tool_budget_exhausted
+            else [f"broker output-token budget reached: {execution_output_cap}"]
+            if output_budget_exhausted
             else [],
         }
     )
@@ -30891,6 +32148,501 @@ def local_llm_response_text(payload: dict[str, Any]) -> str:
     return ""
 
 
+def _working_recap_sanitize_text(value: Any, limit: int = 240) -> str:
+    text = " ".join(str(value or "").replace("\r", "\n").split())
+    if not text:
+        return ""
+
+    def redact(match: re.Match[str]) -> str:
+        return f"{match.group('prefix')}[redacted]"
+
+    for pattern in (SENSITIVE_ASSIGNMENT_RE, SENSITIVE_QUERY_RE, SENSITIVE_BEARER_RE):
+        text = pattern.sub(redact, text)
+    return summarize_text(text, max(24, int(limit or 240)))
+
+
+def default_working_recap() -> dict[str, Any]:
+    return {
+        "schema": "norman.tui.working-recap.v1",
+        "turn_key": "",
+        "status": "idle",
+        "headline": "",
+        "now": "",
+        "milestones": [],
+        "next": "",
+        "updated_at": 0,
+        "last_attempt_at": 0,
+        "last_llm_at": 0,
+        "refreshing": False,
+        "source": "waiting",
+        "model": "",
+        "history": [],
+    }
+
+
+def _working_recap_history_entry(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "at": _coerce_int(value.get("updated_at")) or now_ts(),
+        "headline": _working_recap_sanitize_text(value.get("headline"), 180),
+        "now": _working_recap_sanitize_text(value.get("now"), 280),
+        "milestones": [
+            _working_recap_sanitize_text(item, 180)
+            for item in value.get("milestones") or []
+            if _working_recap_sanitize_text(item, 180)
+        ][:3],
+        "next": _working_recap_sanitize_text(value.get("next"), 220),
+        "source": str(value.get("source") or "deterministic").strip().lower()
+        or "deterministic",
+    }
+
+
+def _working_recap_history_signature(value: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        str(value.get("headline") or ""),
+        str(value.get("now") or ""),
+        tuple(str(item) for item in value.get("milestones") or []),
+        str(value.get("next") or ""),
+    )
+
+
+def normalize_working_recap(value: Any) -> dict[str, Any]:
+    payload = dict(default_working_recap())
+    if isinstance(value, dict):
+        payload.update(value)
+    payload["turn_key"] = str(payload.get("turn_key") or "").strip()[:96]
+    payload["status"] = str(payload.get("status") or "idle").strip().lower() or "idle"
+    if payload["status"] not in {"idle", "running", "complete"}:
+        payload["status"] = "running" if payload["turn_key"] else "idle"
+    payload["headline"] = _working_recap_sanitize_text(payload.get("headline"), 240)
+    payload["now"] = _working_recap_sanitize_text(payload.get("now"), 360)
+    payload["milestones"] = [
+        _working_recap_sanitize_text(item, 200)
+        for item in payload.get("milestones") or []
+        if _working_recap_sanitize_text(item, 200)
+    ][:3]
+    payload["next"] = _working_recap_sanitize_text(payload.get("next"), 260)
+    for key in ("updated_at", "last_attempt_at", "last_llm_at"):
+        payload[key] = _coerce_int(payload.get(key))
+    payload["refreshing"] = bool(payload.get("refreshing"))
+    payload["source"] = str(payload.get("source") or "waiting").strip().lower()
+    if payload["source"] not in {"waiting", "deterministic", "local_llm"}:
+        payload["source"] = "deterministic"
+    payload["model"] = _working_recap_sanitize_text(payload.get("model"), 96)
+    history: list[dict[str, Any]] = []
+    for item in payload.get("history") or []:
+        if not isinstance(item, dict):
+            continue
+        entry = _working_recap_history_entry(item)
+        if not entry["now"] and not entry["milestones"] and not entry["next"]:
+            continue
+        if history and _working_recap_history_signature(history[-1]) == (
+            _working_recap_history_signature(entry)
+        ):
+            history[-1]["at"] = max(history[-1]["at"], entry["at"])
+            continue
+        history.append(entry)
+    payload["history"] = history[-WORKING_RECAP_HISTORY_ITEMS:]
+    return payload
+
+
+def working_recap_turn_key(meta: dict[str, Any]) -> str:
+    started_at = _coerce_int(meta.get("last_started_at"))
+    prompt = str(meta.get("running_prompt") or "").strip()
+    if not started_at or not prompt:
+        return ""
+    digest = hashlib.sha256(prompt.encode("utf-8", errors="replace")).hexdigest()[:12]
+    return f"{started_at}-{digest}"
+
+
+def working_recap_task_category(plan: dict[str, Any]) -> str:
+    labels = {
+        str(item or "").strip().lower()
+        for item in plan.get("skill_labels") or []
+        if str(item or "").strip()
+    }
+    if "approval boundary check" in labels:
+        return "deployment or approval-boundary work"
+    if "code edit" in labels and "verification" in labels:
+        return "targeted implementation and verification"
+    if "code edit" in labels:
+        return "targeted implementation work"
+    if "verification" in labels:
+        return "system verification"
+    if "attachment review" in labels:
+        return "attached-material review"
+    if "cost accounting" in labels:
+        return "routing and cost review"
+    return "the active request"
+
+
+def working_recap_headline(plan: dict[str, Any]) -> str:
+    understood = _working_recap_sanitize_text(plan.get("understood_task"), 220)
+    if understood:
+        return understood
+    return f"Working through {working_recap_task_category(plan)}."
+
+
+def working_recap_live_activity(live: dict[str, Any]) -> tuple[str, list[str]]:
+    event_count = _coerce_int(live.get("event_count"))
+    tool_started = _coerce_int(live.get("tool_started_count"))
+    tool_finished = _coerce_int(live.get("tool_finished_count"))
+    decision_count = _coerce_int(live.get("decision_count"))
+    file_count = _coerce_int(live.get("file_interaction_count"))
+    status = str(live.get("last_tool_status") or "").strip().lower()
+    milestones: list[str] = []
+    if event_count:
+        milestones.append(
+            f"Observed {event_count} live event{'s' if event_count != 1 else ''}."
+        )
+    if tool_started:
+        if status in {"tool-finished", "finished", "complete", "completed"}:
+            milestones.append(
+                f"Completed {tool_finished or 1} tool checkpoint"
+                f"{'s' if (tool_finished or 1) != 1 else ''}."
+            )
+        else:
+            milestones.append(
+                f"Tool activity is in progress ({tool_finished}/{tool_started} complete)."
+            )
+    if file_count:
+        milestones.append(
+            f"Reviewed {file_count} workspace file{'s' if file_count != 1 else ''}."
+        )
+    elif decision_count:
+        milestones.append(
+            f"Recorded {decision_count} planning checkpoint"
+            f"{'s' if decision_count != 1 else ''}."
+        )
+    if status in {"tool-started", "started", "running"}:
+        now = "A live tool step is running; the next recap will fold in its result."
+    elif tool_finished:
+        now = "A tool checkpoint finished; the worker is evaluating what it found."
+    elif event_count:
+        now = "The worker is moving through live planning and execution signals."
+    else:
+        now = "The worker is preparing the first concrete step."
+    return now, milestones[:3]
+
+
+def deterministic_working_recap(
+    meta: dict[str, Any],
+    *,
+    queue_depth: int = 0,
+    observed_at: int = 0,
+) -> dict[str, Any]:
+    now = observed_at or now_ts()
+    plan = normalize_turn_plan_estimate(meta.get("turn_plan"))
+    live = normalize_live_turn(meta.get("live_turn"))
+    task_category = working_recap_task_category(plan)
+    activity_now, activity_milestones = working_recap_live_activity(live)
+    rate_limited = (
+        bool(meta.get("rate_limit_active"))
+        or str(meta.get("state") or "").lower() == "rate_limited"
+    )
+    handoff_running = str(meta.get("queue_handoff_state") or "").lower() == "running"
+    milestones = [
+        (
+            "Plan ready: "
+            + ", ".join(
+                _working_recap_sanitize_text(label, 56)
+                for label in plan.get("skill_labels") or []
+                if _working_recap_sanitize_text(label, 56)
+            )[:3]
+            + "."
+        )
+        if plan.get("skill_labels")
+        else f"Scope classified as {task_category}."
+    ]
+    milestones.extend(activity_milestones)
+    if queue_depth:
+        milestones.append(
+            f"{queue_depth} follow-up{'s' if queue_depth != 1 else ''} remain queued."
+        )
+    if rate_limited:
+        now_text = "Provider backoff is active; the worker will retry automatically."
+        next_text = "Wait for the retry window, then continue from the preserved turn."
+    elif handoff_running:
+        now_text = (
+            "A safe-checkpoint handoff is active; the earlier reply remains preserved."
+        )
+        next_text = "Finish the active handoff, then return the new reply."
+    else:
+        now_text = activity_now
+        plan_steps = [
+            _working_recap_sanitize_text(step, 180)
+            for step in plan.get("plan_steps") or []
+            if _working_recap_sanitize_text(step, 180)
+        ]
+        if _coerce_int(live.get("tool_started_count")) > _coerce_int(
+            live.get("tool_finished_count")
+        ):
+            next_text = "Use the current tool result to decide the next safe action."
+        elif len(plan_steps) > 1:
+            next_text = plan_steps[1]
+        elif plan_steps:
+            next_text = plan_steps[0]
+        else:
+            next_text = "Turn the current evidence into a concise reply."
+    recap = normalize_working_recap(
+        {
+            "turn_key": working_recap_turn_key(meta),
+            "status": "running",
+            "headline": working_recap_headline(plan),
+            "now": now_text,
+            "milestones": milestones[:3],
+            "next": next_text,
+            "updated_at": now,
+            "source": "deterministic",
+        }
+    )
+    return recap
+
+
+def working_recap_with_history(
+    recap: dict[str, Any], previous: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    normalized = normalize_working_recap(recap)
+    prior = normalize_working_recap(previous or {})
+    history = list(prior.get("history") or [])
+    entry = _working_recap_history_entry(normalized)
+    if entry["now"] or entry["milestones"] or entry["next"]:
+        if history and _working_recap_history_signature(history[-1]) == (
+            _working_recap_history_signature(entry)
+        ):
+            history[-1]["at"] = entry["at"]
+            history[-1]["source"] = entry["source"]
+        else:
+            history.append(entry)
+    normalized["history"] = history[-WORKING_RECAP_HISTORY_ITEMS:]
+    return normalize_working_recap(normalized)
+
+
+def working_recap_llm_packet(
+    meta: dict[str, Any], recap: dict[str, Any], *, queue_depth: int = 0
+) -> dict[str, Any]:
+    plan = normalize_turn_plan_estimate(meta.get("turn_plan"))
+    live = normalize_live_turn(meta.get("live_turn"))
+    started_at = _coerce_int(meta.get("last_started_at"))
+    return {
+        "task_class": working_recap_task_category(plan),
+        "route": {
+            "runtime": normalize_runtime(meta.get("running_runtime")),
+            "model": _working_recap_sanitize_text(meta.get("running_model"), 96),
+        },
+        "elapsed_seconds": max(0, now_ts() - started_at) if started_at else 0,
+        "queue_depth": max(0, int(queue_depth or 0)),
+        "live": {
+            "event_count": _coerce_int(live.get("event_count")),
+            "tool_started": _coerce_int(live.get("tool_started_count")),
+            "tool_finished": _coerce_int(live.get("tool_finished_count")),
+            "decision_count": _coerce_int(live.get("decision_count")),
+            "file_count": _coerce_int(live.get("file_interaction_count")),
+            "tool_state": (
+                "running"
+                if str(live.get("last_tool_status") or "").lower()
+                in {"tool-started", "started", "running"}
+                else "completed"
+                if _coerce_int(live.get("tool_finished_count"))
+                else "waiting"
+            ),
+        },
+        "deterministic_recap": {
+            "now": recap.get("now"),
+            "milestones": recap.get("milestones"),
+            "next": recap.get("next"),
+        },
+    }
+
+
+def working_recap_local_llm(
+    meta: dict[str, Any], recap: dict[str, Any], *, queue_depth: int = 0
+) -> tuple[dict[str, Any], str]:
+    if not WORKING_RECAP_ENABLED or not LOCAL_LLM_EXECUTION_ENABLED:
+        return {}, ""
+    packet = working_recap_llm_packet(meta, recap, queue_depth=queue_depth)
+    prompt = "\n".join(
+        [
+            "You write a short, factual progress recap for Norman's running TUI.",
+            "Use only this sanitized status packet. It deliberately contains no user prompt, terminal output, or secrets.",
+            "Do not invent completed work, access, commands, findings, or future outcomes.",
+            "Return JSON only with this exact shape:",
+            '{"now":"one short sentence","milestones":["up to three factual short sentences"],"next":"one short sentence"}',
+            "Keep each string readable in a compact operator panel.",
+            "STATUS_PACKET:",
+            json.dumps(packet, sort_keys=True),
+        ]
+    )
+    model = normalize_runtime_model("localllm", LOCAL_LLM_ROUTE_DEFAULT_MODEL)
+    endpoints = local_llm_candidate_endpoints(model, foreground=True)
+    for endpoint in endpoints:
+        try:
+            payload, _url, _adapter = local_llm_generate_once(
+                endpoint,
+                model,
+                prompt,
+                timeout_seconds=WORKING_RECAP_LLM_TIMEOUT_SECONDS,
+                max_output_tokens=WORKING_RECAP_LLM_MAX_OUTPUT_TOKENS,
+                num_ctx=LOCAL_LLM_SHORT_NUM_CTX,
+            )
+        except Exception:
+            continue
+        response = strip_local_planner_reasoning(local_llm_response_text(payload))
+        if not response:
+            continue
+        match = re.search(r"\{.*\}", response, flags=re.DOTALL)
+        if not match:
+            continue
+        try:
+            parsed = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        candidate = normalize_working_recap(
+            {
+                "turn_key": recap.get("turn_key"),
+                "status": "running",
+                "headline": recap.get("headline"),
+                "now": parsed.get("now"),
+                "milestones": parsed.get("milestones"),
+                "next": parsed.get("next"),
+                "updated_at": now_ts(),
+                "source": "local_llm",
+                "model": model,
+            }
+        )
+        if candidate["now"] or candidate["milestones"] or candidate["next"]:
+            return candidate, model
+    return {}, ""
+
+
+def _working_recap_refresh_worker(turn_key: str) -> None:
+    try:
+        with STATUS_LOCK:
+            meta = load_status_meta()
+            if (
+                not bool(meta.get("pending"))
+                or working_recap_turn_key(meta) != turn_key
+            ):
+                return
+            previous = normalize_working_recap(meta.get("working_recap"))
+            deterministic = deterministic_working_recap(
+                meta,
+                queue_depth=len(normalize_queue(meta.get("queued_prompts"))),
+            )
+        generated, model = working_recap_local_llm(
+            meta,
+            deterministic,
+            queue_depth=len(normalize_queue(meta.get("queued_prompts"))),
+        )
+        refreshed_at = now_ts()
+        with STATUS_LOCK:
+            current = load_status_meta()
+            if (
+                not bool(current.get("pending"))
+                or working_recap_turn_key(current) != turn_key
+            ):
+                return
+            current_recap = normalize_working_recap(current.get("working_recap"))
+            base = deterministic_working_recap(
+                current,
+                queue_depth=len(normalize_queue(current.get("queued_prompts"))),
+                observed_at=refreshed_at,
+            )
+            base.update(
+                {
+                    "last_attempt_at": current_recap.get("last_attempt_at"),
+                    "last_llm_at": current_recap.get("last_llm_at"),
+                    "refreshing": False,
+                    "history": current_recap.get("history") or previous.get("history"),
+                }
+            )
+            if generated:
+                base.update(
+                    {
+                        "now": generated.get("now") or base["now"],
+                        "milestones": generated.get("milestones") or base["milestones"],
+                        "next": generated.get("next") or base["next"],
+                        "source": "local_llm",
+                        "model": model,
+                        "last_llm_at": refreshed_at,
+                    }
+                )
+            recap = working_recap_with_history(base, current_recap)
+            current["working_recap"] = recap
+            save_status_meta(current)
+    finally:
+        with WORKING_RECAP_LOCK:
+            WORKING_RECAP_ACTIVE_TURNS.discard(turn_key)
+
+
+def ensure_working_recap(
+    meta: dict[str, Any], *, pending: bool, queue_depth: int
+) -> dict[str, Any]:
+    current = normalize_working_recap(meta.get("working_recap"))
+    turn_key = working_recap_turn_key(meta)
+    if not pending or not turn_key:
+        if current["status"] == "running":
+            current["status"] = "complete"
+            current["refreshing"] = False
+        return normalize_working_recap(current)
+
+    deterministic = deterministic_working_recap(
+        meta, queue_depth=queue_depth, observed_at=now_ts()
+    )
+    needs_seed = current.get("turn_key") != turn_key
+    needs_early_refresh = (
+        current.get("source") == "deterministic"
+        and not _coerce_int(current.get("last_llm_at"))
+        and _working_recap_history_signature(current)
+        != _working_recap_history_signature(deterministic)
+    )
+    if needs_seed or needs_early_refresh:
+        deterministic.update(
+            {
+                "last_attempt_at": 0 if needs_seed else current.get("last_attempt_at"),
+                "last_llm_at": 0 if needs_seed else current.get("last_llm_at"),
+                "refreshing": False,
+                "history": [] if needs_seed else current.get("history"),
+            }
+        )
+        current = working_recap_with_history(deterministic, current)
+        with STATUS_LOCK:
+            latest = load_status_meta()
+            if working_recap_turn_key(latest) == turn_key:
+                latest["working_recap"] = current
+                save_status_meta(latest)
+
+    now = now_ts()
+    refreshing_stale = current.get("refreshing") and now - _coerce_int(
+        current.get("last_attempt_at")
+    ) > max(WORKING_RECAP_LLM_TIMEOUT_SECONDS * 2, 60)
+    due = WORKING_RECAP_ENABLED and (
+        not _coerce_int(current.get("last_attempt_at"))
+        or now - _coerce_int(current.get("last_attempt_at"))
+        >= WORKING_RECAP_REFRESH_SECONDS
+        or refreshing_stale
+    )
+    if due:
+        with WORKING_RECAP_LOCK:
+            if turn_key not in WORKING_RECAP_ACTIVE_TURNS:
+                WORKING_RECAP_ACTIVE_TURNS.add(turn_key)
+                current["refreshing"] = True
+                current["last_attempt_at"] = now
+                with STATUS_LOCK:
+                    latest = load_status_meta()
+                    if working_recap_turn_key(latest) == turn_key:
+                        latest["working_recap"] = current
+                        save_status_meta(latest)
+                threading.Thread(
+                    target=_working_recap_refresh_worker,
+                    args=(turn_key,),
+                    daemon=True,
+                    name=f"working-recap-{turn_key[-6:]}",
+                ).start()
+    return normalize_working_recap(current)
+
+
 def local_llm_execution_candidate_models(primary_model: Any) -> list[str]:
     primary = normalize_runtime_model("localllm", primary_model)
     candidates = [primary] if primary else []
@@ -31315,7 +33067,25 @@ def _execute_local_llm_prompt(
     final_output_shape = "empty"
     request_timeout = local_llm_foreground_timeout_seconds(timeout_seconds, job_budget)
     request_num_ctx = local_llm_num_ctx_for_budget(job_budget)
-    request_max_output_tokens = local_llm_max_output_tokens_for_budget(job_budget)
+    token_capacity_plan = provider_token_budget_plan(
+        prompt=prompt,
+        runtime="localllm",
+        model=normalized_model,
+        service_tier=service_tier,
+        job_budget=job_budget,
+        detail=detail,
+        attachments=attachments,
+        enforcement="request_hard",
+    )
+    request_max_output_tokens = local_llm_max_output_tokens_for_budget(
+        job_budget,
+        prompt=prompt,
+        detail=detail,
+        attachments=attachments,
+        model=normalized_model,
+        service_tier=service_tier,
+        capacity_plan=token_capacity_plan,
+    )
     if not error_text:
         for candidate_model in candidate_models:
             endpoints = candidate_endpoints.get(candidate_model) or []
@@ -31482,6 +33252,7 @@ def _execute_local_llm_prompt(
             "provider_timeout_seconds": request_timeout,
             "provider_num_ctx": request_num_ctx,
             "provider_max_output_tokens": request_max_output_tokens,
+            "token_capacity_plan": token_capacity_plan,
             "provider_error_text": summarize_text(error_text, 800),
             "output_shape": final_output_shape,
             **token_counts,
@@ -31764,18 +33535,31 @@ def console_runtime_kernel_primary_skip_reason(
     if normalize_attachments(attachments):
         return "attachments are not yet passed through the kernel visible-response path"
     normalized_runtime = normalize_runtime(runtime)
+    if is_subscription_capacity_self_improvement_prompt(prompt):
+        return "subscription self-improvement review must use direct Codex"
     if normalized_runtime == "localllm":
         return ""
+    if prompt_requires_cloud_or_tools(prompt):
+        return "prompt appears to require workspace tools"
     meta = load_status_meta()
     cost_route = meta.get("running_cost_route") if isinstance(meta, dict) else {}
     selected_runtime = normalize_runtime(
         cost_route.get("selected_runtime") if isinstance(cost_route, dict) else ""
     )
-    if selected_runtime == "localllm" or prompt_is_local_first_candidate(prompt):
-        if prompt_requires_cloud_or_tools(prompt):
-            return "prompt appears to require workspace tools"
+    route_lock = coerce_boolish(
+        cost_route.get("route_lock")
+        or cost_route.get("strict_route")
+        or cost_route.get("operator_model_override")
+        if isinstance(cost_route, dict)
+        else False
+    )
+    if route_lock:
+        return "operator route lock keeps the selected runtime"
+    if selected_runtime == "localllm" or prompt_is_local_final_response_candidate(
+        prompt
+    ):
         return ""
-    return "prompt was not classified as a local-first visible-response candidate"
+    return "Norllama is advisory preflight; selected cloud runtime is final authority"
 
 
 def console_runtime_kernel_owned_turn_active(skip_reason: str) -> bool:
@@ -32577,6 +34361,9 @@ def _execute_console_runtime_kernel_prompt(
         detail=detail,
         job_budget=job_budget,
     )
+    token_capacity_plan = normalize_provider_token_budget_plan(
+        run_shape.get("token_capacity_plan")
+    )
     payload = {
         "worker_id": f"tui-kernel-primary-{HOST_NAME}-{SESSION}"[:96],
         "dry_run": False,
@@ -32584,7 +34371,7 @@ def _execute_console_runtime_kernel_prompt(
         "continuous": True,
         "max_steps": run_shape["max_steps"],
         "max_runtime_seconds": max_runtime_seconds,
-        "local_token_budget": 0,
+        "local_token_budget": token_capacity_plan["local_token_budget"],
         "cloud_token_budget": 0,
         "goal_phase_sequence": list(run_shape["goal_phase_sequence"]),
         "planner_kind": run_shape["planner_kind"],
@@ -32619,6 +34406,9 @@ def _execute_console_runtime_kernel_prompt(
             "planner_kind": run_shape["planner_kind"],
             "goal_phase_sequence": list(run_shape["goal_phase_sequence"]),
             "output_shape_expected": run_shape["output_shape_expected"],
+            "local_token_budget": token_capacity_plan["local_token_budget"],
+            "cloud_token_budget": 0,
+            "token_capacity_plan": token_capacity_plan,
             "model_timeout_seconds": model_timeout,
             "provider_timeout_seconds": model_timeout,
         },
@@ -32646,7 +34436,9 @@ def _execute_console_runtime_kernel_prompt(
             "planner_kind": run_shape["planner_kind"],
             "goal_phase_sequence": list(run_shape["goal_phase_sequence"]),
             "output_shape_expected": run_shape["output_shape_expected"],
+            "local_token_budget": token_capacity_plan["local_token_budget"],
             "cloud_token_budget": 0,
+            "token_capacity_plan": token_capacity_plan,
             "model_timeout_seconds": model_timeout,
             "provider_timeout_seconds": model_timeout,
         },
@@ -32741,6 +34533,7 @@ def _execute_console_runtime_kernel_prompt(
     )
     usage["success"] = bool(response_text)
     usage["output_shape"] = output_shape
+    usage["token_capacity_plan"] = token_capacity_plan
     if not response_text and error_text:
         usage["kernel_failure_reason"] = summarize_text(error_text, 700)
     if result.get("model_failed"):
@@ -32848,6 +34641,10 @@ def _prompt_worker(
                 if isinstance(current_meta.get("running_cost_route"), dict)
                 else {}
             )
+            if running_cost_route:
+                running_cost_route["token_capacity_plan"] = turn_plan[
+                    "token_capacity_plan"
+                ]
             turn_envelope = build_turn_control_envelope(
                 prompt=prompt,
                 attachments=attachments,
@@ -34664,8 +36461,9 @@ def prompt_is_route_status_diagnostic(prompt: Any) -> bool:
         return False
     asks_status = bool(
         "?" in str(prompt or "")
-        or re.search(
-            r"\b(?:are|can|could|did|does|do|how|is|should|was|were|what|which|why)\b",
+        or re.match(
+            r"^\s*(?:(?:please|hey|hi)\s*[,:\-]?\s*)?"
+            r"(?:are|can|could|did|does|do|how|is|should|was|were|what|which|why)\b",
             lower,
         )
         or any(
@@ -34794,6 +36592,37 @@ def prompt_is_local_first_candidate(prompt: Any) -> bool:
     return any(marker in lower for marker in LOCAL_FIRST_SAFE_MARKERS)
 
 
+def prompt_is_local_final_response_candidate(prompt: Any) -> bool:
+    """Return whether Norllama may author the visible final response.
+
+    Local models remain useful for routing, prompt reduction, and drafts. Final
+    authority is intentionally narrower: a literal canary or an explicitly
+    self-contained, tool-free transformation. Status, planning, review, and
+    current-state questions must stay on the selected cloud/tool runtime.
+    """
+
+    if prompt_is_literal_response_request(prompt):
+        return True
+    if prompt_is_self_contained_response_request(prompt):
+        return True
+    lower = f" {prompt_core_request(str(prompt or '')).lower()} "
+    has_transform = bool(
+        re.search(
+            r"\b(?:classify|extract|rewrite|summari[sz]e|translate)\b",
+            lower,
+        )
+    )
+    has_explicit_local_scope = bool(
+        " following " in lower
+        or re.search(r"\b[a-z0-9_.:-]+\s*=\s*[^,\s.]+", lower)
+        or re.search(
+            r"\b(?:do not|don't|dont|without|no)\s+(?:use\s+)?tools?\b",
+            lower,
+        )
+    )
+    return bool(has_transform and has_explicit_local_scope)
+
+
 def cost_route_decision_for_prompt(
     *,
     prompt: str,
@@ -34832,6 +36661,8 @@ def cost_route_decision_for_prompt(
         "local_model": LOCAL_LLM_DEFAULT_MODEL,
         "local_min_text_b": LOCAL_LLM_MIN_TEXT_B,
         "local_lane": "",
+        "local_preflight_candidate": prompt_is_local_first_candidate(prompt),
+        "local_final_authority": False,
         "requested_action": requested_action,
         "operator_intent_class": intent_class,
         "mutation_risk": mutation_risk,
@@ -34882,6 +36713,7 @@ def cost_route_decision_for_prompt(
     if prompt_requires_cloud_or_tools(prompt):
         decision["reason"] = "prompt appears to require tools or workspace context"
         return decision
+    local_final_candidate = prompt_is_local_final_response_candidate(prompt)
     classifier_promoted = False
     classifier_lane = ""
     if not prompt_is_local_first_candidate(prompt):
@@ -34909,6 +36741,17 @@ def cost_route_decision_for_prompt(
                 f"; classifier {status}: {reason}" if status or reason else ""
             )
             return decision
+    if not local_final_candidate:
+        decision.update(
+            {
+                "route_source": "local_preflight_cloud_authority",
+                "reason": (
+                    "Norllama is retained for advisory preflight and drafting; "
+                    "the selected cloud runtime is final authority for this prompt"
+                ),
+            }
+        )
+        return decision
     local_lane = local_llm_prompt_lane(
         prompt,
         requested_action=requested_action,
@@ -35011,6 +36854,7 @@ def cost_route_decision_for_prompt(
             "selected_runtime": "localllm",
             "selected_model": local_model,
             "selected_service_tier": normalized_service_tier,
+            "local_final_authority": True,
             "route_source": "local_first_intent_classifier"
             if classifier_promoted
             else "local_first_policy",
@@ -35041,6 +36885,7 @@ def start_web_prompt(
     interlace_mode: str = "",
     route_lock: bool = False,
     optimization_mode: str = "",
+    source: str = "",
 ) -> tuple[bool, dict[str, Any]]:
     clean = prompt.strip()
     if not clean:
@@ -35161,6 +37006,9 @@ def start_web_prompt(
         runtime=cost_route_decision.get("selected_runtime"),
         model=cost_route_decision.get("selected_model"),
         service_tier=cost_route_decision.get("selected_service_tier"),
+        prompt=clean,
+        job_budget=normalized_budget,
+        detail=normalized_detail,
         route_lock=route_lock,
         service_tier_recovery=service_tier_recovery,
     )
@@ -35194,10 +37042,10 @@ def start_web_prompt(
         )
         append_audit_event(
             event_type="chat.subscription-capacity-preferred",
-            summary="Fresh ChatGPT subscription capacity preferred over Bedrock.",
+            summary="Reset-aware ChatGPT subscription capacity preferred over Bedrock.",
             detail=(
                 "A default Bedrock Codex turn was moved to direct Flex after an "
-                "idle interactive capacity observation."
+                "idle capacity observation and reset-window forecast."
             ),
             severity="info",
             actor_type="system",
@@ -35225,6 +37073,73 @@ def start_web_prompt(
         normalized_runtime = selected_runtime
         normalized_model = selected_model
         normalized_service_tier = selected_service_tier
+    if normalized_runtime == "codex":
+        direct_execution = codex_openai_direct_execution_decision(
+            normalized_service_tier,
+            prompt=clean,
+            job_budget=normalized_budget,
+            detail=normalized_detail,
+        )
+        if not direct_execution["allowed"]:
+            if direct_execution.get(
+                "reason_code"
+            ) == "chatgpt_credit_extension_guard" and codex_profile_v2_for_service_tier(
+                "default"
+            ):
+                fallback_reason = str(direct_execution.get("reason") or "")
+                normalized_service_tier = "default"
+                normalized_model = normalize_runtime_model(
+                    "codex",
+                    codex_model_for_service_tier(
+                        normalized_service_tier, normalized_model
+                    ),
+                )
+                append_audit_event(
+                    event_type="chat.chatgpt-credit-extension-bedrock-fallback",
+                    summary="Protected ChatGPT credits by keeping the turn on Bedrock.",
+                    detail=fallback_reason,
+                    severity="info",
+                    actor_type="system",
+                    thread_id=read_text(THREAD_ID_PATH),
+                    payload={
+                        "runtime": normalized_runtime,
+                        "model": normalized_model,
+                        "service_tier": normalized_service_tier,
+                        "decision": direct_execution,
+                    },
+                )
+            else:
+                blocked_message = codex_openai_direct_execution_block_message(
+                    direct_execution
+                )
+                append_audit_event(
+                    event_type="chat.openai-api-spend-blocked",
+                    summary="Blocked a direct OpenAI request before queueing.",
+                    detail=blocked_message,
+                    severity="warn",
+                    actor_type="system",
+                    thread_id=read_text(THREAD_ID_PATH),
+                    payload={
+                        "runtime": normalized_runtime,
+                        "model": normalized_model,
+                        "service_tier": normalized_service_tier,
+                        "decision": direct_execution,
+                    },
+                )
+                snapshot = current_snapshot()
+                snapshot["openai_api_spend_blocked"] = True
+                snapshot["openai_api_spend_error"] = blocked_message
+                return False, snapshot
+    cost_route_decision["token_capacity_plan"] = provider_token_budget_plan(
+        prompt=clean,
+        runtime=normalized_runtime,
+        model=normalized_model,
+        service_tier=normalized_service_tier,
+        job_budget=normalized_budget,
+        detail=normalized_detail,
+        attachments=normalized_attachments,
+        cost_route=cost_route_decision,
+    )
     turn_envelope = build_turn_control_envelope(
         prompt=clean,
         attachments=normalized_attachments,
@@ -35242,7 +37157,7 @@ def start_web_prompt(
     turn_envelope["cost_route"] = dict(cost_route_decision)
     turn_envelope["requested_runtime"] = requested_runtime
     normalized_interlace_mode = normalize_queue_interlace_mode(interlace_mode)
-    normalized_source = normalize_queue_source("", normalized_relay_callback, clean)
+    normalized_source = normalize_queue_source(source, normalized_relay_callback, clean)
     recover_stale_prompt_state()
     should_queue = True
     deduplicated_existing = False
@@ -35546,6 +37461,7 @@ def start_web_prompt(
         interlace_mode=normalized_interlace_mode,
         optimization_mode=normalized_optimization_mode,
         cost_route=cost_route_decision,
+        source=normalized_source,
     )
     queued_snapshot["queued_cost_route"] = cost_route_decision
     if normalized_relay_callback and not queued_snapshot.get("deduplicated_prompt"):
@@ -35885,6 +37801,11 @@ def current_snapshot() -> dict[str, Any]:
             meta["status_message"] = snapshot_status
         save_status_meta(meta)
     running_prompt = str(meta.get("running_prompt") or "")
+    working_recap = ensure_working_recap(
+        meta,
+        pending=pending,
+        queue_depth=queue_depth,
+    )
     raw_resource_meter = load_resource_meter_file() or meta.get("resource_meter")
     resource_meter = normalize_resource_meter(
         raw_resource_meter,
@@ -36112,6 +38033,7 @@ def current_snapshot() -> dict[str, Any]:
             meta.get("live_turn"), pending=pending, observed_at=snapshot_at
         ),
         "turn_plan": normalize_turn_plan_estimate(meta.get("turn_plan")),
+        "working_recap": working_recap,
         "resource_meter": resource_meter,
         "bbs": current_bbs_summary(),
         "permissions_mode": "danger-full-access",
@@ -36253,6 +38175,7 @@ def snapshot_marker(snapshot: dict[str, Any]) -> tuple[Any, ...]:
         json.dumps(snapshot.get("runtime_capabilities") or {}, sort_keys=True),
         json.dumps(snapshot.get("local_first_proof") or {}, sort_keys=True),
         json.dumps(snapshot.get("live_turn") or {}, sort_keys=True),
+        json.dumps(snapshot.get("working_recap") or {}, sort_keys=True),
         json.dumps(snapshot.get("running_cost_route") or {}, sort_keys=True),
         json.dumps(snapshot.get("last_cost_route") or {}, sort_keys=True),
         (snapshot.get("runtime") or {}).get("next_after"),
@@ -45089,6 +47012,15 @@ class Handler(BaseHTTPRequestHandler):
         linear-gradient(90deg, color-mix(in srgb, var(--warn) 6%, transparent), transparent 54%),
         color-mix(in srgb, var(--surface-2) 52%, transparent);
     }}
+    .message.pending.live-status.working-on-message {{
+      max-width: min(88%, 780px);
+      padding: 10px 12px 11px;
+      border-color: color-mix(in srgb, var(--warn) 24%, var(--border));
+      background:
+        linear-gradient(180deg, color-mix(in srgb, var(--surface) 38%, transparent), transparent 76%),
+        linear-gradient(90deg, color-mix(in srgb, var(--warn) 7%, transparent), transparent 58%),
+        color-mix(in srgb, var(--surface-2) 54%, transparent);
+    }}
     .message.queued {{
       border-style: dashed;
       background: var(--surface-2);
@@ -45187,6 +47119,7 @@ class Handler(BaseHTTPRequestHandler):
     }}
     .message-route-chip,
     .message-cost-chip,
+    .message-value-chip,
     .message-estimate-chip {{
       display: inline-flex;
       align-items: center;
@@ -45245,6 +47178,26 @@ class Handler(BaseHTTPRequestHandler):
       border-color: color-mix(in srgb, #38bdf8 30%, var(--border));
       color: color-mix(in srgb, #38bdf8 62%, var(--text));
       background: color-mix(in srgb, #38bdf8 9%, var(--surface-2));
+    }}
+    .message-value-chip[data-value-tone="good"] {{
+      border-color: color-mix(in srgb, #22c55e 34%, var(--border));
+      color: color-mix(in srgb, #22c55e 66%, var(--text));
+      background: color-mix(in srgb, #22c55e 10%, var(--surface-2));
+    }}
+    .message-value-chip[data-value-tone="plan"] {{
+      border-color: color-mix(in srgb, #38bdf8 32%, var(--border));
+      color: color-mix(in srgb, #38bdf8 64%, var(--text));
+      background: color-mix(in srgb, #38bdf8 9%, var(--surface-2));
+    }}
+    .message-value-chip[data-value-tone="watch"] {{
+      border-color: color-mix(in srgb, var(--warn) 48%, var(--border));
+      color: color-mix(in srgb, var(--warn) 74%, var(--text));
+      background: color-mix(in srgb, var(--warn) 12%, var(--surface-2));
+    }}
+    .message-value-chip[data-value-tone="heavy"] {{
+      border-color: color-mix(in srgb, var(--danger) 48%, var(--border));
+      color: color-mix(in srgb, var(--danger) 74%, var(--text));
+      background: color-mix(in srgb, var(--danger) 12%, var(--surface-2));
     }}
     .message-estimate-chip[data-estimate-tone="quiet"] {{
       border-color: color-mix(in srgb, #22c55e 22%, var(--border));
@@ -45517,6 +47470,179 @@ class Handler(BaseHTTPRequestHandler):
       letter-spacing: 0.18em;
       font-size: 0.72rem;
       line-height: 1;
+    }}
+    .message.pending.live-status .message-body.working-on-body::before,
+    .message.pending.live-status .message-body.working-on-body::after {{
+      content: none;
+      display: none;
+    }}
+    .working-on-panel {{
+      display: grid;
+      gap: 8px;
+      max-width: min(100%, 82ch);
+      color: color-mix(in srgb, var(--text) 90%, var(--muted));
+    }}
+    .working-on-panel-head {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      min-width: 0;
+    }}
+    .working-on-kicker {{
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: color-mix(in srgb, var(--warn) 68%, var(--text));
+      font-family: var(--font-ui-wide);
+      font-size: 0.62rem;
+      font-weight: 760;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }}
+    .working-on-kicker::before {{
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: color-mix(in srgb, var(--warn) 78%, white 8%);
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--warn) 10%, transparent);
+      animation: working-recap-pulse 1.8s ease-in-out infinite;
+    }}
+    .working-on-source {{
+      min-width: 0;
+      color: color-mix(in srgb, var(--muted) 74%, var(--text));
+      font-family: var(--font-label);
+      font-size: 0.62rem;
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+      white-space: nowrap;
+    }}
+    .working-on-headline {{
+      color: color-mix(in srgb, var(--text) 94%, var(--agent-accent));
+      font-family: var(--font-reading);
+      font-size: 0.98rem;
+      font-weight: 680;
+      line-height: 1.3;
+    }}
+    .working-on-now {{
+      margin: 0;
+      color: color-mix(in srgb, var(--text) 82%, var(--muted));
+      font-size: 0.84rem;
+      line-height: 1.45;
+    }}
+    .working-on-milestones {{
+      display: grid;
+      gap: 4px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }}
+    .working-on-milestones li {{
+      position: relative;
+      padding-left: 13px;
+      color: color-mix(in srgb, var(--muted) 46%, var(--text));
+      font-size: 0.76rem;
+      line-height: 1.34;
+    }}
+    .working-on-milestones li::before {{
+      content: "";
+      position: absolute;
+      top: 0.48rem;
+      left: 1px;
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: color-mix(in srgb, var(--agent-accent) 70%, var(--warn));
+    }}
+    .working-on-footer {{
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 5px 10px;
+      padding-top: 7px;
+      border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+      color: var(--muted);
+      font-family: var(--font-label);
+      font-size: 0.7rem;
+      line-height: 1.35;
+    }}
+    .working-on-next {{
+      flex: 1 1 280px;
+      min-width: 0;
+      color: color-mix(in srgb, var(--text) 78%, var(--muted));
+    }}
+    .working-on-elapsed {{
+      color: color-mix(in srgb, var(--muted) 74%, var(--text));
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }}
+    .working-on-timeline {{
+      margin-top: 1px;
+      color: var(--muted);
+      font-family: var(--font-body);
+      font-size: 0.72rem;
+    }}
+    .working-on-timeline summary {{
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+      cursor: pointer;
+      color: color-mix(in srgb, var(--text) 72%, var(--muted));
+      font-family: var(--font-label);
+      font-size: 0.68rem;
+      user-select: none;
+    }}
+    .working-on-timeline summary:hover,
+    .working-on-timeline summary:focus-visible {{
+      color: color-mix(in srgb, var(--text) 94%, var(--agent-accent));
+    }}
+    .working-on-timeline ol {{
+      display: grid;
+      gap: 7px;
+      margin: 5px 0 0;
+      padding: 7px 0 0 11px;
+      border-left: 1px solid color-mix(in srgb, var(--border) 64%, transparent);
+      list-style: none;
+    }}
+    .working-on-timeline li {{
+      display: grid;
+      gap: 2px;
+      min-width: 0;
+    }}
+    .working-on-timeline-stamp {{
+      color: color-mix(in srgb, var(--muted) 80%, var(--text));
+      font-family: var(--font-label);
+      font-size: 0.64rem;
+      font-variant-numeric: tabular-nums;
+    }}
+    .working-on-timeline-copy {{
+      color: color-mix(in srgb, var(--text) 74%, var(--muted));
+      line-height: 1.38;
+    }}
+    @keyframes working-recap-pulse {{
+      0%, 100% {{ opacity: 0.72; transform: scale(0.9); }}
+      50% {{ opacity: 1; transform: scale(1.08); }}
+    }}
+    @media (prefers-reduced-motion: reduce) {{
+      .working-on-kicker::before {{
+        animation: none;
+      }}
+    }}
+    @media (max-width: 640px) {{
+      .message.pending.live-status.working-on-message {{
+        max-width: 100%;
+      }}
+      .working-on-panel-head {{
+        align-items: flex-start;
+      }}
+      .working-on-source {{
+        max-width: 44%;
+        white-space: normal;
+      }}
+      .working-on-headline {{
+        font-size: 0.92rem;
+      }}
     }}
     .message-body > :first-child,
     .raw-view > :first-child {{
@@ -55881,6 +58007,7 @@ class Handler(BaseHTTPRequestHandler):
         last_error: String(last?.error || ""),
         queue_depth: Number(snapshot?.queue_depth || 0),
         live_turn: liveTurnRenderSignature(snapshot?.live_turn),
+        working_recap: snapshot?.working_recap || {{}},
       }});
     }}
 
@@ -56243,6 +58370,7 @@ class Handler(BaseHTTPRequestHandler):
         running_started_at: Number(snapshot?.last_started_at || 0),
         model_process_alive: Boolean(snapshot?.model_process_alive),
         live_turn: liveTurnRenderSignature(snapshot?.live_turn),
+        working_recap: snapshot?.working_recap || {{}},
         running_attachments: attachmentSignature(snapshot?.running_attachments),
         queued: queued.map((item) => ({{
           queued_at: Number(item?.queued_at || 0),
@@ -58935,7 +61063,153 @@ class Handler(BaseHTTPRequestHandler):
             ? "estimated"
             : totalTokens >= USAGE_POOR_YIELD_MIN_TOKENS
               ? "warn"
-            : "tokens",
+              : "tokens",
+        usd,
+        highUsd: cost.highUsd,
+        ledgerKind: rawLedgerKind,
+        displayUnit,
+        totalTokens,
+        isCodexCreditEstimate,
+      }};
+    }}
+
+    function turnCostFeedbackDescriptor(usage, snapshot = state.snapshot) {{
+      const cost = usageCostDescriptor(usage, snapshot);
+      if (!cost) {{
+        return null;
+      }}
+      const runtime = String(usage?.runtime || "").trim().toLowerCase();
+      const providerSurface = String(usage?.provider_surface || "").trim().toLowerCase();
+      const model = String(usage?.model || "").trim();
+      const localRoute = ["localllm", "codexspark"].includes(runtime)
+        || runtime.includes("norllama")
+        || runtime.includes("ollama")
+        || runtime.includes("spark")
+        || ["local", "norllama", "ollama"].includes(providerSurface);
+      const avoidedTokens = Math.max(
+        0,
+        Number(
+          usage?.cloud_tokens_avoided_estimate
+          || usage?.cloud_tokens_avoided_floor
+          || 0
+        )
+      );
+      const contextSavedTokens = Math.max(
+        0,
+        Number(usage?.context_pack_saved_tokens || 0)
+      );
+      const savingsTokens = Math.max(avoidedTokens, contextSavedTokens);
+      const netAvoidedTokens = Number(
+        usage?.cloud_preflight_net_token_delta_estimate || 0
+      );
+      const savingsMeta = savingsTokens > 0
+        ? `~${{formatCompactMetric(savingsTokens)}} cloud tok avoided`
+        : "";
+      const savingsTitle = [
+        "Estimated cloud input tokens avoided through local preflight, local tools, or context packing.",
+        savingsTokens ? `${{formatCount(savingsTokens)}} cloud tokens avoided` : "",
+        contextSavedTokens
+          ? `${{formatCount(contextSavedTokens)}} context tokens compacted`
+          : "",
+        netAvoidedTokens
+          ? `${{formatCount(netAvoidedTokens)}} net avoided after local preflight`
+          : "",
+        "This is a token-avoidance estimate, not an invoice saving.",
+      ].filter(Boolean).join(" · ");
+      if (savingsTokens >= 20_000) {{
+        return {{
+          label: `Big save · ${{formatCompactMetric(savingsTokens)}} tok`,
+          meta: "cloud avoided",
+          tone: "good",
+          title: [savingsTitle, cost.title].filter(Boolean).join(" · "),
+        }};
+      }}
+      if (savingsTokens >= 2_000) {{
+        return {{
+          label: `Saved · ${{formatCompactMetric(savingsTokens)}} tok`,
+          meta: "cloud avoided",
+          tone: "good",
+          title: [savingsTitle, cost.title].filter(Boolean).join(" · "),
+        }};
+      }}
+      if (localRoute) {{
+        return {{
+          label: "Good · local",
+          meta: "no cloud bill",
+          tone: "good",
+          title: [
+            "Completed on a local/Norllama route. No metered cloud-provider charge was recorded for this turn.",
+            "This does not include local hardware, electricity, or depreciation.",
+            cost.title,
+          ].filter(Boolean).join(" · "),
+        }};
+      }}
+      if (cost.isCodexCreditEstimate) {{
+        return {{
+          label: "Plan credits",
+          meta: cost.label || "usage estimated",
+          tone: "plan",
+          title: [
+            "Completed on the personal ChatGPT/Codex subscription lane.",
+            "This is an estimated plan-credit use, not a credit-card charge or a known balance deduction.",
+            cost.title,
+          ].filter(Boolean).join(" · "),
+        }};
+      }}
+      const estimatedUsd = Math.max(0, Number(cost.highUsd || cost.usd || 0));
+      if (estimatedUsd > 0) {{
+        if (estimatedUsd >= 0.75) {{
+          return {{
+            label: "Heavy",
+            meta: `~${{formatCompactUsd(estimatedUsd)}} cloud est`,
+            tone: "heavy",
+            title: [
+              "Large estimated cloud-provider turn. This is a local rate-card estimate, not an invoice.",
+              cost.title,
+            ].filter(Boolean).join(" · "),
+          }};
+        }}
+        if (estimatedUsd >= 0.15) {{
+          return {{
+            label: "High",
+            meta: `~${{formatCompactUsd(estimatedUsd)}} cloud est`,
+            tone: "watch",
+            title: [
+              "Higher estimated cloud-provider turn. This is a local rate-card estimate, not an invoice.",
+              cost.title,
+            ].filter(Boolean).join(" · "),
+          }};
+        }}
+        if (estimatedUsd >= 0.03) {{
+          return {{
+            label: "Watch",
+            meta: `~${{formatCompactUsd(estimatedUsd)}} cloud est`,
+            tone: "watch",
+            title: [
+              "Moderate estimated cloud-provider turn. This is a local rate-card estimate, not an invoice.",
+              cost.title,
+            ].filter(Boolean).join(" · "),
+          }};
+        }}
+        return {{
+          label: "Good",
+          meta: `~${{formatCompactUsd(estimatedUsd)}} cloud est`,
+          tone: "good",
+          title: [
+            "Low estimated cloud-provider turn. This is a local rate-card estimate, not an invoice.",
+            cost.title,
+          ].filter(Boolean).join(" · "),
+        }};
+      }}
+      const heavyTokens = cost.totalTokens >= 50_000;
+      return {{
+        label: heavyTokens ? "Token heavy" : "Tracked",
+        meta: `${{formatCompactMetric(cost.totalTokens)}} tok`,
+        tone: heavyTokens ? "watch" : "quiet",
+        title: [
+          "Token use is tracked, but no provider-price estimate is configured for this turn.",
+          cost.title,
+        ].filter(Boolean).join(" · "),
       }};
     }}
 
@@ -61492,6 +63766,33 @@ class Handler(BaseHTTPRequestHandler):
           ? `${{formatCompactUsd(lowUsd)}}-${{formatCompactUsd(highUsd)}}`
           : formatCompactUsd(highUsd)
         : `${{formatCompactMetric(inputTokens + outputTokens)}} tok`;
+      const billingTags = billing.tags && typeof billing.tags === "object"
+        ? billing.tags
+        : {{}};
+      const plannedOwner = String(
+        billingTags.billing_owner || snapshot?.accounting?.billing_owner || ""
+      ).trim().toLowerCase();
+      const plannedGroup = String(
+        billingTags.agent_group || snapshot?.accounting?.agent_group || ""
+      ).trim().toLowerCase();
+      const plannedAuthMode = String(
+        billingTags.codex_auth_mode || snapshot?.accounting?.codex_auth_mode || ""
+      ).trim().toLowerCase();
+      const plannedLocalRoute = ["localllm", "codexspark"].includes(selectedRuntime)
+        || selectedRuntime.includes("norllama")
+        || selectedRuntime.includes("ollama")
+        || selectedRuntime.includes("spark");
+      const plannedSubscriptionRoute = selectedRuntime === "codex"
+        && plannedOwner === "kristopher"
+        && plannedGroup !== "work"
+        && plannedAuthMode === "chatgpt";
+      const plannedSpendLabel = plannedLocalRoute
+        ? "Planned local · no cloud bill"
+        : plannedSubscriptionRoute
+          ? `Planned ${PLAN_CREDIT_LABEL} · ~${{formatCompactMetric(creditEstimate.credits)}} cr`
+          : hasUsd
+            ? `Planned cloud · ~${{nextCostLabel}}`
+            : "Planned token target";
       const resolvedLabel = selectedTier === effectiveTier
         ? serviceTierOption(selectedTier).short_label || selectedTier
         : `${{serviceTierOption(selectedTier).short_label || selectedTier}}→${{serviceTierOption(effectiveTier).short_label || effectiveTier}}`;
@@ -61517,13 +63818,20 @@ class Handler(BaseHTTPRequestHandler):
         ? "1 call"
         : `~${{turns.toFixed(1).replace(/\\.0$/, "")}} calls`;
       const label = [
+        plannedSpendLabel,
         `Target ${{jobBudgetControlLabel(preferences.jobBudget)}}`,
         visibleTurnLabel,
-        `next ~${{nextCostLabel}}`,
         `${{optimizationModeControlLabel(optimizationMode)}} / ${{resolvedLabel}}`,
       ].filter(Boolean).join(" · ");
       const title = [
         "Projected next prompt target and cost; local estimate, not invoice.",
+        plannedLocalRoute
+          ? "Planned local/Norllama route has no metered cloud-provider charge. Local hardware and electricity are not included."
+          : plannedSubscriptionRoute
+            ? `Planned personal ${PLAN_CREDIT_LABEL} estimate. It is not a credit-card charge or a known balance deduction.`
+            : hasUsd
+              ? `Planned cloud rate-card estimate ~${{nextCostLabel}}.`
+              : "No provider price card is available for this planned route.",
         "Work window is the primary control; depth affects answer effort; spend path is an emergency override.",
         `Window ${{jobBudgetLabel(preferences.jobBudget)}} estimates ${{turnLabel}}.`,
         `Input estimate ${{formatCount(inputTokens)}} tokens, cached ${{formatCount(cachedTokens)}}, output ${{formatCount(outputTokens)}}.`,
@@ -62146,6 +64454,32 @@ class Handler(BaseHTTPRequestHandler):
         meta,
         tone,
         title,
+        action: "system",
+      }};
+    }}
+
+    function spendFeedbackCapsuleState(snapshot) {{
+      const usage = snapshot && typeof snapshot === "object" ? snapshot.usage || {{}} : {{}};
+      const lastTurn = usage && typeof usage === "object" && usage.last_turn && typeof usage.last_turn === "object"
+        ? usage.last_turn
+        : null;
+      const feedback = turnCostFeedbackDescriptor(lastTurn, snapshot);
+      if (!feedback) {{
+        return null;
+      }}
+      return {{
+        id: "turn-spend",
+        label: "Spend",
+        value: feedback.label,
+        meta: feedback.meta,
+        tone: feedback.tone === "good"
+          ? "ok"
+          : feedback.tone === "heavy"
+            ? "alert"
+            : feedback.tone === "watch"
+              ? "warn"
+              : "active",
+        title: feedback.title,
         action: "system",
       }};
     }}
@@ -64486,6 +66820,10 @@ class Handler(BaseHTTPRequestHandler):
         capsules.push(sentinelCapsule);
       }}
       capsules.push(routeCostState(snapshot));
+      const spendFeedbackCapsule = spendFeedbackCapsuleState(snapshot);
+      if (spendFeedbackCapsule) {{
+        capsules.push(spendFeedbackCapsule);
+      }}
       capsules.push(billingCapsuleState(snapshot));
       const driftCapsule = driftCapsuleState(snapshot);
       if (driftCapsule) {{
@@ -67809,6 +70147,9 @@ class Handler(BaseHTTPRequestHandler):
       if (cleanRole.includes("pending")) {{
         article.classList.add("live-status");
       }}
+      if (options.workingRecap) {{
+        article.classList.add("working-on-message");
+      }}
       if (options.liveStatusStage) {{
         article.dataset.liveStatusStage = String(options.liveStatusStage || "");
       }}
@@ -67858,6 +70199,21 @@ class Handler(BaseHTTPRequestHandler):
         costNode.title = cost.title;
         costNode.setAttribute("aria-label", cost.title);
         metaWrap.appendChild(costNode);
+      }}
+      const costFeedback = turnCostFeedbackDescriptor(
+        options.usage,
+        options.usageSnapshot || state.snapshot
+      );
+      if (costFeedback && (cleanRole.includes("assistant") || cleanRole.includes("error"))) {{
+        const feedbackNode = document.createElement("span");
+        feedbackNode.className = "message-value-chip";
+        feedbackNode.dataset.valueTone = costFeedback.tone || "quiet";
+        feedbackNode.textContent = [costFeedback.label, costFeedback.meta]
+          .filter(Boolean)
+          .join(" · ");
+        feedbackNode.title = costFeedback.title;
+        feedbackNode.setAttribute("aria-label", costFeedback.title);
+        metaWrap.appendChild(feedbackNode);
       }}
       const effort = turnEffortLedgerDescriptor(options.historyItem || null, options.usage || null);
       if (effort && (cleanRole.includes("assistant") || cleanRole.includes("error"))) {{
@@ -67965,8 +70321,12 @@ class Handler(BaseHTTPRequestHandler):
 
       const text = document.createElement("div");
       text.className = "message-body";
-      const collapsedPrompt = collapsedPromptDescriptor(cleanRole, body, options);
-      if (collapsedPrompt) {{
+      if (cleanRole.includes("pending") && options.workingRecap) {{
+        text.classList.add("working-on-body");
+        text.replaceChildren(buildWorkingOnPanel(options.workingRecap, options.usageSnapshot || state.snapshot, body));
+      }} else {{
+        const collapsedPrompt = collapsedPromptDescriptor(cleanRole, body, options);
+        if (collapsedPrompt) {{
         text.innerHTML = `
           <button type="button" class="collapsed-prompt-toggle" aria-expanded="false">
             <span class="collapsed-prompt-badge">${{escapeHtml(collapsedPrompt.badge || "Text")}}</span>
@@ -67998,10 +70358,11 @@ class Handler(BaseHTTPRequestHandler):
             toggle.setAttribute("aria-expanded", opening ? "true" : "false");
           }});
         }}
-      }} else {{
-        text.innerHTML = cleanRole.includes("error")
-          ? renderErrorMarkup(body)
-          : renderRichText(body);
+        }} else {{
+          text.innerHTML = cleanRole.includes("error")
+            ? renderErrorMarkup(body)
+            : renderRichText(body);
+        }}
       }}
 
       article.appendChild(head);
@@ -68233,7 +70594,9 @@ class Handler(BaseHTTPRequestHandler):
         const elapsed = activityElapsed(snapshot);
         const modelState = snapshot.model_process_alive ? "model process alive" : "waiting for model process";
         const usageCopy = usageSummaryForActiveWork(snapshot);
-        const liveExpanded = liveStatusExpanded(snapshot, elapsed);
+        const workingRecap = workingRecapForSnapshot(snapshot);
+        const liveExpanded = liveStatusExpanded(snapshot, elapsed)
+          || Boolean(workingRecap.now || workingRecap.milestones.length || workingRecap.history.length > 1);
         const liveStatusBody = liveStatusBodyForSnapshot(snapshot, elapsed, usageCopy, modelState, liveExpanded);
         if (!runningPromptAlreadyVisible) {{
           appendMessage(
@@ -68261,6 +70624,8 @@ class Handler(BaseHTTPRequestHandler):
             sourcePrompt: snapshot.running_prompt || "",
             inlinePreviews: false,
             liveStatusStage: liveExpanded ? "expanded" : "initial",
+            workingRecap,
+            usageSnapshot: snapshot,
           }}
         );
       }}
@@ -68422,6 +70787,11 @@ class Handler(BaseHTTPRequestHandler):
       const tokens = Math.max(0, Number(plan.estimated_total_tokens || 0));
       const usd = Math.max(0, Number(plan.estimated_cost_usd || 0));
       const confidence = String(plan.estimate_confidence || "").trim();
+      const capacity = plan.token_capacity_plan && typeof plan.token_capacity_plan === "object"
+        ? plan.token_capacity_plan
+        : {{}};
+      const outputCap = Math.max(0, Number(capacity.execution_output_cap || 0));
+      const capacityProvider = String(capacity.provider_class || "").trim().replace(/_/g, " ");
       const parts = [];
       if (skillCount) {{
         parts.push(`${{formatCount(skillCount)}} skill${{skillCount === 1 ? "" : "s"}}`);
@@ -68436,6 +70806,9 @@ class Handler(BaseHTTPRequestHandler):
       }}
       if (usd && Boolean(plan.cost_configured)) {{
         parts.push(`~${{formatCompactUsd(usd)}} equiv`);
+      }}
+      if (outputCap) {{
+        parts.push(`${{capacityProvider || "provider"}} cap ${{formatCompactMetric(outputCap)}} out`);
       }}
       if (confidence && confidence !== "none") {{
         parts.push(`${{confidence}} confidence`);
@@ -68581,6 +70954,138 @@ class Handler(BaseHTTPRequestHandler):
         usageCopy ? `${{usageCopy}}.` : "",
         `${{modelState}}.`,
       ].filter(Boolean).join(" ");
+    }}
+
+    function workingRecapForSnapshot(snapshot = state.snapshot) {{
+      const recap = snapshot && typeof snapshot.working_recap === "object"
+        ? snapshot.working_recap
+        : {{}};
+      const milestones = Array.isArray(recap.milestones)
+        ? recap.milestones.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 3)
+        : [];
+      const history = Array.isArray(recap.history)
+        ? recap.history
+          .filter((item) => item && typeof item === "object")
+          .map((item) => ({{
+            at: Number(item.at || 0),
+            now: String(item.now || "").trim(),
+            milestones: Array.isArray(item.milestones)
+              ? item.milestones.map((value) => String(value || "").trim()).filter(Boolean).slice(0, 3)
+              : [],
+            next: String(item.next || "").trim(),
+            source: String(item.source || "").trim().toLowerCase(),
+          }}))
+          .filter((item) => item.now || item.milestones.length || item.next)
+          .slice(-6)
+        : [];
+      return {{
+        status: String(recap.status || "").trim().toLowerCase(),
+        headline: String(recap.headline || "").trim(),
+        now: String(recap.now || "").trim(),
+        milestones,
+        next: String(recap.next || "").trim(),
+        updatedAt: Number(recap.updated_at || 0),
+        refreshing: Boolean(recap.refreshing),
+        source: String(recap.source || "").trim().toLowerCase(),
+        model: String(recap.model || "").trim(),
+        history,
+      }};
+    }}
+
+    function workingRecapSourceLabel(recap) {{
+      if (recap.refreshing) return "Refreshing local recap";
+      if (recap.source === "local_llm") return "Local recap";
+      return "Live recap";
+    }}
+
+    function buildWorkingOnPanel(recap, snapshot, fallbackBody = "") {{
+      const panel = document.createElement("section");
+      panel.className = "working-on-panel";
+      panel.setAttribute("aria-label", "Working on");
+
+      const top = document.createElement("div");
+      top.className = "working-on-panel-head";
+      const label = document.createElement("span");
+      label.className = "working-on-kicker";
+      label.textContent = "Working on";
+      top.appendChild(label);
+      const source = document.createElement("span");
+      source.className = "working-on-source";
+      source.textContent = workingRecapSourceLabel(recap);
+      if (recap.updatedAt) {{
+        source.title = `Last recap ${{formatTs(recap.updatedAt)}}${{recap.model ? ` via ${{recap.model}}` : ""}}`;
+      }}
+      top.appendChild(source);
+      panel.appendChild(top);
+
+      const headline = document.createElement("strong");
+      headline.className = "working-on-headline";
+      headline.textContent = recap.headline || "Preparing the active request.";
+      panel.appendChild(headline);
+
+      const now = document.createElement("p");
+      now.className = "working-on-now";
+      now.textContent = recap.now || fallbackBody || "The worker is preparing the first concrete step.";
+      panel.appendChild(now);
+
+      if (recap.milestones.length) {{
+        const milestones = document.createElement("ul");
+        milestones.className = "working-on-milestones";
+        for (const item of recap.milestones) {{
+          const milestone = document.createElement("li");
+          milestone.textContent = item;
+          milestones.appendChild(milestone);
+        }}
+        panel.appendChild(milestones);
+      }}
+
+      const footer = document.createElement("div");
+      footer.className = "working-on-footer";
+      if (recap.next) {{
+        const next = document.createElement("span");
+        next.className = "working-on-next";
+        next.textContent = `Next: ${{recap.next}}`;
+        footer.appendChild(next);
+      }}
+      const elapsed = activityElapsed(snapshot);
+      if (elapsed > 0) {{
+        const elapsedNode = document.createElement("span");
+        elapsedNode.className = "working-on-elapsed";
+        elapsedNode.textContent = `${{formatElapsedCompact(elapsed)}} elapsed`;
+        footer.appendChild(elapsedNode);
+      }}
+      if (footer.childElementCount) {{
+        panel.appendChild(footer);
+      }}
+
+      if (recap.history.length > 1) {{
+        const timeline = document.createElement("details");
+        timeline.className = "working-on-timeline";
+        const summary = document.createElement("summary");
+        const count = recap.history.length;
+        summary.textContent = `${{count}} recap update${{count === 1 ? "" : "s"}}`;
+        timeline.appendChild(summary);
+        const entries = document.createElement("ol");
+        for (const entry of recap.history.slice().reverse()) {{
+          const item = document.createElement("li");
+          const stamp = document.createElement("span");
+          stamp.className = "working-on-timeline-stamp";
+          stamp.textContent = entry.at ? formatTs(entry.at) : "Earlier";
+          item.appendChild(stamp);
+          const copy = document.createElement("span");
+          copy.className = "working-on-timeline-copy";
+          copy.textContent = [
+            entry.now,
+            ...(entry.milestones || []),
+            entry.next ? `Next: ${{entry.next}}` : "",
+          ].filter(Boolean).join(" ");
+          item.appendChild(copy);
+          entries.appendChild(item);
+        }}
+        timeline.appendChild(entries);
+        panel.appendChild(timeline);
+      }}
+      return panel;
     }}
 
     function routeDisplayName(runtime) {{
@@ -69272,6 +71777,7 @@ class Handler(BaseHTTPRequestHandler):
       const queued = queuedEntries(snapshot);
       if (snapshot.pending) {{
         const stage = inferWorkingStage(snapshot);
+        const workingRecap = workingRecapForSnapshot(snapshot);
         const elapsed = activityElapsed(snapshot);
         const handoffActive = String(snapshot.queue_handoff_state || "").toLowerCase() === "running";
         const startedParts = [];
@@ -69329,6 +71835,7 @@ class Handler(BaseHTTPRequestHandler):
           mode: "working",
           stripTitle: handoffActive ? "Interrupt handoff" : stage.line,
           stripDetail: [
+            workingRecap.now ? summarizePrompt(workingRecap.now, 112) : "",
             promptProfileText(snapshot.running_speed, snapshot.running_detail, snapshot.running_job_budget, snapshot.running_service_tier, snapshot.running_optimization_mode),
             startedParts.find((item) => item.includes("in flight")) || "",
             handoffActive ? "previous work preserved" : "",
@@ -69338,7 +71845,7 @@ class Handler(BaseHTTPRequestHandler):
             !elapsed && snapshot.last_started_at ? `started ${{formatTs(snapshot.last_started_at)}}` : "",
           ].filter(Boolean).join(" · "),
           peekTitle: handoffActive ? "Interrupt" : "Background",
-          simLine: `${{handoffActive ? "Interrupt handoff" : "Running"}}: ${{summarizePrompt(snapshot.running_prompt || "", 120)}}`,
+          simLine: `${{handoffActive ? "Interrupt handoff" : "Running"}}: ${{workingRecap.headline || summarizePrompt(snapshot.running_prompt || "", 120)}}`,
           simMeta: handoffActive
             ? [snapshot.queue_handoff_detail || "The queued prompt is running after a safe-checkpoint handoff.", ...startedParts, ...queuePreview]
             : [...startedParts, ...queuePreview],
@@ -69843,6 +72350,7 @@ class Handler(BaseHTTPRequestHandler):
       let statusText = snapshot.status_message || "Ready.";
       if (snapshot.pending && snapshot.running_prompt) {{
         const elapsed = activityElapsed(snapshot);
+        const workingRecap = workingRecapForSnapshot(snapshot);
         const handoffActive = String(snapshot.queue_handoff_state || "").toLowerCase() === "running";
         if (snapshot.rate_limit_active || snapshot.state === "rate_limited") {{
           statusText = [
@@ -69860,7 +72368,8 @@ class Handler(BaseHTTPRequestHandler):
           ].filter(Boolean).join(" · ");
         }} else {{
           statusText = [
-            `Running: ${{summarizePrompt(snapshot.running_prompt, 88)}}`,
+            `Running: ${{workingRecap.headline || summarizePrompt(snapshot.running_prompt, 88)}}`,
+            workingRecap.now ? summarizePrompt(workingRecap.now, 104) : "",
             elapsed > 0 ? `${{formatElapsedCompact(elapsed)}} elapsed` : "",
             promptProfileText(snapshot.running_speed, snapshot.running_detail, snapshot.running_job_budget, snapshot.running_service_tier, snapshot.running_optimization_mode),
             usageSummaryForActiveWork(snapshot),

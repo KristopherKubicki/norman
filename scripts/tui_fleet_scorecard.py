@@ -7,6 +7,7 @@ import os
 import re
 import sqlite3
 import subprocess
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
@@ -871,6 +872,49 @@ def render_markdown(rows: list[ScoreRow]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def render_inventory_unavailable(
+    *,
+    db_path: Path,
+    registry_path: Path,
+    json_output: bool,
+) -> str:
+    detail = (
+        "No TUI inventory was found from the configured database or registry. "
+        "This is not a healthy empty fleet; refresh the runtime inventory or "
+        "supply --db/--registry with populated sources."
+    )
+    if json_output:
+        return json.dumps(
+            {
+                "schema": "norman.tui-fleet-scorecard.v1",
+                "status": "inventory_unavailable",
+                "items": [],
+                "error": detail,
+                "sources": {
+                    "db": str(db_path),
+                    "registry": str(registry_path),
+                },
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    return (
+        "\n".join(
+            (
+                "# TUI Fleet Scorecard",
+                "",
+                "Status: `inventory_unavailable`",
+                "",
+                detail,
+                "",
+                f"- Database: `{db_path}`",
+                f"- Registry: `{registry_path}`",
+            )
+        )
+        + "\n"
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Score Norman TUI fleet health.")
     parser.add_argument("--db", type=Path, default=DEFAULT_DB)
@@ -908,6 +952,22 @@ def main() -> int:
         [*load_db_items(args.db), *load_registry_items(args.registry)],
         token_map,
     )
+    if not items:
+        payload = render_inventory_unavailable(
+            db_path=args.db,
+            registry_path=args.registry,
+            json_output=bool(args.json),
+        )
+        if args.output:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(payload, encoding="utf-8")
+        print(payload, end="" if payload.endswith("\n") else "\n")
+        print(
+            "TUI fleet scorecard failed: no inventory found; refusing to report "
+            "a healthy empty fleet.",
+            file=sys.stderr,
+        )
+        return 2
     expected_dns = expected_tailnet_dns(items, tailnet_frontdoor)
     with ThreadPoolExecutor(max_workers=max(1, int(args.jobs))) as executor:
         rows = list(

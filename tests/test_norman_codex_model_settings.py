@@ -19,6 +19,9 @@ LAUNCH_SCRIPT_PATH = REPO_ROOT / "scripts" / "norman_codex_launch.sh"
 def _load_norman_codex_web(monkeypatch, tmp_path, **overrides):
     codex_home = tmp_path / "codex-home"
     state_dir = tmp_path / "state"
+    existing_legacy_keys = {
+        key for key in os.environ if key.startswith("HOUSEBOT_CODEX_")
+    }
     for key in tuple(os.environ):
         if (
             key.startswith(("NORMAN_CODEX_", "HOUSEBOT_CODEX_"))
@@ -28,10 +31,15 @@ def _load_norman_codex_web(monkeypatch, tmp_path, **overrides):
     monkeypatch.setenv("NORMAN_CODEX_HOME", str(codex_home))
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
     monkeypatch.setenv("NORMAN_CODEX_WEB_STATE_DIR", str(state_dir))
+    monkeypatch.setenv("NORMAN_CODEX_PROFILE_CONFIG_FLAG", "--profile-v2")
     monkeypatch.setenv("NORMAN_CODEX_MODEL", "gpt-5.4")
     monkeypatch.setenv("NORMAN_CODEX_LATEST_MODEL", "gpt-5.5")
     monkeypatch.setenv("NORMAN_CODEX_AVAILABLE_MODELS", "gpt-5.5")
     monkeypatch.setenv("NORMAN_CODEX_BBS_SUMMARY_ENABLED", "0")
+    if "NORMAN_CODEX_ALLOW_OPENAI_API_SPEND" not in overrides:
+        # Legacy executor tests use a synthetic direct Codex runtime without
+        # creating either a ChatGPT or API-key auth fixture.
+        monkeypatch.setenv("NORMAN_CODEX_ALLOW_OPENAI_API_SPEND", "1")
     for key in (
         "NORMAN_CODEX_BILLING_SCOPE",
         "NORMAN_CODEX_BILLING_UNIT",
@@ -52,6 +60,11 @@ def _load_norman_codex_web(monkeypatch, tmp_path, **overrides):
         spec.loader.exec_module(module)
     finally:
         sys.modules.pop(module_name, None)
+        # The module bridges canonical settings to legacy aliases with direct
+        # os.environ writes. Keep those aliases from leaking into later tests.
+        for key in tuple(os.environ):
+            if key.startswith("HOUSEBOT_CODEX_") and key not in existing_legacy_keys:
+                os.environ.pop(key, None)
     return module
 
 
@@ -80,6 +93,25 @@ def test_runtime_model_enforces_gpt55_floor(monkeypatch, tmp_path) -> None:
     assert module.chat_model_update_available() is False
 
 
+def test_profile_flag_uses_modern_cli_option_when_available(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_PROFILE_CONFIG_FLAG="",
+    )
+
+    def fake_run(args, **_kwargs):
+        if args == [module.CODEX_BIN, "exec", "--help"]:
+            return SimpleNamespace(stdout="--profile", stderr="")
+        raise AssertionError(args)
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    assert module.resolve_codex_profile_config_flag() == "--profile"
+
+
 def test_switchboard_exposes_lightweight_version_endpoint() -> None:
     source = WEB_SCRIPT_PATH.read_text(encoding="utf-8")
 
@@ -87,6 +119,487 @@ def test_switchboard_exposes_lightweight_version_endpoint() -> None:
     assert '"ui_version": UI_VERSION' in source
     assert '"agent_name": AGENT_NAME' in source
     assert '"session_name": SESSION' in source
+
+
+def test_switchboard_exposes_dynamic_working_on_recap_panel() -> None:
+    source = WEB_SCRIPT_PATH.read_text(encoding="utf-8")
+
+    assert "NORMAN_CODEX_WORKING_RECAP_REFRESH_SECONDS" in source
+    assert "https://llm.home.arpa" in source
+    assert "def working_recap_local_llm(" in source
+    assert "Use only this sanitized status packet." in source
+    assert '"working_recap": working_recap' in source
+    assert "function workingRecapForSnapshot(" in source
+    assert "function buildWorkingOnPanel(" in source
+    assert "working-on-timeline" in source
+    assert "working-recap-pulse" in source
+
+
+def test_switchboard_token_capacity_plan_tracks_duration_and_provider(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+
+    bedrock = module.provider_token_budget_plan(
+        prompt="Implement the focused fix and verify it.",
+        runtime="claude",
+        job_budget="2m",
+        detail=2,
+        entries=[],
+        cloud_authorized=True,
+    )
+    codex = module.provider_token_budget_plan(
+        prompt="Implement the focused fix and verify it.",
+        runtime="codex",
+        service_tier="flex",
+        job_budget="2m",
+        detail=2,
+        entries=[],
+    )
+
+    assert bedrock["provider_class"] == "bedrock"
+    assert bedrock["time_window_output_cap"] == 2400
+    assert bedrock["execution_output_cap"] == 2100
+    assert bedrock["cloud_token_budget"] == 4200
+    assert bedrock["enforcement"] == "request_hard"
+    assert codex["provider_class"] in {"codex_subscription", "openai_direct"}
+    assert codex["execution_output_cap"] == 2000
+    assert codex["enforcement"] == "advisory"
+
+
+def test_subscription_route_requires_a_reset_aware_forecast(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_STANDARD_PROFILE_V2="personal-bedrock",
+        NORMAN_CODEX_STANDARD_AWS_PROFILE="norman-bedrock",
+        NORMAN_CODEX_AGENT_GROUP="personal",
+        NORMAN_CODEX_BILLING_OWNER="kristopher",
+    )
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "chatgpt")
+    observed_at = module.now_ts()
+    capacity = {
+        **module.default_codex_account_capacity(),
+        "source": "interactive_usage",
+        "observed_at": observed_at,
+        "last_probe_at": observed_at,
+        "auth_mode": "chatgpt",
+        "state": "available",
+        "credits_available": 6907,
+        "windows": [
+            {
+                "label": "Short window",
+                "percent_left": 84,
+                "reset_hint": "2h",
+                "reset_seconds": 7200,
+            }
+        ],
+    }
+
+    selected = module.codex_subscription_capacity_route_decision(
+        runtime="codex",
+        model=module.MODEL,
+        service_tier="default",
+        prompt="Implement the focused fix and verify it.",
+        job_budget="normal",
+        detail=2,
+        capacity=capacity,
+    )
+
+    assert selected["selected"] is True
+    forecast = selected["capacity"]["forecast"]
+    assert forecast["reset_seconds"] == 7200
+    assert forecast["fits_policy_envelope"] is True
+    assert forecast["credits_available_informational"] == 6907
+
+    too_near = module.codex_subscription_capacity_route_decision(
+        runtime="codex",
+        model=module.MODEL,
+        service_tier="default",
+        prompt="Implement the focused fix and verify it.",
+        job_budget="normal",
+        detail=2,
+        capacity={
+            **capacity,
+            "windows": [
+                {
+                    "label": "Short window",
+                    "percent_left": 84,
+                    "reset_hint": "2m",
+                    "reset_seconds": 120,
+                }
+            ],
+        },
+    )
+
+    assert too_near["selected"] is False
+    assert "reset window" in too_near["reason"]
+
+
+def test_work_subscription_route_requires_explicit_scope_enablement(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_AGENT_GROUP="work",
+        NORMAN_CODEX_BILLING_OWNER="openbrand",
+        NORMAN_CODEX_SUBSCRIPTION_ROUTE_WORK_ENABLED="0",
+    )
+
+    assert module.codex_subscription_capacity_personal_lane() is False
+    assert module.codex_subscription_capacity_route_lane() is False
+
+    module.CODEX_SUBSCRIPTION_ROUTE_WORK_ENABLED = True
+
+    assert module.codex_subscription_capacity_route_lane() is True
+
+
+def test_switchboard_working_recap_uses_sanitized_norllama_packet(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_WORKING_RECAP_MODEL="norllama-test",
+        NORMAN_CODEX_WORKING_RECAP_ENDPOINTS="http://norllama.invalid",
+    )
+    captured: list[object] = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "message": {
+                        "content": (
+                            '{"now":"Reviewing the completed checkpoint.",'
+                            '"milestones":["One tool checkpoint completed.",'
+                            '"Bearer output-token"],'
+                            '"next":"Choose the next safe action."}'
+                        )
+                    }
+                }
+            ).encode()
+
+    def fake_urlopen(request, timeout):
+        captured.extend((request, timeout))
+        return Response()
+
+    monkeypatch.setattr(module.urllib_request, "urlopen", fake_urlopen)
+    meta = {
+        "last_started_at": 1712878300,
+        "running_prompt": "Deploy api_key=prompt-secret with Bearer prompt-token",
+        "running_runtime": "codex",
+        "running_model": "gpt-5.5",
+        "turn_plan": {
+            "understood_task": "Deploy api_key=plan-secret",
+            "skill_labels": ["code edit", "verification"],
+            "plan_steps": ["Check the running worker.", "Report the result."],
+        },
+        "live_turn": {
+            "event_count": 3,
+            "tool_started_count": 2,
+            "tool_finished_count": 1,
+            "last_tool_status": "tool-finished",
+        },
+    }
+    deterministic = module.deterministic_working_recap(meta, observed_at=1712878350)
+
+    recap, model = module.working_recap_local_llm(meta, deterministic, queue_depth=1)
+
+    request, timeout = captured
+    request_payload = json.loads(request.data.decode())
+    prompt = request_payload["messages"][0]["content"]
+    assert request.full_url == "http://norllama.invalid/api/chat"
+    assert timeout == module.WORKING_RECAP_LLM_TIMEOUT_SECONDS
+    assert "prompt-secret" not in prompt
+    assert "prompt-token" not in prompt
+    assert "plan-secret" not in prompt
+    assert model == "norllama-test"
+    assert recap["source"] == "local_llm"
+    assert recap["now"] == "Reviewing the completed checkpoint."
+    assert recap["milestones"] == [
+        "One tool checkpoint completed.",
+        "Bearer [redacted]",
+    ]
+
+
+def test_direct_openai_execution_requires_plan_capacity_or_explicit_override(
+    monkeypatch, tmp_path
+) -> None:
+    blocked = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_ALLOW_OPENAI_API_SPEND="0",
+    )
+    monkeypatch.setattr(blocked, "stored_codex_auth_mode", lambda: "api_key")
+
+    blocked_decision = blocked.codex_openai_direct_execution_decision("flex")
+
+    assert blocked_decision["allowed"] is False
+    assert blocked_decision["auth_mode"] == "api_key"
+    assert "API spending is disabled" in blocked_decision["reason"]
+
+    guarded_subscription = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_ALLOW_OPENAI_API_SPEND="0",
+    )
+    monkeypatch.setattr(
+        guarded_subscription, "stored_codex_auth_mode", lambda: "chatgpt"
+    )
+
+    guarded_decision = guarded_subscription.codex_openai_direct_execution_decision(
+        "flex"
+    )
+
+    assert guarded_decision["allowed"] is False
+    assert guarded_decision["reason_code"] == "chatgpt_credit_extension_guard"
+    assert "paid ChatGPT credit extension is disabled" in guarded_decision["reason"]
+
+    subscription = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_ALLOW_OPENAI_API_SPEND="0",
+    )
+    monkeypatch.setattr(subscription, "stored_codex_auth_mode", lambda: "chatgpt")
+    monkeypatch.setattr(
+        subscription,
+        "codex_account_capacity_snapshot",
+        lambda **_kwargs: {
+            "fresh": True,
+            "state": "available",
+            "minimum_window_percent_left": 75,
+            "windows": [{"reset_seconds": 7200}],
+        },
+    )
+
+    subscription_decision = subscription.codex_openai_direct_execution_decision("flex")
+
+    assert subscription_decision["allowed"] is True
+    assert subscription_decision["api_spend_override"] is False
+    assert (
+        subscription_decision["reason"]
+        == "verified ChatGPT plan capacity is above the no-credit extension reserve"
+    )
+
+    override = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_ALLOW_OPENAI_API_SPEND="1",
+    )
+    monkeypatch.setattr(override, "stored_codex_auth_mode", lambda: "")
+
+    override_decision = override.codex_openai_direct_execution_decision("flex")
+
+    assert override_decision["allowed"] is True
+    assert override_decision["api_spend_override"] is True
+    assert override_decision["reason"] == "explicit OpenAI API spend override"
+
+
+def test_direct_openai_execution_rechecks_auth_before_process_launch(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_ALLOW_OPENAI_API_SPEND="0",
+    )
+    auth_state = {"calls": 0}
+
+    def auth_mode() -> str:
+        auth_state["calls"] += 1
+        return "chatgpt" if auth_state["calls"] == 1 else "api_key"
+
+    monkeypatch.setattr(module, "stored_codex_auth_mode", auth_mode)
+
+    def fail_popen(*_args, **_kwargs):
+        raise AssertionError("direct Codex process must not launch after auth changes")
+
+    monkeypatch.setattr(module.subprocess, "Popen", fail_popen)
+
+    response, error_text, _thread_id, usage = module._execute_codex_prompt(
+        "Check the current state.", "balanced", 2, [], service_tier="flex"
+    )
+
+    assert response == ""
+    assert "No OpenAI API request was sent." in error_text
+    assert usage["provider_error_kind"] == "openai_api_spend_blocked"
+
+
+def test_direct_chatgpt_launch_requires_turn_to_fit_reset_window(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_ALLOW_OPENAI_API_SPEND="0",
+    )
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "chatgpt")
+    monkeypatch.setattr(
+        module,
+        "codex_account_capacity_snapshot",
+        lambda **_kwargs: {
+            "fresh": True,
+            "state": "available",
+            "minimum_window_percent_left": 75,
+            "windows": [{"reset_seconds": 300}],
+        },
+    )
+
+    decision = module.codex_openai_direct_execution_decision(
+        "flex",
+        prompt="Implement the focused fix and verify it.",
+        job_budget="normal",
+        detail=3,
+    )
+
+    assert decision["allowed"] is False
+    assert decision["reason_code"] == "chatgpt_credit_extension_guard"
+    assert decision["capacity"]["forecast"]["turn_fits_reset"] is False
+
+
+def test_bedrock_launch_drops_inherited_openai_api_key_when_api_spend_disabled(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-reach-bedrock-child")
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_ALLOW_OPENAI_API_SPEND="0",
+        NORMAN_CODEX_STANDARD_PROFILE_V2="personal-bedrock",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_STANDARD_AWS_PROFILE="kk-personal",
+        NORMAN_CODEX_STANDARD_AWS_REGION="us-east-2",
+    )
+    captured_env: dict[str, str] = {}
+
+    class FakePopen:
+        pid = 12345
+        returncode = 0
+
+        def __init__(self, cmd, text, stdin, stdout, stderr, env, start_new_session):
+            captured_env.update(env)
+            output_path = pathlib.Path(cmd[cmd.index("-o") + 1])
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text("ok", encoding="utf-8")
+
+        def communicate(self, timeout=None):
+            return "", ""
+
+    monkeypatch.setattr(module.subprocess, "Popen", FakePopen)
+
+    response, error_text, _thread_id, _usage = module._execute_codex_prompt(
+        "Check the Bedrock route.", "balanced", 2, [], service_tier="default"
+    )
+
+    assert response == "ok"
+    assert error_text == ""
+    assert "OPENAI_API_KEY" not in captured_env
+    assert captured_env["AWS_PROFILE"] == "kk-personal"
+    assert captured_env["AWS_REGION"] == "us-east-2"
+
+
+def test_subscription_self_improvement_runs_once_near_reset_with_read_only_codex(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_ALLOW_OPENAI_API_SPEND="0",
+        NORMAN_CODEX_SUBSCRIPTION_SELF_IMPROVEMENT_ENABLED="1",
+        NORMAN_CODEX_BILLING_OWNER="kristopher",
+        NORMAN_CODEX_AGENT_GROUP="personal",
+    )
+    module.ensure_state_dir()
+    now = 1_700_000_000
+    capacity = {
+        **module.default_codex_account_capacity(),
+        "source": "interactive_usage",
+        "observed_at": now,
+        "last_probe_at": now,
+        "auth_mode": "chatgpt",
+        "state": "available",
+        "windows": [
+            {
+                "label": "Short",
+                "percent_left": 75,
+                "reset_hint": "10m",
+                "reset_seconds": 600,
+            }
+        ],
+    }
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "chatgpt")
+    monkeypatch.setattr(module, "now_ts", lambda: now)
+    monkeypatch.setattr(module, "prompt_runtime_alive", lambda: False)
+    monkeypatch.setattr(module, "prompt_thread_alive", lambda: False)
+    module.update_status_meta(pending=False, queued_prompts=[])
+    module._persist_codex_account_capacity(capacity)
+    launches: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr(
+        module,
+        "start_web_prompt",
+        lambda *args, **kwargs: (
+            launches.append((args, kwargs)) is None,
+            {},
+        ),
+    )
+
+    decision = module.codex_subscription_self_improvement_decision(capacity, now=now)
+
+    assert decision["eligible"] is True
+    assert decision["reset_window_id"]
+    assert module.maybe_start_subscription_capacity_self_improvement(capacity) is True
+    assert module.maybe_start_subscription_capacity_self_improvement(capacity) is False
+    assert len(launches) == 1
+    args, kwargs = launches[0]
+    assert module.SUBSCRIPTION_SELF_IMPROVEMENT_MARKER in str(args[0])
+    assert kwargs["runtime"] == "codex"
+    assert kwargs["service_tier"] == "flex"
+    assert kwargs["route_lock"] is True
+    assert kwargs["source"] == "system"
+
+    command: list[str] = []
+
+    class FakePopen:
+        pid = 12345
+        returncode = 0
+
+        def __init__(self, cmd, text, stdin, stdout, stderr, env, start_new_session):
+            command.extend(cmd)
+            assert "OPENAI_API_KEY" not in env
+            assert "CODEX_API_KEY" not in env
+            output_path = pathlib.Path(cmd[cmd.index("-o") + 1])
+            output_path.write_text("Read-only review complete.", encoding="utf-8")
+
+        def communicate(self, timeout=None):
+            return "", ""
+
+    monkeypatch.setattr(module.subprocess, "Popen", FakePopen)
+
+    response, error_text, _thread_id, _usage = module._execute_codex_prompt(
+        module.subscription_capacity_self_improvement_prompt(),
+        "balanced",
+        2,
+        [],
+        service_tier="flex",
+        job_budget="2m",
+        optimization_mode="raw",
+    )
+
+    assert response == "Read-only review complete."
+    assert error_text == ""
+    assert command[command.index("--sandbox") + 1] == "read-only"
+    assert command[command.index("--ask-for-approval") + 1] == "never"
+    assert "--dangerously-bypass-approvals-and-sandbox" not in command
 
 
 def test_careful_response_speed_uses_xhigh_reasoning(monkeypatch, tmp_path) -> None:
@@ -619,6 +1132,8 @@ def test_bedrock_standard_profile_routes_standard_and_keeps_flex_direct(
     module = _load_norman_codex_web(
         monkeypatch,
         tmp_path,
+        NORMAN_CODEX_ALLOW_OPENAI_API_SPEND="1",
+        NORMAN_CODEX_CHATGPT_CREDIT_EXTENSION_ALLOWED="1",
         NORMAN_CODEX_SERVICE_TIER="default",
         NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
         NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.5",
@@ -1192,7 +1707,7 @@ def test_start_web_prompt_prefers_fresh_chatgpt_capacity_over_bedrock(
     assert events[0]["payload"]["selected_service_tier"] == "flex"
 
 
-def test_switchboard_unsupported_usage_command_is_sanitized_and_backed_off(
+def test_switchboard_capacity_probe_never_sends_usage_command(
     monkeypatch, tmp_path
 ) -> None:
     module = _load_norman_codex_web(monkeypatch, tmp_path)
@@ -1207,12 +1722,12 @@ def test_switchboard_unsupported_usage_command_is_sanitized_and_backed_off(
     monkeypatch.setattr(module, "prompt_runtime_alive", lambda: False)
     monkeypatch.setattr(module, "prompt_thread_alive", lambda: False)
     prompt_pane = "OpenAI Codex (v0.144.4)\n\n› "
-    unsupported_pane = "Unrecognized command '/usage'. Type \"/\" for a list of supported commands.\n\n› "
-    panes = iter([prompt_pane, unsupported_pane, unsupported_pane])
     sent: list[str] = []
     keys: list[tuple[str, ...]] = []
-    monkeypatch.setattr(module, "capture_pane", lambda: next(panes))
-    monkeypatch.setattr(module, "send_text", lambda value: sent.append(value))
+    monkeypatch.setattr(module, "capture_pane", lambda: prompt_pane)
+    monkeypatch.setattr(
+        module, "send_codex_status_probe", lambda: sent.append("/status")
+    )
     monkeypatch.setattr(module, "send_keys", lambda *value: keys.append(value))
 
     assert (
@@ -1227,16 +1742,12 @@ def test_switchboard_unsupported_usage_command_is_sanitized_and_backed_off(
     worker.join(timeout=1)
 
     persisted = module.codex_account_capacity_snapshot(auth_mode="chatgpt")
-    history_text = module.CODEX_ACCOUNT_CAPACITY_HISTORY_PATH.read_text(
-        encoding="utf-8"
-    )
-    assert sent == ["/usage"]
-    assert keys == [("Escape",), ("C-u",), ("C-a", "C-k"), ("C-l",)]
-    assert persisted["source"] == "unsupported_command"
+    assert sent == []
+    assert keys == []
+    assert persisted["source"] == "probe_command_rejected"
     assert persisted["state"] == "unknown"
     assert persisted["eligible_for_subscription_route"] is False
-    assert "Unrecognized command" not in history_text
-    assert "/usage" not in history_text
+    assert "/usage can consume an account limit reset" in persisted["last_error"]
     assert (
         module.maybe_schedule_codex_account_capacity_probe(
             pane=prompt_pane,
@@ -1244,6 +1755,32 @@ def test_switchboard_unsupported_usage_command_is_sanitized_and_backed_off(
         )
         is False
     )
+
+
+def test_norman_status_capacity_parser_records_credit_metadata(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    observed_at = int(time.mktime((2026, 7, 16, 12, 0, 0, 0, 0, -1)))
+
+    parsed = module.parse_codex_account_capacity_pane(
+        """
+        You have 4 usage limit resets available. Run /usage to use one.
+        Weekly limit: 100% left
+        (resets 12:12 on 23 Jul)
+        Context window: 92% left
+        Credits: 6,907 credits
+        """,
+        observed_at=observed_at,
+        auth_mode="chatgpt",
+    )
+
+    assert parsed["state"] == "available"
+    assert parsed["minimum_window_percent_left"] == 100
+    assert [window["label"] for window in parsed["windows"]] == ["Weekly"]
+    assert parsed["windows"][0]["reset_seconds"] > 6 * 24 * 60 * 60
+    assert parsed["credits_available"] == 6907
+    assert parsed["usage_limit_resets_available"] == 4
 
 
 def test_bedrock_standard_can_disable_direct_openai_tiers(

@@ -48,6 +48,34 @@ def test_form_payload_uses_locked_local_llm_route():
     assert run.expected_response == "DONE local visible r1-norman-canary"
 
 
+def test_dry_run_writes_not_executed_plan(tmp_path, capsys):
+    output = tmp_path / "nested" / "acceptance-plan.json"
+
+    result = acceptance.main(
+        [
+            "--targets",
+            "norman",
+            "--scenarios",
+            "canary",
+            "--run-id",
+            "dry-plan",
+            "--output-json",
+            str(output),
+        ]
+    )
+
+    report = json.loads(output.read_text(encoding="utf-8"))
+    captured = capsys.readouterr()
+    assert result == 0
+    assert report["dry_run_only"] is True
+    assert report["model_calls_executed"] == 0
+    assert report["execution_status"] == "not_executed"
+    assert report["passed"] is None
+    assert report["plans"][0]["target"] == "norman"
+    assert report["plans"][0]["execution_status"] == "not_executed"
+    assert "expected response (not executed)" in captured.out
+
+
 def test_norman_target_uses_ssh_when_acceptance_runs_off_host(monkeypatch):
     monkeypatch.delenv("NORMAN_TUI_ACCEPTANCE_NORMAN_SSH_TARGET", raising=False)
     monkeypatch.setattr(acceptance.socket, "gethostname", lambda: "hal")
