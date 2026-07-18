@@ -2279,6 +2279,21 @@ def test_deterministic_status_prompt_completes_without_model_call(
     assert receipts[-1]["validator_passed"] is True
 
 
+def test_template_routes_svg_benchmark_regeneration_to_tool_capable_runtime(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    prompt = (
+        "why are there no Codex 5.6 benchmarks in the SVG? "
+        "can you regenerate the SVG after running the benchmark?"
+    )
+
+    assert module.prompt_is_route_status_diagnostic(prompt) is False
+    assert module.route_receipt_requested_action(prompt) == "benchmark_or_optimizer"
+    assert module.deterministic_status_prompt_allowed(prompt, []) is False
+    assert module.prompt_requires_cloud_or_tools(prompt) is True
+
+
 def test_cost_route_uses_local_intent_classifier_for_ambiguous_status(
     monkeypatch, tmp_path
 ):

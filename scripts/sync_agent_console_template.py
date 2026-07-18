@@ -28,9 +28,14 @@ from app.services.codex_role_policy import (
 SCRIPT_DIR = Path(__file__).resolve().parent
 TEMPLATE_ROOT = SCRIPT_DIR / "agent_console_template"
 PROMPT_TEMPLATE_ROOT = TEMPLATE_ROOT / "prompts"
+MANAGED_SKILL_ROOT = TEMPLATE_ROOT / "skills"
+MANAGED_SKILLS_BY_INSTANCE: dict[str, tuple[str, ...]] = {
+    "uplink": ("uplink-benchmark",),
+}
 SOURCE_FILES = {
     "web": TEMPLATE_ROOT / "agent_console_web.py",
     "norman-switchboard": SCRIPT_DIR / "norman_codex_web.py",
+    "apply-patch": SCRIPT_DIR / "apply_patch_cli.py",
     "launch": TEMPLATE_ROOT / "agent_console_launch.sh",
     "supervisor": TEMPLATE_ROOT / "agent_console_supervisor.sh",
     "release-readiness": SCRIPT_DIR / "tui_release_readiness.py",
@@ -167,6 +172,7 @@ class ConsoleInstance:
         )
         return (
             (web_source, self.web_path),
+            ("apply-patch", "/usr/local/bin/apply_patch"),
             ("launch", self.launch_path),
             ("supervisor", self.supervisor_path),
             ("release-readiness", f"/opt/{self.name}/tui_release_readiness.py"),
@@ -664,6 +670,24 @@ def scp_command(source: Path, ssh_target: str, remote_path: str) -> list[str]:
 
 def local_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def managed_skill_files(instance: ConsoleInstance) -> tuple[tuple[Path, str], ...]:
+    if not instance.codex_home:
+        return ()
+
+    files: list[tuple[Path, str]] = []
+    for skill_name in MANAGED_SKILLS_BY_INSTANCE.get(instance.name, ()):
+        source_root = MANAGED_SKILL_ROOT / skill_name
+        target_root = Path(instance.codex_home) / "skills" / skill_name
+        for relative_path in (Path("SKILL.md"), Path("agents/openai.yaml")):
+            files.append(
+                (
+                    source_root / relative_path,
+                    str(target_root / relative_path),
+                )
+            )
+    return tuple(files)
 
 
 def discover_host_instances(host: DiscoveryHost) -> list[ConsoleInstance]:
@@ -2448,6 +2472,24 @@ PY
     return capture(ssh_command(host, script)).strip() == "changed"
 
 
+def sync_instance_managed_skills(
+    host: DiscoveryHost,
+    instance: ConsoleInstance,
+) -> bool:
+    changed = False
+    for source, remote_path in managed_skill_files(instance):
+        if not source.exists():
+            raise FileNotFoundError(source)
+        if install_source_path(
+            host,
+            remote_path=remote_path,
+            source=source,
+            source_sha256=local_sha256(source),
+        ):
+            changed = True
+    return changed
+
+
 def remote_file_state(host: DiscoveryHost, remote_path: str) -> RemoteFileState:
     script = f"""
 python3 - <<'PY'
@@ -3106,6 +3148,12 @@ def main() -> int:
     for source in PROMPT_TEMPLATES.values():
         if not source.exists():
             raise FileNotFoundError(source)
+    for skill_names in MANAGED_SKILLS_BY_INSTANCE.values():
+        for skill_name in skill_names:
+            for relative_path in (Path("SKILL.md"), Path("agents/openai.yaml")):
+                source = MANAGED_SKILL_ROOT / skill_name / relative_path
+                if not source.exists():
+                    raise FileNotFoundError(source)
     validate_web_source_versions()
 
     discovered_by_host, discovered_by_name = discover_all_instances(
@@ -3181,6 +3229,9 @@ def main() -> int:
             ):
                 changed_instances[instance.name] = instance
                 print(f"  - codex home seed -> {instance.codex_home}", flush=True)
+            if sync_instance_managed_skills(host, instance):
+                changed_instances[instance.name] = instance
+                print(f"  - managed skills -> {instance.codex_home}", flush=True)
             if sync_instance_codex_profile_files(host, instance):
                 changed_instances[instance.name] = instance
                 print(

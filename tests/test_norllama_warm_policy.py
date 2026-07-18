@@ -857,7 +857,7 @@ def test_build_warm_policy_prefers_active_worker_over_stale_benchmark_target():
     mesh = catalog_mesh()
     mesh["workers"][2]["active_models"].append("qwen3.6:27b")
     packet = {
-        "generated_at": "2026-07-11T12:00:00Z",
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "shareable_view": {
             "recommended_roles": [
                 {

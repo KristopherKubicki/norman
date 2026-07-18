@@ -1,10 +1,10 @@
 {
   "schema": "norman.codex-role-policy.v1",
   "version": "2026.07.15.role-v1",
-  "policy_id": "2026.07.15.role-v1:920a24c51eaf",
-  "policy_hash": "920a24c51eaf48fabc7a07cec5b916b3b163d9391ab107c0b6b5ffbdaf6ed972",
-  "issued_at": "2026-07-15T00:00:00Z",
-  "default_policy": "local-first, GPT-5.4 cloud baseline, GPT-5.5 final-authority only",
+  "policy_id": "2026.07.15.role-v1:60a03317cbb4",
+  "policy_hash": "60a03317cbb478779c4fd9addb489b149965b4a1b5a3568e5a1d3c531c3e6985",
+  "issued_at": "2026-07-17T18:30:00Z",
+  "default_policy": "local-first, GPT-5.4 work baseline, GPT-5.6 Terra personal Bedrock baseline, GPT-5.5 work final-authority only",
   "roles": {
     "work_standard": {
       "provider": "aws-bedrock",
@@ -36,9 +36,9 @@
       "profile_v2": "personal-bedrock",
       "aws_profile_env": "NORMAN_SYNC_NON_WORK_BEDROCK_AWS_PROFILE",
       "aws_region_env": "NORMAN_SYNC_NON_WORK_BEDROCK_AWS_REGION",
-      "model": "openai.gpt-5.4",
+      "model": "openai.gpt-5.6-terra",
       "service_tier": "default",
-      "allowed_use": "personal/non-work cloud fallback after local-first routing; GPT-5.6 stays opt-in until the deployed Codex runtime supports it",
+      "allowed_use": "personal/non-work cloud fallback after local-first routing; Bedrock GPT-5.6 Terra is the validated personal baseline",
       "production_default": true
     },
     "personal_direct": {

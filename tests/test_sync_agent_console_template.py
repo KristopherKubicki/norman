@@ -1362,8 +1362,8 @@ def test_work_named_tui_on_norman_stays_personal_without_test_override(
     assert '"NORMAN_CODEX_BILLING_SCOPE":"norman"' in script
     assert '"NORMAN_CODEX_BILLING_OWNER":"kristopher"' in script
     assert '"NORMAN_CODEX_SERVICE_TIER":"default"' in script
-    assert '"NORMAN_CODEX_MODEL":"openai.gpt-5.4"' in script
-    assert '"NORMAN_CODEX_DIRECT_MODEL":"openai.gpt-5.4"' in script
+    assert '"NORMAN_CODEX_MODEL":"openai.gpt-5.6-terra"' in script
+    assert '"NORMAN_CODEX_DIRECT_MODEL":"openai.gpt-5.6-terra"' in script
     assert "NORMAN_CODEX_STANDARD_PROFILE_V2" not in script
     assert "traqline-bedrock" not in script
     assert "ob-traqline-admin" not in script
@@ -1425,8 +1425,8 @@ def test_personal_tui_does_not_receive_work_bedrock_defaults(monkeypatch) -> Non
     script = captured["script"]
     assert '"NORMAN_CODEX_SERVICE_TIER":"default"' in script
     assert "remove_keys = json.loads('[]')" in script
-    assert '"NORMAN_CODEX_MODEL":"openai.gpt-5.4"' in script
-    assert '"NORMAN_CODEX_DIRECT_MODEL":"openai.gpt-5.4"' in script
+    assert '"NORMAN_CODEX_MODEL":"openai.gpt-5.6-terra"' in script
+    assert '"NORMAN_CODEX_DIRECT_MODEL":"openai.gpt-5.6-terra"' in script
     assert "NORMAN_CODEX_STANDARD_PROFILE_V2" not in script
     assert "traqline-bedrock" not in script
     assert "NORMAN_CODEX_DIRECT_TIERS_ENABLED" not in script
@@ -1652,11 +1652,11 @@ def test_netops_preserves_bedrock_when_profile_source_is_unavailable(
 
     script = captured["script"]
     assert '"NORMAN_CODEX_SERVICE_TIER":"default"' in script
-    assert '"NORMAN_CODEX_MODEL":"openai.gpt-5.4"' in script
-    assert '"NORMAN_CODEX_MODEL_FLOOR":"openai.gpt-5.4"' in script
-    assert '"NORMAN_CODEX_DIRECT_MODEL":"openai.gpt-5.4"' in script
-    assert '"NORMAN_CODEX_FLEX_MODEL":"openai.gpt-5.4"' in script
-    assert '"NORMAN_CODEX_PRIORITY_MODEL":"openai.gpt-5.4"' in script
+    assert '"NORMAN_CODEX_MODEL":"openai.gpt-5.6-terra"' in script
+    assert '"NORMAN_CODEX_MODEL_FLOOR":"openai.gpt-5.6-terra"' in script
+    assert '"NORMAN_CODEX_DIRECT_MODEL":"openai.gpt-5.6-terra"' in script
+    assert '"NORMAN_CODEX_FLEX_MODEL":"openai.gpt-5.6-terra"' in script
+    assert '"NORMAN_CODEX_PRIORITY_MODEL":"openai.gpt-5.6-terra"' in script
     assert (
         '"NORMAN_CODEX_SWITCHABLE_MODELS":"'
         "openai.gpt-5.4,openai.gpt-5.5,"
@@ -1720,14 +1720,58 @@ def test_console_files_include_soul_support_scripts(monkeypatch) -> None:
 
     files = dict(panelbot.files)
 
+    assert files["apply-patch"] == "/usr/local/bin/apply_patch"
     assert files["vector-preflight"] == "/opt/panelbot/tui_vector_preflight.py"
     assert files["release-readiness"] == "/opt/panelbot/tui_release_readiness.py"
     assert files["soul-loader"] == "/opt/panelbot/compose_soul_context.py"
     assert files["soul-validator"] == "/opt/panelbot/validate_soul_md.py"
     assert module.SOURCE_FILES["release-readiness"].name == "tui_release_readiness.py"
+    assert module.SOURCE_FILES["apply-patch"].name == "apply_patch_cli.py"
     assert module.SOURCE_FILES["vector-preflight"].name == "tui_vector_preflight.py"
     assert module.SOURCE_FILES["soul-loader"].name == "compose_soul_context.py"
     assert module.SOURCE_FILES["soul-validator"].name == "validate_soul_md.py"
+
+
+def test_uplink_managed_skill_files_target_its_codex_home(monkeypatch) -> None:
+    module = _load_sync_script(monkeypatch)
+    uplink = _instance(module, "uplink", host_name="networking-host")
+
+    assert module.managed_skill_files(uplink) == (
+        (
+            module.MANAGED_SKILL_ROOT / "uplink-benchmark" / "SKILL.md",
+            "/var/lib/uplink/codex/skills/uplink-benchmark/SKILL.md",
+        ),
+        (
+            module.MANAGED_SKILL_ROOT / "uplink-benchmark" / "agents" / "openai.yaml",
+            "/var/lib/uplink/codex/skills/uplink-benchmark/agents/openai.yaml",
+        ),
+    )
+
+
+def test_non_uplink_instances_have_no_managed_skills(monkeypatch) -> None:
+    module = _load_sync_script(monkeypatch)
+
+    assert module.managed_skill_files(_instance(module, "networking")) == ()
+
+
+def test_sync_instance_managed_skills_installs_every_uplink_skill_file(
+    monkeypatch,
+) -> None:
+    module = _load_sync_script(monkeypatch)
+    uplink = _instance(module, "uplink", host_name="networking-host")
+    installed: list[tuple[str, Path, str]] = []
+
+    def fake_install_source_path(host, *, remote_path, source, source_sha256):
+        installed.append((remote_path, source, source_sha256))
+        return True
+
+    monkeypatch.setattr(module, "install_source_path", fake_install_source_path)
+
+    assert module.sync_instance_managed_skills(_host(module), uplink) is True
+    assert [(source, remote_path) for remote_path, source, _ in installed] == list(
+        module.managed_skill_files(uplink)
+    )
+    assert all(source_sha256 for _, _, source_sha256 in installed)
 
 
 def test_norman_switchboard_uses_its_dedicated_web_source(monkeypatch) -> None:

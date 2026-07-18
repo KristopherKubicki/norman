@@ -45,6 +45,53 @@ def _term_hit(text: str, term: str) -> bool:
     return _lower_words(term) in _lower_words(text)
 
 
+def _forbidden_term_is_actionable(text: str, term: str) -> bool:
+    """Return whether a forbidden phrase is proposed, not merely rejected."""
+
+    text_tokens = re.findall(r"[a-z0-9]+(?:'[a-z]+)?", str(text).casefold())
+    term_tokens = re.findall(r"[a-z0-9]+(?:'[a-z]+)?", str(term).casefold())
+    if not term_tokens:
+        return False
+    negations = (
+        ("do", "not"),
+        ("must", "not"),
+        ("should", "not"),
+        ("will", "not"),
+        ("never",),
+        ("avoid",),
+        ("without",),
+        ("cannot",),
+        ("can't",),
+        ("prohibit",),
+        ("prohibited",),
+        ("refuse",),
+        ("decline",),
+    )
+    term_width = len(term_tokens)
+    for start in range(len(text_tokens) - term_width + 1):
+        if text_tokens[start : start + term_width] != term_tokens:
+            continue
+        context = text_tokens[max(0, start - 5) : start]
+        if any(
+            len(context) >= len(marker)
+            and list(marker)
+            in [
+                context[index : index + len(marker)]
+                for index in range(len(context) - len(marker) + 1)
+            ]
+            for marker in negations
+        ):
+            continue
+        return True
+    return False
+
+
+def _forbidden_terms_hit(text: str, forbidden_terms: list[str]) -> list[str]:
+    return [
+        term for term in forbidden_terms if _forbidden_term_is_actionable(text, term)
+    ]
+
+
 def _coerce_float(value: Any) -> float:
     try:
         return float(value)
@@ -110,13 +157,20 @@ def score_answer(
     required_terms = [str(term) for term in prompt.get("required_terms", [])]
     forbidden_terms = [str(term) for term in prompt.get("forbidden_terms", [])]
     required_hits = [term for term in required_terms if _term_hit(answer_text, term)]
-    forbidden_hits = [term for term in forbidden_terms if _term_hit(answer_text, term)]
+    forbidden_hits = _forbidden_terms_hit(answer_text, forbidden_terms)
     contract_hits = _contract_hits(answer_text)
     verifier_score, verifier_rejected = _verifier_acceptance_score(
         answer.get("verifier_acceptance")
     )
     metric_fields_present = {
         "answer": bool(answer_text.strip()),
+        "route_decision": bool(str(answer.get("route_decision") or "").strip()),
+        "planner_role": bool(str(answer.get("planner_role") or "").strip()),
+        "quality_risk": bool(str(answer.get("quality_risk") or "").strip()),
+        "merge_gate": bool(str(answer.get("merge_gate") or "").strip()),
+        "authority_boundary_preserved": bool(
+            answer.get("authority_boundary_preserved")
+        ),
         "input_tokens": _coerce_int(answer.get("input_tokens")) > 0,
         "output_tokens": _coerce_int(answer.get("output_tokens")) > 0,
         "latency_ms": _coerce_int(answer.get("latency_ms")) > 0,
@@ -143,6 +197,19 @@ def score_answer(
         critical_fail_reasons.append("verifier_rejected")
     if runtime_issue:
         critical_fail_reasons.append("runtime_health_not_healthy")
+    missing_response_fields = [
+        field
+        for field in (
+            "route_decision",
+            "planner_role",
+            "quality_risk",
+            "merge_gate",
+            "authority_boundary_preserved",
+        )
+        if not metric_fields_present[field]
+    ]
+    if missing_response_fields:
+        critical_fail_reasons.append("missing_structured_response_fields")
     weighted_score = (
         required_recall * 0.42
         + contract_score * 0.24
@@ -150,7 +217,9 @@ def score_answer(
         + verifier_score * 0.10
         + metrics_score * 0.08
     )
-    if critical_fail_reasons:
+    uncapped_score = max(0.0, min(1.0, weighted_score))
+    score_cap_reason = "critical_failure" if critical_fail_reasons else ""
+    if score_cap_reason:
         weighted_score = min(weighted_score, 0.49)
     return {
         "prompt_id": prompt["prompt_id"],
@@ -160,6 +229,8 @@ def score_answer(
         "family": case["family"],
         "case_weight": _coerce_float(case.get("promotion_weight")) or 1.0,
         "score": round(max(0.0, min(1.0, weighted_score)), 4),
+        "uncapped_score": round(uncapped_score, 4),
+        "score_cap_reason": score_cap_reason,
         "required_terms_hit": required_hits,
         "required_terms_missing": [
             term for term in required_terms if term not in required_hits
@@ -169,6 +240,13 @@ def score_answer(
         "metric_fields_present": metric_fields_present,
         "runtime_health_status": str(answer.get("runtime_health_status") or ""),
         "verifier_acceptance": str(answer.get("verifier_acceptance") or ""),
+        "route_decision": str(answer.get("route_decision") or ""),
+        "planner_role": str(answer.get("planner_role") or ""),
+        "quality_risk": str(answer.get("quality_risk") or ""),
+        "merge_gate": str(answer.get("merge_gate") or ""),
+        "authority_boundary_preserved": bool(
+            answer.get("authority_boundary_preserved")
+        ),
         "critical_fail_reasons": critical_fail_reasons,
         "estimated_usd": _coerce_float(answer.get("estimated_usd")),
         "latency_ms": _coerce_int(answer.get("latency_ms")),
@@ -330,33 +408,68 @@ def _promotion_records(
     return records
 
 
+def _answer_is_completed(answer: dict[str, Any]) -> bool:
+    """Distinguish a runner's blank template row from an attempted response."""
+
+    return bool(str(answer.get("answer") or "").strip())
+
+
 def build_report(packet: dict[str, Any], answers: dict[str, Any]) -> dict[str, Any]:
     prompts = _prompt_by_id(packet)
     cases = _case_by_id(packet)
     models = _model_by_id(packet)
     answer_rows = answers.get("answers") if isinstance(answers, dict) else []
     scored_rows = []
-    missing_prompt_count = 0
+    completed_prompt_ids = set()
+    known_prompt_ids = set()
+    unknown_answer_row_count = 0
+    unscored_template_row_count = 0
     for answer in answer_rows or []:
         prompt_id = str(answer.get("prompt_id") or "")
         prompt = prompts.get(prompt_id)
         if not prompt:
-            missing_prompt_count += 1
+            unknown_answer_row_count += 1
+            continue
+        known_prompt_ids.add(prompt_id)
+        if not _answer_is_completed(answer):
+            unscored_template_row_count += 1
             continue
         case = cases[str(prompt["case_id"])]
         model = models[str(prompt["candidate_id"])]
         scored_rows.append(score_answer(answer, case=case, prompt=prompt, model=model))
-    promotion_records = _promotion_records(
-        scored_rows, packet=packet, model_by_id=models
+        completed_prompt_ids.add(prompt_id)
+    expected_prompt_count = len(prompts)
+    completed_prompt_count = len(completed_prompt_ids)
+    pending_prompt_count = max(0, expected_prompt_count - completed_prompt_count)
+    missing_or_unknown_prompt_count = (
+        max(0, expected_prompt_count - len(known_prompt_ids)) + unknown_answer_row_count
+    )
+    coverage_complete = (
+        completed_prompt_count == expected_prompt_count
+        and missing_or_unknown_prompt_count == 0
+    )
+    promotion_records = (
+        _promotion_records(scored_rows, packet=packet, model_by_id=models)
+        if coverage_complete
+        else []
     )
     scores = [float(row["score"]) for row in scored_rows]
     critical_rows = [row for row in scored_rows if row["critical_fail_reasons"]]
+    gate = "fail" if critical_rows else "pass" if coverage_complete else "incomplete"
     summary = {
-        "answer_count": len(scored_rows),
-        "expected_prompt_count": len(prompts),
-        "missing_or_unknown_prompt_count": len(prompts)
-        - len(scored_rows)
-        + missing_prompt_count,
+        "answer_count": completed_prompt_count,
+        "expected_prompt_count": expected_prompt_count,
+        "completed_prompt_count": completed_prompt_count,
+        "pending_prompt_count": pending_prompt_count,
+        "coverage_rate": round(
+            completed_prompt_count / expected_prompt_count
+            if expected_prompt_count
+            else 0.0,
+            4,
+        ),
+        "coverage_complete": coverage_complete,
+        "unscored_template_row_count": unscored_template_row_count,
+        "missing_or_unknown_prompt_count": missing_or_unknown_prompt_count,
         "critical_failure_count": len(critical_rows),
         "avg_score": round(sum(scores) / len(scores), 4) if scores else 0.0,
         "local_promotion_record_count": len(promotion_records),
@@ -367,7 +480,7 @@ def build_report(packet: dict[str, Any], answers: dict[str, Any]) -> dict[str, A
         "total_estimated_usd": round(
             sum(float(row["estimated_usd"]) for row in scored_rows), 6
         ),
-        "gate": "pass" if scored_rows and not critical_rows else "fail",
+        "gate": gate,
     }
     return {
         "schema": SCHEMA,
@@ -391,7 +504,9 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Run: `{report.get('run_id')}`",
         f"- Runner: `{report.get('runner')}`",
         f"- Gate: `{summary['gate']}`",
-        f"- Answers scored: `{summary['answer_count']}` / `{summary['expected_prompt_count']}`",
+        f"- Completed answers: `{summary['completed_prompt_count']}` / `{summary['expected_prompt_count']}`",
+        f"- Pending prompts: `{summary['pending_prompt_count']}`",
+        f"- Coverage: `{summary['coverage_rate']:.1%}`",
         f"- Average score: `{summary['avg_score']}`",
         f"- Critical failures: `{summary['critical_failure_count']}`",
         f"- Local promotion records: `{summary['local_promotion_record_count']}`",

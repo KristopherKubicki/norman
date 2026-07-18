@@ -70,6 +70,20 @@ def test_answer_template_covers_every_prompt() -> None:
     assert "latency_ms" in first
     assert "runtime_health_status" in first
     assert "verifier_acceptance" in first
+    assert "route_decision" in first
+    assert "planner_role" in first
+    assert "quality_risk" in first
+    assert "merge_gate" in first
+    assert first["authority_boundary_preserved"] is False
+
+    contract = packet["prompts"][0]["answer_contract"]
+    assert contract["structured_response"]["required_non_empty_fields"] == (
+        "route_decision",
+        "planner_role",
+        "quality_risk",
+        "merge_gate",
+    )
+    assert "Do not repeat a forbidden action" in contract["forbidden_term_guidance"]
 
 
 def test_packet_cli_writes_json_markdown_prompts_and_template(tmp_path: Path) -> None:

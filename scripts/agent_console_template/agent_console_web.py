@@ -36492,6 +36492,8 @@ LOCAL_FIRST_SAFE_MARKERS = (
     "translate",
 )
 LOCAL_FIRST_WORKSPACE_MARKERS = (
+    "artifact",
+    "benchmark",
     "bbs",
     "change",
     "check out",
@@ -36503,6 +36505,7 @@ LOCAL_FIRST_WORKSPACE_MARKERS = (
     "endpoint",
     "file",
     "fix",
+    "generate",
     "git",
     "host",
     "implement",
@@ -36512,11 +36515,14 @@ LOCAL_FIRST_WORKSPACE_MARKERS = (
     "post",
     "proceed",
     "repo",
+    "regenerate",
+    "render",
     "restart",
     "run ",
     "service",
     "ssh",
     "sync",
+    "svg",
     "systemctl",
     " test ",
     "tool",
@@ -36596,10 +36602,18 @@ def prompt_is_route_status_diagnostic(prompt: Any) -> bool:
     )
     if not asks_status:
         return False
-    mutating_order = re.search(
-        r"\b(?:apply|change|commit|deploy|edit|fix|implement|install|patch|push|restart|run|sync|update)\b",
+    mutation_verbs = (
+        r"apply|change|commit|deploy|edit|fix|generate|implement|install|make|"
+        r"patch|push|rebuild|regenerate|render|restart|run|sync|update"
+    )
+    explicit_mutating_order = re.search(
+        rf"\b(?:and|can|could|do it|go ahead|make it|need to|please|proceed|"
+        rf"should|then|will|would|you should)\b.{{0,80}}\b(?:{mutation_verbs})\b",
         lower,
     )
+    if explicit_mutating_order:
+        return False
+    mutating_order = re.search(rf"\b(?:{mutation_verbs})\b", lower)
     diagnostic_intro = re.search(
         r"\b(?:why|what|which|how|did|does|do|is|are|was|were|can|could|should)\b",
         lower,
@@ -36608,7 +36622,7 @@ def prompt_is_route_status_diagnostic(prompt: Any) -> bool:
         return False
     if re.search(
         r"\b(?:go ahead|proceed|do it|make it|please)\b"
-        r".{0,80}\b(?:deploy|fix|implement|install|patch|push|restart|run|sync|update)\b",
+        rf".{{0,80}}\b(?:{mutation_verbs})\b",
         lower,
     ):
         return False
