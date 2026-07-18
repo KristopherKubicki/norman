@@ -66,6 +66,19 @@ def _health_url(value: Any) -> str:
     base = _safe_url(value)
     if not base:
         return ""
+    parsed = urllib.parse.urlsplit(base)
+    path_parts = [part for part in parsed.path.split("/") if part]
+    if "api" in path_parts:
+        path_parts = path_parts[: path_parts.index("api")]
+        base = urllib.parse.urlunsplit(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                f"/{'/'.join(path_parts)}" if path_parts else "",
+                "",
+                "",
+            )
+        )
     if urllib.parse.urlsplit(base).path.rstrip("/").endswith("/health"):
         return base
     return f"{base.rstrip('/')}/health"

@@ -74,6 +74,19 @@ def test_bedrock_missing_profile_is_a_blocking_contract_failure(
     assert commands == []
 
 
+def test_health_url_uses_norman_root_for_console_runtime_api_base(monkeypatch) -> None:
+    module = _load_readiness(monkeypatch)
+
+    assert (
+        module._health_url("http://192.168.2.241:8000/api/v1/console-runtime")
+        == "http://192.168.2.241:8000/health"
+    )
+    assert (
+        module._health_url("https://norman.example/norman/api/v1/console-runtime")
+        == "https://norman.example/norman/health"
+    )
+
+
 def test_bedrock_report_uses_only_read_only_sts_and_no_model_inference(
     monkeypatch, tmp_path: Path
 ) -> None:
