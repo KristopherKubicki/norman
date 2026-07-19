@@ -312,6 +312,19 @@ def test_norllama_warm_policy_overrides_explicit_model_with_proof(monkeypatch):
                 },
                 "promotion_authoritative": True,
             },
+            "lane_policy": {
+                "schema": "norman.norllama.lane-policy.v1",
+                "lane": "coder",
+                "allowed": True,
+                "route_mode": "local_draft_with_verifier",
+            },
+            "capacity_evidence": {
+                "schema": "norman.norllama.capacity-evidence.v1",
+                "state": "available",
+                "target_worker": "spark-151",
+                "p50_latency_ms": 640,
+                "p95_latency_ms": 900,
+            },
         },
     )
     request = NorllamaTaskRequest(
@@ -357,6 +370,10 @@ def test_norllama_warm_policy_overrides_explicit_model_with_proof(monkeypatch):
     assert receipt["promotion_authoritative"] is True
     assert receipt["benchmark_score"] == 0.95
     assert receipt["coverage_ratio"] == 1.0
+    assert receipt["lane_policy"]["lane"] == "coder"
+    assert receipt["capacity_evidence"]["target_worker"] == "spark-151"
+    assert receipt["expected_p50_latency_ms"] == 640
+    assert receipt["expected_p95_latency_ms"] == 900
 
 
 def test_norllama_tool_task_ignores_cloud_without_explicit_tool_proxy():

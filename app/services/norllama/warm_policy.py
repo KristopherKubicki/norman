@@ -33,6 +33,7 @@ from app.services.norllama.route_outcomes import (
     local_route_cooldown,
     normalize_route_outcome,
 )
+from app.services.norllama.lane_policy import lane_policy_for_model
 
 DEFAULT_WARM_RECOMMENDATIONS: list[dict[str, Any]] = [
     {
@@ -1334,7 +1335,33 @@ def _route_guardrail(
     cooldown: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     model = _clean(item.get("model"))
-    lanes = _recommendation_lanes(item)
+    candidate_lanes = _recommendation_lanes(item)
+    lane_policies = {
+        lane: lane_policy_for_model(
+            model=model,
+            lane=lane,
+            benchmark_quality=quality,
+        )
+        for lane in candidate_lanes
+    }
+    allowed_lanes = [
+        lane
+        for lane in candidate_lanes
+        if bool((lane_policies.get(lane) or {}).get("allowed"))
+    ]
+    lane_policy = (
+        lane_policies[allowed_lanes[0]]
+        if allowed_lanes
+        else lane_policies.get(
+            candidate_lanes[0],
+            lane_policy_for_model(
+                model=model,
+                lane="",
+                benchmark_quality=quality,
+            ),
+        )
+    )
+    lanes = allowed_lanes
     size_b = _model_size_b(model)
     canary = "canary" in lanes or _clean(item.get("priority")) == "canary"
     active_cooldown = isinstance(cooldown, dict) and bool(cooldown.get("active"))
@@ -1344,6 +1371,9 @@ def _route_guardrail(
     elif not quality.get("eligible"):
         authority = "blocked"
         route_state = "benchmark_blocked"
+    elif not lane_policy["allowed"]:
+        authority = "blocked"
+        route_state = "lane_policy_blocked"
     elif canary or (size_b is not None and size_b <= SMALL_MODEL_MAX_B):
         authority = "canary_only"
         route_state = "canary"
@@ -1358,9 +1388,14 @@ def _route_guardrail(
     return {
         "schema": "norman.norllama.route-guardrail.v1",
         "lanes": lanes,
+        "blocked_lanes": [
+            lane for lane in candidate_lanes if lane not in set(allowed_lanes)
+        ],
         "authority": authority,
         "route_state": route_state,
         "final_authority": False,
+        "lane_policy": lane_policy,
+        "lane_policies": lane_policies,
         "production_route_eligible": bool(quality.get("production_route_eligible")),
         "capability_route_state": _clean(quality.get("capability_route_state")),
         "requires_verification": authority != "blocked",
@@ -1372,6 +1407,7 @@ def _route_guardrail(
             "final authority",
         ],
         "reason": _clean(cooldown.get("reason") if active_cooldown else "")
+        or _clean(lane_policy.get("reason") if not lane_policy["allowed"] else "")
         or _clean(quality.get("reason")),
         "cooldown": dict(cooldown or {}),
     }
@@ -1395,7 +1431,9 @@ def _route_guardrail_matrix(evaluated: list[dict[str, Any]]) -> dict[str, Any]:
             else {}
         )
         authority = _clean(guardrail.get("authority")) or "blocked"
-        for lane in guardrail.get("lanes") or []:
+        eligible_lanes = [str(lane) for lane in guardrail.get("lanes") or []]
+        blocked_lanes = [str(lane) for lane in guardrail.get("blocked_lanes") or []]
+        for lane in eligible_lanes + blocked_lanes:
             if lane not in lanes or not model:
                 continue
             entry = {
@@ -1407,9 +1445,9 @@ def _route_guardrail_matrix(evaluated: list[dict[str, Any]]) -> dict[str, Any]:
                 "benchmark_quality": item.get("benchmark_quality")
                 if isinstance(item.get("benchmark_quality"), dict)
                 else {},
-                "authority": authority,
+                "authority": "blocked" if lane in blocked_lanes else authority,
             }
-            if authority == "blocked":
+            if entry["authority"] == "blocked":
                 lanes[lane]["blocked_models"].append(entry)
             elif authority == "canary_only":
                 lanes[lane]["canary_models"].append(entry)
@@ -1592,6 +1630,8 @@ def _route_outcome_stats(
             "timeout": 0,
             "success_rate": 0.0,
             "avg_latency_ms": 0,
+            "p50_latency_ms": 0,
+            "p95_latency_ms": 0,
             "last_status": "",
             "last_worker_id": clean_worker,
         }
@@ -1605,6 +1645,9 @@ def _route_outcome_stats(
         for outcome in filtered
         if int(outcome.get("latency_ms") or 0) > 0
     ]
+    sorted_latencies = sorted(latencies)
+    p50_index = max(0, (len(sorted_latencies) - 1) // 2)
+    p95_index = max(0, (len(sorted_latencies) * 95 + 99) // 100 - 1)
     return {
         "schema": "norman.norllama.route-outcome-stats.v1",
         "count": len(filtered),
@@ -1613,6 +1656,8 @@ def _route_outcome_stats(
         "timeout": timeout,
         "success_rate": round(ok / len(filtered), 3),
         "avg_latency_ms": int(sum(latencies) / len(latencies)) if latencies else 0,
+        "p50_latency_ms": sorted_latencies[p50_index] if sorted_latencies else 0,
+        "p95_latency_ms": sorted_latencies[p95_index] if sorted_latencies else 0,
         "last_status": _clean(filtered[0].get("status")),
         "last_worker_id": _clean(filtered[0].get("worker_id")) or clean_worker,
     }
@@ -2336,6 +2381,48 @@ def _pool_candidate_entry(
         lane_index=lane_index,
         strategy=strategy,
     )
+    lane_policies = (
+        item.get("route_guardrail", {}).get("lane_policies")
+        if isinstance(item.get("route_guardrail"), dict)
+        else {}
+    )
+    lane_policy = (
+        lane_policies.get(lane)
+        if isinstance(lane_policies, dict) and isinstance(lane_policies.get(lane), dict)
+        else {}
+    )
+    route_outcome_stats = (
+        item.get("route_outcome_stats")
+        if isinstance(item.get("route_outcome_stats"), dict)
+        else {}
+    )
+    worker_pressure = (
+        item.get("worker_pressure")
+        if isinstance(item.get("worker_pressure"), dict)
+        else {}
+    )
+    capacity_state = "available"
+    if not item.get("target_worker_reachable"):
+        capacity_state = "unavailable"
+    elif _clean(worker_pressure.get("state")) == "high":
+        capacity_state = "constrained"
+    elif (
+        route_outcome_stats.get("count")
+        and float(route_outcome_stats.get("success_rate") or 0) < 0.7
+    ):
+        capacity_state = "degraded"
+    capacity_evidence = {
+        "schema": "norman.norllama.capacity-evidence.v1",
+        "state": capacity_state,
+        "target_worker": _clean(item.get("target_worker")),
+        "target_worker_reachable": bool(item.get("target_worker_reachable")),
+        "target_active": bool(item.get("target_active")),
+        "worker_pressure": worker_pressure,
+        "outcome_sample_count": int(route_outcome_stats.get("count") or 0),
+        "success_rate": float(route_outcome_stats.get("success_rate") or 0),
+        "p50_latency_ms": int(route_outcome_stats.get("p50_latency_ms") or 0),
+        "p95_latency_ms": int(route_outcome_stats.get("p95_latency_ms") or 0),
+    }
     return {
         "model": _clean(item.get("model")),
         "lane": lane,
@@ -2356,12 +2443,10 @@ def _pool_candidate_entry(
         "model_reality": item.get("model_reality")
         if isinstance(item.get("model_reality"), dict)
         else {},
-        "route_outcome_stats": item.get("route_outcome_stats")
-        if isinstance(item.get("route_outcome_stats"), dict)
-        else {},
-        "worker_pressure": item.get("worker_pressure")
-        if isinstance(item.get("worker_pressure"), dict)
-        else {},
+        "lane_policy": lane_policy,
+        "route_outcome_stats": route_outcome_stats,
+        "worker_pressure": worker_pressure,
+        "capacity_evidence": capacity_evidence,
     }
 
 
@@ -2534,6 +2619,8 @@ def select_model_for_task_kind(
         "route_guardrail": item.get("route_guardrail")
         if isinstance(item.get("route_guardrail"), dict)
         else {},
+        "lane_policy": selected_pool_entry.get("lane_policy") or {},
+        "capacity_evidence": selected_pool_entry.get("capacity_evidence") or {},
         "warm_policy_status": _clean(payload.get("status")),
         "route_posture": _clean(payload.get("route_posture")),
     }

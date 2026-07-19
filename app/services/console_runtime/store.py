@@ -505,6 +505,10 @@ def _event_has_spark_hint(payload: dict[str, Any]) -> bool:
 
 def _compact_route_event(event: ConsoleRuntimeEvent) -> dict[str, Any]:
     payload = event.payload
+    receipt = _payload_route_receipt(payload)
+    capacity = _json_dict(
+        payload.get("capacity_evidence") or receipt.get("capacity_evidence")
+    )
     return {
         "sequence": event.sequence,
         "event_type": event.event_type,
@@ -519,6 +523,12 @@ def _compact_route_event(event: ConsoleRuntimeEvent) -> dict[str, Any]:
         "allowed": bool(payload.get("allowed", True)),
         "worker_id": _payload_worker_id(payload),
         "spark_hint": _event_has_spark_hint(payload),
+        "capacity_state": _clean(capacity.get("state")),
+        "expected_p95_latency_ms": _json_int(
+            payload.get("expected_p95_latency_ms")
+            or receipt.get("expected_p95_latency_ms")
+            or capacity.get("p95_latency_ms")
+        ),
     }
 
 
@@ -889,6 +899,10 @@ def _route_activity_summary(events: list[ConsoleRuntimeEvent]) -> dict[str, Any]
             provider = _payload_provider(payload)
             if _is_kernel_primary_visible_echo(payload):
                 continue
+            receipt = _payload_route_receipt(payload)
+            capacity = _json_dict(
+                payload.get("capacity_evidence") or receipt.get("capacity_evidence")
+            )
             model_completed += 1
             _inc(model_counts_by_provider, provider)
             observed_worker = _payload_observed_worker_id(payload)
@@ -922,10 +936,21 @@ def _route_activity_summary(events: list[ConsoleRuntimeEvent]) -> dict[str, Any]
                         + _json_int(usage.get("output_tokens"))
                     )
                 ),
+                "capacity_state": _clean(capacity.get("state")),
+                "expected_p95_latency_ms": _json_int(
+                    payload.get("expected_p95_latency_ms")
+                    or receipt.get("expected_p95_latency_ms")
+                    or capacity.get("p95_latency_ms")
+                ),
+                "observed_completion_ms": _json_int(
+                    payload.get("observed_completion_ms")
+                    or receipt.get("completion_ms")
+                ),
                 "summary": event.summary,
             }
         elif event.event_type == "planner.receipt":
             provider = _payload_provider(payload)
+            capacity = _json_dict(payload.get("capacity_evidence"))
             worker_id = _payload_worker_id(payload)
             planner_receipts += 1
             _inc(planner_counts_by_provider, provider)
@@ -946,6 +971,11 @@ def _route_activity_summary(events: list[ConsoleRuntimeEvent]) -> dict[str, Any]
                 "cloud_proxy": is_cloud_proxy,
                 "worker_id": worker_id,
                 "spark_hint": has_spark_hint,
+                "capacity_state": _clean(capacity.get("state")),
+                "expected_p95_latency_ms": _json_int(
+                    payload.get("expected_p95_latency_ms")
+                    or capacity.get("p95_latency_ms")
+                ),
                 "summary": event.summary,
             }
         elif event.category == "tool":

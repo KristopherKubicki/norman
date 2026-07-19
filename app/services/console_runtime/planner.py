@@ -82,6 +82,19 @@ def planner_receipt_payload(
         "cloud_proxy": bool(
             route_receipt.get("cloud_proxy") or route.get("cloud_proxy")
         ),
+        "lane_policy": route_receipt.get("lane_policy")
+        if isinstance(route_receipt.get("lane_policy"), dict)
+        else {},
+        "capacity_evidence": route_receipt.get("capacity_evidence")
+        if isinstance(route_receipt.get("capacity_evidence"), dict)
+        else {},
+        "expected_p50_latency_ms": int(
+            route_receipt.get("expected_p50_latency_ms") or 0
+        ),
+        "expected_p95_latency_ms": int(
+            route_receipt.get("expected_p95_latency_ms") or 0
+        ),
+        "observed_completion_ms": int(route_receipt.get("completion_ms") or 0),
         "output_shape": _clean(route_receipt.get("output_shape")),
         "verifier_result": _clean(route_receipt.get("verifier_result")),
         "capability": _clean(route.get("capability")),

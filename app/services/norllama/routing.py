@@ -1113,6 +1113,10 @@ def route_receipt_payload(
         if isinstance(selection.get("benchmark_quality"), dict)
         else {}
     )
+    lane_policy = _dict(selection.get("lane_policy"))
+    capacity_evidence = _dict(selection.get("capacity_evidence"))
+    expected_p50_latency_ms = _token_count(capacity_evidence, "p50_latency_ms")
+    expected_p95_latency_ms = _token_count(capacity_evidence, "p95_latency_ms")
     gateway_receipt = _gateway_receipt(output)
     guardrail = (
         selection.get("route_guardrail")
@@ -1511,6 +1515,10 @@ def route_receipt_payload(
             quality.get("promotion_authoritative")
             or selection.get("promotion_authoritative")
         ),
+        "lane_policy": lane_policy,
+        "capacity_evidence": capacity_evidence,
+        "expected_p50_latency_ms": expected_p50_latency_ms,
+        "expected_p95_latency_ms": expected_p95_latency_ms,
         "cold_start_ms": _token_count(output, "cold_start_ms"),
         "first_token_ms": _token_count(output, "first_token_ms"),
         "completion_ms": _token_count(output, "completion_ms", "latency_ms"),

@@ -290,6 +290,14 @@ def test_db_console_runtime_store_summarizes_route_offload_evidence(db):
                 "promotion_authoritative": True,
                 "benchmark_score": 0.91,
                 "coverage_ratio": 0.88,
+                "capacity_evidence": {
+                    "schema": "norman.norllama.capacity-evidence.v1",
+                    "state": "available",
+                    "target_worker": "spark-150",
+                    "p95_latency_ms": 1500,
+                },
+                "expected_p95_latency_ms": 1500,
+                "completion_ms": 1200,
                 "input_tokens": 10,
                 "output_tokens": 5,
                 "total_tokens": 15,
@@ -345,6 +353,9 @@ def test_db_console_runtime_store_summarizes_route_offload_evidence(db):
     assert summary["model"]["local"] == 1
     assert summary["model"]["tokens"] == 15
     assert summary["model"]["by_worker"] == {"spark-150": 1}
+    assert summary["model"]["latest"]["capacity_state"] == "available"
+    assert summary["model"]["latest"]["expected_p95_latency_ms"] == 1500
+    assert summary["model"]["latest"]["observed_completion_ms"] == 1200
     assert summary["usage_ledger"]["schema"] == (
         "norman.console-runtime.usage-ledger.v1"
     )
