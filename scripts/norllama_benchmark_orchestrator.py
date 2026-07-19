@@ -167,6 +167,23 @@ def acquire_lease(state_path: Path, *, ttl_seconds: float) -> Path:
     return lease_path
 
 
+def run_command_with_lease(
+    command: list[str],
+    *,
+    lease_path: Path,
+    lease_seconds: float,
+) -> int:
+    """Run one task while keeping its cross-process lease fresh."""
+
+    refresh_seconds = max(1.0, min(60.0, float(lease_seconds) / 3.0))
+    process = subprocess.Popen(command)
+    while True:
+        try:
+            return int(process.wait(timeout=refresh_seconds))
+        except subprocess.TimeoutExpired:
+            lease_path.touch()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--plan", type=Path, required=True)
@@ -213,12 +230,16 @@ def main() -> int:
                 {"state": "running", "started_at": utc_now(), "updated_at": utc_now()}
             )
             write_json(args.state, state)
-            completed = subprocess.run(command, check=False)
-            apply_task_result(state=state, task=task, returncode=completed.returncode)
+            returncode = run_command_with_lease(
+                command,
+                lease_path=lease_path,
+                lease_seconds=max(1.0, args.lease_seconds),
+            )
+            apply_task_result(state=state, task=task, returncode=returncode)
             executed.append(
                 {
                     "task_id": task_id,
-                    "returncode": completed.returncode,
+                    "returncode": returncode,
                     "state": state["tasks"][task_id]["state"],
                 }
             )

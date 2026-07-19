@@ -35,6 +35,18 @@ _GPT_OSS_CODE = {
     ),
 }
 
+_DEEPSEEK_CODE = {
+    "model_family": "deepseek",
+    "allowed_lanes": {"coder"},
+    "route_mode": "code_draft_with_verifier",
+    "requires_deterministic_verifier": True,
+    "requires_cloud_final_for_actions": True,
+    "selection_reason": (
+        "DeepSeek is permitted for code drafting only; use deterministic checks "
+        "and final verification before any action."
+    ),
+}
+
 _GEMMA_STRUCTURED = {
     "model_family": "gemma",
     "allowed_lanes": {"filter", "summarizer"},
@@ -49,11 +61,27 @@ _GEMMA_STRUCTURED = {
 
 _UNKNOWN = {
     "model_family": "unknown",
-    "allowed_lanes": None,
-    "route_mode": "local_draft_with_verifier",
+    "allowed_lanes": {
+        "embedding",
+        "rerank",
+        "safety",
+        "prompt_injection",
+        "ocr",
+        "doc_parse",
+        "gui_ground",
+        "speech",
+        "forecast",
+        "graph",
+        "network",
+        "world",
+    },
+    "route_mode": "bounded_specialist_with_verifier",
     "requires_deterministic_verifier": True,
     "requires_cloud_final_for_actions": True,
-    "selection_reason": "Unknown local model has no default production lane.",
+    "selection_reason": (
+        "Unrecognized local models are eligible only for explicit bounded "
+        "specialist lanes."
+    ),
 }
 
 
@@ -65,6 +93,8 @@ def _model_policy(model: str) -> dict[str, Any]:
     lowered = _clean(model).lower()
     if "gpt-oss" in lowered or "gpt_oss" in lowered or "gptoss" in lowered:
         return _GPT_OSS_CODE
+    if "deepseek" in lowered:
+        return _DEEPSEEK_CODE
     if "gemma" in lowered:
         return _GEMMA_STRUCTURED
     if "qwen" in lowered:
@@ -92,6 +122,8 @@ def lane_policy_for_model(
         reason = _clean(quality.get("reason")) or "benchmark quality gate blocked model"
     elif not lane_name:
         reason = "model selection did not resolve a routing lane"
+    elif policy["model_family"] == "unknown" and not lane_allowed:
+        reason = "unknown local model has no default production lane"
     elif allowed_lanes is not None and lane_name not in allowed_lanes:
         reason = (
             f"{policy['model_family']} is not eligible for local {lane_name} routing"

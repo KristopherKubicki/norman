@@ -51,3 +51,23 @@ def test_qwen_is_general_local_floor_but_never_final_authority() -> None:
     assert policy["route_mode"] == "local_draft_with_verifier"
     assert policy["requires_cloud_final_for_actions"] is True
     assert policy["final_authority"] is False
+
+
+def test_unknown_models_have_no_default_local_lane() -> None:
+    policy = lane_policy_for_model(
+        model="unvetted-local:latest",
+        lane="planner",
+        benchmark_quality={"eligible": True},
+    )
+
+    assert policy["allowed"] is False
+    assert policy["route_mode"] == "blocked"
+    assert "no default production lane" in policy["reason"]
+
+    specialist = lane_policy_for_model(
+        model="faster-whisper:base",
+        lane="speech",
+        benchmark_quality={"eligible": True},
+    )
+    assert specialist["allowed"] is True
+    assert specialist["route_mode"] == "bounded_specialist_with_verifier"
