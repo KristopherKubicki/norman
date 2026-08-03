@@ -404,7 +404,11 @@ def test_build_warm_policy_marks_active_prefetch_and_unavailable():
         item["model"] == "qwen3-coder:30b-a3b-q4_K_M"
         for item in guardrails["coder"]["eligible_models"]
     )
-    assert guardrails["planner"]["blocked_count"] == 1
+    assert guardrails["planner"]["blocked_count"] >= 1
+    assert any(
+        item["model"] == "hf.co/mradermacher/openfugu-conductor-3b-GGUF:q4_K_M"
+        for item in guardrails["planner"]["blocked_models"]
+    )
 
 
 def test_build_warm_policy_includes_capability_catalog_and_spark_affinity():
@@ -741,6 +745,31 @@ def test_build_warm_policy_blocks_recent_failed_route_cooldown():
     )
 
 
+def test_build_warm_policy_expires_legacy_planner_cold_load_timeout():
+    now = int(time.time())
+    policy = warm_policy.build_warm_policy(
+        mesh=sample_mesh(),
+        packet=sample_packet(),
+        route_outcomes=[
+            {
+                "recorded_at": now - 61,
+                "source": "planner-preflight",
+                "status": "timeout",
+                "ok": False,
+                "model": "qwen3-coder:30b-a3b-q4_K_M",
+                "worker_id": "spark-150",
+                "reason": "planner timed out during cold recovery",
+            }
+        ],
+        cooldown_seconds=900,
+    )
+    by_model = {item["model"]: item for item in policy["recommendations"]}
+    qwen = by_model["qwen3-coder:30b-a3b-q4_K_M"]
+
+    assert qwen["cooldown"] == {}
+    assert qwen["action"] != "skip_cooldown"
+
+
 def test_select_model_for_task_kind_prefers_warm_benchmark_lane():
     policy = warm_policy.build_warm_policy(mesh=sample_mesh(), packet=sample_packet())
 
@@ -759,6 +788,9 @@ def test_select_model_for_task_kind_prefers_warm_benchmark_lane():
     assert selection["pool_size"] >= 1
     assert selection["selected_score"] > 0
     assert selection["pool"][0]["model"] == "qwen3-coder:30b-a3b-q4_K_M"
+    assert selection["lane_policy"]["lane"] == "coder"
+    assert selection["capacity_evidence"]["target_worker"] == "spark-150"
+    assert selection["capacity_evidence"]["state"] == "available"
 
 
 def test_select_model_for_task_kind_uses_recent_outcomes_for_dynamic_pool():
@@ -821,6 +853,8 @@ def test_select_model_for_task_kind_uses_recent_outcomes_for_dynamic_pool():
         pool_by_model["qwen3-coder:30b-a3b-q4_K_M"]["route_outcome_stats"]["fail"] == 5
     )
     assert pool_by_model["deepseek-coder:16b"]["route_outcome_stats"]["ok"] == 3
+    assert selection["capacity_evidence"]["p50_latency_ms"] == 900
+    assert selection["capacity_evidence"]["p95_latency_ms"] == 900
 
 
 def test_build_warm_policy_routes_around_high_pressure_hint_worker():
@@ -857,7 +891,7 @@ def test_build_warm_policy_prefers_active_worker_over_stale_benchmark_target():
     mesh = catalog_mesh()
     mesh["workers"][2]["active_models"].append("qwen3.6:27b")
     packet = {
-        "generated_at": "2026-07-11T12:00:00Z",
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "shareable_view": {
             "recommended_roles": [
                 {

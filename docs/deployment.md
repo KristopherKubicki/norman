@@ -113,6 +113,16 @@ Install the launcher at `/usr/local/libexec/norman-production-launch` with mode
 `0755`, and install the unit at
 `/etc/systemd/system/norman-production@.service`. The unit is deliberately
 separate from the loopback canary and from the legacy `norman.service`.
+Install `scripts/tmpfiles.d/norman-production.conf` at
+`/etc/tmpfiles.d/norman-production.conf` and apply it before starting the
+production unit. It keeps the persistent SQLite state directory owned by the
+production service user:
+
+```bash
+sudo install -D -m 0644 scripts/tmpfiles.d/norman-production.conf \
+  /etc/tmpfiles.d/norman-production.conf
+sudo systemd-tmpfiles --create /etc/tmpfiles.d/norman-production.conf
+```
 
 The unit reads only non-secret identities from
 `/etc/norman/runtime-identities.env`. Store the following logical aliases in
@@ -155,20 +165,159 @@ sudo systemctl disable norman-production@<bad-sha>
 sudo systemctl enable --now norman-production@<known-good-sha>
 ```
 
+### Codex TUI Route Deployment
+
+Install the checkout-aware `codex` and `codex-work` wrappers from the Norman
+checkout:
+
+```bash
+scripts/install_codex_route.sh
+exec "$SHELL" -l
+```
+
+The installer copies the router and token helper to
+`~/.local/lib/norman-codex-route`, installs the wrappers at
+`~/.local/bin/codex` and `~/.local/bin/codex-work`, and ensures that local bin
+directory precedes the NVM Codex binary. Mapped checkouts fail closed if the
+wrong launcher or a provider-changing override is supplied.
+
+Every mapped TUI needs a matching logical Norman Keys alias:
+
+```text
+<route>/prompt-proxy-token
+```
+
+`norman` retains `norman/prompt-proxy-token`. The alias must resolve to the
+bearer token accepted by that route's `/v1` gateway. Configure the user shell
+or the proof service with an approved `NORMAN_SECRET_CMD` or leased
+`NORMAN_KEYS_URL` resolver. Do not store a gateway bearer token in shell
+startup files, Codex profiles, systemd environment files, or the checkout.
+When neither resolver is configured, the helper automatically uses the
+machine-local encrypted `~/.local/bin/cred` vault when available. This fallback
+also needs those logical aliases and is only intended during the Norman Keys
+migration.
+
+After broker provisioning, prove every route without sending a prompt:
+
+```bash
+scripts/codex_route_proof.py \
+  --output-json "$HOME/.local/state/norman/codex-route-proof.json"
+```
+
+To monitor the CLI-to-gateway boundary, install the proof units and provide
+only the non-secret broker command configuration in
+`/etc/norman/codex-route-proof.env`:
+
+```bash
+sudo install -D -m 0644 scripts/systemd/norman-codex-route-proof.service \
+  /etc/systemd/system/norman-codex-route-proof.service
+sudo install -D -m 0644 scripts/systemd/norman-codex-route-proof.timer \
+  /etc/systemd/system/norman-codex-route-proof.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now norman-codex-route-proof.timer
+```
+
+### Temporary Workspace Cleanup
+
+Agent tasks can create large disposable worktrees, browser profiles, archives,
+and test databases in `/tmp`. Install the cleanup units to remove only the
+known generated paths after their retention period. The cleanup keeps unknown
+temporary data, skips paths with open files, and preserves Git worktrees with
+uncommitted changes.
+
+```bash
+sudo install -D -m 0644 scripts/systemd/norman-tui-tmp-workspace-cleanup.service \
+  /etc/systemd/system/norman-tui-tmp-workspace-cleanup.service
+sudo install -D -m 0644 scripts/systemd/norman-tui-tmp-workspace-cleanup.timer \
+  /etc/systemd/system/norman-tui-tmp-workspace-cleanup.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now norman-tui-tmp-workspace-cleanup.timer
+```
+
+The service cleans generated Norman test databases after 24 hours and known
+agent workspace/artifact prefixes after 48 hours. Its most recent manifest is
+written to `/var/lib/norman/state/tui-tmp-workspace-cleanup.json`.
+
+### Local Host Pressure Guard
+
+Install the local guard when Codex TUIs share a host. It samples I/O pressure,
+memory and swap usage, root filesystem headroom, and Codex-related I/O every
+15 seconds. It writes a local KPI report and posts deduplicated warnings or
+automatic-pause notices to the Switchboard BBS.
+
+```bash
+sudo install -D -m 0644 \
+  scripts/systemd/norman-tui-local-host-pressure-guard.service \
+  /etc/systemd/system/norman-tui-local-host-pressure-guard.service
+sudo install -D -m 0644 \
+  scripts/systemd/norman-tui-local-host-pressure-guard.timer \
+  /etc/systemd/system/norman-tui-local-host-pressure-guard.timer
+sudo install -D -m 0644 \
+  scripts/systemd/norman-tui-local-host-pressure-alerts.service \
+  /etc/systemd/system/norman-tui-local-host-pressure-alerts.service
+sudo install -D -m 0644 \
+  scripts/systemd/norman-tui-local-host-pressure-alerts.path \
+  /etc/systemd/system/norman-tui-local-host-pressure-alerts.path
+sudo systemctl daemon-reload
+sudo systemctl enable --now norman-tui-local-host-pressure-guard.timer
+sudo systemctl enable --now norman-tui-local-host-pressure-alerts.path
+```
+
+The guard does not stop ordinary tests, browser activity, or unknown high-I/O
+processes; it reports and alerts on them for human review. Automatic
+intervention requires two consecutive samples with
+`io.full avg10 >= 10`, a read rate of at least 100 MiB/s, and a live Codex
+ancestor running `find` or `rg` against `/`, `/home`, `/home/kristopher`,
+`/tmp`, or `/var/tmp`. It first sends `SIGINT` to the scan and then `SIGSTOP`
+to the verified Codex process. PID start times are checked before either
+signal, and the guard never kills a session automatically.
+
+The current report is
+`/home/kristopher/.local/state/norman/tui-local-host-pressure-guard.json`;
+sampling state, including the most recent automatic actions, is in
+`/home/kristopher/.local/state/norman/tui-local-host-pressure-guard-state.json`.
+The report includes the exact evidence, the Codex PID, and both human controls:
+
+```bash
+kill -CONT -- <codex-pid>  # Resume the paused session
+kill -TERM -- <codex-pid>  # Cancel the paused session
+```
+
+Review the report before resuming work. The BBS alert is a notification and
+audit trail; the human decides whether to resume, cancel, or investigate.
+
 ## Running the Application
 
-1. Start the Norman application:
+Before starting a service, configure the deployment's database, authentication,
+secret broker, and only the model or connector lanes it is approved to use.
+Use `config.yaml.dist` as a starting point; do not put credentials in the
+repository or rely on a default administrative account.
 
+1. Activate the deployment's virtual environment.
+
+2. Start the API service:
+
+   ```bash
+   uvicorn main:app --host 0.0.0.0 --port 8000
    ```
-   uvicorn app.main:app --host 0.0.0.0 --port 8000 --compression gzip
 
-   If the `brotli_asgi` package is installed and your Uvicorn version supports
-   it, you can use `--compression brotli` instead for better compression.
-   ```
+3. Verify the service through its managed authentication path and the endpoints
+   exposed at:
 
-2. Access the Norman Web UI in your browser by navigating to `http://your_server_ip:8000`.
+   - `http://<host>:8000/docs` for the OpenAPI UI
+   - `http://<host>:8000/health` for a health check
 
-3. Log in with the default admin account and start configuring your chatbots, channels, and filters.
+The Console Runtime worker is disabled and dry-run by default. The Kaizen
+broker is also disabled by default and starts with no model budget, target
+edits, automatic actions, or notifications. Enable either only after their
+service account, resource limits, policy, approval path, and rollback
+procedure have been reviewed.
+
+For the runtime and approval model, see the
+[Architecture](architecture.md) and
+[Norman Kernel Program](norman_kernel_program.md). For local-first route
+selection, egress, fallback, and receipts, see
+[Provider And Routing Resilience](llm_runtime_fallback.md).
 
 ## Updating Norman
 

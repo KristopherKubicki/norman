@@ -72,6 +72,34 @@ A future HTTP proxy can accept OpenAI-compatible traffic and forward after
 policy. This should still be explicit: clients set `base_url` or proxy
 configuration to Norman.
 
+### Codex CLI Gateway
+
+The Codex launcher can opt into the existing Norman OpenAI-compatible
+Responses facade:
+
+```bash
+NORMAN_CODEX_PROVIDER=norman scripts/norman_codex_launch.sh
+```
+
+This is a Norman front-door mode, not a dependency on a running terminal or
+browser TUI. It generates the `norman-gateway` Codex profile in `CODEX_HOME`,
+uses `norman-code`, and sends Responses traffic to
+`https://norman.home.arpa/v1` by default. Norman can then apply policy,
+Norllama routing, and failover before choosing a provider.
+
+The profile gets its bearer token through Norman Keys (`NORMAN_KEYS_URL` or
+`NORMAN_KEYS_API_BASE`) or the approved `NORMAN_SECRET_CMD` broker. Supply
+broker credentials through the approved secret infrastructure; do not place
+the prompt-proxy token in the launcher environment or a Codex config file.
+
+Overrides are `NORMAN_CODEX_GATEWAY_BASE_URL`,
+`NORMAN_CODEX_GATEWAY_MODEL`, and `NORMAN_CODEX_GATEWAY_TOKEN_SECRET`.
+Use `NORMAN_CODEX_PROVIDER=bedrock` for the direct Bedrock break-glass path.
+
+The facade is a Responses compatibility subset. It does not yet guarantee
+full native Codex compatibility, especially for advanced agent and tool
+semantics.
+
 ## Intermediary Modes
 
 ### Route Only

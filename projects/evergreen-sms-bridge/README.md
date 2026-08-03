@@ -6,14 +6,44 @@ This package is the house-side companion to `projects/evergreen-sms-cloud`:
 
 - AWS SQS holds normalized inbound SMS from Twilio
 - this bridge long-polls that queue outbound-only
-- it can write messages to a local spool, forward them to a local webhook, or
-  deliver them to Norman's local collector, or inject them into a local tmux target
-- it only deletes an SQS message after local delivery succeeds
+- it resolves the durable cloud turn, submits it to Norman's dedicated SMS API,
+  and hosts an authenticated loopback completion callback
+- it only deletes inbound SQS after the exact turn is durably accepted by the
+  BBS, and only marks a reply sent after completion SQS accepts it
 
-The safe default is `spool` mode so inbound SMS can land on Norman/Subprime even
-before a real Switchboard webhook exists.
+The default is `sms` mode. It is the only mode that supports correlated
+multi-text conversations and final BBS replies. The previous modes remain
+available only as migration fallbacks.
 
-## Current Modes
+## Correlated SMS Mode
+
+Set these values in `.env`:
+
+- `DELIVERY_MODE=sms`
+- `INBOUND_QUEUE_URL`
+- `COMPLETION_QUEUE_URL`
+- `SMS_CONVERSATIONS_TABLE`
+- `BBS_URL`
+- `SMS_CALLBACK_TOKEN_FILE` or systemd `CREDENTIALS_DIRECTORY`
+
+The bridge binds the callback receiver to `127.0.0.1` by default. It posts
+each exact `conversation_id` and `turn_id` to `/api/sms/turns`, then waits for
+the BBS to call `/callbacks/sms` with the same correlation. The final callback
+is recorded before a 2xx response is returned, and a durable outbox forwards
+it to the cloud completion queue.
+
+Production callback credentials are loaded from systemd's encrypted
+`sms-callback-token` credential. They are not sent to the BBS or stored in a
+durable bridge or turn record.
+
+The matching system units are
+`scripts/systemd/norman-sms-bbs.service` and
+`scripts/systemd/evergreen-sms-bridge.service`. The SMS BBS listens only on
+`127.0.0.1:8798`, owns a distinct state directory, and does not share the
+normal BBS on port 8788. Its `norman-sms-codex` launcher loads the configured
+NVM default when Codex is not on systemd's default `PATH`.
+
+## Legacy Modes
 
 - `spool`
   - write one JSON envelope per message under `SPOOL_DIR`
@@ -32,54 +62,65 @@ You can also compose delivery targets directly with `DELIVERY_MODE=spool,tmux`,
 
 ## Files
 
-- `run-consumer.py` polls SQS and dispatches locally
+- `sms_bridge.py` runs the correlated production bridge
 - `.env.example` shows the expected runtime settings
-- `install.sh` creates a local venv, installs `boto3`, and installs a user-level service
-- `systemd/evergreen-sms-bridge.service.in` is the unit template
+- `install.sh` is limited to legacy one-way migration modes
+- `../../scripts/systemd/norman-sms-bbs.service` runs the isolated BBS
+- `../../scripts/systemd/evergreen-sms-bridge.service` runs the correlated bridge
 
-## Quick Start
+## Install Correlated SMS
 
-1. Copy `.env.example` to `.env`.
-2. Fill in at least:
-   - `INBOUND_QUEUE_URL`
-   - `AWS_PROFILE`
-   - `DELIVERY_MODE`
-3. Start with safe spool mode:
+Do not use `install.sh` for `DELIVERY_MODE=sms`; it deliberately refuses that
+configuration because the old user service does not load the shared encrypted
+credential or start the isolated BBS.
+
+1. Create the bridge virtual environment:
+```bash
+python3 -m venv projects/evergreen-sms-bridge/.venv
+projects/evergreen-sms-bridge/.venv/bin/pip install --upgrade pip boto3
+```
+
+2. Put the non-secret cloud settings from `.env.example` in
+   `/etc/norman/evergreen-sms-bridge.env`. It needs `AWS_PROFILE`,
+   `AWS_REGION`, `INBOUND_QUEUE_URL`, `COMPLETION_QUEUE_URL`, and
+   `SMS_CONVERSATIONS_TABLE`.
+3. Provision the same `sms-callback-token` encrypted systemd credential for
+   both services using the approved Norman Keys or secret-broker workflow.
+   Do not add it to `.env` or another plaintext repo-local file.
+4. Install and enable the two root systemd units:
+```bash
+sudo install -D -m 0644 scripts/systemd/norman-sms-bbs.service \
+  /etc/systemd/system/norman-sms-bbs.service
+sudo install -D -m 0644 scripts/systemd/evergreen-sms-bridge.service \
+  /etc/systemd/system/evergreen-sms-bridge.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now norman-sms-bbs.service evergreen-sms-bridge.service
+```
+
+Validate the loopback BBS and then follow both service logs:
+
+```bash
+curl --fail http://127.0.0.1:8798/health
+sudo systemctl status norman-sms-bbs.service evergreen-sms-bridge.service --no-pager
+sudo journalctl -fu norman-sms-bbs.service -u evergreen-sms-bridge.service
+```
+
+This local installation does not deploy AWS resources or send an SMS. Deploy
+the cloud half separately and only after this local path is verified.
+
+## Legacy Installation
+
+The older spool, webhook, collector, and tmux modes remain available for
+one-way migration work only. Set a non-`sms` `DELIVERY_MODE` and run:
 
 ```bash
 cd projects/evergreen-sms-bridge
-cp .env.example .env
-./install.sh
+bash ./install.sh --legacy
 ```
 
-4. Watch the bridge:
-
-```bash
-systemctl --user status evergreen-sms-bridge.service --no-pager
-journalctl --user -u evergreen-sms-bridge.service -f
-```
-
-## Recommended First Pass
-
-Use:
-
-- `DELIVERY_MODE=spool`
-- `KEEP_SPOOL_COPY=true`
-- `SPOOL_DIR=~/.local/state/cloudagent/evergreen-sms/inbox`
-
-That gives you a durable local inbox without assuming Switchboard already exists.
-
-When Norman/Subprime should receive the SMS directly, move to:
-
-- `DELIVERY_MODE=spool,collector`
-- `COLLECTOR_URL=http://127.0.0.1:8796`
-- `COLLECTOR_TOKEN=<subprime-web-token>`
-
-That keeps the spool copy and hands the inbound SMS to Norman's native collector
-API, which is the same path Norman uses for tmux-backed manual sends.
-
-If the collector is unavailable and you need a last-resort local pane injection,
-move to:
+`collector` mode uses the old shared console status polling and must not be
+used for conversational SMS replies. If an emergency manual injection is
+needed during migration, use:
 
 - `DELIVERY_MODE=spool,tmux`
 - `TMUX_TARGET=norman-bot-prime:0.0`
@@ -90,16 +131,13 @@ move to:
 That keeps the spool copy and injects the inbound SMS into the live Subprime
 tmux pane, but it is not the preferred Norman-native ingress.
 
-When Switchboard has an HTTP intake, move to:
-
-- `DELIVERY_MODE=both`
-- `WEBHOOK_URL=http://127.0.0.1:8796/hooks/evergreen-sms`
-
-or whatever the actual local intake becomes.
-
 ## Message Shape
 
-Each local dispatch envelope contains:
+The delayed SQS job contains `conversation_id`, `turn_id`, and `sequence`.
+The bridge loads the authoritative turn body from DynamoDB before it reaches
+the BBS, allowing a short burst of texts to become one turn.
+
+Legacy dispatch envelopes contain:
 
 - `bridge_received_at`
 - `bridge_hostname`
@@ -118,10 +156,8 @@ Each local dispatch envelope contains:
 
 ## Notes
 
-- This bridge intentionally does not expose any local port publicly.
-- It leaves failed SQS messages in the queue by not deleting them.
-- It is safe to run before Twilio is fully switched over.
-- `collector` mode is the preferred Norman/Subprime handoff because it uses the
-  local authenticated collector instead of depending on pane state.
-- `TMUX_TARGET` delivery uses local `tmux send-keys`; it does not depend on
-  Norman's LLM routing stack.
+- The callback receiver is loopback/private only and requires a bearer token.
+- Failed inbound SQS jobs are left for retry; failed completion sends remain in
+  the durable local outbox.
+- Do not configure Twilio or deploy the cloud stack until this bridge and the
+  BBS endpoint have been deliberately validated together.

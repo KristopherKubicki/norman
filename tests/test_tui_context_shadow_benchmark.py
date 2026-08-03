@@ -70,7 +70,12 @@ def test_build_report_summarizes_live_status_preview(monkeypatch) -> None:
     assert report["summary"]["saved_pct"] == 75.0
     assert report["summary"]["db_enabled_rows"] == 1
     assert report["summary"]["shadow_required_rows"] == 1
+    assert report["summary"]["saturated_long_context_run"] is False
+    assert (
+        report["summary"]["long_context_status"] == "not_a_saturated_long_context_run"
+    )
     assert "control-plane" in markdown
+    assert "Long-context status" in markdown
     assert "URLError: timeout" in markdown
     assert template["answers"][0]["context_tokens"] == 20000
     assert template["answers"][1]["context_tokens"] == 5000

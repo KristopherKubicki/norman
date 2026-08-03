@@ -316,5 +316,36 @@ console_runtime_worker_max_steps: 4
 console_runtime_worker_max_runtime_seconds: 1800
 console_runtime_worker_goal_phase_sequence: ["plan", "work", "verify"]
 console_runtime_worker_tick_seconds: 5
-console_runtime_worker_batch_size: 1
+console_runtime_worker_batch_size: 10
+console_runtime_workstream_max_concurrency: 10
+console_runtime_worker_global_concurrency: 10
+console_runtime_norllama_pool_concurrency: 10
 console_runtime_worker_id: "runtime-background-worker"
+
+# Kaizen KPI and evidence collection. Phase 1 is disabled and observe-only by
+# default. The Phase 2 candidate-shadow path additionally requires its explicit
+# switch, a non-zero local token budget, and concurrency; it cannot notify,
+# prepare/apply, or make an automatic change.
+kaizen_enabled: false
+kaizen_observe_only: true
+kaizen_auto_actions_enabled: false
+kaizen_candidate_shadow_enabled: false
+kaizen_pilot_tui_ids: []
+kaizen_allowed_realms: ["personal/home"]
+kaizen_idle_grace_seconds: 900
+kaizen_snapshot_max_age_seconds: 300
+kaizen_candidate_evidence_max_age_seconds: 300
+kaizen_broker_tick_seconds: 60
+kaizen_max_admissions_per_tick: 1
+kaizen_daily_norllama_token_budget: 0
+kaizen_norllama_max_concurrency: 1
+kaizen_candidate_shadow_max_tokens: 0
+kaizen_candidate_shadow_max_concurrency: 0
+kaizen_report_timezone: "America/Chicago"
+kaizen_daily_digest_local_time: "08:00"
+kaizen_weekly_digest_day: "monday"
+kaizen_weekly_digest_local_time: "08:00"
+kaizen_critical_alerts_enabled: false
+kaizen_runbook_prepare_enabled: false
+kaizen_skill_suggestions_enabled: false
+kaizen_mcp_health_suggestions_enabled: false

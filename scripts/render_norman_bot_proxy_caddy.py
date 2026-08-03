@@ -186,6 +186,43 @@ DEFAULT_LB_TRY_DURATION = "5s"
 DEFAULT_HEALTH_INTERVAL = "10s"
 LOCAL_LLM_LB_TRY_DURATION = "15s"
 LOCAL_LLM_HEALTH_INTERVAL = "3s"
+GATEWAY_ROUTES = frozenset(
+    {
+        "autocamera",
+        "cloudagent",
+        "compere",
+        "control-plane",
+        "earlybird",
+        "glimpser",
+        "gold-book",
+        "housebot",
+        "infra",
+        "market-sizing",
+        "networking",
+        "parkergale",
+        "theseus",
+        "tmi-dashboards",
+    }
+)
+# Inventory remains authoritative when it is reachable. These verified
+# canonical upstreams keep every CLI gateway route present when an inventory
+# host is unavailable, so a render cannot silently remove a supported route.
+GATEWAY_FALLBACK_UPSTREAMS: dict[str, str] = {
+    "autocamera": "192.168.2.137:8794",
+    "cloudagent": "192.168.2.242:8793",
+    "compere": "192.168.2.147:8789",
+    "control-plane": "192.168.2.147:8783",
+    "earlybird": "192.168.2.147:8781",
+    "glimpser": "192.168.2.146:8788",
+    "gold-book": "192.168.2.147:8786",
+    "housebot": "192.168.2.146:8787",
+    "infra": "192.168.2.147:8782",
+    "market-sizing": "192.168.2.147:8784",
+    "networking": "192.168.2.242:8791",
+    "parkergale": "192.168.2.148:8796",
+    "theseus": "192.168.2.137:8795",
+    "tmi-dashboards": "192.168.2.147:8785",
+}
 
 
 def _route_block(slug: str, upstream: str) -> str:
@@ -320,6 +357,17 @@ def _reverse_proxy_lines(
     ]
 
 
+def _gateway_proxy_lines(gateway_route: str, *, prefix: str = "    ") -> list[str]:
+    return [
+        f"{prefix}handle /v1/* {{",
+        f"{prefix}    reverse_proxy 127.0.0.1:8000 {{",
+        f"{prefix}        header_up X-Norman-Gateway-Route {gateway_route}",
+        f"{prefix}        header_up X-Forwarded-For 127.0.0.2",
+        f"{prefix}    }}",
+        f"{prefix}}}",
+    ]
+
+
 def _host_block(
     hostnames: tuple[str, ...],
     upstream: str | tuple[str, ...],
@@ -328,6 +376,7 @@ def _host_block(
     allowed_clients: tuple[str, ...] = (),
     lb_try_duration: str = DEFAULT_LB_TRY_DURATION,
     health_interval: str = DEFAULT_HEALTH_INTERVAL,
+    gateway_route: str = "",
 ) -> str:
     https_hosts = ", ".join(hostnames)
     http_hosts = ", ".join(f"http://{host}" for host in hostnames)
@@ -348,24 +397,34 @@ def _host_block(
                 "    handle @knox_allowed {",
             ]
         )
+        if gateway_route:
+            lines.extend(_gateway_proxy_lines(gateway_route, prefix="        "))
+            lines.append("        handle {")
         lines.extend(
             _reverse_proxy_lines(
                 upstream,
-                prefix="        ",
+                prefix="            " if gateway_route else "        ",
                 lb_try_duration=lb_try_duration,
                 health_interval=health_interval,
             )
         )
+        if gateway_route:
+            lines.append("        }")
         lines.extend(["    }", '    respond "forbidden" 403', "}"])
     else:
+        if gateway_route:
+            lines.extend(_gateway_proxy_lines(gateway_route))
+            lines.append("    handle {")
         lines.extend(
             _reverse_proxy_lines(
                 upstream,
-                prefix="    ",
+                prefix="        " if gateway_route else "    ",
                 lb_try_duration=lb_try_duration,
                 health_interval=health_interval,
             )
         )
+        if gateway_route:
+            lines.append("    }")
         lines.append("}")
     return "\n".join(lines)
 
@@ -432,6 +491,7 @@ def render_paths() -> str:
 def render_hosts() -> str:
     _, by_name = discover_all_instances()
     blocks: list[str] = []
+    rendered_names: set[str] = set()
     for name in sorted(by_name):
         instance = by_name[name]
         host = HOSTS[instance.host_name]
@@ -455,6 +515,7 @@ def render_hosts() -> str:
                 upstream,
                 internal_tls=use_internal_tls,
                 allowed_clients=allowed_clients,
+                gateway_route=name if name in GATEWAY_ROUTES else "",
             )
         ]
         for hostnames in _alias_bot_host_groups(name):
@@ -473,6 +534,21 @@ def render_hosts() -> str:
                 )
             )
         blocks.append(f"# {name}\n" + "\n\n".join(rendered))
+        rendered_names.add(name)
+    for name, upstream in GATEWAY_FALLBACK_UPSTREAMS.items():
+        if name in rendered_names:
+            continue
+        canonical_hosts = _canonical_bot_hosts(name)
+        if not canonical_hosts:
+            continue
+        blocks.append(
+            f"# {name}\n"
+            + _host_block(
+                canonical_hosts,
+                upstream,
+                gateway_route=name,
+            )
+        )
     for name, host_groups in SPECIAL_HOST_GROUPS.items():
         upstream = SPECIAL_HOST_UPSTREAMS[name]
         rendered = [

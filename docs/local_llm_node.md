@@ -243,6 +243,19 @@ The Spark restart path uses `sudo -n systemctl restart norllama-gateway.service`
 if passwordless sudo is not configured, copy/compile still works but the worker
 restart must be brokered by the operator.
 
+### Route Policy Refresh
+
+Each Norllama worker reads its own `route_policy.json`. Refresh the exact local
+path through the repo-owned command:
+
+```bash
+python3 refresh_route_policy.py --path /worker/norllama/route_policy.json
+```
+
+Install it in the worker account's cron at `@reboot` and every six hours. The
+command exits nonzero unless the freshly written policy allows the default
+route, preserving the gateway's fail-closed behavior if refresh fails.
+
 That keeps the fast path native on macOS while still giving you a small,
 controllable service boundary. If stricter control is needed later, use this
 `launchd` wrapper before forcing the node into a Linux VM.

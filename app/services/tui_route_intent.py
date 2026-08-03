@@ -264,10 +264,18 @@ def is_route_status_diagnostic(value: Any) -> bool:
     )
     if not asks_status:
         return False
-    mutating_order = re.search(
-        r"\b(?:apply|change|commit|deploy|edit|fix|implement|install|patch|push|restart|run|sync|update)\b",
+    mutation_verbs = (
+        r"apply|change|commit|deploy|edit|fix|generate|implement|install|make|"
+        r"patch|push|rebuild|regenerate|render|restart|run|sync|update"
+    )
+    explicit_mutating_order = re.search(
+        rf"\b(?:and|can|could|do it|go ahead|make it|need to|please|proceed|"
+        rf"should|then|will|would|you should)\b.{{0,80}}\b(?:{mutation_verbs})\b",
         lower,
     )
+    if explicit_mutating_order:
+        return False
+    mutating_order = re.search(rf"\b(?:{mutation_verbs})\b", lower)
     diagnostic_intro = re.search(
         r"\b(?:why|what|which|how|did|does|do|is|are|was|were|can|could|should)\b",
         lower,
@@ -276,7 +284,7 @@ def is_route_status_diagnostic(value: Any) -> bool:
         return False
     return not re.search(
         r"\b(?:go ahead|proceed|do it|make it|please)\b"
-        r".{0,80}\b(?:deploy|fix|implement|install|patch|push|restart|run|sync|update)\b",
+        rf".{{0,80}}\b(?:{mutation_verbs})\b",
         lower,
     )
 

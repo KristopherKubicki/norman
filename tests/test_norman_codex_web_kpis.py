@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import tempfile
 from pathlib import Path
 
@@ -23,6 +24,45 @@ def _configure_state(module) -> tempfile.TemporaryDirectory[str]:
     module.USAGE_PATH = state_dir / "usage.jsonl"
     module.KPI_PATH = state_dir / "kpis.json"
     return tmp
+
+
+def test_norman_submit_hands_off_the_composer_before_acknowledgement() -> None:
+    source = (
+        Path(__file__).resolve().parents[1] / "scripts" / "norman_codex_web.py"
+    ).read_text(encoding="utf-8")
+
+    assert "function clearSubmittedComposer() {{" in source
+    assert "function restoreRejectedPrompt(draftValue) {{" in source
+    assert "clearSubmittedComposer();\n      render(state.snapshot);" in source
+    assert "restoreRejectedPrompt(draftValue);" in source
+    assert "else if (busy) {{" in source
+    assert ".composer-send.pending:disabled" in source
+    assert "PROMPT_SUBMISSION_RESTORE_GRACE_MS" not in source
+
+
+def test_fast_lane_capsule_only_renders_verified_sanitized_outcomes() -> None:
+    source = (
+        Path(__file__).resolve().parents[1] / "scripts" / "norman_codex_web.py"
+    ).read_text(encoding="utf-8")
+    helper = source.split("function fastLaneOutcomeCapsuleState(snapshot) {{", 1)[
+        1
+    ].split("function buildStatusCapsules", 1)[0]
+
+    assert 'String(outcome.state || "").trim().toLowerCase() === "verified"' in helper
+    assert 'laneKind === "luna" || laneKind === "local"' in helper
+    assert "Estimated, not invoiced" in helper
+    assert "Latest route is not counted as a win" in helper
+    assert "automatic route selection remains off" in helper
+    for forbidden in (
+        "selected_worker",
+        "observed_worker",
+        "target_worker",
+        "peer_path",
+        "frontdoor",
+        "endpoint",
+        "spark-",
+    ):
+        assert forbidden not in helper
 
 
 def test_build_kpi_snapshot_marks_prompt_with_node_warning_degraded() -> None:
@@ -51,6 +91,36 @@ def test_build_kpi_snapshot_marks_prompt_with_node_warning_degraded() -> None:
         assert snapshot["activity_state"] == "idle"
         assert snapshot["prompt_visible"] is True
         assert snapshot["signals"][0]["code"] == "js_repl_node_too_old"
+    finally:
+        tmp.cleanup()
+
+
+def test_build_kpi_snapshot_ignores_optional_inactive_service() -> None:
+    module = _load_norman_codex_web()
+    tmp = _configure_state(module)
+    try:
+        snapshot = module.build_kpi_snapshot(
+            {
+                "pending": False,
+                "pane": "› ready",
+                "usage": {"totals": {}},
+                "services": [
+                    {
+                        "name": "tailscaled.service",
+                        "state": "inactive",
+                        "required": False,
+                    }
+                ],
+                "auth": {"required": False},
+            },
+            previous={},
+        )
+
+        assert snapshot["state"] == "idle"
+        assert snapshot["health_state"] == "ok"
+        assert "service_not_active" not in {
+            item["code"] for item in snapshot["signals"]
+        }
     finally:
         tmp.cleanup()
 
@@ -276,3 +346,145 @@ def test_build_kpi_snapshot_ignores_stale_usage_limit_after_success() -> None:
         assert snapshot["state"] != "blocked"
     finally:
         tmp.cleanup()
+
+
+def _kaizen_snapshot_fixture() -> dict:
+    return {
+        "kpis": {
+            "observed_at": 1_786_000_000,
+            "state": "idle",
+            "activity_state": "idle",
+            "health_state": "ok",
+            "prompt_visible": False,
+            "waiting_visible": False,
+            "state_entered_at": 1_785_999_000,
+            "metrics": {
+                "turns": 12,
+                "successful_turns": 10,
+                "failed_turns": 2,
+                "avg_turn_seconds": 20,
+                "last_turn_at": 1_786_000_000,
+                "pending_seconds": 0,
+                "queue_depth": 0,
+                "wedge_count": 0,
+                "blocked_count": 0,
+                "degraded_count": 0,
+                "state_changes": 3,
+                "forbidden_metric": 99,
+            },
+        }
+    }
+
+
+def test_kaizen_tui_payload_is_strict_and_sanitized(monkeypatch) -> None:
+    module = _load_norman_codex_web()
+    tmp = _configure_state(module)
+    try:
+        monkeypatch.setenv("NORMAN_KAIZEN_REALM", "personal/home")
+        monkeypatch.setenv("NORMAN_KAIZEN_SOURCE_TUI", "pilot alpha !")
+
+        payload = module.build_kaizen_tui_snapshot_payload(_kaizen_snapshot_fixture())
+
+        assert payload is not None
+        assert set(payload) == {
+            "schema",
+            "realm",
+            "source_tui",
+            "observed_at",
+            "state",
+            "activity_state",
+            "health_state",
+            "prompt_visible",
+            "waiting_visible",
+            "state_entered_at",
+            "metrics",
+        }
+        assert payload["source_tui"] == "pilot-alpha"
+        assert payload["observed_at"].endswith("+00:00")
+        assert payload["state_entered_at"].endswith("+00:00")
+        assert set(payload["metrics"]) == set(module._KAIZEN_METRIC_LIMITS)
+        assert "forbidden_metric" not in payload["metrics"]
+    finally:
+        tmp.cleanup()
+
+
+def test_kaizen_tui_emitter_is_disabled_by_default(monkeypatch) -> None:
+    module = _load_norman_codex_web()
+    tmp = _configure_state(module)
+    try:
+        monkeypatch.delenv("NORMAN_KAIZEN_ENABLED", raising=False)
+        calls = []
+        monkeypatch.setattr(
+            module.urllib_request,
+            "urlopen",
+            lambda *args, **kwargs: calls.append((args, kwargs)),
+        )
+
+        assert module.emit_kaizen_tui_snapshot(_kaizen_snapshot_fixture()) is False
+        assert calls == []
+    finally:
+        tmp.cleanup()
+
+
+def test_kaizen_tui_emitter_posts_bearer_payload_and_swallows_errors(
+    monkeypatch,
+) -> None:
+    module = _load_norman_codex_web()
+    tmp = _configure_state(module)
+    try:
+        monkeypatch.setenv("NORMAN_KAIZEN_ENABLED", "1")
+        monkeypatch.setenv(
+            "NORMAN_CONSOLE_RUNTIME_API_BASE",
+            "http://norman.test/api/v1/console-runtime",
+        )
+        monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_TOKEN", "test-token")
+        calls = []
+
+        class _Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b"{}"
+
+        def _urlopen(request, timeout):
+            calls.append((request, timeout))
+            return _Response()
+
+        monkeypatch.setattr(module.urllib_request, "urlopen", _urlopen)
+
+        assert module.emit_kaizen_tui_snapshot(_kaizen_snapshot_fixture()) is True
+        request, timeout = calls[0]
+        assert request.full_url == "http://norman.test/api/v1/kaizen/tui-snapshots"
+        assert request.get_header("Authorization") == "Bearer test-token"
+        assert timeout == module._kaizen_emit_timeout_seconds()
+        assert json.loads(request.data.decode("utf-8")) == (
+            module.build_kaizen_tui_snapshot_payload(_kaizen_snapshot_fixture())
+        )
+
+        monkeypatch.setattr(
+            module.urllib_request,
+            "urlopen",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("offline")),
+        )
+        assert module.emit_kaizen_tui_snapshot(_kaizen_snapshot_fixture()) is False
+    finally:
+        tmp.cleanup()
+
+
+def test_kaizen_tui_snapshot_url_only_strips_console_runtime_path_segment(
+    monkeypatch,
+) -> None:
+    module = _load_norman_codex_web()
+    monkeypatch.setenv(
+        "NORMAN_CONSOLE_RUNTIME_API_BASE",
+        "http://norman.test/api/v1/not-console-runtime",
+    )
+
+    assert (
+        module._kaizen_tui_snapshot_url()
+        == "http://norman.test/api/v1/not-console-runtime/api/v1/kaizen/tui-snapshots"
+    )

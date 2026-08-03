@@ -8,9 +8,9 @@ def _sample_kpi_benchmark(path: Path) -> None:
     payload = {
         "runs": [
             {
-                "run_id": "kpi-weekly-1-codex_bedrock_5_4",
+                "run_id": "kpi-weekly-1-codex_bedrock_5_6_terra",
                 "runtime": "codex",
-                "model": "openai.gpt-5.4",
+                "model": "openai.gpt-5.6-terra",
                 "service_tier": "default",
                 "state": "ok",
                 "response": (
@@ -135,7 +135,7 @@ def _sample_cutover_readiness(path: Path) -> None:
 def _sample_invoice_reconciled_ledger(path: Path) -> None:
     rows = [
         {
-            "usage": {"model": "openai.gpt-5.4"},
+            "usage": {"model": "openai.gpt-5.6-terra"},
             "billing": {
                 "price_basis": "bedrock-us-east-2",
                 "charge_status": "invoice_reconciled",

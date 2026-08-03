@@ -1,41 +1,126 @@
 # Norman Documentation
 
-Welcome to the Norman documentation! Here you'll find everything you need to know about setting up, using, and extending
-Norman.
+Norman is an operator control plane for AI-assisted work. These documents
+describe the current control-plane, runtime, routing, and operator model.
+Older design records remain useful context, but their status and date matter;
+they are not all current operating instructions.
 
-## Table of Contents
+## Document Status
 
-- [Usage](usage.md) - Learn how to set up and use Norman.
-- [Examples](examples.md) - Step-by-step usage examples and API calls.
-- [Deployment](deployment.md) - Instructions on how to deploy Norman on various platforms.
-- [Docker Deployment](docker.md) - Containerized setup using Docker and docker-compose.
-- [Extending Norman](extending.md) - A guide on how to extend Norman with new connectors, actions, and filters.
-- [Architecture](architecture.md) - An explanation of Norman's architecture and design principles.
-- [Estate Schema](estate_schema.md) - Concrete object model for principals, bots, workers, services, and the twin.
-- [Fleet Charter](fleet_charter.md) - Operator-first definition of Norman, Prime, lanes, and governance direction.
-- [Naming Policy](naming_policy.md) - Canonical hostname, alias, and namespace rules for work, internal, home, and site-specific surfaces.
-- [Access Matrix](access_matrix.md) - Draft client, lane, host, and bot reachability model before networking hardening.
-- [Bot-to-Bot ACL](bot_acl.md) - Direct, brokered, and forbidden cross-bot communication rules with Norman Prime as the default broker.
-- [Private Enclave Plan](private_enclave.md) - Dedicated host and isolation model for finance, health, and other confidential bots.
-- [Private Auth Handoff](private_auth_handoff.md) - Why remote private-bot browser sign-in is currently incomplete and how the private host should own the callback path.
-- [Norman Keys](norman_keys.md) - Secret-broker design for approvals, leases, audit, and backend abstraction.
-- [Norman Keys V1 Plan](norman_keys_v1_plan.md) - Concrete build plan for the first Norman Keys rollout.
-- [Endless Perplexity V1](endless_perplexity_v1.md) - Perplexity-backed scout and signal-mining operating model for
-  routing cited findings into Norman.
-- [Norman Kernel Program](norman_kernel_program.md) - Kernel-first plan for making TUIs model-independent, offline-capable, and driven by a durable Norman execution layer.
-- [Norman Kernel Runtime Deep Dive](norman_kernel_runtime_deep_dive.md) - Concrete runtime contracts, event taxonomy, adapters, shell execution plan, and worker sequencing for the kernel.
-- [Norman Kernel TUI Deep Dive](norman_kernel_tui_deep_dive.md) - Plan for moving web TUIs and console CLIs from Codex wrappers to kernel clients with behavior streaming.
-- [Norman Kernel Model And Policy Deep Dive](norman_kernel_model_policy_deep_dive.md) - Norllama-first model routing, offline modes, egress policy, cost control, and warm model guidance.
-- [Norllama Router Guidance](norllama_router_guidance.md) - Current frontdoor/router shape, benchmark-backed model guidance, and reliability upgrades for local-first routing.
-- [Norman Kernel Deployment And Test Plan](norman_kernel_deployment_test_plan.md) - Staged rollout, test matrix, live smoke checks, BBS coordination, and rollback.
-- [Model Durability Plan](model_durability_plan.md) - Failure-mode, fallback, checkpoint, and offline-mode plan for keeping Norman usable when Codex/OpenAI is degraded or unavailable.
-- [Philosophy](philosophy.md) - Learn about the philosophy behind Norman and our project goals.
-- [Contributing](../contributing.md) - A guide on how to contribute to the Norman project.
-- [Community](community.md) - Information about the Norman community and how to get involved.
-- [Connectors](connectors.md) - An overview of the available connectors and how to use them.
+Unless a document is explicitly marked otherwise, the sections below identify
+its intended use:
 
-## Getting Started
+- **Current operating docs** define supported behavior, deployment, and
+  operator procedures.
+- **Direction and implementation docs** describe approved designs, migrations,
+  or work in progress. They are not a substitute for an operating runbook.
+- **Reference and history** records preserve dated decisions, investigations,
+  and release context. Verify current behavior against the operating docs.
 
-If you're new to Norman, we recommend starting with the [Usage](usage.md) guide to learn how to set up and use the
-application. From there, you can explore the other sections of the documentation to learn more about Norman's features
-and how to extend its capabilities.
+## Start Here
+
+These are the current operating docs for an initial deployment or operator
+orientation.
+
+- [Root README](../README.md) - product scope, provider-neutral routing,
+  human-control boundary, and local development start.
+- [Architecture](architecture.md) - current system shape, ownership, work flow,
+  operating modes, and observability.
+- [Deployment](deployment.md) - production units, gateways, host-pressure
+  safeguards, and rollback.
+- [Provider And Routing Resilience](llm_runtime_fallback.md) - local-first
+  route order, egress classes, failure handling, and receipts.
+
+## Runtime And Operator Work
+
+These documents describe the runtime design and migration work. Confirm live
+deployment behavior against the current operating docs above.
+
+- [Norman Kernel Program](norman_kernel_program.md) - durable work model and
+  the migration from provider-shaped TUIs to kernel clients.
+- [Norman Kernel Runtime Deep Dive](norman_kernel_runtime_deep_dive.md) -
+  runtime contracts, event taxonomy, adapters, workers, and recovery.
+- [Norman Kernel TUI Deep Dive](norman_kernel_tui_deep_dive.md) - TUI client
+  behavior, event streaming, approval, degraded mode, and interrupts.
+- [Norman Kernel Deployment And Test Plan](norman_kernel_deployment_test_plan.md) -
+  staged rollout, smoke checks, BBS coordination, acceptance, and rollback.
+- [TUI Operator Workflow Skill Spec](tui_operator_workflow_skill_spec.md) -
+  operator and runtime workflow design.
+- [Norman Chat](norman_chat.md) - product direction for the communication desk,
+  not a current implementation guide.
+
+## Routing, Local Models, And Kaizen
+
+These documents define local-model routing direction, rollout work, and the
+bounded improvement program. Follow deployment and policy controls before
+enabling any optional capability.
+
+- [Norllama Router Guidance](norllama_router_guidance.md) - front door, mesh,
+  warm policy, route attribution, and reliability work.
+- [Norman Kernel Model And Policy Deep Dive](norman_kernel_model_policy_deep_dive.md) -
+  model selection, egress, cost, local capability, and cloud escalation policy.
+- [Norllama Kaizen And KPI Control Loop](norllama_kaizen_control_loop_plan.md) -
+  proactive reporting, bounded idle work, candidate lifecycle, and approvals.
+- [Norllama Repository Plan](norllama_repository_plan.md) - approved
+  contract-first extraction direction for an independent inference gateway and
+  mesh repository.
+- [Local LLM Node](local_llm_node.md) - local node installation and route
+  policy refresh operations.
+- [Model Durability Plan](model_durability_plan.md) - earlier failure-mode and
+  recovery design context.
+- [Norllama Capability Execution Runner Handoff](norllama_capability_execution_runner_handoff.md) -
+  specialist capability runner handoff.
+
+## Operations, Security, And Estate
+
+These documents define shared estate, access, and operational control
+boundaries. Some plan documents retain work-in-progress status.
+
+- [Estate Schema](estate_schema.md) - principals, bots, workers, services, and
+  twin object model.
+- [Fleet Charter](fleet_charter.md) - operator-first fleet definition and
+  governance direction.
+- [Naming Policy](naming_policy.md) - hostname, alias, and namespace rules.
+- [Access Matrix](access_matrix.md) - client, lane, host, and bot reachability.
+- [Bot-to-Bot ACL](bot_acl.md) - brokered and forbidden cross-bot paths.
+- [Norman Keys](norman_keys.md) - secret-broker design and operator controls.
+- [Norman Keys V1 Plan](norman_keys_v1_plan.md) - first rollout plan and
+  implementation notes.
+- [Private Enclave Plan](private_enclave.md) - confidential bot isolation
+  model.
+- [Private Auth Handoff](private_auth_handoff.md) - private-host sign-in
+  boundary and remaining work.
+
+## Integrations And Extension
+
+These documents cover supported interfaces and extension direction. Connector
+access still follows the deployment's policy and authentication controls.
+
+- [Usage](usage.md) - deployment, Console Runtime, routing, approvals, and
+  connector compatibility guidance.
+- [Examples](examples.md) - authenticated runtime, route, and Kaizen API
+  examples.
+- [Connectors](connectors.md) - connector catalog and extension points.
+- [Extending Norman](extending.md) - custom connector, action, and filter
+  guidance.
+- [Endless Perplexity V1](endless_perplexity_v1.md) - cited research and signal
+  mining operating model.
+- [Docker Deployment](docker.md) - containerized deployment reference.
+
+## Reference And History
+
+These records provide useful context but are not current runbooks unless their
+own status says otherwise.
+
+- [Changelog](../CHANGELOG.md) - current release-direction and documentation
+  notes.
+- [Philosophy](philosophy.md) - project principles.
+- [Community](community.md) - project community information.
+- [Contributing](../CONTRIBUTING.md) - contribution process.
+- [Release Notes](releases/) - dated deployment and routing records.
+- [Prompt Intermediary Roadmap](norman_prompt_intermediary_roadmap.md) -
+  historical and transitional provider-facade roadmap.
+- [Norllama Model Architecture Audit Handoff](norllama_model_architecture_audit_handoff.md) -
+  dated model architecture investigation.
+- [TUI Queue Resource Meter Decision](tui_queue_resource_meter_decision_2026-05-09.md) -
+  dated TUI resource-management decision.

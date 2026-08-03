@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List
 
@@ -12,16 +13,25 @@ from app.services.console_runtime.planner import (
     planner_receipt_summary,
 )
 from app.services.console_runtime.types import (
+    ConsoleArtifact,
+    ConsoleArtifactRequirement,
+    ConsoleCheckpointCapsule,
+    ConsoleEffect,
     ConsoleJob,
     ConsoleJobContract,
     ConsoleJobLease,
     ConsoleJobStatus,
+    ConsoleVerificationReceipt,
     ModelRequest,
     ModelResult,
+    ModelUsage,
+    RetryClass,
     RouteDecision,
     RuntimeModeState,
 )
 from app.services.norllama.specialist_lanes import evaluate_specialist_cascade
+from app.services.norllama.fast_lane_outcomes import evaluate_fast_lane_outcome
+from app.services.norllama.route_proof import audit_route_receipt
 
 
 class ConsoleRuntimeError(RuntimeError):
@@ -34,6 +44,10 @@ class JobNotFoundError(ConsoleRuntimeError):
 
 class InvalidTransitionError(ConsoleRuntimeError):
     """Raised when a job state transition would violate the job contract."""
+
+
+class EffectReconciliationRequiredError(ConsoleRuntimeError):
+    """Raised when a reserved external effect cannot be safely replayed."""
 
 
 _TERMINAL_STATES = {
@@ -55,6 +69,8 @@ class ConsoleRuntimeKernel:
         self._lock = threading.RLock()
         self._jobs: Dict[str, ConsoleJob] = {}
         self._events: List[ConsoleRuntimeEvent] = []
+        self._effects: Dict[tuple[str, str], ConsoleEffect] = {}
+        self._lease_epochs: Dict[str, int] = {}
         self._next_sequence = 1
 
     def create_job(
@@ -64,6 +80,12 @@ class ConsoleRuntimeKernel:
         with self._lock:
             if job.job_id in self._jobs:
                 raise InvalidTransitionError(f"Job already exists: {job.job_id}")
+            trace_id = str(
+                contract.metadata.get("trace_id")
+                or contract.authority_flags.get("trace_id")
+                or f"trace_{uuid.uuid4().hex}"
+            ).strip()
+            job.metadata["trace_id"] = trace_id
             self._jobs[job.job_id] = job
             self._append_event_locked(
                 job.job_id,
@@ -72,6 +94,7 @@ class ConsoleRuntimeKernel:
                     "objective": contract.objective,
                     "done_when": list(contract.done_when),
                     "required_artifacts": list(contract.required_artifacts),
+                    "trace_id": trace_id,
                 },
                 summary="Job created",
             )
@@ -154,10 +177,14 @@ class ConsoleRuntimeKernel:
                 )
             now = datetime.now(timezone.utc)
             expires_at = now + timedelta(seconds=max(1, int(lease_seconds)))
+            lease_epoch = self._lease_epochs.get(job.job_id, 0) + 1
+            self._lease_epochs[job.job_id] = lease_epoch
             job.lease = ConsoleJobLease(
                 worker_id=worker_id,
                 leased_at=now.isoformat(),
                 expires_at=expires_at.isoformat(),
+                attempt_id=f"attempt_{uuid.uuid4().hex}",
+                lease_epoch=lease_epoch,
             )
             self._set_status_locked(job, ConsoleJobStatus.LEASED)
             self._append_event_locked(
@@ -166,15 +193,28 @@ class ConsoleRuntimeKernel:
                 {
                     "worker_id": worker_id,
                     "expires_at": job.lease.expires_at,
+                    "attempt_id": job.lease.attempt_id,
+                    "lease_epoch": job.lease.lease_epoch,
                 },
                 summary=f"Leased to {worker_id}",
             )
             return job
 
-    def start_job(self, job_id: str) -> ConsoleJob:
+    def start_job(
+        self,
+        job_id: str,
+        *,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
+    ) -> ConsoleJob:
         with self._lock:
             job = self._job_locked(job_id)
             self._ensure_not_terminal(job)
+            self._assert_current_attempt_locked(
+                job,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
             if job.status not in {
                 ConsoleJobStatus.LEASED,
                 ConsoleJobStatus.CHECKPOINTED,
@@ -196,11 +236,19 @@ class ConsoleRuntimeKernel:
         job_id: str,
         *,
         summary: str,
-        artifacts: Iterable[str] | None = None,
+        artifacts: Iterable[Any] | None = None,
+        capsule: ConsoleCheckpointCapsule | dict[str, Any] | None = None,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
     ) -> ConsoleJob:
         with self._lock:
             job = self._job_locked(job_id)
             self._ensure_not_terminal(job)
+            self._assert_current_attempt_locked(
+                job,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
             if job.status not in {
                 ConsoleJobStatus.LEASED,
                 ConsoleJobStatus.RUNNING,
@@ -210,23 +258,50 @@ class ConsoleRuntimeKernel:
                 raise InvalidTransitionError(
                     f"Cannot checkpoint job {job_id} from state {job.status.value}"
                 )
-            added_artifacts = self._record_artifacts_locked(job, artifacts or [])
+            added_artifacts = self._record_artifacts_locked(
+                job,
+                artifacts or [],
+                produced_by_attempt=attempt_id,
+            )
+            checkpoint_capsule = self._checkpoint_capsule_locked(
+                job,
+                summary=summary,
+                capsule=capsule,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
             job.checkpoints.append(summary)
+            job.checkpoint_capsules.append(checkpoint_capsule.as_dict())
             self._set_status_locked(job, ConsoleJobStatus.CHECKPOINTED)
             self._append_event_locked(
                 job.job_id,
                 "job.checkpointed",
-                {"summary": summary, "artifacts": added_artifacts},
+                {
+                    "summary": summary,
+                    "artifacts": added_artifacts,
+                    "checkpoint_capsule": checkpoint_capsule.as_dict(),
+                },
                 summary=summary,
             )
             return job
 
     def require_approval(
-        self, job_id: str, *, reason: str, requested_by: str = ""
+        self,
+        job_id: str,
+        *,
+        reason: str,
+        requested_by: str = "",
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
     ) -> ConsoleJob:
         with self._lock:
             job = self._job_locked(job_id)
             self._ensure_not_terminal(job)
+            self._assert_current_attempt_locked(
+                job,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
             self._set_status_locked(job, ConsoleJobStatus.WAITING_APPROVAL)
             self._append_event_locked(
                 job.job_id,
@@ -242,12 +317,23 @@ class ConsoleRuntimeKernel:
         job_id: str,
         *,
         summary: str = "",
-        artifacts: Iterable[str] | None = None,
+        artifacts: Iterable[Any] | None = None,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
     ) -> ConsoleJob:
         with self._lock:
             job = self._job_locked(job_id)
             self._ensure_not_terminal(job)
-            added_artifacts = self._record_artifacts_locked(job, artifacts or [])
+            self._assert_current_attempt_locked(
+                job,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
+            added_artifacts = self._record_artifacts_locked(
+                job,
+                artifacts or [],
+                produced_by_attempt=attempt_id,
+            )
             missing = [
                 artifact
                 for artifact in job.contract.required_artifacts
@@ -258,6 +344,14 @@ class ConsoleRuntimeKernel:
                     "Cannot complete job before required artifacts exist: "
                     + ", ".join(missing)
                 )
+            if self._verification_required_locked(job) and not any(
+                receipt.get("status") == "pass"
+                for receipt in job.verification_receipts
+                if isinstance(receipt, dict)
+            ):
+                raise InvalidTransitionError(
+                    "Cannot complete job before a passing verification receipt exists"
+                )
             self._set_status_locked(job, ConsoleJobStatus.DONE)
             self._append_event_locked(
                 job.job_id,
@@ -267,10 +361,22 @@ class ConsoleRuntimeKernel:
             )
             return job
 
-    def block_job(self, job_id: str, *, reason: str) -> ConsoleJob:
+    def block_job(
+        self,
+        job_id: str,
+        *,
+        reason: str,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
+    ) -> ConsoleJob:
         with self._lock:
             job = self._job_locked(job_id)
             self._ensure_not_terminal(job)
+            self._assert_current_attempt_locked(
+                job,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
             job.last_error = reason
             self._set_status_locked(job, ConsoleJobStatus.BLOCKED)
             self._append_event_locked(
@@ -282,28 +388,58 @@ class ConsoleRuntimeKernel:
             )
             return job
 
-    def fail_job(self, job_id: str, *, error: str) -> ConsoleJob:
+    def fail_job(
+        self,
+        job_id: str,
+        *,
+        error: str,
+        retry_class: RetryClass | str = RetryClass.UNKNOWN,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
+    ) -> ConsoleJob:
         with self._lock:
             job = self._job_locked(job_id)
-            self._ensure_not_terminal(job)
+            self._assert_current_attempt_locked(
+                job,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
+            if job.status in {ConsoleJobStatus.CANCELED, ConsoleJobStatus.DONE}:
+                raise InvalidTransitionError(
+                    f"Cannot fail job {job_id} from state {job.status.value}"
+                )
             job.last_error = error
+            normalized_retry_class = RetryClass.normalize(retry_class)
+            job.metadata["last_retry_class"] = normalized_retry_class.value
             self._set_status_locked(job, ConsoleJobStatus.FAILED)
             self._append_event_locked(
                 job.job_id,
                 "job.failed",
-                {"error": error},
+                {"error": error, "retry_class": normalized_retry_class.value},
                 summary="Job failed",
                 detail=error,
             )
             return job
 
-    def cancel_job(self, job_id: str, *, reason: str = "") -> ConsoleJob:
+    def cancel_job(
+        self,
+        job_id: str,
+        *,
+        reason: str = "",
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
+    ) -> ConsoleJob:
         with self._lock:
             job = self._job_locked(job_id)
             if job.status == ConsoleJobStatus.DONE:
                 raise InvalidTransitionError("Completed jobs cannot be canceled")
             if job.status in {ConsoleJobStatus.CANCELED, ConsoleJobStatus.FAILED}:
                 return job
+            self._assert_current_attempt_locked(
+                job,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
             self._set_status_locked(job, ConsoleJobStatus.CANCELED)
             self._append_event_locked(
                 job.job_id,
@@ -314,6 +450,224 @@ class ConsoleRuntimeKernel:
             )
             return job
 
+    def append_event(
+        self,
+        job_id: str,
+        *,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+        summary: str = "",
+        detail: str = "",
+        visibility: str = "timeline",
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
+    ) -> ConsoleRuntimeEvent:
+        """Append a fenced runtime event for adapter-specific activity."""
+
+        with self._lock:
+            job = self._job_locked(job_id)
+            self._assert_current_attempt_locked(
+                job,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
+            return self._append_event_locked(
+                job.job_id,
+                event_type,
+                dict(payload or {}),
+                summary=summary,
+                detail=detail,
+                visibility=visibility,
+            )
+
+    def retry_job(self, job_id: str, *, override: bool = False) -> ConsoleJob:
+        with self._lock:
+            job = self._job_locked(job_id)
+            if job.status not in _TERMINAL_STATES:
+                raise InvalidTransitionError(
+                    f"Cannot retry job {job_id} from state {job.status.value}"
+                )
+            retry_class = RetryClass.normalize(job.metadata.get("last_retry_class"))
+            if (
+                retry_class
+                in {
+                    RetryClass.PARTIAL_EFFECT,
+                    RetryClass.POLICY_DENIED,
+                    RetryClass.VALIDATION_FAILED,
+                }
+                and not override
+            ):
+                raise InvalidTransitionError(
+                    "Retry requires explicit override for retry class "
+                    f"{retry_class.value}"
+                )
+            job.lease = None
+            job.last_error = ""
+            self._set_status_locked(job, ConsoleJobStatus.QUEUED)
+            self._append_event_locked(
+                job.job_id,
+                "job.retried",
+                {
+                    "previous_retry_class": retry_class.value,
+                    "override": bool(override),
+                },
+                summary="Job requeued",
+            )
+            return job
+
+    def record_verification(
+        self,
+        job_id: str,
+        *,
+        receipt: ConsoleVerificationReceipt | dict[str, Any],
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
+    ) -> ConsoleVerificationReceipt:
+        with self._lock:
+            job = self._job_locked(job_id)
+            self._ensure_not_terminal(job)
+            self._assert_current_attempt_locked(
+                job,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
+            normalized = (
+                receipt
+                if isinstance(receipt, ConsoleVerificationReceipt)
+                else ConsoleVerificationReceipt(**dict(receipt))
+            )
+            lease = job.lease
+            normalized.attempt_id = (
+                normalized.attempt_id
+                or attempt_id
+                or (lease.attempt_id if lease else "")
+            )
+            normalized.lease_epoch = normalized.lease_epoch or int(
+                lease_epoch
+                if lease_epoch is not None
+                else (lease.lease_epoch if lease else 0)
+            )
+            normalized.trace_id = normalized.trace_id or str(
+                job.metadata.get("trace_id") or ""
+            )
+            job.verification_receipts.append(normalized.as_dict())
+            self._set_status_locked(job, job.status)
+            self._append_event_locked(
+                job.job_id,
+                "verification.receipt",
+                {"receipt": normalized.as_dict()},
+                summary=(
+                    "Verification receipt passed"
+                    if normalized.status == "pass"
+                    else "Verification receipt recorded"
+                ),
+                detail="; ".join(normalized.failures),
+            )
+            return normalized
+
+    def begin_effect(
+        self,
+        job_id: str,
+        *,
+        effect_key: str,
+        kind: str,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
+        approval_ref: str = "",
+        preconditions: dict[str, Any] | None = None,
+    ) -> tuple[ConsoleEffect, bool]:
+        with self._lock:
+            job = self._job_locked(job_id)
+            self._assert_current_attempt_locked(
+                job,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
+            normalized_key = str(effect_key or "").strip()
+            if not normalized_key:
+                raise ValueError("Effect key is required")
+            key = (job_id, normalized_key)
+            existing = self._effects.get(key)
+            if existing is not None:
+                return existing, False
+            lease = job.lease
+            effect = ConsoleEffect(
+                effect_key=normalized_key,
+                kind=kind,
+                state="started",
+                attempt_id=attempt_id or (lease.attempt_id if lease else ""),
+                lease_epoch=(
+                    lease_epoch
+                    if lease_epoch is not None
+                    else (lease.lease_epoch if lease else 0)
+                ),
+                approval_ref=approval_ref,
+                preconditions=dict(preconditions or {}),
+            )
+            self._effects[key] = effect
+            return effect, True
+
+    def get_effect(self, job_id: str, *, effect_key: str) -> ConsoleEffect | None:
+        with self._lock:
+            self._job_locked(job_id)
+            return self._effects.get((job_id, str(effect_key or "").strip()))
+
+    def complete_effect(
+        self,
+        job_id: str,
+        *,
+        effect_key: str,
+        receipt: dict[str, Any] | None = None,
+        artifacts: Iterable[Any] | None = None,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
+    ) -> ConsoleEffect:
+        return self._finish_effect(
+            job_id,
+            effect_key=effect_key,
+            state="completed",
+            receipt=receipt,
+            artifacts=artifacts,
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
+        )
+
+    def fail_effect(
+        self,
+        job_id: str,
+        *,
+        effect_key: str,
+        error: str,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
+    ) -> ConsoleEffect:
+        return self._finish_effect(
+            job_id,
+            effect_key=effect_key,
+            state="failed",
+            receipt={"error": str(error or "").strip()},
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
+        )
+
+    def mark_effect_unknown(
+        self,
+        job_id: str,
+        *,
+        effect_key: str,
+        reason: str,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
+    ) -> ConsoleEffect:
+        return self._finish_effect(
+            job_id,
+            effect_key=effect_key,
+            state="unknown",
+            receipt={"reason": str(reason or "").strip()},
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
+        )
+
     def record_behavior(
         self,
         job_id: str,
@@ -322,10 +676,17 @@ class ConsoleRuntimeKernel:
         summary: str,
         detail: str = "",
         metadata: dict[str, Any] | None = None,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
     ) -> ConsoleRuntimeEvent:
         with self._lock:
             job = self._job_locked(job_id)
             self._ensure_not_terminal(job)
+            self._assert_current_attempt_locked(
+                job,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
             return self._append_event_locked(
                 job.job_id,
                 "behavior.observed",
@@ -346,6 +707,8 @@ class ConsoleRuntimeKernel:
         policy_state: RuntimeModeState | dict[str, Any],
         summary: str = "",
         detail: str = "",
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
     ) -> ConsoleRuntimeEvent:
         payload = (
             policy_state.as_dict()
@@ -356,6 +719,11 @@ class ConsoleRuntimeKernel:
         with self._lock:
             job = self._job_locked(job_id)
             self._ensure_not_terminal(job)
+            self._assert_current_attempt_locked(
+                job,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
             return self._append_event_locked(
                 job.job_id,
                 "policy.mode_selected",
@@ -372,6 +740,8 @@ class ConsoleRuntimeKernel:
         reason: str,
         policy_state: RuntimeModeState | dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
     ) -> ConsoleRuntimeEvent:
         payload: dict[str, Any] = {"reason": reason, "metadata": dict(metadata or {})}
         if policy_state is not None:
@@ -383,6 +753,11 @@ class ConsoleRuntimeKernel:
         with self._lock:
             job = self._job_locked(job_id)
             self._ensure_not_terminal(job)
+            self._assert_current_attempt_locked(
+                job,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
             return self._append_event_locked(
                 job.job_id,
                 "policy.egress_blocked",
@@ -399,6 +774,8 @@ class ConsoleRuntimeKernel:
         event_type: str = "route.decided",
         summary: str = "",
         detail: str = "",
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
     ) -> ConsoleRuntimeEvent:
         payload = (
             decision.as_dict() if hasattr(decision, "as_dict") else dict(decision or {})
@@ -413,6 +790,11 @@ class ConsoleRuntimeKernel:
         with self._lock:
             job = self._job_locked(job_id)
             self._ensure_not_terminal(job)
+            self._assert_current_attempt_locked(
+                job,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
             return self._append_event_locked(
                 job.job_id,
                 event_type,
@@ -429,10 +811,17 @@ class ConsoleRuntimeKernel:
         invocation_id: str = "",
         args_summary: str = "",
         metadata: dict[str, Any] | None = None,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
     ) -> str:
         with self._lock:
             job = self._job_locked(job_id)
             self._ensure_not_terminal(job)
+            self._assert_current_attempt_locked(
+                job,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
             tool_id = invocation_id or f"tool_{self._next_sequence}"
             tool = str(tool_name or "").strip()
             self._append_event_locked(
@@ -456,10 +845,17 @@ class ConsoleRuntimeKernel:
         command: str,
         invocation_id: str = "",
         metadata: dict[str, Any] | None = None,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
     ) -> str:
         with self._lock:
             job = self._job_locked(job_id)
             self._ensure_not_terminal(job)
+            self._assert_current_attempt_locked(
+                job,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
             shell_id = invocation_id or f"shell_{self._next_sequence}"
             self._append_event_locked(
                 job.job_id,
@@ -482,10 +878,17 @@ class ConsoleRuntimeKernel:
         text: str,
         stream: str = "stdout",
         metadata: dict[str, Any] | None = None,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
     ) -> ConsoleRuntimeEvent:
         with self._lock:
             job = self._job_locked(job_id)
             self._ensure_not_terminal(job)
+            self._assert_current_attempt_locked(
+                job,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
             return self._append_event_locked(
                 job.job_id,
                 "shell.output",
@@ -509,13 +912,24 @@ class ConsoleRuntimeKernel:
         summary: str = "",
         output_preview: str = "",
         returncode: int = 0,
-        artifacts: Iterable[str] | None = None,
+        artifacts: Iterable[Any] | None = None,
         metadata: dict[str, Any] | None = None,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
     ) -> ConsoleJob:
         with self._lock:
             job = self._job_locked(job_id)
             self._ensure_not_terminal(job)
-            added_artifacts = self._record_artifacts_locked(job, artifacts or [])
+            self._assert_current_attempt_locked(
+                job,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
+            added_artifacts = self._record_artifacts_locked(
+                job,
+                artifacts or [],
+                produced_by_attempt=attempt_id,
+            )
             self._append_event_locked(
                 job.job_id,
                 "shell.completed",
@@ -540,10 +954,17 @@ class ConsoleRuntimeKernel:
         command: str = "",
         error: str,
         metadata: dict[str, Any] | None = None,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
     ) -> ConsoleJob:
         with self._lock:
             job = self._job_locked(job_id)
             self._ensure_not_terminal(job)
+            self._assert_current_attempt_locked(
+                job,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
             self._append_event_locked(
                 job.job_id,
                 "shell.failed",
@@ -566,13 +987,24 @@ class ConsoleRuntimeKernel:
         tool_name: str = "",
         summary: str = "",
         output_preview: str = "",
-        artifacts: Iterable[str] | None = None,
+        artifacts: Iterable[Any] | None = None,
         metadata: dict[str, Any] | None = None,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
     ) -> ConsoleJob:
         with self._lock:
             job = self._job_locked(job_id)
             self._ensure_not_terminal(job)
-            added_artifacts = self._record_artifacts_locked(job, artifacts or [])
+            self._assert_current_attempt_locked(
+                job,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
+            added_artifacts = self._record_artifacts_locked(
+                job,
+                artifacts or [],
+                produced_by_attempt=attempt_id,
+            )
             tool = str(tool_name or "").strip()
             event_summary = summary or (
                 f"Completed {tool}" if tool else "Tool completed"
@@ -601,10 +1033,17 @@ class ConsoleRuntimeKernel:
         tool_name: str = "",
         error: str,
         metadata: dict[str, Any] | None = None,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
     ) -> ConsoleJob:
         with self._lock:
             job = self._job_locked(job_id)
             self._ensure_not_terminal(job)
+            self._assert_current_attempt_locked(
+                job,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
             tool = str(tool_name or "").strip()
             self._append_event_locked(
                 job.job_id,
@@ -628,10 +1067,17 @@ class ConsoleRuntimeKernel:
         provider: str = "",
         model: str = "",
         metadata: dict[str, Any] | None = None,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
     ) -> ConsoleRuntimeEvent:
         with self._lock:
             job = self._job_locked(job_id)
             self._ensure_not_terminal(job)
+            self._assert_current_attempt_locked(
+                job,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
             return self._append_event_locked(
                 job.job_id,
                 "model.delta",
@@ -654,14 +1100,25 @@ class ConsoleRuntimeKernel:
         capabilities: dict[str, Any] | None = None,
         summary: str = "",
         detail: str = "",
-        artifacts: Iterable[str] | None = None,
+        artifacts: Iterable[Any] | None = None,
         metadata: dict[str, Any] | None = None,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
     ) -> ConsoleRuntimeEvent:
         with self._lock:
             job = self._job_locked(job_id)
             self._ensure_not_terminal(job)
+            self._assert_current_attempt_locked(
+                job,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
             artifact_list = planner_receipt_artifacts(receipt, list(artifacts or []))
-            added_artifacts = self._record_artifacts_locked(job, artifact_list)
+            added_artifacts = self._record_artifacts_locked(
+                job,
+                artifact_list,
+                produced_by_attempt=attempt_id,
+            )
             return self._append_event_locked(
                 job.job_id,
                 "planner.receipt",
@@ -681,16 +1138,71 @@ class ConsoleRuntimeKernel:
         *,
         adapter: ModelAdapter,
         request: ModelRequest,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
+        effect_key: str = "",
     ) -> ModelResult:
+        resolved_effect_key = ""
+        invocation_id = ""
         with self._lock:
             job = self._job_locked(job_id)
             self._ensure_not_terminal(job)
+            self._assert_current_attempt_locked(
+                job,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
             if job.status in {
                 ConsoleJobStatus.QUEUED,
                 ConsoleJobStatus.LEASED,
                 ConsoleJobStatus.CHECKPOINTED,
             }:
                 self._set_status_locked(job, ConsoleJobStatus.RUNNING)
+            request = self._correlated_model_request_locked(
+                job,
+                request=request,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
+            invocation_id = str(request.metadata.get("invocation_id") or "").strip()
+            resolved_effect_key = str(
+                effect_key
+                or request.metadata.get("effect_key")
+                or request.metadata.get("explicit_invocation_id")
+                or ""
+            ).strip()
+            if resolved_effect_key:
+                effect, should_invoke = self.begin_effect(
+                    job_id,
+                    effect_key=resolved_effect_key,
+                    kind="model.invoke",
+                    attempt_id=attempt_id,
+                    lease_epoch=lease_epoch,
+                    preconditions={
+                        "provider": adapter.name,
+                        "model": request.model,
+                        "route_key": request.route_key,
+                        "invocation_id": invocation_id,
+                    },
+                )
+                if not should_invoke:
+                    if effect.state == "completed":
+                        return self._model_result_from_effect(effect)
+                    self._append_event_locked(
+                        job.job_id,
+                        "effect.reconciliation_required",
+                        {
+                            "effect": effect.as_dict(),
+                            "invocation_id": invocation_id,
+                            "reason": "duplicate model invocation reservation",
+                        },
+                        summary="Model effect reconciliation required",
+                        detail=effect.state,
+                    )
+                    raise EffectReconciliationRequiredError(
+                        "Model invocation is already reserved and requires "
+                        f"reconciliation: {resolved_effect_key}"
+                    )
             self._append_event_locked(
                 job.job_id,
                 "model.requested",
@@ -698,6 +1210,8 @@ class ConsoleRuntimeKernel:
                     "provider": adapter.name,
                     "model": request.model,
                     "route_key": request.route_key,
+                    "invocation_id": invocation_id,
+                    "norllama_pool": request.metadata.get("norllama_pool", ""),
                 },
                 summary=f"Requested {adapter.name}",
             )
@@ -707,6 +1221,19 @@ class ConsoleRuntimeKernel:
         except Exception as exc:
             with self._lock:
                 job = self._job_locked(job_id)
+                self._assert_current_attempt_locked(
+                    job,
+                    attempt_id=attempt_id,
+                    lease_epoch=lease_epoch,
+                )
+                if resolved_effect_key:
+                    self.fail_effect(
+                        job_id,
+                        effect_key=resolved_effect_key,
+                        error=str(exc),
+                        attempt_id=attempt_id,
+                        lease_epoch=lease_epoch,
+                    )
                 job.last_error = str(exc)
                 self._set_status_locked(job, ConsoleJobStatus.FAILED)
                 self._append_event_locked(
@@ -720,6 +1247,11 @@ class ConsoleRuntimeKernel:
 
         with self._lock:
             job = self._job_locked(job_id)
+            self._assert_current_attempt_locked(
+                job,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
             metadata = dict(result.metadata or {})
             route = (
                 dict(metadata.get("norllama_route"))
@@ -765,7 +1297,16 @@ class ConsoleRuntimeKernel:
                         },
                         metadata=metadata,
                     )
+                route_receipt["receipt_audit"] = audit_route_receipt(route_receipt)
+                route_receipt["fast_lane_outcome"] = evaluate_fast_lane_outcome(
+                    route_receipt,
+                    task_contract=job.contract.as_dict(),
+                    audit=route_receipt["receipt_audit"],
+                )
                 completed_payload["route_receipt"] = route_receipt
+                completed_payload["fast_lane_outcome"] = route_receipt[
+                    "fast_lane_outcome"
+                ]
                 completed_payload["usage_bucket"] = route_receipt.get("usage_bucket")
                 completed_payload["output_shape"] = route_receipt.get("output_shape")
                 completed_payload["verifier_result"] = route_receipt.get(
@@ -787,6 +1328,17 @@ class ConsoleRuntimeKernel:
                 completed_payload["egress_class"] = (
                     "lan" if route.get("local") else "cloud_llm"
                 )
+            if resolved_effect_key:
+                self.complete_effect(
+                    job_id,
+                    effect_key=resolved_effect_key,
+                    receipt={
+                        "invocation_id": invocation_id,
+                        "result": result.as_dict(),
+                    },
+                    attempt_id=attempt_id,
+                    lease_epoch=lease_epoch,
+                )
             self._append_event_locked(
                 job.job_id,
                 "model.completed",
@@ -795,6 +1347,20 @@ class ConsoleRuntimeKernel:
                 detail=result.stop_reason,
             )
         return result
+
+    def artifact_requirements_satisfied(
+        self,
+        job_id: str,
+        *,
+        requirements: Iterable[ConsoleArtifactRequirement | dict[str, Any] | str],
+    ) -> bool:
+        with self._lock:
+            job = self._job_locked(job_id)
+            normalized = [
+                ConsoleArtifactRequirement.from_value(requirement)
+                for requirement in requirements
+            ]
+            return self._artifact_requirements_satisfied_locked(job, normalized)
 
     def _job_locked(self, job_id: str) -> ConsoleJob:
         try:
@@ -812,10 +1378,21 @@ class ConsoleRuntimeKernel:
         detail: str = "",
         visibility: str = "timeline",
     ) -> ConsoleRuntimeEvent:
+        event_payload = dict(payload or {})
+        job = self._jobs.get(job_id)
+        if job is not None:
+            trace_id = str(job.metadata.get("trace_id") or "").strip()
+            if trace_id and "trace_id" not in event_payload:
+                event_payload["trace_id"] = trace_id
+            if job.lease is not None:
+                if job.lease.attempt_id and "attempt_id" not in event_payload:
+                    event_payload["attempt_id"] = job.lease.attempt_id
+                if "lease_epoch" not in event_payload:
+                    event_payload["lease_epoch"] = job.lease.lease_epoch
         event = ConsoleRuntimeEvent(
             job_id=job_id,
             event_type=event_type,
-            payload=payload,
+            payload=event_payload,
             sequence=self._next_sequence,
             summary=summary,
             detail=detail,
@@ -835,13 +1412,257 @@ class ConsoleRuntimeKernel:
                 f"Job {job.job_id} is already {job.status.value}"
             )
 
+    def _assert_current_attempt_locked(
+        self,
+        job: ConsoleJob,
+        *,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
+    ) -> None:
+        if not attempt_id and lease_epoch is None:
+            return
+        lease = job.lease
+        expected_attempt_id = lease.attempt_id if lease is not None else ""
+        expected_epoch = lease.lease_epoch if lease is not None else 0
+        if (
+            not attempt_id
+            or lease_epoch is None
+            or attempt_id != expected_attempt_id
+            or int(lease_epoch) != expected_epoch
+        ):
+            raise InvalidTransitionError(
+                f"Stale runtime attempt cannot mutate job {job.job_id}"
+            )
+
     def _record_artifacts_locked(
-        self, job: ConsoleJob, artifacts: Iterable[str]
+        self,
+        job: ConsoleJob,
+        artifacts: Iterable[Any],
+        *,
+        produced_by_attempt: str = "",
     ) -> List[str]:
         added: List[str] = []
         for artifact in artifacts:
-            value = str(artifact or "").strip()
+            normalized = ConsoleArtifact.from_value(artifact)
+            if produced_by_attempt and not normalized.produced_by_attempt:
+                normalized.produced_by_attempt = produced_by_attempt
+            value = normalized.legacy_name
             if value and value not in job.artifacts:
                 job.artifacts.append(value)
                 added.append(value)
+            if not any(
+                str(record.get("artifact_id") or "").strip() == normalized.artifact_id
+                for record in job.artifact_records
+                if isinstance(record, dict)
+            ):
+                job.artifact_records.append(normalized.as_dict())
         return added
+
+    def _artifact_requirements_satisfied_locked(
+        self,
+        job: ConsoleJob,
+        requirements: Iterable[ConsoleArtifactRequirement],
+    ) -> bool:
+        artifacts = [
+            ConsoleArtifact.from_value(record)
+            for record in job.artifact_records
+            if isinstance(record, dict)
+        ]
+        if not artifacts:
+            artifacts = [ConsoleArtifact.from_value(item) for item in job.artifacts]
+        return all(
+            any(requirement.matches(artifact) for artifact in artifacts)
+            for requirement in requirements
+        )
+
+    def _checkpoint_capsule_locked(
+        self,
+        job: ConsoleJob,
+        *,
+        summary: str,
+        capsule: ConsoleCheckpointCapsule | dict[str, Any] | None,
+        attempt_id: str,
+        lease_epoch: int | None,
+    ) -> ConsoleCheckpointCapsule:
+        value = (
+            ConsoleCheckpointCapsule.from_value(capsule)
+            if capsule is not None
+            else ConsoleCheckpointCapsule(summary=summary or "Checkpointed")
+        )
+        if not value.summary:
+            value.summary = summary or "Checkpointed"
+        lease = job.lease
+        value.attempt_id = (
+            value.attempt_id or attempt_id or (lease.attempt_id if lease else "")
+        )
+        value.lease_epoch = value.lease_epoch or int(
+            lease_epoch
+            if lease_epoch is not None
+            else (lease.lease_epoch if lease else 0)
+        )
+        value.trace_id = value.trace_id or str(job.metadata.get("trace_id") or "")
+        if not value.artifact_digests:
+            value.artifact_digests = [
+                artifact.sha256
+                for artifact in (
+                    ConsoleArtifact.from_value(record)
+                    for record in job.artifact_records
+                    if isinstance(record, dict)
+                )
+                if artifact.sha256
+            ]
+        return value
+
+    def _verification_required_locked(self, job: ConsoleJob) -> bool:
+        values = (job.contract.route_policy, job.contract.metadata, job.metadata)
+        return any(
+            self._policy_flag(value.get(key))
+            for value in values
+            if isinstance(value, dict)
+            for key in (
+                "require_verification_receipt",
+                "require_verifier_for_completion",
+                "verification_required",
+            )
+        )
+
+    @staticmethod
+    def _policy_flag(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        return str(value or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+            "enabled",
+            "force",
+        }
+
+    def _finish_effect(
+        self,
+        job_id: str,
+        *,
+        effect_key: str,
+        state: str,
+        receipt: dict[str, Any] | None = None,
+        artifacts: Iterable[Any] | None = None,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
+    ) -> ConsoleEffect:
+        if state not in {"completed", "failed", "unknown"}:
+            raise ValueError(f"Invalid terminal effect state: {state}")
+        with self._lock:
+            job = self._job_locked(job_id)
+            self._assert_current_attempt_locked(
+                job,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
+            normalized_key = str(effect_key or "").strip()
+            effect = self._effects.get((job_id, normalized_key))
+            if effect is None:
+                raise InvalidTransitionError(f"Unknown runtime effect: {effect_key}")
+            if effect.state == state:
+                return effect
+            if effect.state not in {"planned", "started"}:
+                raise InvalidTransitionError(
+                    f"Cannot mark effect {effect_key} {state} from state {effect.state}"
+                )
+            effect.state = state
+            effect.receipt = dict(receipt or {})
+            if artifacts is not None:
+                refs: list[str] = []
+                for artifact in artifacts:
+                    normalized = ConsoleArtifact.from_value(artifact)
+                    ref = normalized.ref or normalized.artifact_id or normalized.name
+                    if ref and ref not in refs:
+                        refs.append(ref)
+                effect.artifact_refs = refs
+            effect.updated_at = utc_now_iso()
+            return effect
+
+    def _correlated_model_request_locked(
+        self,
+        job: ConsoleJob,
+        *,
+        request: ModelRequest,
+        attempt_id: str,
+        lease_epoch: int | None,
+    ) -> ModelRequest:
+        original_metadata = dict(request.metadata or {})
+        request_policy = original_metadata.get("route_policy")
+        route_policy = {
+            **dict(job.contract.route_policy or {}),
+            **(dict(request_policy) if isinstance(request_policy, dict) else {}),
+        }
+        provider = (
+            str(
+                route_policy.get("provider")
+                or route_policy.get("preferred_provider")
+                or ""
+            )
+            .strip()
+            .lower()
+        )
+        norllama_pool = str(
+            original_metadata.get("norllama_pool")
+            or route_policy.get("norllama_pool")
+            or ("default" if provider == "norllama" else "")
+        ).strip()
+        if norllama_pool:
+            route_policy["norllama_pool"] = norllama_pool
+        lease = job.lease
+        resolved_attempt_id = attempt_id or (lease.attempt_id if lease else "")
+        resolved_lease_epoch = (
+            lease_epoch
+            if lease_epoch is not None
+            else (lease.lease_epoch if lease else 0)
+        )
+        explicit_invocation_id = str(
+            original_metadata.get("invocation_id") or ""
+        ).strip()
+        invocation_id = explicit_invocation_id or (
+            f"kernel:{job.job_id}:{self._next_sequence}:model"
+        )
+        metadata = {
+            **original_metadata,
+            "route_policy": route_policy,
+            "runtime_job_id": job.job_id,
+            "console_runtime_job_id": job.job_id,
+            "job_id": job.job_id,
+            "trace_id": str(job.metadata.get("trace_id") or "").strip(),
+            "attempt_id": resolved_attempt_id,
+            "lease_epoch": resolved_lease_epoch,
+            "invocation_id": invocation_id,
+            "explicit_invocation_id": explicit_invocation_id,
+        }
+        if norllama_pool:
+            metadata["norllama_pool"] = norllama_pool
+        return ModelRequest(
+            messages=request.messages,
+            model=request.model,
+            route_key=request.route_key,
+            system=request.system,
+            temperature=request.temperature,
+            budget=request.budget,
+            metadata=metadata,
+        )
+
+    @staticmethod
+    def _model_result_from_effect(effect: ConsoleEffect) -> ModelResult:
+        result = effect.receipt.get("result")
+        if not isinstance(result, dict):
+            raise EffectReconciliationRequiredError(
+                f"Completed model effect has no replayable result: {effect.effect_key}"
+            )
+        usage = result.get("usage")
+        return ModelResult(
+            provider=str(result.get("provider") or ""),
+            model=str(result.get("model") or ""),
+            text=str(result.get("text") or ""),
+            stop_reason=str(result.get("stop_reason") or ""),
+            usage=ModelUsage(**dict(usage or {})),
+            metadata=dict(result.get("metadata") or {}),
+            raw=dict(result.get("raw") or {}),
+        )

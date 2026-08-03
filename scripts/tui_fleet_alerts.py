@@ -248,23 +248,36 @@ def evaluate_alerts(
     }
 
 
-def alert_action_line(decision: dict[str, Any]) -> str:
+def alert_action_line(decision: dict[str, Any], *, title: str) -> str:
     new_alerts = [
         issue for issue in decision.get("new_alerts") or [] if isinstance(issue, dict)
     ]
     if any(_issue_severity(issue) == "fail" for issue in new_alerts):
-        return "Check the failed host or TUI first; use doctor JSON for exact evidence before restarting anything."
+        return (
+            f"Check the failed {title.lower()} target first; use the report "
+            "for exact evidence before restarting anything."
+        )
     if new_alerts:
         return "Review repeated warnings; they crossed the debounce threshold and may need cleanup."
     return "No new operator action; this post records current fleet state."
 
 
-def render_alert_body(health: dict[str, Any], decision: dict[str, Any]) -> str:
+def render_alert_body(
+    health: dict[str, Any],
+    decision: dict[str, Any],
+    *,
+    title: str = "TUI fleet health",
+    report_paths: list[Path] | None = None,
+) -> str:
     summary = health.get("summary") if isinstance(health.get("summary"), dict) else {}
+    paths = report_paths or [
+        Path("/home/kristopher/.local/state/norman/tui-fleet-doctor.md"),
+        Path("/home/kristopher/.local/state/norman/tui-fleet-doctor.json"),
+    ]
     lines = [
-        "TUI fleet health alert",
+        f"{title} alert",
         "",
-        f"Action needed: {alert_action_line(decision)}",
+        f"Action needed: {alert_action_line(decision, title=title)}",
         f"Checked: {health.get('checked_at') or 'unknown'}",
         (
             "Summary: "
@@ -305,8 +318,7 @@ def render_alert_body(health: dict[str, Any], decision: dict[str, Any]) -> str:
         [
             "",
             "Reports:",
-            "- /home/kristopher/.local/state/norman/tui-fleet-doctor.md",
-            "- /home/kristopher/.local/state/norman/tui-fleet-doctor.json",
+            *(f"- {path}" for path in paths),
         ]
     )
     return "\n".join(lines)
@@ -319,6 +331,7 @@ def ensure_thread(
     actor: str,
     thread_id: str,
     priority: str,
+    title: str,
 ) -> None:
     encoded_thread = urllib.parse.quote(thread_id)
     status, payload = _request(
@@ -330,7 +343,7 @@ def ensure_thread(
         raise RuntimeError(f"alert thread lookup failed: status={status} {payload}")
     create_payload = {
         "thread_id": thread_id,
-        "title": "TUI fleet health",
+        "title": title,
         "priority": priority,
         "scope": {
             "site": "norman",
@@ -338,7 +351,7 @@ def ensure_thread(
             "topic": "health",
             "lane": "fleet",
         },
-        "summary": "Fleet-wide TUI doctor alerts and follow-up.",
+        "summary": f"Automated {title.lower()} alerts and follow-up.",
         "created_by": actor,
         "owner": "norman",
         "tags": ["domain:tui", "domain:bbs", "work:reliability"],
@@ -364,6 +377,8 @@ def post_alert(
     thread_id: str,
     health: dict[str, Any],
     decision: dict[str, Any],
+    title: str,
+    report_paths: list[Path],
 ) -> None:
     has_failure = any(
         _issue_severity(issue) == "fail" for issue in decision["new_alerts"]
@@ -375,12 +390,18 @@ def post_alert(
         actor=actor,
         thread_id=thread_id,
         priority=priority,
+        title=title,
     )
     encoded_thread = urllib.parse.quote(thread_id)
     payload = {
         "posted_by": actor,
         "kind": "alert",
-        "body": render_alert_body(health, decision),
+        "body": render_alert_body(
+            health,
+            decision,
+            title=title,
+            report_paths=report_paths,
+        ),
         "metadata": {
             "source": "tui_fleet_alerts",
             "status": str(health.get("status") or ""),
@@ -408,6 +429,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--actor", default=DEFAULT_ACTOR)
     parser.add_argument("--actor-env", type=Path, default=DEFAULT_ACTOR_ENV)
     parser.add_argument("--thread-id", default=DEFAULT_THREAD_ID)
+    parser.add_argument("--title", default="TUI fleet health")
+    parser.add_argument(
+        "--report-path",
+        type=Path,
+        action="append",
+        default=None,
+        help="Health-report path to include in the alert body. May be repeated.",
+    )
     parser.add_argument("--warn-threshold", type=int, default=DEFAULT_WARN_THRESHOLD)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--json", action="store_true")
@@ -435,6 +464,8 @@ def main(argv: list[str] | None = None) -> int:
             thread_id=str(args.thread_id),
             health=health,
             decision=decision,
+            title=str(args.title).strip() or "TUI fleet health",
+            report_paths=args.report_path or [],
         )
     _write_json(args.state, decision["next_state"])
     if args.json:

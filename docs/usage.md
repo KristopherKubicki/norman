@@ -1,136 +1,105 @@
-# Usage
+# Norman Usage
 
-This document provides an overview of how to interact with Norman, including creating and configuring chatbots, setting
-up channel filters and actions, and examples of common use-cases and automations.
+Norman is used to create, supervise, and audit AI-assisted work. Its primary
+workflow is a durable Console Runtime job, not an untracked chat completion.
+Web and terminal TUIs, CLI tools, BBS/SMS, connectors, schedulers, and APIs are
+inputs to that workflow.
 
-## Table of Contents
+Read [Architecture](architecture.md) for the ownership model and
+[Provider And Routing Resilience](llm_runtime_fallback.md) for routing,
+operating modes, and degraded behavior.
 
-- [Creating a Chatbot](#creating-a-chatbot)
-- [Configuring a Chatbot](#configuring-a-chatbot)
-- [Channel Filters and Actions](#channel-filters-and-actions)
-- [Examples](#examples)
-- [First Run](#first-run)
-- [Slack Quick Start](#slack-bot-quick-start)
-- [API Examples](#api-examples)
+## Start A Deployment
 
-## Creating a Chatbot
+Begin with `config.yaml.dist`, configure the database, authentication, and only
+the connectors and model lanes approved for the environment, then start Norman.
+The [root README](../README.md) contains the local development command; use
+[Deployment](deployment.md) for hosted service, front-door, worker, and
+rollback guidance.
 
-To create a new chatbot, follow these steps:
+An OpenAI key is not a prerequisite. A local-first deployment can configure
+only the Norllama front door through the `llm_offline_*` settings. Cloud lanes
+are optional and require explicit route, egress, secret, and approval policy.
+Provider credentials belong in the approved secret broker or lease path, not in
+the repository or an individual client configuration.
 
-1. Log in to the Norman Web UI.
-2. Navigate to the "Chatbots" page.
-3. Click the "Create New Chatbot" button.
-4. Fill in the required fields, such as the chatbot's name and the GPT model to use.
-5. Click "Save" to create the chatbot.
+Console Runtime workers and the Kaizen broker are disabled by default. Leave
+them disabled until the corresponding service account, resource limits,
+operating mode, and approval workflow have been reviewed.
 
-## Configuring a Chatbot
+## Run Work
 
-After creating a chatbot, you can configure its settings, such as its associated channels and filters. To do this:
+1. Submit work from a TUI, CLI, BBS/SMS, connector, scheduler, or API.
+2. Norman creates a durable job with an objective, completion criteria,
+   boundaries, and route constraints.
+3. The Console Runtime selects a deterministic tool or policy-permitted
+   capability, records route and execution evidence, and checkpoints progress.
+4. A controlled effect waits for approval rather than being performed by a
+   model.
+5. Operators inspect the job event stream, outputs, receipts, and verification
+   evidence, then approve, reject, retry, or cancel as appropriate.
 
-1. Click on the chatbot's name in the "Chatbots" page.
-2. On the chatbot's settings page, you can add or remove channels, create or modify channel filters, and define actions.
+The worker may execute in dry-run, local-first, degraded, or control-only mode.
+Those modes are visible in runtime status and do not relax approval or egress
+controls.
 
-## Channel Filters and Actions
+## Route Models And Tools
 
-Channel filters are used to trigger actions based on incoming messages. To create a channel filter:
+Norman evaluates safety, approval, and egress policy before choosing a route.
+It prefers deterministic work and eligible local Norllama capabilities, then
+uses peer failover, prefetch, or deferral before a policy-authorized cloud
+escalation. A provider does not receive authority to write, deploy, message,
+or access secrets.
 
-1. Navigate to the chatbot's settings page.
-2. Click on the "Channel Filters" tab.
-3. Click the "Add Channel Filter" button.
-4. Fill in the required fields, such as the filter name, regex pattern, and associated channel.
-5. Click "Save" to create the channel filter.
+Use the Norllama logical front door rather than an individual Ollama worker in
+application or TUI configuration. This preserves health, model residency, peer
+failover, and receipt attribution. See [Local LLM Node](local_llm_node.md) for
+the local service shape.
 
-To create an action:
+## Review Proactive Work
 
-1. Navigate to the chatbot's settings page.
-2. Click on the "Actions" tab.
-3. Click the "Add Action" button.
-4. Fill in the required fields, such as the action name, prompt, and reply channel.
-5. Click "Save" to create the action.
+Kaizen gathers deterministic KPI evidence and can produce local-only,
+API-visible shadow candidates when explicitly enabled. It does not notify,
+edit targets, contact external systems, or apply changes automatically.
+Runbook, skill, MCP, or policy changes still require normal human review and a
+separately approved job.
 
-## Examples
+See [Norllama Kaizen And KPI Control Loop](norllama_kaizen_control_loop_plan.md)
+for admission gates, candidate lifecycle, reporting, and rollout stages.
 
-Here are some example use-cases for Norman:
+## Use Connectors
 
-1. **Helpdesk Automation:** Create a channel filter that detects when users mention "helpdesk" in a customer support
-   channel. When the filter is triggered, Norman can investigate the issue, summarize its findings, and reply in an
-   internal helpdesk channel.
-2. **Meeting Scheduling:** Create a channel filter that detects when users request a meeting. Norman can then check
-   participants' calendars, find an available time, and send out calendar invites.
-3. **Automated Code Review:** Create a channel filter that detects when users submit pull requests. Norman can then
-   analyze the code, provide suggestions or corrections, and post a review comment on the pull request.
+Connectors remain supported input and output adapters. Configure only the
+connector credentials and scopes needed for the deployment, and treat sending
+an external message as a policy-controlled effect. The connector catalog is in
+[Connectors](connectors.md).
 
-Remember to expand on these sections and provide more detailed information based on your project's specific features and
-requirements.
+The older bot, channel-filter, and action API remains a compatibility surface
+for connector-oriented workflows. Its bot schema still uses a `gpt_model`
+field, so it is not the cross-provider Console Runtime contract. New
+operator-work integrations should use durable runtime jobs and route receipts.
 
-## First Run
+## Use The API
 
-When starting Norman for the first time, the application creates a
-`config.yaml` file with random credentials. The admin username, email
-and password are printed to the console. Record these values, edit
-`config.yaml` to supply your `openai_api_key` and any connector
-settings, then restart Norman. Visit `http://localhost:8000` and sign
-in with the credentials shown.
+By default, the authenticated API root is `/api/v1`; the service exposes its
+current OpenAPI contract at `/docs`. Console Runtime clients use an ordinary
+Norman user bearer token or the narrowly scoped runtime service token.
 
-## Slack Bot Quick Start
+Useful read endpoints include:
 
-This example demonstrates how to connect Norman to Slack and create a simple bot.
+- `GET /api/v1/console-runtime/capabilities`
+- `GET /api/v1/console-runtime/worker/status`
+- `GET /api/v1/console-runtime/route-summary`
+- `GET /api/v1/console-runtime/route-outcomes`
+- `GET /api/v1/kaizen/status`
+- `GET /api/v1/kaizen/kpis`
 
-1. Run Norman once to generate `config.yaml` and edit the Slack section:
+See [Examples](examples.md) for a non-mutating inspection request and a
+durable job submission. The exact request and response schemas are maintained
+in the OpenAPI document.
 
-```yaml
-slack_token: "SLACK_BOT_TOKEN_PLACEHOLDER"
-slack_channel_id: "C01234567"
-```
+## Rate Limiting
 
-2. Set your `openai_api_key` in the same file and optionally regenerate the secrets:
-
-```bash
-chmod +x generate_key.sh
-./generate_key.sh
-```
-
-3. Start Norman with `python main.py` and open `http://localhost:8000` in your browser.
-4. Log in with the admin credentials from `config.yaml`, create a chatbot and select the Slack connector. Messages
-   posted in the configured channel will be processed by the bot.
-5. When a bot is generating a reply, the interface displays a *Thinking...* indicator so you know it's working.
-
-## API Examples
-
-You can also interact with Norman programmatically. The API is exposed under the
-path configured by `api_prefix` and `api_version` in `config.yaml` (by default
-`/api/v1`). The following `curl` commands illustrate common operations:
-
-Create a bot:
-
-```bash
-curl -X POST http://localhost:8000/api/v1/bots/ \
-  -H "Content-Type: application/json" \
-  -d '{"name": "demo", "description": "example bot", "gpt_model": "gpt-4.1-mini"}'
-```
-
-List existing bots:
-
-```bash
-curl http://localhost:8000/api/v1/bots/
-```
-
-Delete a bot:
-
-```bash
-curl -X DELETE http://localhost:8000/api/v1/bots/1
-```
-
-List available connectors and their status:
-
-```bash
-curl http://localhost:8000/api/v1/connectors/available
-```
-
-Authentication headers may be required depending on your configuration.
-
-### Rate Limiting
-
-Norman applies a simple IP based rate limit to API requests. The limits can be
-adjusted via `rate_limit_requests` and `rate_limit_window_seconds` in
-`config.yaml`. Exceeding the limit returns a `429 Too Many Requests` response.
+Norman applies an IP-based API rate limit. Configure
+`rate_limit_requests` and `rate_limit_window_seconds` in `config.yaml` to
+match the deployment. Requests over the limit receive `429 Too Many Requests`.

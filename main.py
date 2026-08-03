@@ -39,6 +39,7 @@ from app.services.console_audit_monitor import console_audit_monitor
 from app.services.console_runtime.supervisor import console_runtime_worker_service
 from app.services.fleet_credit_monitor import fleet_credit_monitor
 from app.services.estate_sync import sync_registry
+from app.services.kaizen.supervisor import kaizen_broker_service
 from app.services.passive_udp_listeners import passive_udp_listeners
 from app.services.tmux_reconciler import reconcile_tmux_connectors_for_startup
 from app.core.logging import setup_logger
@@ -192,6 +193,10 @@ async def startup_event():
             logger.info("Startup: starting console runtime worker")
             await console_runtime_worker_service.start()
             app.state.console_runtime_worker_enabled = True
+        if not os.environ.get("SKIP_KAIZEN_BROKER") and settings.kaizen_enabled:
+            logger.info("Startup: starting Kaizen broker scheduler")
+            await kaizen_broker_service.start()
+            app.state.kaizen_broker_enabled = True
         try:
             await passive_udp_listeners.start()
             app.state.passive_udp_listeners_enabled = True
@@ -225,6 +230,8 @@ async def shutdown_event():
         await console_audit_monitor.stop()
     if getattr(app.state, "console_runtime_worker_enabled", False):
         await console_runtime_worker_service.stop()
+    if getattr(app.state, "kaizen_broker_enabled", False):
+        await kaizen_broker_service.stop()
     if getattr(app.state, "passive_udp_listeners_enabled", False):
         await passive_udp_listeners.stop()
     logger.info("Shutdown: complete")

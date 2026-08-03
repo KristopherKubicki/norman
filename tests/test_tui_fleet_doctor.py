@@ -66,6 +66,125 @@ def test_doctor_accepts_clean_active_inventory(monkeypatch) -> None:
     assert report.issues == []
 
 
+def test_workflow_controls_are_private_staged_and_do_not_degrade_fleet_health(
+    monkeypatch,
+) -> None:
+    module = _load_doctor(monkeypatch)
+
+    payload = module.build_payload([], "2026.07.26.1")
+    workflow = payload["workflow_health"]
+
+    assert payload["status"] == "ok"
+    assert payload["summary"]["fail"] == 0
+    assert workflow["visibility"] == "private"
+    assert workflow["summary"] == {
+        "controls": 3,
+        "staged": 3,
+        "not_deployed": 3,
+        "live_status_sources": 0,
+    }
+    assert [control["id"] for control in workflow["controls"]] == [
+        "openbrand_webgoat_staging_boundary_control",
+        "openbrand_product_placement_recovery_control",
+        "openbrand_category_launch_coverage_flash",
+    ]
+    for control in workflow["controls"]:
+        assert control["deployment_state"] == "not_deployed"
+        assert control["visibility"] == "private"
+        assert control["live_status_source"] is False
+        assert control["public_status_eligible"] is False
+
+    markdown = module.render_markdown([], "2026.07.26.1")
+    assert (
+        "Staged controls do not affect fleet status or public availability." in markdown
+    )
+
+
+def test_doctor_tracks_deferred_web_restart_until_its_safety_deadline(
+    monkeypatch,
+) -> None:
+    module = _load_doctor(monkeypatch)
+
+    report = module.analyze_host(
+        host_name="toy-box",
+        expected_names={"housebot"},
+        active_rows=[
+            _row(
+                "housebot",
+                ui_version="2026.07.22.1",
+                status={
+                    "state": "running",
+                    "pending": True,
+                    "queue_depth": 0,
+                    "active_child_pid": 321,
+                    "web_restart_required": True,
+                    "web_restart_reason": "console web script changed after start",
+                    "web_restart_deferred": True,
+                    "web_restart_deferred_at": 1_700_000_000,
+                    "web_restart_deferred_deadline_at": 1_700_000_900,
+                    "web_restart_deferred_expired_at": 0,
+                    "busy_reasons": ["pending_prompt", "model_process_alive"],
+                    "auth": {"required": False},
+                },
+            )
+        ],
+        archived_names=set(),
+        min_timeout_seconds=3600,
+        ui_version="2026.07.22.2",
+        now=1_700_000_120,
+    )
+
+    details = _issue_details(report)
+    assert report.ok is True
+    assert ("warn", "housebot", "web-restart-deferred") in details
+    assert "waiting 120s/900s" in details[("warn", "housebot", "web-restart-deferred")]
+    assert ("warn", "housebot", "ui-version") in details
+
+    payload = module.build_payload([report], "2026.07.22.2")
+    assert payload["deployment_closure"] == {
+        "ready": False,
+        "version_mismatch": 1,
+        "restart_staged": 1,
+        "restart_deferred": 1,
+        "restart_expired": 0,
+    }
+
+
+def test_doctor_escalates_expired_deferred_web_restart(monkeypatch) -> None:
+    module = _load_doctor(monkeypatch)
+
+    report = module.analyze_host(
+        host_name="toy-box",
+        expected_names={"housebot"},
+        active_rows=[
+            _row(
+                "housebot",
+                ui_version="2026.07.22.1",
+                status={
+                    "state": "running",
+                    "pending": True,
+                    "queue_depth": 0,
+                    "active_child_pid": 321,
+                    "web_restart_required": True,
+                    "web_restart_deferred_at": 1_700_000_000,
+                    "web_restart_deferred_expired_at": 1_700_000_900,
+                    "auth": {"required": False},
+                },
+            )
+        ],
+        archived_names=set(),
+        min_timeout_seconds=3600,
+        ui_version="2026.07.22.2",
+        now=1_700_000_960,
+    )
+
+    details = _issue_details(report)
+    assert report.ok is False
+    assert ("fail", "housebot", "web-restart-expired") in details
+    assert "expired 60s ago" in details[("fail", "housebot", "web-restart-expired")]
+    assert ("fail", "housebot", "ui-version") in details
+
+
 def test_doctor_remote_scan_accepts_canonical_norman_env(monkeypatch) -> None:
     module = _load_doctor(monkeypatch)
 
@@ -76,9 +195,75 @@ def test_doctor_remote_scan_accepts_canonical_norman_env(monkeypatch) -> None:
     assert 'key.startswith(("NORMAN_CODEX", "HOUSEBOT_CODEX"))' in source
     assert 'env_get(env, "NORMAN_CODEX_WEB_PORT")' in source
     assert "/api/restart-readiness" in source
-    assert "readiness_url, timeout=4" in source
     assert "status_url, timeout=4" in source
+    assert "readiness_url, timeout=4" in source
     assert "/api/version" in source
+
+
+def test_doctor_keeps_last_prompt_failure_cause_in_warning(monkeypatch) -> None:
+    module = _load_doctor(monkeypatch)
+
+    report = module.analyze_host(
+        host_name="work-special",
+        expected_names={"infra"},
+        active_rows=[
+            _row(
+                "infra",
+                status={
+                    "state": "error",
+                    "pending": False,
+                    "queue_depth": 0,
+                    "active_child_pid": 0,
+                    "last_error": "Bedrock provider failure before usable tokens.",
+                    "auth": {"required": False},
+                },
+            )
+        ],
+        archived_names={"publisher"},
+        min_timeout_seconds=3600,
+        ui_version="2026.06.01.7",
+    )
+
+    details = _issue_details(report)
+
+    assert report.ok is True
+    assert details[("warn", "infra", "runtime")] == (
+        "last prompt failed: Bedrock provider failure before usable tokens."
+    )
+
+
+def test_doctor_suppresses_stale_preflight_failure_after_live_probe(
+    monkeypatch,
+) -> None:
+    module = _load_doctor(monkeypatch)
+
+    report = module.analyze_host(
+        host_name="work-special",
+        expected_names={"publisher"},
+        active_rows=[
+            _row(
+                "publisher",
+                preflight_probe="ready",
+                status={
+                    "state": "error",
+                    "pending": False,
+                    "queue_depth": 0,
+                    "active_child_pid": 0,
+                    "last_error": (
+                        "TUI release preflight blocked this route before Codex "
+                        "started. Read readiness.md for recovery."
+                    ),
+                    "auth": {"required": False},
+                },
+            )
+        ],
+        archived_names=set(),
+        min_timeout_seconds=3600,
+        ui_version="2026.06.01.7",
+    )
+
+    assert report.ok is True
+    assert ("warn", "publisher", "runtime") not in _issues(report)
 
 
 def test_doctor_compacts_failed_ssh_scan_detail(monkeypatch) -> None:
@@ -625,6 +810,84 @@ def test_doctor_fails_pending_prompt_without_worker(monkeypatch) -> None:
     assert "no live web worker" in details[("fail", "panelbot", "runtime")]
 
 
+def test_doctor_allows_recent_tmux_owned_pending_prompt_without_liveness(
+    monkeypatch,
+) -> None:
+    module = _load_doctor(monkeypatch)
+    monkeypatch.setattr(module.time, "time", lambda: 10_000)
+
+    report = module.analyze_host(
+        host_name="norman",
+        expected_names={"norman"},
+        active_rows=[
+            _row(
+                "norman",
+                status={
+                    "state": "running",
+                    "pending": True,
+                    "queue_depth": 0,
+                    "active_child_pid": 0,
+                    "last_started_at": 9_000,
+                    "running_job_budget": "normal",
+                    "running_timeout_seconds": 3_600,
+                    "last_error": "",
+                    "auth": {"required": False},
+                },
+            )
+        ],
+        archived_names={"publisher"},
+        min_timeout_seconds=3600,
+        ui_version="2026.06.01.7",
+    )
+
+    assert report.ok is True
+    assert ("fail", "norman", "runtime") not in _issues(report)
+    assert ("warn", "norman", "runtime") in _issues(report)
+
+
+def test_doctor_fails_overdue_tmux_owned_pending_prompt_without_liveness(
+    monkeypatch,
+) -> None:
+    module = _load_doctor(monkeypatch)
+    monkeypatch.setattr(module.time, "time", lambda: 10_000)
+
+    report = module.analyze_host(
+        host_name="norman",
+        expected_names={"norman"},
+        active_rows=[
+            _row(
+                "norman",
+                status={
+                    "state": "running",
+                    "pending": True,
+                    "queue_depth": 0,
+                    "active_child_pid": 0,
+                    "last_started_at": 5_000,
+                    "running_job_budget": "normal",
+                    "running_timeout_seconds": 3_600,
+                    "last_error": "",
+                    "auth": {"required": False},
+                },
+            )
+        ],
+        archived_names={"publisher"},
+        min_timeout_seconds=3600,
+        ui_version="2026.06.01.7",
+    )
+
+    details = _issue_details(report)
+
+    assert report.ok is False
+    assert ("fail", "norman", "runtime") in details
+    assert any(
+        issue.severity == "fail"
+        and issue.instance == "norman"
+        and issue.check == "runtime"
+        and "no live web worker" in issue.detail
+        for issue in report.issues
+    )
+
+
 def test_tui_fleet_doctor_systemd_timer_runs_script() -> None:
     root = Path(__file__).resolve().parents[1]
     service = (
@@ -646,7 +909,222 @@ def test_tui_fleet_doctor_systemd_timer_runs_script() -> None:
         "--json-output /home/kristopher/.local/state/norman/tui-fleet-doctor.json"
         in service
     )
+    assert (
+        "--route-proof-json /home/kristopher/.local/state/norman/"
+        "tui-status-route-proof.json"
+    ) in service
+    assert "--route-proof-max-age-seconds 2700" in service
+    assert (
+        "--cold-recovery-proof-json /home/kristopher/.local/state/norman/"
+        "tui-cold-recovery-drill.json"
+    ) in service
+    assert "--cold-recovery-proof-max-age-seconds 32400" in service
+    assert "NORMAN_SYNC_EXECUTION_HOST=norman" not in service
     assert "OnUnitActiveSec=5min" in timer
+    assert "Persistent=true" in timer
+    route_proof_timer = (
+        root / "scripts" / "systemd" / "norman-tui-route-proof.timer"
+    ).read_text(encoding="utf-8")
+    assert "OnActiveSec=5min" in route_proof_timer
+    assert "OnUnitActiveSec=30min" in route_proof_timer
+
+
+def test_route_proof_report_requires_fresh_successful_terra_proof(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_doctor(monkeypatch)
+    proof = tmp_path / "route-proof.json"
+    proof.write_text(
+        json.dumps(
+            {
+                "live": True,
+                "generated_at": 1_700_000_000,
+                "summary": {
+                    "targets": 4,
+                    "passed": 4,
+                    "failed": 0,
+                    "named_codexspark_access_check_contract_ok": True,
+                    "route_scorecard": {"observed_turns": 4},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = module.route_proof_report(proof, max_age_seconds=2700, now=1_700_000_100)
+
+    assert report.ok is True
+    assert report.issues == []
+
+
+def test_route_proof_report_flags_missing_stale_and_failed_evidence(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_doctor(monkeypatch)
+    missing = module.route_proof_report(
+        tmp_path / "missing.json", max_age_seconds=2700, now=1_700_000_100
+    )
+    assert ("fail", "<fleet-canary>", "route-proof") in _issues(missing)
+
+    proof = tmp_path / "route-proof.json"
+    proof.write_text(
+        json.dumps(
+            {
+                "live": True,
+                "generated_at": 1_699_990_000,
+                "summary": {
+                    "targets": 4,
+                    "passed": 3,
+                    "failed": 1,
+                    "named_codexspark_access_check_contract_ok": False,
+                    "route_scorecard": {"observed_turns": 3},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    failed = module.route_proof_report(proof, max_age_seconds=2700, now=1_700_000_100)
+    details = [issue.detail for issue in failed.issues]
+
+    assert "scheduled live route proof is stale" in details
+    assert any("live route proof failed" in detail for detail in details)
+    assert any("codexspark" in detail for detail in details)
+
+
+def test_route_proof_report_requires_completed_turn_scorecard(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_doctor(monkeypatch)
+    proof = tmp_path / "route-proof.json"
+    proof.write_text(
+        json.dumps(
+            {
+                "live": True,
+                "generated_at": 1_700_000_000,
+                "summary": {
+                    "targets": 1,
+                    "passed": 1,
+                    "failed": 0,
+                    "named_codexspark_access_check_contract_ok": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = module.route_proof_report(proof, max_age_seconds=2700, now=1_700_000_100)
+
+    assert report.ok is False
+    assert any(
+        "route scorecard is missing completed-turn evidence" in issue.detail
+        for issue in report.issues
+    )
+
+
+def test_cold_recovery_report_requires_fresh_isolated_no_inference_proof(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_doctor(monkeypatch)
+    proof = tmp_path / "cold-recovery-drill.json"
+    proof.write_text(
+        json.dumps(
+            {
+                "live": False,
+                "mode": "cold-recovery-drill",
+                "generated_at": 1_700_000_000,
+                "summary": {
+                    "targets": 4,
+                    "passed": 4,
+                    "failed": 0,
+                    "isolated_no_inference": True,
+                    "stale_timeout_recovery_verified": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = module.cold_recovery_proof_report(
+        proof, max_age_seconds=32400, now=1_700_000_100
+    )
+
+    assert report.ok is True
+    assert report.issues == []
+
+
+def test_cold_recovery_report_flags_missing_mode_invariant_and_recovery_failures(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_doctor(monkeypatch)
+    missing = module.cold_recovery_proof_report(
+        tmp_path / "missing.json", max_age_seconds=32400, now=1_700_000_100
+    )
+    assert ("fail", "<fleet-canary>", "cold-recovery-proof") in _issues(missing)
+
+    proof = tmp_path / "cold-recovery-drill.json"
+    proof.write_text(
+        json.dumps(
+            {
+                "live": True,
+                "mode": "status-route-proof",
+                "generated_at": 1_699_960_000,
+                "summary": {
+                    "targets": 4,
+                    "passed": 3,
+                    "failed": 1,
+                    "isolated_no_inference": False,
+                    "stale_timeout_recovery_verified": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = module.cold_recovery_proof_report(
+        proof, max_age_seconds=32400, now=1_700_000_100
+    )
+    details = [issue.detail for issue in report.issues]
+
+    assert "scheduled no-inference cold-recovery drill is stale" in details
+    assert any("not an isolated no-inference drill" in detail for detail in details)
+    assert any("cold-recovery drill failed" in detail for detail in details)
+    assert any("no-inference invariant" in detail for detail in details)
+    assert any("stale planner timeout recovery" in detail for detail in details)
+
+
+def test_route_proof_timer_runs_canary_set() -> None:
+    root = Path(__file__).resolve().parents[1]
+    service = (
+        root / "scripts" / "systemd" / "norman-tui-route-proof.service"
+    ).read_text(encoding="utf-8")
+    timer = (root / "scripts" / "systemd" / "norman-tui-route-proof.timer").read_text(
+        encoding="utf-8"
+    )
+
+    assert "scripts/tui_status_route_proof.py --live" in service
+    assert "--targets uplink norman publisher platinum-standard" in service
+    assert "tui-status-route-proof.json" in service
+    assert "TimeoutStartSec=10min" in service
+    assert "NORMAN_SYNC_EXECUTION_HOST=norman" not in service
+    assert "OnUnitActiveSec=30min" in timer
+    assert "Persistent=true" in timer
+
+
+def test_cold_recovery_timer_runs_no_inference_canary_set() -> None:
+    root = Path(__file__).resolve().parents[1]
+    service = (
+        root / "scripts" / "systemd" / "norman-tui-cold-recovery-drill.service"
+    ).read_text(encoding="utf-8")
+    timer = (
+        root / "scripts" / "systemd" / "norman-tui-cold-recovery-drill.timer"
+    ).read_text(encoding="utf-8")
+
+    assert "scripts/tui_status_route_proof.py --cold-recovery-drill" in service
+    assert "--targets uplink norman publisher platinum-standard" in service
+    assert "tui-cold-recovery-drill.json" in service
+    assert "TimeoutStartSec=5min" in service
+    assert "NORMAN_SYNC_EXECUTION_HOST=norman" not in service
+    assert "OnUnitActiveSec=6h" in timer
     assert "Persistent=true" in timer
 
 

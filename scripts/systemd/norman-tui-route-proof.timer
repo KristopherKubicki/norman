@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Norman managed TUI local-first route proof periodically
+
+[Timer]
+OnActiveSec=5min
+OnBootSec=10min
+OnUnitActiveSec=30min
+AccuracySec=1min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

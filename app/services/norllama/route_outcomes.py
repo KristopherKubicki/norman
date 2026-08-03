@@ -9,6 +9,7 @@ DEFAULT_COOLDOWN_STATUSES = {
     "request-failed",
     "timeout",
 }
+DEFAULT_PLANNER_PREFLIGHT_COLD_LOAD_COOLDOWN_SECONDS = 60
 
 
 def _clean(value: Any) -> str:
@@ -73,6 +74,7 @@ def normalize_route_outcome(value: Any) -> dict[str, Any]:
         "input_tokens": _as_int(item.get("input_tokens")),
         "output_tokens": _as_int(item.get("output_tokens")),
         "total_tokens": _as_int(item.get("total_tokens")),
+        "cooldown_seconds": _as_int(item.get("cooldown_seconds")),
         "reason": _clean(item.get("reason"))[:480],
         "thread_id": _clean(item.get("thread_id")),
         "metadata": metadata,
@@ -118,6 +120,21 @@ def outcome_from_event_payload(value: Any) -> dict[str, Any]:
     return normalize_route_outcome(payload.get("outcome") or payload)
 
 
+def _effective_cooldown_seconds(
+    outcome: dict[str, Any], *, default_cooldown_seconds: int
+) -> int:
+    configured = max(0, int(default_cooldown_seconds or 0))
+    override = _as_int(outcome.get("cooldown_seconds"))
+    if override > 0:
+        return min(configured, override)
+    if (
+        _lower(outcome.get("source")) == "planner-preflight"
+        and _lower(outcome.get("status")) == "timeout"
+    ):
+        return min(configured, DEFAULT_PLANNER_PREFLIGHT_COLD_LOAD_COOLDOWN_SECONDS)
+    return configured
+
+
 def local_route_cooldown(
     outcomes: Iterable[dict[str, Any]],
     *,
@@ -144,7 +161,11 @@ def local_route_cooldown(
         if clean_worker_id and outcome.get("worker_id") not in {"", clean_worker_id}:
             continue
         age = max(0, current - _as_int(outcome.get("recorded_at")))
-        if age > cooldown_seconds:
+        effective_cooldown = _effective_cooldown_seconds(
+            outcome,
+            default_cooldown_seconds=cooldown_seconds,
+        )
+        if age > effective_cooldown:
             return {}
         if outcome.get("ok"):
             return {}
@@ -159,7 +180,8 @@ def local_route_cooldown(
             "reason": outcome.get("reason") or "",
             "recorded_at": outcome.get("recorded_at"),
             "age_seconds": age,
-            "remaining_seconds": max(0, cooldown_seconds - age),
+            "cooldown_seconds": effective_cooldown,
+            "remaining_seconds": max(0, effective_cooldown - age),
             "worker_id": outcome.get("worker_id") or "",
             "worker_endpoint": outcome.get("worker_endpoint") or "",
             "upstream": outcome.get("upstream") or "",

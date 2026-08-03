@@ -1,0 +1,13 @@
+[Unit]
+Description=Post Norman local host pressure alerts to Switchboard BBS
+After=network-online.target switchboard-bbs.service
+Wants=network-online.target switchboard-bbs.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+StateDirectory=norman
+WorkingDirectory=/home/kristopher/code/norman
+ExecStart=/usr/bin/python3 /home/kristopher/code/norman/scripts/tui_fleet_alerts.py --health-json /home/kristopher/.local/state/norman/tui-local-host-pressure-guard.json --state /var/lib/norman/tui-local-host-pressure-alerts-state.json --thread-id th_local_host_pressure "--title=Norman local host pressure" --warn-threshold 1 --report-path /home/kristopher/.local/state/norman/tui-local-host-pressure-guard.json

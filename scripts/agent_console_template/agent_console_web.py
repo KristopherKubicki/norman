@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import binascii
 import fcntl
+import functools
 import hashlib
 import html
 import importlib.util
@@ -26,7 +27,7 @@ import tempfile
 import threading
 import time
 import zlib
-from datetime import datetime
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -39,6 +40,249 @@ try:
     from app.services import tui_route_intent as SHARED_TUI_ROUTE_INTENT
 except Exception:
     SHARED_TUI_ROUTE_INTENT = None
+
+try:
+    from app.services.tui_waterfall import (
+        BEDROCK_EMERGENCY_TIERS,
+        build_tui_waterfall,
+        sanitize_tui_waterfall_decision,
+        waterfall_allows_bedrock_retry,
+    )
+except Exception:
+    try:
+        from tui_waterfall import (
+            BEDROCK_EMERGENCY_TIERS,
+            build_tui_waterfall,
+            sanitize_tui_waterfall_decision,
+            waterfall_allows_bedrock_retry,
+        )
+    except Exception:
+        BEDROCK_EMERGENCY_TIERS = ()
+        build_tui_waterfall = None
+        sanitize_tui_waterfall_decision = None
+        waterfall_allows_bedrock_retry = None
+
+
+def sanitize_cost_route(value: Any) -> dict[str, Any]:
+    if sanitize_tui_waterfall_decision is None:
+        return {}
+    return sanitize_tui_waterfall_decision(value)
+
+
+def validate_cost_route_proof(
+    value: Any,
+    runtime: Any,
+    model: Any,
+    service_tier: Any,
+) -> dict[str, Any]:
+    """Return a route proof only when it binds the execution route."""
+    decision = sanitize_cost_route(value)
+    if not decision or not decision.get("selected") or decision.get("blocked"):
+        return {}
+    normalized_runtime = normalize_runtime(runtime)
+    normalized_model = normalize_runtime_model(normalized_runtime, model)
+    normalized_tier = normalize_service_tier(service_tier)
+    is_norllama_pool = (
+        decision.get("waterfall_stage") == "norllama_pool"
+        and normalized_runtime == "localllm"
+    )
+    expected_model = "norllama" if is_norllama_pool else normalized_model
+    if (
+        decision.get("selected_runtime") != normalized_runtime
+        or decision.get("selected_model") != expected_model
+        or decision.get("selected_service_tier") != normalized_tier
+    ):
+        return {}
+    if normalized_runtime == "localllm":
+        if is_norllama_pool:
+            if (
+                not normalized_model
+                or normalized_model == "norllama"
+                or normalized_tier != "default"
+                or decision.get("norllama_pool") != "default"
+                or decision.get("local_final_authority") is not True
+            ):
+                return {}
+        elif normalized_tier != "default":
+            return {}
+    return decision
+
+
+def deterministic_status_cost_route() -> dict[str, Any]:
+    """Build the proof for a zero-token status response from durable TUI state."""
+    if build_tui_waterfall is None:
+        return {}
+    runtime = "localllm"
+    model = "deterministic-status"
+    service_tier = "default"
+    decision = build_tui_waterfall(
+        requested_runtime=runtime,
+        requested_model=model,
+        requested_service_tier=service_tier,
+        base_runtime=runtime,
+        base_model=model,
+        base_service_tier=service_tier,
+        bedrock_runtime="codex",
+        bedrock_model=model,
+        bedrock_service_tier="bedrock-emergency",
+        route_lock=False,
+        subscription={},
+        norllama_available=False,
+        norllama_safe_final=False,
+        bedrock_available=False,
+        deterministic_status=True,
+    )
+    return validate_cost_route_proof(decision, runtime, model, service_tier)
+
+
+def sanitize_route_bootstrap_metadata(
+    value: Any,
+    runtime: Any,
+    model: Any,
+    service_tier: Any,
+) -> dict[str, Any]:
+    """Keep a bounded display receipt when an older route proof cannot execute."""
+    strict_proof = validate_cost_route_proof(value, runtime, model, service_tier)
+    if strict_proof:
+        return strict_proof
+    source = value if isinstance(value, dict) else {}
+    required = (
+        "selected_runtime",
+        "selected_model",
+        "selected_service_tier",
+    )
+    if any(not str(source.get(key) or "").strip() for key in required):
+        return {}
+    if not runtime_key_known(source.get("selected_runtime")):
+        return {}
+    selected_runtime = normalize_runtime(source.get("selected_runtime"))
+    selected_model = normalize_runtime_model(
+        selected_runtime, source.get("selected_model")
+    )
+    selected_service_tier = normalize_service_tier(source.get("selected_service_tier"))
+    current_runtime = normalize_runtime(runtime)
+    current_model = normalize_runtime_model(current_runtime, model)
+    current_service_tier = normalize_service_tier(service_tier)
+    if (
+        selected_runtime != current_runtime
+        or selected_model != current_model
+        or selected_service_tier != current_service_tier
+    ):
+        return {}
+    requested_runtime = normalize_runtime(
+        source.get("requested_runtime") or selected_runtime
+    )
+    requested_model = normalize_runtime_model(
+        requested_runtime, source.get("requested_model") or selected_model
+    )
+    requested_service_tier = normalize_service_tier(
+        source.get("requested_service_tier") or selected_service_tier
+    )
+    return {
+        "selected_runtime": selected_runtime,
+        "selected_model": selected_model,
+        "selected_service_tier": selected_service_tier,
+        "requested_runtime": requested_runtime,
+        "requested_model": requested_model,
+        "requested_service_tier": requested_service_tier,
+        "route_source": summarize_text(str(source.get("route_source") or ""), 96),
+        "reason": summarize_text(str(source.get("reason") or ""), 240),
+        "fallback_reason": summarize_text(
+            str(source.get("fallback_reason") or ""), 180
+        ),
+        "route_locked": any(
+            source.get(key) is True
+            for key in ("route_lock", "strict_route", "operator_model_override")
+        ),
+    }
+
+
+def sanitize_turn_envelope_cost_route(value: Any) -> dict[str, Any]:
+    envelope = dict(value) if isinstance(value, dict) else {}
+    if "cost_route" in envelope:
+        envelope["cost_route"] = sanitize_cost_route(envelope.get("cost_route"))
+    return envelope
+
+
+def cost_route_allows_bedrock_retry(value: Any) -> bool:
+    if waterfall_allows_bedrock_retry is None:
+        return False
+    return waterfall_allows_bedrock_retry(value)
+
+
+def updated_bedrock_retry_cost_route(
+    cost_route: Any,
+    runtime: Any,
+    model: Any,
+    service_tier: Any,
+) -> dict[str, Any]:
+    """Advance one verified Bedrock failover tier without changing model class."""
+    normalized_runtime = normalize_runtime(runtime)
+    normalized_model = normalize_runtime_model(normalized_runtime, model)
+    normalized_tier = normalize_service_tier(service_tier)
+    decision = validate_cost_route_proof(
+        cost_route,
+        normalized_runtime,
+        normalized_model,
+        normalized_tier,
+    )
+    if (
+        not decision
+        or not cost_route_allows_bedrock_retry(decision)
+        or normalized_runtime != "codex"
+        or normalized_tier not in BEDROCK_EMERGENCY_TIERS
+    ):
+        return {}
+    try:
+        target_index = BEDROCK_EMERGENCY_TIERS.index(normalized_tier) + 1
+        target_tier = BEDROCK_EMERGENCY_TIERS[target_index]
+    except (ValueError, IndexError):
+        return {}
+    if not codex_profile_v2_for_service_tier(target_tier):
+        return {}
+    target_model = normalized_model
+    updated = dict(decision)
+    updated.update(
+        {
+            "selected_runtime": "codex",
+            "selected_model": target_model,
+            "selected_service_tier": target_tier,
+        }
+    )
+    return validate_cost_route_proof(updated, "codex", target_model, target_tier)
+
+
+try:
+    from app.services.norllama.fast_lane_outcomes import (
+        evaluate_fast_lane_outcome,
+        summarize_fast_lane_outcomes,
+    )
+except Exception:
+    evaluate_fast_lane_outcome = None
+    summarize_fast_lane_outcomes = None
+
+SCRIPT_MODULE_DIR = str(Path(__file__).resolve().parent)
+if SCRIPT_MODULE_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_MODULE_DIR)
+if not (Path(SCRIPT_MODULE_DIR) / "agent_console_child_agents.py").is_file():
+    SOURCE_SCRIPT_DIR = str(Path(SCRIPT_MODULE_DIR).parent)
+    if SOURCE_SCRIPT_DIR not in sys.path:
+        sys.path.insert(0, SOURCE_SCRIPT_DIR)
+
+from agent_console_session_budget import (
+    SessionBudgetPolicy,
+    evaluate_admission as evaluate_session_admission,
+    is_context_checkpoint_prompt,
+    normalize_reasoning_effort,
+    policy_from_env as session_budget_policy_from_env,
+)
+from agent_console_child_agents import (
+    ChildAgentBroker,
+    ChildAgentConflict,
+    ChildAgentError,
+    ChildAgentNotFound,
+    ChildAgentUnavailable,
+)
 
 
 CANONICAL_CONSOLE_ENV_PREFIX = "NORMAN_CODEX_"
@@ -73,7 +317,7 @@ AUTH_COOKIE_NAME = (
 AUTH_COOKIE_MAX_AGE = int(
     os.environ.get("NORMAN_CODEX_WEB_COOKIE_MAX_AGE", str(14 * 24 * 60 * 60))
 )
-DEFAULT_UI_VERSION = "2026.07.17.1"
+DEFAULT_UI_VERSION = "2026.07.31.5"
 UI_VERSION = (
     os.environ.get("NORMAN_CODEX_UI_VERSION", DEFAULT_UI_VERSION).strip()
     or DEFAULT_UI_VERSION
@@ -113,6 +357,25 @@ MAX_PANE_LINES = int(os.environ.get("NORMAN_CODEX_WEB_PANE_LINES", "120"))
 MAX_LOG_LINES = int(os.environ.get("NORMAN_CODEX_WEB_LOG_LINES", "24"))
 MAX_BLOCK_CHARS = int(os.environ.get("NORMAN_CODEX_WEB_BLOCK_CHARS", "12000"))
 MAX_HISTORY_ITEMS = int(os.environ.get("NORMAN_CODEX_WEB_HISTORY_ITEMS", "24"))
+STATUS_SNAPSHOT_REFRESH_SECONDS = max(
+    5.0,
+    float(os.environ.get("NORMAN_CODEX_STATUS_SNAPSHOT_REFRESH_SECONDS", "60")),
+)
+STATUS_TRANSPORT_STRING_LIMIT = max(
+    512,
+    int(os.environ.get("NORMAN_CODEX_STATUS_TRANSPORT_STRING_LIMIT", "2048")),
+)
+STATUS_TRANSPORT_LIST_LIMIT = max(
+    4,
+    int(os.environ.get("NORMAN_CODEX_STATUS_TRANSPORT_LIST_LIMIT", "8")),
+)
+STATUS_TRANSPORT_HISTORY_LIMIT = max(
+    2,
+    int(os.environ.get("NORMAN_CODEX_STATUS_TRANSPORT_HISTORY_LIMIT", "6")),
+)
+# Zero keeps the durable turn archive indefinitely. Set a positive value to opt
+# into time-based pruning for an individual console.
+TURN_ARCHIVE_DAYS = max(0, int(os.environ.get("NORMAN_CODEX_TURN_ARCHIVE_DAYS", "0")))
 CONTEXT_PACK_RECENT_TURNS = max(
     2, int(os.environ.get("NORMAN_CODEX_CONTEXT_PACK_RECENT_TURNS", "6"))
 )
@@ -188,6 +451,10 @@ CONTEXT_PREFLIGHT_ENABLED = os.environ.get(
 CONTEXT_PREFLIGHT_MEMORY_REFS = max(
     0, int(os.environ.get("NORMAN_CODEX_CONTEXT_PREFLIGHT_MEMORY_REFS", "5"))
 )
+CONTEXT_PREFLIGHT_MEMORY_CANDIDATES = max(
+    CONTEXT_PREFLIGHT_MEMORY_REFS,
+    int(os.environ.get("NORMAN_CODEX_CONTEXT_PREFLIGHT_MEMORY_CANDIDATES", "8")),
+)
 CONTEXT_PREFLIGHT_ATTACHMENT_INLINE_CHARS = max(
     0,
     int(
@@ -216,6 +483,10 @@ CLOUD_CONTEXT_GATE_TOKENS = max(
 MAX_USAGE_ITEMS = int(os.environ.get("NORMAN_CODEX_WEB_USAGE_ITEMS", "1000"))
 MAX_USAGE_LEDGER_ITEMS = int(os.environ.get("NORMAN_CODEX_USAGE_LEDGER_ITEMS", "0"))
 MAX_AUDIT_ITEMS = int(os.environ.get("NORMAN_CODEX_WEB_AUDIT_ITEMS", "800"))
+SESSION_BUDGET_POLICY: SessionBudgetPolicy = session_budget_policy_from_env()
+RAW_TMUX_SEND_ALLOWED = os.environ.get(
+    "NORMAN_CODEX_RAW_TMUX_SEND_ALLOWED", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
 MAX_HUMAN_INTERVENTION_ITEMS = int(
     os.environ.get("NORMAN_CODEX_WEB_HUMAN_INTERVENTION_ITEMS", "24")
 )
@@ -410,7 +681,9 @@ CODEX_MODEL_FLOOR = (
 CODEX_ALLOW_BELOW_FLOOR_SWITCHABLE = os.environ.get(
     "NORMAN_CODEX_ALLOW_BELOW_FLOOR_SWITCHABLE", ""
 ).strip().lower() in {"1", "true", "yes", "on"}
-CODEX_SWITCHABLE_MODEL_DEFAULTS = "openai.gpt-5.5,gpt-5.5"
+CODEX_SWITCHABLE_MODEL_DEFAULTS = (
+    "openai.gpt-5.6-terra,gpt-5.6-terra,openai.gpt-5.5,gpt-5.5"
+)
 if CODEX_ALLOW_BELOW_FLOOR_SWITCHABLE:
     CODEX_SWITCHABLE_MODEL_DEFAULTS += ",openai.gpt-5.4,gpt-5.4"
 
@@ -565,7 +838,7 @@ LOCAL_LLM_ALLOW_UNKNOWN_TEXT_SIZE = _early_env_flag(
     "NORMAN_LOCAL_LLM_ALLOW_UNKNOWN_TEXT_SIZE", True
 )
 LOCAL_LLM_EXECUTION_ENABLED = _early_env_flag(
-    "NORMAN_LOCAL_LLM_EXECUTION_ENABLED", True
+    "NORMAN_LOCAL_LLM_EXECUTION_ENABLED", False
 )
 CODEX_LOCAL_FIRST_ENABLED = _early_env_flag("NORMAN_CODEX_LOCAL_FIRST_ENABLED", True)
 LOCAL_LLM_HEALTH_TIMEOUT_SECONDS = _early_env_float(
@@ -654,6 +927,25 @@ LOCAL_PLANNER_PREFLIGHT_PROMPT_CHARS = _early_env_int(
 )
 LOCAL_PLANNER_PREFLIGHT_MAX_CANDIDATES = _early_env_int(
     "NORMAN_LOCAL_PLANNER_PREFLIGHT_MAX_CANDIDATES", 2, minimum=1
+)
+LOCAL_PLANNER_VERIFIER_ENABLED = _early_env_flag(
+    "NORMAN_LOCAL_PLANNER_VERIFIER_ENABLED", True
+)
+LOCAL_PLANNER_VERIFIER_TIMEOUT_SECONDS = _early_env_int(
+    "NORMAN_LOCAL_PLANNER_VERIFIER_TIMEOUT_SECONDS", 18, minimum=3
+)
+LOCAL_PLANNER_VERIFIER_MAX_OUTPUT_TOKENS = _early_env_int(
+    "NORMAN_LOCAL_PLANNER_VERIFIER_MAX_OUTPUT_TOKENS", 96, minimum=32
+)
+LOCAL_PLANNER_VERIFIER_MAX_CANDIDATES = _early_env_int(
+    "NORMAN_LOCAL_PLANNER_VERIFIER_MAX_CANDIDATES", 1, minimum=1
+)
+LOCAL_PLANNER_VERIFIER_MIN_CONFIDENCE = min(
+    1.0,
+    _early_env_float("NORMAN_LOCAL_PLANNER_VERIFIER_MIN_CONFIDENCE", 0.72, minimum=0.0),
+)
+LOCAL_PLANNER_VERIFIER_CONTEXT_TOKENS = _early_env_int(
+    "NORMAN_LOCAL_PLANNER_VERIFIER_CONTEXT_TOKENS", 32_000, minimum=1_000
 )
 WORKING_RECAP_ENABLED = _early_env_flag("NORMAN_CODEX_WORKING_RECAP_ENABLED", True)
 WORKING_RECAP_REFRESH_SECONDS = _early_env_int(
@@ -799,7 +1091,7 @@ def _local_llm_model_allowed_for_lane(lane: str, model: str) -> bool:
 
 
 MODEL = normalize_codex_model_name(
-    os.environ.get("NORMAN_CODEX_MODEL", CODEX_MODEL_FLOOR),
+    os.environ.get("NORMAN_CODEX_MODEL", "openai.gpt-5.6-terra"),
     fallback=CODEX_MODEL_FLOOR,
 )
 # Legacy source check: MODEL = os.environ.get("HOUSEBOT_CODEX_MODEL", "gpt-5.5")
@@ -1270,6 +1562,9 @@ CODEX_STANDARD_PROFILE_V2 = (
     or os.environ.get("NORMAN_CODEX_BEDROCK_PROFILE_V2")
     or ""
 ).strip()
+CODEX_BEDROCK_EMERGENCY_PROFILE_V2 = (
+    os.environ.get("NORMAN_CODEX_BEDROCK_EMERGENCY_PROFILE_V2", "")
+).strip()
 CODEX_FLEX_PROFILE_V2 = os.environ.get("NORMAN_CODEX_FLEX_PROFILE_V2", "").strip()
 CODEX_PRIORITY_PROFILE_V2 = os.environ.get(
     "NORMAN_CODEX_PRIORITY_PROFILE_V2", ""
@@ -1285,6 +1580,19 @@ CODEX_STANDARD_MODEL = normalize_codex_model_name(
     fallback=MODEL,
     allow_blank=True,
     allow_switchable=True,
+)
+CODEX_BEDROCK_EMERGENCY_MODEL = (
+    normalize_codex_model_name(
+        os.environ.get(
+            "NORMAN_CODEX_BEDROCK_EMERGENCY_MODEL",
+            CODEX_STANDARD_MODEL or MODEL,
+        ),
+        fallback=CODEX_STANDARD_MODEL or MODEL,
+        allow_blank=True,
+        allow_switchable=True,
+    )
+    or CODEX_STANDARD_MODEL
+    or MODEL
 )
 CODEX_DIRECT_MODEL = normalize_codex_model_name(
     os.environ.get("NORMAN_CODEX_DIRECT_MODEL", MODEL),
@@ -1338,6 +1646,13 @@ CODEX_STANDARD_PROVIDER_LABEL = os.environ.get(
     "NORMAN_CODEX_STANDARD_PROVIDER_LABEL",
     "Bedrock Standard" if CODEX_STANDARD_PROFILE_V2 else "Standard",
 ).strip() or ("Bedrock Standard" if CODEX_STANDARD_PROFILE_V2 else "Standard")
+CODEX_BEDROCK_EMERGENCY_PROVIDER_LABEL = (
+    os.environ.get(
+        "NORMAN_CODEX_BEDROCK_EMERGENCY_PROVIDER_LABEL",
+        "Bedrock Emergency",
+    ).strip()
+    or "Bedrock Emergency"
+)
 CODEX_BEDROCK_FAILOVER_PROVIDER_LABEL = os.environ.get(
     "NORMAN_CODEX_BEDROCK_FAILOVER_PROVIDER_LABEL",
     "Bedrock Failover" if CODEX_BEDROCK_FAILOVER_PROFILE_V2 else "",
@@ -1359,6 +1674,14 @@ CODEX_STANDARD_AWS_PROFILE = os.environ.get(
 ).strip()
 CODEX_STANDARD_AWS_REGION = os.environ.get(
     "NORMAN_CODEX_STANDARD_AWS_REGION", ""
+).strip()
+CODEX_BEDROCK_EMERGENCY_AWS_PROFILE = (
+    os.environ.get("NORMAN_CODEX_BEDROCK_EMERGENCY_AWS_PROFILE")
+    or CODEX_STANDARD_AWS_PROFILE
+).strip()
+CODEX_BEDROCK_EMERGENCY_AWS_REGION = (
+    os.environ.get("NORMAN_CODEX_BEDROCK_EMERGENCY_AWS_REGION")
+    or CODEX_STANDARD_AWS_REGION
 ).strip()
 CODEX_BEDROCK_FAILOVER_AWS_PROFILE = os.environ.get(
     "NORMAN_CODEX_BEDROCK_FAILOVER_AWS_PROFILE", CODEX_STANDARD_AWS_PROFILE
@@ -1393,10 +1716,11 @@ BEDROCK_CONVERSE_ENABLED = os.environ.get(
     "NORMAN_BEDROCK_CONVERSE_ENABLED", "0"
 ).strip().lower() in {"1", "true", "yes", "on"}
 BEDROCK_CONVERSE_AWS_PROFILE = os.environ.get(
-    "NORMAN_BEDROCK_CONVERSE_AWS_PROFILE", CODEX_STANDARD_AWS_PROFILE
+    "NORMAN_BEDROCK_CONVERSE_AWS_PROFILE", CODEX_BEDROCK_EMERGENCY_AWS_PROFILE
 ).strip()
 BEDROCK_CONVERSE_AWS_REGION = os.environ.get(
-    "NORMAN_BEDROCK_CONVERSE_AWS_REGION", CODEX_STANDARD_AWS_REGION or "us-east-2"
+    "NORMAN_BEDROCK_CONVERSE_AWS_REGION",
+    CODEX_BEDROCK_EMERGENCY_AWS_REGION or "us-east-2",
 ).strip()
 BEDROCK_CONVERSE_PYTHON = os.environ.get("NORMAN_BEDROCK_CONVERSE_PYTHON", "").strip()
 BEDROCK_CONVERSE_MAX_TOOL_CALLS = int_env(
@@ -1524,14 +1848,11 @@ RUNTIME_REGISTRY: dict[str, dict[str, Any]] = {
         "key": "localllm",
         "label": "Norllama",
         "provider": "norllama",
-        "execution": "active" if LOCAL_LLM_CAN_EXECUTE else "registered",
+        "execution": "pool",
         "can_execute": LOCAL_LLM_CAN_EXECUTE,
-        "default_model": LOCAL_LLM_ROUTE_DEFAULT_MODEL,
-        "models": local_llm_preferred_models(),
-        "endpoints": LOCAL_LLM_ENDPOINTS,
-        "frontdoors": LOCAL_LLM_FRONTDOORS,
-        "model_endpoints": LOCAL_LLM_MODEL_ENDPOINTS,
-        "tier": "local" if LOCAL_LLM_CAN_EXECUTE else "planned",
+        "default_model": "norllama",
+        "models": ["norllama"],
+        "tier": "local",
         "context": "local",
         "tools": "brokered-read-only",
         "organ_limits": {
@@ -1651,7 +1972,7 @@ RUNTIME_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "codexspark": {
         "key": "codexspark",
-        "label": "Spark",
+        "label": "Codex Spark Preview",
         "provider": "openai/cerebras",
         "execution": "access-check",
         "can_execute": False,
@@ -1762,6 +2083,9 @@ PFSENSE_TIMER = os.environ.get("NORMAN_PFSENSE_TIMER_NAME", "").strip()
 if not PFSENSE_TIMER and AGENT_SERVICE_NAME == "housebot":
     PFSENSE_TIMER = "housebot-pfsense-sync.timer"
 TAILSCALE_SERVICE = os.environ.get("TAILSCALE_SERVICE_NAME", "tailscaled")
+TAILSCALE_REQUIRED = os.environ.get(
+    "NORMAN_CODEX_TAILSCALE_REQUIRED", "1"
+).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _node_version_key(path: Path) -> tuple[int, int, int, str]:
@@ -1864,6 +2188,10 @@ CODEX_PREFLIGHT_TTL_SECONDS = max(
 CODEX_PREFLIGHT_COMMAND_TIMEOUT_SECONDS = max(
     5, int(os.environ.get("NORMAN_CODEX_PREFLIGHT_COMMAND_TIMEOUT_SECONDS", "20"))
 )
+CODEX_PREFLIGHT_CHECK_TIMEOUT_SECONDS = min(
+    CODEX_PREFLIGHT_COMMAND_TIMEOUT_SECONDS - 1,
+    max(1, int(os.environ.get("NORMAN_CODEX_PREFLIGHT_TIMEOUT_SECONDS", "10"))),
+)
 CODEX_PREFLIGHT_CACHE_LOCK = threading.Lock()
 CODEX_PREFLIGHT_SUCCESS_AT: dict[str, float] = {}
 
@@ -1915,6 +2243,8 @@ def codex_launch_preflight(service_tier: str) -> dict[str, Any]:
         str(STATE_DIR / "release_readiness.json"),
         "--markdown-output",
         str(STATE_DIR / "release_readiness.md"),
+        "--timeout-seconds",
+        str(CODEX_PREFLIGHT_CHECK_TIMEOUT_SECONDS),
         "--quiet",
     ]
     if required:
@@ -2265,6 +2595,11 @@ KPI_PATH = STATE_DIR / "kpis.json"
 AUDIT_PATH = STATE_DIR / "audit.jsonl"
 AUDIT_LOCK = threading.RLock()
 CONSOLE_RUNTIME_JOB_ID_PATH = STATE_DIR / "console_runtime_job_id.txt"
+CONSOLE_RUNTIME_WORKSTREAM_ID_PATH = STATE_DIR / "console_runtime_workstream_id.txt"
+CONSOLE_RUNTIME_WORKSTREAM_BREAKER_PATH = (
+    STATE_DIR / "console_runtime_workstream_breaker.json"
+)
+CONSOLE_RUNTIME_TOKEN_BREAKER_PATH = STATE_DIR / "console_runtime_token_breaker.json"
 DRAFT_ATTACHMENTS_PATH = STATE_DIR / "draft_attachments.json"
 RUNTIME_SETTINGS_PATH = STATE_DIR / "runtime_settings.json"
 ATTACHMENTS_DIR = STATE_DIR / "attachments"
@@ -2279,6 +2614,14 @@ LOCAL_LLM_ROUTE_OUTCOME_MAX_ITEMS = max(
 )
 LOCAL_LLM_ROUTE_COOLDOWN_SECONDS = max(
     0, int(os.environ.get("NORMAN_LOCAL_LLM_ROUTE_COOLDOWN_SECONDS", "900"))
+)
+LOCAL_PLANNER_PREFLIGHT_COLD_LOAD_COOLDOWN_SECONDS = max(
+    0,
+    int(
+        os.environ.get(
+            "NORMAN_LOCAL_PLANNER_PREFLIGHT_COLD_LOAD_COOLDOWN_SECONDS", "60"
+        )
+    ),
 )
 LOCAL_LLM_ROUTE_COOLDOWN_STATUSES = {
     item.strip().lower()
@@ -2365,10 +2708,16 @@ TUI_KERNEL_PRIMARY_ENABLED = TUI_KERNEL_EXECUTION_ENABLED and (
 TUI_KERNEL_PRIMARY_STRICT_ENABLED = TUI_KERNEL_EXECUTION_ENABLED and _early_env_flag(
     "NORMAN_TUI_KERNEL_PRIMARY_STRICT", False
 )
-TUI_KERNEL_OWNED_TURN_ENABLED = TUI_KERNEL_EXECUTION_ENABLED and (
-    _early_env_flag("NORMAN_TUI_KERNEL_OWNED_TURN_ENABLED", False)
-    or _early_env_flag("NORMAN_TUI_KERNEL_OWNED_TURN", False)
-    or TUI_KERNEL_PRIMARY_STRICT_ENABLED
+TUI_KERNEL_STRICT_SHADOW_ENABLED = TUI_KERNEL_EXECUTION_ENABLED and _early_env_flag(
+    "NORMAN_TUI_KERNEL_STRICT_SHADOW", False
+)
+TUI_KERNEL_OWNED_TURN_ENABLED = (
+    TUI_KERNEL_EXECUTION_ENABLED
+    and (
+        _early_env_flag("NORMAN_TUI_KERNEL_OWNED_TURN_ENABLED", False)
+        or _early_env_flag("NORMAN_TUI_KERNEL_OWNED_TURN", False)
+    )
+    and TUI_KERNEL_STRICT_SHADOW_ENABLED
 )
 TUI_KERNEL_CLOUD_FALLBACK_ENABLED = TUI_KERNEL_EXECUTION_ENABLED and (
     _early_env_flag("NORMAN_TUI_KERNEL_CLOUD_FALLBACK_ENABLED", True)
@@ -2405,6 +2754,10 @@ TUI_TURN_SHADOW_ENABLED = _early_env_flag("NORMAN_TUI_TURN_SHADOW_ENABLED", True
 
 
 CONSOLE_RUNTIME_TOKEN_RESOLUTION_ERROR = ""
+CONSOLE_RUNTIME_TOKEN_AUTH_BACKOFF_UNTIL = 0.0
+CONSOLE_RUNTIME_TOKEN_AUTH_RETRY_SECONDS = float(
+    os.environ.get("NORMAN_CONSOLE_RUNTIME_TOKEN_AUTH_RETRY_SECONDS", "3600")
+)
 CONSOLE_RUNTIME_TOKEN_SECRET_DEFAULTS = (
     "norman/console-runtime-token",
     "norman/console-runtime-service-token",
@@ -2471,6 +2824,79 @@ def _runtime_token_secret_names() -> list[str]:
 def _remember_runtime_token_resolution_error(exc: BaseException) -> None:
     global CONSOLE_RUNTIME_TOKEN_RESOLUTION_ERROR
     CONSOLE_RUNTIME_TOKEN_RESOLUTION_ERROR = str(exc)
+
+
+def _console_runtime_breaker_until(path: Path) -> float:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return 0.0
+    if not isinstance(payload, dict):
+        return 0.0
+    try:
+        return max(0.0, float(payload.get("until") or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _record_console_runtime_breaker(
+    path: Path,
+    *,
+    retry_seconds: float,
+    status_code: int,
+) -> float:
+    until = time.time() + max(0.0, retry_seconds)
+    payload = {
+        "until": until,
+        "status_code": int(status_code),
+        "recorded_at": time.time(),
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    except OSError:
+        pass
+    return until
+
+
+def _clear_console_runtime_breaker(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
+def _http_error_status(exc: BaseException) -> int:
+    if isinstance(exc, urllib_error.HTTPError):
+        try:
+            return int(exc.code)
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
+def _runtime_token_auth_backoff_active() -> bool:
+    global CONSOLE_RUNTIME_TOKEN_AUTH_BACKOFF_UNTIL
+    now = time.time()
+    if CONSOLE_RUNTIME_TOKEN_AUTH_BACKOFF_UNTIL <= now:
+        CONSOLE_RUNTIME_TOKEN_AUTH_BACKOFF_UNTIL = _console_runtime_breaker_until(
+            CONSOLE_RUNTIME_TOKEN_BREAKER_PATH
+        )
+    return CONSOLE_RUNTIME_TOKEN_AUTH_BACKOFF_UNTIL > now
+
+
+def _record_runtime_token_auth_failure(exc: BaseException) -> None:
+    global CONSOLE_RUNTIME_TOKEN_AUTH_BACKOFF_UNTIL
+    status_code = _http_error_status(exc)
+    if status_code not in {401, 403, 404, 405, 501}:
+        return
+    CONSOLE_RUNTIME_TOKEN_AUTH_BACKOFF_UNTIL = _record_console_runtime_breaker(
+        CONSOLE_RUNTIME_TOKEN_BREAKER_PATH,
+        retry_seconds=CONSOLE_RUNTIME_TOKEN_AUTH_RETRY_SECONDS,
+        status_code=status_code,
+    )
 
 
 def _resolve_runtime_token_from_norman_keys(secret_name: str) -> str:
@@ -2585,11 +3011,12 @@ def resolve_console_runtime_token() -> str:
     secret_names = _runtime_token_secret_names()
     if not secret_names:
         return ""
+    allow_norman_keys = not _runtime_token_auth_backoff_active()
     for secret_name in secret_names:
-        for resolver in (
-            _resolve_runtime_token_from_norman_keys,
-            _resolve_runtime_token_from_secret_command,
-        ):
+        resolvers = [_resolve_runtime_token_from_secret_command]
+        if allow_norman_keys:
+            resolvers.insert(0, _resolve_runtime_token_from_norman_keys)
+        for resolver in resolvers:
             try:
                 token = resolver(secret_name)
             except (
@@ -2600,8 +3027,13 @@ def resolve_console_runtime_token() -> str:
                 urllib_error.URLError,
             ) as exc:
                 _remember_runtime_token_resolution_error(exc)
+                if _http_error_status(exc) in {401, 403, 404, 405, 501}:
+                    _record_runtime_token_auth_failure(exc)
+                    allow_norman_keys = False
                 continue
             if token:
+                if resolver is _resolve_runtime_token_from_norman_keys:
+                    _clear_console_runtime_breaker(CONSOLE_RUNTIME_TOKEN_BREAKER_PATH)
                 return token
     return ""
 
@@ -2693,39 +3125,47 @@ SCOUT_TUI_HANDOFF_SUBMIT_API = _early_env_flag(
     "NORMAN_CODEX_SCOUT_HANDOFF_SUBMIT_API", False
 )
 CONSOLE_RUNTIME_RECENT_ITEMS = int(
-    os.environ.get("NORMAN_CONSOLE_RUNTIME_RECENT_ITEMS", "12")
+    os.environ.get("NORMAN_CONSOLE_RUNTIME_RECENT_ITEMS", "6")
 )
 CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS = float(
-    os.environ.get("NORMAN_CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS", "5")
+    os.environ.get("NORMAN_CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS", "60")
+)
+CONSOLE_RUNTIME_ACTIVE_SNAPSHOT_TTL_SECONDS = float(
+    os.environ.get("NORMAN_CONSOLE_RUNTIME_ACTIVE_SNAPSHOT_TTL_SECONDS", "5")
 )
 CONSOLE_RUNTIME_ROUTE_OUTCOME_LIMIT = max(
-    20, int(os.environ.get("NORMAN_CONSOLE_RUNTIME_ROUTE_OUTCOME_LIMIT", "200"))
+    20, int(os.environ.get("NORMAN_CONSOLE_RUNTIME_ROUTE_OUTCOME_LIMIT", "50"))
 )
 CONSOLE_RUNTIME_ROUTE_OUTCOME_TTL_SECONDS = float(
-    os.environ.get("NORMAN_CONSOLE_RUNTIME_ROUTE_OUTCOME_TTL_SECONDS", "45")
+    os.environ.get("NORMAN_CONSOLE_RUNTIME_ROUTE_OUTCOME_TTL_SECONDS", "300")
 )
 CONSOLE_RUNTIME_PROOF_TTL_SECONDS = float(
-    os.environ.get("NORMAN_CONSOLE_RUNTIME_PROOF_TTL_SECONDS", "120")
+    os.environ.get("NORMAN_CONSOLE_RUNTIME_PROOF_TTL_SECONDS", "900")
 )
 CONSOLE_RUNTIME_PROOF_BACKOFF_SECONDS = float(
-    os.environ.get("NORMAN_CONSOLE_RUNTIME_PROOF_BACKOFF_SECONDS", "30")
+    os.environ.get("NORMAN_CONSOLE_RUNTIME_PROOF_BACKOFF_SECONDS", "300")
 )
 CONSOLE_RUNTIME_TOKEN_RETRY_SECONDS = float(
-    os.environ.get("NORMAN_CONSOLE_RUNTIME_TOKEN_RETRY_SECONDS", "30")
+    os.environ.get("NORMAN_CONSOLE_RUNTIME_TOKEN_RETRY_SECONDS", "300")
 )
 CONSOLE_RUNTIME_STARTUP_JITTER_SECONDS = max(
     0.0, float(os.environ.get("NORMAN_CONSOLE_RUNTIME_STARTUP_JITTER_SECONDS", "45"))
 )
 CONSOLE_RUNTIME_LOCAL_FIRST_PROOF_LIMIT = max(
-    20, int(os.environ.get("NORMAN_CONSOLE_RUNTIME_LOCAL_FIRST_PROOF_LIMIT", "250"))
+    20, int(os.environ.get("NORMAN_CONSOLE_RUNTIME_LOCAL_FIRST_PROOF_LIMIT", "50"))
 )
 CONSOLE_RUNTIME_LOCAL_FIRST_SESSION_LIMIT = max(
     5,
-    int(os.environ.get("NORMAN_CONSOLE_RUNTIME_LOCAL_FIRST_SESSION_LIMIT", "20")),
+    int(os.environ.get("NORMAN_CONSOLE_RUNTIME_LOCAL_FIRST_SESSION_LIMIT", "10")),
+)
+CONSOLE_RUNTIME_WORKSTREAM_RETRY_SECONDS = float(
+    os.environ.get("NORMAN_CONSOLE_RUNTIME_WORKSTREAM_RETRY_SECONDS", "21600")
 )
 
 PROMPT_LOCK = threading.Lock()
 STATUS_LOCK = threading.Lock()
+STATUS_SNAPSHOT_REFRESH_LOCK = threading.Lock()
+STATUS_SNAPSHOT_CACHE_LOCK = threading.Lock()
 CONSOLE_RUNTIME_LOCK = threading.Lock()
 CONSOLE_RUNTIME_TOKEN_LOCK = threading.Lock()
 CONSOLE_RUNTIME_SNAPSHOT_LOCK = threading.Lock()
@@ -2735,12 +3175,22 @@ CONSOLE_RUNTIME_LOCAL_FIRST_PROOF_LOCK = threading.Lock()
 WORKING_RECAP_LOCK = threading.Lock()
 KPI_LOCK = threading.RLock()
 KPI_COLLECTOR_STARTED = False
+STATUS_SNAPSHOT_COLLECTOR_STARTED = False
 ACTIVE_PROMPT_THREAD: threading.Thread | None = None
 ACTIVE_CODEX_PROC: subprocess.Popen[str] | None = None
 CONSOLE_RUNTIME_CACHED_JOB_ID = ""
+CONSOLE_RUNTIME_CACHED_WORKSTREAM_ID = ""
+CONSOLE_RUNTIME_WORKSTREAM_BACKOFF_UNTIL = 0.0
+CONSOLE_RUNTIME_WORKSTREAM_BACKOFF_LOADED = False
 CONSOLE_RUNTIME_TOKEN_LAST_ATTEMPT_AT = time.time() if CONSOLE_RUNTIME_TOKEN else 0.0
 CONSOLE_RUNTIME_STARTUP_DEFER_UNTIL = 0.0
 CONSOLE_RUNTIME_SNAPSHOT_CACHE: dict[str, Any] = {"at": 0.0, "data": None}
+STATUS_SNAPSHOT_CACHE: dict[str, Any] = {
+    "at": 0.0,
+    "data": None,
+    "refreshing": False,
+    "last_error": "",
+}
 CONSOLE_RUNTIME_ROUTE_OUTCOME_CACHE: dict[str, Any] = {
     "at": 0.0,
     "data": None,
@@ -4753,7 +5203,8 @@ FALLBACK_AGENT_ACCENTS = (
 RESPONSE_SPEED_TO_REASONING = {
     "fast": "low",
     "balanced": "medium",
-    "careful": "xhigh",
+    "careful": "high",
+    "xhigh": "xhigh",
 }
 EMERGENCY_XFAST_ALIASES = {"fast", "xfast", "x-fast", "extra-fast", "low", "minimal"}
 RESPONSE_DETAIL_LABELS = {
@@ -4785,11 +5236,13 @@ def normalize_response_speed(value: Any) -> str:
     clean = str(value or "").strip().lower().replace("_", "-").replace(" ", "-")
     if clean in EMERGENCY_XFAST_ALIASES:
         return "fast" if EMERGENCY_XFAST_ENABLED else "balanced"
+    if clean in {"xhigh", "x-high"}:
+        return "xhigh"
     if clean in {"fast", "quick", "brief", "low", "cheap"}:
         return "fast"
     if clean in {"balanced", "medium", "med", "std", "standard"}:
         return "balanced"
-    if clean in {"careful", "deep", "high", "xhigh", "x-high"}:
+    if clean in {"careful", "deep", "high"}:
         return "careful"
     return reasoning_effort_to_speed(REASONING_EFFORT)
 
@@ -4823,13 +5276,15 @@ AUTO_CONTINUE_MIN_RESPONSE_DETAIL = normalize_response_detail(
 
 
 def response_speed_rank(speed: Any) -> int:
-    return {"fast": 0, "balanced": 1, "careful": 2}.get(
+    return {"fast": 0, "balanced": 1, "careful": 2, "xhigh": 3}.get(
         normalize_response_speed(speed), 1
     )
 
 
 def auto_continue_reasoning_controls(speed: Any, detail: Any) -> tuple[str, int]:
     normalized_speed = normalize_response_speed(speed)
+    if normalized_speed == "xhigh":
+        normalized_speed = "careful"
     if response_speed_rank(normalized_speed) < response_speed_rank(
         AUTO_CONTINUE_MIN_RESPONSE_SPEED
     ):
@@ -4846,8 +5301,8 @@ SERVICE_TIER_OPTIONS: dict[str, dict[str, str]] = {
         "short_label": "Auto",
         "risk": "Optimized",
         "hint": (
-            "Prefer the Bedrock profile when configured; otherwise use direct "
-            "Flex when available, then fall back to Standard."
+            "Uses the configured standard profile when present, otherwise direct "
+            "Flex when available."
         ),
     },
     "default": {
@@ -4855,22 +5310,39 @@ SERVICE_TIER_OPTIONS: dict[str, dict[str, str]] = {
         "short_label": "Bedrock" if CODEX_STANDARD_PROFILE_V2 else "Std",
         "risk": "AWS billed" if CODEX_STANDARD_PROFILE_V2 else "Normal",
         "hint": (
-            f"Default operator lane. Uses profile-v2 {CODEX_STANDARD_PROFILE_V2} "
-            "for Bedrock Standard; Bedrock GPT-5.5 Flex/Priority are not assumed."
+            f"Default operator lane. Uses Codex profile-v2 {CODEX_STANDARD_PROFILE_V2} "
+            "for Bedrock Standard."
             if CODEX_STANDARD_PROFILE_V2
             else "Normal online processing. Use this for ordinary operator work."
         ),
     },
 }
+if CODEX_BEDROCK_EMERGENCY_PROFILE_V2:
+    emergency_hint = (
+        "Manual AWS-billed emergency route. Automatic use is allowed only once "
+        "after this turn confirms direct subscription quota exhaustion."
+    )
+    if CODEX_BEDROCK_EMERGENCY_AWS_REGION:
+        emergency_hint = (
+            f"Manual AWS-billed emergency route in "
+            f"{CODEX_BEDROCK_EMERGENCY_AWS_REGION}. Automatic use is allowed only "
+            "once after this turn confirms direct subscription quota exhaustion."
+        )
+    SERVICE_TIER_OPTIONS["bedrock-emergency"] = {
+        "label": CODEX_BEDROCK_EMERGENCY_PROVIDER_LABEL,
+        "short_label": "Bdrk",
+        "risk": "AWS billed",
+        "hint": emergency_hint,
+    }
 if CODEX_BEDROCK_FAILOVER_PROFILE_V2:
     failover_hint = (
-        "Secondary Bedrock route used automatically after primary Bedrock zero-token "
-        "provider failures, before any OpenAI direct fallback."
+        "Manual-only secondary AWS-billed Bedrock route. It is never selected "
+        "automatically."
     )
     if CODEX_BEDROCK_FAILOVER_AWS_REGION:
         failover_hint = (
             f"Secondary Bedrock route in {CODEX_BEDROCK_FAILOVER_AWS_REGION}; "
-            "used automatically before OpenAI direct fallback."
+            "manual only and never selected automatically."
         )
     SERVICE_TIER_OPTIONS["bedrock-failover"] = {
         "label": CODEX_BEDROCK_FAILOVER_PROVIDER_LABEL,
@@ -4880,13 +5352,13 @@ if CODEX_BEDROCK_FAILOVER_PROFILE_V2:
     }
 if CODEX_BEDROCK_FAILOVER2_PROFILE_V2:
     failover2_hint = (
-        "Third Bedrock route used automatically after the secondary Bedrock route "
-        "fails, before any OpenAI direct fallback."
+        "Manual-only tertiary AWS-billed Bedrock route. It is never selected "
+        "automatically."
     )
     if CODEX_BEDROCK_FAILOVER2_AWS_REGION:
         failover2_hint = (
             f"Third Bedrock route in {CODEX_BEDROCK_FAILOVER2_AWS_REGION}; "
-            "used automatically before OpenAI direct fallback."
+            "manual only and never selected automatically."
         )
     SERVICE_TIER_OPTIONS["bedrock-failover-2"] = {
         "label": CODEX_BEDROCK_FAILOVER2_PROVIDER_LABEL,
@@ -4898,20 +5370,16 @@ if CODEX_DIRECT_TIERS_ENABLED:
     SERVICE_TIER_OPTIONS.update(
         {
             "flex": {
-                "label": f"{CODEX_DIRECT_PROVIDER_LABEL} Flex"
-                if CODEX_STANDARD_PROFILE_V2
-                else "Flex",
+                "label": f"{CODEX_DIRECT_PROVIDER_LABEL} Flex",
                 "short_label": "Flex",
-                "risk": "Lower cost",
-                "hint": "Lower-cost, variable-latency lane. Best for background work that can tolerate delays or resource-unavailable retries.",
+                "risk": "Subscription",
+                "hint": "Direct lower-priority subscription lane. Best for background work that can tolerate variable latency.",
             },
             "priority": {
-                "label": f"{CODEX_DIRECT_PROVIDER_LABEL} Priority"
-                if CODEX_STANDARD_PROFILE_V2
-                else "Priority",
+                "label": f"{CODEX_DIRECT_PROVIDER_LABEL} Priority",
                 "short_label": "Prio",
-                "risk": "Premium",
-                "hint": "Premium latency lane. Use for urgent or high-impact operator-facing work.",
+                "risk": "Subscription",
+                "hint": "Direct priority subscription lane for urgent operator-facing work.",
             },
         }
     )
@@ -4922,6 +5390,7 @@ SERVICE_TIER_ALIASES = {
     "standard": "default",
     "bedrock": "default",
     "bedrock-standard": "default",
+    "bedrock-emergency": "bedrock-emergency",
     "bedrock-secondary": "bedrock-failover",
     "bedrock2": "bedrock-failover",
     "failover": "bedrock-failover",
@@ -4993,12 +5462,12 @@ def service_tier_label(value: Any) -> str:
 
 def service_tier_config_args(value: Any) -> list[str]:
     tier = service_tier_execution_tier(value)
-    if tier == "auto":
-        return []
     if codex_profile_v2_for_service_tier(tier):
         return []
     codex_tier = (
-        "default" if tier in {"bedrock-failover", "bedrock-failover-2"} else tier
+        "default"
+        if tier in {"bedrock-emergency", "bedrock-failover", "bedrock-failover-2"}
+        else tier
     )
     return ["-c", f'service_tier="{codex_tier}"']
 
@@ -5007,6 +5476,8 @@ def codex_profile_v2_for_service_tier(value: Any) -> str:
     tier = service_tier_execution_tier(value)
     if tier in {"auto", "default"}:
         return CODEX_STANDARD_PROFILE_V2
+    if tier == "bedrock-emergency":
+        return CODEX_BEDROCK_EMERGENCY_PROFILE_V2
     if tier == "bedrock-failover":
         return CODEX_BEDROCK_FAILOVER_PROFILE_V2
     if tier == "bedrock-failover-2":
@@ -5036,6 +5507,8 @@ def _codex_configured_model_for_service_tier(tier: str) -> str:
     tier = service_tier_execution_tier(tier)
     if tier in {"auto", "default"}:
         return CODEX_STANDARD_MODEL
+    if tier == "bedrock-emergency":
+        return CODEX_BEDROCK_EMERGENCY_MODEL
     if tier == "bedrock-failover":
         return CODEX_BEDROCK_FAILOVER_MODEL
     if tier == "bedrock-failover-2":
@@ -5057,6 +5530,10 @@ def codex_model_for_service_tier(value: Any, model: Any = "") -> str:
         if not requested_model or normalized_model == default_model:
             return codex_bedrock_model_name(configured_model or normalized_model)
         return codex_bedrock_model_name(normalized_model)
+    if tier in {"auto", "default"} and (
+        not requested_model or normalized_model == default_model
+    ):
+        return codex_direct_model_name(CODEX_DIRECT_MODEL)
     if tier == "flex" and (not requested_model or normalized_model == default_model):
         return codex_direct_model_name(CODEX_FLEX_MODEL)
     if tier == "priority" and (
@@ -5084,23 +5561,27 @@ def codex_profile_v2_config_args(value: Any) -> list[str]:
 
 def codex_aws_profile_for_service_tier(value: Any) -> str:
     tier = service_tier_execution_tier(value)
+    if tier in {"auto", "default"}:
+        return CODEX_STANDARD_AWS_PROFILE
+    if tier == "bedrock-emergency":
+        return CODEX_BEDROCK_EMERGENCY_AWS_PROFILE
     if tier == "bedrock-failover":
         return CODEX_BEDROCK_FAILOVER_AWS_PROFILE
     if tier == "bedrock-failover-2":
         return CODEX_BEDROCK_FAILOVER2_AWS_PROFILE
-    if tier in {"auto", "default"}:
-        return CODEX_STANDARD_AWS_PROFILE
     return ""
 
 
 def codex_aws_region_for_service_tier(value: Any) -> str:
     tier = service_tier_execution_tier(value)
+    if tier in {"auto", "default"}:
+        return CODEX_STANDARD_AWS_REGION
+    if tier == "bedrock-emergency":
+        return CODEX_BEDROCK_EMERGENCY_AWS_REGION
     if tier == "bedrock-failover":
         return CODEX_BEDROCK_FAILOVER_AWS_REGION
     if tier == "bedrock-failover-2":
         return CODEX_BEDROCK_FAILOVER2_AWS_REGION
-    if tier in {"auto", "default"}:
-        return CODEX_STANDARD_AWS_REGION
     return ""
 
 
@@ -5526,8 +6007,21 @@ def prompt_is_broad_planning_request(prompt: str) -> bool:
     )
 
 
+def prompt_requests_investigation(prompt: Any) -> bool:
+    lower = prompt_core_request(str(prompt or "")).lower()
+    return bool(
+        re.search(
+            r"\b(?:dig(?:\s+(?:more|into))?|investigate|diagnose|debug|"
+            r"trace|root cause|look into|verify|prove)\b",
+            lower,
+        )
+    )
+
+
 def prompt_is_quick_status_request(prompt: str) -> bool:
     lower = prompt_core_request(prompt).lower().strip()
+    if prompt_requests_investigation(lower):
+        return False
     if SHARED_TUI_ROUTE_INTENT is not None:
         if SHARED_TUI_ROUTE_INTENT.is_broad_planning(lower):
             return False
@@ -5542,9 +6036,12 @@ def prompt_is_quick_status_request(prompt: str) -> bool:
         "an",
         "any",
         "brief",
+        "changes",
         "current",
         "me",
+        "no",
         "on",
+        "or",
         "please",
         "pls",
         "quick",
@@ -5556,13 +6053,19 @@ def prompt_is_quick_status_request(prompt: str) -> bool:
         "this",
         "tui",
         "tuis",
+        "tools",
         "us",
     }
     if (
         words
         and len(words) <= 8
         and any(word in status_words for word in words)
-        and all(word in status_words or word in status_fillers for word in words)
+        and all(
+            word in status_words
+            or word in status_fillers
+            or re.fullmatch(r"routeproof[a-f0-9]{12,64}", word)
+            for word in words
+        )
     ):
         return True
     if prompt_has_any_marker(lower, AUTO_TURN_CONTROL_QUICK_MARKERS):
@@ -5579,6 +6082,13 @@ def prompt_is_quick_status_request(prompt: str) -> bool:
             "was it ",
             "was that ",
         )
+    )
+
+
+def prompt_is_explicit_status_request(prompt: Any) -> bool:
+    words = re.findall(r"[a-z0-9]+", prompt_core_request(str(prompt or "")).lower())
+    return bool(
+        {"status", "stauts", "stuats", "stats", "update", "updates"} & set(words)
     )
 
 
@@ -6894,6 +7404,19 @@ def runtime_registry_payload() -> list[dict[str, Any]]:
     payload: list[dict[str, Any]] = []
     for key, entry in RUNTIME_REGISTRY.items():
         runtime = normalize_runtime(key)
+        if runtime == "localllm":
+            payload.append(
+                {
+                    "key": "localllm",
+                    "label": "Norllama",
+                    "provider": "norllama",
+                    "execution": "pool",
+                    "default_model": "norllama",
+                    "models": ["norllama"],
+                    "can_execute": runtime_can_execute("localllm"),
+                }
+            )
+            continue
         item = dict(entry)
         item["key"] = runtime
         item["default_model"] = normalize_runtime_model(runtime)
@@ -7043,7 +7566,7 @@ def model_route_presets_payload() -> list[dict[str, Any]]:
         "codex-local",
         "Norllama",
         runtime="localllm",
-        model=LOCAL_LLM_DEFAULT_MODEL,
+        model="norllama",
         service_tier="default",
         provider="Norllama",
         can_execute=runtime_can_execute("localllm"),
@@ -7199,7 +7722,9 @@ def response_speed_label(speed: Any) -> str:
         return "Fast"
     if normalized == "balanced":
         return "Standard"
-    return "Deep"
+    if normalized == "xhigh":
+        return "Escalated"
+    return "High"
 
 
 def response_detail_label(detail: Any) -> str:
@@ -8893,6 +9418,116 @@ def semantic_agent_group(agent_key: str, agent_group: str = "") -> str:
     return fallback_group or "agents"
 
 
+CONNECTOR_PLUGIN_CATALOG = (
+    ("google-drive@openai-curated", "Google Drive"),
+    ("gmail@openai-curated", "Gmail"),
+    ("google-calendar@openai-curated", "Google Calendar"),
+    ("slack@openai-curated", "Slack"),
+    ("github@openai-curated", "GitHub"),
+)
+CONNECTOR_PLUGIN_SECTION_RE = re.compile(
+    r'^\[\s*plugins\.(?:"(?P<quoted>[^"]+)"|(?P<bare>[^\]\s]+))\s*\]$'
+)
+CONNECTOR_PLUGIN_ENABLED_RE = re.compile(r"^enabled\s*=\s*true\s*$", re.IGNORECASE)
+
+
+def _enabled_connector_plugins(config_path: Path) -> set[str] | None:
+    """Read plugin enablement only; config values and credentials stay private."""
+    try:
+        config_text = config_path.read_text(encoding="utf-8")[:256_000]
+    except OSError:
+        return None
+
+    enabled: set[str] = set()
+    current_plugin = ""
+    for line in config_text.splitlines():
+        clean = line.split("#", 1)[0].strip()
+        if not clean:
+            continue
+        section = CONNECTOR_PLUGIN_SECTION_RE.match(clean)
+        if section:
+            current_plugin = str(
+                section.group("quoted") or section.group("bare") or ""
+            ).strip()
+            continue
+        if clean.startswith("["):
+            current_plugin = ""
+            continue
+        if current_plugin and CONNECTOR_PLUGIN_ENABLED_RE.match(clean):
+            enabled.add(current_plugin)
+    return enabled
+
+
+def _connector_profile_from_codex_home() -> tuple[str, str]:
+    explicit_group = semantic_console_group(AGENT_GROUP)
+    home_name = Path(CODEX_HOME).name
+    home_group = semantic_console_group(home_name.removeprefix("."))
+    profile = (
+        explicit_group
+        if explicit_group and explicit_group != "agents"
+        else home_group
+        if home_group and home_group != "agents"
+        else "default"
+    )
+    labels = {
+        "work": "Work connector set",
+        "personal": "Personal connector set",
+        "private": "Private connector set",
+        "shared": "Shared connector set",
+        "norman": "Norman connector set",
+        "default": "Default connector set",
+    }
+    return profile, labels.get(profile, "Connector set")
+
+
+def _connector_display_name(plugin_name: str) -> str:
+    clean = plugin_name.split("@", 1)[0].replace("_", " ").replace("-", " ").strip()
+    return clean.title() or "Connector"
+
+
+def connector_access_snapshot() -> dict[str, Any]:
+    """Return the configured connector inventory for this TUI's CODEX_HOME."""
+    config_path = Path(CODEX_HOME) / "config.toml"
+    enabled_plugins = _enabled_connector_plugins(config_path)
+    config_available = enabled_plugins is not None
+    enabled_plugins = enabled_plugins or set()
+    profile, profile_label = _connector_profile_from_codex_home()
+    known_plugins = {plugin for plugin, _label in CONNECTOR_PLUGIN_CATALOG}
+    apps = [
+        {
+            "key": plugin,
+            "label": label,
+            "configured": plugin in enabled_plugins if config_available else None,
+            "status": (
+                "Configured"
+                if plugin in enabled_plugins
+                else "Not configured"
+                if config_available
+                else "Config unavailable"
+            ),
+        }
+        for plugin, label in CONNECTOR_PLUGIN_CATALOG
+    ]
+    for plugin in sorted(enabled_plugins - known_plugins):
+        apps.append(
+            {
+                "key": plugin,
+                "label": _connector_display_name(plugin),
+                "configured": True,
+                "status": "Configured",
+            }
+        )
+    home_name = Path(CODEX_HOME).name or "CODEX_HOME"
+    return {
+        "profile": profile,
+        "profile_label": profile_label,
+        "config_available": config_available,
+        "source": f"{home_name}/config.toml",
+        "configured_count": len(enabled_plugins),
+        "apps": apps,
+    }
+
+
 def resolve_default_ui_profile(configured: str, agent_key: str) -> str:
     if configured in UI_PROFILES:
         return configured
@@ -9438,6 +10073,169 @@ def now_ts() -> int:
     return int(time.time())
 
 
+ESCALATION_REASON_RE = re.compile(
+    r"(?:x[- ]?high|gpt[- ]?5\.5)(?:\s+(?:because|for)\s+|:\s*)([^\n.]{12,360})",
+    re.IGNORECASE,
+)
+
+
+def submission_reasoning_controls(
+    prompt: str,
+    *,
+    speed: Any,
+    requested_effort: Any = "",
+    escalation_reason: Any = "",
+) -> tuple[str, str, str]:
+    normalized_speed = normalize_response_speed(speed)
+    requested = str(requested_effort or "").strip()
+    inferred_effort = (
+        "xhigh"
+        if re.search(r"\bx[- ]?high\b", str(prompt or ""), flags=re.IGNORECASE)
+        else response_reasoning_effort(normalized_speed)
+    )
+    effort = normalize_reasoning_effort(requested or inferred_effort)
+    if effort == "xhigh":
+        normalized_speed = "xhigh"
+    reason = summarize_text(str(escalation_reason or "").strip(), 360)
+    if not reason:
+        match = ESCALATION_REASON_RE.search(str(prompt or ""))
+        if match:
+            reason = summarize_text(match.group(1), 360)
+    return normalized_speed, effort, reason
+
+
+def session_budget_admission(
+    *,
+    model: str,
+    reasoning_effort: str,
+    escalation_reason: str = "",
+    reauthorization_reason: str = "",
+    checkpoint_intent: bool = False,
+    thread_id: str = "",
+) -> dict[str, Any]:
+    active_thread_id = str(thread_id or read_text(THREAD_ID_PATH)).strip()
+    return evaluate_session_admission(
+        SESSION_BUDGET_POLICY,
+        state_db_path=STATE_DB_PATH,
+        state_db_enabled=STATE_DB_ENABLED,
+        thread_id=active_thread_id,
+        model=model,
+        reasoning_effort=reasoning_effort,
+        escalation_reason=escalation_reason,
+        reauthorization_reason=reauthorization_reason,
+        checkpoint_intent=checkpoint_intent,
+        observed_at=now_ts(),
+    )
+
+
+def append_session_admission_audit(
+    decision: dict[str, Any],
+    *,
+    prompt: str,
+    source: str,
+    actor_ip: str = "",
+    thread_id: str = "",
+) -> None:
+    allowed = bool(decision.get("allowed"))
+    action = str(decision.get("action") or "allow")
+    append_audit_event(
+        event_type=("session.admission" if allowed else "session.admission-denied"),
+        summary=(
+            "Session admission accepted." if allowed else "Session admission denied."
+        ),
+        detail=str(decision.get("reason") or ""),
+        severity="info" if allowed else "warn",
+        actor_type="operator",
+        actor_ip=actor_ip,
+        thread_id=str(thread_id or decision.get("thread_id") or "").strip(),
+        payload={
+            "source": source,
+            "action": action,
+            "reason_code": str(decision.get("reason_code") or ""),
+            "prompt_preview": summarize_text(prompt, 240),
+            "admission": decision,
+        },
+    )
+
+
+def session_admission_requires_fresh_thread(decision: Any, *, success: bool) -> bool:
+    if not success or not isinstance(decision, dict):
+        return False
+    return str(decision.get("action") or "").strip().lower() == "checkpoint" and bool(
+        decision.get("checkpoint_intent")
+    )
+
+
+def complete_session_handoff_if_needed(
+    decision: Any,
+    *,
+    success: bool,
+    thread_id: str,
+    finished_at: int,
+) -> bool:
+    if not session_admission_requires_fresh_thread(decision, success=success):
+        return False
+    write_text(THREAD_ID_PATH, "")
+    write_text(THREAD_SCOPE_PATH, "")
+    append_audit_event(
+        event_type="session.compact-handoff-completed",
+        summary="Completed compact handoff and cleared the resume thread.",
+        detail="The next admitted request will begin in a fresh thread.",
+        severity="info",
+        actor_type="system",
+        thread_id=thread_id,
+        payload={"session_admission": decision},
+        event_at=finished_at,
+    )
+    return True
+
+
+def usage_attribution(
+    *,
+    prompt: str,
+    turn_plan: Any,
+    admission: Any,
+    request_source: Any,
+    speed: Any,
+    usage: Any,
+) -> dict[str, Any]:
+    plan = normalize_turn_plan_estimate(turn_plan)
+    decision = dict(admission) if isinstance(admission, dict) else {}
+    usage_entry = normalize_usage_entry(usage if isinstance(usage, dict) else {})
+    skill_labels = list(plan.get("skill_labels") or [])
+    tool_call_count = max(
+        0,
+        _coerce_int(
+            usage_entry.get("broker_tool_calls")
+            or usage_entry.get("tool_call_count")
+            or usage_entry.get("actual_tool_calls")
+        ),
+    )
+    return {
+        "activity_label": summarize_text(
+            str(
+                plan.get("understood_task") or prompt_core_request(prompt) or "Unknown"
+            ),
+            220,
+        ),
+        "skill_labels": skill_labels,
+        "reasoning_effort": normalize_reasoning_effort(
+            decision.get("reasoning_effort") or response_reasoning_effort(speed)
+        ),
+        "request_source": str(request_source or "operator").strip().lower()
+        or "operator",
+        "escalation_reason": summarize_text(
+            str(decision.get("escalation_reason") or ""), 360
+        ),
+        "session_admission_action": str(decision.get("action") or "unrecorded"),
+        "session_admission_reason_code": str(
+            decision.get("reason_code") or "unrecorded"
+        ),
+        "session_admission_decision": decision,
+        "tool_call_count": tool_call_count,
+    }
+
+
 def run(
     cmd: list[str], *, input_text: str | None = None, check: bool = False
 ) -> subprocess.CompletedProcess[str]:
@@ -9573,6 +10371,15 @@ def _state_db_connect() -> sqlite3.Connection | None:
                 provider_trace_ids TEXT,
                 codex_returncode INTEGER NOT NULL DEFAULT 0,
                 zero_token_provider_failure INTEGER NOT NULL DEFAULT 0,
+                activity_label TEXT,
+                skill_labels TEXT,
+                reasoning_effort TEXT,
+                request_source TEXT,
+                escalation_reason TEXT,
+                session_admission_action TEXT,
+                session_admission_reason_code TEXT,
+                session_admission_decision TEXT,
+                tool_call_count INTEGER NOT NULL DEFAULT 0,
                 payload_json TEXT NOT NULL
             )
             """
@@ -9603,6 +10410,26 @@ def _state_db_connect() -> sqlite3.Connection | None:
             conn,
             "usage_events",
             "zero_token_provider_failure",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
+        _state_db_ensure_column(conn, "usage_events", "activity_label", "TEXT")
+        _state_db_ensure_column(conn, "usage_events", "skill_labels", "TEXT")
+        _state_db_ensure_column(conn, "usage_events", "reasoning_effort", "TEXT")
+        _state_db_ensure_column(conn, "usage_events", "request_source", "TEXT")
+        _state_db_ensure_column(conn, "usage_events", "escalation_reason", "TEXT")
+        _state_db_ensure_column(
+            conn, "usage_events", "session_admission_action", "TEXT"
+        )
+        _state_db_ensure_column(
+            conn, "usage_events", "session_admission_reason_code", "TEXT"
+        )
+        _state_db_ensure_column(
+            conn, "usage_events", "session_admission_decision", "TEXT"
+        )
+        _state_db_ensure_column(
+            conn,
+            "usage_events",
+            "tool_call_count",
             "INTEGER NOT NULL DEFAULT 0",
         )
         _state_db_ensure_column(conn, "turns", "provider_surface", "TEXT")
@@ -9842,8 +10669,11 @@ def mirror_usage_entry_to_state_db(entry: dict[str, Any]) -> None:
                 charge_status, provider_yield_kind, provider_yield_reasons,
                 provider_error_kind, provider_request_ids,
                 provider_trace_ids,
-                codex_returncode, zero_token_provider_failure, payload_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                codex_returncode, zero_token_provider_failure, activity_label,
+                skill_labels, reasoning_effort, request_source, escalation_reason,
+                session_admission_action, session_admission_reason_code,
+                session_admission_decision, tool_call_count, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 _state_db_id("usage", entry),
@@ -9884,6 +10714,19 @@ def mirror_usage_entry_to_state_db(entry: dict[str, Any]) -> None:
                 json.dumps(entry.get("provider_trace_ids") or []),
                 _coerce_int(entry.get("codex_returncode")),
                 1 if entry.get("zero_token_provider_failure") else 0,
+                str(entry.get("activity_label") or ""),
+                json.dumps(entry.get("skill_labels") or []),
+                str(entry.get("reasoning_effort") or ""),
+                str(entry.get("request_source") or ""),
+                str(entry.get("escalation_reason") or ""),
+                str(entry.get("session_admission_action") or ""),
+                str(entry.get("session_admission_reason_code") or ""),
+                _state_db_json(
+                    entry.get("session_admission_decision")
+                    if isinstance(entry.get("session_admission_decision"), dict)
+                    else {}
+                ),
+                _coerce_int(entry.get("tool_call_count")),
                 _state_db_json(entry),
             ),
         )
@@ -11400,6 +12243,151 @@ def context_preflight_memory_refs(
     return [item for _score, _started_at, item in scored[:limit]]
 
 
+def context_preflight_memory_refs_by_ids(
+    value: Any,
+    *,
+    limit: int = CONTEXT_PREFLIGHT_MEMORY_CANDIDATES,
+) -> list[dict[str, Any]]:
+    if not STATE_DB_ENABLED or limit <= 0:
+        return []
+    requested_ids = context_preflight_memory_ref_ids(value)[: max(0, int(limit))]
+    if not requested_ids:
+        return []
+    conn = _state_db_connect()
+    if conn is None:
+        return []
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT id, thread_id, started_at, finished_at, runtime, model,
+                   service_tier, usage_total_tokens, success, prompt_preview,
+                   response_preview, error_preview
+            FROM turns
+            WHERE id IN ({",".join("?" for _ in requested_ids)})
+            """,
+            requested_ids,
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()
+    by_id = {str(row["id"]): dict(row) for row in rows}
+    selected: list[dict[str, Any]] = []
+    for turn_id in requested_ids:
+        item = by_id.get(turn_id)
+        if item is None:
+            continue
+        item["started_label"] = _context_preflight_timestamp_label(
+            item.get("started_at")
+        )
+        selected.append(item)
+    return selected
+
+
+def merge_context_preflight_memory_refs(
+    *groups: Iterable[dict[str, Any]],
+    limit: int = CONTEXT_PREFLIGHT_MEMORY_CANDIDATES,
+) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for group in groups:
+        for item in group:
+            if not isinstance(item, dict):
+                continue
+            turn_id = str(item.get("id") or "").strip()
+            if not turn_id or turn_id in seen:
+                continue
+            seen.add(turn_id)
+            selected.append(item)
+            if len(selected) >= max(0, int(limit)):
+                return selected
+    return selected
+
+
+def context_preflight_memory_ref_ids(value: Any) -> list[str]:
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, (list, tuple, set)):
+        values = value
+    else:
+        return []
+    selected: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        turn_id = str(value or "").strip()
+        if not turn_id or turn_id in seen:
+            continue
+        seen.add(turn_id)
+        selected.append(turn_id)
+        if len(selected) >= CONTEXT_PREFLIGHT_MEMORY_CANDIDATES:
+            break
+    return selected
+
+
+def local_planner_memory_ref_ids(raw_text: Any) -> list[str]:
+    parsed = parse_local_planner_json(str(raw_text or ""))
+    return context_preflight_memory_ref_ids(
+        parsed.get("memory_ref_ids") if isinstance(parsed, dict) else []
+    )
+
+
+def select_context_preflight_memory_refs(
+    candidates: Iterable[dict[str, Any]],
+    planner: dict[str, Any],
+    *,
+    offline: dict[str, Any] | None = None,
+    limit: int = CONTEXT_PREFLIGHT_MEMORY_REFS,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    candidate_rows = [item for item in candidates if isinstance(item, dict)]
+    clean_limit = max(0, int(limit))
+    candidate_count = len(candidate_rows)
+    if not candidate_rows or clean_limit <= 0:
+        return [], {
+            "method": "none",
+            "candidate_count": candidate_count,
+            "selected_count": 0,
+        }
+    by_id = {
+        str(item.get("id") or "").strip(): item
+        for item in candidate_rows
+        if str(item.get("id") or "").strip()
+    }
+    selections = [
+        (
+            "local-planner",
+            planner.get("memory_ref_ids") if isinstance(planner, dict) else [],
+        ),
+        (
+            "vector-preflight",
+            offline.get("memory_ref_ids") if isinstance(offline, dict) else [],
+        ),
+    ]
+    for method, requested_ids in selections:
+        selected = []
+        seen = set()
+        for raw_id in context_preflight_memory_ref_ids(requested_ids):
+            turn_id = str(raw_id or "").strip()
+            item = by_id.get(turn_id)
+            if item is None or turn_id in seen:
+                continue
+            seen.add(turn_id)
+            selected.append(item)
+            if len(selected) >= clean_limit:
+                break
+        if selected:
+            return selected, {
+                "method": method,
+                "candidate_count": candidate_count,
+                "selected_count": len(selected),
+            }
+    lexical = candidate_rows[:clean_limit]
+    return lexical, {
+        "method": "lexical",
+        "candidate_count": candidate_count,
+        "selected_count": len(lexical),
+    }
+
+
 def _attachment_text_inline_limit() -> int:
     if CONTEXT_PREFLIGHT_ENABLED:
         return min(MAX_ATTACHMENT_TEXT_CHARS, CONTEXT_PREFLIGHT_ATTACHMENT_INLINE_CHARS)
@@ -11442,6 +12430,21 @@ def attachment_text_prompt_body(body: str) -> tuple[str, dict[str, Any]]:
         "full_tokens": full_tokens,
         "rendered_tokens": rendered_tokens,
         "saved_tokens": max(0, full_tokens - rendered_tokens),
+    }
+
+
+def context_preflight_memory_rerank(value: Any) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    return {
+        "configured": bool(source.get("configured")),
+        "used": bool(source.get("used")),
+        "status": summarize_text(str(source.get("status") or ""), 80),
+        "model": summarize_text(str(source.get("model") or ""), 160),
+        "candidate_count": _coerce_int(source.get("candidate_count")),
+        "selected_count": _coerce_int(source.get("selected_count")),
+        "failure_class": summarize_text(str(source.get("failure_class") or ""), 80),
+        "latency_ms": _coerce_int(source.get("latency_ms")),
+        "score_method": summarize_text(str(source.get("score_method") or ""), 80),
     }
 
 
@@ -11505,6 +12508,12 @@ def run_context_preflight_offline_command(
         "used": True,
         "status": parsed_status or "ok",
         "summary": summary,
+        "memory_ref_ids": context_preflight_memory_ref_ids(
+            parsed.get("memory_ref_ids") if isinstance(parsed, dict) else []
+        ),
+        "rerank": context_preflight_memory_rerank(
+            parsed.get("rerank") if isinstance(parsed, dict) else {}
+        ),
     }
 
 
@@ -11548,7 +12557,15 @@ def local_planner_preflight_prompt(payload: dict[str, Any]) -> str:
             ),
             (
                 "Use these keys: route, cloud_needed, safe_local_answer_possible, "
-                "next_local_steps, context_to_fetch, cloud_escalation_reason, risk."
+                "next_local_steps, context_to_fetch, memory_ref_ids, confidence, "
+                "recall_status, "
+                "cloud_escalation_reason, risk."
+            ),
+            (
+                "When the supplied memory refs are useful, return memory_ref_ids as "
+                "an ordered JSON array of only their supplied turn ids. Return an "
+                "empty array when none are relevant. Set recall_status to complete, "
+                "partial, or not_needed. Confidence must be a number from 0 to 1."
             ),
             json.dumps(compact_payload, sort_keys=True, ensure_ascii=True),
         ]
@@ -11585,6 +12602,38 @@ def parse_local_planner_json(text: str) -> dict[str, Any]:
     return {}
 
 
+def local_planner_confidence(value: Any) -> float | None:
+    parsed = value if isinstance(value, dict) else parse_local_planner_json(str(value))
+    if not isinstance(parsed, dict) or parsed.get("confidence") is None:
+        return None
+    try:
+        return max(0.0, min(1.0, float(parsed.get("confidence"))))
+    except (TypeError, ValueError):
+        return None
+
+
+def local_planner_recall_status(value: Any) -> str:
+    parsed = value if isinstance(value, dict) else parse_local_planner_json(str(value))
+    if not isinstance(parsed, dict):
+        return "unknown"
+    status = str(parsed.get("recall_status") or "").strip().lower()
+    aliases = {
+        "full": "complete",
+        "complete": "complete",
+        "partial": "partial",
+        "incomplete": "partial",
+        "none-needed": "not_needed",
+        "not-needed": "not_needed",
+        "not_needed": "not_needed",
+    }
+    if status in aliases:
+        return aliases[status]
+    recall_complete = parsed.get("recall_complete")
+    if isinstance(recall_complete, bool):
+        return "complete" if recall_complete else "partial"
+    return "unknown"
+
+
 def local_planner_value_summary(value: Any, *, limit: int = 240) -> str:
     if isinstance(value, bool):
         return "yes" if value else "no"
@@ -11607,6 +12656,8 @@ def local_planner_advice_summary(text: str) -> str:
         ("route", "route"),
         ("cloud_needed", "cloud_needed"),
         ("safe_local_answer_possible", "safe_local_answer_possible"),
+        ("confidence", "confidence"),
+        ("recall_status", "recall_status"),
         ("risk", "risk"),
         ("next_local_steps", "next_local_steps"),
         ("context_to_fetch", "context_to_fetch"),
@@ -11785,6 +12836,8 @@ def local_route_intent_classifier_deterministic_block(
     requested_action: str = "",
     intent_class: str = "",
 ) -> str:
+    if prompt_requests_investigation(str(prompt or "")):
+        return "investigation_request"
     if prompt_is_broad_planning_request(str(prompt or "")):
         return "broad_planning_request"
     if str(requested_action or "") in {
@@ -12730,18 +13783,8 @@ def run_local_specialist_pipeline(
     }
 
 
-def run_local_planner_preflight(payload: dict[str, Any]) -> dict[str, Any]:
-    configured = bool(LOCAL_PLANNER_PREFLIGHT_ENABLED and LOCAL_LLM_CAN_EXECUTE)
-    if not LOCAL_PLANNER_PREFLIGHT_ENABLED:
-        return {"configured": False, "used": False, "status": "disabled"}
-    if not LOCAL_LLM_CAN_EXECUTE:
-        return {"configured": False, "used": False, "status": "no-local-endpoint"}
-    if normalize_runtime(payload.get("runtime")) == "localllm":
-        return {"configured": True, "used": False, "status": "local-runtime-skip"}
-    if not local_planner_preflight_should_run(payload):
-        return {"configured": configured, "used": False, "status": "not-needed"}
-    prompt = local_planner_preflight_prompt(payload)
-    failures: list[dict[str, Any]] = []
+def local_planner_preflight_selection() -> dict[str, Any]:
+    """Select the bounded planner candidates used by the normal preflight."""
     candidate_lane = "planner"
     guardrail_health = local_llm_health_snapshot("local-llm")
     guardrail_candidates = local_llm_lane_models_from_health(
@@ -12768,6 +13811,83 @@ def run_local_planner_preflight(payload: dict[str, Any]) -> dict[str, Any]:
             env_candidates or guardrail_candidates or local_planner_preferred_models()
         )
     candidates = candidates[:LOCAL_PLANNER_PREFLIGHT_MAX_CANDIDATES]
+    return {
+        "candidate_lane": candidate_lane,
+        "guardrail_health": guardrail_health,
+        "guardrail_candidates": guardrail_candidates,
+        "lane_summary": lane_summary,
+        "env_candidates": env_candidates,
+        "degraded_fallback": degraded_fallback,
+        "candidate_policy": candidate_policy,
+        "candidates": candidates,
+        "candidate_limit": LOCAL_PLANNER_PREFLIGHT_MAX_CANDIDATES,
+        "candidate_count": len(candidates),
+    }
+
+
+def local_planner_preflight_readiness() -> dict[str, Any]:
+    """Report only the public readiness of the opaque Norllama planner pool."""
+    configured = bool(LOCAL_PLANNER_PREFLIGHT_ENABLED and LOCAL_LLM_CAN_EXECUTE)
+    if not LOCAL_PLANNER_PREFLIGHT_ENABLED:
+        return {
+            "configured": False,
+            "ready": False,
+            "status": "disabled",
+            "reason": "Norllama planner preflight is disabled.",
+        }
+    if not LOCAL_LLM_CAN_EXECUTE:
+        return {
+            "configured": False,
+            "ready": False,
+            "status": "no-local-endpoint",
+            "reason": "Norllama pool is not configured for execution.",
+        }
+
+    selection = local_planner_preflight_selection()
+    for model in selection["candidates"]:
+        if local_llm_route_cooldown(model):
+            # A pool-wide cooldown is a managed recovery state, not evidence that
+            # the opaque Norllama pool is absent. Keep normal status routing in
+            # control instead of fabricating a deterministic fallback response.
+            return {
+                "configured": True,
+                "ready": True,
+                "status": "ready",
+                "reason": "Norllama planner pool is recovering under cooldown.",
+            }
+        health = local_llm_health_snapshot(model)
+        if health.get("ok") and str(health.get("endpoint") or "").strip():
+            return {
+                "configured": True,
+                "ready": True,
+                "status": "ready",
+                "reason": "Norllama planner pool is ready.",
+            }
+    return {
+        "configured": True,
+        "ready": False,
+        "status": "unavailable",
+        "reason": "Norllama planner pool is unavailable.",
+    }
+
+
+def run_local_planner_preflight(payload: dict[str, Any]) -> dict[str, Any]:
+    configured = bool(LOCAL_PLANNER_PREFLIGHT_ENABLED and LOCAL_LLM_CAN_EXECUTE)
+    if not LOCAL_PLANNER_PREFLIGHT_ENABLED:
+        return {"configured": False, "used": False, "status": "disabled"}
+    if not LOCAL_LLM_CAN_EXECUTE:
+        return {"configured": False, "used": False, "status": "no-local-endpoint"}
+    if normalize_runtime(payload.get("runtime")) == "localllm":
+        return {"configured": True, "used": False, "status": "local-runtime-skip"}
+    if not local_planner_preflight_should_run(payload):
+        return {"configured": configured, "used": False, "status": "not-needed"}
+    prompt = local_planner_preflight_prompt(payload)
+    failures: list[dict[str, Any]] = []
+    selection = local_planner_preflight_selection()
+    candidate_lane = str(selection["candidate_lane"])
+    guardrail_health = selection["guardrail_health"]
+    candidate_policy = str(selection["candidate_policy"])
+    candidates = list(selection["candidates"])
     for model in candidates:
         cooldown = local_llm_route_cooldown(model)
         if cooldown:
@@ -12816,27 +13936,35 @@ def run_local_planner_preflight(payload: dict[str, Any]) -> dict[str, Any]:
                 max_output_tokens=LOCAL_PLANNER_PREFLIGHT_MAX_OUTPUT_TOKENS,
             )
         except (urllib_error.URLError, TimeoutError, OSError, ValueError) as exc:
+            failure_status = local_llm_route_failure_status(exc)
+            outcome_extra: dict[str, Any] = {}
+            if failure_status == "timeout":
+                outcome_extra["cooldown_seconds"] = (
+                    LOCAL_PLANNER_PREFLIGHT_COLD_LOAD_COOLDOWN_SECONDS
+                )
             append_local_llm_route_outcome(
                 source="planner-preflight",
-                status=local_llm_route_failure_status(exc),
+                status=failure_status,
                 ok=False,
                 model=model,
                 endpoint=endpoint,
                 latency_ms=0,
                 reason=f"{type(exc).__name__}: {summarize_text(str(exc), 180)}",
                 thread_id=read_text(THREAD_ID_PATH),
+                **outcome_extra,
             )
             failures.append(
                 local_planner_failure(
                     model=model,
                     endpoint=endpoint,
-                    status=local_llm_route_failure_status(exc),
+                    status=failure_status,
                     reason=f"{type(exc).__name__}: {summarize_text(str(exc), 180)}",
                 )
             )
             continue
         raw_text = local_llm_response_text(response_payload)
         summary = local_planner_advice_summary(raw_text)
+        parsed = parse_local_planner_json(raw_text)
         route_headers = local_llm_route_headers(response_payload)
         usage_counts = local_llm_usage_counts(response_payload)
         if not summary:
@@ -12906,6 +14034,9 @@ def run_local_planner_preflight(payload: dict[str, Any]) -> dict[str, Any]:
             "url": url,
             "summary": summary,
             "raw_preview": summarize_text(strip_local_planner_reasoning(raw_text), 900),
+            "memory_ref_ids": local_planner_memory_ref_ids(raw_text),
+            "confidence": local_planner_confidence(parsed),
+            "recall_status": local_planner_recall_status(parsed),
             "usage": usage_counts,
             "failure_class": "ok",
             "receipt": receipt,
@@ -12951,6 +14082,395 @@ def run_local_planner_preflight(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def local_planner_verifier_reasons(
+    payload: dict[str, Any],
+    planner: dict[str, Any],
+    memory_retrieval: dict[str, Any],
+) -> list[str]:
+    if not planner.get("used") or str(planner.get("status") or "") != "ok":
+        return []
+    reasons: list[str] = []
+    recall_status = str(planner.get("recall_status") or "").strip().lower()
+    if recall_status == "partial":
+        reasons.append("planner reported partial archive recall")
+    confidence = local_planner_confidence(planner)
+    if confidence is not None and confidence < LOCAL_PLANNER_VERIFIER_MIN_CONFIDENCE:
+        reasons.append(
+            "planner confidence "
+            f"{confidence:.2f} is below {LOCAL_PLANNER_VERIFIER_MIN_CONFIDENCE:.2f}"
+        )
+    if (
+        _coerce_int(payload.get("prompt_estimated_tokens"))
+        >= LOCAL_PLANNER_VERIFIER_CONTEXT_TOKENS
+    ):
+        reasons.append(
+            "prompt estimate "
+            f"{_coerce_int(payload.get('prompt_estimated_tokens')):,} is at or above "
+            f"{LOCAL_PLANNER_VERIFIER_CONTEXT_TOKENS:,} tokens"
+        )
+    if (
+        str(memory_retrieval.get("method") or "") == "none"
+        and _coerce_int(payload.get("memory_candidate_count")) > 0
+    ):
+        reasons.append("memory candidates were available but none were selected")
+    return reasons
+
+
+def local_planner_verifier_prompt(
+    payload: dict[str, Any],
+    *,
+    planner: dict[str, Any],
+    memory_candidates: list[dict[str, Any]],
+    selected_refs: list[dict[str, Any]],
+    reasons: list[str],
+) -> str:
+    compact_payload = {
+        "prompt_preview": summarize_text(
+            str(payload.get("prompt_preview") or ""),
+            LOCAL_PLANNER_PREFLIGHT_PROMPT_CHARS,
+        ),
+        "prompt_estimated_tokens": _coerce_int(payload.get("prompt_estimated_tokens")),
+        "verification_reasons": reasons,
+        "planner": {
+            "summary": summarize_text(str(planner.get("summary") or ""), 700),
+            "confidence": local_planner_confidence(planner),
+            "recall_status": str(planner.get("recall_status") or ""),
+            "memory_ref_ids": context_preflight_memory_ref_ids(
+                planner.get("memory_ref_ids")
+            ),
+        },
+        "memory_candidates": memory_candidates,
+        "selected_memory_ref_ids": [
+            str(item.get("id") or "").strip()
+            for item in selected_refs
+            if str(item.get("id") or "").strip()
+        ],
+    }
+    return "\n".join(
+        [
+            "You are Norman's bounded local planner verifier.",
+            "Return compact JSON only. Do not include private chain-of-thought.",
+            "You have no tool, file, deployment, secret, network, or final-authority access.",
+            (
+                "Check whether the local planner's selected archive references are "
+                "adequate for the operator request. Return only supplied turn ids."
+            ),
+            (
+                "Required keys: verdict, recall_status, memory_ref_ids, "
+                "cloud_needed, reason. verdict must be accept or review; "
+                "recall_status must be complete, partial, or not_needed."
+            ),
+            json.dumps(compact_payload, sort_keys=True, ensure_ascii=True),
+        ]
+    )
+
+
+def normalize_local_planner_verifier_payload(value: Any) -> dict[str, Any]:
+    parsed = value if isinstance(value, dict) else {}
+    verdict = str(parsed.get("verdict") or "").strip().lower()
+    if verdict in {"pass", "passed", "ok", "accept"}:
+        verdict = "accept"
+    elif verdict in {"review", "needs_review", "needs-review", "reject"}:
+        verdict = "review"
+    else:
+        verdict = "review"
+    recall_status = local_planner_recall_status(parsed)
+    return {
+        "verdict": verdict,
+        "recall_status": recall_status,
+        "memory_ref_ids": context_preflight_memory_ref_ids(
+            parsed.get("memory_ref_ids")
+        ),
+        "cloud_needed": coerce_boolish(parsed.get("cloud_needed")),
+        "reason": summarize_text(str(parsed.get("reason") or ""), 360),
+    }
+
+
+def local_planner_verifier_receipt(
+    *,
+    used: bool,
+    status: Any,
+    reasons: list[str],
+    model: Any = "",
+    endpoint: Any = "",
+    usage: Any = None,
+    candidate_policy: Any = "",
+) -> dict[str, Any]:
+    usage_counts = usage if isinstance(usage, dict) else {}
+    return {
+        "schema": "norman.tui.local-planner-verifier-receipt.v1",
+        "used": bool(used),
+        "status": str(status or "").strip(),
+        "model": str(model or "").strip(),
+        "endpoint": str(endpoint or "").strip(),
+        "candidate_lane": "verifier",
+        "candidate_policy": str(candidate_policy or "").strip(),
+        "trigger_reasons": list(reasons),
+        "local_tokens": context_preflight_local_tokens({"usage": usage_counts}),
+    }
+
+
+def run_local_planner_verifier(
+    payload: dict[str, Any],
+    *,
+    planner: dict[str, Any],
+    memory_candidates: list[dict[str, Any]],
+    selected_refs: list[dict[str, Any]],
+    memory_retrieval: dict[str, Any],
+) -> dict[str, Any]:
+    configured = bool(LOCAL_PLANNER_VERIFIER_ENABLED and LOCAL_LLM_CAN_EXECUTE)
+    if not LOCAL_PLANNER_VERIFIER_ENABLED:
+        return {"configured": False, "used": False, "status": "disabled"}
+    if not LOCAL_LLM_CAN_EXECUTE:
+        return {"configured": False, "used": False, "status": "no-local-endpoint"}
+    if normalize_runtime(payload.get("runtime")) == "localllm":
+        return {"configured": True, "used": False, "status": "local-runtime-skip"}
+    reasons = local_planner_verifier_reasons(payload, planner, memory_retrieval)
+    if not reasons:
+        return {
+            "configured": configured,
+            "used": False,
+            "status": "not-needed",
+            "trigger_reasons": [],
+        }
+
+    guardrail_health = local_llm_health_snapshot("local-llm")
+    candidate_lane = "verifier"
+    guardrail_candidates = local_llm_lane_models_from_health(
+        guardrail_health, candidate_lane
+    )
+    env_candidates = local_llm_env_lane_models(candidate_lane)
+    lane_summary = local_specialist_lane_summary(guardrail_health, candidate_lane)
+    candidate_policy = local_llm_guardrail_candidate_policy(
+        env_candidates,
+        guardrail_candidates,
+        guardrail_health,
+    )
+    candidates = (
+        env_candidates or guardrail_candidates or local_llm_lane_models(candidate_lane)
+    )[:LOCAL_PLANNER_VERIFIER_MAX_CANDIDATES]
+    lane_status = str(lane_summary.get("status") or "").strip()
+    if lane_status and lane_status != "ready":
+        return {
+            "configured": True,
+            "used": False,
+            "status": "not-ready",
+            "trigger_reasons": reasons,
+            "candidate_policy": candidate_policy,
+            "candidates": candidates,
+            "reason": "verifier lane is not resident/ready",
+            "receipt": local_planner_verifier_receipt(
+                used=False,
+                status="not-ready",
+                reasons=reasons,
+                model=candidates[0] if candidates else "",
+                candidate_policy=candidate_policy,
+            ),
+        }
+    if not candidates:
+        return {
+            "configured": True,
+            "used": False,
+            "status": "no-candidates",
+            "trigger_reasons": reasons,
+            "reason": "no local verifier candidate is available",
+            "receipt": local_planner_verifier_receipt(
+                used=False,
+                status="no-candidates",
+                reasons=reasons,
+            ),
+        }
+
+    model = candidates[0]
+    cooldown = local_llm_route_cooldown(model)
+    if cooldown:
+        return {
+            "configured": True,
+            "used": False,
+            "status": "cooldown",
+            "trigger_reasons": reasons,
+            "model": model,
+            "endpoint": str(cooldown.get("endpoint") or ""),
+            "candidate_policy": candidate_policy,
+            "reason": (
+                f"recent local route failure {cooldown.get('status')}; retry in "
+                f"{cooldown.get('remaining_seconds')}s"
+            ),
+            "receipt": local_planner_verifier_receipt(
+                used=False,
+                status="cooldown",
+                reasons=reasons,
+                model=model,
+                endpoint=cooldown.get("endpoint"),
+                candidate_policy=candidate_policy,
+            ),
+        }
+    health = local_llm_health_snapshot(model)
+    endpoint = str(health.get("endpoint") or "").strip()
+    if not health.get("ok") or not endpoint:
+        return {
+            "configured": True,
+            "used": False,
+            "status": "unhealthy",
+            "trigger_reasons": reasons,
+            "model": model,
+            "endpoint": endpoint,
+            "candidate_policy": candidate_policy,
+            "reason": summarize_text(str(health.get("reason") or ""), 240),
+            "receipt": local_planner_verifier_receipt(
+                used=False,
+                status="unhealthy",
+                reasons=reasons,
+                model=model,
+                endpoint=endpoint,
+                candidate_policy=candidate_policy,
+            ),
+        }
+    prompt = local_planner_verifier_prompt(
+        payload,
+        planner=planner,
+        memory_candidates=memory_candidates,
+        selected_refs=selected_refs,
+        reasons=reasons,
+    )
+    try:
+        response_payload, url, adapter = local_llm_generate_once(
+            endpoint,
+            model,
+            prompt,
+            timeout_seconds=LOCAL_PLANNER_VERIFIER_TIMEOUT_SECONDS,
+            max_output_tokens=LOCAL_PLANNER_VERIFIER_MAX_OUTPUT_TOKENS,
+        )
+    except (urllib_error.URLError, TimeoutError, OSError, ValueError) as exc:
+        status = local_llm_route_failure_status(exc)
+        append_local_llm_route_outcome(
+            source="planner-verifier",
+            status=status,
+            ok=False,
+            model=model,
+            endpoint=endpoint,
+            latency_ms=0,
+            reason=f"{type(exc).__name__}: {summarize_text(str(exc), 180)}",
+            thread_id=read_text(THREAD_ID_PATH),
+        )
+        return {
+            "configured": True,
+            "used": False,
+            "status": status,
+            "trigger_reasons": reasons,
+            "model": model,
+            "endpoint": endpoint,
+            "candidate_policy": candidate_policy,
+            "reason": f"{type(exc).__name__}: {summarize_text(str(exc), 180)}",
+            "receipt": local_planner_verifier_receipt(
+                used=False,
+                status=status,
+                reasons=reasons,
+                model=model,
+                endpoint=endpoint,
+                candidate_policy=candidate_policy,
+            ),
+        }
+
+    raw_text = local_llm_response_text(response_payload)
+    parsed = parse_local_planner_json(raw_text)
+    usage_counts = local_llm_usage_counts(response_payload)
+    route_headers = local_llm_route_headers(response_payload)
+    result = normalize_local_planner_verifier_payload(parsed)
+    status = "ok" if parsed else "invalid-response"
+    append_local_llm_route_outcome(
+        source="planner-verifier",
+        status=status,
+        ok=bool(parsed),
+        model=model,
+        endpoint=endpoint,
+        adapter=adapter,
+        url=url,
+        worker_endpoint=route_headers.get("x-norllama-worker-endpoint", ""),
+        upstream=route_headers.get("x-norllama-upstream", ""),
+        attempts=route_headers.get("x-norllama-attempts", ""),
+        response_chars=len(raw_text),
+        reason=(
+            "planner verifier returned a compact review"
+            if parsed
+            else "planner verifier returned invalid JSON"
+        ),
+        thread_id=read_text(THREAD_ID_PATH),
+        **usage_counts,
+    )
+    return {
+        "configured": True,
+        "used": bool(parsed),
+        "status": status,
+        "trigger_reasons": reasons,
+        "model": model,
+        "endpoint": endpoint,
+        "adapter": adapter,
+        "url": url,
+        "candidate_policy": candidate_policy,
+        "verdict": result["verdict"],
+        "recall_status": result["recall_status"],
+        "memory_ref_ids": result["memory_ref_ids"],
+        "cloud_needed": result["cloud_needed"],
+        "reason": result["reason"],
+        "usage": usage_counts,
+        "receipt": local_planner_verifier_receipt(
+            used=bool(parsed),
+            status=status,
+            reasons=reasons,
+            model=model,
+            endpoint=endpoint,
+            usage=usage_counts,
+            candidate_policy=candidate_policy,
+        ),
+    }
+
+
+def apply_local_planner_verifier_memory_refs(
+    memory_candidates: list[dict[str, Any]],
+    selected_refs: list[dict[str, Any]],
+    memory_retrieval: dict[str, Any],
+    verifier: dict[str, Any],
+    *,
+    limit: int = CONTEXT_PREFLIGHT_MEMORY_REFS,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    retrieval = dict(memory_retrieval or {})
+    retrieval["verification"] = {
+        "used": bool(verifier.get("used")),
+        "status": str(verifier.get("status") or "").strip(),
+        "verdict": str(verifier.get("verdict") or "").strip(),
+        "trigger_reasons": list(verifier.get("trigger_reasons") or []),
+    }
+    if not verifier.get("used") or verifier.get("status") != "ok":
+        return selected_refs, retrieval
+    by_id = {
+        str(item.get("id") or "").strip(): item
+        for item in memory_candidates
+        if str(item.get("id") or "").strip()
+    }
+    selected = list(selected_refs)
+    selected_ids = {
+        str(item.get("id") or "").strip()
+        for item in selected
+        if str(item.get("id") or "").strip()
+    }
+    added = 0
+    for turn_id in context_preflight_memory_ref_ids(verifier.get("memory_ref_ids")):
+        item = by_id.get(turn_id)
+        if item is None or turn_id in selected_ids:
+            continue
+        if len(selected) >= max(0, int(limit)):
+            break
+        selected.append(item)
+        selected_ids.add(turn_id)
+        added += 1
+    retrieval["selected_count"] = len(selected)
+    retrieval["verifier_added_count"] = added
+    if added:
+        retrieval["method"] = "local-planner-verifier"
+    return selected, retrieval
+
+
 def append_local_planner_preflight_audit(
     planner: dict[str, Any],
     payload: dict[str, Any],
@@ -12983,6 +14503,47 @@ def append_local_planner_preflight_audit(
                 "runtime": payload.get("runtime"),
                 "model": payload.get("model"),
                 "attachment_count": payload.get("attachment_count") or 0,
+                "memory_retrieval": payload.get("memory_retrieval") or {},
+            },
+        )
+    except Exception:
+        pass
+
+
+def append_local_planner_verifier_audit(
+    verifier: dict[str, Any],
+    payload: dict[str, Any],
+) -> None:
+    if not verifier.get("configured"):
+        return
+    if verifier.get("status") in {
+        "disabled",
+        "local-runtime-skip",
+        "not-needed",
+    }:
+        return
+    summary = (
+        "Norllama planner verifier completed an advisory recall review."
+        if verifier.get("used")
+        else "Norllama planner verifier did not complete an advisory recall review."
+    )
+    try:
+        append_audit_event(
+            event_type="planner.local-verifier",
+            summary=summary,
+            detail=summarize_text(
+                str(verifier.get("reason") or verifier.get("status") or ""), 320
+            ),
+            severity="info" if verifier.get("used") else "warning",
+            actor_type="system",
+            thread_id=read_text(THREAD_ID_PATH),
+            payload={
+                "verifier": verifier,
+                "prompt_estimated_tokens": payload.get("prompt_estimated_tokens"),
+                "prompt_preview": summarize_text(
+                    str(payload.get("prompt_preview") or ""), 240
+                ),
+                "memory_retrieval": payload.get("memory_retrieval") or {},
             },
         )
     except Exception:
@@ -13124,6 +14685,7 @@ def context_preflight_accounting_payload(
     payload: dict[str, Any],
     offline: dict[str, Any],
     planner: dict[str, Any],
+    verifier: dict[str, Any] | None = None,
     saved_tokens: int,
     specialist: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -13139,9 +14701,17 @@ def context_preflight_accounting_payload(
         if isinstance(specialist_payload.get("receipt"), dict)
         else {}
     )
+    verifier_payload = verifier if isinstance(verifier, dict) else {}
+    rerank_payload = context_preflight_memory_rerank(offline.get("rerank"))
+    verifier_receipt = (
+        verifier_payload.get("receipt")
+        if isinstance(verifier_payload.get("receipt"), dict)
+        else {}
+    )
     specialist_tokens = _coerce_int(
         specialist_payload.get("local_tokens") or specialist_receipt.get("local_tokens")
     )
+    verifier_tokens = context_preflight_local_tokens(verifier_payload)
     avoided_floor = max(0, _coerce_int(saved_tokens))
     gate = cloud_context_gate_accounting(
         payload,
@@ -13150,7 +14720,7 @@ def context_preflight_accounting_payload(
         planner=planner,
         specialist=specialist_payload,
     )
-    local_total_tokens = local_tokens + specialist_tokens
+    local_total_tokens = local_tokens + verifier_tokens + specialist_tokens
     accounting = {
         "schema": "norman.tui.context-preflight-accounting.v1",
         "recorded_at": now_ts(),
@@ -13167,6 +14737,19 @@ def context_preflight_accounting_payload(
         ),
         "attachment_saved_tokens": avoided_floor,
         "memory_ref_count": len(payload.get("memory_refs") or []),
+        "memory_rerank_used": bool(rerank_payload.get("used")),
+        "memory_rerank_status": str(rerank_payload.get("status") or "").strip(),
+        "memory_rerank_model": str(rerank_payload.get("model") or "").strip(),
+        "memory_rerank_candidate_count": _coerce_int(
+            rerank_payload.get("candidate_count")
+        ),
+        "memory_rerank_selected_count": _coerce_int(
+            rerank_payload.get("selected_count")
+        ),
+        "memory_rerank_failure_class": str(
+            rerank_payload.get("failure_class") or ""
+        ).strip(),
+        "memory_rerank_receipt": dict(rerank_payload),
         "offline_preflight_used": bool(offline.get("used")),
         "offline_preflight_status": str(offline.get("status") or "").strip(),
         "local_preflight_used": bool(planner.get("used")),
@@ -13192,6 +14775,20 @@ def context_preflight_accounting_payload(
         "local_preflight_route_posture": str(
             local_receipt.get("route_posture") or ""
         ).strip(),
+        "local_planner_verifier_used": bool(verifier_payload.get("used")),
+        "local_planner_verifier_status": str(
+            verifier_payload.get("status") or ""
+        ).strip(),
+        "local_planner_verifier_model": str(
+            verifier_payload.get("model") or ""
+        ).strip(),
+        "local_planner_verifier_tokens": verifier_tokens,
+        "local_planner_verifier_trigger_reasons": [
+            summarize_text(str(reason), 180)
+            for reason in verifier_payload.get("trigger_reasons") or []
+            if str(reason or "").strip()
+        ],
+        "local_planner_verifier_receipt": dict(verifier_receipt),
         "local_specialist_used": bool(specialist_payload.get("used")),
         "local_specialist_status": str(specialist_payload.get("status") or "").strip(),
         "local_specialist_stage_count": _coerce_int(
@@ -13245,6 +14842,23 @@ def usage_fields_from_context_preflight_accounting(
             accounting.get("attachment_saved_tokens")
         ),
         "memory_ref_count": _coerce_int(accounting.get("memory_ref_count")),
+        "memory_rerank_used": bool(accounting.get("memory_rerank_used")),
+        "memory_rerank_status": str(
+            accounting.get("memory_rerank_status") or ""
+        ).strip(),
+        "memory_rerank_model": str(accounting.get("memory_rerank_model") or "").strip(),
+        "memory_rerank_candidate_count": _coerce_int(
+            accounting.get("memory_rerank_candidate_count")
+        ),
+        "memory_rerank_selected_count": _coerce_int(
+            accounting.get("memory_rerank_selected_count")
+        ),
+        "memory_rerank_failure_class": str(
+            accounting.get("memory_rerank_failure_class") or ""
+        ).strip(),
+        "memory_rerank_receipt": accounting.get("memory_rerank_receipt")
+        if isinstance(accounting.get("memory_rerank_receipt"), dict)
+        else {},
         "offline_preflight_used": bool(accounting.get("offline_preflight_used")),
         "offline_preflight_status": str(
             accounting.get("offline_preflight_status") or ""
@@ -13278,6 +14892,28 @@ def usage_fields_from_context_preflight_accounting(
         "local_preflight_route_posture": str(
             accounting.get("local_preflight_route_posture") or ""
         ).strip(),
+        "local_planner_verifier_used": bool(
+            accounting.get("local_planner_verifier_used")
+        ),
+        "local_planner_verifier_status": str(
+            accounting.get("local_planner_verifier_status") or ""
+        ).strip(),
+        "local_planner_verifier_model": str(
+            accounting.get("local_planner_verifier_model") or ""
+        ).strip(),
+        "local_planner_verifier_tokens": _coerce_int(
+            accounting.get("local_planner_verifier_tokens")
+        ),
+        "local_planner_verifier_trigger_reasons": [
+            str(reason).strip()
+            for reason in accounting.get("local_planner_verifier_trigger_reasons", [])
+            if str(reason).strip()
+        ],
+        "local_planner_verifier_receipt": accounting.get(
+            "local_planner_verifier_receipt"
+        )
+        if isinstance(accounting.get("local_planner_verifier_receipt"), dict)
+        else {},
         "local_specialist_used": bool(accounting.get("local_specialist_used")),
         "local_specialist_status": str(
             accounting.get("local_specialist_status") or ""
@@ -13399,6 +15035,7 @@ def add_context_pack_to_preflight_accounting(
     merged["cloud_preflight_net_token_delta_estimate"] = (
         _coerce_int(merged.get("cloud_tokens_avoided_estimate"))
         - _coerce_int(merged.get("local_preflight_tokens"))
+        - _coerce_int(merged.get("local_planner_verifier_tokens"))
         - _coerce_int(merged.get("local_specialist_tokens"))
     )
     return merged
@@ -13450,7 +15087,9 @@ def context_preflight_prompt_context(
         return ""
     normalized_runtime = normalize_runtime(runtime)
     normalized_model = normalize_runtime_model(normalized_runtime, model)
-    refs = context_preflight_memory_refs(prompt)
+    lexical_memory_candidates = context_preflight_memory_refs(
+        prompt, limit=CONTEXT_PREFLIGHT_MEMORY_CANDIDATES
+    )
     savings_rows = [
         item
         for item in attachment_savings or []
@@ -13467,20 +15106,64 @@ def context_preflight_prompt_context(
         "prompt_estimated_tokens": estimated_prompt_tokens,
         "runtime": normalized_runtime,
         "model": normalized_model,
-        "memory_refs": refs,
+        "memory_refs": lexical_memory_candidates,
+        "memory_candidate_count": len(lexical_memory_candidates),
         "attachment_savings": savings_rows,
         "attachment_count": len(attachments or []),
     }
     should_run_offline = bool(CONTEXT_PREFLIGHT_OFFLINE_COMMAND) and (
-        estimated_prompt_tokens >= 800 or saved_tokens >= 500 or bool(refs)
+        estimated_prompt_tokens >= 800
+        or saved_tokens >= 500
+        or bool(lexical_memory_candidates)
+        or bool(context_preflight_keywords(prompt))
     )
     offline = (
         run_context_preflight_offline_command(preflight_payload)
         if should_run_offline
         else {"configured": bool(CONTEXT_PREFLIGHT_OFFLINE_COMMAND), "used": False}
     )
+    vector_memory_candidates = context_preflight_memory_refs_by_ids(
+        offline.get("memory_ref_ids") if isinstance(offline, dict) else [],
+        limit=CONTEXT_PREFLIGHT_MEMORY_CANDIDATES,
+    )
+    memory_candidates = merge_context_preflight_memory_refs(
+        vector_memory_candidates,
+        lexical_memory_candidates,
+        limit=CONTEXT_PREFLIGHT_MEMORY_CANDIDATES,
+    )
+    preflight_payload["memory_refs"] = memory_candidates
+    preflight_payload["memory_candidate_count"] = len(memory_candidates)
     planner = run_local_planner_preflight(preflight_payload)
+    refs, memory_retrieval = select_context_preflight_memory_refs(
+        memory_candidates,
+        planner,
+        offline=offline,
+    )
+    if memory_retrieval.get(
+        "method"
+    ) == "vector-preflight" and context_preflight_memory_rerank(
+        offline.get("rerank")
+    ).get("used"):
+        memory_retrieval["method"] = "local-rerank"
+    preflight_payload["memory_refs"] = refs
+    preflight_payload["memory_retrieval"] = memory_retrieval
+    verifier = run_local_planner_verifier(
+        preflight_payload,
+        planner=planner,
+        memory_candidates=memory_candidates,
+        selected_refs=refs,
+        memory_retrieval=memory_retrieval,
+    )
+    refs, memory_retrieval = apply_local_planner_verifier_memory_refs(
+        memory_candidates,
+        refs,
+        memory_retrieval,
+        verifier,
+    )
+    preflight_payload["memory_refs"] = refs
+    preflight_payload["memory_retrieval"] = memory_retrieval
     append_local_planner_preflight_audit(planner, preflight_payload)
+    append_local_planner_verifier_audit(verifier, preflight_payload)
     specialist = run_local_specialist_pipeline(preflight_payload, planner=planner)
     append_local_specialist_pipeline_audit(specialist, preflight_payload)
     accounting = context_preflight_accounting_payload(
@@ -13488,6 +15171,7 @@ def context_preflight_prompt_context(
         payload=preflight_payload,
         offline=offline,
         planner=planner,
+        verifier=verifier,
         saved_tokens=saved_tokens,
         specialist=specialist,
     )
@@ -13498,6 +15182,14 @@ def context_preflight_prompt_context(
         or (
             planner.get("configured")
             and planner.get("status")
+            not in {"disabled", "local-runtime-skip", "not-needed"}
+        )
+    )
+    verifier_should_note = bool(
+        verifier.get("used")
+        or (
+            verifier.get("configured")
+            and verifier.get("status")
             not in {"disabled", "local-runtime-skip", "not-needed"}
         )
     )
@@ -13537,6 +15229,33 @@ def context_preflight_prompt_context(
             "- Large text attachments are path-backed previews; inspect the listed file path before relying on omitted sections."
         )
     if refs:
+        retrieval_method = str(memory_retrieval.get("method") or "").strip()
+        candidate_count = _coerce_int(memory_retrieval.get("candidate_count"))
+        if retrieval_method == "local-planner":
+            lines.append(
+                "- Local planner selected "
+                f"{len(refs)} of {candidate_count} archive memory candidates."
+            )
+        elif retrieval_method == "local-planner-verifier":
+            lines.append(
+                "- Local planner verifier expanded the archive recall to "
+                f"{len(refs)} of {candidate_count} candidates."
+            )
+        elif retrieval_method == "vector-preflight":
+            lines.append(
+                "- Local vector preflight selected "
+                f"{len(refs)} of {candidate_count} archive memory candidates."
+            )
+        elif retrieval_method == "local-rerank":
+            lines.append(
+                "- Local Spark reranker selected "
+                f"{len(refs)} of {candidate_count} archive memory candidates."
+            )
+        elif candidate_count > len(refs):
+            lines.append(
+                "- Local memory recall used lexical ranking "
+                f"({len(refs)} of {candidate_count} archive candidates shown)."
+            )
         lines.append(
             "- Relevant local memory refs from this TUI's SQLite state; use as pointers, not proof, unless you inspect the underlying files/history:"
         )
@@ -13591,6 +15310,34 @@ def context_preflight_prompt_context(
             + summarize_text(str(planner.get("reason") or ""), 220)
             + ")."
         )
+    if verifier_should_note:
+        verifier_tokens = context_preflight_local_tokens(verifier)
+        trigger_reasons = "; ".join(
+            str(reason)
+            for reason in verifier.get("trigger_reasons") or []
+            if str(reason or "").strip()
+        )
+        if verifier.get("used"):
+            lines.append(
+                "- Norllama planner verifier: "
+                f"{verifier.get('verdict', 'review')} "
+                f"({verifier_tokens:,} local tokens)."
+            )
+            if trigger_reasons:
+                lines.append(f"  - Trigger: {summarize_text(trigger_reasons, 360)}.")
+            if verifier.get("reason"):
+                lines.append(
+                    "  - Advisory note: "
+                    + summarize_text(str(verifier.get("reason") or ""), 360)
+                    + "."
+                )
+        else:
+            lines.append(
+                "- Norllama planner verifier was requested but did not complete "
+                f"({verifier.get('status', 'not-used')}: "
+                + summarize_text(str(verifier.get("reason") or ""), 220)
+                + ")."
+            )
     if specialist_should_note:
         receipt = (
             specialist.get("receipt")
@@ -13683,7 +15430,7 @@ def response_final_status(response: str) -> str:
 
 
 def response_needs_next_action_plan(response: str) -> bool:
-    return response_final_status(response) in {"blocked", "checkpoint"}
+    return response_final_status(response) == "checkpoint"
 
 
 def response_promises_unfinished_work(response: str) -> bool:
@@ -13952,21 +15699,13 @@ def zero_token_provider_retry_service_tier(
     if provider_surface.lower() == "aws-bedrock" and normalized_usage.get(
         "zero_token_provider_failure"
     ):
-        if tier in {"auto", "default"}:
+        if tier == "bedrock-emergency":
             if "bedrock-failover" in SERVICE_TIER_OPTIONS:
                 return "bedrock-failover"
             if "bedrock-failover-2" in SERVICE_TIER_OPTIONS:
                 return "bedrock-failover-2"
         if tier == "bedrock-failover" and "bedrock-failover-2" in SERVICE_TIER_OPTIONS:
             return "bedrock-failover-2"
-        if CODEX_DIRECT_TIERS_ENABLED and "flex" in SERVICE_TIER_OPTIONS:
-            return "flex"
-        if (
-            tier == "default"
-            and "auto" in SERVICE_TIER_OPTIONS
-            and not CODEX_STANDARD_PROFILE_V2
-        ):
-            return "auto"
     return tier
 
 
@@ -13980,7 +15719,7 @@ def zero_token_provider_retry_model(
         return normalized_model
     if not normalized_usage.get("zero_token_provider_failure"):
         return normalized_model
-    standard_model = codex_bedrock_model_name(CODEX_STANDARD_MODEL or MODEL)
+    standard_model = codex_bedrock_model_name(CODEX_BEDROCK_EMERGENCY_MODEL or MODEL)
     current_version = _codex_model_version(normalized_model)
     standard_version = _codex_model_version(standard_model)
     if current_version and standard_version and current_version > standard_version:
@@ -14781,21 +16520,56 @@ def load_history(limit: int = MAX_HISTORY_ITEMS) -> list[dict[str, Any]]:
     return load_history_from_jsonl(limit=limit)
 
 
-def replace_history_entries_in_state_db(entries: list[dict[str, Any]]) -> None:
+def delete_history_entries_from_state_db(entries: Iterable[dict[str, Any]]) -> None:
     if not STATE_DB_ENABLED:
+        return
+    ids = [_state_db_id("turn", entry) for entry in entries if isinstance(entry, dict)]
+    if not ids:
         return
     conn = _state_db_connect()
     if conn is None:
         return
     try:
-        conn.execute("DELETE FROM turns")
+        conn.executemany(
+            "DELETE FROM turns WHERE id = ?", [(entry_id,) for entry_id in ids]
+        )
         conn.commit()
     except sqlite3.Error:
         pass
     finally:
         conn.close()
+
+
+def prune_history_archive_in_state_db() -> None:
+    if not STATE_DB_ENABLED or TURN_ARCHIVE_DAYS <= 0:
+        return
+    conn = _state_db_connect()
+    if conn is None:
+        return
+    cutoff = now_ts() - (TURN_ARCHIVE_DAYS * 24 * 60 * 60)
+    try:
+        conn.execute(
+            """
+            DELETE FROM turns
+            WHERE CASE
+                WHEN finished_at > 0 THEN finished_at
+                WHEN started_at > 0 THEN started_at
+                ELSE 0
+            END < ?
+            """,
+            (cutoff,),
+        )
+        conn.commit()
+    except sqlite3.Error:
+        pass
+    finally:
+        conn.close()
+
+
+def archive_history_entries_in_state_db(entries: Iterable[dict[str, Any]]) -> None:
     for entry in entries:
         mirror_history_entry_to_state_db(entry)
+    prune_history_archive_in_state_db()
 
 
 def write_history_entries(
@@ -14809,7 +16583,7 @@ def write_history_entries(
     if payload:
         payload += "\n"
     HISTORY_PATH.write_text(payload, encoding="utf-8")
-    replace_history_entries_in_state_db(trimmed)
+    archive_history_entries_in_state_db(entries)
     return trimmed
 
 
@@ -14874,7 +16648,6 @@ def append_history_entry(
     }
     entries.append(entry)
     write_history_entries(entries)
-    mirror_history_entry_to_state_db(entry)
 
 
 def clear_trailing_reauth_history(
@@ -14885,7 +16658,8 @@ def clear_trailing_reauth_history(
     while sanitized and _history_entry_requires_reauth(sanitized[-1]):
         removed.insert(0, sanitized.pop())
     if removed:
-        write_history_entries(sanitized, limit=0)
+        delete_history_entries_from_state_db(removed)
+        write_history_entries(sanitized)
     return sanitized, removed
 
 
@@ -14939,15 +16713,18 @@ def clear_codex_transient_error_history(
     entries: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], bool]:
     sanitized = [dict(item) for item in entries or [] if isinstance(item, dict)]
+    superseded: list[dict[str, Any]] = []
     changed = False
     for item in sanitized:
         error_text = str(item.get("error") or "")
         filtered = strip_codex_empty_last_message_warning(error_text)
         if filtered != error_text.strip():
+            superseded.append(dict(item))
             item["error"] = filtered
             changed = True
     if changed:
-        write_history_entries(sanitized, limit=0)
+        delete_history_entries_from_state_db(superseded)
+        write_history_entries(sanitized)
     return sanitized, changed
 
 
@@ -15007,7 +16784,8 @@ def clear_trailing_empty_ghost_history(
     while sanitized and _history_entry_is_empty_ghost(sanitized[-1]):
         removed.insert(0, sanitized.pop())
     if removed:
-        write_history_entries(sanitized, limit=0)
+        delete_history_entries_from_state_db(removed)
+        write_history_entries(sanitized)
     return sanitized, removed
 
 
@@ -15019,7 +16797,8 @@ def clear_trailing_passive_party_line_history(
     while sanitized and _history_entry_is_passive_party_line(sanitized[-1]):
         removed.insert(0, sanitized.pop())
     if removed:
-        write_history_entries(sanitized, limit=0)
+        delete_history_entries_from_state_db(removed)
+        write_history_entries(sanitized)
     return sanitized, removed
 
 
@@ -15040,7 +16819,8 @@ def unwind_latest_history_turn() -> dict[str, Any]:
             raise ValueError("No completed turn is available to unwind.")
 
         removed = dict(history.pop())
-        write_history_entries(history, limit=0)
+        delete_history_entries_from_state_db([removed])
+        write_history_entries(history)
 
         latest_entry = history[-1] if history else {}
         write_text(LAST_PROMPT_PATH, str(latest_entry.get("prompt") or ""))
@@ -15169,6 +16949,8 @@ def normalize_audit_event(value: Any) -> dict[str, Any]:
     payload["severity"] = (
         str(payload.get("severity") or "info").strip().lower() or "info"
     )
+    if payload["severity"] == "warning":
+        payload["severity"] = "warn"
     if payload["severity"] not in {"info", "warn", "error"}:
         payload["severity"] = "info"
     payload["summary"] = str(payload.get("summary") or "").strip()
@@ -15392,6 +17174,35 @@ def _console_runtime_json_request(
     return parsed if isinstance(parsed, dict) else {}
 
 
+@functools.cache
+def child_agent_broker() -> ChildAgentBroker:
+    return ChildAgentBroker(
+        state_dir=STATE_DIR,
+        parent_session=SESSION,
+        parent_tmux_socket=TMUX_SOCKET,
+        parent_script_path=WEB_SCRIPT_PATH,
+        worker_script_path=Path(
+            os.environ.get("NORMAN_CHILD_AGENT_WORKER_SCRIPT", str(WEB_SCRIPT_PATH))
+        ),
+        codex_home=CODEX_HOME,
+        token=console_runtime_token,
+        agent_name=AGENT_NAME,
+        workdir=WORKDIR,
+        runtime_enabled=console_runtime_bridge_enabled(),
+        runtime_request=_console_runtime_json_request,
+    )
+
+
+def child_agent_error_status(error: ChildAgentError) -> HTTPStatus:
+    if isinstance(error, ChildAgentNotFound):
+        return HTTPStatus.NOT_FOUND
+    if isinstance(error, ChildAgentConflict):
+        return HTTPStatus.CONFLICT
+    if isinstance(error, ChildAgentUnavailable):
+        return HTTPStatus.SERVICE_UNAVAILABLE
+    return HTTPStatus.BAD_REQUEST
+
+
 def _record_console_runtime_error(exc: BaseException) -> None:
     global CONSOLE_RUNTIME_LAST_ERROR, CONSOLE_RUNTIME_LAST_ERROR_AT
     CONSOLE_RUNTIME_LAST_ERROR = str(exc)
@@ -15589,6 +17400,113 @@ def _read_console_runtime_job_id() -> str:
     return stored or _default_console_runtime_job_id()
 
 
+def _read_console_runtime_workstream_id() -> str:
+    if CONSOLE_RUNTIME_CACHED_WORKSTREAM_ID:
+        return CONSOLE_RUNTIME_CACHED_WORKSTREAM_ID
+    return read_text(CONSOLE_RUNTIME_WORKSTREAM_ID_PATH).strip()
+
+
+def _console_runtime_workstreams_backed_off() -> bool:
+    global CONSOLE_RUNTIME_WORKSTREAM_BACKOFF_LOADED
+    global CONSOLE_RUNTIME_WORKSTREAM_BACKOFF_UNTIL
+    if not CONSOLE_RUNTIME_WORKSTREAM_BACKOFF_LOADED:
+        CONSOLE_RUNTIME_WORKSTREAM_BACKOFF_UNTIL = _console_runtime_breaker_until(
+            CONSOLE_RUNTIME_WORKSTREAM_BREAKER_PATH
+        )
+        CONSOLE_RUNTIME_WORKSTREAM_BACKOFF_LOADED = True
+    return CONSOLE_RUNTIME_WORKSTREAM_BACKOFF_UNTIL > time.time()
+
+
+def _workstream_endpoint_is_unavailable(exc: BaseException) -> bool:
+    status_code = _http_error_status(exc)
+    if status_code in {405, 501}:
+        return True
+    if status_code != 404 or not isinstance(exc, urllib_error.HTTPError):
+        return False
+    try:
+        body = exc.read().decode("utf-8", errors="replace")
+        payload = json.loads(body) if body else {}
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    return str(payload.get("detail") or "").strip().lower() == "not found"
+
+
+def _back_off_console_runtime_workstreams(exc: BaseException) -> None:
+    global CONSOLE_RUNTIME_WORKSTREAM_BACKOFF_LOADED
+    global CONSOLE_RUNTIME_WORKSTREAM_BACKOFF_UNTIL
+    CONSOLE_RUNTIME_WORKSTREAM_BACKOFF_UNTIL = _record_console_runtime_breaker(
+        CONSOLE_RUNTIME_WORKSTREAM_BREAKER_PATH,
+        retry_seconds=CONSOLE_RUNTIME_WORKSTREAM_RETRY_SECONDS,
+        status_code=_http_error_status(exc),
+    )
+    CONSOLE_RUNTIME_WORKSTREAM_BACKOFF_LOADED = True
+
+
+def _clear_console_runtime_workstream_backoff() -> None:
+    global CONSOLE_RUNTIME_WORKSTREAM_BACKOFF_LOADED
+    global CONSOLE_RUNTIME_WORKSTREAM_BACKOFF_UNTIL
+    CONSOLE_RUNTIME_WORKSTREAM_BACKOFF_UNTIL = 0.0
+    CONSOLE_RUNTIME_WORKSTREAM_BACKOFF_LOADED = True
+    _clear_console_runtime_breaker(CONSOLE_RUNTIME_WORKSTREAM_BREAKER_PATH)
+
+
+def _ensure_console_runtime_workstream_locked(job_id: str) -> str:
+    """Create the session workstream while the caller owns CONSOLE_RUNTIME_LOCK."""
+    global CONSOLE_RUNTIME_CACHED_WORKSTREAM_ID
+    existing = _read_console_runtime_workstream_id()
+    if existing:
+        CONSOLE_RUNTIME_CACHED_WORKSTREAM_ID = existing
+        return existing
+    if _console_runtime_workstreams_backed_off():
+        return ""
+    clean_job_id = str(job_id or "").strip()
+    if not clean_job_id:
+        return ""
+    payload = {
+        "coordinator_job_id": clean_job_id,
+        "title": f"{AGENT_NAME} on {HOST_NAME}/{SESSION}",
+        "metadata": {
+            "source": "agent_console_web",
+            "session_name": SESSION,
+            "agent_name": AGENT_NAME,
+            "host_name": HOST_NAME,
+            "tui_backend": TUI_BACKEND,
+        },
+        "max_concurrency": 10,
+    }
+    try:
+        response = _console_runtime_json_request(
+            "POST",
+            "/console-runtime/workstreams",
+            payload,
+            timeout_seconds=CONSOLE_RUNTIME_JOB_CREATE_TIMEOUT_SECONDS,
+        )
+    except (
+        urllib_error.URLError,
+        urllib_error.HTTPError,
+        TimeoutError,
+        OSError,
+    ) as exc:
+        _record_console_runtime_error(exc)
+        if _workstream_endpoint_is_unavailable(exc):
+            _back_off_console_runtime_workstreams(exc)
+        return ""
+    workstream_id = str(response.get("workstream_id") or "").strip()
+    if not workstream_id:
+        return ""
+    _clear_console_runtime_workstream_backoff()
+    CONSOLE_RUNTIME_CACHED_WORKSTREAM_ID = workstream_id
+    write_text(CONSOLE_RUNTIME_WORKSTREAM_ID_PATH, workstream_id)
+    return workstream_id
+
+
+def _clear_console_runtime_workstream_locked() -> None:
+    """Forget a workstream when its coordinator job has been recreated."""
+    global CONSOLE_RUNTIME_CACHED_WORKSTREAM_ID
+    CONSOLE_RUNTIME_CACHED_WORKSTREAM_ID = ""
+    write_text(CONSOLE_RUNTIME_WORKSTREAM_ID_PATH, "")
+
+
 def ensure_console_runtime_job(*, create: bool = False) -> str:
     global CONSOLE_RUNTIME_CACHED_JOB_ID
     if not console_runtime_bridge_enabled():
@@ -15596,9 +17514,11 @@ def ensure_console_runtime_job(*, create: bool = False) -> str:
     with CONSOLE_RUNTIME_LOCK:
         job_id = _read_console_runtime_job_id()
         if CONSOLE_RUNTIME_CACHED_JOB_ID:
+            _ensure_console_runtime_workstream_locked(CONSOLE_RUNTIME_CACHED_JOB_ID)
             return CONSOLE_RUNTIME_CACHED_JOB_ID
         if CONSOLE_RUNTIME_JOB_ID and not create:
             CONSOLE_RUNTIME_CACHED_JOB_ID = CONSOLE_RUNTIME_JOB_ID
+            _ensure_console_runtime_workstream_locked(CONSOLE_RUNTIME_CACHED_JOB_ID)
             return CONSOLE_RUNTIME_CACHED_JOB_ID
         payload = {
             "job_id": job_id,
@@ -15661,11 +17581,13 @@ def ensure_console_runtime_job(*, create: bool = False) -> str:
                 str(response.get("job_id") or job_id).strip() or job_id
             )
             write_text(CONSOLE_RUNTIME_JOB_ID_PATH, CONSOLE_RUNTIME_CACHED_JOB_ID)
+            _ensure_console_runtime_workstream_locked(CONSOLE_RUNTIME_CACHED_JOB_ID)
             return CONSOLE_RUNTIME_CACHED_JOB_ID
         except urllib_error.HTTPError as exc:
             if exc.code == HTTPStatus.CONFLICT:
                 CONSOLE_RUNTIME_CACHED_JOB_ID = job_id
                 write_text(CONSOLE_RUNTIME_JOB_ID_PATH, job_id)
+                _ensure_console_runtime_workstream_locked(job_id)
                 return job_id
             _record_console_runtime_error(exc)
             return ""
@@ -15728,6 +17650,7 @@ def _post_console_runtime_event(payload: dict[str, Any]) -> dict[str, Any]:
         if exc.code == HTTPStatus.NOT_FOUND:
             with CONSOLE_RUNTIME_LOCK:
                 CONSOLE_RUNTIME_CACHED_JOB_ID = ""
+                _clear_console_runtime_workstream_locked()
             job_id = ensure_console_runtime_job(create=True)
             if job_id:
                 response = _console_runtime_json_request(
@@ -16201,6 +18124,17 @@ def _normalize_console_runtime_events(value: Any) -> list[dict[str, Any]]:
     return normalized
 
 
+def _console_runtime_snapshot_ttl_seconds() -> float:
+    with ACTIVE_CODEX_LOCK:
+        proc = ACTIVE_CODEX_PROC
+    try:
+        if proc is not None and proc.poll() is None:
+            return CONSOLE_RUNTIME_ACTIVE_SNAPSHOT_TTL_SECONDS
+    except (AttributeError, OSError, ValueError):
+        pass
+    return CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS
+
+
 def console_runtime_activity_snapshot() -> dict[str, Any]:
     backend = tui_backend_snapshot()
     if not console_runtime_bridge_enabled():
@@ -16209,6 +18143,8 @@ def console_runtime_activity_snapshot() -> dict[str, Any]:
             "enabled": False,
             "connected": False,
             "job_id": "",
+            "workstream_id": "",
+            "workstream": {},
             "events": [],
             "next_after": 0,
             "latest_event": None,
@@ -16221,7 +18157,7 @@ def console_runtime_activity_snapshot() -> dict[str, Any]:
     if (
         isinstance(cached, dict)
         and now - float(CONSOLE_RUNTIME_SNAPSHOT_CACHE.get("at") or 0.0)
-        < CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS
+        < _console_runtime_snapshot_ttl_seconds()
     ):
         return dict(cached)
     if _console_runtime_startup_deferred(now):
@@ -16230,6 +18166,8 @@ def console_runtime_activity_snapshot() -> dict[str, Any]:
             "enabled": True,
             "connected": False,
             "job_id": _read_console_runtime_job_id(),
+            "workstream_id": _read_console_runtime_workstream_id(),
+            "workstream": {},
             "events": [],
             "next_after": 0,
             "latest_event": None,
@@ -16244,7 +18182,7 @@ def console_runtime_activity_snapshot() -> dict[str, Any]:
         if (
             isinstance(cached, dict)
             and now - float(CONSOLE_RUNTIME_SNAPSHOT_CACHE.get("at") or 0.0)
-            < CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS
+            < _console_runtime_snapshot_ttl_seconds()
         ):
             return dict(cached)
         if _console_runtime_startup_deferred(now):
@@ -16253,6 +18191,8 @@ def console_runtime_activity_snapshot() -> dict[str, Any]:
                 "enabled": True,
                 "connected": False,
                 "job_id": _read_console_runtime_job_id(),
+                "workstream_id": _read_console_runtime_workstream_id(),
+                "workstream": {},
                 "events": [],
                 "next_after": 0,
                 "latest_event": None,
@@ -16268,6 +18208,8 @@ def console_runtime_activity_snapshot() -> dict[str, Any]:
                 "enabled": True,
                 "connected": False,
                 "job_id": _read_console_runtime_job_id(),
+                "workstream_id": _read_console_runtime_workstream_id(),
+                "workstream": {},
                 "events": [],
                 "next_after": 0,
                 "latest_event": None,
@@ -16283,11 +18225,30 @@ def console_runtime_activity_snapshot() -> dict[str, Any]:
             )
             events = _normalize_console_runtime_events(response.get("events"))
             latest = response.get("latest_event")
+            workstream_id = _read_console_runtime_workstream_id()
+            workstream = {}
+            workstream_error = ""
+            if workstream_id:
+                try:
+                    workstream = _console_runtime_json_request(
+                        "GET",
+                        f"/console-runtime/workstreams/{quote(workstream_id, safe='')}",
+                    )
+                except (
+                    urllib_error.URLError,
+                    urllib_error.HTTPError,
+                    TimeoutError,
+                    OSError,
+                ) as exc:
+                    _record_console_runtime_error(exc)
+                    workstream_error = str(exc)
             snapshot = {
                 **backend,
                 "enabled": True,
                 "connected": True,
                 "job_id": job_id,
+                "workstream_id": workstream_id,
+                "workstream": workstream,
                 "events": events,
                 "event_count": int(response.get("event_count") or len(events)),
                 "category_counts": response.get("category_counts")
@@ -16301,6 +18262,8 @@ def console_runtime_activity_snapshot() -> dict[str, Any]:
                 "turn_shadow_job_id": active_console_runtime_turn_job_id(),
                 "error": "",
             }
+            if workstream_error:
+                snapshot["workstream_error"] = workstream_error
             CONSOLE_RUNTIME_SNAPSHOT_CACHE.update({"at": now, "data": snapshot})
             return dict(snapshot)
         except (
@@ -16315,6 +18278,8 @@ def console_runtime_activity_snapshot() -> dict[str, Any]:
                 "enabled": True,
                 "connected": False,
                 "job_id": job_id,
+                "workstream_id": _read_console_runtime_workstream_id(),
+                "workstream": {},
                 "events": [],
                 "next_after": 0,
                 "latest_event": None,
@@ -16824,7 +18789,13 @@ def default_status_meta() -> dict[str, Any]:
         "running_optimization_mode": DEFAULT_OPTIMIZATION_MODE,
         "running_timeout_seconds": job_budget_timeout_seconds(DEFAULT_JOB_BUDGET),
         "running_turn_control": {},
+        "running_submission_id": "",
+        "running_request_source": "",
+        "running_session_admission": {},
+        "last_session_admission": {},
         "running_console_runtime_job_id": "",
+        "running_cost_route": {},
+        "running_route_bootstrap_metadata": {},
         "last_attachments": [],
         "last_runtime": selected_runtime,
         "last_model": selected_model,
@@ -16840,6 +18811,7 @@ def default_status_meta() -> dict[str, Any]:
         "last_action_at": 0,
         "last_action_detail": "",
         "last_console_runtime_job_id": "",
+        "last_cost_route": {},
         "active_child_pid": 0,
         "active_child_pgid": 0,
         "active_child_started_at": 0,
@@ -16911,6 +18883,15 @@ def _coerce_int(value: Any) -> int:
         return int(value or 0)
     except (TypeError, ValueError):
         return 0
+
+
+SUBMISSION_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}\Z")
+
+
+def normalize_submission_id(value: Any) -> str:
+    """Keep browser submission IDs bounded before they enter durable TUI state."""
+    clean = str(value or "").strip()
+    return clean if SUBMISSION_ID_RE.fullmatch(clean) else ""
 
 
 def _coerce_float(value: Any) -> float:
@@ -18783,6 +20764,12 @@ def default_usage_entry() -> dict[str, Any]:
         "verifier_model": "",
         "route_execution": "",
         "route_verifier": "",
+        "route_source": "",
+        "route_reason": "",
+        "route_requested_runtime": "",
+        "route_requested_model": "",
+        "route_requested_service_tier": "",
+        "route_fallback_reason": "",
         "success": False,
         "input_tokens": 0,
         "cached_input_tokens": 0,
@@ -18813,6 +20800,13 @@ def default_usage_entry() -> dict[str, Any]:
         "preflight_prompt_estimated_tokens": 0,
         "attachment_saved_tokens": 0,
         "memory_ref_count": 0,
+        "memory_rerank_used": False,
+        "memory_rerank_status": "",
+        "memory_rerank_model": "",
+        "memory_rerank_candidate_count": 0,
+        "memory_rerank_selected_count": 0,
+        "memory_rerank_failure_class": "",
+        "memory_rerank_receipt": {},
         "offline_preflight_used": False,
         "offline_preflight_status": "",
         "local_preflight_used": False,
@@ -18826,6 +20820,12 @@ def default_usage_entry() -> dict[str, Any]:
         "local_preflight_receipt": {},
         "local_preflight_warm_policy_source": "",
         "local_preflight_route_posture": "",
+        "local_planner_verifier_used": False,
+        "local_planner_verifier_status": "",
+        "local_planner_verifier_model": "",
+        "local_planner_verifier_tokens": 0,
+        "local_planner_verifier_trigger_reasons": [],
+        "local_planner_verifier_receipt": {},
         "local_specialist_used": False,
         "local_specialist_status": "",
         "local_specialist_stage_count": 0,
@@ -18928,7 +20928,9 @@ def usage_route_class(entry: dict[str, Any]) -> str:
     model = str(entry.get("model") or "").strip().lower()
     provider_surface = str(entry.get("provider_surface") or "").strip().lower()
     service_tier = normalize_service_tier(entry.get("service_tier"))
-    if runtime == "codexspark" or "spark" in runtime or "spark" in model:
+    if runtime == "codexspark" or "codex-spark" in model:
+        return "preview"
+    if "spark" in runtime or "spark" in model:
         return "spark"
     if runtime == "localllm" or provider_surface in {"local", "norllama", "ollama"}:
         return "local"
@@ -18953,6 +20955,8 @@ def usage_route_label(entry: dict[str, Any]) -> str:
         .strip()
         .lower()
     )
+    if normalize_runtime(entry.get("runtime")) == "codexspark":
+        return "Codex Spark preview"
     if execution == "local_spark":
         return "Local Spark"
     if execution == "spark_plus_verifier":
@@ -19125,8 +21129,17 @@ def normalize_usage_entry(value: Any) -> dict[str, Any]:
         "route_execution",
         "route_verifier",
         "route_label",
+        "route_source",
+        "route_reason",
+        "route_requested_runtime",
+        "route_requested_model",
+        "route_requested_service_tier",
+        "route_fallback_reason",
         "route_charge_basis",
         "preflight_accounting_schema",
+        "memory_rerank_status",
+        "memory_rerank_model",
+        "memory_rerank_failure_class",
         "offline_preflight_status",
         "local_preflight_status",
         "local_preflight_model",
@@ -19136,6 +21149,8 @@ def normalize_usage_entry(value: Any) -> dict[str, Any]:
         "local_preflight_failure_class",
         "local_preflight_warm_policy_source",
         "local_preflight_route_posture",
+        "local_planner_verifier_status",
+        "local_planner_verifier_model",
         "local_specialist_status",
         "local_specialist_failure_class",
         "local_specialist_warm_policy_source",
@@ -19184,6 +21199,13 @@ def normalize_usage_entry(value: Any) -> dict[str, Any]:
     payload["route_label"] = str(
         payload.get("route_label") or ""
     ).strip() or usage_route_label(payload)
+    payload["route_source"] = str(payload.get("route_source") or "").strip() or (
+        "selected_runtime"
+    )
+    payload["route_reason"] = (
+        summarize_text(str(payload.get("route_reason") or ""), 420)
+        or f"{payload['route_label']} was final authority for this turn."
+    )
     payload["success"] = bool(payload.get("success"))
     payload["input_tokens"] = _coerce_int(payload.get("input_tokens"))
     input_details = payload.get("input_tokens_details")
@@ -19248,7 +21270,10 @@ def normalize_usage_entry(value: Any) -> dict[str, Any]:
         "preflight_prompt_estimated_tokens",
         "attachment_saved_tokens",
         "memory_ref_count",
+        "memory_rerank_candidate_count",
+        "memory_rerank_selected_count",
         "local_preflight_tokens",
+        "local_planner_verifier_tokens",
         "local_specialist_stage_count",
         "local_specialist_executed_count",
         "local_specialist_ready_count",
@@ -19261,7 +21286,11 @@ def normalize_usage_entry(value: Any) -> dict[str, Any]:
     ):
         payload[key] = _coerce_int(payload.get(key))
     payload["offline_preflight_used"] = bool(payload.get("offline_preflight_used"))
+    payload["memory_rerank_used"] = bool(payload.get("memory_rerank_used"))
     payload["local_preflight_used"] = bool(payload.get("local_preflight_used"))
+    payload["local_planner_verifier_used"] = bool(
+        payload.get("local_planner_verifier_used")
+    )
     payload["local_specialist_used"] = bool(payload.get("local_specialist_used"))
     payload["cloud_context_gate_active"] = bool(
         payload.get("cloud_context_gate_active")
@@ -19275,8 +21304,19 @@ def normalize_usage_entry(value: Any) -> dict[str, Any]:
     ]
     if not isinstance(payload.get("local_preflight_receipt"), dict):
         payload["local_preflight_receipt"] = {}
+    if not isinstance(payload.get("memory_rerank_receipt"), dict):
+        payload["memory_rerank_receipt"] = {}
+    if not isinstance(payload.get("local_planner_verifier_receipt"), dict):
+        payload["local_planner_verifier_receipt"] = {}
     if not isinstance(payload.get("local_specialist_receipt"), dict):
         payload["local_specialist_receipt"] = {}
+    if not isinstance(payload.get("local_planner_verifier_trigger_reasons"), list):
+        payload["local_planner_verifier_trigger_reasons"] = []
+    payload["local_planner_verifier_trigger_reasons"] = [
+        str(reason).strip()
+        for reason in payload.get("local_planner_verifier_trigger_reasons", [])
+        if str(reason).strip()
+    ]
     for key in (
         "raw_input_tokens",
         "raw_cached_input_tokens",
@@ -20069,6 +22109,8 @@ def default_usage_summary() -> dict[str, int]:
         "preflight_prompt_estimated_tokens": 0,
         "attachment_saved_tokens": 0,
         "local_preflight_tokens": 0,
+        "local_planner_verifier_tokens": 0,
+        "local_planner_verifier_turns": 0,
         "local_specialist_tokens": 0,
         "local_specialist_turns": 0,
         "context_pack_saved_tokens": 0,
@@ -20105,6 +22147,11 @@ def summarize_usage_entries(
         ]
         summary["attachment_saved_tokens"] += entry["attachment_saved_tokens"]
         summary["local_preflight_tokens"] += entry["local_preflight_tokens"]
+        summary["local_planner_verifier_tokens"] += entry[
+            "local_planner_verifier_tokens"
+        ]
+        if entry.get("local_planner_verifier_used"):
+            summary["local_planner_verifier_turns"] += 1
         summary["local_specialist_tokens"] += entry["local_specialist_tokens"]
         if entry.get("local_specialist_used"):
             summary["local_specialist_turns"] += 1
@@ -20161,6 +22208,11 @@ def summarize_usage_by_key(
         ]
         bucket["attachment_saved_tokens"] += entry["attachment_saved_tokens"]
         bucket["local_preflight_tokens"] += entry["local_preflight_tokens"]
+        bucket["local_planner_verifier_tokens"] += entry[
+            "local_planner_verifier_tokens"
+        ]
+        if entry.get("local_planner_verifier_used"):
+            bucket["local_planner_verifier_turns"] += 1
         bucket["local_specialist_tokens"] += entry["local_specialist_tokens"]
         if entry.get("local_specialist_used"):
             bucket["local_specialist_turns"] += 1
@@ -20194,6 +22246,7 @@ def default_route_utilization_summary() -> dict[str, Any]:
         "hybrid_turns": 0,
         "local_assisted_turns": 0,
         "local_preflight_turns": 0,
+        "local_planner_verifier_turns": 0,
         "local_specialist_turns": 0,
         "offline_preflight_turns": 0,
         "cloud_context_gate_turns": 0,
@@ -20202,6 +22255,7 @@ def default_route_utilization_summary() -> dict[str, Any]:
         "local_tokens": 0,
         "cloud_tokens": 0,
         "local_preflight_tokens": 0,
+        "local_planner_verifier_tokens": 0,
         "local_specialist_tokens": 0,
         "cloud_tokens_avoided_floor": 0,
         "cloud_tokens_avoided_estimate": 0,
@@ -20255,6 +22309,10 @@ def route_utilization_flags(entry: dict[str, Any]) -> dict[str, bool]:
         bool(entry.get("local_preflight_used"))
         or _coerce_int(entry.get("local_preflight_tokens")) > 0
     )
+    local_planner_verifier = (
+        bool(entry.get("local_planner_verifier_used"))
+        or _coerce_int(entry.get("local_planner_verifier_tokens")) > 0
+    )
     local_specialist = (
         bool(entry.get("local_specialist_used"))
         or _coerce_int(entry.get("local_specialist_tokens")) > 0
@@ -20264,6 +22322,7 @@ def route_utilization_flags(entry: dict[str, Any]) -> dict[str, bool]:
     local_assisted = bool(
         is_local
         or local_preflight
+        or local_planner_verifier
         or local_specialist
         or offline_preflight
         or avoided_tokens > 0
@@ -20277,6 +22336,7 @@ def route_utilization_flags(entry: dict[str, Any]) -> dict[str, bool]:
         "openai": is_openai,
         "hybrid": is_hybrid,
         "local_preflight": local_preflight,
+        "local_planner_verifier": local_planner_verifier,
         "local_specialist": local_specialist,
         "offline_preflight": offline_preflight,
         "local_assisted": local_assisted,
@@ -20299,6 +22359,9 @@ def summarize_route_utilization(
         provider = str(entry.get("provider_surface") or "").strip().lower() or "unknown"
         total_tokens = _coerce_int(entry.get("total_tokens"))
         local_preflight_tokens = _coerce_int(entry.get("local_preflight_tokens"))
+        local_planner_verifier_tokens = _coerce_int(
+            entry.get("local_planner_verifier_tokens")
+        )
         local_specialist_tokens = _coerce_int(entry.get("local_specialist_tokens"))
         summary["turns"] += 1
         if entry.get("success"):
@@ -20323,6 +22386,8 @@ def summarize_route_utilization(
             summary["local_assisted_turns"] += 1
         if flags["local_preflight"]:
             summary["local_preflight_turns"] += 1
+        if flags["local_planner_verifier"]:
+            summary["local_planner_verifier_turns"] += 1
         if flags["local_specialist"]:
             summary["local_specialist_turns"] += 1
         if flags["offline_preflight"]:
@@ -20333,12 +22398,17 @@ def summarize_route_utilization(
             summary["cloud_context_gate_needs_reduction_turns"] += 1
         summary["total_tokens"] += total_tokens
         summary["local_preflight_tokens"] += local_preflight_tokens
+        summary["local_planner_verifier_tokens"] += local_planner_verifier_tokens
         summary["local_specialist_tokens"] += local_specialist_tokens
         if flags["local"] and not flags["cloud"]:
             summary["local_tokens"] += total_tokens
         if flags["cloud"]:
             summary["cloud_tokens"] += total_tokens
-        summary["local_tokens"] += local_preflight_tokens + local_specialist_tokens
+        summary["local_tokens"] += (
+            local_preflight_tokens
+            + local_planner_verifier_tokens
+            + local_specialist_tokens
+        )
         summary["cloud_tokens_avoided_floor"] += _coerce_int(
             entry.get("cloud_tokens_avoided_floor")
         )
@@ -21058,8 +23128,67 @@ def prompt_without_request_preface(prompt: str) -> str:
     return text.strip(" .")
 
 
+FOLLOWUP_ACTION_PROMPT_RE = re.compile(
+    r"^(?:"
+    r"proceed from your last answer(?:\.|$)|"
+    r"dig into the uncertain part of your last answer(?:\.|$)|"
+    r"verify the last answer against (?:the )?(?:code|tests|logs|source material)(?:\.|$)|"
+    r"make it so\. do the concrete thing you just proposed(?:\.|$)"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def prompt_is_generic_followup_action(prompt: Any) -> bool:
+    return bool(FOLLOWUP_ACTION_PROMPT_RE.match(str(prompt or "").strip()))
+
+
+def followup_source_turn(prompt: Any) -> dict[str, str]:
+    """Return the latest concrete turn when a reply shortcut has no session context."""
+    if not prompt_is_generic_followup_action(prompt):
+        return {}
+    try:
+        entries = load_history(limit=8)
+    except Exception:
+        return {}
+    for entry in reversed(entries):
+        if not isinstance(entry, dict):
+            continue
+        prior_prompt = str(entry.get("prompt") or "").strip()
+        if not prior_prompt or prompt_is_generic_followup_action(prior_prompt):
+            continue
+        return {
+            "prompt": summarize_text(prior_prompt, 1200),
+            "response": summarize_text(str(entry.get("response") or ""), 1400),
+        }
+    return {}
+
+
+def turn_plan_subject_prompt(prompt: str) -> str:
+    source = followup_source_turn(prompt)
+    return str(source.get("prompt") or prompt)
+
+
+def build_followup_execution_prompt(prompt: str) -> str:
+    source = followup_source_turn(prompt)
+    prior_prompt = str(source.get("prompt") or "").strip()
+    if not prior_prompt:
+        return prompt
+    prior_response = str(source.get("response") or "").strip()
+    parts = [
+        "This is a continuation action from the Norman TUI.",
+        "Continue the concrete operator request below; do not discuss this wrapper.",
+        "Prior operator request:",
+        prior_prompt,
+    ]
+    if prior_response:
+        parts.extend(["Prior visible result:", prior_response])
+    parts.extend(["Continuation instruction:", str(prompt or "").strip()])
+    return "\n".join(parts)
+
+
 def planner_understood_task(prompt: str, attachments: list[dict[str, Any]]) -> str:
-    clean = prompt_without_request_preface(prompt)
+    clean = prompt_without_request_preface(turn_plan_subject_prompt(prompt))
     lower = clean.lower()
     if not clean and attachments:
         return "Handle the attached material."
@@ -21088,7 +23217,7 @@ def console_runtime_execution_objective(
 
 
 def turn_plan_skill_labels(prompt: str, attachments: list[dict[str, Any]]) -> list[str]:
-    lower = prompt_core_request(prompt).lower()
+    lower = prompt_core_request(turn_plan_subject_prompt(prompt)).lower()
     labels = ["context triage"]
     if attachments:
         labels.append("attachment review")
@@ -21148,7 +23277,7 @@ def turn_plan_steps_for_prompt(
 def estimate_turn_output_tokens(detail: int, job_budget: str, prompt: str) -> int:
     detail_tokens = {1: 700, 2: 1200, 3: 2200, 4: 3600, 5: 5600}
     output_tokens = detail_tokens.get(normalize_response_detail(detail), 2200)
-    lower = prompt_core_request(prompt).lower()
+    lower = prompt_core_request(turn_plan_subject_prompt(prompt)).lower()
     if any(token in lower for token in ("benchmark", "matrix", "test", "kpi")):
         output_tokens += 1400
     if any(
@@ -21176,7 +23305,7 @@ def estimate_turn_output_tokens(detail: int, job_budget: str, prompt: str) -> in
 def estimate_turn_tool_call_range(
     prompt: str, attachments: list[dict[str, Any]], skill_count: int
 ) -> tuple[int, int]:
-    lower = prompt_core_request(prompt).lower()
+    lower = prompt_core_request(turn_plan_subject_prompt(prompt)).lower()
     minimum = 1 if prompt or attachments else 0
     maximum = max(minimum, skill_count + 1)
     if any(
@@ -21609,10 +23738,20 @@ def append_usage_entry(
     runtime: str = "",
     model: str = "",
     usage: dict[str, Any] | None = None,
+    attribution: dict[str, Any] | None = None,
+    cost_route: dict[str, Any] | None = None,
 ) -> None:
     normalized_runtime = normalize_runtime(runtime)
     normalized_model = normalize_runtime_model(normalized_runtime, model)
     normalized_service_tier = normalize_service_tier(service_tier)
+    proof = validate_cost_route_proof(
+        cost_route,
+        normalized_runtime,
+        normalized_model,
+        normalized_service_tier,
+    )
+    if not proof:
+        raise ValueError("missing or mismatched cost route proof")
     provider_tags = (
         local_llm_provider_tags()
         if normalized_runtime == "localllm"
@@ -21622,6 +23761,11 @@ def append_usage_entry(
         {
             **(usage or {}),
             **provider_tags,
+            **(attribution or {}),
+            "route_source": proof["route_source"],
+            "route_fallback_reason": proof["fallback_reason"],
+            "charge_basis": proof["charge_basis"],
+            "waterfall_stage": proof["waterfall_stage"],
             "started_at": started_at,
             "finished_at": finished_at,
             "thread_id": thread_id,
@@ -21705,6 +23849,7 @@ ROUTE_RECEIPT_REQUIRED_FIELDS = (
     "route_policy_version",
     "approval_id",
     "evidence_refs",
+    "fast_lane_outcome",
 )
 
 ROUTE_RECEIPT_APPROVAL_TOKENS = (
@@ -21910,6 +24055,7 @@ def build_route_receipt(
     turn_envelope: dict[str, Any] | None = None,
     requested_model: str = "",
     requested_service_tier: str = "",
+    cost_route: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_runtime = normalize_runtime(runtime)
     normalized_model = normalize_runtime_model(normalized_runtime, model)
@@ -21920,6 +24066,14 @@ def build_route_receipt(
     normalized_requested_tier = normalize_service_tier(
         requested_service_tier or normalized_service_tier
     )
+    proof = validate_cost_route_proof(
+        cost_route,
+        normalized_runtime,
+        normalized_model,
+        normalized_service_tier,
+    )
+    if not proof:
+        raise ValueError("missing or mismatched cost route proof")
     normalized_optimization_mode = normalize_optimization_mode(optimization_mode)
     usage_entry = normalize_usage_entry(
         {
@@ -22032,16 +24186,23 @@ def build_route_receipt(
         evidence_refs.append("turn_plan:final")
     if turn_envelope:
         evidence_refs.append("turn_envelope:classified")
-    provider_tags = usage_provider_tags(normalized_service_tier)
-    requested_provider_tags = usage_provider_tags(normalized_requested_tier)
+    provider_tags = (
+        local_llm_provider_tags()
+        if normalized_runtime == "localllm"
+        else usage_provider_tags(normalized_service_tier)
+    )
+    requested_provider_tags = (
+        local_llm_provider_tags()
+        if normalized_runtime == "localllm"
+        else usage_provider_tags(normalized_requested_tier)
+    )
     observed_service_tier = (
         str(usage_entry.get("observed_service_tier") or "").strip()
         or str(usage_entry.get("resolved_service_tier") or "").strip()
         or normalized_service_tier
     )
-    route_source = (
-        "service_tier_profile" if provider_tags.get("profile_v2") else "direct"
-    )
+    route_source = proof["route_source"]
+    fallback_reason = proof["fallback_reason"]
     context_digest = route_receipt_digest(
         {
             "thread_id": thread_id,
@@ -22049,7 +24210,7 @@ def build_route_receipt(
             "turn_envelope": turn_envelope or {},
         }
     )
-    return {
+    receipt = {
         "receipt_id": f"{ROUTE_RECEIPT_OWNER_TUI}-{finished_at}-{receipt_id_hash}",
         "receipt_source": "live_tui_shadow_route",
         "previous_receipt_hash": "",
@@ -22078,7 +24239,7 @@ def build_route_receipt(
         "route_source": route_source,
         "route_execution": str(usage_entry.get("route_execution") or ""),
         "route_verifier": str(usage_entry.get("route_verifier") or ""),
-        "fallback_reason": fallback_used,
+        "fallback_reason": fallback_reason,
         "routing_score": routing_score,
         "routing_bands": {
             "runtime": normalized_runtime,
@@ -22095,6 +24256,7 @@ def build_route_receipt(
             "mutation_risk": mutation_risk,
             "route_execution": str(usage_entry.get("route_execution") or ""),
             "route_verifier": str(usage_entry.get("route_verifier") or ""),
+            "cost_route": proof,
         },
         "allowed_role": allowed_role,
         "validator_gate": validator_gate,
@@ -22129,6 +24291,12 @@ def build_route_receipt(
         "approval_id": os.environ.get("NORMAN_CODEX_ROUTE_APPROVAL_ID", "").strip(),
         "evidence_refs": evidence_refs,
     }
+    receipt["fast_lane_outcome"] = (
+        evaluate_fast_lane_outcome(receipt)
+        if evaluate_fast_lane_outcome is not None
+        else {}
+    )
+    return receipt
 
 
 def route_receipt_canonical_payload(entry: dict[str, Any]) -> str:
@@ -22274,6 +24442,23 @@ def route_receipt_chain_issues(receipts: list[dict[str, Any]]) -> list[str]:
     return issues
 
 
+def route_receipt_latest_fast_lane_outcome(
+    receipts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not receipts:
+        return {}
+    outcome = receipts[-1].get("fast_lane_outcome")
+    return dict(outcome) if isinstance(outcome, dict) else {}
+
+
+def route_receipt_fast_lane_summary(
+    receipts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if summarize_fast_lane_outcomes is None:
+        return {}
+    return summarize_fast_lane_outcomes(receipts)
+
+
 def route_receipt_chain_status(path: Path = ROUTE_RECEIPT_PATH) -> dict[str, Any]:
     if Path(path) == ROUTE_RECEIPT_PATH:
         state_snapshot = route_receipt_chain_status_from_state_db()
@@ -22293,6 +24478,8 @@ def route_receipt_chain_status(path: Path = ROUTE_RECEIPT_PATH) -> dict[str, Any
             "path": str(path),
             "receipt_count": 0,
             "latest_hash": "",
+            "latest_fast_lane_outcome": {},
+            "fast_lane": route_receipt_fast_lane_summary([]),
             "issue_count": 1,
             "issues": [str(exc)],
         }
@@ -22321,6 +24508,8 @@ def route_receipt_chain_status(path: Path = ROUTE_RECEIPT_PATH) -> dict[str, Any
         "path": str(path),
         "receipt_count": len(receipts),
         "latest_hash": latest_hash,
+        "latest_fast_lane_outcome": route_receipt_latest_fast_lane_outcome(receipts),
+        "fast_lane": route_receipt_fast_lane_summary(receipts),
         "issue_count": len(issues),
         "issues": issues,
     }
@@ -22336,6 +24525,8 @@ def route_receipt_chain_status_from_state_db() -> dict[str, Any]:
             "storage_source": "state_db",
             "receipt_count": 0,
             "latest_hash": "",
+            "latest_fast_lane_outcome": {},
+            "fast_lane": route_receipt_fast_lane_summary([]),
             "issue_count": 0,
             "issues": [],
         }
@@ -22348,6 +24539,8 @@ def route_receipt_chain_status_from_state_db() -> dict[str, Any]:
         "storage_source": "state_db",
         "receipt_count": len(receipts),
         "latest_hash": latest_hash,
+        "latest_fast_lane_outcome": route_receipt_latest_fast_lane_outcome(receipts),
+        "fast_lane": route_receipt_fast_lane_summary(receipts),
         "issue_count": len(issues),
         "issues": issues,
     }
@@ -22362,6 +24555,8 @@ def route_receipt_status_snapshot() -> dict[str, Any]:
             "storage_source": "disabled",
             "receipt_count": 0,
             "latest_hash": "",
+            "latest_fast_lane_outcome": {},
+            "fast_lane": route_receipt_fast_lane_summary([]),
             "issue_count": 0,
             "issues": [],
         }
@@ -22867,13 +25062,7 @@ def codex_subscription_capacity_personal_lane() -> bool:
 
 
 def codex_subscription_capacity_route_lane() -> bool:
-    if codex_subscription_capacity_personal_lane():
-        return True
-    return bool(
-        CODEX_SUBSCRIPTION_ROUTE_WORK_ENABLED
-        and semantic_agent_group(AGENT_SLUG, AGENT_GROUP) == "work"
-        and str(usage_billing_owner() or "").strip()
-    )
+    return CODEX_SUBSCRIPTION_ROUTE_PREFERENCE_ENABLED
 
 
 def codex_subscription_capacity_reset_seconds(value: Any) -> int:
@@ -23381,6 +25570,12 @@ def codex_subscription_capacity_route_decision(
     decision = {
         "enabled": CODEX_SUBSCRIPTION_ROUTE_PREFERENCE_ENABLED,
         "selected": False,
+        "state": str(snapshot.get("state") or "").strip().lower(),
+        "fresh": bool(snapshot.get("fresh")),
+        "chatgpt_auth_verified": (
+            str(snapshot.get("auth_mode") or "").strip().lower() == "chatgpt"
+            and stored_codex_auth_mode() == "chatgpt"
+        ),
         "reason": "subscription capacity did not change the selected route",
         "selected_runtime": normalized_runtime,
         "selected_model": normalized_model,
@@ -23392,9 +25587,6 @@ def codex_subscription_capacity_route_decision(
         return decision
     if route_lock:
         decision["reason"] = "operator route lock"
-        return decision
-    if service_tier_recovery:
-        decision["reason"] = "recent direct-tier limit recovery keeps Bedrock route"
         return decision
     if normalized_runtime != "codex":
         decision["reason"] = "non-Codex runtime selected"
@@ -23429,10 +25621,8 @@ def codex_subscription_capacity_route_decision(
         decision["reason"] = str(route_forecast.get("reason") or "")
         return decision
     execution_tier = service_tier_execution_tier(normalized_tier)
-    if execution_tier != "default" or not codex_profile_v2_for_service_tier(
-        execution_tier
-    ):
-        decision["reason"] = "selected route is not the default Bedrock lane"
+    if execution_tier != "default":
+        decision["reason"] = "selected route is not the default subscription lane"
         return decision
     if "flex" not in SERVICE_TIER_OPTIONS or codex_profile_v2_for_service_tier("flex"):
         decision["reason"] = "direct Flex is not configured"
@@ -23445,7 +25635,7 @@ def codex_subscription_capacity_route_decision(
             "selected": True,
             "reason": (
                 "fresh ChatGPT subscription capacity fits the reset-aware "
-                "forecast and is preferred over Bedrock"
+                "forecast and selected Flex"
             ),
             "selected_model": direct_model,
             "selected_service_tier": "flex",
@@ -23462,6 +25652,7 @@ def codex_openai_direct_execution_decision(
     job_budget: Any = "",
     detail: Any = 2,
     estimated_output_tokens: int | None = None,
+    subscription_probe: bool = False,
 ) -> dict[str, Any]:
     normalized_tier = normalize_service_tier(service_tier)
     provider_surface = (
@@ -23479,6 +25670,41 @@ def codex_openai_direct_execution_decision(
         "reason_code": "not_applicable",
         "reason": "selected route does not use OpenAI direct",
     }
+    if subscription_probe:
+        if normalized_tier != "flex" or provider_surface != "openai-direct":
+            decision.update(
+                {
+                    "allowed": False,
+                    "reason_code": "subscription_capacity_probe_route_invalid",
+                    "reason": (
+                        "subscription capacity probes may only execute through "
+                        "direct OpenAI Flex"
+                    ),
+                }
+            )
+            return decision
+        if observed_auth_mode == "chatgpt" and stored_codex_auth_mode() == "chatgpt":
+            decision.update(
+                {
+                    "reason_code": "subscription_capacity_probe_allowed",
+                    "reason": (
+                        "verified ChatGPT authentication allows one guarded "
+                        "subscription capacity probe"
+                    ),
+                }
+            )
+            return decision
+        decision.update(
+            {
+                "allowed": False,
+                "reason_code": "subscription_capacity_probe_auth_required",
+                "reason": (
+                    "subscription capacity probes require active ChatGPT "
+                    "authentication and never permit OpenAI API-key spending"
+                ),
+            }
+        )
+        return decision
     if provider_surface != "openai-direct":
         return decision
     if observed_auth_mode == "chatgpt":
@@ -23560,6 +25786,13 @@ def codex_openai_direct_execution_decision(
 
 
 def codex_openai_direct_execution_block_message(decision: dict[str, Any]) -> str:
+    if str(decision.get("reason_code") or "").startswith(
+        "subscription_capacity_probe_"
+    ):
+        return (
+            "OpenAI direct request blocked before launch: "
+            f"{decision.get('reason')}. No OpenAI API request was sent."
+        )
     if decision.get("reason_code") == "chatgpt_credit_extension_guard":
         return (
             "OpenAI direct request blocked before launch: paid ChatGPT credit "
@@ -24271,6 +26504,78 @@ def _contains_usage_limit_error(value: Any) -> bool:
     )
 
 
+def persist_subscription_probe_exhaustion(
+    *,
+    cost_route: Any,
+    runtime: Any,
+    model: Any,
+    service_tier: Any,
+    response: Any,
+    error_text: Any,
+    usage: Any,
+) -> bool:
+    """Record a real Flex probe limit before any generic retry logic runs."""
+
+    normalized_runtime = normalize_runtime(runtime)
+    normalized_model = normalize_runtime_model(normalized_runtime, model)
+    normalized_service_tier = normalize_service_tier(service_tier)
+    route = validate_cost_route_proof(
+        cost_route,
+        normalized_runtime,
+        normalized_model,
+        normalized_service_tier,
+    )
+    subscription = (
+        route.get("subscription_capacity")
+        if isinstance(route.get("subscription_capacity"), dict)
+        else {}
+    )
+    usage_entry = usage if isinstance(usage, dict) else {}
+    provider_error = str(usage_entry.get("provider_error_text") or "")
+    observed_error = str(error_text or "") or provider_error
+    if not (
+        route.get("waterfall_stage") == "subscription_flex_probe"
+        and normalized_runtime == "codex"
+        and normalized_service_tier == "flex"
+        and subscription.get("chatgpt_auth_verified") is True
+        and stored_codex_auth_mode() == "chatgpt"
+        and not str(response or "").strip()
+        and (
+            _contains_usage_limit_error(error_text)
+            or _contains_usage_limit_error(provider_error)
+        )
+    ):
+        return False
+
+    observed_at = now_ts()
+    payload = {
+        **default_codex_account_capacity(),
+        "source": "interactive_usage",
+        "state": "blocked",
+        "auth_mode": "chatgpt",
+        "observed_at": observed_at,
+        "last_probe_at": observed_at,
+        "last_error": summarize_text(observed_error, 160),
+    }
+    _persist_codex_account_capacity(payload)
+    append_audit_event(
+        event_type="chat.subscription-capacity-probe-exhausted",
+        summary="Guarded ChatGPT subscription probe reached the usage limit.",
+        detail=summarize_text(observed_error, 320),
+        severity="warn",
+        actor_type="system",
+        thread_id=read_text(THREAD_ID_PATH),
+        payload={
+            "cost_route": route,
+            "runtime": normalized_runtime,
+            "model": normalized_model,
+            "service_tier": normalized_service_tier,
+            "provider_error_kind": str(usage_entry.get("provider_error_kind") or ""),
+        },
+    )
+    return True
+
+
 def _latest_history_entry(snapshot: dict[str, Any]) -> dict[str, Any]:
     history = snapshot.get("history")
     if not isinstance(history, list):
@@ -24387,12 +26692,7 @@ def usage_limit_billing_action(
 
 
 def bedrock_default_recovery_service_tier() -> str:
-    if DEFAULT_SERVICE_TIER not in {"auto", "default"}:
-        return ""
-    if not CODEX_STANDARD_PROFILE_V2 or "default" not in SERVICE_TIER_OPTIONS:
-        return ""
-    target = "default"
-    return target if codex_profile_v2_for_service_tier(target) else ""
+    return ""
 
 
 def direct_service_tier_usage_limit_recovery(
@@ -24402,44 +26702,7 @@ def direct_service_tier_usage_limit_recovery(
     runtime: Any = "codex",
     entries: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    requested_tier = normalize_service_tier(service_tier)
-    target_tier = bedrock_default_recovery_service_tier()
-    if (
-        route_lock
-        or normalize_runtime(runtime) != "codex"
-        or requested_tier not in DIRECT_SERVICE_TIERS
-        or not target_tier
-    ):
-        return {}
-    items = (
-        load_usage_history(limit=DIRECT_TIER_USAGE_LIMIT_RECOVERY_LOOKBACK)
-        if entries is None
-        else entries
-    )
-    matches: list[dict[str, Any]] = []
-    for item in items:
-        usage = normalize_usage_entry(item)
-        if normalize_service_tier(usage.get("service_tier")) != requested_tier:
-            continue
-        if str(usage.get("provider_surface") or "").strip().lower() != "openai-direct":
-            continue
-        if not _contains_usage_limit_error(usage.get("provider_error_text")):
-            continue
-        matches.append(usage)
-    if not matches:
-        return {}
-    latest = matches[-1]
-    return {
-        "requested_service_tier": requested_tier,
-        "service_tier": target_tier,
-        "reason": "recent_direct_usage_limit",
-        "recent_usage_limit_count": len(matches),
-        "latest_usage_limit_at": _coerce_int(latest.get("finished_at"))
-        or _coerce_int(latest.get("started_at")),
-        "target_profile_v2": codex_profile_v2_for_service_tier(target_tier),
-        "target_aws_profile": codex_aws_profile_for_service_tier(target_tier),
-        "target_aws_region": codex_aws_region_for_service_tier(target_tier),
-    }
+    return {}
 
 
 def append_direct_service_tier_recovery_event(
@@ -24554,6 +26817,8 @@ def detect_kpi_signals(
         )
     for service in snapshot.get("services") or []:
         if not isinstance(service, dict):
+            continue
+        if service.get("required") is False:
             continue
         state = str(service.get("state") or "").strip().lower()
         if state in {"failed", "inactive", "dead"}:
@@ -25164,6 +27429,140 @@ def update_kpi_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
         return payload
 
 
+_KAIZEN_TUI_SCHEMA = "norman.kaizen-tui-snapshot.v1"
+_KAIZEN_TUI_STATES = {"blocked", "degraded", "idle", "waiting", "wedged", "working"}
+_KAIZEN_ACTIVITY_STATES = {"idle", "stalled", "waiting", "working", "unknown"}
+_KAIZEN_HEALTH_STATES = {"blocked", "degraded", "ok", "unknown", "wedged"}
+_KAIZEN_METRIC_LIMITS = {
+    "turns": 10_000_000,
+    "successful_turns": 10_000_000,
+    "failed_turns": 10_000_000,
+    "avg_turn_seconds": 604_800,
+    "last_turn_at": 4_102_444_800,
+    "pending_seconds": 604_800,
+    "queue_depth": 100_000,
+    "wedge_count": 10_000_000,
+    "blocked_count": 10_000_000,
+    "degraded_count": 10_000_000,
+    "state_changes": 10_000_000,
+}
+_KAIZEN_REALM_PATTERN = re.compile(r"^[a-z0-9][a-z0-9/_-]{1,95}$")
+
+
+def _kaizen_emitter_enabled() -> bool:
+    value = os.environ.get("NORMAN_KAIZEN_ENABLED", "").strip().lower()
+    return value in {"1", "true", "yes", "on"} and bool(CONSOLE_RUNTIME_API_BASE)
+
+
+def _kaizen_tui_snapshot_url() -> str:
+    base = CONSOLE_RUNTIME_API_BASE.rstrip("/")
+    if base.rsplit("/", 1)[-1] == "console-runtime":
+        base = base.rsplit("/", 1)[0]
+    if base.endswith("/api/v1"):
+        return f"{base}/kaizen/tui-snapshots"
+    if base.endswith("/api"):
+        return f"{base}/v1/kaizen/tui-snapshots"
+    return f"{base}/api/v1/kaizen/tui-snapshots"
+
+
+def _kaizen_tui_source() -> str:
+    configured = os.environ.get("NORMAN_KAIZEN_SOURCE_TUI", "").strip() or SESSION
+    sanitized = re.sub(r"[^A-Za-z0-9._:-]+", "-", configured).strip("-_.:")
+    return (sanitized or "tui")[:128]
+
+
+def _kaizen_tui_realm() -> str:
+    realm = os.environ.get("NORMAN_KAIZEN_REALM", "personal/home").strip()
+    return realm if _KAIZEN_REALM_PATTERN.fullmatch(realm) else ""
+
+
+def _kaizen_rfc3339(value: Any) -> str:
+    try:
+        seconds = float(value)
+        if not math.isfinite(seconds) or seconds < 0:
+            return ""
+        return datetime.fromtimestamp(seconds, tz=timezone.utc).isoformat()
+    except (OverflowError, OSError, TypeError, ValueError):
+        return ""
+
+
+def _kaizen_metric(value: Any, *, maximum: float) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(numeric):
+        return 0.0
+    return min(max(numeric, 0.0), maximum)
+
+
+def build_kaizen_tui_snapshot_payload(
+    snapshot: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Project cached KPI state into the strict Kaizen ingestion contract."""
+    kpis = snapshot.get("kpis") if isinstance(snapshot.get("kpis"), dict) else {}
+    realm = _kaizen_tui_realm()
+    observed_at = _kaizen_rfc3339(kpis.get("observed_at"))
+    state_entered_at = _kaizen_rfc3339(kpis.get("state_entered_at"))
+    if not realm or not observed_at or not state_entered_at:
+        return None
+    metrics = kpis.get("metrics") if isinstance(kpis.get("metrics"), dict) else {}
+    state = str(kpis.get("state") or "").strip().lower()
+    activity_state = str(kpis.get("activity_state") or "").strip().lower()
+    health_state = str(kpis.get("health_state") or "").strip().lower()
+    return {
+        "schema": _KAIZEN_TUI_SCHEMA,
+        "realm": realm,
+        "source_tui": _kaizen_tui_source(),
+        "observed_at": observed_at,
+        "state": state if state in _KAIZEN_TUI_STATES else "working",
+        "activity_state": (
+            activity_state if activity_state in _KAIZEN_ACTIVITY_STATES else "unknown"
+        ),
+        "health_state": (
+            health_state if health_state in _KAIZEN_HEALTH_STATES else "unknown"
+        ),
+        "prompt_visible": bool(kpis.get("prompt_visible")),
+        "waiting_visible": bool(kpis.get("waiting_visible")),
+        "state_entered_at": state_entered_at,
+        "metrics": {
+            key: _kaizen_metric(metrics.get(key), maximum=maximum)
+            for key, maximum in _KAIZEN_METRIC_LIMITS.items()
+        },
+    }
+
+
+def _kaizen_emit_timeout_seconds() -> float:
+    try:
+        value = float(os.environ.get("NORMAN_KAIZEN_EMIT_TIMEOUT_SECONDS", "1.5"))
+    except ValueError:
+        value = 1.5
+    return max(0.1, min(value, 5.0))
+
+
+def emit_kaizen_tui_snapshot(snapshot: dict[str, Any]) -> bool:
+    """Best-effort background-only KPI emission with no retries or side effects."""
+    if not _kaizen_emitter_enabled():
+        return False
+    payload = build_kaizen_tui_snapshot_payload(snapshot)
+    if payload is None:
+        return False
+    try:
+        request = urllib_request.Request(
+            _kaizen_tui_snapshot_url(),
+            data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+            headers=_console_runtime_headers(),
+            method="POST",
+        )
+        with urllib_request.urlopen(
+            request, timeout=_kaizen_emit_timeout_seconds()
+        ) as response:
+            response.read()
+        return True
+    except Exception:
+        return False
+
+
 def runtime_time_target_snapshot(
     meta: dict[str, Any], *, pending: bool, snapshot_at: int
 ) -> dict[str, Any]:
@@ -25261,6 +27660,7 @@ def normalize_queue(value: Any) -> list[dict[str, Any]]:
             model = normalize_runtime_model(runtime)
             timeout_seconds = job_budget_timeout_seconds(job_budget)
             item_id = ""
+            submission_id = ""
             checkpoint_policy = queue_checkpoint_policy()
             interlace_mode = queue_interlace_mode()
         elif isinstance(entry, dict):
@@ -25270,6 +27670,7 @@ def normalize_queue(value: Any) -> list[dict[str, Any]]:
             except (TypeError, ValueError):
                 queued_at = 0
             item_id = str(entry.get("id") or "").strip()
+            submission_id = normalize_submission_id(entry.get("submission_id"))
             speed = normalize_response_speed(entry.get("speed"))
             detail = normalize_response_detail(entry.get("detail"))
             service_tier = normalize_service_tier(entry.get("service_tier"))
@@ -25285,11 +27686,7 @@ def normalize_queue(value: Any) -> list[dict[str, Any]]:
             attachments = normalize_attachments(entry.get("attachments"))
             relay_callback = normalize_relay_callback(entry.get("relay_callback"))
             source = normalize_queue_source(entry.get("source"), relay_callback, prompt)
-            cost_route = (
-                dict(entry.get("cost_route"))
-                if isinstance(entry.get("cost_route"), dict)
-                else {}
-            )
+            cost_route = sanitize_cost_route(entry.get("cost_route"))
             checkpoint_policy = (
                 str(entry.get("checkpoint_policy") or queue_checkpoint_policy()).strip()
                 or queue_checkpoint_policy()
@@ -25300,6 +27697,11 @@ def normalize_queue(value: Any) -> list[dict[str, Any]]:
             )
             checkpoint_policy = queue_checkpoint_policy_for_interlace(interlace_mode)
             recovered = bool(entry.get("recovered"))
+            session_admission = (
+                dict(entry.get("session_admission"))
+                if isinstance(entry.get("session_admission"), dict)
+                else {}
+            )
         else:
             continue
         if not isinstance(entry, dict):
@@ -25308,13 +27710,16 @@ def normalize_queue(value: Any) -> list[dict[str, Any]]:
             source = normalize_queue_source("", relay_callback, prompt)
             cost_route = {}
             recovered = False
+            session_admission = {}
             item_id = ""
+            submission_id = ""
             checkpoint_policy = queue_checkpoint_policy()
             interlace_mode = queue_interlace_mode()
         if prompt:
             item_id = queue_item_id(prompt, queued_at, source, item_id)
             item = {
                 "id": item_id,
+                "submission_id": submission_id,
                 "prompt": prompt,
                 "queued_at": queued_at,
                 "speed": speed,
@@ -25328,6 +27733,7 @@ def normalize_queue(value: Any) -> list[dict[str, Any]]:
                 "attachments": attachments,
                 "source": source,
                 "cost_route": cost_route,
+                "session_admission": session_admission,
                 "interlace_mode": interlace_mode,
                 "checkpoint_policy": checkpoint_policy,
                 "recovered": recovered,
@@ -26681,6 +29087,30 @@ def save_status_meta(meta: dict[str, Any]) -> dict[str, Any]:
         payload.get("last_timeout_seconds"), payload["last_job_budget"]
     )
     payload["last_attachments"] = normalize_attachments(payload.get("last_attachments"))
+    running_cost_route = payload.get("running_cost_route")
+    payload["running_route_bootstrap_metadata"] = sanitize_route_bootstrap_metadata(
+        running_cost_route,
+        payload["running_runtime"],
+        payload["running_model"],
+        payload["running_service_tier"],
+    )
+    payload["running_cost_route"] = validate_cost_route_proof(
+        running_cost_route,
+        payload["running_runtime"],
+        payload["running_model"],
+        payload["running_service_tier"],
+    )
+    payload["last_cost_route"] = validate_cost_route_proof(
+        payload.get("last_cost_route"),
+        payload["last_runtime"],
+        payload["last_model"],
+        payload["last_service_tier"],
+    )
+    payload["running_turn_envelope"] = sanitize_turn_envelope_cost_route(
+        payload.get("running_turn_envelope")
+    )
+    if payload["running_turn_envelope"]:
+        payload["running_turn_envelope"]["cost_route"] = payload["running_cost_route"]
     payload["rate_limit_active"] = bool(payload.get("rate_limit_active"))
     payload["rate_limit_attempt"] = _coerce_int(payload.get("rate_limit_attempt"))
     payload["rate_limit_max_attempts"] = max(
@@ -26769,12 +29199,12 @@ def prompt_thread_alive() -> bool:
     return ACTIVE_PROMPT_THREAD is not None and ACTIVE_PROMPT_THREAD.is_alive()
 
 
-def codex_exec_child_alive() -> bool:
+def active_codex_exec_child() -> tuple[int, int] | None:
     parent_pid = str(os.getpid())
     state_dir_marker = str(STATE_DIR)
     proc_root = Path("/proc")
     if not proc_root.exists():
-        return False
+        return None
     for proc_dir in proc_root.iterdir():
         if not proc_dir.name.isdigit():
             continue
@@ -26787,8 +29217,19 @@ def codex_exec_child_alive() -> bool:
             continue
         command = cmdline.decode("utf-8", errors="replace")
         if "codex exec" in command and state_dir_marker in command:
-            return True
-    return False
+            pid = _coerce_int(proc_dir.name)
+            if pid <= 0:
+                continue
+            try:
+                pgid = os.getpgid(pid)
+            except OSError:
+                pgid = pid
+            return pid, pgid
+    return None
+
+
+def codex_exec_child_alive() -> bool:
+    return active_codex_exec_child() is not None
 
 
 def pid_alive(pid: int) -> bool:
@@ -26840,10 +29281,17 @@ def working_response_text(prompt: str) -> str:
     return f"Working on: {summarize_text(prompt, 180)}. New messages will be queued."
 
 
+def local_status_preflight_available() -> bool:
+    """Return whether normal status routing can obtain a local model preflight."""
+    return bool(local_planner_preflight_readiness().get("ready"))
+
+
 def deterministic_status_prompt_allowed(
     prompt: str, attachments: list[dict[str, Any]], *, route_lock: bool = False
 ) -> bool:
     if route_lock or normalize_attachments(attachments):
+        return False
+    if prompt_runtime_alive():
         return False
     core = prompt_core_request(prompt)
     if not core:
@@ -26852,7 +29300,17 @@ def deterministic_status_prompt_allowed(
         return False
     if prompt_is_broad_planning_request(core):
         return False
-    return route_receipt_requested_action(core) == "status"
+    if prompt_requests_investigation(core):
+        return False
+    # A concise status request still needs the normal Norllama preflight when a
+    # local lane is healthy. State-only output is reserved for degraded mode.
+    if local_status_preflight_available():
+        return False
+    return (
+        prompt_is_explicit_status_request(core)
+        and prompt_is_quick_status_request(core)
+        and route_receipt_requested_action(core) == "status"
+    )
 
 
 def deterministic_status_response(prompt: str) -> str:
@@ -26893,7 +29351,7 @@ def deterministic_status_response(prompt: str) -> str:
             f"- State: {state}; pending: {pending}; status: {status_message}.",
             f"- Selected route: {selected_runtime}/{selected_model}; last turn: {last_runtime}/{last_model}.",
             f"- Last visible result: {response_note}.",
-            f"- Local proof: {local_note}; route receipts: {receipt_note}.",
+            f"- Local lane availability: {local_note}; route receipts: {receipt_note}.",
             f"- Next: continue from `{requested}` with a scoped prompt if more work is needed; this status used deterministic TUI state, not a cloud/model call.",
         ]
     )
@@ -26919,13 +29377,15 @@ def complete_deterministic_status_prompt(
     normalized_optimization_mode = normalize_optimization_mode(optimization_mode)
     runtime = "localllm"
     model = "deterministic-status"
+    execution_service_tier = "default"
+    cost_route = deterministic_status_cost_route()
     response = deterministic_status_response(prompt)
     usage = normalize_usage_entry(
         {
             **local_llm_provider_tags(),
             "runtime": runtime,
             "model": model,
-            "service_tier": normalized_service_tier,
+            "service_tier": execution_service_tier,
             "started_at": started_at,
             "finished_at": finished_at,
             "thread_id": thread_id,
@@ -26959,7 +29419,7 @@ def complete_deterministic_status_prompt(
         thread_id=thread_id,
         speed=normalized_speed,
         detail=normalized_detail,
-        service_tier=normalized_service_tier,
+        service_tier=execution_service_tier,
         job_budget=normalized_budget,
         optimization_mode=normalized_optimization_mode,
         timeout_seconds=job_budget_timeout_seconds(normalized_budget),
@@ -26974,31 +29434,12 @@ def complete_deterministic_status_prompt(
         thread_id=thread_id,
         speed=normalized_speed,
         detail=normalized_detail,
-        service_tier=normalized_service_tier,
+        service_tier=execution_service_tier,
         success=True,
         runtime=runtime,
         model=model,
         usage=usage,
-    )
-    append_route_receipt(
-        prompt=prompt,
-        visible_response=response,
-        error_text="",
-        started_at=started_at,
-        finished_at=finished_at,
-        thread_id=thread_id,
-        speed=normalized_speed,
-        detail=normalized_detail,
-        service_tier=normalized_service_tier,
-        job_budget=normalized_budget,
-        optimization_mode=normalized_optimization_mode,
-        success=True,
-        runtime=runtime,
-        model=model,
-        usage=usage,
-        outcome="done",
-        requested_model=model,
-        requested_service_tier=normalized_service_tier,
+        cost_route=cost_route,
     )
     update_status_meta(
         pending=False,
@@ -27010,7 +29451,7 @@ def complete_deterministic_status_prompt(
         running_model=model,
         running_speed=normalized_speed,
         running_detail=normalized_detail,
-        running_service_tier=normalized_service_tier,
+        running_service_tier=execution_service_tier,
         running_job_budget=normalized_budget,
         running_optimization_mode=normalized_optimization_mode,
         running_timeout_seconds=job_budget_timeout_seconds(DEFAULT_JOB_BUDGET),
@@ -27020,7 +29461,7 @@ def complete_deterministic_status_prompt(
         cancel_requested_at=0,
         last_speed=normalized_speed,
         last_detail=normalized_detail,
-        last_service_tier=normalized_service_tier,
+        last_service_tier=execution_service_tier,
         last_job_budget=normalized_budget,
         last_optimization_mode=normalized_optimization_mode,
         last_runtime=runtime,
@@ -27033,6 +29474,26 @@ def complete_deterministic_status_prompt(
         last_action_detail="Answered from TUI state without a model call.",
         running_console_runtime_job_id="",
         running_cost_route={},
+    )
+    append_route_receipt(
+        prompt=prompt,
+        visible_response=response,
+        started_at=started_at,
+        finished_at=finished_at,
+        thread_id=thread_id,
+        speed=normalized_speed,
+        detail=normalized_detail,
+        service_tier=execution_service_tier,
+        job_budget=normalized_budget,
+        optimization_mode=normalized_optimization_mode,
+        success=True,
+        runtime=runtime,
+        model=model,
+        usage=usage,
+        outcome="done",
+        requested_model=model,
+        requested_service_tier=normalized_service_tier,
+        cost_route=cost_route,
     )
     append_audit_event(
         event_type="chat.deterministic-status",
@@ -27047,6 +29508,7 @@ def complete_deterministic_status_prompt(
             "runtime": runtime,
             "model": model,
             "usage": usage,
+            "cost_route": cost_route,
         },
         event_at=finished_at,
     )
@@ -27160,10 +29622,54 @@ def queue_prompt(
     interlace_mode: str = "",
     optimization_mode: str = "",
     cost_route: dict[str, Any] | None = None,
+    session_admission: dict[str, Any] | None = None,
     source: str = "",
+    submission_id: str = "",
+    fast_snapshot: bool = False,
 ) -> dict[str, Any]:
     duplicate_queue_position = 0
     duplicate_queue_state = ""
+    proof_runtime = normalize_runtime(runtime)
+    proof_model = normalize_runtime_model(proof_runtime, model)
+    proof_service_tier = normalize_service_tier(service_tier)
+    if not validate_cost_route_proof(
+        cost_route,
+        proof_runtime,
+        proof_model,
+        proof_service_tier,
+    ):
+        blocked_message = (
+            "Queued work requires a route proof bound to its execution tuple."
+        )
+        with STATUS_LOCK:
+            meta = load_status_meta()
+            meta.update(
+                {
+                    "last_action": "route-proof-blocked",
+                    "last_action_at": now_ts(),
+                    "last_action_detail": blocked_message,
+                    "status_message": blocked_message,
+                }
+            )
+            save_status_meta(meta)
+        append_audit_event(
+            event_type="chat.route-proof-blocked",
+            summary="Rejected queued work with an invalid route proof.",
+            detail=blocked_message,
+            severity="warn",
+            actor_type="system",
+            thread_id=read_text(THREAD_ID_PATH),
+            payload={
+                "prompt_preview": summarize_text(prompt, 240),
+                "runtime": proof_runtime,
+                "model": proof_model,
+                "service_tier": proof_service_tier,
+            },
+        )
+        snapshot = _live_status_overlay() if fast_snapshot else current_snapshot()
+        snapshot["route_proof_blocked"] = True
+        snapshot["route_proof_error"] = blocked_message
+        return snapshot
     with STATUS_LOCK:
         meta = load_status_meta()
         queue = normalize_queue(meta.get("queued_prompts"))
@@ -27176,8 +29682,17 @@ def queue_prompt(
         normalized_optimization_mode = normalize_optimization_mode(optimization_mode)
         normalized_runtime = normalize_runtime(runtime)
         normalized_model = normalize_runtime_model(normalized_runtime, model)
-        normalized_cost_route = dict(cost_route or {})
+        normalized_cost_route = validate_cost_route_proof(
+            cost_route,
+            normalized_runtime,
+            normalized_model,
+            normalized_service_tier,
+        )
+        normalized_session_admission = (
+            dict(session_admission) if isinstance(session_admission, dict) else {}
+        )
         normalized_interlace_mode = normalize_queue_interlace_mode(interlace_mode)
+        normalized_submission_id = normalize_submission_id(submission_id)
         duplicate_queue_state, duplicate_queue_position = (
             prompt_already_running_or_queued(
                 meta,
@@ -27215,6 +29730,7 @@ def queue_prompt(
             queued_at = now_ts()
             item = {
                 "id": queue_item_id(prompt, queued_at, source),
+                "submission_id": normalized_submission_id,
                 "prompt": prompt,
                 "queued_at": queued_at,
                 "speed": normalize_response_speed(speed),
@@ -27228,6 +29744,7 @@ def queue_prompt(
                 "attachments": normalized_attachments,
                 "source": source,
                 "cost_route": normalized_cost_route,
+                "session_admission": normalized_session_admission,
                 "interlace_mode": normalized_interlace_mode,
                 "checkpoint_policy": checkpoint_policy,
             }
@@ -27290,7 +29807,7 @@ def queue_prompt(
                 "source": source,
             },
         )
-        snapshot = current_snapshot()
+        snapshot = _live_status_overlay() if fast_snapshot else current_snapshot()
         snapshot["deduplicated_prompt"] = True
         return snapshot
     append_audit_event(
@@ -27314,11 +29831,12 @@ def queue_prompt(
             "attachment_summary": attachment_phrase,
             "queue_position": position,
             "source": source,
+            "session_admission": normalized_session_admission,
             "interlace_mode": normalized_interlace_mode,
             "checkpoint_policy": checkpoint_policy,
         },
     )
-    return current_snapshot()
+    return _live_status_overlay() if fast_snapshot else current_snapshot()
 
 
 WAITING_RESPONSE_SENTINELS = {
@@ -27550,6 +30068,7 @@ def start_next_queued_prompt() -> (
         item = queue.pop(run_index)
         started_at = now_ts()
         prompt = item["prompt"]
+        submission_id = normalize_submission_id(item.get("submission_id"))
         speed = normalize_response_speed(item.get("speed"))
         detail = normalize_response_detail(item.get("detail"))
         service_tier = normalize_service_tier(item.get("service_tier"))
@@ -27562,11 +30081,89 @@ def start_next_queued_prompt() -> (
         )
         attachments = normalize_attachments(item.get("attachments"))
         relay_callback = normalize_relay_callback(item.get("relay_callback"))
-        cost_route = (
-            dict(item.get("cost_route"))
-            if isinstance(item.get("cost_route"), dict)
+        cost_route = validate_cost_route_proof(
+            item.get("cost_route"),
+            runtime,
+            model,
+            service_tier,
+        )
+        if not cost_route:
+            blocked_message = (
+                "Removed queued work because its route proof did not bind the "
+                "execution tuple."
+            )
+            meta.update(
+                {
+                    "queued_prompts": queue,
+                    "state": "route-proof-blocked",
+                    "status_message": blocked_message,
+                    "queue_checkpoint_state": "route-proof-blocked",
+                    "queue_checkpoint_detail": blocked_message,
+                    "last_action": "route-proof-blocked",
+                    "last_action_at": now_ts(),
+                    "last_action_detail": blocked_message,
+                }
+            )
+            save_status_meta(meta)
+            append_audit_event(
+                event_type="chat.route-proof-blocked",
+                summary="Removed queued work with an invalid route proof.",
+                detail=blocked_message,
+                severity="warn",
+                actor_type="system",
+                thread_id=read_text(THREAD_ID_PATH),
+                payload={
+                    "prompt_preview": summarize_text(prompt, 240),
+                    "runtime": runtime,
+                    "model": model,
+                    "service_tier": service_tier,
+                },
+            )
+            return None
+        prior_admission = (
+            dict(item.get("session_admission"))
+            if isinstance(item.get("session_admission"), dict)
             else {}
         )
+        queue_admission = session_budget_admission(
+            model=model,
+            reasoning_effort=normalize_reasoning_effort(
+                prior_admission.get("reasoning_effort")
+                or response_reasoning_effort(speed)
+            ),
+            escalation_reason=str(prior_admission.get("escalation_reason") or ""),
+            reauthorization_reason=str(
+                prior_admission.get("reauthorization_reason") or ""
+            ),
+            checkpoint_intent=bool(prior_admission.get("checkpoint_intent")),
+        )
+        item["session_admission"] = queue_admission
+        if not queue_admission.get("allowed"):
+            queue.insert(run_index, item)
+            detail_text = str(
+                queue_admission.get("reason") or "Queue admission denied."
+            )
+            meta.update(
+                {
+                    "queued_prompts": queue,
+                    "state": "session-budget-blocked",
+                    "status_message": detail_text,
+                    "queue_checkpoint_state": "session-budget-blocked",
+                    "queue_checkpoint_detail": detail_text,
+                    "last_session_admission": queue_admission,
+                    "last_action": "queue-session-admission-denied",
+                    "last_action_at": now_ts(),
+                    "last_action_detail": detail_text,
+                }
+            )
+            save_status_meta(meta)
+            append_session_admission_audit(
+                queue_admission,
+                prompt=prompt,
+                source="queue",
+                thread_id=read_text(THREAD_ID_PATH),
+            )
+            return None
         item_interlace_mode = normalize_queue_interlace_mode(item.get("interlace_mode"))
         handoff_ready = (
             item_interlace_mode == "interrupt"
@@ -27608,7 +30205,11 @@ def start_next_queued_prompt() -> (
                 "running_runtime": runtime,
                 "running_model": model,
                 "running_timeout_seconds": timeout_seconds,
+                "running_submission_id": submission_id,
                 "running_cost_route": cost_route,
+                "running_request_source": item.get("source") or "operator",
+                "running_session_admission": queue_admission,
+                "last_session_admission": queue_admission,
                 "last_started_at": started_at,
                 "queued_prompts": queue,
                 "queue_checkpoint_state": "idle" if not queue else "waiting",
@@ -27698,6 +30299,8 @@ def session_exists() -> bool:
 
 
 def ensure_session() -> bool:
+    if os.environ.get("NORMAN_CHILD_AGENT") == "1":
+        return False
     if session_exists():
         return True
     proc = run(["systemctl", "start", CODEX_SERVICE])
@@ -28047,7 +30650,31 @@ def upgrade_queued_prompt_to_interrupt(
 
 
 def cancel_active_web_prompt(clear_queue: bool = False) -> dict[str, Any]:
-    meta = update_status_meta(
+    previous_meta = load_status_meta()
+    tracked_pid = _coerce_int(previous_meta.get("active_child_pid"))
+    tracked_pgid = _coerce_int(previous_meta.get("active_child_pgid"))
+    tracked_live = bool(tracked_pid > 0 and codex_runtime_pid_alive(tracked_pid))
+    discovered_child = active_codex_exec_child()
+    with ACTIVE_CODEX_LOCK:
+        active_proc = ACTIVE_CODEX_PROC
+    active_proc_live = active_proc is not None and active_proc.poll() is None
+    active_before_cancel = bool(
+        previous_meta.get("pending")
+        or prompt_thread_alive()
+        or tracked_live
+        or discovered_child
+        or active_proc_live
+    )
+    if not active_before_cancel:
+        update_status_meta(
+            last_action="web-cancel-noop",
+            last_action_at=now_ts(),
+            last_action_detail="No active web reply was found to cancel.",
+            status_message="No active web reply was found to cancel.",
+        )
+        return current_snapshot()
+
+    update_status_meta(
         state="cancelling",
         status_message="Cancelling current web reply.",
         cancel_requested_at=now_ts(),
@@ -28055,19 +30682,22 @@ def cancel_active_web_prompt(clear_queue: bool = False) -> dict[str, Any]:
         last_action_at=now_ts(),
         last_action_detail="Cancelling current web reply.",
     )
-    pid = _coerce_int(meta.get("active_child_pid"))
-    pgid = _coerce_int(meta.get("active_child_pgid"))
+    pid = tracked_pid if tracked_live else 0
+    pgid = tracked_pgid if tracked_live else 0
     killed = terminate_process_group(pid, pgid) if pid else False
     if not pid or not killed:
-        with ACTIVE_CODEX_LOCK:
-            proc = ACTIVE_CODEX_PROC
-        if proc is not None and proc.poll() is None:
+        if active_proc_live:
             try:
-                pgid = os.getpgid(proc.pid)
+                pgid = os.getpgid(active_proc.pid)
             except OSError:
-                pgid = proc.pid
-            killed = terminate_process_group(proc.pid, pgid)
-            pid = proc.pid
+                pgid = active_proc.pid
+            killed = terminate_process_group(active_proc.pid, pgid)
+            pid = active_proc.pid
+    if not pid or not killed:
+        discovered_child = active_codex_exec_child()
+        if discovered_child:
+            pid, pgid = discovered_child
+            killed = terminate_process_group(pid, pgid)
     if clear_queue:
         with STATUS_LOCK:
             meta = load_status_meta()
@@ -28158,6 +30788,9 @@ def defer_web_only_restart_until_idle(
         f"Operator requested deferred web-only restart of {AGENT_NAME} TUI.",
     )
     update_status_meta(
+        web_restart_deferred_at=now,
+        web_restart_deferred_deadline_at=(now + WEB_RESTART_DEFERRED_MAX_WAIT_SECONDS),
+        web_restart_deferred_expired_at=0,
         last_action="web-restart-deferred",
         last_action_at=now,
         last_action_detail=(
@@ -28194,6 +30827,10 @@ def defer_web_only_restart_until_idle(
             if not bool(probe.get("web_restart_required")):
                 with WEB_RESTART_LOCK:
                     WEB_RESTART_DEFERRED_AT = 0
+                update_status_meta(
+                    web_restart_deferred_at=0,
+                    web_restart_deferred_deadline_at=0,
+                )
                 append_audit_event(
                     event_type="web.restart.deferred.cleared",
                     summary="Deferred web restart cleared.",
@@ -28207,6 +30844,10 @@ def defer_web_only_restart_until_idle(
             if not bool(probe.get("busy")):
                 with WEB_RESTART_LOCK:
                     WEB_RESTART_DEFERRED_AT = 0
+                update_status_meta(
+                    web_restart_deferred_at=0,
+                    web_restart_deferred_deadline_at=0,
+                )
                 schedule_web_only_restart(
                     actor_ip=actor_ip,
                     delay_seconds=delay_seconds,
@@ -28215,6 +30856,22 @@ def defer_web_only_restart_until_idle(
 
         with WEB_RESTART_LOCK:
             WEB_RESTART_DEFERRED_AT = 0
+        expired_at = now_ts()
+        update_status_meta(
+            web_restart_deferred_at=0,
+            web_restart_deferred_deadline_at=0,
+            web_restart_deferred_expired_at=expired_at,
+            last_action="web-restart-deferred-expired",
+            last_action_at=expired_at,
+            last_action_detail=(
+                f"Deferred web-only restart expired after "
+                f"{WEB_RESTART_DEFERRED_MAX_WAIT_SECONDS}s while the TUI stayed busy."
+            ),
+            status_message=(
+                "Deferred web-only restart expired; the staged UI still needs a "
+                "safe restart."
+            ),
+        )
         append_audit_event(
             event_type="web.restart.deferred.expired",
             summary="Deferred web restart expired while waiting for idle.",
@@ -28297,6 +30954,9 @@ def schedule_web_only_restart(
         "web", f"Operator requested web-only restart of {AGENT_NAME} TUI."
     )
     update_status_meta(
+        web_restart_deferred_at=0,
+        web_restart_deferred_deadline_at=0,
+        web_restart_deferred_expired_at=0,
         last_action="web-restart",
         last_action_at=now,
         last_action_detail=f"Web-only restart scheduled for {WEB_SERVICE}.",
@@ -29433,6 +32093,7 @@ def _execute_codex_prompt(
     service_tier: str = "",
     job_budget: str = "",
     optimization_mode: str = "",
+    subscription_probe: bool = False,
 ) -> tuple[str, str, str, dict[str, Any]]:
     output_path = STATE_DIR / "last_message.txt"
     if output_path.exists():
@@ -29450,6 +32111,7 @@ def _execute_codex_prompt(
         prompt=prompt,
         job_budget=normalized_budget,
         detail=normalized_detail,
+        subscription_probe=subscription_probe,
     )
     if not direct_execution["allowed"]:
         blocked_message = codex_openai_direct_execution_block_message(direct_execution)
@@ -29549,9 +32211,13 @@ def _execute_codex_prompt(
     read_only_self_improvement = is_subscription_capacity_self_improvement_prompt(
         prompt
     )
+    child_write_mode = os.environ.get("NORMAN_CHILD_AGENT_WRITE_MODE", "").strip()
+    read_only_child = (
+        os.environ.get("NORMAN_CHILD_AGENT") == "1" and child_write_mode == "read_only"
+    )
     sandbox_args = (
         ["--sandbox", "read-only", "--ask-for-approval", "never"]
-        if read_only_self_improvement
+        if read_only_self_improvement or read_only_child
         else ["--dangerously-bypass-approvals-and-sandbox"]
     )
     cmd = [
@@ -29571,6 +32237,8 @@ def _execute_codex_prompt(
         str(output_path),
     ]
     execution_prompt = active_interrupt_handoff_execution_prompt(prompt) or prompt
+    if not session_id:
+        execution_prompt = build_followup_execution_prompt(execution_prompt)
     if context_pack_plan.get("should_pack"):
         compact_context = bedrock_context_pack_prompt_context(context_pack_plan)
         if compact_context:
@@ -29680,6 +32348,7 @@ def _execute_codex_prompt(
         prompt=prompt,
         job_budget=normalized_budget,
         detail=normalized_detail,
+        subscription_probe=subscription_probe,
     )
     if not launch_direct_execution["allowed"]:
         blocked_message = codex_openai_direct_execution_block_message(
@@ -29709,6 +32378,18 @@ def _execute_codex_prompt(
         env.pop("OPENAI_API_KEY", None)
         env.pop("CODEX_API_KEY", None)
     apply_codex_provider_environment(env, normalized_service_tier)
+    if _coerce_int(load_status_meta().get("cancel_requested_at")) > 0:
+        return (
+            "",
+            CANCELLED_WEB_REPLY_MESSAGE,
+            session_id,
+            normalize_usage_entry(
+                {
+                    "service_tier": normalized_service_tier,
+                    "token_capacity_plan": token_capacity_plan,
+                }
+            ),
+        )
     checkpoint_interrupted = False
     deadline_checkpoint_interrupted = False
     popen = subprocess.Popen(
@@ -31749,38 +34430,6 @@ def local_llm_activity_float(value: Any) -> float | None:
         return None
 
 
-def local_llm_normalize_activity_attempts(value: Any) -> list[dict[str, Any]]:
-    attempts = value if isinstance(value, list) else []
-    normalized: list[dict[str, Any]] = []
-    for item in attempts[:6]:
-        if isinstance(item, str):
-            text = item.strip()
-            if text:
-                normalized.append({"target": text})
-            continue
-        if not isinstance(item, dict):
-            continue
-        normalized_item = {
-            "worker_id": str(
-                item.get("worker_id") or item.get("id") or item.get("worker") or ""
-            ).strip(),
-            "endpoint": str(
-                item.get("endpoint")
-                or item.get("upstream")
-                or item.get("base_url")
-                or ""
-            ).strip(),
-            "status": item.get("status"),
-            "duration_ms": local_llm_activity_float(
-                item.get("duration_ms") or item.get("latency_ms")
-            ),
-        }
-        normalized.append(
-            {key: val for key, val in normalized_item.items() if val not in {"", None}}
-        )
-    return normalized
-
-
 def local_llm_tool_activity_from_payload(
     payload: Any, *, limit: int = 200
 ) -> dict[str, Any]:
@@ -31803,6 +34452,10 @@ def local_llm_tool_activity_from_payload(
         )
         if not is_tool or is_probe:
             continue
+        metadata = (
+            item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        )
+        route = item.get("route") if isinstance(item.get("route"), dict) else {}
         status = item.get("status")
         if isinstance(status, str):
             try:
@@ -31819,29 +34472,19 @@ def local_llm_tool_activity_from_payload(
             "path": path,
             "capability": capability
             or LOCAL_LLM_TOOL_ACTIVITY_PATH_CAPABILITIES.get(path, ""),
+            "model": summarize_text(
+                str(
+                    item.get("model")
+                    or metadata.get("model")
+                    or route.get("model")
+                    or ""
+                ).strip(),
+                160,
+            ),
             "status": status_value,
             "duration_ms": local_llm_activity_float(
                 item.get("duration_ms") or item.get("latency_ms")
             ),
-            "model": str(
-                item.get("model")
-                or item.get("request_model")
-                or item.get("selected_model")
-                or ""
-            ).strip(),
-            "worker_id": str(
-                item.get("worker_id")
-                or item.get("norllama_worker_id")
-                or item.get("selected_worker")
-                or ""
-            ).strip(),
-            "upstream": str(item.get("upstream") or "").strip(),
-            "priority": str(item.get("priority") or "").strip(),
-            "score_method": str(
-                item.get("score_method") or item.get("method_name") or ""
-            ).strip(),
-            "request_id": str(item.get("request_id") or "").strip(),
-            "attempts": local_llm_normalize_activity_attempts(item.get("attempts")),
         }
         compact = {
             key: value
@@ -31875,20 +34518,16 @@ def local_llm_tool_activity_from_payload(
 def local_llm_fetch_tool_activity(endpoint: str, *, limit: int = 200) -> dict[str, Any]:
     clean_endpoint = str(endpoint or "").strip()
     if not clean_endpoint:
-        return local_llm_empty_tool_activity("unavailable", reason="no endpoint")
+        return local_llm_empty_tool_activity("unavailable")
     clean_limit = max(1, min(int(limit or 200), 1000))
     try:
         payload = local_llm_http_json(
             local_llm_url(clean_endpoint, f"/v1/activity?limit={clean_limit}"),
             timeout=LOCAL_LLM_HEALTH_TIMEOUT_SECONDS,
         )
-    except Exception as exc:
-        return local_llm_empty_tool_activity(
-            "error",
-            error=f"{type(exc).__name__}: {summarize_text(str(exc), 180)}",
-        )
+    except Exception:
+        return local_llm_empty_tool_activity("unavailable")
     summary = local_llm_tool_activity_from_payload(payload, limit=clean_limit)
-    summary["source"] = "/v1/activity"
     return summary
 
 
@@ -32201,6 +34840,46 @@ def local_llm_health_snapshot(
     return dict(snapshot)
 
 
+def sanitize_public_local_llm_health(value: Any) -> dict[str, Any]:
+    """Return aggregate Norllama readiness without pool implementation detail."""
+
+    raw = value if isinstance(value, dict) else {}
+    raw_warm_policy = (
+        raw.get("warm_policy") if isinstance(raw.get("warm_policy"), dict) else {}
+    )
+    raw_activity = (
+        raw.get("tool_activity") if isinstance(raw.get("tool_activity"), dict) else {}
+    )
+    activity = local_llm_tool_activity_from_payload(raw_activity)
+    if not raw_activity:
+        activity = local_llm_empty_tool_activity(
+            "quiet" if raw.get("ok") else "unavailable"
+        )
+    checked_at = _coerce_int(raw.get("checked_at")) or now_ts()
+    latency_ms = _coerce_int(raw.get("latency_ms"))
+    warm_policy = {
+        "schema": "norman.norllama.warm-policy.v1",
+        "status": str(raw_warm_policy.get("status") or "").strip(),
+        "route_posture": str(raw_warm_policy.get("route_posture") or "").strip(),
+        "residency_posture": str(
+            raw_warm_policy.get("residency_posture") or ""
+        ).strip(),
+    }
+    return {
+        "schema": "norman.norllama.public-health.v1",
+        "provider": "norllama",
+        "model": "norllama",
+        "status": "ready" if raw.get("ok") else "unavailable",
+        "ok": bool(raw.get("ok")),
+        "checked_at": checked_at,
+        "latency_ms": latency_ms,
+        "warm_policy": {
+            key: item for key, item in warm_policy.items() if item not in {"", None}
+        },
+        "tool_activity": activity,
+    }
+
+
 def local_llm_execution_prompt(
     prompt: str,
     *,
@@ -32455,17 +35134,14 @@ def deterministic_working_recap(
         or str(meta.get("state") or "").lower() == "rate_limited"
     )
     handoff_running = str(meta.get("queue_handoff_state") or "").lower() == "running"
+    skill_labels = [
+        _working_recap_sanitize_text(label, 56)
+        for label in plan.get("skill_labels") or []
+        if _working_recap_sanitize_text(label, 56)
+    ]
     milestones = [
-        (
-            "Plan ready: "
-            + ", ".join(
-                _working_recap_sanitize_text(label, 56)
-                for label in plan.get("skill_labels") or []
-                if _working_recap_sanitize_text(label, 56)
-            )[:3]
-            + "."
-        )
-        if plan.get("skill_labels")
+        ("Plan ready: " + ", ".join(skill_labels[:3]) + ".")
+        if skill_labels
         else f"Scope classified as {task_category}."
     ]
     milestones.extend(activity_milestones)
@@ -32759,23 +35435,25 @@ def ensure_working_recap(
 
 
 def local_llm_execution_candidate_models(primary_model: Any) -> list[str]:
-    primary = normalize_runtime_model("localllm", primary_model)
-    candidates = [primary] if primary else []
-    meta = load_status_meta()
-    cost_route = meta.get("running_cost_route") if isinstance(meta, dict) else {}
-    if isinstance(cost_route, dict):
-        for key in (
-            "local_guardrail_candidates",
-            "local_candidates",
-            "local_model",
+    primary = str(primary_model or "").strip()
+    candidates = [primary] if primary and primary != "norllama" else []
+    candidates.extend(norllama_pool_execution_models())
+    return _dedupe_models(candidates)
+
+
+def norllama_pool_execution_models() -> list[str]:
+    """Resolve the generic pool label only at the local execution boundary."""
+
+    candidates: list[str] = []
+    for item in [*local_llm_preferred_models(), *local_llm_lane_models("planner")]:
+        model = str(item or "").strip()
+        if (
+            model
+            and model != "norllama"
+            and _local_llm_model_allowed(model)
+            and not local_llm_model_canary(model)
         ):
-            values = cost_route.get(key)
-            if isinstance(values, str):
-                values = [values]
-            for item in values or []:
-                model = normalize_runtime_model("localllm", item)
-                if model and _local_llm_model_allowed(model):
-                    candidates.append(model)
+            candidates.append(model)
     return _dedupe_models(candidates)
 
 
@@ -32868,28 +35546,28 @@ def normalize_local_llm_route_outcome(value: Any) -> dict[str, Any]:
     item = value if isinstance(value, dict) else {}
     status = str(item.get("status") or "").strip().lower() or "unknown"
     ok = bool(item.get("ok")) and status in {"ok", "success"}
-    model = normalize_runtime_model("localllm", item.get("model"))
-    endpoint = str(item.get("endpoint") or "").strip()
+    generic_reason = {
+        "ok": "Norllama pool returned a visible response.",
+        "success": "Norllama pool returned a visible response.",
+        "timeout": "Norllama pool request timed out.",
+        "empty-response": "Norllama pool returned no response.",
+        "bad-output": "Norllama pool returned unusable output.",
+        "request-failed": "Norllama pool request failed.",
+    }.get(status, "Norllama pool outcome recorded.")
     return {
-        "schema": "norman.tui.local-llm-route-outcome.v1",
+        "schema": "norman.tui.norllama-pool-outcome.v1",
         "recorded_at": _coerce_int(item.get("recorded_at")) or now_ts(),
         "source": str(item.get("source") or "").strip() or "unknown",
         "status": status,
         "ok": ok,
-        "model": model,
-        "endpoint": endpoint,
-        "adapter": str(item.get("adapter") or "").strip(),
-        "url": str(item.get("url") or "").strip(),
-        "worker_endpoint": str(item.get("worker_endpoint") or "").strip(),
-        "upstream": str(item.get("upstream") or "").strip(),
-        "attempts": str(item.get("attempts") or "").strip(),
+        "norllama_pool": "default",
         "latency_ms": _coerce_int(item.get("latency_ms")),
         "response_chars": _coerce_int(item.get("response_chars")),
         "input_tokens": _coerce_int(item.get("input_tokens")),
         "output_tokens": _coerce_int(item.get("output_tokens")),
         "total_tokens": _coerce_int(item.get("total_tokens")),
-        "reason": summarize_text(str(item.get("reason") or ""), 360),
-        "thread_id": str(item.get("thread_id") or "").strip(),
+        "cooldown_seconds": _coerce_int(item.get("cooldown_seconds")),
+        "reason": generic_reason,
     }
 
 
@@ -32930,17 +35608,17 @@ def append_local_llm_route_outcome(**kwargs: Any) -> dict[str, Any]:
         append_audit_event(
             event_type="route.local-llm-outcome",
             summary=(
-                "Norllama local route succeeded."
+                "Norllama pool route succeeded."
                 if outcome["ok"]
-                else "Norllama local route failed."
+                else "Norllama pool route failed."
             ),
             detail=summarize_text(
-                f"{outcome['model']} {outcome['status']}: {outcome['reason']}",
+                f"Norllama pool {outcome['status']}: {outcome['reason']}",
                 320,
             ),
-            severity="info" if outcome["ok"] else "warning",
+            severity="info" if outcome["ok"] else "warn",
             actor_type="system",
-            thread_id=outcome.get("thread_id") or read_text(THREAD_ID_PATH),
+            thread_id=read_text(THREAD_ID_PATH),
             payload={"outcome": outcome},
         )
     except Exception:
@@ -32959,108 +35637,80 @@ def local_llm_route_failure_status(exc: BaseException) -> str:
     return "request-failed"
 
 
+def local_llm_outcome_cooldown_seconds(outcome: Any) -> int:
+    if LOCAL_LLM_ROUTE_COOLDOWN_SECONDS <= 0:
+        return 0
+    item = outcome if isinstance(outcome, dict) else {}
+    override = _coerce_int(item.get("cooldown_seconds"))
+    if override > 0:
+        return min(LOCAL_LLM_ROUTE_COOLDOWN_SECONDS, override)
+    if (
+        str(item.get("source") or "").strip().lower() == "planner-preflight"
+        and str(item.get("status") or "").strip().lower() == "timeout"
+    ):
+        return min(
+            LOCAL_LLM_ROUTE_COOLDOWN_SECONDS,
+            LOCAL_PLANNER_PREFLIGHT_COLD_LOAD_COOLDOWN_SECONDS,
+        )
+    return LOCAL_LLM_ROUTE_COOLDOWN_SECONDS
+
+
 def local_llm_route_cooldown(
     model: Any, endpoint: Any = "", *, include_fleet: bool = True
 ) -> dict[str, Any]:
+    del model, endpoint, include_fleet
     if LOCAL_LLM_ROUTE_COOLDOWN_SECONDS <= 0:
         return {}
-    normalized_model = normalize_runtime_model("localllm", model)
-    normalized_endpoint = str(endpoint or "").strip()
     now = now_ts()
     for outcome in reversed(load_local_llm_route_outcomes(limit=80)):
-        if outcome.get("model") != normalized_model:
-            continue
-        if normalized_endpoint and outcome.get("endpoint") not in {
-            "",
-            normalized_endpoint,
-        }:
-            continue
         age = now - _coerce_int(outcome.get("recorded_at"))
         if age < 0:
             age = 0
-        if age > LOCAL_LLM_ROUTE_COOLDOWN_SECONDS:
+        cooldown_seconds = local_llm_outcome_cooldown_seconds(outcome)
+        if age > cooldown_seconds:
             return {}
         if outcome.get("ok"):
             return {}
         status = str(outcome.get("status") or "").strip().lower()
         if status not in LOCAL_LLM_ROUTE_COOLDOWN_STATUSES:
             continue
-        if not local_llm_route_cooldown_status_applies(
-            status,
-            outcome_adapter=outcome.get("adapter"),
-        ):
-            continue
         return {
             "active": True,
             "source": "local_jsonl",
-            "scope": "local_tui",
-            "model": normalized_model,
-            "endpoint": normalized_endpoint,
+            "scope": "norllama_pool",
+            "norllama_pool": "default",
             "status": status,
-            "adapter": str(outcome.get("adapter") or "").strip(),
             "reason": str(outcome.get("reason") or "").strip(),
             "recorded_at": outcome.get("recorded_at"),
             "age_seconds": age,
-            "remaining_seconds": max(0, LOCAL_LLM_ROUTE_COOLDOWN_SECONDS - age),
-            "worker_endpoint": outcome.get("worker_endpoint") or "",
-            "upstream": outcome.get("upstream") or "",
+            "cooldown_seconds": cooldown_seconds,
+            "remaining_seconds": max(0, cooldown_seconds - age),
         }
-    if include_fleet:
-        return console_runtime_route_cooldown(normalized_model, normalized_endpoint)
     return {}
 
 
 def local_llm_route_outcome_summary() -> dict[str, Any]:
     entries = load_local_llm_route_outcomes(limit=40)
-    by_model: dict[str, dict[str, Any]] = {}
     failures = 0
     successes = 0
     for entry in entries:
-        model = str(entry.get("model") or "").strip()
-        if not model:
-            continue
-        bucket = by_model.setdefault(
-            model,
-            {
-                "model": model,
-                "ok": 0,
-                "fail": 0,
-                "last_status": "",
-                "last_reason": "",
-                "last_recorded_at": 0,
-                "cooldown": {},
-            },
-        )
         if entry.get("ok"):
             successes += 1
-            bucket["ok"] += 1
         else:
             failures += 1
-            bucket["fail"] += 1
-        if _coerce_int(entry.get("recorded_at")) >= _coerce_int(
-            bucket.get("last_recorded_at")
-        ):
-            bucket["last_status"] = entry.get("status") or ""
-            bucket["last_reason"] = entry.get("reason") or ""
-            bucket["last_recorded_at"] = _coerce_int(entry.get("recorded_at"))
-            bucket["cooldown"] = local_llm_route_cooldown(model, include_fleet=False)
+    latest = entries[-1] if entries else {}
     summary = {
-        "schema": "norman.tui.local-llm-route-outcomes.v1",
+        "schema": "norman.tui.norllama-pool-outcomes.v1",
+        "norllama_pool": "default",
         "count": len(entries),
         "ok": successes,
         "fail": failures,
         "cooldown_seconds": LOCAL_LLM_ROUTE_COOLDOWN_SECONDS,
-        "models": sorted(
-            by_model.values(),
-            key=lambda item: _coerce_int(item.get("last_recorded_at")),
-            reverse=True,
-        )[:8],
+        "latest_status": str(latest.get("status") or ""),
+        "latest_reason": str(latest.get("reason") or ""),
+        "latest_recorded_at": _coerce_int(latest.get("recorded_at")),
+        "cooldown": local_llm_route_cooldown("norllama"),
     }
-    fleet = console_runtime_route_outcomes_summary()
-    if console_runtime_route_outcomes_has_evidence(fleet):
-        summary["fleet"] = compact_console_runtime_route_outcomes_summary(
-            fleet, max_models=6
-        )
     return summary
 
 
@@ -33168,16 +35818,13 @@ def _execute_local_llm_prompt(
         for candidate in candidate_models
     }
     if not LOCAL_LLM_EXECUTION_ENABLED:
-        error_text = "Norllama local execution is disabled for this TUI."
+        error_text = "Norllama pool execution is disabled for this TUI."
     elif not any(candidate_endpoints.values()):
-        error_text = "Norllama local execution has no configured endpoint."
+        error_text = "Norllama pool has no configured route."
     else:
         error_text = ""
     response_text = ""
     usage_payload: dict[str, Any] = {}
-    endpoint_used = ""
-    adapter_used = ""
-    model_used = normalized_model
     errors: list[str] = []
     final_output_shape = "empty"
     request_timeout = local_llm_foreground_timeout_seconds(timeout_seconds, job_budget)
@@ -33185,7 +35832,7 @@ def _execute_local_llm_prompt(
     token_capacity_plan = provider_token_budget_plan(
         prompt=prompt,
         runtime="localllm",
-        model=normalized_model,
+        model="norllama",
         service_tier=service_tier,
         job_budget=job_budget,
         detail=detail,
@@ -33197,7 +35844,7 @@ def _execute_local_llm_prompt(
         prompt=prompt,
         detail=detail,
         attachments=attachments,
-        model=normalized_model,
+        model="norllama",
         service_tier=service_tier,
         capacity_plan=token_capacity_plan,
     )
@@ -33205,14 +35852,7 @@ def _execute_local_llm_prompt(
         for candidate_model in candidate_models:
             endpoints = candidate_endpoints.get(candidate_model) or []
             if not endpoints:
-                errors.append(f"{candidate_model}: no configured endpoint")
-                continue
-            cooldown = local_llm_route_cooldown(candidate_model, include_fleet=False)
-            if cooldown:
-                errors.append(
-                    f"{candidate_model}: local route cooldown after "
-                    f"{cooldown.get('status')}"
-                )
+                errors.append("no-endpoint")
                 continue
             execution_prompt = local_llm_execution_prompt(
                 prompt,
@@ -33231,7 +35871,7 @@ def _execute_local_llm_prompt(
                     break
                 attempt_started = time.time()
                 try:
-                    payload, url, adapter = local_llm_generate_once(
+                    payload, _, _ = local_llm_generate_once(
                         endpoint,
                         candidate_model,
                         execution_prompt,
@@ -33245,111 +35885,69 @@ def _execute_local_llm_prompt(
                         source="local-execution",
                         status=status,
                         ok=False,
-                        model=candidate_model,
-                        endpoint=endpoint,
                         latency_ms=int((time.time() - attempt_started) * 1000),
-                        reason=(
-                            f"{type(exc).__name__}: " f"{summarize_text(str(exc), 240)}"
-                        ),
-                        thread_id=thread_id,
                     )
-                    errors.append(
-                        f"{candidate_model}@{endpoint}: {type(exc).__name__}: "
-                        f"{summarize_text(str(exc), 240)}"
-                    )
+                    errors.append(status)
                     continue
                 if _coerce_int(load_status_meta().get("cancel_requested_at")) > 0:
                     error_text = CANCELLED_WEB_REPLY_MESSAGE
                     break
-                response_text = local_llm_response_text(payload)
+                response_text = re.sub(
+                    r"(?is)<think>.*?</think>", "", local_llm_response_text(payload)
+                ).strip()
                 output_shape = visible_response_output_shape(prompt, response_text)
                 final_output_shape = output_shape
-                route_headers = local_llm_route_headers(payload)
                 token_counts_for_attempt = local_llm_usage_counts(payload)
                 if response_text and output_shape == "complete":
                     append_local_llm_route_outcome(
                         source="local-execution",
                         status="ok",
                         ok=True,
-                        model=candidate_model,
-                        endpoint=endpoint,
-                        adapter=adapter,
-                        url=url,
-                        worker_endpoint=route_headers.get(
-                            "x-norllama-worker-endpoint", ""
-                        ),
-                        upstream=route_headers.get("x-norllama-upstream", ""),
-                        attempts=route_headers.get("x-norllama-attempts", ""),
                         latency_ms=int((time.time() - attempt_started) * 1000),
                         response_chars=len(response_text),
-                        reason="response text returned",
-                        thread_id=thread_id,
                         **token_counts_for_attempt,
                     )
                     usage_payload = payload
-                    endpoint_used = endpoint
-                    adapter_used = adapter
-                    model_used = candidate_model
                     break
                 if response_text:
                     append_local_llm_route_outcome(
                         source="local-execution",
                         status="bad-output",
                         ok=False,
-                        model=candidate_model,
-                        endpoint=endpoint,
-                        adapter=adapter,
-                        url=url,
-                        worker_endpoint=route_headers.get(
-                            "x-norllama-worker-endpoint", ""
-                        ),
-                        upstream=route_headers.get("x-norllama-upstream", ""),
-                        attempts=route_headers.get("x-norllama-attempts", ""),
                         latency_ms=int((time.time() - attempt_started) * 1000),
                         response_chars=len(response_text),
-                        reason=f"local visible output_shape={output_shape}",
-                        thread_id=thread_id,
                         **token_counts_for_attempt,
                     )
-                    errors.append(
-                        f"{candidate_model}@{endpoint}: "
-                        f"local visible output_shape={output_shape}"
-                    )
+                    errors.append("bad-output")
                     response_text = ""
                     continue
                 append_local_llm_route_outcome(
                     source="local-execution",
                     status="empty-response",
                     ok=False,
-                    model=candidate_model,
-                    endpoint=endpoint,
-                    adapter=adapter,
-                    url=url,
-                    worker_endpoint=route_headers.get("x-norllama-worker-endpoint", ""),
-                    upstream=route_headers.get("x-norllama-upstream", ""),
-                    attempts=route_headers.get("x-norllama-attempts", ""),
                     latency_ms=int((time.time() - attempt_started) * 1000),
                     response_chars=0,
-                    reason=f"{url} returned no response text",
-                    thread_id=thread_id,
                     **token_counts_for_attempt,
                 )
-                errors.append(
-                    f"{candidate_model}@{endpoint}: {url} returned no response text"
-                )
+                errors.append("empty-response")
             if response_text or error_text == CANCELLED_WEB_REPLY_MESSAGE:
                 break
         if not response_text and not error_text:
-            error_text = "Norllama local execution did not return a response" + (
-                f": {'; '.join(errors[-3:])}" if errors else "."
-            )
+            if "cooldown" in errors:
+                error_text = "Norllama pool is cooling down after a failed request."
+            elif "timeout" in errors:
+                error_text = "Norllama pool request timed out."
+            elif "no-endpoint" in errors:
+                error_text = "Norllama pool has no configured route."
+            else:
+                error_text = "Norllama pool did not return a visible response."
     finished_at = now_ts()
     token_counts = local_llm_usage_counts(usage_payload)
     usage = normalize_usage_entry(
         {
             **local_llm_provider_tags(),
             "runtime": "localllm",
-            "model": model_used,
+            "model": "norllama",
             "service_tier": service_tier,
             "started_at": started_at,
             "finished_at": finished_at,
@@ -33358,12 +35956,8 @@ def _execute_local_llm_prompt(
             "detail": detail,
             "success": bool(response_text and not error_text),
             "route_class": "local",
-            "route_execution": "local_worker",
-            "local_worker_runtime": "localllm",
-            "local_worker_model": model_used,
-            "local_worker_candidate_count": len(candidate_models),
-            "provider_endpoint": endpoint_used,
-            "provider_adapter": adapter_used,
+            "route_execution": "norllama_pool",
+            "norllama_pool": "default",
             "provider_timeout_seconds": request_timeout,
             "provider_num_ctx": request_num_ctx,
             "provider_max_output_tokens": request_max_output_tokens,
@@ -33387,13 +35981,18 @@ def _execute_prompt_runtime(
     service_tier: str = "",
     job_budget: str = "",
     optimization_mode: str = "",
+    subscription_probe: bool = False,
 ) -> tuple[str, str, str, dict[str, Any]]:
     normalized_runtime = normalize_runtime(runtime)
     normalized_model = normalize_runtime_model(normalized_runtime, model)
-    kernel_skip_reason = console_runtime_kernel_primary_skip_reason(
-        prompt,
-        attachments,
-        normalized_runtime,
+    kernel_skip_reason = (
+        "subscription capacity probe must use direct Codex Flex"
+        if subscription_probe
+        else console_runtime_kernel_primary_skip_reason(
+            prompt,
+            attachments,
+            normalized_runtime,
+        )
     )
     kernel_owned_turn = console_runtime_kernel_owned_turn_active(kernel_skip_reason)
     if not kernel_skip_reason:
@@ -33569,6 +36168,7 @@ def _execute_prompt_runtime(
             model=normalized_model,
             job_budget=job_budget,
             optimization_mode=optimization_mode,
+            subscription_probe=subscription_probe,
             **codex_kwargs,
         )
     if normalized_runtime == "claude" and BEDROCK_CONVERSE_ENABLED:
@@ -33623,17 +36223,24 @@ def _call_with_optional_optimization_mode(
 ) -> Any:
     call_kwargs = dict(kwargs)
     call_kwargs["optimization_mode"] = normalize_optimization_mode(optimization_mode)
-    try:
-        return func(*args, **call_kwargs)
-    except TypeError as exc:
-        message = str(exc)
-        if (
-            "optimization_mode" not in message
-            or "unexpected keyword argument" not in message
-        ):
-            raise
-        call_kwargs.pop("optimization_mode", None)
-        return func(*args, **call_kwargs)
+    while True:
+        try:
+            return func(*args, **call_kwargs)
+        except TypeError as exc:
+            message = str(exc)
+            if "unexpected keyword argument" not in message:
+                raise
+            optional_keyword = next(
+                (
+                    name
+                    for name in ("subscription_probe", "optimization_mode")
+                    if name in call_kwargs and name in message
+                ),
+                "",
+            )
+            if not optional_keyword:
+                raise
+            call_kwargs.pop(optional_keyword, None)
 
 
 def console_runtime_kernel_primary_skip_reason(
@@ -33683,37 +36290,17 @@ def console_runtime_kernel_owned_turn_active(skip_reason: str) -> bool:
 
 def console_runtime_kernel_primary_model(runtime: str, model: str) -> str:
     if normalize_runtime(runtime) == "localllm" and model:
-        return normalize_runtime_model("localllm", model)
-    meta = load_status_meta()
-    cost_route = meta.get("running_cost_route") if isinstance(meta, dict) else {}
-    selected_runtime = normalize_runtime(
-        cost_route.get("selected_runtime") if isinstance(cost_route, dict) else ""
-    )
-    selected_model = (
-        str(cost_route.get("selected_model") or "").strip()
-        if isinstance(cost_route, dict)
-        else ""
-    )
-    if selected_runtime == "localllm" and selected_model:
-        return normalize_runtime_model("localllm", selected_model)
-    if isinstance(cost_route, dict):
-        for key in (
-            "local_guardrail_candidates",
-            "local_candidates",
-            "local_model",
-        ):
-            values = cost_route.get(key)
-            if isinstance(values, str):
-                values = [values]
-            for item in values or []:
-                candidate = normalize_runtime_model("localllm", item)
-                if (
-                    candidate
-                    and _local_llm_model_allowed(candidate)
-                    and not local_llm_model_canary(candidate)
-                ):
-                    return candidate
-    return normalize_runtime_model("localllm", LOCAL_LLM_DEFAULT_MODEL)
+        normalized_model = normalize_runtime_model("localllm", model)
+        if normalized_model != "norllama":
+            return normalized_model
+        pool_models = norllama_pool_execution_models()
+        if pool_models:
+            return pool_models[0]
+    pool_models = norllama_pool_execution_models()
+    if pool_models:
+        return pool_models[0]
+    fallback_model = normalize_runtime_model("localllm", LOCAL_LLM_DEFAULT_MODEL)
+    return "" if fallback_model == "norllama" else fallback_model
 
 
 def console_runtime_kernel_model_timeout(
@@ -34679,6 +37266,34 @@ def _execute_console_runtime_kernel_prompt(
     return response_text, error_text, read_text(THREAD_ID_PATH), usage
 
 
+def route_decision_usage_fields(
+    route: Any,
+    *,
+    runtime: str,
+    model: str,
+    service_tier: str,
+) -> dict[str, str]:
+    decision = route if isinstance(route, dict) else {}
+    requested_runtime = normalize_runtime(decision.get("requested_runtime") or runtime)
+    requested_model = normalize_runtime_model(
+        requested_runtime, decision.get("requested_model") or model
+    )
+    return {
+        "route_source": summarize_text(
+            str(decision.get("route_source") or "selected_runtime"), 120
+        ),
+        "route_reason": summarize_text(str(decision.get("reason") or ""), 420),
+        "route_requested_runtime": requested_runtime,
+        "route_requested_model": requested_model,
+        "route_requested_service_tier": normalize_service_tier(
+            decision.get("requested_service_tier") or service_tier
+        ),
+        "route_fallback_reason": summarize_text(
+            str(decision.get("fallback_reason") or ""), 320
+        ),
+    }
+
+
 def _prompt_worker(
     prompt: str,
     started_at: int,
@@ -34698,6 +37313,7 @@ def _prompt_worker(
     normalized_runtime = normalize_runtime(runtime)
     normalized_model = normalize_runtime_model(normalized_runtime, model)
     requested_model = normalized_model
+    running_cost_route: dict[str, Any] = {}
     next_prompt: (
         tuple[
             str,
@@ -34728,6 +37344,47 @@ def _prompt_worker(
                 timeout_seconds, normalized_budget
             )
             attachments = normalize_attachments(attachments)
+            current_meta = load_status_meta()
+            running_cost_route = validate_cost_route_proof(
+                current_meta.get("running_cost_route"),
+                normalized_runtime,
+                normalized_model,
+                normalized_service_tier,
+            )
+            if not running_cost_route:
+                route_proof_error = "Route proof missing or does not match the selected execution route."
+                write_last_response("")
+                write_text(LAST_ERROR_PATH, route_proof_error)
+                update_status_meta(
+                    pending=False,
+                    state="error",
+                    status_message=route_proof_error,
+                    running_cost_route={},
+                    running_turn_envelope={},
+                    running_turn_control={},
+                    running_request_source="",
+                    running_submission_id="",
+                    running_console_runtime_job_id="",
+                )
+                append_audit_event(
+                    event_type="chat.route-proof-blocked",
+                    summary="Blocked a prompt without a matching route proof.",
+                    detail=route_proof_error,
+                    severity="error",
+                    actor_type="system",
+                    thread_id=read_text(THREAD_ID_PATH),
+                    payload={
+                        "prompt_preview": summarize_text(prompt, 240),
+                        "runtime": normalized_runtime,
+                        "model": normalized_model,
+                        "service_tier": normalized_service_tier,
+                    },
+                    event_at=started_at,
+                )
+                return
+            subscription_probe = (
+                running_cost_route.get("waterfall_stage") == "subscription_flex_probe"
+            )
             drift_assessment = assess_tui_drift(
                 prompt,
                 attachments=attachments,
@@ -34750,16 +37407,15 @@ def _prompt_worker(
                 drift_assessment=drift_assessment,
                 created_at=started_at,
             )
-            current_meta = load_status_meta()
-            running_cost_route = (
-                dict(current_meta.get("running_cost_route"))
-                if isinstance(current_meta.get("running_cost_route"), dict)
+            running_session_admission = (
+                dict(current_meta.get("running_session_admission"))
+                if isinstance(current_meta.get("running_session_admission"), dict)
                 else {}
             )
-            if running_cost_route:
-                running_cost_route["token_capacity_plan"] = turn_plan[
-                    "token_capacity_plan"
-                ]
+            running_request_source = (
+                str(current_meta.get("running_request_source") or "operator").strip()
+                or "operator"
+            )
             turn_envelope = build_turn_control_envelope(
                 prompt=prompt,
                 attachments=attachments,
@@ -34778,8 +37434,8 @@ def _prompt_worker(
                 requested_model=requested_model,
                 requested_service_tier=normalized_service_tier,
             )
-            if running_cost_route:
-                turn_envelope["cost_route"] = running_cost_route
+            turn_envelope["token_capacity_plan"] = turn_plan["token_capacity_plan"]
+            turn_envelope["cost_route"] = running_cost_route
             # A worker can wait here behind an older run; reassert ownership once
             # it actually has the prompt lock so stale completions cannot leave
             # the UI showing the wrong prompt or attachment state.
@@ -34950,8 +37606,19 @@ def _prompt_worker(
                         service_tier=normalized_service_tier,
                         job_budget=normalized_budget,
                         optimization_mode=normalized_optimization_mode,
+                        subscription_probe=subscription_probe,
                     )
                 )
+                if persist_subscription_probe_exhaustion(
+                    cost_route=running_cost_route,
+                    runtime=normalized_runtime,
+                    model=normalized_model,
+                    service_tier=normalized_service_tier,
+                    response=response,
+                    error_text=error_text,
+                    usage=usage,
+                ):
+                    break
                 zero_token_retry_pending = zero_token_provider_retry_pending(
                     response, error_text, usage, zero_token_provider_attempt
                 )
@@ -34981,6 +37648,8 @@ def _prompt_worker(
                             running_runtime=normalized_runtime,
                             running_model=normalized_model,
                             running_timeout_seconds=normalized_timeout,
+                            running_turn_envelope=turn_envelope,
+                            running_cost_route=running_cost_route,
                             live_turn=initial_live_turn(
                                 prompt=execution_prompt,
                                 attachments=[],
@@ -35039,49 +37708,34 @@ def _prompt_worker(
                     break
                 if zero_token_retry_pending:
                     retry_meta = load_status_meta()
-                    if zero_token_provider_retry_allowed(retry_meta, usage, error_text):
+                    retry_cost_route = updated_bedrock_retry_cost_route(
+                        running_cost_route,
+                        normalized_runtime,
+                        normalized_model,
+                        normalized_service_tier,
+                    )
+                    if (
+                        zero_token_provider_retry_allowed(retry_meta, usage, error_text)
+                        and retry_cost_route
+                    ):
                         zero_token_provider_attempt += 1
                         previous_model = normalized_model
-                        retry_model = zero_token_provider_retry_model(
-                            normalized_model, usage
-                        )
-                        model_fallback = retry_model != previous_model
-                        normalized_model = retry_model
                         previous_service_tier = normalized_service_tier
-                        if not model_fallback:
-                            normalized_service_tier = (
-                                zero_token_provider_retry_service_tier(
-                                    normalized_service_tier, usage
-                                )
-                            )
-                        service_tier_fallback = (
-                            normalized_service_tier != previous_service_tier
-                        )
-                        fallback_note = ""
+                        normalized_runtime = retry_cost_route["selected_runtime"]
+                        normalized_model = retry_cost_route["selected_model"]
+                        normalized_service_tier = retry_cost_route[
+                            "selected_service_tier"
+                        ]
+                        running_cost_route = retry_cost_route
+                        turn_envelope["cost_route"] = running_cost_route
+                        service_tier_fallback = True
+                        model_fallback = False
+                        retry_label = service_tier_label(normalized_service_tier)
                         retry_detail = (
                             "Retry is allowed because no tool or file activity was "
-                            "observed during the failed provider attempt."
+                            "observed during the failed provider attempt. Advancing "
+                            f"to bounded Bedrock failover on {retry_label}."
                         )
-                        if model_fallback:
-                            fallback_note = f" on {normalized_model}"
-                            retry_detail += (
-                                f" Retry model is {normalized_model}; this keeps "
-                                "the recovery on the configured Bedrock default "
-                                "before any service-tier fallback."
-                            )
-                        if service_tier_fallback:
-                            retry_label = service_tier_label(normalized_service_tier)
-                            fallback_note = f" on {retry_label}"
-                            if normalized_service_tier in {"flex", "priority"}:
-                                fallback_note += (
-                                    "; OpenAI direct spend is visible in the ledger"
-                                )
-                                retry_detail += (
-                                    f" Retry route is {retry_label}; this can use "
-                                    "OpenAI credits/cost outside the Bedrock lane."
-                                )
-                            else:
-                                retry_detail += f" Retry route is {retry_label}."
                         execution_prompt = build_zero_token_provider_retry_prompt(
                             prompt, error_text, usage
                         )
@@ -35090,7 +37744,7 @@ def _prompt_worker(
                             state="running",
                             status_message=(
                                 "Provider stream failed before producing tokens; "
-                                f"retrying once with preserved context{fallback_note}."
+                                f"retrying with bounded Bedrock failover on {retry_label}."
                             ),
                             running_prompt=execution_prompt,
                             running_attachments=[],
@@ -35102,6 +37756,8 @@ def _prompt_worker(
                             running_runtime=normalized_runtime,
                             running_model=normalized_model,
                             running_timeout_seconds=normalized_timeout,
+                            running_turn_envelope=turn_envelope,
+                            running_cost_route=running_cost_route,
                             live_turn=initial_live_turn(
                                 prompt=execution_prompt,
                                 attachments=[],
@@ -35146,6 +37802,7 @@ def _prompt_worker(
                                 "runtime": normalized_runtime,
                                 "model": normalized_model,
                                 "timeout_seconds": normalized_timeout,
+                                "cost_route": running_cost_route,
                             },
                         )
                         continue
@@ -35196,79 +37853,56 @@ def _prompt_worker(
                             "side effects."
                         )
                     )
-                    provider_recovery_response = (
-                        build_zero_token_provider_recovery_response(
-                            prompt,
-                            provider_original_error_text,
-                            usage,
-                            retry_meta,
-                            thread_id=thread_id,
-                            service_tier=normalized_service_tier,
-                            job_budget=normalized_budget,
-                            runtime=normalized_runtime,
-                            model=normalized_model,
-                        )
-                    )
                     previous_model = normalized_model
-                    recovery_model = zero_token_provider_retry_model(
-                        normalized_model, usage
-                    )
-                    model_fallback = recovery_model != previous_model
                     previous_service_tier = normalized_service_tier
-                    if model_fallback:
-                        recovery_service_tier = normalized_service_tier
-                    else:
-                        recovery_service_tier = zero_token_provider_retry_service_tier(
-                            normalized_service_tier, usage
-                        )
-                    recovery_handoff = (
-                        model_fallback
-                        or recovery_service_tier != normalized_service_tier
+                    recovery_cost_route = updated_bedrock_retry_cost_route(
+                        running_cost_route,
+                        normalized_runtime,
+                        normalized_model,
+                        normalized_service_tier,
                     )
-                    if recovery_handoff:
+                    if recovery_cost_route:
                         zero_token_provider_attempt += 1
-                        normalized_model = recovery_model
-                        normalized_service_tier = recovery_service_tier
+                        normalized_runtime = recovery_cost_route["selected_runtime"]
+                        normalized_model = recovery_cost_route["selected_model"]
+                        normalized_service_tier = recovery_cost_route[
+                            "selected_service_tier"
+                        ]
+                        running_cost_route = recovery_cost_route
+                        turn_envelope["cost_route"] = running_cost_route
+                        model_fallback = False
                         recovery_label = service_tier_label(normalized_service_tier)
-                        if model_fallback:
-                            recovery_label = f"{recovery_label} {normalized_model}"
+                        provider_recovery_response = (
+                            build_zero_token_provider_recovery_response(
+                                prompt,
+                                provider_original_error_text,
+                                usage,
+                                retry_meta,
+                                thread_id=thread_id,
+                                service_tier=normalized_service_tier,
+                                job_budget=normalized_budget,
+                                runtime=normalized_runtime,
+                                model=normalized_model,
+                            )
+                        )
                         execution_prompt = (
                             build_zero_token_provider_recovery_handoff_prompt(
                                 provider_recovery_response
                             )
                         )
-                        recovery_is_openai_direct = normalized_service_tier in {
-                            "flex",
-                            "priority",
-                        }
-                        recovery_spend_note = (
-                            "this can use OpenAI credits/cost outside the Bedrock lane."
-                            if recovery_is_openai_direct
-                            else "this stays on AWS-billed Bedrock using the secondary route."
-                        )
-                        recovery_status_note = (
-                            "OpenAI direct spend is visible in the ledger."
-                            if recovery_is_openai_direct
-                            else "AWS Bedrock failover spend is visible in the ledger."
-                        )
                         recovery_detail = (
                             "Original prompt replay was unsafe because the failed "
                             "Bedrock attempt observed tool or file activity. Continuing "
-                            f"from the recovery checkpoint on {recovery_label}; "
-                            f"{recovery_spend_note}"
+                            "from the recovery checkpoint with bounded Bedrock "
+                            f"failover on {recovery_label}."
                         )
-                        if model_fallback:
-                            recovery_detail += (
-                                f" Downgraded from {previous_model} to "
-                                f"{normalized_model} before any service-tier fallback."
-                            )
                         update_status_meta(
                             pending=True,
                             state="running",
                             status_message=(
                                 "Bedrock failed after tool/file activity; continuing "
-                                f"from a recovery checkpoint on {recovery_label}. "
-                                f"{recovery_status_note}"
+                                f"from a recovery checkpoint with bounded Bedrock "
+                                f"failover on {recovery_label}."
                             ),
                             running_prompt=execution_prompt,
                             running_attachments=[],
@@ -35280,6 +37914,8 @@ def _prompt_worker(
                             running_runtime=normalized_runtime,
                             running_model=normalized_model,
                             running_timeout_seconds=normalized_timeout,
+                            running_turn_envelope=turn_envelope,
+                            running_cost_route=running_cost_route,
                             live_turn=initial_live_turn(
                                 prompt=execution_prompt,
                                 attachments=[],
@@ -35328,6 +37964,7 @@ def _prompt_worker(
                                 "runtime": normalized_runtime,
                                 "model": normalized_model,
                                 "live_turn": retry_meta.get("live_turn"),
+                                "cost_route": running_cost_route,
                             },
                         )
                         continue
@@ -35395,6 +38032,8 @@ def _prompt_worker(
                     running_runtime=normalized_runtime,
                     running_model=normalized_model,
                     running_timeout_seconds=normalized_timeout,
+                    running_turn_envelope=turn_envelope,
+                    running_cost_route=running_cost_route,
                     rate_limit_active=True,
                     rate_limit_attempt=rate_limit_attempt,
                     rate_limit_max_attempts=WEB_PROMPT_RATE_LIMIT_MAX_ATTEMPTS,
@@ -35439,6 +38078,8 @@ def _prompt_worker(
                         f"({rate_limit_attempt + 1}/{WEB_PROMPT_RATE_LIMIT_MAX_ATTEMPTS})."
                     ),
                     running_prompt=execution_prompt,
+                    running_turn_envelope=turn_envelope,
+                    running_cost_route=running_cost_route,
                     rate_limit_active=False,
                     rate_limit_retry_at=0,
                     rate_limit_delay_seconds=0,
@@ -35612,6 +38253,12 @@ def _prompt_worker(
                 {
                     **usage,
                     **yield_diagnostics,
+                    **route_decision_usage_fields(
+                        running_cost_route,
+                        runtime=normalized_runtime,
+                        model=normalized_model,
+                        service_tier=normalized_service_tier,
+                    ),
                     "success": prompt_success,
                 }
             )
@@ -35620,6 +38267,14 @@ def _prompt_worker(
                 usage=usage,
                 finished_at=finished_at,
                 success=prompt_success,
+            )
+            turn_attribution = usage_attribution(
+                prompt=prompt,
+                turn_plan=final_turn_plan,
+                admission=running_session_admission,
+                request_source=running_request_source,
+                speed=normalized_speed,
+                usage=usage,
             )
             append_history_entry(
                 prompt=prompt,
@@ -35712,6 +38367,7 @@ def _prompt_worker(
                     "attachment_count": len(attachments),
                     "turn_plan": final_turn_plan,
                     "cost_route": running_cost_route,
+                    "attribution": turn_attribution,
                     "usage": normalize_usage_entry(usage),
                     "success": prompt_success,
                     "provider_yield_kind": usage.get("provider_yield_kind"),
@@ -35742,6 +38398,8 @@ def _prompt_worker(
                 runtime=normalized_runtime,
                 model=normalized_model,
                 usage=usage,
+                attribution=turn_attribution,
+                cost_route=running_cost_route,
             )
             final_live_turn_state = (
                 "cancelled"
@@ -35784,6 +38442,7 @@ def _prompt_worker(
                 requested_model=requested_model,
                 requested_service_tier=normalized_service_tier,
                 timed_out=timed_out,
+                cost_route=running_cost_route,
             )
             try:
                 finalize_console_runtime_turn_shadow_job(
@@ -35929,9 +38588,21 @@ def _prompt_worker(
                 last_finished_at=finished_at,
                 turn_plan=final_turn_plan,
                 last_cost_route=running_cost_route,
+                last_session_admission=running_session_admission,
+                running_session_admission={},
                 last_console_runtime_job_id=turn_shadow_job_id,
                 running_console_runtime_job_id="",
                 running_cost_route={},
+                running_turn_envelope={},
+                running_turn_control={},
+                running_request_source="",
+                running_submission_id="",
+            )
+            complete_session_handoff_if_needed(
+                running_session_admission,
+                success=prompt_success,
+                thread_id=thread_id,
+                finished_at=finished_at,
             )
             if active_interrupt_handoff_matches_prompt(prompt):
                 update_status_meta(
@@ -35992,6 +38663,8 @@ def _prompt_worker(
                         running_runtime=normalized_runtime,
                         running_model=normalized_model,
                         running_timeout_seconds=normalized_timeout,
+                        running_turn_envelope=turn_envelope,
+                        running_cost_route=running_cost_route,
                         last_started_at=auto_continue_started_at,
                         cancel_requested_at=0,
                         deadline_checkpoint_state="resuming",
@@ -36103,6 +38776,8 @@ def _prompt_worker(
                         running_runtime=normalized_runtime,
                         running_model=normalized_model,
                         running_timeout_seconds=normalized_timeout,
+                        running_turn_envelope=turn_envelope,
+                        running_cost_route=running_cost_route,
                         last_started_at=auto_continue_started_at,
                         cancel_requested_at=0,
                         live_turn=initial_live_turn(
@@ -36193,6 +38868,8 @@ def _prompt_worker(
                         running_runtime=normalized_runtime,
                         running_model=normalized_model,
                         running_timeout_seconds=normalized_timeout,
+                        running_turn_envelope=turn_envelope,
+                        running_cost_route=running_cost_route,
                         last_started_at=auto_continue_started_at,
                         cancel_requested_at=0,
                         live_turn=initial_live_turn(
@@ -36273,6 +38950,12 @@ def _prompt_worker(
                 next_prompt = start_next_queued_prompt()
     except Exception as exc:  # pragma: no cover - defensive bridge hardening
         finished_at = now_ts()
+        crash_cost_route = validate_cost_route_proof(
+            running_cost_route,
+            normalized_runtime,
+            normalized_model,
+            normalize_service_tier(service_tier),
+        )
         write_text(LAST_PROMPT_PATH, prompt)
         write_last_response("")
         write_text(LAST_ERROR_PATH, str(exc))
@@ -36318,6 +39001,7 @@ def _prompt_worker(
                     timeout_seconds, job_budget
                 ),
                 "attachment_count": len(attachments),
+                "cost_route": crash_cost_route,
                 "error": str(exc),
             },
             event_at=finished_at,
@@ -36348,24 +39032,26 @@ def _prompt_worker(
             )
         except Exception as shadow_exc:
             _record_console_runtime_error(shadow_exc)
-        append_usage_entry(
-            started_at=started_at,
-            finished_at=finished_at,
-            thread_id=read_text(THREAD_ID_PATH),
-            speed=speed,
-            detail=detail,
-            service_tier=service_tier,
-            success=False,
-            runtime=normalized_runtime,
-            model=normalized_model,
-            usage=normalize_usage_entry(
-                {
-                    "runtime": normalized_runtime,
-                    "model": normalized_model,
-                    "service_tier": service_tier,
-                }
-            ),
-        )
+        if crash_cost_route:
+            append_usage_entry(
+                started_at=started_at,
+                finished_at=finished_at,
+                thread_id=read_text(THREAD_ID_PATH),
+                speed=speed,
+                detail=detail,
+                service_tier=service_tier,
+                success=False,
+                runtime=normalized_runtime,
+                model=normalized_model,
+                usage=normalize_usage_entry(
+                    {
+                        "runtime": normalized_runtime,
+                        "model": normalized_model,
+                        "service_tier": service_tier,
+                    }
+                ),
+                cost_route=crash_cost_route,
+            )
         maybe_notify_long_job_completion(
             prompt=prompt,
             visible_response="",
@@ -36424,6 +39110,12 @@ def _prompt_worker(
             last_finished_at=finished_at,
             last_console_runtime_job_id=crash_turn_shadow_job_id,
             running_console_runtime_job_id="",
+            last_cost_route=crash_cost_route,
+            running_cost_route={},
+            running_turn_envelope={},
+            running_turn_control={},
+            running_request_source="",
+            running_submission_id="",
         )
         if active_interrupt_handoff_matches_prompt(prompt):
             update_status_meta(
@@ -36492,6 +39184,8 @@ LOCAL_FIRST_SAFE_MARKERS = (
     "translate",
 )
 LOCAL_FIRST_WORKSPACE_MARKERS = (
+    "artifact",
+    "benchmark",
     "bbs",
     "change",
     "check out",
@@ -36503,6 +39197,7 @@ LOCAL_FIRST_WORKSPACE_MARKERS = (
     "endpoint",
     "file",
     "fix",
+    "generate",
     "git",
     "host",
     "implement",
@@ -36512,11 +39207,14 @@ LOCAL_FIRST_WORKSPACE_MARKERS = (
     "post",
     "proceed",
     "repo",
+    "regenerate",
+    "render",
     "restart",
     "run ",
     "service",
     "ssh",
     "sync",
+    "svg",
     "systemctl",
     " test ",
     "tool",
@@ -36596,10 +39294,18 @@ def prompt_is_route_status_diagnostic(prompt: Any) -> bool:
     )
     if not asks_status:
         return False
-    mutating_order = re.search(
-        r"\b(?:apply|change|commit|deploy|edit|fix|implement|install|patch|push|restart|run|sync|update)\b",
+    mutation_verbs = (
+        r"apply|change|commit|deploy|edit|fix|generate|implement|install|make|"
+        r"patch|push|rebuild|regenerate|render|restart|run|sync|update"
+    )
+    explicit_mutating_order = re.search(
+        rf"\b(?:and|can|could|do it|go ahead|make it|need to|please|proceed|"
+        rf"should|then|will|would|you should)\b.{{0,80}}\b(?:{mutation_verbs})\b",
         lower,
     )
+    if explicit_mutating_order:
+        return False
+    mutating_order = re.search(rf"\b(?:{mutation_verbs})\b", lower)
     diagnostic_intro = re.search(
         r"\b(?:why|what|which|how|did|does|do|is|are|was|were|can|could|should)\b",
         lower,
@@ -36608,7 +39314,7 @@ def prompt_is_route_status_diagnostic(prompt: Any) -> bool:
         return False
     if re.search(
         r"\b(?:go ahead|proceed|do it|make it|please)\b"
-        r".{0,80}\b(?:deploy|fix|implement|install|patch|push|restart|run|sync|update)\b",
+        rf".{{0,80}}\b(?:{mutation_verbs})\b",
         lower,
     ):
         return False
@@ -37001,6 +39707,11 @@ def start_web_prompt(
     route_lock: bool = False,
     optimization_mode: str = "",
     source: str = "",
+    submission_id: str = "",
+    reasoning_effort: str = "",
+    escalation_reason: str = "",
+    reauthorization_reason: str = "",
+    actor_ip: str = "",
 ) -> tuple[bool, dict[str, Any]]:
     clean = prompt.strip()
     if not clean:
@@ -37014,13 +39725,26 @@ def start_web_prompt(
         snapshot["pressure_guard_error"] = detail
         record_action("pressure-guard-block", detail)
         return False, snapshot
-    normalized_speed = normalize_response_speed(speed)
+    normalized_speed, requested_reasoning_effort, normalized_escalation_reason = (
+        submission_reasoning_controls(
+            clean,
+            speed=speed,
+            requested_effort=reasoning_effort,
+            escalation_reason=escalation_reason,
+        )
+    )
+    normalized_reauthorization_reason = summarize_text(
+        str(reauthorization_reason or "").strip(), 360
+    )
+    checkpoint_intent = is_context_checkpoint_prompt(clean)
     normalized_detail = normalize_response_detail(detail)
     normalized_service_tier = normalize_service_tier(service_tier)
     normalized_budget = normalize_job_budget(job_budget)
     normalized_optimization_mode = normalize_optimization_mode(optimization_mode)
     normalized_attachments = normalize_attachments(attachments or [])
     normalized_relay_callback = normalize_relay_callback(relay_callback)
+    normalized_submission_id = normalize_submission_id(submission_id)
+    normalized_source = normalize_queue_source(source, normalized_relay_callback, clean)
     drift_gate = assess_tui_drift(
         clean,
         attachments=normalized_attachments,
@@ -37060,6 +39784,14 @@ def start_web_prompt(
         normalized_budget = normalize_job_budget(
             auto_turn_controls.get("effective_job_budget")
         )
+    if (
+        requested_reasoning_effort != "xhigh"
+        and response_reasoning_effort(normalized_speed) == "xhigh"
+    ):
+        normalized_speed = "careful"
+        auto_turn_controls["effective_speed"] = normalized_speed
+        auto_turn_controls["effective_reasoning_effort"] = "high"
+    effective_reasoning_effort = response_reasoning_effort(normalized_speed)
     if host_pressure_guard_defers_heavy_work(
         guard
     ) and host_pressure_guard_work_is_heavy(
@@ -37077,39 +39809,36 @@ def start_web_prompt(
         record_action("pressure-guard-defer", snapshot["pressure_guard_error"])
         return False, snapshot
     normalized_timeout = job_budget_timeout_seconds(normalized_budget)
-    normalized_runtime = normalize_runtime(runtime or configured_runtime())
-    normalized_model = normalize_runtime_model(
-        normalized_runtime, model or configured_runtime_model(normalized_runtime)
+    requested_runtime = normalize_runtime(runtime or configured_runtime())
+    requested_model = normalize_runtime_model(
+        requested_runtime,
+        model or configured_runtime_model(requested_runtime),
     )
-    requested_runtime = normalized_runtime
-    requested_model = normalized_model
     requested_service_tier = normalized_service_tier
+    base_runtime = requested_runtime
+    base_model = requested_model
+    base_service_tier = normalized_service_tier
     if FORCE_DEFAULT_RUNTIME and not route_lock:
-        normalized_runtime = configured_runtime()
-        normalized_model = configured_runtime_model(normalized_runtime)
-    service_tier_recovery = direct_service_tier_usage_limit_recovery(
-        normalized_service_tier,
+        base_runtime = normalize_runtime(configured_runtime())
+        base_model = normalize_runtime_model(
+            base_runtime, configured_runtime_model(base_runtime)
+        )
+    subscription_capacity_decision = codex_subscription_capacity_route_decision(
+        runtime=base_runtime,
+        model=base_model,
+        service_tier=base_service_tier,
+        prompt=clean,
+        job_budget=normalized_budget,
+        detail=normalized_detail,
         route_lock=route_lock,
-        runtime=normalized_runtime,
     )
-    if service_tier_recovery:
-        append_direct_service_tier_recovery_event(
-            service_tier_recovery,
-            prompt=clean,
-            route_lock=route_lock,
-            runtime=normalized_runtime,
-            model=normalized_model,
-        )
-        normalized_service_tier = normalize_service_tier(
-            service_tier_recovery.get("service_tier")
-        )
-    cost_route_decision = cost_route_decision_for_prompt(
+    local_route_probe = cost_route_decision_for_prompt(
         prompt=clean,
         attachments=normalized_attachments,
         relay_callback=normalized_relay_callback,
-        runtime=normalized_runtime,
-        model=normalized_model,
-        service_tier=normalized_service_tier,
+        runtime=base_runtime,
+        model=base_model,
+        service_tier=base_service_tier,
         job_budget=normalized_budget,
         optimization_mode=normalized_optimization_mode,
         route_lock=route_lock,
@@ -37117,69 +39846,149 @@ def start_web_prompt(
         requested_model=requested_model,
         requested_service_tier=requested_service_tier,
     )
-    subscription_capacity_decision = codex_subscription_capacity_route_decision(
-        runtime=cost_route_decision.get("selected_runtime"),
-        model=cost_route_decision.get("selected_model"),
-        service_tier=cost_route_decision.get("selected_service_tier"),
-        prompt=clean,
-        job_budget=normalized_budget,
-        detail=normalized_detail,
-        route_lock=route_lock,
-        service_tier_recovery=service_tier_recovery,
+    norllama_available = (
+        normalize_runtime(local_route_probe.get("selected_runtime")) == "localllm"
     )
-    cost_route_decision["subscription_capacity"] = subscription_capacity_decision
-    if subscription_capacity_decision.get("selected"):
-        normalized_capacity_runtime = normalize_runtime(
-            subscription_capacity_decision.get("selected_runtime")
+    norllama_safe_final = norllama_available and bool(
+        local_route_probe.get("local_final_authority")
+    )
+    bedrock_runtime = "codex"
+    bedrock_service_tier = "bedrock-emergency"
+    bedrock_model = normalize_runtime_model(
+        bedrock_runtime,
+        codex_model_for_service_tier(bedrock_service_tier, base_model),
+    )
+    bedrock_available = bool(codex_profile_v2_for_service_tier(bedrock_service_tier))
+    manual_bedrock_available = bool(
+        codex_profile_v2_for_service_tier(base_service_tier)
+    )
+    if build_tui_waterfall is None or sanitize_tui_waterfall_decision is None:
+        cost_route_decision = {
+            "schema": "norman.tui-waterfall.v1",
+            "selected": False,
+            "blocked": True,
+            "requested_runtime": requested_runtime,
+            "requested_model": requested_model,
+            "requested_service_tier": requested_service_tier,
+            "selected_runtime": "",
+            "selected_model": "",
+            "selected_service_tier": "",
+            "stage": "blocked",
+            "waterfall_stage": "blocked",
+            "route_source": "waterfall_guard",
+            "reason": "routing waterfall helper is unavailable",
+            "fallback_reason": "",
+            "attempts": [],
+            "waterfall_attempt_count": 0,
+            "route_lock": bool(route_lock),
+            "bedrock_auto_authorized": False,
+            "subscription_capacity": {},
+            "charge_basis": "blocked",
+        }
+    else:
+        cost_route_decision = sanitize_tui_waterfall_decision(
+            build_tui_waterfall(
+                requested_runtime=requested_runtime,
+                requested_model=requested_model,
+                requested_service_tier=requested_service_tier,
+                base_runtime=base_runtime,
+                base_model=base_model,
+                base_service_tier=base_service_tier,
+                bedrock_runtime=bedrock_runtime,
+                bedrock_model=bedrock_model,
+                bedrock_service_tier=bedrock_service_tier,
+                route_lock=route_lock,
+                subscription=subscription_capacity_decision,
+                norllama_available=norllama_available,
+                norllama_safe_final=norllama_safe_final,
+                bedrock_available=bedrock_available,
+                manual_bedrock_available=manual_bedrock_available,
+            )
         )
-        normalized_capacity_model = normalize_runtime_model(
-            normalized_capacity_runtime,
-            subscription_capacity_decision.get("selected_model"),
-        )
-        normalized_capacity_tier = normalize_service_tier(
-            subscription_capacity_decision.get("selected_service_tier")
-        )
-        cost_route_decision.update(
-            {
-                "selected_runtime": normalized_capacity_runtime,
-                "selected_model": normalized_capacity_model,
-                "selected_service_tier": normalized_capacity_tier,
-                "route_source": "subscription_capacity_preference",
-                "reason": subscription_capacity_decision.get("reason"),
-                "charge_basis": usage_route_charge_basis(
-                    {
-                        "runtime": normalized_capacity_runtime,
-                        "model": normalized_capacity_model,
-                        "service_tier": normalized_capacity_tier,
-                    }
-                ),
-            }
+    if cost_route_decision.get("blocked"):
+        blocked_message = str(
+            cost_route_decision.get("reason") or "Route was blocked by the waterfall."
         )
         append_audit_event(
+            event_type="chat.waterfall-blocked",
+            summary="Blocked a prompt before queueing because capacity was not verified.",
+            detail=blocked_message,
+            severity="warn",
+            actor_type="system",
+            thread_id=read_text(THREAD_ID_PATH),
+            payload={
+                "cost_route": cost_route_decision,
+                "prompt_preview": summarize_text(clean, 240),
+            },
+        )
+        snapshot = current_snapshot()
+        snapshot["waterfall_blocked"] = True
+        snapshot["waterfall_error"] = blocked_message
+        snapshot["cost_route"] = cost_route_decision
+        return False, snapshot
+    waterfall_stage = str(cost_route_decision.get("waterfall_stage") or "")
+    subscription_probe = waterfall_stage == "subscription_flex_probe"
+    if waterfall_stage == "subscription_flex":
+        append_audit_event(
             event_type="chat.subscription-capacity-preferred",
-            summary="Reset-aware ChatGPT subscription capacity preferred over Bedrock.",
+            summary="Fresh ChatGPT subscription capacity selected Flex.",
             detail=(
-                "A default Bedrock Codex turn was moved to direct Flex after an "
-                "idle capacity observation and reset-window forecast."
+                "This turn has fresh verified ChatGPT subscription capacity, so "
+                "Flex was selected before any local or Bedrock fallback."
             ),
             severity="info",
             actor_type="system",
             thread_id=read_text(THREAD_ID_PATH),
             payload={
-                "route_lock": route_lock,
-                "requested_service_tier": requested_service_tier,
-                "selected_service_tier": normalized_capacity_tier,
-                "capacity": subscription_capacity_decision.get("capacity"),
+                "cost_route": cost_route_decision,
                 "prompt_preview": summarize_text(clean, 240),
             },
         )
+    elif subscription_probe:
+        append_audit_event(
+            event_type="chat.subscription-capacity-probe",
+            summary="Guarded ChatGPT subscription capacity probe selected Flex.",
+            detail=(
+                "Subscription capacity is stale or unknown, so this turn will "
+                "make one guarded Flex check using ChatGPT authentication only. "
+                "OpenAI Platform/API-key spending is not permitted."
+            ),
+            severity="info",
+            actor_type="system",
+            thread_id=read_text(THREAD_ID_PATH),
+            payload={
+                "cost_route": cost_route_decision,
+                "prompt_preview": summarize_text(clean, 240),
+            },
+        )
+    normalized_runtime = base_runtime
+    normalized_model = base_model
+    normalized_service_tier = base_service_tier
     selected_runtime = normalize_runtime(cost_route_decision.get("selected_runtime"))
     selected_model = normalize_runtime_model(
         selected_runtime, cost_route_decision.get("selected_model")
     )
     selected_service_tier = normalize_service_tier(
-        cost_route_decision.get("selected_service_tier") or normalized_service_tier
+        cost_route_decision.get("selected_service_tier") or base_service_tier
     )
+    if waterfall_stage == "norllama_pool":
+        local_execution_runtime = normalize_runtime(
+            local_route_probe.get("selected_runtime")
+        )
+        local_execution_model = str(
+            local_route_probe.get("selected_model") or ""
+        ).strip()
+        if (
+            local_execution_runtime == "localllm"
+            and local_route_probe.get("local_final_authority") is True
+            and local_execution_model
+            and local_execution_model != "norllama"
+        ):
+            selected_runtime = local_execution_runtime
+            selected_model = normalize_runtime_model(
+                local_execution_runtime, local_execution_model
+            )
+            selected_service_tier = "default"
     if (
         selected_runtime != normalized_runtime
         or selected_model != normalized_model
@@ -37188,64 +39997,82 @@ def start_web_prompt(
         normalized_runtime = selected_runtime
         normalized_model = selected_model
         normalized_service_tier = selected_service_tier
-    if normalized_runtime == "codex":
+    cost_route_decision = validate_cost_route_proof(
+        cost_route_decision,
+        normalized_runtime,
+        normalized_model,
+        normalized_service_tier,
+    )
+    if not cost_route_decision:
+        blocked_message = "Route proof did not bind the selected execution tuple."
+        append_audit_event(
+            event_type="chat.route-proof-blocked",
+            summary="Blocked a prompt whose route proof did not bind execution.",
+            detail=blocked_message,
+            severity="warn",
+            actor_type="system",
+            thread_id=read_text(THREAD_ID_PATH),
+            payload={
+                "prompt_preview": summarize_text(clean, 240),
+                "runtime": normalized_runtime,
+                "model": normalized_model,
+                "service_tier": normalized_service_tier,
+            },
+        )
+        snapshot = current_snapshot()
+        snapshot["route_proof_blocked"] = True
+        snapshot["route_proof_error"] = blocked_message
+        return False, snapshot
+    if normalized_runtime == "codex" and normalized_service_tier == "flex":
         direct_execution = codex_openai_direct_execution_decision(
             normalized_service_tier,
             prompt=clean,
             job_budget=normalized_budget,
             detail=normalized_detail,
+            subscription_probe=subscription_probe,
         )
         if not direct_execution["allowed"]:
-            if direct_execution.get(
-                "reason_code"
-            ) == "chatgpt_credit_extension_guard" and codex_profile_v2_for_service_tier(
-                "default"
-            ):
-                fallback_reason = str(direct_execution.get("reason") or "")
-                normalized_service_tier = "default"
-                normalized_model = normalize_runtime_model(
-                    "codex",
-                    codex_model_for_service_tier(
-                        normalized_service_tier, normalized_model
-                    ),
-                )
-                append_audit_event(
-                    event_type="chat.chatgpt-credit-extension-bedrock-fallback",
-                    summary="Protected ChatGPT credits by keeping the turn on Bedrock.",
-                    detail=fallback_reason,
-                    severity="info",
-                    actor_type="system",
-                    thread_id=read_text(THREAD_ID_PATH),
-                    payload={
-                        "runtime": normalized_runtime,
-                        "model": normalized_model,
-                        "service_tier": normalized_service_tier,
-                        "decision": direct_execution,
-                    },
-                )
-            else:
-                blocked_message = codex_openai_direct_execution_block_message(
-                    direct_execution
-                )
-                append_audit_event(
-                    event_type="chat.openai-api-spend-blocked",
-                    summary="Blocked a direct OpenAI request before queueing.",
-                    detail=blocked_message,
-                    severity="warn",
-                    actor_type="system",
-                    thread_id=read_text(THREAD_ID_PATH),
-                    payload={
-                        "runtime": normalized_runtime,
-                        "model": normalized_model,
-                        "service_tier": normalized_service_tier,
-                        "decision": direct_execution,
-                    },
-                )
-                snapshot = current_snapshot()
-                snapshot["openai_api_spend_blocked"] = True
-                snapshot["openai_api_spend_error"] = blocked_message
-                return False, snapshot
-    cost_route_decision["token_capacity_plan"] = provider_token_budget_plan(
+            blocked_message = codex_openai_direct_execution_block_message(
+                direct_execution
+            )
+            append_audit_event(
+                event_type="chat.openai-api-spend-blocked",
+                summary="Blocked a direct OpenAI request before queueing.",
+                detail=blocked_message,
+                severity="warn",
+                actor_type="system",
+                thread_id=read_text(THREAD_ID_PATH),
+                payload={
+                    "cost_route": cost_route_decision,
+                    "reason_code": str(direct_execution.get("reason_code") or ""),
+                },
+            )
+            snapshot = current_snapshot()
+            snapshot["openai_api_spend_blocked"] = True
+            snapshot["openai_api_spend_error"] = blocked_message
+            snapshot["cost_route"] = cost_route_decision
+            return False, snapshot
+    session_admission = session_budget_admission(
+        model=normalized_model,
+        reasoning_effort=effective_reasoning_effort,
+        escalation_reason=normalized_escalation_reason,
+        reauthorization_reason=normalized_reauthorization_reason,
+        checkpoint_intent=checkpoint_intent,
+    )
+    append_session_admission_audit(
+        session_admission,
+        prompt=clean,
+        source=normalized_source,
+        actor_ip=actor_ip,
+        thread_id=read_text(THREAD_ID_PATH),
+    )
+    if not session_admission.get("allowed"):
+        snapshot = current_snapshot()
+        snapshot["session_admission"] = session_admission
+        snapshot["session_budget_blocked"] = True
+        snapshot["session_admission_error"] = str(session_admission.get("reason") or "")
+        return False, snapshot
+    token_capacity_plan = provider_token_budget_plan(
         prompt=clean,
         runtime=normalized_runtime,
         model=normalized_model,
@@ -37269,10 +40096,10 @@ def start_web_prompt(
         requested_model=requested_model,
         requested_service_tier=requested_service_tier,
     )
+    turn_envelope["token_capacity_plan"] = token_capacity_plan
     turn_envelope["cost_route"] = dict(cost_route_decision)
     turn_envelope["requested_runtime"] = requested_runtime
     normalized_interlace_mode = normalize_queue_interlace_mode(interlace_mode)
-    normalized_source = normalize_queue_source(source, normalized_relay_callback, clean)
     recover_stale_prompt_state()
     should_queue = True
     deduplicated_existing = False
@@ -37365,7 +40192,11 @@ def start_web_prompt(
                     "running_timeout_seconds": normalized_timeout,
                     "running_turn_control": auto_turn_controls,
                     "running_turn_envelope": turn_envelope,
+                    "running_submission_id": normalized_submission_id,
                     "running_cost_route": cost_route_decision,
+                    "running_request_source": normalized_source,
+                    "running_session_admission": session_admission,
+                    "last_session_admission": session_admission,
                     "last_started_at": now_ts(),
                     "recovered_after_restart": False,
                     "stale_queue": False,
@@ -37396,6 +40227,7 @@ def start_web_prompt(
                     "auto_turn_controls": auto_turn_controls,
                     "turn_envelope": turn_envelope,
                     "cost_route": cost_route_decision,
+                    "session_admission": session_admission,
                 },
                 event_at=started_at,
             )
@@ -37454,8 +40286,9 @@ def start_web_prompt(
                 "source": normalized_source,
             },
         )
-        snapshot = current_snapshot()
+        snapshot = _live_status_overlay()
         snapshot["deduplicated_prompt"] = True
+        snapshot["session_admission"] = session_admission
         return True, snapshot
     if not should_queue:
         turn_shadow_error = ""
@@ -37537,7 +40370,7 @@ def start_web_prompt(
                     timeout_seconds=3,
                 )
             launch_prompt_worker(*worker_args)
-        accepted_snapshot = current_snapshot()
+        accepted_snapshot = _live_status_overlay()
         accepted_snapshot.update(
             {
                 "pending": True,
@@ -37555,7 +40388,11 @@ def start_web_prompt(
                 "running_timeout_seconds": normalized_timeout,
                 "running_turn_control": auto_turn_controls,
                 "running_turn_envelope": turn_envelope,
+                "running_submission_id": normalized_submission_id,
                 "running_cost_route": cost_route_decision,
+                "running_request_source": normalized_source,
+                "running_session_admission": session_admission,
+                "last_session_admission": session_admission,
                 "running_console_runtime_job_id": accepted_turn_shadow_job_id,
                 "last_console_runtime_job_id": accepted_turn_shadow_job_id,
                 "console_runtime_job_id": accepted_turn_shadow_job_id,
@@ -37576,9 +40413,13 @@ def start_web_prompt(
         interlace_mode=normalized_interlace_mode,
         optimization_mode=normalized_optimization_mode,
         cost_route=cost_route_decision,
+        session_admission=session_admission,
         source=normalized_source,
+        submission_id=normalized_submission_id,
+        fast_snapshot=True,
     )
     queued_snapshot["queued_cost_route"] = cost_route_decision
+    queued_snapshot["session_admission"] = session_admission
     if normalized_relay_callback and not queued_snapshot.get("deduplicated_prompt"):
         relay_queue_position = max(1, int(queued_snapshot.get("queue_depth") or 1))
         notify_relay_callback(
@@ -37639,6 +40480,41 @@ def restart_activity_state(
     }
 
 
+def web_restart_deferred_state(
+    meta: dict[str, Any],
+    *,
+    restart_required: bool,
+    observed_at: int | None = None,
+) -> dict[str, Any]:
+    if not restart_required:
+        return {
+            "web_restart_deferred": False,
+            "web_restart_deferred_at": 0,
+            "web_restart_deferred_deadline_at": 0,
+            "web_restart_deferred_age_seconds": 0,
+            "web_restart_deferred_expired_at": 0,
+            "web_restart_deferred_max_wait_seconds": (
+                WEB_RESTART_DEFERRED_MAX_WAIT_SECONDS
+            ),
+        }
+    requested_at = _coerce_int(meta.get("web_restart_deferred_at"))
+    deadline_at = _coerce_int(meta.get("web_restart_deferred_deadline_at"))
+    if requested_at > 0 and deadline_at <= 0:
+        deadline_at = requested_at + WEB_RESTART_DEFERRED_MAX_WAIT_SECONDS
+    expired_at = _coerce_int(meta.get("web_restart_deferred_expired_at"))
+    now = _coerce_int(observed_at) or now_ts()
+    return {
+        "web_restart_deferred": bool(requested_at > 0 and expired_at <= 0),
+        "web_restart_deferred_at": requested_at,
+        "web_restart_deferred_deadline_at": deadline_at,
+        "web_restart_deferred_age_seconds": (
+            max(0, now - requested_at) if requested_at > 0 else 0
+        ),
+        "web_restart_deferred_expired_at": expired_at,
+        "web_restart_deferred_max_wait_seconds": WEB_RESTART_DEFERRED_MAX_WAIT_SECONDS,
+    }
+
+
 def restart_readiness_snapshot() -> dict[str, Any]:
     recover_stale_prompt_state()
     meta = load_status_meta()
@@ -37680,6 +40556,13 @@ def restart_readiness_snapshot() -> dict[str, Any]:
         "updated_at": now_ts(),
     }
     snapshot.update(web_process_update_snapshot())
+    snapshot.update(
+        web_restart_deferred_state(
+            meta,
+            restart_required=bool(snapshot.get("web_restart_required")),
+            observed_at=snapshot["updated_at"],
+        )
+    )
     snapshot["context_handoff"] = restart_context_handoff(
         scope="web",
         reason=str(snapshot.get("web_restart_reason") or "restart readiness probe"),
@@ -37774,7 +40657,11 @@ def current_snapshot() -> dict[str, Any]:
         last_error = ""
         write_text(LAST_ERROR_PATH, "")
     services = [
-        {"name": name, "state": state}
+        {
+            "name": name,
+            "state": state,
+            "required": name != TAILSCALE_SERVICE or TAILSCALE_REQUIRED,
+        }
         for name, state in service_status(
             [
                 AGENT_SERVICE_NAME,
@@ -37949,6 +40836,7 @@ def current_snapshot() -> dict[str, Any]:
         if normalize_runtime(configured_chat_runtime) == "localllm"
         else LOCAL_LLM_ROUTE_DEFAULT_MODEL
     )
+    configured_local_planner_readiness = local_planner_preflight_readiness()
     configured_local_llm_route_outcomes = local_llm_route_outcome_summary()
     configured_console_runtime = console_runtime_activity_snapshot()
     configured_runtime_capabilities = console_runtime_capabilities_snapshot()
@@ -38001,19 +40889,18 @@ def current_snapshot() -> dict[str, Any]:
             if isinstance(meta.get("running_turn_control"), dict)
             else {}
         ),
-        "running_turn_envelope": (
-            dict(meta.get("running_turn_envelope"))
-            if isinstance(meta.get("running_turn_envelope"), dict)
-            else {}
+        "running_turn_envelope": sanitize_turn_envelope_cost_route(
+            meta.get("running_turn_envelope")
+        ),
+        "running_submission_id": (
+            normalize_submission_id(meta.get("running_submission_id"))
+            if pending
+            else ""
         ),
         "running_console_runtime_job_id": str(
             meta.get("running_console_runtime_job_id") or ""
         ),
-        "running_cost_route": (
-            dict(meta.get("running_cost_route"))
-            if isinstance(meta.get("running_cost_route"), dict)
-            else {}
-        ),
+        "running_cost_route": sanitize_cost_route(meta.get("running_cost_route")),
         "time_target": time_target,
         "model_process_alive": active_codex_process_alive(),
         "web_worker_alive": prompt_runtime_alive(),
@@ -38074,11 +40961,7 @@ def current_snapshot() -> dict[str, Any]:
         "last_optimization_mode": normalize_optimization_mode(
             meta.get("last_optimization_mode")
         ),
-        "last_cost_route": (
-            dict(meta.get("last_cost_route"))
-            if isinstance(meta.get("last_cost_route"), dict)
-            else {}
-        ),
+        "last_cost_route": sanitize_cost_route(meta.get("last_cost_route")),
         "last_timeout_seconds": normalize_job_timeout_seconds(
             meta.get("last_timeout_seconds"), meta.get("last_job_budget")
         ),
@@ -38111,7 +40994,10 @@ def current_snapshot() -> dict[str, Any]:
         "usage": usage,
         "route_receipts": route_receipt_status_snapshot(),
         "bedrock_health": bedrock_health_snapshot(snapshot_at=snapshot_at),
-        "local_llm_health": configured_local_llm_health,
+        "local_llm_health": sanitize_public_local_llm_health(
+            configured_local_llm_health
+        ),
+        "local_planner_readiness": configured_local_planner_readiness,
         "local_llm_route_outcomes": configured_local_llm_route_outcomes,
         "runtime_capabilities": configured_runtime_capabilities,
         "local_first_proof": configured_local_first_proof,
@@ -38151,6 +41037,7 @@ def current_snapshot() -> dict[str, Any]:
         "working_recap": working_recap,
         "resource_meter": resource_meter,
         "bbs": current_bbs_summary(),
+        "connector_access": connector_access_snapshot(),
         "permissions_mode": "danger-full-access",
         "ui_version": UI_VERSION,
         "web_process_refresh_event": web_refresh_event,
@@ -38185,6 +41072,13 @@ def current_snapshot() -> dict[str, Any]:
         )
     )
     snapshot.update(web_process_update_snapshot())
+    snapshot.update(
+        web_restart_deferred_state(
+            meta,
+            restart_required=bool(snapshot.get("web_restart_required")),
+            observed_at=snapshot_at,
+        )
+    )
     detect_human_interventions(snapshot)
     human_interventions = load_human_interventions()
     ask_now_interventions = [
@@ -38235,6 +41129,356 @@ def current_snapshot() -> dict[str, Any]:
     return snapshot
 
 
+def _transport_snapshot_value(
+    value: Any,
+    *,
+    string_limit: int = STATUS_TRANSPORT_STRING_LIMIT,
+    list_limit: int = STATUS_TRANSPORT_LIST_LIMIT,
+    depth: int = 0,
+) -> Any:
+    """Keep live transport bounded without changing the durable snapshot."""
+    if isinstance(value, str):
+        if len(value) <= string_limit:
+            return value
+        omitted = len(value) - string_limit
+        return f"{value[:string_limit]}\n[... {omitted} characters omitted from live transport]"
+    if isinstance(value, list):
+        items = value[-list_limit:] if len(value) > list_limit else value
+        return [
+            _transport_snapshot_value(
+                item,
+                string_limit=string_limit,
+                list_limit=list_limit,
+                depth=depth + 1,
+            )
+            for item in items
+        ]
+    if isinstance(value, tuple):
+        return _transport_snapshot_value(
+            list(value),
+            string_limit=string_limit,
+            list_limit=list_limit,
+            depth=depth + 1,
+        )
+    if isinstance(value, dict):
+        if depth >= 10:
+            return {"summary": "[nested live detail omitted]"}
+        return {
+            str(key): _transport_snapshot_value(
+                item,
+                string_limit=string_limit,
+                list_limit=list_limit,
+                depth=depth + 1,
+            )
+            for key, item in value.items()
+        }
+    return value
+
+
+def _route_bootstrap_snapshot(
+    meta: dict[str, Any],
+    queue: list[dict[str, Any]],
+    *,
+    details_ready: bool,
+    refreshing: bool,
+) -> dict[str, Any]:
+    """Describe the selected route without performing health or runtime probes."""
+    pending = bool(meta.get("pending"))
+    queued = bool(queue)
+    queued_item = queue[0] if queued and isinstance(queue[0], dict) else {}
+    phase = "running" if pending else "queued" if queued else "configured"
+    if pending:
+        selected_runtime = normalize_runtime(meta.get("running_runtime"))
+        selected_model = normalize_runtime_model(
+            selected_runtime, meta.get("running_model")
+        )
+        selected_service_tier = normalize_service_tier(meta.get("running_service_tier"))
+        candidate_route = meta.get("running_cost_route")
+        bootstrap_metadata = meta.get("running_route_bootstrap_metadata")
+    elif queued:
+        selected_runtime = normalize_runtime(queued_item.get("runtime"))
+        selected_model = normalize_runtime_model(
+            selected_runtime, queued_item.get("model")
+        )
+        selected_service_tier = normalize_service_tier(queued_item.get("service_tier"))
+        candidate_route = queued_item.get("cost_route")
+        bootstrap_metadata = {}
+    else:
+        selected_runtime = normalize_runtime(meta.get("selected_runtime"))
+        selected_model = normalize_runtime_model(
+            selected_runtime, meta.get("selected_model")
+        )
+        selected_service_tier = normalize_service_tier(
+            meta.get("selected_service_tier") or configured_service_tier()
+        )
+        candidate_route = {}
+        bootstrap_metadata = {}
+    route = validate_cost_route_proof(
+        candidate_route,
+        selected_runtime,
+        selected_model,
+        selected_service_tier,
+    )
+    if not route:
+        route = sanitize_route_bootstrap_metadata(
+            bootstrap_metadata,
+            selected_runtime,
+            selected_model,
+            selected_service_tier,
+        )
+    requested_runtime = normalize_runtime(
+        route.get("requested_runtime") or selected_runtime
+    )
+    requested_model = normalize_runtime_model(
+        requested_runtime, route.get("requested_model") or selected_model
+    )
+    requested_service_tier = normalize_service_tier(
+        route.get("requested_service_tier") or selected_service_tier
+    )
+    return {
+        "phase": phase,
+        "details_ready": details_ready,
+        "refreshing": refreshing,
+        "selected_runtime": selected_runtime,
+        "selected_model": selected_model,
+        "selected_service_tier": selected_service_tier,
+        "requested_runtime": requested_runtime,
+        "requested_model": requested_model,
+        "requested_service_tier": requested_service_tier,
+        "route_source": summarize_text(str(route.get("route_source") or ""), 96),
+        "route_reason": summarize_text(str(route.get("reason") or ""), 240),
+        "fallback_reason": summarize_text(str(route.get("fallback_reason") or ""), 180),
+        "route_locked": any(
+            route.get(key) is True
+            for key in (
+                "route_locked",
+                "route_lock",
+                "strict_route",
+                "operator_model_override",
+            )
+        ),
+    }
+
+
+def _live_status_overlay() -> dict[str, Any]:
+    """Read only cheap state needed to keep a submit acknowledgement current."""
+    meta = load_status_meta()
+    queue = normalize_queue(meta.get("queued_prompts"))
+    pending = bool(meta.get("pending"))
+    now = now_ts()
+    return {
+        "pending": pending,
+        "state": str(meta.get("state") or "idle"),
+        "status_message": str(meta.get("status_message") or "Ready."),
+        "selected_runtime": normalize_runtime(meta.get("selected_runtime")),
+        "selected_model": normalize_runtime_model(
+            meta.get("selected_runtime"), meta.get("selected_model")
+        ),
+        "running_prompt": str(meta.get("running_prompt") or ""),
+        "running_attachments": normalize_attachments(meta.get("running_attachments")),
+        "running_runtime": normalize_runtime(meta.get("running_runtime")),
+        "running_model": normalize_runtime_model(
+            meta.get("running_runtime"), meta.get("running_model")
+        ),
+        "running_speed": normalize_response_speed(meta.get("running_speed")),
+        "running_detail": normalize_response_detail(meta.get("running_detail")),
+        "running_service_tier": normalize_service_tier(
+            meta.get("running_service_tier")
+        ),
+        "running_job_budget": normalize_job_budget(meta.get("running_job_budget")),
+        "running_optimization_mode": normalize_optimization_mode(
+            meta.get("running_optimization_mode")
+        ),
+        "running_timeout_seconds": normalize_job_timeout_seconds(
+            meta.get("running_timeout_seconds"), meta.get("running_job_budget")
+        ),
+        "running_submission_id": normalize_submission_id(
+            meta.get("running_submission_id")
+        ),
+        "queue_depth": len(queue),
+        "queued_prompts": _transport_snapshot_value(queue),
+        "queue_interlace_mode": normalize_queue_interlace_mode(
+            meta.get("queue_interlace_mode") or queue_interlace_mode()
+        ),
+        "queue_checkpoint_policy": str(
+            meta.get("queue_checkpoint_policy") or queue_checkpoint_policy()
+        ),
+        "queue_checkpoint_state": str(meta.get("queue_checkpoint_state") or "idle"),
+        "queue_checkpoint_detail": str(meta.get("queue_checkpoint_detail") or ""),
+        "last_action": str(meta.get("last_action") or ""),
+        "last_action_at": _coerce_int(meta.get("last_action_at")),
+        "last_action_detail": str(meta.get("last_action_detail") or ""),
+        "last_started_at": _coerce_int(meta.get("last_started_at")),
+        "last_finished_at": _coerce_int(meta.get("last_finished_at")),
+        "last_error": truncate_block(read_text(LAST_ERROR_PATH), 4000),
+        "last_prompt": truncate_block(
+            read_text(LAST_PROMPT_PATH, "[no prompt yet]"),
+            STATUS_TRANSPORT_STRING_LIMIT,
+        ),
+        "last_response": truncate_block(
+            read_text(LAST_RESPONSE_PATH, "[no response yet]"),
+            STATUS_TRANSPORT_STRING_LIMIT,
+        ),
+        "local_planner_readiness": {
+            "configured": bool(
+                LOCAL_PLANNER_PREFLIGHT_ENABLED and LOCAL_LLM_CAN_EXECUTE
+            ),
+            "ready": False,
+            "status": "unavailable",
+            "reason": "planner readiness is available after the next status refresh",
+            "candidate_lane": "planner",
+            "candidate_limit": LOCAL_PLANNER_PREFLIGHT_MAX_CANDIDATES,
+            "candidate_count": 0,
+            "candidates": [],
+            "candidate_diagnostics": [],
+        },
+        "live_turn": live_turn_snapshot(
+            meta.get("live_turn"), pending=pending, observed_at=now
+        ),
+        "working_recap": (
+            dict(meta.get("working_recap"))
+            if isinstance(meta.get("working_recap"), dict)
+            else {}
+        ),
+        "connector_access": connector_access_snapshot(),
+        "route_bootstrap": _route_bootstrap_snapshot(
+            meta, queue, details_ready=False, refreshing=True
+        ),
+        "updated_at": now,
+    }
+
+
+def refresh_status_snapshot_cache(*, blocking: bool = False) -> bool:
+    acquired = STATUS_SNAPSHOT_REFRESH_LOCK.acquire(blocking=blocking)
+    if not acquired:
+        return False
+    with STATUS_SNAPSHOT_CACHE_LOCK:
+        STATUS_SNAPSHOT_CACHE["refreshing"] = True
+    try:
+        snapshot = current_snapshot()
+        with STATUS_SNAPSHOT_CACHE_LOCK:
+            STATUS_SNAPSHOT_CACHE.update(
+                {
+                    "at": time.time(),
+                    "data": snapshot,
+                    "refreshing": False,
+                    "last_error": "",
+                }
+            )
+        return True
+    except Exception as exc:
+        with STATUS_SNAPSHOT_CACHE_LOCK:
+            STATUS_SNAPSHOT_CACHE.update(
+                {"refreshing": False, "last_error": summarize_text(str(exc), 300)}
+            )
+        return False
+    finally:
+        STATUS_SNAPSHOT_REFRESH_LOCK.release()
+
+
+def request_status_snapshot_refresh() -> None:
+    with STATUS_SNAPSHOT_CACHE_LOCK:
+        refreshing = bool(STATUS_SNAPSHOT_CACHE.get("refreshing"))
+    if refreshing:
+        return
+    threading.Thread(
+        target=refresh_status_snapshot_cache,
+        kwargs={"blocking": False},
+        name=f"{SESSION}-status-snapshot-refresh",
+        daemon=True,
+    ).start()
+
+
+def status_snapshot() -> dict[str, Any]:
+    """Return an immediately usable, bounded snapshot for browser transport."""
+    with STATUS_SNAPSHOT_CACHE_LOCK:
+        cached = STATUS_SNAPSHOT_CACHE.get("data")
+        cached_at = float(STATUS_SNAPSHOT_CACHE.get("at") or 0.0)
+        refreshing = bool(STATUS_SNAPSHOT_CACHE.get("refreshing"))
+        refresh_error = str(STATUS_SNAPSHOT_CACHE.get("last_error") or "")
+    if not isinstance(cached, dict):
+        request_status_snapshot_refresh()
+        snapshot = _live_status_overlay()
+        snapshot.update(
+            {
+                "history": [],
+                "usage": {},
+                "services": [],
+                "pane": "[collecting live console details]",
+                "logs": "[collecting live service details]",
+                "snapshot_cached": False,
+                "snapshot_age_seconds": 0,
+                "snapshot_refreshing": True,
+            }
+        )
+        return snapshot
+
+    snapshot = _transport_snapshot_value(cached)
+    snapshot.update(_live_status_overlay())
+    route_bootstrap = snapshot.get("route_bootstrap")
+    if isinstance(route_bootstrap, dict):
+        route_bootstrap["details_ready"] = True
+        route_bootstrap["refreshing"] = refreshing
+    snapshot["history"] = _transport_snapshot_value(
+        list(cached.get("history") or [])[-STATUS_TRANSPORT_HISTORY_LIMIT:],
+        list_limit=STATUS_TRANSPORT_HISTORY_LIMIT,
+    )
+    for field in (
+        "runtime_capabilities",
+        "local_llm_health",
+        "local_planner_readiness",
+        "usage",
+        "runtime",
+    ):
+        snapshot[field] = _transport_snapshot_value(
+            cached.get(field) or {},
+            string_limit=1024,
+            list_limit=6,
+        )
+    snapshot["pane"] = _transport_snapshot_value(
+        cached.get("pane") or "", string_limit=6000, list_limit=6
+    )
+    snapshot["logs"] = _transport_snapshot_value(
+        cached.get("logs") or "", string_limit=3000, list_limit=6
+    )
+    snapshot["snapshot_cached"] = True
+    snapshot["snapshot_age_seconds"] = max(0, int(time.time() - cached_at))
+    snapshot["snapshot_refreshing"] = refreshing
+    if refresh_error:
+        snapshot["snapshot_refresh_error"] = refresh_error
+    if time.time() - cached_at >= STATUS_SNAPSHOT_REFRESH_SECONDS:
+        request_status_snapshot_refresh()
+    return snapshot
+
+
+def status_snapshot_collector_loop() -> None:
+    while True:
+        refreshed = refresh_status_snapshot_cache(blocking=True)
+        if refreshed:
+            with STATUS_SNAPSHOT_CACHE_LOCK:
+                snapshot = STATUS_SNAPSHOT_CACHE.get("data")
+            if isinstance(snapshot, dict):
+                emit_kaizen_tui_snapshot(snapshot)
+                maybe_schedule_codex_account_capacity_probe(
+                    pane=snapshot.get("pane"),
+                    auth_mode=snapshot.get("codex_auth_mode"),
+                    pending=bool(snapshot.get("pending")),
+                )
+        time.sleep(STATUS_SNAPSHOT_REFRESH_SECONDS)
+
+
+def start_status_snapshot_collector() -> None:
+    global STATUS_SNAPSHOT_COLLECTOR_STARTED
+    if STATUS_SNAPSHOT_COLLECTOR_STARTED:
+        return
+    STATUS_SNAPSHOT_COLLECTOR_STARTED = True
+    threading.Thread(
+        target=status_snapshot_collector_loop,
+        name="tui-status-snapshot-collector",
+        daemon=True,
+    ).start()
+
+
 def snapshot_marker(snapshot: dict[str, Any]) -> tuple[Any, ...]:
     return (
         snapshot.get("pending"),
@@ -38275,6 +41519,10 @@ def snapshot_marker(snapshot: dict[str, Any]) -> tuple[Any, ...]:
         json.dumps(snapshot.get("web_process_refresh_event") or {}, sort_keys=True),
         snapshot.get("web_restart_required"),
         snapshot.get("web_script_updated_at"),
+        snapshot.get("web_restart_deferred"),
+        snapshot.get("web_restart_deferred_at"),
+        snapshot.get("web_restart_deferred_deadline_at"),
+        snapshot.get("web_restart_deferred_expired_at"),
         json.dumps(snapshot.get("context_handoff") or {}, sort_keys=True),
         json.dumps(snapshot.get("restart_handoff") or {}, sort_keys=True),
         tuple(item.get("token") for item in (snapshot.get("last_attachments") or [])),
@@ -38287,6 +41535,7 @@ def snapshot_marker(snapshot: dict[str, Any]) -> tuple[Any, ...]:
         json.dumps(snapshot.get("resource_meter") or {}, sort_keys=True),
         json.dumps(snapshot.get("bedrock_health") or {}, sort_keys=True),
         json.dumps(snapshot.get("local_llm_health") or {}, sort_keys=True),
+        json.dumps(snapshot.get("local_planner_readiness") or {}, sort_keys=True),
         json.dumps(snapshot.get("runtime_capabilities") or {}, sort_keys=True),
         json.dumps(snapshot.get("local_first_proof") or {}, sort_keys=True),
         json.dumps(snapshot.get("live_turn") or {}, sort_keys=True),
@@ -38302,11 +41551,22 @@ def snapshot_marker(snapshot: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
-def token_ok(params: dict[str, list[str]], cookie_token: str = "") -> bool:
+def token_ok(
+    params: dict[str, list[str]],
+    cookie_token: str = "",
+    authorization: str = "",
+) -> bool:
     if not TOKEN:
         return True
-    values = params.get("token", [])
-    return any(value == TOKEN for value in values) or cookie_token == TOKEN
+    candidates = [str(value or "") for value in params.get("token", [])]
+    candidates.append(str(cookie_token or ""))
+    bearer = str(authorization or "").strip()
+    if bearer.lower().startswith("bearer "):
+        candidates.append(bearer.split(" ", 1)[1].strip())
+    return any(
+        candidate and secrets.compare_digest(candidate, TOKEN)
+        for candidate in candidates
+    )
 
 
 def long_job_notify_receiver_token_ok(
@@ -38995,11 +42255,31 @@ def _initial_status_text(snapshot: dict[str, Any]) -> str:
     queue_depth = int(snapshot.get("queue_depth") or 0)
     draft_attachment_count = len(snapshot.get("draft_attachments") or [])
     status_text = str(snapshot.get("status_message") or "Ready.")
+    route_bootstrap = (
+        snapshot.get("route_bootstrap")
+        if isinstance(snapshot.get("route_bootstrap"), dict)
+        else {}
+    )
+    route_runtime = str(route_bootstrap.get("selected_runtime") or "").strip()
+    route_model = str(route_bootstrap.get("selected_model") or "").strip()
+    route_label = " / ".join(part for part in (route_runtime, route_model) if part)
+    details_loading = snapshot.get("snapshot_cached") is False
     if snapshot.get("pending") and snapshot.get("running_prompt"):
         status_text = (
             f"Working: {summarize_text(str(snapshot.get('running_prompt') or ''), 88)}"
             f" · {_response_profile_text(snapshot.get('running_speed'), snapshot.get('running_detail'))}"
         )
+        if details_loading and route_label:
+            status_text += (
+                f" · route {route_label} accepted; detailed health is loading"
+            )
+    elif details_loading:
+        status_text = (
+            f"Preparing live console state · configured route {route_label}"
+            if route_label
+            else "Preparing live console state"
+        )
+        status_text += " · detailed health and service state is loading"
     elif draft_attachment_count > 0:
         status_text = (
             "Ready. 1 attachment staged."
@@ -39759,7 +43039,10 @@ def summarize_services(services: list[dict[str, Any]]) -> str:
     if not items:
         return "Runtime state unavailable"
     problems = [
-        item for item in items if str(item.get("state") or "").lower() != "active"
+        item
+        for item in items
+        if item.get("required") is not False
+        and str(item.get("state") or "").lower() != "active"
     ]
     if not problems:
         return "All services healthy"
@@ -40261,7 +43544,7 @@ def _render_initial_inline_markup(
         label_text = _display_text_for_initial_link(clean, label)
         if re.match(r"^https?://", clean, flags=re.IGNORECASE):
             rendered_anchor = (
-                f'<a href="{html.escape(clean)}" target="_blank" rel="noreferrer">'
+                f'<a class="external-link" href="{html.escape(clean)}" target="_blank" rel="noreferrer">'
                 f"{html.escape(label_text)}</a>"
             )
         elif clean and _is_initial_file_target(clean):
@@ -40314,7 +43597,7 @@ def _render_initial_inline_markup(
         display_text = _display_text_for_initial_link(target, label)
         if re.match(r"^https?://", target, flags=re.IGNORECASE):
             return stash_rendered_anchor(
-                f'<a href="{html.escape(target)}" target="_blank" rel="noreferrer">'
+                f'<a class="external-link" href="{html.escape(target)}" target="_blank" rel="noreferrer">'
                 f"{html.escape(display_text)}</a>"
             )
         if target and _is_initial_file_target(target):
@@ -40364,13 +43647,14 @@ def _render_initial_inline_markup(
         if not clean.lower().startswith(("http://", "https://")):
             return match.group(0)
         return (
-            f'{prefix}<a href="{html.escape(clean)}" target="_blank" rel="noreferrer">'
+            f'{prefix}<a class="external-link" href="{html.escape(clean)}" target="_blank" rel="noreferrer">'
             f"{html.escape(_mask_sensitive_url_text(clean))}</a>"
         )
 
     rendered = INITIAL_MARKDOWN_LINK_RE.sub(replace_markdown_link, rendered)
     rendered = INITIAL_FILE_TARGET_RE.sub(replace_file_target, rendered)
     rendered = INITIAL_URL_RE.sub(replace_url, rendered)
+    rendered = re.sub(r"~~([^~\n][\s\S]*?[^~\n])~~", r"<del>\1</del>", rendered)
     rendered = re.sub(
         r"\*\*([^*\n][\s\S]*?[^*\n])\*\*", r"<strong>\1</strong>", rendered
     )
@@ -41011,6 +44295,17 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b"ok\n")
             return
 
+        if parsed.path == "/health":
+            self.json_response(
+                {
+                    "status": "ok",
+                    "agent_name": AGENT_NAME,
+                    "host_name": HOST_NAME,
+                    "ui_version": UI_VERSION,
+                }
+            )
+            return
+
         if parsed.path == "/api/version":
             self.json_response(
                 {
@@ -41029,7 +44324,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
-        if parsed.path == "/" and query_token(params) == TOKEN:
+        if TOKEN and parsed.path == "/" and query_token(params) == TOKEN:
             self.redirect_root(params)
             return
 
@@ -41038,7 +44333,46 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/status":
-            self.json_response(current_snapshot())
+            self.json_response(status_snapshot())
+            return
+
+        if parsed.path == "/api/children":
+            try:
+                children = child_agent_broker().list_children()
+            except (ChildAgentError, OSError) as exc:
+                status = (
+                    child_agent_error_status(exc)
+                    if isinstance(exc, ChildAgentError)
+                    else HTTPStatus.SERVICE_UNAVAILABLE
+                )
+                self.json_response({"ok": False, "error": str(exc)}, status=status)
+                return
+            active_count = sum(
+                1
+                for child in children
+                if child.get("status")
+                in {"provisioning", "starting", "running", "cancelling"}
+            )
+            self.json_response(
+                {
+                    "ok": True,
+                    "children": children,
+                    "count": len(children),
+                    "active_count": active_count,
+                    "limit": 10,
+                }
+            )
+            return
+
+        if parsed.path == "/api/last-response":
+            text = read_text(LAST_RESPONSE_PATH, "[no response yet]")
+            self.json_response(
+                {
+                    "ok": True,
+                    "text": text,
+                    "character_count": len(text),
+                }
+            )
             return
 
         if parsed.path == "/api/usage":
@@ -41067,23 +44401,19 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/llm/tool-activity":
             requested_limit = _coerce_int((params.get("limit") or ["200"])[0])
             limit = max(1, min(requested_limit or 200, 1000))
-            endpoint = str((params.get("endpoint") or [""])[0]).strip()
-            if not endpoint:
-                health = local_llm_health_snapshot(
-                    LOCAL_LLM_ROUTE_DEFAULT_MODEL,
-                    force=str((params.get("refresh") or [""])[0]).lower()
-                    in {"1", "true", "yes", "force"},
-                )
-                endpoint = str(health.get("endpoint") or "").strip()
-                existing = health.get("tool_activity")
-                if (
-                    isinstance(existing, dict)
-                    and existing.get("schema") == "norman.norllama.tool-activity.v1"
-                    and not str((params.get("refresh") or [""])[0]).strip()
-                ):
-                    self.json_response(existing)
-                    return
-            self.json_response(local_llm_fetch_tool_activity(endpoint, limit=limit))
+            health = local_llm_health_snapshot(
+                LOCAL_LLM_ROUTE_DEFAULT_MODEL,
+                force=str((params.get("refresh") or [""])[0]).lower()
+                in {"1", "true", "yes", "force"},
+            )
+            activity = (
+                health.get("tool_activity")
+                if isinstance(health.get("tool_activity"), dict)
+                else {}
+            )
+            self.json_response(
+                local_llm_tool_activity_from_payload(activity, limit=limit)
+            )
             return
 
         if parsed.path == "/api/kpis":
@@ -41241,7 +44571,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if not (
             self.is_trusted_client()
-            or token_ok(params, cookie_token)
+            or token_ok(params, cookie_token, self.headers.get("Authorization", ""))
             or long_job_notify_receiver_token_ok(parsed.path, params, self.headers)
         ):
             if api_path:
@@ -41250,6 +44580,53 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
             self.send_error(HTTPStatus.FORBIDDEN, "missing or invalid token")
+            return
+
+        if parsed.path == "/api/children":
+            payload = json_payload if isinstance(json_payload, dict) else {}
+            try:
+                child = child_agent_broker().spawn(
+                    label=payload.get("label") or (params.get("label") or [""])[0],
+                    objective=payload.get("objective")
+                    or (params.get("objective") or [""])[0],
+                    write_mode=payload.get("write_mode")
+                    or (params.get("write_mode") or [""])[0],
+                )
+            except ChildAgentError as exc:
+                self.json_response(
+                    {"ok": False, "error": str(exc)},
+                    status=child_agent_error_status(exc),
+                )
+                return
+            self.json_response({"ok": True, "child": child}, status=HTTPStatus.CREATED)
+            return
+
+        child_action_match = re.fullmatch(
+            r"/api/children/([^/]+)/(rename|cancel|retry|collect)", parsed.path
+        )
+        if child_action_match:
+            child_id, action = child_action_match.groups()
+            payload = json_payload if isinstance(json_payload, dict) else {}
+            try:
+                broker = child_agent_broker()
+                if action == "rename":
+                    child = broker.rename(
+                        child_id,
+                        payload.get("label") or (params.get("label") or [""])[0],
+                    )
+                elif action == "cancel":
+                    child = broker.cancel(child_id)
+                elif action == "retry":
+                    child = broker.retry(child_id)
+                else:
+                    child = broker.collect(child_id)
+            except ChildAgentError as exc:
+                self.json_response(
+                    {"ok": False, "error": str(exc)},
+                    status=child_agent_error_status(exc),
+                )
+                return
+            self.json_response({"ok": True, "child": child})
             return
 
         if parsed.path in {"/long-job-notify", "/api/long-job-notify"}:
@@ -41556,6 +44933,9 @@ class Handler(BaseHTTPRequestHandler):
             source_prompt = (params.get("source_prompt") or [""])[0].strip()
             source_response = (params.get("source_response") or [""])[0].strip()
             speed = normalize_response_speed((params.get("speed") or [""])[0])
+            reasoning_effort = (params.get("reasoning_effort") or [""])[0]
+            escalation_reason = (params.get("escalation_reason") or [""])[0]
+            reauthorization_reason = (params.get("reauthorization_reason") or [""])[0]
             detail = normalize_response_detail((params.get("detail") or [""])[0])
             service_tier = normalize_service_tier(
                 (params.get("service_tier") or [""])[0]
@@ -41595,6 +44975,9 @@ class Handler(BaseHTTPRequestHandler):
                     "token": target["token"],
                     "message": handoff_message,
                     "speed": speed,
+                    "reasoning_effort": reasoning_effort,
+                    "escalation_reason": escalation_reason,
+                    "reauthorization_reason": reauthorization_reason,
                     "detail": str(detail),
                     "service_tier": service_tier,
                     "job_budget": job_budget,
@@ -41688,7 +45071,13 @@ class Handler(BaseHTTPRequestHandler):
             actor_ip = self.request_client_ip()
             attachments = load_draft_attachments()
             message = (params.get("message", [""])[0]).strip()
+            submission_id = normalize_submission_id(
+                (params.get("submission_id") or [""])[0]
+            )
             speed = normalize_response_speed((params.get("speed") or [""])[0])
+            reasoning_effort = (params.get("reasoning_effort") or [""])[0]
+            escalation_reason = (params.get("escalation_reason") or [""])[0]
+            reauthorization_reason = (params.get("reauthorization_reason") or [""])[0]
             detail = normalize_response_detail((params.get("detail") or [""])[0])
             service_tier = normalize_service_tier(
                 (params.get("service_tier") or [""])[0]
@@ -41809,6 +45198,9 @@ class Handler(BaseHTTPRequestHandler):
                                 "reason": "deterministic_status",
                             },
                             "request_nonce": route_receipt_prompt_id(message),
+                            "submission_id": submission_id,
+                            "submission_state": "completed",
+                            "queue_position": 0,
                             "session": SESSION,
                             "error": "",
                             "snapshot": snapshot,
@@ -41818,23 +45210,6 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self.redirect_root(params)
                 return
-            service_tier_recovery = direct_service_tier_usage_limit_recovery(
-                service_tier,
-                route_lock=route_lock,
-                runtime=runtime,
-            )
-            if service_tier_recovery:
-                append_direct_service_tier_recovery_event(
-                    service_tier_recovery,
-                    prompt=message,
-                    actor_ip=actor_ip,
-                    route_lock=route_lock,
-                    runtime=runtime,
-                    model=model,
-                )
-                service_tier = normalize_service_tier(
-                    service_tier_recovery.get("service_tier")
-                )
             accepted, snapshot = start_web_prompt(
                 message,
                 speed,
@@ -41848,11 +45223,16 @@ class Handler(BaseHTTPRequestHandler):
                 interlace_mode=interlace_mode,
                 route_lock=route_lock,
                 optimization_mode=optimization_mode,
+                source="operator",
+                submission_id=submission_id,
+                reasoning_effort=reasoning_effort,
+                escalation_reason=escalation_reason,
+                reauthorization_reason=reauthorization_reason,
+                actor_ip=actor_ip,
             )
             deduplicated_prompt = bool(snapshot.get("deduplicated_prompt"))
             if accepted and not deduplicated_prompt:
                 clear_draft_attachments()
-                snapshot = current_snapshot()
                 append_audit_event(
                     event_type="chat.requested",
                     summary="Prompt requested from the web TUI.",
@@ -41872,6 +45252,11 @@ class Handler(BaseHTTPRequestHandler):
                         "runtime": runtime,
                         "model": model,
                         "route_lock": route_lock,
+                        "reasoning_effort": reasoning_effort,
+                        "escalation_reason": summarize_text(escalation_reason, 360),
+                        "reauthorization_reason": summarize_text(
+                            reauthorization_reason, 360
+                        ),
                         "relay_id": relay_callback.get("relay_id"),
                         "timeout_seconds": job_budget_timeout_seconds(job_budget),
                         "attachment_count": len(attachments),
@@ -41880,6 +45265,7 @@ class Handler(BaseHTTPRequestHandler):
             if api_path:
                 queue_depth = max(0, int(snapshot.get("queue_depth") or 0))
                 queued = bool(accepted and queue_depth > 0)
+                queue_position = queue_depth if queued else 0
                 console_runtime_job_id = str(
                     snapshot.get("console_runtime_job_id")
                     or snapshot.get("turn_shadow_job_id")
@@ -41891,7 +45277,8 @@ class Handler(BaseHTTPRequestHandler):
                     console_runtime_job_id
                 )
                 error_text = str(
-                    snapshot.get("pressure_guard_error")
+                    snapshot.get("session_admission_error")
+                    or snapshot.get("pressure_guard_error")
                     or "a web prompt is already running"
                 )
                 self.json_response(
@@ -41907,9 +45294,20 @@ class Handler(BaseHTTPRequestHandler):
                         "receipt_url": receipt_visibility.get("receipt_url", ""),
                         "receipt_visibility_detail": receipt_visibility,
                         "request_nonce": route_receipt_prompt_id(message),
+                        "submission_id": submission_id,
+                        "submission_state": (
+                            "deduplicated"
+                            if deduplicated_prompt
+                            else "queued"
+                            if queued
+                            else "running"
+                            if accepted
+                            else "rejected"
+                        ),
+                        "queue_position": queue_position,
+                        "session_admission": snapshot.get("session_admission") or {},
                         "session": SESSION,
                         "error": "" if accepted else error_text,
-                        "snapshot": snapshot,
                     },
                     status=HTTPStatus.ACCEPTED if accepted else HTTPStatus.CONFLICT,
                 )
@@ -41919,6 +45317,32 @@ class Handler(BaseHTTPRequestHandler):
 
         if parsed.path in {"/send", "/api/send"}:
             message = (params.get("message", [""])[0]).strip()
+            if not RAW_TMUX_SEND_ALLOWED:
+                detail = (
+                    "Raw tmux sends are disabled. Submit work through /api/ask so "
+                    "routing, session limits, and attribution are enforced."
+                )
+                append_audit_event(
+                    event_type="tmux.send-blocked",
+                    summary="Blocked raw text sent to the live tmux session.",
+                    detail=detail,
+                    severity="warn",
+                    actor_type="operator",
+                    actor_ip=self.request_client_ip(),
+                    thread_id=read_text(THREAD_ID_PATH),
+                    payload={"message_preview": summarize_text(message, 240)},
+                )
+                snapshot = current_snapshot()
+                snapshot["raw_tmux_send_blocked"] = True
+                snapshot["raw_tmux_send_error"] = detail
+                if api_path:
+                    self.json_response(
+                        {"ok": False, "error": detail, "snapshot": snapshot},
+                        status=HTTPStatus.FORBIDDEN,
+                    )
+                else:
+                    self.redirect_root(params)
+                return
             if message:
                 send_text(message)
                 append_audit_event(
@@ -42177,7 +45601,15 @@ class Handler(BaseHTTPRequestHandler):
             "token",
             "profile",
             "message",
+            "runtime",
+            "route_lock",
+            "label",
+            "objective",
+            "write_mode",
             "speed",
+            "reasoning_effort",
+            "escalation_reason",
+            "reauthorization_reason",
             "detail",
             "attachment_token",
         ):
@@ -42674,7 +46106,7 @@ class Handler(BaseHTTPRequestHandler):
         last_sent = 0.0
         try:
             while True:
-                snapshot = current_snapshot()
+                snapshot = status_snapshot()
                 marker = snapshot_marker(snapshot)
                 now = time.time()
                 if marker != last_marker:
@@ -43198,7 +46630,7 @@ class Handler(BaseHTTPRequestHandler):
             if TOKEN or route_preference != "auto"
             else ""
         )
-        initial_snapshot_data = current_snapshot()
+        initial_snapshot_data = status_snapshot()
         initial_snapshot = script_json(initial_snapshot_data)
         initial_tone, initial_run_label = _snapshot_tone_label(initial_snapshot_data)
         initial_status_message = _initial_status_text(initial_snapshot_data)
@@ -44796,6 +48228,39 @@ class Handler(BaseHTTPRequestHandler):
       color: var(--text);
       opacity: 0.88;
     }}
+    button,
+    a,
+    textarea,
+    summary,
+    [role="button"],
+    [role="tab"],
+    [data-action],
+    [data-activity-action],
+    [data-kpi-action],
+    [data-notice-action] {{
+      touch-action: manipulation;
+      -webkit-tap-highlight-color: rgba(178, 92, 52, 0.12);
+    }}
+    button:not(:disabled),
+    a[href],
+    summary,
+    [role="button"]:not([aria-disabled="true"]),
+    [role="tab"]:not([aria-disabled="true"]),
+    [data-action]:not([aria-disabled="true"]),
+    [data-activity-action]:not([data-activity-action=""]):not([aria-disabled="true"]),
+    [data-kpi-action]:not([aria-disabled="true"]),
+    [data-notice-action]:not([aria-disabled="true"]) {{
+      cursor: pointer;
+    }}
+    [role="button"]:focus-visible,
+    [role="tab"]:focus-visible,
+    [data-action]:focus-visible,
+    [data-activity-action]:focus-visible,
+    [data-kpi-action]:focus-visible,
+    [data-notice-action]:focus-visible {{
+      outline: 2px solid rgba(125, 211, 252, 0.4);
+      outline-offset: 2px;
+    }}
     [data-tooltip]:not([data-governance-action]) {{
       position: relative;
     }}
@@ -46240,6 +49705,89 @@ class Handler(BaseHTTPRequestHandler):
         font-size: 0.64rem;
       }}
     }}
+    .connector-access {{
+      display: grid;
+      gap: 6px;
+      margin-top: 10px;
+      padding: 10px 0 0;
+      border-top: 1px solid color-mix(in srgb, var(--border) 42%, transparent);
+    }}
+    .connector-access-head {{
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 10px;
+    }}
+    .connector-access-label {{
+      font-size: 0.6rem;
+      letter-spacing: 0;
+      text-transform: uppercase;
+      color: var(--muted);
+    }}
+    .connector-access-profile {{
+      margin-top: 2px;
+      font-size: 0.82rem;
+      line-height: 1.25;
+      font-weight: 650;
+      color: var(--text);
+    }}
+    .connector-access-count {{
+      flex: 0 0 auto;
+      padding: 3px 6px;
+      border: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+      border-radius: 999px;
+      font-size: 0.62rem;
+      line-height: 1;
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }}
+    .connector-access-source,
+    .connector-access-note {{
+      font-size: 0.66rem;
+      line-height: 1.3;
+      color: color-mix(in srgb, var(--muted) 84%, var(--text));
+    }}
+    .connector-access-apps {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+    }}
+    .connector-access-app {{
+      display: inline-flex;
+      align-items: baseline;
+      gap: 5px;
+      min-width: 0;
+      padding: 4px 6px;
+      border: 1px solid color-mix(in srgb, var(--border) 44%, transparent);
+      border-radius: 6px;
+      background: color-mix(in srgb, var(--surface-2) 46%, transparent);
+    }}
+    .connector-access-app-label {{
+      min-width: 0;
+      font-size: 0.66rem;
+      line-height: 1.2;
+      color: var(--text);
+      overflow-wrap: anywhere;
+    }}
+    .connector-access-app-state {{
+      font-size: 0.58rem;
+      line-height: 1.2;
+      color: var(--muted);
+      white-space: nowrap;
+    }}
+    .connector-access-app[data-state="configured"] {{
+      border-color: color-mix(in srgb, var(--accent-2) 40%, var(--border));
+    }}
+    .connector-access-app[data-state="configured"] .connector-access-app-state {{
+      color: color-mix(in srgb, var(--accent-2) 72%, var(--text));
+    }}
+    .connector-access-app[data-state="unavailable"] {{
+      border-color: color-mix(in srgb, var(--warn) 42%, var(--border));
+    }}
+    .connector-access-app[data-state="unavailable"] .connector-access-app-state {{
+      color: color-mix(in srgb, var(--warn) 78%, var(--text));
+    }}
     .bbs-summary-card {{
       --tone-main: var(--muted);
       --tone-alt: var(--agent-accent-2);
@@ -47253,6 +50801,34 @@ class Handler(BaseHTTPRequestHandler):
       white-space: nowrap;
       cursor: help;
     }}
+    .message-route-details-toggle {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 17px;
+      height: 17px;
+      margin: 0;
+      padding: 0;
+      border: 1px solid color-mix(in srgb, var(--border) 56%, transparent);
+      border-radius: 50%;
+      background: color-mix(in srgb, var(--surface-2) 60%, transparent);
+      color: color-mix(in srgb, var(--text) 72%, var(--muted));
+      font: 700 0.62rem/1 var(--font-ui);
+      cursor: pointer;
+    }}
+    .message-route-details-toggle::before {{
+      content: attr(data-icon);
+      display: block;
+      transform: translateY(-0.5px);
+    }}
+    .message-route-details-toggle:hover,
+    .message-route-details-toggle:focus-visible,
+    .message-route-details-toggle.active {{
+      color: var(--text);
+      border-color: color-mix(in srgb, var(--agent-accent) 52%, var(--border));
+      background: color-mix(in srgb, var(--agent-accent) 13%, var(--surface-2));
+      outline: none;
+    }}
     .message-route-chip::before {{
       content: "";
       width: 5px;
@@ -47345,6 +50921,35 @@ class Handler(BaseHTTPRequestHandler):
       line-height: 1;
       white-space: nowrap;
       cursor: help;
+    }}
+    .message-route-details {{
+      display: grid;
+      gap: 7px;
+      margin: 8px 0 2px;
+      padding: 9px 0 2px;
+      border-top: 1px solid color-mix(in srgb, var(--border) 38%, transparent);
+      color: var(--muted);
+    }}
+    .message-route-details dl {{
+      display: grid;
+      grid-template-columns: minmax(88px, 0.42fr) minmax(0, 1fr);
+      gap: 5px 10px;
+      margin: 0;
+    }}
+    .message-route-details dt {{
+      margin: 0;
+      color: color-mix(in srgb, var(--text) 68%, var(--muted));
+      font-size: 0.61rem;
+      font-weight: 680;
+      line-height: 1.3;
+    }}
+    .message-route-details dd {{
+      min-width: 0;
+      margin: 0;
+      overflow-wrap: anywhere;
+      color: var(--muted);
+      font-size: 0.64rem;
+      line-height: 1.35;
     }}
     .message-state-badge {{
       display: inline-flex;
@@ -47839,9 +51444,10 @@ class Handler(BaseHTTPRequestHandler):
     .message-body blockquote,
     .raw-view blockquote {{
       margin: 0.76rem 0 0;
-      padding: 0.1rem 0 0.1rem 0.95rem;
-      border-left: 3px solid color-mix(in srgb, var(--agent-accent) 32%, var(--border));
-      color: color-mix(in srgb, var(--muted) 44%, var(--text));
+      padding: 0.26rem 0 0.26rem 0.95rem;
+      border-left: 3px solid color-mix(in srgb, var(--agent-accent) 46%, var(--border));
+      background: linear-gradient(90deg, color-mix(in srgb, var(--agent-accent) 7%, transparent), transparent 68%);
+      color: color-mix(in srgb, var(--muted) 36%, var(--text));
       font-style: italic;
     }}
     .message-body hr,
@@ -47852,13 +51458,23 @@ class Handler(BaseHTTPRequestHandler):
     }}
     .message-body strong,
     .raw-view strong {{
-      font-weight: 700;
-      color: color-mix(in srgb, var(--text) 92%, var(--agent-accent));
+      font-weight: 740;
+      color: color-mix(in srgb, var(--text) 95%, var(--agent-accent));
+      text-decoration: underline;
+      text-decoration-color: color-mix(in srgb, var(--agent-accent) 38%, transparent);
+      text-decoration-thickness: 0.08em;
+      text-underline-offset: 0.15em;
     }}
     .message-body em,
     .raw-view em {{
       font-style: italic;
-      color: color-mix(in srgb, var(--text) 82%, var(--agent-accent-2));
+      color: color-mix(in srgb, var(--text) 88%, var(--agent-accent-2));
+    }}
+    .message-body del,
+    .raw-view del {{
+      color: color-mix(in srgb, var(--muted) 76%, var(--text));
+      text-decoration-color: color-mix(in srgb, var(--danger) 46%, var(--muted));
+      text-decoration-thickness: 0.08em;
     }}
     .message-body table,
     .raw-view table {{
@@ -47869,20 +51485,28 @@ class Handler(BaseHTTPRequestHandler):
       min-width: max-content;
     }}
     .table-wrap {{
-      margin-top: 0.76rem;
+      position: relative;
+      max-width: 100%;
+      margin: 0.82rem 0 0;
       overflow-x: auto;
-      border-radius: 15px;
-      border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
-      background: color-mix(in srgb, var(--surface) 78%, transparent);
+      overscroll-behavior-inline: contain;
+      border-radius: 8px;
+      border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+      background: color-mix(in srgb, var(--surface) 84%, transparent);
       box-shadow:
-        0 10px 24px rgba(8, 12, 18, 0.08),
+        0 8px 20px rgba(8, 12, 18, 0.07),
         inset 0 1px 0 color-mix(in srgb, rgba(255, 255, 255, 0.03) 42%, transparent);
       -webkit-overflow-scrolling: touch;
       scrollbar-gutter: stable both-edges;
+      scrollbar-color: color-mix(in srgb, var(--agent-accent) 42%, var(--border)) transparent;
+    }}
+    .table-wrap:focus-visible {{
+      outline: 2px solid color-mix(in srgb, var(--agent-accent) 68%, transparent);
+      outline-offset: 2px;
     }}
     .rich-table th,
     .rich-table td {{
-      padding: 0.56rem 0.7rem;
+      padding: 0.58rem 0.74rem;
       border-bottom: 1px solid color-mix(in srgb, var(--border) 66%, transparent);
       vertical-align: top;
       text-align: left;
@@ -47894,12 +51518,16 @@ class Handler(BaseHTTPRequestHandler):
       border-left: 1px solid color-mix(in srgb, var(--border) 42%, transparent);
     }}
     .rich-table thead th {{
+      position: sticky;
+      top: 0;
+      z-index: 1;
       color: var(--text);
       font-size: 0.74rem;
-      font-weight: 680;
-      letter-spacing: 0.015em;
+      font-weight: 720;
+      letter-spacing: 0;
       font-family: var(--font-ui-wide);
-      background: color-mix(in srgb, var(--surface-2) 54%, transparent);
+      background: color-mix(in srgb, var(--surface-2) 92%, var(--surface));
+      box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--agent-accent) 24%, var(--border));
       white-space: nowrap;
     }}
     .rich-table tbody tr:nth-child(even) td {{
@@ -48460,18 +52088,43 @@ class Handler(BaseHTTPRequestHandler):
       font-size: 0.64rem;
       white-space: nowrap;
     }}
-    .message-body a {{
+    .message-body a,
+    .raw-view a {{
       color: var(--agent-accent);
       text-decoration: underline;
-      text-decoration-color: color-mix(in srgb, currentColor 72%, transparent);
+      text-decoration-color: color-mix(in srgb, currentColor 58%, transparent);
       text-decoration-thickness: 0.08em;
       text-underline-offset: 0.16em;
       overflow-wrap: anywhere;
       cursor: pointer;
       font-weight: 600;
     }}
-    .message-body a:hover {{
+    .message-body a:hover,
+    .raw-view a:hover {{
       color: color-mix(in srgb, var(--agent-accent) 82%, var(--text));
+    }}
+    .message-body a:focus-visible,
+    .raw-view a:focus-visible {{
+      outline: 2px solid color-mix(in srgb, var(--agent-accent) 68%, transparent);
+      outline-offset: 2px;
+      border-radius: 3px;
+    }}
+    .message-body a.external-link,
+    .raw-view a.external-link {{
+      display: inline;
+    }}
+    .message-body a.external-link::after,
+    .raw-view a.external-link::after {{
+      content: "↗";
+      display: inline-block;
+      margin-left: 0.16em;
+      font-family: var(--font-ui-wide);
+      font-size: 0.72em;
+      font-weight: 760;
+      line-height: 1;
+      text-decoration: none;
+      vertical-align: 0.08em;
+      opacity: 0.78;
     }}
     .message-body a.file-link,
     .raw-view a.file-link {{
@@ -48858,8 +52511,8 @@ class Handler(BaseHTTPRequestHandler):
     }}
     .message-file-preview-gallery {{
       display: grid;
-      grid-template-columns: repeat(6, minmax(0, 1fr));
-      gap: 6px;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 168px), 1fr));
+      gap: 8px;
       min-width: 0;
     }}
     .inline-image-preview-tile {{
@@ -48867,20 +52520,33 @@ class Handler(BaseHTTPRequestHandler):
       display: block;
       min-width: 0;
       overflow: hidden;
-      aspect-ratio: 1 / 1;
-      border-radius: 11px;
+      aspect-ratio: 4 / 3;
+      border-radius: 8px;
       border: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
       background:
         linear-gradient(180deg, color-mix(in srgb, var(--surface) 88%, transparent), color-mix(in srgb, var(--surface-2) 76%, transparent));
       box-shadow: inset 0 1px 0 color-mix(in srgb, rgba(255, 255, 255, 0.04) 34%, transparent);
       text-decoration: none;
       color: inherit;
+      transition:
+        border-color 140ms ease,
+        box-shadow 140ms ease,
+        transform 140ms ease;
+    }}
+    .inline-image-preview-tile:hover,
+    .inline-image-preview-tile:focus-visible {{
+      border-color: color-mix(in srgb, var(--agent-accent) 62%, var(--border-strong));
+      box-shadow:
+        0 8px 20px rgba(8, 12, 18, 0.12),
+        inset 0 1px 0 color-mix(in srgb, rgba(255, 255, 255, 0.07) 44%, transparent);
+      outline: none;
+      transform: translateY(-1px);
     }}
     .inline-image-preview-tile img {{
       display: block;
       width: 100%;
       height: 100%;
-      object-fit: cover;
+      object-fit: contain;
       object-position: center;
       background:
         radial-gradient(circle at top, color-mix(in srgb, var(--surface-3) 76%, transparent), color-mix(in srgb, var(--surface) 90%, transparent));
@@ -48939,14 +52605,143 @@ class Handler(BaseHTTPRequestHandler):
       align-items: center;
       justify-content: center;
       min-width: 0;
-      aspect-ratio: 1 / 1;
-      border-radius: 11px;
+      aspect-ratio: 4 / 3;
+      border-radius: 8px;
       border: 1px dashed color-mix(in srgb, var(--border) 72%, transparent);
       background: color-mix(in srgb, var(--surface-2) 72%, transparent);
       color: color-mix(in srgb, var(--muted) 88%, var(--agent-accent));
       font-size: 0.72rem;
       font-weight: 650;
       letter-spacing: 0.02em;
+    }}
+    .inline-image-preview-open {{
+      display: block;
+      width: 100%;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      cursor: zoom-in;
+      text-align: inherit;
+    }}
+    .inline-image-preview-open:focus-visible {{
+      outline: 2px solid color-mix(in srgb, var(--agent-accent) 70%, transparent);
+      outline-offset: 3px;
+      border-radius: 8px;
+    }}
+    body.inline-image-lightbox-open {{
+      overflow: hidden;
+    }}
+    .inline-image-lightbox {{
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      display: grid;
+      place-items: center;
+      padding: clamp(10px, 2.5vw, 30px);
+      background: color-mix(in srgb, rgba(5, 9, 16, 0.84) 92%, transparent);
+      backdrop-filter: blur(8px) saturate(112%);
+    }}
+    .inline-image-lightbox[hidden] {{
+      display: none;
+    }}
+    .inline-image-lightbox-frame {{
+      position: relative;
+      display: grid;
+      grid-template-rows: minmax(0, 1fr) auto;
+      width: min(1180px, 100%);
+      max-height: min(92dvh, 980px);
+      min-height: 0;
+      overflow: hidden;
+      border-radius: 8px;
+      border: 1px solid color-mix(in srgb, var(--agent-accent) 32%, var(--border-strong));
+      background: color-mix(in srgb, var(--surface) 96%, #080b11);
+      box-shadow:
+        0 28px 72px rgba(0, 0, 0, 0.42),
+        inset 0 1px 0 color-mix(in srgb, rgba(255, 255, 255, 0.06) 50%, transparent);
+    }}
+    .inline-image-lightbox-image {{
+      display: block;
+      width: 100%;
+      min-width: 0;
+      min-height: 0;
+      max-height: min(78dvh, 860px);
+      object-fit: contain;
+      background: color-mix(in srgb, #05070a 92%, var(--surface));
+    }}
+    .inline-image-lightbox-close {{
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      z-index: 1;
+      display: inline-grid;
+      place-items: center;
+      width: 32px;
+      min-width: 32px;
+      min-height: 32px;
+      padding: 0;
+      border-radius: 8px;
+      border-color: color-mix(in srgb, rgba(255, 255, 255, 0.34) 72%, var(--border));
+      background: color-mix(in srgb, rgba(5, 9, 16, 0.72) 92%, transparent);
+      color: color-mix(in srgb, white 88%, var(--text));
+      font-size: 1.12rem;
+      line-height: 1;
+    }}
+    .inline-image-lightbox-footer {{
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      min-width: 0;
+      padding: 8px 10px;
+      border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+      background: color-mix(in srgb, var(--surface-2) 86%, var(--surface));
+    }}
+    .inline-image-lightbox-meta {{
+      display: grid;
+      gap: 1px;
+      min-width: 0;
+    }}
+    .inline-image-lightbox-title {{
+      overflow: hidden;
+      color: var(--text);
+      font-size: 0.76rem;
+      font-weight: 720;
+      line-height: 1.2;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }}
+    .inline-image-lightbox-path {{
+      overflow: hidden;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 0.62rem;
+      line-height: 1.2;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }}
+    .inline-image-lightbox-actions {{
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      flex: 0 0 auto;
+    }}
+    .inline-image-lightbox-actions a {{
+      min-height: 26px;
+      padding: 3px 7px;
+      border-radius: 6px;
+      border: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
+      background: color-mix(in srgb, var(--surface) 64%, transparent);
+      color: color-mix(in srgb, var(--text) 82%, var(--agent-accent));
+      font-size: 0.64rem;
+      font-weight: 680;
+      line-height: 1;
+      text-decoration: none;
+    }}
+    .inline-image-lightbox-actions a:hover,
+    .inline-image-lightbox-actions a:focus-visible {{
+      border-color: color-mix(in srgb, var(--agent-accent) 56%, var(--border-strong));
+      background: color-mix(in srgb, var(--agent-accent) 10%, var(--surface-2));
+      outline: none;
     }}
     .inline-file-preview {{
       display: block;
@@ -48969,6 +52764,19 @@ class Handler(BaseHTTPRequestHandler):
       background:
         linear-gradient(180deg, color-mix(in srgb, var(--danger) 5%, transparent), transparent 58%),
         color-mix(in srgb, var(--surface-2) 78%, transparent);
+    }}
+    .inline-file-preview.inline-image-showcase {{
+      padding: 5px;
+      border-color: color-mix(in srgb, var(--agent-accent) 34%, var(--border));
+      background:
+        linear-gradient(180deg, color-mix(in srgb, var(--agent-accent) 7%, transparent), transparent 56%),
+        color-mix(in srgb, var(--surface) 88%, transparent);
+    }}
+    .inline-file-preview.inline-image-showcase .inline-file-preview-head {{
+      padding: 1px 2px;
+    }}
+    .inline-file-preview.inline-image-showcase .inline-file-preview-body {{
+      margin-top: 6px;
     }}
     .inline-file-preview-head {{
       display: flex;
@@ -49085,6 +52893,12 @@ class Handler(BaseHTTPRequestHandler):
       background:
         radial-gradient(circle at top, color-mix(in srgb, var(--surface-3) 76%, transparent), color-mix(in srgb, var(--surface) 90%, transparent));
     }}
+    .inline-file-preview.inline-image-showcase .inline-file-preview-body img {{
+      max-height: min(560px, 64vh);
+      min-height: min(180px, 28vh);
+      border-radius: 6px;
+      border-color: color-mix(in srgb, var(--agent-accent) 26%, var(--border));
+    }}
     .inline-media-player {{
       display: block;
       width: 100%;
@@ -49118,6 +52932,101 @@ class Handler(BaseHTTPRequestHandler):
       border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
       background: color-mix(in srgb, var(--surface-2) 86%, transparent);
     }}
+    .inline-document-viewer-markdown {{
+      max-height: min(460px, 58vh);
+      padding: 12px 13px;
+      overflow: auto;
+      color: color-mix(in srgb, var(--text) 96%, var(--muted));
+      font-size: 0.79rem;
+      line-height: 1.48;
+      scrollbar-gutter: stable;
+    }}
+    .inline-document-viewer-markdown > :first-child {{
+      margin-top: 0;
+    }}
+    .inline-document-viewer-markdown > :last-child {{
+      margin-bottom: 0;
+    }}
+    .inline-document-viewer-markdown :is(h1, h2, h3, h4) {{
+      margin: 0.86em 0 0.42em;
+      color: var(--text);
+      font-size: 0.92rem;
+      line-height: 1.2;
+    }}
+    .inline-document-viewer-markdown p {{
+      margin: 0.56em 0;
+    }}
+    .inline-document-viewer-markdown :is(ul, ol) {{
+      margin: 0.5em 0;
+      padding-left: 1.3em;
+    }}
+    .inline-document-viewer-markdown .table-wrap {{
+      margin: 0.62em 0;
+    }}
+    .inline-document-viewer-structured {{
+      max-height: min(430px, 54vh);
+      overflow: auto;
+      scrollbar-gutter: stable;
+    }}
+    .inline-document-summary {{
+      display: flex;
+      align-items: center;
+      min-height: 27px;
+      padding: 5px 9px;
+      border-bottom: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
+      background: color-mix(in srgb, var(--surface-3) 34%, transparent);
+      color: var(--muted);
+      font-size: 0.61rem;
+      font-weight: 650;
+      line-height: 1.2;
+    }}
+    .inline-document-json {{
+      margin: 0;
+      padding: 10px 11px;
+      color: color-mix(in srgb, var(--text) 94%, var(--muted));
+      font: 500 0.74rem/1.42 var(--font-mono);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }}
+    .inline-data-table-wrap {{
+      width: 100%;
+      overflow: auto;
+      scrollbar-gutter: stable;
+    }}
+    .inline-data-table {{
+      width: 100%;
+      min-width: max-content;
+      border-collapse: collapse;
+      color: color-mix(in srgb, var(--text) 94%, var(--muted));
+      font-size: 0.69rem;
+      line-height: 1.3;
+    }}
+    .inline-data-table th,
+    .inline-data-table td {{
+      max-width: min(40vw, 280px);
+      padding: 6px 8px;
+      border-right: 1px solid color-mix(in srgb, var(--border) 44%, transparent);
+      border-bottom: 1px solid color-mix(in srgb, var(--border) 48%, transparent);
+      overflow: hidden;
+      text-align: left;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }}
+    .inline-data-table th {{
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: color-mix(in srgb, var(--surface-3) 88%, var(--surface));
+      color: color-mix(in srgb, var(--text) 88%, var(--agent-accent));
+      font-size: 0.62rem;
+      font-weight: 720;
+    }}
+    .inline-data-table tr:last-child td {{
+      border-bottom: 0;
+    }}
+    .inline-data-table :is(th, td):last-child {{
+      border-right: 0;
+    }}
     .inline-document-viewer object {{
       display: block;
       width: 100%;
@@ -49145,6 +53054,17 @@ class Handler(BaseHTTPRequestHandler):
       word-break: break-word;
       overflow-x: auto;
       max-height: min(260px, 40vh);
+    }}
+    .inline-file-preview[data-preview-format="markdown"] .inline-file-preview-summary,
+    .inline-file-preview[data-preview-format="json"] .inline-file-preview-summary,
+    .inline-file-preview[data-preview-format="csv"] .inline-file-preview-summary,
+    .inline-file-preview[data-preview-format="tsv"] .inline-file-preview-summary,
+    .inline-file-preview.attachment-kind-pdf .inline-file-preview-summary {{
+      display: block;
+      margin: 3px 2px 0;
+      color: var(--muted);
+      font-size: 0.61rem;
+      line-height: 1.2;
     }}
     .inline-file-preview-note {{
       margin-top: 6px;
@@ -49441,29 +53361,93 @@ class Handler(BaseHTTPRequestHandler):
       max-width: 100%;
     }}
     .link-chip {{
-      display: inline-flex;
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
       align-items: center;
-      min-height: 24px;
+      min-height: 30px;
       max-width: 100%;
-      padding: 2px 8px;
-      border-radius: 10px;
+      gap: 7px;
+      padding: 4px 8px 4px 5px;
+      border-radius: 8px;
       border: 1px solid color-mix(in srgb, var(--border) 84%, transparent);
       background: color-mix(in srgb, var(--surface) 82%, transparent);
-      color: var(--agent-accent);
+      color: var(--text);
       text-decoration: none;
-      font-size: 0.71rem;
-      line-height: 1.2;
-      white-space: nowrap;
       overflow: hidden;
-      text-overflow: ellipsis;
       transition: background 0.12s ease, border-color 0.12s ease;
+    }}
+    .link-chip[data-link-origin="external"] {{
+      border-color: color-mix(in srgb, var(--agent-accent) 30%, var(--border));
+    }}
+    .link-chip[data-link-origin="internal"] {{
+      border-color: color-mix(in srgb, var(--accent-2) 34%, var(--border));
+    }}
+    .link-chip[data-link-origin="console"] {{
+      border-color: color-mix(in srgb, var(--warn) 38%, var(--border));
     }}
     .link-chip:hover {{
       background: color-mix(in srgb, var(--surface-3) 82%, transparent);
       border-color: var(--border-strong);
     }}
+    .link-chip:focus-visible {{
+      outline: 2px solid color-mix(in srgb, var(--agent-accent) 70%, transparent);
+      outline-offset: 2px;
+    }}
+    .link-chip-origin {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 19px;
+      padding: 1px 5px;
+      border-radius: 5px;
+      border: 1px solid color-mix(in srgb, var(--border) 56%, transparent);
+      background: color-mix(in srgb, var(--surface-2) 78%, transparent);
+      color: color-mix(in srgb, var(--muted) 82%, var(--text));
+      font-size: 0.5rem;
+      font-weight: 760;
+      letter-spacing: 0.07em;
+      line-height: 1;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }}
+    .link-chip[data-link-origin="external"] .link-chip-origin {{
+      border-color: color-mix(in srgb, var(--agent-accent) 34%, var(--border));
+      color: color-mix(in srgb, var(--agent-accent) 72%, var(--text));
+    }}
+    .link-chip[data-link-origin="internal"] .link-chip-origin {{
+      border-color: color-mix(in srgb, var(--accent-2) 38%, var(--border));
+      color: color-mix(in srgb, var(--accent-2) 72%, var(--text));
+    }}
+    .link-chip[data-link-origin="console"] .link-chip-origin {{
+      border-color: color-mix(in srgb, var(--warn) 42%, var(--border));
+      color: color-mix(in srgb, var(--warn) 76%, var(--text));
+    }}
+    .link-chip-copy {{
+      display: grid;
+      min-width: 0;
+      gap: 1px;
+    }}
+    .link-chip-title,
+    .link-chip-domain {{
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }}
+    .link-chip-title {{
+      color: color-mix(in srgb, var(--text) 94%, var(--agent-accent));
+      font-size: 0.69rem;
+      font-weight: 650;
+      line-height: 1.15;
+    }}
+    .link-chip-domain {{
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 0.55rem;
+      line-height: 1.1;
+    }}
     .link-copy-button {{
-      min-height: 24px;
+      min-height: 30px;
       padding: 2px 6px;
       font-size: 0.69rem;
     }}
@@ -49815,6 +53799,240 @@ class Handler(BaseHTTPRequestHandler):
       line-height: 1.45;
       white-space: pre-wrap;
       word-break: break-word;
+    }}
+    .operator-focus-rail {{
+      position: relative;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      align-items: center;
+      gap: 8px;
+      min-height: 34px;
+      padding: 5px 7px;
+      border: 1px solid color-mix(in srgb, var(--border-strong) 42%, var(--border));
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--surface) 90%, var(--surface-3));
+      box-shadow: inset 0 1px 0 color-mix(in srgb, white 14%, transparent);
+    }}
+    .operator-focus-rail[hidden] {{
+      display: none;
+    }}
+    .operator-focus-copy,
+    .operator-focus-metrics,
+    .operator-focus-actions {{
+      display: inline-flex;
+      align-items: center;
+      min-width: 0;
+    }}
+    .operator-focus-copy {{
+      gap: 6px;
+      overflow: hidden;
+    }}
+    .operator-focus-label {{
+      flex: 0 0 auto;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 0.58rem;
+      font-weight: 760;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }}
+    .operator-focus-state {{
+      overflow: hidden;
+      color: var(--text);
+      font-size: 0.72rem;
+      font-weight: 650;
+      line-height: 1.2;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }}
+    .operator-focus-state[data-tone="alert"] {{
+      color: var(--danger);
+    }}
+    .operator-focus-state[data-tone="warn"] {{
+      color: var(--warn);
+    }}
+    .operator-focus-state[data-tone="active"] {{
+      color: var(--agent-accent);
+    }}
+    .operator-focus-metrics {{
+      flex: 0 0 auto;
+      gap: 4px;
+    }}
+    .operator-focus-metric {{
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      padding: 1px 5px;
+      border: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
+      border-radius: 5px;
+      background: color-mix(in srgb, var(--surface-3) 48%, transparent);
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 0.58rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+      white-space: nowrap;
+    }}
+    .operator-focus-metric[data-tone="attention"] {{
+      border-color: color-mix(in srgb, var(--danger) 48%, var(--border));
+      color: var(--danger);
+    }}
+    .operator-focus-metric[data-tone="handoff"] {{
+      border-color: color-mix(in srgb, var(--agent-accent) 48%, var(--border));
+      color: var(--agent-accent);
+    }}
+    .operator-focus-actions {{
+      position: relative;
+      flex: 0 0 auto;
+      gap: 4px;
+    }}
+    .operator-focus-action,
+    .operator-action-palette-toggle {{
+      min-height: 24px;
+      padding: 2px 7px;
+      border-radius: 5px;
+      font-size: 0.62rem;
+      font-weight: 720;
+      line-height: 1;
+      white-space: nowrap;
+    }}
+    .operator-focus-action {{
+      border-color: color-mix(in srgb, var(--agent-accent) 46%, var(--border));
+      background: color-mix(in srgb, var(--agent-accent) 10%, var(--surface-2));
+      color: color-mix(in srgb, var(--agent-accent) 62%, var(--text));
+    }}
+    .operator-focus-action:hover,
+    .operator-focus-action:focus-visible {{
+      border-color: color-mix(in srgb, var(--agent-accent) 66%, var(--border-strong));
+      background: color-mix(in srgb, var(--agent-accent) 16%, var(--surface-2));
+      color: var(--text);
+    }}
+    .operator-action-palette-toggle {{
+      min-width: 26px;
+      padding-inline: 5px;
+      color: var(--muted);
+    }}
+    .operator-action-palette-toggle[data-icon]::before {{
+      content: attr(data-icon);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 0.9rem;
+      height: 0.9rem;
+      color: currentColor;
+      font-size: 0.9rem;
+      font-weight: 800;
+      line-height: 1;
+    }}
+    .operator-action-palette {{
+      position: absolute;
+      right: 0;
+      bottom: calc(100% + 6px);
+      z-index: 16;
+      display: grid;
+      width: min(248px, calc(100vw - 28px));
+      gap: 5px;
+      padding: 5px;
+      border: 1px solid color-mix(in srgb, var(--border-strong) 64%, var(--border));
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--surface) 97%, var(--surface-2));
+      box-shadow: 0 12px 28px rgba(6, 10, 16, 0.2);
+      opacity: 0;
+      transform: translateY(4px);
+      transition: opacity 0.14s ease, transform 0.14s ease;
+    }}
+    .operator-action-palette:not([hidden]) {{
+      opacity: 1;
+      transform: translateY(0);
+    }}
+    .operator-action-palette-head {{
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 2px 3px 0;
+    }}
+    .operator-action-palette-title {{
+      color: var(--text);
+      font-size: 0.63rem;
+      font-weight: 760;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }}
+    .operator-action-palette-status {{
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 0.58rem;
+      font-variant-numeric: tabular-nums;
+    }}
+    .operator-action-palette-search {{
+      width: 100%;
+      min-height: 30px;
+      padding: 5px 7px;
+      border: 1px solid color-mix(in srgb, var(--border-strong) 48%, var(--border));
+      border-radius: 5px;
+      background: color-mix(in srgb, var(--surface-3) 65%, transparent);
+      color: var(--text);
+      font: 600 0.68rem/1.2 var(--font-sans);
+      outline: none;
+    }}
+    .operator-action-palette-search::placeholder {{
+      color: var(--muted);
+      opacity: 0.82;
+    }}
+    .operator-action-palette-search:focus {{
+      border-color: color-mix(in srgb, var(--agent-accent) 62%, var(--border-strong));
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--agent-accent) 12%, transparent);
+    }}
+    .operator-action-palette-list {{
+      display: grid;
+      gap: 2px;
+      max-height: min(330px, 46vh);
+      overflow: auto;
+      overscroll-behavior: contain;
+    }}
+    .operator-action-palette button {{
+      display: flex;
+      align-items: center;
+      min-height: 30px;
+      width: 100%;
+      padding: 5px 7px;
+      border: 1px solid transparent;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--text);
+      font-size: 0.7rem;
+      font-weight: 620;
+      letter-spacing: 0;
+      text-align: left;
+    }}
+    .operator-action-palette button:hover,
+    .operator-action-palette button:focus-visible {{
+      border-color: color-mix(in srgb, var(--agent-accent) 30%, var(--border));
+      background: color-mix(in srgb, var(--agent-accent) 10%, var(--surface-2));
+      outline: none;
+    }}
+    .operator-action-palette button[hidden] {{
+      display: none;
+    }}
+    .operator-action-palette button:disabled {{
+      cursor: not-allowed;
+      opacity: 0.48;
+    }}
+    .operator-action-palette-empty {{
+      padding: 8px 7px;
+      color: var(--muted);
+      font-size: 0.68rem;
+      line-height: 1.35;
+    }}
+    .operator-action-palette-empty[hidden] {{
+      display: none;
+    }}
+    @media (prefers-reduced-motion: reduce) {{
+      .operator-action-palette {{
+        transition: none;
+      }}
     }}
     .composer-wrap {{
       display: grid;
@@ -51058,6 +55276,21 @@ class Handler(BaseHTTPRequestHandler):
         inset 0 1px 0 color-mix(in srgb, rgba(255, 255, 255, 0.035) 44%, transparent),
         0 4px 12px rgba(8, 12, 18, 0.09);
     }}
+    .composer-send.pending:disabled,
+    .composer-send.pending:disabled:hover,
+    .composer-send.pending:disabled:focus-visible {{
+      cursor: progress;
+      opacity: 1;
+      color: color-mix(in srgb, var(--text) 88%, var(--agent-accent-2));
+      border-color: color-mix(in srgb, var(--agent-accent) 56%, var(--border-strong));
+      background:
+        linear-gradient(180deg, color-mix(in srgb, var(--agent-accent) 46%, var(--surface)), color-mix(in srgb, var(--agent-accent) 22%, var(--surface-2)));
+      box-shadow:
+        0 0 0 1px color-mix(in srgb, var(--agent-accent) 26%, transparent),
+        0 10px 22px rgba(8, 12, 18, 0.2),
+        inset 0 1px 0 color-mix(in srgb, rgba(255, 255, 255, 0.09) 48%, transparent),
+        inset 0 -1px 0 color-mix(in srgb, rgba(0, 0, 0, 0.2) 34%, transparent);
+    }}
     .composer.idle .composer-send {{
       width: 38px;
       min-width: 38px;
@@ -51698,6 +55931,17 @@ class Handler(BaseHTTPRequestHandler):
       width: min(100vw - 24px, 360px);
       pointer-events: none;
       align-items: end;
+    }}
+    body.topbar-menu-open .toast-stack,
+    body.topbar-menu-open .toast-stack .toast,
+    body.system-open .toast-stack,
+    body.system-open .toast-stack .toast,
+    body.settings-open .toast-stack,
+    body.settings-open .toast-stack .toast,
+    body.notices-open .toast-stack,
+    body.notices-open .toast-stack .toast {{
+      visibility: hidden;
+      pointer-events: none;
     }}
     .toast {{
       --tone-main: var(--muted);
@@ -52741,6 +56985,686 @@ class Handler(BaseHTTPRequestHandler):
       align-items: baseline;
       gap: 12px;
     }}
+    .child-agents-card {{
+      container-type: inline-size;
+    }}
+    .child-agents-head {{
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+    }}
+    .child-agents-head h2 {{
+      min-width: 0;
+      margin: 0;
+    }}
+    .child-agents-head-actions {{
+      grid-column: 2;
+      grid-row: 1;
+      display: inline-flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 6px;
+      min-width: 0;
+    }}
+    .child-agents-count,
+    .child-agent-status {{
+      display: inline-flex;
+      align-items: center;
+      gap: 0.34rem;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      font-weight: 700;
+      padding: 3px 7px;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }}
+    .child-agents-capacity {{
+      grid-column: 1 / -1;
+      height: 4px;
+      overflow: hidden;
+      border: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--surface) 54%, var(--surface-2));
+    }}
+    .child-agents-capacity-fill {{
+      display: block;
+      width: 0;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, var(--agent-accent), var(--accent-2));
+      transition: width 0.2s ease;
+    }}
+    .child-agent-pool-route {{
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: baseline;
+      flex-wrap: wrap;
+      gap: 4px 7px;
+      min-width: 0;
+      padding: 5px 7px;
+      border-inline-start: 2px solid color-mix(in srgb, var(--agent-accent) 54%, var(--border));
+      background: color-mix(in srgb, var(--agent-accent) 5%, transparent);
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 0.63rem;
+      font-weight: 700;
+      line-height: 1.3;
+    }}
+    .child-agent-pool-route strong {{
+      min-width: 0;
+      color: color-mix(in srgb, var(--text) 88%, var(--agent-accent));
+      font-weight: 700;
+    }}
+    .child-agent-guide-toggle {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 26px;
+      min-width: 26px;
+      height: 26px;
+      min-height: 26px;
+      padding: 0;
+      border-radius: 6px;
+      color: var(--muted);
+      font-size: 0;
+    }}
+    .child-agent-guide-toggle::before {{
+      content: attr(data-icon);
+      font-family: var(--font-ui);
+      font-size: 0.78rem;
+      font-weight: 800;
+      line-height: 1;
+    }}
+    .child-agent-guide-toggle[aria-expanded="true"] {{
+      border-color: color-mix(in srgb, var(--agent-accent) 54%, var(--border));
+      color: var(--text);
+      background: color-mix(in srgb, var(--agent-accent) 12%, var(--surface-2));
+    }}
+    .child-agent-guide {{
+      display: grid;
+      gap: 8px;
+      padding: 9px 10px;
+      border: 1px solid color-mix(in srgb, var(--agent-accent) 34%, var(--border));
+      border-radius: 6px;
+      background: color-mix(in srgb, var(--agent-accent) 6%, var(--surface-2));
+      color: var(--muted);
+      font-size: 0.73rem;
+      line-height: 1.4;
+    }}
+    .child-agent-guide[hidden] {{
+      display: none;
+    }}
+    .child-agent-guide p {{
+      margin: 0;
+    }}
+    .child-agent-guide-steps {{
+      display: grid;
+      gap: 3px;
+      margin: 0;
+      padding-left: 1.15rem;
+    }}
+    .child-agent-guide-legend {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 9px;
+      color: color-mix(in srgb, var(--muted) 80%, var(--text));
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      font-weight: 700;
+    }}
+    .child-agent-guide-legend b {{
+      color: var(--text);
+    }}
+    .child-agent-route-note {{
+      color: color-mix(in srgb, var(--muted) 84%, var(--text));
+      font-size: 0.68rem;
+    }}
+    .child-agent-capacity-note,
+    .child-agent-field-hint,
+    .child-agent-objective-feedback,
+    .child-agent-write-acknowledgment-note {{
+      color: var(--muted);
+      font-size: 0.68rem;
+      font-weight: 500;
+      line-height: 1.35;
+    }}
+    .child-agent-capacity-note {{
+      padding: 7px 8px;
+      border-inline-start: 2px solid var(--warn);
+      background: color-mix(in srgb, var(--warn) 8%, transparent);
+      color: color-mix(in srgb, var(--warn) 74%, var(--text));
+    }}
+    .child-agent-capacity-note[hidden] {{
+      display: none;
+    }}
+    .child-agent-summary {{
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 5px;
+      min-width: 0;
+    }}
+    .child-agent-summary-chip {{
+      --child-agent-summary-tone: var(--muted);
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      align-items: baseline;
+      gap: 4px;
+      min-width: 0;
+      min-height: 30px;
+      padding: 4px 6px;
+      border: 1px solid color-mix(in srgb, var(--child-agent-summary-tone) 34%, var(--border));
+      border-radius: 6px;
+      background: color-mix(in srgb, var(--child-agent-summary-tone) 5%, var(--surface-2));
+      color: var(--muted);
+      font: 700 0.63rem/1.15 var(--font-mono);
+      text-align: left;
+      cursor: pointer;
+    }}
+    .child-agent-summary-chip:hover,
+    .child-agent-summary-chip:focus-visible,
+    .child-agent-summary-chip[aria-pressed="true"] {{
+      border-color: color-mix(in srgb, var(--child-agent-summary-tone) 60%, var(--border-strong));
+      background: color-mix(in srgb, var(--child-agent-summary-tone) 13%, var(--surface-2));
+      color: var(--text);
+      outline: none;
+    }}
+    .child-agent-summary-chip[data-tone="active"] {{
+      --child-agent-summary-tone: var(--warn);
+    }}
+    .child-agent-summary-chip[data-tone="attention"] {{
+      --child-agent-summary-tone: var(--danger);
+    }}
+    .child-agent-summary-chip[data-tone="handoff"] {{
+      --child-agent-summary-tone: var(--accent-2);
+    }}
+    .child-agent-summary-value {{
+      color: var(--child-agent-summary-tone);
+      font-size: 0.76rem;
+      font-variant-numeric: tabular-nums;
+    }}
+    .child-agent-summary-label {{
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }}
+    .child-agent-browser-controls {{
+      display: grid;
+      grid-template-columns: minmax(7.5rem, 0.7fr) minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }}
+    .child-agent-browser-controls select,
+    .child-agent-browser-controls input {{
+      box-sizing: border-box;
+      min-width: 0;
+      width: 100%;
+      height: 30px;
+      border: 1px solid color-mix(in srgb, var(--border-strong) 78%, var(--agent-accent));
+      border-radius: 6px;
+      background: color-mix(in srgb, var(--surface) 88%, var(--surface-2));
+      color: var(--text);
+      font: 600 0.7rem var(--font-ui);
+    }}
+    .child-agent-browser-controls input {{
+      padding-inline: 8px;
+    }}
+    .child-agent-browser-controls select:focus-visible,
+    .child-agent-browser-controls input:focus-visible {{
+      border-color: color-mix(in srgb, var(--agent-accent) 76%, var(--border-strong));
+      outline: 2px solid color-mix(in srgb, var(--agent-accent) 34%, transparent);
+      outline-offset: 1px;
+    }}
+    .child-agent-filter-clear {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 30px;
+      min-width: 30px;
+      height: 30px;
+      min-height: 30px;
+      padding: 0;
+      border-radius: 6px;
+      color: var(--muted);
+      font-size: 0;
+    }}
+    .child-agent-filter-clear::before {{
+      content: attr(data-icon);
+      font-family: var(--font-ui);
+      font-size: 0.82rem;
+      font-weight: 800;
+      line-height: 1;
+    }}
+    .child-agent-filter-clear[hidden] {{
+      display: none;
+    }}
+    .child-agent-form {{
+      display: grid;
+      gap: 9px;
+    }}
+    .child-agent-templates {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+    }}
+    .child-agent-template {{
+      min-height: 28px;
+      padding: 3px 8px;
+      border-radius: 6px;
+      color: var(--muted);
+      font-size: 0.68rem;
+      font-weight: 700;
+    }}
+    .child-agent-template[aria-pressed="true"] {{
+      border-color: color-mix(in srgb, var(--agent-accent) 58%, var(--border));
+      background: color-mix(in srgb, var(--agent-accent) 12%, var(--surface-2));
+      color: var(--text);
+    }}
+    .child-agent-form-grid {{
+      display: grid;
+      gap: 9px;
+      grid-template-columns: minmax(0, 1fr) minmax(130px, 0.55fr);
+    }}
+    .child-agent-field {{
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      min-width: 0;
+      color: var(--muted);
+      font-size: 0.72rem;
+      font-weight: 700;
+    }}
+    .child-agent-field-hint {{
+      margin-top: -1px;
+    }}
+    .child-agent-field.objective {{
+      grid-column: 1 / -1;
+    }}
+    .child-agent-field input,
+    .child-agent-field textarea,
+    .child-agent-field select {{
+      box-sizing: border-box;
+      min-width: 0;
+      width: 100%;
+      border: 1px solid color-mix(in srgb, var(--border-strong) 82%, var(--agent-accent));
+      border-radius: 6px;
+      background: color-mix(in srgb, var(--surface) 88%, var(--surface-2));
+      color: var(--text);
+      font: inherit;
+    }}
+    .child-agent-field input:focus-visible,
+    .child-agent-field textarea:focus-visible,
+    .child-agent-field select:focus-visible {{
+      border-color: color-mix(in srgb, var(--agent-accent) 76%, var(--border-strong));
+      outline: 2px solid color-mix(in srgb, var(--agent-accent) 34%, transparent);
+      outline-offset: 1px;
+    }}
+    .child-agent-field textarea {{
+      min-height: 74px;
+      resize: vertical;
+    }}
+    .child-agent-objective-feedback[data-tone="needs-detail"] {{
+      color: var(--warn);
+    }}
+    .child-agent-objective-feedback[data-tone="ready"] {{
+      color: var(--accent-2);
+    }}
+    .child-agent-write-acknowledgment {{
+      display: grid;
+      gap: 4px;
+      padding: 8px 9px;
+      border: 1px solid color-mix(in srgb, var(--warn) 38%, var(--border));
+      border-radius: 6px;
+      background: color-mix(in srgb, var(--warn) 8%, transparent);
+    }}
+    .child-agent-write-acknowledgment[hidden] {{
+      display: none;
+    }}
+    .child-agent-write-acknowledgment label {{
+      display: flex;
+      align-items: flex-start;
+      gap: 7px;
+      color: color-mix(in srgb, var(--warn) 78%, var(--text));
+      font-size: 0.72rem;
+      font-weight: 700;
+      line-height: 1.35;
+    }}
+    .child-agent-write-acknowledgment input {{
+      width: 14px;
+      height: 14px;
+      margin: 2px 0 0;
+      accent-color: var(--warn);
+      flex: 0 0 auto;
+    }}
+    .child-agent-launch-row {{
+      display: flex;
+    }}
+    .child-agent-launch-row .utility-button {{
+      width: 100%;
+      min-height: 32px;
+      justify-content: center;
+    }}
+    .child-agents-list {{
+      display: grid;
+      gap: 8px;
+    }}
+    .child-agent-row {{
+      --child-agent-tone: var(--muted);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-areas:
+        "head actions"
+        "detail actions";
+      column-gap: 10px;
+      row-gap: 6px;
+      min-width: 0;
+      padding: 9px 0 0 9px;
+      border-top: 1px solid color-mix(in srgb, var(--border) 68%, transparent);
+      border-inline-start: 3px solid color-mix(in srgb, var(--child-agent-tone) 62%, transparent);
+      background: linear-gradient(90deg, color-mix(in srgb, var(--child-agent-tone) 6%, transparent), transparent 48%);
+    }}
+    .child-agent-row:first-child {{
+      padding-top: 0;
+      border-top: 0;
+    }}
+    .child-agent-row-head {{
+      grid-area: head;
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 5px 7px;
+      min-width: 0;
+    }}
+    .child-agent-actions {{
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 4px;
+      min-width: 0;
+    }}
+    .child-agent-row .child-agent-actions {{
+      grid-area: actions;
+      align-self: start;
+      justify-content: flex-end;
+    }}
+    .child-agent-label {{
+      flex: 1 1 9rem;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 0.84rem;
+      font-weight: 800;
+    }}
+    .child-agent-mode {{
+      display: inline-flex;
+      align-items: center;
+      min-height: 20px;
+      padding: 1px 6px;
+      border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+      border-radius: 6px;
+      background: color-mix(in srgb, var(--surface-2) 62%, transparent);
+      color: var(--muted);
+      font-family: var(--font-mono);
+      font-size: 0.64rem;
+      font-weight: 700;
+      line-height: 1;
+      white-space: nowrap;
+    }}
+    .child-agent-status::before {{
+      content: "";
+      width: 0.38rem;
+      height: 0.38rem;
+      border-radius: 999px;
+      background: currentColor;
+      box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 12%, transparent);
+      opacity: 0.74;
+      flex: 0 0 auto;
+    }}
+    .child-agent-detail,
+    .child-agent-empty,
+    .child-agent-error {{
+      color: var(--muted);
+      font-size: 0.75rem;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
+    }}
+    .child-agent-detail {{
+      grid-area: detail;
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      align-items: start;
+      gap: 6px;
+      min-width: 0;
+    }}
+    .child-agent-detail-kind {{
+      color: color-mix(in srgb, var(--muted) 78%, var(--text));
+      font-family: var(--font-mono);
+      font-size: 0.62rem;
+      font-weight: 700;
+      line-height: 1.45;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }}
+    .child-agent-detail-text {{
+      min-width: 0;
+    }}
+    .child-agent-detail-copy {{
+      display: grid;
+      gap: 3px;
+      min-width: 0;
+    }}
+    .child-agent-updated {{
+      color: color-mix(in srgb, var(--muted) 88%, transparent);
+      font-family: var(--font-mono);
+      font-size: 0.61rem;
+      font-weight: 700;
+      line-height: 1.2;
+    }}
+    .child-agent-detail[data-kind="result"] .child-agent-detail-kind {{
+      color: var(--accent-2);
+    }}
+    .child-agent-detail[data-kind="error"],
+    .child-agent-detail[data-kind="error"] .child-agent-detail-kind {{
+      color: var(--danger);
+    }}
+    .child-agent-error {{
+      color: var(--danger);
+    }}
+    .child-agent-action {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      min-width: 28px;
+      height: 28px;
+      min-height: 28px;
+      padding: 0;
+      border-radius: 6px;
+      font-size: 0;
+    }}
+    .child-agent-action[data-action="retry"] {{
+      border-color: color-mix(in srgb, var(--accent-2) 48%, var(--border));
+      color: var(--accent-2);
+    }}
+    .child-agent-action[data-action="handoff"] {{
+      border-color: color-mix(in srgb, var(--agent-accent) 52%, var(--border));
+      color: var(--agent-accent);
+    }}
+    .child-agent-action[data-action="cancel"] {{
+      border-color: color-mix(in srgb, var(--danger) 52%, var(--border));
+      color: var(--danger);
+    }}
+    .child-agent-action[data-action="retry"]:hover:not(:disabled),
+    .child-agent-action[data-action="retry"]:focus-visible {{
+      background: color-mix(in srgb, var(--accent-2) 12%, transparent);
+    }}
+    .child-agent-action[data-action="handoff"]:hover:not(:disabled),
+    .child-agent-action[data-action="handoff"]:focus-visible {{
+      background: color-mix(in srgb, var(--agent-accent) 12%, transparent);
+    }}
+    .child-agent-action[data-action="cancel"]:hover:not(:disabled),
+    .child-agent-action[data-action="cancel"]:focus-visible {{
+      background: color-mix(in srgb, var(--danger) 12%, transparent);
+    }}
+    .child-agent-action[data-icon]::before {{
+      content: attr(data-icon);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 1rem;
+      height: 1rem;
+      color: currentColor;
+      font-family: var(--font-ui);
+      font-size: 0.82rem;
+      font-weight: 800;
+      line-height: 1;
+    }}
+    .child-agent-action[data-tooltip] {{
+      position: relative;
+    }}
+    .child-agent-action[data-tooltip]::after {{
+      content: attr(data-tooltip);
+      position: absolute;
+      right: 0;
+      bottom: calc(100% + 6px);
+      z-index: 120;
+      width: max-content;
+      max-width: min(16rem, calc(100vw - 24px));
+      padding: 4px 6px;
+      border: 1px solid color-mix(in srgb, var(--agent-accent) 22%, var(--border-strong));
+      border-radius: 6px;
+      background: color-mix(in srgb, var(--surface) 96%, var(--surface-2));
+      color: var(--text);
+      box-shadow: 0 8px 18px rgba(8, 12, 18, 0.16);
+      font: 700 0.62rem/1.18 var(--font-ui);
+      letter-spacing: 0;
+      text-align: right;
+      white-space: normal;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(3px);
+      transition: opacity 0.12s ease, transform 0.12s ease;
+    }}
+    .child-agent-action[data-tooltip]:hover::after,
+    .child-agent-action[data-tooltip]:focus-visible::after {{
+      opacity: 1;
+      transform: translateY(0);
+    }}
+    .child-agent-row[data-status="completed"] {{
+      --child-agent-tone: var(--accent-2);
+    }}
+    .child-agent-row[data-status="completed"] .child-agent-status {{
+      border-color: color-mix(in srgb, var(--accent-2) 60%, var(--border));
+      color: var(--accent-2);
+    }}
+    .child-agent-row[data-status="failed"] .child-agent-status,
+    .child-agent-row[data-status="stopped"] .child-agent-status,
+    .child-agent-row[data-status="cancelled"] .child-agent-status {{
+      border-color: color-mix(in srgb, var(--danger) 60%, var(--border));
+      color: var(--danger);
+    }}
+    .child-agent-row[data-status="failed"],
+    .child-agent-row[data-status="stopped"],
+    .child-agent-row[data-status="cancelled"] {{
+      --child-agent-tone: var(--danger);
+    }}
+    .child-agent-row[data-status="running"] .child-agent-status,
+    .child-agent-row[data-status="starting"] .child-agent-status,
+    .child-agent-row[data-status="provisioning"] .child-agent-status,
+    .child-agent-row[data-status="cancelling"] .child-agent-status {{
+      border-color: color-mix(in srgb, var(--warn) 60%, var(--border));
+      color: var(--warn);
+    }}
+    .child-agent-row[data-status="running"],
+    .child-agent-row[data-status="starting"],
+    .child-agent-row[data-status="provisioning"],
+    .child-agent-row[data-status="cancelling"] {{
+      --child-agent-tone: var(--warn);
+    }}
+    .child-agent-row[data-status="running"] .child-agent-status::before,
+    .child-agent-row[data-status="starting"] .child-agent-status::before,
+    .child-agent-row[data-status="provisioning"] .child-agent-status::before,
+    .child-agent-row[data-status="cancelling"] .child-agent-status::before {{
+      animation: child-agent-status-pulse 1.5s ease-in-out infinite;
+    }}
+    .child-agent-rename {{
+      grid-area: detail;
+      min-width: 0;
+    }}
+    .child-agent-rename-form {{
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      align-items: center;
+      gap: 4px;
+    }}
+    .child-agent-rename-input {{
+      min-width: 0;
+      width: 100%;
+      height: 28px;
+      padding: 4px 7px;
+      border-radius: 6px;
+      font-size: 0.76rem;
+    }}
+    @keyframes child-agent-status-pulse {{
+      0%,
+      100% {{
+        opacity: 0.48;
+        transform: scale(0.86);
+      }}
+      50% {{
+        opacity: 1;
+        transform: scale(1);
+      }}
+    }}
+    @container (max-width: 420px) {{
+      .child-agent-browser-controls {{
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+      }}
+      .child-agent-row {{
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-areas:
+          "head"
+          "detail"
+          "actions";
+      }}
+      .child-agent-row .child-agent-actions {{
+        justify-content: flex-start;
+      }}
+    }}
+    @media (max-width: 460px) {{
+      .child-agent-browser-controls {{
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+      }}
+      .child-agent-row {{
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-areas:
+          "head"
+          "detail"
+          "actions";
+      }}
+      .child-agent-row .child-agent-actions {{
+        justify-content: flex-start;
+      }}
+    }}
+    @media (hover: none), (pointer: coarse) {{
+      .child-agent-action[data-tooltip]::after {{
+        display: none;
+      }}
+    }}
+    @media (prefers-reduced-motion: reduce) {{
+      .child-agent-row[data-status="running"] .child-agent-status::before,
+      .child-agent-row[data-status="starting"] .child-agent-status::before,
+      .child-agent-row[data-status="provisioning"] .child-agent-status::before,
+      .child-agent-row[data-status="cancelling"] .child-agent-status::before {{
+        animation: none;
+      }}
+    }}
     .raw-grid {{
       display: grid;
       gap: 10px;
@@ -53592,7 +58516,7 @@ class Handler(BaseHTTPRequestHandler):
         gap: 4px;
       }}
       .message-file-preview-gallery {{
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 5px;
       }}
       .inline-file-preview {{
@@ -53624,6 +58548,25 @@ class Handler(BaseHTTPRequestHandler):
       .inline-file-preview-body img {{
         max-height: min(240px, 34vh);
       }}
+      .inline-file-preview.inline-image-showcase .inline-file-preview-body img {{
+        max-height: min(380px, 52vh);
+        min-height: min(150px, 24vh);
+      }}
+      .inline-image-lightbox {{
+        padding: 8px;
+      }}
+      .inline-image-lightbox-frame {{
+        width: 100%;
+        max-height: min(94dvh, 860px);
+      }}
+      .inline-image-lightbox-footer {{
+        align-items: flex-start;
+        padding: 7px 8px;
+      }}
+      .inline-image-lightbox-actions a {{
+        min-height: 28px;
+        padding: 4px 7px;
+      }}
       .inline-media-player video {{
         max-height: min(220px, 32vh);
       }}
@@ -53633,6 +58576,20 @@ class Handler(BaseHTTPRequestHandler):
       }}
       .inline-document-viewer object {{
         min-height: min(360px, 48vh);
+      }}
+      .inline-document-viewer-markdown {{
+        max-height: min(330px, 46vh);
+        padding: 10px 11px;
+        font-size: 0.74rem;
+      }}
+      .inline-document-viewer-structured {{
+        max-height: min(310px, 43vh);
+      }}
+      .inline-data-table th,
+      .inline-data-table td {{
+        max-width: 54vw;
+        padding: 5px 7px;
+        font-size: 0.64rem;
       }}
       .inline-file-preview-text {{
         font-size: 0.72rem;
@@ -53889,7 +58846,8 @@ class Handler(BaseHTTPRequestHandler):
       body.mobile-compose-mode .kpi-strip,
       body.mobile-compose-mode .notice-rail,
       body.mobile-compose-mode .history-toolbar,
-      body.mobile-compose-mode .activity-strip {{
+      body.mobile-compose-mode .activity-strip,
+      body.mobile-compose-mode .operator-focus-rail {{
         opacity: 0;
         max-height: 0;
         min-height: 0;
@@ -53907,6 +58865,19 @@ class Handler(BaseHTTPRequestHandler):
       }}
       body.mobile-compose-mode .activity-strip.visible {{
         display: grid;
+      }}
+      .operator-focus-rail {{
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 5px;
+      }}
+      .operator-focus-metrics {{
+        display: none;
+      }}
+      .operator-action-palette {{
+        position: fixed;
+        right: 10px;
+        bottom: calc(var(--composer-reserve) + 10px);
+        width: min(280px, calc(100vw - 20px));
       }}
       body.mobile-compose-mode .context-save-button {{
         display: none;
@@ -54521,6 +59492,28 @@ class Handler(BaseHTTPRequestHandler):
       gap: 5px;
       padding-top: 5px;
     }}
+    body[data-layout-mode="tile"] .operator-focus-rail {{
+      min-height: 31px;
+      padding: 4px 5px;
+      gap: 5px;
+    }}
+    body[data-layout-mode="tile"] .operator-focus-label {{
+      font-size: 0.54rem;
+    }}
+    body[data-layout-mode="tile"] .operator-focus-state {{
+      font-size: 0.66rem;
+    }}
+    body[data-layout-mode="tile"] .operator-focus-metric {{
+      min-height: 20px;
+      padding-inline: 4px;
+      font-size: 0.54rem;
+    }}
+    body[data-layout-mode="tile"] .operator-focus-action,
+    body[data-layout-mode="tile"] .operator-action-palette-toggle {{
+      min-height: 22px;
+      padding: 2px 5px;
+      font-size: 0.58rem;
+    }}
         body[data-layout-mode="tile"] .composer-input-shell {{
           grid-template-rows: auto auto auto minmax(48px, auto);
           border-radius: 16px;
@@ -54562,6 +59555,165 @@ class Handler(BaseHTTPRequestHandler):
       gap: 4px;
       padding-inline: 2px;
     }}
+    /*
+     * Full desktop is an operational surface, not a centered document column.
+     * Keep prose readable within the wider response rail while using the
+     * surrounding width for live state, activity, and composition controls.
+     */
+    body[data-layout-mode="full"] {{
+      --command-gutter: clamp(10px, 1.2vw, 24px);
+      --workspace-edge-pad: 0px;
+      --message-max-width: 100%;
+      --assistant-message-max-width: 100%;
+      --user-message-max-width: min(46rem, 46%);
+    }}
+    body[data-layout-mode="full"] .topbar {{
+      padding:
+        9px
+        max(14px, calc((100vw - 1800px) / 2 + 20px))
+        7px;
+    }}
+    body[data-layout-mode="full"] .console-nav {{
+      width: 100%;
+      margin-inline: 0;
+      padding-inline: 2px;
+    }}
+    body[data-layout-mode="full"] .workspace {{
+      padding: 0;
+      background:
+        linear-gradient(
+          180deg,
+          color-mix(in srgb, var(--agent-accent) 5%, transparent) 0%,
+          color-mix(in srgb, var(--surface) 24%, transparent) 18%,
+          transparent 44%
+        );
+      box-shadow:
+        inset 0 1px 0 color-mix(in srgb, var(--agent-accent) 18%, transparent),
+        inset 0 -1px 0 color-mix(in srgb, var(--border) 28%, transparent);
+    }}
+    body[data-layout-mode="full"] .chat-shell {{
+      --reading-lane: 100%;
+      --conversation-lane: 100%;
+      padding: 5px var(--command-gutter) 8px;
+    }}
+    body[data-layout-mode="full"] .chat-main > .chat-summary-bar,
+    body[data-layout-mode="full"] .chat-main > .notice-rail,
+    body[data-layout-mode="full"] .chat-main > .history-toolbar,
+    body[data-layout-mode="full"] .chat-main > .conversation,
+    body[data-layout-mode="full"] .chat-shell > .activity-strip {{
+      width: 100%;
+    }}
+    body[data-layout-mode="full"] .chat-summary-bar {{
+      min-height: 36px;
+      padding: 6px 10px 7px;
+      border-inline: 0;
+      border-top-color: color-mix(in srgb, var(--agent-accent) 24%, var(--border));
+      border-bottom-color: color-mix(in srgb, var(--agent-accent) 30%, var(--border));
+      background:
+        linear-gradient(
+          90deg,
+          color-mix(in srgb, var(--agent-accent) 11%, transparent),
+          transparent 34%,
+          color-mix(in srgb, var(--agent-accent-2) 6%, transparent)
+        ),
+        linear-gradient(
+          180deg,
+          color-mix(in srgb, var(--surface) 88%, transparent),
+          color-mix(in srgb, var(--surface-2) 72%, transparent)
+        );
+      box-shadow:
+        inset 0 1px 0 color-mix(in srgb, rgba(255, 255, 255, 0.055) 48%, transparent),
+        0 5px 14px rgba(8, 12, 18, 0.055);
+    }}
+    body[data-layout-mode="full"] .conversation {{
+      gap: 4px;
+      padding: 4px 0 calc(82px + var(--composer-reserve));
+    }}
+    body[data-layout-mode="full"] .conversation::before {{
+      background:
+        linear-gradient(
+          90deg,
+          color-mix(in srgb, var(--agent-accent) 4%, transparent),
+          transparent 16%,
+          transparent 84%,
+          color-mix(in srgb, var(--agent-accent-2) 3%, transparent)
+        );
+      opacity: 1;
+    }}
+    body[data-layout-mode="full"] .message.assistant {{
+      max-width: 100%;
+      padding: 10px var(--command-gutter) 12px;
+      border-top-color: color-mix(in srgb, var(--border) 30%, transparent);
+      border-right-color: color-mix(in srgb, var(--border) 18%, transparent);
+      border-bottom-color: color-mix(in srgb, var(--border) 28%, transparent);
+      border-left: 3px solid color-mix(in srgb, var(--agent-accent) 62%, transparent);
+      background:
+        linear-gradient(
+          90deg,
+          color-mix(in srgb, var(--agent-accent) 11%, transparent),
+          transparent 36%
+        ),
+        repeating-linear-gradient(
+          90deg,
+          color-mix(in srgb, var(--agent-accent-3) 3%, transparent) 0 1px,
+          transparent 1px 28px
+        ),
+        color-mix(in srgb, var(--surface) 42%, transparent);
+      box-shadow:
+        inset 0 1px 0 color-mix(in srgb, rgba(255, 255, 255, 0.04) 46%, transparent),
+        inset 0 -1px 0 color-mix(in srgb, rgba(0, 0, 0, 0.12) 36%, transparent);
+    }}
+    body[data-layout-mode="full"] .message.assistant .message-body > p,
+    body[data-layout-mode="full"] .message.assistant .message-body > ul,
+    body[data-layout-mode="full"] .message.assistant .message-body > ol,
+    body[data-layout-mode="full"] .message.assistant .message-body > blockquote,
+    body[data-layout-mode="full"] .message.assistant .message-body > .callout,
+    body[data-layout-mode="full"] .message.assistant .message-body > .kv-list,
+    body[data-layout-mode="full"] .message.assistant .message-body > .task-list,
+    body[data-layout-mode="full"] .message.assistant .message-body > hr {{
+      max-width: min(84ch, 88vw);
+    }}
+    body[data-layout-mode="full"] .chat-shell > .composer-wrap {{
+      width: auto;
+      margin-inline: calc(var(--command-gutter) * -1);
+      padding:
+        10px
+        var(--command-gutter)
+        calc(12px + env(safe-area-inset-bottom));
+      border-top: 1px solid color-mix(in srgb, var(--agent-accent) 24%, var(--border));
+      background:
+        linear-gradient(
+          180deg,
+          transparent 0%,
+          color-mix(in srgb, var(--surface) 58%, transparent) 18%,
+          color-mix(in srgb, var(--bg) 98%, transparent) 56%,
+          var(--bg) 100%
+        );
+      box-shadow:
+        inset 0 1px 0 color-mix(in srgb, rgba(255, 255, 255, 0.04) 40%, transparent),
+        0 -12px 26px rgba(8, 12, 18, 0.06);
+    }}
+    body[data-layout-mode="full"] .composer-input-shell {{
+      border-color: color-mix(in srgb, var(--agent-accent) 30%, var(--border));
+      background:
+        linear-gradient(
+          90deg,
+          color-mix(in srgb, var(--agent-accent) 8%, transparent),
+          transparent 38%
+        ),
+        color-mix(in srgb, var(--surface-2) 84%, transparent);
+      box-shadow:
+        inset 0 1px 0 color-mix(in srgb, rgba(255, 255, 255, 0.05) 46%, transparent),
+        inset 0 -1px 0 color-mix(in srgb, rgba(0, 0, 0, 0.14) 38%, transparent),
+        0 8px 20px rgba(8, 12, 18, 0.08);
+    }}
+    body[data-layout-mode="full"] .composer-input-shell:focus-within {{
+      border-color: color-mix(in srgb, var(--agent-accent) 58%, var(--border-strong));
+      box-shadow:
+        0 0 0 2px color-mix(in srgb, var(--agent-accent) 12%, transparent),
+        inset 0 1px 0 color-mix(in srgb, rgba(255, 255, 255, 0.06) 50%, transparent),
+        0 10px 26px rgba(8, 12, 18, 0.11);
+    }}
     @media (max-width: 980px) {{
       .console-focus {{
         grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -54575,6 +59727,193 @@ class Handler(BaseHTTPRequestHandler):
         grid-template-columns: 1fr;
       }}
       .focus-lane p {{
+        display: none;
+      }}
+    }}
+    /*
+     * Phone layouts keep the operational rails compact, but interaction
+     * controls retain a dependable touch target even in tile mode.
+     */
+    @media (max-width: 640px) {{
+      .topbar {{
+        min-height: 44px;
+        padding: 2px 3px;
+      }}
+      .brand {{
+        min-height: 40px;
+      }}
+      .status-action-button {{
+        min-width: 40px;
+        min-height: 40px;
+      }}
+      .topbar-actions {{
+        gap: 3px;
+      }}
+      .topbar-actions .utility-button,
+      .topbar-actions .button-link,
+      .switcher-toggle-button,
+      .topbar-menu-button {{
+        min-width: 40px;
+        min-height: 40px;
+      }}
+      .status-action-controls .utility-button {{
+        min-height: 40px;
+      }}
+      .low-ui-rail {{
+        top: var(--low-ui-rail-top, 44px);
+      }}
+      .chat-summary-bar {{
+        flex-wrap: nowrap;
+        gap: 3px;
+        min-height: 28px;
+        padding: 2px 14px 3px 3px;
+        overflow-x: auto;
+        overflow-y: hidden;
+        scrollbar-width: none;
+        scroll-padding-inline: 3px 14px;
+        scroll-snap-type: x proximity;
+        touch-action: pan-x;
+        -webkit-overflow-scrolling: touch;
+        -webkit-mask-image: linear-gradient(90deg, #000 0 calc(100% - 18px), transparent);
+        mask-image: linear-gradient(90deg, #000 0 calc(100% - 18px), transparent);
+      }}
+      .chat-summary-bar::-webkit-scrollbar {{
+        display: none;
+      }}
+      .chat-summary-bar > * {{
+        flex: 0 0 auto;
+        max-width: min(74vw, 20rem);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        scroll-snap-align: start;
+      }}
+      body.chat-scrolled .chat-summary-bar {{
+        gap: 3px;
+        min-height: 26px;
+        padding: 1px 14px 2px 2px;
+      }}
+      body.chat-scrolled .chat-summary-bar > * {{
+        min-height: 22px;
+        padding-inline: 4px;
+      }}
+      .kpi-strip {{
+        position: relative;
+        gap: 3px;
+        min-height: 26px;
+        padding: 1px 14px 2px 1px;
+        overflow-x: auto;
+        overflow-y: hidden;
+        scrollbar-width: none;
+        scroll-padding-inline: 1px 14px;
+        scroll-snap-type: x proximity;
+        touch-action: pan-x;
+        -webkit-overflow-scrolling: touch;
+        -webkit-mask-image: linear-gradient(90deg, #000 0 calc(100% - 18px), transparent);
+        mask-image: linear-gradient(90deg, #000 0 calc(100% - 18px), transparent);
+      }}
+      .kpi-capsule {{
+        min-height: 24px;
+        padding: 3px 7px;
+      }}
+      body[data-agent-slug="norman"] .norman-command-rail {{
+        min-height: 36px;
+        padding: 2px 0 2px 4px;
+        overflow: hidden;
+      }}
+      .norman-command-cells {{
+        gap: 4px;
+        padding: 0 14px 0 0;
+        scroll-padding-inline: 0 14px;
+        touch-action: pan-x;
+        -webkit-overflow-scrolling: touch;
+        -webkit-mask-image: linear-gradient(90deg, #000 0 calc(100% - 18px), transparent);
+        mask-image: linear-gradient(90deg, #000 0 calc(100% - 18px), transparent);
+      }}
+      .norman-command-cell {{
+        min-width: max(7.5rem, 31vw);
+        min-height: 32px;
+        grid-template-columns: auto minmax(0, 1fr);
+        grid-template-rows: minmax(0, 1fr);
+        align-items: center;
+        gap: 4px;
+        padding: 3px 6px;
+      }}
+      .norman-command-label {{
+        font-size: 0.42rem;
+      }}
+      .norman-command-value {{
+        font-size: 0.64rem;
+      }}
+      .operator-focus-rail,
+      body[data-layout-mode="tile"] .operator-focus-rail {{
+        min-height: 42px;
+        padding: 4px 5px;
+      }}
+      .operator-focus-action,
+      .operator-action-palette-toggle,
+      body[data-layout-mode="tile"] .operator-focus-action,
+      body[data-layout-mode="tile"] .operator-action-palette-toggle {{
+        min-height: 36px;
+      }}
+      .composer-wrap,
+      body[data-layout-mode="tile"] .composer-wrap {{
+        padding-top: 4px;
+      }}
+      .composer-inline-action,
+      .composer-tools-inline,
+      .composer-upload-button,
+      body[data-layout-mode="tile"] .composer-inline-action,
+      body[data-layout-mode="tile"] .composer-tools-inline {{
+        width: 44px;
+        min-width: 44px;
+        min-height: 44px;
+      }}
+      .composer-input-shell,
+      body[data-layout-mode="tile"] .composer-input-shell {{
+        grid-template-rows: auto auto auto minmax(54px, auto) auto;
+        gap: 7px 8px;
+      }}
+      .composer-inline-actions,
+      body[data-layout-mode="tile"] .composer-inline-actions {{
+        grid-column: 1;
+        grid-row: 5;
+        align-self: center;
+      }}
+      textarea,
+      body[data-layout-mode="tile"] textarea {{
+        grid-column: 1 / -1;
+        grid-row: 4;
+        min-height: 54px;
+        padding: 8px 10px 7px;
+        text-align: left;
+      }}
+      .composer-send,
+      .composer.idle .composer-send,
+      body[data-layout-mode="tile"] .composer-send {{
+        width: 44px;
+        min-width: 44px;
+        min-height: 44px;
+      }}
+      .composer-send-cluster,
+      body[data-layout-mode="tile"] .composer-send-cluster {{
+        grid-column: 3;
+        grid-row: 5;
+        align-self: center;
+        flex-direction: row;
+        min-width: 44px;
+        gap: 7px;
+      }}
+      #interrupt-submit-button:disabled {{
+        display: none;
+      }}
+      .composer-send-interrupt,
+      body[data-layout-mode="tile"] .composer-send-interrupt {{
+        width: 44px;
+        min-width: 44px;
+        min-height: 44px;
+      }}
+      body.mobile-compose-mode .norman-command-rail {{
         display: none;
       }}
     }}
@@ -54638,6 +59977,405 @@ class Handler(BaseHTTPRequestHandler):
     }}
     .composer-upload-item {{
       border-radius: 7px !important;
+    }}
+    /*
+     * Keep the operational surface deliberate on phones: no horizontal page
+     * leakage, bounded overlays, and controls that remain practical to tap.
+     */
+    @media (max-width: 640px) {{
+      html,
+      body {{
+        max-width: 100%;
+        overflow-x: clip;
+      }}
+      .app-shell,
+      .workspace,
+      .chat-shell,
+      .chat-main,
+      .conversation,
+      .message,
+      .message-body,
+      .composer-wrap,
+      .composer-input-shell,
+      .system-panel,
+      .system-panel-body,
+      .settings-panel,
+      .notices-panel,
+      .switcher-panel,
+      .topbar-menu,
+      .child-agents-card,
+      .child-agent-row,
+      .child-agent-row-head,
+      .child-agent-actions,
+      .child-agent-detail,
+      .child-agent-rename-form {{
+        min-width: 0;
+        max-width: 100%;
+      }}
+      .child-agent-pool-route,
+      .child-agent-pool-route strong,
+      .child-agent-detail,
+      .child-agent-detail-text,
+      .child-agent-detail-copy,
+      .child-agent-error,
+      .system-note,
+      .raw-view,
+      .raw-view a,
+      .message-body a,
+      .switcher-list,
+      .switcher-list a {{
+        overflow-wrap: anywhere;
+      }}
+      .raw-view,
+      .code-scroll,
+      .table-wrap,
+      .system-panel-body,
+      .settings-body,
+      .notifications-list,
+      .switcher-list,
+      .operator-action-palette,
+      .operator-action-palette-list,
+      .composer-toolbar-panels,
+      .composer-upload-menu {{
+        overscroll-behavior: contain;
+        -webkit-overflow-scrolling: touch;
+      }}
+      .system-panel,
+      .settings-panel,
+      .notices-panel,
+      .switcher-panel,
+      .topbar-menu {{
+        box-sizing: border-box;
+        max-height: min(
+          calc(100dvh - env(safe-area-inset-top) - 8px),
+          860px
+        );
+      }}
+      .system-panel-body,
+      .settings-body,
+      .notifications-list,
+      .switcher-list {{
+        min-height: 0;
+        overflow-y: auto;
+      }}
+      .operator-action-palette {{
+        max-height: min(54dvh, 400px);
+        overflow-y: auto;
+      }}
+      .composer-toolbar {{
+        max-width: calc(100vw - 8px);
+      }}
+      .composer-toolbar-panels {{
+        max-height: min(66dvh, 540px);
+        overflow-y: auto;
+      }}
+      .composer-upload-menu {{
+        max-height: min(48dvh, 360px);
+        overflow-y: auto;
+      }}
+      .child-agent-browser-controls select,
+      .child-agent-browser-controls input,
+      .child-agent-field input,
+      .child-agent-field select,
+      .child-agent-guide-toggle,
+      .child-agent-template,
+      .child-agent-launch-row .utility-button {{
+        min-height: 40px;
+      }}
+      .child-agent-browser-controls select,
+      .child-agent-browser-controls input {{
+        height: 40px;
+      }}
+      .child-agent-filter-clear,
+      .child-agent-action {{
+        width: 40px;
+        min-width: 40px;
+        height: 40px;
+        min-height: 40px;
+      }}
+      .child-agent-field textarea {{
+        min-height: 96px;
+      }}
+      .child-agent-rename-input {{
+        height: 40px;
+      }}
+    }}
+    @media (max-width: 390px) {{
+      .child-agent-browser-controls {{
+        grid-template-areas:
+          "status clear"
+          "search search";
+        grid-template-columns: minmax(0, 1fr) 40px;
+      }}
+      .child-agent-browser-controls select {{
+        grid-area: status;
+      }}
+      .child-agent-browser-controls input {{
+        grid-area: search;
+      }}
+      .child-agent-filter-clear {{
+        grid-area: clear;
+      }}
+      .child-agent-form-grid {{
+        grid-template-columns: minmax(0, 1fr);
+      }}
+      .child-agent-field.objective {{
+        grid-column: auto;
+      }}
+      .child-agent-row {{
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-areas:
+          "head"
+          "detail"
+          "actions";
+      }}
+      .child-agent-row-head {{
+        align-items: flex-start;
+      }}
+      .child-agent-label {{
+        flex-basis: 100%;
+      }}
+      .child-agent-status,
+      .child-agent-mode {{
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }}
+      .child-agent-detail {{
+        grid-template-columns: minmax(0, 1fr);
+        gap: 2px;
+      }}
+      .child-agent-row .child-agent-actions {{
+        justify-content: flex-start;
+      }}
+      .child-agent-action {{
+        width: 36px;
+        min-width: 36px;
+        height: 36px;
+        min-height: 36px;
+      }}
+      .child-agent-rename-input {{
+        height: 36px;
+      }}
+    }}
+    @media (max-width: 360px) {{
+      .topbar {{
+        gap: 2px;
+        padding-inline: 2px;
+      }}
+      .brand {{
+        padding-inline: 2px;
+      }}
+      .brand-title {{
+        max-width: min(42vw, 10rem);
+      }}
+      .topbar-actions {{
+        gap: 2px;
+      }}
+      .topbar-actions .utility-button,
+      .topbar-actions .button-link,
+      .switcher-toggle-button,
+      .topbar-menu-button {{
+        min-width: 36px;
+        min-height: 36px;
+        padding-inline: 4px;
+      }}
+      .composer-input-shell {{
+        gap: 6px;
+        padding-inline: 7px;
+      }}
+      .composer-inline-action,
+      .composer-tools-inline,
+      .composer-upload-button,
+      .composer-send,
+      .composer-send-interrupt {{
+        width: 40px;
+        min-width: 40px;
+        min-height: 40px;
+      }}
+    }}
+    /*
+     * Operational-density pass: keep the conversation and active work legible
+     * while retaining every control through the existing menu and switcher.
+     */
+    :root {{
+      --body-overlay-opacity: 0.42;
+      --body-edge-opacity: 0.48;
+      --topbar-glint-opacity: 0.48;
+      --microtexture-thread-opacity: 0.12;
+    }}
+    body[data-microtexture-state="idle"] .microtexture-thread-field {{
+      opacity: 0.06;
+    }}
+    body[data-microtexture-state="idle"] .brand,
+    body[data-microtexture-state="idle"] .topbar,
+    body[data-microtexture-state="idle"] .topbar::before,
+    body[data-microtexture-state="idle"] .topbar::after {{
+      animation: none !important;
+    }}
+    .topbar {{
+      min-height: 44px;
+      padding: 5px 8px 4px;
+      background: color-mix(in srgb, var(--surface) 92%, var(--bg));
+      box-shadow:
+        inset 0 -1px 0 color-mix(in srgb, var(--border) 48%, transparent);
+      backdrop-filter: none;
+    }}
+    .brand {{
+      min-height: 30px;
+      padding: 3px 6px;
+      border-color: transparent;
+      background: transparent;
+      box-shadow: none;
+    }}
+    .topbar-version,
+    .status-copy {{
+      display: none;
+    }}
+    .topbar-actions {{
+      gap: 4px;
+    }}
+    .topbar-actions .prime-home-button,
+    .topbar-actions .directory-home-button {{
+      display: none;
+    }}
+    .topbar-actions .utility-button,
+    .topbar-actions .button-link {{
+      min-height: 32px;
+      padding: 3px 8px;
+      background: transparent;
+      box-shadow: none;
+    }}
+    .topbar-actions .utility-button:hover,
+    .topbar-actions .button-link:hover,
+    .topbar-actions .utility-button:focus-visible,
+    .topbar-actions .button-link:focus-visible {{
+      background: color-mix(in srgb, var(--surface-3) 44%, transparent);
+      box-shadow: none;
+      transform: none;
+    }}
+    .chat-summary-bar {{
+      min-height: 27px;
+      padding: 3px 5px;
+      border-color: color-mix(in srgb, var(--border) 20%, transparent);
+      background: color-mix(in srgb, var(--surface) 50%, transparent);
+      box-shadow: none;
+    }}
+    .chat-summary-bar::before {{
+      display: none;
+    }}
+    .activity-strip {{
+      min-height: 30px;
+      padding: 5px 7px;
+      border-radius: 0;
+      background: color-mix(in srgb, var(--surface-2) 80%, transparent);
+      box-shadow:
+        inset 0 1px 0 color-mix(in srgb, rgba(255, 255, 255, 0.035) 44%, transparent);
+      backdrop-filter: none;
+    }}
+    .operator-focus-rail {{
+      min-height: 32px;
+      padding: 4px 6px;
+      border-radius: 0;
+      box-shadow: none;
+    }}
+    .composer-wrap {{
+      padding-top: 5px;
+    }}
+    .composer-input-shell {{
+      gap: 6px 8px;
+      padding: 8px 9px;
+      background: color-mix(in srgb, var(--surface-2) 92%, var(--surface));
+      box-shadow:
+        inset 0 1px 0 color-mix(in srgb, rgba(255, 255, 255, 0.05) 44%, transparent),
+        0 5px 16px rgba(8, 12, 18, 0.07);
+    }}
+    .composer-input-shell::before,
+    .composer-input-shell::after {{
+      opacity: 0;
+    }}
+    textarea,
+    .composer-input-shell:focus-within textarea {{
+      background: color-mix(in srgb, var(--surface) 76%, var(--surface-2));
+      box-shadow: inset 0 1px 3px rgba(8, 12, 18, 0.10);
+    }}
+    .composer-inline-action,
+    .composer-tools-inline {{
+      background: color-mix(in srgb, var(--surface) 80%, transparent);
+      box-shadow: none;
+    }}
+    .composer.idle .composer-send {{
+      background: color-mix(in srgb, var(--agent-accent) 20%, var(--surface-2));
+      box-shadow: 0 3px 10px rgba(8, 12, 18, 0.10);
+    }}
+    @media (max-width: 640px) {{
+      .topbar {{
+        min-height: 44px;
+        padding: 2px 3px;
+      }}
+      .brand {{
+        min-height: 40px;
+        padding-inline: 4px;
+      }}
+      .topbar-actions .utility-button,
+      .topbar-actions .button-link,
+      .switcher-toggle-button,
+      .topbar-menu-button {{
+        width: 40px;
+        min-width: 40px;
+        min-height: 40px;
+        padding: 0;
+        font-size: 0;
+      }}
+      .topbar-actions .utility-button[data-icon]::before,
+      .topbar-actions .button-link[data-icon]::before {{
+        font-size: 0.76rem;
+      }}
+      .switcher-toggle-label,
+      .topbar-menu-button-label {{
+        display: none;
+      }}
+      .status-action-button {{
+        width: 40px;
+        min-width: 40px;
+        min-height: 40px;
+        padding: 0;
+        font-size: 0;
+      }}
+      .chat-summary-bar {{
+        min-height: 24px;
+        padding: 2px 3px;
+      }}
+      .operator-focus-rail,
+      body[data-layout-mode="tile"] .operator-focus-rail {{
+        min-height: 36px;
+        padding: 3px 5px;
+      }}
+      .composer-input-shell,
+      body[data-layout-mode="tile"] .composer-input-shell {{
+        padding: 8px;
+      }}
+      body:not(.low-ui-mode) #ask-button {{
+        width: auto;
+        min-width: 92px;
+        padding-inline: 11px;
+        gap: 6px;
+        font-size: 0.72rem;
+      }}
+      body:not(.low-ui-mode) #ask-button .composer-send-label {{
+        display: inline-flex;
+        align-items: center;
+      }}
+      body.low-ui-mode #ask-button {{
+        flex: 1 1 0;
+        min-width: 0;
+      }}
+    }}
+    @media (max-width: 360px) {{
+      body:not(.low-ui-mode) #ask-button {{
+        min-width: 84px;
+        padding-inline: 9px;
+      }}
     }}
   </style>
 </head>
@@ -54752,6 +60490,9 @@ class Handler(BaseHTTPRequestHandler):
           <div class="topbar-menu-shortcuts" aria-label="Quick shortcuts">
             <span class="shortcut-chip"><kbd>/</kbd><span>Prompt</span></span>
             <span class="shortcut-chip"><kbd>Mod+K</kbd><span>Switch</span></span>
+            <span class="shortcut-chip"><kbd>Mod+J</kbd><span>Actions</span></span>
+            <span class="shortcut-chip"><kbd>Mod+Shift+A</kbd><span>New child</span></span>
+            <span class="shortcut-chip"><kbd>Mod+Shift+F</kbd><span>Find child</span></span>
             <span class="shortcut-chip"><kbd>End</kbd><span>Latest</span></span>
             <span class="shortcut-chip"><kbd>Esc</kbd><span>Close</span></span>
             <span class="shortcut-chip"><kbd>?</kbd><span>Help</span></span>
@@ -54820,6 +60561,41 @@ class Handler(BaseHTTPRequestHandler):
                 <summary>Live pane</summary>
                 <pre id="activity-pane-output"></pre>
               </details>
+            </div>
+          </div>
+          <div id="operator-focus-rail" class="operator-focus-rail" aria-live="polite">
+            <div class="operator-focus-copy">
+              <span class="operator-focus-label">Operator</span>
+              <span id="operator-focus-state" class="operator-focus-state"></span>
+            </div>
+            <div class="operator-focus-metrics" aria-label="Queue and child-agent state">
+              <button id="operator-focus-queue" type="button" class="ghost operator-focus-metric" data-operator-metric="queue"></button>
+              <button id="operator-focus-children" type="button" class="ghost operator-focus-metric" data-operator-metric="children"></button>
+            </div>
+            <div class="operator-focus-actions">
+              <button id="operator-focus-action" type="button" class="ghost operator-focus-action"></button>
+              <button id="operator-action-palette-toggle" type="button" class="ghost operator-action-palette-toggle" data-icon="⋯" aria-label="Open operator actions" title="Open operator actions" data-tooltip="Open operator actions" aria-expanded="false">Actions</button>
+              <div id="operator-action-palette" class="operator-action-palette" role="dialog" aria-label="Operator actions" aria-hidden="true" hidden>
+                <div class="operator-action-palette-head">
+                  <span class="operator-action-palette-title">Actions</span>
+                  <span id="operator-action-palette-status" class="operator-action-palette-status" aria-live="polite"></span>
+                </div>
+                <label class="visually-hidden" for="operator-action-search">Filter operator actions</label>
+                <input id="operator-action-search" class="operator-action-palette-search" type="search" autocomplete="off" spellcheck="false" placeholder="Filter actions">
+                <div id="operator-action-palette-list" class="operator-action-palette-list">
+                  <button type="button" data-operator-action="focus-prompt" data-operator-search="focus prompt compose draft write">Focus prompt</button>
+                  <button type="button" data-operator-action="open-switcher" data-operator-search="open switcher agent console change">Open switcher</button>
+                  <button type="button" data-operator-action="review-status" data-operator-search="review status health issue recovery">Review status</button>
+                  <button type="button" data-operator-action="open-settings" data-operator-search="open settings view preferences appearance">Open settings</button>
+                  <button type="button" data-operator-action="open-system" data-operator-search="open system controls services runtime">Open system controls</button>
+                  <button type="button" data-operator-action="stage-compact" data-operator-search="stage save compact context handoff draft">Stage save/compact draft</button>
+                  <button type="button" data-operator-action="open-children" data-operator-search="open child agent workbench delegate subtask">Open child-agent workbench</button>
+                  <button type="button" data-operator-action="refresh-status" data-operator-search="refresh status reload health">Refresh status</button>
+                  <button type="button" data-operator-action="stage-child-relay" data-operator-search="stage child agent handoff relay result draft">Stage child-agent relay draft</button>
+                  <button type="button" data-operator-action="jump-latest" data-operator-search="jump latest conversation bottom recent">Jump to latest conversation</button>
+                </div>
+                <div id="operator-action-palette-empty" class="operator-action-palette-empty" role="status" hidden>No actions match that filter.</div>
+              </div>
             </div>
           </div>
           <form id="ask-form" class="composer" method="post" action="{html.escape(prefixed_path('/ask', path_prefix))}">
@@ -55061,7 +60837,19 @@ class Handler(BaseHTTPRequestHandler):
           <div class="settings-row">
             <button id="completion-bell-test-button" type="button" class="ghost utility-button">Test bell</button>
           </div>
-          <div class="settings-note">Auto follows this console’s lane. Bells are deep gong tones with per-agent variation. Silent mutes completion and interaction tones; hidden or unfocused phone pages stay silent.</div>
+          <div class="settings-note">Auto follows this console’s lane. Bells are deep gong tones with per-agent variation. Silent mutes all console audio; hidden or unfocused pages stay silent.</div>
+        </section>
+        <section class="settings-card">
+          <span class="settings-label" data-icon="{html.escape(icon_for_label("Feedback"))}">Feedback</span>
+          <div id="feedback-sound-row" class="settings-row">
+            <button type="button" class="ghost setting-pill" data-setting="feedbackSounds" data-value="signals">Signals</button>
+            <button type="button" class="ghost setting-pill" data-setting="feedbackSounds" data-value="full">Full</button>
+            <button type="button" class="ghost setting-pill" data-setting="feedbackSounds" data-value="off">Off</button>
+          </div>
+          <div class="settings-row">
+            <button id="feedback-sound-test-button" type="button" class="ghost utility-button">Test feedback</button>
+          </div>
+          <div class="settings-note">Signals keeps prompt, queue, confirmation, blocked, and error cues. Full also adds light tactile control sounds. Off keeps visual feedback and completion bells only.</div>
         </section>
         <section class="settings-card">
           <span class="settings-label" data-icon="{html.escape(icon_for_label("Phone History"))}">Phone History</span>
@@ -55144,6 +60932,18 @@ class Handler(BaseHTTPRequestHandler):
             <div id="services" class="services"></div>
             <div id="system-summary" class="system-note">{html.escape(summarize_services(initial_snapshot_data.get("services") or []))}</div>
             <div id="system-runtime-metrics" class="system-runtime-metrics"></div>
+            <section id="connector-access" class="connector-access" aria-label="Connector access">
+              <div class="connector-access-head">
+                <div>
+                  <div class="connector-access-label">Connector access</div>
+                  <div id="connector-access-profile" class="connector-access-profile">Loading configuration</div>
+                </div>
+                <div id="connector-access-count" class="connector-access-count"></div>
+              </div>
+              <div id="connector-access-source" class="connector-access-source"></div>
+              <div id="connector-access-apps" class="connector-access-apps"></div>
+              <div id="connector-access-note" class="connector-access-note"></div>
+            </section>
             <div id="bbs-summary-card" class="bbs-summary-card" data-tone="unknown">
               <div class="bbs-summary-head">
                 <div>
@@ -55158,6 +60958,94 @@ class Handler(BaseHTTPRequestHandler):
               <div id="bbs-thread-list" class="bbs-thread-list"></div>
             </div>
             <div class="system-note">ui <strong>v{html.escape(UI_VERSION)}</strong> · tmux <strong>{html.escape(SESSION)}</strong> · web chat <strong>{html.escape(MODEL)}</strong> · tuning <strong>Think Std/medium ↔ Deep/xhigh</strong> · full access · <a href="{html.escape(prefixed_path('/healthz', path_prefix))}{token_suffix}">healthz</a></div>
+          </section>
+
+          <section class="system-card child-agents-card" aria-label="Child agents">
+            <div class="child-agents-head">
+              <h2>Child agents</h2>
+              <div class="child-agents-head-actions">
+                <button id="child-agent-guide-toggle" type="button" class="ghost utility-button child-agent-guide-toggle" data-icon="?" aria-expanded="false" aria-controls="child-agent-guide" aria-label="Show child-agent guide" title="Show child-agent guide" data-tooltip="Show child-agent guide" data-tooltip-side="left">Guide</button>
+                <span id="child-agents-count" class="child-agents-count">0 / 10 active</span>
+              </div>
+              <div id="child-agents-capacity" class="child-agents-capacity" role="progressbar" aria-label="Active child agents" aria-valuemin="0" aria-valuemax="10" aria-valuenow="0">
+                <span id="child-agents-capacity-fill" class="child-agents-capacity-fill"></span>
+              </div>
+              <div class="child-agent-pool-route" title="Child work uses the Norman/Norllama pool policy. It is local-first and capacity managed, without pinning work to a named host.">
+                <span>Pool route</span>
+                <strong>local-first, capacity managed</strong>
+              </div>
+            </div>
+            <section id="child-agent-guide" class="child-agent-guide" aria-label="Child-agent guide" hidden>
+              <p>Use a child for independent work that should not consume the parent conversation.</p>
+              <ol class="child-agent-guide-steps">
+                <li>Define an outcome, scope, and definition of done.</li>
+                <li>Use read only to inspect and report. Patch files can modify the shared working tree.</li>
+                <li>Collect progress or the result, then review any file changes before using them.</li>
+              </ol>
+              <div class="child-agent-guide-legend" aria-label="Child-agent action legend">
+                <span><b>↻</b> collect</span>
+                <span><b>✎</b> rename</span>
+                <span><b>↺</b> retry</span>
+                <span><b>×</b> cancel</span>
+                <span><b>↳</b> add result to parent draft</span>
+              </div>
+              <p class="child-agent-route-note">Uses this console's Norman/Norllama pool policy. Press Ctrl+Enter or Cmd+Enter in Objective to launch. Mod+Shift+A starts a child objective; Mod+Shift+F finds a child.</p>
+            </section>
+            <div id="child-agent-capacity-note" class="child-agent-capacity-note" aria-live="polite" hidden></div>
+            <div id="child-agent-summary" class="child-agent-summary" role="group" aria-label="Child-agent attention summary"></div>
+            <div class="child-agent-browser-controls" role="group" aria-label="Child-agent list controls">
+              <label class="visually-hidden" for="child-agent-status-filter">Show child agents</label>
+              <select id="child-agent-status-filter" title="Filter child agents by status">
+                <option value="all">All agents</option>
+                <option value="active">Active</option>
+                <option value="attention">Needs attention</option>
+                <option value="completed">Completed</option>
+              </select>
+              <label class="visually-hidden" for="child-agent-search">Find child agent</label>
+              <input id="child-agent-search" type="search" autocomplete="off" placeholder="Find a child" title="Find a child agent by name, objective, result, or error">
+              <button id="child-agent-filter-clear" type="button" class="ghost utility-button child-agent-filter-clear" data-icon="×" aria-label="Clear child-agent filters" title="Clear child-agent filters" hidden>Clear filters</button>
+            </div>
+            <form id="child-agent-form" class="child-agent-form">
+              <div class="child-agent-templates" role="group" aria-label="Child-agent objective templates">
+                <button type="button" class="ghost child-agent-template" data-child-agent-template="investigate" aria-pressed="false" title="Start an investigation objective">Investigate</button>
+                <button type="button" class="ghost child-agent-template" data-child-agent-template="review" aria-pressed="false" title="Start a review objective">Review</button>
+                <button type="button" class="ghost child-agent-template" data-child-agent-template="implement" aria-pressed="false" title="Start an implementation objective">Implement</button>
+                <button type="button" class="ghost child-agent-template" data-child-agent-template="verify" aria-pressed="false" title="Start a verification objective">Verify</button>
+              </div>
+              <div class="child-agent-form-grid">
+                <label class="child-agent-field">
+                  Name
+                  <input id="child-agent-label" name="label" type="text" maxlength="120" autocomplete="off" placeholder="Optional task name" title="Optional. Use a short name that makes this child easy to identify.">
+                  <span class="child-agent-field-hint">Optional. Use it to identify this task in the list.</span>
+                </label>
+                <label class="child-agent-field">
+                  Write mode
+                  <select id="child-agent-write-mode" name="write_mode" aria-describedby="child-agent-write-mode-hint" title="Read only reports findings. Patch files can modify the shared working tree.">
+                    <option value="read_only">Read only</option>
+                    <option value="patch_only">Patch files</option>
+                  </select>
+                  <span id="child-agent-write-mode-hint" class="child-agent-field-hint">Read only reports findings. Patch files can modify the shared working tree.</span>
+                </label>
+                <label class="child-agent-field objective">
+                  Objective
+                  <textarea id="child-agent-objective" name="objective" maxlength="12000" required aria-describedby="child-agent-objective-hint child-agent-objective-feedback" placeholder="Outcome, scope, and definition of done." title="Describe a concrete outcome, its scope, and how the child should know it is done."></textarea>
+                  <span id="child-agent-objective-hint" class="child-agent-field-hint">Give the child a concrete outcome and the boundaries for the work.</span>
+                  <span id="child-agent-objective-feedback" class="child-agent-objective-feedback" aria-live="polite"></span>
+                </label>
+              </div>
+              <div id="child-agent-write-acknowledgment" class="child-agent-write-acknowledgment" hidden>
+                <label>
+                  <input id="child-agent-patch-acknowledgment" name="patch_acknowledgment" type="checkbox">
+                  I understand this child agent can modify the shared working tree.
+                </label>
+                <span class="child-agent-write-acknowledgment-note">Review its result and file changes before relying on them.</span>
+              </div>
+              <div class="child-agent-launch-row">
+                <button id="child-agent-launch-button" type="submit" class="ghost utility-button" aria-describedby="child-agent-capacity-note">Launch child agent</button>
+              </div>
+            </form>
+            <div id="child-agent-error" class="child-agent-error" aria-live="polite" hidden></div>
+            <div id="child-agents-list" class="child-agents-list" role="list"></div>
           </section>
 
           <section class="system-card">
@@ -55175,6 +61063,7 @@ class Handler(BaseHTTPRequestHandler):
                 <div>
                   <div class="copy-row">
                     <h3>Last Reply</h3>
+                    <button id="view-full-response-button" type="button" class="ghost copy-button" hidden>View full</button>
                     <button id="copy-response-button" type="button" class="ghost copy-button" data-icon="⎘">Copy</button>
                   </div>
                   <div id="response-live-frame" class="response-live-frame" data-tone="idle" hidden>
@@ -55305,12 +61194,17 @@ class Handler(BaseHTTPRequestHandler):
     const INLINE_PREVIEW_VISIBLE_MESSAGE_LIMIT = 2;
     const INLINE_TEXT_PREVIEW_MAX_CHARS = 24000;
     const INLINE_TEXT_PREVIEW_RANGE_BYTES = 32768;
+    const INLINE_DATA_TABLE_ROW_LIMIT = 12;
+    const INLINE_DATA_TABLE_COLUMN_LIMIT = 8;
     const INLINE_PREVIEW_TIMEOUT_MS = 4500;
     const INLINE_PREVIEW_CACHE_LIMIT = 24;
     const VISIBLE_PENDING_STATUS_POLL_MS = 2000;
     const VISIBLE_IDLE_STATUS_POLL_MS = 12000;
     const BACKGROUND_PENDING_STATUS_POLL_MS = 12000;
     const BACKGROUND_IDLE_STATUS_POLL_MS = 30000;
+    const STATUS_REQUEST_TIMEOUT_MS = 9000;
+    const ACTION_REQUEST_TIMEOUT_MS = 15000;
+    const UPLOAD_REQUEST_TIMEOUT_MS = 45000;
     const DRAFT_ATTACHMENT_PROTECT_MS = 5000;
     const RESPONSE_DETAIL_LABELS = {{
       1: "Simple",
@@ -55324,24 +61218,45 @@ class Handler(BaseHTTPRequestHandler):
     const PROMPT_DRAFT_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 7;
     const PROMPT_SUBMISSION_STORAGE_KEY = `${{AGENT_LABEL.toLowerCase().replace(/[^a-z0-9]+/g, "-")}}-console-submission-v1:${{window.location.hostname}}${{window.location.pathname}}`;
     const PROMPT_SUBMISSION_MAX_AGE_MS = 1000 * 60 * 60 * 12;
-    const PROMPT_SUBMISSION_RESTORE_GRACE_MS = 1000 * 90;
     const SWITCHER_STORAGE_KEY = "agent-console-switcher-v1";
     const SWITCHER_STATE_PARAM = "fleet";
     const SWITCHER_RECENTS_LIMIT = 8;
     const INTERACTION_TONES = {{
-      focus: {{ frequency: 196, ratio: 1.51, duration: 0.22, peak: 0.012, wave: "sine", filter: 820 }},
-      type: {{ frequency: 154, ratio: 1.34, duration: 0.055, peak: 0.0038, wave: "triangle", filter: 620 }},
-      click: {{ frequency: 156, ratio: 1.76, duration: 0.16, peak: 0.012, wave: "sine", filter: 640 }},
-      tick: {{ frequency: 138, ratio: 1.28, duration: 0.074, peak: 0.006, wave: "triangle", filter: 520 }},
-      send: {{ frequency: 220, ratio: 1.49, duration: 0.34, peak: 0.016, wave: "sine", filter: 900 }},
-      confirm: {{ frequency: 184, ratio: 1.57, duration: 0.32, peak: 0.014, wave: "triangle", filter: 840 }},
-      approve: {{ frequency: 207, ratio: 2.03, duration: 0.38, peak: 0.015, wave: "sine", filter: 940 }},
-      chime: {{ frequency: 176, ratio: 1.414, duration: 0.42, peak: 0.014, wave: "sine", filter: 860 }},
-      accepted: {{ frequency: 233, ratio: 1.498, duration: 0.48, peak: 0.017, wave: "sine", filter: 980 }},
-      soft: {{ frequency: 132, ratio: 1.32, duration: 0.18, peak: 0.0065, wave: "triangle", filter: 520 }},
+      press: {{ frequency: 148, ratio: 1.16, duration: 0.082, peak: 0.0046, master: 0.52, wave: "triangle", filter: 560 }},
+      focus: {{ frequency: 196, ratio: 1.51, duration: 0.18, peak: 0.009, master: 0.62, wave: "sine", filter: 820 }},
+      type: {{ frequency: 154, ratio: 1.34, duration: 0.048, peak: 0.003, master: 0.46, wave: "triangle", filter: 620 }},
+      click: {{ frequency: 156, ratio: 1.62, duration: 0.12, peak: 0.008, master: 0.62, wave: "sine", filter: 640 }},
+      tick: {{ frequency: 138, ratio: 1.28, duration: 0.064, peak: 0.0048, master: 0.5, wave: "triangle", filter: 520 }},
+      send: {{ frequency: 202, ratio: 1.34, duration: 0.24, peak: 0.011, master: 0.72, wave: "sine", filter: 860 }},
+      accepted: {{ frequency: 226, ratio: 1.5, duration: 0.34, peak: 0.013, master: 0.78, wave: "sine", filter: 960 }},
+      queued: {{ frequency: 174, ratio: 1.32, duration: 0.28, peak: 0.010, master: 0.7, wave: "triangle", filter: 760 }},
+      blocked: {{ frequency: 166, ratio: 0.78, duration: 0.18, peak: 0.0078, master: 0.62, wave: "triangle", filter: 560 }},
+      error: {{ frequency: 184, ratio: 0.72, duration: 0.3, peak: 0.010, master: 0.72, wave: "sine", filter: 620 }},
+      confirm: {{ frequency: 184, ratio: 1.57, duration: 0.3, peak: 0.012, master: 0.72, wave: "triangle", filter: 840 }},
+      approve: {{ frequency: 207, ratio: 2.03, duration: 0.34, peak: 0.013, master: 0.76, wave: "sine", filter: 940 }},
+      chime: {{ frequency: 176, ratio: 1.414, duration: 0.34, peak: 0.012, master: 0.72, wave: "sine", filter: 860 }},
+      soft: {{ frequency: 132, ratio: 1.26, duration: 0.13, peak: 0.0048, master: 0.48, wave: "triangle", filter: 520 }},
     }};
+    const FEEDBACK_TONE_COOLDOWNS = Object.freeze({{
+      send: 110,
+      accepted: 150,
+      queued: 180,
+      blocked: 420,
+      error: 750,
+      action: 140,
+    }});
+    const SIGNAL_TONE_KINDS = new Set([
+      "send",
+      "accepted",
+      "queued",
+      "blocked",
+      "error",
+      "confirm",
+      "approve",
+      "chime",
+    ]);
     const AUDIO_GAIN = {{
-      interactionMaster: 0.82,
+      interactionMaster: 0.76,
       interactionPeakMax: 0.055,
       interactionGainFloor: 0.22,
       completionMasterMin: 0.58,
@@ -55541,6 +61456,7 @@ class Handler(BaseHTTPRequestHandler):
       styleVariant: "auto",
       finish: {json.dumps(DEFAULT_UI_FINISH if DEFAULT_UI_FINISH in FINISH_OPTIONS else "flat")},
       completionBell: "auto",
+      feedbackSounds: "signals",
       responseSpeed: DEFAULT_RESPONSE_SPEED,
       responseDetail: DEFAULT_RESPONSE_DETAIL,
       serviceTier: DEFAULT_SERVICE_TIER,
@@ -55848,9 +61764,14 @@ class Handler(BaseHTTPRequestHandler):
       lastPromptSubmitAt: 0,
       promptSubmitInFlight: false,
       promptSubmitSignature: "",
+      operatorReceipt: null,
+      operatorReceiptTimer: 0,
+      transportAcknowledged: false,
+      hasRenderedSnapshot: false,
       primePingTimer: 0,
       lastPrimePingAt: 0,
       authRedirectTriggered: false,
+      fullLastResponse: null,
       lastTabChromeKey: "",
       tabFaviconTimer: 0,
       tabFaviconFrame: 0,
@@ -55862,6 +61783,24 @@ class Handler(BaseHTTPRequestHandler):
       statusPanelOpen: false,
       statusKpis: null,
       statusActionBusy: false,
+      operatorActionPaletteOpen: false,
+      operatorActionQuery: "",
+      operatorActionPaletteLastFocus: null,
+      childAgents: {{
+        children: [],
+        activeCount: 0,
+        limit: 10,
+        pollTimer: 0,
+        requestInFlight: false,
+        busy: false,
+        error: "",
+        editingId: "",
+        editingLabel: "",
+        renameFocusPending: false,
+        template: "",
+        filter: "all",
+        query: "",
+      }},
       renderCache: {{
         conversation: "",
         promptResponse: "",
@@ -55876,12 +61815,16 @@ class Handler(BaseHTTPRequestHandler):
         promptCostEstimate: "",
         systemMetrics: "",
         services: "",
+        operatorFocus: "",
       }},
       inlinePreviewCache: {{}},
+      inlineImageLightbox: null,
       audioContext: null,
+      audioResumePromise: null,
       lastCompletionBellAt: 0,
       lastInteractionToneAt: 0,
       lastTypingToneAt: 0,
+      feedbackToneAt: {{}},
       tactilePulseTimer: 0,
       microtextureCounters: null,
       microtextureLastState: "idle",
@@ -55961,6 +61904,12 @@ class Handler(BaseHTTPRequestHandler):
       contextSaveButton: document.getElementById("context-save-button"),
       systemSummary: document.getElementById("system-summary"),
       systemRuntimeMetrics: document.getElementById("system-runtime-metrics"),
+      connectorAccess: document.getElementById("connector-access"),
+      connectorAccessProfile: document.getElementById("connector-access-profile"),
+      connectorAccessCount: document.getElementById("connector-access-count"),
+      connectorAccessSource: document.getElementById("connector-access-source"),
+      connectorAccessApps: document.getElementById("connector-access-apps"),
+      connectorAccessNote: document.getElementById("connector-access-note"),
       bbsSummaryCard: document.getElementById("bbs-summary-card"),
       bbsSummaryValue: document.getElementById("bbs-summary-value"),
       bbsSummaryMeta: document.getElementById("bbs-summary-meta"),
@@ -55986,6 +61935,17 @@ class Handler(BaseHTTPRequestHandler):
       activityPaneDetails: document.getElementById("activity-pane-details"),
       activityLogOutput: document.getElementById("activity-log-output"),
       activityPaneOutput: document.getElementById("activity-pane-output"),
+      operatorFocusRail: document.getElementById("operator-focus-rail"),
+      operatorFocusState: document.getElementById("operator-focus-state"),
+      operatorFocusQueue: document.getElementById("operator-focus-queue"),
+      operatorFocusChildren: document.getElementById("operator-focus-children"),
+      operatorFocusAction: document.getElementById("operator-focus-action"),
+      operatorActionPaletteToggle: document.getElementById("operator-action-palette-toggle"),
+      operatorActionPalette: document.getElementById("operator-action-palette"),
+      operatorActionSearch: document.getElementById("operator-action-search"),
+      operatorActionPaletteList: document.getElementById("operator-action-palette-list"),
+      operatorActionPaletteStatus: document.getElementById("operator-action-palette-status"),
+      operatorActionPaletteEmpty: document.getElementById("operator-action-palette-empty"),
       composerToolsToggle: document.getElementById("composer-tools-toggle"),
       composerToolbarPanels: document.getElementById("composer-toolbar-panels"),
       responseSummary: document.getElementById("response-summary"),
@@ -56034,6 +61994,7 @@ class Handler(BaseHTTPRequestHandler):
       errorDetails: document.getElementById("error-details"),
       copyPromptButton: document.getElementById("copy-prompt-button"),
       copyResponseButton: document.getElementById("copy-response-button"),
+      viewFullResponseButton: document.getElementById("view-full-response-button"),
       services: document.getElementById("services"),
       paneOutput: document.getElementById("pane-output"),
       journalOutput: document.getElementById("journal-output"),
@@ -56077,15 +62038,39 @@ class Handler(BaseHTTPRequestHandler):
       systemPanel: document.getElementById("system-panel"),
       systemPanelBody: document.getElementById("system-panel-body"),
       systemBackdrop: document.getElementById("system-backdrop"),
+      childAgentsCount: document.getElementById("child-agents-count"),
+      childAgentsCapacity: document.getElementById("child-agents-capacity"),
+      childAgentsCapacityFill: document.getElementById("child-agents-capacity-fill"),
+      childAgentGuideToggle: document.getElementById("child-agent-guide-toggle"),
+      childAgentGuide: document.getElementById("child-agent-guide"),
+      childAgentCapacityNote: document.getElementById("child-agent-capacity-note"),
+      childAgentSummary: document.getElementById("child-agent-summary"),
+      childAgentStatusFilter: document.getElementById("child-agent-status-filter"),
+      childAgentSearch: document.getElementById("child-agent-search"),
+      childAgentFilterClear: document.getElementById("child-agent-filter-clear"),
+      childAgentForm: document.getElementById("child-agent-form"),
+      childAgentLabel: document.getElementById("child-agent-label"),
+      childAgentObjective: document.getElementById("child-agent-objective"),
+      childAgentObjectiveFeedback: document.getElementById("child-agent-objective-feedback"),
+      childAgentWriteMode: document.getElementById("child-agent-write-mode"),
+      childAgentWriteAcknowledgment: document.getElementById("child-agent-write-acknowledgment"),
+      childAgentPatchAcknowledgment: document.getElementById("child-agent-patch-acknowledgment"),
+      childAgentLaunchButton: document.getElementById("child-agent-launch-button"),
+      childAgentError: document.getElementById("child-agent-error"),
+      childAgentsList: document.getElementById("child-agents-list"),
       consoleFocusShell: document.getElementById("console-focus-shell"),
       consoleFocusToggle: document.getElementById("console-focus-toggle"),
       consoleFocusPanel: document.getElementById("console-focus-panel"),
       consoleFocusCaret: document.getElementById("console-focus-caret"),
       completionBellTestButton: document.getElementById("completion-bell-test-button"),
+      feedbackSoundTestButton: document.getElementById("feedback-sound-test-button"),
     }};
     const suggestionButtons = Array.from(document.querySelectorAll("[data-suggestion]"));
     const settingButtons = Array.from(document.querySelectorAll("[data-setting]"));
     const routePresetButtons = Array.from(document.querySelectorAll("[data-route-preset]"));
+    const childAgentTemplateButtons = Array.from(
+      document.querySelectorAll("[data-child-agent-template]")
+    );
     const consoleGroupButtons = Array.from(document.querySelectorAll(".console-group-pill"));
     const consoleNavPanels = Array.from(document.querySelectorAll(".console-nav-panel"));
     const consoleNavLinks = Array.from(document.querySelectorAll(".console-nav .quick-link[data-group]"));
@@ -57210,6 +63195,11 @@ class Handler(BaseHTTPRequestHandler):
       return "auto";
     }}
 
+    function normalizeFeedbackSounds(value) {{
+      const clean = String(value || "").toLowerCase();
+      return ["signals", "full", "off"].includes(clean) ? clean : "signals";
+    }}
+
     function normalizeStyleVariant(value) {{
       const clean = String(value || "").toLowerCase();
       if (clean === "auto") {{
@@ -57235,24 +63225,153 @@ class Handler(BaseHTTPRequestHandler):
       }}
     }}
 
+    const CONTROL_TOOLTIP_SELECTOR = [
+      "button",
+      "[role='button']",
+      "[role='tab']",
+      "summary",
+      "[data-action]",
+      "[data-activity-action]",
+      "[data-kpi-action]",
+      "[data-notice-action]",
+      "a.utility-button",
+      "a.button-link",
+      "a.quick-link",
+      "a.console-group-pill",
+      "a.low-ui-action",
+      ".meta-chip[title]",
+    ].join(", ");
+
+    function tooltipTextForControl(control) {{
+      if (!(control instanceof Element)) {{
+        return "";
+      }}
+      const explicit = String(control.getAttribute("title") || "").trim();
+      if (explicit) {{
+        return explicit;
+      }}
+      const action = String(control.dataset?.operatorAction || "").trim();
+      if (action) {{
+        return `Run action: ${{String(control.textContent || action).replace(/\\s+/g, " ").trim() || action}}`;
+      }}
+      const setting = String(control.dataset?.setting || "").trim();
+      if (setting) {{
+        const card = control.closest(".settings-card");
+        const section = String(card?.querySelector(".settings-label")?.textContent || setting)
+          .replace(/\\s+/g, " ")
+          .trim();
+        const value = String(control.textContent || control.dataset?.value || "")
+          .replace(/\\s+/g, " ")
+          .trim();
+        return value ? `${{section}}: ${{value}}` : section;
+      }}
+      const childTemplate = String(control.dataset?.childAgentTemplate || "").trim();
+      if (childTemplate) {{
+        return `Start a ${{childTemplate}} child-agent objective`;
+      }}
+      const ariaLabel = String(control.getAttribute("aria-label") || "").trim();
+      if (ariaLabel) {{
+        return ariaLabel;
+      }}
+      const label = String(control.dataset?.tooltipLabel || control.dataset?.label || "")
+        .replace(/\\s+/g, " ")
+        .trim();
+      if (label) {{
+        return label;
+      }}
+      return String(control.textContent || "").replace(/\\s+/g, " ").trim();
+    }}
+
+    function tooltipSideForControl(control) {{
+      if (
+        control.closest(
+          ".topbar, .topbar-menu, .low-ui-rail, .norman-command-rail, .status-action-panel"
+        )
+      ) {{
+        return "bottom";
+      }}
+      if (control.closest(".composer-wrap, .operator-action-palette")) {{
+        return "top";
+      }}
+      return "";
+    }}
+
     function hydrateControlTooltips(root = document) {{
       const scope = root && typeof root.querySelectorAll === "function" ? root : document;
-      scope.querySelectorAll("button[title], a[title], [role='button'][title], .meta-chip[title]").forEach((control) => {{
-        const title = String(control.getAttribute("title") || "").trim();
-        if (!title) {{
+      const controls = [];
+      if (scope instanceof Element && scope.matches(CONTROL_TOOLTIP_SELECTOR)) {{
+        controls.push(scope);
+      }}
+      controls.push(...scope.querySelectorAll(CONTROL_TOOLTIP_SELECTOR));
+      controls.forEach((control) => {{
+        const tooltip = tooltipTextForControl(control);
+        if (!tooltip || tooltip.length > 120) {{
           return;
         }}
-        if (!control.dataset.tooltip || control.dataset.tooltipFromTitle === "true") {{
-          control.dataset.tooltip = title;
-          control.dataset.tooltipFromTitle = "true";
+        if (!control.dataset.tooltip || control.dataset.tooltipFromControl === "true") {{
+          control.dataset.tooltip = tooltip;
+          control.dataset.tooltipFromControl = "true";
         }}
         if (
           !control.getAttribute("aria-label")
-          && (control.matches("button") || control.matches("a") || control.getAttribute("role") === "button")
+          && (
+            control.matches("button, a, summary")
+            || control.getAttribute("role") === "button"
+            || control.getAttribute("role") === "tab"
+          )
         ) {{
-          control.setAttribute("aria-label", title);
+          control.setAttribute("aria-label", tooltip);
+        }}
+        if (control.hasAttribute("title")) {{
+          control.removeAttribute("title");
+        }}
+        if (!control.dataset.tooltipSide) {{
+          const side = tooltipSideForControl(control);
+          if (side) {{
+            control.dataset.tooltipSide = side;
+          }}
         }}
       }});
+    }}
+
+    let controlTooltipHydrationFrame = 0;
+    let controlTooltipObserver = null;
+
+    function scheduleControlTooltipHydration() {{
+      if (controlTooltipHydrationFrame) {{
+        return;
+      }}
+      controlTooltipHydrationFrame = window.requestAnimationFrame(() => {{
+        controlTooltipHydrationFrame = 0;
+        hydrateControlTooltips(document.body);
+      }});
+    }}
+
+    function observeControlTooltips() {{
+      if (
+        controlTooltipObserver
+        || !document.body
+        || typeof MutationObserver !== "function"
+      ) {{
+        return;
+      }}
+      controlTooltipObserver = new MutationObserver((mutations) => {{
+        if (
+          mutations.some((mutation) =>
+            Array.from(mutation.addedNodes).some(
+              (node) =>
+                node instanceof Element
+                && (
+                  node.matches(CONTROL_TOOLTIP_SELECTOR)
+                  || node.querySelector?.(CONTROL_TOOLTIP_SELECTOR)
+                )
+            )
+          )
+        ) {{
+          scheduleControlTooltipHydration();
+        }}
+      }});
+      controlTooltipObserver.observe(document.body, {{ childList: true, subtree: true }});
     }}
 
     function defaultCompletionBell() {{
@@ -57275,11 +63394,15 @@ class Handler(BaseHTTPRequestHandler):
       if (!AudioCtor) {{
         return null;
       }}
-      if (!state.audioContext) {{
+      if (!state.audioContext || state.audioContext.state === "closed") {{
         state.audioContext = new AudioCtor();
       }}
-      if (state.audioContext.state === "suspended") {{
-        state.audioContext.resume().catch(() => {{}});
+      if (state.audioContext.state === "suspended" && !state.audioResumePromise) {{
+        state.audioResumePromise = state.audioContext.resume()
+          .catch(() => null)
+          .finally(() => {{
+            state.audioResumePromise = null;
+          }});
       }}
       return state.audioContext;
     }}
@@ -57300,8 +63423,53 @@ class Handler(BaseHTTPRequestHandler):
       return "";
     }}
 
-    function interactionToneAllowed(options = {{}}) {{
-      return !audioQuietReason(options);
+    function interactionToneAllowed(kind, options = {{}}) {{
+      if (audioQuietReason(options)) {{
+        return false;
+      }}
+      const mode = normalizeFeedbackSounds(state.preferences?.feedbackSounds);
+      if (mode === "off") {{
+        return false;
+      }}
+      return mode === "full" || Boolean(options.feedback) || SIGNAL_TONE_KINDS.has(kind);
+    }}
+
+    function playFeedbackTone(kind = "action", options = {{}}) {{
+      const toneByFeedback = {{
+        send: "send",
+        accepted: "accepted",
+        queued: "queued",
+        blocked: "blocked",
+        error: "error",
+        action: "accepted",
+      }};
+      const cleanKind = Object.prototype.hasOwnProperty.call(toneByFeedback, kind)
+        ? kind
+        : "action";
+      if (!interactionToneAllowed(cleanKind, {{ ...options, feedback: true }})) {{
+        triggerMicrotexturePulse(toneByFeedback[cleanKind], {{ throttleMs: 120 }});
+        return false;
+      }}
+      const nowMs = Date.now();
+      const cooldownMs = Math.max(
+        60,
+        Number(options.cooldownMs || FEEDBACK_TONE_COOLDOWNS[cleanKind] || 140)
+      );
+      const previous = Number(state.feedbackToneAt?.[cleanKind] || 0);
+      if (!options.force && nowMs - previous < cooldownMs) {{
+        return false;
+      }}
+      const played = playInteractionTone(toneByFeedback[cleanKind], {{
+        ...options,
+        feedback: true,
+        force: true,
+        throttleMs: cooldownMs,
+        visualPulse: true,
+      }});
+      if (played) {{
+        state.feedbackToneAt[cleanKind] = nowMs;
+      }}
+      return played;
     }}
 
     function scheduleInteractionToneVoice(ctx, destination, profile, startTime, ratio = 1, gainScale = 1) {{
@@ -57333,40 +63501,72 @@ class Handler(BaseHTTPRequestHandler):
       osc.stop(releaseEnd + 0.02);
     }}
 
+    function scheduleInteractionTone(ctx, profile) {{
+      const start = ctx.currentTime + 0.006;
+      const master = ctx.createGain();
+      const limiter = ctx.createDynamicsCompressor();
+      const masterLevel = Math.max(
+        0.2,
+        Math.min(1, Number(profile.master || AUDIO_GAIN.interactionMaster))
+      );
+      limiter.threshold.setValueAtTime(-28, start);
+      limiter.knee.setValueAtTime(14, start);
+      limiter.ratio.setValueAtTime(8, start);
+      limiter.attack.setValueAtTime(0.003, start);
+      limiter.release.setValueAtTime(0.11, start);
+      master.gain.setValueAtTime(masterLevel, start);
+      master.connect(limiter);
+      limiter.connect(ctx.destination);
+      scheduleInteractionToneVoice(ctx, master, profile, start, 1, 1);
+      if (profile.ratio) {{
+        scheduleInteractionToneVoice(ctx, master, profile, start + Math.min(0.035, Number(profile.duration || 0.1) * 0.28), profile.ratio, 0.45);
+      }}
+    }}
+
     function playInteractionTone(kind = "click", options = {{}}) {{
       const cleanKind = Object.prototype.hasOwnProperty.call(INTERACTION_TONES, kind) ? kind : "click";
       if (cleanKind !== "type" || options.visualPulse) {{
         triggerMicrotexturePulse(cleanKind, {{ throttleMs: cleanKind === "tick" ? 90 : 120 }});
       }}
-      if (!interactionToneAllowed(options)) {{
-        return;
+      if (!interactionToneAllowed(cleanKind, options)) {{
+        return false;
       }}
       const nowMs = Date.now();
       const throttleMs = Math.max(25, Number(options.throttleMs || (cleanKind === "type" ? 72 : 42)));
       if (!options.force) {{
         if (cleanKind === "type") {{
           if (nowMs - Number(state.lastTypingToneAt || 0) < throttleMs) {{
-            return;
+            return false;
           }}
           state.lastTypingToneAt = nowMs;
         }} else if (nowMs - Number(state.lastInteractionToneAt || 0) < throttleMs) {{
-          return;
+          return false;
         }}
       }}
       state.lastInteractionToneAt = nowMs;
       const ctx = primeCompletionAudio();
-      if (!ctx || ctx.state !== "running") {{
-        return;
+      if (!ctx || ctx.state === "closed") {{
+        return false;
       }}
       const profile = INTERACTION_TONES[cleanKind] || INTERACTION_TONES.click;
-      const start = ctx.currentTime + 0.006;
-      const master = ctx.createGain();
-      master.gain.setValueAtTime(AUDIO_GAIN.interactionMaster, start);
-      master.connect(ctx.destination);
-      scheduleInteractionToneVoice(ctx, master, profile, start, 1, 1);
-      if (profile.ratio) {{
-        scheduleInteractionToneVoice(ctx, master, profile, start + Math.min(0.035, Number(profile.duration || 0.1) * 0.28), profile.ratio, 0.45);
+      if (ctx.state === "running") {{
+        scheduleInteractionTone(ctx, profile);
+        return true;
       }}
+      const resume = state.audioResumePromise;
+      if (!resume) {{
+        return false;
+      }}
+      resume.then(() => {{
+        if (
+          state.audioContext === ctx
+          && ctx.state === "running"
+          && interactionToneAllowed(cleanKind, options)
+        ) {{
+          scheduleInteractionTone(ctx, profile);
+        }}
+      }});
+      return true;
     }}
 
     function composerInputShellElement() {{
@@ -57396,13 +63596,10 @@ class Handler(BaseHTTPRequestHandler):
       const id = String(control?.id || "");
       const label = String(control?.getAttribute?.("aria-label") || control?.getAttribute?.("title") || control?.textContent || "").toLowerCase();
       const action = String(control?.dataset?.governanceAction || control?.dataset?.action || control?.dataset?.activityAction || control?.dataset?.uploadAction || "").toLowerCase();
-      if (id === "ask-button") return "send";
-      if (id === "interrupt-submit-button") return "chime";
-      if (id === "composer-safety-confirm") return "confirm";
+      if (id === "ask-button" || id === "interrupt-submit-button" || id === "composer-safety-confirm") return "press";
       if (control?.classList?.contains("response-range")) return "tick";
+      if (label.includes("send") || label.includes("queue") || label.includes("interrupt") || label.includes("promote") || action.includes("send")) return "press";
       if (label.includes("approve") || label.includes("confirm") || action.includes("approval")) return "approve";
-      if (label.includes("send") || label.includes("queue") || action.includes("send")) return "send";
-      if (label.includes("interrupt") || label.includes("promote")) return "chime";
       return "click";
     }}
 
@@ -58061,6 +64258,31 @@ class Handler(BaseHTTPRequestHandler):
       return normalizeJobBudget(snapshot.running_job_budget || snapshot.last_job_budget || DEFAULT_JOB_BUDGET);
     }}
 
+    function isLiveTransportTruncated(value) {{
+      const text = String(value || "");
+      return /\\n\\[\\.\\.\\. \\d+ characters omitted from live transport\\]$/.test(text)
+        || /^\\[truncated \\d+ earlier characters\\]\\n/.test(text);
+    }}
+
+    function applyLoadedFullLastResponse(snapshot) {{
+      const loaded = state.fullLastResponse;
+      if (!loaded || !snapshot || typeof snapshot !== "object") {{
+        return snapshot;
+      }}
+      if (String(snapshot.last_response || "") !== loaded.transport) {{
+        state.fullLastResponse = null;
+        return snapshot;
+      }}
+      const history = Array.isArray(snapshot.history)
+        ? snapshot.history.map((item, index, items) => (
+          index === items.length - 1 && String(item?.response || "") === loaded.transport
+            ? {{ ...item, response: loaded.text }}
+            : item
+        ))
+        : snapshot.history;
+      return {{ ...snapshot, last_response: loaded.text, history }};
+    }}
+
     function historyEntries(snapshot) {{
       const items = Array.isArray(snapshot.history) ? [...snapshot.history] : [];
       if (!items.length && !snapshot.pending && snapshot.last_prompt && snapshot.last_prompt !== "[no prompt yet]") {{
@@ -58109,6 +64331,7 @@ class Handler(BaseHTTPRequestHandler):
     function conversationTailKey(snapshot = state.snapshot) {{
       const items = historyEntries(snapshot);
       const last = items.length ? items[items.length - 1] : null;
+      const provisional = provisionalPromptSubmission(snapshot);
       return JSON.stringify({{
         thread_id: String(snapshot?.thread_id || ""),
         pending: Boolean(snapshot?.pending && snapshot?.running_prompt),
@@ -58123,6 +64346,13 @@ class Handler(BaseHTTPRequestHandler):
         queue_depth: Number(snapshot?.queue_depth || 0),
         live_turn: liveTurnRenderSignature(snapshot?.live_turn),
         working_recap: snapshot?.working_recap || {{}},
+        provisional_submission: provisional
+          ? {{
+            submission_id: provisional.submissionId,
+            state: provisional.state,
+            prompt: textBlockSignature(provisional.value),
+          }}
+          : null,
       }});
     }}
 
@@ -58464,6 +64694,7 @@ class Handler(BaseHTTPRequestHandler):
       const queued = queuedEntries(snapshot);
       const windowSize = recentHistoryWindow();
       const visibleItems = state.historyExpanded ? items : items.slice(-windowSize);
+      const provisional = provisionalPromptSubmission(snapshot);
       return JSON.stringify({{
         thread_id: String(snapshot?.thread_id || ""),
         expanded: Boolean(state.historyExpanded),
@@ -58478,6 +64709,16 @@ class Handler(BaseHTTPRequestHandler):
           response: textBlockSignature(item?.response || ""),
           error: textBlockSignature(item?.error || ""),
           attachments: attachmentSignature(item?.attachments),
+          route: {{
+            runtime: String(item?.usage?.runtime || ""),
+            model: String(item?.usage?.model || ""),
+            source: String(item?.usage?.route_source || ""),
+            reason: textBlockSignature(item?.usage?.route_reason || ""),
+            memory_refs: Number(item?.usage?.memory_ref_count || 0),
+            rerank: String(item?.usage?.memory_rerank_status || ""),
+            planner: String(item?.usage?.local_preflight_status || ""),
+            verifier: String(item?.usage?.local_planner_verifier_status || ""),
+          }},
         }})),
         pending: Boolean(snapshot?.pending && snapshot?.running_prompt),
         running_prompt: textBlockSignature(snapshot?.running_prompt || ""),
@@ -58496,6 +64737,14 @@ class Handler(BaseHTTPRequestHandler):
           prompt: textBlockSignature(item?.prompt || ""),
           attachments: attachmentSignature(item?.attachments),
         }})),
+        provisional_submission: provisional
+          ? {{
+            submission_id: provisional.submissionId,
+            state: provisional.state,
+            prompt: textBlockSignature(provisional.value),
+            attachments: attachmentSignature(provisional.attachments),
+          }}
+          : null,
       }});
     }}
 
@@ -58559,12 +64808,47 @@ class Handler(BaseHTTPRequestHandler):
       el.promptInput.value = draft;
       autoresize(el.promptInput);
       updateComposerToolbar(state.snapshot);
+      renderOperatorFocus(state.snapshot);
       renderSuggestions(state.snapshot);
       return true;
     }}
 
     function clearPromptDraft() {{
       safeStorageRemove(PROMPT_DRAFT_STORAGE_KEY);
+    }}
+
+    function clearSubmittedComposer() {{
+      el.promptInput.value = "";
+      clearPromptSafetyConfirm();
+      state.toolbarExpanded = false;
+      setUploadMenuOpen(false);
+      autoresize(el.promptInput);
+      clearPromptDraft();
+      renderPromptSafetyRail();
+      updateComposerToolbar(state.snapshot);
+      renderOperatorFocus(state.snapshot);
+      renderPromptCostEstimate(state.snapshot);
+      scheduleComposerReserve({{ preserveLiveEdge: true }});
+    }}
+
+    function restoreRejectedPrompt(draftValue) {{
+      if (el.promptInput.value.trim()) {{
+        return false;
+      }}
+      const value = String(draftValue || "");
+      if (!value.trim()) {{
+        return false;
+      }}
+      el.promptInput.value = value;
+      clearPromptSafetyConfirm();
+      autoresize(el.promptInput);
+      persistPromptDraft(value);
+      renderPromptSafetyRail();
+      updateComposerToolbar(state.snapshot);
+      renderOperatorFocus(state.snapshot);
+      renderPromptCostEstimate(state.snapshot);
+      scheduleComposerReserve({{ preserveLiveEdge: true }});
+      return true;
     }}
 
     function normalizePromptReceiptValue(value) {{
@@ -58590,6 +64874,7 @@ class Handler(BaseHTTPRequestHandler):
         }}
         return {{
           value,
+          submissionId: String(payload?.submissionId || "").trim(),
           submittedAt,
           acceptedAt: Number(payload?.acceptedAt || 0),
           verifiedAt: Number(payload?.verifiedAt || 0),
@@ -58603,6 +64888,7 @@ class Handler(BaseHTTPRequestHandler):
         }}
         return {{
           value,
+          submissionId: "",
           submittedAt: Date.now(),
           acceptedAt: 0,
           verifiedAt: 0,
@@ -58620,6 +64906,7 @@ class Handler(BaseHTTPRequestHandler):
       const existing = loadPromptSubmission();
       const payload = {{
         value: text.slice(0, 20000),
+        submissionId: String(options.submissionId || existing?.submissionId || "").trim(),
         submittedAt: Number(options.submittedAt || existing?.submittedAt || Date.now()),
         acceptedAt: Number(options.acceptedAt || existing?.acceptedAt || 0),
         verifiedAt: Number(options.verifiedAt || existing?.verifiedAt || 0),
@@ -58629,6 +64916,13 @@ class Handler(BaseHTTPRequestHandler):
       }};
       safeStorageSet(PROMPT_SUBMISSION_STORAGE_KEY, JSON.stringify(payload));
       return true;
+    }}
+
+    function createPromptSubmissionId() {{
+      const random = window.crypto?.randomUUID
+        ? window.crypto.randomUUID().replace(/-/g, "")
+        : `${{Math.random().toString(36).slice(2)}}${{Date.now().toString(36)}}`;
+      return `submit-${{Date.now().toString(36)}}-${{random}}`.slice(0, 120);
     }}
 
     function clearPromptSubmission() {{
@@ -58673,6 +64967,19 @@ class Handler(BaseHTTPRequestHandler):
         || promptReceiptMatches(snapshot.last_prompt, value)
             || queuedEntries(snapshot).some((item) => promptReceiptMatches(item?.prompt, value))
             || historyEntries(snapshot).some((item) => promptReceiptMatches(item?.prompt, value));
+        }}
+
+        function snapshotIncludesSubmissionId(snapshot, submissionId) {{
+          const clean = String(submissionId || "").trim();
+          if (!snapshot || !clean) {{
+            return false;
+          }}
+          if (String(snapshot.running_submission_id || "").trim() === clean) {{
+            return true;
+          }}
+          return queuedEntries(snapshot).some(
+            (item) => String(item?.submission_id || "").trim() === clean
+          );
         }}
 
         function promptConflictInSnapshot(snapshot, prompt, attachments = []) {{
@@ -58740,8 +65047,14 @@ class Handler(BaseHTTPRequestHandler):
         clearPromptSubmission();
         return true;
       }}
-      if (snapshotIncludesPromptSubmission(snapshot, value)) {{
-        clearPromptDraft();
+      if (
+        snapshotIncludesSubmissionId(snapshot, receipt.submissionId)
+        || snapshotIncludesPromptSubmission(snapshot, value)
+      ) {{
+        const draft = loadPromptDraft();
+        if (draft && promptReceiptMatches(draft, value)) {{
+          clearPromptDraft();
+        }}
         if (!receipt.verifiedAt) {{
           persistPromptSubmission(value, {{
             ...receipt,
@@ -58751,26 +65064,52 @@ class Handler(BaseHTTPRequestHandler):
         }}
         return true;
       }}
-      const submittedAt = Number(receipt.submittedAt || 0);
+      return true;
+    }}
+
+    function provisionalPromptSubmission(snapshot = state.snapshot) {{
+      const receipt = loadPromptSubmission();
+      if (!receipt) {{
+        return null;
+      }}
+      const receiptState = String(receipt.state || "").trim().toLowerCase();
+      if (!["sending", "accepted", "running", "queued", "reconciling"].includes(receiptState)) {{
+        return null;
+      }}
       if (
-        submittedAt > 0
-        && Date.now() - submittedAt < PROMPT_SUBMISSION_RESTORE_GRACE_MS
+        snapshotCompletedPromptSubmission(snapshot, receipt.value)
+        || snapshotIncludesSubmissionId(snapshot, receipt.submissionId)
+        || snapshotIncludesPromptSubmission(snapshot, receipt.value)
       ) {{
-        clearPromptDraft();
-        return true;
+        return null;
       }}
-      const queueDepth = Number(snapshot?.queue_depth || 0);
-      if (!snapshot?.pending && queueDepth <= 0 && el.promptInput && !el.promptInput.value.trim()) {{
-        el.promptInput.value = value;
-        autoresize(el.promptInput);
-        updateComposerToolbar(snapshot);
-        renderSuggestions(snapshot);
-        persistPromptDraft(value);
-        clearPromptSubmission();
-        el.statusMessage.textContent = "Restored a prompt that left the composer but is not visible in running or queued work.";
-        return true;
-      }}
-      return false;
+      const phase = receiptState === "reconciling"
+        ? {{
+          meta: "Outcome unknown · reconciling",
+          body: "Checking live console state before retrying.",
+        }}
+        : receiptState === "sending"
+          ? {{
+            meta: `Sending to ${{AGENT_LABEL}}`,
+            body: "Checking admission and starting the worker…",
+          }}
+          : receiptState === "queued"
+            ? {{
+              meta: "Accepted · awaiting queue state",
+              body: "The server accepted this prompt. Waiting for live queue confirmation…",
+            }}
+            : {{
+              meta: "Accepted · awaiting worker state",
+              body: "The server accepted this prompt. Waiting for the worker's first signal…",
+            }};
+      return {{
+        ...receipt,
+        state: receiptState,
+        phase,
+        attachments: receiptState === "sending" && Array.isArray(snapshot?.draft_attachments)
+          ? snapshot.draft_attachments
+          : [],
+      }};
     }}
 
     function encodeSwitcherToken(payload) {{
@@ -59186,6 +65525,7 @@ class Handler(BaseHTTPRequestHandler):
         styleVariant: "auto",
         finish: {json.dumps(DEFAULT_UI_FINISH if DEFAULT_UI_FINISH in FINISH_OPTIONS else "flat")},
         completionBell: "auto",
+        feedbackSounds: "signals",
         responseSpeed: DEFAULT_RESPONSE_SPEED,
         responseDetail: DEFAULT_RESPONSE_DETAIL,
         serviceTier: DEFAULT_SERVICE_TIER,
@@ -59206,6 +65546,7 @@ class Handler(BaseHTTPRequestHandler):
       const finish = {json.dumps(list(FINISH_OPTIONS))}.includes(String(payload.finish || "").toLowerCase())
         ? String(payload.finish).toLowerCase()
         : base.finish;
+      const feedbackSounds = normalizeFeedbackSounds(payload.feedbackSounds);
       const savedDefaultServiceTier = normalizeServiceTier(payload.defaultServiceTier || "auto");
       let serviceTier = normalizeServiceTier(payload.serviceTier);
       const directTierExplicit = Boolean(payload.directTierExplicit);
@@ -59236,6 +65577,7 @@ class Handler(BaseHTTPRequestHandler):
         styleVariant,
         finish,
         completionBell: normalizeCompletionBell(payload.completionBell),
+        feedbackSounds,
         responseSpeed: normalizeResponseSpeed(payload.responseSpeed),
         responseDetail: normalizeResponseDetail(payload.responseDetail),
         serviceTier,
@@ -59524,16 +65866,86 @@ class Handler(BaseHTTPRequestHandler):
           }}
           const pending = Boolean(snapshot?.pending);
           const staleAge = pending && ageSeconds >= 30;
+          const live = snapshot?.live_turn && typeof snapshot.live_turn === "object"
+            ? snapshot.live_turn
+            : {{}};
+          const activityAt = Number(live.updated_at || snapshot?.last_started_at || 0);
+          const activityAgeSeconds = pending && activityAt > 0
+            ? Math.max(0, Math.round((Date.now() / 1000) - activityAt))
+            : 0;
+          const eventCount = Math.max(0, Number(live.event_count || 0));
+          const progressStale = pending && activityAgeSeconds >= 45;
           if (staleAge && tone !== "offline") {{
             tone = "stale";
           }}
+          if (progressStale && tone !== "offline") {{
+            tone = "stale";
+          }}
+          const activityLabel = progressStale
+            ? `no worker progress for ${{formatElapsedCompact(activityAgeSeconds)}}`
+            : eventCount > 0
+              ? `last worker event ${{formatElapsedCompact(activityAgeSeconds)}} ago`
+              : activityAgeSeconds >= 12
+                ? `awaiting first worker receipt · ${{formatElapsedCompact(activityAgeSeconds)}}`
+                : "";
           return {{
             label: transportLabel,
             short,
             tone,
             ageSeconds,
             staleLabel: staleAge ? `sync ${{formatElapsedCompact(ageSeconds)}} old` : "",
+            activityAgeSeconds,
+            activityLabel,
           }};
+        }}
+
+        function activeWorkEvidence(snapshot = state.snapshot) {{
+          const live = liveTurnState(snapshot);
+          const recap = workingRecapForSnapshot(snapshot);
+          if (live.lastTool) {{
+            const stateLabel = live.lastToolStatus || "tool";
+            return {{
+              headline: `${{stateLabel}} · ${{summarizePrompt(live.lastTool, 92)}}`,
+              detail: live.toolStarted > live.toolFinished
+                ? "The current tool is still running."
+                : "The worker is evaluating the completed tool result.",
+            }};
+          }}
+          if (live.lastDecision) {{
+            return {{
+              headline: `Planning · ${{summarizePrompt(live.lastDecision, 92)}}`,
+              detail: recap.next || "The worker is choosing the next concrete action.",
+            }};
+          }}
+          if (live.eventCount > 0) {{
+            return {{
+              headline: `${{formatCount(live.eventCount)}} live signal${{live.eventCount === 1 ? "" : "s"}} received`,
+              detail: recap.now || "The worker is moving through the active turn.",
+            }};
+          }}
+          return {{
+            headline: recap.now
+              ? summarizePrompt(recap.now, 112)
+              : "Accepted · preparing the first worker step",
+            detail: recap.next || "The next concrete update will appear here.",
+          }};
+        }}
+
+        function activeSubmissionLabel(snapshot = state.snapshot) {{
+          const receipt = loadPromptSubmission();
+          if (!receipt) {{
+            return "";
+          }}
+          if (receipt.state === "reconciling") {{
+            return "Submit outcome unknown · reconciling";
+          }}
+          if (snapshotIncludesSubmissionId(snapshot, receipt.submissionId)) {{
+            return snapshot.pending ? "Accepted · running" : "Accepted · queued";
+          }}
+          if (receipt.acceptedAt) {{
+            return "Accepted";
+          }}
+          return receipt.state === "sending" ? "Sending" : "";
         }}
 
         function renderComposerActiveWork(snapshot = state.snapshot) {{
@@ -59567,15 +65979,20 @@ class Handler(BaseHTTPRequestHandler):
           );
           const usage = usageSummaryForActiveWork(snapshot);
           const sync = composerSyncSignal(snapshot);
+          const evidence = activeWorkEvidence(snapshot);
+          const submission = activeSubmissionLabel(snapshot);
           const copyParts = [
-            runningPrompt ? `Active: ${{summarizePrompt(runningPrompt, 92)}}` : "Active work is running",
-            elapsed > 0 ? `${{formatElapsedCompact(elapsed)}} elapsed` : "",
-            usage,
+            submission,
+            evidence.headline,
           ].filter(Boolean);
           const metaParts = [
+            evidence.detail,
+            sync.activityLabel,
+            elapsed > 0 ? `${{formatElapsedCompact(elapsed)}} elapsed` : "",
             queueDepth > 0 ? `+${{queueDepth}} queued` : "Queue sends behind it",
             sync.staleLabel || sync.short,
             profile,
+            usage,
           ].filter(Boolean);
           if (el.composerActiveCopy) {{
             el.composerActiveCopy.textContent = copyParts.join(" · ");
@@ -59585,7 +66002,10 @@ class Handler(BaseHTTPRequestHandler):
           }}
           el.composerActiveWork.title = [
             runningPrompt ? `Current active work: ${{runningPrompt}}` : "Current active work is still running.",
-            "Normal submit queues behind this run.",
+            submission ? `Submission: ${{submission}}.` : "",
+            evidence.detail,
+            sync.activityLabel ? `Worker evidence: ${{sync.activityLabel}}.` : "",
+            "Queue adds a follow-up behind this run. Interrupt waits for a safe checkpoint.",
             `Transport: ${{sync.label}}.`,
             sync.staleLabel ? `Visible status may be stale: ${{sync.staleLabel}}.` : "",
             "Use the upward interrupt button only when you need a safe-checkpoint handoff.",
@@ -59745,6 +66165,7 @@ class Handler(BaseHTTPRequestHandler):
       applyStyleVariantPreference();
       document.body.dataset.finish = state.preferences.finish;
       document.body.dataset.completionBell = resolvedCompletionBellKey(state.preferences.completionBell);
+      document.body.dataset.feedbackSounds = state.preferences.feedbackSounds;
       document.body.dataset.layoutMode = detectLayoutMode();
       document.body.dataset.readingScale = detectReadingScale();
       syncLowUiRailPosition();
@@ -59845,7 +66266,11 @@ class Handler(BaseHTTPRequestHandler):
       if (width <= 720) {{
         return "mobile";
       }}
-      if (width <= 1280 || height <= 780 || (width <= 1500 && height <= 860)) {{
+      if (
+        width < 980
+        || height <= 620
+        || (width <= 1180 && height <= 700)
+      ) {{
         return "tile";
       }}
       return "full";
@@ -59928,8 +66353,110 @@ class Handler(BaseHTTPRequestHandler):
       }}
     }}
 
+    function operatorActionPaletteButtons() {{
+      if (!el.operatorActionPalette) {{
+        return [];
+      }}
+      return Array.from(
+        el.operatorActionPalette.querySelectorAll("[data-operator-action]")
+      );
+    }}
+
+    function visibleOperatorActionPaletteButtons() {{
+      return operatorActionPaletteButtons().filter((button) => (
+        !button.hidden && !button.disabled
+      ));
+    }}
+
+    function operatorActionDisabled(action) {{
+      return action === "stage-child-relay" && !latestCompletedChildAgentWithResult();
+    }}
+
+    function renderOperatorActionPalette() {{
+      const query = String(state.operatorActionQuery || "").trim().toLowerCase();
+      let visibleCount = 0;
+      for (const button of operatorActionPaletteButtons()) {{
+        const action = String(button.dataset.operatorAction || "");
+        const searchText = [
+          button.textContent,
+          button.dataset.operatorSearch,
+          action,
+        ].join(" ").toLowerCase();
+        const matches = !query || searchText.includes(query);
+        button.hidden = !matches;
+        button.disabled = matches && operatorActionDisabled(action);
+        if (matches) {{
+          visibleCount += 1;
+        }}
+      }}
+      if (el.operatorActionPaletteEmpty) {{
+        el.operatorActionPaletteEmpty.hidden = visibleCount > 0;
+      }}
+      if (el.operatorActionPaletteStatus) {{
+        el.operatorActionPaletteStatus.textContent = query
+          ? String(visibleCount) + " match" + (visibleCount === 1 ? "" : "es")
+          : String(visibleCount) + " actions";
+      }}
+    }}
+
+    function focusOperatorActionPaletteButton(direction = 1) {{
+      const buttons = visibleOperatorActionPaletteButtons();
+      if (!buttons.length) {{
+        return false;
+      }}
+      const currentIndex = buttons.indexOf(document.activeElement);
+      const nextIndex = currentIndex < 0
+        ? (direction < 0 ? buttons.length - 1 : 0)
+        : (currentIndex + direction + buttons.length) % buttons.length;
+      buttons[nextIndex].focus({{ preventScroll: true }});
+      return true;
+    }}
+
+    function setOperatorActionPaletteOpen(open, options = {{}}) {{
+      const shouldOpen = Boolean(open);
+      const wasOpen = Boolean(state.operatorActionPaletteOpen);
+      if (shouldOpen && !wasOpen && document.activeElement instanceof HTMLElement) {{
+        state.operatorActionPaletteLastFocus = document.activeElement;
+      }}
+      state.operatorActionPaletteOpen = shouldOpen;
+      if (shouldOpen) {{
+        setTopbarMenuOpen(false);
+        setSwitcherOpen(false);
+        setSettingsOpen(false);
+        setSystemOpen(false);
+        setNoticesOpen(false);
+        setStatusActionOpen(false);
+        setConsoleFocusExpanded(false);
+        state.operatorActionQuery = "";
+      }}
+      if (!el.operatorActionPalette || !el.operatorActionPaletteToggle) {{
+        return;
+      }}
+      if (el.operatorActionSearch) {{
+        el.operatorActionSearch.value = shouldOpen ? state.operatorActionQuery : "";
+      }}
+      renderOperatorActionPalette();
+      el.operatorActionPalette.hidden = !shouldOpen;
+      el.operatorActionPalette.setAttribute("aria-hidden", shouldOpen ? "false" : "true");
+      el.operatorActionPaletteToggle.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
+      if (shouldOpen) {{
+        window.requestAnimationFrame(() => {{
+          el.operatorActionSearch?.focus({{ preventScroll: true }});
+        }});
+      }} else if (options.restoreFocus) {{
+        const previous = state.operatorActionPaletteLastFocus;
+        if (previous instanceof HTMLElement && previous.isConnected) {{
+          previous.focus({{ preventScroll: true }});
+        }}
+      }}
+      if (!shouldOpen) {{
+        state.operatorActionPaletteLastFocus = null;
+      }}
+    }}
+
     function setSystemOpen(open) {{
       if (open) {{
+        setOperatorActionPaletteOpen(false);
         setTopbarMenuOpen(false);
         setSwitcherOpen(false);
         setSettingsOpen(false);
@@ -59939,10 +66466,16 @@ class Handler(BaseHTTPRequestHandler):
       const shouldOpen = Boolean(open);
       document.body.classList.toggle("system-open", shouldOpen);
       el.systemPanel.setAttribute("aria-hidden", shouldOpen ? "false" : "true");
+      if (shouldOpen) {{
+        void refreshChildAgents();
+      }} else {{
+        stopChildAgentsPoll();
+      }}
     }}
 
     function setSettingsOpen(open) {{
       if (open) {{
+        setOperatorActionPaletteOpen(false);
         setTopbarMenuOpen(false);
         setSwitcherOpen(false);
         setSystemOpen(false);
@@ -59963,6 +66496,7 @@ class Handler(BaseHTTPRequestHandler):
 
     function setNoticesOpen(open) {{
       if (open) {{
+        setOperatorActionPaletteOpen(false);
         setTopbarMenuOpen(false);
         setSwitcherOpen(false);
         setSettingsOpen(false);
@@ -59995,6 +66529,7 @@ class Handler(BaseHTTPRequestHandler):
     function setTopbarMenuOpen(open) {{
       const shouldOpen = Boolean(open);
       if (shouldOpen) {{
+        setOperatorActionPaletteOpen(false);
         syncTopbarMenuPosition();
         setStatusActionOpen(false);
       }}
@@ -60007,6 +66542,7 @@ class Handler(BaseHTTPRequestHandler):
       const shouldOpen = Boolean(open);
       state.statusPanelOpen = shouldOpen;
       if (shouldOpen) {{
+        setOperatorActionPaletteOpen(false);
         setTopbarMenuOpen(false);
         setSwitcherOpen(false);
         setSettingsOpen(false);
@@ -60022,6 +66558,9 @@ class Handler(BaseHTTPRequestHandler):
         return;
       }}
       const shouldOpen = Boolean(open);
+      if (shouldOpen) {{
+        setOperatorActionPaletteOpen(false);
+      }}
       el.consoleFocusShell.classList.toggle("expanded", shouldOpen);
       el.consoleFocusToggle.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
       el.consoleFocusPanel.hidden = !shouldOpen;
@@ -60033,6 +66572,7 @@ class Handler(BaseHTTPRequestHandler):
     function setSwitcherOpen(open) {{
       const shouldOpen = Boolean(open);
       if (shouldOpen) {{
+        setOperatorActionPaletteOpen(false);
         setTopbarMenuOpen(false);
         setSettingsOpen(false);
         setNoticesOpen(false);
@@ -60768,6 +67308,55 @@ class Handler(BaseHTTPRequestHandler):
       }}
     }}
 
+    function linkProvenance(url) {{
+      try {{
+        const parsed = new URL(String(url || ""), window.location.href);
+        const hostname = String(parsed.hostname || "").toLowerCase();
+        const currentHostname = String(window.location.hostname || "").toLowerCase();
+        const visibleHost = `${{hostname.replace(/^www\\./, "")}}${{parsed.port ? `:${{parsed.port}}` : ""}}`;
+        const isConsole = Boolean(hostname && hostname === currentHostname);
+        const isInternal = isConsole
+          || hostname === "localhost"
+          || hostname === "::1"
+          || /^127(?:\\.\\d{{1,3}}){{3}}$/.test(hostname)
+          || hostname === "home.arpa"
+          || hostname.endsWith(".home.arpa")
+          || hostname.endsWith(".ts.net")
+          || hostname.endsWith(".local");
+        const origin = isConsole ? "console" : isInternal ? "internal" : "external";
+        const label = origin === "console"
+          ? "Console"
+          : origin === "internal"
+            ? "Internal"
+            : "Source";
+        return {{
+          origin,
+          label,
+          domain: visibleHost || "link",
+          detail: maskSensitiveUrlText(`${{parsed.pathname || ""}}${{parsed.search || ""}}`) || "/",
+        }};
+      }} catch (_) {{
+        return {{
+          origin: "external",
+          label: "Source",
+          domain: "external link",
+          detail: maskSensitiveUrlText(String(url || "")),
+        }};
+      }}
+    }}
+
+    function linkDisplayLabel(url, label, provenance = linkProvenance(url)) {{
+      const supplied = String(label || "").replace(/\\s+/g, " ").trim();
+      if (supplied && supplied !== url && !/^https?:\\/\\//i.test(supplied)) {{
+        return supplied;
+      }}
+      const detail = String(provenance?.detail || "").trim();
+      if (detail && detail !== "/") {{
+        return detail.length > 52 ? `${{detail.slice(0, 51)}}…` : detail;
+      }}
+      return provenance?.origin === "console" ? "Open this console" : "Open source";
+    }}
+
     function humanSize(value) {{
       const bytes = Number(value || 0);
       if (!Number.isFinite(bytes) || bytes <= 0) {{
@@ -61196,11 +67785,14 @@ class Handler(BaseHTTPRequestHandler):
       const runtime = String(usage?.runtime || "").trim().toLowerCase();
       const providerSurface = String(usage?.provider_surface || "").trim().toLowerCase();
       const model = String(usage?.model || "").trim();
-      const localRoute = ["localllm", "codexspark"].includes(runtime)
+      const namedCodexSpark = runtime === "codexspark";
+      const localRoute = !namedCodexSpark && (
+        runtime === "localllm"
         || runtime.includes("norllama")
         || runtime.includes("ollama")
         || runtime.includes("spark")
-        || ["local", "norllama", "ollama"].includes(providerSurface);
+        || ["local", "norllama", "ollama"].includes(providerSurface)
+      );
       const avoidedTokens = Math.max(
         0,
         Number(
@@ -61345,8 +67937,11 @@ class Handler(BaseHTTPRequestHandler):
       const explicitExecution = String(usage.route_execution || "").trim().toLowerCase();
       const explicitVerifier = String(usage.route_verifier || "").trim().toLowerCase();
       let routeClass = explicitClass;
+      const namedCodexSpark = runtime === "codexspark" || modelLower.includes("codex-spark");
       if (!routeClass) {{
-        if (runtime === "codexspark" || runtime.includes("spark") || modelLower.includes("spark")) {{
+        if (namedCodexSpark) {{
+          routeClass = "preview";
+        }} else if (runtime.includes("spark") || modelLower.includes("spark")) {{
           routeClass = "spark";
         }} else if (runtime === "localllm" || providerSurface === "local" || providerSurface === "norllama" || providerSurface === "ollama") {{
           routeClass = "local";
@@ -61360,18 +67955,19 @@ class Handler(BaseHTTPRequestHandler):
           routeClass = "unknown";
         }}
       }}
-      const sparkWorker = routeClass === "spark"
-        || runtime === "codexspark"
+      const sparkWorker = !namedCodexSpark && (routeClass === "spark"
         || runtime.includes("spark")
         || modelLower.includes("spark")
         || localWorkerRuntime.includes("spark")
         || localWorkerModel.toLowerCase().includes("spark")
-        || explicitExecution.includes("spark");
+        || explicitExecution.includes("spark"));
       const verifierPresent = Boolean(verifierRuntime || verifierModel || explicitVerifier)
         || (sparkWorker && ["bedrock", "cloud"].includes(routeClass))
         || explicitExecution.includes("verifier");
       const routeExecution = explicitExecution || (
-        sparkWorker && verifierPresent
+        namedCodexSpark
+          ? "codex_spark_preview"
+          : sparkWorker && verifierPresent
           ? "spark_plus_verifier"
           : sparkWorker
             ? "local_spark"
@@ -61384,6 +67980,7 @@ class Handler(BaseHTTPRequestHandler):
                   : "unknown"
       );
       const routeLabel = String(usage.route_label || "").trim() || {{
+        codex_spark_preview: "Codex Spark preview",
         local_spark: "Local Spark",
         spark_plus_verifier: "Spark + verifier",
         local_worker: "Norllama",
@@ -61414,6 +68011,9 @@ class Handler(BaseHTTPRequestHandler):
       const title = [
         `Route: ${{routeLabel}}`,
         routeExecution ? `execution ${{routeExecution.replace(/_/g, " ")}}` : "",
+        namedCodexSpark
+          ? "named OpenAI/Cerebras preview; not a local Norllama/Spark worker"
+          : "",
         runtime ? `runtime ${{runtime}}` : "",
         model ? `model ${{model}}` : "",
         localWorkerRuntime ? `local worker ${{localWorkerRuntime}}${{localWorkerModel ? ` / ${{localWorkerModel}}` : ""}}` : "",
@@ -61432,6 +68032,125 @@ class Handler(BaseHTTPRequestHandler):
         tone: ["spark", "local", "bedrock", "cloud"].includes(routeTone) ? routeTone : "unknown",
         execution: routeExecution,
       }};
+    }}
+
+    function turnRouteExplanationDescriptor(historyItem, usage, snapshot = state.snapshot) {{
+      const entry = usage && typeof usage === "object"
+        ? usage
+        : historyItem?.usage && typeof historyItem.usage === "object"
+          ? historyItem.usage
+          : {{}};
+      const route = usageRouteDescriptor(entry, snapshot);
+      const runtime = String(entry.runtime || historyItem?.runtime || "").trim();
+      const model = String(entry.model || historyItem?.model || "").trim();
+      const reason = String(entry.route_reason || "").trim();
+      const routeSource = String(entry.route_source || "").trim().replace(/_/g, " ");
+      const lines = [];
+      if (route || runtime || model) {{
+        lines.push({{
+          label: "Final authority",
+          value: [route?.label, runtime, model].filter(Boolean).join(" · "),
+        }});
+      }}
+      if (reason) {{
+        lines.push({{ label: "Decision", value: reason }});
+      }}
+      if (routeSource) {{
+        lines.push({{ label: "Policy", value: routeSource }});
+      }}
+      const plannerUsed = Boolean(entry.local_preflight_used);
+      const plannerStatus = String(entry.local_preflight_status || "").trim();
+      const plannerModel = String(entry.local_preflight_model || "").trim();
+      const plannerTokens = Math.max(0, Number(entry.local_preflight_tokens || 0));
+      const plannerFailure = String(entry.local_preflight_failure_class || "").trim();
+      if (plannerUsed || plannerStatus || plannerFailure) {{
+        const plannerValue = [
+          plannerUsed ? "advisory preflight ran" : "advisory preflight skipped",
+          plannerModel,
+          plannerTokens ? `${{formatCompactMetric(plannerTokens)}} tok` : "",
+          plannerStatus && plannerStatus !== "ok" ? plannerStatus : "",
+          plannerFailure && plannerFailure !== "ok" ? plannerFailure : "",
+        ].filter(Boolean).join(" · ");
+        lines.push({{ label: "Local preflight", value: plannerValue }});
+      }}
+      const memoryRefs = Math.max(0, Number(entry.memory_ref_count || 0));
+      const rerankUsed = Boolean(entry.memory_rerank_used);
+      const rerankStatus = String(entry.memory_rerank_status || "").trim();
+      const rerankModel = String(entry.memory_rerank_model || "").trim();
+      const rerankCandidates = Math.max(0, Number(entry.memory_rerank_candidate_count || 0));
+      const rerankSelected = Math.max(0, Number(entry.memory_rerank_selected_count || 0));
+      if (memoryRefs || rerankUsed || rerankStatus) {{
+        const archiveValue = [
+          memoryRefs ? `${{formatCount(memoryRefs)}} archive refs` : "",
+          rerankUsed
+            ? `Spark rerank${{rerankSelected && rerankCandidates ? ` ${{rerankSelected}}/${{rerankCandidates}}` : ""}}`
+            : "",
+          rerankModel,
+          rerankStatus && rerankStatus !== "ok" && rerankStatus !== "disabled"
+            ? rerankStatus
+            : "",
+        ].filter(Boolean).join(" · ");
+        lines.push({{ label: "Archive recall", value: archiveValue }});
+      }}
+      const verifierUsed = Boolean(entry.local_planner_verifier_used);
+      const verifierStatus = String(entry.local_planner_verifier_status || "").trim();
+      const verifierModel = String(entry.local_planner_verifier_model || "").trim();
+      const verifierReasons = Array.isArray(entry.local_planner_verifier_trigger_reasons)
+        ? entry.local_planner_verifier_trigger_reasons
+          .map((value) => String(value || "").trim())
+          .filter(Boolean)
+          .slice(0, 2)
+        : [];
+      if (verifierUsed || verifierStatus) {{
+        lines.push({{
+          label: "Recall verifier",
+          value: [
+            verifierUsed ? "advisory review ran" : verifierStatus,
+            verifierModel,
+            verifierReasons.join("; "),
+          ].filter(Boolean).join(" · "),
+        }});
+      }}
+      const fallback = String(entry.route_fallback_reason || "").trim();
+      if (fallback) {{
+        lines.push({{ label: "Fallback", value: fallback }});
+      }}
+      if (!lines.length) {{
+        return null;
+      }}
+      return {{
+        title: "Route details",
+        summary: route?.label || runtime || "Route",
+        lines,
+      }};
+    }}
+
+    function buildTurnRouteExplanationPanel(descriptor) {{
+      if (!descriptor || !Array.isArray(descriptor.lines) || !descriptor.lines.length) {{
+        return null;
+      }}
+      const panel = document.createElement("section");
+      panel.className = "message-route-details";
+      panel.hidden = true;
+      const list = document.createElement("dl");
+      for (const row of descriptor.lines) {{
+        const label = String(row?.label || "").trim();
+        const value = String(row?.value || "").trim();
+        if (!label || !value) {{
+          continue;
+        }}
+        const term = document.createElement("dt");
+        term.textContent = label;
+        const definition = document.createElement("dd");
+        definition.textContent = value;
+        list.appendChild(term);
+        list.appendChild(definition);
+      }}
+      if (!list.children.length) {{
+        return null;
+      }}
+      panel.appendChild(list);
+      return panel;
     }}
 
     function modelNameLooksFrontier(value) {{
@@ -61846,14 +68565,37 @@ class Handler(BaseHTTPRequestHandler):
       return "";
     }}
 
+    function textPreviewFormatForPath(value) {{
+      const clean = splitFileTarget(value).path.toLowerCase();
+      if (/\.(md|markdown|rst)$/i.test(clean)) {{
+        return "markdown";
+      }}
+      if (clean.endsWith(".json")) {{
+        return "json";
+      }}
+      if (clean.endsWith(".csv")) {{
+        return "csv";
+      }}
+      if (clean.endsWith(".tsv")) {{
+        return "tsv";
+      }}
+      return "text";
+    }}
+
     function shouldAutoExpandInlinePreview(entry) {{
       const kind = String(entry?.kind || "");
       if (kind === "video" || kind === "audio") {{
         return true;
       }}
+      if (kind === "pdf") {{
+        return true;
+      }}
       if (kind === "image") {{
         const name = basenameForPath(entry?.path || "").toLowerCase();
-        return /(?:screenshot|screen[-_ ]?shot|capture|clipboard|upload|image|chart|graph|plot|contact[-_ ]?sheet|storyboard|frame[-_ ]?sheet|preview|poster|thumbnail|thumb)/i.test(name);
+        return !/(?:^|[-_.])(icon|favicon|logo|avatar|emoji|sprite|cursor|badge)(?:[-_.]|$)/i.test(name);
+      }}
+      if (kind === "text") {{
+        return ["markdown", "json", "csv", "tsv"].includes(textPreviewFormatForPath(entry?.path || ""));
       }}
       return false;
     }}
@@ -62046,12 +68788,15 @@ class Handler(BaseHTTPRequestHandler):
         const totalMatch = contentRange.match(/\/(\d+)$/);
         const totalBytes = totalMatch ? Number(totalMatch[1]) : 0;
         const normalized = raw.replace(/\\r\\n/g, "\\n").replace(/\\r/g, "\\n");
+        const previewText = normalized.slice(0, INLINE_TEXT_PREVIEW_MAX_CHARS);
         const truncated = normalized.length > INLINE_TEXT_PREVIEW_MAX_CHARS || totalBytes > raw.length;
-        const lines = normalized.split("\\n");
+        const lines = previewText.split("\\n");
         const visibleLines = lines.slice(0, 8);
         const payload = {{
           kind,
-          text: visibleLines.join("\\n").trimEnd(),
+          format: textPreviewFormatForPath(cacheKey),
+          text: previewText.trimEnd(),
+          visibleText: visibleLines.join("\\n").trimEnd(),
           lineCount: lines.length,
           hiddenLines: Math.max(0, lines.length - visibleLines.length),
           truncated,
@@ -62073,6 +68818,310 @@ class Handler(BaseHTTPRequestHandler):
         return `Preview resolved from "${{original}}" to a full local artifact path.`;
       }}
       return "Preview uses this TUI's local file proxy for the path shown here.";
+    }}
+
+    function textPreviewFormat(entry, payload = null) {{
+      const fromPayload = String(payload?.format || "").trim();
+      return fromPayload || textPreviewFormatForPath(entry?.path || "");
+    }}
+
+    function clipInlinePreviewText(value, limit = INLINE_TEXT_PREVIEW_MAX_CHARS) {{
+      const text = String(value || "");
+      if (text.length <= limit) {{
+        return {{ text, clipped: false }};
+      }}
+      return {{ text: `${{text.slice(0, Math.max(0, limit - 1))}}…`, clipped: true }};
+    }}
+
+    function describeJsonPreview(value) {{
+      if (Array.isArray(value)) {{
+        return `JSON array · ${{value.length}} ${{value.length === 1 ? "item" : "items"}}`;
+      }}
+      if (value && typeof value === "object") {{
+        const count = Object.keys(value).length;
+        return `JSON object · ${{count}} ${{count === 1 ? "key" : "keys"}}`;
+      }}
+      return `JSON ${{typeof value}}`;
+    }}
+
+    function parseDelimitedPreview(value, delimiter) {{
+      const text = String(value || "");
+      const rows = [];
+      let row = [];
+      let cell = "";
+      let quoted = false;
+      let reachedLimit = false;
+      const pushRow = () => {{
+        row.push(cell);
+        if (row.some((item) => String(item || "").length > 0)) {{
+          rows.push(row);
+        }}
+        row = [];
+        cell = "";
+      }};
+      for (let index = 0; index < text.length; index += 1) {{
+        const character = text[index];
+        if (quoted) {{
+          if (character === '"') {{
+            if (text[index + 1] === '"') {{
+              cell += '"';
+              index += 1;
+            }} else {{
+              quoted = false;
+            }}
+          }} else {{
+            cell += character;
+          }}
+          continue;
+        }}
+        if (character === '"') {{
+          quoted = true;
+          continue;
+        }}
+        if (character === delimiter) {{
+          row.push(cell);
+          cell = "";
+          continue;
+        }}
+        if (character === "\\n") {{
+          pushRow();
+          if (rows.length >= INLINE_DATA_TABLE_ROW_LIMIT) {{
+            reachedLimit = true;
+            break;
+          }}
+          continue;
+        }}
+        cell += character;
+      }}
+      if (!reachedLimit && (cell.length || row.length)) {{
+        pushRow();
+      }}
+      return rows.slice(0, INLINE_DATA_TABLE_ROW_LIMIT);
+    }}
+
+    function compactDelimitedCell(value) {{
+      const text = String(value || "").replace(/\s+/g, " ").trim();
+      return text.length > 180 ? `${{text.slice(0, 179)}}…` : text;
+    }}
+
+    function buildDelimitedDocumentPreview(payload, delimiter) {{
+      const rows = parseDelimitedPreview(payload.text, delimiter);
+      if (!rows.length) {{
+        return null;
+      }}
+      const columnCount = Math.min(
+        INLINE_DATA_TABLE_COLUMN_LIMIT,
+        Math.max(1, ...rows.map((row) => row.length))
+      );
+      const format = delimiter === "\\t" ? "TSV" : "CSV";
+      const shell = document.createElement("div");
+      shell.className = "inline-document-viewer inline-document-viewer-structured";
+      const summary = document.createElement("div");
+      summary.className = "inline-document-summary";
+      const hasMoreRows = payload.truncated || payload.lineCount > rows.length;
+      summary.textContent = `${{format}} · ${{rows.length}} ${{rows.length === 1 ? "row" : "rows"}} × ${{columnCount}} ${{columnCount === 1 ? "column" : "columns"}}${{hasMoreRows ? " shown" : ""}}`;
+      shell.appendChild(summary);
+      const wrap = document.createElement("div");
+      wrap.className = "inline-data-table-wrap";
+      wrap.tabIndex = 0;
+      wrap.setAttribute("role", "region");
+      wrap.setAttribute("aria-label", `${{format}} data preview`);
+      const table = document.createElement("table");
+      table.className = "inline-data-table";
+      const head = document.createElement("thead");
+      const headerRow = document.createElement("tr");
+      const header = rows[0] || [];
+      for (let column = 0; column < columnCount; column += 1) {{
+        const cell = document.createElement("th");
+        cell.scope = "col";
+        const raw = String(header[column] || "");
+        cell.textContent = compactDelimitedCell(raw) || `Column ${{column + 1}}`;
+        cell.title = raw;
+        headerRow.appendChild(cell);
+      }}
+      head.appendChild(headerRow);
+      table.appendChild(head);
+      const body = document.createElement("tbody");
+      for (const row of rows.slice(1)) {{
+        const rowElement = document.createElement("tr");
+        for (let column = 0; column < columnCount; column += 1) {{
+          const cell = document.createElement("td");
+          const raw = String(row[column] || "");
+          cell.textContent = compactDelimitedCell(raw);
+          cell.title = raw;
+          rowElement.appendChild(cell);
+        }}
+        body.appendChild(rowElement);
+      }}
+      table.appendChild(body);
+      wrap.appendChild(table);
+      shell.appendChild(wrap);
+      return shell;
+    }}
+
+    function buildJsonDocumentPreview(payload) {{
+      try {{
+        const value = JSON.parse(String(payload.text || ""));
+        const serialized = JSON.stringify(value, null, 2);
+        const clipped = clipInlinePreviewText(serialized);
+        const shell = document.createElement("div");
+        shell.className = "inline-document-viewer inline-document-viewer-structured";
+        const summary = document.createElement("div");
+        summary.className = "inline-document-summary";
+        summary.textContent = `${{describeJsonPreview(value)}}${{payload.truncated || clipped.clipped ? " · preview clipped" : ""}}`;
+        shell.appendChild(summary);
+        const pre = document.createElement("pre");
+        pre.className = "inline-document-json";
+        pre.textContent = clipped.text;
+        shell.appendChild(pre);
+        return shell;
+      }} catch (_) {{
+        return null;
+      }}
+    }}
+
+    function buildTextDocumentPreview(entry, payload) {{
+      const format = textPreviewFormat(entry, payload);
+      if (format === "markdown") {{
+        const shell = document.createElement("div");
+        shell.className = "inline-document-viewer inline-document-viewer-markdown";
+        shell.innerHTML = renderRichText(payload.text);
+        return shell;
+      }}
+      if (format === "json") {{
+        const preview = buildJsonDocumentPreview(payload);
+        if (preview) {{
+          return preview;
+        }}
+      }}
+      if (format === "csv" || format === "tsv") {{
+        const preview = buildDelimitedDocumentPreview(payload, format === "tsv" ? "\\t" : ",");
+        if (preview) {{
+          return preview;
+        }}
+      }}
+      const pre = document.createElement("pre");
+      pre.className = "inline-file-preview-text";
+      pre.textContent = payload.text || payload.visibleText || "";
+      return pre;
+    }}
+
+    function ensureInlineImageLightbox() {{
+      if (state.inlineImageLightbox) {{
+        return state.inlineImageLightbox;
+      }}
+      const lightbox = document.createElement("div");
+      lightbox.className = "inline-image-lightbox";
+      lightbox.hidden = true;
+      lightbox.setAttribute("role", "dialog");
+      lightbox.setAttribute("aria-modal", "true");
+
+      const frame = document.createElement("section");
+      frame.className = "inline-image-lightbox-frame";
+      lightbox.appendChild(frame);
+
+      const close = document.createElement("button");
+      close.type = "button";
+      close.className = "ghost inline-image-lightbox-close";
+      close.dataset.icon = "×";
+      close.setAttribute("aria-label", "Close image preview");
+      close.setAttribute("data-tooltip", "Close preview");
+      frame.appendChild(close);
+
+      const image = document.createElement("img");
+      image.className = "inline-image-lightbox-image";
+      image.decoding = "async";
+      frame.appendChild(image);
+
+      const footer = document.createElement("div");
+      footer.className = "inline-image-lightbox-footer";
+      frame.appendChild(footer);
+
+      const meta = document.createElement("div");
+      meta.className = "inline-image-lightbox-meta";
+      footer.appendChild(meta);
+
+      const title = document.createElement("div");
+      title.className = "inline-image-lightbox-title";
+      title.id = "inline-image-lightbox-title";
+      meta.appendChild(title);
+      lightbox.setAttribute("aria-labelledby", title.id);
+
+      const path = document.createElement("div");
+      path.className = "inline-image-lightbox-path";
+      meta.appendChild(path);
+
+      const actions = document.createElement("div");
+      actions.className = "inline-image-lightbox-actions";
+      footer.appendChild(actions);
+
+      const open = document.createElement("a");
+      open.target = "_blank";
+      open.rel = "noreferrer";
+      open.textContent = "Open";
+      open.title = "Open dedicated file view";
+      actions.appendChild(open);
+
+      const save = document.createElement("a");
+      save.textContent = "Save";
+      save.title = "Download original image";
+      actions.appendChild(save);
+
+      const viewer = {{
+        lightbox,
+        close,
+        image,
+        title,
+        path,
+        open,
+        save,
+        opener: null,
+      }};
+      close.addEventListener("click", () => closeInlineImageLightbox());
+      lightbox.addEventListener("click", (event) => {{
+        if (event.target === lightbox) {{
+          closeInlineImageLightbox();
+        }}
+      }});
+      document.body.appendChild(lightbox);
+      state.inlineImageLightbox = viewer;
+      return viewer;
+    }}
+
+    function closeInlineImageLightbox() {{
+      const viewer = state.inlineImageLightbox;
+      if (!viewer || viewer.lightbox.hidden) {{
+        return false;
+      }}
+      viewer.lightbox.hidden = true;
+      viewer.image.removeAttribute("src");
+      document.body.classList.remove("inline-image-lightbox-open");
+      const opener = viewer.opener;
+      viewer.opener = null;
+      if (opener && document.contains(opener) && typeof opener.focus === "function") {{
+        opener.focus({{ preventScroll: true }});
+      }}
+      return true;
+    }}
+
+    function openInlineImageLightbox(entry, opener = null) {{
+      const path = String(entry?.path || "").trim();
+      if (!path) {{
+        return;
+      }}
+      const viewer = ensureInlineImageLightbox();
+      const label = String(entry?.label || basenameForPath(path));
+      viewer.image.src = buildFileRawHref(path);
+      viewer.image.alt = label;
+      viewer.title.textContent = label;
+      viewer.path.textContent = compactInlineFilePath(path);
+      viewer.path.title = path;
+      viewer.open.href = buildFileViewHref(path);
+      viewer.save.href = buildFileDownloadHref(path);
+      viewer.opener = opener instanceof HTMLElement ? opener : null;
+      viewer.lightbox.hidden = false;
+      document.body.classList.add("inline-image-lightbox-open");
+      window.requestAnimationFrame(() => viewer.close.focus({{ preventScroll: true }}));
     }}
 
     function markInlinePreviewLoadFailed(card, summary, body, entry, detail = "") {{
@@ -62110,9 +69159,18 @@ class Handler(BaseHTTPRequestHandler):
       card.dataset.previewKind = entry.kind || "file";
       card.dataset.previewSource = entry.originalPath ? "resolved-relative" : "local-file";
       const isInlineMedia = entry.kind === "video" || entry.kind === "audio";
+      const previewFormat = entry.kind === "text" ? textPreviewFormatForPath(entry.path) : entry.kind;
+      const isRichDocument = entry.kind === "pdf" || ["markdown", "json", "csv", "tsv"].includes(previewFormat);
+      card.dataset.previewFormat = previewFormat || "file";
       const autoExpandPreview = shouldAutoExpandInlinePreview(entry);
       if (isInlineMedia) {{
         card.classList.add("inline-media-preview");
+      }}
+      if (isRichDocument) {{
+        card.classList.add("inline-document-preview");
+      }}
+      if (entry.kind === "image" && autoExpandPreview) {{
+        card.classList.add("inline-image-showcase");
       }}
       if (autoExpandPreview) {{
         card.classList.add("inline-auto-preview");
@@ -62138,6 +69196,7 @@ class Handler(BaseHTTPRequestHandler):
       const label = document.createElement("div");
       label.className = "inline-file-preview-label";
       const labelTextByKind = {{ image: "IMG", video: "VID", audio: "AUD", pdf: "PDF", text: "TXT", file: "FILE" }};
+      const labelTextByFormat = {{ markdown: "MD", json: "JSON", csv: "CSV", tsv: "TSV" }};
       const titleByKind = {{
         image: "Image preview",
         video: "Video preview",
@@ -62146,8 +69205,16 @@ class Handler(BaseHTTPRequestHandler):
         text: "Text preview",
         file: "File artifact",
       }};
-      label.textContent = labelTextByKind[entry.kind] || "FILE";
-      label.title = titleByKind[entry.kind] || "File artifact";
+      const formatTitle = {{
+        markdown: "Rendered Markdown preview",
+        json: "Structured JSON preview",
+        csv: "CSV table preview",
+        tsv: "TSV table preview",
+      }};
+      label.textContent = entry.kind === "text"
+        ? (labelTextByFormat[previewFormat] || labelTextByKind.text)
+        : (labelTextByKind[entry.kind] || "FILE");
+      label.title = formatTitle[previewFormat] || titleByKind[entry.kind] || "File artifact";
       meta.appendChild(label);
 
       const name = document.createElement("div");
@@ -62202,14 +69269,22 @@ class Handler(BaseHTTPRequestHandler):
       const summary = document.createElement("div");
       summary.className = "inline-file-preview-summary";
       summary.textContent = isInlineMedia
-        ? `Playable media preview. ${{inlinePreviewSourceSummary(entry)}}`
+        ? "Playable media preview"
         : entry.kind === "pdf"
-          ? `PDF preview collapsed by default. ${{inlinePreviewSourceSummary(entry)}}`
+          ? "Embedded PDF preview"
         : entry.kind === "image"
-          ? `Image preview collapsed by default. ${{inlinePreviewSourceSummary(entry)}}`
+          ? "Image preview"
+          : previewFormat === "markdown"
+            ? "Rendered Markdown preview"
+            : previewFormat === "json"
+              ? "JSON preview"
+              : previewFormat === "csv"
+                ? "CSV table preview"
+                : previewFormat === "tsv"
+                  ? "TSV table preview"
           : entry.kind === "file"
             ? "File ready. Download keeps the original artifact."
-            : `Preview collapsed by default. ${{inlinePreviewSourceSummary(entry)}}`;
+            : "Text preview";
       summary.title = inlinePreviewSourceSummary(entry);
       card.appendChild(summary);
       if (thumb) {{
@@ -62237,6 +69312,11 @@ class Handler(BaseHTTPRequestHandler):
         card.classList.remove("loading");
         body.innerHTML = "";
         if (payload.kind === "image" && payload.src) {{
+          const imageButton = document.createElement("button");
+          imageButton.type = "button";
+          imageButton.className = "inline-image-preview-open";
+          imageButton.setAttribute("aria-label", `Inspect image: ${{entry.label || basenameForPath(entry.path)}}`);
+          imageButton.title = "Inspect image";
           const image = document.createElement("img");
           image.src = payload.src;
           image.alt = entry.label || basenameForPath(entry.path);
@@ -62245,7 +69325,9 @@ class Handler(BaseHTTPRequestHandler):
           image.addEventListener("error", () => {{
             markInlinePreviewLoadFailed(card, summary, body, entry, `Image fetch failed: ${{payload.src}}`);
           }}, {{ once: true }});
-          body.appendChild(image);
+          imageButton.addEventListener("click", () => openInlineImageLightbox(entry, imageButton));
+          imageButton.appendChild(image);
+          body.appendChild(imageButton);
           return;
         }}
         if (payload.kind === "pdf" && payload.src) {{
@@ -62291,18 +69373,18 @@ class Handler(BaseHTTPRequestHandler):
           return;
         }}
         if (payload.kind === "text" && payload.text) {{
-          const pre = document.createElement("pre");
-          pre.className = "inline-file-preview-text";
-          pre.textContent = payload.text;
-          body.appendChild(pre);
-          const note = document.createElement("div");
-          note.className = "inline-file-preview-note";
-          note.textContent = payload.truncated
-            ? "Preview clipped. Open the file view for the full content."
-            : payload.hiddenLines > 0
-            ? `${{payload.hiddenLines}} more lines in file`
-            : `${{payload.lineCount || 0}} lines total`;
-          body.appendChild(note);
+          const preview = buildTextDocumentPreview(entry, payload);
+          body.appendChild(preview);
+          if (payload.truncated || preview.classList.contains("inline-file-preview-text")) {{
+            const note = document.createElement("div");
+            note.className = "inline-file-preview-note";
+            note.textContent = payload.truncated
+              ? "Preview clipped. Open the file view for the full content."
+              : payload.hiddenLines > 0
+                ? `${{payload.hiddenLines}} more lines in file`
+                : `${{payload.lineCount || 0}} lines total`;
+            body.appendChild(note);
+          }}
           return;
         }}
         const note = document.createElement("div");
@@ -62340,6 +69422,7 @@ class Handler(BaseHTTPRequestHandler):
       tile.target = "_blank";
       tile.rel = "noreferrer";
       tile.title = entry.path;
+      tile.setAttribute("aria-label", `Open image: ${{entry.label || basenameForPath(entry.path)}}`);
 
       const image = document.createElement("img");
       image.src = buildFileRawHref(entry.path);
@@ -62355,6 +69438,20 @@ class Handler(BaseHTTPRequestHandler):
         tile.insertBefore(error, tile.firstChild);
         tile.title = `Preview could not load via this TUI host. Target: ${{entry.path}}`;
       }}, {{ once: true }});
+      tile.addEventListener("click", (event) => {{
+        if (
+          event.defaultPrevented
+          || event.button !== 0
+          || event.metaKey
+          || event.ctrlKey
+          || event.shiftKey
+          || event.altKey
+        ) {{
+          return;
+        }}
+        event.preventDefault();
+        openInlineImageLightbox(entry, tile);
+      }});
       tile.appendChild(image);
 
       const caption = document.createElement("div");
@@ -62487,7 +69584,7 @@ class Handler(BaseHTTPRequestHandler):
         let markup = "";
         if (/^https?:\\/\\//i.test(cleanHref)) {{
           const url = normalizeUrlCandidate(cleanHref);
-          markup = `<a href="${{escapeHtml(url)}}" target="_blank" rel="noreferrer">${{escapeHtml(displayTextForLink(url, innerHtml))}}</a>`;
+          markup = `<a class="external-link" href="${{escapeHtml(url)}}" target="_blank" rel="noreferrer">${{escapeHtml(displayTextForLink(url, innerHtml))}}</a>`;
         }} else if (isFileTarget(cleanHref)) {{
           const fullHref = fullFileTarget(cleanHref) || normalizeFileTarget(cleanHref);
           const visibleLabel = labelText && labelText !== cleanHref && labelText !== fullHref
@@ -62688,6 +69785,7 @@ class Handler(BaseHTTPRequestHandler):
       let text = escapeHtml(sensitive.text);
       const stashes = [rawAnchors.stash, sensitive.stash];
       stashes.push(inlineCode);
+      text = text.replace(/~~([^~\\n][\\s\\S]*?[^~\\n])~~/g, "<del>$1</del>");
       text = text.replace(/\\*\\*([^*\\n][\\s\\S]*?[^*\\n])\\*\\*/g, "<strong>$1</strong>");
       text = text.replace(/(^|[^\\w*])\\*([^*\\n][\\s\\S]*?[^*\\n])\\*(?!\\*)/g, "$1<em>$2</em>");
       text = text.replace(
@@ -62696,7 +69794,7 @@ class Handler(BaseHTTPRequestHandler):
           const clean = unwrapMarkdownLinkTarget(String(target || "").trim());
           if (/^https?:\\/\\//i.test(clean)) {{
             const url = normalizeUrlCandidate(clean);
-            return stashMarkdownLink(`<a href="${{escapeHtml(url)}}" target="_blank" rel="noreferrer">${{escapeHtml(displayTextForLink(url, label))}}</a>`);
+            return stashMarkdownLink(`<a class="external-link" href="${{escapeHtml(url)}}" target="_blank" rel="noreferrer">${{escapeHtml(displayTextForLink(url, label))}}</a>`);
           }}
           if (looksLikeWebRouteTarget(clean)) {{
             const href = clean.startsWith("//") ? clean : clientPath(clean);
@@ -62730,7 +69828,7 @@ class Handler(BaseHTTPRequestHandler):
         (_, prefix, url) => {{
           const clean = normalizeUrlCandidate(url);
           const trailing = escapeHtml(url.slice(clean.length));
-          return `${{prefix}}<a href="${{escapeHtml(clean)}}" target="_blank" rel="noreferrer">${{escapeHtml(maskSensitiveUrlText(clean))}}</a>${{trailing}}`;
+          return `${{prefix}}<a class="external-link" href="${{escapeHtml(clean)}}" target="_blank" rel="noreferrer">${{escapeHtml(maskSensitiveUrlText(clean))}}</a>${{trailing}}`;
         }}
       );
       const bbsRefs = highlightBbsRefs(text);
@@ -62952,14 +70050,18 @@ class Handler(BaseHTTPRequestHandler):
 
     function renderTableBlock(header, separator, rows) {{
       const alignments = separator.map((cell) => tableAlignment(cell));
-      const headHtml = header.map((cell, index) => `<th style="text-align:${{alignments[index]}}">${{renderInlineMarkup(cell)}}</th>`).join("");
+      const tableLabel = header
+        .map((cell) => stripInlineHtmlText(cell).replace(/\\s+/g, " ").trim())
+        .filter(Boolean)
+        .join(", ");
+      const headHtml = header.map((cell, index) => `<th scope="col" style="text-align:${{alignments[index]}}">${{renderInlineMarkup(cell)}}</th>`).join("");
       const bodyHtml = rows.map((row) => `
         <tr>
           ${{row.map((cell, index) => `<td style="text-align:${{alignments[index]}}">${{renderInlineMarkup(cell)}}</td>`).join("")}}
         </tr>
       `).join("");
       return `
-        <div class="table-wrap">
+        <div class="table-wrap" tabindex="0" role="region" aria-label="${{escapeHtml(tableLabel ? `Data table: ${{tableLabel}}` : "Data table")}}">
           <table class="rich-table">
             <thead><tr>${{headHtml}}</tr></thead>
             <tbody>${{bodyHtml}}</tbody>
@@ -63893,15 +70995,20 @@ class Handler(BaseHTTPRequestHandler):
       const plannedAuthMode = String(
         billingTags.codex_auth_mode || snapshot?.accounting?.codex_auth_mode || ""
       ).trim().toLowerCase();
-      const plannedLocalRoute = ["localllm", "codexspark"].includes(selectedRuntime)
+      const plannedCodexSparkPreview = selectedRuntime === "codexspark";
+      const plannedLocalRoute = !plannedCodexSparkPreview && (
+        selectedRuntime === "localllm"
         || selectedRuntime.includes("norllama")
         || selectedRuntime.includes("ollama")
-        || selectedRuntime.includes("spark");
+        || selectedRuntime.includes("spark")
+      );
       const plannedSubscriptionRoute = selectedRuntime === "codex"
         && plannedOwner === "kristopher"
         && plannedGroup !== "work"
         && plannedAuthMode === "chatgpt";
-      const plannedSpendLabel = plannedLocalRoute
+      const plannedSpendLabel = plannedCodexSparkPreview
+        ? "Planned preview · execution unavailable"
+        : plannedLocalRoute
         ? "Planned local · no cloud bill"
         : plannedSubscriptionRoute
           ? `Planned ${PLAN_CREDIT_LABEL} · ~${{formatCompactMetric(creditEstimate.credits)}} cr`
@@ -64494,24 +71601,29 @@ class Handler(BaseHTTPRequestHandler):
               : "local_token_estimate");
       const receiptStatus = String(routeReceipts.status || "").trim().toLowerCase();
       const receiptCount = Math.max(0, Number(routeReceipts.receipt_count || 0));
-      const isLocalRuntime = ["localllm", "codexspark"].includes(runtime)
+      const isNamedCodexSpark = runtime === "codexspark"
+        || String(model || "").toLowerCase().includes("codex-spark");
+      const isLocalRuntime = !isNamedCodexSpark && (
+        runtime === "localllm"
         || runtime.includes("norllama")
         || runtime.includes("ollama")
         || runtime.includes("spark")
-        || surface === "norllama";
-      const isSparkRuntime = runtime.includes("spark")
-        || runtime === "codexspark"
+        || surface === "norllama"
+      );
+      const isSparkRuntime = !isNamedCodexSpark && (runtime.includes("spark")
         || String(model || "").toLowerCase().includes("spark")
         || localWorkerRuntime.includes("spark")
         || localWorkerModel.toLowerCase().includes("spark")
-        || routeExecution.includes("spark");
+        || routeExecution.includes("spark"));
       const hasVerifier = routeExecution.includes("verifier")
         || Boolean(routeVerifier || verifierRuntime || verifierModel)
         || (isSparkRuntime && (surface === "aws-bedrock" || surface === "openai-direct"));
       const isBedrock = surface === "aws-bedrock" || serviceTier.includes("bedrock");
       const isOpenAiDirect = surface === "openai-direct" || runtime === "codex";
       let value = "Route?";
-      if (isSparkRuntime && hasVerifier) {{
+      if (isNamedCodexSpark) {{
+        value = "Codex Spark preview";
+      }} else if (isSparkRuntime && hasVerifier) {{
         value = "Spark + verifier";
       }} else if (isSparkRuntime) {{
         value = "Local Spark";
@@ -66826,6 +73938,104 @@ class Handler(BaseHTTPRequestHandler):
       }};
     }}
 
+    function fastLaneOutcomeCapsuleState(snapshot) {{
+      const receipts = snapshot?.route_receipts;
+      const outcome = receipts && typeof receipts === "object"
+        && receipts.latest_fast_lane_outcome
+        && typeof receipts.latest_fast_lane_outcome === "object"
+        ? receipts.latest_fast_lane_outcome
+        : null;
+      const summary = receipts && typeof receipts === "object"
+        && receipts.fast_lane && typeof receipts.fast_lane === "object"
+        ? receipts.fast_lane
+        : {{}};
+      const verified = summary.verified && typeof summary.verified === "object"
+        ? summary.verified
+        : {{}};
+      const verifiedCount = Math.max(0, Number(verified.count || 0));
+      const estimatedSavingsUsd = Math.max(0, Number(verified.estimated_savings_usd || 0));
+      const localEstimatedSavingsUsd = Math.max(
+        0,
+        Number(verified.local_not_invoiced_estimated_savings_usd || 0),
+      );
+      const calibration = summary.calibration && typeof summary.calibration === "object"
+        ? summary.calibration
+        : {{}};
+      const proofReadyLanes = Array.isArray(calibration.proof_ready_lanes)
+        ? calibration.proof_ready_lanes
+          .map((item) => String(item || "").trim().toLowerCase())
+          .filter((item) => item === "luna" || item === "local")
+        : [];
+      const historyTitle = [
+        verifiedCount ? `${{formatCount(verifiedCount)}} verified historical result${{verifiedCount === 1 ? "" : "s"}}` : "",
+        verifiedCount ? `Estimated savings ${{formatCompactUsd(estimatedSavingsUsd)}}` : "",
+        localEstimatedSavingsUsd ? "Local estimates are not invoiced" : "",
+        proofReadyLanes.length
+          ? `Proof ready: ${{proofReadyLanes.join(", ")}}`
+          : "Calibration only; automatic route selection remains off",
+      ].filter(Boolean);
+      const lane = outcome && outcome.lane && typeof outcome.lane === "object" ? outcome.lane : {{}};
+      const laneKind = String(lane.kind || "").trim().toLowerCase();
+      const latestVerified = Boolean(
+        outcome
+        && String(outcome.state || "").trim().toLowerCase() === "verified"
+        && (laneKind === "luna" || laneKind === "local"),
+      );
+      if (latestVerified) {{
+        const performance = outcome.performance && typeof outcome.performance === "object"
+          ? outcome.performance
+          : {{}};
+        const model = String(lane.model || "").replace(/[\\r\\n]+/g, " ").trim().slice(0, 96);
+        const savingsUsd = Math.max(0, Number(performance.savings_usd || 0));
+        const latencyMs = Math.max(0, Number(performance.latency_ms || 0));
+        const laneLabel = laneKind === "luna" ? "Luna" : "Local";
+        const meta = [
+          `Saved ${{formatCompactUsd(savingsUsd)}}`,
+          latencyMs ? `${{formatCompactMetric(latencyMs)}} ms` : "",
+          verifiedCount > 1 ? `${{formatCount(verifiedCount)}} proven` : "",
+        ].filter(Boolean).join(" | ");
+        const title = [
+          "Verified fast-lane result",
+          `Lane ${{laneLabel}}`,
+          model ? `Model ${{model}}` : "",
+          `Savings ${{formatCompactUsd(savingsUsd)}}`,
+          latencyMs ? `Latency ${{formatCompactMetric(latencyMs)}} ms` : "",
+          laneKind === "local" ? "Estimated, not invoiced" : "",
+          "Validation and authority gates passed",
+          ...historyTitle,
+        ].filter(Boolean).join(" | ");
+        return {{
+          id: "fast-lane",
+          label: "Fast lane",
+          value: laneLabel,
+          meta,
+          tone: "ok",
+          title,
+          action: "system",
+        }};
+      }}
+      if (!verifiedCount) {{
+        return null;
+      }}
+      const meta = [
+        `Estimated ${{formatCompactUsd(estimatedSavingsUsd)}}`,
+        localEstimatedSavingsUsd ? "Estimate only" : "",
+      ].filter(Boolean).join(" | ");
+      return {{
+        id: "fast-lane",
+        label: "Fast lane",
+        value: `${{formatCount(verifiedCount)}} proven`,
+        meta,
+        tone: "ok",
+        title: [
+          "Verified fast-lane history",
+          ...historyTitle,
+          outcome ? "Latest route is not counted as a win" : "",
+        ].filter(Boolean).join(" | "),
+        action: "system",
+      }};
+    }}
+
     function buildStatusCapsules(snapshot) {{
       const services = Array.isArray(snapshot?.services) ? snapshot.services : [];
       const failedServices = services.filter((item) => {{
@@ -66925,6 +74135,10 @@ class Handler(BaseHTTPRequestHandler):
       const timeCapsule = timeTargetCapsuleState(snapshot);
       if (timeCapsule) {{
         capsules.push(timeCapsule);
+      }}
+      const fastLaneCapsule = fastLaneOutcomeCapsuleState(snapshot);
+      if (fastLaneCapsule) {{
+        capsules.push(fastLaneCapsule);
       }}
       const humanCapsule = humanInterventionCapsuleState(snapshot);
       if (humanCapsule) {{
@@ -68044,6 +75258,92 @@ class Handler(BaseHTTPRequestHandler):
       `).join("");
     }}
 
+    function renderConnectorAccess(snapshot) {{
+      if (!el.connectorAccess || !el.connectorAccessProfile || !el.connectorAccessApps) {{
+        return;
+      }}
+      const access = snapshot && typeof snapshot === "object" && snapshot.connector_access
+        && typeof snapshot.connector_access === "object"
+        ? snapshot.connector_access
+        : null;
+      if (!access) {{
+        el.connectorAccess.hidden = true;
+        return;
+      }}
+      const configAvailable = access.config_available === true;
+      const apps = Array.isArray(access.apps)
+        ? access.apps.filter((item) => item && typeof item === "object")
+        : [];
+      const configuredCount = Math.max(
+        0,
+        Number.isFinite(Number(access.configured_count))
+          ? Number(access.configured_count)
+          : apps.filter((item) => item.configured === true).length,
+      );
+      const rows = apps.map((item) => {{
+        const configured = item.configured === true;
+        const state = configured
+          ? "configured"
+          : configAvailable
+            ? "not-configured"
+            : "unavailable";
+        return {{
+          key: String(item.key || item.label || "").trim(),
+          label: String(item.label || item.key || "Connector").trim() || "Connector",
+          state,
+          status: String(
+            item.status
+            || (configured ? "Configured" : configAvailable ? "Not configured" : "Config unavailable"),
+          ).trim(),
+        }};
+      }});
+      const renderKey = JSON.stringify({{
+        profile: String(access.profile_label || ""),
+        source: String(access.source || ""),
+        configAvailable,
+        configuredCount,
+        rows,
+      }});
+      if (state.renderCache.connectorAccess === renderKey) {{
+        return;
+      }}
+      state.renderCache.connectorAccess = renderKey;
+      el.connectorAccess.hidden = false;
+      el.connectorAccessProfile.textContent = String(access.profile_label || "Connector set");
+      if (el.connectorAccessCount) {{
+        el.connectorAccessCount.textContent = configAvailable
+          ? `${{formatCount(configuredCount)}} configured`
+          : "Unavailable";
+      }}
+      if (el.connectorAccessSource) {{
+        const source = String(access.source || "").trim();
+        el.connectorAccessSource.textContent = source ? `Source: ${{source}}` : "";
+        el.connectorAccessSource.hidden = !source;
+      }}
+      if (el.connectorAccessNote) {{
+        el.connectorAccessNote.textContent = configAvailable
+          ? "Configuration only; access is checked when used."
+          : "The profile config could not be read.";
+      }}
+      el.connectorAccessApps.textContent = "";
+      const fragment = document.createDocumentFragment();
+      for (const item of rows) {{
+        const app = document.createElement("div");
+        app.className = "connector-access-app";
+        app.dataset.state = item.state;
+        app.title = `${{item.label}}: ${{item.status}}. Configuration status only.`;
+        const label = document.createElement("span");
+        label.className = "connector-access-app-label";
+        label.textContent = item.label;
+        const status = document.createElement("span");
+        status.className = "connector-access-app-state";
+        status.textContent = item.status;
+        app.append(label, status);
+        fragment.appendChild(app);
+      }}
+      el.connectorAccessApps.appendChild(fragment);
+    }}
+
     function setNormanCommandCell(cell, item) {{
       if (!cell || !item) {{
         return;
@@ -68444,19 +75744,37 @@ class Handler(BaseHTTPRequestHandler):
         if (!url) {{
           continue;
         }}
-        const label = typeof entry === "string"
-          ? formatUrlLabel(url)
-          : String(entry?.label || formatUrlLabel(url));
+        const suppliedLabel = typeof entry === "string"
+          ? ""
+          : String(entry?.label || "");
+        const provenance = linkProvenance(url);
+        const label = linkDisplayLabel(url, suppliedLabel, provenance);
         const row = document.createElement("div");
         row.className = "link-chip-row";
 
         const link = document.createElement("a");
         link.className = "link-chip";
+        link.dataset.linkOrigin = provenance.origin;
         link.href = url;
         link.target = "_blank";
         link.rel = "noreferrer";
-        link.textContent = label;
-        link.title = url;
+        link.title = maskSensitiveUrlText(url);
+        const origin = document.createElement("span");
+        origin.className = "link-chip-origin";
+        origin.textContent = provenance.label;
+        link.appendChild(origin);
+        const copy = document.createElement("span");
+        copy.className = "link-chip-copy";
+        const title = document.createElement("span");
+        title.className = "link-chip-title";
+        title.textContent = label;
+        copy.appendChild(title);
+        const domain = document.createElement("span");
+        domain.className = "link-chip-domain";
+        domain.textContent = provenance.domain;
+        domain.title = provenance.domain;
+        copy.appendChild(domain);
+        link.appendChild(copy);
         row.appendChild(link);
 
         const copyButton = document.createElement("button");
@@ -68464,6 +75782,7 @@ class Handler(BaseHTTPRequestHandler):
         copyButton.className = "ghost link-copy-button";
         copyButton.dataset.icon = "⎘";
         copyButton.textContent = "Copy";
+        copyButton.title = "Copy source URL";
         copyButton.addEventListener("click", () => copyText(url, copyButton));
         row.appendChild(copyButton);
 
@@ -69510,6 +76829,15 @@ class Handler(BaseHTTPRequestHandler):
         );
         playCompletionBell();
       }}
+      const endedWithError = Boolean(
+        prev.pending
+        && !snapshot.pending
+        && String(snapshot.last_error || "").trim()
+        && snapshot.last_error !== prev.last_error
+      );
+      if (endedWithError) {{
+        playFeedbackTone("error");
+      }}
       if (issue && (!prevIssue || issue.code !== prevIssue.code || issue.summary !== prevIssue.summary)) {{
         pushNotice(
           issue.tone,
@@ -70350,6 +77678,34 @@ class Handler(BaseHTTPRequestHandler):
         qualityNode.setAttribute("aria-label", quality.title);
         metaWrap.appendChild(qualityNode);
       }}
+      const routeDetails = turnRouteExplanationDescriptor(
+        options.historyItem || null,
+        options.usage || null,
+        options.usageSnapshot || state.snapshot
+      );
+      const routeDetailsPanel = (
+        cleanRole.includes("assistant") || cleanRole.includes("error")
+      )
+        ? buildTurnRouteExplanationPanel(routeDetails)
+        : null;
+      if (routeDetailsPanel) {{
+        const routeDetailsToggle = document.createElement("button");
+        routeDetailsToggle.type = "button";
+        routeDetailsToggle.className = "message-route-details-toggle";
+        routeDetailsToggle.dataset.icon = "i";
+        routeDetailsToggle.textContent = "";
+        routeDetailsToggle.title = "Route details";
+        routeDetailsToggle.setAttribute("aria-label", "Route details");
+        routeDetailsToggle.setAttribute("aria-expanded", "false");
+        routeDetailsToggle.addEventListener("click", (event) => {{
+          event.stopPropagation();
+          const opening = routeDetailsPanel.hidden;
+          routeDetailsPanel.hidden = !opening;
+          routeDetailsToggle.classList.toggle("active", opening);
+          routeDetailsToggle.setAttribute("aria-expanded", opening ? "true" : "false");
+        }});
+        metaWrap.appendChild(routeDetailsToggle);
+      }}
       if (cleanRole.includes("queued")) {{
         const queueBadge = document.createElement("span");
         queueBadge.className = "message-state-badge";
@@ -70482,6 +77838,9 @@ class Handler(BaseHTTPRequestHandler):
 
       article.appendChild(head);
       article.appendChild(text);
+      if (routeDetailsPanel) {{
+        article.appendChild(routeDetailsPanel);
+      }}
       const attachmentPaths = new Set(
         (Array.isArray(options.attachments) ? options.attachments : [])
           .map((entry) => splitFileTarget(entry?.path || "").path)
@@ -70527,6 +77886,17 @@ class Handler(BaseHTTPRequestHandler):
           copyText(plainTextFromRenderedMessage(article, body), copyQuick);
         }});
         visibleShortcutGroup.appendChild(copyQuick);
+        if (options.canLoadFullResponse) {{
+          const fullReplyQuick = document.createElement("button");
+          fullReplyQuick.type = "button";
+          fullReplyQuick.className = "ghost inline-action reply-tail-action";
+          fullReplyQuick.textContent = "View full";
+          fullReplyQuick.title = "Load the complete reply saved by this TUI";
+          fullReplyQuick.addEventListener("click", () => {{
+            void loadFullLastResponse(fullReplyQuick);
+          }});
+          visibleShortcutGroup.appendChild(fullReplyQuick);
+        }}
         if (options.canUnwindLatestTurn) {{
           const unwindQuick = document.createElement("button");
           unwindQuick.type = "button";
@@ -70624,7 +77994,8 @@ class Handler(BaseHTTPRequestHandler):
       const tailChanged = Boolean(previousTailKey) && previousTailKey !== nextTailKey;
       const items = historyEntries(snapshot);
       const queued = queuedEntries(snapshot);
-      const totalTurns = items.length + (snapshot.pending ? 1 : 0);
+      const provisional = provisionalPromptSubmission(snapshot);
+      const totalTurns = items.length + (snapshot.pending ? 1 : 0) + (provisional ? 1 : 0);
       const windowSize = recentHistoryWindow();
       const hiddenTurns = Math.max(0, items.length - windowSize);
       const visibleItems = state.historyExpanded ? items : items.slice(-windowSize);
@@ -70633,7 +78004,7 @@ class Handler(BaseHTTPRequestHandler):
 
       el.conversation.innerHTML = "";
       let latestNode = null;
-      if (!items.length && !snapshot.pending) {{
+      if (!items.length && !snapshot.pending && !provisional) {{
         const empty = document.createElement("div");
         empty.className = "message empty";
         empty.textContent = {json.dumps(PROMPT_PLACEHOLDER)};
@@ -70678,6 +78049,9 @@ class Handler(BaseHTTPRequestHandler):
           latestNode = appendMessage("assistant", AGENT_LABEL, item.response, replyMeta, {{
             sourcePrompt: item.prompt || "",
             canUnwindLatestTurn: canUnwindLatestTurn && !String(item.error || "").trim(),
+            canLoadFullResponse: index === visibleItems.length - 1
+              && isLiveTransportTruncated(item.response)
+              && String(item.response || "") === String(snapshot.last_response || ""),
             inlinePreviews: allowInlinePreviews,
             inlinePreviewLimit: INLINE_FILE_TARGET_LIMIT,
             usage: item.usage || null,
@@ -70696,6 +78070,31 @@ class Handler(BaseHTTPRequestHandler):
             historyItem: item,
           }});
         }}
+      }}
+
+      if (provisional) {{
+        appendMessage(
+          "user provisional",
+          "You",
+          provisional.value || "[attachment prompt]",
+          provisional.phase.meta,
+          {{
+            attachments: provisional.attachments,
+            inlinePreviews: false,
+          }}
+        );
+        latestNode = appendMessage(
+          "assistant pending provisional",
+          AGENT_LABEL,
+          provisional.phase.body,
+          provisional.phase.meta,
+          {{
+            latest: true,
+            sourcePrompt: provisional.value || "",
+            inlinePreviews: false,
+            liveStatusStage: "initial",
+          }}
+        );
       }}
 
       if (snapshot.pending && snapshot.running_prompt) {{
@@ -70788,7 +78187,7 @@ class Handler(BaseHTTPRequestHandler):
         );
       }}
 
-      const visibleTurns = visibleItems.length + (snapshot.pending ? 1 : 0);
+      const visibleTurns = visibleItems.length + (snapshot.pending ? 1 : 0) + (provisional ? 1 : 0);
       const queueCount = queued.length;
       applyConversationGrouping();
       renderHistoryToolbar(totalTurns);
@@ -72310,20 +79709,21 @@ class Handler(BaseHTTPRequestHandler):
 
     function setBusyButtons(isBusy) {{
       const attachmentBusy = state.attachmentBusy || hasActiveUploadTrayItems();
-      const busy = Boolean(isBusy) || attachmentBusy;
+      const busy = Boolean(isBusy) || attachmentBusy || state.promptSubmitInFlight;
+      const replyActive = webReplyActive(state.snapshot);
       el.askButton.disabled = busy;
       if (el.interruptSubmitButton) {{
-        el.interruptSubmitButton.disabled = busy || !state.snapshot.pending;
+        el.interruptSubmitButton.disabled = busy || !replyActive;
       }}
       const interruptConfirming = (
         !busy
-        && Boolean(state.snapshot.pending)
+        && replyActive
         && interruptSubmitConfirmActive()
       );
       if (attachmentBusy) {{
         setAskButtonState("Attaching files…", "…", "Wait");
         setInterruptSubmitState("Attaching files…", "…");
-      }} else if (isBusy) {{
+      }} else if (busy) {{
         setAskButtonState(
           state.snapshot.pending ? "Queue next prompt…" : "Sending prompt…",
           "…",
@@ -72354,9 +79754,9 @@ class Handler(BaseHTTPRequestHandler):
       }}
       el.tmuxSendButton.disabled = busy;
       const queueDepth = Number(state.snapshot.queue_depth || 0);
-      el.cancelWebButton.disabled = busy || !state.snapshot.pending;
+      el.cancelWebButton.disabled = busy || !replyActive;
       el.clearQueueButton.disabled = busy || queueDepth <= 0;
-      el.cancelAllButton.disabled = busy || (!state.snapshot.pending && queueDepth <= 0);
+      el.cancelAllButton.disabled = busy || (!replyActive && queueDepth <= 0);
       el.promoteLatestButton.disabled = busy || queueDepth <= 1;
       el.interruptLatestButton.disabled = busy || queueDepth <= 0;
       el.interruptButton.disabled = busy;
@@ -72404,12 +79804,200 @@ class Handler(BaseHTTPRequestHandler):
       scheduleComposerReserve({{ preserveLiveEdge: true }});
     }}
 
+    function routeBootstrapState(snapshot = state.snapshot) {{
+      const route = snapshot && typeof snapshot === "object" && snapshot.route_bootstrap && typeof snapshot.route_bootstrap === "object"
+        ? snapshot.route_bootstrap
+        : {{}};
+      return {{
+        phase: String(route.phase || "").trim().toLowerCase(),
+        detailsReady: Boolean(route.details_ready),
+        selectedRuntime: String(route.selected_runtime || "").trim(),
+        selectedModel: String(route.selected_model || "").trim(),
+        selectedServiceTier: String(route.selected_service_tier || "").trim(),
+        routeReason: String(route.route_reason || "").trim(),
+        fallbackReason: String(route.fallback_reason || "").trim(),
+        routeLocked: Boolean(route.route_locked),
+      }};
+    }}
+
+    function routeBootstrapLabel(route) {{
+      return [
+        String(route?.selectedRuntime || "").trim(),
+        String(route?.selectedServiceTier || "").trim(),
+        String(route?.selectedModel || "").trim(),
+      ].filter(Boolean).join(" · ");
+    }}
+
+    function routeBootstrapLoadingCopy(snapshot = state.snapshot) {{
+      if (snapshot?.snapshot_cached !== false) {{
+        return "";
+      }}
+      const route = routeBootstrapState(snapshot);
+      const label = routeBootstrapLabel(route);
+      if (route.phase === "running") {{
+        return label
+          ? `Route active: ${{label}}. Detailed local health and service state is loading.`
+          : "Route active. Detailed local health and service state is loading.";
+      }}
+      if (route.phase === "queued") {{
+        return label
+          ? `Route queued: ${{label}}. Detailed local health and service state is loading.`
+          : "Route queued. Detailed local health and service state is loading.";
+      }}
+      return label
+        ? `Preparing live console state · configured route ${{label}}. Detailed local health and service state is loading.`
+        : "Preparing live console state. Detailed local health and service state is loading.";
+    }}
+
+    function routePreparationReceipt(runtime, model, serviceTier, queued = false) {{
+      const route = [
+        String(runtime || "").trim(),
+        String(serviceTier || "").trim(),
+        String(model || "").trim(),
+      ].filter(Boolean).join(" · ");
+      return [
+        `Preparing route: ${{route || "selected runtime"}}.`,
+        "Applying route policy before acceptance.",
+        queued ? "Current work continues while this prompt waits." : "",
+      ].filter(Boolean).join(" ");
+    }}
+
+    function acceptedRouteReceipt(snapshot, options = {{}}) {{
+      const route = routeBootstrapState(snapshot);
+      const label = routeBootstrapLabel(route);
+      if (!label) {{
+        return "";
+      }}
+      const queued = Boolean(options.queued || route.phase === "queued");
+      const stateLabel = queued
+        ? `queued${{options.queuePosition ? ` at position ${{options.queuePosition}}` : ""}}`
+        : "running";
+      const policy = route.routeLocked
+        ? "Route lock honored."
+        : route.fallbackReason
+          ? `Fallback: ${{route.fallbackReason}}`
+          : route.routeReason
+            ? `Policy: ${{route.routeReason}}`
+            : "";
+      return [`Accepted · ${{label}} ${{stateLabel}}.`, policy].filter(Boolean).join(" ");
+    }}
+
+    function operatorReceiptDuration(tone) {{
+      if (tone === "error") {{
+        return 15000;
+      }}
+      if (tone === "warning") {{
+        return 12000;
+      }}
+      if (tone === "success") {{
+        return 12000;
+      }}
+      return 8000;
+    }}
+
+    function currentOperatorReceipt() {{
+      const receipt = state.operatorReceipt;
+      if (!receipt || Date.now() >= Number(receipt.expiresAt || 0)) {{
+        return null;
+      }}
+      return receipt;
+    }}
+
+    function clearOperatorReceipt(options = {{}}) {{
+      const receipt = state.operatorReceipt;
+      clearTimeout(state.operatorReceiptTimer);
+      state.operatorReceiptTimer = 0;
+      state.operatorReceipt = null;
+      if (
+        receipt
+        && el.composerFeedback
+        && el.composerFeedback.textContent === receipt.message
+      ) {{
+        clearComposerFeedback();
+      }}
+      if (options.render !== false && state.hasRenderedSnapshot && state.snapshot) {{
+        render(state.snapshot);
+      }}
+    }}
+
+    function setOperatorReceipt(message, tone = "info", options = {{}}) {{
+      const text = String(message || "").trim();
+      if (!text) {{
+        clearOperatorReceipt();
+        return;
+      }}
+      const normalizedTone = ["info", "success", "warning", "error"].includes(tone)
+        ? tone
+        : "info";
+      const timeoutMs = Math.max(
+        1000,
+        Number(options.timeoutMs || operatorReceiptDuration(normalizedTone))
+      );
+      clearTimeout(state.operatorReceiptTimer);
+      state.operatorReceipt = {{
+        message: text,
+        tone: normalizedTone,
+        expiresAt: Date.now() + timeoutMs,
+      }};
+      el.statusMessage.textContent = text;
+      setComposerFeedback(text, normalizedTone, {{ timeoutMs }});
+      state.operatorReceiptTimer = window.setTimeout(() => {{
+        clearOperatorReceipt();
+      }}, timeoutMs + 30);
+    }}
+
+    function terminalOperatorReceipt(previousSnapshot, snapshot) {{
+      if (!previousSnapshot || !previousSnapshot.pending || snapshot.pending) {{
+        return null;
+      }}
+      const error = String(snapshot.last_error || "").trim();
+      const previousError = String(previousSnapshot.last_error || "").trim();
+      const outcome = [
+        snapshot.status_message,
+        snapshot.last_action_detail,
+        error,
+        snapshot.last_response,
+      ].join(" ").toLowerCase();
+      if (/(cancel(?:led|ed)?|interrupted|stopped|aborted)/.test(outcome)) {{
+        return {{
+          message: "Reply cancelled. The worker has stopped; any queued work remains visible above the input.",
+          tone: "warning",
+        }};
+      }}
+      const meaningfulError = error && !["[none]", "none"].includes(error.toLowerCase());
+      if (
+        meaningfulError
+        && (error !== previousError || String(snapshot.state || "").toLowerCase() === "error")
+      ) {{
+        return {{
+          message: "Reply stopped with an error. Details are below; the prompt was not resent.",
+          tone: "error",
+        }};
+      }}
+      const hasReply = Boolean(String(snapshot.last_response || "").trim())
+        && !isPlaceholderAssistantResponse(snapshot.last_response);
+      if (
+        hasReply
+        && Number(snapshot.last_finished_at || 0) >= Number(previousSnapshot.last_finished_at || 0)
+      ) {{
+        return {{
+          message: "Reply complete. Result is below.",
+          tone: "success",
+        }};
+      }}
+      return {{
+        message: "The active reply ended. Review the result and queue before sending another prompt.",
+        tone: "info",
+      }};
+    }}
+
     function showComposerFeedbackError(message) {{
       const text = String(message || "Action failed.").trim();
       el.runState.className = "pill error";
       el.runState.textContent = "Error";
-      el.statusMessage.textContent = text;
-      setComposerFeedback(text, "error");
+      setOperatorReceipt(text, "error");
+      playFeedbackTone("error");
+      pulseComposerShell("error", {{ durationMs: 460 }});
     }}
 
     function autoresize(textarea) {{
@@ -72424,7 +80012,10 @@ class Handler(BaseHTTPRequestHandler):
     }}
 
     function render(snapshot) {{
+      const previousSnapshot = state.previousSnapshot;
+      state.hasRenderedSnapshot = true;
       snapshot = applyDraftAttachmentProtection(snapshot);
+      snapshot = applyLoadedFullLastResponse(snapshot);
       const nextThreadId = String(snapshot.thread_id || "");
       if (nextThreadId !== String(state.activeThreadId || "")) {{
         state.activeThreadId = nextThreadId;
@@ -72435,6 +80026,10 @@ class Handler(BaseHTTPRequestHandler):
       }}
       syncNotifications(snapshot);
       state.snapshot = snapshot;
+      const terminalReceipt = terminalOperatorReceipt(previousSnapshot, snapshot);
+      if (terminalReceipt) {{
+        setOperatorReceipt(terminalReceipt.message, terminalReceipt.tone);
+      }}
       const auth = currentAuthState(snapshot);
       const [tone, label] = stateTone(snapshot);
       const mainIssue = runtimeIssue(snapshot);
@@ -72482,9 +80077,13 @@ class Handler(BaseHTTPRequestHandler):
             usageSummaryForActiveWork(snapshot),
           ].filter(Boolean).join(" · ");
         }} else {{
+          const sync = composerSyncSignal(snapshot);
+          const submission = activeSubmissionLabel(snapshot);
           statusText = [
+            submission,
             `Running: ${{workingRecap.headline || summarizePrompt(snapshot.running_prompt, 88)}}`,
             workingRecap.now ? summarizePrompt(workingRecap.now, 104) : "",
+            sync.activityLabel,
             elapsed > 0 ? `${{formatElapsedCompact(elapsed)}} elapsed` : "",
             promptProfileText(snapshot.running_speed, snapshot.running_detail, snapshot.running_job_budget, snapshot.running_service_tier, snapshot.running_optimization_mode),
             usageSummaryForActiveWork(snapshot),
@@ -72521,6 +80120,15 @@ class Handler(BaseHTTPRequestHandler):
         statusText += ` ${{
           queueDepth === 1 ? "1 queued." : `${{queueDepth}} queued.`
         }}`;
+      }}
+      const operatorReceipt = currentOperatorReceipt();
+      if (operatorReceipt) {{
+        statusText = operatorReceipt.message;
+      }} else {{
+        const bootstrapText = routeBootstrapLoadingCopy(snapshot);
+        if (bootstrapText) {{
+          statusText = bootstrapText;
+        }}
       }}
       el.statusMessage.textContent = statusText;
       document.body.classList.toggle(
@@ -72580,6 +80188,7 @@ class Handler(BaseHTTPRequestHandler):
       renderStatusCapsules(snapshot);
       renderBbsSummary(snapshot);
       renderNormanCommandRail(snapshot);
+      renderOperatorFocus(snapshot);
       if (el.chatSummaryBar) {{
         const contextHidden = !el.contextMeterChip || el.contextMeterChip.hidden;
         const saveHidden = !el.contextSaveButton || el.contextSaveButton.hidden;
@@ -72589,8 +80198,12 @@ class Handler(BaseHTTPRequestHandler):
       el.lastError.innerHTML = renderPreformattedText(snapshot.last_error || "[none]");
       el.copyPromptButton.disabled = !snapshot.last_prompt || snapshot.last_prompt === "[no prompt yet]";
       el.copyResponseButton.disabled = !snapshot.last_response || snapshot.last_response === "[no response yet]";
+      const responseIsTransportTruncated = isLiveTransportTruncated(snapshot.last_response);
+      el.viewFullResponseButton.hidden = !responseIsTransportTruncated;
+      el.viewFullResponseButton.disabled = !responseIsTransportTruncated;
       el.errorDetails.open = Boolean(snapshot.last_error);
       renderResponseLiveFrame(snapshot);
+      reconcilePromptSubmission(snapshot);
 
       const preserveSelection = selectionActiveInUi();
       if (!preserveSelection) {{
@@ -72623,7 +80236,6 @@ class Handler(BaseHTTPRequestHandler):
       renderSuggestions(snapshot);
       renderDraftAttachments(snapshot);
       renderPromptSafetyRail();
-      reconcilePromptSubmission(snapshot);
       updateAuthActions(snapshot);
       applyPreferences();
 
@@ -72643,14 +80255,54 @@ class Handler(BaseHTTPRequestHandler):
         }}
       }}
       renderSystemRuntimeMetrics(snapshot);
+      renderConnectorAccess(snapshot);
 
       hydrateControlTooltips();
+      observeControlTooltips();
       scheduleComposerReserve();
       setBusyButtons(false);
     }}
 
+    async function fetchWithDeadline(url, options = {{}}, timeoutMs = ACTION_REQUEST_TIMEOUT_MS) {{
+      if (typeof AbortController === "undefined") {{
+        return fetch(url, options);
+      }}
+      const controller = new AbortController();
+      const externalSignal = options.signal;
+      let timedOut = false;
+      const abortFromCaller = () => controller.abort();
+      if (externalSignal) {{
+        if (externalSignal.aborted) {{
+          controller.abort();
+        }} else {{
+          externalSignal.addEventListener("abort", abortFromCaller, {{ once: true }});
+        }}
+      }}
+      const timer = window.setTimeout(() => {{
+        timedOut = true;
+        controller.abort();
+      }}, Math.max(1000, Number(timeoutMs) || ACTION_REQUEST_TIMEOUT_MS));
+      try {{
+        return await fetch(url, {{ ...options, signal: controller.signal }});
+      }} catch (err) {{
+        if (timedOut) {{
+          throw new Error(`request timed out after ${{Math.ceil(timeoutMs / 1000)}}s`);
+        }}
+        throw err;
+      }} finally {{
+        window.clearTimeout(timer);
+        if (externalSignal) {{
+          externalSignal.removeEventListener("abort", abortFromCaller);
+        }}
+      }}
+    }}
+
     async function fetchStatus() {{
-      const res = await fetch(`${{clientPath("/api/status")}}?token=${{encodeURIComponent(TOKEN)}}`, {{ cache: "no-store" }});
+      const res = await fetchWithDeadline(
+        `${{clientPath("/api/status")}}?token=${{encodeURIComponent(TOKEN)}}`,
+        {{ cache: "no-store" }},
+        STATUS_REQUEST_TIMEOUT_MS
+      );
       if (res.status === 401 || res.status === 403) {{
         triggerAuthRefresh("Authentication expired. Reloading console…");
         throw new Error("authentication required");
@@ -72661,8 +80313,53 @@ class Handler(BaseHTTPRequestHandler):
       return await res.json();
     }}
 
+    async function loadFullLastResponse(button = null) {{
+      const transport = String(state.snapshot?.last_response || "");
+      if (!isLiveTransportTruncated(transport)) {{
+        return;
+      }}
+      const originalLabel = button ? button.textContent : "";
+      if (button) {{
+        button.disabled = true;
+        button.textContent = "Loading…";
+      }}
+      try {{
+        const res = await fetchWithDeadline(
+          `${{clientPath("/api/last-response")}}?token=${{encodeURIComponent(TOKEN)}}`,
+          {{ cache: "no-store" }},
+          STATUS_REQUEST_TIMEOUT_MS
+        );
+        if (res.status === 401 || res.status === 403) {{
+          triggerAuthRefresh("Authentication expired. Reloading console…");
+          throw new Error("authentication required");
+        }}
+        if (!res.ok) {{
+          throw new Error(`full reply ${{res.status}}`);
+        }}
+        const payload = await res.json();
+        if (!payload || typeof payload.text !== "string") {{
+          throw new Error("full reply was unavailable");
+        }}
+        state.fullLastResponse = {{ transport, text: payload.text }};
+        state.renderCache.conversation = "";
+        state.renderCache.promptResponse = "";
+        render(state.snapshot);
+        setOperatorReceipt("Complete reply loaded.", "success", {{ timeoutMs: 5000 }});
+      }} catch (err) {{
+        setOperatorReceipt(`Could not load complete reply: ${{err.message}}`, "error");
+        if (button) {{
+          button.disabled = false;
+          button.textContent = originalLabel || "View full";
+        }}
+      }}
+    }}
+
     async function fetchKpis() {{
-      const res = await fetch(`${{clientPath("/api/kpis")}}?token=${{encodeURIComponent(TOKEN)}}`, {{ cache: "no-store" }});
+      const res = await fetchWithDeadline(
+        `${{clientPath("/api/kpis")}}?token=${{encodeURIComponent(TOKEN)}}`,
+        {{ cache: "no-store" }},
+        STATUS_REQUEST_TIMEOUT_MS
+      );
       if (res.status === 404) {{
         return state.snapshot?.kpis || {{}};
       }}
@@ -72692,7 +80389,7 @@ class Handler(BaseHTTPRequestHandler):
           renderStatusActionPanel(state.snapshot);
         }}
       }} catch (err) {{
-        el.statusMessage.textContent = `Status check failed: ${{err.message}}`;
+        setOperatorReceipt(`Status check failed: ${{err.message}}`, "error");
       }} finally {{
         state.statusActionBusy = false;
         if (options.keepOpen) {{
@@ -72748,9 +80445,10 @@ class Handler(BaseHTTPRequestHandler):
       state.statusActionBusy = true;
       setStatusActionOpen(false);
       setBusyButtons(false);
-      el.statusMessage.textContent = kind === "handle"
+      const statusActionText = kind === "handle"
         ? "Sending status recovery prompt…"
         : "Asking for operator status…";
+      setOperatorReceipt(statusActionText, "info", {{ timeoutMs: ACTION_REQUEST_TIMEOUT_MS + 3000 }});
       try {{
         const result = await postForm("/api/ask", {{
           message,
@@ -72766,12 +80464,12 @@ class Handler(BaseHTTPRequestHandler):
           render(result.snapshot);
         }}
         if (!result.accepted) {{
-          el.statusMessage.textContent = result.error || "Status prompt could not be accepted.";
+          setOperatorReceipt(result.error || "Status prompt could not be accepted.", "warning");
         }}
       }} catch (err) {{
         el.runState.className = "pill error";
         el.runState.textContent = "Error";
-        el.statusMessage.textContent = `Status action failed: ${{err.message}}`;
+        setOperatorReceipt(`Status action failed: ${{err.message}}`, "error");
       }} finally {{
         state.statusActionBusy = false;
         renderStatusActionPanel(state.snapshot);
@@ -72779,13 +80477,17 @@ class Handler(BaseHTTPRequestHandler):
       }}
     }}
 
-    async function postForm(path, payload) {{
+    async function postForm(path, payload, timeoutMs = ACTION_REQUEST_TIMEOUT_MS) {{
       const body = new URLSearchParams({{ token: TOKEN, ...payload }});
-      const res = await fetch(clientPath(path), {{
-        method: "POST",
-        headers: {{ "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" }},
-        body,
-      }});
+      const res = await fetchWithDeadline(
+        clientPath(path),
+        {{
+          method: "POST",
+          headers: {{ "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" }},
+          body,
+        }},
+        timeoutMs
+      );
       let data = {{}};
       const contentType = res.headers.get("content-type") || "";
       if (contentType.includes("application/json")) {{
@@ -72826,12 +80528,16 @@ class Handler(BaseHTTPRequestHandler):
       return result;
     }}
 
-    async function postJson(path, payload) {{
-      const res = await fetch(clientPath(path), {{
-        method: "POST",
-        headers: {{ "Content-Type": "application/json;charset=UTF-8" }},
-        body: JSON.stringify({{ token: TOKEN, ...payload }}),
-      }});
+    async function postJson(path, payload, timeoutMs = ACTION_REQUEST_TIMEOUT_MS) {{
+      const res = await fetchWithDeadline(
+        clientPath(path),
+        {{
+          method: "POST",
+          headers: {{ "Content-Type": "application/json;charset=UTF-8" }},
+          body: JSON.stringify({{ token: TOKEN, ...payload }}),
+        }},
+        timeoutMs
+      );
       const contentType = res.headers.get("content-type") || "";
       let data = {{}};
       if (contentType.includes("application/json")) {{
@@ -72845,6 +80551,1290 @@ class Handler(BaseHTTPRequestHandler):
         throw new Error(data.error || `request failed (${{res.status}})`);
       }}
       return data;
+    }}
+
+    function setChildAgentsError(message = "") {{
+      const clean = String(message || "").trim();
+      state.childAgents.error = clean;
+      el.childAgentError.textContent = clean;
+      el.childAgentError.hidden = !clean;
+    }}
+
+    const CHILD_AGENT_MIN_OBJECTIVE_CHARACTERS = 12;
+    const CHILD_AGENT_TEMPLATES = {{
+      investigate: {{
+        label: "Investigate",
+        writeMode: "read_only",
+        objective: "Investigate [area]. Identify the root cause, supporting evidence, and a recommended next step. Do not modify files.",
+      }},
+      review: {{
+        label: "Review",
+        writeMode: "read_only",
+        objective: "Review [area] for correctness, regressions, and missing tests. Report prioritized findings with file references. Do not modify files.",
+      }},
+      implement: {{
+        label: "Implement",
+        writeMode: "patch_only",
+        objective: "Implement [outcome]. Limit changes to the necessary files, run focused verification, and report exact changes and remaining risks.",
+      }},
+      verify: {{
+        label: "Verify",
+        writeMode: "read_only",
+        objective: "Verify [area] against requirements and tests. Run the most relevant checks, report evidence, and do not modify files.",
+      }},
+    }};
+
+    function childAgentObjectiveLength(value) {{
+      return String(value || "").trim().replace(/\s+/g, "").length;
+    }}
+
+    function childAgentObjectiveReadiness(value) {{
+      const objective = String(value || "").trim();
+      const placeholder = objective.match(/\\[[^\\]\\r\\n]+\\]/);
+      const length = childAgentObjectiveLength(objective);
+      if (!objective) {{
+        return {{
+          ready: false,
+          message: "Add an outcome, scope, and definition of done.",
+          tone: "needs-detail",
+        }};
+      }}
+      if (placeholder) {{
+        return {{
+          ready: false,
+          message: "Replace " + placeholder[0] + " before launch.",
+          tone: "needs-detail",
+        }};
+      }}
+      if (length < CHILD_AGENT_MIN_OBJECTIVE_CHARACTERS) {{
+        const remaining = CHILD_AGENT_MIN_OBJECTIVE_CHARACTERS - length;
+        return {{
+          ready: false,
+          message: "Add " + String(remaining) + " more meaningful character" + (remaining === 1 ? "" : "s") + ".",
+          tone: "needs-detail",
+        }};
+      }}
+      return {{
+        ready: true,
+        message: String(length) + " meaningful characters - ready to launch.",
+        tone: "ready",
+      }};
+    }}
+
+    function childAgentTemplateKeyForObjective(value) {{
+      const objective = String(value || "").trim();
+      return Object.entries(CHILD_AGENT_TEMPLATES).find(
+        ([, template]) => objective === template.objective
+      )?.[0] || "";
+    }}
+
+    function renderChildAgentTemplateButtons() {{
+      for (const button of childAgentTemplateButtons) {{
+        const active = button.dataset.childAgentTemplate === state.childAgents.template;
+        button.setAttribute("aria-pressed", String(active));
+      }}
+    }}
+
+    function applyChildAgentTemplate(key) {{
+      const template = CHILD_AGENT_TEMPLATES[key];
+      if (!template || state.childAgents.busy) {{
+        return;
+      }}
+      el.childAgentObjective.value = template.objective;
+      el.childAgentWriteMode.value = template.writeMode;
+      el.childAgentPatchAcknowledgment.checked = false;
+      if (!String(el.childAgentLabel.value || "").trim()) {{
+        el.childAgentLabel.value = template.label;
+      }}
+      state.childAgents.template = key;
+      setChildAgentsError("");
+      renderChildAgentForm();
+      renderChildAgentTemplateButtons();
+      el.childAgentObjective.focus();
+      const markerStart = el.childAgentObjective.value.indexOf("[");
+      const markerEnd = el.childAgentObjective.value.indexOf("]", markerStart + 1);
+      if (markerStart >= 0 && markerEnd > markerStart) {{
+        el.childAgentObjective.setSelectionRange(markerStart, markerEnd + 1);
+      }}
+    }}
+
+    function childAgentLimit() {{
+      return Math.max(1, Number(state.childAgents.limit) || 10);
+    }}
+
+    function childAgentActiveCount() {{
+      return Math.max(0, Number(state.childAgents.activeCount) || 0);
+    }}
+
+    function focusChildAgentWorkbench(target = "objective") {{
+      setSystemOpen(true);
+      window.requestAnimationFrame(() => {{
+        const control = target === "search"
+          ? el.childAgentSearch
+          : el.childAgentObjective;
+        if (!control) {{
+          return;
+        }}
+        try {{
+          control.scrollIntoView({{ block: "center", inline: "nearest" }});
+        }} catch (_) {{
+          // Embedded browsers may not support scrollIntoView options.
+        }}
+        control.focus({{ preventScroll: true }});
+      }});
+    }}
+
+    function setChildAgentGuideOpen(open) {{
+      const isOpen = Boolean(open);
+      el.childAgentGuide.hidden = !isOpen;
+      el.childAgentGuideToggle.setAttribute("aria-expanded", String(isOpen));
+      const label = isOpen ? "Hide child-agent guide" : "Show child-agent guide";
+      el.childAgentGuideToggle.setAttribute("aria-label", label);
+      el.childAgentGuideToggle.title = label;
+      el.childAgentGuideToggle.dataset.tooltip = label;
+    }}
+
+    function renderChildAgentForm() {{
+      const readiness = childAgentObjectiveReadiness(el.childAgentObjective.value);
+      const writeMode = String(el.childAgentWriteMode.value || "read_only");
+      const patchMode = writeMode === "patch_only";
+      const patchAcknowledged = Boolean(el.childAgentPatchAcknowledgment.checked);
+      const limit = childAgentLimit();
+      const activeCount = childAgentActiveCount();
+      const atCapacity = activeCount >= limit;
+      const feedback = el.childAgentObjectiveFeedback;
+
+      feedback.textContent = readiness.message;
+      feedback.dataset.tone = readiness.tone;
+
+      el.childAgentWriteAcknowledgment.hidden = !patchMode;
+      const capacityMessage = "All " + String(limit) + " child-agent slots are active. Collect, cancel, or wait for one to finish.";
+      el.childAgentCapacityNote.hidden = !atCapacity;
+      el.childAgentCapacityNote.textContent = atCapacity ? capacityMessage : "";
+      const launchBlockedByAcknowledgment = patchMode && !patchAcknowledged;
+      el.childAgentLaunchButton.disabled = (
+        state.childAgents.busy
+        || atCapacity
+        || !readiness.ready
+        || launchBlockedByAcknowledgment
+      );
+      el.childAgentLaunchButton.title = atCapacity
+        ? capacityMessage
+        : state.childAgents.busy
+          ? "A child-agent request is in progress."
+          : !readiness.ready
+            ? readiness.message
+            : launchBlockedByAcknowledgment
+              ? "Confirm that this child may modify the shared working tree."
+              : "Launch child agent";
+    }}
+
+    function childAgentsActiveStatus(status) {{
+      return ["provisioning", "starting", "running", "cancelling"].includes(
+        String(status || "").toLowerCase()
+      );
+    }}
+
+    const CHILD_AGENT_ACTIONS = {{
+      open: {{ label: "Open child console", icon: "↗" }},
+      handoff: {{ label: "Add result to parent draft", icon: "↳" }},
+      collect: {{ label: "Collect update", icon: "↻" }},
+      rename: {{ label: "Rename child agent", icon: "✎" }},
+      retry: {{ label: "Retry child agent", icon: "↺" }},
+      cancel: {{ label: "Cancel child agent", icon: "×" }},
+    }};
+    const CHILD_AGENT_HANDOFF_MAX_CHARS = 1200;
+
+    function childAgentStatusLabel(status) {{
+      return String(status || "unknown").replace(/_/g, " ");
+    }}
+
+    function childAgentHasResult(child) {{
+      return Boolean(String(child?.result || "").trim());
+    }}
+
+    function normalizedChildAgentPath(value) {{
+      const raw = String(value || "").trim();
+      if (!raw.startsWith("/")) {{
+        return "";
+      }}
+      const segments = [];
+      for (const segment of raw.split("/")) {{
+        if (!segment || segment === ".") {{
+          continue;
+        }}
+        if (segment === "..") {{
+          segments.pop();
+          continue;
+        }}
+        segments.push(segment);
+      }}
+      return "/" + segments.join("/");
+    }}
+
+    function childAgentPathWithin(path, root) {{
+      return Boolean(root) && (path === root || path.startsWith(root + "/"));
+    }}
+
+    function childAgentAllowlistedArtifacts(child) {{
+      const roots = [
+        normalizedChildAgentPath(WORKDIR),
+        normalizedChildAgentPath(child?.state_dir),
+      ].filter(Boolean);
+      const artifacts = [];
+      const candidates = Array.isArray(child?.artifacts) ? child.artifacts : [];
+      for (const candidate of candidates) {{
+        const path = normalizedChildAgentPath(candidate);
+        if (
+          !path
+          || !roots.some((root) => childAgentPathWithin(path, root))
+          || artifacts.includes(path)
+        ) {{
+          continue;
+        }}
+        artifacts.push(path);
+        if (artifacts.length >= 20) {{
+          break;
+        }}
+      }}
+      return artifacts;
+    }}
+
+    function childAgentHandoffText(child) {{
+      const result = String(child?.result || "").trim();
+      if (!result) {{
+        return "";
+      }}
+      const boundedResult = result.length > CHILD_AGENT_HANDOFF_MAX_CHARS
+        ? result.slice(0, CHILD_AGENT_HANDOFF_MAX_CHARS - 3).trimEnd() + "..."
+        : result;
+      const label = String(child?.label || "Child agent").trim() || "Child agent";
+      const status = childAgentStatusLabel(child?.status);
+      const artifacts = childAgentAllowlistedArtifacts(child);
+      const sections = [
+        "Child-agent handoff: " + label + " (" + status + ")",
+        "Result:\\n" + boundedResult,
+      ];
+      if (artifacts.length) {{
+        sections.push("Allow-listed artifacts:\\n" + artifacts.map((path) => "- " + path).join("\\n"));
+      }}
+      sections.push("Review this handoff and any referenced file changes before acting on it.");
+      return sections.join("\\n\\n");
+    }}
+
+    function addChildAgentResultToParentPrompt(child) {{
+      const handoff = childAgentHandoffText(child);
+      if (!handoff) {{
+        setChildAgentsError("This child agent does not have a result to add.");
+        return;
+      }}
+      const prefix = String(el.promptInput.value || "").trim() ? "\\n\\n" : "";
+      setSystemOpen(false);
+      if (!insertTextIntoPrompt(prefix + handoff, {{ placeAtEnd: true }})) {{
+        setChildAgentsError("Could not add this child result to the parent draft.");
+        return;
+      }}
+      setOperatorReceipt(
+        "Child-agent handoff draft added. It has not been sent.",
+        "success",
+        {{ timeoutMs: 9000 }}
+      );
+    }}
+
+    function childAgentIconButton(label, icon, onClick, options = {{}}) {{
+      const button = document.createElement("button");
+      button.type = String(options.type || "button");
+      button.className = "ghost utility-button child-agent-action";
+      button.dataset.icon = icon;
+      button.setAttribute("aria-label", label);
+      button.title = label;
+      button.dataset.tooltip = label;
+      button.dataset.tooltipSide = "left";
+      button.textContent = label;
+      button.disabled = Boolean(options.disabled);
+      const action = String(options.action || "").trim();
+      if (action) {{
+        button.dataset.action = action;
+      }}
+      if (typeof onClick === "function") {{
+        button.addEventListener("click", onClick);
+      }}
+      return button;
+    }}
+
+    function childAgentActionButton(action, child, disabled = false) {{
+      const metadata = CHILD_AGENT_ACTIONS[action];
+      if (!metadata) {{
+        return null;
+      }}
+      return childAgentIconButton(
+        metadata.label,
+        metadata.icon,
+        () => {{
+          if (action === "open") {{
+            openChildAgentConsole(child);
+            return;
+          }}
+          if (action === "handoff") {{
+            addChildAgentResultToParentPrompt(child);
+            return;
+          }}
+          if (action === "rename") {{
+            beginChildAgentRename(child);
+            return;
+          }}
+          void runChildAgentAction(child, action);
+        }},
+        {{ disabled, action }}
+      );
+    }}
+
+    function childAgentConsoleUrl(child) {{
+      const raw = String(child?.url || "").trim();
+      if (!raw) {{
+        return "";
+      }}
+      try {{
+        const parsed = new URL(raw, window.location.origin);
+        return ["http:", "https:"].includes(parsed.protocol) ? parsed.href : "";
+      }} catch (_) {{
+        return "";
+      }}
+    }}
+
+    function openChildAgentConsole(child) {{
+      const url = childAgentConsoleUrl(child);
+      if (!url) {{
+        setChildAgentsError("This child agent does not have a console URL.");
+        return;
+      }}
+      const opened = window.open("", "_blank");
+      if (!opened) {{
+        setChildAgentsError("The browser blocked the child-agent console. Allow popups and try again.");
+        return;
+      }}
+      opened.opener = null;
+      opened.location.replace(url);
+    }}
+
+    function childAgentActionsForStatus(status) {{
+      if (childAgentsActiveStatus(status)) {{
+        return ["collect", "rename", "cancel"];
+      }}
+      if (status === "completed") {{
+        return ["collect", "rename", "retry"];
+      }}
+      if (["failed", "stopped", "cancelled"].includes(status)) {{
+        return ["rename", "retry"];
+      }}
+      return ["collect", "rename", "retry"];
+    }}
+
+    function childAgentFilterMatches(child, filter) {{
+      const status = String(child?.status || "").toLowerCase();
+      if (filter === "active") {{
+        return childAgentsActiveStatus(status);
+      }}
+      if (filter === "attention") {{
+        return ["failed", "stopped", "cancelled"].includes(status);
+      }}
+      if (filter === "completed") {{
+        return status === "completed";
+      }}
+      return true;
+    }}
+
+    function setChildAgentFilter(filter, options = {{}}) {{
+      state.childAgents.filter = ["active", "attention", "completed"].includes(filter)
+        ? filter
+        : "all";
+      if (options.clearQuery) {{
+        state.childAgents.query = "";
+      }}
+      renderChildAgents();
+      if (options.focusSearch) {{
+        el.childAgentSearch.focus({{ preventScroll: true }});
+      }}
+    }}
+
+    function childAgentSearchMatches(child, query) {{
+      const needle = String(query || "").trim().toLowerCase();
+      if (!needle) {{
+        return true;
+      }}
+      return [
+        child?.label,
+        child?.objective,
+        child?.result,
+        child?.error,
+      ].some((value) => String(value || "").toLowerCase().includes(needle));
+    }}
+
+    function childAgentUpdatedAt(child) {{
+      const raw = Number(child?.updated_at || child?.created_at || 0);
+      if (!Number.isFinite(raw) || raw <= 0) {{
+        return 0;
+      }}
+      return raw < 100000000000 ? raw * 1000 : raw;
+    }}
+
+    function childAgentSortRank(child) {{
+      const status = String(child?.status || "").toLowerCase();
+      if (childAgentsActiveStatus(status)) {{
+        return 0;
+      }}
+      if (["failed", "stopped", "cancelled"].includes(status)) {{
+        return 1;
+      }}
+      if (status === "completed") {{
+        return 2;
+      }}
+      return 3;
+    }}
+
+    function visibleChildAgents(children) {{
+      const filter = String(state.childAgents.filter || "all");
+      const query = state.childAgents.query;
+      return children
+        .filter((child) => childAgentFilterMatches(child, filter))
+        .filter((child) => childAgentSearchMatches(child, query))
+        .sort((left, right) => (
+          childAgentSortRank(left) - childAgentSortRank(right)
+          || childAgentUpdatedAt(right) - childAgentUpdatedAt(left)
+          || String(left?.label || "").localeCompare(String(right?.label || ""))
+        ));
+    }}
+
+    function childAgentUpdatedLabel(child, now = Date.now()) {{
+      const updatedAt = childAgentUpdatedAt(child);
+      if (!updatedAt) {{
+        return "";
+      }}
+      const seconds = Math.max(0, Math.round((now - updatedAt) / 1000));
+      if (seconds < 45) {{
+        return "updated just now";
+      }}
+      if (seconds < 90) {{
+        return "updated 1m ago";
+      }}
+      if (seconds < 3600) {{
+        return "updated " + String(Math.round(seconds / 60)) + "m ago";
+      }}
+      if (seconds < 86400) {{
+        return "updated " + String(Math.round(seconds / 3600)) + "h ago";
+      }}
+      return "updated " + String(Math.round(seconds / 86400)) + "d ago";
+    }}
+
+    function childAgentSummaryCounts(children) {{
+      return {{
+        active: childAgentActiveCount(),
+        attention: children.filter((child) => childAgentFilterMatches(child, "attention")).length,
+        handoff: children.filter((child) => (
+          String(child?.status || "").toLowerCase() === "completed"
+          && childAgentHasResult(child)
+        )).length,
+      }};
+    }}
+
+    function operatorFocusDescriptor(snapshot = state.snapshot) {{
+      const queueDepth = Math.max(0, Number(snapshot?.queue_depth || 0));
+      const children = Array.isArray(state.childAgents.children) ? state.childAgents.children : [];
+      const childCounts = childAgentSummaryCounts(children);
+      const auth = currentAuthState(snapshot);
+      const intervention = humanInterventionFocus(snapshot);
+      const issue = runtimeIssue(snapshot);
+      const context = contextMeterState(snapshot);
+      const draftReady = Boolean(String(el.promptInput?.value || "").trim());
+      const idle = !snapshot?.pending && queueDepth === 0;
+
+      if (auth.required || intervention || issue?.code) {{
+        const state = auth.required
+          ? (auth.summary || "Sign-in needs attention.")
+          : intervention
+            ? (intervention.question || "Operator input is needed.")
+            : (issue.title || issue.summary || "Console status needs review.");
+        return {{
+          state,
+          tone: "alert",
+          action: "review-status",
+          actionLabel: "Review status",
+          actionTitle: "Open the current status and recovery actions",
+          queueDepth,
+          childCounts,
+        }};
+      }}
+
+      if (
+        idle
+        && !context.hidden
+        && ["warn", "danger"].includes(String(context.tone || ""))
+      ) {{
+        return {{
+          state: context.tone === "danger"
+            ? "Context is heavy. Stage a compact handoff before more work."
+            : "Context is growing. Stage a compact handoff soon.",
+          tone: "warn",
+          action: "stage-compact",
+          actionLabel: "Stage compact",
+          actionTitle: "Append a save/compact request to the draft",
+          queueDepth,
+          childCounts,
+        }};
+      }}
+
+      if (childCounts.attention > 0) {{
+        return {{
+          state: String(childCounts.attention) + " child agent"
+            + (childCounts.attention === 1 ? " needs attention." : "s need attention."),
+          tone: "alert",
+          action: "open-children-attention",
+          actionLabel: "Review children",
+          actionTitle: "Open child agents that need attention",
+          queueDepth,
+          childCounts,
+        }};
+      }}
+
+      if (childCounts.handoff > 0) {{
+        return {{
+          state: String(childCounts.handoff) + " child-agent handoff"
+            + (childCounts.handoff === 1 ? " is ready." : "s are ready."),
+          tone: "active",
+          action: "open-children-completed",
+          actionLabel: "Review handoffs",
+          actionTitle: "Open completed child agents with results",
+          queueDepth,
+          childCounts,
+        }};
+      }}
+
+      if (queueDepth > 0) {{
+        return {{
+          state: String(queueDepth) + " queued "
+            + (queueDepth === 1 ? "request is waiting." : "requests are waiting."),
+          tone: "active",
+          action: "jump-latest",
+          actionLabel: "Jump latest",
+          actionTitle: "Jump to the latest conversation activity",
+          queueDepth,
+          childCounts,
+        }};
+      }}
+
+      if (idle && !draftReady) {{
+        return {{
+          state: "Ready to review the current state and choose the next action.",
+          tone: "neutral",
+          action: "stage-next-action",
+          actionLabel: "Stage next action",
+          actionTitle: "Append a next-action review request to the draft",
+          queueDepth,
+          childCounts,
+        }};
+      }}
+
+      return {{
+        state: draftReady
+          ? "Draft ready. Review it, then send when you are ready."
+          : "Console is working. You can prepare the next request.",
+        tone: snapshot?.pending ? "active" : "neutral",
+        action: "focus-prompt",
+        actionLabel: "Focus prompt",
+        actionTitle: "Focus the prompt without changing its draft",
+        queueDepth,
+        childCounts,
+      }};
+    }}
+
+    function renderOperatorFocus(snapshot = state.snapshot) {{
+      if (
+        !el.operatorFocusRail
+        || !el.operatorFocusState
+        || !el.operatorFocusQueue
+        || !el.operatorFocusChildren
+        || !el.operatorFocusAction
+      ) {{
+        return;
+      }}
+      const descriptor = operatorFocusDescriptor(snapshot);
+      const queueLabel = descriptor.queueDepth > 0
+        ? "Q " + String(descriptor.queueDepth)
+        : snapshot?.pending
+          ? "Working"
+          : "Queue clear";
+      const childCounts = descriptor.childCounts;
+      const childLabel = childCounts.attention > 0
+        ? "Child " + String(childCounts.attention) + " alert"
+        : childCounts.handoff > 0
+          ? "Handoff " + String(childCounts.handoff)
+          : childCounts.active > 0
+            ? "Child " + String(childCounts.active) + " active"
+            : "Children clear";
+      const childTone = childCounts.attention > 0
+        ? "attention"
+        : childCounts.handoff > 0
+          ? "handoff"
+          : "";
+      const queueTitle = descriptor.queueDepth > 0
+        ? String(descriptor.queueDepth) + " queued request"
+          + (descriptor.queueDepth === 1 ? ". Select to review the latest work." : "s. Select to review the latest work.")
+        : snapshot?.pending
+          ? "A reply is running; new requests can queue. Select to review the latest work."
+          : "No requests are queued. Select to review detailed status.";
+      const childTitle = childCounts.attention > 0
+        ? String(childCounts.attention) + " child agent"
+          + (childCounts.attention === 1 ? " needs attention. Select to review it." : "s need attention. Select to review them.")
+        : childCounts.handoff > 0
+          ? String(childCounts.handoff) + " completed handoff"
+            + (childCounts.handoff === 1 ? " is ready. Select to review it." : "s are ready. Select to review them.")
+          : childCounts.active > 0
+            ? String(childCounts.active) + " child agent"
+              + (childCounts.active === 1 ? " is active. Select to review it." : "s are active. Select to review them.")
+            : "No child-agent work needs review. Select to launch a child-agent task.";
+      const renderKey = JSON.stringify({{
+        state: descriptor.state,
+        tone: descriptor.tone,
+        action: descriptor.action,
+        actionLabel: descriptor.actionLabel,
+        queueLabel,
+        childLabel,
+        childTone,
+      }});
+      if (state.operatorActionPaletteOpen) {{
+        renderOperatorActionPalette();
+      }}
+      if (state.renderCache.operatorFocus === renderKey) {{
+        return;
+      }}
+      state.renderCache.operatorFocus = renderKey;
+      el.operatorFocusRail.hidden = false;
+      el.operatorFocusState.textContent = descriptor.state;
+      el.operatorFocusState.dataset.tone = descriptor.tone;
+      el.operatorFocusQueue.textContent = queueLabel;
+      el.operatorFocusQueue.title = queueTitle;
+      el.operatorFocusQueue.dataset.tooltip = queueTitle;
+      el.operatorFocusQueue.setAttribute(
+        "aria-label",
+        queueLabel + ". " + queueTitle
+      );
+      el.operatorFocusChildren.textContent = childLabel;
+      el.operatorFocusChildren.dataset.tone = childTone;
+      el.operatorFocusChildren.title = childTitle;
+      el.operatorFocusChildren.dataset.tooltip = childTitle;
+      el.operatorFocusChildren.setAttribute(
+        "aria-label",
+        childLabel + ". " + childTitle
+      );
+      el.operatorFocusAction.textContent = descriptor.actionLabel;
+      el.operatorFocusAction.dataset.operatorAction = descriptor.action;
+      el.operatorFocusAction.title = descriptor.actionTitle;
+      el.operatorFocusAction.dataset.tooltip = descriptor.actionTitle;
+      el.operatorFocusAction.setAttribute(
+        "aria-label",
+        descriptor.actionLabel + ". " + descriptor.actionTitle
+      );
+    }}
+
+    function stageOperatorDraft(text, receipt) {{
+      const value = String(text || "").trim();
+      if (!value) {{
+        return false;
+      }}
+      const prefix = String(el.promptInput?.value || "").trim() ? "\\n\\n" : "";
+      if (!insertTextIntoPrompt(prefix + value, {{ placeAtEnd: true }})) {{
+        setOperatorReceipt("Could not add that request to the draft.", "error");
+        return false;
+      }}
+      setOperatorReceipt(receipt, "success", {{ timeoutMs: 9000 }});
+      return true;
+    }}
+
+    function latestCompletedChildAgentWithResult() {{
+      const children = Array.isArray(state.childAgents.children) ? state.childAgents.children : [];
+      return children
+        .filter((child) => (
+          String(child?.status || "").toLowerCase() === "completed"
+          && childAgentHasResult(child)
+        ))
+        .sort((left, right) => (
+          childAgentUpdatedAt(right) - childAgentUpdatedAt(left)
+          || String(left?.label || "").localeCompare(String(right?.label || ""))
+        ))[0] || null;
+    }}
+
+    function openChildAgentWorkbenchFilter(filter) {{
+      setChildAgentFilter(filter, {{ clearQuery: true }});
+      focusChildAgentWorkbench("search");
+    }}
+
+    function stageLatestChildAgentRelay() {{
+      const child = latestCompletedChildAgentWithResult();
+      if (!child) {{
+        setOperatorReceipt("No completed child-agent handoff is ready.", "warning");
+        return false;
+      }}
+      const prefix = String(el.promptInput?.value || "").trim() ? "\\n\\n" : "";
+      setSystemOpen(false);
+      if (!insertTextIntoPrompt(prefix + childAgentHandoffText(child), {{ placeAtEnd: true }})) {{
+        setOperatorReceipt("Could not add the child-agent handoff to the draft.", "error");
+        return false;
+      }}
+      setOperatorReceipt(
+        "Child-agent handoff draft added. It has not been sent.",
+        "success",
+        {{ timeoutMs: 9000 }}
+      );
+      return true;
+    }}
+
+    function runOperatorMetricAction(metric) {{
+      const cleanMetric = String(metric || "").trim();
+      const descriptor = operatorFocusDescriptor(state.snapshot);
+      if (cleanMetric === "queue") {{
+        if (descriptor.queueDepth > 0 || state.snapshot?.pending) {{
+          jumpToLatestConversation();
+          return true;
+        }}
+        setStatusActionOpen(true);
+        return true;
+      }}
+      if (cleanMetric === "children") {{
+        const childCounts = descriptor.childCounts;
+        if (childCounts.attention > 0) {{
+          openChildAgentWorkbenchFilter("attention");
+          return true;
+        }}
+        if (childCounts.handoff > 0) {{
+          openChildAgentWorkbenchFilter("completed");
+          return true;
+        }}
+        if (childCounts.active > 0) {{
+          openChildAgentWorkbenchFilter("active");
+          return true;
+        }}
+        focusChildAgentWorkbench("objective");
+        return true;
+      }}
+      return false;
+    }}
+
+    function runOperatorAction(action) {{
+      const cleanAction = String(action || "").trim();
+      if (!cleanAction) {{
+        return false;
+      }}
+      setOperatorActionPaletteOpen(false);
+      switch (cleanAction) {{
+        case "focus-prompt":
+          focusPromptInputAtEnd();
+          return true;
+        case "open-switcher":
+          setSwitcherOpen(true);
+          return true;
+        case "review-status":
+          setStatusActionOpen(true);
+          return true;
+        case "open-settings":
+          setSettingsOpen(true);
+          return true;
+        case "open-system":
+          setSystemOpen(true);
+          return true;
+        case "stage-compact":
+          return stageOperatorDraft(
+            buildContextSavePrompt(contextMeterState(state.snapshot)),
+            "Save/compact request added to the draft. It has not been sent."
+          );
+        case "stage-next-action":
+          return stageOperatorDraft(
+            "Review the current state, identify the highest-value next action, and proceed with it.",
+            "Next-action review added to the draft. It has not been sent."
+          );
+        case "open-children":
+          focusChildAgentWorkbench("objective");
+          return true;
+        case "open-children-attention":
+          openChildAgentWorkbenchFilter("attention");
+          return true;
+        case "open-children-completed":
+          openChildAgentWorkbenchFilter("completed");
+          return true;
+        case "refresh-status":
+          setOperatorReceipt("Refreshing status…", "info");
+          void refreshStatus();
+          return true;
+        case "stage-child-relay":
+          return stageLatestChildAgentRelay();
+        case "jump-latest":
+          jumpToLatestConversation();
+          return true;
+        default:
+          return false;
+      }}
+    }}
+
+    function renderChildAgentSummary(children) {{
+      const counts = childAgentSummaryCounts(children);
+      const descriptors = [
+        {{
+          filter: "active",
+          tone: "active",
+          label: "Active",
+          value: counts.active,
+          title: "Show active child agents",
+        }},
+        {{
+          filter: "attention",
+          tone: "attention",
+          label: "Attention",
+          value: counts.attention,
+          title: "Show child agents that need attention",
+        }},
+        {{
+          filter: "completed",
+          tone: "handoff",
+          label: "Handoffs",
+          value: counts.handoff,
+          title: "Show completed child agents with results ready to hand off",
+        }},
+      ];
+      el.childAgentSummary.replaceChildren();
+      for (const descriptor of descriptors) {{
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "child-agent-summary-chip";
+        button.dataset.tone = descriptor.tone;
+        button.setAttribute(
+          "aria-pressed",
+          String(state.childAgents.filter === descriptor.filter)
+        );
+        button.title = descriptor.title;
+        button.setAttribute("aria-label", descriptor.label + ": " + String(descriptor.value) + ". " + descriptor.title);
+        const value = document.createElement("span");
+        value.className = "child-agent-summary-value";
+        value.textContent = String(descriptor.value);
+        const label = document.createElement("span");
+        label.className = "child-agent-summary-label";
+        label.textContent = descriptor.label;
+        button.append(value, label);
+        button.addEventListener("click", () => {{
+          setChildAgentFilter(descriptor.filter, {{ clearQuery: true }});
+        }});
+        el.childAgentSummary.appendChild(button);
+      }}
+    }}
+
+    function renderChildAgentFilters(children, visibleChildren) {{
+      const active = (
+        state.childAgents.filter !== "all"
+        || String(state.childAgents.query || "").trim()
+      );
+      el.childAgentStatusFilter.value = state.childAgents.filter;
+      el.childAgentSearch.value = state.childAgents.query;
+      el.childAgentFilterClear.hidden = !active;
+      el.childAgentFilterClear.disabled = state.childAgents.busy;
+      const suffix = visibleChildren.length === children.length
+        ? ""
+        : " · " + String(visibleChildren.length) + " shown";
+      el.childAgentsCount.textContent = (
+        String(childAgentActiveCount()) + " / " + String(childAgentLimit()) + " active" + suffix
+      );
+    }}
+
+    function beginChildAgentRename(child) {{
+      const childId = String(child?.id || "");
+      if (!childId || state.childAgents.busy) {{
+        return;
+      }}
+      state.childAgents.editingId = childId;
+      state.childAgents.editingLabel = String(child?.label || "Child agent");
+      state.childAgents.renameFocusPending = true;
+      setChildAgentsError("");
+      renderChildAgents();
+    }}
+
+    function cancelChildAgentRename() {{
+      state.childAgents.editingId = "";
+      state.childAgents.editingLabel = "";
+      state.childAgents.renameFocusPending = false;
+      renderChildAgents();
+    }}
+
+    async function saveChildAgentRename(child) {{
+      const childId = String(child?.id || "");
+      const label = String(state.childAgents.editingLabel || "").trim();
+      if (!childId || !label) {{
+        setChildAgentsError("A child-agent name is required.");
+        renderChildAgents();
+        return;
+      }}
+      const renamed = await runChildAgentAction(child, "rename", {{ label }});
+      if (renamed && state.childAgents.editingId === childId) {{
+        state.childAgents.editingId = "";
+        state.childAgents.editingLabel = "";
+        state.childAgents.renameFocusPending = false;
+        renderChildAgents();
+      }}
+    }}
+
+    function renderChildAgents() {{
+      const childState = state.childAgents;
+      const children = Array.isArray(childState.children) ? childState.children : [];
+      const limit = childAgentLimit();
+      const activeCount = childAgentActiveCount();
+      const visibleChildren = visibleChildAgents(children);
+      renderChildAgentSummary(children);
+      renderChildAgentFilters(children, visibleChildren);
+      const capacityPercentage = Math.min(100, Math.round((activeCount / limit) * 100));
+      el.childAgentsCapacity.setAttribute("aria-valuemax", String(limit));
+      el.childAgentsCapacity.setAttribute("aria-valuenow", String(activeCount));
+      el.childAgentsCapacityFill.style.width = String(capacityPercentage) + "%";
+      renderChildAgentForm();
+      el.childAgentsList.replaceChildren();
+
+      if (
+        childState.editingId
+        && !children.some((child) => String(child?.id || "") === childState.editingId)
+      ) {{
+        childState.editingId = "";
+        childState.editingLabel = "";
+        childState.renameFocusPending = false;
+      }}
+
+      if (!children.length || !visibleChildren.length) {{
+        const empty = document.createElement("div");
+        empty.className = "child-agent-empty";
+        empty.setAttribute("role", "status");
+        if (!children.length) {{
+          empty.textContent = "No child agents yet. Use a template or describe a focused outcome, then launch one.";
+        }} else if (
+          state.childAgents.filter === "attention"
+          && !String(state.childAgents.query || "").trim()
+        ) {{
+          empty.textContent = "No child agents need attention.";
+        }} else if (
+          state.childAgents.filter === "active"
+          && !String(state.childAgents.query || "").trim()
+        ) {{
+          empty.textContent = "No child agents are active. Launch one when work can run independently.";
+        }} else if (
+          state.childAgents.filter === "completed"
+          && !String(state.childAgents.query || "").trim()
+        ) {{
+          empty.textContent = "No completed child agents are ready to review.";
+        }} else {{
+          empty.textContent = "No child agents match the current filter. Clear filters or try another search.";
+        }}
+        el.childAgentsList.appendChild(empty);
+        return;
+      }}
+
+      for (const child of visibleChildren) {{
+        const childId = String(child?.id || "");
+        const status = String(child?.status || "unknown").toLowerCase();
+        const editing = Boolean(childId && childState.editingId === childId);
+        const row = document.createElement("article");
+        row.className = "child-agent-row";
+        row.dataset.status = status;
+        row.dataset.editing = editing ? "true" : "false";
+        row.setAttribute("role", "listitem");
+
+        const head = document.createElement("div");
+        head.className = "child-agent-row-head";
+        const label = document.createElement("div");
+        label.className = "child-agent-label";
+        label.textContent = String(child?.label || "Child agent");
+        label.title = label.textContent;
+        const badge = document.createElement("span");
+        badge.className = "child-agent-status";
+        badge.textContent = childAgentStatusLabel(status);
+        badge.setAttribute("aria-label", "Status: " + badge.textContent);
+        const mode = document.createElement("span");
+        mode.className = "child-agent-mode";
+        mode.textContent = String(child?.write_mode || "read_only").replace(/_/g, " ");
+        head.append(label, badge, mode);
+
+        let detail;
+        let renameInput = null;
+        if (editing) {{
+          detail = document.createElement("div");
+          detail.className = "child-agent-rename";
+          const renameForm = document.createElement("form");
+          renameForm.className = "child-agent-rename-form";
+          renameForm.addEventListener("submit", (event) => {{
+            event.preventDefault();
+            void saveChildAgentRename(child);
+          }});
+          renameInput = document.createElement("input");
+          renameInput.className = "child-agent-rename-input";
+          renameInput.type = "text";
+          renameInput.maxLength = 120;
+          renameInput.autocomplete = "off";
+          renameInput.value = String(childState.editingLabel || "");
+          renameInput.setAttribute("aria-label", "Child-agent name");
+          renameInput.addEventListener("input", () => {{
+            childState.editingLabel = renameInput.value;
+          }});
+          renameInput.addEventListener("keydown", (event) => {{
+            if (event.key === "Escape") {{
+              event.preventDefault();
+              cancelChildAgentRename();
+            }}
+          }});
+          const saveButton = childAgentIconButton(
+            "Save name",
+            "✓",
+            null,
+            {{ type: "submit", disabled: childState.busy }}
+          );
+          const cancelButton = childAgentIconButton(
+            "Cancel rename",
+            "×",
+            cancelChildAgentRename,
+            {{ disabled: childState.busy }}
+          );
+          renameForm.append(renameInput, saveButton, cancelButton);
+          detail.appendChild(renameForm);
+        }} else {{
+          detail = document.createElement("div");
+          detail.className = "child-agent-detail";
+          const error = String(child?.error || "").trim();
+          const result = String(child?.result || "").trim();
+          const detailKind = error ? "error" : result ? "result" : "objective";
+          detail.dataset.kind = detailKind;
+          const detailLabel = document.createElement("span");
+          detailLabel.className = "child-agent-detail-kind";
+          detailLabel.textContent = {{
+            error: "Error",
+            result: "Result",
+            objective: "Objective",
+          }}[detailKind];
+          const detailText = document.createElement("span");
+          detailText.className = "child-agent-detail-text";
+          detailText.textContent = error || result || String(child?.objective || "");
+          const detailCopy = document.createElement("div");
+          detailCopy.className = "child-agent-detail-copy";
+          detailCopy.appendChild(detailText);
+          const updated = childAgentUpdatedLabel(child);
+          if (updated) {{
+            const updatedMeta = document.createElement("span");
+            updatedMeta.className = "child-agent-updated";
+            updatedMeta.textContent = updated;
+            detailCopy.appendChild(updatedMeta);
+          }}
+          detail.append(detailLabel, detailCopy);
+        }}
+
+        const actions = document.createElement("div");
+        actions.className = "child-agent-actions";
+        const disabled = Boolean(childState.busy);
+        if (childAgentConsoleUrl(child)) {{
+          const openButton = childAgentActionButton("open", child, false);
+          if (openButton) {{
+            actions.appendChild(openButton);
+          }}
+        }}
+        if (childAgentHasResult(child)) {{
+          const handoffButton = childAgentActionButton("handoff", child, false);
+          if (handoffButton) {{
+            actions.appendChild(handoffButton);
+          }}
+        }}
+        for (const action of childAgentActionsForStatus(status)) {{
+          const button = childAgentActionButton(action, child, disabled);
+          if (button) {{
+            actions.appendChild(button);
+          }}
+        }}
+        row.append(head, detail, actions);
+        el.childAgentsList.appendChild(row);
+        if (renameInput && childState.renameFocusPending) {{
+          childState.renameFocusPending = false;
+          window.requestAnimationFrame(() => {{
+            if (document.body.contains(renameInput)) {{
+              renameInput.focus();
+              renameInput.select();
+            }}
+          }});
+        }}
+      }}
+    }}
+
+    function stopChildAgentsPoll() {{
+      window.clearTimeout(state.childAgents.pollTimer);
+      state.childAgents.pollTimer = 0;
+    }}
+
+    function scheduleChildAgentsPoll() {{
+      stopChildAgentsPoll();
+      if (
+        !document.body.classList.contains("system-open")
+        || document.hidden
+      ) {{
+        return;
+      }}
+      state.childAgents.pollTimer = window.setTimeout(() => {{
+        void refreshChildAgents();
+      }}, 3000);
+    }}
+
+    async function fetchChildren() {{
+      const res = await fetchWithDeadline(
+        `${{clientPath("/api/children")}}?token=${{encodeURIComponent(TOKEN)}}`,
+        {{ cache: "no-store" }},
+        STATUS_REQUEST_TIMEOUT_MS
+      );
+      if (res.status === 401 || res.status === 403) {{
+        triggerAuthRefresh("Authentication expired. Reloading console…");
+        throw new Error("authentication required");
+      }}
+      if (!res.ok) {{
+        const payload = await res.json().catch(() => ({{}}));
+        throw new Error(payload.error || ("child agents " + String(res.status)));
+      }}
+      return await res.json();
+    }}
+
+    async function refreshChildAgents(options = {{}}) {{
+      if (
+        state.childAgents.requestInFlight
+        || (!document.body.classList.contains("system-open") && !options.background)
+      ) {{
+        return;
+      }}
+      state.childAgents.requestInFlight = true;
+      try {{
+        const payload = await fetchChildren();
+        state.childAgents.children = Array.isArray(payload?.children) ? payload.children : [];
+        state.childAgents.activeCount = Number(payload?.active_count) || 0;
+        state.childAgents.limit = Number(payload?.limit) || 10;
+        setChildAgentsError("");
+      }} catch (err) {{
+        setChildAgentsError("Child agents unavailable: " + String(err?.message || err));
+      }} finally {{
+        state.childAgents.requestInFlight = false;
+        renderChildAgents();
+        renderOperatorFocus(state.snapshot);
+        scheduleChildAgentsPoll();
+      }}
+    }}
+
+    async function runChildAgentAction(child, action, payload = {{}}) {{
+      const childId = String(child?.id || "");
+      if (!childId) {{
+        return false;
+      }}
+      const cleanAction = String(action || "");
+      if (cleanAction === "cancel") {{
+        const childLabel = String(child?.label || "this child agent");
+        const confirmed = window.confirm([
+          "Cancel " + childLabel + "?",
+          "",
+          "Any unfinished work will stop. You can still collect its latest update.",
+        ].join("\\n"));
+        if (!confirmed) {{
+          return false;
+        }}
+      }}
+      let actionPayload = payload && typeof payload === "object" ? {{ ...payload }} : {{}};
+      if (cleanAction === "rename") {{
+        const nextLabel = String(actionPayload.label || "").trim();
+        if (!nextLabel) {{
+          setChildAgentsError("A child-agent name is required.");
+          return false;
+        }}
+        actionPayload = {{ label: nextLabel }};
+      }}
+      state.childAgents.busy = true;
+      setChildAgentsError("");
+      renderChildAgents();
+      let succeeded = false;
+      try {{
+        await postJson(
+          "/api/children/" + encodeURIComponent(childId) + "/" + cleanAction,
+          actionPayload
+        );
+        succeeded = true;
+      }} catch (err) {{
+        setChildAgentsError("Child-agent action failed: " + String(err?.message || err));
+      }} finally {{
+        state.childAgents.busy = false;
+        await refreshChildAgents();
+        renderChildAgents();
+      }}
+      return succeeded;
+    }}
+
+    async function launchChildAgent() {{
+      const objective = String(el.childAgentObjective.value || "").trim();
+      const objectiveLength = childAgentObjectiveLength(objective);
+      const writeMode = String(el.childAgentWriteMode.value || "read_only");
+      const limit = childAgentLimit();
+      const activeCount = childAgentActiveCount();
+      if (state.childAgents.busy) {{
+        return;
+      }}
+      if (activeCount >= limit) {{
+        setChildAgentsError(
+          "Child-agent capacity is full (" + String(activeCount) + " / " + String(limit) + " active)."
+        );
+        renderChildAgentForm();
+        return;
+      }}
+      if (!objective) {{
+        setChildAgentsError("A child-agent objective is required.");
+        el.childAgentObjective.focus();
+        renderChildAgentForm();
+        return;
+      }}
+      if (objectiveLength < CHILD_AGENT_MIN_OBJECTIVE_CHARACTERS) {{
+        setChildAgentsError(
+          "Give the child a clearer objective with at least "
+          + String(CHILD_AGENT_MIN_OBJECTIVE_CHARACTERS)
+          + " meaningful characters."
+        );
+        el.childAgentObjective.focus();
+        renderChildAgentForm();
+        return;
+      }}
+      const readiness = childAgentObjectiveReadiness(objective);
+      if (!readiness.ready) {{
+        setChildAgentsError(readiness.message);
+        el.childAgentObjective.focus();
+        renderChildAgentForm();
+        return;
+      }}
+      if (writeMode === "patch_only" && !el.childAgentPatchAcknowledgment.checked) {{
+        setChildAgentsError(
+          "Confirm that the child may modify the shared working tree before launching."
+        );
+        el.childAgentPatchAcknowledgment.focus();
+        renderChildAgentForm();
+        return;
+      }}
+      state.childAgents.busy = true;
+      setChildAgentsError("");
+      renderChildAgents();
+      try {{
+        await postJson("/api/children", {{
+          label: String(el.childAgentLabel.value || "").trim(),
+          objective,
+          write_mode: writeMode,
+        }});
+        el.childAgentObjective.value = "";
+        el.childAgentLabel.value = "";
+        el.childAgentPatchAcknowledgment.checked = false;
+        state.childAgents.template = "";
+        renderChildAgentTemplateButtons();
+        renderChildAgentForm();
+      }} catch (err) {{
+        setChildAgentsError("Child-agent launch failed: " + String(err?.message || err));
+      }} finally {{
+        state.childAgents.busy = false;
+        await refreshChildAgents();
+        renderChildAgents();
+      }}
     }}
 
     function fileToBase64(file) {{
@@ -72873,8 +81863,7 @@ class Handler(BaseHTTPRequestHandler):
           const recoveredText = attachments.length === 1
             ? `Upload response was interrupted; ${{attachmentDisplayName(attachments[0])}} is staged.`
             : `Upload response was interrupted; ${{attachments.length}} attachments are staged.`;
-          el.statusMessage.textContent = recoveredText;
-          setComposerFeedback(recoveredText, "success", {{ timeoutMs: 10000 }});
+          setOperatorReceipt(recoveredText, "success", {{ timeoutMs: 10000 }});
           return true;
         }}
       }} catch (_) {{
@@ -72962,8 +81951,7 @@ class Handler(BaseHTTPRequestHandler):
       }}
       if (result.attachment) {{
         const stagedText = `Staged ${{attachmentDisplayName(result.attachment)}} · ready to send.`;
-        el.statusMessage.textContent = stagedText;
-        setComposerFeedback(stagedText, "success", {{ timeoutMs: 10000 }});
+        setOperatorReceipt(stagedText, "success", {{ timeoutMs: 10000 }});
       }}
     }}
 
@@ -72972,11 +81960,10 @@ class Handler(BaseHTTPRequestHandler):
       const previousDraftSignature = attachmentSignature(state.snapshot?.draft_attachments);
       setBusyButtons(false);
       if (waitingText) {{
-        el.statusMessage.textContent = waitingText;
-        setComposerFeedback(waitingText, "info");
+        setOperatorReceipt(waitingText, "info");
       }}
       try {{
-        const result = await postJson(path, payload);
+        const result = await postJson(path, payload, UPLOAD_REQUEST_TIMEOUT_MS);
         applyAttachmentUploadResult(result);
       }} catch (err) {{
         const recovered = await recoverAttachmentUploadStatus(previousDraftSignature);
@@ -73000,18 +81987,21 @@ class Handler(BaseHTTPRequestHandler):
       setBusyButtons(false);
       const fileName = file.name || "attachment";
       const waitingText = `Staging ${{fileName}}…`;
-      el.statusMessage.textContent = waitingText;
-      setComposerFeedback(waitingText, "info");
+      setOperatorReceipt(waitingText, "info");
       try {{
-        const res = await fetch(attachmentUploadUrl("/api/attachment/upload", {{
-          name: fileName,
-          content_type: file.type || "application/octet-stream",
-          source: source || "paste-file",
-        }}), {{
-          method: "POST",
-          headers: {{ "Content-Type": file.type || "application/octet-stream" }},
-          body: file,
-        }});
+        const res = await fetchWithDeadline(
+          attachmentUploadUrl("/api/attachment/upload", {{
+            name: fileName,
+            content_type: file.type || "application/octet-stream",
+            source: source || "paste-file",
+          }}),
+          {{
+            method: "POST",
+            headers: {{ "Content-Type": file.type || "application/octet-stream" }},
+            body: file,
+          }},
+          UPLOAD_REQUEST_TIMEOUT_MS
+        );
         const contentType = res.headers.get("content-type") || "";
         let result = {{}};
         if (contentType.includes("application/json")) {{
@@ -73304,15 +82294,14 @@ class Handler(BaseHTTPRequestHandler):
       state.attachmentBusy = true;
       setBusyButtons(false);
       const removeText = `Removing ${{attachmentLabel}}…`;
-      el.statusMessage.textContent = removeText;
-      setComposerFeedback(removeText, "info");
+      setOperatorReceipt(removeText, "info");
       try {{
         const result = await postForm("/api/attachment/remove", {{ attachment_token: token }});
         if (result.snapshot) {{
           clearDraftAttachmentProtection();
           render(result.snapshot);
         }}
-        setComposerFeedback(`Removed ${{attachmentLabel}}.`, "success", {{ timeoutMs: 7000 }});
+        setOperatorReceipt(`Removed ${{attachmentLabel}}.`, "success", {{ timeoutMs: 7000 }});
       }} catch (err) {{
         showComposerFeedbackError(`Remove failed: ${{err.message}}`);
       }} finally {{
@@ -73370,6 +82359,12 @@ class Handler(BaseHTTPRequestHandler):
     function connectStream() {{
       if (!window.EventSource) {{
         setTransportState("Polling", false);
+        if (!state.transportAcknowledged) {{
+          state.transportAcknowledged = true;
+          if (!currentOperatorReceipt()) {{
+            setOperatorReceipt("Live updates are unavailable. Direct status checks are connected.", "info");
+          }}
+        }}
         return;
       }}
       if (document.hidden) {{
@@ -73389,6 +82384,12 @@ class Handler(BaseHTTPRequestHandler):
           const snapshot = JSON.parse(event.data);
           state.streamConnected = true;
           setTransportState(snapshot.pending ? "Live · waiting" : "Live", true);
+          if (!state.transportAcknowledged) {{
+            state.transportAcknowledged = true;
+            if (!currentOperatorReceipt()) {{
+              setOperatorReceipt("Live updates connected. Console state is current.", "success");
+            }}
+          }}
           clearTimeout(state.pollTimer);
           render(snapshot);
         }} catch (_) {{
@@ -73399,6 +82400,12 @@ class Handler(BaseHTTPRequestHandler):
       stream.onerror = () => {{
         disconnectStream();
         setTransportState(document.hidden ? "Background" : "Reconnecting…", false);
+        if (!document.hidden) {{
+          setOperatorReceipt(
+            "Live updates lost. Direct status checks will keep this console current while reconnecting.",
+            "warning"
+          );
+        }}
         schedulePoll(900);
         scheduleStreamReconnect(1800);
       }};
@@ -73409,11 +82416,17 @@ class Handler(BaseHTTPRequestHandler):
         const snapshot = await fetchStatus();
         state.streamConnected = false;
         setTransportState(snapshot.pending ? "Polling · waiting" : "Polling", false);
+        if (!state.transportAcknowledged) {{
+          state.transportAcknowledged = true;
+          if (!currentOperatorReceipt()) {{
+            setOperatorReceipt("Direct status checks connected. Live updates will reconnect when available.", "info");
+          }}
+        }}
         render(snapshot);
       }} catch (err) {{
         el.runState.className = "pill error";
         el.runState.textContent = "Offline";
-        el.statusMessage.textContent = `Status refresh failed: ${{err.message}}`;
+        setOperatorReceipt(`Status refresh failed: ${{err.message}}`, "error");
         setTransportState("Offline", false);
       }} finally {{
         schedulePoll();
@@ -73587,13 +82600,14 @@ class Handler(BaseHTTPRequestHandler):
       if (hasActiveUploadTrayItems()) {{
         const waitingText = "Files are still attaching. Wait for upload status to settle before sending.";
         el.statusMessage.textContent = waitingText;
-        playInteractionTone("soft", {{ force: true }});
+        playFeedbackTone("blocked");
         pulseComposerShell("soft");
         setComposerFeedback(waitingText, "warning");
         setBusyButtons(false);
         return;
       }}
-      const message = el.promptInput.value.trim();
+      const draftValue = el.promptInput.value;
+      const message = draftValue.trim();
           const draftAttachments = Array.isArray(state.snapshot.draft_attachments)
             ? state.snapshot.draft_attachments
             : [];
@@ -73606,7 +82620,7 @@ class Handler(BaseHTTPRequestHandler):
           if (existingConflict) {{
             const duplicateText = `That prompt is ${{existingConflict.label}}; duplicate send ignored. Active work is still visible above the input.`;
             el.statusMessage.textContent = duplicateText;
-            playInteractionTone("soft", {{ force: true }});
+            playFeedbackTone("blocked");
             pulseComposerShell("soft");
             setComposerFeedback(duplicateText, "warning", {{ timeoutMs: 8000 }});
             renderComposerActiveWork(state.snapshot);
@@ -73628,7 +82642,7 @@ class Handler(BaseHTTPRequestHandler):
             if (!state.snapshot.pending) {{
               const idleText = "Nothing is running; use Queue for a normal prompt.";
           el.statusMessage.textContent = idleText;
-          playInteractionTone("soft", {{ force: true }});
+          playFeedbackTone("blocked");
           pulseComposerShell("soft");
           setComposerFeedback(idleText, "info", {{ timeoutMs: 5000 }});
           return;
@@ -73636,7 +82650,7 @@ class Handler(BaseHTTPRequestHandler):
         if (!options.interruptConfirmed && !confirmInterruptSubmit(message || "attachment prompt")) {{
           const cancelledText = "Interrupt cancelled. Use Queue to park the prompt behind the current reply.";
           el.statusMessage.textContent = cancelledText;
-          playInteractionTone("soft", {{ force: true }});
+          playFeedbackTone("blocked");
           pulseComposerShell("soft");
           setComposerFeedback(cancelledText, "info", {{ timeoutMs: 5000 }});
           return;
@@ -73651,13 +82665,20 @@ class Handler(BaseHTTPRequestHandler):
           ? "Prompt is already being submitted; duplicate send ignored."
           : "A prompt submit is already in flight. Wait for the acknowledgement before sending another.";
         el.statusMessage.textContent = duplicateText;
-        playInteractionTone("soft", {{ force: true }});
+        playFeedbackTone("blocked");
         pulseComposerShell("soft");
         setComposerFeedback(duplicateText, "info", {{ timeoutMs: 4000 }});
         return;
       }}
       state.promptSubmitInFlight = true;
       state.promptSubmitSignature = submissionSignature;
+      const priorReceipt = loadPromptSubmission();
+      const submissionId = (
+        priorReceipt
+        && promptReceiptMatches(priorReceipt.value, message)
+        && ["sending", "reconciling"].includes(String(priorReceipt.state || ""))
+        && String(priorReceipt.submissionId || "").trim()
+      ) || createPromptSubmissionId();
       const speed = normalizeResponseSpeed(state.preferences.responseSpeed);
       const detail = normalizeResponseDetail(state.preferences.responseDetail);
       const serviceTier = normalizeServiceTier(state.preferences.serviceTier);
@@ -73666,7 +82687,7 @@ class Handler(BaseHTTPRequestHandler):
       const runtime = normalizeRuntime(state.preferences.runtime);
       const model = normalizeRuntimeModel(runtime, state.preferences.model);
       const responseProfile = promptProfileText(speed, detail, jobBudget, serviceTier, optimizationMode);
-      playInteractionTone(requestedInterlaceMode === "interrupt" ? "chime" : "send", {{ force: true }});
+      playFeedbackTone("send");
       pulseComposerShell(requestedInterlaceMode === "interrupt" ? "chime" : "send", {{ press: true, durationMs: 360 }});
       state.transientOperatorBanner = "";
       setSystemOpen(false);
@@ -73682,16 +82703,26 @@ class Handler(BaseHTTPRequestHandler):
             : "Sending prompt…",
         "…"
       );
-      el.statusMessage.textContent = state.snapshot.pending
-        ? requestedInterlaceMode === "interrupt"
-          ? `Interrupt requested at next safe checkpoint · ${{responseProfile}}…`
-          : `Queueing follow-up prompt · ${{responseProfile}}…`
-        : `Submitting prompt to ${{AGENT_LABEL}} · ${{responseProfile}}…`;
-      setComposerFeedback(el.statusMessage.textContent, "info");
-      persistPromptSubmission(message, {{ state: "sending" }});
+      const submittingText = state.snapshot.pending && requestedInterlaceMode === "interrupt"
+        ? `Interrupt requested at next safe checkpoint · ${{responseProfile}}…`
+        : routePreparationReceipt(
+          runtime,
+          model,
+          serviceTier,
+          Boolean(state.snapshot.pending)
+        );
+      setOperatorReceipt(submittingText, "info", {{ timeoutMs: ACTION_REQUEST_TIMEOUT_MS + 3000 }});
+      persistPromptSubmission(message, {{
+        state: "sending",
+        submissionId,
+        submittedAt: priorReceipt?.submittedAt || Date.now(),
+      }});
+      clearSubmittedComposer();
+      render(state.snapshot);
       try {{
         const result = await postForm("/api/ask", {{
           message,
+          submission_id: submissionId,
           speed,
           detail: String(detail),
           service_tier: serviceTier,
@@ -73702,57 +82733,84 @@ class Handler(BaseHTTPRequestHandler):
           model,
         }});
         if (result.accepted) {{
+          const acceptedSubmissionId = String(result.submission_id || submissionId).trim();
+          const submissionState = String(result.submission_state || "").trim().toLowerCase();
+          const queuePosition = Math.max(0, Number(result.queue_position || 0));
           if (result.deduplicated) {{
-            persistPromptSubmission(message, {{ state: "visible", acceptedAt: Date.now(), verifiedAt: Date.now() }});
-            playInteractionTone("soft", {{ force: true }});
-            setComposerFeedback(
-              "That prompt is already running or queued; duplicate send ignored.",
+            persistPromptSubmission(message, {{
+              state: "visible",
+              submissionId: acceptedSubmissionId,
+              acceptedAt: Date.now(),
+              verifiedAt: Date.now(),
+            }});
+            playFeedbackTone("blocked");
+            setOperatorReceipt(
+              "Submission confirmed. That prompt is already running or queued; duplicate send ignored.",
               "info",
-              {{ timeoutMs: 7000 }}
+              {{ timeoutMs: 12000 }}
             );
           }} else {{
             clearDraftAttachmentProtection();
-            persistPromptSubmission(message, {{ state: "accepted", acceptedAt: Date.now() }});
-            playInteractionTone("accepted", {{ force: true }});
-            pulseComposerShell("accepted", {{ durationMs: 420 }});
-            el.promptInput.value = "";
-            clearPromptSafetyConfirm();
-            renderPromptSafetyRail();
-            autoresize(el.promptInput);
-            state.toolbarExpanded = false;
-            clearPromptDraft();
-            setComposerFeedback(
-              state.snapshot.pending
-                ? requestedInterlaceMode === "interrupt"
-                  ? "Interrupt prompt queued for the next safe checkpoint."
-                  : "Follow-up prompt queued."
-                : "Prompt submitted.",
+            persistPromptSubmission(message, {{
+              state: submissionState || "accepted",
+              submissionId: acceptedSubmissionId,
+              acceptedAt: Date.now(),
+            }});
+            const queuedPrompt = Boolean(result.queued)
+              || requestedInterlaceMode === "interrupt"
+              || Boolean(state.snapshot.pending);
+            playFeedbackTone(queuedPrompt ? "queued" : "accepted");
+            pulseComposerShell(queuedPrompt ? "queued" : "accepted", {{ durationMs: 420 }});
+            const receiptText = acceptedRouteReceipt(result.snapshot, {{
+              queued: queuedPrompt,
+              queuePosition,
+            }}) || (queuedPrompt
+              ? `Accepted · queued${{queuePosition ? ` at position ${{queuePosition}}` : ""}}. The current turn keeps running.`
+              : "Accepted · running. Live worker detail will appear above the input.");
+            setOperatorReceipt(
+              requestedInterlaceMode === "interrupt"
+                ? "Accepted · interrupt is waiting for the next safe checkpoint."
+                : receiptText,
               "success",
-              {{ timeoutMs: 6000 }}
+              {{ timeoutMs: 15000 }}
             );
           }}
         }}
         if (result.snapshot) {{
           render(result.snapshot);
+        }} else {{
+          render(state.snapshot);
         }}
         if (!result.accepted) {{
           clearPromptSubmission();
           const rejectedText = result.error || "A web prompt is already running.";
-          el.statusMessage.textContent = rejectedText;
-          playInteractionTone("soft", {{ force: true }});
+          restoreRejectedPrompt(draftValue);
+          setOperatorReceipt(rejectedText, "warning");
+          playFeedbackTone("blocked");
           pulseComposerShell("soft");
-          setComposerFeedback(rejectedText, "warning");
+          render(state.snapshot);
         }}
       }} catch (err) {{
-        clearPromptSubmission();
-        persistPromptDraft(message);
-        playInteractionTone("soft", {{ force: true }});
+        persistPromptSubmission(message, {{
+          state: "reconciling",
+          submissionId,
+          submittedAt: priorReceipt?.submittedAt || Date.now(),
+        }});
+        const unknownText = "Submit outcome unknown. Checking whether the console accepted it; do not resend yet.";
+        setOperatorReceipt(unknownText, "warning", {{ timeoutMs: 15000 }});
+        playFeedbackTone("blocked");
         pulseComposerShell("soft");
-        showComposerFeedbackError(`Send failed: ${{err.message}}`);
+        render(state.snapshot);
+        window.setTimeout(() => {{
+          fetchStatus()
+            .then((snapshot) => render(snapshot))
+            .catch(() => {{}});
+        }}, 650);
         setBusyButtons(false);
       }} finally {{
         state.promptSubmitInFlight = false;
         state.promptSubmitSignature = "";
+        setBusyButtons(false);
         schedulePoll(1200);
       }}
     }}
@@ -73825,6 +82883,10 @@ class Handler(BaseHTTPRequestHandler):
     function submitPromptFromKeyboard(event) {{
       if (state.promptSubmitInFlight || el.askButton.disabled) {{
         event.preventDefault();
+        const waitingText = state.promptSubmitInFlight
+          ? "Submit is still being acknowledged. Your prompt has not been sent again."
+          : "Submit controls are busy. Waiting for the current acknowledgement.";
+        setOperatorReceipt(waitingText, "info", {{ timeoutMs: 5000 }});
         return true;
       }}
       if (!promptHasSubmissionPayload()) {{
@@ -73848,7 +82910,7 @@ class Handler(BaseHTTPRequestHandler):
       if (!message) return;
       state.transientOperatorBanner = `Console send in progress: ${{summarizePrompt(message, 88)}}`;
       renderActivityStrip(state.snapshot);
-      el.statusMessage.textContent = "Sending raw text into tmux…";
+      setOperatorReceipt("Sending raw text into tmux…", "info", {{ timeoutMs: ACTION_REQUEST_TIMEOUT_MS + 3000 }});
       setBusyButtons(true);
       try {{
         const result = await postForm("/api/send", {{ message }});
@@ -73858,10 +82920,11 @@ class Handler(BaseHTTPRequestHandler):
           state.transientOperatorBanner = "";
           render(result.snapshot);
         }}
+        setOperatorReceipt("Raw console text sent.", "success");
       }} catch (err) {{
         state.transientOperatorBanner = "Console action failed.";
         renderActivityStrip(state.snapshot);
-        el.statusMessage.textContent = `tmux send failed: ${{err.message}}`;
+        setOperatorReceipt(`tmux send failed: ${{err.message}}`, "error");
         setBusyButtons(false);
       }} finally {{
         schedulePoll(1000);
@@ -73871,20 +82934,33 @@ class Handler(BaseHTTPRequestHandler):
     async function fireAction(path, label) {{
       state.transientOperatorBanner = label;
       renderActivityStrip(state.snapshot);
-      el.statusMessage.textContent = label;
+      setOperatorReceipt(label, "info", {{ timeoutMs: ACTION_REQUEST_TIMEOUT_MS + 3000 }});
       setBusyButtons(true);
       try {{
         const result = await postForm(path, {{}});
+        playFeedbackTone("action");
         if (result.snapshot) {{
           state.transientOperatorBanner = "";
           render(result.snapshot);
+        }}
+        const existingReceipt = currentOperatorReceipt();
+        if (!existingReceipt || !existingReceipt.message.startsWith("Reply ")) {{
+          setOperatorReceipt(`${{label.replace(/…+$/, "")}} complete.`, "success");
         }}
       }} catch (err) {{
         state.transientOperatorBanner = "Console action failed.";
         renderActivityStrip(state.snapshot);
         el.runState.className = "pill error";
         el.runState.textContent = "Error";
-        el.statusMessage.textContent = `${{label}} failed: ${{err.message}}`;
+        const actionError = String(err?.message || "request failed");
+        const outcomeUnknown = actionError.includes("request timed out");
+        setOperatorReceipt(
+          outcomeUnknown
+            ? `${{label}} timed out. Checking the console state before another action.`
+            : `${{label}} failed: ${{actionError}}`,
+          outcomeUnknown ? "warning" : "error"
+        );
+        playFeedbackTone("error");
         setBusyButtons(false);
       }} finally {{
         schedulePoll(1000);
@@ -73895,7 +82971,7 @@ class Handler(BaseHTTPRequestHandler):
       const label = "Scheduling web-only TUI restart…";
       state.transientOperatorBanner = label;
       renderActivityStrip(state.snapshot);
-      el.statusMessage.textContent = label;
+      setOperatorReceipt(label, "info", {{ timeoutMs: ACTION_REQUEST_TIMEOUT_MS + 3000 }});
       setBusyButtons(true);
       try {{
         const result = await postForm("/api/web-restart", {{}});
@@ -73907,7 +82983,8 @@ class Handler(BaseHTTPRequestHandler):
         if (result.snapshot) {{
           render(result.snapshot);
         }}
-        el.statusMessage.textContent = message;
+        setOperatorReceipt(message, "success");
+        playFeedbackTone("action");
         window.setTimeout(() => {{
           window.location.reload();
         }}, result.already_scheduled ? 1200 : 1800);
@@ -73916,7 +82993,8 @@ class Handler(BaseHTTPRequestHandler):
         renderActivityStrip(state.snapshot);
         el.runState.className = "pill error";
         el.runState.textContent = "Error";
-        el.statusMessage.textContent = `Web-only restart failed: ${{err.message}}`;
+        setOperatorReceipt(`Web-only restart failed: ${{err.message}}`, "error");
+        playFeedbackTone("error");
         setBusyButtons(false);
         schedulePoll(1000);
       }}
@@ -73934,20 +83012,23 @@ class Handler(BaseHTTPRequestHandler):
       }}
       state.transientOperatorBanner = "Removing queued prompt…";
       renderActivityStrip(state.snapshot);
-      el.statusMessage.textContent = "Removing queued prompt…";
+      setOperatorReceipt("Removing queued prompt…", "info", {{ timeoutMs: ACTION_REQUEST_TIMEOUT_MS + 3000 }});
       setBusyButtons(true);
       try {{
         const result = await postForm("/api/queue/delete", {{ id: cleanId }});
+        playFeedbackTone("action");
         state.transientOperatorBanner = "";
         if (result.snapshot) {{
           render(result.snapshot);
         }}
+        setOperatorReceipt("Queued prompt removed.", "success");
       }} catch (err) {{
         state.transientOperatorBanner = "Queue update failed.";
         renderActivityStrip(state.snapshot);
         el.runState.className = "pill error";
         el.runState.textContent = "Error";
-        el.statusMessage.textContent = `Remove queued prompt failed: ${{err.message}}`;
+        setOperatorReceipt(`Remove queued prompt failed: ${{err.message}}`, "error");
+        playFeedbackTone("error");
         if (button) {{
           button.disabled = false;
           button.textContent = originalText || "Remove";
@@ -73970,20 +83051,23 @@ class Handler(BaseHTTPRequestHandler):
       }}
       state.transientOperatorBanner = "Upgrading queued prompt to interruption…";
       renderActivityStrip(state.snapshot);
-      el.statusMessage.textContent = "Upgrading queued prompt to interruption…";
+      setOperatorReceipt("Upgrading queued prompt to interruption…", "info", {{ timeoutMs: ACTION_REQUEST_TIMEOUT_MS + 3000 }});
       setBusyButtons(true);
       try {{
         const result = await postForm("/api/queue/interrupt", {{ id: cleanId }});
+        playFeedbackTone("queued");
         state.transientOperatorBanner = "";
         if (result.snapshot) {{
           render(result.snapshot);
         }}
+        setOperatorReceipt("Queued prompt will interrupt at the next safe checkpoint.", "success");
       }} catch (err) {{
         state.transientOperatorBanner = "Queue update failed.";
         renderActivityStrip(state.snapshot);
         el.runState.className = "pill error";
         el.runState.textContent = "Error";
-        el.statusMessage.textContent = `Interrupt queued prompt failed: ${{err.message}}`;
+        setOperatorReceipt(`Interrupt queued prompt failed: ${{err.message}}`, "error");
+        playFeedbackTone("error");
         if (button) {{
           button.disabled = false;
           button.textContent = originalText || "Interrupt";
@@ -73997,7 +83081,7 @@ class Handler(BaseHTTPRequestHandler):
     function startBrowserAuthFromConsole() {{
       state.transientOperatorBanner = "Opening browser sign-in…";
       renderActivityStrip(state.snapshot);
-      el.statusMessage.textContent = "Opening browser sign-in…";
+      setOperatorReceipt("Opening browser sign-in…", "info", {{ timeoutMs: ACTION_REQUEST_TIMEOUT_MS + 3000 }});
       (async () => {{
         try {{
           const result = await postJson("/api/auth/browser", {{}});
@@ -74009,7 +83093,7 @@ class Handler(BaseHTTPRequestHandler):
           const auth = currentAuthState(snapshot);
           const snapshotState = String(snapshot?.state || "").trim().toLowerCase();
           if (!auth.required && snapshotState === "ok") {{
-            el.statusMessage.textContent = "Already signed in.";
+            setOperatorReceipt("Already signed in.", "success");
             return;
           }}
           const verificationUrl = String(auth.verification_url || "").trim();
@@ -74023,25 +83107,31 @@ class Handler(BaseHTTPRequestHandler):
             }} catch (_) {{
               popup = null;
             }}
-            el.statusMessage.textContent = BROWSER_AUTH_BRIDGE_ALLOWED && launchHref.startsWith(browserAuthBridgeApiBase())
-              ? "Browser sign-in opened. Local auth bridge armed."
-              : "Browser sign-in opened. If localhost cannot connect, use Auth Helper with the callback URL.";
+            setOperatorReceipt(
+              BROWSER_AUTH_BRIDGE_ALLOWED && launchHref.startsWith(browserAuthBridgeApiBase())
+                ? "Browser sign-in opened. Local auth bridge armed."
+                : "Browser sign-in opened. If localhost cannot connect, use Auth Helper with the callback URL.",
+              "success"
+            );
             if (popup) {{
               popup.location.replace(launchHref);
             }} else {{
               window.location.assign(launchHref);
             }}
           }} else {{
-            el.statusMessage.textContent = auth.required
-              ? "Browser sign-in was prepared, but no auth URL was returned. Refresh and retry."
-              : "No browser sign-in was needed.";
+            setOperatorReceipt(
+              auth.required
+                ? "Browser sign-in was prepared, but no auth URL was returned. Refresh and retry."
+                : "No browser sign-in was needed.",
+              auth.required ? "warning" : "success"
+            );
           }}
         }} catch (err) {{
           state.transientOperatorBanner = "Auth action failed.";
           renderActivityStrip(state.snapshot);
           el.runState.className = "pill error";
           el.runState.textContent = "Error";
-          el.statusMessage.textContent = `Browser sign-in failed: ${{err.message}}`;
+          setOperatorReceipt(`Browser sign-in failed: ${{err.message}}`, "error");
           setBusyButtons(false);
         }} finally {{
           schedulePoll(1000);
@@ -74052,7 +83142,7 @@ class Handler(BaseHTTPRequestHandler):
     async function startDeviceAuthFromConsole() {{
       state.transientOperatorBanner = "Preparing device code…";
       renderActivityStrip(state.snapshot);
-      el.statusMessage.textContent = "Preparing device code…";
+      setOperatorReceipt("Preparing device code…", "info", {{ timeoutMs: ACTION_REQUEST_TIMEOUT_MS + 3000 }});
       setBusyButtons(true);
       try {{
         const result = await postJson("/api/auth/device", {{}});
@@ -74064,15 +83154,18 @@ class Handler(BaseHTTPRequestHandler):
         if (auth.verification_url) {{
           window.open(auth.verification_url, "_blank", "noopener,noreferrer");
         }}
-        el.statusMessage.textContent = auth.device_code
-          ? `Device code ready: ${{auth.device_code}}`
-          : "Device code sign-in is ready.";
+        setOperatorReceipt(
+          auth.device_code
+            ? `Device code ready: ${{auth.device_code}}`
+            : "Device code sign-in is ready.",
+          "success"
+        );
       }} catch (err) {{
         state.transientOperatorBanner = "Auth action failed.";
         renderActivityStrip(state.snapshot);
         el.runState.className = "pill error";
         el.runState.textContent = "Error";
-        el.statusMessage.textContent = `Device code failed: ${{err.message}}`;
+        setOperatorReceipt(`Device code failed: ${{err.message}}`, "error");
         setBusyButtons(false);
       }} finally {{
         schedulePoll(1000);
@@ -74300,6 +83393,33 @@ class Handler(BaseHTTPRequestHandler):
       }}
 
       if (
+        lowerKey === "j"
+        && hasPrimaryModifier
+        && !event.altKey
+        && (
+          !editableShortcutTarget(event.target)
+          || (
+            state.operatorActionPaletteOpen
+            && Boolean(el.operatorActionPalette?.contains(event.target))
+          )
+        )
+        && (
+          !selectionActiveInUi()
+          || (
+            state.operatorActionPaletteOpen
+            && Boolean(el.operatorActionPalette?.contains(event.target))
+          )
+        )
+      ) {{
+        event.preventDefault();
+        const shouldOpen = !state.operatorActionPaletteOpen;
+        setOperatorActionPaletteOpen(shouldOpen, {{
+          restoreFocus: !shouldOpen,
+        }});
+        return true;
+      }}
+
+      if (
         lowerKey === "k"
         && hasPrimaryModifier
         && !event.altKey
@@ -74307,6 +83427,19 @@ class Handler(BaseHTTPRequestHandler):
       ) {{
         event.preventDefault();
         setSwitcherOpen(true);
+        return true;
+      }}
+
+      if (
+        (lowerKey === "a" || lowerKey === "f")
+        && hasPrimaryModifier
+        && event.shiftKey
+        && !event.altKey
+        && !editableShortcutTarget(event.target)
+        && !selectionActiveInUi()
+      ) {{
+        event.preventDefault();
+        focusChildAgentWorkbench(lowerKey === "f" ? "search" : "objective");
         return true;
       }}
 
@@ -74506,6 +83639,9 @@ class Handler(BaseHTTPRequestHandler):
     el.tmuxForm.addEventListener("submit", submitTmux);
     el.copyPromptButton.addEventListener("click", () => copyText(el.lastPrompt.dataset.raw || el.lastPrompt.textContent, el.copyPromptButton));
     el.copyResponseButton.addEventListener("click", () => copyText(el.lastResponse.dataset.raw || el.lastResponse.textContent, el.copyResponseButton));
+    el.viewFullResponseButton.addEventListener("click", () => {{
+      void loadFullLastResponse(el.viewFullResponseButton);
+    }});
     if (el.contextSaveButton) {{
       el.contextSaveButton.addEventListener("click", () => handleContextSaveAction(el.contextSaveButton));
     }}
@@ -74703,6 +83839,48 @@ class Handler(BaseHTTPRequestHandler):
     el.systemToggleButton.addEventListener("click", () => setSystemOpen(true));
     el.systemCloseButton.addEventListener("click", () => setSystemOpen(false));
     el.systemBackdrop.addEventListener("click", () => setSystemOpen(false));
+    el.childAgentGuideToggle.addEventListener("click", () => {{
+      setChildAgentGuideOpen(el.childAgentGuide.hidden);
+    }});
+    childAgentTemplateButtons.forEach((button) => {{
+      button.addEventListener("click", () => {{
+        applyChildAgentTemplate(String(button.dataset.childAgentTemplate || ""));
+      }});
+    }});
+    el.childAgentStatusFilter.addEventListener("change", () => {{
+      setChildAgentFilter(String(el.childAgentStatusFilter.value || "all"));
+    }});
+    el.childAgentSearch.addEventListener("input", () => {{
+      state.childAgents.query = String(el.childAgentSearch.value || "");
+      renderChildAgents();
+    }});
+    el.childAgentFilterClear.addEventListener("click", () => {{
+      setChildAgentFilter("all", {{ clearQuery: true, focusSearch: true }});
+    }});
+    el.childAgentForm.addEventListener("submit", (event) => {{
+      event.preventDefault();
+      void launchChildAgent();
+    }});
+    el.childAgentObjective.addEventListener("input", () => {{
+      state.childAgents.template = childAgentTemplateKeyForObjective(
+        el.childAgentObjective.value
+      );
+      renderChildAgentTemplateButtons();
+      renderChildAgentForm();
+    }});
+    el.childAgentObjective.addEventListener("keydown", (event) => {{
+      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {{
+        event.preventDefault();
+        void launchChildAgent();
+      }}
+    }});
+    el.childAgentWriteMode.addEventListener("change", () => {{
+      if (String(el.childAgentWriteMode.value || "read_only") !== "patch_only") {{
+        el.childAgentPatchAcknowledgment.checked = false;
+      }}
+      renderChildAgentForm();
+    }});
+    el.childAgentPatchAcknowledgment.addEventListener("change", () => renderChildAgentForm());
     if (el.activityPeekToggle) {{
       el.activityPeekToggle.addEventListener("click", () => {{
         state.activityPeekOpen = !state.activityPeekOpen;
@@ -74720,6 +83898,83 @@ class Handler(BaseHTTPRequestHandler):
         state.activityPeekOpen = true;
         renderActivityStrip(state.snapshot);
         setSystemOpen(true);
+      }});
+    }}
+    if (el.operatorFocusAction) {{
+      el.operatorFocusAction.addEventListener("click", () => {{
+        runOperatorAction(el.operatorFocusAction.dataset.operatorAction || "");
+      }});
+    }}
+    if (el.operatorFocusQueue) {{
+      el.operatorFocusQueue.addEventListener("click", () => {{
+        runOperatorMetricAction(el.operatorFocusQueue.dataset.operatorMetric || "");
+      }});
+    }}
+    if (el.operatorFocusChildren) {{
+      el.operatorFocusChildren.addEventListener("click", () => {{
+        runOperatorMetricAction(el.operatorFocusChildren.dataset.operatorMetric || "");
+      }});
+    }}
+    if (el.operatorActionPaletteToggle) {{
+      el.operatorActionPaletteToggle.addEventListener("click", () => {{
+        const shouldOpen = !state.operatorActionPaletteOpen;
+        setOperatorActionPaletteOpen(shouldOpen, {{
+          restoreFocus: !shouldOpen,
+        }});
+      }});
+    }}
+    if (el.operatorActionSearch) {{
+      el.operatorActionSearch.addEventListener("input", () => {{
+        state.operatorActionQuery = el.operatorActionSearch.value;
+        renderOperatorActionPalette();
+      }});
+      el.operatorActionSearch.addEventListener("keydown", (event) => {{
+        if (event.key === "Escape") {{
+          event.preventDefault();
+          event.stopPropagation();
+          setOperatorActionPaletteOpen(false, {{ restoreFocus: true }});
+          return;
+        }}
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {{
+          event.preventDefault();
+          focusOperatorActionPaletteButton(event.key === "ArrowDown" ? 1 : -1);
+          return;
+        }}
+        if (event.key === "Enter") {{
+          const buttons = visibleOperatorActionPaletteButtons();
+          event.preventDefault();
+          if (buttons.length === 1) {{
+            runOperatorAction(buttons[0].dataset.operatorAction || "");
+          }} else {{
+            focusOperatorActionPaletteButton(1);
+          }}
+        }}
+      }});
+    }}
+    if (el.operatorActionPalette) {{
+      el.operatorActionPalette.addEventListener("keydown", (event) => {{
+        if (event.target === el.operatorActionSearch) {{
+          return;
+        }}
+        if (event.key === "Escape") {{
+          event.preventDefault();
+          event.stopPropagation();
+          setOperatorActionPaletteOpen(false, {{ restoreFocus: true }});
+          return;
+        }}
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {{
+          event.preventDefault();
+          focusOperatorActionPaletteButton(event.key === "ArrowDown" ? 1 : -1);
+        }}
+      }});
+      el.operatorActionPalette.addEventListener("click", (event) => {{
+        const target = event.target instanceof Element
+          ? event.target.closest("[data-operator-action]")
+          : null;
+        if (!target || target.disabled) {{
+          return;
+        }}
+        runOperatorAction(target.dataset.operatorAction || "");
       }});
     }}
     el.composerToolsToggle.addEventListener("click", () => {{
@@ -74829,6 +84084,7 @@ class Handler(BaseHTTPRequestHandler):
         (el.consoleFocusPanel && !el.consoleFocusPanel.hidden)
         || state.toolbarExpanded
         || state.uploadMenuOpen
+        || state.operatorActionPaletteOpen
         || document.body.classList.contains("switcher-open")
         || document.body.classList.contains("topbar-menu-open")
         || document.body.classList.contains("settings-open")
@@ -74843,6 +84099,7 @@ class Handler(BaseHTTPRequestHandler):
       setConsoleFocusExpanded(false);
       setUploadMenuOpen(false);
       updateComposerToolbar(state.snapshot);
+      setOperatorActionPaletteOpen(false);
       setSwitcherOpen(false);
       setTopbarMenuOpen(false);
       setSettingsOpen(false);
@@ -74850,6 +84107,18 @@ class Handler(BaseHTTPRequestHandler):
       setSystemOpen(false);
       closeMessageActionMenus();
       return true;
+    }}
+
+    function webReplyActive(snapshot = state.snapshot) {{
+      const stateName = String(snapshot?.state || "").trim().toLowerCase();
+      return Boolean(
+        snapshot?.pending
+        || snapshot?.model_process_alive
+        || snapshot?.web_worker_alive
+        || Number(snapshot?.active_child_pid || 0) > 0
+        || stateName === "running"
+        || stateName === "cancelling"
+      );
     }}
 
     function maybeInterruptFromEscape(event) {{
@@ -74862,7 +84131,12 @@ class Handler(BaseHTTPRequestHandler):
         focusPromptInputAtEnd();
         return true;
       }}
-      if (!state.snapshot.pending || event.repeat) {{
+      const submission = loadPromptSubmission();
+      const submitOutcomeUncertain = Boolean(
+        state.promptSubmitInFlight
+        || ["sending", "reconciling"].includes(String(submission?.state || ""))
+      );
+      if ((!webReplyActive(state.snapshot) && !submitOutcomeUncertain) || event.repeat) {{
         return false;
       }}
       const active = document.activeElement;
@@ -74881,7 +84155,12 @@ class Handler(BaseHTTPRequestHandler):
       state.escapeInterruptAt = Date.now();
       event.preventDefault();
       event.stopPropagation();
-      fireAction("/api/cancel-web", "Cancelling current web reply…");
+      fireAction(
+        "/api/cancel-web",
+        submitOutcomeUncertain && !webReplyActive(state.snapshot)
+          ? "Stop requested. Checking for a newly started web reply…"
+          : "Stop requested. Cancelling the current web reply…"
+      );
       return true;
     }}
 
@@ -74891,7 +84170,7 @@ class Handler(BaseHTTPRequestHandler):
         || event.defaultPrevented
         || event.key !== "Escape"
         || event.repeat
-        || state.snapshot.pending
+        || webReplyActive(state.snapshot)
         || !shortcutEligibleTarget(event)
       ) {{
         return false;
@@ -74967,6 +84246,10 @@ class Handler(BaseHTTPRequestHandler):
       copyText(code.textContent || "", button);
     }});
     document.addEventListener("keydown", (event) => {{
+      if (event.key === "Escape" && closeInlineImageLightbox()) {{
+        event.preventDefault();
+        return;
+      }}
       if (handleGlobalConsoleShortcut(event)) {{
         return;
       }}
@@ -75027,7 +84310,7 @@ class Handler(BaseHTTPRequestHandler):
     }}
     el.refreshButton.addEventListener("click", () => {{
       setTopbarMenuOpen(false);
-      el.statusMessage.textContent = "Refreshing status…";
+      setOperatorReceipt("Refreshing status…", "info");
       refreshStatus();
     }});
     el.cancelWebButton.addEventListener("click", () => fireAction("/api/cancel-web", "Cancelling current web reply…"));
@@ -75042,6 +84325,7 @@ class Handler(BaseHTTPRequestHandler):
       clearInterruptSubmitConfirm();
       autoresize(el.promptInput);
       updateComposerToolbar(state.snapshot);
+      renderOperatorFocus(state.snapshot);
       renderSuggestions(state.snapshot);
       renderPromptSafetyRail();
       renderPromptCostEstimate(state.snapshot);
@@ -75074,7 +84358,7 @@ class Handler(BaseHTTPRequestHandler):
         if (!key || !value) {{
           return;
         }}
-        const stringSettings = new Set(["density", "viewMode", "textZoom", "styleVariant", "finish", "responseSpeed", "completionBell", "runtime", "model"]);
+        const stringSettings = new Set(["density", "viewMode", "textZoom", "styleVariant", "finish", "responseSpeed", "completionBell", "feedbackSounds", "runtime", "model"]);
         let nextPreferences = normalizePreferences({{
           ...state.preferences,
           [key]: stringSettings.has(key) ? value : Number(value),
@@ -75146,6 +84430,17 @@ class Handler(BaseHTTPRequestHandler):
       el.completionBellTestButton.addEventListener("click", () => {{
         primeCompletionAudio();
         playCompletionBell({{ force: true }});
+      }});
+    }}
+    if (el.feedbackSoundTestButton) {{
+      el.feedbackSoundTestButton.addEventListener("click", () => {{
+        const preview = ["send", "accepted", "queued"];
+        preview.forEach((kind, index) => {{
+          window.setTimeout(() => playFeedbackTone(kind, {{
+            force: true,
+            cooldownMs: 0,
+          }}), index * 190);
+        }});
       }});
     }}
     window.addEventListener("pointerdown", primeCompletionAudio, {{ passive: true, capture: true }});
@@ -75246,6 +84541,9 @@ class Handler(BaseHTTPRequestHandler):
     document.addEventListener("visibilitychange", () => {{
       if (document.visibilityState === "hidden") {{
         persistPromptDraft(el.promptInput.value);
+        stopChildAgentsPoll();
+      }} else if (document.body.classList.contains("system-open")) {{
+        void refreshChildAgents();
       }}
       updateTabChrome(state.snapshot);
       syncLiveTransport();
@@ -75274,6 +84572,12 @@ class Handler(BaseHTTPRequestHandler):
         !event.target.closest(".composer-upload-shell")
       ) {{
         setUploadMenuOpen(false);
+      }}
+      if (
+        state.operatorActionPaletteOpen
+        && !event.target.closest("#operator-focus-rail")
+      ) {{
+        setOperatorActionPaletteOpen(false);
       }}
       if (state.toolbarExpanded && !event.target.closest("#ask-form")) {{
         state.toolbarExpanded = false;
@@ -75398,7 +84702,11 @@ class Handler(BaseHTTPRequestHandler):
       state.preferences = normalizePreferences(DEFAULT_PREFERENCES);
     }}
     startMicrotextureThreadField();
+    if (INITIAL_SNAPSHOT.snapshot_cached !== false) {{
+      setOperatorReceipt("Opening live console…", "info", {{ timeoutMs: 10000 }});
+    }}
     render(INITIAL_SNAPSHOT);
+    void refreshChildAgents({{ background: true }});
     restorePromptDraft();
     try {{
       applyPreferences();
@@ -75590,7 +84898,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> int:
     ensure_state_dir()
-    start_kpi_collector()
+    start_status_snapshot_collector()
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Serving {AGENT_NAME} {WORKER_BRIDGE_LABEL} on http://{HOST}:{PORT}")
     try:

@@ -116,7 +116,7 @@ class SyncASGIClient:
         self._cookies = httpx.Cookies()
 
     async def _request_async(self, method: str, url: str, **kwargs):
-        transport = httpx.ASGITransport(app=self.app)
+        transport = httpx.ASGITransport(app=self.app, client=("127.0.0.1", 18900))
         async with httpx.AsyncClient(
             transport=transport, base_url="http://testserver", cookies=self._cookies
         ) as client:

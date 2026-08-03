@@ -1,0 +1,13 @@
+[Unit]
+Description=Norman managed TUI local-first route proof
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=kristopher
+Group=kristopher
+WorkingDirectory=/home/kristopher/code/norman
+ExecStartPre=/usr/bin/mkdir -p /home/kristopher/.local/state/norman
+ExecStart=/home/kristopher/code/norman/.venv/bin/python /home/kristopher/code/norman/scripts/tui_status_route_proof.py --live --targets uplink norman publisher platinum-standard --output-json /home/kristopher/.local/state/norman/tui-status-route-proof.json --output-md /home/kristopher/.local/state/norman/tui-status-route-proof.md
+TimeoutStartSec=10min

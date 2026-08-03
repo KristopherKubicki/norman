@@ -45,6 +45,25 @@ def test_route_status_diagnostic_stays_status() -> None:
     assert operator_intent_class(prompt) == "status"
 
 
+def test_svg_regeneration_request_is_not_downgraded_to_status() -> None:
+    prompt = (
+        "why are there no Codex 5.6 benchmarks in the SVG? "
+        "can you regenerate the SVG after running the benchmark?"
+    )
+
+    assert is_route_status_diagnostic(prompt) is False
+    assert requested_action(prompt) == "benchmark_or_optimizer"
+    assert operator_intent_class(prompt) == "benchmark"
+    assert (
+        deterministic_local_verifier_block(
+            prompt,
+            action=requested_action(prompt),
+            intent_class=operator_intent_class(prompt),
+        )
+        == "deterministic_action_benchmark_or_optimizer"
+    )
+
+
 def test_terse_commands_have_control_intents() -> None:
     assert requested_action("go ahead") == "proceed_or_next"
     assert requested_action("make it so") == "proceed_or_next"

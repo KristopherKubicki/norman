@@ -155,3 +155,94 @@ def test_vector_benchmark_defaults_load_from_repo_case_file() -> None:
         "metadata-only-session-turn-id",
         "semantic-synonym-gap",
     }
+
+
+class _RerankBenchmarkMemoryTool:
+    @staticmethod
+    def search_turns(_conn, *, query, limit):
+        return {"rows": []}
+
+    @staticmethod
+    def metadata_search(_conn, *, query, limit):
+        return {"rows": []}
+
+    @staticmethod
+    def vector_search(_conn, *, query, limit):
+        return {
+            "rows": [
+                {
+                    "turn_id": "turn-noise",
+                    "text_preview": "unrelated archive memory",
+                },
+                {
+                    "turn_id": "turn-relevant",
+                    "text_preview": "target routing decision evidence",
+                },
+            ]
+        }
+
+
+def _rerank_benchmark_case() -> dict:
+    return {
+        "id": "rerank-mrr",
+        "kind": "hybrid_should_find",
+        "query": "routing decision",
+        "expected_terms": ["target", "routing"],
+    }
+
+
+def test_vector_benchmark_reports_rerank_mrr_improvement() -> None:
+    benchmark = _load_script("tui_memory_vector_benchmark")
+
+    def reranker(_memory_tool, _query, rows, limit):
+        assert [row["turn_id"] for row in rows] == ["turn-noise", "turn-relevant"]
+        assert limit == 2
+        return {
+            "configured": True,
+            "used": True,
+            "status": "ok",
+            "candidate_count": 2,
+            "selected_count": 2,
+            "memory_ref_ids": ["turn-relevant", "turn-noise"],
+        }
+
+    result = benchmark.benchmark_case(
+        _RerankBenchmarkMemoryTool(),
+        None,
+        _rerank_benchmark_case(),
+        limit=2,
+        reranker=reranker,
+    )
+
+    assert result["hybrid_first_hit_rank"] == 2
+    assert result["rerank_first_hit_rank"] == 1
+    assert result["hybrid_mrr"] == 0.5
+    assert result["rerank_mrr"] == 1.0
+    assert result["rerank_mrr_delta"] == 0.5
+    assert result["rerank_non_regression"] is True
+
+
+def test_vector_benchmark_invalid_rerank_preserves_hybrid_ordering() -> None:
+    benchmark = _load_script("tui_memory_vector_benchmark")
+
+    def reranker(_memory_tool, _query, _rows, _limit):
+        return {
+            "configured": True,
+            "used": True,
+            "status": "ok",
+            "memory_ref_ids": ["turn-relevant"],
+        }
+
+    result = benchmark.benchmark_case(
+        _RerankBenchmarkMemoryTool(),
+        None,
+        _rerank_benchmark_case(),
+        limit=2,
+        reranker=reranker,
+    )
+
+    assert result["rerank"]["used"] is False
+    assert result["rerank"]["status"] == "invalid-response"
+    assert result["rerank"]["failure_class"] == "incomplete-ranking"
+    assert result["rerank_mrr"] == result["hybrid_mrr"]
+    assert result["rerank_non_regression"] is True

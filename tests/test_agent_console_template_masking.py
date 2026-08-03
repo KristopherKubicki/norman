@@ -10,6 +10,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import threading
+from urllib import request as urllib_request
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -103,6 +105,66 @@ def _agent_console_supervisor_source() -> str:
     ).read_text(encoding="utf-8")
 
 
+def _route_proof(
+    module,
+    *,
+    runtime: str = "",
+    model: str = "",
+    service_tier: str = "",
+) -> dict:
+    normalized_runtime = module.normalize_runtime(runtime)
+    normalized_model = module.normalize_runtime_model(normalized_runtime, model)
+    normalized_tier = module.normalize_service_tier(service_tier)
+    options = {
+        "requested_runtime": normalized_runtime,
+        "requested_model": normalized_model,
+        "requested_service_tier": normalized_tier,
+        "base_runtime": normalized_runtime,
+        "base_model": normalized_model,
+        "base_service_tier": normalized_tier,
+        "bedrock_runtime": "codex",
+        "bedrock_model": normalized_model,
+        "bedrock_service_tier": "bedrock-emergency",
+        "route_lock": True,
+        "subscription": {},
+        "norllama_available": False,
+        "norllama_safe_final": False,
+        "bedrock_available": False,
+    }
+    if normalized_tier == "flex":
+        options.update(
+            {
+                "route_lock": False,
+                "subscription": {
+                    "enabled": True,
+                    "selected": True,
+                    "state": "available",
+                    "fresh": True,
+                    "chatgpt_auth_verified": True,
+                },
+                "norllama_available": True,
+                "norllama_safe_final": True,
+                "bedrock_available": True,
+            }
+        )
+    elif normalized_runtime == "localllm":
+        options.update(
+            {
+                "route_lock": False,
+                "subscription": {
+                    "enabled": True,
+                    "selected": False,
+                    "state": "blocked",
+                    "fresh": True,
+                    "chatgpt_auth_verified": True,
+                },
+                "norllama_available": True,
+                "norllama_safe_final": True,
+            }
+        )
+    return module.build_tui_waterfall(**options)
+
+
 def test_agent_console_templates_default_to_gpt_55() -> None:
     launch_source = _agent_console_launch_source()
 
@@ -115,6 +177,152 @@ def test_agent_console_templates_default_to_gpt_55() -> None:
         'MODEL = os.environ.get("HOUSEBOT_CODEX_MODEL", "gpt-5.5")'
         in _agent_console_web_source()
     )
+
+
+def test_agent_console_kaizen_emitter_is_strict_and_never_retries_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NORMAN_KAIZEN_ENABLED", "1")
+    monkeypatch.setenv(
+        "NORMAN_CONSOLE_RUNTIME_API_BASE",
+        "http://norman.test/api/v1/console-runtime",
+    )
+    monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_TOKEN", "test-token")
+    module = _load_agent_console_web()
+    captured: dict[str, object] = {}
+    snapshot = {
+        "kpis": {
+            "observed_at": 1_786_000_000,
+            "state": "idle",
+            "activity_state": "idle",
+            "health_state": "ok",
+            "prompt_visible": False,
+            "waiting_visible": False,
+            "state_entered_at": 1_785_999_000,
+            "metrics": {key: 0 for key in module._KAIZEN_METRIC_LIMITS},
+        }
+    }
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    def _urlopen(request, timeout):
+        captured["request"] = request
+        captured["timeout"] = timeout
+        return _Response()
+
+    monkeypatch.setattr(module.urllib_request, "urlopen", _urlopen)
+
+    assert module.emit_kaizen_tui_snapshot(snapshot) is True
+    request = captured["request"]
+    assert request.full_url == "http://norman.test/api/v1/kaizen/tui-snapshots"
+    assert request.get_header("Authorization") == "Bearer test-token"
+    payload = json.loads(request.data.decode("utf-8"))
+    assert set(payload) == {
+        "schema",
+        "realm",
+        "source_tui",
+        "observed_at",
+        "state",
+        "activity_state",
+        "health_state",
+        "prompt_visible",
+        "waiting_visible",
+        "state_entered_at",
+        "metrics",
+    }
+    assert set(payload["metrics"]) == set(module._KAIZEN_METRIC_LIMITS)
+    assert captured["timeout"] == module._kaizen_emit_timeout_seconds()
+
+    monkeypatch.setattr(
+        module.urllib_request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("offline")),
+    )
+    assert module.emit_kaizen_tui_snapshot(snapshot) is False
+
+
+def test_agent_console_full_reply_endpoint_and_controls(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _load_agent_console_web()
+    full_reply = "template durable reply\n" + (
+        "x" * module.STATUS_TRANSPORT_STRING_LIMIT
+    )
+    module.write_text(module.LAST_RESPONSE_PATH, full_reply)
+
+    transport_reply = module._transport_snapshot_value(full_reply)
+    assert transport_reply != full_reply
+    assert "characters omitted from live transport" in transport_reply
+
+    server = module.ThreadingHTTPServer(("127.0.0.1", 0), module.Handler)
+    thread = threading.Thread(target=server.handle_request, daemon=True)
+    thread.start()
+    try:
+        with urllib_request.urlopen(
+            f"http://127.0.0.1:{server.server_port}/api/last-response",
+            timeout=5,
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert payload == {
+        "ok": True,
+        "text": full_reply,
+        "character_count": len(full_reply),
+    }
+    source = _agent_console_web_source()
+    assert 'id="view-full-response-button"' in source
+    assert "function loadFullLastResponse(button = null)" in source
+    assert "applyLoadedFullLastResponse(snapshot)" in source
+
+
+def test_agent_console_connector_access_panel_reports_config_only(
+    tmp_path: Path,
+) -> None:
+    module = _load_agent_console_web()
+    codex_home = tmp_path / ".codex-work"
+    codex_home.mkdir()
+    module.CODEX_HOME = str(codex_home)
+    module.AGENT_GROUP = ""
+    (codex_home / "config.toml").write_text(
+        """
+[plugins."gmail@openai-curated"]
+enabled = true
+
+[plugins."slack@openai-curated"]
+enabled = true
+
+[plugins."google-drive@openai-curated"]
+enabled = false
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    snapshot = module.connector_access_snapshot()
+    apps = {item["key"]: item for item in snapshot["apps"]}
+    source = _agent_console_web_source()
+
+    assert snapshot["profile_label"] == "Work connector set"
+    assert snapshot["source"] == ".codex-work/config.toml"
+    assert snapshot["config_available"] is True
+    assert snapshot["configured_count"] == 2
+    assert apps["gmail@openai-curated"]["status"] == "Configured"
+    assert apps["slack@openai-curated"]["status"] == "Configured"
+    assert apps["google-drive@openai-curated"]["status"] == "Not configured"
+    assert 'id="connector-access"' in source
+    assert "function renderConnectorAccess(snapshot)" in source
+    assert "Configuration only; access is checked when used." in source
 
 
 def test_agent_console_promotes_stale_codex_model_setting_to_floor() -> None:
@@ -170,6 +378,85 @@ def test_route_receipt_default_path_uses_tui_state_dir() -> None:
     assert '"/var/lib/norman/route_receipts"' not in source
 
 
+def test_template_local_receipt_uses_generic_pool_fast_lane_outcome(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("NORMAN_CODEX_ROUTE_RECEIPTS_ENABLED", "1")
+    monkeypatch.setenv(
+        "NORMAN_CODEX_ROUTE_RECEIPT_PATH",
+        str(tmp_path / "receipts" / "template.jsonl"),
+    )
+    module = _load_agent_console_web()
+
+    receipt = module.append_route_receipt(
+        prompt="Status and what's next?",
+        visible_response="Ready for the next read-only task.",
+        error_text="",
+        started_at=1_786_000_100,
+        finished_at=1_786_000_102,
+        thread_id="thread-template",
+        speed="normal",
+        detail=2,
+        service_tier="default",
+        job_budget="normal",
+        optimization_mode="auto",
+        success=True,
+        runtime="localllm",
+        model="qwen3.6:35b-a3b-q4_K_M",
+        usage={"input_tokens": 200_000, "output_tokens": 20_000},
+        outcome="done",
+        cost_route=_route_proof(
+            module,
+            runtime="localllm",
+            model="norllama",
+            service_tier="default",
+        ),
+    )
+
+    assert receipt is not None
+    assert module.local_llm_provider_tags()["provider_surface"] == "norllama"
+    assert receipt["requested_provider"] == "norllama"
+    assert receipt["effective_provider"] == "norllama"
+    outcome = receipt["fast_lane_outcome"]
+    assert outcome["schema"] == "norman.fast-lane-outcome.v1"
+    assert outcome["lane"]["kind"] == "local"
+    assert outcome["state"] != "verified"
+    snapshot = module.route_receipt_status_snapshot()
+    assert snapshot["latest_fast_lane_outcome"] == outcome
+    assert snapshot["fast_lane"]["states"]["candidate"] == 1
+    assert snapshot["fast_lane"]["calibration"]["auto_selection_enabled"] is False
+
+
+def test_template_norllama_proof_binds_to_a_concrete_pool_model() -> None:
+    module = _load_agent_console_web()
+    model = "qwen3.6:35b-a3b-q4_K_M"
+    proof = _route_proof(
+        module,
+        runtime="localllm",
+        model=model,
+        service_tier="default",
+    )
+
+    accepted = module.validate_cost_route_proof(
+        proof,
+        "localllm",
+        model,
+        "default",
+    )
+
+    assert accepted["waterfall_stage"] == "norllama_pool"
+    assert accepted["selected_model"] == "norllama"
+    assert (
+        module.validate_cost_route_proof(
+            proof,
+            "localllm",
+            "norllama",
+            "default",
+        )
+        == {}
+    )
+
+
 def test_route_receipt_write_permission_failure_is_nonfatal(tmp_path) -> None:
     module = _load_agent_console_web()
     blocked_dir = tmp_path / "blocked"
@@ -199,6 +486,12 @@ def test_route_receipt_write_permission_failure_is_nonfatal(tmp_path) -> None:
             runtime="codex",
             model="gpt-5.5",
             usage={"input_tokens": 10, "output_tokens": 2, "total_tokens": 12},
+            cost_route=_route_proof(
+                module,
+                runtime="codex",
+                model="gpt-5.5",
+                service_tier="default",
+            ),
         )
         snapshot = module.route_receipt_status_snapshot()
     finally:
@@ -265,6 +558,12 @@ def test_route_receipt_status_prefers_state_db_over_jsonl(tmp_path) -> None:
             runtime="codex",
             model="gpt-5.5",
             usage={"input_tokens": 10, "output_tokens": 2, "total_tokens": 12},
+            cost_route=_route_proof(
+                module,
+                runtime="codex",
+                model="gpt-5.5",
+                service_tier="default",
+            ),
         )
         receipt_path.write_text("{not-json}\n", encoding="utf-8")
 
@@ -520,6 +819,7 @@ def test_template_exposes_browser_console_shortcuts() -> None:
     assert "jumpToLatestConversation();" in source
     assert "<kbd>/</kbd><span>Prompt</span>" in source
     assert "<kbd>Mod+K</kbd><span>Switch</span>" in source
+    assert "<kbd>Mod+J</kbd><span>Actions</span>" in source
     assert "<kbd>End</kbd><span>Latest</span>" in source
     assert "<kbd>Esc</kbd><span>Close</span>" in source
     assert "<kbd>?</kbd><span>Help</span>" in source
@@ -529,8 +829,33 @@ def test_template_exposes_browser_console_shortcuts() -> None:
     assert 'title="Jump to latest (End)"' in source
     assert "if (handleGlobalConsoleShortcut(event)) {{" in source
     assert "function maybeFocusPromptFromEscape(event) {" in source
+    assert "function webReplyActive(snapshot = state.snapshot) {" in source
+    assert "snapshot?.model_process_alive" in source
+    assert "snapshot?.web_worker_alive" in source
+    assert "Stop requested. Cancelling the current web reply…" in source
     assert "if (maybeInterruptFromEscape(event)) {{" in source
     assert "maybeFocusPromptFromEscape(event);" in source
+    assert 'id="operator-focus-rail"' in source
+    assert 'id="operator-action-palette"' in source
+    assert 'id="operator-action-search"' in source
+    assert 'data-operator-metric="queue"' in source
+    assert 'data-operator-metric="children"' in source
+    assert 'operatorActionQuery: ""' in source
+    assert "function operatorFocusDescriptor(snapshot = state.snapshot)" in source
+    assert "function renderOperatorFocus(snapshot = state.snapshot)" in source
+    assert "function renderOperatorActionPalette()" in source
+    assert "function focusOperatorActionPaletteButton(direction = 1)" in source
+    assert "function runOperatorMetricAction(metric)" in source
+    assert "function runOperatorAction(action)" in source
+    assert 'lowerKey === "j"' in source
+    assert 'event.key === "ArrowDown" || event.key === "ArrowUp"' in source
+    assert "setOperatorActionPaletteOpen(false, {{ restoreFocus: true }});" in source
+    assert "Save/compact request added to the draft. It has not been sent." in source
+    assert "Child-agent handoff draft added. It has not been sent." in source
+    assert "async function refreshChildAgents(options = {{}})" in source
+    assert "void refreshChildAgents({{ background: true }});" in source
+    assert "@media (max-width: 760px)" in source
+    assert "@media (prefers-reduced-motion: reduce)" in source
 
 
 def test_supervisor_always_clears_visible_update_interstitials() -> None:
@@ -564,6 +889,18 @@ def test_mobile_composer_tracks_visual_viewport_and_keyboard_state() -> None:
     assert "--viewport-height: 100dvh;" in source
     assert "--keyboard-inset: 0px;" in source
     assert "body.mobile-keyboard-open" in source
+    assert ".chat-summary-bar > * {" in source
+    assert "scroll-snap-type: x proximity;" in source
+    assert (
+        "-webkit-mask-image: linear-gradient(90deg, #000 0 calc(100% - 18px), transparent);"
+        in source
+    )
+    assert "body.mobile-compose-mode .norman-command-rail {" in source
+    assert "grid-template-rows: auto auto auto minmax(54px, auto) auto;" in source
+    assert "grid-column: 1 / -1;" in source
+    assert "#interrupt-submit-button:disabled {" in source
+    assert 'body[data-layout-mode="tile"] .composer-inline-action,' in source
+    assert "width: 44px;" in source
 
 
 def test_template_exposes_structured_audit_feed_for_central_collection() -> None:
@@ -627,16 +964,36 @@ def test_chat_file_links_surface_inline_previews_without_clickthrough() -> None:
     )
     assert "const visibleLines = lines.slice(0, 8);" in source
     assert "const totalMatch = contentRange.match(/\\/(\\d+)$/);" in source
-    assert 'const lines = normalized.split("\\\\n");' in source
+    assert (
+        "const previewText = normalized.slice(0, INLINE_TEXT_PREVIEW_MAX_CHARS);"
+        in source
+    )
+    assert 'const lines = previewText.split("\\\\n");' in source
+    assert "text: previewText.trimEnd()," in source
     assert "function buildInlineImagePreviewTile(entry)" in source
     assert "function renderInlineImagePreviewGallery(items)" in source
     assert "function renderInlineFilePreviews(container, targets)" in source
     assert ".message-file-previews {" in source
     assert "grid-template-columns: minmax(0, 1fr);" in source
     assert ".message-file-preview-gallery {" in source
-    assert "grid-template-columns: repeat(6, minmax(0, 1fr));" in source
+    assert (
+        "grid-template-columns: repeat(auto-fit, minmax(min(100%, 168px), 1fr));"
+        in source
+    )
     assert ".inline-image-preview-tile {" in source
     assert ".inline-image-preview-caption {" in source
+    assert ".inline-file-preview.inline-image-showcase {" in source
+    assert 'card.classList.add("inline-image-showcase");' in source
+    assert "icon|favicon|logo|avatar|emoji|sprite|cursor|badge" in source
+    assert 'tile.setAttribute("aria-label", `Open image:' in source
+    assert "function ensureInlineImageLightbox()" in source
+    assert "function openInlineImageLightbox(entry, opener = null)" in source
+    assert "function closeInlineImageLightbox()" in source
+    assert 'imageButton.className = "inline-image-preview-open";' in source
+    assert "openInlineImageLightbox(entry, tile);" in source
+    assert "buildFileRawHref(path)" in source
+    assert "buildFileViewHref(path)" in source
+    assert "buildFileDownloadHref(path)" in source
     assert ".inline-file-preview-summary {" in source
     assert ".inline-file-preview .inline-action {" in source
     assert "justify-content: space-between;" in source
@@ -662,6 +1019,82 @@ def test_chat_file_links_surface_inline_previews_without_clickthrough() -> None:
     assert "extractInlineFileTargets(body, previewLimit)" in source
     assert "inlinePreviews: allowInlinePreviews" in source
     assert "renderInlineFilePreviews(previews, previewTargets);" in source
+
+
+def test_chat_renderer_polishes_external_links_and_rich_tables() -> None:
+    source = _agent_console_web_source()
+
+    assert 'class="external-link"' in source
+    assert 'class="external-link" href="${{escapeHtml(url)}}"' in source
+    assert ".message-body a.external-link::after," in source
+    assert ".message-body a:focus-visible," in source
+    assert ".table-wrap:focus-visible {" in source
+    assert 'tabindex="0" role="region" aria-label="${{escapeHtml(tableLabel' in source
+    assert '<th scope="col" style="text-align:${{alignments[index]}}">' in source
+    assert "position: sticky;" in source
+    assert (
+        'text = text.replace(/~~([^~\\\\n][\\\\s\\\\S]*?[^~\\\\n])~~/g, "<del>$1</del>");'
+        in source
+    )
+    assert 'r"~~([^~\\n][\\s\\S]*?[^~\\n])~~"' in source
+
+
+def test_chat_link_provenance_and_structured_document_previews() -> None:
+    source = _agent_console_web_source()
+
+    assert "function linkProvenance(url)" in source
+    assert 'hostname.endsWith(".home.arpa")' in source
+    assert 'hostname.endsWith(".ts.net")' in source
+    assert 'const label = origin === "console"' in source
+    assert (
+        "function linkDisplayLabel(url, label, provenance = linkProvenance(url))"
+        in source
+    )
+    assert "link.dataset.linkOrigin = provenance.origin;" in source
+    assert 'origin.className = "link-chip-origin";' in source
+    assert 'copy.className = "link-chip-copy";' in source
+    assert 'domain.className = "link-chip-domain";' in source
+    assert '.link-chip[data-link-origin="external"]' in source
+    assert ".link-chip-origin {" in source
+    assert "const INLINE_DATA_TABLE_ROW_LIMIT = 12;" in source
+    assert "const INLINE_DATA_TABLE_COLUMN_LIMIT = 8;" in source
+    assert "function textPreviewFormatForPath(value)" in source
+    assert 'if (clean.endsWith(".json"))' in source
+    assert 'if (clean.endsWith(".csv"))' in source
+    assert 'if (clean.endsWith(".tsv"))' in source
+    assert "function parseDelimitedPreview(value, delimiter)" in source
+    assert "if (text[index + 1] === '\"')" in source
+    assert "function buildDelimitedDocumentPreview(payload, delimiter)" in source
+    assert "function buildJsonDocumentPreview(payload)" in source
+    assert 'const value = JSON.parse(String(payload.text || ""));' in source
+    assert "function buildTextDocumentPreview(entry, payload)" in source
+    assert "shell.innerHTML = renderRichText(payload.text);" in source
+    assert (
+        'shell.className = "inline-document-viewer inline-document-viewer-markdown";'
+        in source
+    )
+    assert 'table.className = "inline-data-table";' in source
+    assert 'card.dataset.previewFormat = previewFormat || "file";' in source
+    assert 'previewFormat === "markdown"' in source
+    assert "const preview = buildTextDocumentPreview(entry, payload);" in source
+    assert 'if (kind === "pdf") {{' in source
+    assert 'return ["markdown", "json", "csv", "tsv"].includes(' in source
+    assert ".inline-document-viewer-markdown {" in source
+    assert ".inline-document-viewer-structured {" in source
+    assert ".inline-data-table {" in source
+
+
+def test_render_initial_inline_markup_formats_strikethrough() -> None:
+    module = _load_agent_console_web()
+
+    rendered = module._render_initial_inline_markup(
+        "This is ~~superseded~~.",
+        token="open-sesame",
+        profile="personal-2",
+        route="host",
+    )
+
+    assert "<del>superseded</del>" in rendered
 
 
 def test_chat_renderer_lazily_collapses_heavy_messages() -> None:
@@ -874,7 +1307,7 @@ def test_browser_signin_skips_blank_popup_when_lane_is_already_ready() -> None:
     source = _agent_console_web_source()
 
     assert 'if (!auth.required && snapshotState === "ok") {{' in source
-    assert 'el.statusMessage.textContent = "Already signed in.";' in source
+    assert 'setOperatorReceipt("Already signed in.", "success");' in source
     assert "const bridgeAllowed = Boolean(BROWSER_AUTH_BRIDGE_ALLOWED);" in source
     assert "el.authBrowserButton.disabled = !required;" in source
     assert "el.authDeviceButton.disabled = !required;" in source
@@ -882,11 +1315,12 @@ def test_browser_signin_skips_blank_popup_when_lane_is_already_ready() -> None:
         'el.authHelperLink.hidden = !required || mode !== "browser_signin";' in source
     )
     assert '? "Already signed in."' in source
+    assert "setOperatorReceipt(\n              auth.required" in source
     assert (
-        "el.statusMessage.textContent = auth.required\n"
-        '              ? "Browser sign-in was prepared, but no auth URL was returned. Refresh and retry."\n'
-        '              : "No browser sign-in was needed.";' in source
+        '"Browser sign-in was prepared, but no auth URL was returned. Refresh and retry."'
+        in source
     )
+    assert '"No browser sign-in was needed."' in source
 
 
 def test_browser_signin_callback_runs_post_auth_self_check() -> None:
@@ -2446,6 +2880,18 @@ def test_template_polishes_reading_lane_and_composer_shell() -> None:
     assert "border-radius: 999px;" in source
 
 
+def test_template_uses_operational_density_polish_across_viewports() -> None:
+    source = _agent_console_web_source()
+
+    assert "Operational-density pass" in source
+    assert 'body[data-microtexture-state="idle"] .microtexture-thread-field' in source
+    assert "animation: none !important;" in source
+    assert ".topbar-actions .prime-home-button," in source
+    assert ".topbar-actions .directory-home-button {{" in source
+    assert "body:not(.low-ui-mode) #ask-button {{" in source
+    assert "body:not(.low-ui-mode) #ask-button .composer-send-label {{" in source
+
+
 def test_template_uses_single_motion_source_for_live_worker_state() -> None:
     source = _agent_console_web_source()
 
@@ -2606,8 +3052,16 @@ def test_template_adds_dense_menu_tooltips_and_icon_choices() -> None:
     assert 'data-tooltip="Console controls"' in source
     assert 'data-tooltip="Add file, screenshot, or context"' in source
     assert 'data-tooltip-side="left"' in source
+    assert "const CONTROL_TOOLTIP_SELECTOR = [" in source
+    assert "\"[role='tab']\"," in source
+    assert '"[data-notice-action]",' in source
     assert "function hydrateControlTooltips(root = document) {" in source
-    assert 'control.dataset.tooltipFromTitle = "true";' in source
+    assert 'control.dataset.tooltipFromControl = "true";' in source
+    assert "function observeControlTooltips() {" in source
+    assert "observeControlTooltips();" in source
+    assert "node.matches(CONTROL_TOOLTIP_SELECTOR)" in source
+    assert '[role="button"]:focus-visible,' in source
+    assert '[data-notice-action]:not([aria-disabled="true"]) {' in source
     assert "hydrateControlTooltips();" in source
     assert ".topbar-menu::before {" in source
     assert ".topbar-menu-links--context {" in source
@@ -2679,6 +3133,11 @@ def test_completion_bell_settings_and_reply_hook_are_present() -> None:
 
     assert 'data-setting="completionBell"' in source
     assert 'id="completion-bell-test-button"' in source
+    assert 'data-setting="feedbackSounds"' in source
+    assert 'id="feedback-sound-test-button"' in source
+    assert 'data-value="signals">Signals</button>' in source
+    assert 'data-value="full">Full</button>' in source
+    assert 'data-value="off">Off</button>' in source
     assert "const COMPLETION_BELL_PROFILES = {{" in source
     assert "voices: [" in source
     assert "answer: {{" in source
@@ -2693,6 +3152,53 @@ def test_completion_bell_settings_and_reply_hook_are_present() -> None:
         in source
     )
     assert "function playCompletionBell(options = {{}})" in source
+    assert "playCompletionBell();" in source
+
+
+def test_audio_feedback_uses_semantic_cues_without_tactile_double_chimes() -> None:
+    source = _agent_console_web_source()
+
+    assert "const FEEDBACK_TONE_COOLDOWNS = Object.freeze({{" in source
+    assert "const SIGNAL_TONE_KINDS = new Set([" in source
+    assert "queued: 180," in source
+    assert "blocked: 420," in source
+    assert "error: 750," in source
+    assert "press: {{ frequency: 148," in source
+    assert "queued: {{ frequency: 174," in source
+    assert "blocked: {{ frequency: 166," in source
+    assert "error: {{ frequency: 184," in source
+    assert "feedbackToneAt: {{}},\n" in source
+    assert "audioResumePromise: null," in source
+    assert "function normalizeFeedbackSounds(value) {{" in source
+    assert 'feedbackSounds: "signals",' in source
+    assert "function interactionToneAllowed(kind, options = {{}})" in source
+    assert "SIGNAL_TONE_KINDS.has(kind)" in source
+    assert 'function playFeedbackTone(kind = "action", options = {{}})' in source
+    assert (
+        "triggerMicrotexturePulse(toneByFeedback[cleanKind], {{ throttleMs: 120 }});"
+        in source
+    )
+    assert 'queued: "queued",' in source
+    assert 'blocked: "blocked",' in source
+    assert 'error: "error",' in source
+    assert "const previous = Number(state.feedbackToneAt?.[cleanKind] || 0);" in source
+    assert "if (!options.force && nowMs - previous < cooldownMs) {{" in source
+    assert "const played = playInteractionTone(toneByFeedback[cleanKind], {{" in source
+    assert "if (played) {{" in source
+    assert "state.feedbackToneAt[cleanKind] = nowMs;" in source
+    assert "function scheduleInteractionTone(ctx, profile) {{" in source
+    assert "const limiter = ctx.createDynamicsCompressor();" in source
+    assert "const resume = state.audioResumePromise;" in source
+    assert "resume.then(() => {{" in source
+    assert (
+        'if (id === "ask-button" || id === "interrupt-submit-button" || id === "composer-safety-confirm") return "press";'
+        in source
+    )
+    assert 'playFeedbackTone("send");' in source
+    assert 'playFeedbackTone(queuedPrompt ? "queued" : "accepted");' in source
+    assert 'playFeedbackTone("blocked");' in source
+    assert 'playFeedbackTone("error");' in source
+    assert "const endedWithError = Boolean(" in source
     assert "playCompletionBell();" in source
 
 
@@ -2992,6 +3498,77 @@ def test_tui_uses_render_caches_and_background_transport_backoff() -> None:
     assert "syncLiveTransport();" in source
 
 
+def test_tui_submission_receipts_reconcile_and_surface_worker_progress() -> None:
+    source = _agent_console_web_source()
+
+    assert "def normalize_submission_id(value: Any) -> str:" in source
+    assert '"running_submission_id": ""' in source
+    assert "function createPromptSubmissionId() {{" in source
+    assert "function snapshotIncludesSubmissionId(snapshot, submissionId) {{" in source
+    assert "function clearSubmittedComposer() {{" in source
+    assert "function restoreRejectedPrompt(draftValue) {{" in source
+    assert "clearSubmittedComposer();\n      render(state.snapshot);" in source
+    assert "restoreRejectedPrompt(draftValue);" in source
+    assert "else if (busy) {{" in source
+    assert ".composer-send.pending:disabled" in source
+    assert "PROMPT_SUBMISSION_RESTORE_GRACE_MS" not in source
+    assert (
+        'el.statusMessage.textContent = "Restored a prompt that left the composer'
+        not in source
+    )
+    assert (
+        "function provisionalPromptSubmission(snapshot = state.snapshot) {{" in source
+    )
+    assert "meta: `Sending to ${{AGENT_LABEL}}`," in source
+    assert "Checking admission and starting the worker…" in source
+    assert "Waiting for the worker's first signal…" in source
+    assert 'appendMessage(\n          "user provisional",' in source
+    assert 'appendMessage(\n          "assistant pending provisional",' in source
+    assert "function activeWorkEvidence(snapshot = state.snapshot) {{" in source
+    assert "function activeSubmissionLabel(snapshot = state.snapshot) {{" in source
+    assert "submission_id: submissionId," in source
+    assert 'state: "reconciling",' in source
+    assert (
+        "Submit outcome unknown. Checking whether the console accepted it; do not resend yet."
+        in source
+    )
+    assert "no worker progress for" in source
+    assert "awaiting first worker receipt" in source
+    assert (
+        'function setOperatorReceipt(message, tone = "info", options = {{}})' in source
+    )
+    assert "function terminalOperatorReceipt(previousSnapshot, snapshot)" in source
+    assert "const operatorReceipt = currentOperatorReceipt();" in source
+    assert "function routeBootstrapState(snapshot = state.snapshot)" in source
+    assert (
+        "function routePreparationReceipt(runtime, model, serviceTier, queued = false)"
+        in source
+    )
+    assert "function acceptedRouteReceipt(snapshot, options = {{}})" in source
+    assert "Applying route policy before acceptance." in source
+    assert "Detailed local health and service state is loading." in source
+    assert "if (!currentOperatorReceipt()) {{" in source
+    assert "if (INITIAL_SNAPSHOT.snapshot_cached !== false) {{" in source
+    assert "Reply complete. Result is below." in source
+    assert "Reply cancelled. The worker has stopped" in source
+    assert "Opening live console…" in source
+    assert "Live updates connected. Console state is current." in source
+    assert "Direct status checks connected." in source
+    assert (
+        "Submit is still being acknowledged. Your prompt has not been sent again."
+        in source
+    )
+    assert (
+        "function fetchWithDeadline(url, options = {{}}, timeoutMs = ACTION_REQUEST_TIMEOUT_MS)"
+        in source
+    )
+    assert "const STATUS_REQUEST_TIMEOUT_MS = 9000;" in source
+    assert "const ACTION_REQUEST_TIMEOUT_MS = 15000;" in source
+    assert "const UPLOAD_REQUEST_TIMEOUT_MS = 45000;" in source
+    assert "AbortController" in source
+    assert "request timed out after" in source
+
+
 def test_home_prime_uses_adaptive_poll_loops() -> None:
     source = _home_js_source()
 
@@ -3076,6 +3653,7 @@ def test_usage_snapshot_tracks_recent_burn() -> None:
         detail=1,
         success=False,
         usage={"input_tokens": 50, "cached_input_tokens": 10, "output_tokens": 5},
+        cost_route=_route_proof(module),
     )
     module.append_usage_entry(
         started_at=now - 90,
@@ -3098,6 +3676,7 @@ def test_usage_snapshot_tracks_recent_burn() -> None:
             "cloud_context_gate_active": True,
             "cloud_context_gate_status": "preflighted",
         },
+        cost_route=_route_proof(module),
     )
 
     snapshot = module.usage_snapshot(thread_id="recent")
@@ -3118,6 +3697,49 @@ def test_usage_snapshot_tracks_recent_burn() -> None:
     assert snapshot["last_turn"]["thread_id"] == "recent"
     assert snapshot["last_turn"]["total_tokens"] == 138
     assert snapshot["last_turn"]["cloud_preflight_net_token_delta_estimate"] == 1_975
+
+
+def test_agent_console_route_details_are_durable_and_rendered() -> None:
+    module = _load_agent_console_web()
+    usage = module.normalize_usage_entry(
+        {
+            "runtime": "codex",
+            "model": module.MODEL,
+            "route_source": "cost_router",
+            "route_reason": "Cloud execution was required for the workspace change.",
+            "route_requested_runtime": "localllm",
+            "route_requested_model": "qwen3.6:35b-a3b-q4_K_M",
+            "route_requested_service_tier": "default",
+            "route_fallback_reason": "Local planner was advisory only.",
+            "memory_ref_count": 3,
+            "memory_rerank_used": True,
+            "memory_rerank_status": "ok",
+            "memory_rerank_model": "BAAI/bge-reranker-v2-m3",
+            "memory_rerank_candidate_count": 8,
+            "memory_rerank_selected_count": 3,
+            "memory_rerank_receipt": {
+                "status": "ok",
+                "model": "BAAI/bge-reranker-v2-m3",
+                "candidate_count": 8,
+                "selected_count": 3,
+            },
+            "local_preflight_used": True,
+            "local_preflight_status": "ok",
+            "local_preflight_model": "qwen3.6:35b-a3b-q4_K_M",
+        }
+    )
+    source = _agent_console_web_source()
+
+    assert usage["route_reason"] == (
+        "Cloud execution was required for the workspace change."
+    )
+    assert usage["route_requested_runtime"] == "localllm"
+    assert usage["route_fallback_reason"] == "Local planner was advisory only."
+    assert usage["memory_rerank_used"] is True
+    assert usage["memory_rerank_receipt"]["status"] == "ok"
+    assert "function turnRouteExplanationDescriptor(" in source
+    assert "message-route-details-toggle" in source
+    assert "Spark rerank" in source
 
 
 def test_usage_snapshot_reports_route_utilization() -> None:
@@ -3244,6 +3866,11 @@ def test_usage_api_payload_defaults_to_compact_route_utilization() -> None:
             "local_specialist_tokens": 17,
             "cloud_tokens_avoided_estimate": 2000,
         },
+        cost_route=_route_proof(
+            module,
+            runtime="codex",
+            model="gpt-5",
+        ),
     )
 
     payload = module.usage_api_payload(thread_id="recent")
@@ -3591,6 +4218,20 @@ def test_template_exposes_context_meter_save_hint() -> None:
     assert "function renderContextMeter(snapshot)" in source
     assert "Save soon" in source
     assert "Heuristic only; use it as a save/compact hint" in source
+
+
+def test_template_uses_a_full_command_surface_on_standard_desktops() -> None:
+    source = _agent_console_web_source()
+
+    assert "width < 980" in source
+    assert "height <= 620" in source
+    assert "(width <= 1180 && height <= 700)" in source
+    assert 'body[data-layout-mode="full"] .chat-shell {' in source
+    assert "--reading-lane: 100%;" in source
+    assert 'body[data-layout-mode="full"] .message.assistant {' in source
+    assert "--assistant-message-max-width: 100%;" in source
+    assert "max-width: min(84ch, 88vw);" in source
+    assert 'body[data-layout-mode="full"] .chat-shell > .composer-wrap {' in source
 
 
 def test_composer_upload_icon_uses_composer_inline_action_selector() -> None:
@@ -4174,11 +4815,12 @@ def test_norman_frontdoor_caddy_serves_shortcuts_locally() -> None:
     rendered = module.render_caddy()
 
     assert (
+        "{\n" "    acme_ca https://ca.home.arpa/acme/acme/directory\n" "}"
+    ) in rendered
+    assert (
         "(norman_internal_tls) {\n"
         "    tls {\n"
-        "        issuer internal {\n"
-        "            lifetime 6d\n"
-        "        }\n"
+        "        ca https://ca.home.arpa/acme/acme/directory\n"
         "    }\n"
         "}"
     ) in rendered
@@ -4198,27 +4840,24 @@ def test_norman_frontdoor_caddy_serves_shortcuts_locally() -> None:
     ) in rendered
     assert (
         "norman.tail94915.ts.net {\n"
-        "    import norman_internal_tls\n"
-        "    import norman_frontdoor\n"
-        "}"
-    ) in rendered
-
-
-def test_norman_frontdoor_caddy_allows_explicit_canonical_cert_paths() -> None:
-    module = _load_frontdoor_renderer()
-
-    rendered = module.render_caddy(
-        canonical_cert="/etc/caddy/certs/norman.tail94915.ts.net.crt",
-        canonical_key="/etc/caddy/certs/norman.tail94915.ts.net.key",
-    )
-
-    assert (
-        "norman.tail94915.ts.net {\n"
         "    tls /etc/caddy/certs/norman.tail94915.ts.net.crt "
         "/etc/caddy/certs/norman.tail94915.ts.net.key\n"
         "    import norman_frontdoor\n"
         "}"
     ) in rendered
+    assert (
+        "@norman_root path /\n"
+        "    handle @norman_root {\n"
+        "        redir * /bot/norman/ 302\n"
+        "    }"
+    ) in rendered
+    assert "tls /etc/caddy/certs/norman-lollie.crt" not in rendered
+    gateway_position = rendered.index("handle /v1/* {")
+    root_redirect_position = rendered.index("@norman_root path /")
+    fallback_position = rendered.index("handle {\n        reverse_proxy 127.0.0.1:8000")
+    assert gateway_position < root_redirect_position < fallback_position
+    assert "header_up X-Norman-Gateway-Route norman" in rendered
+    assert "header_up X-Forwarded-For 127.0.0.2" in rendered
 
 
 def test_bot_proxy_caddy_routes_forward_original_prefix() -> None:
@@ -4299,6 +4938,43 @@ def test_bot_proxy_caddy_ip_gates_knox_local_work_aliases() -> None:
     assert "cp.kris.openbrand.com {\n    @knox_allowed remote_ip" not in rendered
     assert "goldbook.kris.openbrand.com {\n    @knox_allowed remote_ip" not in rendered
     assert "platinum.kris.openbrand.com {\n    @knox_allowed remote_ip" not in rendered
+
+
+def test_bot_proxy_caddy_routes_canonical_codex_hosts_to_gateway_before_console() -> (
+    None
+):
+    from scripts.codex_route import ROUTES
+
+    module = _load_bot_proxy_renderer()
+    rendered = module.render_hosts()
+    route_keys = {route.key for route in ROUTES}
+
+    assert module.GATEWAY_ROUTES == route_keys - {"norman"}
+    for route_key in sorted(module.GATEWAY_ROUTES):
+        assert f"header_up X-Norman-Gateway-Route {route_key}" in rendered
+    assert rendered.count("header_up X-Forwarded-For 127.0.0.2") == len(
+        module.GATEWAY_ROUTES
+    )
+
+    def host_block(host: str) -> str:
+        start = rendered.index(f"{host} {{")
+        end = rendered.find("\n\n# ", start)
+        return rendered[start:] if end == -1 else rendered[start:end]
+
+    gold_book = host_block("goldbook.kris.openbrand.com")
+    assert "handle /v1/* {" in gold_book
+    assert "header_up X-Norman-Gateway-Route gold-book" in gold_book
+    assert gold_book.index("handle /v1/* {") < gold_book.index(
+        "handle {\n        reverse_proxy"
+    )
+
+    infra = host_block("infra.kris.openbrand.com")
+    assert "@knox_allowed remote_ip" in infra
+    assert "handle /v1/* {" in infra
+    assert "header_up X-Norman-Gateway-Route infra" in infra
+    assert infra.index("handle /v1/* {") < infra.index(
+        "handle {\n            reverse_proxy"
+    )
 
 
 def test_bot_proxy_caddy_redirects_work_shortcuts_to_canonical_hosts() -> None:
@@ -4648,20 +5324,34 @@ def test_sync_template_rolls_runtime_bridge_through_norman_keys() -> None:
     assert "def sync_instance_runtime_bridge_settings(" in source
     assert 'RUNTIME_BRIDGE_SECRET_LANE = "shared_infra"' in source
     assert 'RUNTIME_BRIDGE_JOB_CREATE_TIMEOUT_SECONDS = "15"' in source
-    assert 'RUNTIME_BRIDGE_TOKEN_RETRY_SECONDS = "30"' in source
-    assert 'RUNTIME_BRIDGE_PROOF_TTL_SECONDS = "120"' in source
+    assert 'RUNTIME_BRIDGE_TOKEN_RETRY_SECONDS = "300"' in source
+    assert 'RUNTIME_BRIDGE_TOKEN_AUTH_RETRY_SECONDS = "3600"' in source
+    assert 'RUNTIME_BRIDGE_SNAPSHOT_TTL_SECONDS = "60"' in source
+    assert 'RUNTIME_BRIDGE_ACTIVE_SNAPSHOT_TTL_SECONDS = "5"' in source
+    assert 'RUNTIME_BRIDGE_PROOF_TTL_SECONDS = "900"' in source
+    assert 'RUNTIME_BRIDGE_PROOF_BACKOFF_SECONDS = "300"' in source
     assert 'RUNTIME_BRIDGE_STARTUP_JITTER_SECONDS = "45"' in source
-    assert 'RUNTIME_BRIDGE_ROUTE_OUTCOME_LIMIT = "200"' in source
-    assert 'RUNTIME_BRIDGE_LOCAL_FIRST_PROOF_LIMIT = "250"' in source
+    assert 'RUNTIME_BRIDGE_ROUTE_OUTCOME_TTL_SECONDS = "300"' in source
+    assert 'RUNTIME_BRIDGE_ROUTE_OUTCOME_LIMIT = "50"' in source
+    assert 'RUNTIME_BRIDGE_RECENT_ITEMS = "6"' in source
+    assert 'RUNTIME_BRIDGE_LOCAL_FIRST_PROOF_LIMIT = "50"' in source
+    assert 'RUNTIME_BRIDGE_LOCAL_FIRST_SESSION_LIMIT = "10"' in source
+    assert 'RUNTIME_BRIDGE_WORKSTREAM_RETRY_SECONDS = "21600"' in source
     assert '"NORMAN_CONSOLE_RUNTIME_API_BASE": api_base' in source
     assert '"NORMAN_CONSOLE_RUNTIME_TOKEN_SECRET": token_secret' in source
     assert '"NORMAN_KEYS_URL": keys_url' in source
     assert '"NORMAN_KEYS_TOKEN": keys_token' in source
-    assert '"NORMAN_CONSOLE_RUNTIME_PROOF_TTL_SECONDS": (' in source
+    assert (
+        '"NORMAN_CONSOLE_RUNTIME_PROOF_TTL_SECONDS": RUNTIME_BRIDGE_PROOF_TTL_SECONDS'
+        in source
+    )
     assert '"NORMAN_CONSOLE_RUNTIME_JOB_CREATE_TIMEOUT_SECONDS": (' in source
     assert '"NORMAN_CONSOLE_RUNTIME_TOKEN_RETRY_SECONDS": (' in source
+    assert '"NORMAN_CONSOLE_RUNTIME_TOKEN_AUTH_RETRY_SECONDS": (' in source
+    assert '"NORMAN_CONSOLE_RUNTIME_ACTIVE_SNAPSHOT_TTL_SECONDS": (' in source
     assert '"NORMAN_CONSOLE_RUNTIME_STARTUP_JITTER_SECONDS": (' in source
     assert '"NORMAN_CONSOLE_RUNTIME_LOCAL_FIRST_PROOF_LIMIT": (' in source
+    assert '"NORMAN_CONSOLE_RUNTIME_WORKSTREAM_RETRY_SECONDS": (' in source
     assert '"NORMAN_CONSOLE_RUNTIME_TOKEN":' not in source
     assert '"NORMAN_API_TOKEN":' not in source
 
@@ -4736,8 +5426,9 @@ def test_sync_template_rolls_kernel_primary_to_canary_instances() -> None:
     assert canary_settings["NORMAN_TUI_BACKEND"] == "kernel"
     assert canary_settings["NORMAN_TUI_KERNEL_EXECUTION"] == "1"
     assert canary_settings["NORMAN_TUI_KERNEL_PRIMARY"] == "1"
-    assert canary_settings["NORMAN_TUI_KERNEL_OWNED_TURN"] == "1"
+    assert canary_settings["NORMAN_TUI_KERNEL_OWNED_TURN"] == "0"
     assert canary_settings["NORMAN_TUI_KERNEL_PRIMARY_STRICT"] == "0"
+    assert canary_settings["NORMAN_TUI_KERNEL_STRICT_SHADOW"] == "0"
     assert canary_settings["NORMAN_TUI_KERNEL_CLOUD_FALLBACK"] == "1"
     assert canary_settings["NORMAN_TUI_KERNEL_WORKSPACE_PREFLIGHT"] == "1"
     assert canary_settings["NORMAN_TUI_KERNEL_PRIMARY_MAX_STEPS"] == "5"
@@ -4771,8 +5462,9 @@ def test_sync_template_rolls_kernel_primary_to_canary_instances() -> None:
         settings = module.kernel_rollout_settings_for_instance(promoted)
         assert settings["NORMAN_TUI_BACKEND"] == "kernel"
         assert settings["NORMAN_TUI_KERNEL_EXECUTION"] == "1"
-        assert settings["NORMAN_TUI_KERNEL_OWNED_TURN"] == "1"
+        assert settings["NORMAN_TUI_KERNEL_OWNED_TURN"] == "0"
         assert settings["NORMAN_TUI_KERNEL_PRIMARY_STRICT"] == "0"
+        assert settings["NORMAN_TUI_KERNEL_STRICT_SHADOW"] == "0"
         assert settings["NORMAN_TUI_KERNEL_CLOUD_FALLBACK"] == "1"
 
 
@@ -4822,11 +5514,19 @@ def test_runtime_bridge_settings_prefers_broker_reference(monkeypatch) -> None:
     assert settings["NORMAN_CONSOLE_RUNTIME_ENABLED"] == "1"
     assert settings["NORMAN_CONSOLE_RUNTIME_LANE"] == "shared_infra"
     assert settings["NORMAN_CONSOLE_RUNTIME_JOB_CREATE_TIMEOUT_SECONDS"] == "15"
-    assert settings["NORMAN_CONSOLE_RUNTIME_TOKEN_RETRY_SECONDS"] == "30"
-    assert settings["NORMAN_CONSOLE_RUNTIME_PROOF_TTL_SECONDS"] == "120"
+    assert settings["NORMAN_CONSOLE_RUNTIME_TOKEN_RETRY_SECONDS"] == "300"
+    assert settings["NORMAN_CONSOLE_RUNTIME_TOKEN_AUTH_RETRY_SECONDS"] == "3600"
+    assert settings["NORMAN_CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS"] == "60"
+    assert settings["NORMAN_CONSOLE_RUNTIME_ACTIVE_SNAPSHOT_TTL_SECONDS"] == "5"
+    assert settings["NORMAN_CONSOLE_RUNTIME_PROOF_TTL_SECONDS"] == "900"
+    assert settings["NORMAN_CONSOLE_RUNTIME_PROOF_BACKOFF_SECONDS"] == "300"
     assert settings["NORMAN_CONSOLE_RUNTIME_STARTUP_JITTER_SECONDS"] == "45"
-    assert settings["NORMAN_CONSOLE_RUNTIME_ROUTE_OUTCOME_LIMIT"] == "200"
-    assert settings["NORMAN_CONSOLE_RUNTIME_LOCAL_FIRST_PROOF_LIMIT"] == "250"
+    assert settings["NORMAN_CONSOLE_RUNTIME_ROUTE_OUTCOME_TTL_SECONDS"] == "300"
+    assert settings["NORMAN_CONSOLE_RUNTIME_ROUTE_OUTCOME_LIMIT"] == "50"
+    assert settings["NORMAN_CONSOLE_RUNTIME_RECENT_ITEMS"] == "6"
+    assert settings["NORMAN_CONSOLE_RUNTIME_LOCAL_FIRST_PROOF_LIMIT"] == "50"
+    assert settings["NORMAN_CONSOLE_RUNTIME_LOCAL_FIRST_SESSION_LIMIT"] == "10"
+    assert settings["NORMAN_CONSOLE_RUNTIME_WORKSTREAM_RETRY_SECONDS"] == "21600"
     assert "NORMAN_CONSOLE_RUNTIME_TOKEN" not in settings
     assert "NORMAN_API_TOKEN" not in settings
 
@@ -4885,6 +5585,56 @@ def test_runtime_bridge_sync_writes_broker_env_without_direct_token(
     assert '"NORMAN_API_TOKEN":' not in rendered_command
 
 
+def test_runtime_bridge_sync_applies_polling_guards_without_broker_reference(
+    monkeypatch,
+) -> None:
+    module = _load_sync_agent_console_template()
+    instance = module.ConsoleInstance(
+        name="autocamera",
+        host_name="hal",
+        ssh_target=module.HOSTS["hal"].ssh_target,
+        use_sudo=module.HOSTS["hal"].use_sudo,
+        env_file="/etc/autocamera/codex-web.env",
+        web_path="/opt/autocamera/codex_web.py",
+        launch_path="/opt/autocamera/codex_launch.sh",
+        supervisor_path="/opt/autocamera/codex_supervisor.sh",
+        restart_units=("autocamera-codex.service", "autocamera-codex-web.service"),
+        agent_label="Autocamera",
+        web_port="8789",
+        web_token="demo-token",
+        prompt_file="/etc/autocamera/codex-system-prompt.txt",
+        codex_home="/home/kristopher/.codex-autocamera",
+    )
+    captured: list[list[str]] = []
+
+    def fake_capture(cmd):
+        captured.append(cmd)
+        return "changed"
+
+    monkeypatch.setattr(module, "capture", fake_capture)
+
+    changed = module.sync_instance_runtime_bridge_settings(
+        module.HOSTS["hal"],
+        instance,
+        {},
+    )
+
+    assert changed is True
+    rendered_command = " ".join(captured[0])
+    assert '"NORMAN_CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS":"60"' in rendered_command
+    assert (
+        '"NORMAN_CONSOLE_RUNTIME_TOKEN_AUTH_RETRY_SECONDS":"3600"' in rendered_command
+    )
+    assert (
+        '"NORMAN_CONSOLE_RUNTIME_WORKSTREAM_RETRY_SECONDS":"21600"' in rendered_command
+    )
+    assert "NORMAN_KEYS_TOKEN" not in rendered_command
+    assert "NORMAN_CONSOLE_RUNTIME_TOKEN_SECRET" not in rendered_command
+    assert "remove_keys = json.loads('[]')" in rendered_command
+    assert '"NORMAN_CONSOLE_RUNTIME_TOKEN"' not in rendered_command
+    assert '"NORMAN_API_TOKEN"' not in rendered_command
+
+
 def test_kernel_rollout_sync_writes_backend_env(monkeypatch) -> None:
     module = _load_sync_agent_console_template()
     instance = module.ConsoleInstance(
@@ -4923,7 +5673,7 @@ def test_kernel_rollout_sync_writes_backend_env(monkeypatch) -> None:
     assert "NORMAN_TUI_KERNEL_PRIMARY" in rendered_command
 
 
-def test_local_sync_systemd_units_target_hal() -> None:
+def test_local_sync_systemd_units_target_the_local_host() -> None:
     service = _systemd_unit_source("norman-agent-console-sync-local.service")
     user_service = _systemd_unit_source("norman-agent-console-sync.service")
     bedrock_dropin = _systemd_unit_source(
@@ -4932,7 +5682,14 @@ def test_local_sync_systemd_units_target_hal() -> None:
     path = _systemd_unit_source("norman-agent-console-sync-local.path")
     timer = _systemd_unit_source("norman-agent-console-sync-local.timer")
 
-    assert "sync_agent_console_template.py --targets hal" in service
+    assert "sync_agent_console_template.py --targets %H --restart-web-only" in service
+    assert "User=kristopher" in service
+    assert "Group=kristopher" in service
+    assert "RuntimeDirectory=norman-agent-console-sync" in service
+    assert "/run/norman-agent-console-sync/sync-local.lock" in service
+    assert "PYTHONPATH=/home/kristopher/code/norman" in service
+    assert "NORMAN_SYNC_EXECUTION_HOST=%H" in service
+    assert "/home/kristopher/code/norman/.venv/bin/python" in service
     profile_source = (
         "NORMAN_SYNC_NON_WORK_BEDROCK_PROFILE_SOURCE="
         "/home/kristopher/.codex-nonwork/personal-bedrock.config.toml"
@@ -5572,6 +6329,32 @@ def test_chatgpt_direct_credit_extension_guard_requires_fresh_plan_capacity(
 
     assert allowed["allowed"] is True
     assert allowed["reason_code"] == "chatgpt_plan_capacity_verified"
+
+
+def test_template_subscription_capacity_probe_never_uses_api_key_spend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("NORMAN_CODEX_ALLOW_OPENAI_API_SPEND", "1")
+    module = _load_agent_console_web()
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "chatgpt")
+
+    allowed = module.codex_openai_direct_execution_decision(
+        "flex",
+        subscription_probe=True,
+    )
+
+    assert allowed["allowed"] is True
+    assert allowed["api_spend_override"] is True
+    assert allowed["reason_code"] == "subscription_capacity_probe_allowed"
+
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "api_key")
+    blocked = module.codex_openai_direct_execution_decision(
+        "flex",
+        subscription_probe=True,
+    )
+
+    assert blocked["allowed"] is False
+    assert blocked["reason_code"] == "subscription_capacity_probe_auth_required"
 
 
 def test_template_direct_chatgpt_launch_requires_turn_to_fit_reset_window(

@@ -4,15 +4,18 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_CASES_PATH = (
     SCRIPT_DIR.parent / "db" / "tui_memory_retrieval_benchmark_cases.json"
 )
+DEFAULT_RERANK_CANDIDATES = 8
+Reranker = Callable[[Any, str, list[dict[str, Any]], int], dict[str, Any]]
 
 
 DEFAULT_CASES: list[dict[str, Any]] = [
@@ -50,6 +53,16 @@ DEFAULT_CASES: list[dict[str, Any]] = [
 def _load_memory_tool() -> Any:
     path = SCRIPT_DIR / "tui_memory_tool.py"
     spec = importlib.util.spec_from_file_location("tui_memory_tool", path)
+    if not spec or not spec.loader:
+        raise RuntimeError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_preflight() -> Any:
+    path = SCRIPT_DIR / "tui_vector_preflight.py"
+    spec = importlib.util.spec_from_file_location("tui_vector_preflight", path)
     if not spec or not spec.loader:
         raise RuntimeError(f"cannot load {path}")
     module = importlib.util.module_from_spec(spec)
@@ -149,6 +162,97 @@ def _mrr(rank: int | None) -> float:
     return 1.0 / rank if rank else 0.0
 
 
+def _row_turn_id(row: dict[str, Any]) -> str:
+    return str(row.get("turn_id") or row.get("id") or "").strip()
+
+
+def _rerank_rows(
+    memory_tool: Any,
+    *,
+    query: str,
+    baseline_rows: list[dict[str, Any]],
+    limit: int,
+    reranker: Reranker | None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    fallback_rows = baseline_rows[:limit]
+    receipt: dict[str, Any] = {
+        "configured": reranker is not None,
+        "used": False,
+        "status": "disabled" if reranker is None else "not-run",
+        "candidate_count": len(baseline_rows),
+        "selected_count": len(fallback_rows),
+        "failure_class": "",
+    }
+    if reranker is None:
+        return fallback_rows, receipt
+    try:
+        result = reranker(memory_tool, query, baseline_rows, limit)
+    except Exception as exc:
+        return fallback_rows, {
+            **receipt,
+            "status": "failed",
+            "failure_class": type(exc).__name__.lower(),
+        }
+    if not isinstance(result, dict):
+        return fallback_rows, {
+            **receipt,
+            "status": "invalid-response",
+            "failure_class": "non-object-response",
+        }
+    result_receipt = {
+        key: value
+        for key, value in result.items()
+        if key
+        in {
+            "configured",
+            "used",
+            "status",
+            "model",
+            "endpoint",
+            "candidate_count",
+            "selected_count",
+            "failure_class",
+            "latency_ms",
+            "score_method",
+        }
+    }
+    receipt.update(result_receipt)
+    if not receipt["used"] or receipt["status"] != "ok":
+        return fallback_rows, receipt
+
+    candidate_by_id = {
+        _row_turn_id(row): row for row in baseline_rows if _row_turn_id(row)
+    }
+    ranked_rows = result.get("rows")
+    if not isinstance(ranked_rows, list):
+        ranked_rows = [
+            candidate_by_id[turn_id]
+            for turn_id in result.get("memory_ref_ids", [])
+            if isinstance(turn_id, str) and turn_id in candidate_by_id
+        ]
+    ordered: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for row in ranked_rows:
+        if not isinstance(row, dict):
+            continue
+        turn_id = _row_turn_id(row)
+        candidate = candidate_by_id.get(turn_id)
+        if not candidate or turn_id in seen:
+            continue
+        seen.add(turn_id)
+        ordered.append(candidate)
+        if len(ordered) >= limit:
+            break
+    if len(ordered) != min(limit, len(baseline_rows)):
+        return fallback_rows, {
+            **receipt,
+            "used": False,
+            "status": "invalid-response",
+            "failure_class": "incomplete-ranking",
+        }
+    return ordered, receipt
+
+
 def _forbidden_hit_rows(
     rows: list[dict[str, Any]], forbidden_terms: list[str]
 ) -> list[dict[str, Any]]:
@@ -186,6 +290,8 @@ def benchmark_case(
     case: dict[str, Any],
     *,
     limit: int,
+    reranker: Reranker | None = None,
+    rerank_candidate_limit: int = DEFAULT_RERANK_CANDIDATES,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     query = str(case.get("query") or "")
@@ -203,22 +309,26 @@ def benchmark_case(
     fts_hit = fts_hit_row is not None
     metadata_hit = metadata_hit_row is not None
     vector_hit = vector_hit_row is not None
-    hybrid_rows = _dedupe_rows(fts_rows + metadata_rows + vector_rows)
+    hybrid_rows = _dedupe_rows(vector_rows + metadata_rows + fts_rows)
+    rerank_candidates = hybrid_rows[
+        : max(limit, min(16, max(1, int(rerank_candidate_limit))))
+    ]
+    reranked_rows, rerank = _rerank_rows(
+        memory_tool,
+        query=query,
+        baseline_rows=rerank_candidates,
+        limit=limit,
+        reranker=reranker,
+    )
     forbidden_rows = _forbidden_hit_rows(hybrid_rows, forbidden_terms)
     forbidden_hit = bool(forbidden_rows)
     fts_first_hit_rank = _first_hit_rank(fts_rows, expected_terms)
     metadata_first_hit_rank = _first_hit_rank(metadata_rows, expected_terms)
     vector_first_hit_rank = _first_hit_rank(vector_rows, expected_terms)
-    rank_candidates = [
-        rank
-        for rank in (
-            fts_first_hit_rank,
-            metadata_first_hit_rank,
-            vector_first_hit_rank,
-        )
-        if rank is not None
-    ]
-    hybrid_first_hit_rank = min(rank_candidates) if rank_candidates else None
+    hybrid_first_hit_rank = _first_hit_rank(hybrid_rows[:limit], expected_terms)
+    rerank_first_hit_rank = _first_hit_rank(reranked_rows, expected_terms)
+    rerank_mrr = _mrr(rerank_first_hit_rank)
+    hybrid_mrr = _mrr(hybrid_first_hit_rank)
     kind = str(case.get("kind") or "hybrid_should_find")
     passed = _outcome_passes(
         kind,
@@ -246,6 +356,7 @@ def benchmark_case(
         "metadata_first_hit_rank": metadata_first_hit_rank,
         "vector_first_hit_rank": vector_first_hit_rank,
         "hybrid_first_hit_rank": hybrid_first_hit_rank,
+        "rerank_first_hit_rank": rerank_first_hit_rank,
         "fts_precision_at_k": _precision_at_k(fts_rows, expected_terms, k=limit),
         "metadata_precision_at_k": _precision_at_k(
             metadata_rows, expected_terms, k=limit
@@ -255,29 +366,51 @@ def benchmark_case(
         "fts_mrr": _mrr(fts_first_hit_rank),
         "metadata_mrr": _mrr(metadata_first_hit_rank),
         "vector_mrr": _mrr(vector_first_hit_rank),
-        "hybrid_mrr": _mrr(hybrid_first_hit_rank),
+        "hybrid_mrr": hybrid_mrr,
+        "rerank_hit": _hit(reranked_rows, expected_terms),
+        "rerank_mrr": rerank_mrr,
+        "rerank_mrr_delta": round(rerank_mrr - hybrid_mrr, 4),
+        "rerank_non_regression": rerank_mrr >= hybrid_mrr,
+        "rerank": rerank,
         "fts_top": fts_rows[:1],
         "metadata_top": metadata_rows[:1],
         "vector_top": vector_rows[:1],
         "fts_hit_row": fts_hit_row,
         "metadata_hit_row": metadata_hit_row,
         "vector_hit_row": vector_hit_row,
+        "rerank_top": reranked_rows[:1],
         "notes": str(case.get("notes") or ""),
     }
 
 
 def run_benchmark(
-    db: Path, cases: list[dict[str, Any]], *, limit: int
+    db: Path,
+    cases: list[dict[str, Any]],
+    *,
+    limit: int,
+    reranker: Reranker | None = None,
+    rerank_candidate_limit: int = DEFAULT_RERANK_CANDIDATES,
 ) -> dict[str, Any]:
     memory_tool = _load_memory_tool()
     with memory_tool.connect(db) as conn:
         stats = memory_tool.stats(conn)
-        rows = [benchmark_case(memory_tool, conn, case, limit=limit) for case in cases]
+        rows = [
+            benchmark_case(
+                memory_tool,
+                conn,
+                case,
+                limit=limit,
+                reranker=reranker,
+                rerank_candidate_limit=rerank_candidate_limit,
+            )
+            for case in cases
+        ]
     case_count = len(rows)
     return {
-        "schema": "norman.tui.memory-vector-benchmark.v1",
+        "schema": "norman.tui.memory-vector-benchmark.v2",
         "db": str(db),
         "limit": limit,
+        "rerank_candidate_limit": rerank_candidate_limit,
         "memory_vector": stats.get("memory_vector"),
         "summary": {
             "cases": len(rows),
@@ -287,6 +420,19 @@ def run_benchmark(
             "metadata_hits": sum(1 for row in rows if row["metadata_hit"]),
             "fts_hits": sum(1 for row in rows if row["fts_hit"]),
             "hybrid_hits": sum(1 for row in rows if row["hybrid_hit"]),
+            "rerank_attempted": sum(
+                1 for row in rows if bool((row.get("rerank") or {}).get("configured"))
+            ),
+            "rerank_used": sum(
+                1 for row in rows if bool((row.get("rerank") or {}).get("used"))
+            ),
+            "rerank_hits": sum(1 for row in rows if row["rerank_hit"]),
+            "rerank_non_regressions": sum(
+                1 for row in rows if row["rerank_non_regression"]
+            ),
+            "rerank_regressions": sum(
+                1 for row in rows if not row["rerank_non_regression"]
+            ),
             "forbidden_hits": sum(1 for row in rows if row["forbidden_hit"]),
             "avg_elapsed_ms": round(
                 sum(float(row["elapsed_ms"]) for row in rows) / case_count, 3
@@ -295,6 +441,16 @@ def run_benchmark(
             else 0.0,
             "avg_hybrid_mrr": round(
                 sum(float(row["hybrid_mrr"]) for row in rows) / case_count, 4
+            )
+            if case_count
+            else 0.0,
+            "avg_rerank_mrr": round(
+                sum(float(row["rerank_mrr"]) for row in rows) / case_count, 4
+            )
+            if case_count
+            else 0.0,
+            "avg_rerank_mrr_delta": round(
+                sum(float(row["rerank_mrr_delta"]) for row in rows) / case_count, 4
             )
             if case_count
             else 0.0,
@@ -316,16 +472,23 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"Metadata hits: `{summary.get('metadata_hits', 0)}`",
         f"Vector hits: `{summary.get('vector_hits', 0)}`",
         f"Hybrid hits: `{summary.get('hybrid_hits', 0)}`",
+        f"Rerank attempted: `{summary.get('rerank_attempted', 0)}`",
+        f"Rerank used: `{summary.get('rerank_used', 0)}`",
+        f"Rerank hits: `{summary.get('rerank_hits', 0)}`",
+        f"Rerank non-regressions: `{summary.get('rerank_non_regressions', 0)}`",
+        f"Rerank regressions: `{summary.get('rerank_regressions', 0)}`",
         f"Forbidden hits: `{summary.get('forbidden_hits', 0)}`",
         f"Avg elapsed ms: `{summary.get('avg_elapsed_ms', 0)}`",
         f"Avg hybrid MRR: `{summary.get('avg_hybrid_mrr', 0)}`",
+        f"Avg rerank MRR: `{summary.get('avg_rerank_mrr', 0)}`",
+        f"Avg rerank MRR delta: `{summary.get('avg_rerank_mrr_delta', 0)}`",
         "",
-        "| Case | Kind | Pass | FTS | Metadata | Vector | Rank | MRR | ms | Notes |",
-        "|---|---|---:|---:|---:|---:|---:|---:|---:|---|",
+        "| Case | Kind | Pass | FTS | Metadata | Vector | Hybrid rank | Rerank rank | MRR delta | Rerank | ms | Notes |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
     for row in report.get("cases", []):
         lines.append(
-            "| {id} | {kind} | {passed} | {fts} | {metadata} | {vector} | {rank} | {mrr} | {elapsed} | {notes} |".format(
+            "| {id} | {kind} | {passed} | {fts} | {metadata} | {vector} | {rank} | {rerank_rank} | {rerank_delta} | {rerank} | {elapsed} | {notes} |".format(
                 id=str(row.get("id") or "").replace("|", "/"),
                 kind=str(row.get("kind") or "").replace("|", "/"),
                 passed="yes" if row.get("passed") else "no",
@@ -333,7 +496,13 @@ def render_markdown(report: dict[str, Any]) -> str:
                 metadata="yes" if row.get("metadata_hit") else "no",
                 vector="yes" if row.get("vector_hit") else "no",
                 rank=row.get("hybrid_first_hit_rank") or "",
-                mrr=row.get("hybrid_mrr") or 0,
+                rerank_rank=row.get("rerank_first_hit_rank") or "",
+                rerank_delta=row.get("rerank_mrr_delta") or 0,
+                rerank=(
+                    str((row.get("rerank") or {}).get("status") or "disabled").replace(
+                        "|", "/"
+                    )
+                ),
                 elapsed=row.get("elapsed_ms") or 0,
                 notes=str(row.get("notes") or "").replace("|", "/"),
             )
@@ -348,6 +517,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--db", type=Path, required=True)
     parser.add_argument("--cases", type=Path)
     parser.add_argument("--limit", type=int, default=5)
+    parser.add_argument(
+        "--rerank",
+        action="store_true",
+        help="Run the optional local Norllama reranker using the configured preflight endpoint.",
+    )
+    parser.add_argument("--rerank-url")
+    parser.add_argument("--rerank-model")
+    parser.add_argument("--rerank-timeout-seconds", type=int)
+    parser.add_argument(
+        "--rerank-candidates", type=int, default=DEFAULT_RERANK_CANDIDATES
+    )
     parser.add_argument("--output-json", type=Path)
     parser.add_argument("--output-md", type=Path)
     return parser.parse_args()
@@ -355,7 +535,40 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    report = run_benchmark(args.db, _load_cases(args.cases), limit=args.limit)
+    if args.rerank_url:
+        os.environ["NORMAN_CODEX_VECTOR_RERANK_URL"] = args.rerank_url
+    if args.rerank_model:
+        os.environ["NORMAN_CODEX_VECTOR_RERANK_MODEL"] = args.rerank_model
+    if args.rerank_timeout_seconds:
+        os.environ["NORMAN_CODEX_VECTOR_RERANK_TIMEOUT_SECONDS"] = str(
+            args.rerank_timeout_seconds
+        )
+    if args.rerank:
+        os.environ["NORMAN_CODEX_VECTOR_RERANK_ENABLED"] = "1"
+        preflight = _load_preflight()
+
+        def reranker(
+            memory_tool: Any,
+            query: str,
+            rows: list[dict[str, Any]],
+            limit: int,
+        ) -> dict[str, Any]:
+            return preflight.rerank_memory_rows(
+                memory_tool,
+                query=query,
+                rows=rows,
+                limit=limit,
+            )
+
+    else:
+        reranker = None
+    report = run_benchmark(
+        args.db,
+        _load_cases(args.cases),
+        limit=args.limit,
+        reranker=reranker,
+        rerank_candidate_limit=args.rerank_candidates,
+    )
     if args.output_json:
         args.output_json.parent.mkdir(parents=True, exist_ok=True)
         args.output_json.write_text(

@@ -359,8 +359,37 @@ class Settings(BaseSettings):
     console_runtime_worker_max_runtime_seconds: int = 1800
     console_runtime_worker_goal_phase_sequence: list[str] = ["plan", "work", "verify"]
     console_runtime_worker_tick_seconds: float = 5.0
-    console_runtime_worker_batch_size: int = 1
+    console_runtime_worker_batch_size: int = 10
+    console_runtime_workstream_max_concurrency: int = 10
+    console_runtime_worker_global_concurrency: int = 10
+    console_runtime_norllama_pool_concurrency: int = 10
     console_runtime_worker_id: str = "runtime-background-worker"
+
+    # Kaizen KPI and evidence collection. Candidate shadow mode remains disabled
+    # unless its explicit switch, local token budget, and concurrency limit allow it.
+    kaizen_enabled: bool = False
+    kaizen_observe_only: bool = True
+    kaizen_auto_actions_enabled: bool = False
+    kaizen_candidate_shadow_enabled: bool = False
+    kaizen_pilot_tui_ids: List[str] = []
+    kaizen_allowed_realms: List[str] = ["personal/home"]
+    kaizen_idle_grace_seconds: int = 900
+    kaizen_snapshot_max_age_seconds: int = 300
+    kaizen_candidate_evidence_max_age_seconds: int = 300
+    kaizen_broker_tick_seconds: int = 60
+    kaizen_max_admissions_per_tick: int = 1
+    kaizen_daily_norllama_token_budget: int = 0
+    kaizen_norllama_max_concurrency: int = 1
+    kaizen_candidate_shadow_max_tokens: int = 0
+    kaizen_candidate_shadow_max_concurrency: int = 0
+    kaizen_report_timezone: str = "America/Chicago"
+    kaizen_daily_digest_local_time: str = "08:00"
+    kaizen_weekly_digest_day: str = "monday"
+    kaizen_weekly_digest_local_time: str = "08:00"
+    kaizen_critical_alerts_enabled: bool = False
+    kaizen_runbook_prepare_enabled: bool = False
+    kaizen_skill_suggestions_enabled: bool = False
+    kaizen_mcp_health_suggestions_enabled: bool = False
 
     # Norman Keys service integration
     norman_keys_service_token: str = ""

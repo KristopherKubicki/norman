@@ -5,10 +5,12 @@ import uuid
 import pytest
 
 from app import crud
+from app.core.command_policy import CommandDecision
 from app.schemas.user import UserCreate
-from app.services.console_runtime import ConsoleJobContract
+from app.services.console_runtime import ConsoleJobContract, ConsoleSubtaskContract
 from app.services.console_runtime.adapters.bedrock import BedrockModelAdapter
 from app.services.console_runtime.adapters.fake import FakeModelAdapter
+from app.services.console_runtime.adapters.shell import ShellResult
 from app.services.console_runtime.store import DbConsoleRuntimeStore
 from app.services.console_runtime.types import ModelResult, ModelUsage
 from app.services.console_runtime.worker import (
@@ -480,8 +482,13 @@ def test_db_console_runtime_worker_normalizes_verifier_before_audit_and_gate(db)
     assert audit_event.payload["receipt_audit"]["pass"] is True
     assert model_event.payload["route_receipt"]["verifier_result"] == "pass"
     assert model_event.payload["route_receipt"]["receipt_audit"]["pass"] is True
+    audit_outcome = audit_event.payload["fast_lane_outcome"]
+    assert audit_outcome["schema"] == "norman.fast-lane-outcome.v1"
+    assert audit_outcome["lane"]["kind"] == "local"
+    assert model_event.payload["fast_lane_outcome"] == audit_outcome
     assert gate_event.payload["route_receipt"] == audit_event.payload["route_receipt"]
     assert gate_event.payload["receipt_audit"] == audit_event.payload["receipt_audit"]
+    assert gate_event.payload["fast_lane_outcome"] == audit_outcome
     assert gate_event.payload["completion_gate"]["gate_passed"] is True
 
 
@@ -1299,6 +1306,56 @@ def test_db_console_runtime_worker_requires_approval_before_live_execution(db):
     assert "model.requested" not in event_types
 
 
+def test_db_console_runtime_worker_exits_canceled_job_before_model_invocation(db):
+    class UnexpectedAdapter:
+        name = "unexpected"
+
+        @property
+        def capabilities(self):
+            return FakeModelAdapter().capabilities
+
+        def invoke(self, request):
+            raise AssertionError("canceled jobs must not invoke a model adapter")
+
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-canceled-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(objective="Do not invoke after cancellation"),
+    )
+    store.request_cancel_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        reason="Operator canceled before execution",
+    )
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-test",
+            dry_run=False,
+            live_execution_approved=True,
+        ),
+        adapter=UnexpectedAdapter(),
+    )
+
+    assert result["canceled"] is True
+    assert result["job"]["status"] == "canceled"
+    assert result["model_result"] is None
+    event_types = [
+        event.event_type
+        for event in store.events_after(db, user_id=user.id, job_id=job_id)
+    ]
+    assert "model.requested" not in event_types
+
+
 def test_db_console_runtime_worker_allows_explicitly_approved_live_execution(db):
     user = _ensure_user(db)
     store = DbConsoleRuntimeStore()
@@ -1720,6 +1777,68 @@ def test_db_console_runtime_worker_runs_read_only_shell_step(db):
     assert "model.requested" not in event_types
 
 
+def test_db_console_runtime_worker_holds_delegated_read_only_shell_subtask(
+    db, monkeypatch
+):
+    class UnexpectedShellAdapter:
+        def __init__(self):
+            raise AssertionError("delegated read-only subtasks must not run shell")
+
+    monkeypatch.setattr(
+        worker_module,
+        "ShellRuntimeAdapter",
+        UnexpectedShellAdapter,
+    )
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    coordinator = store.create_job(
+        db,
+        user_id=user.id,
+        job_id=f"job-worker-coordinator-{uuid.uuid4().hex}",
+        contract=ConsoleJobContract(objective="Coordinate a guarded shell subtask"),
+    )
+    workstream = store.create_workstream(
+        db,
+        user_id=user.id,
+        coordinator_job_id=coordinator.job_id,
+        title="Worker shell safety test",
+    )
+    child = store.delegate_subtasks(
+        db,
+        user_id=user.id,
+        workstream_id=workstream.workstream_id,
+        subtasks=[
+            ConsoleSubtaskContract(
+                job_id=f"job-worker-read-only-shell-{uuid.uuid4().hex}",
+                objective="Inspect the workspace without changing it",
+                route_policy={"runtime": "shell", "command": "pwd"},
+                write_mode="read_only",
+            )
+        ],
+    )[0]
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=child.job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-test",
+            dry_run=False,
+            live_execution_approved=True,
+        ),
+    )
+
+    assert result["approval_required"] is True
+    assert result["job"]["status"] == "waiting_approval"
+    assert "Delegated read-only subtasks" in result["approval_reason"]
+    event_types = [
+        event.event_type
+        for event in store.events_after(db, user_id=user.id, job_id=child.job_id)
+    ]
+    assert "shell.started" not in event_types
+
+
 def test_db_console_runtime_worker_blocks_shell_step_in_control_only_mode(db):
     user = _ensure_user(db)
     store = DbConsoleRuntimeStore()
@@ -1907,3 +2026,347 @@ def test_db_console_runtime_worker_holds_preflight_mutating_command_for_approval
     assert result["last_result"]["approval_required"] is True
     assert "mutating command" in result["last_result"]["approval_reason"]
     assert "shell.started" not in event_types
+
+
+def test_db_console_runtime_worker_reconciles_model_effect_before_cancellation(
+    db, monkeypatch
+):
+    class UnexpectedModelAdapter:
+        name = "unexpected-model"
+
+        def invoke(self, request):
+            raise AssertionError("canceled model effect must not be invoked")
+
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-model-cancel-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Cancel immediately before model invocation",
+            route_policy={"provider": "norllama"},
+        ),
+    )
+    original_begin_effect = store.begin_effect
+    effect_keys: list[str] = []
+
+    def reserve_then_cancel(*args, **kwargs):
+        effect, should_invoke = original_begin_effect(*args, **kwargs)
+        if should_invoke and kwargs["kind"] == "model.invoke":
+            effect_keys.append(kwargs["effect_key"])
+            store.request_cancel_job(
+                db,
+                user_id=user.id,
+                job_id=job_id,
+                reason="operator canceled model effect",
+            )
+        return effect, should_invoke
+
+    monkeypatch.setattr(store, "begin_effect", reserve_then_cancel)
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-effect-cancel",
+            dry_run=True,
+            include_capabilities=False,
+        ),
+        adapter=UnexpectedModelAdapter(),
+    )
+
+    assert result["canceled"] is True
+    assert result["job"]["status"] == "canceled"
+    assert len(effect_keys) == 1
+    effect = store.get_effect(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        effect_key=effect_keys[0],
+    )
+    assert effect is not None
+    assert effect.state == "failed"
+    assert effect.receipt["error"] == "Cancellation requested before model invocation"
+
+
+def test_db_console_runtime_worker_reconciles_shell_effect_before_cancellation(
+    db, monkeypatch
+):
+    class UnexpectedShellAdapter:
+        def evaluate(self, request):
+            return CommandDecision("allow", "read", "test shell command")
+
+        def run(self, request):
+            raise AssertionError("canceled shell effect must not be invoked")
+
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-shell-cancel-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Cancel immediately before shell invocation",
+            route_policy={"runtime": "shell", "command": "pwd"},
+        ),
+    )
+    original_begin_effect = store.begin_effect
+    effect_keys: list[str] = []
+
+    def reserve_then_cancel(*args, **kwargs):
+        effect, should_run = original_begin_effect(*args, **kwargs)
+        if should_run and kwargs["kind"] == "shell.run":
+            effect_keys.append(kwargs["effect_key"])
+            store.request_cancel_job(
+                db,
+                user_id=user.id,
+                job_id=job_id,
+                reason="operator canceled shell effect",
+            )
+        return effect, should_run
+
+    monkeypatch.setattr(store, "begin_effect", reserve_then_cancel)
+    monkeypatch.setattr(worker_module, "ShellRuntimeAdapter", UnexpectedShellAdapter)
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-effect-cancel",
+            dry_run=False,
+            live_execution_approved=True,
+        ),
+    )
+
+    assert result["canceled"] is True
+    assert result["job"]["status"] == "canceled"
+    assert len(effect_keys) == 1
+    effect = store.get_effect(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        effect_key=effect_keys[0],
+    )
+    assert effect is not None
+    assert effect.state == "failed"
+    assert effect.receipt["error"] == "Cancellation requested before shell invocation"
+
+
+def test_db_console_runtime_worker_marks_timed_out_shell_effect_unknown(
+    db, monkeypatch
+):
+    class TimedOutShellAdapter:
+        def evaluate(self, request):
+            return CommandDecision("allow", "read", "test shell command")
+
+        def run(self, request):
+            return ShellResult(
+                command=request.command,
+                returncode=124,
+                stderr="command timed out",
+                policy={"decision": "allow"},
+                timed_out=True,
+            )
+
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-shell-timeout-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Run a shell command that times out",
+            route_policy={"runtime": "shell", "command": "pwd"},
+        ),
+    )
+    monkeypatch.setattr(worker_module, "ShellRuntimeAdapter", TimedOutShellAdapter)
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-timeout",
+            dry_run=False,
+            live_execution_approved=True,
+        ),
+    )
+
+    assert result["job"]["status"] == "failed"
+    assert result["failure_class"] == "partial_effect"
+    assert result["effect"]["state"] == "unknown"
+    assert result["job"]["metadata"]["last_retry_class"] == "partial_effect"
+
+
+def test_db_console_runtime_worker_records_nonzero_shell_effect_before_failure(
+    db, monkeypatch
+):
+    class NonzeroShellAdapter:
+        def evaluate(self, request):
+            return CommandDecision("allow", "read", "test shell command")
+
+        def run(self, request):
+            return ShellResult(
+                command=request.command,
+                returncode=7,
+                stderr="expected test failure",
+                policy={"decision": "allow"},
+            )
+
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-shell-nonzero-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Run a shell command that exits nonzero",
+            route_policy={"runtime": "shell", "command": "pwd"},
+        ),
+    )
+    original_begin_effect = store.begin_effect
+    effect_keys: list[str] = []
+
+    def capture_effect_key(*args, **kwargs):
+        effect, should_run = original_begin_effect(*args, **kwargs)
+        if should_run and kwargs["kind"] == "shell.run":
+            effect_keys.append(kwargs["effect_key"])
+        return effect, should_run
+
+    monkeypatch.setattr(store, "begin_effect", capture_effect_key)
+    monkeypatch.setattr(worker_module, "ShellRuntimeAdapter", NonzeroShellAdapter)
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-nonzero",
+            dry_run=False,
+            live_execution_approved=True,
+        ),
+    )
+
+    assert result["job"]["status"] == "failed"
+    assert result["job"]["metadata"]["last_retry_class"] == "partial_effect"
+    assert len(effect_keys) == 1
+    effect = store.get_effect(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        effect_key=effect_keys[0],
+    )
+    assert effect is not None
+    assert effect.state == "completed"
+    assert effect.receipt["returncode"] == 7
+
+
+def test_db_console_runtime_worker_checkpoints_shell_for_required_verification(
+    db, monkeypatch
+):
+    class SuccessfulShellAdapter:
+        def evaluate(self, request):
+            return CommandDecision("allow", "read", "test shell command")
+
+        def run(self, request):
+            return ShellResult(
+                command=request.command,
+                returncode=0,
+                stdout="workspace",
+                policy={"decision": "allow"},
+            )
+
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-shell-verification-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Run a verified shell command",
+            route_policy={
+                "runtime": "shell",
+                "command": "pwd",
+                "require_verification_receipt": True,
+            },
+        ),
+    )
+    monkeypatch.setattr(worker_module, "ShellRuntimeAdapter", SuccessfulShellAdapter)
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-verification",
+            dry_run=False,
+            live_execution_approved=True,
+        ),
+    )
+
+    assert result["job"]["status"] == "checkpointed"
+    assert "pending verification receipt" in result["job"]["checkpoints"][-1]
+    assert result["job"]["verification_receipts"] == []
+
+
+def test_db_console_runtime_worker_checkpoints_duplicate_shell_reservation(
+    db, monkeypatch
+):
+    class UnexpectedShellAdapter:
+        def evaluate(self, request):
+            return CommandDecision("allow", "read", "test shell command")
+
+        def run(self, request):
+            raise AssertionError("duplicate shell reservation must not be invoked")
+
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-shell-duplicate-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Reconcile an existing shell reservation",
+            route_policy={"runtime": "shell", "command": "pwd"},
+        ),
+    )
+    original_begin_effect = store.begin_effect
+
+    def reserve_duplicate_effect(*args, **kwargs):
+        original_begin_effect(*args, **kwargs)
+        return original_begin_effect(*args, **kwargs)
+
+    monkeypatch.setattr(store, "begin_effect", reserve_duplicate_effect)
+    monkeypatch.setattr(worker_module, "ShellRuntimeAdapter", UnexpectedShellAdapter)
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-duplicate",
+            dry_run=False,
+            live_execution_approved=True,
+        ),
+    )
+
+    assert result["effect_reconciliation_required"] is True
+    assert result["job"]["status"] == "checkpointed"
+    assert result["effect"]["state"] == "started"
+    events = store.events_after(db, user_id=user.id, job_id=job_id)
+    assert "effect.reconciliation_required" in {event.event_type for event in events}

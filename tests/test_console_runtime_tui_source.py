@@ -43,6 +43,8 @@ def test_consoles_js_streams_runtime_events_and_controls_worker() -> None:
     assert "proof" in source
     assert "cloud llm" in source
     assert "cloud tok" in source
+    assert "p95" in source
+    assert "capacity" in source
     assert "local_evidence_percent" in source
     assert "workers.by_id" in source
     assert "payload.norllama" in source

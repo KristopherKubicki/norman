@@ -197,6 +197,7 @@ ROUTE_RECEIPT_REMOTE_CONNECT_TIMEOUT_SECONDS = (
 OPENAI_DIRECT_PRICING_USD_PER_1M = {
     "gpt-5.5": {"input": 5.00, "cached_input": 0.50, "output": 30.00},
     "gpt-5.4": {"input": 2.50, "cached_input": 0.25, "output": 15.00},
+    "gpt-5.6-terra": {"input": 2.50, "cached_input": 0.25, "output": 15.00},
     "gpt-5.4-mini": {"input": 0.75, "cached_input": 0.075, "output": 4.50},
 }
 
@@ -204,6 +205,11 @@ OPENAI_DIRECT_PRICING_USD_PER_1M = {
 BEDROCK_US_EAST_2_PRICING_USD_PER_1M = {
     "openai.gpt-5.5": {"input": 5.50, "cached_input": 0.55, "output": 33.00},
     "openai.gpt-5.4": {"input": 2.75, "cached_input": 0.275, "output": 16.50},
+    "openai.gpt-5.6-terra": {
+        "input": 2.75,
+        "cached_input": 0.275,
+        "output": 16.50,
+    },
 }
 
 

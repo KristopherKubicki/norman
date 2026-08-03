@@ -7,7 +7,7 @@ import pytest
 from app import crud
 from app.core.config import settings
 from app.schemas.user import UserCreate
-from app.services.console_runtime import ConsoleJobContract
+from app.services.console_runtime import ConsoleJobContract, ConsoleSubtaskContract
 from app.services.console_runtime.store import DbConsoleRuntimeStore
 from app.services.console_runtime.supervisor import (
     LIVE_EXECUTION_CONFIRMATION,
@@ -42,9 +42,204 @@ def _create_job(db, store: DbConsoleRuntimeStore, user_id: int, *, suffix: str =
     )
 
 
+def _create_workstream_subtasks(
+    db,
+    store: DbConsoleRuntimeStore,
+    user_id: int,
+    *,
+    prefix: str,
+    max_concurrency: int = 10,
+    route_policies: list[dict] | None = None,
+):
+    coordinator = store.create_job(
+        db,
+        user_id=user_id,
+        job_id=f"job-supervisor-coordinator-{prefix}",
+        contract=ConsoleJobContract(
+            objective=f"Coordinate supervisor workstream {prefix}",
+        ),
+    )
+    workstream = store.create_workstream(
+        db,
+        user_id=user_id,
+        coordinator_job_id=coordinator.job_id,
+        title=f"Supervisor workstream {prefix}",
+        max_concurrency=max_concurrency,
+    )
+    policies = route_policies or [{}, {}]
+    subtasks = [
+        ConsoleSubtaskContract(
+            job_id=f"job-supervisor-{prefix}-{index}",
+            objective=f"Run supervisor subtask {prefix}-{index}",
+            route_policy=policy,
+        )
+        for index, policy in enumerate(policies, start=1)
+    ]
+    return workstream, store.delegate_subtasks(
+        db,
+        user_id=user_id,
+        workstream_id=workstream.workstream_id,
+        subtasks=subtasks,
+    )
+
+
 def _clear_runnable_jobs(db, store: DbConsoleRuntimeStore) -> None:
     for user_id, job in store.list_runnable_jobs(db, limit=100):
         store.fail_job(db, user_id=user_id, job_id=job.job_id, error="test cleanup")
+
+
+def test_console_runtime_supervisor_global_capacity_blocks_selection(db, monkeypatch):
+    monkeypatch.setattr(
+        settings, "console_runtime_worker_global_concurrency", 1, raising=False
+    )
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    _workstream, subtasks = _create_workstream_subtasks(
+        db,
+        store,
+        user.id,
+        prefix=f"global-capacity-{uuid.uuid4().hex}",
+    )
+    service = ConsoleRuntimeWorkerService(store=store)
+
+    selected = service._select_runnable_jobs(
+        db,
+        candidates=[(user.id, job) for job in subtasks],
+        active_counts={"total": 1, "norllama_pool_total": 0, "by_workstream": {}},
+        batch_size=10,
+    )
+
+    assert selected == []
+
+
+def test_console_runtime_supervisor_enforces_workstream_capacity(db, monkeypatch):
+    monkeypatch.setattr(
+        settings, "console_runtime_worker_global_concurrency", 10, raising=False
+    )
+    monkeypatch.setattr(
+        settings, "console_runtime_workstream_max_concurrency", 10, raising=False
+    )
+    monkeypatch.setattr(
+        settings, "console_runtime_norllama_pool_concurrency", 10, raising=False
+    )
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    _workstream, subtasks = _create_workstream_subtasks(
+        db,
+        store,
+        user.id,
+        prefix=f"workstream-capacity-{uuid.uuid4().hex}",
+        max_concurrency=1,
+    )
+    service = ConsoleRuntimeWorkerService(store=store)
+
+    selected = service._select_runnable_jobs(
+        db,
+        candidates=[(user.id, job) for job in subtasks],
+        active_counts={
+            "total": 0,
+            "norllama_pool_total": 0,
+            "by_workstream": {},
+        },
+        batch_size=10,
+    )
+
+    assert [job.job_id for _, job in selected] == [subtasks[0].job_id]
+
+
+def test_console_runtime_supervisor_limits_norllama_pool_without_blocking_other_providers(
+    db, monkeypatch
+):
+    monkeypatch.setattr(
+        settings, "console_runtime_worker_global_concurrency", 10, raising=False
+    )
+    monkeypatch.setattr(
+        settings, "console_runtime_workstream_max_concurrency", 10, raising=False
+    )
+    monkeypatch.setattr(
+        settings, "console_runtime_norllama_pool_concurrency", 1, raising=False
+    )
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    _workstream, subtasks = _create_workstream_subtasks(
+        db,
+        store,
+        user.id,
+        prefix=f"norllama-pool-capacity-{uuid.uuid4().hex}",
+        route_policies=[
+            {},
+            {},
+            {"provider": "shell"},
+        ],
+    )
+    service = ConsoleRuntimeWorkerService(store=store)
+
+    selected = service._select_runnable_jobs(
+        db,
+        candidates=[(user.id, job) for job in subtasks],
+        active_counts={
+            "total": 0,
+            "norllama_pool_total": 0,
+            "by_workstream": {},
+        },
+        batch_size=3,
+    )
+
+    assert [job.job_id for _, job in selected] == [
+        subtasks[0].job_id,
+        subtasks[2].job_id,
+    ]
+
+
+def test_console_runtime_supervisor_round_robins_between_workstreams(db, monkeypatch):
+    monkeypatch.setattr(
+        settings, "console_runtime_worker_global_concurrency", 10, raising=False
+    )
+    monkeypatch.setattr(
+        settings, "console_runtime_workstream_max_concurrency", 10, raising=False
+    )
+    monkeypatch.setattr(
+        settings, "console_runtime_norllama_pool_concurrency", 10, raising=False
+    )
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    suffix = uuid.uuid4().hex
+    _workstream_a, subtasks_a = _create_workstream_subtasks(
+        db,
+        store,
+        user.id,
+        prefix=f"fair-a-{suffix}",
+    )
+    _workstream_b, subtasks_b = _create_workstream_subtasks(
+        db,
+        store,
+        user.id,
+        prefix=f"fair-b-{suffix}",
+    )
+    service = ConsoleRuntimeWorkerService(store=store)
+
+    selected = service._select_runnable_jobs(
+        db,
+        candidates=[
+            (user.id, subtasks_a[0]),
+            (user.id, subtasks_a[1]),
+            (user.id, subtasks_b[0]),
+            (user.id, subtasks_b[1]),
+        ],
+        active_counts={
+            "total": 0,
+            "norllama_pool_total": 0,
+            "by_workstream": {},
+        },
+        batch_size=4,
+    )
+
+    assert [job.job_id for _, job in selected] == [
+        subtasks_a[0].job_id,
+        subtasks_b[0].job_id,
+        subtasks_a[1].job_id,
+        subtasks_b[1].job_id,
+    ]
 
 
 @pytest.mark.asyncio

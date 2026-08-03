@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Norman front-door LAN DNS reconciliation
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+RandomizedDelaySec=1min
+Persistent=true
+Unit=norman-frontdoor-dns-reconcile.service
+
+[Install]
+WantedBy=timers.target
