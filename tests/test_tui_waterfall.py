@@ -47,6 +47,29 @@ def test_fresh_verified_capacity_selects_subscription_flex():
     assert decision["bedrock_auto_authorized"] is False
 
 
+def test_deterministic_status_has_a_zero_token_local_route_proof():
+    decision = build_decision(
+        requested_runtime="localllm",
+        requested_model="deterministic-status",
+        requested_service_tier="default",
+        base_runtime="localllm",
+        base_model="deterministic-status",
+        base_service_tier="default",
+        subscription={},
+        norllama_available=False,
+        norllama_safe_final=False,
+        deterministic_status=True,
+    )
+
+    assert decision["waterfall_stage"] == "deterministic_status"
+    assert decision["route_source"] == "deterministic_tui_status"
+    assert decision["charge_basis"] == "zero_token_deterministic"
+    assert decision["selected_runtime"] == "localllm"
+    assert decision["selected_model"] == "deterministic-status"
+    assert decision["selected_service_tier"] == "default"
+    assert sanitize_tui_waterfall_decision(decision) == decision
+
+
 def test_verified_exhaustion_uses_norllama_before_bedrock():
     decision = build_decision(subscription=exhausted_capacity())
 

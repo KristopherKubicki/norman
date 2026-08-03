@@ -108,6 +108,33 @@ def validate_cost_route_proof(
     return decision
 
 
+def deterministic_status_cost_route() -> dict[str, Any]:
+    """Build the proof for a zero-token status response from durable TUI state."""
+    if build_tui_waterfall is None:
+        return {}
+    runtime = "localllm"
+    model = "deterministic-status"
+    service_tier = "default"
+    decision = build_tui_waterfall(
+        requested_runtime=runtime,
+        requested_model=model,
+        requested_service_tier=service_tier,
+        base_runtime=runtime,
+        base_model=model,
+        base_service_tier=service_tier,
+        bedrock_runtime="codex",
+        bedrock_model=model,
+        bedrock_service_tier="bedrock-emergency",
+        route_lock=False,
+        subscription={},
+        norllama_available=False,
+        norllama_safe_final=False,
+        bedrock_available=False,
+        deterministic_status=True,
+    )
+    return validate_cost_route_proof(decision, runtime, model, service_tier)
+
+
 def sanitize_route_bootstrap_metadata(
     value: Any,
     runtime: Any,
@@ -22582,13 +22609,15 @@ def complete_deterministic_status_prompt(
     normalized_optimization_mode = normalize_optimization_mode(optimization_mode)
     runtime = "localllm"
     model = "deterministic-status"
+    execution_service_tier = "default"
+    cost_route = deterministic_status_cost_route()
     response = deterministic_status_response(prompt)
     usage = normalize_usage_entry(
         {
             **usage_provider_tags(normalized_service_tier),
             "runtime": runtime,
             "model": model,
-            "service_tier": normalized_service_tier,
+            "service_tier": execution_service_tier,
             "started_at": started_at,
             "finished_at": finished_at,
             "thread_id": thread_id,
@@ -22617,7 +22646,7 @@ def complete_deterministic_status_prompt(
         thread_id=thread_id,
         speed=normalized_speed,
         detail=normalized_detail,
-        service_tier=normalized_service_tier,
+        service_tier=execution_service_tier,
         job_budget=normalized_budget,
         optimization_mode=normalized_optimization_mode,
         timeout_seconds=job_budget_timeout_seconds(normalized_budget),
@@ -22625,6 +22654,19 @@ def complete_deterministic_status_prompt(
         model=model,
         attachments=[],
         usage=usage,
+    )
+    append_usage_entry(
+        started_at=started_at,
+        finished_at=finished_at,
+        thread_id=thread_id,
+        speed=normalized_speed,
+        detail=normalized_detail,
+        service_tier=execution_service_tier,
+        success=True,
+        runtime=runtime,
+        model=model,
+        usage=usage,
+        cost_route=cost_route,
     )
     update_status_meta(
         pending=False,
@@ -22636,7 +22678,7 @@ def complete_deterministic_status_prompt(
         running_model=model,
         running_speed=normalized_speed,
         running_detail=normalized_detail,
-        running_service_tier=normalized_service_tier,
+        running_service_tier=execution_service_tier,
         running_job_budget=normalized_budget,
         running_optimization_mode=normalized_optimization_mode,
         running_timeout_seconds=job_budget_timeout_seconds(normalized_budget),
@@ -22650,7 +22692,7 @@ def complete_deterministic_status_prompt(
         last_attachments=[],
         last_speed=normalized_speed,
         last_detail=normalized_detail,
-        last_service_tier=normalized_service_tier,
+        last_service_tier=execution_service_tier,
         last_job_budget=normalized_budget,
         last_optimization_mode=normalized_optimization_mode,
         last_runtime=runtime,
@@ -22663,6 +22705,26 @@ def complete_deterministic_status_prompt(
         last_action_detail="Answered from TUI state without a model call.",
         running_console_runtime_job_id="",
         running_cost_route={},
+    )
+    append_route_receipt(
+        prompt=prompt,
+        visible_response=response,
+        started_at=started_at,
+        finished_at=finished_at,
+        thread_id=thread_id,
+        speed=normalized_speed,
+        detail=normalized_detail,
+        service_tier=execution_service_tier,
+        job_budget=normalized_budget,
+        optimization_mode=normalized_optimization_mode,
+        success=True,
+        runtime=runtime,
+        model=model,
+        usage=usage,
+        outcome="done",
+        requested_model=model,
+        requested_service_tier=normalized_service_tier,
+        cost_route=cost_route,
     )
     append_audit_event(
         event_type="chat.deterministic-status",
@@ -22677,6 +22739,7 @@ def complete_deterministic_status_prompt(
             "runtime": runtime,
             "model": model,
             "usage": usage,
+            "cost_route": cost_route,
         },
         event_at=finished_at,
     )

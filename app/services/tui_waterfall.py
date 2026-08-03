@@ -23,6 +23,7 @@ _STAGES = {
     "bedrock_direct_limit_recovery",
     "bedrock_manual",
     "route_lock",
+    "deterministic_status",
     "blocked",
     "blocked_manual_bedrock",
 }
@@ -85,6 +86,13 @@ _STAGE_METADATA = {
         "fallback_reason": "",
         "charge_basis": "manual_route",
         "attempts": ("route_lock",),
+    },
+    "deterministic_status": {
+        "route_source": "deterministic_tui_status",
+        "reason": "durable TUI state answered status without a model call",
+        "fallback_reason": "",
+        "charge_basis": "zero_token_deterministic",
+        "attempts": ("deterministic_status",),
     },
     "blocked": {
         "route_source": "waterfall_guard",
@@ -248,6 +256,13 @@ def sanitize_tui_waterfall_decision(value: Any) -> dict[str, Any]:
         route_lock and selected_runtime and selected_model and selected_service_tier
     ):
         return {}
+    if stage == "deterministic_status" and not (
+        selected_runtime == "localllm"
+        and selected_model == "deterministic-status"
+        and selected_service_tier == "default"
+        and not route_lock
+    ):
+        return {}
 
     metadata = _STAGE_METADATA[stage]
     attempts = list(metadata["attempts"])
@@ -408,6 +423,7 @@ def build_tui_waterfall(
     bedrock_available: bool,
     manual_bedrock_available: bool | None = None,
     direct_tier_usage_limit_recovery: bool = False,
+    deterministic_status: bool = False,
 ) -> dict[str, Any]:
     """Choose the only automatic path from ChatGPT capacity to Bedrock.
 
@@ -434,6 +450,33 @@ def build_tui_waterfall(
         if manual_bedrock_available is None
         else bool(manual_bedrock_available)
     )
+    if deterministic_status:
+        if not (
+            requested_runtime == base_runtime == "localllm"
+            and requested_model == base_model == "deterministic-status"
+            and base_service_tier == "default"
+        ):
+            return {}
+        return _decision(
+            requested_runtime=requested_runtime,
+            requested_model=requested_model,
+            requested_service_tier=requested_service_tier,
+            selected=True,
+            blocked=False,
+            selected_runtime="localllm",
+            selected_model="deterministic-status",
+            selected_service_tier="default",
+            stage="deterministic_status",
+            route_source="deterministic_tui_status",
+            reason="durable TUI state answered status without a model call",
+            fallback_reason="",
+            attempts=["deterministic_status"],
+            route_lock=False,
+            bedrock_auto_authorized=False,
+            subscription_capacity=capacity,
+            charge_basis="zero_token_deterministic",
+        )
+
     if (
         route_lock
         and requested_runtime == base_runtime == "codex"

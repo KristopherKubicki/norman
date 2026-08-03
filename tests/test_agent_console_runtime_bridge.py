@@ -2672,16 +2672,15 @@ def test_deterministic_status_prompt_completes_without_model_call(
     assert history[-1]["model"] == "deterministic-status"
     assert history[-1]["usage"]["route_execution"] == "deterministic_tui_status"
     assert history[-1]["usage"]["total_tokens"] == 0
-    if module.ROUTE_RECEIPT_PATH.exists():
-        receipts = [
-            json.loads(line)
-            for line in module.ROUTE_RECEIPT_PATH.read_text(
-                encoding="utf-8"
-            ).splitlines()
-            if line.strip()
-        ]
-        assert receipts[-1]["requested_action"] == "status"
-        assert receipts[-1]["validator_passed"] is True
+    receipts = [
+        json.loads(line)
+        for line in module.ROUTE_RECEIPT_PATH.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert receipts[-1]["requested_action"] == "status"
+    assert receipts[-1]["validator_passed"] is True
+    assert receipts[-1]["input_tokens"] == 0
+    assert receipts[-1]["output_tokens"] == 0
 
 
 def test_healthy_local_lane_routes_explicit_status_through_normal_preflight(

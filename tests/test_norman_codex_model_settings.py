@@ -3925,10 +3925,12 @@ def test_api_ask_parses_interlace_mode_before_starting_prompt(
 def test_api_ask_completes_explicit_status_when_planner_preflight_is_disabled(
     monkeypatch, tmp_path
 ) -> None:
+    receipt_path = tmp_path / "route-receipts" / "status-fallback.jsonl"
     module = _load_norman_codex_web(
         monkeypatch,
         tmp_path,
         NORMAN_CODEX_ROUTE_RECEIPTS_ENABLED="1",
+        NORMAN_CODEX_ROUTE_RECEIPT_PATH=str(receipt_path),
         NORMAN_LOCAL_PLANNER_PREFLIGHT_ENABLED="0",
     )
     start_calls = []
