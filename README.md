@@ -1,6 +1,6 @@
 # Norman
 
-[![CI](https://github.com/OperatorKubicki/norman/actions/workflows/ci_cd.yml/badge.svg)](https://github.com/OperatorKubicki/norman/actions/workflows/ci_cd.yml)
+[![CI](https://github.com/KristopherKubicki/norman/actions/workflows/ci_cd.yml/badge.svg)](https://github.com/KristopherKubicki/norman/actions/workflows/ci_cd.yml)
 [![Codecov](https://codecov.io/gh/KristopherKubicki/norman/branch/main/graph/badge.svg)](https://codecov.io/gh/KristopherKubicki/norman)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/KristopherKubicki/norman/badge)](https://securityscorecards.dev/viewer/?uri=github.com/KristopherKubicki/norman)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)

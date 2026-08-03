@@ -5,7 +5,22 @@ describe the current control-plane, runtime, routing, and operator model.
 Older design records remain useful context, but their status and date matter;
 they are not all current operating instructions.
 
+## Document Status
+
+Unless a document is explicitly marked otherwise, the sections below identify
+its intended use:
+
+- **Current operating docs** define supported behavior, deployment, and
+  operator procedures.
+- **Direction and implementation docs** describe approved designs, migrations,
+  or work in progress. They are not a substitute for an operating runbook.
+- **Reference and history** records preserve dated decisions, investigations,
+  and release context. Verify current behavior against the operating docs.
+
 ## Start Here
+
+These are the current operating docs for an initial deployment or operator
+orientation.
 
 - [Root README](../README.md) - product scope, provider-neutral routing,
   human-control boundary, and local development start.
@@ -15,10 +30,11 @@ they are not all current operating instructions.
   safeguards, and rollback.
 - [Provider And Routing Resilience](llm_runtime_fallback.md) - local-first
   route order, egress classes, failure handling, and receipts.
-- [Norllama Repository Plan](norllama_repository_plan.md) - approved
-  contract-first extraction path for the inference gateway and mesh.
 
 ## Runtime And Operator Work
+
+These documents describe the runtime design and migration work. Confirm live
+deployment behavior against the current operating docs above.
 
 - [Norman Kernel Program](norman_kernel_program.md) - durable work model and
   the migration from provider-shaped TUIs to kernel clients.
@@ -30,9 +46,14 @@ they are not all current operating instructions.
   staged rollout, smoke checks, BBS coordination, acceptance, and rollback.
 - [TUI Operator Workflow Skill Spec](tui_operator_workflow_skill_spec.md) -
   operator and runtime workflow design.
-- [Norman Chat](norman_chat.md) - chat and TUI interaction context.
+- [Norman Chat](norman_chat.md) - product direction for the communication desk,
+  not a current implementation guide.
 
 ## Routing, Local Models, And Kaizen
+
+These documents define local-model routing direction, rollout work, and the
+bounded improvement program. Follow deployment and policy controls before
+enabling any optional capability.
 
 - [Norllama Router Guidance](norllama_router_guidance.md) - front door, mesh,
   warm policy, route attribution, and reliability work.
@@ -40,6 +61,9 @@ they are not all current operating instructions.
   model selection, egress, cost, local capability, and cloud escalation policy.
 - [Norllama Kaizen And KPI Control Loop](norllama_kaizen_control_loop_plan.md) -
   proactive reporting, bounded idle work, candidate lifecycle, and approvals.
+- [Norllama Repository Plan](norllama_repository_plan.md) - approved
+  contract-first extraction direction for an independent inference gateway and
+  mesh repository.
 - [Local LLM Node](local_llm_node.md) - local node installation and route
   policy refresh operations.
 - [Model Durability Plan](model_durability_plan.md) - earlier failure-mode and
@@ -48,6 +72,9 @@ they are not all current operating instructions.
   specialist capability runner handoff.
 
 ## Operations, Security, And Estate
+
+These documents define shared estate, access, and operational control
+boundaries. Some plan documents retain work-in-progress status.
 
 - [Estate Schema](estate_schema.md) - principals, bots, workers, services, and
   twin object model.
@@ -66,6 +93,9 @@ they are not all current operating instructions.
 
 ## Integrations And Extension
 
+These documents cover supported interfaces and extension direction. Connector
+access still follows the deployment's policy and authentication controls.
+
 - [Usage](usage.md) - deployment, Console Runtime, routing, approvals, and
   connector compatibility guidance.
 - [Examples](examples.md) - authenticated runtime, route, and Kaizen API
@@ -78,6 +108,9 @@ they are not all current operating instructions.
 - [Docker Deployment](docker.md) - containerized deployment reference.
 
 ## Reference And History
+
+These records provide useful context but are not current runbooks unless their
+own status says otherwise.
 
 - [Changelog](../CHANGELOG.md) - current release-direction and documentation
   notes.

@@ -288,18 +288,36 @@ audit trail; the human decides whether to resume, cancel, or investigate.
 
 ## Running the Application
 
-1. Start the Norman application:
+Before starting a service, configure the deployment's database, authentication,
+secret broker, and only the model or connector lanes it is approved to use.
+Use `config.yaml.dist` as a starting point; do not put credentials in the
+repository or rely on a default administrative account.
 
+1. Activate the deployment's virtual environment.
+
+2. Start the API service:
+
+   ```bash
+   uvicorn main:app --host 0.0.0.0 --port 8000
    ```
-   uvicorn app.main:app --host 0.0.0.0 --port 8000 --compression gzip
 
-   If the `brotli_asgi` package is installed and your Uvicorn version supports
-   it, you can use `--compression brotli` instead for better compression.
-   ```
+3. Verify the service through its managed authentication path and the endpoints
+   exposed at:
 
-2. Access the Norman Web UI in your browser by navigating to `http://your_server_ip:8000`.
+   - `http://<host>:8000/docs` for the OpenAPI UI
+   - `http://<host>:8000/health` for a health check
 
-3. Log in with the default admin account and start configuring your chatbots, channels, and filters.
+The Console Runtime worker is disabled and dry-run by default. The Kaizen
+broker is also disabled by default and starts with no model budget, target
+edits, automatic actions, or notifications. Enable either only after their
+service account, resource limits, policy, approval path, and rollback
+procedure have been reviewed.
+
+For the runtime and approval model, see the
+[Architecture](architecture.md) and
+[Norman Kernel Program](norman_kernel_program.md). For local-first route
+selection, egress, fallback, and receipts, see
+[Provider And Routing Resilience](llm_runtime_fallback.md).
 
 ## Updating Norman
 
