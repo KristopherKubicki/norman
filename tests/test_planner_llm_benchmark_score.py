@@ -50,6 +50,8 @@ def _completed_answers_for_candidate(packet: dict, candidate_id: str) -> dict:
                 "cached_input_tokens": prompt["cached_input_tokens"],
                 "output_tokens": prompt["expected_output_tokens"],
                 "latency_ms": 1200,
+                "input_token_source": "provider_usage",
+                "prompt_payload_tokens": prompt["input_tokens"],
                 "runtime_health_status": "healthy",
                 "verifier_acceptance": "accepted",
             }
@@ -95,6 +97,8 @@ def test_score_report_promotes_passing_local_dgx_spark_roles() -> None:
     assert "planner_advisory" in personal["planner_consumption_allowed_roles"]
     assert "bounded_local_execute" in personal["planner_consumption_allowed_roles"]
     assert "final_authority" not in personal["planner_consumption_allowed_roles"]
+    assert report["summary"]["long_context_gate"] == "pass"
+    assert report["summary"]["saturated_long_context_run_count"] == 1
 
 
 def test_score_report_fails_closed_for_forbidden_terms_and_bad_runtime() -> None:
@@ -117,6 +121,33 @@ def test_score_report_fails_closed_for_forbidden_terms_and_bad_runtime() -> None
     assert first["score_cap_reason"] == "critical_failure"
     record = report["promotion_records"][0]
     assert record["planner_consumption_allowed_roles"] == []
+
+
+def test_score_rejects_short_payload_as_non_saturated_long_context() -> None:
+    packet_module = _load_module("planner_llm_benchmark_packet")
+    score_module = _load_module("planner_llm_benchmark_score")
+    candidate_id = "local_dgx_spark_qwen3_coder_30b"
+    packet = _packet_for_candidate(packet_module.build_packet(), candidate_id)
+    answers = _completed_answers_for_candidate(packet, candidate_id)
+    long_context_answer = next(
+        answer
+        for answer in answers["answers"]
+        if answer["case_id"] == "saturated-archive-recall"
+    )
+    long_context_answer["prompt_payload_tokens"] = 2_400
+
+    report = score_module.build_report(packet, answers)
+
+    row = next(
+        score
+        for score in report["scores"]
+        if score["case_id"] == "saturated-archive-recall"
+    )
+    assert row["long_context"]["status"] == "not_saturated_short_payload"
+    assert "long_context_not_saturated" in row["critical_fail_reasons"]
+    assert report["summary"]["gate"] == "fail"
+    assert report["summary"]["long_context_gate"] == "not_saturated_long_context"
+    assert report["promotion_records"][0]["planner_consumption_allowed_roles"] == []
 
 
 def test_score_report_marks_unattempted_template_rows_incomplete() -> None:

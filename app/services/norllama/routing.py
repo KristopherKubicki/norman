@@ -7,6 +7,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from app.core.config import settings
 from app.services.norllama.capability_catalog import default_model_for_task_kind
+from app.services.norllama.fast_lane_outcomes import evaluate_fast_lane_outcome
 from app.services.norllama.specialist_lanes import (
     evaluate_specialist_cascade,
     specialist_cascade_template,
@@ -1556,6 +1557,10 @@ def route_receipt_payload(
     from app.services.norllama.route_proof import audit_route_receipt
 
     receipt_payload["receipt_audit"] = audit_route_receipt(receipt_payload)
+    receipt_payload["fast_lane_outcome"] = evaluate_fast_lane_outcome(
+        receipt_payload,
+        audit=receipt_payload["receipt_audit"],
+    )
     return receipt_payload
 
 

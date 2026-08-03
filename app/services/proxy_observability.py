@@ -204,6 +204,7 @@ def record_proxy_event(
     response = response or {}
     norman = _mapping(response.get("norman"))
     route_envelope = _mapping(norman.get("route"))
+    gateway = _mapping(norman.get("gateway"))
     route = _nested(route_envelope, "norman_route", "route")
     classification = _nested(route_envelope, "norman_route", "classification")
     strategy = _nested(route_envelope, "norman_route", "routing_strategy")
@@ -221,6 +222,10 @@ def record_proxy_event(
         "endpoint": endpoint,
         "method": method.upper(),
         "request_id": request_id or _clean(norman.get("request_id")),
+        "gateway_route": _clean(norman.get("gateway_route"))
+        or _clean(gateway.get("gateway_route")),
+        "source_tui": _clean(gateway.get("source_tui")),
+        "policy_scope": _clean(gateway.get("policy_scope")),
         "gateway_request_id": _clean(receipt.get("gateway_request_id")),
         "invocation_id": _clean(receipt.get("invocation_id")),
         "job_id": _clean(receipt.get("job_id")),

@@ -3,15 +3,19 @@ from __future__ import annotations
 import pytest
 
 from app.services.console_runtime import (
+    ConsoleArtifactRequirement,
+    ConsoleCheckpointCapsule,
     ConsoleJobContract,
     ConsoleJobStatus,
     ConsoleRuntimeKernel,
+    EffectReconciliationRequiredError,
     InvalidTransitionError,
     JobNotFoundError,
     ModelBudget,
     ModelRequest,
     ModelResult,
     ModelUsage,
+    RetryClass,
 )
 from app.services.console_runtime.adapters.fake import FakeModelAdapter
 from app.services.console_runtime.adapters.norllama import NorllamaModelAdapter
@@ -88,7 +92,14 @@ def test_invoke_model_uses_adapter_and_records_events():
     result = kernel.invoke_model("job-test", adapter=adapter, request=request)
 
     assert result.text == "runtime draft"
-    assert adapter.invocations == [request]
+    assert len(adapter.invocations) == 1
+    invoked_request = adapter.invocations[0]
+    assert invoked_request is not request
+    assert invoked_request.messages == request.messages
+    assert invoked_request.model == request.model
+    assert invoked_request.route_key == request.route_key
+    assert invoked_request.metadata["runtime_job_id"] == "job-test"
+    assert invoked_request.metadata["trace_id"]
     assert kernel.get_job("job-test").status == ConsoleJobStatus.RUNNING
     assert [event.event_type for event in kernel.events("job-test")] == [
         "job.created",
@@ -526,6 +537,300 @@ def test_fake_adapter_can_return_structured_model_result():
         "output_tokens": 4,
         "total_tokens": 14,
     }
+
+
+def test_model_completion_exposes_verified_luna_fast_lane_outcome():
+    structured = ModelResult(
+        provider="codex",
+        model="openai.gpt-5.6-luna",
+        text="Verified answer.",
+        usage=ModelUsage(input_tokens=1_000, output_tokens=500),
+        metadata={
+            "norllama_receipt": {
+                "route_receipt": {
+                    "selected_provider": "codex",
+                    "selected_model": "openai.gpt-5.6-luna",
+                    "effective_runtime_model": "openai.gpt-5.6-luna",
+                    "cloud_proxy": True,
+                    "validator_gate": "pass",
+                    "validator_passed": True,
+                    "estimated_cost_usd": 0.004,
+                    "baseline_all_5_5_cost_usd": 0.02,
+                }
+            }
+        },
+    )
+    adapter = FakeModelAdapter(responses=[structured], name="fake-luna")
+    kernel = ConsoleRuntimeKernel()
+    kernel.create_job(_contract(), job_id="job-test")
+
+    kernel.invoke_model(
+        "job-test",
+        adapter=adapter,
+        request=ModelRequest(messages=[{"role": "user", "content": "verify"}]),
+    )
+    completion_event = kernel.events("job-test")[-1]
+    outcome = completion_event.payload["fast_lane_outcome"]
+
+    assert outcome["schema"] == "norman.fast-lane-outcome.v1"
+    assert outcome["state"] == "verified"
+    assert outcome["lane"]["kind"] == "luna"
+    assert completion_event.payload["route_receipt"]["fast_lane_outcome"] == outcome
+
+
+def test_stale_attempt_cannot_mutate_after_a_new_lease_is_granted():
+    kernel = ConsoleRuntimeKernel()
+    kernel.create_job(_contract(), job_id="job-test")
+    first_lease = kernel.lease_job("job-test", worker_id="worker-a")
+    assert first_lease.lease is not None
+    first_attempt = first_lease.lease.attempt_id
+    first_epoch = first_lease.lease.lease_epoch
+    kernel.checkpoint_job(
+        "job-test",
+        summary="First worker checkpointed.",
+        attempt_id=first_attempt,
+        lease_epoch=first_epoch,
+    )
+    second_lease = kernel.lease_job("job-test", worker_id="worker-b")
+    assert second_lease.lease is not None
+    assert second_lease.lease.attempt_id != first_attempt
+    assert second_lease.lease.lease_epoch > first_epoch
+
+    with pytest.raises(InvalidTransitionError, match="Stale runtime attempt"):
+        kernel.checkpoint_job(
+            "job-test",
+            summary="Stale worker checkpoint.",
+            attempt_id=first_attempt,
+            lease_epoch=first_epoch,
+        )
+    with pytest.raises(InvalidTransitionError, match="Stale runtime attempt"):
+        kernel.complete_job(
+            "job-test",
+            summary="Stale worker completion.",
+            attempt_id=first_attempt,
+            lease_epoch=first_epoch,
+        )
+    with pytest.raises(InvalidTransitionError, match="Stale runtime attempt"):
+        kernel.append_event(
+            "job-test",
+            event_type="worker.stale",
+            attempt_id=first_attempt,
+            lease_epoch=first_epoch,
+        )
+
+
+def test_active_events_include_trace_and_lease_correlation():
+    kernel = ConsoleRuntimeKernel()
+    job = kernel.create_job(_contract(), job_id="job-test")
+    leased = kernel.lease_job("job-test", worker_id="worker-a")
+    assert leased.lease is not None
+    kernel.start_job(
+        "job-test",
+        attempt_id=leased.lease.attempt_id,
+        lease_epoch=leased.lease.lease_epoch,
+    )
+    event = kernel.append_event(
+        "job-test",
+        event_type="worker.progress",
+        payload={"stage": "executing"},
+        attempt_id=leased.lease.attempt_id,
+        lease_epoch=leased.lease.lease_epoch,
+    )
+
+    assert event.payload["trace_id"] == job.metadata["trace_id"]
+    assert event.payload["attempt_id"] == leased.lease.attempt_id
+    assert event.payload["lease_epoch"] == leased.lease.lease_epoch
+
+
+def test_typed_artifacts_and_checkpoint_capsules_are_persisted():
+    kernel = ConsoleRuntimeKernel()
+    kernel.create_job(_contract(), job_id="job-test")
+    leased = kernel.lease_job("job-test", worker_id="worker-a")
+    assert leased.lease is not None
+
+    checkpointed = kernel.checkpoint_job(
+        "job-test",
+        summary="Produced the contract artifact.",
+        artifacts=[
+            {
+                "artifact_id": "route-receipt",
+                "name": "route-receipt.json",
+                "ref": "artifacts/route-receipt.json",
+                "sha256": "abc123",
+                "schema_name": "norman.route-receipt",
+                "schema_version": "v1",
+            }
+        ],
+        capsule=ConsoleCheckpointCapsule(
+            summary="Route receipt is durable.",
+            facts=["The route was verified."],
+        ),
+        attempt_id=leased.lease.attempt_id,
+        lease_epoch=leased.lease.lease_epoch,
+    )
+
+    assert checkpointed.artifacts == ["route-receipt.json"]
+    assert checkpointed.artifact_records[0]["schema_name"] == "norman.route-receipt"
+    capsule = checkpointed.checkpoint_capsules[0]
+    assert capsule["trace_id"] == checkpointed.metadata["trace_id"]
+    assert capsule["attempt_id"] == leased.lease.attempt_id
+    assert capsule["artifact_digests"] == ["abc123"]
+
+
+def test_typed_artifact_requirements_match_schema_and_digest():
+    kernel = ConsoleRuntimeKernel()
+    kernel.create_job(_contract(), job_id="job-test")
+    kernel.lease_job("job-test", worker_id="worker-a")
+    kernel.checkpoint_job(
+        "job-test",
+        summary="Artifact ready.",
+        artifacts=[
+            {
+                "artifact_id": "report",
+                "name": "report.json",
+                "schema_name": "norman.report",
+                "schema_version": "v2",
+                "sha256": "deadbeef",
+            }
+        ],
+    )
+
+    assert kernel.artifact_requirements_satisfied(
+        "job-test",
+        requirements=[
+            ConsoleArtifactRequirement(
+                name="report",
+                schema_name="norman.report",
+                schema_version="v2",
+                sha256="deadbeef",
+            )
+        ],
+    )
+    assert not kernel.artifact_requirements_satisfied(
+        "job-test",
+        requirements=[
+            {
+                "name": "report",
+                "schema_name": "norman.report",
+                "schema_version": "v2",
+                "sha256": "mismatch",
+            }
+        ],
+    )
+
+
+def test_verification_receipt_is_required_before_completion():
+    kernel = ConsoleRuntimeKernel()
+    kernel.create_job(
+        _contract(route_policy={"require_verification_receipt": True}),
+        job_id="job-test",
+    )
+
+    with pytest.raises(InvalidTransitionError, match="verification receipt"):
+        kernel.complete_job("job-test")
+
+    receipt = kernel.record_verification(
+        "job-test",
+        receipt={
+            "verifier": "contract-checker",
+            "status": "pass",
+            "evidence_refs": ["artifacts/verification.json"],
+        },
+    )
+    completed = kernel.complete_job("job-test")
+
+    assert receipt.trace_id == completed.metadata["trace_id"]
+    assert completed.status == ConsoleJobStatus.DONE
+
+
+def test_completed_model_effect_replays_without_a_second_invocation():
+    kernel = ConsoleRuntimeKernel()
+    kernel.create_job(_contract(), job_id="job-test")
+    adapter = FakeModelAdapter(responses=["first result"])
+    request = ModelRequest(messages=[{"role": "user", "content": "work"}])
+
+    first = kernel.invoke_model(
+        "job-test",
+        adapter=adapter,
+        request=request,
+        effect_key="idempotent-model-work",
+    )
+    replayed = kernel.invoke_model(
+        "job-test",
+        adapter=adapter,
+        request=request,
+        effect_key="idempotent-model-work",
+    )
+
+    assert first.as_dict() == replayed.as_dict()
+    assert len(adapter.invocations) == 1
+    assert (
+        kernel.get_effect("job-test", effect_key="idempotent-model-work").state
+        == "completed"
+    )
+
+
+def test_incomplete_model_effect_requires_reconciliation():
+    kernel = ConsoleRuntimeKernel()
+    kernel.create_job(_contract(), job_id="job-test")
+    kernel.begin_effect(
+        "job-test",
+        effect_key="incomplete-model-work",
+        kind="model.invoke",
+    )
+
+    with pytest.raises(EffectReconciliationRequiredError, match="reconciliation"):
+        kernel.invoke_model(
+            "job-test",
+            adapter=FakeModelAdapter(responses=["must not run"]),
+            request=ModelRequest(messages=[{"role": "user", "content": "work"}]),
+            effect_key="incomplete-model-work",
+        )
+
+
+def test_partial_effect_retry_requires_an_explicit_override():
+    kernel = ConsoleRuntimeKernel()
+    kernel.create_job(_contract(), job_id="job-test")
+    kernel.fail_job(
+        "job-test",
+        error="Effect outcome is unknown.",
+        retry_class=RetryClass.PARTIAL_EFFECT,
+    )
+
+    with pytest.raises(InvalidTransitionError, match="explicit override"):
+        kernel.retry_job("job-test")
+
+    retried = kernel.retry_job("job-test", override=True)
+    assert retried.status == ConsoleJobStatus.QUEUED
+
+
+def test_model_request_correlation_uses_the_norllama_pool_not_a_worker():
+    kernel = ConsoleRuntimeKernel()
+    kernel.create_job(
+        _contract(
+            route_policy={
+                "provider": "norllama",
+                "norllama_pool": "spark-pool",
+            }
+        ),
+        job_id="job-test",
+    )
+    adapter = FakeModelAdapter(responses=["routed"])
+    kernel.invoke_model(
+        "job-test",
+        adapter=adapter,
+        request=ModelRequest(
+            messages=[{"role": "user", "content": "route this"}],
+            metadata={"invocation_id": "operator-request-7"},
+        ),
+    )
+
+    metadata = adapter.invocations[0].metadata
+    assert metadata["norllama_pool"] == "spark-pool"
+    assert metadata["route_policy"]["norllama_pool"] == "spark-pool"
+    assert metadata["invocation_id"] == "operator-request-7"
+    assert metadata["runtime_job_id"] == "job-test"
+    assert metadata["trace_id"]
 
 
 def test_job_and_event_dicts_are_json_ready():

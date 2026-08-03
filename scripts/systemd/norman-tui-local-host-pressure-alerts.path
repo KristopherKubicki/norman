@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch Norman local host pressure guard reports
+
+[Path]
+PathChanged=/home/kristopher/.local/state/norman/tui-local-host-pressure-guard.json
+Unit=norman-tui-local-host-pressure-alerts.service
+
+[Install]
+WantedBy=multi-user.target

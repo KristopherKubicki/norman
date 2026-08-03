@@ -383,6 +383,16 @@ def ensure_schema(conn: sqlite3.Connection) -> bool:
         """
     )
     conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS memory_vector_turns (
+            turn_id TEXT PRIMARY KEY,
+            content_sha256 TEXT NOT NULL,
+            chunk_count INTEGER NOT NULL DEFAULT 0,
+            indexed_at INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_turns_thread_started ON turns(thread_id, started_at)"
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_turns_started ON turns(started_at)")
@@ -400,6 +410,10 @@ def ensure_schema(conn: sqlite3.Connection) -> bool:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_memory_terms_chunk ON memory_embedding_terms(chunk_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_vector_turns_indexed "
+        "ON memory_vector_turns(indexed_at)"
     )
     fts_enabled = ensure_fts(conn)
     conn.execute(
@@ -1445,6 +1459,16 @@ def _turn_text_payload(row: sqlite3.Row) -> dict[str, Any]:
     return payload
 
 
+def _turn_memory_content_sha256(row: sqlite3.Row) -> str:
+    payload = _turn_text_payload(row)
+    material = {
+        "prompt": str(payload.get("prompt") or payload.get("prompt_text") or ""),
+        "response": str(payload.get("response") or payload.get("response_text") or ""),
+        "error": str(payload.get("error") or payload.get("error_text") or ""),
+    }
+    return hashlib.sha256(_json(material).encode("utf-8")).hexdigest()
+
+
 def _iter_turn_chunks(row: sqlite3.Row) -> list[dict[str, Any]]:
     payload = _turn_text_payload(row)
     chunks: list[dict[str, Any]] = []
@@ -1497,6 +1521,226 @@ def _iter_turn_chunks(row: sqlite3.Row) -> list[dict[str, Any]]:
     return chunks
 
 
+def _delete_turn_memory_vectors(conn: sqlite3.Connection, turn_id: str) -> None:
+    conn.execute(
+        """
+        DELETE FROM memory_embedding_terms
+        WHERE chunk_id IN (
+            SELECT chunk_id FROM memory_chunks WHERE turn_id = ?
+        )
+        """,
+        (turn_id,),
+    )
+    conn.execute(
+        """
+        DELETE FROM memory_embeddings
+        WHERE chunk_id IN (
+            SELECT chunk_id FROM memory_chunks WHERE turn_id = ?
+        )
+        """,
+        (turn_id,),
+    )
+    conn.execute("DELETE FROM memory_chunks WHERE turn_id = ?", (turn_id,))
+    conn.execute("DELETE FROM memory_vector_turns WHERE turn_id = ?", (turn_id,))
+
+
+def _index_memory_vector_turn(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    created_at: int,
+) -> tuple[int, int]:
+    turn_id = str(row["id"])
+    _delete_turn_memory_vectors(conn, turn_id)
+    chunk_count = 0
+    term_count = 0
+    for chunk in _iter_turn_chunks(row):
+        vector = _memory_hash_vector(chunk["text"])
+        if not vector:
+            continue
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO memory_chunks(
+                chunk_id, turn_id, thread_id, started_at, source_kind,
+                source_path, chunk_kind, chunk_index, text, text_preview,
+                metadata_json, sha256, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                chunk["chunk_id"],
+                chunk["turn_id"],
+                chunk["thread_id"],
+                chunk["started_at"],
+                chunk["source_kind"],
+                chunk["source_path"],
+                chunk["chunk_kind"],
+                chunk["chunk_index"],
+                chunk["text"],
+                chunk["text_preview"],
+                chunk["metadata_json"],
+                chunk["sha256"],
+                created_at,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO memory_embeddings(
+                chunk_id, embedding_model, dimension, vector_json, created_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                chunk["chunk_id"],
+                MEMORY_VECTOR_MODEL,
+                MEMORY_VECTOR_DIMENSION,
+                _json(vector),
+                created_at,
+            ),
+        )
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO memory_embedding_terms(
+                embedding_model, term, chunk_id, weight
+            ) VALUES (?, ?, ?, ?)
+            """,
+            [
+                (MEMORY_VECTOR_MODEL, term, chunk["chunk_id"], weight)
+                for term, weight in vector.items()
+            ],
+        )
+        chunk_count += 1
+        term_count += len(vector)
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO memory_vector_turns(
+            turn_id, content_sha256, chunk_count, indexed_at
+        ) VALUES (?, ?, ?, ?)
+        """,
+        (turn_id, _turn_memory_content_sha256(row), chunk_count, created_at),
+    )
+    return chunk_count, term_count
+
+
+def _memory_vector_turn_rows(
+    conn: sqlite3.Connection,
+    *,
+    limit: int | None = None,
+    unindexed_only: bool = False,
+) -> list[sqlite3.Row]:
+    sql = """
+        SELECT id, thread_id, started_at, finished_at, runtime, model,
+               prompt_preview, response_preview, error_preview, payload_json
+        FROM turns
+    """
+    params: list[Any] = []
+    if unindexed_only:
+        sql += """
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM memory_vector_turns
+                WHERE memory_vector_turns.turn_id = turns.id
+            )
+        """
+    sql += " ORDER BY COALESCE(started_at, 0) DESC, id DESC"
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(max(1, int(limit)))
+    return conn.execute(sql, params).fetchall()
+
+
+def incremental_memory_vectors(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = 128,
+) -> dict[str, Any]:
+    clean_limit = max(1, int(limit))
+    pending_before = conn.execute(
+        """
+        SELECT COUNT(*) AS pending_turns
+        FROM turns
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM memory_vector_turns
+            WHERE memory_vector_turns.turn_id = turns.id
+        )
+        """
+    ).fetchone()["pending_turns"]
+    rows = _memory_vector_turn_rows(
+        conn,
+        limit=clean_limit,
+        unindexed_only=True,
+    )
+    created_at = now_ts()
+    chunk_count = 0
+    term_count = 0
+    for row in rows:
+        chunks, terms = _index_memory_vector_turn(conn, row, created_at=created_at)
+        chunk_count += chunks
+        term_count += terms
+    conn.execute(
+        "INSERT OR REPLACE INTO meta(key, value, updated_at) VALUES (?, ?, ?)",
+        ("memory_vector_model", MEMORY_VECTOR_MODEL, created_at),
+    )
+    conn.commit()
+    pending_after = max(0, int(pending_before or 0) - len(rows))
+    return {
+        "embedding_model": MEMORY_VECTOR_MODEL,
+        "dimension": MEMORY_VECTOR_DIMENSION,
+        "turns_indexed": len(rows),
+        "chunks": chunk_count,
+        "terms": term_count,
+        "pending_turns_before": int(pending_before or 0),
+        "pending_turns_after": pending_after,
+    }
+
+
+def incremental_memory_vectors_locked(
+    db_path: Path,
+    *,
+    limit: int = 128,
+    batches: int = 1,
+) -> dict[str, Any]:
+    lock_path = db_path.with_name(f"{db_path.name}.vector-index.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        try:
+            import fcntl
+
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError):
+            return {
+                "status": "already-running",
+                "db": str(db_path),
+                "turns_indexed": 0,
+            }
+        try:
+            with connect(db_path) as conn:
+                results: list[dict[str, Any]] = []
+                for _batch in range(max(1, int(batches))):
+                    result = incremental_memory_vectors(conn, limit=limit)
+                    results.append(result)
+                    if (
+                        result["turns_indexed"] <= 0
+                        or result["pending_turns_after"] <= 0
+                    ):
+                        break
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    first = results[0]
+    last = results[-1]
+    return {
+        "status": "ok",
+        "db": str(db_path),
+        "embedding_model": last["embedding_model"],
+        "dimension": last["dimension"],
+        "batches": len(results),
+        "turns_indexed": sum(int(item["turns_indexed"]) for item in results),
+        "chunks": sum(int(item["chunks"]) for item in results),
+        "terms": sum(int(item["terms"]) for item in results),
+        "pending_turns_before": first["pending_turns_before"],
+        "pending_turns_after": last["pending_turns_after"],
+    }
+
+
 def rebuild_memory_vectors(
     conn: sqlite3.Connection,
     *,
@@ -1505,76 +1749,15 @@ def rebuild_memory_vectors(
     conn.execute("DELETE FROM memory_embedding_terms")
     conn.execute("DELETE FROM memory_embeddings")
     conn.execute("DELETE FROM memory_chunks")
-    sql = """
-        SELECT id, thread_id, started_at, finished_at, runtime, model,
-               prompt_preview, response_preview, error_preview, payload_json
-        FROM turns
-        ORDER BY COALESCE(started_at, 0) DESC, id
-    """
-    params: list[Any] = []
-    if limit is not None:
-        sql += " LIMIT ?"
-        params.append(max(1, int(limit)))
-    rows = conn.execute(sql, params).fetchall()
+    conn.execute("DELETE FROM memory_vector_turns")
+    rows = _memory_vector_turn_rows(conn, limit=limit)
     chunk_count = 0
     term_count = 0
     created_at = now_ts()
     for row in rows:
-        for chunk in _iter_turn_chunks(row):
-            vector = _memory_hash_vector(chunk["text"])
-            if not vector:
-                continue
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO memory_chunks(
-                    chunk_id, turn_id, thread_id, started_at, source_kind,
-                    source_path, chunk_kind, chunk_index, text, text_preview,
-                    metadata_json, sha256, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    chunk["chunk_id"],
-                    chunk["turn_id"],
-                    chunk["thread_id"],
-                    chunk["started_at"],
-                    chunk["source_kind"],
-                    chunk["source_path"],
-                    chunk["chunk_kind"],
-                    chunk["chunk_index"],
-                    chunk["text"],
-                    chunk["text_preview"],
-                    chunk["metadata_json"],
-                    chunk["sha256"],
-                    created_at,
-                ),
-            )
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO memory_embeddings(
-                    chunk_id, embedding_model, dimension, vector_json, created_at
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    chunk["chunk_id"],
-                    MEMORY_VECTOR_MODEL,
-                    MEMORY_VECTOR_DIMENSION,
-                    _json(vector),
-                    created_at,
-                ),
-            )
-            conn.executemany(
-                """
-                INSERT OR REPLACE INTO memory_embedding_terms(
-                    embedding_model, term, chunk_id, weight
-                ) VALUES (?, ?, ?, ?)
-                """,
-                [
-                    (MEMORY_VECTOR_MODEL, term, chunk["chunk_id"], weight)
-                    for term, weight in vector.items()
-                ],
-            )
-            chunk_count += 1
-            term_count += len(vector)
+        chunks, terms = _index_memory_vector_turn(conn, row, created_at=created_at)
+        chunk_count += chunks
+        term_count += terms
     conn.execute(
         "INSERT OR REPLACE INTO meta(key, value, updated_at) VALUES (?, ?, ?)",
         ("memory_vector_model", MEMORY_VECTOR_MODEL, created_at),
@@ -1917,7 +2100,17 @@ def stats(conn: sqlite3.Connection) -> dict[str, Any]:
             (SELECT COUNT(*) FROM memory_chunks) AS chunks,
             (SELECT COUNT(*) FROM memory_embeddings) AS embeddings,
             (SELECT COUNT(*) FROM memory_embedding_terms) AS terms,
-            (SELECT COUNT(DISTINCT turn_id) FROM memory_chunks) AS indexed_turns
+            (SELECT COUNT(DISTINCT turn_id) FROM memory_chunks) AS indexed_turns,
+            (SELECT COUNT(*) FROM memory_vector_turns) AS tracked_turns,
+            (
+                SELECT COUNT(*)
+                FROM turns
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM memory_vector_turns
+                    WHERE memory_vector_turns.turn_id = turns.id
+                )
+            ) AS pending_turns
         """
     ).fetchone()
     return {
@@ -2010,6 +2203,10 @@ def parse_args() -> argparse.Namespace:
     vector_rebuild_parser = subparsers.add_parser("vector-rebuild")
     vector_rebuild_parser.add_argument("--limit", type=int)
 
+    vector_index_parser = subparsers.add_parser("vector-index")
+    vector_index_parser.add_argument("--limit", type=int, default=128)
+    vector_index_parser.add_argument("--batches", type=int, default=1)
+
     vector_search_parser = subparsers.add_parser("vector-search")
     vector_search_parser.add_argument("query")
     vector_search_parser.add_argument("--since")
@@ -2032,6 +2229,19 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    if args.command == "vector-index":
+        print(
+            json.dumps(
+                incremental_memory_vectors_locked(
+                    args.db,
+                    limit=args.limit,
+                    batches=args.batches,
+                ),
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 0
     with connect(args.db) as conn:
         if args.command == "init":
             print(json.dumps(stats(conn), indent=2, sort_keys=True))

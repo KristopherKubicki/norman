@@ -25,10 +25,13 @@ from app.services.console_runtime.policy import (
 )
 from app.services.console_runtime.store import DbConsoleRuntimeStore
 from app.services.console_runtime.types import (
+    ConsoleCheckpointCapsule,
     ConsoleJobStatus,
+    ConsoleVerificationReceipt,
     ModelBudget,
     ModelRequest,
     ModelResult,
+    RetryClass,
 )
 from app.services.prompt_load_balancer import classify_prompt
 from app.services.reasoning_orchestrator import (
@@ -41,6 +44,7 @@ from app.services.norllama.route_proof import (
     normalize_route_receipt_for_completion_gate,
     receipt_completion_gate_passes,
 )
+from app.services.norllama.fast_lane_outcomes import evaluate_fast_lane_outcome
 from app.services.norllama.specialist_lanes import evaluate_specialist_cascade
 from app.services.norllama.types import NorllamaTaskRequest
 
@@ -643,6 +647,126 @@ class DbConsoleRuntimeWorker:
     def __init__(self, store: DbConsoleRuntimeStore | None = None) -> None:
         self.store = store or DbConsoleRuntimeStore()
 
+    @staticmethod
+    def _attempt_tokens(job: Any) -> tuple[str, int | None]:
+        lease = getattr(job, "lease", None)
+        attempt_id = _clean(getattr(lease, "attempt_id", ""))
+        if not attempt_id:
+            return "", None
+        return attempt_id, max(0, int(getattr(lease, "lease_epoch", 0) or 0))
+
+    @staticmethod
+    def _requires_verification_receipt(job: Any) -> bool:
+        contract = getattr(job, "contract", None)
+        values = (
+            getattr(contract, "route_policy", {}),
+            getattr(contract, "metadata", {}),
+            getattr(job, "metadata", {}),
+        )
+        return any(
+            _flag(value.get(key))
+            for value in values
+            if isinstance(value, dict)
+            for key in (
+                "require_verification_receipt",
+                "require_verifier_for_completion",
+                "verification_required",
+            )
+        )
+
+    @staticmethod
+    def _checkpoint_capsule(
+        job: Any,
+        *,
+        summary: str,
+        attempt_id: str,
+        lease_epoch: int | None,
+        route_receipt: dict[str, Any] | None = None,
+        completed_clauses: list[str] | None = None,
+    ) -> ConsoleCheckpointCapsule:
+        receipt = dict(route_receipt or {})
+        receipt_ref = _clean(
+            receipt.get("request_id")
+            or receipt.get("client_request_id")
+            or receipt.get("invocation_id")
+        )
+        return ConsoleCheckpointCapsule(
+            summary=summary,
+            facts=[
+                "A bounded runtime attempt completed.",
+                f"Worker: {_clean(getattr(getattr(job, 'lease', None), 'worker_id', ''))}",
+            ],
+            evidence_refs=[receipt_ref] if receipt_ref else [],
+            completed_clauses=list(completed_clauses or []),
+            remaining_clauses=list(getattr(job.contract, "done_when", []) or []),
+            next_safe_action="Resume from this checkpoint with the active route policy.",
+            route_receipt_ref=receipt_ref,
+            approval_state=getattr(getattr(job, "status", None), "value", "")
+            or _clean(getattr(job, "status", "")),
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch or 0,
+            trace_id=_clean(getattr(job, "metadata", {}).get("trace_id")),
+        )
+
+    def _finalize_cancellation_if_requested(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        job_id: str,
+        options: ConsoleRuntimeRunOptions,
+        reason: str,
+        effect_key: str = "",
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
+    ) -> dict[str, Any] | None:
+        job = self.store.get_job(db, user_id=user_id, job_id=job_id)
+        status = getattr(job.status, "value", job.status)
+        if status != ConsoleJobStatus.CANCELED.value and not job.cancel_requested_at:
+            return None
+        normalized_effect_key = _clean(effect_key)
+        if normalized_effect_key:
+            effect = self.store.get_effect(
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                effect_key=normalized_effect_key,
+            )
+            if effect is not None and effect.state in {"planned", "started"}:
+                self.store.fail_effect(
+                    db,
+                    user_id=user_id,
+                    job_id=job_id,
+                    effect_key=normalized_effect_key,
+                    error=reason or "Cancellation requested before effect invocation",
+                    attempt_id=(
+                        attempt_id if status != ConsoleJobStatus.CANCELED.value else ""
+                    ),
+                    lease_epoch=(
+                        lease_epoch
+                        if status != ConsoleJobStatus.CANCELED.value
+                        else None
+                    ),
+                )
+        finalized = self.store.finalize_cancel_requested(
+            db,
+            user_id=user_id,
+            job_id=job_id,
+            reason=reason,
+        )
+        finalized_status = getattr(finalized.status, "value", finalized.status)
+        if finalized_status != ConsoleJobStatus.CANCELED.value:
+            return None
+        snapshot = self.store.activity_snapshot(db, user_id=user_id, job_id=job_id)
+        return {
+            "job": finalized.as_dict(),
+            "model_result": None,
+            "snapshot": snapshot,
+            "dry_run": options.dry_run,
+            "worker_id": options.worker_id,
+            "canceled": True,
+        }
+
     def run_once(
         self,
         db: Session,
@@ -654,6 +778,15 @@ class DbConsoleRuntimeWorker:
     ) -> dict[str, Any]:
         opts = options or ConsoleRuntimeRunOptions()
         job = self.store.get_job(db, user_id=user_id, job_id=job_id)
+        canceled = self._finalize_cancellation_if_requested(
+            db,
+            user_id=user_id,
+            job_id=job_id,
+            options=opts,
+            reason="Cancellation requested before runtime execution",
+        )
+        if canceled is not None:
+            return canceled
         if job.status in {ConsoleJobStatus.QUEUED, ConsoleJobStatus.CHECKPOINTED}:
             job = self.store.lease_job(
                 db,
@@ -662,8 +795,34 @@ class DbConsoleRuntimeWorker:
                 worker_id=opts.worker_id,
                 lease_seconds=job.contract.checkpoint_interval_seconds,
             )
+            canceled = self._finalize_cancellation_if_requested(
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                options=opts,
+                reason="Cancellation requested after runtime lease",
+            )
+            if canceled is not None:
+                return canceled
         if job.status in {ConsoleJobStatus.LEASED, ConsoleJobStatus.CHECKPOINTED}:
-            job = self.store.start_job(db, user_id=user_id, job_id=job_id)
+            attempt_id, lease_epoch = self._attempt_tokens(job)
+            job = self.store.start_job(
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
+            canceled = self._finalize_cancellation_if_requested(
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                options=opts,
+                reason="Cancellation requested after runtime start",
+            )
+            if canceled is not None:
+                return canceled
+        attempt_id, lease_epoch = self._attempt_tokens(job)
 
         route_policy = _local_first_route_policy(
             _merge_dicts(job.contract.route_policy, opts.route_policy)
@@ -700,6 +859,8 @@ class DbConsoleRuntimeWorker:
             },
             summary="Runtime worker accepted job.",
             detail=job.contract.objective,
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
         )
 
         if "recent_route_outcomes" not in route_policy:
@@ -714,6 +875,8 @@ class DbConsoleRuntimeWorker:
             user_id=user_id,
             job_id=job_id,
             policy_state=policy_state,
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
         )
 
         if not opts.dry_run and not self._live_execution_allowed(opts):
@@ -726,6 +889,8 @@ class DbConsoleRuntimeWorker:
                 job_id=job_id,
                 reason=reason,
                 requested_by=opts.worker_id,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
             )
             snapshot = self.store.activity_snapshot(db, user_id=user_id, job_id=job_id)
             return {
@@ -747,6 +912,8 @@ class DbConsoleRuntimeWorker:
                 options=opts,
                 route_policy=route_policy,
                 policy_state=policy_state,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
             )
 
         task_kind = initial_task_kind
@@ -814,6 +981,8 @@ class DbConsoleRuntimeWorker:
             user_id=user_id,
             job_id=job_id,
             decision=decision,
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
         )
         if not decision.allowed:
             reason = "; ".join(decision.blocked_reasons) or "runtime route blocked"
@@ -824,12 +993,16 @@ class DbConsoleRuntimeWorker:
                 reason=reason,
                 policy_state=policy_state,
                 metadata={"decision_id": decision.decision_id},
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
             )
             blocked = self.store.block_job(
                 db,
                 user_id=user_id,
                 job_id=job_id,
                 reason=reason,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
             )
             snapshot = self.store.activity_snapshot(db, user_id=user_id, job_id=job_id)
             return {
@@ -849,6 +1022,8 @@ class DbConsoleRuntimeWorker:
             receipt=receipt.as_dict(),
             capabilities=capabilities,
             metadata={"source": "runtime_worker", "worker_id": opts.worker_id},
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
         )
 
         goal_phase = _clean(opts.metadata.get("goal_phase")) or opts.planner_kind
@@ -915,6 +1090,8 @@ class DbConsoleRuntimeWorker:
                     "decision_id": decision.decision_id,
                     "cloud_budget": cloud_budget,
                 },
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
             )
             self.store.append_event(
                 db,
@@ -928,9 +1105,16 @@ class DbConsoleRuntimeWorker:
                 },
                 summary="Cloud token budget blocked provider invocation.",
                 detail=reason,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
             )
             blocked = self.store.block_job(
-                db, user_id=user_id, job_id=job_id, reason=reason
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                reason=reason,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
             )
             snapshot = self.store.activity_snapshot(db, user_id=user_id, job_id=job_id)
             return {
@@ -980,6 +1164,9 @@ class DbConsoleRuntimeWorker:
                 ),
                 "runtime_job_id": job_id,
                 "console_runtime_job_id": job_id,
+                "trace_id": _clean(job.metadata.get("trace_id")),
+                "attempt_id": attempt_id,
+                "lease_epoch": lease_epoch or 0,
                 "worker_id": opts.worker_id,
                 "invocation_id": invocation_id,
                 "request_id": invocation_id,
@@ -993,6 +1180,67 @@ class DbConsoleRuntimeWorker:
                 "cloud_budget": cloud_budget,
             },
         )
+        effect_key = f"{attempt_id}:{invocation_id}"
+        effect, should_invoke = self.store.begin_effect(
+            db,
+            user_id=user_id,
+            job_id=job_id,
+            effect_key=effect_key,
+            kind="model.invoke",
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
+            preconditions={
+                "provider": model_adapter.name,
+                "model": request.model,
+                "route_key": request.route_key,
+                "invocation_id": invocation_id,
+            },
+        )
+        if not should_invoke:
+            reconciliation_summary = (
+                "Runtime worker checkpointed because a model invocation was "
+                "already reserved for this attempt."
+            )
+            self.store.append_event(
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                event_type="effect.reconciliation_required",
+                payload={
+                    "effect": effect.as_dict(),
+                    "invocation_id": invocation_id,
+                    "reason": "duplicate model invocation reservation",
+                },
+                summary="Model effect reconciliation required",
+                detail=effect.state,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
+            checkpointed = self.store.checkpoint_job(
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                summary=reconciliation_summary,
+                capsule=self._checkpoint_capsule(
+                    job,
+                    summary=reconciliation_summary,
+                    attempt_id=attempt_id,
+                    lease_epoch=lease_epoch,
+                    route_receipt={"invocation_id": invocation_id},
+                ),
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
+            snapshot = self.store.activity_snapshot(db, user_id=user_id, job_id=job_id)
+            return {
+                "job": checkpointed.as_dict(),
+                "model_result": None,
+                "snapshot": snapshot,
+                "dry_run": opts.dry_run,
+                "worker_id": opts.worker_id,
+                "effect_reconciliation_required": True,
+                "effect": effect.as_dict(),
+            }
         self.store.append_event(
             db,
             user_id=user_id,
@@ -1017,6 +1265,8 @@ class DbConsoleRuntimeWorker:
             },
             summary=f"Started {model_adapter.name}",
             detail=request.route_key,
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
         )
         self.store.append_event(
             db,
@@ -1037,12 +1287,35 @@ class DbConsoleRuntimeWorker:
                 ),
             },
             summary=f"Requested {model_adapter.name}",
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
         )
 
+        canceled = self._finalize_cancellation_if_requested(
+            db,
+            user_id=user_id,
+            job_id=job_id,
+            options=opts,
+            reason="Cancellation requested before model invocation",
+            effect_key=effect_key,
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
+        )
+        if canceled is not None:
+            return canceled
         try:
             result = model_adapter.invoke(request)
         except Exception as exc:
             error = str(exc)
+            self.store.fail_effect(
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                effect_key=effect_key,
+                error=error,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
             failed_receipt = build_task_receipt(
                 task,
                 route,
@@ -1068,6 +1341,8 @@ class DbConsoleRuntimeWorker:
                 },
                 summary=f"{model_adapter.name} failed",
                 detail=error,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
             )
             self.store.append_event(
                 db,
@@ -1081,9 +1356,17 @@ class DbConsoleRuntimeWorker:
                 },
                 summary="Model adapter failed",
                 detail=error,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
             )
             failed_job = self.store.fail_job(
-                db, user_id=user_id, job_id=job_id, error=error
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                error=error,
+                retry_class=RetryClass.TRANSIENT_TRANSPORT,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
             )
             snapshot = self.store.activity_snapshot(db, user_id=user_id, job_id=job_id)
             return {
@@ -1127,6 +1410,23 @@ class DbConsoleRuntimeWorker:
                     verification_signal = "needs_more_work"
             elif not verification_signal:
                 verification_signal = structured_signal
+        result_route_receipt = _route_receipt_from_result(result)
+        self.store.complete_effect(
+            db,
+            user_id=user_id,
+            job_id=job_id,
+            effect_key=effect_key,
+            receipt={
+                "invocation_id": invocation_id,
+                "provider": result.provider or model_adapter.name,
+                "model": result.model or request.model,
+                "stop_reason": result.stop_reason,
+                "usage": result.usage.as_dict(),
+                "route_receipt": result_route_receipt,
+            },
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
+        )
         self._record_model_result(
             db,
             user_id=user_id,
@@ -1136,8 +1436,11 @@ class DbConsoleRuntimeWorker:
             result=result,
             verification_signal=verification_signal,
             reasoning_plan=reasoning_plan,
+            task_contract=job.contract.as_dict(),
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
         )
-        route_receipt = _route_receipt_from_result(result)
+        route_receipt = result_route_receipt
         if route_receipt:
             route_receipt = {
                 **route_receipt,
@@ -1167,6 +1470,8 @@ class DbConsoleRuntimeWorker:
                 if verification_signal == "complete"
                 else "Verifier requested more local work",
                 detail=_preview(result.text, 800),
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
             )
         if route_receipt:
             route_receipt = normalize_route_receipt_for_completion_gate(
@@ -1175,6 +1480,11 @@ class DbConsoleRuntimeWorker:
             )
             receipt_audit = _receipt_audit(route_receipt)
             route_receipt["receipt_audit"] = receipt_audit
+            route_receipt["fast_lane_outcome"] = evaluate_fast_lane_outcome(
+                route_receipt,
+                task_contract=job.contract.as_dict(),
+                audit=receipt_audit,
+            )
             self.store.append_event(
                 db,
                 user_id=user_id,
@@ -1183,6 +1493,7 @@ class DbConsoleRuntimeWorker:
                 payload={
                     "route_receipt": route_receipt,
                     "receipt_audit": receipt_audit,
+                    "fast_lane_outcome": route_receipt["fast_lane_outcome"],
                     "request_id": route_receipt.get("request_id"),
                     "client_request_id": route_receipt.get("client_request_id"),
                     "gateway_request_id": route_receipt.get("gateway_request_id"),
@@ -1207,6 +1518,8 @@ class DbConsoleRuntimeWorker:
                     else "Route receipt audit failed"
                 ),
                 detail="; ".join(receipt_audit.get("failures") or []),
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
             )
         else:
             receipt_audit = {}
@@ -1234,6 +1547,11 @@ class DbConsoleRuntimeWorker:
                     "route_receipt": route_receipt,
                     "receipt_audit": receipt_audit,
                     "completion_gate": completion_gate,
+                    "fast_lane_outcome": (
+                        route_receipt.get("fast_lane_outcome")
+                        if isinstance(route_receipt, dict)
+                        else {}
+                    ),
                     "request_id": route_receipt.get("request_id")
                     if isinstance(route_receipt, dict)
                     else "",
@@ -1255,6 +1573,8 @@ class DbConsoleRuntimeWorker:
                     else "Route proof completion gate failed"
                 ),
                 detail=completion_gate.get("reason", ""),
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
             )
         reasoning_tool_gate = _reasoning_tool_gate_summary(
             reasoning_plan=reasoning_plan,
@@ -1280,31 +1600,86 @@ class DbConsoleRuntimeWorker:
                 else "Reasoning tool gate missing required evidence"
             ),
             detail=reasoning_tool_gate["reason"],
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
         )
-        if (
+        canceled = self._finalize_cancellation_if_requested(
+            db,
+            user_id=user_id,
+            job_id=job_id,
+            options=opts,
+            reason="Cancellation requested before runtime finalization",
+        )
+        if canceled is not None:
+            return canceled
+        verification_receipt_ready = (
+            not self._requires_verification_receipt(job)
+            or verification_signal == "complete"
+        )
+        should_complete_from_verifier = (
             verification_signal == "complete"
             and not missing
             and completion_gate["gate_passed"]
             and reasoning_tool_gate["completion_allowed"]
-        ):
-            final_job = self.store.complete_job(
-                db,
-                user_id=user_id,
-                job_id=job_id,
-                summary="Runtime verifier marked goal complete.",
-            )
-        elif (
+            and verification_receipt_ready
+        )
+        should_complete_from_step = (
             opts.complete
             and not missing
             and verification_signal != "needs_more_work"
             and completion_gate["gate_passed"]
             and reasoning_tool_gate["completion_allowed"]
+            and verification_receipt_ready
+        )
+        if self._requires_verification_receipt(job) and (
+            should_complete_from_verifier or should_complete_from_step
         ):
+            evidence_refs = [invocation_id]
+            if isinstance(route_receipt, dict):
+                route_reference = _clean(
+                    route_receipt.get("request_id")
+                    or route_receipt.get("client_request_id")
+                    or route_receipt.get("gateway_request_id")
+                )
+                if route_reference:
+                    evidence_refs.append(route_reference)
+            self.store.record_verification(
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                receipt=ConsoleVerificationReceipt(
+                    verifier="runtime_worker",
+                    status="pass",
+                    evidence_refs=evidence_refs,
+                    metadata={
+                        "verification_signal": verification_signal,
+                        "completion_gate": completion_gate,
+                        "reasoning_tool_gate": reasoning_tool_gate,
+                    },
+                    attempt_id=attempt_id,
+                    lease_epoch=lease_epoch or 0,
+                    trace_id=_clean(job.metadata.get("trace_id")),
+                ),
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
+        if should_complete_from_verifier:
+            final_job = self.store.complete_job(
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                summary="Runtime verifier marked goal complete.",
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
+        elif should_complete_from_step:
             final_job = self.store.complete_job(
                 db,
                 user_id=user_id,
                 job_id=job_id,
                 summary="Runtime worker completed one model step.",
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
             )
         else:
             if not reasoning_tool_gate["completion_allowed"]:
@@ -1324,6 +1699,20 @@ class DbConsoleRuntimeWorker:
                 user_id=user_id,
                 job_id=job_id,
                 summary=checkpoint_reason,
+                capsule=self._checkpoint_capsule(
+                    job,
+                    summary=checkpoint_reason,
+                    attempt_id=attempt_id,
+                    lease_epoch=lease_epoch,
+                    route_receipt=route_receipt,
+                    completed_clauses=(
+                        list(job.contract.done_when)
+                        if verification_signal == "complete"
+                        else []
+                    ),
+                ),
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
             )
 
         snapshot = self.store.activity_snapshot(db, user_id=user_id, job_id=job_id)
@@ -1384,6 +1773,17 @@ class DbConsoleRuntimeWorker:
 
         last_result: dict[str, Any] | None = None
         for step_index in range(1, opts.max_steps + 1):
+            canceled = self._finalize_cancellation_if_requested(
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                options=opts,
+                reason="Cancellation requested during goal loop",
+            )
+            if canceled is not None:
+                last_result = canceled
+                stop_reason = ConsoleJobStatus.CANCELED.value
+                break
             if time.monotonic() - started > max_runtime_seconds:
                 stop_reason = "runtime_budget"
                 break
@@ -1458,6 +1858,8 @@ class DbConsoleRuntimeWorker:
                 },
             }
             steps.append(step_summary)
+            current_after_step = self.store.get_job(db, user_id=user_id, job_id=job_id)
+            step_attempt_id, step_lease_epoch = self._attempt_tokens(current_after_step)
             self.store.append_event(
                 db,
                 user_id=user_id,
@@ -1466,6 +1868,8 @@ class DbConsoleRuntimeWorker:
                 payload=step_summary,
                 summary=f"Goal loop step {step_index} completed",
                 detail=status,
+                attempt_id=step_attempt_id,
+                lease_epoch=step_lease_epoch,
             )
 
             if result.get("approval_required"):
@@ -1491,6 +1895,7 @@ class DbConsoleRuntimeWorker:
             stop_reason = "max_steps"
 
         final_job = self.store.get_job(db, user_id=user_id, job_id=job_id)
+        final_attempt_id, final_lease_epoch = self._attempt_tokens(final_job)
         elapsed_ms = int((time.monotonic() - started) * 1000)
         self.store.append_event(
             db,
@@ -1513,6 +1918,8 @@ class DbConsoleRuntimeWorker:
             },
             summary=f"Goal loop stopped: {stop_reason}",
             detail=f"{len(steps)}/{opts.max_steps} steps in {elapsed_ms} ms",
+            attempt_id=final_attempt_id,
+            lease_epoch=final_lease_epoch,
         )
         snapshot = self.store.activity_snapshot(db, user_id=user_id, job_id=job_id)
         return {
@@ -1542,7 +1949,44 @@ class DbConsoleRuntimeWorker:
         options: ConsoleRuntimeRunOptions,
         route_policy: dict[str, Any],
         policy_state,
+        attempt_id: str,
+        lease_epoch: int | None,
     ) -> dict[str, Any]:
+        if self._is_delegated_read_only_subtask(job, route_policy):
+            reason = (
+                "Delegated read-only subtasks require explicit approval before "
+                "shell execution."
+            )
+            self.store.record_policy_block(
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                reason=reason,
+                policy_state=policy_state,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
+            held = self.store.require_approval(
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                reason=reason,
+                requested_by=options.worker_id,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
+            snapshot = self.store.activity_snapshot(db, user_id=user_id, job_id=job_id)
+            return {
+                "job": held.as_dict(),
+                "model_result": None,
+                "shell_result": None,
+                "snapshot": snapshot,
+                "dry_run": options.dry_run,
+                "worker_id": options.worker_id,
+                "approval_required": True,
+                "approval_reason": reason,
+            }
+
         commands = self._shell_commands(route_policy, options)
         if not commands:
             reason = "Shell runtime requires route_policy.command or preflight commands"
@@ -1552,9 +1996,16 @@ class DbConsoleRuntimeWorker:
                 job_id=job_id,
                 reason=reason,
                 policy_state=policy_state,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
             )
             blocked = self.store.block_job(
-                db, user_id=user_id, job_id=job_id, reason=reason
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                reason=reason,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
             )
             snapshot = self.store.activity_snapshot(db, user_id=user_id, job_id=job_id)
             return {
@@ -1594,6 +2045,8 @@ class DbConsoleRuntimeWorker:
             user_id=user_id,
             job_id=job_id,
             decision=decision,
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
         )
         if not decision.allowed:
             reason = "; ".join(decision.blocked_reasons) or "shell route blocked"
@@ -1604,9 +2057,16 @@ class DbConsoleRuntimeWorker:
                 reason=reason,
                 policy_state=policy_state,
                 metadata={"decision_id": decision.decision_id},
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
             )
             blocked = self.store.block_job(
-                db, user_id=user_id, job_id=job_id, reason=reason
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                reason=reason,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
             )
             snapshot = self.store.activity_snapshot(db, user_id=user_id, job_id=job_id)
             return {
@@ -1645,6 +2105,8 @@ class DbConsoleRuntimeWorker:
                     job_id=job_id,
                     reason=reason,
                     requested_by=options.worker_id,
+                    attempt_id=attempt_id,
+                    lease_epoch=lease_epoch,
                 )
                 snapshot = self.store.activity_snapshot(
                     db, user_id=user_id, job_id=job_id
@@ -1661,6 +2123,72 @@ class DbConsoleRuntimeWorker:
                     "approval_reason": reason,
                 }
 
+            effect_key = f"{attempt_id}:{invocation_id}"
+            effect, should_run = self.store.begin_effect(
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                effect_key=effect_key,
+                kind="shell.run",
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+                preconditions={
+                    "command": command,
+                    "cwd": request.cwd,
+                    "timeout_seconds": request.timeout_seconds,
+                    "invocation_id": invocation_id,
+                },
+            )
+            if not should_run:
+                reconciliation_summary = (
+                    "Runtime worker checkpointed because a shell command was "
+                    "already reserved for this attempt."
+                )
+                self.store.append_event(
+                    db,
+                    user_id=user_id,
+                    job_id=job_id,
+                    event_type="effect.reconciliation_required",
+                    payload={
+                        "effect": effect.as_dict(),
+                        "invocation_id": invocation_id,
+                        "command": command,
+                        "reason": "duplicate shell invocation reservation",
+                    },
+                    summary="Shell effect reconciliation required",
+                    detail=effect.state,
+                    attempt_id=attempt_id,
+                    lease_epoch=lease_epoch,
+                )
+                checkpointed = self.store.checkpoint_job(
+                    db,
+                    user_id=user_id,
+                    job_id=job_id,
+                    summary=reconciliation_summary,
+                    capsule=self._checkpoint_capsule(
+                        job,
+                        summary=reconciliation_summary,
+                        attempt_id=attempt_id,
+                        lease_epoch=lease_epoch,
+                        route_receipt={"invocation_id": invocation_id},
+                    ),
+                    attempt_id=attempt_id,
+                    lease_epoch=lease_epoch,
+                )
+                snapshot = self.store.activity_snapshot(
+                    db, user_id=user_id, job_id=job_id
+                )
+                return {
+                    "job": checkpointed.as_dict(),
+                    "model_result": None,
+                    "shell_result": None,
+                    "shell_results": results,
+                    "snapshot": snapshot,
+                    "dry_run": options.dry_run,
+                    "worker_id": options.worker_id,
+                    "effect_reconciliation_required": True,
+                    "effect": effect.as_dict(),
+                }
             self.store.append_event(
                 db,
                 user_id=user_id,
@@ -1675,7 +2203,25 @@ class DbConsoleRuntimeWorker:
                 },
                 summary="Shell command started",
                 detail=command,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
             )
+            canceled = self._finalize_cancellation_if_requested(
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                options=options,
+                reason="Cancellation requested before shell invocation",
+                effect_key=effect_key,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
+            if canceled is not None:
+                return {
+                    **canceled,
+                    "shell_result": None,
+                    "shell_results": results,
+                }
             try:
                 result = shell.run(request)
             except ShellPolicyError as exc:
@@ -1693,8 +2239,63 @@ class DbConsoleRuntimeWorker:
                     },
                     summary="Shell command failed policy",
                     detail=error,
+                    attempt_id=attempt_id,
+                    lease_epoch=lease_epoch,
                 )
-                self.store.fail_job(db, user_id=user_id, job_id=job_id, error=error)
+                self.store.fail_effect(
+                    db,
+                    user_id=user_id,
+                    job_id=job_id,
+                    effect_key=effect_key,
+                    error=error,
+                    attempt_id=attempt_id,
+                    lease_epoch=lease_epoch,
+                )
+                self.store.fail_job(
+                    db,
+                    user_id=user_id,
+                    job_id=job_id,
+                    error=error,
+                    retry_class=RetryClass.POLICY_DENIED,
+                    attempt_id=attempt_id,
+                    lease_epoch=lease_epoch,
+                )
+                raise
+            except Exception as exc:
+                error = str(exc)
+                self.store.fail_effect(
+                    db,
+                    user_id=user_id,
+                    job_id=job_id,
+                    effect_key=effect_key,
+                    error=error,
+                    attempt_id=attempt_id,
+                    lease_epoch=lease_epoch,
+                )
+                self.store.append_event(
+                    db,
+                    user_id=user_id,
+                    job_id=job_id,
+                    event_type="shell.failed",
+                    payload={
+                        "invocation_id": invocation_id,
+                        "command": command,
+                        "error": error,
+                    },
+                    summary="Shell command execution failed",
+                    detail=error,
+                    attempt_id=attempt_id,
+                    lease_epoch=lease_epoch,
+                )
+                self.store.fail_job(
+                    db,
+                    user_id=user_id,
+                    job_id=job_id,
+                    error=error,
+                    retry_class=RetryClass.TRANSIENT_TRANSPORT,
+                    attempt_id=attempt_id,
+                    lease_epoch=lease_epoch,
+                )
                 raise
 
             if result.stdout:
@@ -1711,6 +2312,8 @@ class DbConsoleRuntimeWorker:
                     summary="Shell stdout",
                     detail=_preview(result.stdout, 800),
                     visibility="stream",
+                    attempt_id=attempt_id,
+                    lease_epoch=lease_epoch,
                 )
             if result.stderr:
                 self.store.append_event(
@@ -1726,6 +2329,8 @@ class DbConsoleRuntimeWorker:
                     summary="Shell stderr",
                     detail=_preview(result.stderr, 800),
                     visibility="stream",
+                    attempt_id=attempt_id,
+                    lease_epoch=lease_epoch,
                 )
             self.store.append_event(
                 db,
@@ -1744,14 +2349,75 @@ class DbConsoleRuntimeWorker:
                 },
                 summary="Shell command completed",
                 detail=result.output_preview,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
             )
             results.append(result.as_dict())
+            effect_receipt = {
+                "invocation_id": invocation_id,
+                "command": command,
+                "returncode": result.returncode,
+                "timed_out": result.timed_out,
+                "output_preview": result.output_preview,
+                "policy": result.policy,
+            }
+            if result.timed_out:
+                self.store.mark_effect_unknown(
+                    db,
+                    user_id=user_id,
+                    job_id=job_id,
+                    effect_key=effect_key,
+                    reason="Shell command timed out; external effects are unknown.",
+                    attempt_id=attempt_id,
+                    lease_epoch=lease_epoch,
+                )
+                final_job = self.store.fail_job(
+                    db,
+                    user_id=user_id,
+                    job_id=job_id,
+                    error="Shell command timed out; external effects are unknown.",
+                    retry_class=RetryClass.PARTIAL_EFFECT,
+                    attempt_id=attempt_id,
+                    lease_epoch=lease_epoch,
+                )
+                snapshot = self.store.activity_snapshot(
+                    db, user_id=user_id, job_id=job_id
+                )
+                return {
+                    "job": final_job.as_dict(),
+                    "model_result": None,
+                    "shell_result": result.as_dict(),
+                    "shell_results": results,
+                    "snapshot": snapshot,
+                    "dry_run": options.dry_run,
+                    "worker_id": options.worker_id,
+                    "failure_class": RetryClass.PARTIAL_EFFECT.value,
+                    "effect": self.store.get_effect(
+                        db,
+                        user_id=user_id,
+                        job_id=job_id,
+                        effect_key=effect_key,
+                    ).as_dict(),
+                }
+
+            self.store.complete_effect(
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                effect_key=effect_key,
+                receipt=effect_receipt,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
             if result.returncode != 0:
                 final_job = self.store.fail_job(
                     db,
                     user_id=user_id,
                     job_id=job_id,
                     error=f"Shell command exited {result.returncode}",
+                    retry_class=RetryClass.PARTIAL_EFFECT,
+                    attempt_id=attempt_id,
+                    lease_epoch=lease_epoch,
                 )
                 snapshot = self.store.activity_snapshot(
                     db, user_id=user_id, job_id=job_id
@@ -1769,7 +2435,12 @@ class DbConsoleRuntimeWorker:
         if not results:
             reason = "Shell runtime had no commands to run"
             blocked = self.store.block_job(
-                db, user_id=user_id, job_id=job_id, reason=reason
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                reason=reason,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
             )
             snapshot = self.store.activity_snapshot(db, user_id=user_id, job_id=job_id)
             return {
@@ -1784,19 +2455,66 @@ class DbConsoleRuntimeWorker:
                 "blocked_reason": reason,
             }
 
-        if options.complete:
+        canceled = self._finalize_cancellation_if_requested(
+            db,
+            user_id=user_id,
+            job_id=job_id,
+            options=options,
+            reason="Cancellation requested before shell finalization",
+        )
+        if canceled is not None:
+            return {
+                **canceled,
+                "shell_result": results[-1],
+                "shell_results": results,
+            }
+        finalized = self.store.get_job(db, user_id=user_id, job_id=job_id)
+        has_verification_receipt = any(
+            isinstance(receipt, dict) and receipt.get("status") == "pass"
+            for receipt in finalized.verification_receipts
+        )
+        completion_blocked_by_verification = (
+            options.complete
+            and self._requires_verification_receipt(finalized)
+            and not has_verification_receipt
+        )
+        if options.complete and not completion_blocked_by_verification:
             final_job = self.store.complete_job(
                 db,
                 user_id=user_id,
                 job_id=job_id,
                 summary="Runtime worker completed shell step.",
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
             )
         else:
+            checkpoint_summary = (
+                "Runtime worker checkpointed shell step pending verification receipt."
+                if completion_blocked_by_verification
+                else "Runtime worker checkpointed after shell step."
+            )
             final_job = self.store.checkpoint_job(
                 db,
                 user_id=user_id,
                 job_id=job_id,
-                summary="Runtime worker checkpointed after shell step.",
+                summary=checkpoint_summary,
+                capsule=self._checkpoint_capsule(
+                    finalized,
+                    summary=checkpoint_summary,
+                    attempt_id=attempt_id,
+                    lease_epoch=lease_epoch,
+                    route_receipt={
+                        "invocation_id": f"{options.worker_id}:{job_id}:shell:"
+                        f"{len(results)}"
+                    },
+                    completed_clauses=(
+                        list(finalized.contract.done_when)
+                        if not completion_blocked_by_verification
+                        else []
+                    ),
+                ),
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
             )
         snapshot = self.store.activity_snapshot(db, user_id=user_id, job_id=job_id)
         return {
@@ -1808,6 +2526,28 @@ class DbConsoleRuntimeWorker:
             "dry_run": options.dry_run,
             "worker_id": options.worker_id,
         }
+
+    def _is_delegated_read_only_subtask(
+        self,
+        job,
+        route_policy: dict[str, Any],
+    ) -> bool:
+        if not _clean(getattr(job, "parent_job_id", "")):
+            return False
+        contract = getattr(job, "contract", None)
+        values = (
+            route_policy,
+            getattr(contract, "metadata", {}),
+            getattr(contract, "authority_flags", {}),
+            getattr(job, "metadata", {}),
+        )
+        for value in values:
+            if not isinstance(value, dict):
+                continue
+            write_mode = _clean(value.get("write_mode")).lower()
+            if write_mode:
+                return write_mode == "read_only"
+        return False
 
     def _shell_commands(
         self, route_policy: dict[str, Any], options: ConsoleRuntimeRunOptions
@@ -2134,6 +2874,9 @@ class DbConsoleRuntimeWorker:
         result: ModelResult,
         verification_signal: str = "",
         reasoning_plan: dict[str, Any] | None = None,
+        task_contract: dict[str, Any] | None = None,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
     ) -> None:
         preview = _preview(result.text)
         metadata = dict(result.metadata or {})
@@ -2218,7 +2961,13 @@ class DbConsoleRuntimeWorker:
                     metadata=metadata,
                 )
             route_receipt["receipt_audit"] = audit_route_receipt(route_receipt)
+            route_receipt["fast_lane_outcome"] = evaluate_fast_lane_outcome(
+                route_receipt,
+                task_contract=task_contract,
+                audit=route_receipt["receipt_audit"],
+            )
             payload["route_receipt"] = route_receipt
+            payload["fast_lane_outcome"] = route_receipt["fast_lane_outcome"]
             payload["usage_bucket"] = route_receipt.get("usage_bucket")
             payload["output_shape"] = route_receipt.get("output_shape")
             payload["verifier_result"] = route_receipt.get("verifier_result")
@@ -2240,6 +2989,8 @@ class DbConsoleRuntimeWorker:
             payload=payload,
             summary=f"{result.provider or adapter_name} completed",
             detail=result.stop_reason,
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
         )
         if preview:
             self.store.append_event(
@@ -2258,6 +3009,8 @@ class DbConsoleRuntimeWorker:
                 summary="Model output",
                 detail=preview,
                 visibility="stream",
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
             )
         self.store.append_event(
             db,
@@ -2276,4 +3029,6 @@ class DbConsoleRuntimeWorker:
             },
             summary="Model adapter completed",
             detail=preview,
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
         )

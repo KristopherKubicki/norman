@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Norman TUI no-inference cold-recovery drill periodically
+
+[Timer]
+OnBootSec=12min
+OnUnitActiveSec=6h
+AccuracySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

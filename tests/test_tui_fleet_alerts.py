@@ -186,6 +186,8 @@ def test_alert_post_creates_thread_and_posts_message(monkeypatch) -> None:
         thread_id="th_tui_fleet_health",
         health=health,
         decision=decision,
+        title="TUI fleet health",
+        report_paths=[],
     )
 
     assert calls[0][0] == "GET"

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from dataclasses import asdict, dataclass
 from typing import Any, Optional
 
 from app.core.config import settings
 from app.core.logging import setup_logger
 from app.db import session as db_session
-from app.services.console_runtime.kernel import InvalidTransitionError
+from app.services.console_runtime.kernel import InvalidTransitionError, JobNotFoundError
 from app.services.console_runtime.store import DbConsoleRuntimeStore
 from app.services.console_runtime.worker import (
     ConsoleRuntimeRunOptions,
@@ -104,6 +105,9 @@ class ConsoleRuntimeWorkerService:
             "goal_phase_sequence": self._goal_phase_sequence(),
             "tick_seconds": self._tick_seconds(),
             "batch_size": self._batch_size(),
+            "workstream_max_concurrency": self._workstream_max_concurrency(),
+            "global_concurrency": self._global_concurrency(),
+            "norllama_pool_concurrency": self._norllama_pool_concurrency(),
             "worker_id": str(
                 getattr(settings, "console_runtime_worker_id", "")
                 or "runtime-background-worker"
@@ -122,6 +126,9 @@ class ConsoleRuntimeWorkerService:
         goal_phase_sequence: list[str] | None = None,
         tick_seconds: float | None = None,
         batch_size: int | None = None,
+        workstream_max_concurrency: int | None = None,
+        global_concurrency: int | None = None,
+        norllama_pool_concurrency: int | None = None,
         worker_id: str = "",
         confirm_live_execution: str = "",
         reset_counters: bool = False,
@@ -164,6 +171,18 @@ class ConsoleRuntimeWorkerService:
         if batch_size is not None:
             settings.console_runtime_worker_batch_size = self._coerce_batch_size(
                 batch_size
+            )
+        if workstream_max_concurrency is not None:
+            settings.console_runtime_workstream_max_concurrency = (
+                self._coerce_concurrency(workstream_max_concurrency)
+            )
+        if global_concurrency is not None:
+            settings.console_runtime_worker_global_concurrency = (
+                self._coerce_concurrency(global_concurrency)
+            )
+        if norllama_pool_concurrency is not None:
+            settings.console_runtime_norllama_pool_concurrency = (
+                self._coerce_concurrency(norllama_pool_concurrency)
             )
         if worker_id:
             settings.console_runtime_worker_id = str(worker_id).strip()
@@ -211,34 +230,53 @@ class ConsoleRuntimeWorkerService:
         processed = 0
         db = db_session.SessionLocal()
         try:
-            items = self.store.list_runnable_jobs(db, limit=batch_size)
-            for user_id, job in items:
-                try:
-                    await asyncio.to_thread(
-                        self._run_job_once,
-                        user_id,
-                        job.job_id,
-                    )
-                    processed += 1
-                    async with self._lock:
-                        self._snapshot.jobs_started += 1
-                        self._snapshot.jobs_completed += 1
-                        self._snapshot.last_job_id = job.job_id
-                        self._snapshot.last_error = ""
-                except InvalidTransitionError:
-                    logger.info(
-                        "ConsoleRuntimeWorker: skipped job with invalid transition",
-                        extra={"job_id": job.job_id},
-                    )
-                except Exception as exc:
+            active_counts = self.store.active_job_counts(db)
+            candidates = self.store.list_runnable_jobs(
+                db,
+                limit=max(1, batch_size * 5),
+            )
+            selected = self._select_runnable_jobs(
+                db,
+                candidates=candidates,
+                active_counts=active_counts,
+                batch_size=batch_size,
+            )
+            leased = self._lease_jobs(db, selected)
+            outcomes = await asyncio.gather(
+                *(
+                    asyncio.to_thread(self._run_job_once, user_id, job.job_id)
+                    for user_id, job in leased
+                ),
+                return_exceptions=True,
+            )
+            for (user_id, job), outcome in zip(leased, outcomes):
+                if isinstance(outcome, BaseException):
+                    if isinstance(outcome, InvalidTransitionError):
+                        logger.info(
+                            "ConsoleRuntimeWorker: skipped job with invalid transition",
+                            extra={"job_id": job.job_id},
+                        )
+                        continue
                     async with self._lock:
                         self._snapshot.failures += 1
                         self._snapshot.last_job_id = job.job_id
-                        self._snapshot.last_error = str(exc)
+                        self._snapshot.last_error = str(outcome)
                     logger.exception(
                         "ConsoleRuntimeWorker: job failed",
-                        extra={"job_id": job.job_id},
+                        exc_info=(
+                            type(outcome),
+                            outcome,
+                            outcome.__traceback__,
+                        ),
+                        extra={"job_id": job.job_id, "user_id": user_id},
                     )
+                    continue
+                processed += 1
+                async with self._lock:
+                    self._snapshot.jobs_started += 1
+                    self._snapshot.jobs_completed += 1
+                    self._snapshot.last_job_id = job.job_id
+                    self._snapshot.last_error = ""
         finally:
             db.close()
 
@@ -341,6 +379,164 @@ class ConsoleRuntimeWorkerService:
             },
         )
 
+    def _select_runnable_jobs(
+        self,
+        db,
+        *,
+        candidates: list[tuple[int, Any]],
+        active_counts: dict[str, Any],
+        batch_size: int,
+    ) -> list[tuple[int, Any]]:
+        """Choose a fair, capacity-safe batch before leasing any jobs."""
+        active_total = max(0, int((active_counts or {}).get("total") or 0))
+        active_norllama_pool = max(
+            0, int((active_counts or {}).get("norllama_pool_total") or 0)
+        )
+        active_by_workstream = {
+            str(workstream_id): max(0, int(count or 0))
+            for workstream_id, count in dict(
+                (active_counts or {}).get("by_workstream") or {}
+            ).items()
+            if str(workstream_id).strip()
+        }
+        global_capacity = max(0, self._global_concurrency() - active_total)
+        selection_limit = min(max(1, int(batch_size or 1)), global_capacity)
+        if selection_limit <= 0:
+            return []
+
+        queues: dict[str, deque[tuple[int, Any]]] = {}
+        group_order: deque[str] = deque()
+        for user_id, job in candidates:
+            workstream_id = str(getattr(job, "workstream_id", "") or "").strip()
+            group_id = workstream_id or f"job:{job.job_id}"
+            if group_id not in queues:
+                queues[group_id] = deque()
+                group_order.append(group_id)
+            queues[group_id].append((user_id, job))
+
+        workstream_limits: dict[tuple[int, str], int] = {}
+
+        def workstream_limit(user_id: int, workstream_id: str) -> int:
+            if not workstream_id:
+                return self._workstream_max_concurrency()
+            key = (int(user_id), workstream_id)
+            if key not in workstream_limits:
+                try:
+                    persisted = self.store.get_workstream(
+                        db,
+                        user_id=int(user_id),
+                        workstream_id=workstream_id,
+                    )
+                    configured = int(persisted.max_concurrency or 1)
+                except JobNotFoundError:
+                    logger.warning(
+                        "ConsoleRuntimeWorker: could not load workstream capacity",
+                        extra={
+                            "user_id": user_id,
+                            "workstream_id": workstream_id,
+                        },
+                    )
+                    configured = 1
+                workstream_limits[key] = min(
+                    self._workstream_max_concurrency(),
+                    max(1, configured),
+                )
+            return workstream_limits[key]
+
+        selected: list[tuple[int, Any]] = []
+        selected_by_workstream: dict[str, int] = {}
+        selected_norllama_pool = 0
+        while group_order and len(selected) < selection_limit:
+            round_size = len(group_order)
+            selected_this_round = 0
+            for _ in range(round_size):
+                if len(selected) >= selection_limit:
+                    break
+                group_id = group_order.popleft()
+                queue = queues[group_id]
+                selected_item: tuple[int, Any] | None = None
+                while queue:
+                    user_id, job = queue[0]
+                    workstream_id = str(getattr(job, "workstream_id", "") or "").strip()
+                    if workstream_id:
+                        active = active_by_workstream.get(workstream_id, 0)
+                        chosen = selected_by_workstream.get(workstream_id, 0)
+                        if active + chosen >= workstream_limit(user_id, workstream_id):
+                            queue.clear()
+                            break
+                    if self._is_norllama_pool_routed(job) and (
+                        active_norllama_pool + selected_norllama_pool
+                        >= self._norllama_pool_concurrency()
+                    ):
+                        queue.popleft()
+                        continue
+                    selected_item = queue.popleft()
+                    break
+
+                if selected_item is not None:
+                    user_id, job = selected_item
+                    workstream_id = str(getattr(job, "workstream_id", "") or "").strip()
+                    selected.append(selected_item)
+                    if workstream_id:
+                        selected_by_workstream[workstream_id] = (
+                            selected_by_workstream.get(workstream_id, 0) + 1
+                        )
+                    if self._is_norllama_pool_routed(job):
+                        selected_norllama_pool += 1
+                    selected_this_round += 1
+                if queue:
+                    group_order.append(group_id)
+            if not selected_this_round:
+                break
+        return selected
+
+    def _lease_jobs(
+        self,
+        db,
+        items: list[tuple[int, Any]],
+    ) -> list[tuple[int, Any]]:
+        leased: list[tuple[int, Any]] = []
+        worker_id = str(
+            getattr(settings, "console_runtime_worker_id", "")
+            or "runtime-background-worker"
+        )
+        for user_id, job in items:
+            try:
+                leased_job = self.store.lease_job(
+                    db,
+                    user_id=user_id,
+                    job_id=job.job_id,
+                    worker_id=worker_id,
+                    lease_seconds=job.contract.checkpoint_interval_seconds,
+                )
+            except InvalidTransitionError:
+                logger.info(
+                    "ConsoleRuntimeWorker: skipped job with invalid lease transition",
+                    extra={"job_id": job.job_id, "user_id": user_id},
+                )
+                continue
+            status = getattr(leased_job.status, "value", leased_job.status)
+            if status == "leased":
+                leased.append((user_id, leased_job))
+        return leased
+
+    def _is_norllama_pool_routed(self, job: Any) -> bool:
+        route_policy = dict(
+            getattr(getattr(job, "contract", None), "route_policy", {}) or {}
+        )
+        provider = (
+            str(
+                route_policy.get("provider")
+                or route_policy.get("preferred_provider")
+                or ""
+            )
+            .strip()
+            .lower()
+        )
+        return provider == "norllama" or bool(
+            str(route_policy.get("norllama_pool") or "").strip()
+        )
+
     def _tick_seconds(self) -> float:
         return self._coerce_tick_seconds(
             getattr(settings, "console_runtime_worker_tick_seconds", 5.0)
@@ -348,7 +544,22 @@ class ConsoleRuntimeWorkerService:
 
     def _batch_size(self) -> int:
         return self._coerce_batch_size(
-            getattr(settings, "console_runtime_worker_batch_size", 1)
+            getattr(settings, "console_runtime_worker_batch_size", 10)
+        )
+
+    def _workstream_max_concurrency(self) -> int:
+        return self._coerce_concurrency(
+            getattr(settings, "console_runtime_workstream_max_concurrency", 10)
+        )
+
+    def _global_concurrency(self) -> int:
+        return self._coerce_concurrency(
+            getattr(settings, "console_runtime_worker_global_concurrency", 10)
+        )
+
+    def _norllama_pool_concurrency(self) -> int:
+        return self._coerce_concurrency(
+            getattr(settings, "console_runtime_norllama_pool_concurrency", 10)
         )
 
     def _max_steps(self) -> int:
@@ -381,8 +592,15 @@ class ConsoleRuntimeWorkerService:
         try:
             parsed = int(value)
         except (TypeError, ValueError):
-            parsed = 1
+            parsed = 10
         return max(1, min(parsed, 25))
+
+    def _coerce_concurrency(self, value: object) -> int:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = 10
+        return max(1, min(parsed, 100))
 
     def _coerce_max_steps(self, value: object) -> int:
         try:

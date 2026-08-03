@@ -34,16 +34,31 @@ MANAGED_SKILLS_BY_INSTANCE: dict[str, tuple[str, ...]] = {
 }
 SOURCE_FILES = {
     "web": TEMPLATE_ROOT / "agent_console_web.py",
+    "child-worker-web": TEMPLATE_ROOT / "agent_console_web.py",
+    "tui-waterfall": SCRIPT_DIR.parent / "app" / "services" / "tui_waterfall.py",
+    "child-agents": SCRIPT_DIR / "agent_console_child_agents.py",
+    "session-budget": TEMPLATE_ROOT / "agent_console_session_budget.py",
+    "sms-turns": TEMPLATE_ROOT / "agent_console_sms.py",
     "norman-switchboard": SCRIPT_DIR / "norman_codex_web.py",
     "apply-patch": SCRIPT_DIR / "apply_patch_cli.py",
     "launch": TEMPLATE_ROOT / "agent_console_launch.sh",
     "supervisor": TEMPLATE_ROOT / "agent_console_supervisor.sh",
+    "gateway-token": SCRIPT_DIR / "norman_codex_gateway_token.py",
+    "terminal-runtime-bridge": SCRIPT_DIR / "norman_codex_runtime_bridge.py",
     "release-readiness": SCRIPT_DIR / "tui_release_readiness.py",
+    "memory-tool": SCRIPT_DIR / "tui_memory_tool.py",
     "vector-preflight": SCRIPT_DIR / "tui_vector_preflight.py",
     "soul-loader": SCRIPT_DIR / "compose_soul_context.py",
     "soul-validator": SCRIPT_DIR / "validate_soul_md.py",
 }
 WEB_SOURCE_KEYS = frozenset({"web", "norman-switchboard"})
+KAIZEN_PILOT_OPTIONAL_ENV_KEYS = (
+    "NORMAN_KAIZEN_SOURCE_TUI",
+    "NORMAN_KAIZEN_REALM",
+    "NORMAN_KAIZEN_EMIT_TIMEOUT_SECONDS",
+)
+KAIZEN_PILOT_REALM = "personal/home"
+KAIZEN_PILOT_EMIT_TIMEOUT_SECONDS = "1.5"
 NORMAN_FLEET_DOCTOR_TEMPLATE_PATH = (
     os.environ.get(
         "NORMAN_SYNC_FLEET_DOCTOR_TEMPLATE_PATH",
@@ -172,10 +187,39 @@ class ConsoleInstance:
         )
         return (
             (web_source, self.web_path),
+            (
+                "child-worker-web",
+                str(Path(self.web_path).parent / "agent_console_web.py"),
+            ),
+            (
+                "tui-waterfall",
+                str(Path(self.web_path).parent / "tui_waterfall.py"),
+            ),
+            (
+                "child-agents",
+                str(Path(self.web_path).parent / "agent_console_child_agents.py"),
+            ),
+            (
+                "session-budget",
+                str(Path(self.web_path).parent / "agent_console_session_budget.py"),
+            ),
+            (
+                "sms-turns",
+                str(Path(self.web_path).parent / "agent_console_sms.py"),
+            ),
             ("apply-patch", "/usr/local/bin/apply_patch"),
             ("launch", self.launch_path),
             ("supervisor", self.supervisor_path),
+            (
+                "gateway-token",
+                str(Path(self.launch_path).parent / "norman_codex_gateway_token.py"),
+            ),
+            (
+                "terminal-runtime-bridge",
+                str(Path(self.launch_path).parent / "norman_codex_runtime_bridge.py"),
+            ),
             ("release-readiness", f"/opt/{self.name}/tui_release_readiness.py"),
+            ("memory-tool", f"/opt/{self.name}/tui_memory_tool.py"),
             ("vector-preflight", f"/opt/{self.name}/tui_vector_preflight.py"),
             ("soul-loader", f"/opt/{self.name}/compose_soul_context.py"),
             ("soul-validator", f"/opt/{self.name}/validate_soul_md.py"),
@@ -303,17 +347,32 @@ RUNTIME_BRIDGE_DEFAULT_API_BASE = "http://192.168.2.241:8000/api/v1/console-runt
 RUNTIME_BRIDGE_DEFAULT_KEYS_URL = "http://192.168.2.241:8000"
 RUNTIME_BRIDGE_TIMEOUT_SECONDS = "3"
 RUNTIME_BRIDGE_JOB_CREATE_TIMEOUT_SECONDS = "15"
-RUNTIME_BRIDGE_TOKEN_RETRY_SECONDS = "30"
-RUNTIME_BRIDGE_SNAPSHOT_TTL_SECONDS = "5"
-RUNTIME_BRIDGE_PROOF_TTL_SECONDS = "120"
-RUNTIME_BRIDGE_PROOF_BACKOFF_SECONDS = "30"
+RUNTIME_BRIDGE_TOKEN_RETRY_SECONDS = "300"
+RUNTIME_BRIDGE_TOKEN_AUTH_RETRY_SECONDS = "3600"
+RUNTIME_BRIDGE_SNAPSHOT_TTL_SECONDS = "60"
+RUNTIME_BRIDGE_ACTIVE_SNAPSHOT_TTL_SECONDS = "5"
+RUNTIME_BRIDGE_PROOF_TTL_SECONDS = "900"
+RUNTIME_BRIDGE_PROOF_BACKOFF_SECONDS = "300"
 RUNTIME_BRIDGE_STARTUP_JITTER_SECONDS = "45"
-RUNTIME_BRIDGE_ROUTE_OUTCOME_TTL_SECONDS = "45"
-RUNTIME_BRIDGE_ROUTE_OUTCOME_LIMIT = "200"
-RUNTIME_BRIDGE_RECENT_ITEMS = "12"
-RUNTIME_BRIDGE_LOCAL_FIRST_PROOF_LIMIT = "250"
-RUNTIME_BRIDGE_LOCAL_FIRST_SESSION_LIMIT = "20"
+RUNTIME_BRIDGE_ROUTE_OUTCOME_TTL_SECONDS = "300"
+RUNTIME_BRIDGE_ROUTE_OUTCOME_LIMIT = "50"
+RUNTIME_BRIDGE_RECENT_ITEMS = "6"
+RUNTIME_BRIDGE_LOCAL_FIRST_PROOF_LIMIT = "50"
+RUNTIME_BRIDGE_LOCAL_FIRST_SESSION_LIMIT = "10"
+RUNTIME_BRIDGE_WORKSTREAM_RETRY_SECONDS = "21600"
 LOCAL_LLM_DISABLED_MODEL_PATTERNS = "llama3.2,llama3.2:*"
+LOCAL_RERANK_FRONTDOOR_URL = (
+    os.environ.get(
+        "NORMAN_SYNC_VECTOR_RERANK_URL", "https://llm.home.arpa/v1/rerank"
+    ).strip()
+    or "https://llm.home.arpa/v1/rerank"
+)
+LOCAL_PLANNER_POLICY_MODELS: tuple[str, ...] = (
+    "qwen3.6:35b-a3b-q4_K_M",
+    "qwen3.6:27b",
+    "qwen3.5:27b-q4_K_M",
+)
+LOCAL_PLANNER_POLICY_MAX_CANDIDATES = 3
 LOCAL_ROUTE_INTENT_CLASSIFIER_MODEL = (
     os.environ.get(
         "NORMAN_SYNC_LOCAL_ROUTE_INTENT_CLASSIFIER_MODEL",
@@ -347,15 +406,27 @@ WORK_STANDARD_PROFILE_V2 = codex_role_value(
 WORK_STANDARD_AWS_PROFILE = codex_role_value(
     "work_standard", "aws_profile", policy=CODEX_ROLE_POLICY
 )
+WORK_STANDARD_AWS_REGION = codex_role_value(
+    "work_standard", "aws_region", policy=CODEX_ROLE_POLICY
+)
 WORK_STANDARD_MODEL = codex_role_value(
     "work_standard", "model", policy=CODEX_ROLE_POLICY
 )
 WORK_DIRECT_MODEL = codex_role_value("work_direct", "model", policy=CODEX_ROLE_POLICY)
+WORK_FINAL_AUTHORITY_MODEL = codex_role_value(
+    "work_final_authority", "model", policy=CODEX_ROLE_POLICY
+)
 PERSONAL_DEFAULT_MODEL = codex_role_value(
     "personal_default", "model", policy=CODEX_ROLE_POLICY
 )
 PERSONAL_DIRECT_MODEL = codex_role_value(
     "personal_direct", "model", default=PERSONAL_DEFAULT_MODEL, policy=CODEX_ROLE_POLICY
+)
+PERSONAL_FINAL_AUTHORITY_MODEL = codex_role_value(
+    "personal_final_authority",
+    "model",
+    default=PERSONAL_DEFAULT_MODEL,
+    policy=CODEX_ROLE_POLICY,
 )
 NON_WORK_BEDROCK_PROFILE_V2 = codex_role_value(
     "personal_default", "profile_v2", policy=CODEX_ROLE_POLICY
@@ -503,16 +574,13 @@ KERNEL_PRIMARY_CANARY_INSTANCES: tuple[str, ...] = (
     "uplink",
     "norman",
 )
-KERNEL_OWNED_TURN_CANARY_INSTANCES: tuple[str, ...] = (
-    "cloudagent",
-    "housebot",
-    "networking",
-    "norman",
-    "scout",
-    "uplink",
-)
+# Interactive canaries must retain direct Codex fallback when the kernel fails.
+# Strict kernel ownership is reserved for explicitly configured non-interactive
+# shadow runs, not a deployed TUI.
+KERNEL_OWNED_TURN_CANARY_INSTANCES: tuple[str, ...] = ()
 KERNEL_PRIMARY_MAX_STEPS = "5"
 KERNEL_PREFLIGHT_TIMEOUT_SECONDS = "60"
+RELEASE_PREFLIGHT_TIMEOUT_SECONDS = "10"
 RUNTIME_BRIDGE_ENV_KEYS: tuple[str, ...] = (
     "NORMAN_CONSOLE_RUNTIME_API_BASE",
     "NORMAN_API_BASE_URL",
@@ -640,8 +708,13 @@ def capture(cmd: list[str]) -> str:
     return completed.stdout
 
 
+def host_runs_local(host: DiscoveryHost) -> bool:
+    execution_host = os.environ.get("NORMAN_SYNC_EXECUTION_HOST", "").strip().lower()
+    return host.local or bool(execution_host and execution_host == host.name.lower())
+
+
 def ssh_command(host: DiscoveryHost, script: str) -> list[str]:
-    if host.local:
+    if host_runs_local(host):
         if host.use_sudo:
             return ["sudo", "bash", "-lc", script]
         return ["bash", "-lc", script]
@@ -1397,6 +1470,7 @@ def _origin_model_updates(
     remove_keys = [
         "NORMAN_CODEX_STANDARD_PROFILE_V2",
         "NORMAN_CODEX_STANDARD_AWS_PROFILE",
+        "NORMAN_CODEX_STANDARD_AWS_REGION",
         "NORMAN_CODEX_STANDARD_MODEL",
         "NORMAN_CODEX_BEDROCK_FAILOVER_PROFILE_V2",
         "NORMAN_CODEX_BEDROCK_FAILOVER_MODEL",
@@ -1425,15 +1499,19 @@ def _origin_model_updates(
             "NORMAN_CODEX_SERVICE_TIER": "default",
             "NORMAN_CODEX_STANDARD_PROFILE_V2": WORK_STANDARD_PROFILE_V2,
             "NORMAN_CODEX_STANDARD_AWS_PROFILE": WORK_STANDARD_AWS_PROFILE,
+            "NORMAN_CODEX_STANDARD_AWS_REGION": WORK_STANDARD_AWS_REGION,
             "NORMAN_CODEX_STANDARD_MODEL": WORK_STANDARD_MODEL,
             "NORMAN_CODEX_MODEL": WORK_DIRECT_MODEL,
-            "NORMAN_CODEX_MODEL_FLOOR": "gpt-5.4",
+            "NORMAN_CODEX_MODEL_FLOOR": WORK_STANDARD_MODEL,
             "NORMAN_CODEX_DIRECT_MODEL": WORK_DIRECT_MODEL,
             "NORMAN_CODEX_FLEX_MODEL": WORK_DIRECT_MODEL,
-            "NORMAN_CODEX_PRIORITY_MODEL": WORK_STANDARD_MODEL,
+            "NORMAN_CODEX_PRIORITY_MODEL": WORK_FINAL_AUTHORITY_MODEL,
             "NORMAN_CODEX_SWITCHABLE_MODELS": WORK_SWITCHABLE_MODELS,
             "NORMAN_CODEX_AVAILABLE_MODELS": WORK_SWITCHABLE_MODELS,
             "NORMAN_CODEX_DIRECT_TIERS_ENABLED": direct_tiers,
+            "NORMAN_CODEX_TAILSCALE_REQUIRED": (
+                "0" if host.name == "work-special" else "1"
+            ),
             "NORMAN_CODEX_ZERO_TOKEN_PROVIDER_MAX_RETRIES": str(1 + len(failovers)),
             "NORMAN_CODEX_BEDROCK_FAILOVER_PROFILE_V2": "",
             "NORMAN_CODEX_BEDROCK_FAILOVER_MODEL": "",
@@ -1483,7 +1561,7 @@ def _origin_model_updates(
                 "NORMAN_CODEX_MODEL_FLOOR": PERSONAL_DEFAULT_MODEL,
                 "NORMAN_CODEX_DIRECT_MODEL": PERSONAL_DEFAULT_MODEL,
                 "NORMAN_CODEX_FLEX_MODEL": PERSONAL_DEFAULT_MODEL,
-                "NORMAN_CODEX_PRIORITY_MODEL": PERSONAL_DEFAULT_MODEL,
+                "NORMAN_CODEX_PRIORITY_MODEL": PERSONAL_FINAL_AUTHORITY_MODEL,
                 "NORMAN_CODEX_SWITCHABLE_MODELS": PERSONAL_SWITCHABLE_MODELS,
                 "NORMAN_CODEX_AVAILABLE_MODELS": PERSONAL_SWITCHABLE_MODELS,
                 "NORMAN_CODEX_ZERO_TOKEN_PROVIDER_MAX_RETRIES": "1",
@@ -1505,6 +1583,7 @@ def _origin_model_updates(
                 "NORMAN_CODEX_BILLING_SCOPE": host.name,
                 "NORMAN_CODEX_BILLING_OWNER": "kristopher",
                 "NORMAN_CODEX_SERVICE_TIER": "default",
+                "NORMAN_CODEX_STANDARD_MODEL": PERSONAL_DEFAULT_MODEL,
                 "NORMAN_CODEX_MODEL": PERSONAL_DEFAULT_MODEL,
                 "NORMAN_CODEX_MODEL_FLOOR": PERSONAL_DEFAULT_MODEL,
                 "NORMAN_CODEX_DIRECT_MODEL": PERSONAL_DEFAULT_MODEL,
@@ -1583,6 +1662,15 @@ def sync_instance_origin_settings(
                 f"python3 /opt/{instance.name}/tui_vector_preflight.py"
             ),
             "NORMAN_CODEX_VECTOR_PREFLIGHT_LIMIT": "5",
+            "NORMAN_CODEX_VECTOR_RERANK_ENABLED": "1",
+            "NORMAN_CODEX_VECTOR_RERANK_URL": LOCAL_RERANK_FRONTDOOR_URL,
+            "NORMAN_CODEX_VECTOR_RERANK_MODEL": "BAAI/bge-reranker-v2-m3",
+            "NORMAN_CODEX_VECTOR_RERANK_CANDIDATES": "8",
+            "NORMAN_CODEX_VECTOR_RERANK_TIMEOUT_SECONDS": "8",
+            "NORMAN_CODEX_VECTOR_RERANK_VERIFY_TLS": os.environ.get(
+                "NORMAN_SYNC_VECTOR_RERANK_VERIFY_TLS", "0"
+            ).strip()
+            or "0",
         }
     )
     updates.update(_local_llm_env_updates())
@@ -1609,7 +1697,17 @@ for key, value in updates.items():
     line = f"{{key}}={{value}}"
     pattern = re.compile(rf"^{{re.escape(key)}}=.*$", re.M)
     if pattern.search(text):
-        updated = pattern.sub(line, text, count=1)
+        updated = pattern.sub(line, text)
+        seen = False
+        deduplicated = []
+        for raw_line in updated.splitlines(keepends=True):
+            if raw_line.rstrip("\\r\\n") != line:
+                deduplicated.append(raw_line)
+                continue
+            if not seen:
+                deduplicated.append(raw_line)
+                seen = True
+        updated = "".join(deduplicated)
     else:
         updated = text if text.endswith("\\n") else text + "\\n"
         updated += line + "\\n"
@@ -1714,11 +1812,14 @@ desired_model = {desired_model!r}
 switchable_models = {switchable_models!r}
 stale_default_models = {{
     "",
+    "gpt-5.4",
+    "openai.gpt-5.4",
     "gpt-5.5",
     "openai.gpt-5.5",
     "gpt-5.6-terra",
     "openai.gpt-5.6-terra",
 }}
+stale_default_models.discard(str(desired_model or "").strip().lower())
 stale_model_markers = tuple(
     model for model in stale_default_models if model
 )
@@ -1858,8 +1959,8 @@ def sync_instance_bedrock_profile(
                 "profile_v2": WORK_STANDARD_PROFILE_V2,
                 "source": "/home/kristopher/.codex-infra/traqline-bedrock.config.toml",
                 "model": WORK_STANDARD_MODEL,
-                "reasoning_effort": "xhigh",
-                "aws_region": "",
+                "reasoning_effort": "high",
+                "aws_region": WORK_STANDARD_AWS_REGION,
             }
         ]
         if _env_truthy("NORMAN_SYNC_WORK_BEDROCK_FAILOVER_ENABLED"):
@@ -1868,7 +1969,7 @@ def sync_instance_bedrock_profile(
                     "profile_v2": "traqline-bedrock-us-east-1",
                     "source": "/home/kristopher/.codex-infra/traqline-bedrock.config.toml",
                     "model": WORK_DIRECT_MODEL,
-                    "reasoning_effort": "xhigh",
+                    "reasoning_effort": "high",
                     "aws_region": "us-east-1",
                 }
             )
@@ -1882,7 +1983,7 @@ def sync_instance_bedrock_profile(
                 "source_text": source_text,
                 "source_text_present": True,
                 "model": PERSONAL_DEFAULT_MODEL,
-                "reasoning_effort": "xhigh",
+                "reasoning_effort": "high",
                 "aws_profile": NON_WORK_BEDROCK_AWS_PROFILE,
                 "aws_region": NON_WORK_BEDROCK_AWS_REGION,
             }
@@ -1927,7 +2028,7 @@ for spec in profile_specs:
     aws_region = str(spec.get("aws_region") or "")
     aws_profile = str(spec.get("aws_profile") or "")
     aws_table = "aws"
-    model_reasoning_effort = str(spec.get("reasoning_effort") or "xhigh")
+    model_reasoning_effort = str(spec.get("reasoning_effort") or "high")
     rendered = ensure_table_setting(rendered, "", "model", str(spec.get("model") or ""))
     rendered = ensure_table_setting(rendered, "", "model_reasoning_effort", model_reasoning_effort)
     rendered = ensure_table_setting(rendered, aws_table, "profile", aws_profile)
@@ -1987,6 +2088,7 @@ PY
 def sync_instance_local_llm_foreground_settings(
     host: DiscoveryHost, instance: ConsoleInstance
 ) -> bool:
+    planner_models = planner_models_for_instance(host, instance)
     updates = {
         "NORMAN_LOCAL_LLM_CALL_TIMEOUT_SECONDS": "360",
         "NORMAN_LOCAL_LLM_FOREGROUND_TIMEOUT_SECONDS": "240",
@@ -1997,6 +2099,14 @@ def sync_instance_local_llm_foreground_settings(
         "NORMAN_LOCAL_LLM_SHORT_NUM_CTX": "4096",
         "NORMAN_LOCAL_LLM_FALLBACK_MODELS": "",
         "NORMAN_LOCAL_LLM_ALLOW_TINY_FOREGROUND_FALLBACK": "0",
+        "NORMAN_LOCAL_LLM_PLANNER_MODELS": ",".join(planner_models),
+        "NORMAN_LOCAL_PLANNER_PREFLIGHT_ENABLED": "1",
+        "NORMAN_LOCAL_PLANNER_PREFLIGHT_TIMEOUT_SECONDS": "18",
+        "NORMAN_LOCAL_PLANNER_PREFLIGHT_COLD_LOAD_COOLDOWN_SECONDS": "60",
+        "NORMAN_LOCAL_PLANNER_PREFLIGHT_MAX_OUTPUT_TOKENS": "96",
+        "NORMAN_LOCAL_PLANNER_PREFLIGHT_MAX_CANDIDATES": str(
+            LOCAL_PLANNER_POLICY_MAX_CANDIDATES
+        ),
         "NORMAN_TUI_TOKEN_CAPACITY_PLAN_ENABLED": "1",
         "NORMAN_TUI_TOKEN_CAPACITY_USAGE_WINDOW_SECONDS": "3600",
         "NORMAN_TUI_NORLLAMA_OUTPUT_TOKENS_PER_HOUR": "48000",
@@ -2009,9 +2119,9 @@ def sync_instance_local_llm_foreground_settings(
         "NORMAN_CODEX_PREFLIGHT_SCRIPT": (
             f"/opt/{instance.name}/tui_release_readiness.py"
         ),
-        "NORMAN_CODEX_PREFLIGHT_TIMEOUT_SECONDS": "2",
+        "NORMAN_CODEX_PREFLIGHT_TIMEOUT_SECONDS": RELEASE_PREFLIGHT_TIMEOUT_SECONDS,
         "NORMAN_CODEX_PREFLIGHT_TTL_SECONDS": "300",
-        "NORMAN_CODEX_PREFLIGHT_COMMAND_TIMEOUT_SECONDS": "20",
+        "NORMAN_CODEX_PREFLIGHT_COMMAND_TIMEOUT_SECONDS": "30",
         "NORMAN_CODEX_SUBSCRIPTION_ROUTE_PREFERENCE_ENABLED": "1",
         "NORMAN_CODEX_SUBSCRIPTION_ROUTE_WORK_ENABLED": (
             "1" if instance_uses_work_config(host, instance) else "0"
@@ -2036,7 +2146,6 @@ def sync_instance_local_llm_foreground_settings(
         "NORMAN_LOCAL_PLANNER_PREFLIGHT_MODELS",
         "NORMAN_LOCAL_PLANNER_MODELS",
         "NORMAN_LOCAL_LLM_FILTER_MODELS",
-        "NORMAN_LOCAL_LLM_PLANNER_MODELS",
     ]
     payload = json.dumps(updates, separators=(",", ":"))
     remove_payload = json.dumps(remove_keys, separators=(",", ":"))
@@ -2074,6 +2183,63 @@ print("changed" if changed else "unchanged")
 PY
 """
     return capture(ssh_command(host, script)).strip() == "changed"
+
+
+def _split_model_values(value: str) -> list[str]:
+    return [item.strip() for item in str(value or "").split(",") if item.strip()]
+
+
+def _unique_models(values: list[str]) -> list[str]:
+    selected: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        clean = str(value or "").strip()
+        key = clean.lower()
+        if not clean or key in seen:
+            continue
+        seen.add(key)
+        selected.append(clean)
+    return selected
+
+
+def _planner_model_disabled(model: str) -> bool:
+    clean = str(model or "").strip().lower()
+    return clean == "llama3.2" or clean.startswith("llama3.2:")
+
+
+def planner_models_for_instance(
+    host: DiscoveryHost, instance: ConsoleInstance
+) -> list[str]:
+    values = read_instance_env_values(
+        host,
+        instance,
+        ("NORMAN_LOCAL_LLM_MODELS", "NORMAN_LOCAL_LLM_MODEL"),
+    )
+    configured = _unique_models(
+        [
+            *_split_model_values(values.get("NORMAN_LOCAL_LLM_MODELS", "")),
+            values.get("NORMAN_LOCAL_LLM_MODEL", ""),
+        ]
+    )
+    available = {
+        model.lower(): model
+        for model in configured
+        if not _planner_model_disabled(model)
+    }
+    selected = [
+        available[preferred.lower()]
+        for preferred in LOCAL_PLANNER_POLICY_MODELS
+        if preferred.lower() in available
+    ]
+    selected.extend(
+        model
+        for model in configured
+        if model.lower() not in {item.lower() for item in selected}
+        and not _planner_model_disabled(model)
+    )
+    if not selected:
+        selected = list(LOCAL_PLANNER_POLICY_MODELS)
+    return _unique_models(selected)[:LOCAL_PLANNER_POLICY_MAX_CANDIDATES]
 
 
 def read_instance_env_values(
@@ -2156,48 +2322,64 @@ def runtime_bridge_settings_from_references(
             or values.get("NORMAN_API_BASE_URL")
             or RUNTIME_BRIDGE_DEFAULT_API_BASE
         )
-        return {
-            "NORMAN_CONSOLE_RUNTIME_ENABLED": "1",
-            "NORMAN_CONSOLE_RUNTIME_API_BASE": api_base,
-            "NORMAN_CONSOLE_RUNTIME_TOKEN_SECRET": token_secret,
-            "NORMAN_KEYS_URL": keys_url,
-            "NORMAN_KEYS_TOKEN": keys_token,
-            "NORMAN_CONSOLE_RUNTIME_REQUESTER_ID": "runtime-tui-bridge",
-            "NORMAN_CONSOLE_RUNTIME_LANE": RUNTIME_BRIDGE_SECRET_LANE,
-            "NORMAN_CONSOLE_RUNTIME_TIMEOUT_SECONDS": RUNTIME_BRIDGE_TIMEOUT_SECONDS,
-            "NORMAN_CONSOLE_RUNTIME_JOB_CREATE_TIMEOUT_SECONDS": (
-                RUNTIME_BRIDGE_JOB_CREATE_TIMEOUT_SECONDS
-            ),
-            "NORMAN_CONSOLE_RUNTIME_TOKEN_RETRY_SECONDS": (
-                RUNTIME_BRIDGE_TOKEN_RETRY_SECONDS
-            ),
-            "NORMAN_CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS": (
-                RUNTIME_BRIDGE_SNAPSHOT_TTL_SECONDS
-            ),
-            "NORMAN_CONSOLE_RUNTIME_PROOF_TTL_SECONDS": (
-                RUNTIME_BRIDGE_PROOF_TTL_SECONDS
-            ),
-            "NORMAN_CONSOLE_RUNTIME_PROOF_BACKOFF_SECONDS": (
-                RUNTIME_BRIDGE_PROOF_BACKOFF_SECONDS
-            ),
-            "NORMAN_CONSOLE_RUNTIME_STARTUP_JITTER_SECONDS": (
-                RUNTIME_BRIDGE_STARTUP_JITTER_SECONDS
-            ),
-            "NORMAN_CONSOLE_RUNTIME_ROUTE_OUTCOME_TTL_SECONDS": (
-                RUNTIME_BRIDGE_ROUTE_OUTCOME_TTL_SECONDS
-            ),
-            "NORMAN_CONSOLE_RUNTIME_ROUTE_OUTCOME_LIMIT": (
-                RUNTIME_BRIDGE_ROUTE_OUTCOME_LIMIT
-            ),
-            "NORMAN_CONSOLE_RUNTIME_RECENT_ITEMS": RUNTIME_BRIDGE_RECENT_ITEMS,
-            "NORMAN_CONSOLE_RUNTIME_LOCAL_FIRST_PROOF_LIMIT": (
-                RUNTIME_BRIDGE_LOCAL_FIRST_PROOF_LIMIT
-            ),
-            "NORMAN_CONSOLE_RUNTIME_LOCAL_FIRST_SESSION_LIMIT": (
-                RUNTIME_BRIDGE_LOCAL_FIRST_SESSION_LIMIT
-            ),
-        }
+        settings = runtime_bridge_operational_settings()
+        settings.update(
+            {
+                "NORMAN_CONSOLE_RUNTIME_ENABLED": "1",
+                "NORMAN_CONSOLE_RUNTIME_API_BASE": api_base,
+                "NORMAN_CONSOLE_RUNTIME_TOKEN_SECRET": token_secret,
+                "NORMAN_KEYS_URL": keys_url,
+                "NORMAN_KEYS_TOKEN": keys_token,
+                "NORMAN_CONSOLE_RUNTIME_REQUESTER_ID": "runtime-tui-bridge",
+                "NORMAN_CONSOLE_RUNTIME_LANE": RUNTIME_BRIDGE_SECRET_LANE,
+            }
+        )
+        return settings
     return {}
+
+
+def runtime_bridge_operational_settings() -> dict[str, str]:
+    return {
+        "NORMAN_CONSOLE_RUNTIME_TIMEOUT_SECONDS": RUNTIME_BRIDGE_TIMEOUT_SECONDS,
+        "NORMAN_CONSOLE_RUNTIME_JOB_CREATE_TIMEOUT_SECONDS": (
+            RUNTIME_BRIDGE_JOB_CREATE_TIMEOUT_SECONDS
+        ),
+        "NORMAN_CONSOLE_RUNTIME_TOKEN_RETRY_SECONDS": (
+            RUNTIME_BRIDGE_TOKEN_RETRY_SECONDS
+        ),
+        "NORMAN_CONSOLE_RUNTIME_TOKEN_AUTH_RETRY_SECONDS": (
+            RUNTIME_BRIDGE_TOKEN_AUTH_RETRY_SECONDS
+        ),
+        "NORMAN_CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS": (
+            RUNTIME_BRIDGE_SNAPSHOT_TTL_SECONDS
+        ),
+        "NORMAN_CONSOLE_RUNTIME_ACTIVE_SNAPSHOT_TTL_SECONDS": (
+            RUNTIME_BRIDGE_ACTIVE_SNAPSHOT_TTL_SECONDS
+        ),
+        "NORMAN_CONSOLE_RUNTIME_PROOF_TTL_SECONDS": RUNTIME_BRIDGE_PROOF_TTL_SECONDS,
+        "NORMAN_CONSOLE_RUNTIME_PROOF_BACKOFF_SECONDS": (
+            RUNTIME_BRIDGE_PROOF_BACKOFF_SECONDS
+        ),
+        "NORMAN_CONSOLE_RUNTIME_STARTUP_JITTER_SECONDS": (
+            RUNTIME_BRIDGE_STARTUP_JITTER_SECONDS
+        ),
+        "NORMAN_CONSOLE_RUNTIME_ROUTE_OUTCOME_TTL_SECONDS": (
+            RUNTIME_BRIDGE_ROUTE_OUTCOME_TTL_SECONDS
+        ),
+        "NORMAN_CONSOLE_RUNTIME_ROUTE_OUTCOME_LIMIT": (
+            RUNTIME_BRIDGE_ROUTE_OUTCOME_LIMIT
+        ),
+        "NORMAN_CONSOLE_RUNTIME_RECENT_ITEMS": RUNTIME_BRIDGE_RECENT_ITEMS,
+        "NORMAN_CONSOLE_RUNTIME_LOCAL_FIRST_PROOF_LIMIT": (
+            RUNTIME_BRIDGE_LOCAL_FIRST_PROOF_LIMIT
+        ),
+        "NORMAN_CONSOLE_RUNTIME_LOCAL_FIRST_SESSION_LIMIT": (
+            RUNTIME_BRIDGE_LOCAL_FIRST_SESSION_LIMIT
+        ),
+        "NORMAN_CONSOLE_RUNTIME_WORKSTREAM_RETRY_SECONDS": (
+            RUNTIME_BRIDGE_WORKSTREAM_RETRY_SECONDS
+        ),
+    }
 
 
 def kernel_rollout_settings_for_instance(instance: ConsoleInstance) -> dict[str, str]:
@@ -2214,6 +2396,7 @@ def kernel_rollout_settings_for_instance(instance: ConsoleInstance) -> dict[str,
             "NORMAN_TUI_KERNEL_OWNED_TURN": kernel_owned_turn,
             "NORMAN_TUI_KERNEL_OWNED_TURN_ENABLED": kernel_owned_turn,
             "NORMAN_TUI_KERNEL_PRIMARY_STRICT": "0",
+            "NORMAN_TUI_KERNEL_STRICT_SHADOW": "0",
             "NORMAN_TUI_KERNEL_CLOUD_FALLBACK": "1",
             "NORMAN_TUI_KERNEL_CLOUD_FALLBACK_ENABLED": "1",
             "NORMAN_TUI_KERNEL_WORKSPACE_PREFLIGHT": "1",
@@ -2232,6 +2415,7 @@ def kernel_rollout_settings_for_instance(instance: ConsoleInstance) -> dict[str,
         "NORMAN_TUI_KERNEL_OWNED_TURN": "0",
         "NORMAN_TUI_KERNEL_OWNED_TURN_ENABLED": "0",
         "NORMAN_TUI_KERNEL_PRIMARY_STRICT": "0",
+        "NORMAN_TUI_KERNEL_STRICT_SHADOW": "0",
         "NORMAN_TUI_KERNEL_CLOUD_FALLBACK": "0",
         "NORMAN_TUI_KERNEL_CLOUD_FALLBACK_ENABLED": "0",
         "NORMAN_TUI_KERNEL_WORKSPACE_PREFLIGHT": "0",
@@ -2244,10 +2428,68 @@ def sync_instance_runtime_bridge_settings(
     instance: ConsoleInstance,
     bridge_settings: dict[str, str],
 ) -> bool:
-    if not bridge_settings:
-        return False
-    payload = json.dumps(bridge_settings, separators=(",", ":"))
-    remove_payload = json.dumps(RUNTIME_BRIDGE_LEGACY_TOKEN_KEYS, separators=(",", ":"))
+    updates = runtime_bridge_operational_settings()
+    updates.update(bridge_settings)
+    payload = json.dumps(updates, separators=(",", ":"))
+    remove_keys = RUNTIME_BRIDGE_LEGACY_TOKEN_KEYS if bridge_settings else ()
+    remove_payload = json.dumps(remove_keys, separators=(",", ":"))
+    script = f"""
+python3 - <<'PY'
+from pathlib import Path
+import json
+import re
+
+path = Path({instance.env_file!r})
+updates = json.loads({payload!r})
+remove_keys = json.loads({remove_payload!r})
+text = path.read_text(encoding="utf-8")
+changed = False
+for key in remove_keys:
+    pattern = re.compile(rf"^{{re.escape(key)}}=.*\\n?", re.M)
+    updated = pattern.sub("", text)
+    if updated != text:
+        text = updated
+        changed = True
+for key, value in updates.items():
+    line = f"{{key}}={{value}}"
+    pattern = re.compile(rf"^{{re.escape(key)}}=.*$", re.M)
+    if pattern.search(text):
+        updated = pattern.sub(line, text, count=1)
+    else:
+        updated = text if text.endswith("\\n") else text + "\\n"
+        updated += line + "\\n"
+    if updated != text:
+        text = updated
+        changed = True
+if changed:
+    path.write_text(text, encoding="utf-8")
+print("changed" if changed else "unchanged")
+PY
+"""
+    return capture(ssh_command(host, script)).strip() == "changed"
+
+
+def sync_instance_kaizen_pilot_settings(
+    host: DiscoveryHost,
+    instance: ConsoleInstance,
+    *,
+    pilot_tui: str,
+    realm: str,
+) -> bool:
+    """Apply Kaizen emission only to the named observe-only pilot TUI."""
+    if instance.name == pilot_tui:
+        updates = {
+            "NORMAN_KAIZEN_ENABLED": "1",
+            "NORMAN_KAIZEN_SOURCE_TUI": pilot_tui,
+            "NORMAN_KAIZEN_REALM": realm,
+            "NORMAN_KAIZEN_EMIT_TIMEOUT_SECONDS": KAIZEN_PILOT_EMIT_TIMEOUT_SECONDS,
+        }
+        remove_keys: tuple[str, ...] = ()
+    else:
+        updates = {"NORMAN_KAIZEN_ENABLED": "0"}
+        remove_keys = KAIZEN_PILOT_OPTIONAL_ENV_KEYS
+    payload = json.dumps(updates, separators=(",", ":"))
+    remove_payload = json.dumps(remove_keys, separators=(",", ":"))
     script = f"""
 python3 - <<'PY'
 from pathlib import Path
@@ -2562,7 +2804,7 @@ def install_source_path(
     if remote_state.sha256 == source_sha256:
         return False
 
-    if host.local:
+    if host_runs_local(host):
         install_args = ["install", "-D", "-m", remote_state.mode or "755"]
         if remote_state.owner:
             install_args.extend(["-o", remote_state.owner])
@@ -3054,6 +3296,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="250",
         help="Maximum route receipt items each TUI should retain.",
     )
+    parser.add_argument(
+        "--enable-kaizen-pilot",
+        action="store_true",
+        help="Enable observe-only Kaizen KPI emission for one selected personal TUI.",
+    )
+    parser.add_argument(
+        "--kaizen-pilot-tui",
+        default="",
+        help="Exact discovered TUI name to use as the Kaizen pilot.",
+    )
+    parser.add_argument(
+        "--kaizen-realm",
+        choices=(KAIZEN_PILOT_REALM,),
+        default=KAIZEN_PILOT_REALM,
+        help="Kaizen realm for the observe-only pilot.",
+    )
     return parser.parse_args(argv)
 
 
@@ -3098,6 +3356,35 @@ def select_instances(
         for host_name, instances in selected.items()
         if instances
     }
+
+
+def validate_kaizen_pilot_selection(
+    args: argparse.Namespace,
+    selected_by_host: dict[str, list[ConsoleInstance]],
+    discovered_by_name: dict[str, ConsoleInstance],
+) -> str:
+    """Return the validated pilot TUI name, or an empty string when disabled."""
+    pilot_name = str(args.kaizen_pilot_tui or "").strip()
+    if not args.enable_kaizen_pilot:
+        if pilot_name:
+            raise SystemExit("--kaizen-pilot-tui requires --enable-kaizen-pilot")
+        return ""
+    if not args.targets:
+        raise SystemExit("--enable-kaizen-pilot requires an explicit --targets scope")
+    if not pilot_name:
+        raise SystemExit("--enable-kaizen-pilot requires --kaizen-pilot-tui")
+    if pilot_name not in discovered_by_name:
+        raise SystemExit(f"Unknown Kaizen pilot TUI: {pilot_name}")
+    selected_names = {
+        instance.name
+        for instances in selected_by_host.values()
+        for instance in instances
+    }
+    if pilot_name not in selected_names:
+        raise SystemExit(
+            f"Kaizen pilot TUI is outside the selected scope: {pilot_name}"
+        )
+    return pilot_name
 
 
 def list_targets(
@@ -3168,6 +3455,11 @@ def main() -> int:
         args.targets,
         discovered_by_host=discovered_by_host,
         discovered_by_name=discovered_by_name,
+    )
+    kaizen_pilot_tui = validate_kaizen_pilot_selection(
+        args,
+        selected_by_host,
+        discovered_by_name,
     )
     runtime_bridge_settings = runtime_bridge_settings_from_references(
         discovered_by_name
@@ -3272,6 +3564,14 @@ def main() -> int:
             ):
                 changed_instances[instance.name] = instance
                 print(f"  - runtime bridge -> {instance.env_file}", flush=True)
+            if kaizen_pilot_tui and sync_instance_kaizen_pilot_settings(
+                host,
+                instance,
+                pilot_tui=kaizen_pilot_tui,
+                realm=args.kaizen_realm,
+            ):
+                changed_instances[instance.name] = instance
+                print(f"  - Kaizen pilot -> {instance.env_file}", flush=True)
             if sync_instance_kernel_rollout_settings(host, instance):
                 changed_instances[instance.name] = instance
                 print(f"  - kernel rollout -> {instance.env_file}", flush=True)

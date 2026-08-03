@@ -29,6 +29,8 @@ WORK_SPECIAL_ENDPOINTS = {
 DEFAULT_OUTPUT_JSON = Path("/tmp/norman_tui_context_shadow_benchmark.json")
 DEFAULT_OUTPUT_MD = Path("/tmp/norman_tui_context_shadow_benchmark.md")
 DEFAULT_ANSWER_TEMPLATE = Path("/tmp/norman_tui_quality_shadow_answers.template.json")
+SATURATED_LONG_CONTEXT_MIN_INPUT_TOKENS = 80_000
+LONG_CONTEXT_STATUS = "not_a_saturated_long_context_run"
 
 
 @dataclass
@@ -257,6 +259,14 @@ def build_report(statuses: list[dict[str, Any]], *, source: str = "") -> dict[st
             and row.saved_tokens >= 4000
             and not row.live_prompt_behavior_changed
         ),
+        "measured_model_input_tokens": 0,
+        "long_context_threshold_tokens": SATURATED_LONG_CONTEXT_MIN_INPUT_TOKENS,
+        "saturated_long_context_run": False,
+        "long_context_status": LONG_CONTEXT_STATUS,
+        "long_context_reason": (
+            "read-only packing estimates do not measure a model prompt payload or "
+            "provider/runtime input usage"
+        ),
     }
     return {
         "schema": "norman.tui.context-shadow-benchmark.v1",
@@ -286,6 +296,11 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Rows needing old-detail retrieval: {summary.get('needs_retrieval_rows')}",
         f"- Rows still requiring shadow before activation: {summary.get('shadow_required_rows')}",
         f"- Rows with live prompt behavior already changed: {summary.get('live_prompt_changed_rows')}",
+        (
+            "- Long-context status: "
+            f"{summary.get('long_context_status')} "
+            f"({summary.get('long_context_reason')})"
+        ),
         "",
         "## Rows",
         "",
@@ -328,7 +343,9 @@ def build_answer_template(report: dict[str, Any]) -> dict[str, Any]:
         "run_id": f"context-shadow-{int(time.time())}",
         "notes": (
             "Fill in the baseline and candidate answers from a real shadow A/B run. "
-            "Context token counts came from the context shadow benchmark."
+            "Context token counts came from the context shadow benchmark. This "
+            "template is not a saturated long-context result until the runner "
+            "records an actual prompt payload and provider/runtime input usage."
         ),
         "answers": [
             {

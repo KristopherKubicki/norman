@@ -18,6 +18,8 @@ DEFAULT_ANSWER_TEMPLATE = Path("/tmp/norman_tui_context_replay_answers.template.
 
 MIN_ROW_SAVED_PCT = 50.0
 MIN_ROW_SAVED_TOKENS = 4000
+SATURATED_LONG_CONTEXT_MIN_INPUT_TOKENS = 80_000
+LONG_CONTEXT_STATUS = "not_a_saturated_long_context_run"
 
 
 def _coerce_int(value: Any) -> int:
@@ -394,6 +396,14 @@ def build_report(
             "cases_needing_shadow_pairs": len(case_rows_needing_shadow),
             "shadow_run_ready": shadow_run_ready,
             "activation_safe": activation_safe,
+            "measured_model_input_tokens": 0,
+            "long_context_threshold_tokens": SATURATED_LONG_CONTEXT_MIN_INPUT_TOKENS,
+            "saturated_long_context_run": False,
+            "long_context_status": LONG_CONTEXT_STATUS,
+            "long_context_reason": (
+                "this packet maps context estimates and answer requirements; it does "
+                "not execute or measure a model prompt payload"
+            ),
         },
         "row_proofs": row_proofs,
         "case_replays": case_replays,
@@ -429,7 +439,9 @@ def build_answer_template(report: dict[str, Any]) -> dict[str, Any]:
         "run_id": f"context-replay-{int(time.time())}",
         "notes": (
             "Fill baseline/candidate with real model outputs. Baseline should use the "
-            "full current context. Candidate should use the compact DB/reference packet."
+            "full current context. Candidate should use the compact DB/reference packet. "
+            "Record actual prompt-payload and provider/runtime input tokens separately "
+            "before calling either result a saturated long-context run."
         ),
         "answers": answers,
     }
@@ -453,6 +465,11 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Review rows: {summary.get('review_rows')}",
         f"- Benchmark cases with context rows: {summary.get('cases_with_context_rows')}/{summary.get('case_count')}",
         f"- Cases still needing real shadow pairs: {summary.get('cases_needing_shadow_pairs')}",
+        (
+            "- Long-context status: "
+            f"{summary.get('long_context_status')} "
+            f"({summary.get('long_context_reason')})"
+        ),
         f"- Safe to run shadow now: {'yes' if summary.get('shadow_run_ready') else 'no'}",
         f"- Activation safe now: {'yes' if summary.get('activation_safe') else 'no'}",
         "",

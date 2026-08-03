@@ -745,6 +745,31 @@ def test_build_warm_policy_blocks_recent_failed_route_cooldown():
     )
 
 
+def test_build_warm_policy_expires_legacy_planner_cold_load_timeout():
+    now = int(time.time())
+    policy = warm_policy.build_warm_policy(
+        mesh=sample_mesh(),
+        packet=sample_packet(),
+        route_outcomes=[
+            {
+                "recorded_at": now - 61,
+                "source": "planner-preflight",
+                "status": "timeout",
+                "ok": False,
+                "model": "qwen3-coder:30b-a3b-q4_K_M",
+                "worker_id": "spark-150",
+                "reason": "planner timed out during cold recovery",
+            }
+        ],
+        cooldown_seconds=900,
+    )
+    by_model = {item["model"]: item for item in policy["recommendations"]}
+    qwen = by_model["qwen3-coder:30b-a3b-q4_K_M"]
+
+    assert qwen["cooldown"] == {}
+    assert qwen["action"] != "skip_cooldown"
+
+
 def test_select_model_for_task_kind_prefers_warm_benchmark_lane():
     policy = warm_policy.build_warm_policy(mesh=sample_mesh(), packet=sample_packet())
 

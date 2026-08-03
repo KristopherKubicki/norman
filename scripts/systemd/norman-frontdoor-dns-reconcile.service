@@ -1,0 +1,16 @@
+[Unit]
+Description=Reconcile Norman front-door LAN DNS for Caddy ACME
+Wants=network-online.target caddy.service
+After=network-online.target caddy.service
+
+[Service]
+Type=oneshot
+User=kristopher
+Group=kristopher
+UMask=0077
+StateDirectory=norman-frontdoor-dns
+WorkingDirectory=/home/kristopher/code/norman
+EnvironmentFile=-/etc/norman/runtime-identities.env
+EnvironmentFile=-/etc/norman/release.env
+LoadCredentialEncrypted=norman-cred-passphrase:/etc/norman/credentials/norman-cred-passphrase.cred
+ExecStart=/home/kristopher/code/norman/scripts/run_norman_frontdoor_dns_reconcile.sh --output /var/lib/norman-frontdoor-dns/frontdoor-dns-health.json

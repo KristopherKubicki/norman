@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if command -v codex >/dev/null 2>&1; then
+    exec codex "$@"
+fi
+
+nvm_dir=${NVM_DIR:-"${HOME}/.nvm"}
+if [[ -s "${nvm_dir}/nvm.sh" ]]; then
+    # nvm selects the configured default Node release, including its Codex CLI.
+    # shellcheck disable=SC1090
+    . "${nvm_dir}/nvm.sh"
+    nvm use --silent default >/dev/null
+fi
+
+if ! command -v codex >/dev/null 2>&1; then
+    printf '%s\n' "Unable to find codex after loading NVM." >&2
+    exit 127
+fi
+
+exec codex "$@"

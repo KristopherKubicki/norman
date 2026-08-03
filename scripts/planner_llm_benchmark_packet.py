@@ -24,6 +24,12 @@ DEFAULT_PROMPTS_JSONL = Path(
 DEFAULT_ANSWERS_TEMPLATE_JSON = Path(
     "/tmp/norman_tui_benchmarks/planner_llm_benchmark_answers.template.json"
 )
+SATURATED_LONG_CONTEXT_MIN_INPUT_TOKENS = 80_000
+SATURATED_LONG_CONTEXT_ALLOWED_MEASUREMENT_SOURCES = (
+    "provider_usage",
+    "runtime_usage",
+    "local_prompt_eval",
+)
 
 
 BENCHMARK_CASES: tuple[dict[str, Any], ...] = (
@@ -171,6 +177,31 @@ BENCHMARK_CASES: tuple[dict[str, Any], ...] = (
         "forbidden_terms": ("skip tests", "untracked spend"),
         "promotion_weight": 1.1,
     },
+    {
+        "case_id": "saturated-archive-recall",
+        "title": "Planner recalls evidence across a saturated archive payload",
+        "account_scope": "both",
+        "family": "long-context-recall",
+        "input_tokens": 86_000,
+        "cached_input_tokens": 42_000,
+        "expected_output_tokens": 1_800,
+        "requires_saturated_long_context": True,
+        "prompt": (
+            "Use the supplied immutable archive fixture to reconcile the three "
+            "named routing decisions. Cite the opening, middle, and tail anchors; "
+            "identify any conflict; preserve the cloud final-authority boundary; "
+            "and state the next verification action."
+        ),
+        "required_terms": (
+            "opening anchor",
+            "middle anchor",
+            "tail anchor",
+            "conflict",
+            "final authority",
+        ),
+        "forbidden_terms": ("all evidence agrees", "local final authority"),
+        "promotion_weight": 1.5,
+    },
 )
 
 
@@ -214,12 +245,29 @@ PROMOTION_POLICY = {
         "required_terms_hit",
         "forbidden_terms_hit",
         "verifier_acceptance",
+        "input_token_source",
+        "prompt_payload_tokens",
+        "saturated_long_context_status",
     ),
     "planner_consumption_rule": (
         "A local model is routeable only when runtime health is healthy, this packet "
         "has a passing promotion record for the requested account scope, and the "
         "requested role is no higher than the promoted role."
     ),
+    "long_context_integrity": {
+        "min_measured_input_tokens": SATURATED_LONG_CONTEXT_MIN_INPUT_TOKENS,
+        "allowed_measurement_sources": SATURATED_LONG_CONTEXT_ALLOWED_MEASUREMENT_SOURCES,
+        "required_fixture_properties": (
+            "immutable archive fixture",
+            "unique opening/middle/tail evidence anchors",
+            "no repeated filler used to inflate the payload",
+        ),
+        "promotion_rule": (
+            "Every candidate must complete the saturated-archive-recall case with "
+            "a payload and provider/runtime measurement at or above the threshold. "
+            "A short payload is not a saturated long-context run."
+        ),
+    },
 }
 
 
@@ -257,6 +305,25 @@ def _case_cost_for_model(case: dict[str, Any], model: dict[str, Any]) -> float:
 
 def _prompt_row(case: dict[str, Any], model: dict[str, Any]) -> dict[str, Any]:
     estimated_usd = _case_cost_for_model(case, model)
+    requires_saturated_long_context = bool(case.get("requires_saturated_long_context"))
+    long_context_contract = {
+        "required": requires_saturated_long_context,
+        "min_measured_input_tokens": (
+            SATURATED_LONG_CONTEXT_MIN_INPUT_TOKENS
+            if requires_saturated_long_context
+            else 0
+        ),
+        "allowed_measurement_sources": list(
+            SATURATED_LONG_CONTEXT_ALLOWED_MEASUREMENT_SOURCES
+        ),
+        "prompt_payload_requirement": (
+            "Materialize an immutable archive fixture with unique opening, middle, "
+            "and tail anchors. Record the measured payload token count; do not "
+            "substitute repeated filler."
+            if requires_saturated_long_context
+            else ""
+        ),
+    }
     return {
         "schema": "norman.planner-llm-benchmark-prompt.v1",
         "prompt_id": f"{model['route_id']}::{case['case_id']}",
@@ -271,6 +338,7 @@ def _prompt_row(case: dict[str, Any], model: dict[str, Any]) -> dict[str, Any]:
         "cached_input_tokens": case["cached_input_tokens"],
         "expected_output_tokens": case["expected_output_tokens"],
         "estimated_usd": estimated_usd,
+        "long_context_contract": long_context_contract,
         "required_terms": list(case["required_terms"]),
         "forbidden_terms": list(case["forbidden_terms"]),
         "prompt": case["prompt"],
@@ -387,6 +455,8 @@ def answer_template(packet: dict[str, Any]) -> dict[str, Any]:
                 "output_tokens": 0,
                 "latency_ms": 0,
                 "estimated_usd": prompt["estimated_usd"],
+                "input_token_source": "",
+                "prompt_payload_tokens": 0,
                 "runtime_health_status": "",
                 "verifier_acceptance": "",
             }
@@ -409,6 +479,10 @@ def render_markdown(packet: dict[str, Any]) -> str:
         f"- Local DGX Spark models: `{summary['local_dgx_spark_model_count']}`",
         f"- Estimated cloud run cost: `${summary['estimated_cloud_run_cost_usd']:.6f}`",
         f"- Local marginal token cost: `${summary['local_marginal_token_cost_usd']:.6f}`",
+        (
+            "- Saturated long-context threshold: "
+            f"`{SATURATED_LONG_CONTEXT_MIN_INPUT_TOKENS:,}` measured input tokens"
+        ),
         "",
         "## Promotion Rule",
         "",

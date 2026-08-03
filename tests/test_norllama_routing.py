@@ -47,6 +47,9 @@ def test_norllama_tool_task_routes_to_local_capability_lane(monkeypatch):
     assert route_receipt["selected_model"] == "BAAI/bge-reranker-v2-m3"
     assert route_receipt["target_model"] == "BAAI/bge-reranker-v2-m3"
     assert route_receipt["effective_runtime_model"] == "BAAI/bge-reranker-v2-m3"
+    outcome = route_receipt["fast_lane_outcome"]
+    assert outcome["schema"] == "norman.fast-lane-outcome.v1"
+    assert outcome["lane"]["kind"] == "local"
     assert route_receipt["frontdoor"] == "http://127.0.0.1:11434"
     assert route_receipt["cloud_proxy"] is False
     assert route_receipt["usage_bucket"] == "offline_local"

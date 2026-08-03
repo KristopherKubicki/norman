@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import os
 import shutil
@@ -23,7 +24,7 @@ except ModuleNotFoundError:  # Python 3.10 is still used by a few managed TUIs.
 
 
 SCHEMA = "norman.tui.release-readiness.v1"
-DEFAULT_TIMEOUT_SECONDS = 4.0
+DEFAULT_TIMEOUT_SECONDS = 10.0
 DEFAULT_NORLLAMA_ENDPOINTS = (
     "https://llm.home.arpa",
     "https://llm.knox.lollie.org",
@@ -340,16 +341,27 @@ def _check_norllama(endpoints: list[str], *, timeout_seconds: float) -> dict[str
             "No Norllama endpoint was configured for this TUI.",
             recovery="Configure NORMAN_LOCAL_LLM_ENDPOINTS before expecting local-first execution.",
         )
-    reachable = 0
-    model_count = 0
-    for url in urls:
+
+    def probe(url: str) -> tuple[bool, int]:
         try:
             status, payload = _http_json(url, timeout_seconds=timeout_seconds)
         except Exception:
-            continue
+            return False, 0
         if 200 <= status < 300:
-            reachable += 1
-            model_count = max(model_count, _model_count(payload))
+            return True, _model_count(payload)
+        return False, 0
+
+    # Endpoint reachability is advisory. Probe every front door concurrently so
+    # several slow local gateways cannot consume the whole release-gate budget.
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=len(urls), thread_name_prefix="norllama-readiness"
+    ) as executor:
+        results = list(executor.map(probe, urls))
+    reachable = sum(1 for is_reachable, _count in results if is_reachable)
+    model_count = max(
+        (count for is_reachable, count in results if is_reachable),
+        default=0,
+    )
     if reachable:
         return _check(
             "norllama_models",
@@ -359,6 +371,7 @@ def _check_norllama(endpoints: list[str], *, timeout_seconds: float) -> dict[str
                 "configured_endpoints": len(urls),
                 "reachable_endpoints": reachable,
                 "model_count": model_count,
+                "probe_timeout_seconds": timeout_seconds,
             },
         )
     return _check(
@@ -366,7 +379,11 @@ def _check_norllama(endpoints: list[str], *, timeout_seconds: float) -> dict[str
         "warn",
         f"Norllama model inventory did not respond at {len(urls)} configured endpoint(s).",
         recovery="Restore the configured Norllama gateway or correct NORMAN_LOCAL_LLM_ENDPOINTS; cloud routing remains separately gated.",
-        metadata={"configured_endpoints": len(urls), "reachable_endpoints": 0},
+        metadata={
+            "configured_endpoints": len(urls),
+            "reachable_endpoints": 0,
+            "probe_timeout_seconds": timeout_seconds,
+        },
     )
 
 

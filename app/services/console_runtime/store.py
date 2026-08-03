@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
@@ -8,21 +9,34 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.console_runtime import (
+    ConsoleRuntimeEffectRecord,
     ConsoleRuntimeEventRecord,
+    ConsoleRuntimeJobDependencyRecord,
     ConsoleRuntimeJobRecord,
+    ConsoleRuntimeWorkstreamRecord,
 )
 from app.services.console_runtime.events import ConsoleRuntimeEvent
 from app.services.console_runtime.kernel import InvalidTransitionError, JobNotFoundError
+from app.services.console_runtime.policy import with_norllama_pool_delegation_defaults
 from app.services.console_runtime.planner import (
     planner_receipt_artifacts,
     planner_receipt_payload,
     planner_receipt_summary,
 )
 from app.services.console_runtime.types import (
+    ConsoleArtifact,
+    ConsoleArtifactRequirement,
+    ConsoleCheckpointCapsule,
+    ConsoleEffect,
     ConsoleJob,
     ConsoleJobContract,
     ConsoleJobLease,
     ConsoleJobStatus,
+    ConsoleSubtaskContract,
+    ConsoleTaskResult,
+    ConsoleVerificationReceipt,
+    ConsoleWorkstream,
+    RetryClass,
     RouteDecision,
     RuntimeModeState,
 )
@@ -99,6 +113,12 @@ def _json_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [_clean(item) for item in value if _clean(item)]
+
+
+def _json_records(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    return [dict(item) for item in value if isinstance(item, dict)]
 
 
 def _json_int(value: Any) -> int:
@@ -1540,6 +1560,12 @@ _TERMINAL_STATES = {
     ConsoleJobStatus.DONE.value,
     ConsoleJobStatus.FAILED.value,
 }
+_ACTIVE_STATES = {
+    ConsoleJobStatus.LEASED.value,
+    ConsoleJobStatus.PLANNING.value,
+    ConsoleJobStatus.RUNNING.value,
+    ConsoleJobStatus.VERIFYING.value,
+}
 
 
 def _is_tui_stream_record(record: ConsoleRuntimeJobRecord) -> bool:
@@ -1624,6 +1650,8 @@ def _to_job(record: ConsoleRuntimeJobRecord) -> ConsoleJob:
             worker_id=_clean(lease_json.get("worker_id")),
             leased_at=_clean(lease_json.get("leased_at")),
             expires_at=_clean(lease_json.get("expires_at")),
+            attempt_id=_clean(lease_json.get("attempt_id")),
+            lease_epoch=_json_int(lease_json.get("lease_epoch") or record.lease_epoch),
         )
     return ConsoleJob(
         job_id=record.job_id,
@@ -1633,10 +1661,63 @@ def _to_job(record: ConsoleRuntimeJobRecord) -> ConsoleJob:
         updated_at=_iso(record.updated_at),
         lease=lease,
         checkpoints=_json_list(record.checkpoints_json),
+        checkpoint_capsules=_json_records(record.checkpoint_capsules_json),
         artifacts=_json_list(record.artifacts_json),
+        artifact_records=_json_records(record.artifact_records_json),
+        verification_receipts=_json_records(record.verification_receipts_json),
         last_error=_clean(record.last_error),
         metadata=_json_dict(record.metadata_json),
+        workstream_id=_clean(record.workstream_id),
+        parent_job_id=_clean(record.parent_job_id),
+        result=_json_dict(record.result_json),
+        cancel_requested_at=_iso(record.cancel_requested_at)
+        if record.cancel_requested_at
+        else "",
     )
+
+
+def _to_effect(record: ConsoleRuntimeEffectRecord) -> ConsoleEffect:
+    return ConsoleEffect(
+        effect_key=_clean(record.effect_key),
+        kind=_clean(record.kind),
+        state=_clean(record.state) or "planned",
+        attempt_id=_clean(record.attempt_id),
+        lease_epoch=_json_int(record.lease_epoch),
+        approval_ref=_clean(record.approval_ref),
+        preconditions=_json_dict(record.preconditions_json),
+        receipt=_json_dict(record.receipt_json),
+        artifact_refs=_json_list(record.artifact_refs_json),
+        created_at=_iso(record.created_at),
+        updated_at=_iso(record.updated_at),
+    )
+
+
+def _to_workstream(record: ConsoleRuntimeWorkstreamRecord) -> ConsoleWorkstream:
+    return ConsoleWorkstream(
+        workstream_id=record.workstream_id,
+        coordinator_job_id=record.coordinator_job_id,
+        title=_clean(record.title),
+        status=_clean(record.status) or "active",
+        metadata=_json_dict(record.metadata_json),
+        max_concurrency=max(1, int(record.max_concurrency or 1)),
+        created_at=_iso(record.created_at),
+        updated_at=_iso(record.updated_at),
+    )
+
+
+def _route_norllama_pool(contract_json: Any) -> str:
+    route_policy = _json_dict(_json_dict(contract_json).get("route_policy"))
+    provider = _provider_key(
+        route_policy.get("provider") or route_policy.get("preferred_provider")
+    )
+    pool = _clean(route_policy.get("norllama_pool"))
+    if provider == "norllama" or pool:
+        return pool or "default"
+    return ""
+
+
+def _record_is_norllama_pool_routed(record: ConsoleRuntimeJobRecord) -> bool:
+    return bool(_route_norllama_pool(record.contract_json))
 
 
 def _to_event(record: ConsoleRuntimeEventRecord) -> ConsoleRuntimeEvent:
@@ -1673,16 +1754,31 @@ class DbConsoleRuntimeStore:
         if self._job_record(db, user_id=user_id, job_id=job.job_id) is not None:
             raise InvalidTransitionError(f"Job already exists: {job.job_id}")
         now = _utc_now()
+        job_metadata = dict(metadata or {})
+        trace_id = _clean(
+            job_metadata.get("trace_id")
+            or contract.metadata.get("trace_id")
+            or contract.authority_flags.get("trace_id")
+        )
+        job_metadata["trace_id"] = trace_id or f"trace_{uuid.uuid4().hex}"
         record = ConsoleRuntimeJobRecord(
             user_id=user_id,
             job_id=job.job_id,
             status=job.status.value,
             objective=contract.objective,
             contract_json=contract.as_dict(),
-            metadata_json=dict(metadata or {}),
+            metadata_json=job_metadata,
+            workstream_id=None,
+            parent_job_id=None,
+            result_json=None,
+            cancel_requested_at=None,
             lease_json=None,
+            lease_epoch=0,
             checkpoints_json=[],
+            checkpoint_capsules_json=[],
             artifacts_json=[],
+            artifact_records_json=[],
+            verification_receipts_json=[],
             last_error="",
             created_at=now,
             updated_at=now,
@@ -1698,6 +1794,7 @@ class DbConsoleRuntimeStore:
                 "objective": contract.objective,
                 "done_when": list(contract.done_when),
                 "required_artifacts": list(contract.required_artifacts),
+                "trace_id": job_metadata["trace_id"],
             },
             summary="Job created",
             created_at=now,
@@ -1705,6 +1802,289 @@ class DbConsoleRuntimeStore:
         db.commit()
         db.refresh(record)
         return _to_job(record)
+
+    def create_workstream(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        coordinator_job_id: str,
+        title: str = "",
+        metadata: dict[str, Any] | None = None,
+        max_concurrency: int = 10,
+        workstream_id: str | None = None,
+    ) -> ConsoleWorkstream:
+        coordinator = self._required_job_record(
+            db,
+            user_id=user_id,
+            job_id=coordinator_job_id,
+        )
+        if _clean(coordinator.parent_job_id):
+            raise InvalidTransitionError(
+                "Delegated child jobs cannot become workstream coordinators"
+            )
+        existing = self._workstream_for_coordinator(
+            db,
+            user_id=user_id,
+            coordinator_job_id=coordinator_job_id,
+        )
+        if existing is not None:
+            return _to_workstream(existing)
+
+        now = _utc_now()
+        identifier = _clean(workstream_id) or f"workstream_{uuid.uuid4().hex}"
+        if self._workstream_record(db, user_id=user_id, workstream_id=identifier):
+            raise InvalidTransitionError(f"Workstream already exists: {identifier}")
+        record = ConsoleRuntimeWorkstreamRecord(
+            user_id=user_id,
+            workstream_id=identifier,
+            coordinator_job_id=coordinator_job_id,
+            title=_clean(title),
+            status="active",
+            metadata_json=dict(metadata or {}),
+            max_concurrency=max(1, min(int(max_concurrency or 1), 10)),
+            created_at=now,
+            updated_at=now,
+        )
+        coordinator.workstream_id = identifier
+        coordinator.updated_at = now
+        db.add(record)
+        db.add(coordinator)
+        db.flush()
+        self._append_event_record(
+            db,
+            user_id=user_id,
+            job_id=coordinator_job_id,
+            event_type="workstream.created",
+            payload={
+                "workstream_id": identifier,
+                "title": _clean(title),
+                "max_concurrency": record.max_concurrency,
+            },
+            summary="Coordinator workstream created",
+            created_at=now,
+        )
+        db.commit()
+        db.refresh(record)
+        return _to_workstream(record)
+
+    def get_workstream(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        workstream_id: str,
+    ) -> ConsoleWorkstream:
+        return _to_workstream(
+            self._required_workstream_record(
+                db,
+                user_id=user_id,
+                workstream_id=workstream_id,
+            )
+        )
+
+    def list_workstreams(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        limit: int = 100,
+    ) -> list[ConsoleWorkstream]:
+        records = (
+            db.query(ConsoleRuntimeWorkstreamRecord)
+            .filter(ConsoleRuntimeWorkstreamRecord.user_id == user_id)
+            .order_by(ConsoleRuntimeWorkstreamRecord.id.desc())
+            .limit(max(1, min(int(limit or 100), 1000)))
+            .all()
+        )
+        return [_to_workstream(record) for record in records]
+
+    def delegate_subtasks(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        workstream_id: str,
+        subtasks: Iterable[ConsoleSubtaskContract],
+    ) -> list[ConsoleJob]:
+        workstream = self._required_workstream_record(
+            db,
+            user_id=user_id,
+            workstream_id=workstream_id,
+        )
+        if _clean(workstream.status) != "active":
+            raise InvalidTransitionError(
+                f"Cannot delegate to workstream {workstream_id} in state "
+                f"{workstream.status}"
+            )
+        coordinator = self._required_job_record(
+            db,
+            user_id=user_id,
+            job_id=workstream.coordinator_job_id,
+        )
+        if _clean(coordinator.parent_job_id):
+            raise InvalidTransitionError(
+                "Delegated child jobs cannot create further subtasks"
+            )
+
+        items = list(subtasks or [])
+        if not items:
+            raise ValueError("At least one console subtask is required")
+        if len(items) > 100:
+            raise ValueError(
+                "A workstream delegation request may contain at most 100 subtasks"
+            )
+
+        created: list[tuple[ConsoleRuntimeJobRecord, ConsoleSubtaskContract]] = []
+        candidate_ids: set[str] = set()
+        for subtask in items:
+            if not isinstance(subtask, ConsoleSubtaskContract):
+                raise ValueError("Subtasks must use ConsoleSubtaskContract")
+            child_id = subtask.job_id or f"job_{uuid.uuid4().hex}"
+            if child_id in candidate_ids:
+                raise InvalidTransitionError(
+                    f"Duplicate subtask job ID in request: {child_id}"
+                )
+            if self._job_record(db, user_id=user_id, job_id=child_id) is not None:
+                raise InvalidTransitionError(f"Job already exists: {child_id}")
+            candidate_ids.add(child_id)
+            contract = subtask.as_job_contract()
+            contract.route_policy = with_norllama_pool_delegation_defaults(
+                contract.route_policy
+            )
+            metadata = {
+                **dict(subtask.metadata),
+                "source": "console_runtime_workstream",
+                "workstream_id": workstream_id,
+                "parent_job_id": workstream.coordinator_job_id,
+                "subtask_title": subtask.title,
+                "write_mode": subtask.write_mode,
+                "trace_id": _clean(
+                    _json_dict(coordinator.metadata_json).get("trace_id")
+                )
+                or f"trace_{uuid.uuid4().hex}",
+            }
+            created.append(
+                (
+                    ConsoleRuntimeJobRecord(
+                        user_id=user_id,
+                        job_id=child_id,
+                        status=ConsoleJobStatus.QUEUED.value,
+                        objective=contract.objective,
+                        contract_json=contract.as_dict(),
+                        metadata_json=metadata,
+                        workstream_id=workstream_id,
+                        parent_job_id=workstream.coordinator_job_id,
+                        result_json=None,
+                        cancel_requested_at=None,
+                        lease_json=None,
+                        lease_epoch=0,
+                        checkpoints_json=[],
+                        checkpoint_capsules_json=[],
+                        artifacts_json=[],
+                        artifact_records_json=[],
+                        verification_receipts_json=[],
+                        last_error="",
+                    ),
+                    subtask,
+                )
+            )
+
+        existing_children = {
+            job_id
+            for (job_id,) in db.query(ConsoleRuntimeJobRecord.job_id)
+            .filter(
+                ConsoleRuntimeJobRecord.user_id == user_id,
+                ConsoleRuntimeJobRecord.workstream_id == workstream_id,
+                ConsoleRuntimeJobRecord.parent_job_id.isnot(None),
+            )
+            .all()
+        }
+        dependencies: dict[str, set[str]] = {}
+        for dependency in (
+            db.query(ConsoleRuntimeJobDependencyRecord)
+            .filter(
+                ConsoleRuntimeJobDependencyRecord.user_id == user_id,
+                ConsoleRuntimeJobDependencyRecord.workstream_id == workstream_id,
+            )
+            .all()
+        ):
+            dependencies.setdefault(dependency.job_id, set()).add(
+                dependency.depends_on_job_id
+            )
+        allowed_dependencies = existing_children | candidate_ids
+        for record, subtask in created:
+            dependency_ids = set(subtask.depends_on)
+            if record.job_id in dependency_ids:
+                raise ValueError(f"Subtask {record.job_id} cannot depend on itself")
+            unknown = dependency_ids - allowed_dependencies
+            if unknown:
+                raise ValueError(
+                    f"Subtask {record.job_id} has dependencies outside its workstream: "
+                    + ", ".join(sorted(unknown))
+                )
+            dependencies[record.job_id] = dependency_ids
+        self._ensure_dependency_graph_acyclic(dependencies)
+
+        now = _utc_now()
+        for record, _subtask in created:
+            record.created_at = now
+            record.updated_at = now
+            db.add(record)
+        db.flush()
+        for record, subtask in created:
+            self._append_event_record(
+                db,
+                user_id=user_id,
+                job_id=record.job_id,
+                event_type="job.created",
+                payload={
+                    "objective": record.objective,
+                    "done_when": list(
+                        _json_dict(record.contract_json).get("done_when") or []
+                    ),
+                    "required_artifacts": list(
+                        _json_dict(record.contract_json).get("required_artifacts") or []
+                    ),
+                    "workstream_id": workstream_id,
+                    "parent_job_id": workstream.coordinator_job_id,
+                    "write_mode": subtask.write_mode,
+                },
+                summary="Delegated subtask created",
+                created_at=now,
+            )
+            for dependency_id in sorted(set(subtask.depends_on)):
+                db.add(
+                    ConsoleRuntimeJobDependencyRecord(
+                        user_id=user_id,
+                        workstream_id=workstream_id,
+                        job_id=record.job_id,
+                        depends_on_job_id=dependency_id,
+                        artifact_requirements_json=list(
+                            subtask.dependency_artifacts.get(dependency_id) or []
+                        ),
+                        created_at=now,
+                    )
+                )
+        workstream.updated_at = now
+        db.add(workstream)
+        self._append_event_record(
+            db,
+            user_id=user_id,
+            job_id=workstream.coordinator_job_id,
+            event_type="workstream.subtasks_delegated",
+            payload={
+                "workstream_id": workstream_id,
+                "job_ids": [record.job_id for record, _ in created],
+                "count": len(created),
+            },
+            summary=f"Delegated {len(created)} workstream subtasks",
+            created_at=now,
+        )
+        db.commit()
+        for record, _ in created:
+            db.refresh(record)
+        return [_to_job(record) for record, _ in created]
 
     def get_job(self, db: Session, *, user_id: int, job_id: str) -> ConsoleJob:
         record = self._job_record(db, user_id=user_id, job_id=job_id)
@@ -1757,10 +2137,170 @@ class DbConsoleRuntimeStore:
         for record in records:
             if _is_tui_stream_record(record):
                 continue
+            if not self._dependencies_ready(
+                db,
+                user_id=int(record.user_id),
+                job_id=record.job_id,
+            ):
+                continue
             runnable.append((int(record.user_id), _to_job(record)))
             if len(runnable) >= max_items:
                 break
         return runnable
+
+    def active_job_counts(self, db: Session) -> dict[str, Any]:
+        records = (
+            db.query(ConsoleRuntimeJobRecord)
+            .filter(ConsoleRuntimeJobRecord.status.in_(sorted(_ACTIVE_STATES)))
+            .all()
+        )
+        by_workstream: dict[str, int] = {}
+        by_norllama_pool: dict[str, int] = {}
+        by_capability: dict[str, int] = {}
+        norllama_pool_total = 0
+        for record in records:
+            workstream_id = _clean(record.workstream_id)
+            if workstream_id:
+                by_workstream[workstream_id] = by_workstream.get(workstream_id, 0) + 1
+            if _record_is_norllama_pool_routed(record):
+                norllama_pool_total += 1
+                pool = _route_norllama_pool(record.contract_json) or "default"
+                by_norllama_pool[pool] = by_norllama_pool.get(pool, 0) + 1
+            route_policy = _json_dict(
+                _json_dict(record.contract_json).get("route_policy")
+            )
+            capability = _clean(
+                route_policy.get("capability")
+                or route_policy.get("task_kind")
+                or route_policy.get("goal_task_kind")
+            )
+            if capability:
+                by_capability[capability] = by_capability.get(capability, 0) + 1
+        return {
+            "total": len(records),
+            "norllama_pool_total": norllama_pool_total,
+            "by_norllama_pool": by_norllama_pool,
+            "by_capability": by_capability,
+            "by_workstream": by_workstream,
+        }
+
+    def list_workstream_subtasks(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        workstream_id: str,
+    ) -> list[ConsoleJob]:
+        self._required_workstream_record(
+            db,
+            user_id=user_id,
+            workstream_id=workstream_id,
+        )
+        records = (
+            db.query(ConsoleRuntimeJobRecord)
+            .filter(
+                ConsoleRuntimeJobRecord.user_id == user_id,
+                ConsoleRuntimeJobRecord.workstream_id == workstream_id,
+                ConsoleRuntimeJobRecord.parent_job_id.isnot(None),
+            )
+            .order_by(ConsoleRuntimeJobRecord.id.asc())
+            .all()
+        )
+        return [_to_job(record) for record in records]
+
+    def workstream_snapshot(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        workstream_id: str,
+    ) -> dict[str, Any]:
+        workstream_record = self._required_workstream_record(
+            db,
+            user_id=user_id,
+            workstream_id=workstream_id,
+        )
+        coordinator = self.get_job(
+            db,
+            user_id=user_id,
+            job_id=workstream_record.coordinator_job_id,
+        )
+        child_records = (
+            db.query(ConsoleRuntimeJobRecord)
+            .filter(
+                ConsoleRuntimeJobRecord.user_id == user_id,
+                ConsoleRuntimeJobRecord.workstream_id == workstream_id,
+                ConsoleRuntimeJobRecord.parent_job_id.isnot(None),
+            )
+            .order_by(ConsoleRuntimeJobRecord.id.asc())
+            .all()
+        )
+        dependencies = (
+            db.query(ConsoleRuntimeJobDependencyRecord)
+            .filter(
+                ConsoleRuntimeJobDependencyRecord.user_id == user_id,
+                ConsoleRuntimeJobDependencyRecord.workstream_id == workstream_id,
+            )
+            .order_by(ConsoleRuntimeJobDependencyRecord.id.asc())
+            .all()
+        )
+        dependency_map: dict[str, list[str]] = {}
+        for dependency in dependencies:
+            dependency_map.setdefault(dependency.job_id, []).append(
+                dependency.depends_on_job_id
+            )
+
+        status_counts: dict[str, int] = {}
+        artifacts: list[str] = []
+        result_cards: list[dict[str, Any]] = []
+        subtasks: list[dict[str, Any]] = []
+        for record in child_records:
+            job = _to_job(record)
+            status_counts[job.status.value] = status_counts.get(job.status.value, 0) + 1
+            for artifact in job.artifacts:
+                if artifact not in artifacts:
+                    artifacts.append(artifact)
+            if job.result:
+                result_cards.append({"job_id": job.job_id, **job.result})
+            subtask = job.as_dict()
+            subtask["depends_on"] = sorted(dependency_map.get(job.job_id, []))
+            subtasks.append(subtask)
+
+        workstream = _to_workstream(workstream_record).as_dict()
+        if workstream["status"] == "active" and subtasks:
+            statuses = {item["status"] for item in subtasks}
+            if statuses <= {ConsoleJobStatus.DONE.value}:
+                workstream["derived_status"] = "complete"
+            elif statuses <= _TERMINAL_STATES:
+                workstream["derived_status"] = "needs_attention"
+            else:
+                workstream["derived_status"] = "active"
+        else:
+            workstream["derived_status"] = workstream["status"]
+        return {
+            "workstream": workstream,
+            "coordinator": coordinator.as_dict(),
+            "subtasks": subtasks,
+            "dependencies": [
+                {
+                    "job_id": dependency.job_id,
+                    "depends_on_job_id": dependency.depends_on_job_id,
+                    **(
+                        {
+                            "artifact_requirements": _json_records(
+                                dependency.artifact_requirements_json
+                            )
+                        }
+                        if _json_records(dependency.artifact_requirements_json)
+                        else {}
+                    ),
+                }
+                for dependency in dependencies
+            ],
+            "status_counts": status_counts,
+            "result_cards": result_cards,
+            "artifacts": artifacts,
+        }
 
     def lease_job(
         self,
@@ -1774,6 +2314,19 @@ class DbConsoleRuntimeStore:
         last_error: IntegrityError | None = None
         for _attempt in range(5):
             record = self._required_job_record(db, user_id=user_id, job_id=job_id)
+            if (
+                record.cancel_requested_at is not None
+                and record.status not in _TERMINAL_STATES
+            ):
+                self._transition_to_canceled(
+                    db,
+                    record=record,
+                    reason="Cancellation requested before lease",
+                    now=_utc_now(),
+                )
+                db.commit()
+                db.refresh(record)
+                return _to_job(record)
             self._ensure_not_terminal(record)
             if record.status not in {
                 ConsoleJobStatus.QUEUED.value,
@@ -1784,10 +2337,13 @@ class DbConsoleRuntimeStore:
                 )
             now = _utc_now()
             expires_at = now + timedelta(seconds=max(1, int(lease_seconds or 1)))
+            record.lease_epoch = _json_int(record.lease_epoch) + 1
             record.lease_json = {
                 "worker_id": _clean(worker_id) or "runtime-worker",
                 "leased_at": now.isoformat(),
                 "expires_at": expires_at.isoformat(),
+                "attempt_id": f"attempt_{uuid.uuid4().hex}",
+                "lease_epoch": record.lease_epoch,
             }
             record.status = ConsoleJobStatus.LEASED.value
             record.updated_at = now
@@ -1821,11 +2377,31 @@ class DbConsoleRuntimeStore:
         *,
         user_id: int,
         job_id: str,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
     ) -> ConsoleJob:
         last_error: IntegrityError | None = None
         for _attempt in range(5):
             record = self._required_job_record(db, user_id=user_id, job_id=job_id)
+            if (
+                record.cancel_requested_at is not None
+                and record.status not in _TERMINAL_STATES
+            ):
+                self._transition_to_canceled(
+                    db,
+                    record=record,
+                    reason="Cancellation requested before start",
+                    now=_utc_now(),
+                )
+                db.commit()
+                db.refresh(record)
+                return _to_job(record)
             self._ensure_not_terminal(record)
+            self._assert_current_attempt(
+                record,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
             if record.status not in {
                 ConsoleJobStatus.LEASED.value,
                 ConsoleJobStatus.CHECKPOINTED.value,
@@ -1896,13 +2472,20 @@ class DbConsoleRuntimeStore:
         summary: str = "",
         detail: str = "",
         visibility: str = "timeline",
-        artifacts: Iterable[str] | None = None,
+        artifacts: Iterable[Any] | None = None,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
     ) -> ConsoleRuntimeEvent:
         last_error: IntegrityError | None = None
         for _attempt in range(5):
             record = self._job_record(db, user_id=user_id, job_id=job_id)
             if record is None:
                 raise JobNotFoundError(f"Unknown job: {job_id}")
+            self._assert_current_attempt(
+                record,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
             event = self._append_event_record(
                 db,
                 user_id=user_id,
@@ -1913,16 +2496,7 @@ class DbConsoleRuntimeStore:
                 detail=detail,
                 visibility=visibility,
             )
-            added = []
-            if artifacts:
-                current = _json_list(record.artifacts_json)
-                for artifact in artifacts:
-                    value = _clean(artifact)
-                    if value and value not in current:
-                        current.append(value)
-                        added.append(value)
-                if added:
-                    record.artifacts_json = current
+            added = self._record_artifacts(record, artifacts or [])
             record.updated_at = _utc_now()
             db.add(record)
             try:
@@ -2063,6 +2637,8 @@ class DbConsoleRuntimeStore:
         policy_state: RuntimeModeState | dict[str, Any],
         summary: str = "",
         detail: str = "",
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
     ) -> ConsoleRuntimeEvent:
         payload = (
             policy_state.as_dict()
@@ -2079,6 +2655,8 @@ class DbConsoleRuntimeStore:
             summary=summary
             or (f"Runtime mode: {mode}" if mode else "Runtime mode selected"),
             detail=detail,
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
         )
 
     def record_policy_block(
@@ -2090,6 +2668,8 @@ class DbConsoleRuntimeStore:
         reason: str,
         policy_state: RuntimeModeState | dict[str, Any] | None = None,
         metadata: dict[str, Any] | None = None,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
     ) -> ConsoleRuntimeEvent:
         payload: dict[str, Any] = {"reason": reason, "metadata": dict(metadata or {})}
         if policy_state is not None:
@@ -2106,6 +2686,8 @@ class DbConsoleRuntimeStore:
             payload=payload,
             summary="Runtime policy blocked route",
             detail=reason,
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
         )
 
     def record_route_decision(
@@ -2118,6 +2700,8 @@ class DbConsoleRuntimeStore:
         event_type: str = "route.decided",
         summary: str = "",
         detail: str = "",
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
     ) -> ConsoleRuntimeEvent:
         payload = (
             decision.as_dict() if hasattr(decision, "as_dict") else dict(decision or {})
@@ -2137,6 +2721,8 @@ class DbConsoleRuntimeStore:
             payload=payload,
             summary=summary or route_summary,
             detail=detail or "; ".join(payload.get("blocked_reasons") or []),
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
         )
 
     def checkpoint_job(
@@ -2146,10 +2732,18 @@ class DbConsoleRuntimeStore:
         user_id: int,
         job_id: str,
         summary: str,
-        artifacts: Iterable[str] | None = None,
+        artifacts: Iterable[Any] | None = None,
+        capsule: ConsoleCheckpointCapsule | dict[str, Any] | None = None,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
     ) -> ConsoleJob:
         record = self._required_job_record(db, user_id=user_id, job_id=job_id)
         self._ensure_not_terminal(record)
+        self._assert_current_attempt(
+            record,
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
+        )
         if record.status not in {
             ConsoleJobStatus.LEASED.value,
             ConsoleJobStatus.RUNNING.value,
@@ -2159,10 +2753,24 @@ class DbConsoleRuntimeStore:
             raise InvalidTransitionError(
                 f"Cannot checkpoint job {job_id} from state {record.status}"
             )
-        added_artifacts = self._record_artifacts(record, artifacts or [])
+        added_artifacts = self._record_artifacts(
+            record,
+            artifacts or [],
+            produced_by_attempt=attempt_id,
+        )
         checkpoints = _json_list(record.checkpoints_json)
         checkpoints.append(_clean(summary) or "Checkpointed")
         record.checkpoints_json = checkpoints
+        checkpoint_capsule = self._checkpoint_capsule(
+            record,
+            summary=summary,
+            capsule=capsule,
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
+        )
+        capsules = _json_records(record.checkpoint_capsules_json)
+        capsules.append(checkpoint_capsule.as_dict())
+        record.checkpoint_capsules_json = capsules
         record.status = ConsoleJobStatus.CHECKPOINTED.value
         record.updated_at = _utc_now()
         self._append_event_record(
@@ -2170,7 +2778,11 @@ class DbConsoleRuntimeStore:
             user_id=user_id,
             job_id=job_id,
             event_type="job.checkpointed",
-            payload={"summary": summary, "artifacts": added_artifacts},
+            payload={
+                "summary": summary,
+                "artifacts": added_artifacts,
+                "checkpoint_capsule": checkpoint_capsule.as_dict(),
+            },
             summary=summary,
             created_at=record.updated_at,
         )
@@ -2186,12 +2798,25 @@ class DbConsoleRuntimeStore:
         user_id: int,
         job_id: str,
         reason: str,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
     ) -> ConsoleJob:
         record = self._required_job_record(db, user_id=user_id, job_id=job_id)
         self._ensure_not_terminal(record)
+        self._assert_current_attempt(
+            record,
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
+        )
         record.status = ConsoleJobStatus.BLOCKED.value
         record.last_error = _clean(reason)
         record.updated_at = _utc_now()
+        self._ensure_terminal_task_result(
+            record,
+            status=ConsoleJobStatus.BLOCKED.value,
+            summary="Job blocked",
+            detail=record.last_error,
+        )
         self._append_event_record(
             db,
             user_id=user_id,
@@ -2214,11 +2839,22 @@ class DbConsoleRuntimeStore:
         user_id: int,
         job_id: str,
         summary: str = "",
-        artifacts: Iterable[str] | None = None,
+        artifacts: Iterable[Any] | None = None,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
     ) -> ConsoleJob:
         record = self._required_job_record(db, user_id=user_id, job_id=job_id)
         self._ensure_not_terminal(record)
-        added_artifacts = self._record_artifacts(record, artifacts or [])
+        self._assert_current_attempt(
+            record,
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
+        )
+        added_artifacts = self._record_artifacts(
+            record,
+            artifacts or [],
+            produced_by_attempt=attempt_id,
+        )
         job = _to_job(record)
         missing = [
             artifact
@@ -2230,8 +2866,20 @@ class DbConsoleRuntimeStore:
                 "Cannot complete job before required artifacts exist: "
                 + ", ".join(missing)
             )
+        if self._verification_required(record) and not self._has_passing_verification(
+            record
+        ):
+            raise InvalidTransitionError(
+                "Cannot complete job before a passing verification receipt exists"
+            )
         record.status = ConsoleJobStatus.DONE.value
         record.updated_at = _utc_now()
+        self._ensure_terminal_task_result(
+            record,
+            status=ConsoleJobStatus.DONE.value,
+            summary=_clean(summary) or "Job completed",
+            artifacts=_json_list(record.artifacts_json),
+        )
         self._append_event_record(
             db,
             user_id=user_id,
@@ -2253,8 +2901,16 @@ class DbConsoleRuntimeStore:
         user_id: int,
         job_id: str,
         error: str,
+        retry_class: RetryClass | str = RetryClass.UNKNOWN,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
     ) -> ConsoleJob:
         record = self._required_job_record(db, user_id=user_id, job_id=job_id)
+        self._assert_current_attempt(
+            record,
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
+        )
         if record.status in {
             ConsoleJobStatus.CANCELED.value,
             ConsoleJobStatus.DONE.value,
@@ -2264,13 +2920,27 @@ class DbConsoleRuntimeStore:
             )
         record.status = ConsoleJobStatus.FAILED.value
         record.last_error = _clean(error)
+        normalized_retry_class = RetryClass.normalize(retry_class)
+        metadata = _json_dict(record.metadata_json)
+        metadata["last_retry_class"] = normalized_retry_class.value
+        record.metadata_json = metadata
         record.updated_at = _utc_now()
+        self._ensure_terminal_task_result(
+            record,
+            status=ConsoleJobStatus.FAILED.value,
+            summary="Job failed",
+            detail=record.last_error,
+            metadata={"retry_class": normalized_retry_class.value},
+        )
         self._append_event_record(
             db,
             user_id=user_id,
             job_id=job_id,
             event_type="job.failed",
-            payload={"error": record.last_error},
+            payload={
+                "error": record.last_error,
+                "retry_class": normalized_retry_class.value,
+            },
             summary="Job failed",
             detail=record.last_error,
             created_at=record.updated_at,
@@ -2280,6 +2950,463 @@ class DbConsoleRuntimeStore:
         db.refresh(record)
         return _to_job(record)
 
+    def record_task_result(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        job_id: str,
+        result: ConsoleTaskResult,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
+    ) -> ConsoleJob:
+        record = self._required_job_record(db, user_id=user_id, job_id=job_id)
+        self._assert_current_attempt(
+            record,
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
+        )
+        result_payload = result.as_dict()
+        added_artifacts = self._record_artifacts(
+            record,
+            result.artifacts,
+            produced_by_attempt=attempt_id,
+        )
+        if added_artifacts:
+            result_payload["artifacts"] = _json_list(record.artifacts_json)
+        record.result_json = result_payload
+        record.updated_at = _utc_now()
+        self._append_event_record(
+            db,
+            user_id=user_id,
+            job_id=job_id,
+            event_type="task.result_recorded",
+            payload=result_payload,
+            summary=result.summary or "Task result recorded",
+            detail=result.detail,
+            created_at=record.updated_at,
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+        return _to_job(record)
+
+    def begin_effect(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        job_id: str,
+        effect_key: str,
+        kind: str,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
+        approval_ref: str = "",
+        preconditions: dict[str, Any] | None = None,
+    ) -> tuple[ConsoleEffect, bool]:
+        """Reserve an effect key before crossing an external execution boundary.
+
+        The boolean is true only for the caller that created the reservation.
+        A duplicate key must be inspected or reconciled instead of executed again.
+        """
+
+        record = self._required_job_record(db, user_id=user_id, job_id=job_id)
+        self._assert_current_attempt(
+            record,
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
+        )
+        normalized_key = _clean(effect_key)
+        if not normalized_key:
+            raise ValueError("Effect key is required")
+        existing = self._effect_record(
+            db,
+            user_id=user_id,
+            job_id=job_id,
+            effect_key=normalized_key,
+        )
+        if existing is not None:
+            return _to_effect(existing), False
+        now = _utc_now()
+        effect = ConsoleRuntimeEffectRecord(
+            user_id=user_id,
+            job_id=job_id,
+            effect_key=normalized_key,
+            kind=_clean(kind) or "runtime",
+            state="started",
+            attempt_id=_clean(attempt_id),
+            lease_epoch=_json_int(lease_epoch),
+            approval_ref=_clean(approval_ref),
+            preconditions_json=dict(preconditions or {}),
+            receipt_json={},
+            artifact_refs_json=[],
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(effect)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            existing = self._effect_record(
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                effect_key=normalized_key,
+            )
+            if existing is not None:
+                return _to_effect(existing), False
+            raise
+        db.refresh(effect)
+        return _to_effect(effect), True
+
+    def get_effect(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        job_id: str,
+        effect_key: str,
+    ) -> ConsoleEffect | None:
+        record = self._effect_record(
+            db,
+            user_id=user_id,
+            job_id=job_id,
+            effect_key=effect_key,
+        )
+        return _to_effect(record) if record is not None else None
+
+    def complete_effect(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        job_id: str,
+        effect_key: str,
+        receipt: dict[str, Any] | None = None,
+        artifacts: Iterable[Any] | None = None,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
+    ) -> ConsoleEffect:
+        job = self._required_job_record(db, user_id=user_id, job_id=job_id)
+        self._assert_current_attempt(
+            job,
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
+        )
+        effect = self._required_effect_record(
+            db,
+            user_id=user_id,
+            job_id=job_id,
+            effect_key=effect_key,
+        )
+        if _clean(effect.state) == "completed":
+            return _to_effect(effect)
+        if _clean(effect.state) not in {"planned", "started"}:
+            raise InvalidTransitionError(
+                f"Cannot complete effect {effect_key} from state {effect.state}"
+            )
+        return self._finish_effect(
+            db,
+            user_id=user_id,
+            job_id=job_id,
+            effect_key=effect_key,
+            state="completed",
+            receipt=dict(receipt or {}),
+            artifacts=artifacts,
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
+        )
+
+    def fail_effect(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        job_id: str,
+        effect_key: str,
+        error: str,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
+    ) -> ConsoleEffect:
+        return self._finish_effect(
+            db,
+            user_id=user_id,
+            job_id=job_id,
+            effect_key=effect_key,
+            state="failed",
+            receipt={"error": _clean(error)},
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
+        )
+
+    def mark_effect_unknown(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        job_id: str,
+        effect_key: str,
+        reason: str,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
+    ) -> ConsoleEffect:
+        return self._finish_effect(
+            db,
+            user_id=user_id,
+            job_id=job_id,
+            effect_key=effect_key,
+            state="unknown",
+            receipt={"reason": _clean(reason)},
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
+        )
+
+    def record_verification(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        job_id: str,
+        receipt: ConsoleVerificationReceipt | dict[str, Any],
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
+    ) -> ConsoleVerificationReceipt:
+        record = self._required_job_record(db, user_id=user_id, job_id=job_id)
+        self._assert_current_attempt(
+            record,
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
+        )
+        normalized = (
+            receipt
+            if isinstance(receipt, ConsoleVerificationReceipt)
+            else ConsoleVerificationReceipt(**dict(receipt))
+        )
+        lease = _json_dict(record.lease_json)
+        normalized.attempt_id = (
+            normalized.attempt_id or attempt_id or _clean(lease.get("attempt_id"))
+        )
+        normalized.lease_epoch = normalized.lease_epoch or _json_int(
+            lease_epoch or lease.get("lease_epoch") or record.lease_epoch
+        )
+        normalized.trace_id = normalized.trace_id or _clean(
+            _json_dict(record.metadata_json).get("trace_id")
+        )
+        receipts = _json_records(record.verification_receipts_json)
+        receipts.append(normalized.as_dict())
+        record.verification_receipts_json = receipts
+        record.updated_at = _utc_now()
+        self._append_event_record(
+            db,
+            user_id=user_id,
+            job_id=job_id,
+            event_type="verification.receipt",
+            payload={"receipt": normalized.as_dict()},
+            summary=(
+                "Verification receipt passed"
+                if normalized.status == "pass"
+                else "Verification receipt recorded"
+            ),
+            detail="; ".join(normalized.failures),
+            created_at=record.updated_at,
+        )
+        db.add(record)
+        db.commit()
+        return normalized
+
+    def retry_job(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        job_id: str,
+        override: bool = False,
+    ) -> ConsoleJob:
+        record = self._required_job_record(db, user_id=user_id, job_id=job_id)
+        if not _clean(record.parent_job_id):
+            raise InvalidTransitionError("Only delegated child jobs may be retried")
+        if _clean(record.status) not in _TERMINAL_STATES:
+            raise InvalidTransitionError(
+                f"Cannot retry job {job_id} from state {record.status}"
+            )
+        retry_class = RetryClass.normalize(
+            _json_dict(record.metadata_json).get("last_retry_class")
+            or _json_dict(record.result_json).get("metadata", {}).get("retry_class")
+        )
+        if (
+            retry_class
+            in {
+                RetryClass.PARTIAL_EFFECT,
+                RetryClass.POLICY_DENIED,
+                RetryClass.VALIDATION_FAILED,
+            }
+            and not override
+        ):
+            raise InvalidTransitionError(
+                "Retry requires explicit override for retry class "
+                f"{retry_class.value}"
+            )
+        now = _utc_now()
+        record.status = ConsoleJobStatus.QUEUED.value
+        record.lease_json = None
+        record.result_json = None
+        record.cancel_requested_at = None
+        record.last_error = ""
+        record.updated_at = now
+        self._append_event_record(
+            db,
+            user_id=user_id,
+            job_id=job_id,
+            event_type="job.retried",
+            payload={
+                "workstream_id": _clean(record.workstream_id),
+                "previous_retry_class": retry_class.value,
+                "override": bool(override),
+            },
+            summary="Delegated subtask requeued",
+            created_at=now,
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+        return _to_job(record)
+
+    def request_cancel_job(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        job_id: str,
+        reason: str = "",
+    ) -> ConsoleJob:
+        record = self._required_job_record(db, user_id=user_id, job_id=job_id)
+        if _clean(record.status) in _TERMINAL_STATES:
+            return _to_job(record)
+        now = _utc_now()
+        if _clean(record.status) in _ACTIVE_STATES:
+            if record.cancel_requested_at is None:
+                record.cancel_requested_at = now
+                record.updated_at = now
+                self._append_event_record(
+                    db,
+                    user_id=user_id,
+                    job_id=job_id,
+                    event_type="job.cancel_requested",
+                    payload={"reason": _clean(reason)},
+                    summary="Cancellation requested",
+                    detail=_clean(reason),
+                    created_at=now,
+                )
+                db.add(record)
+                db.commit()
+                db.refresh(record)
+            return _to_job(record)
+        self._transition_to_canceled(
+            db,
+            record=record,
+            reason=reason,
+            now=now,
+        )
+        db.commit()
+        db.refresh(record)
+        return _to_job(record)
+
+    def finalize_cancel_requested(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        job_id: str,
+        reason: str = "",
+    ) -> ConsoleJob:
+        record = self._required_job_record(db, user_id=user_id, job_id=job_id)
+        if _clean(record.status) in _TERMINAL_STATES:
+            return _to_job(record)
+        if record.cancel_requested_at is None:
+            return _to_job(record)
+        self._transition_to_canceled(
+            db,
+            record=record,
+            reason=reason or "Cancellation requested",
+            now=_utc_now(),
+        )
+        db.commit()
+        db.refresh(record)
+        return _to_job(record)
+
+    def cancel_workstream(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        workstream_id: str,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        workstream = self._required_workstream_record(
+            db,
+            user_id=user_id,
+            workstream_id=workstream_id,
+        )
+        now = _utc_now()
+        children = (
+            db.query(ConsoleRuntimeJobRecord)
+            .filter(
+                ConsoleRuntimeJobRecord.user_id == user_id,
+                ConsoleRuntimeJobRecord.workstream_id == workstream_id,
+                ConsoleRuntimeJobRecord.parent_job_id.isnot(None),
+            )
+            .order_by(ConsoleRuntimeJobRecord.id.asc())
+            .all()
+        )
+        for child in children:
+            if _clean(child.status) in _TERMINAL_STATES:
+                continue
+            if _clean(child.status) in _ACTIVE_STATES:
+                if child.cancel_requested_at is None:
+                    child.cancel_requested_at = now
+                    child.updated_at = now
+                    self._append_event_record(
+                        db,
+                        user_id=user_id,
+                        job_id=child.job_id,
+                        event_type="job.cancel_requested",
+                        payload={
+                            "reason": _clean(reason),
+                            "workstream_id": workstream_id,
+                        },
+                        summary="Workstream cancellation requested",
+                        detail=_clean(reason),
+                        created_at=now,
+                    )
+                    db.add(child)
+            else:
+                self._transition_to_canceled(
+                    db,
+                    record=child,
+                    reason=reason or "Workstream canceled",
+                    now=now,
+                )
+        workstream.status = "canceled"
+        workstream.updated_at = now
+        db.add(workstream)
+        self._append_event_record(
+            db,
+            user_id=user_id,
+            job_id=workstream.coordinator_job_id,
+            event_type="workstream.canceled",
+            payload={"workstream_id": workstream_id, "reason": _clean(reason)},
+            summary="Workstream canceled",
+            detail=_clean(reason),
+            created_at=now,
+        )
+        db.commit()
+        return self.workstream_snapshot(
+            db,
+            user_id=user_id,
+            workstream_id=workstream_id,
+        )
+
     def require_approval(
         self,
         db: Session,
@@ -2288,9 +3415,16 @@ class DbConsoleRuntimeStore:
         job_id: str,
         reason: str,
         requested_by: str = "",
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
     ) -> ConsoleJob:
         record = self._required_job_record(db, user_id=user_id, job_id=job_id)
         self._ensure_not_terminal(record)
+        self._assert_current_attempt(
+            record,
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
+        )
         record.status = ConsoleJobStatus.WAITING_APPROVAL.value
         record.updated_at = _utc_now()
         self._append_event_record(
@@ -2387,10 +3521,17 @@ class DbConsoleRuntimeStore:
         detail: str = "",
         artifacts: Iterable[str] | None = None,
         metadata: dict[str, Any] | None = None,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
     ) -> ConsoleRuntimeEvent:
         record = self._job_record(db, user_id=user_id, job_id=job_id)
         if record is None:
             raise JobNotFoundError(f"Unknown job: {job_id}")
+        self._assert_current_attempt(
+            record,
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
+        )
         artifact_list = planner_receipt_artifacts(receipt, list(artifacts or []))
         event = self._append_event_record(
             db,
@@ -2406,16 +3547,11 @@ class DbConsoleRuntimeStore:
             summary=summary or planner_receipt_summary(receipt),
             detail=detail,
         )
-        added = []
-        if artifact_list:
-            current = _json_list(record.artifacts_json)
-            for artifact in artifact_list:
-                value = _clean(artifact)
-                if value and value not in current:
-                    current.append(value)
-                    added.append(value)
-            if added:
-                record.artifacts_json = current
+        self._record_artifacts(
+            record,
+            artifact_list,
+            produced_by_attempt=attempt_id,
+        )
         record.updated_at = _utc_now()
         db.add(record)
         db.commit()
@@ -2490,6 +3626,111 @@ class DbConsoleRuntimeStore:
         )
         return _local_first_proof(events, session_limit=session_limit)
 
+    def _workstream_record(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        workstream_id: str,
+    ) -> ConsoleRuntimeWorkstreamRecord | None:
+        return (
+            db.query(ConsoleRuntimeWorkstreamRecord)
+            .filter(
+                ConsoleRuntimeWorkstreamRecord.user_id == user_id,
+                ConsoleRuntimeWorkstreamRecord.workstream_id == workstream_id,
+            )
+            .first()
+        )
+
+    def _required_workstream_record(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        workstream_id: str,
+    ) -> ConsoleRuntimeWorkstreamRecord:
+        record = self._workstream_record(
+            db,
+            user_id=user_id,
+            workstream_id=workstream_id,
+        )
+        if record is None:
+            raise JobNotFoundError(f"Unknown workstream: {workstream_id}")
+        return record
+
+    def _workstream_for_coordinator(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        coordinator_job_id: str,
+    ) -> ConsoleRuntimeWorkstreamRecord | None:
+        return (
+            db.query(ConsoleRuntimeWorkstreamRecord)
+            .filter(
+                ConsoleRuntimeWorkstreamRecord.user_id == user_id,
+                ConsoleRuntimeWorkstreamRecord.coordinator_job_id == coordinator_job_id,
+            )
+            .first()
+        )
+
+    def _dependencies_ready(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        job_id: str,
+    ) -> bool:
+        dependencies = (
+            db.query(ConsoleRuntimeJobDependencyRecord)
+            .filter(
+                ConsoleRuntimeJobDependencyRecord.user_id == user_id,
+                ConsoleRuntimeJobDependencyRecord.job_id == job_id,
+            )
+            .all()
+        )
+        for dependency in dependencies:
+            dependency_id = _clean(dependency.depends_on_job_id)
+            record = self._job_record(
+                db,
+                user_id=user_id,
+                job_id=dependency_id,
+            )
+            if record is None or _clean(record.status) != ConsoleJobStatus.DONE.value:
+                return False
+            requirements = [
+                ConsoleArtifactRequirement.from_value(item)
+                for item in _json_records(dependency.artifact_requirements_json)
+            ]
+            if requirements and not self._artifact_requirements_satisfied(
+                record,
+                requirements,
+            ):
+                return False
+        return True
+
+    def _ensure_dependency_graph_acyclic(
+        self,
+        dependencies: dict[str, set[str]],
+    ) -> None:
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(job_id: str) -> None:
+            if job_id in visited:
+                return
+            if job_id in visiting:
+                raise ValueError("Workstream subtask dependencies contain a cycle")
+            visiting.add(job_id)
+            for dependency_id in dependencies.get(job_id, set()):
+                if dependency_id in dependencies:
+                    visit(dependency_id)
+            visiting.remove(job_id)
+            visited.add(job_id)
+
+        for job_id in dependencies:
+            visit(job_id)
+
     def _job_record(
         self,
         db: Session,
@@ -2518,6 +3759,86 @@ class DbConsoleRuntimeStore:
             raise JobNotFoundError(f"Unknown job: {job_id}")
         return record
 
+    def _effect_record(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        job_id: str,
+        effect_key: str,
+    ) -> ConsoleRuntimeEffectRecord | None:
+        return (
+            db.query(ConsoleRuntimeEffectRecord)
+            .filter(
+                ConsoleRuntimeEffectRecord.user_id == user_id,
+                ConsoleRuntimeEffectRecord.job_id == job_id,
+                ConsoleRuntimeEffectRecord.effect_key == _clean(effect_key),
+            )
+            .first()
+        )
+
+    def _required_effect_record(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        job_id: str,
+        effect_key: str,
+    ) -> ConsoleRuntimeEffectRecord:
+        record = self._effect_record(
+            db,
+            user_id=user_id,
+            job_id=job_id,
+            effect_key=effect_key,
+        )
+        if record is None:
+            raise InvalidTransitionError(f"Unknown runtime effect: {effect_key}")
+        return record
+
+    def _finish_effect(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        job_id: str,
+        effect_key: str,
+        state: str,
+        receipt: dict[str, Any] | None = None,
+        artifacts: Iterable[Any] | None = None,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
+    ) -> ConsoleEffect:
+        if state not in {"completed", "failed", "unknown"}:
+            raise ValueError(f"Invalid terminal effect state: {state}")
+        job = self._required_job_record(db, user_id=user_id, job_id=job_id)
+        self._assert_current_attempt(
+            job,
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
+        )
+        effect = self._required_effect_record(
+            db,
+            user_id=user_id,
+            job_id=job_id,
+            effect_key=effect_key,
+        )
+        current_state = _clean(effect.state) or "planned"
+        if current_state == state:
+            return _to_effect(effect)
+        if current_state not in {"planned", "started"}:
+            raise InvalidTransitionError(
+                f"Cannot mark effect {effect_key} {state} from state {effect.state}"
+            )
+        effect.state = state
+        effect.receipt_json = dict(receipt or {})
+        if artifacts is not None:
+            effect.artifact_refs_json = self._artifact_refs(artifacts)
+        effect.updated_at = _utc_now()
+        db.add(effect)
+        db.commit()
+        db.refresh(effect)
+        return _to_effect(effect)
+
     def _ensure_not_terminal(self, record: ConsoleRuntimeJobRecord) -> None:
         if record.status in _TERMINAL_STATES:
             raise InvalidTransitionError(
@@ -2525,18 +3846,197 @@ class DbConsoleRuntimeStore:
             )
 
     def _record_artifacts(
-        self, record: ConsoleRuntimeJobRecord, artifacts: Iterable[str]
+        self,
+        record: ConsoleRuntimeJobRecord,
+        artifacts: Iterable[Any],
+        *,
+        produced_by_attempt: str = "",
     ) -> list[str]:
         current = _json_list(record.artifacts_json)
+        artifact_records = _json_records(record.artifact_records_json)
         added: list[str] = []
         for artifact in artifacts:
-            value = _clean(artifact)
+            normalized = ConsoleArtifact.from_value(artifact)
+            if produced_by_attempt and not normalized.produced_by_attempt:
+                normalized.produced_by_attempt = produced_by_attempt
+            value = normalized.legacy_name
             if value and value not in current:
                 current.append(value)
                 added.append(value)
-        if added:
+            if not any(
+                _clean(item.get("artifact_id")) == normalized.artifact_id
+                for item in artifact_records
+            ):
+                artifact_records.append(normalized.as_dict())
+        if added or artifact_records != _json_records(record.artifact_records_json):
             record.artifacts_json = current
+            record.artifact_records_json = artifact_records
         return added
+
+    def _artifact_refs(self, artifacts: Iterable[Any]) -> list[str]:
+        refs: list[str] = []
+        for artifact in artifacts:
+            normalized = ConsoleArtifact.from_value(artifact)
+            ref = normalized.ref or normalized.artifact_id or normalized.name
+            if ref and ref not in refs:
+                refs.append(ref)
+        return refs
+
+    def _artifact_requirements_satisfied(
+        self,
+        record: ConsoleRuntimeJobRecord,
+        requirements: Iterable[ConsoleArtifactRequirement],
+    ) -> bool:
+        artifacts = [
+            ConsoleArtifact.from_value(item)
+            for item in _json_records(record.artifact_records_json)
+        ]
+        if not artifacts:
+            artifacts = [
+                ConsoleArtifact.from_value(item)
+                for item in _json_list(record.artifacts_json)
+            ]
+        return all(
+            any(requirement.matches(artifact) for artifact in artifacts)
+            for requirement in requirements
+        )
+
+    def _checkpoint_capsule(
+        self,
+        record: ConsoleRuntimeJobRecord,
+        *,
+        summary: str,
+        capsule: ConsoleCheckpointCapsule | dict[str, Any] | None,
+        attempt_id: str,
+        lease_epoch: int | None,
+    ) -> ConsoleCheckpointCapsule:
+        value = (
+            ConsoleCheckpointCapsule.from_value(capsule)
+            if capsule is not None
+            else ConsoleCheckpointCapsule(summary=_clean(summary) or "Checkpointed")
+        )
+        if not value.summary:
+            value.summary = _clean(summary) or "Checkpointed"
+        lease = _json_dict(record.lease_json)
+        value.attempt_id = (
+            value.attempt_id or attempt_id or _clean(lease.get("attempt_id"))
+        )
+        value.lease_epoch = value.lease_epoch or _json_int(
+            lease_epoch or lease.get("lease_epoch") or record.lease_epoch
+        )
+        value.trace_id = value.trace_id or _clean(
+            _json_dict(record.metadata_json).get("trace_id")
+        )
+        if not value.artifact_digests:
+            value.artifact_digests = [
+                artifact.sha256
+                for artifact in (
+                    ConsoleArtifact.from_value(item)
+                    for item in _json_records(record.artifact_records_json)
+                )
+                if artifact.sha256
+            ]
+        return value
+
+    def _verification_required(self, record: ConsoleRuntimeJobRecord) -> bool:
+        contract = _json_dict(record.contract_json)
+        route_policy = _json_dict(contract.get("route_policy"))
+        metadata = _json_dict(record.metadata_json)
+        return any(
+            _json_bool(values.get(key))
+            for values in (route_policy, contract, metadata)
+            for key in (
+                "require_verification_receipt",
+                "require_verifier_for_completion",
+                "verification_required",
+            )
+        )
+
+    def _has_passing_verification(self, record: ConsoleRuntimeJobRecord) -> bool:
+        return any(
+            _clean(receipt.get("status")).lower() == "pass"
+            for receipt in _json_records(record.verification_receipts_json)
+        )
+
+    def _assert_current_attempt(
+        self,
+        record: ConsoleRuntimeJobRecord,
+        *,
+        attempt_id: str = "",
+        lease_epoch: int | None = None,
+    ) -> None:
+        if not attempt_id and lease_epoch is None:
+            return
+        lease = _json_dict(record.lease_json)
+        expected_attempt_id = _clean(lease.get("attempt_id"))
+        expected_epoch = _json_int(lease.get("lease_epoch") or record.lease_epoch)
+        if (
+            not attempt_id
+            or lease_epoch is None
+            or attempt_id != expected_attempt_id
+            or int(lease_epoch) != expected_epoch
+        ):
+            raise InvalidTransitionError(
+                f"Stale runtime attempt cannot mutate job {record.job_id}"
+            )
+
+    def _ensure_terminal_task_result(
+        self,
+        record: ConsoleRuntimeJobRecord,
+        *,
+        status: str,
+        summary: str,
+        detail: str = "",
+        artifacts: Iterable[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        if _json_dict(record.result_json):
+            return
+        record.result_json = ConsoleTaskResult(
+            status=status,
+            summary=summary,
+            detail=detail,
+            artifacts=list(artifacts or _json_list(record.artifacts_json)),
+            metadata={
+                "workstream_id": _clean(record.workstream_id),
+                "parent_job_id": _clean(record.parent_job_id),
+                "synthesized": True,
+                **dict(metadata or {}),
+            },
+        ).as_dict()
+
+    def _transition_to_canceled(
+        self,
+        db: Session,
+        *,
+        record: ConsoleRuntimeJobRecord,
+        reason: str,
+        now: datetime,
+    ) -> None:
+        record.status = ConsoleJobStatus.CANCELED.value
+        record.lease_json = None
+        record.cancel_requested_at = record.cancel_requested_at or now
+        record.updated_at = now
+        self._ensure_terminal_task_result(
+            record,
+            status=ConsoleJobStatus.CANCELED.value,
+            summary="Job canceled",
+            detail=_clean(reason),
+        )
+        self._append_event_record(
+            db,
+            user_id=int(record.user_id),
+            job_id=record.job_id,
+            event_type="job.canceled",
+            payload={
+                "reason": _clean(reason),
+                "workstream_id": _clean(record.workstream_id),
+            },
+            summary="Job canceled",
+            detail=_clean(reason),
+            created_at=now,
+        )
+        db.add(record)
 
     def _events_for_job(
         self,
@@ -2585,11 +4085,25 @@ class DbConsoleRuntimeStore:
         visibility: str = "timeline",
         created_at: datetime | None = None,
     ) -> ConsoleRuntimeEventRecord:
+        event_payload = dict(payload or {})
+        job = self._job_record(db, user_id=user_id, job_id=job_id)
+        if job is not None:
+            metadata = _json_dict(job.metadata_json)
+            trace_id = _clean(metadata.get("trace_id"))
+            lease = _json_dict(job.lease_json)
+            attempt_id = _clean(lease.get("attempt_id"))
+            lease_epoch = _json_int(lease.get("lease_epoch") or job.lease_epoch)
+            if trace_id and "trace_id" not in event_payload:
+                event_payload["trace_id"] = trace_id
+            if attempt_id and "attempt_id" not in event_payload:
+                event_payload["attempt_id"] = attempt_id
+            if attempt_id and "lease_epoch" not in event_payload:
+                event_payload["lease_epoch"] = lease_epoch
         sequence = self._next_sequence(db)
         event = ConsoleRuntimeEvent(
             job_id=job_id,
             event_type=event_type,
-            payload=payload,
+            payload=event_payload,
             sequence=sequence,
             summary=summary,
             detail=detail,

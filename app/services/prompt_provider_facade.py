@@ -8,6 +8,8 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+import requests
+
 from app.core.config import settings
 from app.services.norllama import gateway as norllama_gateway
 from app.services.norllama.route_proof import (
@@ -34,7 +36,9 @@ SUPPORTED_CHAT_FIELDS = {
     "user",
 }
 SUPPORTED_RESPONSES_FIELDS = {
+    "client_metadata",
     "input",
+    "include",
     "instructions",
     "max_output_tokens",
     "max_tokens",
@@ -42,8 +46,12 @@ SUPPORTED_RESPONSES_FIELDS = {
     "metadata",
     "model",
     "norman",
+    "parallel_tool_calls",
     "prompt",
+    "prompt_cache_key",
     "previous_response_id",
+    "reasoning",
+    "store",
     "stream",
     "temperature",
     "text",
@@ -56,15 +64,18 @@ BEHAVIOR_BEARING_UNSUPPORTED_FIELDS = {
     "background",
     "conversation",
     "modalities",
-    "parallel_tool_calls",
     "previous_response_id",
-    "reasoning",
     "response_format",
     "stream_options",
     "text",
     "tool_choice",
     "tools",
 }
+SUPPORTED_REASONING_EFFORTS = frozenset(
+    {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+)
+SUPPORTED_REASONING_SUMMARIES = frozenset({"auto", "concise", "detailed", "none"})
+SUPPORTED_RESPONSES_INCLUDE_VALUES = frozenset({"reasoning.encrypted_content"})
 MAX_FACADE_TOKENS = 4096
 MAX_RESPONSE_STATE = 200
 MODEL_ALIASES = {
@@ -493,6 +504,126 @@ def _validate_supported_fields(
         )
 
 
+def _responses_reasoning_advisory(payload: Mapping[str, Any]) -> dict[str, str]:
+    """Validate the supported Responses reasoning hint without emulating hidden output."""
+
+    if "reasoning" not in payload:
+        return {}
+    reasoning = payload.get("reasoning")
+    if not isinstance(reasoning, Mapping):
+        raise FacadeError(
+            "Responses reasoning must be an object with an effort value",
+            status_code=400,
+            code="invalid_reasoning",
+            param="reasoning",
+        )
+    unsupported = sorted(
+        str(key) for key in reasoning if key not in {"effort", "summary"}
+    )
+    if unsupported:
+        raise FacadeError(
+            "Unsupported Responses reasoning option: " + ", ".join(unsupported),
+            status_code=501,
+            error_type="unsupported_parameter",
+            code="unsupported_reasoning_option",
+            param=f"reasoning.{unsupported[0]}",
+        )
+    advisory: dict[str, str] = {}
+    if "effort" in reasoning:
+        effort = _lower(reasoning.get("effort"))
+        if effort not in SUPPORTED_REASONING_EFFORTS:
+            allowed = ", ".join(sorted(SUPPORTED_REASONING_EFFORTS))
+            raise FacadeError(
+                f"Unsupported Responses reasoning effort: {effort or '<blank>'}. "
+                f"Expected one of: {allowed}",
+                status_code=400,
+                code="invalid_reasoning_effort",
+                param="reasoning.effort",
+            )
+        advisory["effort"] = effort
+    if "summary" in reasoning:
+        summary = _lower(reasoning.get("summary"))
+        if summary not in SUPPORTED_REASONING_SUMMARIES:
+            allowed = ", ".join(sorted(SUPPORTED_REASONING_SUMMARIES))
+            raise FacadeError(
+                f"Unsupported Responses reasoning summary: {summary or '<blank>'}. "
+                f"Expected one of: {allowed}",
+                status_code=400,
+                code="invalid_reasoning_summary",
+                param="reasoning.summary",
+            )
+        advisory["summary"] = summary
+    if not advisory:
+        raise FacadeError(
+            "Responses reasoning must specify effort or summary",
+            status_code=400,
+            code="invalid_reasoning",
+            param="reasoning",
+        )
+    return advisory
+
+
+def _responses_include_advisory(payload: Mapping[str, Any]) -> list[str]:
+    """Validate legacy Responses include values that do not affect local execution."""
+
+    if "include" not in payload:
+        return []
+    include = payload.get("include")
+    if not isinstance(include, list) or not all(
+        isinstance(value, str) for value in include
+    ):
+        raise FacadeError(
+            "Responses include must be an array of strings",
+            status_code=400,
+            code="invalid_include",
+            param="include",
+        )
+    requested = sorted({_lower(value) for value in include})
+    unsupported = sorted(
+        value for value in requested if value not in SUPPORTED_RESPONSES_INCLUDE_VALUES
+    )
+    if unsupported:
+        raise FacadeError(
+            "Unsupported Responses include value: " + ", ".join(unsupported),
+            status_code=501,
+            error_type="unsupported_parameter",
+            code="unsupported_include_value",
+            param="include",
+        )
+    return requested
+
+
+def _responses_client_metadata_ignored(payload: Mapping[str, Any]) -> bool:
+    """Validate opaque Codex metadata before deliberately discarding it."""
+
+    if "client_metadata" not in payload:
+        return False
+    if not isinstance(payload.get("client_metadata"), Mapping):
+        raise FacadeError(
+            "Responses client_metadata must be an object",
+            status_code=400,
+            code="invalid_client_metadata",
+            param="client_metadata",
+        )
+    return True
+
+
+def _responses_store_requested(payload: Mapping[str, Any]) -> bool:
+    """Validate the Responses persistence preference without exposing storage."""
+
+    if "store" not in payload:
+        return True
+    store = payload.get("store")
+    if not isinstance(store, bool):
+        raise FacadeError(
+            "Responses store must be a boolean",
+            status_code=400,
+            code="invalid_store",
+            param="store",
+        )
+    return store
+
+
 def _text_part_text(part: Mapping[str, Any]) -> str:
     part_type = _clean(part.get("type"))
     if part_type in {"input_text", "text"}:
@@ -694,10 +825,12 @@ def _facade_route_receipt(
     gateway_attribution: Mapping[str, Any],
     invocation_id: str,
     text: str,
+    trusted_context: Mapping[str, Any],
 ) -> dict[str, Any]:
     messages = _messages(
         provider_payload.get("messages")
     ) or response_input_to_messages(provider_payload)
+    reasoning_advisory = _responses_reasoning_advisory(provider_payload)
     task = NorllamaTaskRequest(
         kind="chat",
         input_text=text or "OpenAI-compatible facade call",
@@ -713,6 +846,8 @@ def _facade_route_receipt(
             "invocation_id": invocation_id,
             "route_selected_model": authorization.model,
             "requested_model": authorization.model,
+            "codex_reasoning_advisory": reasoning_advisory,
+            **dict(trusted_context),
         },
         task_id=invocation_id,
     )
@@ -751,6 +886,8 @@ def _facade_route_receipt(
             ),
             "observed_worker": _clean(gateway_attribution.get("observed_worker")),
             "verifier_result": "pass",
+            "codex_reasoning_advisory": reasoning_advisory,
+            **dict(trusted_context),
         },
         metadata={
             "phase": "chat",
@@ -764,6 +901,8 @@ def _facade_route_receipt(
             ),
             "observed_worker": _clean(gateway_attribution.get("observed_worker")),
             "target_worker": _clean(gateway_attribution.get("target_worker")),
+            "codex_reasoning_advisory": reasoning_advisory,
+            **dict(trusted_context),
         },
     ).as_dict()
     route_receipt = _mapping(receipt.get("route_receipt"))
@@ -863,21 +1002,46 @@ def _execute_authorized_chat(
         1024,
     )
     invocation_id = request_id or f"norman-openai-facade-{uuid.uuid4().hex}"
-    result = norllama_gateway.invoke_text_chat(
-        messages=messages,
-        model=authorization.model,
-        base_url=str(getattr(settings, "llm_offline_base_url", "") or ""),
-        api_key=str(getattr(settings, "llm_offline_api_key", "") or ""),
-        max_tokens=max_tokens,
-        timeout_seconds=float(getattr(settings, "llm_provider_timeout_seconds", 45)),
-        correlation_headers={
-            "X-Request-Id": invocation_id,
-            "X-Norman-Execution-Mode": "prompt_intermediary_openai_facade",
-            "X-Norman-Phase": "chat",
-            "X-Norman-Route-Authority": "prompt_intermediary",
-            "X-Norman-Request-Production-Eligible": "false",
-        },
-    )
+    trusted_context = _mapping(route_envelope.get("trusted_gateway_context"))
+    reasoning_advisory = _responses_reasoning_advisory(provider_payload)
+    correlation_headers = {
+        "X-Request-Id": invocation_id,
+        "X-Norman-Execution-Mode": "prompt_intermediary_openai_facade",
+        "X-Norman-Phase": "chat",
+        "X-Norman-Route-Authority": "prompt_intermediary",
+        "X-Norman-Request-Production-Eligible": "false",
+    }
+    if _clean(trusted_context.get("gateway_route")):
+        correlation_headers.update(
+            {
+                "X-Norman-Gateway-Route": _clean(trusted_context.get("gateway_route")),
+                "X-Norman-Source-Tui": _clean(trusted_context.get("source_tui")),
+                "X-Norman-Policy-Scope": _clean(trusted_context.get("policy_scope")),
+            }
+        )
+    if "effort" in reasoning_advisory:
+        correlation_headers["X-Norman-Requested-Reasoning-Effort"] = reasoning_advisory[
+            "effort"
+        ]
+    try:
+        result = norllama_gateway.invoke_text_chat(
+            messages=messages,
+            model=authorization.model,
+            base_url=str(getattr(settings, "llm_offline_base_url", "") or ""),
+            api_key=str(getattr(settings, "llm_offline_api_key", "") or ""),
+            max_tokens=max_tokens,
+            timeout_seconds=float(
+                getattr(settings, "llm_provider_timeout_seconds", 45)
+            ),
+            correlation_headers=correlation_headers,
+        )
+    except (requests.RequestException, RuntimeError) as exc:
+        raise FacadeError(
+            "Local model gateway is unavailable",
+            status_code=502,
+            error_type="server_error",
+            code="local_model_unavailable",
+        ) from exc
     text = _choice_text(result)
     if not text:
         raise FacadeError(
@@ -900,6 +1064,7 @@ def _execute_authorized_chat(
         gateway_attribution=gateway_attribution,
         invocation_id=invocation_id,
         text=text,
+        trusted_context=trusted_context,
     )
     response_id = f"chatcmpl-norman-{uuid.uuid4().hex}"
     created = int(time.time())
@@ -920,6 +1085,7 @@ def _execute_authorized_chat(
             "schema": "norman.openai-compatible-facade.v1",
             "request_id": invocation_id,
             "route": dict(route_envelope),
+            "gateway": trusted_context,
             "authorization": authorization.as_dict(),
             "local_execution": True,
             "cloud_forwarding": False,
@@ -938,6 +1104,7 @@ def execute_openai_chat_facade(
     payload: Mapping[str, Any],
     *,
     request_id: str = "",
+    trusted_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute the OpenAI Chat Completions local text subset."""
 
@@ -950,6 +1117,7 @@ def execute_openai_chat_facade(
         provider="openai",
         endpoint="openai.chat.completions",
         payload=provider_payload,
+        trusted_context=trusted_context,
     )
     return _execute_authorized_chat(
         provider_payload=provider_payload,
@@ -963,11 +1131,22 @@ def execute_openai_responses_facade(
     payload: Mapping[str, Any],
     *,
     request_id: str = "",
+    trusted_context: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Execute the OpenAI Responses local text subset with one route decision."""
 
     _validate_supported_fields(payload, supported_fields=SUPPORTED_RESPONSES_FIELDS)
     provider_payload = _prepare_payload(payload)
+    reasoning_advisory = _responses_reasoning_advisory(provider_payload)
+    include_advisory = _responses_include_advisory(provider_payload)
+    client_metadata_ignored = _responses_client_metadata_ignored(provider_payload)
+    store_requested = _responses_store_requested(provider_payload)
+    provider_payload.pop("client_metadata", None)
+    provider_payload.pop("store", None)
+    if reasoning_advisory:
+        provider_payload["reasoning"] = reasoning_advisory
+    if include_advisory:
+        provider_payload["include"] = include_advisory
     previous_messages = _previous_response_messages(
         _clean(provider_payload.get("previous_response_id"))
     )
@@ -982,6 +1161,7 @@ def execute_openai_responses_facade(
         provider="openai",
         endpoint="openai.responses",
         payload=route_payload,
+        trusted_context=trusted_context,
     )
     chat_response = _execute_authorized_chat(
         provider_payload=route_payload,
@@ -1023,15 +1203,20 @@ def execute_openai_responses_facade(
                 "structured_output_requested": bool(
                     _mapping(provider_payload.get("text")).get("format")
                 ),
+                "reasoning_advisory": _responses_reasoning_advisory(provider_payload),
+                "include_advisory": _responses_include_advisory(provider_payload),
+                "client_metadata_ignored": client_metadata_ignored,
+                "store_requested": store_requested,
             },
         },
     }
-    _store_response_state(
-        response_id,
-        messages=messages,
-        output_text=output_text or text,
-        output_items=output_items,
-    )
+    if store_requested:
+        _store_response_state(
+            response_id,
+            messages=messages,
+            output_text=output_text or text,
+            output_items=output_items,
+        )
     return response
 
 

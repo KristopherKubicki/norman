@@ -4,6 +4,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 
@@ -87,6 +88,18 @@ def test_health_url_uses_norman_root_for_console_runtime_api_base(monkeypatch) -
     )
 
 
+def test_managed_console_health_endpoint_returns_lightweight_json() -> None:
+    root = Path(__file__).resolve().parents[1]
+    for path in (
+        root / "scripts" / "agent_console_template" / "agent_console_web.py",
+        root / "scripts" / "norman_codex_web.py",
+    ):
+        source = path.read_text(encoding="utf-8")
+        assert 'if parsed.path == "/health":' in source
+        assert '"status": "ok"' in source
+        assert 'if parsed.path == "/healthz":' in source
+
+
 def test_bedrock_report_uses_only_read_only_sts_and_no_model_inference(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -136,6 +149,38 @@ def test_bedrock_report_uses_only_read_only_sts_and_no_model_inference(
     assert command_env["AWS_PROFILE"] == "approved-profile"
     assert command_env["AWS_REGION"] == "us-east-2"
     assert all("exec" not in item for item in command)
+
+
+def test_norllama_model_probes_run_concurrently(monkeypatch) -> None:
+    module = _load_readiness(monkeypatch)
+    lock = threading.Lock()
+    both_started = threading.Event()
+    active = 0
+    maximum_active = 0
+
+    def fake_http(_url, *, timeout_seconds):
+        nonlocal active, maximum_active
+        assert timeout_seconds == 10
+        with lock:
+            active += 1
+            maximum_active = max(maximum_active, active)
+            if active == 2:
+                both_started.set()
+        assert both_started.wait(timeout=1)
+        with lock:
+            active -= 1
+        return 200, {"data": [{"id": "qwen"}]}
+
+    monkeypatch.setattr(module, "_http_json", fake_http)
+
+    check = module._check_norllama(
+        ["https://llm-one.example", "https://llm-two.example"],
+        timeout_seconds=10,
+    )
+
+    assert check["status"] == "pass"
+    assert maximum_active == 2
+    assert check["metadata"]["reachable_endpoints"] == 2
 
 
 def test_direct_route_requires_codex_login_but_not_aws_identity(
@@ -223,6 +268,15 @@ def test_managed_launchers_run_required_preflight_before_codex() -> None:
         assert "run_release_preflight" in source
         assert "--fail-on-blocker" in source
         assert source.index("run_release_preflight") < source.index("run_codex()")
+        assert "norman_codex_runtime_bridge.py" in source
+        assert "run_terminal_runtime_bridge" in source
+        assert (
+            source.index("run_release_preflight")
+            < source.index("\nrun_terminal_runtime_bridge\n")
+            < source.index("run_codex()")
+        )
+        assert "openai_base_url" not in source.lower()
+        assert "llm.home.arpa" not in source.lower()
 
 
 def test_browser_workers_gate_codex_before_launching_a_prompt() -> None:
@@ -233,6 +287,8 @@ def test_browser_workers_gate_codex_before_launching_a_prompt() -> None:
     ):
         source = path.read_text(encoding="utf-8")
         assert "def codex_launch_preflight(service_tier: str)" in source
+        assert "CODEX_PREFLIGHT_CHECK_TIMEOUT_SECONDS" in source
+        assert '"--timeout-seconds"' in source
         assert '"provider_error_kind": "tui_preflight_blocked"' in source
         assert source.index(
             "release_preflight = codex_launch_preflight"

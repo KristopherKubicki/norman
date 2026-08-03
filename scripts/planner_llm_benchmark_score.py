@@ -106,6 +106,54 @@ def _coerce_int(value: Any) -> int:
         return 0
 
 
+def _long_context_measurement(
+    answer: dict[str, Any],
+    prompt: dict[str, Any],
+) -> dict[str, Any]:
+    contract = (
+        prompt.get("long_context_contract")
+        if isinstance(prompt.get("long_context_contract"), dict)
+        else {}
+    )
+    required = bool(contract.get("required"))
+    minimum = _coerce_int(contract.get("min_measured_input_tokens"))
+    allowed_sources = {
+        _lower_words(source)
+        for source in contract.get("allowed_measurement_sources", [])
+        if str(source or "").strip()
+    }
+    input_tokens = _coerce_int(answer.get("input_tokens"))
+    payload_tokens = _coerce_int(answer.get("prompt_payload_tokens"))
+    source = _lower_words(str(answer.get("input_token_source") or ""))
+    if not required:
+        return {
+            "required": False,
+            "valid": True,
+            "status": "not_required",
+            "minimum_input_tokens": 0,
+            "input_tokens": input_tokens,
+            "prompt_payload_tokens": payload_tokens,
+            "input_token_source": source,
+        }
+    if source not in allowed_sources:
+        status = "unmeasured"
+    elif payload_tokens < minimum:
+        status = "not_saturated_short_payload"
+    elif input_tokens < minimum:
+        status = "not_saturated_short_input"
+    else:
+        status = "saturated"
+    return {
+        "required": True,
+        "valid": status == "saturated",
+        "status": status,
+        "minimum_input_tokens": minimum,
+        "input_tokens": input_tokens,
+        "prompt_payload_tokens": payload_tokens,
+        "input_token_source": source,
+    }
+
+
 def _case_by_id(packet: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {str(case["case_id"]): case for case in packet.get("cases", [])}
 
@@ -162,6 +210,7 @@ def score_answer(
     verifier_score, verifier_rejected = _verifier_acceptance_score(
         answer.get("verifier_acceptance")
     )
+    long_context = _long_context_measurement(answer, prompt)
     metric_fields_present = {
         "answer": bool(answer_text.strip()),
         "route_decision": bool(str(answer.get("route_decision") or "").strip()),
@@ -176,6 +225,7 @@ def score_answer(
         "latency_ms": _coerce_int(answer.get("latency_ms")) > 0,
         "runtime_health_status": bool(str(answer.get("runtime_health_status") or "")),
         "verifier_acceptance": bool(str(answer.get("verifier_acceptance") or "")),
+        "saturated_long_context": bool(long_context["valid"]),
     }
     required_recall = (
         len(required_hits) / len(required_terms) if required_terms else 1.0
@@ -197,6 +247,8 @@ def score_answer(
         critical_fail_reasons.append("verifier_rejected")
     if runtime_issue:
         critical_fail_reasons.append("runtime_health_not_healthy")
+    if long_context["required"] and not long_context["valid"]:
+        critical_fail_reasons.append("long_context_not_saturated")
     missing_response_fields = [
         field
         for field in (
@@ -253,6 +305,7 @@ def score_answer(
         "input_tokens": _coerce_int(answer.get("input_tokens")),
         "cached_input_tokens": _coerce_int(answer.get("cached_input_tokens")),
         "output_tokens": _coerce_int(answer.get("output_tokens")),
+        "long_context": long_context,
     }
 
 
@@ -455,6 +508,15 @@ def build_report(packet: dict[str, Any], answers: dict[str, Any]) -> dict[str, A
     )
     scores = [float(row["score"]) for row in scored_rows]
     critical_rows = [row for row in scored_rows if row["critical_fail_reasons"]]
+    long_context_rows = [
+        row
+        for row in scored_rows
+        if isinstance(row.get("long_context"), dict)
+        and row["long_context"].get("required")
+    ]
+    saturated_long_context_rows = [
+        row for row in long_context_rows if row["long_context"].get("valid")
+    ]
     gate = "fail" if critical_rows else "pass" if coverage_complete else "incomplete"
     summary = {
         "answer_count": completed_prompt_count,
@@ -476,6 +538,19 @@ def build_report(packet: dict[str, Any], answers: dict[str, Any]) -> dict[str, A
         "local_promoted_role_count": sum(
             len(record["planner_consumption_allowed_roles"])
             for record in promotion_records
+        ),
+        "saturated_long_context_target_count": len(long_context_rows),
+        "saturated_long_context_run_count": len(saturated_long_context_rows),
+        "unsaturated_long_context_run_count": (
+            len(long_context_rows) - len(saturated_long_context_rows)
+        ),
+        "long_context_gate": (
+            "pass"
+            if long_context_rows
+            and len(long_context_rows) == len(saturated_long_context_rows)
+            else "not_saturated_long_context"
+            if long_context_rows
+            else "not_required"
         ),
         "total_estimated_usd": round(
             sum(float(row["estimated_usd"]) for row in scored_rows), 6
@@ -511,6 +586,12 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Critical failures: `{summary['critical_failure_count']}`",
         f"- Local promotion records: `{summary['local_promotion_record_count']}`",
         f"- Local promoted roles: `{summary['local_promoted_role_count']}`",
+        (
+            "- Saturated long-context runs: "
+            f"`{summary['saturated_long_context_run_count']}` / "
+            f"`{summary['saturated_long_context_target_count']}` "
+            f"(`{summary['long_context_gate']}`)"
+        ),
         f"- Total estimated run cost: `${summary['total_estimated_usd']:.6f}`",
         "",
         "## Local Promotion Records",

@@ -1,0 +1,167 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Durable inbound and outbound Evergreen SMS conversation pipeline.
+
+Parameters:
+  TwilioAuthTokenSecretArn:
+    Type: String
+    Description: ARN of the Secrets Manager secret holding the Twilio auth token.
+  TwilioWebhookUrl:
+    Type: String
+    Description: Exact public Twilio webhook URL used for signature validation.
+  BurstSeconds:
+    Type: Number
+    Default: 8
+  ConversationIdleSeconds:
+    Type: Number
+    Default: 86400
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 30
+    MemorySize: 256
+    Environment:
+      Variables:
+        SMS_CONVERSATIONS_TABLE: !Ref ConversationsTable
+        TWILIO_AUTH_TOKEN_SECRET_ARN: !Ref TwilioAuthTokenSecretArn
+
+Resources:
+  InboundDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: evergreen-sms-inbound-dlq
+  InboundQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: evergreen-sms-inbound
+      VisibilityTimeout: 180
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt InboundDlq.Arn
+        maxReceiveCount: 5
+  CompletionDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: evergreen-sms-completion-dlq
+  CompletionQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: evergreen-sms-completion
+      VisibilityTimeout: 180
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt CompletionDlq.Arn
+        maxReceiveCount: 5
+  OutboundDlq:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: evergreen-sms-outbound-dlq
+  OutboundQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: evergreen-sms-outbound
+      VisibilityTimeout: 180
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt OutboundDlq.Arn
+        maxReceiveCount: 5
+  ConversationsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: evergreen-sms-conversations
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+  SmsApi:
+    Type: AWS::Serverless::HttpApi
+  InboundFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: evergreen-sms-inbound
+      CodeUri: .
+      Handler: inbound_handler.lambda_handler
+      Environment:
+        Variables:
+          INBOUND_QUEUE_URL: !Ref InboundQueue
+          TWILIO_WEBHOOK_URL: !Ref TwilioWebhookUrl
+          TWILIO_VALIDATE_SIGNATURE: "1"
+          SMS_BURST_SECONDS: !Ref BurstSeconds
+          SMS_CONVERSATION_IDLE_SECONDS: !Ref ConversationIdleSeconds
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ConversationsTable
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt InboundQueue.QueueName
+        - Statement:
+            Effect: Allow
+            Action: secretsmanager:GetSecretValue
+            Resource: !Ref TwilioAuthTokenSecretArn
+      Events:
+        TwilioInbound:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SmsApi
+            Path: /twilio/inbound
+            Method: POST
+  CompletionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: evergreen-sms-completion
+      CodeUri: .
+      Handler: completion_handler.lambda_handler
+      Environment:
+        Variables:
+          OUTBOUND_QUEUE_URL: !Ref OutboundQueue
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ConversationsTable
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt OutboundQueue.QueueName
+      Events:
+        Completion:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt CompletionQueue.Arn
+            BatchSize: 10
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+  OutboundFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: evergreen-sms-outbound
+      CodeUri: .
+      Handler: outbound_handler.lambda_handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ConversationsTable
+        - Statement:
+            Effect: Allow
+            Action: secretsmanager:GetSecretValue
+            Resource: !Ref TwilioAuthTokenSecretArn
+      Events:
+        Outbound:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt OutboundQueue.Arn
+            BatchSize: 10
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+
+Outputs:
+  TwilioInboundUrl:
+    Value: !Sub "https://${SmsApi}.execute-api.${AWS::Region}.amazonaws.com/twilio/inbound"
+  InboundQueueUrl:
+    Value: !Ref InboundQueue
+  CompletionQueueUrl:
+    Value: !Ref CompletionQueue
+  OutboundQueueUrl:
+    Value: !Ref OutboundQueue

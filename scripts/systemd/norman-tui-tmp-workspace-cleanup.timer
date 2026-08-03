@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Norman temporary workspace cleanup daily
+
+[Timer]
+OnBootSec=30min
+OnUnitActiveSec=1d
+RandomizedDelaySec=20min
+Persistent=true
+Unit=norman-tui-tmp-workspace-cleanup.service
+
+[Install]
+WantedBy=timers.target

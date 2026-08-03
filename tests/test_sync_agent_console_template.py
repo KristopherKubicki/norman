@@ -77,6 +77,22 @@ def _named_host(module, name: str, group_host: str = "192.0.2.10"):
     )
 
 
+def test_host_runs_local_honors_execution_host(monkeypatch) -> None:
+    module = _load_sync_script(monkeypatch)
+    host = _named_host(module, "norman")
+
+    assert module.host_runs_local(host) is False
+
+    monkeypatch.setenv("NORMAN_SYNC_EXECUTION_HOST", "norman")
+
+    assert module.host_runs_local(host) is True
+    assert module.ssh_command(host, "printf ready") == [
+        "bash",
+        "-lc",
+        "printf ready",
+    ]
+
+
 def test_discovery_infers_codex_home_from_launcher_fallback(
     monkeypatch, tmp_path
 ) -> None:
@@ -293,6 +309,114 @@ def test_parse_args_supports_route_receipt_shadow_enablement(monkeypatch) -> Non
     assert args.route_receipt_dir == "/tmp/receipts"
     assert args.route_receipt_items == "50"
     assert args.targets == ["market-sizing", "toy-box"]
+
+
+def test_parse_args_supports_explicit_kaizen_pilot(monkeypatch) -> None:
+    module = _load_sync_script(monkeypatch)
+
+    args = module.parse_args(
+        [
+            "--targets",
+            "housebot",
+            "--enable-kaizen-pilot",
+            "--kaizen-pilot-tui",
+            "housebot",
+        ]
+    )
+
+    assert args.enable_kaizen_pilot is True
+    assert args.kaizen_pilot_tui == "housebot"
+    assert args.kaizen_realm == "personal/home"
+    assert args.targets == ["housebot"]
+
+
+def test_kaizen_pilot_selection_requires_an_explicit_selected_tui(monkeypatch) -> None:
+    module = _load_sync_script(monkeypatch)
+    housebot = _instance(module, "housebot", host_name="toy-box")
+    selected = {"toy-box": [housebot]}
+    discovered = {"housebot": housebot}
+
+    args = module.parse_args(
+        ["--enable-kaizen-pilot", "--kaizen-pilot-tui", "housebot"]
+    )
+    try:
+        module.validate_kaizen_pilot_selection(args, selected, discovered)
+    except SystemExit as exc:
+        assert str(exc) == "--enable-kaizen-pilot requires an explicit --targets scope"
+    else:
+        raise AssertionError("expected Kaizen pilot scope to be required")
+
+    args = module.parse_args(
+        [
+            "--targets",
+            "housebot",
+            "--enable-kaizen-pilot",
+            "--kaizen-pilot-tui",
+            "unknown",
+        ]
+    )
+    try:
+        module.validate_kaizen_pilot_selection(args, selected, discovered)
+    except SystemExit as exc:
+        assert str(exc) == "Unknown Kaizen pilot TUI: unknown"
+    else:
+        raise AssertionError("expected unknown Kaizen pilot to be rejected")
+
+    args = module.parse_args(
+        [
+            "--targets",
+            "housebot",
+            "--enable-kaizen-pilot",
+            "--kaizen-pilot-tui",
+            "housebot",
+        ]
+    )
+    assert (
+        module.validate_kaizen_pilot_selection(args, selected, discovered) == "housebot"
+    )
+
+
+def test_kaizen_pilot_sync_enables_only_the_named_tui(monkeypatch) -> None:
+    module = _load_sync_script(monkeypatch)
+    housebot = _instance(module, "housebot", host_name="toy-box")
+    panelbot = _instance(module, "panelbot")
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(
+        module,
+        "capture",
+        lambda command: commands.append(command) or "changed",
+    )
+
+    assert (
+        module.sync_instance_kaizen_pilot_settings(
+            _host(module),
+            housebot,
+            pilot_tui="housebot",
+            realm="personal/home",
+        )
+        is True
+    )
+    assert (
+        module.sync_instance_kaizen_pilot_settings(
+            _host(module),
+            panelbot,
+            pilot_tui="housebot",
+            realm="personal/home",
+        )
+        is True
+    )
+
+    enabled_script = " ".join(commands[0])
+    assert '"NORMAN_KAIZEN_ENABLED":"1"' in enabled_script
+    assert '"NORMAN_KAIZEN_SOURCE_TUI":"housebot"' in enabled_script
+    assert '"NORMAN_KAIZEN_REALM":"personal/home"' in enabled_script
+    assert '"NORMAN_KAIZEN_EMIT_TIMEOUT_SECONDS":"1.5"' in enabled_script
+
+    disabled_script = " ".join(commands[1])
+    assert '"NORMAN_KAIZEN_ENABLED":"0"' in disabled_script
+    for key in module.KAIZEN_PILOT_OPTIONAL_ENV_KEYS:
+        assert key in disabled_script
 
 
 def test_route_receipt_sync_exports_shadow_capture_env(monkeypatch) -> None:
@@ -583,6 +707,7 @@ def test_origin_sync_exports_bbs_env_file_without_raw_token(monkeypatch) -> None
     assert "NORMAN_CODEX_SERVICE_TIER" in script
     assert '"NORMAN_CODEX_SERVICE_TIER":"default"' in script
     assert "NORMAN_CODEX_STANDARD_PROFILE_V2" in script
+    assert '"NORMAN_CODEX_STANDARD_AWS_REGION":"us-east-2"' in script
     assert "NORMAN_CODEX_STANDARD_MODEL" in script
     assert "NORMAN_CODEX_ROLE_POLICY_ID" in script
     assert "NORMAN_CODEX_ROLE_POLICY_HASH" in script
@@ -601,13 +726,17 @@ def test_origin_sync_exports_bbs_env_file_without_raw_token(monkeypatch) -> None
     assert "NORMAN_CODEX_FLEX_MODEL" in script
     assert "NORMAN_CODEX_PRIORITY_MODEL" in script
     assert "NORMAN_CODEX_SWITCHABLE_MODELS" in script
-    assert "openai.gpt-5.4" in script
-    assert "gpt-5.4" in script
+    assert "openai.gpt-5.6-terra" in script
+    assert "gpt-5.6-terra" in script
     assert module.WORK_SWITCHABLE_MODELS == (
-        "openai.gpt-5.4,openai.gpt-5.5,gpt-5.4,gpt-5.5"
+        "openai.gpt-5.6-terra,openai.gpt-5.5,openai.gpt-5.4,"
+        "gpt-5.6-terra,gpt-5.5,gpt-5.4"
     )
-    assert module.WORK_STANDARD_MODEL == "openai.gpt-5.4"
-    assert module.WORK_DIRECT_MODEL == "openai.gpt-5.4"
+    assert module.WORK_STANDARD_MODEL == "openai.gpt-5.6-terra"
+    assert module.WORK_STANDARD_AWS_REGION == "us-east-2"
+    assert module.WORK_DIRECT_MODEL == "gpt-5.6-terra"
+    assert module.WORK_FINAL_AUTHORITY_MODEL == "openai.gpt-5.5"
+    assert '"NORMAN_CODEX_TAILSCALE_REQUIRED":"0"' in script
     assert '"NORMAN_CODEX_DIRECT_TIERS_ENABLED":"1"' in script
     assert "ob-traqline-admin" in script
     assert "SWITCHBOARD_URL" in script
@@ -746,10 +875,10 @@ def test_work_runtime_default_model_reset_migrates_old_default(
 
     script = captured["script"]
     assert "runtime_settings.json" in script
-    assert "desired_model = 'openai.gpt-5.4'" in script
+    assert "desired_model = 'gpt-5.6-terra'" in script
     assert (
-        "switchable_models = ['openai.gpt-5.4', 'openai.gpt-5.5', 'gpt-5.4', 'gpt-5.5']"
-        in script
+        "switchable_models = ['openai.gpt-5.6-terra', 'openai.gpt-5.5', "
+        "'openai.gpt-5.4', 'gpt-5.6-terra', 'gpt-5.5', 'gpt-5.4']" in script
     )
     assert 'payload["service_tier"] = "default"' in script
 
@@ -921,6 +1050,13 @@ def test_local_llm_foreground_sync_configures_intent_classifier(
 
     synced = env_path.read_text(encoding="utf-8")
     assert "NORMAN_LOCAL_LLM_FILTER_MODELS" not in synced
+    assert (
+        "NORMAN_LOCAL_LLM_PLANNER_MODELS="
+        "qwen3.6:35b-a3b-q4_K_M,qwen3.6:27b,qwen3.5:27b-q4_K_M"
+    ) in synced
+    assert "NORMAN_LOCAL_PLANNER_PREFLIGHT_TIMEOUT_SECONDS=18" in synced
+    assert "NORMAN_LOCAL_PLANNER_PREFLIGHT_MAX_OUTPUT_TOKENS=96" in synced
+    assert "NORMAN_LOCAL_PLANNER_PREFLIGHT_MAX_CANDIDATES=3" in synced
     assert (
         "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MODEL=" "qwen3.6:35b-a3b-q4_K_M"
     ) in synced
@@ -1220,11 +1356,11 @@ def test_work_bedrock_defaults_can_be_disabled_and_cleaned(monkeypatch) -> None:
     assert "NORMAN_CODEX_BEDROCK_FAILOVER_AWS_REGION" in script
     assert "NORMAN_CODEX_DIRECT_TIERS_ENABLED" in script
     assert "traqline-bedrock" not in script
-    assert '"NORMAN_CODEX_MODEL":"gpt-5.4"' in script
-    assert '"NORMAN_CODEX_MODEL_FLOOR":"gpt-5.4"' in script
-    assert '"NORMAN_CODEX_DIRECT_MODEL":"gpt-5.4"' in script
-    assert '"NORMAN_CODEX_FLEX_MODEL":"gpt-5.4"' in script
-    assert '"NORMAN_CODEX_PRIORITY_MODEL":"gpt-5.4"' in script
+    assert '"NORMAN_CODEX_MODEL":"gpt-5.6-terra"' in script
+    assert '"NORMAN_CODEX_MODEL_FLOOR":"gpt-5.6-terra"' in script
+    assert '"NORMAN_CODEX_DIRECT_MODEL":"gpt-5.6-terra"' in script
+    assert '"NORMAN_CODEX_FLEX_MODEL":"gpt-5.6-terra"' in script
+    assert '"NORMAN_CODEX_PRIORITY_MODEL":"gpt-5.6-terra"' in script
     assert (
         '"NORMAN_CODEX_SWITCHABLE_MODELS":"'
         "openai.gpt-5.4,openai.gpt-5.5,"
@@ -1267,7 +1403,8 @@ def test_work_bedrock_profile_sync_copies_host_local_profile(monkeypatch) -> Non
     assert "profile_specs = json.loads" in script
     assert '"profile_v2":"traqline-bedrock-us-east-1"' not in script
     assert '"aws_region":"us-east-1"' not in script
-    assert '"reasoning_effort":"xhigh"' in script
+    assert '"aws_region":"us-east-2"' in script
+    assert '"reasoning_effort":"high"' in script
     assert 'ensure_table_setting(rendered, "", "profile", profile_name)' not in script
     assert 'ensure_table_setting(rendered, aws_table, "region", aws_region)' in script
     assert 'ensure_table_setting(rendered, aws_table, "wire_api"' not in script
@@ -1331,6 +1468,7 @@ def test_work_special_host_receives_work_bedrock_defaults_by_host(
     assert '"NORMAN_CODEX_SERVICE_TIER":"default"' in script
     assert '"NORMAN_CODEX_STANDARD_PROFILE_V2":"traqline-bedrock"' in script
     assert '"NORMAN_CODEX_STANDARD_AWS_PROFILE":"ob-traqline-admin"' in script
+    assert '"NORMAN_CODEX_STANDARD_AWS_REGION":"us-east-2"' in script
 
 
 def test_work_named_tui_on_norman_stays_personal_without_test_override(
@@ -1433,6 +1571,44 @@ def test_personal_tui_does_not_receive_work_bedrock_defaults(monkeypatch) -> Non
     assert "ob-traqline-admin" not in script
 
 
+def test_origin_sync_deduplicates_personal_model_settings(
+    monkeypatch, tmp_path
+) -> None:
+    source = tmp_path / "personal-bedrock.config.toml"
+    source.write_text("# personal bedrock overlay\n", encoding="utf-8")
+    monkeypatch.setenv("NORMAN_SYNC_NON_WORK_BEDROCK_PROFILE_SOURCE", str(source))
+    module = _load_sync_script(monkeypatch)
+    env_path = tmp_path / "codex-web.env"
+    env_path.write_text(
+        "\n".join(
+            (
+                "NORMAN_CODEX_MODEL=gpt-5.4",
+                "NORMAN_CODEX_MODEL=gpt-5.5",
+                "NORMAN_CODEX_STANDARD_MODEL=openai.gpt-5.4",
+                "NORMAN_CODEX_STANDARD_MODEL=openai.gpt-5.5",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    housebot = replace(
+        _instance(module, "housebot", host_name="toy-box"),
+        env_file=str(env_path),
+    )
+    toy_box = _named_host(module, "toy-box")
+    monkeypatch.setattr(
+        module,
+        "ssh_command",
+        lambda host, script: ["bash", "-lc", script],
+    )
+
+    assert module.sync_instance_origin_settings(toy_box, housebot) is True
+
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    assert lines.count("NORMAN_CODEX_MODEL=openai.gpt-5.6-terra") == 1
+    assert lines.count("NORMAN_CODEX_STANDARD_MODEL=openai.gpt-5.6-terra") == 1
+
+
 def test_non_work_bedrock_defaults_can_be_disabled_and_cleaned(
     monkeypatch,
 ) -> None:
@@ -1462,11 +1638,11 @@ def test_non_work_bedrock_defaults_can_be_disabled_and_cleaned(
     assert "NORMAN_CODEX_STANDARD_PROFILE_V2" in script
     assert "NORMAN_CODEX_STANDARD_PROFILE_V2" in script
     assert "traqline-bedrock" not in script
-    assert '"NORMAN_CODEX_MODEL":"gpt-5.4"' in script
-    assert '"NORMAN_CODEX_MODEL_FLOOR":"gpt-5.4"' in script
-    assert '"NORMAN_CODEX_DIRECT_MODEL":"gpt-5.4"' in script
-    assert '"NORMAN_CODEX_FLEX_MODEL":"gpt-5.4"' in script
-    assert '"NORMAN_CODEX_PRIORITY_MODEL":"gpt-5.4"' in script
+    assert '"NORMAN_CODEX_MODEL":"gpt-5.6-terra"' in script
+    assert '"NORMAN_CODEX_MODEL_FLOOR":"gpt-5.6-terra"' in script
+    assert '"NORMAN_CODEX_DIRECT_MODEL":"gpt-5.6-terra"' in script
+    assert '"NORMAN_CODEX_FLEX_MODEL":"gpt-5.6-terra"' in script
+    assert '"NORMAN_CODEX_PRIORITY_MODEL":"gpt-5.6-terra"' in script
     assert (
         '"NORMAN_CODEX_SWITCHABLE_MODELS":"'
         "openai.gpt-5.4,openai.gpt-5.5,"
@@ -1553,10 +1729,12 @@ def test_personal_tui_uses_non_work_bedrock_only_with_explicit_source(
     assert module.sync_instance_origin_settings(toy_box, housebot) is True
 
     script = captured["script"]
+    assert module.PERSONAL_FINAL_AUTHORITY_MODEL == "openai.gpt-5.6-terra"
     assert '"NORMAN_CODEX_SERVICE_TIER":"default"' in script
     assert '"NORMAN_CODEX_STANDARD_PROFILE_V2":"personal-bedrock"' in script
     assert '"NORMAN_CODEX_STANDARD_AWS_PROFILE":"personal-bedrock"' in script
     assert '"NORMAN_CODEX_STANDARD_AWS_REGION":"us-west-2"' in script
+    assert '"NORMAN_CODEX_PRIORITY_MODEL":"openai.gpt-5.6-terra"' in script
     assert "ob-traqline-admin" not in script
 
 
@@ -1716,17 +1894,46 @@ def test_shared_and_norman_instances_use_non_work_bedrock(
 
 def test_console_files_include_soul_support_scripts(monkeypatch) -> None:
     module = _load_sync_script(monkeypatch)
-    panelbot = _instance(module, "panelbot")
+    panelbot = replace(
+        _instance(module, "panelbot"),
+        web_path="/opt/panelbot/scripts/panelbot_codex_web.py",
+    )
 
     files = dict(panelbot.files)
 
     assert files["apply-patch"] == "/usr/local/bin/apply_patch"
+    assert (
+        files["terminal-runtime-bridge"]
+        == "/opt/panelbot/norman_codex_runtime_bridge.py"
+    )
+    assert files["gateway-token"] == "/opt/panelbot/norman_codex_gateway_token.py"
+    assert (
+        files["session-budget"]
+        == "/opt/panelbot/scripts/agent_console_session_budget.py"
+    )
+    assert files["sms-turns"] == "/opt/panelbot/scripts/agent_console_sms.py"
+    assert files["child-worker-web"] == "/opt/panelbot/scripts/agent_console_web.py"
+    assert files["tui-waterfall"] == "/opt/panelbot/scripts/tui_waterfall.py"
+    assert (
+        files["child-agents"] == "/opt/panelbot/scripts/agent_console_child_agents.py"
+    )
+    assert files["memory-tool"] == "/opt/panelbot/tui_memory_tool.py"
     assert files["vector-preflight"] == "/opt/panelbot/tui_vector_preflight.py"
     assert files["release-readiness"] == "/opt/panelbot/tui_release_readiness.py"
     assert files["soul-loader"] == "/opt/panelbot/compose_soul_context.py"
     assert files["soul-validator"] == "/opt/panelbot/validate_soul_md.py"
     assert module.SOURCE_FILES["release-readiness"].name == "tui_release_readiness.py"
     assert module.SOURCE_FILES["apply-patch"].name == "apply_patch_cli.py"
+    assert module.SOURCE_FILES["child-worker-web"].name == "agent_console_web.py"
+    assert module.SOURCE_FILES["tui-waterfall"].name == "tui_waterfall.py"
+    assert module.SOURCE_FILES["child-agents"].name == "agent_console_child_agents.py"
+    assert module.SOURCE_FILES["sms-turns"].name == "agent_console_sms.py"
+    assert (
+        module.SOURCE_FILES["terminal-runtime-bridge"].name
+        == "norman_codex_runtime_bridge.py"
+    )
+    assert module.SOURCE_FILES["gateway-token"].name == "norman_codex_gateway_token.py"
+    assert module.SOURCE_FILES["memory-tool"].name == "tui_memory_tool.py"
     assert module.SOURCE_FILES["vector-preflight"].name == "tui_vector_preflight.py"
     assert module.SOURCE_FILES["soul-loader"].name == "compose_soul_context.py"
     assert module.SOURCE_FILES["soul-validator"].name == "validate_soul_md.py"
@@ -1782,6 +1989,15 @@ def test_norman_switchboard_uses_its_dedicated_web_source(monkeypatch) -> None:
 
     assert files["norman-switchboard"] == norman.web_path
     assert "web" not in files
+    assert files["child-worker-web"] == str(
+        Path(norman.web_path).parent / "agent_console_web.py"
+    )
+    assert files["tui-waterfall"] == str(
+        Path(norman.web_path).parent / "tui_waterfall.py"
+    )
+    assert files["child-agents"] == str(
+        Path(norman.web_path).parent / "agent_console_child_agents.py"
+    )
     assert module.SOURCE_FILES["norman-switchboard"].name == "norman_codex_web.py"
     assert (
         module.restart_scope_for_instance(
@@ -1796,7 +2012,7 @@ def test_norman_switchboard_uses_its_dedicated_web_source(monkeypatch) -> None:
 def test_web_sources_must_share_ui_version(monkeypatch, tmp_path: Path) -> None:
     module = _load_sync_script(monkeypatch)
 
-    assert module.validate_web_source_versions() == "2026.07.17.1"
+    assert module.validate_web_source_versions() == "2026.07.31.5"
 
     stale_switchboard = tmp_path / "norman_codex_web.py"
     stale_switchboard.write_text(
@@ -1810,7 +2026,7 @@ def test_web_sources_must_share_ui_version(monkeypatch, tmp_path: Path) -> None:
     except RuntimeError as exc:
         assert str(exc) == (
             "Web UI source versions must match: "
-            "norman-switchboard=v2026.07.16.06, web=v2026.07.17.1"
+            "norman-switchboard=v2026.07.16.06, web=v2026.07.31.5"
         )
     else:
         raise AssertionError("expected mismatched web sources to be rejected")

@@ -1,211 +1,166 @@
 # Norman
 
 [![CI](https://github.com/OperatorKubicki/norman/actions/workflows/ci_cd.yml/badge.svg)](https://github.com/OperatorKubicki/norman/actions/workflows/ci_cd.yml)
-[![Codecov](https://codecov.io/gh/OperatorKubicki/norman/branch/main/graph/badge.svg)](https://codecov.io/gh/OperatorKubicki/norman)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/operatorkubicki/norman/badge)](https://securityscorecards.dev/viewer/?uri=github.com/operatorkubicki/norman)
+[![Codecov](https://codecov.io/gh/KristopherKubicki/norman/branch/main/graph/badge.svg)](https://codecov.io/gh/KristopherKubicki/norman)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/KristopherKubicki/norman/badge)](https://securityscorecards.dev/viewer/?uri=github.com/KristopherKubicki/norman)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
-[![Python 3.8](https://img.shields.io/badge/python-3.8-blue.svg)](https://www.python.org/)
-[![Python 3.9](https://img.shields.io/badge/python-3.9-blue.svg)](https://www.python.org/)
-[![Python 3.10](https://img.shields.io/badge/python-3.10-blue.svg)](https://www.python.org/)
-[![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/)
-[![GitHub release](https://img.shields.io/github/v/release/OperatorKubicki/norman.svg)](https://github.com/OperatorKubicki/norman/releases)
+[![GitHub release](https://img.shields.io/github/v/release/KristopherKubicki/norman.svg)](https://github.com/KristopherKubicki/norman/releases)
 
-Norman is an open-source chatbot that leverages OpenAI's GPT models to assist and automate communication on various chat platforms like Slack and IRC. The project is built with FastAPI, SQLite, and SQLAlchemy, and is designed to be easily extensible with additional connectors.
+Norman is an operator control plane for AI-assisted work. It accepts work from
+web and terminal TUIs, CLI tools, BBS/SMS, connectors, schedules, and APIs;
+applies policy and human approval boundaries; then coordinates models, tools,
+shell runners, and durable background jobs.
 
-![krstopher_abstract_readme_header_graphic_for_a_chatbot_software_a578ebda-8121-4195-ba94-7c5128049da3 (1)](https://user-images.githubusercontent.com/478212/235266088-7f69c1bd-e3db-4b80-b8ff-64c5785f55b7.png)
+It is no longer a single-provider chatbot. OpenAI support and an
+OpenAI-compatible facade remain available, but they are optional provider
+lanes. Norman can use Norllama-hosted local models and specialist services,
+Bedrock, compatible cloud providers, Codex through an adapter or gateway, and
+deterministic tools. Provider choice is policy-backed and observable rather
+than a client-side assumption.
 
-## Table of Contents
+## What Norman Owns
 
-- [Features](#features)
-- [Requirements](#requirements)
-- [Installation](#installation)
-- [Usage](#usage)
-- [Testing](#testing)
-- [Contributing](#contributing)
-- [License](#license)
-- [Docker Deployment](docs/docker.md)
+- Durable Console Runtime jobs, leases, checkpoints, event streams, and SSE.
+- Operator-facing TUIs, CLI/runtime bridges, BBS/SMS, connectors, and APIs.
+- Route, egress, cost, safety, command, and approval policy.
+- Model and tool adapter selection, provider-independent receipts, and
+  degraded-mode handling.
+- KPI reporting and the bounded, local-first Kaizen control loop.
+- Persistence, audit history, identity boundaries, and operator workflows.
 
-### Features
+Norllama is Norman's inference and capability gateway today. It presents a
+local-first mesh behind a stable front door and can serve text, code, planning,
+OCR, transcription, embeddings, reranking, safety, and other specialist
+lanes. Its extraction into an independent repository is planned, but it is not
+a separate live repository yet. See the
+[Norllama Repository Plan](docs/norllama_repository_plan.md).
 
-- Supports multiple chat platforms (e.g., Slack, IRC) through connectors
-- Allows multiple chatbots with different GPT models (e.g., gpt-4.1-mini, o3)
-- Configurable channel filters and actions for automation
-- Minimal Web UI for configuration and management
-- SQLite database for lightweight deployment
-- Authentication and authorization support
-- Extendable with custom connectors
+## System Model
 
-*Bots default to the `gpt-4.1-mini` model for speed. Use `o3` when you need deeper reasoning and can tolerate more latency.*
-
-### Project Structure
-
-- `app`: The main application directory
-  - `api`: FastAPI routers and API endpoints
-  - `core`: Core modules like configuration, logging, and exception handling
-  - `crud`: CRUD operations for database models
-  - `db`: Database models and utilities
-  - `schemas`: Pydantic schemas for API validation
-  - `connectors`: Channel connectors (e.g., IRC, Slack)
-- `tests`: Unit tests and integration tests
-- `alembic`: Alembic migration scripts and configuration
-
-## Getting Started
-
-### Prerequisites
-
-- Python 3.8, 3.9, 3.10, or 3.11
-- pip
-- SQLite
-- PyYAML
-- virtualenv (optional)
-
-### Installation
-
-1. Clone the repository:
+```text
+Operators, TUIs, CLI, BBS/SMS, connectors, schedules, APIs
+                         |
+                         v
+                  Norman Control Plane
+      policy, approvals, jobs, events, persistence, reporting
+                         |
+                         v
+                 Console Runtime / Kernel
+    plan -> run -> verify -> checkpoint -> resume or await approval
+                         |
+                         v
+             Norllama Gateway And Capability Mesh
+     local models, specialist lanes, health, residency, failover
+                         |
+                         v
+  deterministic tools | local services | policy-approved cloud providers
 ```
-git clone https://github.com/OperatorKubicki/norman.git
+
+Norman owns the work and its safety boundaries. Providers execute bounded
+steps; they do not independently approve commands, deployments, external
+actions, or secret access.
+
+## Model And Tool Routing
+
+Routing starts with task type, risk, required capabilities, residency, current
+operating mode, egress policy, and budget. The default direction is:
+
+1. Apply safety, approval, and egress policy.
+2. Use a deterministic tool when it can answer the request.
+3. Use a suitable local Norllama model or specialist lane.
+4. Wait, prefetch, or fail over within the local mesh when appropriate.
+5. Escalate to a cloud provider only when the policy permits it and the route
+   receipt explains why.
+
+Every meaningful route should produce evidence of the chosen lane, model,
+endpoint class, fallback decision, and policy context. Direct Ollama access is
+for diagnostics, not the Norman application contract.
+
+OpenAI is therefore one possible cloud lane, not a required installation
+choice. A local-only deployment can use the Norllama front door without an
+OpenAI key. A cloud-enabled deployment should configure only the approved
+provider credentials through its secret broker and policy.
+
+For the complete operating model, see
+[Architecture](docs/architecture.md) and
+[Provider And Routing Resilience](docs/llm_runtime_fallback.md).
+
+## Human Control And Kaizen
+
+The Console Runtime retains the human in the loop. A model suggestion does not
+grant authority to write files, run a mutating command, deploy, contact an
+external system, or access a secret. Those actions remain behind the existing
+policy and approval path.
+
+Kaizen is intentionally narrow. It can collect deterministic KPI evidence and
+produce local-model shadow candidates only when explicitly enabled. The default
+configuration disables it, sets a zero Norllama token budget, sends no
+notifications, and permits no target edits or automatic actions. Proposed
+runbook, skill, and MCP documentation changes require human review and an
+ordinary approved runtime job before they can take effect.
+
+Read [Norllama Kaizen And KPI Control Loop](docs/norllama_kaizen_control_loop_plan.md)
+for the authority model, admission gates, reporting contract, and rollout
+stages.
+
+## Quick Start
+
+Use the distribution configuration as a starting point, then configure the
+database, authentication, connectors, and only the model lanes required for
+the environment. Do not commit credentials or place provider tokens in the
+repository.
+
+```bash
+git clone https://github.com/KristopherKubicki/norman.git
 cd norman
+python -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt
+cp config.yaml.dist config.yaml
+uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-2. Set up a virtual environment (optional):
-```
-python -m venv env
-source env/bin/activate
-```
+The service exposes API documentation at `http://localhost:8000/docs` and a
+health endpoint at `http://localhost:8000/health`. Start with
+[Deployment](docs/deployment.md) for service deployment and route setup.
 
-3. Install the required Python packages:
-```
-pip install -r requirements.txt
-```
+The Console Runtime worker is disabled and dry-run by default. The Kaizen
+broker is also disabled by default. Enable either only after the relevant
+policy, service account, resource limits, and approval workflow are in place.
 
-Norman automatically enables [WAL](https://www.sqlite.org/wal.html) mode when using SQLite for improved concurrency.
+## Documentation
 
-4. Install the Node.js dependencies used by the front-end and Jest tests:
-```bash
-npm install
-```
+- [Documentation Index](docs/index.md) - current operating and design docs.
+- [Architecture](docs/architecture.md) - ownership, control flow, approvals,
+  routing, and observability.
+- [Provider And Routing Resilience](docs/llm_runtime_fallback.md) - operating
+  modes, local-first order, egress, and route receipts.
+- [Norllama Repository Plan](docs/norllama_repository_plan.md) - contract-first
+  path to an independent Norllama repository.
+- [Norman Kernel Program](docs/norman_kernel_program.md) - durable work model
+  and the TUI migration program.
+- [Norllama Router Guidance](docs/norllama_router_guidance.md) - front door,
+  mesh, warm-policy, and route-attribution guidance.
+- [Deployment](docs/deployment.md) - production units, gateways, host pressure
+  guard, and operational rollback.
+- [Changelog](CHANGELOG.md) - current documentation and release-direction
+  notes.
 
-5. Run Norman once to automatically generate `config.yaml` with secure defaults.
-   The generated bootstrap credentials are stored only in that protected file,
-   not printed to the console. Edit `config.yaml` to configure connectors and
-   add your OpenAI API key, then start Norman again.
+## Development
 
-6. (Optional) Regenerate the secrets in `config.yaml` using the provided script:
-
-```
-chmod +x generate_key.sh
-./generate_key.sh
-```
-
-You can also edit `config.yaml` manually to provide your own values. Be sure to add your OpenAI key under `openai_api_key`.
-
-7. Run the application:
-```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
-Response compression is enabled by middleware (gzip by default; brotli if `brotli_asgi` is installed).
-
-8. Open the API documentation in your browser: [http://localhost:8000/docs](http://localhost:8000/docs)
-   A basic health check endpoint is available at [http://localhost:8000/health](http://localhost:8000/health)
-
-Norman emits structured JSON logs that include the timestamp, module and request ID. Sensitive data such as API keys are automatically redacted so these logs can be safely forwarded to monitoring systems.
-
-For more information, refer to the [documentation](docs/) and the [contributing guidelines](CONTRIBUTING.md).
-
-## Usage
-
-For detailed information on how to use Norman, see the [Usage](./docs/usage.md) guide.
-Practical walkthroughs and API calls can be found in the [Examples](./docs/examples.md) document.
-
-### Screen Hypervisor (`normanctl`)
-
-Norman includes a screen-backed hypervisor CLI for managing app/runtime sessions
-and their paired Codex agents.
-
-1. Initialize the registry:
-```bash
-python3 scripts/normanctl.py init
-```
-
-2. Start an app + agent pair:
-```bash
-python3 scripts/normanctl.py up earlybird --target both
-```
-
-3. Send text to the agent target (default enter count is 2):
-```bash
-python3 scripts/normanctl.py send earlybird "status?"
-```
-
-4. Pull incremental logs and auto-ack inflight turns:
-```bash
-python3 scripts/normanctl.py pull earlybird --target agent
-```
-
-5. Lock/unlock a target to queue work safely:
-```bash
-python3 scripts/normanctl.py lock earlybird --target agent
-python3 scripts/normanctl.py unlock earlybird --target agent
-```
-
-## Testing
-
-Automated tests are powered by `pytest`. The development dependencies are listed
-in `requirements-dev.txt`.
+Run the repository checks before submitting code changes:
 
 ```bash
-pip install -r requirements-dev.txt
-pytest -vv
+make format
+make lint
+make test
 ```
 
-For front-end components located in the `frontend` directory, Jest is used
-alongside React Testing Library. To run these tests you will need Node.js and
-install the dev dependencies defined in `package.json`:
+When changing `frontend/`, also run:
 
 ```bash
-npm install
 npm test
 ```
 
-Note: Some test suites mock modules that are not required at runtime. To keep
-the Jest environment self-contained (and resilient to flaky npm installs), we
-map `react-query` to a local stub for tests via `moduleNameMapper` in
-`package.json` (see `frontend/test_stubs/react-query.js`).
-
-For a test coverage report you can additionally run:
-
-```bash
-pytest --cov=./ -vv
-```
-
-## Deployment
-
-Norman can be deployed on various platforms, such as on a local server or a cloud provider. For detailed deployment instructions, please refer to our [Deployment](docs/deployment.md) guide. A separate [Docker Deployment](docs/docker.md) guide is available if you prefer running Norman in containers.
-
-## Architecture
-
-The architecture of Norman is designed to be modular and scalable. We have a detailed explanation of our architectural principles in our [Architecture](docs/architecture.md) document, complete with a simple diagram to help you understand the structure.
-
-## Extending Norman
-
-Norman is built to be extensible, allowing you to add new connectors, actions, and filters as needed. To learn more about extending Norman, refer to our [Extending Norman](docs/extending.md) guide.
-
-## Philosophy
-
-We created Norman to provide an open, self-hosted, and open-source solution for accessing large language models like GPT-4. We hope others can build upon and extend Norman to incorporate additional chat technologies and channels. Our philosophy centers on continuous improvement, utilizing automation, and striving for excellence in our project. Learn more about our philosophy in our [Philosophy](docs/philosophy.md) document.
-## Coding Style
-
-We use [pylint](https://pylint.pycqa.org/) with the configuration in `.pylintrc` and format code using [Black](https://github.com/psf/black). Run `make lint` before submitting a PR or install pre-commit hooks with `pre-commit install` to automatically check formatting and linting.
-
-
-## Contributing
-
-We welcome contributions from the community! If you're interested in helping us improve Norman, please refer to our [Contributing](CONTRIBUTING.md) guide.
-
-## Community
-
-Norman is more than just a software project; it's a community of developers and users working together to create something special. To learn more about our community and how to get involved, check out our [Community](docs/community.md) page.
-
-## License
-
-Norman is licensed under the MIT License. For more information, see the [LICENSE.md](LICENSE.md) file.
+See [Contributing](CONTRIBUTING.md) for contribution guidance and
+[License](LICENSE.md) for licensing.

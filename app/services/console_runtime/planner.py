@@ -69,6 +69,9 @@ def planner_receipt_payload(
     return {
         "receipt": receipt_payload,
         "route_receipt": route_receipt,
+        "fast_lane_outcome": route_receipt.get("fast_lane_outcome")
+        if isinstance(route_receipt.get("fast_lane_outcome"), dict)
+        else {},
         "specialist_cascade": specialist_cascade,
         "specialist_summary": specialist_summary,
         "route": route,

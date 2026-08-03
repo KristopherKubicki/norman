@@ -18,6 +18,8 @@ from app.models import User
 from app.services.console_runtime import (
     ConsoleJobContract,
     ConsoleRuntimeRunOptions,
+    ConsoleSubtaskContract,
+    ConsoleTaskResult,
     DbConsoleRuntimeWorker,
     InvalidTransitionError,
     JobNotFoundError,
@@ -32,6 +34,7 @@ from app.services.console_runtime.supervisor import (
 from app.services.console_runtime.policy import (
     resolve_runtime_mode,
     with_local_first_catalog_defaults,
+    with_norllama_pool_delegation_defaults,
 )
 from app.services.console_runtime.streaming import event_to_sse
 from app.services.norllama import mesh_cache as norllama_mesh_cache
@@ -111,6 +114,17 @@ def _read_cache_set(key: tuple[Any, ...], payload: dict[str, Any]) -> None:
             "stored_at": time.time(),
             "payload": copy.deepcopy(payload),
         }
+
+
+def _invalidate_read_cache(*, user_id: int | None = None) -> None:
+    with _READ_CACHE_LOCK:
+        if user_id is None:
+            _READ_CACHE.clear()
+            _READ_CACHE_REFRESHING.clear()
+            return
+        for key in list(_READ_CACHE):
+            if len(key) > 1 and key[1] == user_id:
+                _READ_CACHE.pop(key, None)
 
 
 def _cached_read(
@@ -254,6 +268,52 @@ class ConsoleRuntimeJobCreate(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class ConsoleRuntimeWorkstreamCreate(BaseModel):
+    coordinator_job_id: str
+    workstream_id: str = ""
+    title: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    max_concurrency: int = Field(default=10, ge=1, le=10)
+
+
+class ConsoleRuntimeSubtaskCreate(BaseModel):
+    objective: str
+    title: str = ""
+    job_id: str = ""
+    done_when: list[str] = Field(default_factory=list)
+    success_metrics: list[str] = Field(default_factory=list)
+    required_artifacts: list[str] = Field(default_factory=list)
+    max_runtime_seconds: int = 1800
+    checkpoint_interval_seconds: int = 300
+    question_budget: int = 0
+    approval_required_for: list[str] = Field(default_factory=list)
+    authority_flags: dict[str, Any] = Field(default_factory=dict)
+    route_policy: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    write_mode: Literal["read_only", "patch_only", "isolated_worktree"] = "read_only"
+    depends_on: list[str] = Field(default_factory=list)
+
+
+class ConsoleRuntimeSubtaskBatchCreate(BaseModel):
+    subtasks: list[ConsoleRuntimeSubtaskCreate] = Field(
+        default_factory=list,
+        min_items=1,
+        max_items=100,
+    )
+
+
+class ConsoleRuntimeTaskResultCreate(BaseModel):
+    status: str
+    summary: str = ""
+    detail: str = ""
+    artifacts: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ConsoleRuntimeCancelRequest(BaseModel):
+    reason: str = ""
+
+
 class ConsoleRuntimeEventCreate(BaseModel):
     event_type: str
     payload: dict[str, Any] = Field(default_factory=dict)
@@ -343,6 +403,9 @@ class ConsoleRuntimeWorkerControl(BaseModel):
     goal_phase_sequence: list[str] | None = None
     tick_seconds: float | None = None
     batch_size: int | None = None
+    workstream_max_concurrency: int | None = None
+    global_concurrency: int | None = None
+    norllama_pool_concurrency: int | None = None
     worker_id: str = ""
     confirm_live_execution: str = ""
     reset_counters: bool = False
@@ -630,10 +693,181 @@ async def append_console_runtime_route_outcome(
         db,
         user_id=current_user.id,
     )
+    _invalidate_read_cache(user_id=current_user.id)
     return {
         "event": event.as_dict(),
         "summary": summary,
     }
+
+
+@router.post("/workstreams")
+async def create_console_runtime_workstream(
+    payload: ConsoleRuntimeWorkstreamCreate,
+    current_user: User = Depends(get_console_runtime_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        workstream = db_console_runtime_store.create_workstream(
+            db,
+            user_id=current_user.id,
+            coordinator_job_id=payload.coordinator_job_id,
+            workstream_id=payload.workstream_id or None,
+            title=payload.title,
+            metadata=payload.metadata,
+            max_concurrency=payload.max_concurrency,
+        )
+        _invalidate_read_cache(user_id=current_user.id)
+        return {
+            **workstream.as_dict(),
+            "snapshot": db_console_runtime_store.workstream_snapshot(
+                db,
+                user_id=current_user.id,
+                workstream_id=workstream.workstream_id,
+            ),
+        }
+    except JobNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="Console runtime coordinator job not found",
+        ) from exc
+    except (InvalidTransitionError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/workstreams/{workstream_id}")
+async def get_console_runtime_workstream(
+    workstream_id: str,
+    current_user: User = Depends(get_console_runtime_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        return _cached_read(
+            ("workstream", current_user.id, workstream_id),
+            ttl_seconds=1.0,
+            busy_payload=lambda: {
+                "workstream": {"workstream_id": workstream_id, "status": "unknown"},
+                "coordinator": {},
+                "subtasks": [],
+                "dependencies": [],
+                "status_counts": {},
+                "result_cards": [],
+                "artifacts": [],
+                "_cache": {"state": "refresh_busy"},
+            },
+            loader=lambda: db_console_runtime_store.workstream_snapshot(
+                db,
+                user_id=current_user.id,
+                workstream_id=workstream_id,
+            ),
+        )
+    except JobNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="Console runtime workstream not found",
+        ) from exc
+
+
+@router.get("/workstreams/{workstream_id}/subtasks")
+async def list_console_runtime_workstream_subtasks(
+    workstream_id: str,
+    current_user: User = Depends(get_console_runtime_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        items = [
+            job.as_dict()
+            for job in db_console_runtime_store.list_workstream_subtasks(
+                db,
+                user_id=current_user.id,
+                workstream_id=workstream_id,
+            )
+        ]
+        return {"items": items, "count": len(items)}
+    except JobNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="Console runtime workstream not found",
+        ) from exc
+
+
+@router.post("/workstreams/{workstream_id}/subtasks")
+async def create_console_runtime_workstream_subtasks(
+    workstream_id: str,
+    payload: ConsoleRuntimeSubtaskBatchCreate,
+    current_user: User = Depends(get_console_runtime_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        subtasks: list[ConsoleSubtaskContract] = []
+        for item in payload.subtasks:
+            route_policy = with_norllama_pool_delegation_defaults(item.route_policy)
+            subtasks.append(
+                ConsoleSubtaskContract(
+                    objective=item.objective,
+                    title=item.title,
+                    job_id=item.job_id,
+                    done_when=item.done_when,
+                    success_metrics=item.success_metrics,
+                    required_artifacts=item.required_artifacts,
+                    max_runtime_seconds=item.max_runtime_seconds,
+                    checkpoint_interval_seconds=item.checkpoint_interval_seconds,
+                    question_budget=item.question_budget,
+                    approval_required_for=item.approval_required_for,
+                    authority_flags=item.authority_flags,
+                    route_policy=route_policy,
+                    metadata=item.metadata,
+                    write_mode=item.write_mode,
+                    depends_on=item.depends_on,
+                )
+            )
+        jobs = db_console_runtime_store.delegate_subtasks(
+            db,
+            user_id=current_user.id,
+            workstream_id=workstream_id,
+            subtasks=subtasks,
+        )
+        _invalidate_read_cache(user_id=current_user.id)
+        return {
+            "items": [job.as_dict() for job in jobs],
+            "count": len(jobs),
+            "snapshot": db_console_runtime_store.workstream_snapshot(
+                db,
+                user_id=current_user.id,
+                workstream_id=workstream_id,
+            ),
+        }
+    except JobNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="Console runtime workstream not found",
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except InvalidTransitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/workstreams/{workstream_id}/cancel")
+async def cancel_console_runtime_workstream(
+    workstream_id: str,
+    payload: ConsoleRuntimeCancelRequest,
+    current_user: User = Depends(get_console_runtime_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        snapshot = db_console_runtime_store.cancel_workstream(
+            db,
+            user_id=current_user.id,
+            workstream_id=workstream_id,
+            reason=payload.reason,
+        )
+        _invalidate_read_cache(user_id=current_user.id)
+        return snapshot
+    except JobNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="Console runtime workstream not found",
+        ) from exc
 
 
 @router.post("/jobs")
@@ -663,11 +897,89 @@ async def create_console_runtime_job(
             job_id=payload.job_id or None,
             metadata=payload.metadata,
         )
+        _invalidate_read_cache(user_id=current_user.id)
         return job.as_dict()
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except InvalidTransitionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/jobs/{job_id}/result")
+async def record_console_runtime_task_result(
+    job_id: str,
+    payload: ConsoleRuntimeTaskResultCreate,
+    current_user: User = Depends(get_console_runtime_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        job = db_console_runtime_store.record_task_result(
+            db,
+            user_id=current_user.id,
+            job_id=job_id,
+            result=ConsoleTaskResult(
+                status=payload.status,
+                summary=payload.summary,
+                detail=payload.detail,
+                artifacts=payload.artifacts,
+                metadata=payload.metadata,
+            ),
+        )
+        _invalidate_read_cache(user_id=current_user.id)
+        return job.as_dict()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except JobNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="Console runtime job not found",
+        ) from exc
+
+
+@router.post("/jobs/{job_id}/retry")
+async def retry_console_runtime_job(
+    job_id: str,
+    current_user: User = Depends(get_console_runtime_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        job = db_console_runtime_store.retry_job(
+            db,
+            user_id=current_user.id,
+            job_id=job_id,
+        )
+        _invalidate_read_cache(user_id=current_user.id)
+        return job.as_dict()
+    except JobNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="Console runtime job not found",
+        ) from exc
+    except InvalidTransitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.post("/jobs/{job_id}/cancel")
+async def cancel_console_runtime_job(
+    job_id: str,
+    payload: ConsoleRuntimeCancelRequest,
+    current_user: User = Depends(get_console_runtime_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        job = db_console_runtime_store.request_cancel_job(
+            db,
+            user_id=current_user.id,
+            job_id=job_id,
+            reason=payload.reason,
+        )
+        _invalidate_read_cache(user_id=current_user.id)
+        return job.as_dict()
+    except JobNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail="Console runtime job not found",
+        ) from exc
 
 
 @router.get("/jobs/{job_id}")
@@ -770,6 +1082,9 @@ async def control_console_runtime_worker(
             goal_phase_sequence=payload.goal_phase_sequence,
             tick_seconds=payload.tick_seconds,
             batch_size=payload.batch_size,
+            workstream_max_concurrency=payload.workstream_max_concurrency,
+            global_concurrency=payload.global_concurrency,
+            norllama_pool_concurrency=payload.norllama_pool_concurrency,
             worker_id=payload.worker_id,
             confirm_live_execution=payload.confirm_live_execution,
             reset_counters=payload.reset_counters,
@@ -785,6 +1100,7 @@ async def control_console_runtime_worker(
     response["norllama"] = _norllama_runtime_status_snapshot(
         route_outcomes=route_outcomes,
     )
+    _invalidate_read_cache(user_id=current_user.id)
     return response
 
 
@@ -845,6 +1161,7 @@ async def create_console_runtime_planner_receipt(
             capabilities=capabilities,
             metadata={"source": "console_runtime_api"},
         )
+        _invalidate_read_cache(user_id=current_user.id)
         return event.as_dict()
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -904,7 +1221,9 @@ async def run_console_runtime_job_once(
             finally:
                 worker_db.close()
 
-        return await asyncio.to_thread(run_worker)
+        response = await asyncio.to_thread(run_worker)
+        _invalidate_read_cache(user_id=current_user.id)
+        return response
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except JobNotFoundError as exc:
@@ -941,6 +1260,7 @@ async def decide_console_runtime_job_approval(
                 reason=payload.reason,
                 rejected_by=actor,
             )
+        _invalidate_read_cache(user_id=current_user.id)
         return job.as_dict()
     except JobNotFoundError as exc:
         raise HTTPException(
@@ -995,6 +1315,7 @@ async def append_console_runtime_job_event(
             visibility=payload.visibility,
             artifacts=payload.artifacts,
         )
+        _invalidate_read_cache(user_id=current_user.id)
         return event.as_dict()
     except JobNotFoundError as exc:
         raise HTTPException(

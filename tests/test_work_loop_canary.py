@@ -32,7 +32,7 @@ def test_build_report_marks_cp_and_gold_book_loop_ready(monkeypatch) -> None:
             "queue_depth": 0,
             "ui_version": "2026.06.11.1",
             "selected_runtime": "codex",
-            "selected_model": "openai.gpt-5.4",
+            "selected_model": "openai.gpt-5.6-terra",
             "status_message": "Ready.",
             "last_error": "",
         },
@@ -44,7 +44,7 @@ def test_build_report_marks_cp_and_gold_book_loop_ready(monkeypatch) -> None:
             "queue_depth": 0,
             "ui_version": "2026.06.11.1",
             "selected_runtime": "codex",
-            "selected_model": "openai.gpt-5.4",
+            "selected_model": "openai.gpt-5.6-terra",
             "status_message": "Ready.",
             "last_error": "",
         },
@@ -834,7 +834,7 @@ def test_bbs_missing_context_holds_optimizer_for_netops(monkeypatch) -> None:
                 "pending": False,
                 "queue_depth": 0,
                 "selected_runtime": "codex",
-                "selected_model": "openai.gpt-5.4",
+                "selected_model": "openai.gpt-5.6-terra",
                 "_bbs_summary": {
                     "actor": "netops",
                     "state": "watch",
@@ -881,7 +881,7 @@ def test_bbs_waiting_pickup_holds_until_owner_intends_pickup(monkeypatch) -> Non
                 "pending": False,
                 "queue_depth": 0,
                 "selected_runtime": "codex",
-                "selected_model": "openai.gpt-5.4",
+                "selected_model": "openai.gpt-5.6-terra",
                 "_bbs_summary": {
                     "actor": "phoneops",
                     "state": "watch",
@@ -921,7 +921,7 @@ def test_build_report_can_select_full_5_5_mode(monkeypatch) -> None:
                 "pending": False,
                 "queue_depth": 0,
                 "selected_runtime": "codex",
-                "selected_model": "openai.gpt-5.4",
+                "selected_model": "openai.gpt-5.6-terra",
             }
         ],
         source="fixture",
@@ -951,7 +951,7 @@ def test_always_on_budget_gate_holds_when_p95_cycle_exceeds_budget(
                 "pending": False,
                 "queue_depth": 0,
                 "selected_runtime": "codex",
-                "selected_model": "openai.gpt-5.4",
+                "selected_model": "openai.gpt-5.6-terra",
             }
         ],
         source="fixture",
@@ -1072,7 +1072,7 @@ def test_cli_writes_report_from_source_json(tmp_path: Path, monkeypatch) -> None
                         "pending": False,
                         "queue_depth": 0,
                         "selected_runtime": "codex",
-                        "selected_model": "openai.gpt-5.4",
+                        "selected_model": "openai.gpt-5.6-terra",
                     }
                 ]
             }
@@ -1372,7 +1372,7 @@ def test_cli_loop_mode_writes_cp_journal(tmp_path: Path, monkeypatch) -> None:
                 "pending": False,
                 "queue_depth": 0,
                 "selected_runtime": "codex",
-                "selected_model": "openai.gpt-5.4",
+                "selected_model": "openai.gpt-5.6-terra",
             }
         ]
 

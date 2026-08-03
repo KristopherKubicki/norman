@@ -55,6 +55,19 @@ def test_packet_includes_catalog_models_cases_and_dgx_spark_promotion_policy() -
         is False
     )
     assert "account_scope" in packet["promotion_policy"]["required_metrics"]
+    long_context = next(
+        case
+        for case in packet["cases"]
+        if case["case_id"] == "saturated-archive-recall"
+    )
+    assert long_context["requires_saturated_long_context"] is True
+    assert long_context["input_tokens"] >= 80_000
+    assert (
+        packet["promotion_policy"]["long_context_integrity"][
+            "min_measured_input_tokens"
+        ]
+        == 80_000
+    )
 
 
 def test_answer_template_covers_every_prompt() -> None:
@@ -75,6 +88,8 @@ def test_answer_template_covers_every_prompt() -> None:
     assert "quality_risk" in first
     assert "merge_gate" in first
     assert first["authority_boundary_preserved"] is False
+    assert first["input_token_source"] == ""
+    assert first["prompt_payload_tokens"] == 0
 
     contract = packet["prompts"][0]["answer_contract"]
     assert contract["structured_response"]["required_non_empty_fields"] == (
@@ -84,6 +99,16 @@ def test_answer_template_covers_every_prompt() -> None:
         "merge_gate",
     )
     assert "Do not repeat a forbidden action" in contract["forbidden_term_guidance"]
+    long_context_prompt = next(
+        prompt
+        for prompt in packet["prompts"]
+        if prompt["case_id"] == "saturated-archive-recall"
+    )
+    assert long_context_prompt["long_context_contract"]["required"] is True
+    assert (
+        long_context_prompt["long_context_contract"]["min_measured_input_tokens"]
+        == 80_000
+    )
 
 
 def test_packet_cli_writes_json_markdown_prompts_and_template(tmp_path: Path) -> None:

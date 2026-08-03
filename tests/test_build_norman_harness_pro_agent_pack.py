@@ -36,6 +36,7 @@ def test_pack_builder_includes_replay_dependencies_and_fixture(tmp_path, monkeyp
 
     assert result["zip_path"] == str(zip_path)
     assert (pack_dir / "code/scripts/norman_codex_web.py").exists()
+    assert (pack_dir / "code/scripts/norman_codex_runtime_bridge.py").exists()
     assert (pack_dir / "code/config.yaml.dist").exists()
     assert (pack_dir / "code/main.py").exists()
     assert (pack_dir / "code/setup.py").exists()
@@ -43,9 +44,11 @@ def test_pack_builder_includes_replay_dependencies_and_fixture(tmp_path, monkeyp
         pack_dir / "code/scripts/agent_console_template/agent_console_web.py"
     ).exists()
     assert (pack_dir / "code/tests/test_norman_codex_model_settings.py").exists()
+    assert (pack_dir / "code/tests/test_norman_codex_runtime_bridge.py").exists()
     assert (pack_dir / "code/scripts/gaphelp_ticket_loop_shadow.py").exists()
     assert (pack_dir / "code/scripts/ticket_token_cost_ledger.py").exists()
     assert (pack_dir / "code/scripts/norllama/norllama_gateway.py").exists()
+    assert (pack_dir / "code/scripts/norllama/refresh_route_policy.py").exists()
     assert (pack_dir / "code/scripts/route_policy_drift_lint.py").exists()
     assert (pack_dir / "code/scripts/runbook_hybrid_architecture_audit.py").exists()
     assert (pack_dir / "code/scripts/tui_bedrock_shortstop_benchmark.py").exists()
@@ -87,10 +90,12 @@ def test_pack_builder_includes_replay_dependencies_and_fixture(tmp_path, monkeyp
     with zipfile.ZipFile(zip_path) as archive:
         names = set(archive.namelist())
     assert "pack/code/scripts/ticket_token_cost_ledger.py" in names
+    assert "pack/code/scripts/norman_codex_runtime_bridge.py" in names
     assert "pack/code/config.yaml.dist" in names
     assert "pack/code/main.py" in names
     assert "pack/code/setup.py" in names
     assert "pack/code/scripts/norllama/norllama_gateway.py" in names
+    assert "pack/code/scripts/norllama/refresh_route_policy.py" in names
     assert "pack/code/scripts/runbook_hybrid_architecture_audit.py" in names
     assert "pack/code/scripts/tui_bedrock_shortstop_benchmark.py" in names
     assert "pack/code/scripts/local_model_skill_floor.py" in names
@@ -102,6 +107,7 @@ def test_pack_builder_includes_replay_dependencies_and_fixture(tmp_path, monkeyp
     assert "pack/code/db/policies/codex_role_policy.json" in names
     assert "pack/code/db/prompt_bad_route_corpus.json" in names
     assert "pack/code/tests/test_prompt_load_balancer.py" in names
+    assert "pack/code/tests/test_norman_codex_runtime_bridge.py" in names
     assert "pack/data/policies/codex_role_policy.json" in names
     assert "pack/data/fixtures/prompt_bad_route_corpus.json" in names
     assert "pack/code/scripts/agent_console_template/prompts/control-plane.txt" in names

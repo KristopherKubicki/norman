@@ -1,5 +1,9 @@
+import asyncio
 import json
 from pathlib import Path
+
+import httpx
+import requests
 
 from app.services.prompt_load_balancer import (
     balance_prompt,
@@ -341,6 +345,8 @@ def test_openai_chat_adapter_does_not_trust_caller_route_policy():
                     "allow_cloud_proxy": True,
                     "route_lock": True,
                     "model": "gpt-5.5",
+                    "gateway_route": "forged-route",
+                    "source_tui": "forged-tui",
                 }
             },
         },
@@ -348,8 +354,33 @@ def test_openai_chat_adapter_does_not_trust_caller_route_policy():
 
     assert result["caller_request"]["route_policy_supplied"] is True
     assert result["caller_request"]["route_policy_trusted"] is False
+    assert result["trusted_gateway_context"] == {}
     assert result["selected_runtime"] == "localllm"
     assert result["selected_provider"] == "norllama"
+
+
+def test_openai_chat_adapter_retains_server_supplied_gateway_context():
+    gateway = {
+        "gateway_route": "gold-book",
+        "source_tui": "gold-book",
+        "policy_scope": "tui:gold-book",
+    }
+    result = provider_adapter_decision(
+        provider="openai",
+        endpoint="openai.chat.completions",
+        payload={
+            "model": "norman-code",
+            "messages": [{"role": "user", "content": "status?"}],
+        },
+        trusted_context=gateway,
+    )
+
+    assert result["trusted_gateway_context"] == gateway
+    assert result["caller_request"]["trusted_gateway_context"] is True
+    assert (
+        result["norman_route"]["decision"]["metadata"]["route_policy"]["gateway_route"]
+        == "gold-book"
+    )
 
 
 def test_openai_chat_adapter_transparent_log_only_is_advisory():
@@ -438,6 +469,66 @@ def test_openai_responses_adapter_extracts_structured_input():
     assert result["selected_runtime"] == "localllm"
 
 
+def test_openai_responses_adapter_classifies_latest_user_turn_only():
+    result = provider_adapter_decision(
+        provider="openai",
+        endpoint="openai.responses",
+        payload={
+            "model": "norman-code",
+            "input": [
+                {
+                    "role": "developer",
+                    "content": "Do not stop at analysis; restart only when asked.",
+                },
+                {
+                    "role": "user",
+                    "content": "Repository instruction: deploy changes after release review.",
+                },
+                {
+                    "role": "system",
+                    "content": (
+                        "Tool contract: shell commands can restart services or "
+                        "delete temporary files."
+                    ),
+                },
+                {"role": "user", "content": "Reply with exactly: route-ok"},
+            ],
+        },
+    )
+
+    assert result["normalized_prompt"] == "Reply with exactly: route-ok"
+    assert result["caller_request"]["policy_prompt_source"] == "latest_user_turn"
+    assert result["norman_route"]["classification"]["risk_class"] == "read_only"
+    assert result["norman_route"]["recommendation"]["requires_approval"] is False
+    assert result["norman_route"]["recommendation"]["execution_allowed"] is True
+
+
+def test_openai_responses_adapter_still_blocks_mutating_latest_user_turn():
+    result = provider_adapter_decision(
+        provider="openai",
+        endpoint="openai.responses",
+        payload={
+            "model": "norman-code",
+            "input": [
+                {
+                    "role": "developer",
+                    "content": "Answer helpfully and do not execute commands yourself.",
+                },
+                {
+                    "role": "user",
+                    "content": "Restart the Goldbook production service.",
+                },
+            ],
+        },
+    )
+
+    assert result["norman_route"]["classification"]["risk_class"] == (
+        "external_mutation"
+    )
+    assert result["norman_route"]["recommendation"]["requires_approval"] is True
+    assert result["norman_route"]["recommendation"]["execution_allowed"] is False
+
+
 def test_prompt_load_balancer_capabilities_document_intermediary_mode():
     capabilities = prompt_load_balancer_capabilities()
 
@@ -524,9 +615,16 @@ def _mock_local_chat(messages, model, **kwargs):
     }
 
 
-def _proxy_headers(monkeypatch):
+def _gateway_headers(route: str = "norman"):
+    return {"X-Norman-Gateway-Route": route}
+
+
+def _proxy_headers(monkeypatch, *, route: str = "norman"):
     monkeypatch.setenv("NORMAN_PROMPT_PROXY_TOKEN", "proxy-token")
-    return {"Authorization": "Bearer proxy-token"}
+    return {
+        "Authorization": "Bearer proxy-token",
+        **_gateway_headers(route),
+    }
 
 
 def _local_route_envelope(**overrides):
@@ -569,8 +667,14 @@ def _local_route_envelope(**overrides):
 def test_openai_compat_chat_completions_routes_local_first(test_app, monkeypatch):
     from app.services.prompt_provider_facade import norllama_gateway
 
-    headers = _proxy_headers(monkeypatch)
-    monkeypatch.setattr(norllama_gateway, "invoke_text_chat", _mock_local_chat)
+    headers = _proxy_headers(monkeypatch, route="gold-book")
+    invocations = []
+
+    def invoke_local_chat(*args, **kwargs):
+        invocations.append(kwargs)
+        return _mock_local_chat(*args, **kwargs)
+
+    monkeypatch.setattr(norllama_gateway, "invoke_text_chat", invoke_local_chat)
 
     response = test_app.post(
         "/v1/chat/completions",
@@ -593,6 +697,23 @@ def test_openai_compat_chat_completions_routes_local_first(test_app, monkeypatch
     assert payload["norman"]["route"]["selected_provider"] == "norllama"
     assert payload["norman"]["norllama"]["observed_worker"] == "spark-151"
     assert payload["norman"]["norllama"]["observed_worker_source"] == "gateway_headers"
+    gateway = {
+        "gateway_route": "gold-book",
+        "source_tui": "gold-book",
+        "policy_scope": "tui:gold-book",
+    }
+    assert payload["norman"]["gateway"] == gateway
+    assert payload["norman"]["route"]["trusted_gateway_context"] == gateway
+    receipt = payload["norman"]["facade_receipt"]
+    assert receipt["metadata"]["gateway_route"] == "gold-book"
+    assert receipt["output"]["source_tui"] == "gold-book"
+    assert invocations[0]["correlation_headers"]["X-Norman-Gateway-Route"] == (
+        "gold-book"
+    )
+    assert invocations[0]["correlation_headers"]["X-Norman-Source-Tui"] == ("gold-book")
+    assert invocations[0]["correlation_headers"]["X-Norman-Policy-Scope"] == (
+        "tui:gold-book"
+    )
 
 
 def test_openai_compat_chat_completions_streams_sse(test_app, monkeypatch):
@@ -638,6 +759,208 @@ def test_openai_compat_responses_routes_local_first(test_app, monkeypatch):
     assert payload["norman"]["local_execution"] is True
 
 
+def test_openai_compat_responses_returns_gateway_failure(test_app, monkeypatch):
+    from app.services.prompt_provider_facade import norllama_gateway
+
+    headers = _proxy_headers(monkeypatch, route="gold-book")
+    upstream_response = requests.Response()
+    upstream_response.status_code = 502
+
+    def unavailable_local_model(**kwargs):
+        raise requests.HTTPError(response=upstream_response)
+
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat",
+        unavailable_local_model,
+    )
+
+    response = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={"model": "gpt-5.5", "input": "status?"},
+    )
+
+    assert response.status_code == 502
+    assert response.json()["error"] == {
+        "message": "Local model gateway is unavailable",
+        "type": "server_error",
+        "param": None,
+        "code": "local_model_unavailable",
+    }
+
+
+def test_openai_compat_responses_ignores_codex_compatibility_metadata(
+    test_app, monkeypatch
+):
+    from app.services.prompt_provider_facade import norllama_gateway
+
+    headers = _proxy_headers(monkeypatch, route="gold-book")
+    invocations = []
+
+    def invoke_local_chat(*args, **kwargs):
+        invocations.append(kwargs)
+        return _mock_local_chat(*args, **kwargs)
+
+    monkeypatch.setattr(norllama_gateway, "invoke_text_chat", invoke_local_chat)
+
+    response = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={
+            "model": "norman-code",
+            "input": "status?",
+            "parallel_tool_calls": True,
+            "prompt_cache_key": "codex-session-cache-key",
+            "reasoning": {"effort": "medium", "summary": "auto"},
+            "include": ["reasoning.encrypted_content"],
+            "store": False,
+            "client_metadata": {
+                "session_id": "untrusted-client-metadata",
+                "route_policy": {"allow_cloud_escalation": True},
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["output_text"] == "local ok"
+    assert payload["norman"]["local_execution"] is True
+    assert payload["norman"]["route"]["trusted_gateway_context"]["gateway_route"] == (
+        "gold-book"
+    )
+    assert payload["norman"]["responses_compatibility"]["reasoning_advisory"] == {
+        "effort": "medium",
+        "summary": "auto",
+    }
+    assert payload["norman"]["responses_compatibility"]["include_advisory"] == [
+        "reasoning.encrypted_content"
+    ]
+    assert (
+        payload["norman"]["responses_compatibility"]["client_metadata_ignored"] is True
+    )
+    assert payload["norman"]["responses_compatibility"]["store_requested"] is False
+    assert "untrusted-client-metadata" not in json.dumps(payload["norman"])
+    receipt = payload["norman"]["facade_receipt"]
+    assert receipt["metadata"]["codex_reasoning_advisory"] == {
+        "effort": "medium",
+        "summary": "auto",
+    }
+    assert (
+        invocations[0]["correlation_headers"]["X-Norman-Requested-Reasoning-Effort"]
+        == "medium"
+    )
+
+
+def test_openai_compat_responses_rejects_invalid_reasoning_advisory(
+    test_app, monkeypatch
+):
+    headers = _proxy_headers(monkeypatch)
+
+    invalid_shape = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={"model": "norman-code", "input": "status?", "reasoning": "high"},
+    )
+    assert invalid_shape.status_code == 400
+    assert invalid_shape.json()["error"]["code"] == "invalid_reasoning"
+
+    invalid_effort = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={
+            "model": "norman-code",
+            "input": "status?",
+            "reasoning": {"effort": "turbo"},
+        },
+    )
+    assert invalid_effort.status_code == 400
+    assert invalid_effort.json()["error"]["code"] == "invalid_reasoning_effort"
+
+    invalid_summary = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={
+            "model": "norman-code",
+            "input": "status?",
+            "reasoning": {"summary": "full"},
+        },
+    )
+    assert invalid_summary.status_code == 400
+    assert invalid_summary.json()["error"]["code"] == "invalid_reasoning_summary"
+
+    unsupported_option = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={
+            "model": "norman-code",
+            "input": "status?",
+            "reasoning": {"effort": "medium", "context": "all_turns"},
+        },
+    )
+    assert unsupported_option.status_code == 501
+    assert unsupported_option.json()["error"]["code"] == "unsupported_reasoning_option"
+
+
+def test_openai_compat_responses_rejects_invalid_include_advisory(
+    test_app, monkeypatch
+):
+    headers = _proxy_headers(monkeypatch)
+
+    invalid_shape = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={"model": "norman-code", "input": "status?", "include": "reasoning"},
+    )
+    assert invalid_shape.status_code == 400
+    assert invalid_shape.json()["error"]["code"] == "invalid_include"
+
+    unsupported_value = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={
+            "model": "norman-code",
+            "input": "status?",
+            "include": ["reasoning.encrypted_content", "message.output_text.logprobs"],
+        },
+    )
+    assert unsupported_value.status_code == 501
+    assert unsupported_value.json()["error"]["code"] == "unsupported_include_value"
+
+
+def test_openai_compat_responses_rejects_invalid_client_metadata(test_app, monkeypatch):
+    headers = _proxy_headers(monkeypatch)
+
+    response = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={
+            "model": "norman-code",
+            "input": "status?",
+            "client_metadata": ["not", "an", "object"],
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_client_metadata"
+    assert response.json()["error"]["param"] == "client_metadata"
+
+
+def test_openai_compat_responses_rejects_invalid_store(test_app, monkeypatch):
+    headers = _proxy_headers(monkeypatch)
+
+    for store in ("false", 0, None):
+        response = test_app.post(
+            "/v1/responses",
+            headers=headers,
+            json={"model": "norman-code", "input": "status?", "store": store},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "invalid_store"
+        assert response.json()["error"]["param"] == "store"
+
+
 def test_openai_compat_models_requires_proxy_token_when_configured(
     test_app,
     monkeypatch,
@@ -645,6 +968,10 @@ def test_openai_compat_models_requires_proxy_token_when_configured(
     headers = _proxy_headers(monkeypatch)
 
     denied = test_app.get("/v1/models")
+    assert denied.status_code == 403
+    assert denied.json()["error"]["code"] == "gateway_route_required"
+
+    denied = test_app.get("/v1/models", headers=_gateway_headers())
     assert denied.status_code == 401
     assert denied.json()["error"]["type"] == "authentication_error"
 
@@ -655,11 +982,35 @@ def test_openai_compat_models_requires_proxy_token_when_configured(
     assert allowed.status_code == 200
     payload = allowed.json()
     assert payload["object"] == "list"
+    assert {item["id"] for item in payload["data"]} >= {
+        "norman-code",
+        "norman-local",
+    }
     assert payload["norman"]["base_url"] == "/v1"
+    assert payload["norman"]["gateway"]["gateway_route"] == "norman"
+
+
+def test_openai_compat_models_advertises_codex_catalog(test_app, monkeypatch):
+    headers = _proxy_headers(monkeypatch)
+
+    response = test_app.get("/v1/models", headers=headers)
+
+    assert response.status_code == 200
+    models = response.json()["models"]
+    assert [model["slug"] for model in models] == ["norman-code", "norman-local"]
+    for model in models:
+        assert model["display_name"]
+        assert model["supported_in_api"] is True
+        assert model["priority"] > 0
+        assert model["supports_parallel_tool_calls"] is False
+        assert model["supports_image_detail_original"] is False
+        assert model["context_window"] == 128000
+        assert model["truncation_policy"] == {"mode": "bytes", "limit": 128000}
 
 
 def test_openai_compat_auth_fails_closed_without_facade_token(test_app, monkeypatch):
     monkeypatch.delenv("NORMAN_PROMPT_PROXY_TOKEN", raising=False)
+    headers = _gateway_headers()
 
     for method, path, body in [
         ("get", "/v1/models", None),
@@ -671,9 +1022,57 @@ def test_openai_compat_auth_fails_closed_without_facade_token(test_app, monkeypa
         ("post", "/v1/responses", {"model": "gpt-5.5", "input": "status?"}),
     ]:
         request = getattr(test_app, method)
-        response = request(path, json=body) if body is not None else request(path)
+        response = (
+            request(path, headers=headers, json=body)
+            if body is not None
+            else request(path, headers=headers)
+        )
         assert response.status_code == 503
         assert response.json()["error"]["code"] == "proxy_token_not_configured"
+
+
+def test_openai_compat_rejects_unknown_gateway_route(test_app, monkeypatch):
+    monkeypatch.setenv("NORMAN_PROMPT_PROXY_TOKEN", "proxy-token")
+
+    response = test_app.get(
+        "/v1/models",
+        headers={
+            "Authorization": "Bearer proxy-token",
+            "X-Norman-Gateway-Route": "forged-route",
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "gateway_route_invalid"
+
+
+def test_openai_compat_rejects_gateway_identity_from_non_loopback(
+    test_app,
+    monkeypatch,
+):
+    monkeypatch.setenv("NORMAN_PROMPT_PROXY_TOKEN", "proxy-token")
+
+    async def request_from_lan():
+        transport = httpx.ASGITransport(
+            app=test_app.app,
+            client=("192.168.2.99", 18900),
+        )
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            return await client.get(
+                "/v1/models",
+                headers={
+                    "Authorization": "Bearer proxy-token",
+                    "X-Norman-Gateway-Route": "gold-book",
+                },
+            )
+
+    response = asyncio.run(request_from_lan())
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "gateway_route_untrusted"
 
 
 def test_openai_compat_rejects_unsupported_tool_parameters(test_app, monkeypatch):
@@ -799,6 +1198,7 @@ def test_openai_compat_responses_routes_once_and_preserves_instructions(
         {
             "model": "gpt-5.5",
             "instructions": "Answer briefly.",
+            "store": False,
             "input": [
                 {
                     "role": "developer",
@@ -813,11 +1213,73 @@ def test_openai_compat_responses_routes_once_and_preserves_instructions(
     assert len(decisions) == 1
     assert len(invocations) == 1
     assert invocations[0]["model"] == "qwen3.6:27b"
+    assert "store" not in decisions[0]["payload"]
+    assert response["norman"]["responses_compatibility"]["store_requested"] is False
     assert invocations[0]["messages"] == [
         {"role": "system", "content": "Answer briefly."},
         {"role": "developer", "content": "Preserve this role."},
         {"role": "user", "content": "status?"},
     ]
+
+
+def test_openai_compat_responses_accepts_benign_codex_context(monkeypatch):
+    import app.services.prompt_provider_facade as facade
+
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: _mock_local_chat(
+            kwargs["messages"],
+            kwargs["model"],
+        )
+        | {
+            "choices": [
+                {
+                    "message": {
+                        "content": "route-ok",
+                    }
+                }
+            ]
+        },
+    )
+
+    response = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": [
+                {
+                    "role": "developer",
+                    "content": "Do not stop at analysis; restart only when asked.",
+                },
+                {
+                    "role": "user",
+                    "content": "Repository instruction: deploy after release review.",
+                },
+                {"role": "user", "content": "Reply with exactly: route-ok"},
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "shell",
+                    "description": (
+                        "Run a local shell command that can restart a service or "
+                        "delete temporary files."
+                    ),
+                    "parameters": {"type": "object"},
+                }
+            ],
+        },
+        trusted_context={
+            "gateway_route": "gold-book",
+            "source_tui": "gold-book",
+        },
+    )
+
+    assert response["output_text"] == "route-ok"
+    route = response["norman"]["route"]
+    assert route["normalized_prompt"] == "Reply with exactly: route-ok"
+    assert route["caller_request"]["policy_prompt_source"] == "latest_user_turn"
+    assert route["norman_route"]["recommendation"]["execution_allowed"] is True
 
 
 def test_openai_compat_responses_can_return_explicit_tool_call(monkeypatch):
@@ -920,6 +1382,37 @@ def test_openai_compat_responses_replays_previous_response_and_tool_output(
     assert {"role": "user", "content": "continue"} in replayed
 
 
+def test_openai_compat_responses_store_false_does_not_retain_history(monkeypatch):
+    import app.services.prompt_provider_facade as facade
+
+    facade.reset_facade_response_state()
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: _mock_local_chat(kwargs["messages"], kwargs["model"]),
+    )
+
+    response = execute_openai_responses_facade(
+        {"model": "gpt-5.5", "input": "do not retain", "store": False}
+    )
+
+    try:
+        execute_openai_responses_facade(
+            {
+                "model": "gpt-5.5",
+                "previous_response_id": response["id"],
+                "input": "continue",
+            }
+        )
+    except FacadeError as exc:
+        assert exc.code == "previous_response_not_found"
+    else:
+        raise AssertionError("expected stateless response history to be unavailable")
+
+
 def test_openai_compat_proxy_observability_records_success_without_prompt_leak(
     test_app,
     monkeypatch,
@@ -929,7 +1422,7 @@ def test_openai_compat_proxy_observability_records_success_without_prompt_leak(
 
     reset_proxy_events()
     headers = {
-        **_proxy_headers(monkeypatch),
+        **_proxy_headers(monkeypatch, route="gold-book"),
         "X-Norman-Client": "codex-work",
         "X-Norman-Team": "platform",
     }
@@ -974,6 +1467,9 @@ def test_openai_compat_proxy_observability_records_success_without_prompt_leak(
     assert events[0]["completion_gate_passed"] is True
     assert events[0]["execution_mode"] == "prompt_intermediary_openai_facade"
     assert events[0]["policy_id"]
+    assert events[0]["gateway_route"] == "gold-book"
+    assert events[0]["source_tui"] == "gold-book"
+    assert events[0]["policy_scope"] == "tui:gold-book"
     assert "secret-value" not in str(events[0])
 
 
@@ -986,7 +1482,7 @@ def test_openai_compat_proxy_observability_reports_auth_and_unsupported_alerts(
     reset_proxy_events()
     headers = _proxy_headers(monkeypatch)
 
-    denied = test_app.get("/v1/models")
+    denied = test_app.get("/v1/models", headers=_gateway_headers())
     assert denied.status_code == 401
 
     unsupported = test_app.post(
