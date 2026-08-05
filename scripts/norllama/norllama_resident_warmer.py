@@ -160,7 +160,7 @@ def _warm_chat_model(
         "keep_alive": keep_alive,
         "options": options,
     }
-    if model.lower().startswith(("qwen3.5:", "qwen3.6:")):
+    if model.lower().startswith(("qwen3.5:", "qwen3.6:", "qwen3-coder:")):
         payload["think"] = False
     started = time.perf_counter()
     status, response = _json_request(
@@ -210,6 +210,19 @@ def _warm_embed_model(
     }
 
 
+def _is_manual_only_model(model: str) -> bool:
+    clean = str(model or "").strip().lower().replace("_", "-")
+    return any(
+        needle in clean
+        for needle in (
+            "qwen3.5:122b",
+            "qwen3.5-122b",
+            "qwen3.5/122b",
+            "nvidia/qwen3.5-122b",
+        )
+    )
+
+
 def main() -> int:
     base_url = os.getenv("NORLLAMA_WARM_BASE_URL", "http://127.0.0.1:18151")
     ollama_url = os.getenv("NORLLAMA_WARM_OLLAMA_URL", "http://127.0.0.1:11434")
@@ -253,6 +266,9 @@ def main() -> int:
         return 2
 
     for model in chat_models:
+        if _is_manual_only_model(model):
+            results.append({"model": model, "status": "skipped_manual_only"})
+            continue
         free_mib = _free_mib(media_health_url, health_timeout_s)
         if (
             min_free_mib_chat > 0

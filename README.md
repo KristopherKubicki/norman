@@ -81,6 +81,22 @@ choice. A local-only deployment can use the Norllama front door without an
 OpenAI key. A cloud-enabled deployment should configure only the approved
 provider credentials through its secret broker and policy.
 
+### Zero-Model TUI Reads
+
+The web TUI has a deliberately narrow no-model lane for exact state reads and
+fixed read-only commands. Exact status prompts can report durable TUI state.
+The command form is either a command wrapped in backticks, such as `` `pwd` ``,
+or `run pwd`. It is limited to `pwd`, `date`, `date -Is`,
+`git status --short`, `git branch --show-current`, `git diff --stat`, and
+`git log -1 --oneline`.
+
+These commands execute as fixed argv with `shell=False` and a short timeout;
+there is no natural-language shell interpretation. Attachments, route locks,
+and an active prompt disable this lane. Writes, deploys, secret access,
+network/external actions, and every command outside the allowlist return to
+the normal policy, approval, and model-routing flow. Zero-model receipts carry
+zero tokens and record the avoided local and frontier calls in the KPI ledger.
+
 For the complete operating model, see
 [Architecture](docs/architecture.md) and
 [Provider And Routing Resilience](docs/llm_runtime_fallback.md).

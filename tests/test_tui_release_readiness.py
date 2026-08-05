@@ -207,6 +207,163 @@ def test_direct_route_requires_codex_login_but_not_aws_identity(
     assert commands == [(["/usr/bin/codex", "login", "status"], None)]
 
 
+def test_flex_ignores_shared_bedrock_default_config(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_readiness(monkeypatch)
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text(
+        'model_provider = "amazon-bedrock"\n',
+        encoding="utf-8",
+    )
+    commands = _fake_tools(monkeypatch, module)
+
+    report = module.build_report(
+        codex_bin="codex",
+        codex_home=str(codex_home),
+        service_tier="flex",
+        norman_health_url="",
+        norllama_endpoints=[],
+        cloud_token_budget="",
+        timeout_seconds=2,
+        env={
+            "NORMAN_CODEX_STANDARD_PROFILE_V2": "bedrock-default",
+            "NORMAN_CODEX_STANDARD_AWS_PROFILE": "approved-profile",
+            "NORMAN_CODEX_STANDARD_AWS_REGION": "us-east-2",
+        },
+    )
+
+    by_id = {check["id"]: check for check in report["checks"]}
+    assert report["status"] == "ready"
+    assert report["launch"]["provider_surface"] == "openai-direct"
+    assert by_id["codex_direct_login"]["status"] == "pass"
+    assert by_id["bedrock_aws_identity"]["status"] == "skip"
+    assert commands == [(["/usr/bin/codex", "login", "status"], None)]
+
+
+def test_explicit_bedrock_flex_profile_is_a_blocking_contract_failure(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_readiness(monkeypatch)
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir()
+    (codex_home / "flex-direct.config.toml").write_text(
+        'model_provider = "amazon-bedrock"\n',
+        encoding="utf-8",
+    )
+    commands = _fake_tools(monkeypatch, module)
+
+    report = module.build_report(
+        codex_bin="codex",
+        codex_home=str(codex_home),
+        service_tier="flex",
+        norman_health_url="",
+        norllama_endpoints=[],
+        cloud_token_budget="",
+        timeout_seconds=2,
+        env={"NORMAN_CODEX_FLEX_PROFILE_V2": "flex-direct"},
+    )
+
+    by_id = {check["id"]: check for check in report["checks"]}
+    assert report["status"] == "blocked"
+    assert report["blockers"] == ["launch_contract"]
+    assert by_id["launch_contract"]["blocking"] is True
+    assert by_id["bedrock_aws_identity"]["status"] == "skip"
+    assert commands == [(["/usr/bin/codex", "login", "status"], None)]
+
+
+def test_flex_blocks_when_direct_codex_login_fails(monkeypatch, tmp_path: Path) -> None:
+    module = _load_readiness(monkeypatch)
+    commands = _fake_tools(monkeypatch, module, returncode=1)
+
+    report = module.build_report(
+        codex_bin="codex",
+        codex_home=str(tmp_path / "codex"),
+        service_tier="flex",
+        norman_health_url="",
+        norllama_endpoints=[],
+        cloud_token_budget="",
+        timeout_seconds=2,
+        env={},
+    )
+
+    by_id = {check["id"]: check for check in report["checks"]}
+    assert report["status"] == "blocked"
+    assert report["blockers"] == ["codex_direct_login"]
+    assert by_id["codex_direct_login"]["blocking"] is True
+    assert by_id["bedrock_aws_identity"]["status"] == "skip"
+    assert commands == [(["/usr/bin/codex", "login", "status"], None)]
+
+
+def test_default_bedrock_requires_profile_region_and_sts(
+    monkeypatch, tmp_path: Path
+) -> None:
+    module = _load_readiness(monkeypatch)
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text(
+        'model_provider = "amazon-bedrock"\n',
+        encoding="utf-8",
+    )
+    commands = _fake_tools(monkeypatch, module)
+
+    missing_profile = module.build_report(
+        codex_bin="codex",
+        codex_home=str(codex_home),
+        service_tier="default",
+        norman_health_url="",
+        norllama_endpoints=[],
+        cloud_token_budget="",
+        timeout_seconds=2,
+        env={},
+    )
+    assert missing_profile["blockers"] == ["bedrock_credentials_profile_missing"]
+
+    missing_region = module.build_report(
+        codex_bin="codex",
+        codex_home=str(codex_home),
+        service_tier="default",
+        norman_health_url="",
+        norllama_endpoints=[],
+        cloud_token_budget="",
+        timeout_seconds=2,
+        env={"NORMAN_CODEX_STANDARD_AWS_PROFILE": "approved-profile"},
+    )
+    assert missing_region["blockers"] == ["bedrock_credentials_region_missing"]
+
+    ready = module.build_report(
+        codex_bin="codex",
+        codex_home=str(codex_home),
+        service_tier="default",
+        norman_health_url="",
+        norllama_endpoints=[],
+        cloud_token_budget="",
+        timeout_seconds=2,
+        env={
+            "NORMAN_CODEX_STANDARD_AWS_PROFILE": "approved-profile",
+            "NORMAN_CODEX_STANDARD_AWS_REGION": "us-east-2",
+        },
+    )
+    assert ready["status"] == "ready"
+    assert len(commands) == 1
+    command, command_env = commands[0]
+    assert command == [
+        "/usr/bin/aws",
+        "--profile",
+        "approved-profile",
+        "--region",
+        "us-east-2",
+        "sts",
+        "get-caller-identity",
+        "--output",
+        "json",
+    ]
+    assert command_env
+    assert command_env["AWS_PROFILE"] == "approved-profile"
+    assert command_env["AWS_REGION"] == "us-east-2"
+
+
 def test_cli_writes_machine_readable_and_markdown_reports(
     monkeypatch, tmp_path: Path
 ) -> None:

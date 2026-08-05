@@ -203,13 +203,13 @@ DEFAULT_RERANK_MODEL = os.getenv("NORLLAMA_DEFAULT_RERANK_MODEL", BGE_RERANKER_M
 QWEN3GUARD_MODEL = os.getenv(
     "NORLLAMA_DEFAULT_SAFETY_MODEL", "Qwen/Qwen3Guard-Stream-0.6B"
 )
-QWEN36_ROUTER_MODEL = "qwen3.6:35b-a3b-q4_K_M"
-QWEN36_CODE_MODEL = "qwen3.6:27b"
+QWEN3_CODER_MODEL = "qwen3-coder:30b-a3b-q4_K_M"
+# Retain the legacy names while downstream callers migrate to the unified
+# Coder runtime.
+QWEN36_ROUTER_MODEL = QWEN3_CODER_MODEL
+QWEN36_CODE_MODEL = QWEN3_CODER_MODEL
 QWEN35_JUDGE_MODEL = "qwen3.5:122b-a10b-q4_K_M"
 QWEN3_VL_MODEL = "qwen3-vl:30b-a3b-instruct-q4_K_M"
-QWEN35_JUDGE_KEEP_ALIVE = (
-    os.getenv("NORLLAMA_QWEN35_JUDGE_KEEP_ALIVE", "30s").strip() or "30s"
-)
 PREFERRED_UI_CHAT_MODEL = os.getenv("NORLLAMA_UI_DEFAULT_MODEL", QWEN36_ROUTER_MODEL)
 USER_AGENT = "norllama-gateway/0.1"
 GATEWAY_VERSION = os.getenv("NORLLAMA_GATEWAY_VERSION", "0.1.20260710-route-proof")
@@ -326,8 +326,8 @@ LIVE_POLICY_OVERRIDE_REASON = (
 LIVE_POLICY_OVERRIDE_EXPIRES_AT_ENV = "NORLLAMA_LIVE_POLICY_OVERRIDE_EXPIRES_AT"
 LIVE_CAPABILITY_CONTRACT_OVERRIDES: dict[str, dict[str, object]] = {
     "chat": {
-        "default_model": QWEN36_ROUTER_MODEL,
-        "default_profile": "qwen36_35_local",
+        "default_model": QWEN3_CODER_MODEL,
+        "default_profile": "qwen3_coder_30b_local",
         "status": "routable_live_policy",
         "production_state": "production",
         "benchmark_confidence": "refresh_required",
@@ -335,18 +335,13 @@ LIVE_CAPABILITY_CONTRACT_OVERRIDES: dict[str, dict[str, object]] = {
         "guardrail": "Use Qwen-first local routing; keep irreversible work behind verifier receipts and explicit policy gates.",
         "alternates_prepend": [
             {
-                "model": QWEN36_CODE_MODEL,
-                "profile": "qwen36_27_local",
+                "model": QWEN3_CODER_MODEL,
+                "profile": "qwen3_coder_30b_local",
                 "role": "coding_operator",
-            },
-            {
-                "model": QWEN35_JUDGE_MODEL,
-                "profile": "qwen35_122_local",
-                "role": "heavyweight_judge",
             },
         ],
         "notes_append": [
-            "Live override: Qwen 3.6 35B is the default interactive router/planner/filter lane.",
+            "Live override: Qwen3-Coder 30B is the default interactive router/planner/filter lane.",
             "Gemma lanes remain visible as lab or fallback comparisons, not production defaults.",
         ],
     },
@@ -360,8 +355,8 @@ LIVE_CAPABILITY_CONTRACT_OVERRIDES: dict[str, dict[str, object]] = {
         "guardrail": "Use as visual triage only until GroundNext or an equivalent coordinate-grounding service passes live smoke tests.",
         "alternates_prepend": [
             {
-                "model": QWEN36_ROUTER_MODEL,
-                "profile": "qwen36_35_local",
+                "model": QWEN3_CODER_MODEL,
+                "profile": "qwen3_coder_30b_local",
                 "role": "screen_reasoning",
             },
         ],
@@ -447,16 +442,16 @@ LIVE_CAPABILITY_CONTRACT_OVERRIDES: dict[str, dict[str, object]] = {
         ],
     },
     "entity_event_extract": {
-        "default_model": QWEN36_ROUTER_MODEL,
-        "default_profile": "qwen36_35_local",
+        "default_model": QWEN3_CODER_MODEL,
+        "default_profile": "qwen3_coder_30b_local",
         "status": "routable_live_policy",
         "production_state": "production",
         "benchmark_confidence": "refresh_required",
         "selection_method": "live_model_reality_policy",
     },
     "ops_anomaly": {
-        "default_model": QWEN36_ROUTER_MODEL,
-        "default_profile": "qwen36_35_local",
+        "default_model": QWEN3_CODER_MODEL,
+        "default_profile": "qwen3_coder_30b_local",
         "status": "routable_live_policy",
         "production_state": "production",
         "benchmark_confidence": "refresh_required",
@@ -466,26 +461,21 @@ LIVE_CAPABILITY_CONTRACT_OVERRIDES: dict[str, dict[str, object]] = {
         ],
     },
     "code_risk": {
-        "default_model": QWEN36_CODE_MODEL,
-        "default_profile": "qwen36_27_local",
+        "default_model": QWEN3_CODER_MODEL,
+        "default_profile": "qwen3_coder_30b_local",
         "status": "routable_live_policy",
         "production_state": "production",
         "benchmark_confidence": "refresh_required",
         "selection_method": "live_model_reality_policy",
         "alternates_prepend": [
             {
-                "model": QWEN35_JUDGE_MODEL,
-                "profile": "qwen35_122_local",
-                "role": "heavyweight_judge",
-            },
-            {
-                "model": QWEN36_ROUTER_MODEL,
-                "profile": "qwen36_35_local",
+                "model": QWEN3_CODER_MODEL,
+                "profile": "qwen3_coder_30b_local",
                 "role": "fast_reviewer",
             },
         ],
         "notes_append": [
-            "Qwen 3.6 27B is the production local coding/risk lane; deterministic experts should still run for real patches.",
+            "Qwen3-Coder 30B is the production local coding/risk lane; deterministic experts should still run for real patches.",
         ],
     },
 }
@@ -506,10 +496,10 @@ HIGH_PAYBACK_MODEL_LANES: list[dict[str, object]] = [
     },
     {
         "lane": "heavyweight_judge",
-        "state": "production_available",
+        "state": "manual_only",
         "models": [QWEN35_JUDGE_MODEL],
         "serving_path": "/v1/chat/completions",
-        "notes": "Local high-cost judge for difficult verification and escalation avoidance.",
+        "notes": "Explicit manual-review lane; automatic routing, warming, and prefetch are prohibited.",
     },
     {
         "lane": "text_memory_retrieval",
@@ -1180,7 +1170,7 @@ def apply_live_policy_contract_override(row: dict[str, object]) -> dict[str, obj
 
 def should_disable_qwen_thinking(model_id: str) -> bool:
     lower = str(model_id or "").strip().lower()
-    return "qwen3.6:" in lower or "qwen3.5:" in lower
+    return "qwen3-coder:" in lower or "qwen3.6:" in lower or "qwen3.5:" in lower
 
 
 def normalize_chat_payload_for_local_qwen(
@@ -1194,26 +1184,6 @@ def normalize_chat_payload_for_local_qwen(
     return normalized, True
 
 
-def default_keep_alive_for_model(model_id: str) -> str:
-    if str(model_id or "").strip() == QWEN35_JUDGE_MODEL:
-        return QWEN35_JUDGE_KEEP_ALIVE
-    return ""
-
-
-def apply_model_keep_alive_default(
-    payload: dict[str, object],
-) -> tuple[dict[str, object], bool]:
-    model = str(payload.get("model") or "").strip()
-    default_keep_alive = default_keep_alive_for_model(model)
-    if not default_keep_alive:
-        return payload, False
-    if payload.get("keep_alive") not in (None, ""):
-        return payload, False
-    normalized = dict(payload)
-    normalized["keep_alive"] = default_keep_alive
-    return normalized, True
-
-
 def openai_chat_payload_to_ollama(payload: dict[str, object]) -> dict[str, object]:
     model = str(payload.get("model") or "").strip()
     native: dict[str, object] = {
@@ -1224,10 +1194,6 @@ def openai_chat_payload_to_ollama(payload: dict[str, object]) -> dict[str, objec
     }
     if payload.get("keep_alive") is not None:
         native["keep_alive"] = payload.get("keep_alive")
-    else:
-        default_keep_alive = default_keep_alive_for_model(model)
-        if default_keep_alive:
-            native["keep_alive"] = default_keep_alive
     options: dict[str, object] = {}
     existing_options = payload.get("options")
     if isinstance(existing_options, dict):
@@ -1271,26 +1237,16 @@ def target_bases_from_payload(
     return accepted, rejected
 
 
-def resident_model_ids_from_ps(ps_doc: dict[str, object] | None) -> set[str]:
-    rows = []
-    if isinstance(ps_doc, dict):
-        rows = list(ps_doc.get("models") or [])
-    return {
-        str(item.get("model") or item.get("name") or "").strip()
-        for item in rows
-        if isinstance(item, dict)
-        and str(item.get("model") or item.get("name") or "").strip()
-    }
-
-
-def should_evict_heavy_judge_for_interactive_load(
-    requested_model: str,
-    resident_models: set[str],
-) -> bool:
-    clean_model = str(requested_model or "").strip()
-    if clean_model not in {QWEN36_ROUTER_MODEL, QWEN36_CODE_MODEL}:
-        return False
-    return QWEN35_JUDGE_MODEL in resident_models and clean_model not in resident_models
+def is_manual_only_model(model_id: str) -> bool:
+    normalized = (
+        str(model_id or "")
+        .strip()
+        .lower()
+        .replace("_", "-")
+        .replace("/", "-")
+        .replace(":", "-")
+    )
+    return "qwen3.5-122b" in normalized
 
 
 def ollama_chat_payload_to_openai(
@@ -1386,14 +1342,10 @@ def infer_model_summary(model_id: str, provider: str, capabilities: list[str]) -
         return "Legacy benchmark winner kept for comparison and fallback; Qwen-first policy is now preferred."
     if lower.startswith("gemma4:31b"):
         return "Legacy larger Gemma lane kept for fallback and benchmark comparison."
-    if "qwen3.6:35b" in lower:
-        return "Production local router/planner/filter lane for the Spark fleet."
-    if "qwen3.6:27b" in lower or "qwen3.5:27b" in lower:
-        return "Production local coding/operator lane for repo and implementation work."
-    if "qwen3.5:122b" in lower:
-        return "Heavyweight local judge lane for difficult verification and escalation avoidance."
     if "qwen3-coder-next" in lower or "qwen3-coder:" in lower:
-        return "Code-focused Qwen lane for repo and implementation work."
+        return "Production local router, planning, and coding lane for the Spark fleet."
+    if is_manual_only_model(model_id):
+        return "Heavyweight local judge lane available only for explicit manual review."
     if "qwen3-vl" in lower:
         return "Vision-capable Qwen lane; local visual reasoning is live, dedicated grounding/OCR is still partial."
     if "gpt-oss:120b" in lower:
@@ -1924,12 +1876,10 @@ class App:
                     "base_url": base,
                     "healthy": False,
                     "http_status": 0,
-                    "loaded_models": None,
                     "model_count": 0,
                     "models": [],
                     "model_docs": [],
                     "tag_docs": [],
-                    "ps_docs": [],
                 }
                 tags_doc = self.fetch_json_or_none(
                     base.rstrip("/") + "/api/tags", timeout_s=inventory_timeout_s
@@ -1989,13 +1939,6 @@ class App:
                     and row.get("http_status") == 0
                 ):
                     row["error"] = "inventory_unavailable"
-                ps_doc = self.fetch_json_or_none(
-                    base.rstrip("/") + "/api/ps", timeout_s=inventory_timeout_s
-                )
-                if ps_doc is not None:
-                    ps_models = list(ps_doc.get("models") or [])
-                    row["ps_docs"] = ps_models
-                    row["loaded_models"] = len(ps_models)
                 rows.append(row)
             return rows
 
@@ -2186,25 +2129,6 @@ class App:
                 base = str(row.get("base_url") or "").strip()
                 if not base:
                     continue
-                ps_doc = self.fetch_json_or_none(
-                    base.rstrip("/") + "/api/ps?scope=local", timeout_s=timeout_s
-                )
-                ps_rows = list((ps_doc or {}).get("models") or [])
-                active_docs = [
-                    item
-                    for item in ps_rows
-                    if isinstance(item, dict)
-                    and str(item.get("model") or item.get("name") or "").strip()
-                    == clean_model
-                ]
-                if active_docs:
-                    doc = active_docs[0]
-                    size = max(1, int(doc.get("size") or 0))
-                    size_vram = max(0, int(doc.get("size_vram") or 0))
-                    row["model_active"] = True
-                    row["model_vram_ratio"] = round(size_vram / size, 6)
-                    row["model_size_vram"] = size_vram
-                    continue
                 tags_doc = self.fetch_json_or_none(
                     base.rstrip("/") + "/api/tags", timeout_s=timeout_s
                 )
@@ -2217,23 +2141,8 @@ class App:
                     == clean_model
                     for item in tag_rows
                 )
-            model_aware = [
-                row
-                for row in healthy
-                if row.get("model_active") or row.get("model_available")
-            ]
-            if model_aware:
-                healthy = model_aware
-            healthy.sort(
-                key=lambda row: (
-                    0 if row.get("model_active") else 1,
-                    -float(row.get("model_vram_ratio") or 0.0),
-                    -int(row.get("model_size_vram") or 0),
-                    str(row.get("base_url") or ""),
-                )
-            )
-        else:
-            healthy.sort(key=lambda row: str(row.get("base_url") or ""))
+            healthy = [row for row in healthy if row.get("model_available")]
+        healthy.sort(key=lambda row: str(row.get("base_url") or ""))
         return [str(row["base_url"]) for row in healthy], rows
 
     def ollama_candidate_bases(
@@ -2245,16 +2154,7 @@ class App:
             healthy = [
                 row for row in healthy if model_id in set(row.get("models") or [])
             ]
-        healthy.sort(
-            key=lambda row: (
-                int(
-                    row.get("loaded_models")
-                    if row.get("loaded_models") is not None
-                    else 10**9
-                ),
-                str(row.get("base_url") or ""),
-            )
-        )
+        healthy.sort(key=lambda row: str(row.get("base_url") or ""))
         return [str(row["base_url"]) for row in healthy], rows
 
     def choose_ollama_base(
@@ -2314,9 +2214,14 @@ class App:
 
     def merged_ollama_ps(self, *, include_peers: bool = False) -> dict:
         models: list[dict] = []
-        for row in self.ollama_host_rows():
-            base = str(row.get("base_url") or "")
-            for model in row.get("ps_docs") or []:
+        for base in self.ollama_bases:
+            doc = self.fetch_json_or_none(
+                base.rstrip("/") + "/api/ps",
+                timeout_s=min(self.timeout_s, self.inventory_timeout_s),
+            )
+            for model in (doc or {}).get("models") or []:
+                if not isinstance(model, dict):
+                    continue
                 model_id = str(model.get("model") or model.get("name") or "").strip()
                 if not model_id or model_id in HIDDEN_MODEL_IDS:
                     continue
@@ -2843,6 +2748,9 @@ class App:
             model_row = dict(row)
             provider = str(model_row.get("provider") or "")
             model_row["provider"] = self.public_provider(provider)
+            model_row["manual_only"] = is_manual_only_model(
+                str(model_row.get("id") or "")
+            )
             if not self.expose_upstream_details:
                 model_row.pop("host", None)
                 model_row.pop("hosts", None)
@@ -3279,22 +3187,6 @@ class App:
             ).strip()
             if model_id and model_id.lower() not in catalog:
                 catalog[model_id.lower()] = row
-        ps_doc = self.merged_ollama_ps(include_peers=True)
-        active_hosts_by_model: dict[str, list[str]] = {}
-        for row in ps_doc.get("models") or []:
-            if not isinstance(row, dict):
-                continue
-            model_id = str(row.get("model") or row.get("name") or "").strip().lower()
-            if not model_id:
-                continue
-            host = str(row.get("gateway_host") or row.get("host") or "").strip()
-            if host:
-                active_hosts_by_model.setdefault(model_id, [])
-                if host not in active_hosts_by_model[model_id]:
-                    active_hosts_by_model[model_id].append(host)
-            else:
-                active_hosts_by_model.setdefault(model_id, [])
-        active_models = set(active_hosts_by_model)
         prefetch_doc = self.prefetch_jobs_doc(limit=50)
         warming_models = {
             str(row.get("model") or "").strip().lower()
@@ -3343,8 +3235,11 @@ class App:
                 model = str(model_row.get("model") or "").strip()
                 catalog_row = catalog.get(model.lower()) or {}
                 available = bool(catalog_row)
-                active = model.lower() in active_models
-                active_hosts = active_hosts_by_model.get(model.lower(), [])
+                # Loaded-model residency is intentionally observability-only.
+                # The warm-policy route can reason about installed inventory and
+                # its own prefetch jobs without polling Ollama's /api/ps endpoint.
+                active = False
+                active_hosts: list[str] = []
                 warming = model.lower() in warming_models
                 hosts = [
                     str(host)
@@ -3354,6 +3249,23 @@ class App:
                 if not hosts and str(catalog_row.get("host") or "").strip():
                     hosts = [str(catalog_row.get("host"))]
                 tool_only = dispatch in WARM_POLICY_TOOL_ONLY_DISPATCHES
+                manual_only = bool(
+                    catalog_row.get("manual_only")
+                ) or is_manual_only_model(model)
+                if manual_only:
+                    entry = self.warm_policy_entry(
+                        contract,
+                        model_row,
+                        action="manual_only",
+                        authority="manual_only",
+                        state="manual_only",
+                        available=available,
+                        active=False,
+                        hosts=hosts,
+                    )
+                    for lane in lane_ids:
+                        lanes[lane]["blocked_models"].append(entry)
+                    continue
                 if (
                     self.warm_policy_model_observe_only(model)
                     or status in WARM_POLICY_CANARY_STATUSES
@@ -3418,7 +3330,7 @@ class App:
                     ),
                 )
                 qwen_production_default = (
-                    "qwen3." in model.lower()
+                    model.lower().startswith("qwen3")
                     and str(model_row.get("role") or "").strip() == "default"
                 )
                 if qwen_production_default and (
@@ -3580,11 +3492,7 @@ class App:
             "route_posture": "blocked"
             if not policy_authorization.get("allowed")
             else route_posture,
-            "residency_posture": "warm"
-            if active_models
-            else "warming"
-            if warming_models
-            else "cold",
+            "residency_posture": "warm" if warming_models else "unknown",
             "source": {
                 "kind": "benchmark_packet",
                 "path": benchmark_path,
@@ -3592,7 +3500,8 @@ class App:
             },
             "catalog": {
                 "visible_model_count": len(catalog_rows),
-                "active_model_count": len(active_models),
+                "active_model_count": None,
+                "residency_observation": "available_only_via_api_ps",
             },
             "route_guardrails": {
                 "schema": "norman.norllama.route-guardrail-matrix.v1",
@@ -3727,9 +3636,9 @@ class App:
                 "policy_lifecycle": policy_lifecycle,
                 "mode": "qwen_first_local",
                 "frontdoor": "https://llm.home.arpa",
-                "preferred_chat_model": QWEN36_ROUTER_MODEL,
-                "preferred_code_model": QWEN36_CODE_MODEL,
-                "heavyweight_judge_model": QWEN35_JUDGE_MODEL,
+                "preferred_chat_model": QWEN3_CODER_MODEL,
+                "preferred_code_model": QWEN3_CODER_MODEL,
+                "manual_review_model": QWEN35_JUDGE_MODEL,
                 "embedding_model": DEFAULT_EMBEDDING_MODEL,
                 "rerank_model": DEFAULT_RERANK_MODEL,
                 "safety_model": QWEN3GUARD_MODEL,
@@ -3791,11 +3700,14 @@ class App:
             hosts = [str(item) for item in (row.get("hosts") or [])]
             capabilities = infer_model_capabilities(model_id, provider)
             access = infer_model_access(model_id, provider, capabilities)
+            manual_only = is_manual_only_model(model_id)
             model_row: dict[str, object] = {
                 "id": model_id,
                 "provider": self.public_provider(provider),
                 "capabilities": capabilities,
                 "access": access,
+                "manual_only": manual_only,
+                "tool_only": not access.startswith("unified_chat"),
                 "recommended_path": self.recommended_path(
                     provider, capabilities, access
                 ),
@@ -4942,10 +4854,19 @@ class App:
 
     def readyz(self) -> dict:
         identity = active_route_policy_identity(allow_missing_default=False)
+        routable_models = [
+            row
+            for row in self.catalog().get("models") or []
+            if isinstance(row, dict)
+            and str(row.get("access") or "").startswith("unified_chat")
+            and not bool(row.get("manual_only"))
+            and not bool(row.get("tool_only"))
+        ]
         ready = bool(
             identity.get("integrity_valid")
             and identity.get("default_route_allowed")
             and identity.get("lifecycle_state") in {"valid", "expiring_soon"}
+            and routable_models
         )
         return {
             "service": "norllama",
@@ -4954,6 +4875,7 @@ class App:
             "ready": ready,
             "time": now_iso(),
             "policy": identity,
+            "routable_model_count": len(routable_models),
             "features": self.feature_flags(),
         }
 
@@ -5166,6 +5088,17 @@ class Handler(BaseHTTPRequestHandler):
             attempts=attempts,
         )
 
+    def send_local_model_not_installed(self, model: str) -> None:
+        self.send_json(
+            HTTPStatus.UNPROCESSABLE_ENTITY,
+            {
+                "ok": False,
+                "error": "local_model_not_installed",
+                "model": model,
+                "candidates": [],
+            },
+        )
+
     def send_html(self, status: int, body_text: str) -> None:
         body = body_text.encode("utf-8")
         self.send_response(status)
@@ -5328,11 +5261,6 @@ class Handler(BaseHTTPRequestHandler):
                 is_peer = bool(peer_bases and normalize_base_url(base) in peer_bases)
                 if is_peer:
                     request_headers = self.peer_forward_headers(request_headers)
-                self.maybe_evict_heavy_judge_for_interactive_load(
-                    base,
-                    requested_model=model_hint or "",
-                    is_peer=is_peer,
-                )
                 result = self.request_upstream(
                     base,
                     upstream_path,
@@ -5381,94 +5309,6 @@ class Handler(BaseHTTPRequestHandler):
                 "X-Norllama-Upstream": last_base,
                 "X-Norllama-Attempts": ",".join(attempted),
             },
-        )
-
-    def resident_models_for_base(self, base: str, *, is_peer: bool) -> set[str]:
-        path = "/api/ps?scope=local" if is_peer else "/api/ps"
-        headers = self.peer_forward_headers({}) if is_peer else {}
-        status, response_headers, response_body = self.request_upstream(
-            base,
-            path,
-            headers=headers or None,
-            method="GET",
-            timeout_s=min(self.app.timeout_s, self.app.inventory_timeout_s),
-        )
-        content_type = response_headers.get("Content-Type", "application/json")
-        if not (200 <= int(status) < 300) or "json" not in content_type.lower():
-            return set()
-        try:
-            ps_doc = json.loads(response_body.decode("utf-8"))
-        except Exception:
-            return set()
-        if not isinstance(ps_doc, dict):
-            return set()
-        return resident_model_ids_from_ps(ps_doc)
-
-    def maybe_evict_heavy_judge_for_interactive_load(
-        self,
-        base: str,
-        *,
-        requested_model: str,
-        is_peer: bool,
-    ) -> None:
-        clean_model = str(requested_model or "").strip()
-        if clean_model not in {QWEN36_ROUTER_MODEL, QWEN36_CODE_MODEL}:
-            return
-        try:
-            resident_models = self.resident_models_for_base(base, is_peer=is_peer)
-        except Exception as exc:
-            self.merge_activity_extra(
-                {
-                    "load_pressure_guard": "ps_probe_failed",
-                    "load_pressure_guard_error": str(exc)[:200],
-                    "load_pressure_requested_model": clean_model,
-                }
-            )
-            return
-        if not should_evict_heavy_judge_for_interactive_load(
-            clean_model, resident_models
-        ):
-            return
-        evict_body = json.dumps(
-            {
-                "model": QWEN35_JUDGE_MODEL,
-                "timeout_s": 30,
-                "reason": "interactive_qwen36_load_pressure",
-            }
-        ).encode("utf-8")
-        evict_path = "/v1/evict" if is_peer else "/api/generate"
-        evict_headers = {"Content-Type": "application/json"}
-        if is_peer:
-            evict_headers = self.peer_forward_headers(evict_headers)
-        if not is_peer:
-            evict_body = json.dumps(
-                {
-                    "model": QWEN35_JUDGE_MODEL,
-                    "prompt": "",
-                    "stream": False,
-                    "keep_alive": 0,
-                }
-            ).encode("utf-8")
-        started = time.perf_counter()
-        status, _response_headers, _response_body = self.request_upstream(
-            base,
-            evict_path,
-            headers=evict_headers,
-            body=evict_body,
-            method="POST",
-            timeout_s=30,
-        )
-        self.merge_activity_extra(
-            {
-                "load_pressure_guard": "evicted_heavy_judge",
-                "load_pressure_requested_model": clean_model,
-                "load_pressure_evicted_model": QWEN35_JUDGE_MODEL,
-                "load_pressure_evict_status": int(status),
-                "load_pressure_evict_duration_ms": round(
-                    (time.perf_counter() - started) * 1000, 3
-                ),
-                "load_pressure_worker": self.app.host_alias(base),
-            }
         )
 
     def request_upstream(
@@ -5540,7 +5380,7 @@ class Handler(BaseHTTPRequestHandler):
         self, model: str
     ) -> tuple[list[str], list[dict], set[str]]:
         bases, rows = self.app.ollama_candidate_bases(model or None)
-        peer_bases, peer_rows = self.peer_candidate_bases()
+        peer_bases, peer_rows = self.peer_candidate_bases(model or None)
         return (
             bases + peer_bases,
             rows + peer_rows,
@@ -6284,6 +6124,20 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         self._model_hint = model
+        if is_manual_only_model(model):
+            self.send_json(
+                HTTPStatus.FORBIDDEN,
+                {
+                    "ok": False,
+                    "error": "manual_only_model",
+                    "model": model,
+                    "detail": (
+                        "This model is available only for explicit manual review; "
+                        "automatic prefetch and warming are disabled."
+                    ),
+                },
+            )
+            return
         keep_alive = str(payload.get("keep_alive") or "30m").strip() or "30m"
         num_ctx_raw = payload.get("num_ctx")
         num_ctx = (
@@ -6545,23 +6399,20 @@ class Handler(BaseHTTPRequestHandler):
                 normalized_payload, changed = normalize_chat_payload_for_local_qwen(
                     normalized_payload
                 )
-                normalized_payload, keep_alive_changed = apply_model_keep_alive_default(
-                    normalized_payload
-                )
-                changed = changed or keep_alive_changed
                 if changed:
                     body = json.dumps(normalized_payload).encode("utf-8")
         bases, rows = self.app.ollama_candidate_bases(model)
         peer_bases, peer_rows = self.peer_candidate_bases(model)
         candidates = bases + peer_bases
         if not candidates:
+            if model:
+                self.send_local_model_not_installed(model)
+                return
             self.send_json(
                 HTTPStatus.BAD_GATEWAY,
                 {
                     "ok": False,
-                    "error": "ollama_model_unavailable"
-                    if model
-                    else "ollama_unavailable",
+                    "error": "ollama_unavailable",
                     "model": model,
                     "candidates": self.app.public_candidate_rows(
                         "ollama", rows + peer_rows
@@ -6599,11 +6450,6 @@ class Handler(BaseHTTPRequestHandler):
             if is_peer:
                 headers = self.peer_forward_headers(headers)
             try:
-                self.maybe_evict_heavy_judge_for_interactive_load(
-                    base,
-                    requested_model=model,
-                    is_peer=is_peer,
-                )
                 status, response_headers, response_body = self.request_upstream(
                     base,
                     "/api/chat",
@@ -6761,13 +6607,14 @@ class Handler(BaseHTTPRequestHandler):
         peer_bases, peer_rows = self.peer_candidate_bases(model or None)
         candidates = bases + peer_bases
         if not candidates:
+            if model:
+                self.send_local_model_not_installed(model)
+                return
             self.send_json(
                 HTTPStatus.BAD_GATEWAY,
                 {
                     "ok": False,
-                    "error": "ollama_model_unavailable"
-                    if model
-                    else "ollama_unavailable",
+                    "error": "ollama_unavailable",
                     "model": model or None,
                     "candidates": self.app.public_candidate_rows(
                         "ollama", rows + peer_rows
@@ -7611,16 +7458,17 @@ class Handler(BaseHTTPRequestHandler):
             )
             model = self.extract_ollama_model(body)
             bases, rows = self.app.ollama_candidate_bases(model)
-            peer_bases, peer_rows = self.peer_candidate_bases()
+            peer_bases, peer_rows = self.peer_candidate_bases(model)
             candidates = bases + peer_bases
             if not candidates:
+                if model:
+                    self.send_local_model_not_installed(model)
+                    return
                 self.send_json(
                     HTTPStatus.BAD_GATEWAY,
                     {
                         "ok": False,
-                        "error": "ollama_model_unavailable"
-                        if model
-                        else "ollama_unavailable",
+                        "error": "ollama_unavailable",
                         "model": model,
                         "candidates": self.app.public_candidate_rows(
                             "ollama", rows + peer_rows

@@ -4,6 +4,7 @@ from app.services.reasoning_orchestrator import (
     kpi_background_loop_plan,
     plan_reasoning_turn,
 )
+from app.services.work_classification import classify_work
 
 
 def _classification(**overrides):
@@ -121,6 +122,30 @@ def test_reasoning_receipt_tracks_skipped_required_tools_until_observed():
     assert observed["completion_state"] == "observed"
     assert observed["receipt_complete"] is True
     assert observed["skipped_required_tools"] == []
+
+
+def test_reasoning_plan_and_receipt_retain_only_valid_work_classification():
+    work_classification = classify_work(task_kind="plan")
+    plan = plan_reasoning_turn(
+        prompt="plan the next local-first routing improvement",
+        classification=_classification(
+            intent="planning_or_architecture",
+            task_kind="plan",
+        ),
+        work_classification=work_classification,
+    )
+
+    assert plan["work_classification"] == work_classification
+    assert build_reasoning_receipt(plan)["work_classification"] == work_classification
+
+    tampered = dict(work_classification)
+    tampered["operator_summary"] = "force the cloud route"
+    untrusted_plan = plan_reasoning_turn(
+        prompt="plan safely",
+        classification=_classification(task_kind="plan"),
+        work_classification=tampered,
+    )
+    assert untrusted_plan["work_classification"] == {}
 
 
 def test_kpi_background_loop_is_local_only_and_receipted():

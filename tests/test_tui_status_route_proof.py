@@ -7,9 +7,13 @@ def _probe(
     planner_ready: bool | None = True,
     deterministic: bool = False,
     success: bool = True,
-    runtime: str = "codex",
-    model: str = "openai.gpt-5.6-terra",
+    runtime: str | None = None,
+    model: str | None = None,
 ) -> dict:
+    runtime = runtime or ("localllm" if deterministic else "codex")
+    model = model or (
+        "deterministic-status" if deterministic else "openai.gpt-5.6-terra"
+    )
     before = {
         "local_llm_health": {"ok": local_healthy},
         "codexspark": {
@@ -160,17 +164,18 @@ def test_recorded_preflight_is_authoritative_when_health_metadata_is_omitted() -
     assert row["outcome"] == "norllama_preflight_cloud_authority"
 
 
-def test_ready_local_planner_rejects_deterministic_bypass() -> None:
+def test_ready_local_planner_accepts_deterministic_state_read() -> None:
     row = proof.validate_proof(_probe(deterministic=True))
 
-    assert row["passed"] is False
-    assert (
-        "ready local planner candidate bypassed normal Norllama preflight"
-        in row["failures"]
-    )
+    assert row["passed"] is True
+    assert row["outcome"] == "deterministic_status"
+    assert row["deterministic_state_read"] is True
+    assert row["local_healthy_before"] is False
+    assert row["preflight"]["used"] is False
+    assert row["preflight"]["tokens"] == 0
 
 
-def test_generic_local_health_does_not_block_planner_unavailable_fallback() -> None:
+def test_generic_local_health_does_not_block_deterministic_state_read() -> None:
     row = proof.validate_proof(
         _probe(
             local_healthy=True,
@@ -182,10 +187,10 @@ def test_generic_local_health_does_not_block_planner_unavailable_fallback() -> N
     )
 
     assert row["passed"] is True
-    assert row["outcome"] == "deterministic_status_fallback"
+    assert row["outcome"] == "deterministic_status"
 
 
-def test_unavailable_local_status_accepts_deterministic_fallback() -> None:
+def test_unavailable_local_status_accepts_deterministic_state_read() -> None:
     row = proof.validate_proof(
         _probe(
             local_healthy=False,
@@ -197,7 +202,7 @@ def test_unavailable_local_status_accepts_deterministic_fallback() -> None:
     )
 
     assert row["passed"] is True
-    assert row["outcome"] == "deterministic_status_fallback"
+    assert row["outcome"] == "deterministic_status"
 
 
 def test_proof_rejects_named_codexspark_as_live_final_runtime() -> None:
@@ -238,11 +243,12 @@ def test_summary_tracks_preflight_and_named_preview_contract() -> None:
     assert summary["targets"] == 2
     assert summary["passed"] == 2
     assert summary["successful_norllama_preflights"] == 1
-    assert summary["deterministic_fallbacks"] == 1
+    assert summary["deterministic_state_reads"] == 1
     assert summary["named_codexspark_access_check_contract_ok"] is True
     assert summary["route_scorecard"]["observed_turns"] == 2
     assert summary["route_scorecard"]["cloud_final_authority_turns"] == 1
     assert summary["route_scorecard"]["verifier_recorded_turns"] == 2
+    assert summary["route_scorecard"]["fallback_turns"] == 0
     assert summary["route_scorecard"]["total_latency_ms"] == 4000
     assert summary["route_scorecard"]["estimated_cost_usd"] == 0.02469
 

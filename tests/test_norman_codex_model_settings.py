@@ -208,6 +208,53 @@ def test_release_preflight_passes_configured_inner_timeout(
     assert captured["timeout"] == 20
 
 
+def test_release_preflight_reports_blocking_detail_and_recovery(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_PREFLIGHT_MODE="required",
+    )
+    helper = tmp_path / "tui_release_readiness.py"
+    helper.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+    module.STATE_DIR.mkdir(parents=True, exist_ok=True)
+    (module.STATE_DIR / "release_readiness.json").write_text(
+        json.dumps(
+            {
+                "checks": [
+                    {
+                        "id": "bedrock_credentials_profile_missing",
+                        "blocking": True,
+                        "detail": (
+                            "Selected Bedrock route has no configured AWS "
+                            "credential profile."
+                        ),
+                        "recovery": (
+                            "Set NORMAN_CODEX_STANDARD_AWS_PROFILE, then "
+                            "restart the managed TUI."
+                        ),
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(module, "_tui_release_readiness_script", lambda: helper)
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stdout="", stderr=""),
+    )
+
+    result = module.codex_launch_preflight("default")
+
+    assert result["allowed"] is False
+    assert "no configured AWS credential profile" in result["message"]
+    assert "Set NORMAN_CODEX_STANDARD_AWS_PROFILE" in result["message"]
+
+
 def test_switchboard_exposes_lightweight_version_endpoint() -> None:
     source = WEB_SCRIPT_PATH.read_text(encoding="utf-8")
 
@@ -544,7 +591,7 @@ def test_switchboard_working_recap_uses_sanitized_norllama_packet(
     ]
 
 
-def test_switchboard_planner_preflight_prefers_fleet_qwen_lane(
+def test_switchboard_planner_preflight_uses_resident_coder_policy(
     monkeypatch, tmp_path
 ) -> None:
     module = _load_norman_codex_web(
@@ -568,15 +615,15 @@ def test_switchboard_planner_preflight_prefers_fleet_qwen_lane(
     receipt = module.local_planner_preflight("Check the current TUI route.")
 
     assert receipt["used"] is True
-    assert receipt["model"] == "qwen3.6:35b-a3b-q4_K_M"
-    assert receipt["candidate_policy"] == "fleet-planner-lane"
+    assert receipt["model"] == "qwen3-coder:30b-a3b-q4_K_M"
+    assert receipt["candidate_policy"] == "resident-coder-policy"
     assert calls[0][3] == {
         "timeout_seconds": 18,
         "max_output_tokens": 96,
     }
 
 
-def test_switchboard_planner_readiness_prefers_fleet_qwen_lane(
+def test_switchboard_planner_readiness_uses_resident_coder_policy(
     monkeypatch, tmp_path
 ) -> None:
     module = _load_norman_codex_web(
@@ -593,16 +640,16 @@ def test_switchboard_planner_readiness_prefers_fleet_qwen_lane(
     readiness = module.local_planner_preflight_readiness()
 
     assert readiness["ready"] is True
-    assert readiness["model"] == "qwen3.6:35b-a3b-q4_K_M"
+    assert readiness["model"] == "qwen3-coder:30b-a3b-q4_K_M"
     assert readiness["endpoint"] == "http://local-llm:18151"
-    assert readiness["candidate_policy"] == "fleet-planner-lane"
+    assert readiness["candidate_policy"] == "resident-coder-policy"
     assert readiness["candidate_diagnostics"][-1]["status"] == "ready"
 
 
 def test_switchboard_planner_readiness_reports_active_cooldown(
     monkeypatch, tmp_path
 ) -> None:
-    planner_model = "qwen3.6:35b-a3b-q4_K_M"
+    planner_model = "qwen3-coder:30b-a3b-q4_K_M"
     module = _load_norman_codex_web(
         monkeypatch,
         tmp_path,
@@ -695,7 +742,7 @@ def test_switchboard_planner_verifier_is_bounded_and_advisory(
         "planner reported partial archive recall",
         "planner confidence 0.42 is below 0.72",
     ]
-    assert calls[0][1] == "qwen3.5:122b-a10b-q4_K_M"
+    assert calls[0][1] == "qwen3-coder:30b-a3b-q4_K_M"
     assert calls[0][3] == {
         "timeout_seconds": 18,
         "max_output_tokens": 96,
@@ -713,7 +760,7 @@ def test_switchboard_planner_timeout_cooldown_clears_after_one_minute(
         NORMAN_LOCAL_LLM_ROUTE_COOLDOWN_SECONDS="900",
         NORMAN_LOCAL_PLANNER_PREFLIGHT_COLD_LOAD_COOLDOWN_SECONDS="60",
     )
-    model = "qwen3.6:35b-a3b-q4_K_M"
+    model = "qwen3-coder:30b-a3b-q4_K_M"
     now = int(time.time())
 
     assert (
@@ -1912,8 +1959,15 @@ def test_service_tier_controls_are_explicit_and_alias_legacy_fast(
     assert module.normalize_service_tier("flex") == "flex"
     assert module.normalize_service_tier("fast") == "priority"
     assert module.service_tier_execution_tier("auto") == "flex"
-    assert module.service_tier_config_args("auto") == ["-c", 'service_tier="flex"']
+    assert module.service_tier_config_args("auto") == [
+        "-c",
+        'model_provider="openai"',
+        "-c",
+        'service_tier="flex"',
+    ]
     assert module.service_tier_config_args("priority") == [
+        "-c",
+        'model_provider="openai"',
         "-c",
         'service_tier="priority"',
     ]
@@ -1933,8 +1987,9 @@ def test_service_tier_default_can_be_set_to_flex(monkeypatch, tmp_path) -> None:
 def test_bedrock_standard_profile_routes_standard_and_keeps_flex_direct(
     monkeypatch, tmp_path
 ) -> None:
-    monkeypatch.delenv("AWS_PROFILE", raising=False)
-    monkeypatch.delenv("AWS_REGION", raising=False)
+    monkeypatch.setenv("AWS_PROFILE", "ambient-aws-profile")
+    monkeypatch.setenv("AWS_REGION", "us-west-1")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-west-1")
     monkeypatch.setenv("OPENAI_API_KEY", "should-not-reach-chatgpt-codex")
     module = _load_norman_codex_web(
         monkeypatch,
@@ -1991,6 +2046,13 @@ def test_bedrock_standard_profile_routes_standard_and_keeps_flex_direct(
         "AWS_PROFILE": "ob-traqline-admin",
         "AWS_REGION": "us-east-2",
     }
+    direct_provider_env = {
+        "AWS_PROFILE": "ambient-aws-profile",
+        "AWS_REGION": "us-west-1",
+        "AWS_DEFAULT_REGION": "us-west-1",
+    }
+    module.apply_codex_provider_environment(direct_provider_env, "flex")
+    assert direct_provider_env == {}
 
     captured: list[tuple[list[str], dict[str, str]]] = []
 
@@ -2022,9 +2084,11 @@ def test_bedrock_standard_profile_routes_standard_and_keeps_flex_direct(
     flex_cmd, flex_env = captured[-1]
     assert "--profile-v2" not in flex_cmd
     assert flex_cmd[flex_cmd.index("-m") + 1] == "gpt-5.5"
+    assert 'model_provider="openai"' in flex_cmd
     assert 'service_tier="flex"' in flex_cmd
     assert flex_env.get("AWS_PROFILE") is None
     assert flex_env.get("AWS_REGION") is None
+    assert flex_env.get("AWS_DEFAULT_REGION") is None
     assert "OPENAI_API_KEY" not in flex_env
 
     module._execute_codex_prompt(
@@ -3155,6 +3219,121 @@ def test_mixed_unpriced_direct_and_bedrock_history_prefers_usd_display(
     assert estimate["usd"] > 0
 
 
+def test_monthly_usage_meter_summarizes_current_cycle_only(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_PLAN_MONTHLY_CREDIT_ALLOWANCE="100",
+    )
+    bounds = module.usage_billing_cycle_bounds()
+    current_entry_at = bounds["started_at"] + 60
+    prior_entry_at = bounds["started_at"] - 60
+
+    summary = module.usage_billing_cycle_summary(
+        [
+            {
+                "finished_at": current_entry_at,
+                "runtime": "codex",
+                "model": "gpt-5.5",
+                "billing_owner": "kristopher",
+                "agent_group": "home",
+                "codex_auth_mode": "chatgpt",
+                "provider_surface": "openai-direct",
+                "charge_ledger_kind": "chatgpt_codex_credit_estimate",
+                "charge_display_unit": "credits",
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+            },
+            {
+                "finished_at": current_entry_at,
+                "runtime": "codex",
+                "model": "gpt-5.5",
+                "billing_owner": "kristopher",
+                "agent_group": "home",
+                "codex_auth_mode": "api-key",
+                "provider_surface": "openai-direct",
+                "charge_ledger_kind": "api_rate_card_estimate",
+                "charge_display_unit": "usd_equivalent",
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+            },
+            {
+                "finished_at": current_entry_at,
+                "runtime": "localllm",
+                "provider_surface": "norllama",
+                "charge_ledger_kind": "local_token_estimate",
+                "charge_display_unit": "tokens",
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+            },
+            {
+                "finished_at": prior_entry_at,
+                "runtime": "codex",
+                "model": "gpt-5.5",
+                "billing_owner": "kristopher",
+                "agent_group": "home",
+                "codex_auth_mode": "chatgpt",
+                "provider_surface": "openai-direct",
+                "charge_ledger_kind": "chatgpt_codex_credit_estimate",
+                "charge_display_unit": "credits",
+                "input_tokens": 10_000,
+                "output_tokens": 1_000,
+            },
+        ]
+    )
+
+    assert summary["kind"] == "calendar_month"
+    assert summary["entries"] == 3
+    assert summary["plan"] == {
+        "credits": 0.2,
+        "entries": 1,
+        "configured_entries": 1,
+        "allowance_credits": 100.0,
+    }
+    assert summary["metered"]["entries"] == 1
+    assert summary["metered"]["configured_entries"] == 1
+    assert summary["metered"]["usd"] > 0
+
+
+def test_initial_monthly_usage_meter_only_shows_fill_for_configured_allowance(
+    monkeypatch, tmp_path
+) -> None:
+    snapshot = {
+        "usage": {
+            "billing": {
+                "cycle": {
+                    "label": "Aug 01 to Sep 01",
+                    "timezone": "CDT",
+                    "plan": {"credits": 75},
+                    "metered": {"usd": 1.25},
+                }
+            }
+        }
+    }
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+
+    unbounded = module._initial_usage_meter(snapshot)
+
+    assert unbounded["has_fill"] is False
+    assert unbounded["fill_pct"] == 0
+    assert unbounded["plan_label"] == "Plan ~75 cr"
+    assert unbounded["metered_label"] == "Metered ~$1.25"
+
+    allowance_module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_PLAN_MONTHLY_CREDIT_ALLOWANCE="100",
+    )
+    bounded = allowance_module._initial_usage_meter(snapshot)
+
+    assert bounded["has_fill"] is True
+    assert bounded["fill_pct"] == 75
+    assert bounded["tone"] == "warn"
+    assert bounded["plan_label"] == "Plan 75%"
+
+
 def test_usage_entry_keeps_append_only_ledger_when_ui_cache_trims(
     monkeypatch, tmp_path
 ) -> None:
@@ -3922,7 +4101,7 @@ def test_api_ask_parses_interlace_mode_before_starting_prompt(
     }
 
 
-def test_api_ask_completes_explicit_status_when_planner_preflight_is_disabled(
+def test_api_ask_completes_explicit_deterministic_status_without_model_call(
     monkeypatch, tmp_path
 ) -> None:
     receipt_path = tmp_path / "route-receipts" / "status-fallback.jsonl"
@@ -3991,7 +4170,7 @@ def test_api_ask_completes_explicit_status_when_planner_preflight_is_disabled(
     assert receipts[-1]["output_tokens"] == 0
 
 
-def test_active_prompt_never_uses_keystone_deterministic_status_fallback(
+def test_active_prompt_never_uses_deterministic_status_read(
     monkeypatch, tmp_path
 ) -> None:
     module = _load_norman_codex_web(
@@ -4004,6 +4183,182 @@ def test_active_prompt_never_uses_keystone_deterministic_status_fallback(
     assert module.deterministic_status_prompt_allowed("Status update?", []) is False
 
     module.ACTIVE_PROMPT_THREAD = None
+
+
+def test_api_ask_completes_allowlisted_command_without_model_call(
+    monkeypatch, tmp_path
+) -> None:
+    receipt_path = tmp_path / "route-receipts" / "deterministic-command.jsonl"
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_ROUTE_RECEIPTS_ENABLED="1",
+        NORMAN_CODEX_ROUTE_RECEIPT_PATH=str(receipt_path),
+    )
+    start_calls = []
+    executed: list[list[str]] = []
+    monkeypatch.setattr(
+        module,
+        "start_web_prompt",
+        lambda *_args, **_kwargs: start_calls.append(True)
+        or (_ for _ in ()).throw(
+            AssertionError("allowlisted command should not start a model prompt")
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "execute_deterministic_command",
+        lambda argv: (
+            executed.append(argv)
+            or "Command `pwd` completed with exit code 0.\n/test-workspace",
+            True,
+        ),
+    )
+
+    server = module.ThreadingHTTPServer(("127.0.0.1", 0), module.Handler)
+    thread = threading.Thread(target=server.handle_request, daemon=True)
+    thread.start()
+    try:
+        body = urllib.parse.urlencode(
+            {
+                "message": "run pwd",
+                "speed": "fast",
+                "detail": "2",
+                "service_tier": "default",
+                "job_budget": "quick",
+                "runtime": "codex",
+                "model": "gpt-5.5",
+                "submission_id": "deterministic-command-001",
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_port}/api/ask",
+            data=body,
+            headers={"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert start_calls == []
+    assert executed == [["pwd"]]
+    assert payload["accepted"] is True
+    assert payload["queued"] is False
+    assert payload["running"] is False
+    assert payload["submission_id"] == "deterministic-command-001"
+    assert payload["submission_state"] == "completed"
+    assert payload["snapshot"]["state"] == "ok"
+    history = module.load_history(limit=1)
+    assert history[-1]["runtime"] == "localllm"
+    assert history[-1]["model"] == "deterministic-command"
+    assert history[-1]["usage"]["total_tokens"] == 0
+    receipts = [
+        json.loads(line)
+        for line in module.ROUTE_RECEIPT_PATH.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert receipts[-1]["requested_action"] == "command"
+    assert receipts[-1]["selected_model_tier"] == "deterministic_tool"
+    assert receipts[-1]["allowed_role"] == "deterministic_read"
+    assert receipts[-1]["decision_class"] == "deterministic"
+    assert receipts[-1]["frontier_review_required"] is False
+    assert receipts[-1]["frontier_calls_avoided"] == 1
+    assert receipts[-1]["local_calls_avoided"] == 1
+
+
+def test_deterministic_command_parser_has_exact_safe_boundaries(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+
+    assert module.deterministic_command_request("run pwd") == ["pwd"]
+    assert module.deterministic_command_request("`date -Is`") == ["date", "-Is"]
+    assert module.deterministic_command_request("run git status --short") == [
+        "git",
+        "status",
+        "--short",
+    ]
+    for prompt in (
+        "git status",
+        "git status --short --ignored",
+        "run git status --short; pwd",
+        "run pwd && date",
+        "run pwd\nrun date",
+        "please run pwd",
+        "status? run pwd",
+    ):
+        assert module.deterministic_command_request(prompt) is None
+
+    attachment = [{"token": "attachment-1", "path": str(tmp_path / "note.txt")}]
+    assert (
+        module.deterministic_command_prompt_allowed(
+            "run pwd", attachment, route_lock=False
+        )
+        is False
+    )
+    assert (
+        module.deterministic_command_prompt_allowed("run pwd", [], route_lock=True)
+        is False
+    )
+    module.ACTIVE_PROMPT_THREAD = SimpleNamespace(is_alive=lambda: True)
+    assert module.deterministic_command_prompt_allowed("run pwd", []) is False
+    module.ACTIVE_PROMPT_THREAD = None
+
+
+def test_status_json_replacement_keeps_route_proof_readable_during_write(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    route = module.deterministic_command_cost_route()
+    assert route
+    original = module.default_status_meta()
+    original.update(
+        {
+            "status_message": "Original route proof.",
+            "running_runtime": "localllm",
+            "running_model": "deterministic-command",
+            "running_service_tier": "default",
+            "running_cost_route": route,
+        }
+    )
+    module.save_status_meta(original)
+
+    replacement_started = threading.Event()
+    release_replacement = threading.Event()
+    original_replace = module.os.replace
+    failures = []
+
+    def delayed_replace(source, destination):
+        if pathlib.Path(destination) == module.STATUS_PATH:
+            replacement_started.set()
+            release_replacement.wait(timeout=2)
+        return original_replace(source, destination)
+
+    def write_updated_status() -> None:
+        try:
+            updated = module.load_status_meta()
+            updated["status_message"] = "Updated route proof."
+            module.save_status_meta(updated)
+        except BaseException as exc:  # pragma: no cover - surfaced below
+            failures.append(exc)
+
+    monkeypatch.setattr(module.os, "replace", delayed_replace)
+    writer = threading.Thread(target=write_updated_status, daemon=True)
+    writer.start()
+    assert replacement_started.wait(timeout=2)
+
+    observed = module.load_status_meta()
+    assert observed["status_message"] == "Original route proof."
+    assert observed["running_cost_route"] == route
+
+    release_replacement.set()
+    writer.join(timeout=2)
+    assert not writer.is_alive()
+    assert failures == []
+    assert module.load_status_meta()["status_message"] == "Updated route proof."
 
 
 def test_api_last_response_returns_full_durable_reply(monkeypatch, tmp_path) -> None:

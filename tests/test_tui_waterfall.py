@@ -70,6 +70,68 @@ def test_deterministic_status_has_a_zero_token_local_route_proof():
     assert sanitize_tui_waterfall_decision(decision) == decision
 
 
+def test_deterministic_command_has_a_zero_token_local_route_proof():
+    decision = build_decision(
+        requested_runtime="localllm",
+        requested_model="deterministic-command",
+        requested_service_tier="default",
+        base_runtime="localllm",
+        base_model="deterministic-command",
+        base_service_tier="default",
+        subscription={},
+        norllama_available=False,
+        norllama_safe_final=False,
+        deterministic_command=True,
+    )
+
+    assert decision["waterfall_stage"] == "deterministic_command"
+    assert decision["route_source"] == "deterministic_tui_command"
+    assert decision["charge_basis"] == "zero_token_deterministic"
+    assert decision["selected_runtime"] == "localllm"
+    assert decision["selected_model"] == "deterministic-command"
+    assert decision["selected_service_tier"] == "default"
+    assert sanitize_tui_waterfall_decision(decision) == decision
+
+
+def test_deterministic_command_requires_an_exact_unlocked_route_proof():
+    decision = build_decision(
+        requested_runtime="localllm",
+        requested_model="deterministic-command",
+        requested_service_tier="default",
+        base_runtime="localllm",
+        base_model="deterministic-command",
+        base_service_tier="default",
+        subscription={},
+        norllama_available=False,
+        norllama_safe_final=False,
+        deterministic_command=True,
+    )
+
+    for tampered in (
+        {**decision, "selected_model": "deterministic-status"},
+        {**decision, "selected_service_tier": "flex"},
+        {**decision, "requested_model": "gpt-5.6"},
+        {**decision, "route_lock": True},
+    ):
+        assert sanitize_tui_waterfall_decision(tampered) == {}
+    assert (
+        build_decision(
+            requested_runtime="localllm",
+            requested_model="deterministic-command",
+            requested_service_tier="default",
+            base_runtime="localllm",
+            base_model="deterministic-command",
+            base_service_tier="default",
+            subscription={},
+            norllama_available=False,
+            norllama_safe_final=False,
+            deterministic_status=True,
+            deterministic_command=True,
+        )
+        == {}
+    )
+
+
 def test_verified_exhaustion_uses_norllama_before_bedrock():
     decision = build_decision(subscription=exhausted_capacity())
 

@@ -32,7 +32,7 @@ from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 from urllib import error as urllib_error, request as urllib_request
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 
@@ -135,6 +135,33 @@ def deterministic_status_cost_route() -> dict[str, Any]:
     return validate_cost_route_proof(decision, runtime, model, service_tier)
 
 
+def deterministic_command_cost_route() -> dict[str, Any]:
+    """Build the proof for an allowlisted read-only TUI command."""
+    if build_tui_waterfall is None:
+        return {}
+    runtime = "localllm"
+    model = "deterministic-command"
+    service_tier = "default"
+    decision = build_tui_waterfall(
+        requested_runtime=runtime,
+        requested_model=model,
+        requested_service_tier=service_tier,
+        base_runtime=runtime,
+        base_model=model,
+        base_service_tier=service_tier,
+        bedrock_runtime="codex",
+        bedrock_model=model,
+        bedrock_service_tier="bedrock-emergency",
+        route_lock=False,
+        subscription={},
+        norllama_available=False,
+        norllama_safe_final=False,
+        bedrock_available=False,
+        deterministic_command=True,
+    )
+    return validate_cost_route_proof(decision, runtime, model, service_tier)
+
+
 def sanitize_route_bootstrap_metadata(
     value: Any,
     runtime: Any,
@@ -197,10 +224,305 @@ def sanitize_route_bootstrap_metadata(
     }
 
 
+WORK_CLASSIFICATION_SCHEMA = "norman.work-classification.v1"
+
+_WORK_CLASS_PROPERTIES = {
+    "deterministic": {
+        "execution_authority": "none",
+        "review_required": False,
+        "human_approval_required": False,
+        "evidence_required": "deterministic_receipt",
+    },
+    "local": {
+        "execution_authority": "local",
+        "review_required": False,
+        "human_approval_required": False,
+        "evidence_required": "none",
+    },
+    "local_review": {
+        "execution_authority": "local",
+        "review_required": True,
+        "human_approval_required": False,
+        "evidence_required": "verification_receipt",
+    },
+    "frontier": {
+        "execution_authority": "frontier",
+        "review_required": True,
+        "human_approval_required": False,
+        "evidence_required": "frontier_review",
+    },
+    "approval_required": {
+        "execution_authority": "none",
+        "review_required": True,
+        "human_approval_required": True,
+        "evidence_required": "approval_receipt",
+    },
+}
+
+_VALID_WORK_CLASS_REASONS = {
+    "trusted_deterministic_status",
+    "trusted_deterministic_command",
+    "trusted_approval_requirement",
+    "external_mutation",
+    "destructive_risk",
+    "high_risk",
+    "forced_frontier_route",
+    "locked_frontier_route",
+    "effective_frontier_runtime",
+    "local_review_code",
+    "local_review_kpi",
+    "local_review_plan",
+    "local_review_scout",
+    "local_review_verify",
+    "local_safe_analysis",
+}
+
+_WORK_CLASS_REQUIRED_REASONS = {
+    "deterministic": {
+        "trusted_deterministic_status",
+        "trusted_deterministic_command",
+    },
+    "approval_required": {
+        "trusted_approval_requirement",
+        "external_mutation",
+        "destructive_risk",
+        "high_risk",
+    },
+    "frontier": {
+        "forced_frontier_route",
+        "locked_frontier_route",
+        "effective_frontier_runtime",
+    },
+    "local_review": {
+        "local_review_code",
+        "local_review_kpi",
+        "local_review_plan",
+        "local_review_scout",
+        "local_review_verify",
+    },
+    "local": {"local_safe_analysis"},
+}
+
+_WORK_CLASS_REASON_LABELS = {
+    "trusted_deterministic_status": "trusted status handler",
+    "trusted_deterministic_command": "trusted read-only command handler",
+    "trusted_approval_requirement": "approval gate",
+    "external_mutation": "external mutation risk",
+    "destructive_risk": "destructive risk",
+    "high_risk": "high-risk work",
+    "forced_frontier_route": "explicit frontier route",
+    "locked_frontier_route": "locked frontier route",
+    "effective_frontier_runtime": "effective frontier runtime",
+    "local_review_code": "local code review",
+    "local_review_kpi": "local KPI review",
+    "local_review_plan": "local planning review",
+    "local_review_scout": "local scout review",
+    "local_review_verify": "local verification review",
+    "local_safe_analysis": "local analysis",
+}
+
+_WORK_CLASS_FRONTIER_RUNTIMES = {
+    "anthropic",
+    "aws-bedrock",
+    "aws_bedrock",
+    "bedrock",
+    "claude",
+    "codex",
+    "kimi",
+    "openai",
+    "openai-compatible",
+    "openai_compatible",
+    "openai-direct",
+    "openai_direct",
+    "qwen",
+}
+
+
+def _work_class_clean(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _work_class_lower(value: Any) -> str:
+    return _work_class_clean(value).lower().replace("_", "-")
+
+
+def _work_class_mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _work_class_frontier_runtime(*values: Any) -> bool:
+    return any(
+        _work_class_lower(value) in _WORK_CLASS_FRONTIER_RUNTIMES for value in values
+    )
+
+
+def _work_class_contract(work_class: str, reason_codes: list[str]) -> dict[str, Any]:
+    labels = ", ".join(_WORK_CLASS_REASON_LABELS[reason] for reason in reason_codes)
+    return {
+        "schema": WORK_CLASSIFICATION_SCHEMA,
+        "work_class": work_class,
+        **_WORK_CLASS_PROPERTIES[work_class],
+        "reason_codes": reason_codes,
+        "operator_summary": f"{work_class.replace('_', ' ')}: {labels}.",
+    }
+
+
+def classify_work(
+    *,
+    prompt_classification: Mapping[str, Any] | None = None,
+    deterministic_kind: str = "",
+    attachment_count: int = 0,
+    active_work: bool = False,
+    route_locked: bool = False,
+    force_requested_runtime: bool = False,
+    requested_runtime: str = "",
+    effective_runtime: str = "",
+    selected_provider: str = "",
+    external_mutation: bool = False,
+    destructive: bool = False,
+    approval_required: bool = False,
+    risk_level: str = "",
+    task_kind: str = "",
+) -> dict[str, Any]:
+    """Return the self-contained shared work-routing classification contract."""
+
+    classification = _work_class_mapping(prompt_classification)
+    normalized_kind = _work_class_lower(deterministic_kind)
+    normalized_task_kind = _work_class_lower(
+        task_kind or classification.get("task_kind")
+    )
+    normalized_risk = _work_class_lower(risk_level or classification.get("risk_level"))
+    requires_approval = (
+        bool(approval_required)
+        or bool(classification.get("requires_approval"))
+        or bool(classification.get("external_side_effects_possible"))
+    )
+    external_risk = (
+        bool(external_mutation)
+        or bool(classification.get("external_side_effects_possible"))
+        or _work_class_lower(classification.get("risk_class"))
+        in {
+            "destructive",
+            "external-mutation",
+        }
+    )
+    destructive_risk = (
+        bool(destructive)
+        or _work_class_lower(classification.get("risk_class")) == "destructive"
+        or normalized_risk == "critical"
+    )
+    high_risk = normalized_risk in {"high", "critical"}
+    requested_frontier = _work_class_frontier_runtime(requested_runtime)
+    effective_frontier = _work_class_frontier_runtime(
+        effective_runtime, selected_provider
+    )
+    route_is_frontier = effective_frontier or (
+        requested_frontier and (bool(force_requested_runtime) or bool(route_locked))
+    )
+    deterministic_allowed = (
+        normalized_kind in {"status", "command"}
+        and max(0, int(attachment_count or 0)) == 0
+        and not bool(active_work)
+        and not bool(route_locked)
+        and not bool(force_requested_runtime)
+        and not requires_approval
+        and not external_risk
+        and not destructive_risk
+        and not high_risk
+        and not route_is_frontier
+    )
+    if deterministic_allowed:
+        return _work_class_contract(
+            "deterministic",
+            [
+                "trusted_deterministic_status"
+                if normalized_kind == "status"
+                else "trusted_deterministic_command"
+            ],
+        )
+    if requires_approval or external_risk or destructive_risk or high_risk:
+        reasons: list[str] = []
+        if requires_approval:
+            reasons.append("trusted_approval_requirement")
+        if external_risk:
+            reasons.append("external_mutation")
+        if destructive_risk:
+            reasons.append("destructive_risk")
+        if high_risk and "destructive_risk" not in reasons:
+            reasons.append("high_risk")
+        return _work_class_contract("approval_required", reasons)
+    if route_is_frontier:
+        reasons = []
+        if bool(force_requested_runtime):
+            reasons.append("forced_frontier_route")
+        if bool(route_locked):
+            reasons.append("locked_frontier_route")
+        if effective_frontier:
+            reasons.append("effective_frontier_runtime")
+        return _work_class_contract("frontier", reasons)
+    review_reason = {
+        "code": "local_review_code",
+        "judge": "local_review_verify",
+        "kpi": "local_review_kpi",
+        "plan": "local_review_plan",
+        "scout": "local_review_scout",
+        "verify": "local_review_verify",
+    }.get(normalized_task_kind)
+    if review_reason:
+        return _work_class_contract("local_review", [review_reason])
+    return _work_class_contract("local", ["local_safe_analysis"])
+
+
+def sanitize_work_classification(value: Any) -> dict[str, Any]:
+    payload = _work_class_mapping(value)
+    work_class = _work_class_clean(payload.get("work_class"))
+    if (
+        payload.get("schema") != WORK_CLASSIFICATION_SCHEMA
+        or work_class not in _WORK_CLASS_PROPERTIES
+    ):
+        return {}
+    reason_codes = payload.get("reason_codes")
+    if (
+        not isinstance(reason_codes, list)
+        or not reason_codes
+        or len(reason_codes) > 4
+        or any(not isinstance(reason, str) for reason in reason_codes)
+    ):
+        return {}
+    normalized_reasons = [_work_class_clean(reason) for reason in reason_codes]
+    if (
+        any(reason not in _VALID_WORK_CLASS_REASONS for reason in normalized_reasons)
+        or len(set(normalized_reasons)) != len(normalized_reasons)
+        or not set(normalized_reasons) & _WORK_CLASS_REQUIRED_REASONS[work_class]
+    ):
+        return {}
+    expected = _work_class_contract(work_class, normalized_reasons)
+    return (
+        expected
+        if all(
+            payload.get(key) == expected_value
+            for key, expected_value in expected.items()
+        )
+        else {}
+    )
+
+
+def work_classification_summary(value: Any) -> str:
+    return _work_class_clean(
+        sanitize_work_classification(value).get("operator_summary")
+    )
+
+
 def sanitize_turn_envelope_cost_route(value: Any) -> dict[str, Any]:
     envelope = dict(value) if isinstance(value, dict) else {}
     if "cost_route" in envelope:
         envelope["cost_route"] = sanitize_cost_route(envelope.get("cost_route"))
+    envelope["work_classification"] = sanitize_work_classification(
+        envelope.get("work_classification")
+    )
+    envelope["route_rationale"] = work_classification_summary(
+        envelope["work_classification"]
+    )
     return envelope
 
 
@@ -302,6 +624,17 @@ def _bridge_console_env_aliases() -> None:
 _bridge_console_env_aliases()
 
 
+def _optional_nonnegative_float_env(name: str) -> float | None:
+    raw_value = os.environ.get(name, "").strip()
+    if not raw_value:
+        return None
+    try:
+        value = float(raw_value)
+    except ValueError:
+        return None
+    return value if math.isfinite(value) and value >= 0 else None
+
+
 SESSION = os.environ.get("NORMAN_CODEX_SESSION", "housebot-codex")
 TMUX_SOCKET = os.environ.get("NORMAN_CODEX_TMUX_SOCKET", SESSION).strip() or SESSION
 HOST = os.environ.get("NORMAN_CODEX_WEB_BIND", "0.0.0.0")
@@ -317,7 +650,7 @@ AUTH_COOKIE_NAME = (
 AUTH_COOKIE_MAX_AGE = int(
     os.environ.get("NORMAN_CODEX_WEB_COOKIE_MAX_AGE", str(14 * 24 * 60 * 60))
 )
-DEFAULT_UI_VERSION = "2026.07.31.5"
+DEFAULT_UI_VERSION = "2026.08.04.1"
 UI_VERSION = (
     os.environ.get("NORMAN_CODEX_UI_VERSION", DEFAULT_UI_VERSION).strip()
     or DEFAULT_UI_VERSION
@@ -336,6 +669,9 @@ WORKER_BRIDGE_LABEL = (
 )
 PLAN_CREDIT_LABEL = (
     os.environ.get("NORMAN_PLAN_CREDIT_LABEL", "plan credits").strip() or "plan credits"
+)
+PLAN_MONTHLY_CREDIT_ALLOWANCE = _optional_nonnegative_float_env(
+    "NORMAN_PLAN_MONTHLY_CREDIT_ALLOWANCE"
 )
 WEB_PROCESS_STARTED_AT = int(time.time())
 WEB_PROCESS_EVENT_LOCK = threading.Lock()
@@ -926,7 +1262,7 @@ LOCAL_PLANNER_PREFLIGHT_PROMPT_CHARS = _early_env_int(
     "NORMAN_LOCAL_PLANNER_PREFLIGHT_PROMPT_CHARS", 2400, minimum=400
 )
 LOCAL_PLANNER_PREFLIGHT_MAX_CANDIDATES = _early_env_int(
-    "NORMAN_LOCAL_PLANNER_PREFLIGHT_MAX_CANDIDATES", 2, minimum=1
+    "NORMAN_LOCAL_PLANNER_PREFLIGHT_MAX_CANDIDATES", 1, minimum=1
 )
 LOCAL_PLANNER_VERIFIER_ENABLED = _early_env_flag(
     "NORMAN_LOCAL_PLANNER_VERIFIER_ENABLED", True
@@ -1066,9 +1402,25 @@ def _local_llm_model_disabled(model: str) -> bool:
     return False
 
 
+def _local_llm_model_manual_only(model: str) -> bool:
+    name = str(model or "").strip().lower().replace("_", "-")
+    if not name:
+        return False
+    return any(
+        needle in name
+        for needle in (
+            "qwen3.5:122b",
+            "qwen3.5-122b",
+            "qwen3.5/122b",
+            "nvidia/qwen3.5-122b",
+        )
+    )
+
+
 def _local_llm_model_allowed(model: str) -> bool:
     return (
         not _local_llm_model_disabled(model)
+        and not _local_llm_model_manual_only(model)
         and not _qwen_below_floor(model, LOCAL_LLM_QWEN_MINIMUM_VERSION)
         and not _local_llm_model_non_text(model)
         and not _local_llm_model_too_small(model)
@@ -1078,6 +1430,7 @@ def _local_llm_model_allowed(model: str) -> bool:
 def _local_llm_canary_model_allowed(model: str) -> bool:
     return (
         not _local_llm_model_disabled(model)
+        and not _local_llm_model_manual_only(model)
         and not _qwen_below_floor(model, LOCAL_LLM_QWEN_MINIMUM_VERSION)
         and not _local_llm_model_non_text(model)
     )
@@ -1112,46 +1465,20 @@ AVAILABLE_MODELS = _dedupe_models(
     for item in os.environ.get("NORMAN_CODEX_AVAILABLE_MODELS", MODEL).split(",")
     if item.strip()
 ) + CODEX_SWITCHABLE_MODELS or [MODEL]
-DEFAULT_LOCAL_LLM_MODEL = "qwen3.6:27b"
-DEFAULT_LOCAL_LLM_MODELS = (
-    "qwen3.6:27b",
-    "qwen3.6:35b-a3b-q4_K_M",
-    "qwen3.5:122b-a10b-q4_K_M",
-)
-DEFAULT_LOCAL_LLM_BENCHMARK_MODELS = (
-    "qwen3.6:27b",
-    "qwen3.6:35b-a3b-q4_K_M",
-    "qwen3.5:122b-a10b-q4_K_M",
-)
+DEFAULT_LOCAL_LLM_MODEL = "qwen3-coder:30b-a3b-q4_K_M"
+DEFAULT_LOCAL_LLM_MODELS = (DEFAULT_LOCAL_LLM_MODEL,)
+DEFAULT_LOCAL_LLM_BENCHMARK_MODELS = (DEFAULT_LOCAL_LLM_MODEL,)
 DEFAULT_LOCAL_LLM_CANARY_MODELS: tuple[str, ...] = ()
 DEFAULT_LOCAL_LLM_FALLBACK_MODELS: tuple[str, ...] = ()
+LOCAL_PLANNER_AUTOMATIC_MODEL = "qwen3-coder:30b-a3b-q4_K_M"
 DEFAULT_LOCAL_LLM_LANE_MODELS = {
-    "planner": (
-        "qwen3.6:35b-a3b-q4_K_M",
-        "qwen3.6:27b",
-    ),
-    "scout": (
-        "qwen3.6:35b-a3b-q4_K_M",
-        "qwen3.6:27b",
-    ),
-    "summarizer": (
-        "qwen3.6:35b-a3b-q4_K_M",
-        "qwen3.6:27b",
-    ),
-    "coder": (
-        "qwen3.6:27b",
-        "qwen3.6:35b-a3b-q4_K_M",
-    ),
-    "filter": (
-        "qwen3.6:35b-a3b-q4_K_M",
-        "qwen3.6:27b",
-    ),
-    "verifier": (
-        "qwen3.5:122b-a10b-q4_K_M",
-        "qwen3.6:35b-a3b-q4_K_M",
-        "qwen3.6:27b",
-    ),
-    "canary": ("qwen3.6:27b",),
+    "planner": (DEFAULT_LOCAL_LLM_MODEL,),
+    "scout": (DEFAULT_LOCAL_LLM_MODEL,),
+    "summarizer": (DEFAULT_LOCAL_LLM_MODEL,),
+    "coder": (DEFAULT_LOCAL_LLM_MODEL,),
+    "filter": (DEFAULT_LOCAL_LLM_MODEL,),
+    "verifier": (DEFAULT_LOCAL_LLM_MODEL,),
+    "canary": (DEFAULT_LOCAL_LLM_MODEL,),
 }
 LOCAL_LLM_ROUTE_GUARDRAIL_LANES = (
     "planner",
@@ -1228,7 +1555,6 @@ DEFAULT_LOCAL_LLM_OBSERVE_ONLY_MODEL_NEEDLES = (
     "devstral",
     "openfugu",
     "gemma4:",
-    "qwen3-coder",
 )
 DEFAULT_LOCAL_LLM_AUTOSENSE_ENDPOINTS = (
     "https://llm.home.arpa",
@@ -1535,25 +1861,16 @@ LOCAL_LLM_ROUTE_DEFAULT_MODEL = (
 )
 
 
+def local_automatic_text_models() -> list[str]:
+    """Return the sole resident model allowed for automatic text work."""
+
+    if _local_llm_model_allowed(LOCAL_PLANNER_AUTOMATIC_MODEL):
+        return [LOCAL_PLANNER_AUTOMATIC_MODEL]
+    return []
+
+
 def local_planner_preferred_models() -> list[str]:
-    raw_model = (
-        os.environ.get("NORMAN_LOCAL_PLANNER_PREFLIGHT_MODEL")
-        or os.environ.get("NORMAN_LOCAL_PLANNER_MODEL")
-        or ""
-    ).strip()
-    raw_models = (
-        os.environ.get("NORMAN_LOCAL_PLANNER_PREFLIGHT_MODELS")
-        or os.environ.get("NORMAN_LOCAL_PLANNER_MODELS")
-        or ""
-    ).strip()
-    configured = _dedupe_models(
-        model for model in [raw_model, *raw_models.split(",")] if model.strip()
-    )
-    if configured:
-        return _dedupe_models(
-            model for model in configured if _local_llm_model_allowed(model)
-        )
-    return local_llm_lane_models("planner")
+    return local_automatic_text_models()
 
 
 CODEX_STANDARD_PROFILE_V2 = (
@@ -2211,6 +2528,40 @@ def _tui_release_readiness_script() -> Path:
     )
 
 
+def _release_readiness_blocked_message() -> str:
+    fallback = (
+        "TUI release preflight blocked this route before Codex started. "
+        f"Read {STATE_DIR / 'release_readiness.md'} for recovery."
+    )
+    try:
+        payload = json.loads(
+            (STATE_DIR / "release_readiness.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return fallback
+    checks = payload.get("checks") if isinstance(payload, dict) else None
+    if not isinstance(checks, list):
+        return fallback
+    blocker = next(
+        (
+            check
+            for check in checks
+            if isinstance(check, dict) and check.get("blocking") is True
+        ),
+        None,
+    )
+    if not blocker:
+        return fallback
+    detail = str(blocker.get("detail") or "").strip()
+    recovery = str(blocker.get("recovery") or "").strip()
+    if not detail:
+        return fallback
+    message = f"TUI release preflight blocked this route before Codex started. {detail}"
+    if recovery:
+        message = f"{message} Recovery: {recovery}"
+    return message
+
+
 def codex_launch_preflight(service_tier: str) -> dict[str, Any]:
     if CODEX_PREFLIGHT_MODE in {"off", "0", "false", "no"}:
         return {"allowed": True, "mode": "off"}
@@ -2270,10 +2621,7 @@ def codex_launch_preflight(service_tier: str) -> dict[str, Any]:
             "message": message,
         }
     if completed.returncode != 0:
-        message = (
-            "TUI release preflight blocked this route before Codex started. "
-            f"Read {STATE_DIR / 'release_readiness.md'} for recovery."
-        )
+        message = _release_readiness_blocked_message()
         return {"allowed": False, "mode": CODEX_PREFLIGHT_MODE, "message": message}
     with CODEX_PREFLIGHT_CACHE_LOCK:
         CODEX_PREFLIGHT_SUCCESS_AT[service_tier] = now
@@ -2726,6 +3074,10 @@ TUI_KERNEL_CLOUD_FALLBACK_ENABLED = TUI_KERNEL_EXECUTION_ENABLED and (
 TUI_KERNEL_WORKSPACE_PREFLIGHT_ENABLED = TUI_KERNEL_EXECUTION_ENABLED and (
     _early_env_flag("NORMAN_TUI_KERNEL_WORKSPACE_PREFLIGHT_ENABLED", True)
     and _early_env_flag("NORMAN_TUI_KERNEL_WORKSPACE_PREFLIGHT", True)
+)
+HYBRID_LOCAL_PLAN_SCHEMA = "norman.tui.hybrid-local-plan.v1"
+TUI_HYBRID_LOCAL_EXECUTION_ENABLED = _early_env_flag(
+    "NORMAN_TUI_HYBRID_LOCAL_EXECUTION_ENABLED", False
 )
 TUI_KERNEL_WORKSPACE_PREFLIGHT_COMMANDS = [
     item.strip()
@@ -5469,7 +5821,13 @@ def service_tier_config_args(value: Any) -> list[str]:
         if tier in {"bedrock-emergency", "bedrock-failover", "bedrock-failover-2"}
         else tier
     )
-    return ["-c", f'service_tier="{codex_tier}"']
+    # A shared CODEX_HOME may default to Bedrock; direct tiers must override it.
+    return [
+        "-c",
+        'model_provider="openai"',
+        "-c",
+        f'service_tier="{codex_tier}"',
+    ]
 
 
 def codex_profile_v2_for_service_tier(value: Any) -> str:
@@ -5589,6 +5947,8 @@ def apply_codex_provider_environment(env: dict[str, str], value: Any) -> None:
     tier = service_tier_execution_tier(value)
     profile = codex_profile_v2_for_service_tier(tier)
     if not profile:
+        for key in ("AWS_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION"):
+            env.pop(key, None)
         return
     aws_profile = codex_aws_profile_for_service_tier(tier)
     aws_region = codex_aws_region_for_service_tier(tier)
@@ -6440,6 +6800,85 @@ def turn_control_authority_class(
     return "read_only"
 
 
+def tui_work_task_kind(prompt: Any, *, requested_action: str = "") -> str:
+    """Map TUI work to the shared review contract without granting authority."""
+
+    lower = prompt_core_request(str(prompt or "")).lower()
+    action = str(requested_action or "").strip().lower()
+    if action == "benchmark_or_optimizer" or any(
+        token in lower
+        for token in ("benchmark", "optimizer", "metric", "metrics", "kpi", "kpis")
+    ):
+        return "kpi"
+    if any(
+        token in lower
+        for token in (
+            "implement",
+            "code",
+            "edit",
+            "fix",
+            "patch",
+            "refactor",
+            "test failure",
+        )
+    ):
+        return "code"
+    if any(
+        token in lower
+        for token in ("verify", "validate", "check regression", "test this")
+    ):
+        return "verify"
+    if any(token in lower for token in ("research", "scout", "investigate")):
+        return "scout"
+    if action in {"proceed_or_next", "undo_or_back"} or any(
+        token in lower
+        for token in ("plan", "design", "approach", "architecture", "analyze")
+    ):
+        return "plan"
+    return "analysis"
+
+
+def classify_tui_work(
+    *,
+    prompt: Any,
+    attachments: list[dict[str, Any]] | None = None,
+    runtime: str = "",
+    requested_runtime: str = "",
+    route_lock: bool = False,
+    active_work: bool = False,
+    deterministic_kind: str = "",
+) -> dict[str, Any]:
+    """Classify trusted TUI routing facts for history, receipts, and KPIs."""
+
+    normalized_runtime = normalize_runtime(runtime)
+    normalized_requested_runtime = normalize_runtime(
+        requested_runtime or normalized_runtime
+    )
+    requested_action = route_receipt_requested_action(prompt)
+    mutation_risk = turn_control_mutation_risk(prompt)
+    authority_class = turn_control_authority_class(
+        prompt,
+        selected_model_tier="",
+        mutation_risk=mutation_risk,
+        requested_action=requested_action,
+    )
+    return classify_work(
+        deterministic_kind=deterministic_kind,
+        attachment_count=len(normalize_attachments(attachments or [])),
+        active_work=active_work,
+        route_locked=bool(route_lock),
+        # Global default-runtime policy is not an operator frontier lock.
+        force_requested_runtime=False,
+        requested_runtime=normalized_requested_runtime,
+        effective_runtime=normalized_runtime,
+        selected_provider=normalized_runtime,
+        external_mutation=mutation_risk
+        in {"deploy_restart", "external_write", "billing_secret"},
+        approval_required=authority_class == "approval_required",
+        task_kind=tui_work_task_kind(prompt, requested_action=requested_action),
+    )
+
+
 def build_turn_control_envelope(
     *,
     prompt: str,
@@ -6454,12 +6893,19 @@ def build_turn_control_envelope(
     optimization_mode: str = "",
     requested_model: str = "",
     requested_service_tier: str = "",
+    requested_runtime: str = "",
+    route_lock: bool = False,
+    active_work: bool = False,
+    deterministic_kind: str = "",
 ) -> dict[str, Any]:
     normalized_runtime = normalize_runtime(runtime)
     normalized_model = normalize_runtime_model(normalized_runtime, model)
+    normalized_requested_runtime = normalize_runtime(
+        requested_runtime or normalized_runtime
+    )
     normalized_tier = normalize_service_tier(service_tier)
     requested = normalize_runtime_model(
-        normalized_runtime, requested_model or normalized_model
+        normalized_requested_runtime, requested_model or normalized_model
     )
     requested_tier = normalize_service_tier(requested_service_tier or normalized_tier)
     normalized_attachments = normalize_attachments(attachments or [])
@@ -6489,6 +6935,15 @@ def build_turn_control_envelope(
     elif mutation_risk == "local_file":
         allowed_actions.extend(["draft_patch", "run_focused_tests"])
         blocked_actions.append("external_write")
+    work_classification = classify_tui_work(
+        prompt=prompt,
+        attachments=normalized_attachments,
+        runtime=normalized_runtime,
+        requested_runtime=normalized_requested_runtime,
+        route_lock=route_lock,
+        active_work=active_work,
+        deterministic_kind=deterministic_kind,
+    )
     return {
         "schema": TURN_CONTROL_ENVELOPE_SCHEMA,
         "route_policy_version": ROUTE_RECEIPT_POLICY_VERSION,
@@ -6499,6 +6954,8 @@ def build_turn_control_envelope(
         "operator_intent_class": intent_class,
         "authority_class": authority_class,
         "mutation_risk": mutation_risk,
+        "route_lock": bool(route_lock),
+        "requested_runtime": normalized_requested_runtime,
         "requested_model": requested,
         "effective_model": normalized_model,
         "requested_service_tier": requested_tier,
@@ -6519,6 +6976,8 @@ def build_turn_control_envelope(
         ),
         "stop_condition": "validator passes or explicit blocker is found",
         "attachment_count": len(normalized_attachments),
+        "work_classification": work_classification,
+        "route_rationale": work_classification_summary(work_classification),
         "steering_chips": [
             str(item).strip()
             for item in control.get("steering_chips") or []
@@ -12683,9 +13142,12 @@ def local_route_intent_classifier_models() -> list[str]:
     configured = _dedupe_models(
         model for model in [raw_model, *raw_models.split(",")] if model.strip()
     )
-    return _dedupe_models(
-        model for model in configured if _local_llm_model_allowed(str(model))
-    )
+    if not any(
+        str(model).strip().lower() == LOCAL_PLANNER_AUTOMATIC_MODEL.lower()
+        for model in configured
+    ):
+        return []
+    return local_planner_preferred_models()
 
 
 def local_route_intent_classifier_should_run(prompt: Any) -> bool:
@@ -13388,25 +13850,9 @@ def local_specialist_stage_candidates(
     guardrail_health: dict[str, Any],
 ) -> tuple[list[str], str, dict[str, Any]]:
     lane = str(stage.get("lane") or "").strip().lower().replace("-", "_")
-    env_candidates = local_llm_env_lane_models(lane)
-    guardrail_candidates = local_llm_lane_models_from_health(guardrail_health, lane)
-    fallback_candidates = local_llm_lane_models(lane)
     lane_summary = local_specialist_lane_summary(guardrail_health, lane)
-    degraded_fallback = bool(
-        not env_candidates
-        and guardrail_candidates
-        and not local_llm_lane_ready_for_foreground(lane_summary)
-    )
-    if degraded_fallback:
-        candidates = local_llm_fallback_models() or fallback_candidates
-    else:
-        candidates = env_candidates or guardrail_candidates or fallback_candidates
-    policy = local_llm_guardrail_candidate_policy(
-        env_candidates,
-        guardrail_candidates,
-        guardrail_health,
-        degraded_fallback=degraded_fallback,
-    )
+    candidates = local_planner_preferred_models()
+    policy = "resident-coder-policy" if candidates else "resident-coder-disabled"
     return candidates, policy, lane_summary
 
 
@@ -13784,7 +14230,7 @@ def run_local_specialist_pipeline(
 
 
 def local_planner_preflight_selection() -> dict[str, Any]:
-    """Select the bounded planner candidates used by the normal preflight."""
+    """Use the one resident Coder model for every automatic planner preflight."""
     candidate_lane = "planner"
     guardrail_health = local_llm_health_snapshot("local-llm")
     guardrail_candidates = local_llm_lane_models_from_health(
@@ -13792,32 +14238,19 @@ def local_planner_preflight_selection() -> dict[str, Any]:
         candidate_lane,
     )
     lane_summary = local_specialist_lane_summary(guardrail_health, candidate_lane)
-    env_candidates = local_llm_env_lane_models(candidate_lane)
-    degraded_fallback = bool(
-        not env_candidates
-        and guardrail_candidates
-        and not local_llm_lane_ready_for_foreground(lane_summary)
+    candidates = local_planner_preferred_models()[
+        :LOCAL_PLANNER_PREFLIGHT_MAX_CANDIDATES
+    ]
+    candidate_policy = (
+        "resident-coder-policy" if candidates else "resident-coder-disabled"
     )
-    candidate_policy = local_llm_guardrail_candidate_policy(
-        env_candidates,
-        guardrail_candidates,
-        guardrail_health,
-        degraded_fallback=degraded_fallback,
-    )
-    if degraded_fallback:
-        candidates = local_llm_fallback_models() or local_planner_preferred_models()
-    else:
-        candidates = (
-            env_candidates or guardrail_candidates or local_planner_preferred_models()
-        )
-    candidates = candidates[:LOCAL_PLANNER_PREFLIGHT_MAX_CANDIDATES]
     return {
         "candidate_lane": candidate_lane,
         "guardrail_health": guardrail_health,
         "guardrail_candidates": guardrail_candidates,
         "lane_summary": lane_summary,
-        "env_candidates": env_candidates,
-        "degraded_fallback": degraded_fallback,
+        "env_candidates": [],
+        "degraded_fallback": False,
         "candidate_policy": candidate_policy,
         "candidates": candidates,
         "candidate_limit": LOCAL_PLANNER_PREFLIGHT_MAX_CANDIDATES,
@@ -14034,6 +14467,7 @@ def run_local_planner_preflight(payload: dict[str, Any]) -> dict[str, Any]:
             "url": url,
             "summary": summary,
             "raw_preview": summarize_text(strip_local_planner_reasoning(raw_text), 900),
+            "parsed": parsed,
             "memory_ref_ids": local_planner_memory_ref_ids(raw_text),
             "confidence": local_planner_confidence(parsed),
             "recall_status": local_planner_recall_status(parsed),
@@ -14239,16 +14673,13 @@ def run_local_planner_verifier(
     guardrail_candidates = local_llm_lane_models_from_health(
         guardrail_health, candidate_lane
     )
-    env_candidates = local_llm_env_lane_models(candidate_lane)
     lane_summary = local_specialist_lane_summary(guardrail_health, candidate_lane)
-    candidate_policy = local_llm_guardrail_candidate_policy(
-        env_candidates,
-        guardrail_candidates,
-        guardrail_health,
+    candidates = local_planner_preferred_models()[
+        :LOCAL_PLANNER_VERIFIER_MAX_CANDIDATES
+    ]
+    candidate_policy = (
+        "resident-coder-policy" if candidates else "resident-coder-disabled"
     )
-    candidates = (
-        env_candidates or guardrail_candidates or local_llm_lane_models(candidate_lane)
-    )[:LOCAL_PLANNER_VERIFIER_MAX_CANDIDATES]
     lane_status = str(lane_summary.get("status") or "").strip()
     if lane_status and lane_status != "ready":
         return {
@@ -16605,6 +17036,7 @@ def append_history_entry(
     model: str = "",
     attachments: list[dict[str, Any]] | None = None,
     usage: dict[str, Any] | None = None,
+    turn_envelope: dict[str, Any] | None = None,
 ) -> None:
     entries = load_history(limit=0)
     clean_error_text = strip_codex_empty_last_message_warning(error_text)
@@ -16614,6 +17046,13 @@ def append_history_entry(
     normalized_runtime = normalize_runtime(runtime)
     normalized_model = normalize_runtime_model(normalized_runtime, model)
     usage_payload = dict(usage or {})
+    sanitized_envelope = sanitize_turn_envelope_cost_route(turn_envelope)
+    work_classification = sanitize_work_classification(
+        sanitized_envelope.get("work_classification")
+    ) or sanitize_work_classification(usage_payload.get("work_classification"))
+    route_rationale = work_classification_summary(work_classification)
+    usage_payload["work_classification"] = work_classification
+    usage_payload["route_rationale"] = route_rationale
     if "success" not in usage_payload:
         usage_payload["success"] = not bool(clean_error_text)
     entry = {
@@ -16634,6 +17073,8 @@ def append_history_entry(
         "timeout_seconds": normalize_job_timeout_seconds(
             timeout_seconds, normalized_budget
         ),
+        "work_classification": work_classification,
+        "route_rationale": route_rationale,
         "usage": normalize_usage_entry(
             {
                 **usage_payload,
@@ -17056,6 +17497,7 @@ def tui_backend_snapshot() -> dict[str, Any]:
         "kernel_execution": TUI_KERNEL_EXECUTION_ENABLED,
         "kernel_primary": TUI_KERNEL_PRIMARY_ENABLED,
         "kernel_owned_turn": TUI_KERNEL_OWNED_TURN_ENABLED,
+        "hybrid_local_execution": TUI_HYBRID_LOCAL_EXECUTION_ENABLED,
         "control_only": TUI_CONTROL_ONLY,
         "execution_backend": "kernel"
         if TUI_KERNEL_EXECUTION_ENABLED
@@ -18694,12 +19136,16 @@ def finalize_console_runtime_turn_shadow_job(
     success: bool,
     usage: dict[str, Any] | None = None,
     turn_plan: dict[str, Any] | None = None,
+    turn_envelope: dict[str, Any] | None = None,
     cost_route: dict[str, Any] | None = None,
     final_state: str = "",
 ) -> None:
     clean_job_id = str(job_id or "").strip()
     if not clean_job_id or not console_runtime_bridge_enabled():
         return
+    sanitized_envelope = sanitize_turn_envelope_cost_route(turn_envelope)
+    work_classification = sanitized_envelope["work_classification"]
+    route_rationale = sanitized_envelope["route_rationale"]
     usage_entry = normalize_usage_entry(
         {
             **(usage or {}),
@@ -18709,6 +19155,8 @@ def finalize_console_runtime_turn_shadow_job(
             "started_at": started_at,
             "finished_at": finished_at,
             "success": bool(success),
+            "work_classification": work_classification,
+            "route_rationale": route_rationale,
         }
     )
     output_preview = summarize_text(visible_response or error_text, 600)
@@ -18729,6 +19177,9 @@ def finalize_console_runtime_turn_shadow_job(
                 "model": normalize_runtime_model(runtime, model),
                 "service_tier": normalize_service_tier(service_tier),
                 "usage": usage_entry,
+                "turn_envelope": sanitized_envelope,
+                "work_classification": work_classification,
+                "route_rationale": route_rationale,
                 "output_preview": output_preview,
                 "error": summarize_text(error_text, 500),
                 "success": bool(success),
@@ -18761,7 +19212,10 @@ def finalize_console_runtime_turn_shadow_job(
                 "final_state": str(final_state or ("done" if success else "error")),
                 "usage": usage_entry,
                 "turn_plan": normalize_turn_plan_estimate(turn_plan),
-                "cost_route": dict(cost_route or {}),
+                "turn_envelope": sanitized_envelope,
+                "work_classification": work_classification,
+                "route_rationale": route_rationale,
+                "cost_route": sanitized_envelope.get("cost_route", {}),
                 "error": summarize_text(error_text, 500),
             },
             "artifacts": [],
@@ -20770,6 +21224,12 @@ def default_usage_entry() -> dict[str, Any]:
         "route_requested_model": "",
         "route_requested_service_tier": "",
         "route_fallback_reason": "",
+        "work_classification": {},
+        "route_rationale": "",
+        "decision_class": "",
+        "frontier_review_required": False,
+        "frontier_calls_avoided": 0,
+        "local_calls_avoided": 0,
         "success": False,
         "input_tokens": 0,
         "cached_input_tokens": 0,
@@ -21094,6 +21554,21 @@ def usage_charge_status(entry: dict[str, Any]) -> str:
     return "not_invoice_reconciled"
 
 
+def usage_decision_class(entry: dict[str, Any]) -> str:
+    runtime = normalize_runtime(entry.get("runtime"))
+    model = str(entry.get("model") or "").strip().lower()
+    if runtime == "localllm" and model in {
+        "deterministic-status",
+        "deterministic-command",
+    }:
+        return "deterministic"
+    if runtime == "localllm":
+        return "local_final"
+    if bool(entry.get("local_preflight_used")):
+        return "local_preflight_cloud_authority"
+    return "frontier"
+
+
 def normalize_usage_entry(value: Any) -> dict[str, Any]:
     payload = dict(default_usage_entry())
     provided_keys: set[str] = set()
@@ -21135,6 +21610,7 @@ def normalize_usage_entry(value: Any) -> dict[str, Any]:
         "route_requested_model",
         "route_requested_service_tier",
         "route_fallback_reason",
+        "decision_class",
         "route_charge_basis",
         "preflight_accounting_schema",
         "memory_rerank_status",
@@ -21206,6 +21682,24 @@ def normalize_usage_entry(value: Any) -> dict[str, Any]:
         summarize_text(str(payload.get("route_reason") or ""), 420)
         or f"{payload['route_label']} was final authority for this turn."
     )
+    payload["work_classification"] = sanitize_work_classification(
+        payload.get("work_classification")
+    )
+    payload["route_rationale"] = work_classification_summary(
+        payload["work_classification"]
+    )
+    payload["decision_class"] = usage_decision_class(payload)
+    payload["frontier_review_required"] = payload["decision_class"] in {
+        "frontier",
+        "local_preflight_cloud_authority",
+    }
+    payload["frontier_calls_avoided"] = _coerce_int(
+        payload.get("frontier_calls_avoided")
+    )
+    payload["local_calls_avoided"] = _coerce_int(payload.get("local_calls_avoided"))
+    if payload["decision_class"] == "deterministic":
+        payload["frontier_calls_avoided"] = 1
+        payload["local_calls_avoided"] = 1
     payload["success"] = bool(payload.get("success"))
     payload["input_tokens"] = _coerce_int(payload.get("input_tokens"))
     input_details = payload.get("input_tokens_details")
@@ -22101,6 +22595,15 @@ def default_usage_summary() -> dict[str, int]:
         "turns": 0,
         "successful_turns": 0,
         "failed_turns": 0,
+        "deterministic_turns": 0,
+        "local_turns": 0,
+        "local_review_turns": 0,
+        "frontier_turns": 0,
+        "approval_required_turns": 0,
+        "review_required_turns": 0,
+        "frontier_review_required_turns": 0,
+        "frontier_calls_avoided": 0,
+        "local_calls_avoided": 0,
         "input_tokens": 0,
         "cached_input_tokens": 0,
         "output_tokens": 0,
@@ -22137,6 +22640,22 @@ def summarize_usage_entries(
             summary["successful_turns"] += 1
         else:
             summary["failed_turns"] += 1
+        if entry["decision_class"] == "deterministic":
+            summary["deterministic_turns"] += 1
+        work_class = str(entry["work_classification"].get("work_class") or "")
+        if work_class in {
+            "local",
+            "local_review",
+            "frontier",
+            "approval_required",
+        }:
+            summary[f"{work_class}_turns"] += 1
+        if bool(entry["work_classification"].get("review_required")):
+            summary["review_required_turns"] += 1
+        if entry["frontier_review_required"]:
+            summary["frontier_review_required_turns"] += 1
+        summary["frontier_calls_avoided"] += entry["frontier_calls_avoided"]
+        summary["local_calls_avoided"] += entry["local_calls_avoided"]
         summary["input_tokens"] += entry["input_tokens"]
         summary["cached_input_tokens"] += entry["cached_input_tokens"]
         summary["output_tokens"] += entry["output_tokens"]
@@ -22198,6 +22717,22 @@ def summarize_usage_by_key(
             bucket["successful_turns"] += 1
         else:
             bucket["failed_turns"] += 1
+        if entry["decision_class"] == "deterministic":
+            bucket["deterministic_turns"] += 1
+        work_class = str(entry["work_classification"].get("work_class") or "")
+        if work_class in {
+            "local",
+            "local_review",
+            "frontier",
+            "approval_required",
+        }:
+            bucket[f"{work_class}_turns"] += 1
+        if bool(entry["work_classification"].get("review_required")):
+            bucket["review_required_turns"] += 1
+        if entry["frontier_review_required"]:
+            bucket["frontier_review_required_turns"] += 1
+        bucket["frontier_calls_avoided"] += entry["frontier_calls_avoided"]
+        bucket["local_calls_avoided"] += entry["local_calls_avoided"]
         bucket["input_tokens"] += entry["input_tokens"]
         bucket["cached_input_tokens"] += entry["cached_input_tokens"]
         bucket["output_tokens"] += entry["output_tokens"]
@@ -23663,6 +24198,76 @@ def cost_explorer_hints(tags: dict[str, str]) -> dict[str, Any]:
     }
 
 
+METERED_USAGE_LEDGER_KINDS = frozenset(
+    {"api_rate_card_estimate", "provider_invoice_estimate"}
+)
+
+
+def usage_billing_cycle_bounds(observed_at: int | None = None) -> dict[str, Any]:
+    observed = _coerce_int(observed_at) or now_ts()
+    local_now = datetime.fromtimestamp(observed).astimezone()
+    started = local_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if started.month == 12:
+        ends = started.replace(year=started.year + 1, month=1)
+    else:
+        ends = started.replace(month=started.month + 1)
+    timezone_label = local_now.tzname() or "local"
+    return {
+        "kind": "calendar_month",
+        "started_at": int(started.timestamp()),
+        "ends_at": int(ends.timestamp()),
+        "label": f"{started:%b %d} to {ends:%b %d}",
+        "timezone": timezone_label,
+    }
+
+
+def usage_billing_cycle_summary(
+    entries: list[dict[str, Any]], *, observed_at: int | None = None
+) -> dict[str, Any]:
+    bounds = usage_billing_cycle_bounds(observed_at)
+    started_at = _coerce_int(bounds["started_at"])
+    ends_at = _coerce_int(bounds["ends_at"])
+    cycle_entries = [
+        entry
+        for entry in (normalize_usage_entry(raw_entry) for raw_entry in entries)
+        if started_at <= _coerce_int(entry.get("finished_at")) < ends_at
+    ]
+    plan_entries = [
+        entry
+        for entry in cycle_entries
+        if str(entry.get("charge_ledger_kind") or "").strip()
+        == "chatgpt_codex_credit_estimate"
+    ]
+    metered_entries = [
+        entry
+        for entry in cycle_entries
+        if str(entry.get("charge_ledger_kind") or "").strip()
+        in METERED_USAGE_LEDGER_KINDS
+    ]
+    plan_estimate = estimate_usage_entries_cost(plan_entries)
+    metered_estimate = estimate_usage_entries_cost(metered_entries)
+    return {
+        **bounds,
+        "entries": len(cycle_entries),
+        "plan": {
+            "credits": plan_estimate["credits"],
+            "entries": plan_estimate["entries"],
+            "configured_entries": plan_estimate["credit_configured_entries"],
+            "allowance_credits": PLAN_MONTHLY_CREDIT_ALLOWANCE,
+        },
+        "metered": {
+            "usd": metered_estimate["usd"],
+            "entries": metered_estimate["entries"],
+            "configured_entries": metered_estimate["configured_entries"],
+        },
+        "note": (
+            "Local ledger estimate for the current calendar month. Plan credits "
+            "are not a provider-reported subscription balance; metered USD is "
+            "not a reconciled provider invoice."
+        ),
+    }
+
+
 def usage_billing_report(entries: list[dict[str, Any]]) -> dict[str, Any]:
     tags = usage_accounting_tags()
     recent_since = max(0, now_ts() - USAGE_WINDOW_SECONDS)
@@ -23682,6 +24287,7 @@ def usage_billing_report(entries: list[dict[str, Any]]) -> dict[str, Any]:
         "last_24h_estimate": estimate_usage_entries_cost(
             effective_entries, since_ts=recent_since
         ),
+        "cycle": usage_billing_cycle_summary(effective_entries),
     }
 
 
@@ -23740,6 +24346,7 @@ def append_usage_entry(
     usage: dict[str, Any] | None = None,
     attribution: dict[str, Any] | None = None,
     cost_route: dict[str, Any] | None = None,
+    turn_envelope: dict[str, Any] | None = None,
 ) -> None:
     normalized_runtime = normalize_runtime(runtime)
     normalized_model = normalize_runtime_model(normalized_runtime, model)
@@ -23752,6 +24359,10 @@ def append_usage_entry(
     )
     if not proof:
         raise ValueError("missing or mismatched cost route proof")
+    sanitized_envelope = sanitize_turn_envelope_cost_route(turn_envelope)
+    work_classification = sanitize_work_classification(
+        sanitized_envelope.get("work_classification")
+    ) or sanitize_work_classification((usage or {}).get("work_classification"))
     provider_tags = (
         local_llm_provider_tags()
         if normalized_runtime == "localllm"
@@ -23766,6 +24377,8 @@ def append_usage_entry(
             "route_fallback_reason": proof["fallback_reason"],
             "charge_basis": proof["charge_basis"],
             "waterfall_stage": proof["waterfall_stage"],
+            "work_classification": work_classification,
+            "route_rationale": work_classification_summary(work_classification),
             "started_at": started_at,
             "finished_at": finished_at,
             "thread_id": thread_id,
@@ -23819,6 +24432,12 @@ ROUTE_RECEIPT_REQUIRED_FIELDS = (
     "fallback_reason",
     "routing_score",
     "routing_bands",
+    "work_classification",
+    "route_rationale",
+    "decision_class",
+    "frontier_review_required",
+    "frontier_calls_avoided",
+    "local_calls_avoided",
     "allowed_role",
     "validator_gate",
     "escalation_trigger",
@@ -23912,6 +24531,8 @@ def route_receipt_text_has_any(text: Any, tokens: tuple[str, ...]) -> bool:
 
 
 def route_receipt_requires_operator_approval(prompt: Any) -> bool:
+    if deterministic_command_request(prompt):
+        return False
     if prompt_is_literal_response_request(prompt):
         return False
     if prompt_is_route_status_diagnostic(prompt):
@@ -23924,6 +24545,8 @@ def route_receipt_requires_operator_approval(prompt: Any) -> bool:
 def route_receipt_requested_action(prompt: Any) -> str:
     clean = prompt_core_request(str(prompt or ""))
     lower = clean.lower()
+    if deterministic_command_request(clean):
+        return "command"
     if prompt_is_literal_response_request(clean):
         return "status"
     if prompt_is_route_status_diagnostic(clean):
@@ -23961,6 +24584,7 @@ def route_receipt_requested_action(prompt: Any) -> str:
 
 def route_receipt_skill_id(requested_action: str) -> str:
     return {
+        "command": "deterministic-read-command",
         "status": "common-status",
         "proceed_or_next": "common-proceed-next",
         "undo_or_back": "common-undo-back",
@@ -23972,6 +24596,8 @@ def route_receipt_skill_id(requested_action: str) -> str:
 def route_receipt_model_tier(model: Any, service_tier: Any) -> str:
     clean_model = str(model or "").strip().lower()
     tier = normalize_service_tier(service_tier)
+    if clean_model in {"deterministic-status", "deterministic-command"}:
+        return "deterministic_tool"
     bedrock_surface = tier in {"default", "standard"}
     if "5.5" in clean_model:
         return "bedrock_5_5_xhigh_final" if bedrock_surface else "frontier_5_5_final"
@@ -23985,6 +24611,8 @@ def route_receipt_model_tier(model: Any, service_tier: Any) -> str:
 
 
 def route_receipt_allowed_role(selected_model_tier: str) -> str:
+    if selected_model_tier == "deterministic_tool":
+        return "deterministic_read"
     if "5_5" in selected_model_tier:
         return "final_authority"
     if "5_4" in selected_model_tier:
@@ -24053,14 +24681,21 @@ def build_route_receipt(
     timed_out: bool = False,
     turn_plan: dict[str, Any] | None = None,
     turn_envelope: dict[str, Any] | None = None,
+    requested_runtime: str = "",
     requested_model: str = "",
     requested_service_tier: str = "",
     cost_route: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_runtime = normalize_runtime(runtime)
     normalized_model = normalize_runtime_model(normalized_runtime, model)
+    sanitized_envelope = sanitize_turn_envelope_cost_route(turn_envelope)
+    normalized_requested_runtime = normalize_runtime(
+        requested_runtime
+        or sanitized_envelope.get("requested_runtime")
+        or normalized_runtime
+    )
     normalized_requested_model = normalize_runtime_model(
-        normalized_runtime, requested_model or normalized_model
+        normalized_requested_runtime, requested_model or normalized_model
     )
     normalized_service_tier = normalize_service_tier(service_tier)
     normalized_requested_tier = normalize_service_tier(
@@ -24074,6 +24709,26 @@ def build_route_receipt(
     )
     if not proof:
         raise ValueError("missing or mismatched cost route proof")
+    deterministic_kind = (
+        "status"
+        if normalized_model == "deterministic-status"
+        else "command"
+        if normalized_model == "deterministic-command"
+        else ""
+    )
+    work_classification = sanitize_work_classification(
+        sanitized_envelope.get("work_classification")
+    )
+    if not work_classification:
+        work_classification = classify_tui_work(
+            prompt=prompt,
+            runtime=normalized_runtime,
+            requested_runtime=normalized_requested_runtime,
+            route_lock=bool(proof.get("route_lock")),
+            active_work=not bool(deterministic_kind),
+            deterministic_kind=deterministic_kind,
+        )
+    route_rationale = work_classification_summary(work_classification)
     normalized_optimization_mode = normalize_optimization_mode(optimization_mode)
     usage_entry = normalize_usage_entry(
         {
@@ -24087,6 +24742,8 @@ def build_route_receipt(
             "success": bool(success),
             "runtime": normalized_runtime,
             "model": normalized_model,
+            "work_classification": work_classification,
+            "route_rationale": route_rationale,
         }
     )
     prompt_id = route_receipt_prompt_id(prompt)
@@ -24095,7 +24752,12 @@ def build_route_receipt(
         normalized_model, normalized_service_tier
     )
     allowed_role = route_receipt_allowed_role(selected_model_tier)
-    operator_approval_required = route_receipt_requires_operator_approval(prompt)
+    deterministic_read = selected_model_tier == "deterministic_tool"
+    operator_approval_required = (
+        False
+        if deterministic_read
+        else route_receipt_requires_operator_approval(prompt)
+    )
     mutation_risk = turn_control_mutation_risk(prompt, visible_response, error_text)
     operator_intent_class = turn_control_operator_intent_class(prompt)
     authority_class = turn_control_authority_class(
@@ -24112,6 +24774,12 @@ def build_route_receipt(
     live_write_attempted = route_receipt_text_has_any(
         f"{prompt}\n{visible_response}\n{error_text}", ROUTE_RECEIPT_LIVE_WRITE_MARKERS
     )
+    if deterministic_read:
+        mutation_risk = "none"
+        operator_intent_class = "deterministic_read"
+        authority_class = "deterministic_read"
+        final_authority_required = False
+        live_write_attempted = False
     boundary_violation = bool(
         live_write_attempted
         and (operator_approval_required or final_authority_required)
@@ -24193,7 +24861,7 @@ def build_route_receipt(
     )
     requested_provider_tags = (
         local_llm_provider_tags()
-        if normalized_runtime == "localllm"
+        if normalized_requested_runtime == "localllm"
         else usage_provider_tags(normalized_requested_tier)
     )
     observed_service_tier = (
@@ -24203,6 +24871,10 @@ def build_route_receipt(
     )
     route_source = proof["route_source"]
     fallback_reason = proof["fallback_reason"]
+    decision_class = str(usage_entry.get("decision_class") or "").strip()
+    frontier_review_required = bool(usage_entry.get("frontier_review_required"))
+    frontier_calls_avoided = _coerce_int(usage_entry.get("frontier_calls_avoided"))
+    local_calls_avoided = _coerce_int(usage_entry.get("local_calls_avoided"))
     context_digest = route_receipt_digest(
         {
             "thread_id": thread_id,
@@ -24241,8 +24913,15 @@ def build_route_receipt(
         "route_verifier": str(usage_entry.get("route_verifier") or ""),
         "fallback_reason": fallback_reason,
         "routing_score": routing_score,
+        "work_classification": work_classification,
+        "route_rationale": route_rationale,
+        "decision_class": decision_class,
+        "frontier_review_required": frontier_review_required,
+        "frontier_calls_avoided": frontier_calls_avoided,
+        "local_calls_avoided": local_calls_avoided,
         "routing_bands": {
             "runtime": normalized_runtime,
+            "requested_runtime": normalized_requested_runtime,
             "model": normalized_model,
             "service_tier": normalized_service_tier,
             "requested_model": normalized_requested_model,
@@ -24254,8 +24933,14 @@ def build_route_receipt(
             "operator_intent_class": operator_intent_class,
             "authority_class": authority_class,
             "mutation_risk": mutation_risk,
+            "decision_class": decision_class,
+            "frontier_review_required": frontier_review_required,
+            "frontier_calls_avoided": frontier_calls_avoided,
+            "local_calls_avoided": local_calls_avoided,
             "route_execution": str(usage_entry.get("route_execution") or ""),
             "route_verifier": str(usage_entry.get("route_verifier") or ""),
+            "work_classification": work_classification,
+            "route_rationale": route_rationale,
             "cost_route": proof,
         },
         "allowed_role": allowed_role,
@@ -24451,6 +25136,20 @@ def route_receipt_latest_fast_lane_outcome(
     return dict(outcome) if isinstance(outcome, dict) else {}
 
 
+def route_receipt_latest_work_classification(
+    receipts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not receipts:
+        return {}
+    return sanitize_work_classification(receipts[-1].get("work_classification"))
+
+
+def route_receipt_latest_route_rationale(receipts: list[dict[str, Any]]) -> str:
+    return work_classification_summary(
+        route_receipt_latest_work_classification(receipts)
+    )
+
+
 def route_receipt_fast_lane_summary(
     receipts: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -24479,6 +25178,8 @@ def route_receipt_chain_status(path: Path = ROUTE_RECEIPT_PATH) -> dict[str, Any
             "receipt_count": 0,
             "latest_hash": "",
             "latest_fast_lane_outcome": {},
+            "latest_work_classification": {},
+            "latest_route_rationale": "",
             "fast_lane": route_receipt_fast_lane_summary([]),
             "issue_count": 1,
             "issues": [str(exc)],
@@ -24509,6 +25210,10 @@ def route_receipt_chain_status(path: Path = ROUTE_RECEIPT_PATH) -> dict[str, Any
         "receipt_count": len(receipts),
         "latest_hash": latest_hash,
         "latest_fast_lane_outcome": route_receipt_latest_fast_lane_outcome(receipts),
+        "latest_work_classification": route_receipt_latest_work_classification(
+            receipts
+        ),
+        "latest_route_rationale": route_receipt_latest_route_rationale(receipts),
         "fast_lane": route_receipt_fast_lane_summary(receipts),
         "issue_count": len(issues),
         "issues": issues,
@@ -24526,6 +25231,8 @@ def route_receipt_chain_status_from_state_db() -> dict[str, Any]:
             "receipt_count": 0,
             "latest_hash": "",
             "latest_fast_lane_outcome": {},
+            "latest_work_classification": {},
+            "latest_route_rationale": "",
             "fast_lane": route_receipt_fast_lane_summary([]),
             "issue_count": 0,
             "issues": [],
@@ -24540,6 +25247,10 @@ def route_receipt_chain_status_from_state_db() -> dict[str, Any]:
         "receipt_count": len(receipts),
         "latest_hash": latest_hash,
         "latest_fast_lane_outcome": route_receipt_latest_fast_lane_outcome(receipts),
+        "latest_work_classification": route_receipt_latest_work_classification(
+            receipts
+        ),
+        "latest_route_rationale": route_receipt_latest_route_rationale(receipts),
         "fast_lane": route_receipt_fast_lane_summary(receipts),
         "issue_count": len(issues),
         "issues": issues,
@@ -24556,6 +25267,8 @@ def route_receipt_status_snapshot() -> dict[str, Any]:
             "receipt_count": 0,
             "latest_hash": "",
             "latest_fast_lane_outcome": {},
+            "latest_work_classification": {},
+            "latest_route_rationale": "",
             "fast_lane": route_receipt_fast_lane_summary([]),
             "issue_count": 0,
             "issues": [],
@@ -29302,14 +30015,90 @@ def deterministic_status_prompt_allowed(
         return False
     if prompt_requests_investigation(core):
         return False
-    # A concise status request still needs the normal Norllama preflight when a
-    # local lane is healthy. State-only output is reserved for degraded mode.
-    if local_status_preflight_available():
-        return False
     return (
         prompt_is_explicit_status_request(core)
         and prompt_is_quick_status_request(core)
         and route_receipt_requested_action(core) == "status"
+    )
+
+
+DETERMINISTIC_TUI_COMMANDS = (
+    ("pwd",),
+    ("date",),
+    ("date", "-Is"),
+    ("git", "status", "--short"),
+    ("git", "branch", "--show-current"),
+    ("git", "diff", "--stat"),
+    ("git", "log", "-1", "--oneline"),
+)
+DETERMINISTIC_TUI_COMMAND_TIMEOUT_SECONDS = 5
+_DETERMINISTIC_TUI_COMMAND_TEXT = {
+    " ".join(argv): argv for argv in DETERMINISTIC_TUI_COMMANDS
+}
+
+
+def deterministic_command_request(prompt: Any) -> list[str] | None:
+    """Return an exact allowlisted argv tuple for a narrow command request."""
+    text = str(prompt or "")
+    if not text or "\n" in text or "\r" in text:
+        return None
+    clean = text.strip()
+    match = re.fullmatch(r"`([^`\n]+)`", clean)
+    if match is None:
+        match = re.fullmatch(r"run\s+(?:`([^`\n]+)`|([^`\n]+))", clean, re.I)
+    if match is None:
+        return None
+    command = next((group for group in match.groups() if group is not None), "")
+    argv = _DETERMINISTIC_TUI_COMMAND_TEXT.get(command.strip())
+    return list(argv) if argv else None
+
+
+def deterministic_command_prompt_allowed(
+    prompt: str, attachments: list[dict[str, Any]], *, route_lock: bool = False
+) -> bool:
+    return bool(
+        not route_lock
+        and not normalize_attachments(attachments)
+        and not prompt_runtime_alive()
+        and deterministic_command_request(prompt)
+    )
+
+
+def execute_deterministic_command(argv: list[str]) -> tuple[str, bool]:
+    command = " ".join(argv)
+    try:
+        completed = subprocess.run(
+            argv,
+            shell=False,
+            cwd=WORKDIR,
+            timeout=DETERMINISTIC_TUI_COMMAND_TIMEOUT_SECONDS,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.TimeoutExpired:
+        return (
+            f"Command `{command}` timed out after "
+            f"{DETERMINISTIC_TUI_COMMAND_TIMEOUT_SECONDS} seconds.",
+            False,
+        )
+    except OSError as exc:
+        return (
+            f"Command `{command}` could not start: "
+            f"{summarize_text(str(exc), 240) or 'execution unavailable'}.",
+            False,
+        )
+    output = summarize_text(completed.stdout, 2400)
+    if completed.returncode:
+        error_text = summarize_text(completed.stderr, 1000) or "no stderr output"
+        return (
+            f"Command `{command}` exited with code {completed.returncode}.\n"
+            f"{error_text}",
+            False,
+        )
+    return (
+        f"Command `{command}` completed with exit code 0.\n"
+        f"{output or '(no output)'}",
+        True,
     )
 
 
@@ -29379,6 +30168,22 @@ def complete_deterministic_status_prompt(
     model = "deterministic-status"
     execution_service_tier = "default"
     cost_route = deterministic_status_cost_route()
+    turn_envelope = build_turn_control_envelope(
+        prompt=prompt,
+        attachments=[],
+        runtime=runtime,
+        model=model,
+        service_tier=execution_service_tier,
+        job_budget=normalized_budget,
+        speed=normalized_speed,
+        detail=normalized_detail,
+        optimization_mode=normalized_optimization_mode,
+        requested_runtime=runtime,
+        requested_model=model,
+        requested_service_tier=normalized_service_tier,
+        deterministic_kind="status",
+    )
+    turn_envelope["cost_route"] = cost_route
     response = deterministic_status_response(prompt)
     usage = normalize_usage_entry(
         {
@@ -29400,6 +30205,8 @@ def complete_deterministic_status_prompt(
             "cached_input_tokens": 0,
             "output_tokens": 0,
             "total_tokens": 0,
+            "work_classification": turn_envelope["work_classification"],
+            "route_rationale": turn_envelope["route_rationale"],
         }
     )
     write_text(LAST_PROMPT_PATH, prompt)
@@ -29427,6 +30234,7 @@ def complete_deterministic_status_prompt(
         model=model,
         attachments=[],
         usage=usage,
+        turn_envelope=turn_envelope,
     )
     append_usage_entry(
         started_at=started_at,
@@ -29440,6 +30248,7 @@ def complete_deterministic_status_prompt(
         model=model,
         usage=usage,
         cost_route=cost_route,
+        turn_envelope=turn_envelope,
     )
     update_status_meta(
         pending=False,
@@ -29454,11 +30263,15 @@ def complete_deterministic_status_prompt(
         running_service_tier=execution_service_tier,
         running_job_budget=normalized_budget,
         running_optimization_mode=normalized_optimization_mode,
-        running_timeout_seconds=job_budget_timeout_seconds(DEFAULT_JOB_BUDGET),
+        running_timeout_seconds=job_budget_timeout_seconds(normalized_budget),
+        running_turn_control={},
+        running_turn_envelope={},
+        running_submission_id="",
         active_child_pid=0,
         active_child_pgid=0,
         active_child_started_at=0,
         cancel_requested_at=0,
+        last_attachments=[],
         last_speed=normalized_speed,
         last_detail=normalized_detail,
         last_service_tier=execution_service_tier,
@@ -29494,6 +30307,8 @@ def complete_deterministic_status_prompt(
         requested_model=model,
         requested_service_tier=normalized_service_tier,
         cost_route=cost_route,
+        turn_envelope=turn_envelope,
+        requested_runtime=runtime,
     )
     append_audit_event(
         event_type="chat.deterministic-status",
@@ -29509,6 +30324,206 @@ def complete_deterministic_status_prompt(
             "model": model,
             "usage": usage,
             "cost_route": cost_route,
+            "turn_envelope": turn_envelope,
+        },
+        event_at=finished_at,
+    )
+    return current_snapshot()
+
+
+def complete_deterministic_command_prompt(
+    prompt: str,
+    *,
+    speed: str,
+    detail: int,
+    service_tier: str,
+    job_budget: str,
+    optimization_mode: str,
+    actor_ip: str = "",
+) -> dict[str, Any]:
+    argv = deterministic_command_request(prompt)
+    if not argv:
+        raise ValueError("deterministic command prompt was not allowlisted")
+    started_at = now_ts()
+    response, success = execute_deterministic_command(argv)
+    finished_at = now_ts()
+    thread_id = read_text(THREAD_ID_PATH)
+    normalized_speed = normalize_response_speed(speed)
+    normalized_detail = normalize_response_detail(detail)
+    normalized_service_tier = normalize_service_tier(service_tier)
+    normalized_budget = normalize_job_budget(job_budget)
+    normalized_optimization_mode = normalize_optimization_mode(optimization_mode)
+    runtime = "localllm"
+    model = "deterministic-command"
+    execution_service_tier = "default"
+    cost_route = deterministic_command_cost_route()
+    turn_envelope = build_turn_control_envelope(
+        prompt=prompt,
+        attachments=[],
+        runtime=runtime,
+        model=model,
+        service_tier=execution_service_tier,
+        job_budget=normalized_budget,
+        speed=normalized_speed,
+        detail=normalized_detail,
+        optimization_mode=normalized_optimization_mode,
+        requested_runtime=runtime,
+        requested_model=model,
+        requested_service_tier=normalized_service_tier,
+        deterministic_kind="command",
+    )
+    turn_envelope["cost_route"] = cost_route
+    error_text = "" if success else response
+    usage = normalize_usage_entry(
+        {
+            **local_llm_provider_tags(),
+            "runtime": runtime,
+            "model": model,
+            "service_tier": execution_service_tier,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "thread_id": thread_id,
+            "speed": normalized_speed,
+            "detail": normalized_detail,
+            "success": success,
+            "route_class": "local",
+            "route_execution": "deterministic_tui_command",
+            "route_verifier": "deterministic_tui_command",
+            "output_shape": "complete" if success else "error",
+            "input_tokens": 0,
+            "cached_input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "work_classification": turn_envelope["work_classification"],
+            "route_rationale": turn_envelope["route_rationale"],
+        }
+    )
+    write_text(LAST_PROMPT_PATH, prompt)
+    write_last_response(
+        response,
+        prompt=prompt,
+        source="deterministic_command",
+        updated_at=finished_at,
+    )
+    write_text(LAST_ERROR_PATH, error_text)
+    append_history_entry(
+        prompt=prompt,
+        response=response,
+        error_text=error_text,
+        started_at=started_at,
+        finished_at=finished_at,
+        thread_id=thread_id,
+        speed=normalized_speed,
+        detail=normalized_detail,
+        service_tier=execution_service_tier,
+        job_budget=normalized_budget,
+        optimization_mode=normalized_optimization_mode,
+        timeout_seconds=job_budget_timeout_seconds(normalized_budget),
+        runtime=runtime,
+        model=model,
+        attachments=[],
+        usage=usage,
+        turn_envelope=turn_envelope,
+    )
+    append_usage_entry(
+        started_at=started_at,
+        finished_at=finished_at,
+        thread_id=thread_id,
+        speed=normalized_speed,
+        detail=normalized_detail,
+        service_tier=execution_service_tier,
+        success=success,
+        runtime=runtime,
+        model=model,
+        usage=usage,
+        cost_route=cost_route,
+        turn_envelope=turn_envelope,
+    )
+    update_status_meta(
+        pending=False,
+        state="ok" if success else "error",
+        status_message=(
+            "Deterministic TUI command completed."
+            if success
+            else "Deterministic TUI command failed."
+        ),
+        running_prompt="",
+        running_attachments=[],
+        running_runtime=runtime,
+        running_model=model,
+        running_speed=normalized_speed,
+        running_detail=normalized_detail,
+        running_service_tier=execution_service_tier,
+        running_job_budget=normalized_budget,
+        running_optimization_mode=normalized_optimization_mode,
+        running_timeout_seconds=job_budget_timeout_seconds(normalized_budget),
+        running_turn_control={},
+        running_turn_envelope={},
+        running_submission_id="",
+        active_child_pid=0,
+        active_child_pgid=0,
+        active_child_started_at=0,
+        cancel_requested_at=0,
+        last_attachments=[],
+        last_speed=normalized_speed,
+        last_detail=normalized_detail,
+        last_service_tier=execution_service_tier,
+        last_job_budget=normalized_budget,
+        last_optimization_mode=normalized_optimization_mode,
+        last_runtime=runtime,
+        last_model=model,
+        last_timeout_seconds=job_budget_timeout_seconds(normalized_budget),
+        last_started_at=started_at,
+        last_finished_at=finished_at,
+        last_action="deterministic-command",
+        last_action_at=finished_at,
+        last_action_detail=(
+            "Executed a fixed read-only command without a model call."
+            if success
+            else "A fixed read-only command failed without a model call."
+        ),
+        running_console_runtime_job_id="",
+        running_cost_route={},
+    )
+    append_route_receipt(
+        prompt=prompt,
+        visible_response=response,
+        error_text=error_text,
+        started_at=started_at,
+        finished_at=finished_at,
+        thread_id=thread_id,
+        speed=normalized_speed,
+        detail=normalized_detail,
+        service_tier=execution_service_tier,
+        job_budget=normalized_budget,
+        optimization_mode=normalized_optimization_mode,
+        success=success,
+        runtime=runtime,
+        model=model,
+        usage=usage,
+        outcome="done" if success else "failed",
+        requested_model=model,
+        requested_service_tier=normalized_service_tier,
+        cost_route=cost_route,
+        turn_envelope=turn_envelope,
+        requested_runtime=runtime,
+    )
+    append_audit_event(
+        event_type="chat.deterministic-command",
+        summary="Executed a fixed read-only TUI command.",
+        detail=summarize_text(response, 300),
+        severity="info" if success else "warn",
+        actor_type="operator",
+        actor_ip=actor_ip,
+        thread_id=thread_id,
+        payload={
+            "prompt_preview": summarize_text(prompt, 240),
+            "command": argv,
+            "runtime": runtime,
+            "model": model,
+            "usage": usage,
+            "cost_route": cost_route,
+            "turn_envelope": turn_envelope,
         },
         event_at=finished_at,
     )
@@ -31129,6 +32144,7 @@ def build_prompt_with_attachments(
     speed: Any = "",
     service_tier: Any = "",
     optimization_mode: Any = "",
+    preflight_context: str | None = None,
 ) -> str:
     combined = prompt.strip()
     attachment_savings: list[dict[str, Any]] = []
@@ -31152,15 +32168,17 @@ def build_prompt_with_attachments(
     bbs_context = bbs_handoff_prompt_context()
     if bbs_context:
         combined = f"{combined}\n{bbs_context}".strip()
-    preflight_context = context_preflight_prompt_context(
-        combined,
-        attachments=attachments,
-        attachment_savings=attachment_savings,
-        runtime=runtime or configured_runtime(),
-        model=model or configured_chat_model(),
-    )
-    if preflight_context:
-        combined = f"{combined}\n{preflight_context}".strip()
+    resolved_preflight_context = preflight_context
+    if resolved_preflight_context is None:
+        resolved_preflight_context = context_preflight_prompt_context(
+            combined,
+            attachments=attachments,
+            attachment_savings=attachment_savings,
+            runtime=runtime or configured_runtime(),
+            model=model or configured_chat_model(),
+        )
+    if resolved_preflight_context:
+        combined = f"{combined}\n{resolved_preflight_context}".strip()
     return build_tuned_prompt(
         combined,
         detail,
@@ -32094,6 +33112,7 @@ def _execute_codex_prompt(
     job_budget: str = "",
     optimization_mode: str = "",
     subscription_probe: bool = False,
+    preflight_context: str | None = None,
 ) -> tuple[str, str, str, dict[str, Any]]:
     output_path = STATE_DIR / "last_message.txt"
     if output_path.exists():
@@ -32321,6 +33340,7 @@ def _execute_codex_prompt(
         normalized_speed,
         normalized_service_tier,
         normalized_optimization_mode,
+        preflight_context=preflight_context,
     )
     preflight_usage_fields = usage_fields_from_context_preflight_accounting(
         add_context_pack_to_preflight_accounting(
@@ -33367,6 +34387,7 @@ def _execute_bedrock_converse_prompt(
     service_tier: str = "",
     job_budget: str = "",
     optimization_mode: str = "",
+    preflight_context: str | None = None,
 ) -> tuple[str, str, str, dict[str, Any]]:
     started_at = now_ts()
     normalized_speed = normalize_response_speed(speed)
@@ -33398,6 +34419,7 @@ def _execute_bedrock_converse_prompt(
         normalized_speed,
         "default",
         optimization_mode,
+        preflight_context=preflight_context,
     )
     preflight_usage_fields = usage_fields_from_context_preflight_accounting(
         take_latest_context_preflight_accounting("claude", normalized_model)
@@ -35445,7 +36467,7 @@ def norllama_pool_execution_models() -> list[str]:
     """Resolve the generic pool label only at the local execution boundary."""
 
     candidates: list[str] = []
-    for item in [*local_llm_preferred_models(), *local_llm_lane_models("planner")]:
+    for item in local_automatic_text_models():
         model = str(item or "").strip()
         if (
             model
@@ -36233,7 +37255,13 @@ def _call_with_optional_optimization_mode(
             optional_keyword = next(
                 (
                     name
-                    for name in ("subscription_probe", "optimization_mode")
+                    for name in (
+                        "subscription_probe",
+                        "optimization_mode",
+                        "preflight_context",
+                        "relay_callback",
+                        "kernel_metadata",
+                    )
                     if name in call_kwargs and name in message
                 ),
                 "",
@@ -37312,7 +38340,10 @@ def _prompt_worker(
     normalized_relay_callback = normalize_relay_callback(relay_callback)
     normalized_runtime = normalize_runtime(runtime)
     normalized_model = normalize_runtime_model(normalized_runtime, model)
+    requested_runtime = normalized_runtime
     requested_model = normalized_model
+    requested_service_tier = normalize_service_tier(service_tier)
+    route_lock = False
     running_cost_route: dict[str, Any] = {}
     next_prompt: (
         tuple[
@@ -37382,6 +38413,29 @@ def _prompt_worker(
                     event_at=started_at,
                 )
                 return
+            stored_envelope = sanitize_turn_envelope_cost_route(
+                current_meta.get("running_turn_envelope")
+            )
+            requested_runtime = normalize_runtime(
+                stored_envelope.get("requested_runtime")
+                or running_cost_route.get("requested_runtime")
+                or normalized_runtime
+            )
+            requested_model = normalize_runtime_model(
+                requested_runtime,
+                stored_envelope.get("requested_model")
+                or running_cost_route.get("requested_model")
+                or normalized_model,
+            )
+            requested_service_tier = normalize_service_tier(
+                stored_envelope.get("requested_service_tier")
+                or running_cost_route.get("requested_service_tier")
+                or normalized_service_tier
+            )
+            route_lock = bool(
+                stored_envelope.get("route_lock")
+                or running_cost_route.get("route_lock")
+            )
             subscription_probe = (
                 running_cost_route.get("waterfall_stage") == "subscription_flex_probe"
             )
@@ -37416,26 +38470,34 @@ def _prompt_worker(
                 str(current_meta.get("running_request_source") or "operator").strip()
                 or "operator"
             )
-            turn_envelope = build_turn_control_envelope(
-                prompt=prompt,
-                attachments=attachments,
-                turn_control=(
-                    current_meta.get("running_turn_control")
-                    if isinstance(current_meta, dict)
-                    else {}
-                ),
-                runtime=normalized_runtime,
-                model=normalized_model,
-                service_tier=normalized_service_tier,
-                job_budget=normalized_budget,
-                speed=normalized_speed,
-                detail=normalized_detail,
-                optimization_mode=normalized_optimization_mode,
-                requested_model=requested_model,
-                requested_service_tier=normalized_service_tier,
-            )
-            turn_envelope["token_capacity_plan"] = turn_plan["token_capacity_plan"]
-            turn_envelope["cost_route"] = running_cost_route
+
+            def build_active_turn_envelope() -> dict[str, Any]:
+                envelope = build_turn_control_envelope(
+                    prompt=prompt,
+                    attachments=attachments,
+                    turn_control=(
+                        current_meta.get("running_turn_control")
+                        if isinstance(current_meta, dict)
+                        else {}
+                    ),
+                    runtime=normalized_runtime,
+                    model=normalized_model,
+                    service_tier=normalized_service_tier,
+                    job_budget=normalized_budget,
+                    speed=normalized_speed,
+                    detail=normalized_detail,
+                    optimization_mode=normalized_optimization_mode,
+                    requested_runtime=requested_runtime,
+                    requested_model=requested_model,
+                    requested_service_tier=requested_service_tier,
+                    route_lock=route_lock,
+                    active_work=True,
+                )
+                envelope["token_capacity_plan"] = turn_plan["token_capacity_plan"]
+                envelope["cost_route"] = running_cost_route
+                return envelope
+
+            turn_envelope = build_active_turn_envelope()
             # A worker can wait here behind an older run; reassert ownership once
             # it actually has the prompt lock so stale completions cannot leave
             # the UI showing the wrong prompt or attachment state.
@@ -37727,7 +38789,7 @@ def _prompt_worker(
                             "selected_service_tier"
                         ]
                         running_cost_route = retry_cost_route
-                        turn_envelope["cost_route"] = running_cost_route
+                        turn_envelope = build_active_turn_envelope()
                         service_tier_fallback = True
                         model_fallback = False
                         retry_label = service_tier_label(normalized_service_tier)
@@ -37869,7 +38931,7 @@ def _prompt_worker(
                             "selected_service_tier"
                         ]
                         running_cost_route = recovery_cost_route
-                        turn_envelope["cost_route"] = running_cost_route
+                        turn_envelope = build_active_turn_envelope()
                         model_fallback = False
                         recovery_label = service_tier_label(normalized_service_tier)
                         provider_recovery_response = (
@@ -38259,6 +39321,8 @@ def _prompt_worker(
                         model=normalized_model,
                         service_tier=normalized_service_tier,
                     ),
+                    "work_classification": turn_envelope["work_classification"],
+                    "route_rationale": turn_envelope["route_rationale"],
                     "success": prompt_success,
                 }
             )
@@ -38293,6 +39357,7 @@ def _prompt_worker(
                 model=normalized_model,
                 attachments=attachments,
                 usage=usage,
+                turn_envelope=turn_envelope,
             )
             append_audit_event(
                 event_type="chat.cancelled"
@@ -38369,6 +39434,8 @@ def _prompt_worker(
                     "cost_route": running_cost_route,
                     "attribution": turn_attribution,
                     "usage": normalize_usage_entry(usage),
+                    "work_classification": turn_envelope["work_classification"],
+                    "route_rationale": turn_envelope["route_rationale"],
                     "success": prompt_success,
                     "provider_yield_kind": usage.get("provider_yield_kind"),
                     "provider_yield_reasons": usage.get("provider_yield_reasons"),
@@ -38400,6 +39467,7 @@ def _prompt_worker(
                 usage=usage,
                 attribution=turn_attribution,
                 cost_route=running_cost_route,
+                turn_envelope=turn_envelope,
             )
             final_live_turn_state = (
                 "cancelled"
@@ -38439,8 +39507,9 @@ def _prompt_worker(
                 rate_limit_attempt=rate_limit_attempt,
                 turn_plan=final_turn_plan,
                 turn_envelope=turn_envelope,
+                requested_runtime=requested_runtime,
                 requested_model=requested_model,
-                requested_service_tier=normalized_service_tier,
+                requested_service_tier=requested_service_tier,
                 timed_out=timed_out,
                 cost_route=running_cost_route,
             )
@@ -38460,6 +39529,7 @@ def _prompt_worker(
                     success=prompt_success,
                     usage=usage,
                     turn_plan=final_turn_plan,
+                    turn_envelope=turn_envelope,
                     cost_route=running_cost_route,
                     final_state=final_live_turn_state,
                 )
@@ -38950,11 +40020,45 @@ def _prompt_worker(
                 next_prompt = start_next_queued_prompt()
     except Exception as exc:  # pragma: no cover - defensive bridge hardening
         finished_at = now_ts()
+        crash_service_tier = normalize_service_tier(
+            (
+                running_cost_route.get("selected_service_tier")
+                if isinstance(running_cost_route, dict)
+                else ""
+            )
+            or service_tier
+        )
         crash_cost_route = validate_cost_route_proof(
             running_cost_route,
             normalized_runtime,
             normalized_model,
-            normalize_service_tier(service_tier),
+            crash_service_tier,
+        )
+        crash_turn_envelope = build_turn_control_envelope(
+            prompt=prompt,
+            attachments=attachments,
+            runtime=normalized_runtime,
+            model=normalized_model,
+            service_tier=crash_service_tier,
+            job_budget=normalize_job_budget(job_budget),
+            speed=normalize_response_speed(speed),
+            detail=normalize_response_detail(detail),
+            optimization_mode=normalize_optimization_mode(optimization_mode),
+            requested_runtime=requested_runtime,
+            requested_model=requested_model,
+            requested_service_tier=requested_service_tier,
+            route_lock=route_lock,
+            active_work=True,
+        )
+        crash_turn_envelope["cost_route"] = crash_cost_route
+        crash_usage = normalize_usage_entry(
+            {
+                "runtime": normalized_runtime,
+                "model": normalized_model,
+                "service_tier": crash_service_tier,
+                "work_classification": crash_turn_envelope["work_classification"],
+                "route_rationale": crash_turn_envelope["route_rationale"],
+            }
         )
         write_text(LAST_PROMPT_PATH, prompt)
         write_last_response("")
@@ -38968,19 +40072,14 @@ def _prompt_worker(
             thread_id=read_text(THREAD_ID_PATH),
             speed=speed,
             detail=detail,
-            service_tier=service_tier,
+            service_tier=crash_service_tier,
             job_budget=job_budget,
             timeout_seconds=timeout_seconds,
             runtime=normalized_runtime,
             model=normalized_model,
             attachments=attachments,
-            usage=normalize_usage_entry(
-                {
-                    "runtime": normalized_runtime,
-                    "model": normalized_model,
-                    "service_tier": service_tier,
-                }
-            ),
+            usage=crash_usage,
+            turn_envelope=crash_turn_envelope,
         )
         append_audit_event(
             event_type="chat.crashed",
@@ -38993,7 +40092,7 @@ def _prompt_worker(
                 "prompt_preview": summarize_text(prompt, 240),
                 "speed": normalize_response_speed(speed),
                 "detail": normalize_response_detail(detail),
-                "service_tier": normalize_service_tier(service_tier),
+                "service_tier": crash_service_tier,
                 "job_budget": normalize_job_budget(job_budget),
                 "runtime": normalized_runtime,
                 "model": normalized_model,
@@ -39002,6 +40101,10 @@ def _prompt_worker(
                 ),
                 "attachment_count": len(attachments),
                 "cost_route": crash_cost_route,
+                "turn_envelope": crash_turn_envelope,
+                "work_classification": crash_turn_envelope["work_classification"],
+                "route_rationale": crash_turn_envelope["route_rationale"],
+                "usage": crash_usage,
                 "error": str(exc),
             },
             event_at=finished_at,
@@ -39015,19 +40118,15 @@ def _prompt_worker(
                 error_text=str(exc),
                 runtime=normalized_runtime,
                 model=normalized_model,
-                service_tier=service_tier,
+                service_tier=crash_service_tier,
                 job_budget=job_budget,
                 optimization_mode=optimization_mode,
                 started_at=started_at,
                 finished_at=finished_at,
                 success=False,
-                usage=normalize_usage_entry(
-                    {
-                        "runtime": normalized_runtime,
-                        "model": normalized_model,
-                        "service_tier": service_tier,
-                    }
-                ),
+                usage=crash_usage,
+                turn_envelope=crash_turn_envelope,
+                cost_route=crash_cost_route,
                 final_state="crashed",
             )
         except Exception as shadow_exc:
@@ -39039,18 +40138,13 @@ def _prompt_worker(
                 thread_id=read_text(THREAD_ID_PATH),
                 speed=speed,
                 detail=detail,
-                service_tier=service_tier,
+                service_tier=crash_service_tier,
                 success=False,
                 runtime=normalized_runtime,
                 model=normalized_model,
-                usage=normalize_usage_entry(
-                    {
-                        "runtime": normalized_runtime,
-                        "model": normalized_model,
-                        "service_tier": service_tier,
-                    }
-                ),
+                usage=crash_usage,
                 cost_route=crash_cost_route,
+                turn_envelope=crash_turn_envelope,
             )
         maybe_notify_long_job_completion(
             prompt=prompt,
@@ -39061,17 +40155,11 @@ def _prompt_worker(
             finished_at=finished_at,
             speed=normalize_response_speed(speed),
             detail=normalize_response_detail(detail),
-            service_tier=normalize_service_tier(service_tier),
+            service_tier=crash_service_tier,
             job_budget=normalize_job_budget(job_budget),
             optimization_mode=normalize_optimization_mode(optimization_mode),
             timeout_seconds=normalize_job_timeout_seconds(timeout_seconds, job_budget),
-            usage=normalize_usage_entry(
-                {
-                    "runtime": normalized_runtime,
-                    "model": normalized_model,
-                    "service_tier": service_tier,
-                }
-            ),
+            usage=crash_usage,
             success=False,
             cancelled=False,
             timed_out=False,
@@ -39099,7 +40187,7 @@ def _prompt_worker(
             last_attachments=attachments,
             last_speed=normalize_response_speed(speed),
             last_detail=normalize_response_detail(detail),
-            last_service_tier=normalize_service_tier(service_tier),
+            last_service_tier=crash_service_tier,
             last_job_budget=normalize_job_budget(job_budget),
             last_optimization_mode=normalize_optimization_mode(optimization_mode),
             last_runtime=normalized_runtime,
@@ -39479,7 +40567,7 @@ def cost_route_decision_for_prompt(
         "selected_runtime": normalized_runtime,
         "selected_model": normalized_model,
         "selected_service_tier": normalized_service_tier,
-        "local_model": LOCAL_LLM_DEFAULT_MODEL,
+        "local_model": LOCAL_PLANNER_AUTOMATIC_MODEL,
         "local_min_text_b": LOCAL_LLM_MIN_TEXT_B,
         "local_lane": "",
         "local_preflight_candidate": prompt_is_local_first_candidate(prompt),
@@ -39588,27 +40676,11 @@ def cost_route_decision_for_prompt(
         guardrail_health,
         local_lane,
     )
-    env_candidates = local_llm_env_lane_models(local_lane)
     lane_summary = local_specialist_lane_summary(guardrail_health, local_lane)
-    degraded_fallback = bool(
-        not env_candidates
-        and guardrail_candidates
-        and not local_llm_lane_ready_for_foreground(lane_summary)
-    )
-    if degraded_fallback:
-        local_candidates = local_llm_fallback_models() or local_llm_lane_models(
-            local_lane
-        )
-    else:
-        local_candidates = (
-            env_candidates or guardrail_candidates or local_llm_lane_models(local_lane)
-        )
+    local_candidates = local_automatic_text_models()
     decision["local_lane"] = local_lane
-    decision["local_candidate_policy"] = local_llm_guardrail_candidate_policy(
-        env_candidates,
-        guardrail_candidates,
-        guardrail_health,
-        degraded_fallback=degraded_fallback,
+    decision["local_candidate_policy"] = (
+        "resident-coder-policy" if local_candidates else "resident-coder-disabled"
     )
     decision["local_candidates"] = local_candidates
     if guardrail_candidates:
@@ -39619,6 +40691,10 @@ def cost_route_decision_for_prompt(
             lanes = guardrails.get("lanes")
             if isinstance(lanes, dict) and isinstance(lanes.get(local_lane), dict):
                 decision["local_guardrail_lane"] = lanes[local_lane]
+    if not local_candidates:
+        decision["reason"] = "automatic resident Coder model is disabled"
+        decision["route_source"] = "local_first_health_gate"
+        return decision
     fleet_outcomes = console_runtime_route_outcomes_summary(allow_startup_defer=False)
     if console_runtime_route_outcomes_has_evidence(fleet_outcomes):
         decision["fleet_route_outcomes"] = (
@@ -39627,13 +40703,11 @@ def cost_route_decision_for_prompt(
                 max_models=5,
             )
         )
-    local_model = normalize_runtime_model(
-        "localllm", local_candidates[0] if local_candidates else LOCAL_LLM_DEFAULT_MODEL
-    )
+    local_model = normalize_runtime_model("localllm", local_candidates[0])
     health: dict[str, Any] = {}
     failed_health: list[dict[str, Any]] = []
     cooled_candidates: list[dict[str, Any]] = []
-    for candidate in local_candidates or [local_model]:
+    for candidate in local_candidates:
         candidate_model = normalize_runtime_model("localllm", candidate)
         cooldown = local_llm_route_cooldown(candidate_model)
         if cooldown:
@@ -40093,12 +41167,13 @@ def start_web_prompt(
         speed=normalized_speed,
         detail=normalized_detail,
         optimization_mode=normalized_optimization_mode,
+        requested_runtime=requested_runtime,
         requested_model=requested_model,
         requested_service_tier=requested_service_tier,
+        route_lock=route_lock,
     )
     turn_envelope["token_capacity_plan"] = token_capacity_plan
     turn_envelope["cost_route"] = dict(cost_route_decision)
-    turn_envelope["requested_runtime"] = requested_runtime
     normalized_interlace_mode = normalize_queue_interlace_mode(interlace_mode)
     recover_stale_prompt_state()
     should_queue = True
@@ -40860,6 +41935,10 @@ def current_snapshot() -> dict[str, Any]:
         last_response_console_runtime_job_id
         or str(meta.get("last_console_runtime_job_id") or "").strip()
     )
+    running_turn_envelope = sanitize_turn_envelope_cost_route(
+        meta.get("running_turn_envelope")
+    )
+    route_receipts = route_receipt_status_snapshot()
     snapshot = {
         "pending": pending,
         "state": snapshot_state,
@@ -40889,9 +41968,11 @@ def current_snapshot() -> dict[str, Any]:
             if isinstance(meta.get("running_turn_control"), dict)
             else {}
         ),
-        "running_turn_envelope": sanitize_turn_envelope_cost_route(
-            meta.get("running_turn_envelope")
+        "running_turn_envelope": running_turn_envelope,
+        "running_work_classification": running_turn_envelope.get(
+            "work_classification", {}
         ),
+        "running_route_rationale": running_turn_envelope.get("route_rationale", ""),
         "running_submission_id": (
             normalize_submission_id(meta.get("running_submission_id"))
             if pending
@@ -40992,7 +42073,11 @@ def current_snapshot() -> dict[str, Any]:
         "billing_link": billing_action.get("billing_url", ""),
         "history": history,
         "usage": usage,
-        "route_receipts": route_receipt_status_snapshot(),
+        "route_receipts": route_receipts,
+        "latest_work_classification": route_receipts.get(
+            "latest_work_classification", {}
+        ),
+        "latest_route_rationale": route_receipts.get("latest_route_rationale", ""),
         "bedrock_health": bedrock_health_snapshot(snapshot_at=snapshot_at),
         "local_llm_health": sanitize_public_local_llm_health(
             configured_local_llm_health
@@ -42584,6 +43669,58 @@ def _initial_context_meter(snapshot: dict[str, Any]) -> dict[str, Any]:
         "label": label,
         "value": value,
         "fill_pct": 0 if hidden else max(6, min(100, round(fill * 100))),
+        "title": " · ".join(title_parts),
+    }
+
+
+def _initial_usage_meter(snapshot: dict[str, Any]) -> dict[str, Any]:
+    usage = snapshot.get("usage") if isinstance(snapshot.get("usage"), dict) else {}
+    billing = usage.get("billing") if isinstance(usage.get("billing"), dict) else {}
+    cycle = billing.get("cycle") if isinstance(billing.get("cycle"), dict) else {}
+    plan = cycle.get("plan") if isinstance(cycle.get("plan"), dict) else {}
+    metered = cycle.get("metered") if isinstance(cycle.get("metered"), dict) else {}
+    credits = max(0.0, _coerce_float(plan.get("credits")))
+    allowance = _optional_nonnegative_float_env("NORMAN_PLAN_MONTHLY_CREDIT_ALLOWANCE")
+    if allowance is None:
+        allowance = _coerce_float(plan.get("allowance_credits"))
+        allowance = allowance if allowance > 0 else None
+    metered_usd = max(0.0, _coerce_float(metered.get("usd")))
+    has_allowance = allowance is not None and allowance > 0
+    used_pct = (credits / allowance * 100) if has_allowance else 0.0
+    tone = "ok"
+    if used_pct >= 100:
+        tone = "danger"
+    elif used_pct >= 75:
+        tone = "warn"
+    plan_label = (
+        f"Plan {round(used_pct)}%"
+        if has_allowance
+        else f"Plan {'~' if credits else ''}{_compact_metric(credits)} cr"
+    )
+    metered_label = (
+        f"Metered {'~' if metered_usd else ''}{_format_compact_usd(metered_usd)}"
+    )
+    cycle_label = str(cycle.get("label") or "current calendar month")
+    timezone_label = str(cycle.get("timezone") or "local")
+    title_parts = [
+        f"Monthly usage ({cycle_label}, {timezone_label})",
+        (
+            f"Plan estimate ~{_compact_metric(credits)} credits of "
+            f"{_compact_metric(allowance)} configured credits"
+            if has_allowance
+            else f"Plan estimate ~{_compact_metric(credits)} credits"
+        ),
+        f"Metered estimate {_format_compact_usd(metered_usd)}",
+        "Plan is a local credit estimate, not a provider-reported subscription balance.",
+        "Metered USD is a local rate-card estimate, not a reconciled invoice.",
+    ]
+    return {
+        "hidden": False,
+        "tone": tone,
+        "plan_label": plan_label,
+        "metered_label": metered_label,
+        "fill_pct": max(0, min(100, round(used_pct))) if has_allowance else 0,
+        "has_fill": has_allowance,
         "title": " · ".join(title_parts),
     }
 
@@ -45171,6 +46308,46 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if not message:
                 message = build_attachment_lead_message(attachments)
+            if deterministic_command_prompt_allowed(
+                message, attachments, route_lock=route_lock
+            ):
+                snapshot = complete_deterministic_command_prompt(
+                    message,
+                    speed=speed,
+                    detail=detail,
+                    service_tier=service_tier,
+                    job_budget=job_budget,
+                    optimization_mode=optimization_mode,
+                    actor_ip=actor_ip,
+                )
+                clear_draft_attachments()
+                if api_path:
+                    self.json_response(
+                        {
+                            "accepted": True,
+                            "queued": False,
+                            "running": False,
+                            "deduplicated": False,
+                            "console_runtime_job_id": "",
+                            "receipt_visibility": "not_applicable",
+                            "receipt_url": "",
+                            "receipt_visibility_detail": {
+                                "state": "not_applicable",
+                                "reason": "deterministic_command",
+                            },
+                            "request_nonce": route_receipt_prompt_id(message),
+                            "submission_id": submission_id,
+                            "submission_state": "completed",
+                            "queue_position": 0,
+                            "session": SESSION,
+                            "error": str(snapshot.get("last_error") or ""),
+                            "snapshot": snapshot,
+                        },
+                        status=HTTPStatus.OK,
+                    )
+                else:
+                    self.redirect_root(params)
+                return
             if deterministic_status_prompt_allowed(
                 message, attachments, route_lock=route_lock
             ):
@@ -45183,6 +46360,7 @@ class Handler(BaseHTTPRequestHandler):
                     optimization_mode=optimization_mode,
                     actor_ip=actor_ip,
                 )
+                clear_draft_attachments()
                 if api_path:
                     self.json_response(
                         {
@@ -46642,8 +47820,11 @@ class Handler(BaseHTTPRequestHandler):
         )
         initial_history_summary = _initial_history_summary(initial_snapshot_data)
         initial_context_meter = _initial_context_meter(initial_snapshot_data)
+        initial_usage_meter = _initial_usage_meter(initial_snapshot_data)
         initial_chat_summary_hidden = (
-            initial_chat_activity_hidden and initial_context_meter["hidden"]
+            initial_chat_activity_hidden
+            and initial_context_meter["hidden"]
+            and initial_usage_meter["hidden"]
         )
         initial_last_updated = (
             f"updated {_format_ui_ts(initial_snapshot_data.get('updated_at'))}"
@@ -49160,7 +50341,7 @@ class Handler(BaseHTTPRequestHandler):
     body.chat-scrolled #last-updated-head {{
       display: none;
     }}
-    body.chat-scrolled .context-meter-track {{
+    body.chat-scrolled :is(.context-meter-track, .usage-meter-track) {{
       width: 22px;
       flex-basis: 22px;
     }}
@@ -49468,6 +50649,60 @@ class Handler(BaseHTTPRequestHandler):
       height: 100%;
       border-radius: inherit;
       background: linear-gradient(90deg, color-mix(in srgb, var(--context-tone) 68%, transparent), var(--context-tone));
+    }}
+    .usage-meter-chip {{
+      --usage-tone: color-mix(in srgb, var(--agent-accent) 72%, var(--text));
+      gap: 5px;
+      padding-right: 7px;
+      color: color-mix(in srgb, var(--muted) 82%, var(--text));
+      border-color: color-mix(in srgb, var(--border) 28%, transparent);
+      background:
+        linear-gradient(180deg, color-mix(in srgb, var(--surface) 84%, transparent), color-mix(in srgb, var(--surface-2) 78%, transparent));
+    }}
+    .usage-meter-chip[data-load-tone="ok"] {{
+      --usage-tone: color-mix(in srgb, var(--agent-accent) 76%, var(--text));
+      border-color: color-mix(in srgb, var(--agent-accent) 16%, var(--border));
+      background:
+        linear-gradient(180deg, color-mix(in srgb, var(--agent-accent) 5%, var(--surface)), color-mix(in srgb, var(--surface-2) 82%, transparent));
+    }}
+    .usage-meter-chip[data-load-tone="warn"] {{
+      --usage-tone: color-mix(in srgb, var(--warn) 88%, var(--text));
+      border-color: color-mix(in srgb, var(--warn) 22%, var(--border));
+      background:
+        linear-gradient(180deg, color-mix(in srgb, var(--warn) 8%, var(--surface)), color-mix(in srgb, var(--surface-2) 84%, transparent));
+    }}
+    .usage-meter-chip[data-load-tone="danger"] {{
+      --usage-tone: color-mix(in srgb, var(--danger) 88%, var(--text));
+      border-color: color-mix(in srgb, var(--danger) 26%, var(--border));
+      background:
+        linear-gradient(180deg, color-mix(in srgb, var(--danger) 9%, var(--surface)), color-mix(in srgb, var(--surface-2) 84%, transparent));
+    }}
+    #usage-meter-plan {{
+      color: var(--text);
+      font-weight: 620;
+      white-space: nowrap;
+    }}
+    #usage-meter-metered {{
+      color: inherit;
+      opacity: 0.94;
+      white-space: nowrap;
+    }}
+    .usage-meter-track {{
+      position: relative;
+      flex: 0 0 30px;
+      width: 30px;
+      height: 4px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: color-mix(in srgb, var(--border) 34%, transparent);
+      box-shadow: inset 0 1px 0 color-mix(in srgb, rgba(255, 255, 255, 0.04) 40%, transparent);
+    }}
+    .usage-meter-fill {{
+      display: block;
+      width: var(--usage-load, 0%);
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, color-mix(in srgb, var(--usage-tone) 68%, transparent), var(--usage-tone));
     }}
     .context-save-button {{
       min-height: 18px;
@@ -58366,7 +59601,7 @@ class Handler(BaseHTTPRequestHandler):
         flex: 1 1 0;
         min-width: 0;
       }}
-      .context-meter-track {{
+      :is(.context-meter-track, .usage-meter-track) {{
         flex-basis: 24px;
         width: 24px;
       }}
@@ -59453,7 +60688,7 @@ class Handler(BaseHTTPRequestHandler):
       padding: 1px 4px;
       font-size: 0.54rem;
     }}
-    body[data-layout-mode="tile"] .context-meter-track {{
+    body[data-layout-mode="tile"] :is(.context-meter-track, .usage-meter-track) {{
       flex-basis: 20px;
       width: 20px;
     }}
@@ -60511,6 +61746,11 @@ class Handler(BaseHTTPRequestHandler):
               <span id="context-meter-status">{html.escape(str(initial_context_meter["label"]))}</span>
               <span id="context-meter-value">{html.escape(str(initial_context_meter["value"]))}</span>
               <span class="context-meter-track" aria-hidden="true"><span class="context-meter-fill"></span></span>
+            </span>
+            <span id="usage-meter-chip" class="meta-chip subtle usage-meter-chip" data-icon="¤" data-load-tone="{html.escape(str(initial_usage_meter['tone']))}" style="--usage-load: {int(initial_usage_meter['fill_pct'])}%;" title="{html.escape(str(initial_usage_meter['title']))}"{' hidden' if initial_usage_meter['hidden'] else ''}>
+              <span id="usage-meter-plan">{html.escape(str(initial_usage_meter["plan_label"]))}</span>
+              <span id="usage-meter-metered">{html.escape(str(initial_usage_meter["metered_label"]))}</span>
+              <span id="usage-meter-track" class="usage-meter-track" aria-hidden="true"{' hidden' if not initial_usage_meter['has_fill'] else ''}><span class="usage-meter-fill"></span></span>
             </span>
             <button id="context-save-button" type="button" class="ghost context-save-button" hidden>Save</button>
             <span id="route-chip" class="meta-chip subtle" data-icon="{html.escape(icon_for_label(active_route_mode, "⇄"))}">{html.escape("LAN route" if active_route_mode == "lan" else "Host route")}</span>
@@ -61901,6 +63141,10 @@ class Handler(BaseHTTPRequestHandler):
       contextMeterChip: document.getElementById("context-meter-chip"),
       contextMeterStatus: document.getElementById("context-meter-status"),
       contextMeterValue: document.getElementById("context-meter-value"),
+      usageMeterChip: document.getElementById("usage-meter-chip"),
+      usageMeterPlan: document.getElementById("usage-meter-plan"),
+      usageMeterMetered: document.getElementById("usage-meter-metered"),
+      usageMeterTrack: document.getElementById("usage-meter-track"),
       contextSaveButton: document.getElementById("context-save-button"),
       systemSummary: document.getElementById("system-summary"),
       systemRuntimeMetrics: document.getElementById("system-runtime-metrics"),
@@ -71303,6 +72547,88 @@ class Handler(BaseHTTPRequestHandler):
       }}
     }}
 
+    function usageMeterState(snapshot) {{
+      const usage = snapshot && typeof snapshot === "object" ? snapshot.usage || {{}} : {{}};
+      const billing = usage && typeof usage === "object" && usage.billing && typeof usage.billing === "object"
+        ? usage.billing
+        : {{}};
+      const cycle = billing && typeof billing.cycle === "object" && billing.cycle
+        ? billing.cycle
+        : {{}};
+      const plan = cycle && typeof cycle.plan === "object" && cycle.plan ? cycle.plan : {{}};
+      const metered = cycle && typeof cycle.metered === "object" && cycle.metered
+        ? cycle.metered
+        : {{}};
+      const rawCredits = Number(plan.credits || 0);
+      const credits = Number.isFinite(rawCredits) && rawCredits > 0 ? rawCredits : 0;
+      const rawAllowance = Number(plan.allowance_credits);
+      const hasAllowance = Number.isFinite(rawAllowance) && rawAllowance > 0;
+      const usedPct = hasAllowance ? (credits / rawAllowance) * 100 : 0;
+      const rawMeteredUsd = Number(metered.usd || 0);
+      const meteredUsd = Number.isFinite(rawMeteredUsd) && rawMeteredUsd > 0 ? rawMeteredUsd : 0;
+      let tone = "ok";
+      if (usedPct >= 100) {{
+        tone = "danger";
+      }} else if (usedPct >= 75) {{
+        tone = "warn";
+      }}
+      const planLabel = hasAllowance
+        ? `Plan ${{Math.round(usedPct)}}%`
+        : `Plan ${{credits > 0 ? "~" : ""}}${{formatCompactMetric(credits)}} cr`;
+      const meteredLabel = `Metered ${{meteredUsd > 0 ? "~" : ""}}${{formatCompactUsd(meteredUsd)}}`;
+      const cycleLabel = String(cycle.label || "current calendar month").trim();
+      const timezoneLabel = String(cycle.timezone || "local").trim();
+      const title = [
+        `Monthly usage (${{cycleLabel}}${{timezoneLabel ? `, ${{timezoneLabel}}` : ""}})`,
+        hasAllowance
+          ? `Plan estimate ~${{formatCompactMetric(credits)}} credits of ${{formatCompactMetric(rawAllowance)}} configured credits`
+          : `Plan estimate ~${{formatCompactMetric(credits)}} credits`,
+        `Metered estimate ${{formatCompactUsd(meteredUsd)}}`,
+        String(cycle.note || billing.note || "").trim(),
+        "Plan is a local credit estimate, not a provider-reported subscription balance.",
+        "Metered USD is a local rate-card estimate, not a reconciled invoice.",
+      ].filter(Boolean).join(" · ");
+      return {{
+        hidden: false,
+        tone,
+        planLabel,
+        meteredLabel,
+        fill: hasAllowance ? Math.max(0, Math.min(100, Math.round(usedPct))) : 0,
+        hasFill: hasAllowance,
+        title,
+      }};
+    }}
+
+    function renderUsageMeter(snapshot) {{
+      if (!el.usageMeterChip || !el.usageMeterPlan || !el.usageMeterMetered) {{
+        return;
+      }}
+      const meter = usageMeterState(snapshot);
+      const renderKey = JSON.stringify({{
+        hidden: Boolean(meter.hidden),
+        tone: String(meter.tone || ""),
+        planLabel: String(meter.planLabel || ""),
+        meteredLabel: String(meter.meteredLabel || ""),
+        fill: Number(meter.fill || 0),
+        hasFill: Boolean(meter.hasFill),
+        title: String(meter.title || ""),
+      }});
+      if (state.renderCache.usageMeter === renderKey) {{
+        return;
+      }}
+      state.renderCache.usageMeter = renderKey;
+      el.usageMeterChip.hidden = meter.hidden;
+      el.usageMeterChip.dataset.loadTone = meter.tone;
+      el.usageMeterChip.style.setProperty("--usage-load", `${{meter.fill}}%`);
+      el.usageMeterChip.title = meter.title;
+      el.usageMeterChip.setAttribute("aria-label", meter.title);
+      el.usageMeterPlan.textContent = meter.planLabel;
+      el.usageMeterMetered.textContent = meter.meteredLabel;
+      if (el.usageMeterTrack) {{
+        el.usageMeterTrack.hidden = !meter.hasFill;
+      }}
+    }}
+
     function usageCapsuleState(snapshot) {{
       const usage = snapshot && typeof snapshot === "object" ? snapshot.usage || {{}} : {{}};
       const recent = usage && typeof usage === "object" ? usage.last_24h || {{}} : {{}};
@@ -80185,14 +81511,16 @@ class Handler(BaseHTTPRequestHandler):
       }}
       el.chatActivityChip.hidden = !snapshot.pending && !consoleActionActive && draftAttachmentCount === 0 && !humanAsk;
       renderContextMeter(snapshot);
+      renderUsageMeter(snapshot);
       renderStatusCapsules(snapshot);
       renderBbsSummary(snapshot);
       renderNormanCommandRail(snapshot);
       renderOperatorFocus(snapshot);
       if (el.chatSummaryBar) {{
         const contextHidden = !el.contextMeterChip || el.contextMeterChip.hidden;
+        const usageHidden = !el.usageMeterChip || el.usageMeterChip.hidden;
         const saveHidden = !el.contextSaveButton || el.contextSaveButton.hidden;
-        el.chatSummaryBar.hidden = el.chatActivityChip.hidden && contextHidden && saveHidden;
+        el.chatSummaryBar.hidden = el.chatActivityChip.hidden && contextHidden && usageHidden && saveHidden;
       }}
 
       el.lastError.innerHTML = renderPreformattedText(snapshot.last_error || "[none]");

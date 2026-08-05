@@ -278,7 +278,7 @@ def test_console_runtime_api_exposes_kernel_capabilities(test_app, monkeypatch):
         "norman.norllama.capability-catalog.v1"
     )
     assert payload["norllama"]["capability_catalog"]["defaults"]["code"] == (
-        "qwen3.6:27b"
+        "qwen3-coder:30b-a3b-q4_K_M"
     )
     assert payload["norllama"]["specialist_lanes"]["schema"] == (
         "norman.norllama.specialist-lanes.v1"

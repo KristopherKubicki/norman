@@ -29,30 +29,28 @@ CAPABILITY_CLASSES = {
 
 CAPABILITY_MODELS: list[dict[str, Any]] = [
     {
-        "capability": "fast_agent_router",
-        "class": "chat",
-        "model": "nvidia/Qwen3.6-35B-A3B-NVFP4",
-        "runtime_model": "qwen3.6:35b-a3b-q4_K_M",
-        "priority": "p0",
-        "residency": "resident",
-        "target_worker": "spark-151",
-        "target_role": "production",
-        "use_for": "fast agent routing, planning, filtering, and swarm coordination",
-        "guardrail": "Use for routing and draft plans; verify risky work.",
-        "default_for": ["plan", "filter", "summarize", "compact", "scout"],
-    },
-    {
         "capability": "coding_operator",
         "class": "code",
-        "model": "nvidia/Qwen3.6-27B-NVFP4",
-        "runtime_model": "qwen3.6:27b",
+        "model": "Qwen/Qwen3-Coder-30B-A3B",
+        "runtime_model": "qwen3-coder:30b-a3b-q4_K_M",
         "priority": "p0",
-        "residency": "warm_on_demand",
-        "target_worker": "spark-151",
+        "residency": "resident",
+        "target_worker": "spark-150",
         "target_role": "production",
-        "use_for": "default local coding operator and repo reasoning brain",
+        "dispatch": "unified_chat",
+        "serving_path": "/v1/chat/completions",
+        "use_for": "default local agent, code, planning, filtering, and summarization brain",
         "guardrail": "Run tests and verifier checks before final authority.",
-        "default_for": ["chat", "code"],
+        "default_for": [
+            "chat",
+            "code",
+            "plan",
+            "filter",
+            "summarize",
+            "compact",
+            "scout",
+            "verify",
+        ],
     },
     {
         "capability": "local_heavyweight_judge",
@@ -63,9 +61,9 @@ CAPABILITY_MODELS: list[dict[str, Any]] = [
         "residency": "warm_on_demand",
         "target_worker": "spark-151",
         "target_role": "production",
+        "manual_only": True,
         "use_for": "heavy local judge, verifier, and escalation reducer",
         "guardrail": "Use for expensive verification and high-value decisions.",
-        "default_for": ["verify", "judge"],
     },
     {
         "capability": "text_embedding_heavy",
@@ -76,6 +74,8 @@ CAPABILITY_MODELS: list[dict[str, Any]] = [
         "residency": "resident",
         "target_worker": "spark-150",
         "target_role": "production",
+        "dispatch": "embedding_proxy",
+        "serving_path": "/v1/embeddings",
         "use_for": "repo, docs, logs, tickets, crawl captures, and agent trace memory",
         "guardrail": "Use as retrieval infrastructure, not as a reasoning authority.",
         "default_for": ["embed"],
@@ -239,10 +239,10 @@ CAPABILITY_MODELS: list[dict[str, Any]] = [
         "capability": "agent_world_simulator",
         "class": "world",
         "model": "Qwen/Qwen-AgentWorld-35B-A3B",
-        "runtime_model": "qwen3.6:35b-a3b-q4_K_M",
+        "runtime_model": "qwen3-coder:30b-a3b-q4_K_M",
         "priority": "p1",
         "residency": "warm_on_demand",
-        "target_worker": "spark-151",
+        "target_worker": "spark-150",
         "target_role": "production",
         "dispatch": "world_proxy",
         "use_for": "simulate action consequences before browser, shell, and workflow execution",
@@ -253,10 +253,10 @@ CAPABILITY_MODELS: list[dict[str, Any]] = [
         "capability": "web_world_simulator",
         "class": "world",
         "model": "Qwen/WebWorld-8B",
-        "runtime_model": "qwen3.6:35b-a3b-q4_K_M",
+        "runtime_model": "qwen3-coder:30b-a3b-q4_K_M",
         "priority": "p1",
         "residency": "warm_on_demand",
-        "target_worker": "spark-151",
+        "target_worker": "spark-150",
         "target_role": "production",
         "dispatch": "world_proxy",
         "use_for": "browser task simulation, page-state prediction, and web-agent rehearsal",
@@ -406,6 +406,11 @@ def catalog_by_model() -> dict[str, dict[str, Any]]:
     return by_model
 
 
+def _is_tool_only(item: dict[str, Any]) -> bool:
+    dispatch = _clean(item.get("dispatch")).lower()
+    return bool(dispatch and dispatch != "unified_chat")
+
+
 def default_model_for_task_kind(kind: str, *, lightweight: bool = False) -> str:
     clean_kind = _clean(kind).lower()
     if not clean_kind:
@@ -414,6 +419,7 @@ def default_model_for_task_kind(kind: str, *, lightweight: bool = False) -> str:
         item
         for item in CAPABILITY_MODELS
         if clean_kind in {str(value).lower() for value in item.get("default_for", [])}
+        and not bool(item.get("manual_only"))
     ]
     if not matches:
         return ""
@@ -431,6 +437,8 @@ def warm_policy_recommendations() -> list[dict[str, Any]]:
         desired_model = _clean(item.get("model"))
         runtime_model = runtime_model_for_catalog_item(item)
         priority = _clean(item.get("priority")) or "p2"
+        manual_only = bool(item.get("manual_only"))
+        tool_only = _is_tool_only(item)
         existing = by_runtime_model.get(runtime_model)
         if existing:
             existing["desired_models"] = _ordered_unique(
@@ -445,9 +453,12 @@ def warm_policy_recommendations() -> list[dict[str, Any]]:
             existing["roles"] = _ordered_unique(
                 [*existing.get("roles", []), item.get("capability")]
             )
-            existing["default_for"] = _ordered_unique(
-                [*existing.get("default_for", []), *item.get("default_for", [])]
-            )
+            if not tool_only:
+                existing["default_for"] = _ordered_unique(
+                    [*existing.get("default_for", []), *item.get("default_for", [])]
+                )
+            existing["manual_only"] = bool(existing.get("manual_only")) and manual_only
+            existing["tool_only"] = bool(existing.get("tool_only")) and tool_only
             if priority_rank.get(priority, 9) < priority_rank.get(
                 existing.get("priority"), 9
             ):
@@ -458,6 +469,8 @@ def warm_policy_recommendations() -> list[dict[str, Any]]:
                 existing["capability"] = _clean(item.get("capability"))
                 existing["capability_class"] = _clean(item.get("class"))
                 existing["residency"] = _clean(item.get("residency"))
+                existing["dispatch"] = _clean(item.get("dispatch")) or "unified_chat"
+                existing["serving_path"] = _clean(item.get("serving_path"))
             continue
         by_runtime_model[runtime_model] = {
             "model": runtime_model,
@@ -477,6 +490,10 @@ def warm_policy_recommendations() -> list[dict[str, Any]]:
             "residency": _clean(item.get("residency")),
             "roles": [_clean(item.get("capability"))],
             "default_for": _ordered_unique(item.get("default_for", [])),
+            "manual_only": manual_only,
+            "tool_only": tool_only,
+            "dispatch": _clean(item.get("dispatch")) or "unified_chat",
+            "serving_path": _clean(item.get("serving_path")),
         }
     return list(by_runtime_model.values())
 

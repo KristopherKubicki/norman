@@ -103,36 +103,18 @@ def test_gateway_activity_defaults_missing_execution_mode_to_unknown(monkeypatch
     assert execution["items"][0]["activity_class"] == "execution"
 
 
-def test_gateway_applies_short_keep_alive_to_heavy_judge_by_default():
+def test_gateway_marks_all_heavy_judge_aliases_as_manual_only():
     module = load_gateway_module()
 
-    payload, changed = module.apply_model_keep_alive_default(
-        {"model": module.QWEN35_JUDGE_MODEL, "prompt": "verify"}
-    )
-    explicit_payload, explicit_changed = module.apply_model_keep_alive_default(
-        {
-            "model": module.QWEN35_JUDGE_MODEL,
-            "prompt": "verify",
-            "keep_alive": "5m",
-        }
-    )
-    chat_payload = module.openai_chat_payload_to_ollama(
-        {
-            "model": module.QWEN35_JUDGE_MODEL,
-            "messages": [{"role": "user", "content": "verify"}],
-        }
-    )
-    router_payload, router_changed = module.apply_model_keep_alive_default(
-        {"model": module.QWEN36_ROUTER_MODEL, "prompt": "plan"}
-    )
+    for model in (
+        module.QWEN35_JUDGE_MODEL,
+        "qwen3.5-122b-a10b-q4_K_M",
+        "Qwen3.5/122B-A10B-Q4_K_M",
+        "NVIDIA/Qwen3.5-122B-A10B-Q4_K_M",
+    ):
+        assert module.is_manual_only_model(model) is True
 
-    assert changed is True
-    assert payload["keep_alive"] == module.QWEN35_JUDGE_KEEP_ALIVE
-    assert explicit_changed is False
-    assert explicit_payload["keep_alive"] == "5m"
-    assert chat_payload["keep_alive"] == module.QWEN35_JUDGE_KEEP_ALIVE
-    assert router_changed is False
-    assert "keep_alive" not in router_payload
+    assert module.is_manual_only_model(module.QWEN3_CODER_MODEL) is False
 
 
 def test_gateway_disables_qwen_thinking_for_generate_payloads():
@@ -155,113 +137,30 @@ def test_gateway_disables_qwen_thinking_for_generate_payloads():
     assert explicit_payload["think"] is True
 
 
-def test_gateway_load_pressure_guard_evicts_heavy_judge_for_interactive_peer():
+def test_gateway_rejects_manual_only_prefetch_before_starting_a_job():
     module = load_gateway_module()
-    app = module.App()
     handler = object.__new__(module.Handler)
-    handler.server = type("Server", (), {"app": app})()
-    handler.headers = {}
-    handler._peer_hop = 0
-    handler._activity_extra = {}
-    calls = []
+    responses = []
+    handler.send_json = lambda status, payload: responses.append((status, payload))
 
-    def fake_request_upstream(
-        base,
-        upstream_path,
-        *,
-        headers=None,
-        body=None,
-        method=None,
-        timeout_s=None,
-    ):
-        calls.append(
+    handler.handle_prefetch(
+        json.dumps({"model": "Qwen3.5/122B-A10B-Q4_K_M"}).encode("utf-8")
+    )
+
+    assert responses == [
+        (
+            module.HTTPStatus.FORBIDDEN,
             {
-                "base": base,
-                "path": upstream_path,
-                "headers": dict(headers or {}),
-                "body": body,
-                "method": method,
-                "timeout_s": timeout_s,
-            }
-        )
-        if upstream_path.startswith("/api/ps"):
-            return (
-                200,
-                {"Content-Type": "application/json"},
-                json.dumps({"models": [{"model": module.QWEN35_JUDGE_MODEL}]}).encode(
-                    "utf-8"
+                "ok": False,
+                "error": "manual_only_model",
+                "model": "Qwen3.5/122B-A10B-Q4_K_M",
+                "detail": (
+                    "This model is available only for explicit manual review; "
+                    "automatic prefetch and warming are disabled."
                 ),
-            )
-        return 200, {"Content-Type": "application/json"}, b'{"ok": true}'
-
-    handler.request_upstream = fake_request_upstream
-
-    handler.maybe_evict_heavy_judge_for_interactive_load(
-        "http://192.168.2.151:18151",
-        requested_model=module.QWEN36_ROUTER_MODEL,
-        is_peer=True,
-    )
-
-    assert [call["path"] for call in calls] == ["/api/ps?scope=local", "/v1/evict"]
-    evict_payload = json.loads(calls[1]["body"].decode("utf-8"))
-    assert evict_payload["model"] == module.QWEN35_JUDGE_MODEL
-    assert evict_payload["reason"] == "interactive_qwen36_load_pressure"
-    assert calls[1]["headers"]["X-Norllama-Peer-Hop"] == "1"
-    assert handler._activity_extra["load_pressure_guard"] == "evicted_heavy_judge"
-    assert handler._activity_extra["load_pressure_requested_model"] == (
-        module.QWEN36_ROUTER_MODEL
-    )
-
-
-def test_gateway_load_pressure_guard_skips_when_requested_model_is_resident():
-    module = load_gateway_module()
-
-    resident = {module.QWEN35_JUDGE_MODEL, module.QWEN36_ROUTER_MODEL}
-
-    assert (
-        module.should_evict_heavy_judge_for_interactive_load(
-            module.QWEN36_ROUTER_MODEL,
-            resident,
+            },
         )
-        is False
-    )
-    assert (
-        module.should_evict_heavy_judge_for_interactive_load(
-            module.QWEN36_CODE_MODEL,
-            {module.QWEN35_JUDGE_MODEL},
-        )
-        is True
-    )
-    assert (
-        module.should_evict_heavy_judge_for_interactive_load(
-            module.QWEN35_JUDGE_MODEL,
-            {module.QWEN35_JUDGE_MODEL},
-        )
-        is False
-    )
-
-
-def test_gateway_load_pressure_guard_does_not_probe_noninteractive_models():
-    module = load_gateway_module()
-    app = module.App()
-    handler = object.__new__(module.Handler)
-    handler.server = type("Server", (), {"app": app})()
-    handler.headers = {}
-    handler._peer_hop = 0
-    handler._activity_extra = {}
-
-    def fail_request_upstream(*_args, **_kwargs):
-        raise AssertionError("noninteractive traffic should not probe residency")
-
-    handler.request_upstream = fail_request_upstream
-
-    handler.maybe_evict_heavy_judge_for_interactive_load(
-        "http://192.168.2.151:18151",
-        requested_model=module.QWEN35_JUDGE_MODEL,
-        is_peer=True,
-    )
-
-    assert handler._activity_extra == {}
+    ]
 
 
 @pytest.mark.parametrize(
@@ -590,7 +489,7 @@ def test_gateway_warm_policy_accepts_production_backed_qwen_contract(monkeypatch
     contract = {
         "contract_id": "chat",
         "default_model": model,
-        "default_profile": "qwen36_35_router_local_route_proof",
+        "default_profile": "qwen3_coder_30b_local_route_proof",
         "dispatch": "unified_chat",
         "selection_method": "uplink_route_proof_live_probe",
         "status": "production_backed",
@@ -627,9 +526,11 @@ def test_gateway_warm_policy_accepts_production_backed_qwen_contract(monkeypatch
     planner = policy["route_guardrails"]["lanes"]["planner"]
     entry = planner["eligible_models"][0]
 
-    assert policy["route_posture"] == "ready"
-    assert planner["status"] == "ready"
+    assert policy["route_posture"] == "prefetch_or_wait"
+    assert planner["status"] == "prefetch_or_wait"
     assert entry["model"] == model
+    assert entry["action"] == "prefetch"
+    assert entry["active"] is False
     assert entry["contract_status"] == "production_backed"
     assert entry["benchmark_quality"]["coverage_ratio"] == 1.0
     assert entry["benchmark_quality"]["benchmark_gate"]["gate"] == "production"
@@ -644,7 +545,7 @@ def test_gateway_warm_policy_blocks_qwen_default_without_capability_gate(monkeyp
     contract = {
         "contract_id": "chat",
         "default_model": model,
-        "default_profile": "qwen36_35_router_local_route_proof",
+        "default_profile": "qwen3_coder_30b_local_route_proof",
         "dispatch": "unified_chat",
         "selection_method": "uplink_route_proof_live_probe",
         "status": "production_backed",
@@ -704,7 +605,7 @@ def test_gateway_warm_policy_blocks_qwen_without_production_gate(monkeypatch):
     contract = {
         "contract_id": "chat",
         "default_model": model,
-        "default_profile": "qwen36_35_router_local_route_proof",
+        "default_profile": "qwen3_coder_30b_local_route_proof",
         "dispatch": "unified_chat",
         "status": "production_backed",
         "best_weighted_score": 0.95,

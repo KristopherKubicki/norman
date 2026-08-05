@@ -256,6 +256,7 @@ def _console_runtime_worker_session(parent_db: Session):
 class ConsoleRuntimeJobCreate(BaseModel):
     objective: str
     job_id: str = ""
+    execution_mode: str = "standard"
     done_when: list[str] = Field(default_factory=list)
     success_metrics: list[str] = Field(default_factory=list)
     required_artifacts: list[str] = Field(default_factory=list)
@@ -375,6 +376,7 @@ class ConsoleRuntimePlannerReceiptCreate(BaseModel):
 
 class ConsoleRuntimeRunCreate(BaseModel):
     worker_id: str = "runtime-api-worker"
+    execution_mode: str = "standard"
     dry_run: bool = True
     complete: bool = True
     continuous: bool = False
@@ -877,6 +879,9 @@ async def create_console_runtime_job(
     db: Session = Depends(get_db),
 ):
     try:
+        execution_mode = str(payload.execution_mode or "standard").strip().lower()
+        if execution_mode not in {"standard", "advisory"}:
+            raise ValueError("execution_mode must be standard or advisory")
         contract = ConsoleJobContract(
             objective=payload.objective,
             done_when=payload.done_when,
@@ -887,7 +892,11 @@ async def create_console_runtime_job(
             question_budget=payload.question_budget,
             approval_required_for=payload.approval_required_for,
             authority_flags=payload.authority_flags,
-            route_policy=with_local_first_catalog_defaults(payload.route_policy),
+            route_policy=(
+                dict(payload.route_policy or {})
+                if execution_mode == "advisory"
+                else with_local_first_catalog_defaults(payload.route_policy)
+            ),
             metadata=payload.metadata,
         )
         job = db_console_runtime_store.create_job(
@@ -1178,11 +1187,10 @@ async def run_console_runtime_job_once(
     current_user: User = Depends(get_console_runtime_user),
     db: Session = Depends(get_db),
 ):
-    if not payload.dry_run and payload.live_execution_approved:
-        _require_live_execution_confirmation(payload.confirm_live_execution)
     try:
         options = ConsoleRuntimeRunOptions(
             worker_id=payload.worker_id,
+            execution_mode=payload.execution_mode,
             dry_run=payload.dry_run,
             complete=payload.complete,
             continuous=payload.continuous,
@@ -1199,13 +1207,19 @@ async def run_console_runtime_job_once(
             include_capabilities=payload.include_capabilities,
             live_execution_approved=payload.live_execution_approved,
         )
+        if (
+            options.execution_mode != "advisory"
+            and not options.dry_run
+            and options.live_execution_approved
+        ):
+            _require_live_execution_confirmation(payload.confirm_live_execution)
         worker = DbConsoleRuntimeWorker(db_console_runtime_store)
         user_id = current_user.id
 
         def run_worker() -> dict[str, Any]:
             worker_db = _console_runtime_worker_session(db)
             try:
-                if payload.continuous:
+                if options.continuous:
                     return worker.run_continuous(
                         worker_db,
                         user_id=user_id,

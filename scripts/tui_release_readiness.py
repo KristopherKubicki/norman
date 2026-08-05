@@ -223,14 +223,152 @@ def _provider_from_config(payload: dict[str, Any]) -> str:
     return ""
 
 
-def _configured_profile_path(codex_home: Path, profile_v2: str) -> Path | None:
+def _configured_profile_path(
+    codex_home: Path, profile_v2: str, *, allow_default_config: bool
+) -> Path | None:
     profile = _clean(profile_v2)
     if profile:
         candidate = codex_home / f"{Path(profile).name}.config.toml"
         if candidate.exists():
             return candidate
-    candidate = codex_home / "config.toml"
-    return candidate if candidate.exists() else None
+    if allow_default_config:
+        candidate = codex_home / "config.toml"
+        return candidate if candidate.exists() else None
+    return None
+
+
+BEDROCK_SERVICE_TIERS = frozenset(
+    {
+        "bedrock-emergency",
+        "bedrock-failover",
+        "bedrock-failover-2",
+    }
+)
+DIRECT_SERVICE_TIERS = frozenset({"flex", "priority"})
+
+
+def _normalized_service_tier(value: Any) -> str:
+    tier = _clean(value).lower()
+    return "default" if tier in {"", "standard"} else tier
+
+
+def _profile_for_service_tier(source: dict[str, str], tier: str) -> tuple[str, str]:
+    if tier in {"auto", "default"}:
+        return (
+            (
+                _clean(source.get("NORMAN_CODEX_STANDARD_PROFILE_V2"))
+                or _clean(source.get("NORMAN_CODEX_DEFAULT_PROFILE_V2"))
+                or _clean(source.get("NORMAN_CODEX_BEDROCK_PROFILE_V2"))
+            ),
+            "NORMAN_CODEX_STANDARD_PROFILE_V2",
+        )
+    if tier == "bedrock-emergency":
+        return (
+            _clean(source.get("NORMAN_CODEX_BEDROCK_EMERGENCY_PROFILE_V2")),
+            "NORMAN_CODEX_BEDROCK_EMERGENCY_PROFILE_V2",
+        )
+    if tier == "bedrock-failover":
+        return (
+            _clean(source.get("NORMAN_CODEX_BEDROCK_FAILOVER_PROFILE_V2")),
+            "NORMAN_CODEX_BEDROCK_FAILOVER_PROFILE_V2",
+        )
+    if tier == "bedrock-failover-2":
+        return (
+            _clean(source.get("NORMAN_CODEX_BEDROCK_FAILOVER2_PROFILE_V2")),
+            "NORMAN_CODEX_BEDROCK_FAILOVER2_PROFILE_V2",
+        )
+    if tier == "flex":
+        return (
+            _clean(source.get("NORMAN_CODEX_FLEX_PROFILE_V2")),
+            "NORMAN_CODEX_FLEX_PROFILE_V2",
+        )
+    if tier == "priority":
+        return (
+            _clean(source.get("NORMAN_CODEX_PRIORITY_PROFILE_V2")),
+            "NORMAN_CODEX_PRIORITY_PROFILE_V2",
+        )
+    return "", ""
+
+
+def _aws_settings_for_service_tier(
+    source: dict[str, str], tier: str, config: dict[str, Any]
+) -> tuple[str, str, str, str]:
+    if tier in {"auto", "default"}:
+        profile_setting = "NORMAN_CODEX_STANDARD_AWS_PROFILE"
+        region_setting = "NORMAN_CODEX_STANDARD_AWS_REGION"
+        configured_profile = _clean(source.get(profile_setting))
+        configured_region = _clean(source.get(region_setting))
+    elif tier == "bedrock-emergency":
+        profile_setting = "NORMAN_CODEX_BEDROCK_EMERGENCY_AWS_PROFILE"
+        region_setting = "NORMAN_CODEX_BEDROCK_EMERGENCY_AWS_REGION"
+        configured_profile = _clean(source.get(profile_setting)) or _clean(
+            source.get("NORMAN_CODEX_STANDARD_AWS_PROFILE")
+        )
+        configured_region = _clean(source.get(region_setting)) or _clean(
+            source.get("NORMAN_CODEX_STANDARD_AWS_REGION")
+        )
+    elif tier == "bedrock-failover":
+        profile_setting = "NORMAN_CODEX_BEDROCK_FAILOVER_AWS_PROFILE"
+        region_setting = "NORMAN_CODEX_BEDROCK_FAILOVER_AWS_REGION"
+        configured_profile = _clean(source.get(profile_setting)) or _clean(
+            source.get("NORMAN_CODEX_STANDARD_AWS_PROFILE")
+        )
+        configured_region = _clean(source.get(region_setting))
+    elif tier == "bedrock-failover-2":
+        profile_setting = "NORMAN_CODEX_BEDROCK_FAILOVER2_AWS_PROFILE"
+        region_setting = "NORMAN_CODEX_BEDROCK_FAILOVER2_AWS_REGION"
+        configured_profile = (
+            _clean(source.get(profile_setting))
+            or _clean(source.get("NORMAN_CODEX_BEDROCK_FAILOVER_AWS_PROFILE"))
+            or _clean(source.get("NORMAN_CODEX_STANDARD_AWS_PROFILE"))
+        )
+        configured_region = _clean(source.get(region_setting))
+    else:
+        return "", "", "", ""
+    return (
+        configured_profile
+        or _config_aws_value(config, "profile")
+        or _clean(source.get("AWS_PROFILE")),
+        configured_region
+        or _config_aws_value(config, "region")
+        or _clean(source.get("AWS_REGION"))
+        or _clean(source.get("AWS_DEFAULT_REGION")),
+        profile_setting,
+        region_setting,
+    )
+
+
+def _model_for_service_tier(
+    source: dict[str, str], tier: str, provider_surface: str
+) -> str:
+    bedrock_model_setting = {
+        "bedrock-emergency": "NORMAN_CODEX_BEDROCK_EMERGENCY_MODEL",
+        "bedrock-failover": "NORMAN_CODEX_BEDROCK_FAILOVER_MODEL",
+        "bedrock-failover-2": "NORMAN_CODEX_BEDROCK_FAILOVER2_MODEL",
+    }.get(tier)
+    if bedrock_model_setting:
+        return (
+            _clean(source.get(bedrock_model_setting))
+            or _clean(source.get("NORMAN_CODEX_STANDARD_MODEL"))
+            or _clean(source.get("NORMAN_CODEX_MODEL"))
+        )
+    direct_model_setting = {
+        "flex": "NORMAN_CODEX_FLEX_MODEL",
+        "priority": "NORMAN_CODEX_PRIORITY_MODEL",
+    }.get(tier)
+    if direct_model_setting:
+        return (
+            _clean(source.get(direct_model_setting))
+            or _clean(source.get("NORMAN_CODEX_DIRECT_MODEL"))
+            or _clean(source.get("NORMAN_CODEX_MODEL"))
+        )
+    if provider_surface == "aws-bedrock":
+        return _clean(source.get("NORMAN_CODEX_STANDARD_MODEL")) or _clean(
+            source.get("NORMAN_CODEX_MODEL")
+        )
+    return _clean(source.get("NORMAN_CODEX_DIRECT_MODEL")) or _clean(
+        source.get("NORMAN_CODEX_MODEL")
+    )
 
 
 def launch_context(
@@ -240,49 +378,43 @@ def launch_context(
     env: dict[str, str] | None = None,
 ) -> dict[str, str]:
     source = os.environ if env is None else env
-    tier = _clean(service_tier or source.get("NORMAN_CODEX_SERVICE_TIER")).lower()
-    if tier in {"", "standard"}:
-        tier = "default"
-    profile_v2 = (
-        _clean(source.get("NORMAN_CODEX_STANDARD_PROFILE_V2"))
-        or _clean(source.get("NORMAN_CODEX_DEFAULT_PROFILE_V2"))
-        or _clean(source.get("NORMAN_CODEX_BEDROCK_PROFILE_V2"))
+    tier = _normalized_service_tier(
+        service_tier or source.get("NORMAN_CODEX_SERVICE_TIER")
     )
+    profile_v2, profile_setting = _profile_for_service_tier(source, tier)
     home = Path(codex_home).expanduser()
-    config_path = _configured_profile_path(home, profile_v2)
+    config_path = _configured_profile_path(
+        home,
+        profile_v2,
+        allow_default_config=tier not in DIRECT_SERVICE_TIERS,
+    )
     config = _read_toml(config_path) if config_path else {}
     configured_provider = _provider_from_config(config)
 
     provider_surface = "openai-direct"
-    if tier in {"auto", "default"} and (
-        profile_v2 or configured_provider == "aws-bedrock"
+    if tier in BEDROCK_SERVICE_TIERS or (
+        tier in {"auto", "default"}
+        and (profile_v2 or configured_provider == "aws-bedrock")
     ):
         provider_surface = "aws-bedrock"
 
-    aws_profile = (
-        _clean(source.get("NORMAN_CODEX_STANDARD_AWS_PROFILE"))
-        or _config_aws_value(config, "profile")
-        or _clean(source.get("AWS_PROFILE"))
-    )
-    aws_region = (
-        _clean(source.get("NORMAN_CODEX_STANDARD_AWS_REGION"))
-        or _config_aws_value(config, "region")
-        or _clean(source.get("AWS_REGION"))
-        or _clean(source.get("AWS_DEFAULT_REGION"))
-    )
-    model = (
-        _clean(source.get("NORMAN_CODEX_STANDARD_MODEL"))
+    aws_profile, aws_region, aws_profile_setting, aws_region_setting = (
+        _aws_settings_for_service_tier(source, tier, config)
         if provider_surface == "aws-bedrock"
-        else _clean(source.get("NORMAN_CODEX_DIRECT_MODEL"))
-    ) or _clean(source.get("NORMAN_CODEX_MODEL"))
+        else ("", "", "", "")
+    )
+    model = _model_for_service_tier(source, tier, provider_surface)
 
     return {
         "service_tier": tier,
         "provider_surface": provider_surface,
         "profile_v2": profile_v2,
+        "profile_setting": profile_setting,
         "model": model,
         "aws_profile": aws_profile,
         "aws_region": aws_region,
+        "aws_profile_setting": aws_profile_setting,
+        "aws_region_setting": aws_region_setting,
         "configured_provider": configured_provider,
         "config_present": "true" if config_path else "false",
     }
@@ -462,13 +594,27 @@ def _check_bedrock_contract(context: dict[str, str]) -> dict[str, Any]:
             "pass",
             "Selected direct Codex launch contract is coherent.",
         )
+    if context["service_tier"] in BEDROCK_SERVICE_TIERS and not context["profile_v2"]:
+        return _check(
+            "bedrock_profile_missing",
+            "fail",
+            "Selected Bedrock route has no dedicated Codex profile.",
+            blocking=True,
+            recovery=(
+                f"Set {context['profile_setting']} to the dedicated Bedrock "
+                "profile, then retry the managed TUI."
+            ),
+        )
     if not context["aws_profile"]:
         return _check(
             "bedrock_credentials_profile_missing",
             "fail",
             "Selected Bedrock route has no configured AWS credential profile.",
             blocking=True,
-            recovery="Set NORMAN_CODEX_STANDARD_AWS_PROFILE or the selected profile's aws.profile, then restart the managed TUI.",
+            recovery=(
+                f"Set {context['aws_profile_setting']} or the selected "
+                "profile's aws.profile, then restart the managed TUI."
+            ),
         )
     if not context["aws_region"]:
         return _check(
@@ -476,7 +622,10 @@ def _check_bedrock_contract(context: dict[str, str]) -> dict[str, Any]:
             "fail",
             "Selected Bedrock route has no configured AWS region.",
             blocking=True,
-            recovery="Set NORMAN_CODEX_STANDARD_AWS_REGION or the selected profile's aws.region, then restart the managed TUI.",
+            recovery=(
+                f"Set {context['aws_region_setting']} or the selected "
+                "profile's aws.region, then restart the managed TUI."
+            ),
         )
     return _check(
         "launch_contract",

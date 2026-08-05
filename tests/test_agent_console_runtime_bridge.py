@@ -106,6 +106,34 @@ def _planner_selection(*candidates: str) -> dict[str, object]:
     }
 
 
+def _stub_current_snapshot_dependencies(
+    module, monkeypatch, *, route_receipts: dict | None = None
+) -> None:
+    monkeypatch.setattr(module, "recover_stale_prompt_state", lambda: None)
+    monkeypatch.setattr(module, "capture_pane", lambda: "")
+    monkeypatch.setattr(module, "service_status", lambda names: [])
+    monkeypatch.setattr(module, "usage_snapshot", lambda thread_id="": {"totals": {}})
+    monkeypatch.setattr(module, "load_draft_attachments", lambda: [])
+    monkeypatch.setattr(module, "prompt_thread_alive", lambda: False)
+    monkeypatch.setattr(module, "active_codex_process_alive", lambda: False)
+    monkeypatch.setattr(module, "console_runtime_activity_snapshot", lambda: {})
+    monkeypatch.setattr(module, "console_runtime_capabilities_snapshot", lambda: {})
+    monkeypatch.setattr(
+        module, "console_runtime_local_first_proof_snapshot", lambda: {}
+    )
+    monkeypatch.setattr(module, "local_llm_health_snapshot", lambda _model: {})
+    monkeypatch.setattr(module, "local_llm_route_outcome_summary", lambda: {})
+    monkeypatch.setattr(module, "bedrock_health_snapshot", lambda snapshot_at=0: {})
+    monkeypatch.setattr(
+        module, "host_pressure_guard_snapshot", lambda snapshot_at=0: {}
+    )
+    monkeypatch.setattr(module, "usage_accounting_tags", lambda: {})
+    if route_receipts is not None:
+        monkeypatch.setattr(
+            module, "route_receipt_status_snapshot", lambda: route_receipts
+        )
+
+
 def test_local_llm_url_does_not_duplicate_version_or_api_base(monkeypatch, tmp_path):
     module = _load_agent_console_web(monkeypatch, tmp_path)
 
@@ -139,25 +167,7 @@ def test_status_snapshot_prefers_response_bound_runtime_job(monkeypatch, tmp_pat
         last_console_runtime_job_id="turn-stale-local",
     )
 
-    monkeypatch.setattr(module, "recover_stale_prompt_state", lambda: None)
-    monkeypatch.setattr(module, "capture_pane", lambda: "")
-    monkeypatch.setattr(module, "service_status", lambda names: [])
-    monkeypatch.setattr(module, "usage_snapshot", lambda thread_id="": {"totals": {}})
-    monkeypatch.setattr(module, "load_draft_attachments", lambda: [])
-    monkeypatch.setattr(module, "prompt_thread_alive", lambda: False)
-    monkeypatch.setattr(module, "active_codex_process_alive", lambda: False)
-    monkeypatch.setattr(module, "console_runtime_activity_snapshot", lambda: {})
-    monkeypatch.setattr(module, "console_runtime_capabilities_snapshot", lambda: {})
-    monkeypatch.setattr(
-        module, "console_runtime_local_first_proof_snapshot", lambda: {}
-    )
-    monkeypatch.setattr(module, "local_llm_health_snapshot", lambda _model: {})
-    monkeypatch.setattr(module, "local_llm_route_outcome_summary", lambda: {})
-    monkeypatch.setattr(module, "bedrock_health_snapshot", lambda snapshot_at=0: {})
-    monkeypatch.setattr(
-        module, "host_pressure_guard_snapshot", lambda snapshot_at=0: {}
-    )
-    monkeypatch.setattr(module, "usage_accounting_tags", lambda: {})
+    _stub_current_snapshot_dependencies(module, monkeypatch)
 
     snapshot = module.current_snapshot()
 
@@ -165,6 +175,72 @@ def test_status_snapshot_prefers_response_bound_runtime_job(monkeypatch, tmp_pat
     assert snapshot["last_console_runtime_job_id"] == "turn-fresh-local"
     assert snapshot["last_response_console_runtime_job_id"] == "turn-fresh-local"
     assert snapshot["last_response_meta"]["source"] == "test"
+
+
+def test_current_snapshot_exposes_work_classification_contract(monkeypatch, tmp_path):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    prompt = "Draft a plan for the next change."
+    envelope = module.build_turn_control_envelope(
+        prompt=prompt,
+        runtime="localllm",
+        model="qwen3-coder:30b-a3b-q4_K_M",
+        service_tier="default",
+        requested_runtime="codex",
+        requested_model=module.MODEL,
+        requested_service_tier="default",
+        active_work=True,
+    )
+    module.update_status_meta(
+        pending=True,
+        state="running",
+        running_prompt=prompt,
+        running_turn_envelope=envelope,
+    )
+    _stub_current_snapshot_dependencies(
+        module,
+        monkeypatch,
+        route_receipts={
+            "latest_work_classification": envelope["work_classification"],
+            "latest_route_rationale": envelope["route_rationale"],
+        },
+    )
+
+    snapshot = module.current_snapshot()
+
+    assert snapshot["running_work_classification"] == envelope["work_classification"]
+    assert snapshot["running_route_rationale"] == envelope["route_rationale"]
+    assert snapshot["latest_work_classification"] == envelope["work_classification"]
+    assert snapshot["latest_route_rationale"] == envelope["route_rationale"]
+
+
+def test_current_snapshot_discards_invalid_running_work_classification(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    envelope = module.build_turn_control_envelope(
+        prompt="Draft a plan for the next change.",
+        runtime="localllm",
+        model="qwen3-coder:30b-a3b-q4_K_M",
+        service_tier="default",
+        active_work=True,
+    )
+    envelope["work_classification"] = {
+        "schema": module.WORK_CLASSIFICATION_SCHEMA,
+        "work_class": "local_review",
+        "reason_codes": ["not-a-valid-reason"],
+    }
+    envelope["route_rationale"] = "untrusted route rationale"
+    module.update_status_meta(
+        pending=True,
+        state="running",
+        running_turn_envelope=envelope,
+    )
+    _stub_current_snapshot_dependencies(module, monkeypatch)
+
+    snapshot = module.current_snapshot()
+
+    assert snapshot["running_work_classification"] == {}
+    assert snapshot["running_route_rationale"] == ""
 
 
 def test_response_owner_meta_ignores_stale_response_hash(monkeypatch, tmp_path):
@@ -850,6 +926,7 @@ def test_console_runtime_job_advertises_kernel_shadow_backend(monkeypatch, tmp_p
         "kernel_execution": False,
         "kernel_primary": False,
         "kernel_owned_turn": False,
+        "hybrid_local_execution": False,
         "control_only": False,
         "execution_backend": "codex_direct",
     }
@@ -883,6 +960,7 @@ def test_console_runtime_snapshot_disabled_without_api_base(monkeypatch, tmp_pat
         "kernel_execution": False,
         "kernel_primary": False,
         "kernel_owned_turn": False,
+        "hybrid_local_execution": False,
         "control_only": False,
         "execution_backend": "codex_direct",
         "enabled": False,
@@ -1168,6 +1246,77 @@ def test_console_runtime_turn_shadow_creates_per_turn_job(monkeypatch, tmp_path)
     assert started_event["payload"]["objective_summary"] != prompt
 
 
+def test_console_runtime_turn_shadow_finalizer_propagates_work_classification(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_API_BASE", "http://norman.local/api/v1")
+    monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_TOKEN", "runtime-token")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    requests = []
+
+    class Response:
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    def fake_urlopen(request, timeout):
+        requests.append((request, timeout))
+        return Response()
+
+    monkeypatch.setattr(module.urllib_request, "urlopen", fake_urlopen)
+    prompt = "Draft a plan for the next change."
+    envelope = module.build_turn_control_envelope(
+        prompt=prompt,
+        runtime="localllm",
+        model="qwen3-coder:30b-a3b-q4_K_M",
+        service_tier="default",
+        active_work=True,
+    )
+
+    module.finalize_console_runtime_turn_shadow_job(
+        job_id="turn-classification",
+        prompt=prompt,
+        visible_response="DONE",
+        error_text="",
+        runtime="localllm",
+        model="qwen3-coder:30b-a3b-q4_K_M",
+        service_tier="default",
+        job_budget="5m",
+        optimization_mode="auto",
+        started_at=100,
+        finished_at=110,
+        success=True,
+        usage={"input_tokens": 4, "output_tokens": 2},
+        turn_envelope=envelope,
+    )
+
+    assert len(requests) == 2
+    events = [json.loads(request.data.decode("utf-8")) for request, _ in requests]
+    assert [event["event_type"] for event in events] == [
+        "model.completed",
+        "turn.completed",
+    ]
+    for event in events:
+        payload = event["payload"]
+        assert (
+            payload["turn_envelope"]["work_classification"]
+            == envelope["work_classification"]
+        )
+        assert payload["work_classification"] == envelope["work_classification"]
+        assert payload["route_rationale"] == envelope["route_rationale"]
+        assert (
+            payload["usage"]["work_classification"] == envelope["work_classification"]
+        )
+        assert payload["usage"]["route_rationale"] == envelope["route_rationale"]
+
+
 def test_console_runtime_turn_shadow_does_not_return_non_durable_job_id(
     monkeypatch, tmp_path
 ):
@@ -1416,7 +1565,7 @@ def test_kernel_primary_runtime_can_return_visible_response(monkeypatch, tmp_pat
     assert requests[0][2]["confirm_live_execution"] == "ENABLE LIVE RUNTIME"
 
 
-def test_kernel_primary_model_uses_local_candidates_after_health_gate(
+def test_kernel_primary_model_uses_resident_coder_after_health_gate(
     monkeypatch, tmp_path
 ):
     monkeypatch.setenv("NORMAN_TUI_BACKEND", "kernel")
@@ -1436,14 +1585,13 @@ def test_kernel_primary_model_uses_local_candidates_after_health_gate(
     )
 
     assert (
-        module.console_runtime_kernel_primary_model("codex", "gpt-5.4") == "qwen3.6:27b"
+        module.console_runtime_kernel_primary_model("codex", "gpt-5.4")
+        == "qwen3-coder:30b-a3b-q4_K_M"
     )
-    assert module.local_llm_execution_candidate_models("llama3.2:3b")[0] == (
-        "llama3.2:3b"
-    )
-    assert "qwen3.6:35b-a3b-q4_K_M" in module.local_llm_execution_candidate_models(
-        "llama3.2:3b"
-    )
+    assert module.local_llm_execution_candidate_models("llama3.2:3b") == [
+        "llama3.2:3b",
+        "qwen3-coder:30b-a3b-q4_K_M",
+    ]
 
 
 def test_kernel_primary_model_prefers_explicit_local_model_over_stale_cost_route(
@@ -2268,7 +2416,7 @@ def test_localllm_runtime_accepts_qwen3_coder_benchmark_lane(monkeypatch, tmp_pa
     assert module.runtime_can_execute("localllm") is True
 
 
-def test_localllm_lane_models_keep_benchmark_guardrails(monkeypatch, tmp_path):
+def test_localllm_automatic_lanes_use_resident_coder(monkeypatch, tmp_path):
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
     monkeypatch.setenv(
         "NORMAN_LOCAL_LLM_MODELS",
@@ -2282,15 +2430,13 @@ def test_localllm_lane_models_keep_benchmark_guardrails(monkeypatch, tmp_path):
         == "summarizer"
     )
     assert module.local_llm_prompt_lane("Patch this repo test failure.") == "coder"
-    assert module.local_llm_lane_models("summarizer")[:2] == [
-        "qwen3.6:35b-a3b-q4_K_M",
-        "qwen3.6:27b",
-    ]
-    assert module.local_llm_lane_models("coder")[:2] == [
-        "qwen3.6:27b",
-        "qwen3.6:35b-a3b-q4_K_M",
-    ]
-    assert module.local_llm_lane_models("canary")[:1] == ["qwen3.6:27b"]
+    assert module.local_automatic_text_models() == ["qwen3-coder:30b-a3b-q4_K_M"]
+    assert module.local_planner_preferred_models() == ["qwen3-coder:30b-a3b-q4_K_M"]
+    assert module.local_llm_lane_models("summarizer")[0] == (
+        "qwen3-coder:30b-a3b-q4_K_M"
+    )
+    assert module.local_llm_lane_models("coder")[0] == "qwen3-coder:30b-a3b-q4_K_M"
+    assert module.local_llm_lane_models("canary")[0] == "qwen3-coder:30b-a3b-q4_K_M"
     assert "llama3.2:3b" not in module.local_llm_lane_models("canary")
     assert module._local_llm_model_disabled("llama3.2:3b") is True
 
@@ -2317,10 +2463,10 @@ def test_localllm_health_defaults_to_benchmark_route_model(monkeypatch, tmp_path
     snapshot = module.local_llm_health_snapshot(force=True)
 
     assert module.LOCAL_LLM_DEFAULT_MODEL == "qwen3.6:27b"
-    assert module.LOCAL_LLM_ROUTE_DEFAULT_MODEL == "qwen3.6:27b"
-    assert snapshot["model"] == "qwen3.6:27b"
+    assert module.LOCAL_LLM_ROUTE_DEFAULT_MODEL == "qwen3-coder:30b-a3b-q4_K_M"
+    assert snapshot["model"] == "qwen3-coder:30b-a3b-q4_K_M"
     assert calls == [
-        ("http://local-llm:18151", "qwen3.6:27b"),
+        ("http://local-llm:18151", "qwen3-coder:30b-a3b-q4_K_M"),
     ]
 
 
@@ -2334,10 +2480,10 @@ def test_localllm_autosenses_norman_norllama_by_default(monkeypatch, tmp_path):
 
     module = _load_agent_console_web(monkeypatch, tmp_path)
 
-    assert module.LOCAL_LLM_DEFAULT_MODEL == "qwen3.6:27b"
+    assert module.LOCAL_LLM_DEFAULT_MODEL == "qwen3-coder:30b-a3b-q4_K_M"
     assert module.LOCAL_LLM_AUTOSENSE_ENABLED is True
     assert module.runtime_can_execute("localllm") is True
-    assert module.local_llm_candidate_endpoints("qwen3.6:27b") == [
+    assert module.local_llm_candidate_endpoints("qwen3-coder:30b-a3b-q4_K_M") == [
         "https://llm.home.arpa",
         "https://llm.knox.lollie.org",
     ]
@@ -2454,7 +2600,7 @@ def test_template_does_not_downshift_fork_strategy_prompt_to_status(
     assert "Answer now" not in recommendation["steering_chips"]
 
 
-def test_literal_canary_allows_tiny_canary_model_without_lowering_general_floor(
+def test_literal_canary_keeps_tiny_model_out_of_automatic_final_routing(
     monkeypatch, tmp_path
 ):
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3-coder-next:q4_K_M")
@@ -2465,10 +2611,14 @@ def test_literal_canary_allows_tiny_canary_model_without_lowering_general_floor(
 
     def fake_health(model):
         return {
-            "ok": model == "gemma3:1b",
+            "ok": model == "qwen3-coder:30b-a3b-q4_K_M",
             "model": model,
             "endpoint": "http://local-llm:18151",
-            "reason": "model advertised" if model == "gemma3:1b" else "not resident",
+            "reason": (
+                "model advertised"
+                if model == "qwen3-coder:30b-a3b-q4_K_M"
+                else "not resident"
+            ),
         }
 
     monkeypatch.setattr(module, "local_llm_health_snapshot", fake_health)
@@ -2491,9 +2641,9 @@ def test_literal_canary_allows_tiny_canary_model_without_lowering_general_floor(
     assert module._local_llm_model_allowed("gemma3:1b") is False
     assert module._local_llm_model_allowed_for_lane("canary", "gemma3:1b") is True
     assert decision["selected_runtime"] == "localllm"
-    assert decision["selected_model"] == "gemma3:1b"
+    assert decision["selected_model"] == "qwen3-coder:30b-a3b-q4_K_M"
     assert decision["local_lane"] == "canary"
-    assert "gemma3:1b" in decision["local_candidates"]
+    assert decision["local_candidates"] == ["qwen3-coder:30b-a3b-q4_K_M"]
 
 
 def test_cost_route_prefers_local_for_safe_self_contained_prompt(monkeypatch, tmp_path):
@@ -2533,9 +2683,9 @@ def test_cost_route_prefers_local_for_safe_self_contained_prompt(monkeypatch, tm
     )
 
     assert decision["selected_runtime"] == "localllm"
-    assert decision["selected_model"] == "qwen3.6:35b-a3b-q4_K_M"
+    assert decision["selected_model"] == "qwen3-coder:30b-a3b-q4_K_M"
     assert decision["local_lane"] == "summarizer"
-    assert decision["local_candidate_policy"] == "benchmark_lane_guardrail"
+    assert decision["local_candidate_policy"] == "resident-coder-policy"
     assert decision["route_source"] == "local_first_policy"
     assert decision["charge_basis"] == "local_token_estimate"
     assert decision["local_final_authority"] is True
@@ -2584,7 +2734,7 @@ def test_cost_route_keeps_service_status_matrix_local(monkeypatch, tmp_path):
     )
 
     assert decision["selected_runtime"] == "localllm"
-    assert decision["selected_model"] == "qwen3.6:35b-a3b-q4_K_M"
+    assert decision["selected_model"] == "qwen3-coder:30b-a3b-q4_K_M"
     assert decision["route_source"] == "local_first_policy"
     assert decision["mutation_risk"] == "none"
 
@@ -2672,6 +2822,9 @@ def test_deterministic_status_prompt_completes_without_model_call(
     assert history[-1]["model"] == "deterministic-status"
     assert history[-1]["usage"]["route_execution"] == "deterministic_tui_status"
     assert history[-1]["usage"]["total_tokens"] == 0
+    assert history[-1]["work_classification"]["work_class"] == "deterministic"
+    assert history[-1]["route_rationale"] == "deterministic: trusted status handler."
+    assert history[-1]["usage"]["work_classification"]["work_class"] == "deterministic"
     receipts = [
         json.loads(line)
         for line in module.ROUTE_RECEIPT_PATH.read_text(encoding="utf-8").splitlines()
@@ -2681,11 +2834,217 @@ def test_deterministic_status_prompt_completes_without_model_call(
     assert receipts[-1]["validator_passed"] is True
     assert receipts[-1]["input_tokens"] == 0
     assert receipts[-1]["output_tokens"] == 0
+    assert receipts[-1]["work_classification"]["work_class"] == "deterministic"
 
 
-def test_healthy_local_lane_routes_explicit_status_through_normal_preflight(
+def test_deterministic_command_prompt_completes_without_model_call(
     monkeypatch, tmp_path
 ):
+    monkeypatch.setenv("NORMAN_CODEX_ROUTE_RECEIPTS_ENABLED", "1")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    executed: list[list[str]] = []
+
+    monkeypatch.setattr(
+        module,
+        "_execute_prompt_runtime",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("deterministic command should not call a model")
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "execute_deterministic_command",
+        lambda argv: (
+            executed.append(argv) or "Command `pwd` completed with exit code 0.\n/test",
+            True,
+        ),
+    )
+
+    prompt = "run pwd"
+    assert module.deterministic_command_prompt_allowed(prompt, [], route_lock=False)
+
+    snapshot = module.complete_deterministic_command_prompt(
+        prompt,
+        speed="fast",
+        detail=2,
+        service_tier="default",
+        job_budget="quick",
+        optimization_mode="auto",
+        actor_ip="127.0.0.1",
+    )
+
+    assert executed == [["pwd"]]
+    assert snapshot["pending"] is False
+    assert snapshot["state"] == "ok"
+    history = module.load_history(limit=1)
+    assert history[-1]["runtime"] == "localllm"
+    assert history[-1]["model"] == "deterministic-command"
+    assert history[-1]["usage"]["route_execution"] == "deterministic_tui_command"
+    assert history[-1]["usage"]["total_tokens"] == 0
+    assert history[-1]["work_classification"]["work_class"] == "deterministic"
+    assert history[-1]["route_rationale"] == (
+        "deterministic: trusted read-only command handler."
+    )
+    assert history[-1]["usage"]["work_classification"]["work_class"] == "deterministic"
+    receipts = [
+        json.loads(line)
+        for line in module.ROUTE_RECEIPT_PATH.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert receipts[-1]["requested_action"] == "command"
+    assert receipts[-1]["selected_model_tier"] == "deterministic_tool"
+    assert receipts[-1]["allowed_role"] == "deterministic_read"
+    assert receipts[-1]["decision_class"] == "deterministic"
+    assert receipts[-1]["frontier_review_required"] is False
+    assert receipts[-1]["frontier_calls_avoided"] == 1
+    assert receipts[-1]["local_calls_avoided"] == 1
+    assert receipts[-1]["work_classification"]["work_class"] == "deterministic"
+
+
+def test_prompt_worker_preserves_requested_cloud_identity_on_local_execution(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_CODEX_ROUTE_RECEIPTS_ENABLED", "1")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    prompt = "Draft a plan for the next change."
+    requested_model = module.normalize_runtime_model("codex", module.MODEL)
+    cost_route = module.build_tui_waterfall(
+        requested_runtime="codex",
+        requested_model=requested_model,
+        requested_service_tier="default",
+        base_runtime="localllm",
+        base_model="qwen3-coder:30b-a3b-q4_K_M",
+        base_service_tier="default",
+        bedrock_runtime="codex",
+        bedrock_model=requested_model,
+        bedrock_service_tier="bedrock-emergency",
+        route_lock=False,
+        subscription={
+            "enabled": True,
+            "selected": False,
+            "state": "blocked",
+            "fresh": True,
+            "chatgpt_auth_verified": True,
+        },
+        norllama_available=True,
+        norllama_safe_final=True,
+        bedrock_available=False,
+    )
+    assert cost_route["selected_runtime"] == "localllm"
+    local_model = "qwen3-coder:30b-a3b-q4_K_M"
+    assert (
+        module.validate_cost_route_proof(
+            cost_route,
+            "localllm",
+            local_model,
+            "default",
+        )
+        == cost_route
+    )
+    envelope = module.build_turn_control_envelope(
+        prompt=prompt,
+        runtime="localllm",
+        model=local_model,
+        service_tier="default",
+        requested_runtime="codex",
+        requested_model=requested_model,
+        requested_service_tier="default",
+        active_work=True,
+    )
+    envelope["cost_route"] = cost_route
+    module.update_status_meta(
+        pending=True,
+        state="running",
+        running_prompt=prompt,
+        running_runtime="localllm",
+        running_model=local_model,
+        running_service_tier="default",
+        running_cost_route=cost_route,
+        running_turn_envelope=envelope,
+    )
+    monkeypatch.setattr(
+        module,
+        "_execute_prompt_runtime",
+        lambda *_args, **_kwargs: (
+            "Plan complete.\nDONE",
+            "",
+            "thread-local-plan",
+            {"input_tokens": 7, "output_tokens": 3},
+        ),
+    )
+    monkeypatch.setattr(
+        module, "maybe_notify_long_job_completion", lambda **_kwargs: None
+    )
+
+    module._prompt_worker(
+        prompt,
+        module.now_ts(),
+        "balanced",
+        2,
+        "5m",
+        300,
+        [],
+        "localllm",
+        local_model,
+        service_tier="default",
+    )
+
+    receipts = [
+        json.loads(line)
+        for line in module.ROUTE_RECEIPT_PATH.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    receipt = receipts[-1]
+    assert (
+        receipt["requested_provider"]
+        == module.usage_provider_tags("default")["provider_surface"]
+    )
+    assert receipt["routing_bands"]["requested_runtime"] == "codex"
+    assert receipt["requested_model"] == requested_model
+    assert receipt["effective_provider"] == "norllama"
+    assert receipt["routing_bands"]["runtime"] == "localllm"
+    assert receipt["work_classification"]["work_class"] == "local_review"
+    assert receipt["route_rationale"] == "local review: local planning review."
+
+
+def test_deterministic_command_parser_has_exact_safe_boundaries(monkeypatch, tmp_path):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    assert module.deterministic_command_request("run pwd") == ["pwd"]
+    assert module.deterministic_command_request("`date -Is`") == ["date", "-Is"]
+    assert module.deterministic_command_request("run git status --short") == [
+        "git",
+        "status",
+        "--short",
+    ]
+    for prompt in (
+        "git status",
+        "git status --short --ignored",
+        "run git status --short; pwd",
+        "run pwd && date",
+        "run pwd\nrun date",
+        "please run pwd",
+        "status? run pwd",
+    ):
+        assert module.deterministic_command_request(prompt) is None
+
+    attachment = [{"token": "attachment-1", "path": str(tmp_path / "note.txt")}]
+    assert (
+        module.deterministic_command_prompt_allowed(
+            "run pwd", attachment, route_lock=False
+        )
+        is False
+    )
+    assert (
+        module.deterministic_command_prompt_allowed("run pwd", [], route_lock=True)
+        is False
+    )
+    module.ACTIVE_PROMPT_THREAD = SimpleNamespace(is_alive=lambda: True)
+    assert module.deterministic_command_prompt_allowed("run pwd", []) is False
+    module.ACTIVE_PROMPT_THREAD = None
+
+
+def test_healthy_local_lane_allows_exact_deterministic_status(monkeypatch, tmp_path):
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODELS", "qwen3.6:27b")
     monkeypatch.setenv("NORMAN_LOCAL_LLM_PLANNER_MODELS", "qwen3.6:27b")
@@ -2705,16 +3064,14 @@ def test_healthy_local_lane_routes_explicit_status_through_normal_preflight(
     )
 
     assert module.local_status_preflight_available() is True
-    assert module.deterministic_status_prompt_allowed("Status update?", []) is False
+    assert module.deterministic_status_prompt_allowed("Status update?", []) is True
     assert health_calls == [
-        "local-llm",
-        module.LOCAL_LLM_ROUTE_DEFAULT_MODEL,
         "local-llm",
         module.LOCAL_LLM_ROUTE_DEFAULT_MODEL,
     ]
 
 
-def test_generic_local_guardrail_does_not_block_status_fallback_when_planner_is_unhealthy(
+def test_generic_local_guardrail_does_not_block_deterministic_state_read(
     monkeypatch, tmp_path
 ):
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
@@ -2753,7 +3110,9 @@ def test_generic_local_guardrail_does_not_block_status_fallback_when_planner_is_
     assert module.deterministic_status_prompt_allowed("Status update?", []) is True
 
 
-def test_planner_cooldown_keeps_opaque_pool_status_authoritative(monkeypatch, tmp_path):
+def test_planner_cooldown_does_not_block_deterministic_state_read(
+    monkeypatch, tmp_path
+):
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODELS", "qwen3.6:27b")
     monkeypatch.setenv("NORMAN_LOCAL_LLM_PLANNER_MODELS", "qwen3.6:27b")
@@ -2785,12 +3144,10 @@ def test_planner_cooldown_keeps_opaque_pool_status_authoritative(monkeypatch, tm
     assert readiness["configured"] is True
     assert readiness["ready"] is True
     assert readiness["status"] == "ready"
-    assert module.deterministic_status_prompt_allowed("Status update?", []) is False
+    assert module.deterministic_status_prompt_allowed("Status update?", []) is True
 
 
-def test_unavailable_local_lane_retains_deterministic_status_fallback(
-    monkeypatch, tmp_path
-):
+def test_unavailable_local_lane_allows_deterministic_state_read(monkeypatch, tmp_path):
     monkeypatch.setenv("NORMAN_LOCAL_LLM_EXECUTION_ENABLED", "0")
     module = _load_agent_console_web(monkeypatch, tmp_path)
 
@@ -2798,7 +3155,7 @@ def test_unavailable_local_lane_retains_deterministic_status_fallback(
     assert module.deterministic_status_prompt_allowed("Status update?", []) is True
 
 
-def test_active_prompt_never_uses_deterministic_status_fallback(monkeypatch, tmp_path):
+def test_active_prompt_never_uses_deterministic_state_read(monkeypatch, tmp_path):
     monkeypatch.setenv("NORMAN_LOCAL_LLM_EXECUTION_ENABLED", "0")
     module = _load_agent_console_web(monkeypatch, tmp_path)
     module.ACTIVE_PROMPT_THREAD = SimpleNamespace(is_alive=lambda: True)
@@ -2808,7 +3165,7 @@ def test_active_prompt_never_uses_deterministic_status_fallback(monkeypatch, tmp
     module.ACTIVE_PROMPT_THREAD = None
 
 
-def test_route_proof_nonce_keeps_degraded_status_on_deterministic_fallback(
+def test_route_proof_nonce_keeps_status_on_deterministic_state_read(
     monkeypatch, tmp_path
 ):
     monkeypatch.setenv("NORMAN_LOCAL_LLM_EXECUTION_ENABLED", "0")
@@ -2838,7 +3195,10 @@ def test_investigative_status_runs_local_route_preflight_instead_of_zero_token_r
 ):
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODELS", "qwen3.6:27b")
-    monkeypatch.setenv("NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MODELS", "qwen3.6:27b")
+    monkeypatch.setenv(
+        "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MODELS",
+        "qwen3-coder:30b-a3b-q4_K_M",
+    )
     monkeypatch.setenv("NORMAN_LOCAL_LLM_ENDPOINTS", "http://local-llm:11434")
     module = _load_agent_console_web(monkeypatch, tmp_path)
     prompt = "all the cameras are looking stale. What's up, can you dig more?"
@@ -2930,7 +3290,10 @@ def test_cost_route_uses_local_intent_classifier_for_ambiguous_status(
 ):
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODELS", "qwen3.6:27b")
-    monkeypatch.setenv("NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MODELS", "qwen3.6:27b")
+    monkeypatch.setenv(
+        "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MODELS",
+        "qwen3-coder:30b-a3b-q4_K_M",
+    )
     monkeypatch.setenv("NORMAN_LOCAL_LLM_ENDPOINTS", "http://local-llm:11434")
     module = _load_agent_console_web(monkeypatch, tmp_path)
 
@@ -3436,7 +3799,7 @@ def test_cost_route_uses_norllama_contract_guardrail_candidates(monkeypatch, tmp
                 "warm_policy": warm_policy,
             }
         return {
-            "ok": model in {"qwen3.6:35b-a3b-q4_K_M", "qwen3.6:27b"},
+            "ok": model == "qwen3-coder:30b-a3b-q4_K_M",
             "model": model,
             "endpoint": "http://local-llm:18151",
             "reason": "model advertised",
@@ -3460,11 +3823,9 @@ def test_cost_route_uses_norllama_contract_guardrail_candidates(monkeypatch, tmp
     )
 
     assert decision["selected_runtime"] == "localllm"
-    assert decision["selected_model"] == "qwen3.6:35b-a3b-q4_K_M"
-    assert decision["local_candidate_policy"] == (
-        "norllama_warm_policy_degraded_fallback"
-    )
-    assert decision["local_candidates"][:1] == ["qwen3.6:35b-a3b-q4_K_M"]
+    assert decision["selected_model"] == "qwen3-coder:30b-a3b-q4_K_M"
+    assert decision["local_candidate_policy"] == "resident-coder-policy"
+    assert decision["local_candidates"] == ["qwen3-coder:30b-a3b-q4_K_M"]
     assert decision["local_guardrail_candidates"] == ["qwen3.6:35b-a3b-q4_K_M"]
     assert decision["local_guardrail_lane"]["status"] == "prefetch_or_wait"
 
@@ -3505,7 +3866,7 @@ def test_cost_route_labels_first_class_norllama_warm_policy(monkeypatch, tmp_pat
                 "warm_policy": warm_policy,
             }
         return {
-            "ok": model in {"qwen3.6:35b-a3b-q4_K_M", "qwen3.6:27b"},
+            "ok": model == "qwen3-coder:30b-a3b-q4_K_M",
             "model": model,
             "endpoint": "http://local-llm:18151",
             "reason": "model advertised",
@@ -3529,14 +3890,12 @@ def test_cost_route_labels_first_class_norllama_warm_policy(monkeypatch, tmp_pat
     )
 
     assert decision["selected_runtime"] == "localllm"
-    assert decision["selected_model"] == "qwen3.6:35b-a3b-q4_K_M"
-    assert decision["local_candidate_policy"] == (
-        "norllama_warm_policy_degraded_fallback"
-    )
+    assert decision["selected_model"] == "qwen3-coder:30b-a3b-q4_K_M"
+    assert decision["local_candidate_policy"] == "resident-coder-policy"
     assert decision["local_guardrail_lane"]["status"] == "prefetch_or_wait"
 
 
-def test_cost_route_tries_next_local_model_when_default_unhealthy(
+def test_cost_route_fails_closed_when_resident_coder_is_unhealthy(
     monkeypatch, tmp_path
 ):
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
@@ -3547,14 +3906,10 @@ def test_cost_route_tries_next_local_model_when_default_unhealthy(
     monkeypatch.setenv("NORMAN_LOCAL_LLM_ENDPOINTS", "http://local-llm:18151")
     module = _load_agent_console_web(monkeypatch, tmp_path)
 
+    health_calls = []
+
     def fake_health(model):
-        if model == "qwen3.5:27b-q4_K_M":
-            return {
-                "ok": True,
-                "model": model,
-                "endpoint": "http://local-llm:18151",
-                "reason": "model advertised",
-            }
+        health_calls.append(model)
         return {
             "ok": False,
             "model": model,
@@ -3579,16 +3934,13 @@ def test_cost_route_tries_next_local_model_when_default_unhealthy(
         requested_service_tier="default",
     )
 
-    assert decision["selected_runtime"] == "localllm"
-    assert decision["selected_model"] == "qwen3.5:27b-q4_K_M"
+    assert decision["selected_runtime"] == "codex"
+    assert decision["selected_model"] == module.MODEL
     assert decision["local_lane"] == "summarizer"
-    assert decision["local_candidates"][:3] == [
-        "qwen3.6:35b-a3b-q4_K_M",
-        "qwen3.6:27b",
-        "qwen3.5:27b-q4_K_M",
-    ]
+    assert decision["local_candidates"] == ["qwen3-coder:30b-a3b-q4_K_M"]
     failed_models = {item["model"] for item in decision["local_candidate_failures"]}
-    assert {"qwen3.6:35b-a3b-q4_K_M", "qwen3.6:27b"} <= failed_models
+    assert failed_models == {"qwen3-coder:30b-a3b-q4_K_M"}
+    assert health_calls == ["local-llm", "qwen3-coder:30b-a3b-q4_K_M"]
 
 
 def test_cost_route_skips_recently_failed_local_model_cooldown(monkeypatch, tmp_path):
@@ -3601,7 +3953,7 @@ def test_cost_route_skips_recently_failed_local_model_cooldown(monkeypatch, tmp_
         source="test",
         status="empty-response",
         ok=False,
-        model="qwen3.6:35b-a3b-q4_K_M",
+        model="qwen3-coder:30b-a3b-q4_K_M",
         endpoint="",
         reason="empty smoke output",
     )
@@ -3634,7 +3986,7 @@ def test_cost_route_skips_recently_failed_local_model_cooldown(monkeypatch, tmp_
 
     assert decision["selected_runtime"] == "codex"
     assert decision["selected_model"] == module.MODEL
-    assert decision["local_cooldowns"][0]["model"] == "qwen3.6:35b-a3b-q4_K_M"
+    assert decision["local_cooldowns"][0]["model"] == "qwen3-coder:30b-a3b-q4_K_M"
     assert decision["local_cooldowns"][0]["cooldown"]["status"] == "empty-response"
     assert decision["local_cooldowns"][0]["cooldown"]["scope"] == "norllama_pool"
 
@@ -3775,7 +4127,7 @@ def test_cost_route_records_opaque_fleet_route_outcome_evidence(monkeypatch, tmp
     assert decision["selected_runtime"] == "localllm"
     # This helper is private route-selection state. The waterfall receipt
     # persisted by start_web_prompt sanitizes the pool member to "norllama".
-    assert decision["selected_model"] == "qwen3.6:35b-a3b-q4_K_M"
+    assert decision["selected_model"] == "qwen3-coder:30b-a3b-q4_K_M"
     assert decision["fleet_route_outcomes"]["fail"] == 2
     assert "local_cooldowns" not in decision
 
@@ -3817,7 +4169,7 @@ def test_cost_route_ignores_unavailable_fleet_route_outcomes(monkeypatch, tmp_pa
     )
 
     assert decision["selected_runtime"] == "localllm"
-    assert decision["selected_model"] == "qwen3.6:35b-a3b-q4_K_M"
+    assert decision["selected_model"] == "qwen3-coder:30b-a3b-q4_K_M"
     assert decision["local_lane"] == "summarizer"
     assert "local_cooldowns" not in decision
     assert "fleet_route_outcomes" not in decision
@@ -3960,8 +4312,8 @@ def test_context_preflight_uses_norllama_planner_for_cloud_turn(monkeypatch, tmp
     assert "Norllama planner preflight" in context
     assert "cloud_needed=no" in context
     assert "safe_local_answer_possible=yes" in context
-    assert "qwen3.6:35b-a3b-q4_K_M" in context
-    assert calls[0]["model"] == "qwen3.6:35b-a3b-q4_K_M"
+    assert "qwen3-coder:30b-a3b-q4_K_M" in context
+    assert calls[0]["model"] == "qwen3-coder:30b-a3b-q4_K_M"
     assert (
         calls[0]["max_output_tokens"]
         == module.LOCAL_PLANNER_PREFLIGHT_MAX_OUTPUT_TOKENS
@@ -3969,10 +4321,10 @@ def test_context_preflight_uses_norllama_planner_for_cloud_turn(monkeypatch, tmp
     accounting = module.take_latest_context_preflight_accounting("codex", module.MODEL)
     assert accounting["local_preflight_used"] is True
     assert accounting["local_preflight_status"] == "ok"
-    assert accounting["local_preflight_model"] == "qwen3.6:35b-a3b-q4_K_M"
+    assert accounting["local_preflight_model"] == "qwen3-coder:30b-a3b-q4_K_M"
     assert accounting["local_preflight_tokens"] == 20
     assert accounting["local_preflight_candidate_lane"] == "planner"
-    assert accounting["local_preflight_candidate_policy"] == "benchmark_lane_guardrail"
+    assert accounting["local_preflight_candidate_policy"] == "resident-coder-policy"
     assert accounting["local_preflight_failure_class"] == "ok"
     assert accounting["local_preflight_receipt"]["schema"] == (
         "norman.tui.local-preflight-receipt.v1"
@@ -4057,7 +4409,7 @@ def test_context_preflight_local_planner_selects_archive_memory_candidates(
         num_ctx=None,
     ):
         assert endpoint == "http://local-llm:18151"
-        assert model == "qwen3.6:35b-a3b-q4_K_M"
+        assert model == "qwen3-coder:30b-a3b-q4_K_M"
         assert "turn-selected" in prompt
         return (
             {
@@ -4155,7 +4507,7 @@ def test_context_preflight_escalates_partial_recall_to_bounded_local_verifier(
         num_ctx=None,
     ):
         calls.append((model, prompt))
-        if model == "qwen3.6:35b-a3b-q4_K_M":
+        if "planner reported partial archive recall" not in prompt:
             return (
                 {
                     "response": json.dumps(
@@ -4172,7 +4524,6 @@ def test_context_preflight_escalates_partial_recall_to_bounded_local_verifier(
                 "http://local-llm:18151/api/generate",
                 "ollama-generate",
             )
-        assert model == "qwen3.5:122b-a10b-q4_K_M"
         assert "planner reported partial archive recall" in prompt
         return (
             {
@@ -4202,8 +4553,8 @@ def test_context_preflight_escalates_partial_recall_to_bounded_local_verifier(
     )
 
     assert [model for model, _prompt in calls] == [
-        "qwen3.6:35b-a3b-q4_K_M",
-        "qwen3.5:122b-a10b-q4_K_M",
+        "qwen3-coder:30b-a3b-q4_K_M",
+        "qwen3-coder:30b-a3b-q4_K_M",
     ]
     assert (
         "Local planner verifier expanded the archive recall to 2 of 2 candidates."
@@ -4214,7 +4565,7 @@ def test_context_preflight_escalates_partial_recall_to_bounded_local_verifier(
     accounting = module.take_latest_context_preflight_accounting("codex", module.MODEL)
     assert accounting["memory_ref_count"] == 2
     assert accounting["local_planner_verifier_used"] is True
-    assert accounting["local_planner_verifier_model"] == "qwen3.5:122b-a10b-q4_K_M"
+    assert accounting["local_planner_verifier_model"] == "qwen3-coder:30b-a3b-q4_K_M"
     assert accounting["local_planner_verifier_tokens"] == 16
     assert accounting["local_planner_verifier_receipt"]["trigger_reasons"] == [
         "planner reported partial archive recall",
@@ -4270,16 +4621,7 @@ def test_context_preflight_runs_ready_norllama_specialists(monkeypatch, tmp_path
                 "max_output_tokens": max_output_tokens,
             }
         )
-        if model == "planner-local":
-            response = {
-                "route": "local_plan",
-                "cloud_needed": False,
-                "safe_local_answer_possible": True,
-                "next_local_steps": ["summarize locally first"],
-                "risk": "low",
-            }
-            prompt_tokens, output_tokens = 12, 8
-        elif model == "filter-local":
+        if "Stage: intent-classifier" in prompt:
             response = {
                 "route": "local_filter",
                 "cloud_needed": False,
@@ -4288,7 +4630,7 @@ def test_context_preflight_runs_ready_norllama_specialists(monkeypatch, tmp_path
                 "risk": "low",
             }
             prompt_tokens, output_tokens = 5, 5
-        else:
+        elif "Stage: summarizer-specialist" in prompt:
             response = {
                 "route": "local_summary",
                 "cloud_needed": False,
@@ -4297,6 +4639,15 @@ def test_context_preflight_runs_ready_norllama_specialists(monkeypatch, tmp_path
                 "risk": "low",
             }
             prompt_tokens, output_tokens = 7, 8
+        else:
+            response = {
+                "route": "local_plan",
+                "cloud_needed": False,
+                "safe_local_answer_possible": True,
+                "next_local_steps": ["summarize locally first"],
+                "risk": "low",
+            }
+            prompt_tokens, output_tokens = 12, 8
         return (
             {
                 "response": json.dumps(response),
@@ -4317,16 +4668,16 @@ def test_context_preflight_runs_ready_norllama_specialists(monkeypatch, tmp_path
     )
 
     assert [call["model"] for call in calls] == [
-        "planner-local",
-        "filter-local",
-        "summary-local",
+        "qwen3-coder:30b-a3b-q4_K_M",
+        "qwen3-coder:30b-a3b-q4_K_M",
+        "qwen3-coder:30b-a3b-q4_K_M",
     ]
     assert "Norllama planner preflight" in context
     assert "Norllama specialist pipeline: 2/4 local specialist stages ran" in context
     accounting = module.take_latest_context_preflight_accounting("codex", module.MODEL)
     assert accounting["local_preflight_used"] is True
     assert accounting["local_preflight_tokens"] == 20
-    assert accounting["local_preflight_candidate_policy"] == "norllama_warm_policy"
+    assert accounting["local_preflight_candidate_policy"] == "resident-coder-policy"
     assert accounting["local_preflight_warm_policy_source"] == "/v1/warm-policy"
     assert accounting["local_specialist_used"] is True
     assert accounting["local_specialist_status"] == "ok"
@@ -4352,7 +4703,9 @@ def test_context_preflight_runs_ready_norllama_specialists(monkeypatch, tmp_path
     assert specialist_event["payload"]["specialist_pipeline"]["used"] is True
 
 
-def test_context_preflight_specialists_try_fallback_candidate(monkeypatch, tmp_path):
+def test_context_preflight_specialists_ignore_legacy_stage_candidates(
+    monkeypatch, tmp_path
+):
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODELS", "qwen3.6:27b")
     monkeypatch.setenv("NORMAN_LOCAL_LLM_ENDPOINTS", "http://local-llm:18151")
@@ -4390,8 +4743,7 @@ def test_context_preflight_specialists_try_fallback_candidate(monkeypatch, tmp_p
         num_ctx=None,
     ):
         calls.append(model)
-        if model == "qwen3-coder-next:q4_K_M":
-            raise TimeoutError("spark route timed out")
+        assert model == "qwen3-coder:30b-a3b-q4_K_M"
         response = {
             "route": "local_plan",
             "cloud_needed": False,
@@ -4423,26 +4775,21 @@ def test_context_preflight_specialists_try_fallback_candidate(monkeypatch, tmp_p
     accounting = module.take_latest_context_preflight_accounting("codex", module.MODEL)
     receipt = accounting["local_specialist_receipt"]
     assert calls == [
-        "qwen3-coder-next:q4_K_M",
-        "qwen3.6:27b",
-        "qwen3-coder-next:q4_K_M",
-        "qwen3.6:27b",
-        "qwen3-coder-next:q4_K_M",
-        "qwen3.6:27b",
+        "qwen3-coder:30b-a3b-q4_K_M",
+        "qwen3-coder:30b-a3b-q4_K_M",
+        "qwen3-coder:30b-a3b-q4_K_M",
     ]
     assert accounting["local_specialist_status"] == "ok"
     assert accounting["local_specialist_executed_count"] == 2
     assert [stage["model"] for stage in receipt["stages"] if stage.get("executed")] == [
-        "qwen3.6:27b",
-        "qwen3.6:27b",
+        "qwen3-coder:30b-a3b-q4_K_M",
+        "qwen3-coder:30b-a3b-q4_K_M",
     ]
     outcomes = module.load_local_llm_route_outcomes(limit=10)
-    assert [item["status"] for item in outcomes].count("timeout") == 3
+    assert [item["status"] for item in outcomes].count("timeout") == 0
 
 
-def test_context_preflight_uses_degraded_fallback_for_cold_norllama_lane(
-    monkeypatch, tmp_path
-):
+def test_context_preflight_keeps_cold_specialist_lanes_queued(monkeypatch, tmp_path):
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.6:27b")
     monkeypatch.setenv("NORMAN_LOCAL_LLM_MODELS", "qwen3.6:27b")
     monkeypatch.setenv("NORMAN_LOCAL_LLM_ENDPOINTS", "http://local-llm:18151")
@@ -4502,37 +4849,28 @@ def test_context_preflight_uses_degraded_fallback_for_cold_norllama_lane(
         model=module.MODEL,
     )
 
-    assert calls == [
-        "qwen3.6:35b-a3b-q4_K_M",
-        "qwen3.6:35b-a3b-q4_K_M",
-        "qwen3.6:35b-a3b-q4_K_M",
-    ]
-    assert "planned local stages but did not run a ready specialist" not in context
+    assert calls == ["qwen3-coder:30b-a3b-q4_K_M"]
+    assert "planned local stages but did not run a ready specialist" in context
     accounting = module.take_latest_context_preflight_accounting("codex", module.MODEL)
     assert accounting["local_preflight_used"] is True
-    assert accounting["local_preflight_model"] == "qwen3.6:35b-a3b-q4_K_M"
-    assert accounting["local_preflight_candidate_policy"] == (
-        "norllama_warm_policy_degraded_fallback"
-    )
-    assert accounting["local_specialist_used"] is True
-    assert accounting["local_specialist_status"] == "ok"
+    assert accounting["local_preflight_model"] == "qwen3-coder:30b-a3b-q4_K_M"
+    assert accounting["local_preflight_candidate_policy"] == "resident-coder-policy"
+    assert accounting["local_specialist_used"] is False
+    assert accounting["local_specialist_status"] == "planned"
     assert accounting["local_specialist_stage_count"] == 4
-    assert accounting["local_specialist_executed_count"] == 2
-    assert accounting["local_specialist_tokens"] == 40
-    assert accounting["local_specialist_failure_class"] == ""
+    assert accounting["local_specialist_executed_count"] == 0
+    assert accounting["local_specialist_tokens"] == 0
+    assert accounting["local_specialist_failure_class"] == "cold_load_timeout"
     receipt = accounting["local_specialist_receipt"]
     assert receipt["route_posture"] == "prefetch_or_wait"
-    assert [stage["model"] for stage in receipt["stages"] if stage.get("executed")] == [
-        "qwen3.6:35b-a3b-q4_K_M",
-        "qwen3.6:35b-a3b-q4_K_M",
-    ]
-    assert receipt["stages"][0]["candidate_policy"] == (
-        "norllama_warm_policy_degraded_fallback"
-    )
+    assert [
+        stage["model"] for stage in receipt["stages"] if stage.get("executed")
+    ] == []
+    assert receipt["stages"][0]["candidate_policy"] == "resident-coder-policy"
     specialist_event = next(
         event for event in events if event["event_type"] == "planner.local-specialists"
     )
-    assert specialist_event["payload"]["specialist_pipeline"]["used"] is True
+    assert specialist_event["payload"]["specialist_pipeline"]["used"] is False
 
 
 def test_context_preflight_skips_norllama_planner_for_localllm_runtime(
@@ -4563,7 +4901,7 @@ def test_context_preflight_skips_norllama_planner_for_localllm_runtime(
     assert events == []
 
 
-def test_context_preflight_can_use_dedicated_norllama_planner_model(
+def test_context_preflight_ignores_dedicated_norllama_planner_override(
     monkeypatch, tmp_path
 ):
     planner_model = "hf.co/mradermacher/openfugu-conductor-3b-GGUF:q4_K_M"
@@ -4619,10 +4957,11 @@ def test_context_preflight_can_use_dedicated_norllama_planner_model(
         model=module.MODEL,
     )
 
-    assert calls == [planner_model]
-    assert planner_model in context
+    assert calls == ["qwen3-coder:30b-a3b-q4_K_M"]
+    assert planner_model not in context
+    assert "qwen3-coder:30b-a3b-q4_K_M" in context
     assert module.LOCAL_LLM_DEFAULT_MODEL == "qwen3.6:27b"
-    assert module.LOCAL_LLM_ROUTE_DEFAULT_MODEL == "qwen3.6:27b"
+    assert module.LOCAL_LLM_ROUTE_DEFAULT_MODEL == "qwen3-coder:30b-a3b-q4_K_M"
 
 
 def test_context_preflight_handles_unhealthy_norllama_planner(monkeypatch, tmp_path):
@@ -4881,6 +5220,116 @@ def test_agent_template_mixed_unpriced_direct_and_bedrock_history_prefers_usd_di
     assert estimate["usd"] > 0
 
 
+def test_agent_template_monthly_usage_meter_summarizes_current_cycle_only(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_PLAN_MONTHLY_CREDIT_ALLOWANCE", "100")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    bounds = module.usage_billing_cycle_bounds()
+    current_entry_at = bounds["started_at"] + 60
+    prior_entry_at = bounds["started_at"] - 60
+
+    summary = module.usage_billing_cycle_summary(
+        [
+            {
+                "finished_at": current_entry_at,
+                "runtime": "codex",
+                "model": "gpt-5.5",
+                "billing_owner": "kristopher",
+                "agent_group": "home",
+                "codex_auth_mode": "chatgpt",
+                "provider_surface": "openai-direct",
+                "charge_ledger_kind": "chatgpt_codex_credit_estimate",
+                "charge_display_unit": "credits",
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+            },
+            {
+                "finished_at": current_entry_at,
+                "runtime": "codex",
+                "model": "gpt-5.5",
+                "billing_owner": "kristopher",
+                "agent_group": "home",
+                "codex_auth_mode": "api-key",
+                "provider_surface": "openai-direct",
+                "charge_ledger_kind": "api_rate_card_estimate",
+                "charge_display_unit": "usd_equivalent",
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+            },
+            {
+                "finished_at": current_entry_at,
+                "runtime": "localllm",
+                "provider_surface": "norllama",
+                "charge_ledger_kind": "local_token_estimate",
+                "charge_display_unit": "tokens",
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+            },
+            {
+                "finished_at": prior_entry_at,
+                "runtime": "codex",
+                "model": "gpt-5.5",
+                "billing_owner": "kristopher",
+                "agent_group": "home",
+                "codex_auth_mode": "chatgpt",
+                "provider_surface": "openai-direct",
+                "charge_ledger_kind": "chatgpt_codex_credit_estimate",
+                "charge_display_unit": "credits",
+                "input_tokens": 10_000,
+                "output_tokens": 1_000,
+            },
+        ]
+    )
+
+    assert summary["kind"] == "calendar_month"
+    assert summary["entries"] == 3
+    assert summary["plan"] == {
+        "credits": 0.2,
+        "entries": 1,
+        "configured_entries": 1,
+        "allowance_credits": 100.0,
+    }
+    assert summary["metered"]["entries"] == 1
+    assert summary["metered"]["configured_entries"] == 1
+    assert summary["metered"]["usd"] > 0
+
+
+def test_agent_template_initial_monthly_usage_meter_only_shows_fill_for_configured_allowance(
+    monkeypatch, tmp_path
+):
+    snapshot = {
+        "usage": {
+            "billing": {
+                "cycle": {
+                    "label": "Aug 01 to Sep 01",
+                    "timezone": "CDT",
+                    "plan": {"credits": 75},
+                    "metered": {"usd": 1.25},
+                }
+            }
+        }
+    }
+    monkeypatch.delenv("NORMAN_PLAN_MONTHLY_CREDIT_ALLOWANCE", raising=False)
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    unbounded = module._initial_usage_meter(snapshot)
+
+    assert unbounded["has_fill"] is False
+    assert unbounded["fill_pct"] == 0
+    assert unbounded["plan_label"] == "Plan ~75 cr"
+    assert unbounded["metered_label"] == "Metered ~$1.25"
+
+    monkeypatch.setenv("NORMAN_PLAN_MONTHLY_CREDIT_ALLOWANCE", "100")
+    allowance_module = _load_agent_console_web(monkeypatch, tmp_path)
+    bounded = allowance_module._initial_usage_meter(snapshot)
+
+    assert bounded["has_fill"] is True
+    assert bounded["fill_pct"] == 75
+    assert bounded["tone"] == "warn"
+    assert bounded["plan_label"] == "Plan 75%"
+
+
 def test_context_preflight_limits_norllama_planner_candidate_timeouts(
     monkeypatch, tmp_path
 ):
@@ -4927,15 +5376,15 @@ def test_context_preflight_limits_norllama_planner_candidate_timeouts(
         model=module.MODEL,
     )
 
-    assert calls == ["qwen3.6:35b-a3b-q4_K_M"]
+    assert calls == ["qwen3-coder:30b-a3b-q4_K_M"]
     assert "Norllama planner preflight did not add context" in context
-    assert "qwen3.6:35b-a3b-q4_K_M" in context
+    assert "qwen3-coder:30b-a3b-q4_K_M" in context
     assert "qwen3.5:27b-q4_K_M" not in context
     accounting = module.take_latest_context_preflight_accounting("codex", module.MODEL)
     assert accounting["local_preflight_status"] == "unavailable"
     assert accounting["local_preflight_failure_class"] == "cold_load_timeout"
     assert accounting["local_preflight_receipt"]["last_failure_model"] == (
-        "qwen3.6:35b-a3b-q4_K_M"
+        "qwen3-coder:30b-a3b-q4_K_M"
     )
     planner_outcomes = [
         outcome
@@ -4944,7 +5393,7 @@ def test_context_preflight_limits_norllama_planner_candidate_timeouts(
     ]
     assert planner_outcomes[-1]["cooldown_seconds"] == 60
     cooldown = module.local_llm_route_cooldown(
-        "qwen3.6:35b-a3b-q4_K_M", include_fleet=False
+        "qwen3-coder:30b-a3b-q4_K_M", include_fleet=False
     )
     assert cooldown["cooldown_seconds"] == 60
     assert cooldown["remaining_seconds"] <= 60
@@ -5509,7 +5958,10 @@ def test_localllm_execution_tries_next_route_candidate_after_timeout(
 
     assert response == "- alpha\n- beta gamma"
     assert error == ""
-    assert calls == ["gemma4:26b-a4b-it-q4_K_M", "qwen3.6:27b"]
+    assert calls == [
+        "gemma4:26b-a4b-it-q4_K_M",
+        "qwen3-coder:30b-a3b-q4_K_M",
+    ]
     assert usage["model"] == "norllama"
     assert [item["status"] for item in outcomes[-2:]] == ["timeout", "ok"]
     assert [item["norllama_pool"] for item in outcomes[-2:]] == [

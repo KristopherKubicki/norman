@@ -135,8 +135,7 @@ def catalog_mesh():
         "schema": "norman.norllama.mesh.v1",
         "status": "ok",
         "models": [
-            "qwen3.6:35b-a3b-q4_K_M",
-            "qwen3.6:27b",
+            "qwen3-coder:30b-a3b-q4_K_M",
             "qwen3.5:122b-a10b-q4_K_M",
             "bge-m3:latest",
             "Qwen/Qwen3-Reranker-0.6B",
@@ -167,6 +166,7 @@ def catalog_mesh():
                 "reachable": True,
                 "models": [
                     "bge-m3:latest",
+                    "qwen3-coder:30b-a3b-q4_K_M",
                     "Qwen/Qwen3Guard-Stream-0.6B",
                 ],
                 "active_models": ["bge-m3:latest", "Qwen/Qwen3Guard-Stream-0.6B"],
@@ -183,18 +183,13 @@ def catalog_mesh():
                 "memory_gb": 128,
                 "reachable": True,
                 "models": [
-                    "qwen3.6:35b-a3b-q4_K_M",
-                    "qwen3.6:27b",
                     "qwen3.5:122b-a10b-q4_K_M",
                     "faster-whisper:distil-large-v3",
                     "Qwen/Qwen3Guard-Stream-0.6B",
                     "Qwen/Qwen-AgentWorld-35B-A3B",
                     "Qwen/WebWorld-8B",
                 ],
-                "active_models": [
-                    "qwen3.6:35b-a3b-q4_K_M",
-                    "Qwen/Qwen3Guard-Stream-0.6B",
-                ],
+                "active_models": ["Qwen/Qwen3Guard-Stream-0.6B"],
                 "endpoints": [{"path": "/v1/safety/classify", "kind": "safety"}],
                 "safety": {
                     "model": "Qwen/Qwen3Guard-Stream-0.6B",
@@ -419,30 +414,34 @@ def test_build_warm_policy_includes_capability_catalog_and_spark_affinity():
     assert policy["capability_catalog"]["schema"] == (
         "norman.norllama.capability-catalog.v1"
     )
-    assert policy["capability_catalog"]["defaults"]["code"] == ("qwen3.6:27b")
+    assert policy["capability_catalog"]["defaults"]["code"] == (
+        "qwen3-coder:30b-a3b-q4_K_M"
+    )
     assert policy["capability_catalog"]["defaults"]["asr"] == (
         "faster-whisper:distil-large-v3"
     )
     assert policy["capability_catalog"]["defaults"]["world"] == (
-        "qwen3.6:35b-a3b-q4_K_M"
+        "qwen3-coder:30b-a3b-q4_K_M"
     )
     assert policy["model_reality"]["schema"] == "norman.norllama.model-reality.v1"
-    assert by_model["qwen3.6:35b-a3b-q4_K_M"]["action"] == "skip_quality_gate"
+    assert by_model["qwen3-coder:30b-a3b-q4_K_M"]["action"] == ("skip_quality_gate")
     assert (
-        by_model["qwen3.6:35b-a3b-q4_K_M"]["model_reality"]["proof_status"]
+        by_model["qwen3-coder:30b-a3b-q4_K_M"]["model_reality"]["proof_status"]
         == "installed_unproven"
     )
-    assert by_model["qwen3.6:27b"]["action"] == "skip_quality_gate"
-    assert by_model["qwen3.6:27b"]["target_worker"] == "spark-151"
-    assert by_model["qwen3.5:122b-a10b-q4_K_M"]["action"] == ("skip_quality_gate")
+    assert by_model["qwen3-coder:30b-a3b-q4_K_M"]["target_worker"] == "spark-150"
+    assert by_model["qwen3.5:122b-a10b-q4_K_M"]["action"] == "observe"
     assert by_model["qwen3.5:122b-a10b-q4_K_M"]["target_worker"] == "spark-151"
     assert by_model["Qwen/Qwen3-Reranker-0.6B"]["target_worker"] == "mac-mini-133"
-    assert by_model["qwen3.6:35b-a3b-q4_K_M"]["target_worker"] == "spark-151"
+    assert (
+        by_model["qwen3.5:122b-a10b-q4_K_M"]["route_guardrail"]["authority"]
+        == "manual_only"
+    )
     assert (
         policy["capability_catalog"]["defaults"]["prompt_injection"]
         == "Qwen/Qwen3Guard-Stream-0.6B"
     )
-    assert by_model["Qwen/Qwen3Guard-Stream-0.6B"]["target_worker"] == "spark-150"
+    assert by_model["Qwen/Qwen3Guard-Stream-0.6B"]["target_worker"] == "spark-151"
     assert (
         by_model["Qwen/Qwen3Guard-Stream-0.6B"]["model_reality"]["service"]["reason"]
         == "service endpoint advertised"
@@ -454,7 +453,7 @@ def test_build_warm_policy_includes_capability_catalog_and_spark_affinity():
     assert by_model["faster-whisper:large-v3"]["target_worker"] == "spark-150"
     assert (
         "Qwen/Qwen-AgentWorld-35B-A3B"
-        in by_model["qwen3.6:35b-a3b-q4_K_M"]["desired_models"]
+        in by_model["qwen3-coder:30b-a3b-q4_K_M"]["desired_models"]
     )
     assert guardrails["coder"]["eligible_count"] == 0
     assert guardrails["judge"]["eligible_count"] == 0
@@ -473,7 +472,8 @@ def test_service_backed_asr_is_servable_without_ollama_model_inventory():
     quality = by_model["faster-whisper:large-v3"]
 
     assert fast["available"] is True
-    assert fast["action"] == "skip_quality_gate"
+    assert fast["action"] == "observe"
+    assert fast["route_guardrail"]["authority"] == "tool_only"
     assert fast["service_evidence"]["installed"] is True
     assert fast["model_reality"]["state"] == "servable"
     assert fast["model_reality"]["proof_status"] == "installed_unproven"
@@ -501,7 +501,7 @@ def test_gateway_asr_service_attributes_upstream_worker_not_gateway():
     assert fast["model_reality"]["service"]["worker_ids"] == ["mac-mini-133"]
 
 
-def test_benchmark_backed_asr_service_can_be_prefetch_eligible():
+def test_benchmark_backed_asr_service_remains_tool_only():
     packet = {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "results": [
@@ -522,7 +522,7 @@ def test_benchmark_backed_asr_service_can_be_prefetch_eligible():
 
     fast = by_model["faster-whisper:base"]
     assert fast["available"] is True
-    assert fast["route_guardrail"]["authority"] == "canary_only"
+    assert fast["route_guardrail"]["authority"] == "tool_only"
     assert fast["model_reality"]["proof_status"] == "ready"
     assert fast["model_reality"]["state"] == "resident"
     assert fast["model_reality"]["route_eligible"] is True
@@ -889,14 +889,15 @@ def test_build_warm_policy_routes_around_high_pressure_hint_worker():
 
 def test_build_warm_policy_prefers_active_worker_over_stale_benchmark_target():
     mesh = catalog_mesh()
-    mesh["workers"][2]["active_models"].append("qwen3.6:27b")
+    mesh["workers"][2]["models"].append("qwen3-coder:30b-a3b-q4_K_M")
+    mesh["workers"][2]["active_models"].append("qwen3-coder:30b-a3b-q4_K_M")
     packet = {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "shareable_view": {
             "recommended_roles": [
                 {
                     "lane_id": "qwen_code",
-                    "model": "qwen3.6:27b",
+                    "model": "qwen3-coder:30b-a3b-q4_K_M",
                     "score": 0.95,
                     "coverage_ratio": 1.0,
                     "target_worker": "spark-150",
@@ -909,7 +910,7 @@ def test_build_warm_policy_prefers_active_worker_over_stale_benchmark_target():
 
     policy = warm_policy.build_warm_policy(mesh=mesh, packet=packet)
     by_model = {item["model"]: item for item in policy["recommendations"]}
-    qwen = by_model["qwen3.6:27b"]
+    qwen = by_model["qwen3-coder:30b-a3b-q4_K_M"]
 
     assert qwen["target_worker"] == "spark-151"
     assert qwen["target_active"] is True
@@ -958,8 +959,11 @@ def test_mac_mini_only_gets_tiny_canary_prefetch_from_fallbacks(monkeypatch):
     assert by_model["gemma3:1b"]["model_reality"]["proof_status"] == (
         "installed_unproven"
     )
-    assert by_model["qwen3.6:27b"]["action"] == "skip_unavailable"
-    assert by_model["qwen3.6:27b"]["model_reality"]["proof_status"] == "catalog_only"
+    assert by_model["qwen3-coder:30b-a3b-q4_K_M"]["action"] == "skip_quality_gate"
+    assert (
+        by_model["qwen3-coder:30b-a3b-q4_K_M"]["model_reality"]["proof_status"]
+        == "installed_unproven"
+    )
     assert "hf.co/mradermacher/openfugu-conductor-3b-GGUF:q4_K_M" not in by_model
 
 
@@ -982,7 +986,7 @@ def test_build_warm_policy_blocks_heavy_model_on_fallback_node():
     assert "heavy model cannot be warmed on fallback node" in qwen["action_reason"]
 
 
-def test_build_warm_policy_allows_quantized_heavy_judge_on_spark():
+def test_build_warm_policy_observes_manual_only_heavy_judge_on_spark():
     packet = {
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "packet_id": "uplink-qwen-heavy-judge",
@@ -1014,10 +1018,21 @@ def test_build_warm_policy_allows_quantized_heavy_judge_on_spark():
     by_model = {item["model"]: item for item in policy["recommendations"]}
     qwen = by_model["qwen3.5:122b-a10b-q4_K_M"]
 
-    assert qwen["action"] == "prefetch"
+    assert qwen["action"] == "observe"
+    assert qwen["residency_state"] == "manual_only"
+    assert qwen["route_guardrail"]["authority"] == "manual_only"
+    assert qwen["model_policy"]["manual_only"] is True
     assert qwen["model_reality"]["proof_status"] == "ready"
     assert qwen["model_reality"]["worker_fit"] is True
     assert qwen["model_reality"]["fit"]["estimated_model_memory_gb"] < 128
+    assert all(
+        item["model"] != "qwen3.5:122b-a10b-q4_K_M"
+        for item in policy["prefetch_candidates"]
+    )
+    assert all(
+        "qwen3.5:122b-a10b-q4_K_M" not in worker["desired_models"]
+        for worker in policy["workers"]
+    )
 
 
 def test_explicit_qwen_route_lanes_keep_heavy_judge_out_of_chat_pool():
@@ -1025,7 +1040,7 @@ def test_explicit_qwen_route_lanes_keep_heavy_judge_out_of_chat_pool():
         "score": 0.95,
         "coverage_ratio": 1.0,
         "status": "benchmark_backed",
-        "target_worker": "spark-151",
+        "target_worker": "spark-150",
         "accepted_count": 1,
         "total_count": 1,
         "timeout_rate": 0,
@@ -1043,15 +1058,15 @@ def test_explicit_qwen_route_lanes_keep_heavy_judge_out_of_chat_pool():
                 {
                     **metrics,
                     "lane_id": "coder",
-                    "model": "qwen3.6:27b",
-                    "profile": "qwen36_27_local",
+                    "model": "qwen3-coder:30b-a3b-q4_K_M",
+                    "profile": "qwen3_coder_30_local",
                     "use_for": "local coding, repo reasoning, patch drafting",
                 },
                 {
                     **metrics,
                     "lane_id": "planner",
-                    "model": "qwen3.6:35b-a3b-q4_K_M",
-                    "profile": "qwen36_35_router_local",
+                    "model": "qwen3-coder:30b-a3b-q4_K_M",
+                    "profile": "qwen3_coder_30_local",
                     "use_for": "interactive planning, routing, filtering, scout prep",
                 },
                 {
@@ -1072,10 +1087,11 @@ def test_explicit_qwen_route_lanes_keep_heavy_judge_out_of_chat_pool():
     plan = warm_policy.select_model_for_task_kind("plan", warm_policy_payload=policy)
     judge = warm_policy.select_model_for_task_kind("judge", warm_policy_payload=policy)
 
-    assert chat["model"] == "qwen3.6:27b"
-    assert code["model"] == "qwen3.6:27b"
-    assert plan["model"] == "qwen3.6:35b-a3b-q4_K_M"
-    assert judge["model"] == "qwen3.5:122b-a10b-q4_K_M"
+    assert chat["model"] == "qwen3-coder:30b-a3b-q4_K_M"
+    assert code["model"] == "qwen3-coder:30b-a3b-q4_K_M"
+    assert plan["model"] == "qwen3-coder:30b-a3b-q4_K_M"
+    assert judge["selected"] is False
+    assert "no eligible" in judge["reason"]
 
 
 def test_capability_unproven_qwen_transport_proof_is_not_default_route():
@@ -1083,7 +1099,7 @@ def test_capability_unproven_qwen_transport_proof_is_not_default_route():
         "score": 0.95,
         "coverage_ratio": 1.0,
         "status": "production_backed",
-        "target_worker": "spark-151",
+        "target_worker": "spark-150",
         "accepted_count": 5,
         "total_count": 5,
         "cold_sample_count": 1,
@@ -1118,8 +1134,8 @@ def test_capability_unproven_qwen_transport_proof_is_not_default_route():
                 {
                     **metrics,
                     "lane_id": "coder",
-                    "model": "qwen3.6:27b",
-                    "profile": "qwen36_27_local",
+                    "model": "qwen3-coder:30b-a3b-q4_K_M",
+                    "profile": "qwen3_coder_30_local",
                     "use_for": "local coding, repo reasoning, patch drafting",
                 }
             ]
@@ -1128,7 +1144,7 @@ def test_capability_unproven_qwen_transport_proof_is_not_default_route():
 
     policy = warm_policy.build_warm_policy(mesh=catalog_mesh(), packet=packet)
     by_model = {item["model"]: item for item in policy["recommendations"]}
-    qwen = by_model["qwen3.6:27b"]
+    qwen = by_model["qwen3-coder:30b-a3b-q4_K_M"]
     selection = warm_policy.select_model_for_task_kind(
         "code", warm_policy_payload=policy
     )
@@ -1145,9 +1161,9 @@ def test_capability_unproven_qwen_transport_proof_is_not_default_route():
     assert qwen["route_guardrail"]["route_state"] == "capability_unproven"
     assert selection["selected"] is False
     assert selection["canary_available"] is True
-    assert selection["canary_pool"][0]["model"] == "qwen3.6:27b"
+    assert selection["canary_pool"][0]["model"] == "qwen3-coder:30b-a3b-q4_K_M"
     assert canary_selection["selected"] is True
-    assert canary_selection["model"] == "qwen3.6:27b"
+    assert canary_selection["model"] == "qwen3-coder:30b-a3b-q4_K_M"
 
 
 def test_capability_proven_qwen_transport_proof_is_default_route():
@@ -1155,7 +1171,7 @@ def test_capability_proven_qwen_transport_proof_is_default_route():
         "score": 0.95,
         "coverage_ratio": 1.0,
         "status": "production_backed",
-        "target_worker": "spark-151",
+        "target_worker": "spark-150",
         "accepted_count": 5,
         "total_count": 5,
         "cold_sample_count": 1,
@@ -1190,8 +1206,8 @@ def test_capability_proven_qwen_transport_proof_is_default_route():
                 {
                     **metrics,
                     "lane_id": "coder",
-                    "model": "qwen3.6:27b",
-                    "profile": "qwen36_27_local",
+                    "model": "qwen3-coder:30b-a3b-q4_K_M",
+                    "profile": "qwen3_coder_30_local",
                     "use_for": "local coding, repo reasoning, patch drafting",
                 }
             ]
@@ -1204,7 +1220,7 @@ def test_capability_proven_qwen_transport_proof_is_default_route():
     )
 
     assert selection["selected"] is True
-    assert selection["model"] == "qwen3.6:27b"
+    assert selection["model"] == "qwen3-coder:30b-a3b-q4_K_M"
     assert (
         selection["benchmark_quality"]["capability_route_state"]
         == "production_capability_backed"
@@ -1233,17 +1249,17 @@ def test_narrow_specialist_lanes_do_not_leak_into_general_model_pool():
                 {
                     **metrics,
                     "lane_id": "coder",
-                    "model": "qwen3.6:27b",
-                    "profile": "qwen36_27_local",
-                    "target_worker": "spark-151",
+                    "model": "qwen3-coder:30b-a3b-q4_K_M",
+                    "profile": "qwen3_coder_30_local",
+                    "target_worker": "spark-150",
                     "use_for": "local coding, repo reasoning, patch drafting",
                 },
                 {
                     **metrics,
                     "lane_id": "planner",
-                    "model": "qwen3.6:35b-a3b-q4_K_M",
-                    "profile": "qwen36_35_router_local",
-                    "target_worker": "spark-151",
+                    "model": "qwen3-coder:30b-a3b-q4_K_M",
+                    "profile": "qwen3_coder_30_local",
+                    "target_worker": "spark-150",
                     "use_for": "interactive planning and routing",
                 },
                 {
@@ -1303,10 +1319,11 @@ def test_narrow_specialist_lanes_do_not_leak_into_general_model_pool():
     )
     ocr = warm_policy.select_model_for_task_kind("ocr", warm_policy_payload=policy)
 
-    assert chat["model"] == "qwen3.6:27b"
-    assert code["model"] == "qwen3.6:27b"
-    assert plan["model"] == "qwen3.6:35b-a3b-q4_K_M"
-    assert judge["model"] == "qwen3.5:122b-a10b-q4_K_M"
+    assert chat["model"] == "qwen3-coder:30b-a3b-q4_K_M"
+    assert code["model"] == "qwen3-coder:30b-a3b-q4_K_M"
+    assert plan["model"] == "qwen3-coder:30b-a3b-q4_K_M"
+    assert judge["selected"] is False
+    assert "no eligible" in judge["reason"]
     assert embed["model"] == "bge-m3:latest"
     assert rerank["model"] == "BAAI/bge-reranker-v2-m3"
     assert ocr["model"] == "paddleocr:PP-OCRv6-small"

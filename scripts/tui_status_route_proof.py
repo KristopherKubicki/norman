@@ -589,7 +589,7 @@ def validate_proof(probe: dict[str, Any]) -> dict[str, Any]:
             "passed": False,
             "outcome": "skipped_busy",
             "local_healthy_before": planner_ready,
-            "deterministic_fallback": False,
+            "deterministic_state_read": False,
             "final_authority": "",
             "failures": [_text(probe.get("error")) or "TUI was busy"],
         }
@@ -615,44 +615,47 @@ def validate_proof(probe: dict[str, Any]) -> dict[str, Any]:
         failures.append(f"status turn failed{': ' + detail if detail else ''}")
     if final_runtime == "codexspark":
         failures.append("named codexspark preview was selected as a live final runtime")
-    if not deterministic and not is_terra_model(final_model):
-        failures.append("cloud final authority did not use GPT-5.6 Terra")
-
     preflight_used = bool(turn.get("local_preflight_used"))
     preflight_ok = _text(turn.get("local_preflight_status")).lower() == "ok"
     preflight_tokens = _int(turn.get("local_preflight_tokens"))
-    requires_local_preflight = planner_ready or preflight_used
-    if requires_local_preflight:
-        if deterministic:
-            failures.append(
-                "ready local planner candidate bypassed normal Norllama preflight"
-            )
-        if not (preflight_used and preflight_ok and preflight_tokens > 0):
-            failures.append(
-                "ready local planner candidate did not record a successful "
-                "Norllama preflight"
-            )
-        outcome = (
-            "norllama_preflight_cloud_authority"
-            if not failures
-            else "norllama_preflight_proof_failed"
-        )
-    else:
-        if not deterministic:
-            failures.append(
-                "local lane was unavailable but deterministic status fallback was not used"
-            )
+    if deterministic:
         if (
             final_runtime != "localllm"
             or final_model != "deterministic-status"
             or _int(turn.get("total_tokens")) != 0
         ):
             failures.append(
-                "degraded status fallback did not retain deterministic zero-token semantics"
+                "deterministic state read did not retain zero-token local semantics"
+            )
+        if preflight_used or preflight_tokens:
+            failures.append(
+                "deterministic state read unexpectedly recorded a Norllama preflight"
             )
         outcome = (
-            "deterministic_status_fallback" if not failures else "degraded_proof_failed"
+            "deterministic_status" if not failures else "deterministic_proof_failed"
         )
+        requires_local_preflight = False
+    else:
+        if not is_terra_model(final_model):
+            failures.append("cloud final authority did not use GPT-5.6 Terra")
+        requires_local_preflight = planner_ready or preflight_used
+        if requires_local_preflight:
+            if not (preflight_used and preflight_ok and preflight_tokens > 0):
+                failures.append(
+                    "ready local planner candidate did not record a successful "
+                    "Norllama preflight"
+                )
+            outcome = (
+                "norllama_preflight_cloud_authority"
+                if not failures
+                else "norllama_preflight_proof_failed"
+            )
+        else:
+            failures.append(
+                "local lane was unavailable but the status turn did not record "
+                "a deterministic state read"
+            )
+            outcome = "local_preflight_proof_failed"
 
     if codexspark and (
         bool(codexspark.get("can_execute"))
@@ -670,7 +673,7 @@ def validate_proof(probe: dict[str, Any]) -> dict[str, Any]:
         "passed": not failures,
         "outcome": outcome,
         "local_healthy_before": requires_local_preflight,
-        "deterministic_fallback": deterministic,
+        "deterministic_state_read": deterministic,
         "preflight": {
             "used": preflight_used,
             "status": _text(turn.get("local_preflight_status")),
@@ -732,7 +735,7 @@ def discovery_failure(target: str, reason: str, *, host: str = "") -> dict[str, 
         "passed": False,
         "outcome": "discovery_failed",
         "local_healthy_before": False,
-        "deterministic_fallback": False,
+        "deterministic_state_read": False,
         "preflight": {},
         "requested_route": {},
         "final_authority": "",
@@ -756,7 +759,7 @@ def build_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
         and _text(_dict(item.get("preflight")).get("status")).lower() == "ok"
         and _int(_dict(item.get("preflight")).get("tokens")) > 0
     )
-    deterministic = sum(1 for item in results if item.get("deterministic_fallback"))
+    deterministic = sum(1 for item in results if item.get("deterministic_state_read"))
     named_spark_contract_ok = all(
         not _dict(_dict(item.get("before")).get("codexspark")).get("can_execute")
         and _text(_dict(_dict(item.get("before")).get("codexspark")).get("execution"))
@@ -783,7 +786,7 @@ def build_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
             1
             for item in observed_turns
             if _text(item.get("final_authority"))
-            and not item.get("deterministic_fallback")
+            and not item.get("deterministic_state_read")
             and not _text(item.get("final_authority")).startswith("localllm/")
         ),
         "verifier_recorded_turns": sum(
@@ -792,7 +795,8 @@ def build_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
         "fallback_turns": sum(
             1
             for item in observed_turns
-            if item.get("deterministic_fallback") or _text(item.get("fallback_reason"))
+            if not item.get("deterministic_state_read")
+            and _text(item.get("fallback_reason"))
         ),
         "total_latency_ms": total_latency_ms,
         "average_latency_ms": round(total_latency_ms / len(observed_turns), 2)
@@ -808,7 +812,7 @@ def build_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
         "skipped_busy": skipped,
         "local_healthy_before": local_healthy,
         "successful_norllama_preflights": preflight_success,
-        "deterministic_fallbacks": deterministic,
+        "deterministic_state_reads": deterministic,
         "named_codexspark_access_check_contract_ok": named_spark_contract_ok,
         "route_scorecard": route_scorecard,
         "passed_rate": round(passed / total, 4) if total else 0.0,
@@ -861,6 +865,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         "Terminology:",
         "",
         "- `Norllama preflight` is a local planner/worker call before a tool-capable cloud final authority.",
+        "- `deterministic state read` is a zero-token TUI state response; it does not require planner readiness or a cloud final authority.",
         "- `codexspark` is the named OpenAI/Cerebras preview runtime. Its required state is `access-check`, not a local worker.",
         "",
         (
@@ -874,8 +879,8 @@ def render_markdown(report: dict[str, Any]) -> str:
         local = (
             f"{_text(preflight.get('model'))} " f"({_int(preflight.get('tokens'))} tok)"
             if preflight.get("used")
-            else "deterministic fallback"
-            if item.get("deterministic_fallback")
+            else "deterministic state read"
+            if item.get("deterministic_state_read")
             else "not observed"
         )
         detail = _text(item.get("outcome"))

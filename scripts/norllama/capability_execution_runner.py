@@ -81,9 +81,9 @@ CORE_AGENT_SUITES = {"planner_router", "coder", "verifier_judge"}
 SUPPORTED_SUITES = {"ocr", "reranker", "safety"} | CORE_AGENT_SUITES
 ASR_SUITE = "asr"
 CORE_AGENT_MODELS = {
-    "planner_router": "qwen3.6:35b-a3b-q4_K_M",
-    "coder": "qwen3.6:27b",
-    "verifier_judge": "qwen3.6:27b",
+    "planner_router": "qwen3-coder:30b-a3b-q4_K_M",
+    "coder": "qwen3-coder:30b-a3b-q4_K_M",
+    "verifier_judge": "qwen3-coder:30b-a3b-q4_K_M",
 }
 CORE_AGENT_OPERATION = {
     "planner_router": "route_decision",
