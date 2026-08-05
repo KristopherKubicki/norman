@@ -576,6 +576,32 @@ def test_invoke_text_chat_preserves_gateway_failure_payload(monkeypatch):
     }
 
 
+def test_invoke_text_chat_retains_only_safe_retry_after_header(monkeypatch):
+    def fake_post(url, headers, json, timeout, verify):
+        return FakeResponse(
+            {"error": "capacity exhausted"},
+            status_code=429,
+            headers={
+                "Retry-After": "9",
+                "Set-Cookie": "upstream-session=secret",
+                "X-Norllama-Worker": "spark-150",
+            },
+        )
+
+    monkeypatch.setattr(gateway.requests, "post", fake_post)
+
+    with pytest.raises(gateway.NorllamaGatewayError) as error:
+        gateway.invoke_text_chat(
+            messages=[{"role": "user", "content": "hi"}],
+            model="qwen3-coder:30b-a3b-q4_K_M",
+            base_url="https://llm.home.arpa/v1",
+            max_tokens=32,
+        )
+
+    assert error.value.status_code == 429
+    assert error.value.headers == {"Retry-After": "9"}
+
+
 def test_normalize_capabilities_payload_accepts_ollama_tags():
     payload = gateway.normalize_capabilities_payload(
         {

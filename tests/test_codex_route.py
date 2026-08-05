@@ -263,3 +263,126 @@ def test_regular_and_work_fallbacks_execute_the_expected_targets(
     assert captured[1][1] == [str(reentry), "--version"]
     assert captured[1][2]["CODEX_ROUTER_RESOLVED"] == "1"
     assert captured[1][2]["CODEX_REAL_BIN"] == str(real_codex)
+
+
+def test_mapped_route_verify_checks_models_then_local_capacity_once(
+    route_module, monkeypatch
+):
+    route = route_by_key(route_module, "networking")
+    calls = []
+
+    monkeypatch.setattr(
+        route_module, "brokered_gateway_token", lambda _route: ("short-lived-token", "")
+    )
+
+    def fake_gateway_get(endpoint, path, *, token):
+        calls.append((endpoint, path, token))
+        if path == "models":
+            return 200, {"object": "list"}, ""
+        return 200, {"available": True, "cloud_fallback": False}, ""
+
+    monkeypatch.setattr(route_module, "gateway_get_json", fake_gateway_get)
+
+    assert route_module.verify_route(route) == (
+        True,
+        "authenticated Responses gateway and local coding capacity verified",
+    )
+    assert calls == [
+        (route.endpoint, "models", "short-lived-token"),
+        (
+            route.endpoint,
+            "norman/capacity?model=norman-code",
+            "short-lived-token",
+        ),
+    ]
+
+
+def test_norman_route_verify_checks_models_then_local_capacity_once(
+    route_module, monkeypatch
+):
+    route = route_by_key(route_module, "norman")
+    broker_calls = []
+    calls = []
+
+    def fake_broker(configured_route):
+        broker_calls.append(configured_route.key)
+        return "short-lived-token", ""
+
+    def fake_gateway_get(endpoint, path, *, token):
+        calls.append((endpoint, path, token))
+        if path == "models":
+            return 200, {"object": "list"}, ""
+        return 200, {"available": True, "cloud_fallback": False}, ""
+
+    monkeypatch.setattr(route_module, "brokered_gateway_token", fake_broker)
+    monkeypatch.setattr(route_module, "gateway_get_json", fake_gateway_get)
+
+    assert route_module.verify_route(route) == (
+        True,
+        "authenticated Responses gateway and local coding capacity verified",
+    )
+    assert broker_calls == ["norman"]
+    assert calls == [
+        (route.endpoint, "models", "short-lived-token"),
+        (
+            route.endpoint,
+            "norman/capacity?model=norman-code",
+            "short-lived-token",
+        ),
+    ]
+
+
+def test_norman_capacity_unavailable_blocks_session_before_exec(
+    route_module, monkeypatch, capsys
+):
+    route = route_by_key(route_module, "norman")
+    executed = []
+
+    monkeypatch.setattr(route_module, "resolve_route", lambda _cwd: route)
+    monkeypatch.setattr(
+        route_module,
+        "preflight_route_capacity",
+        lambda _route: (
+            False,
+            "local coding capacity is unavailable (mesh_probe_stale); retry later",
+        ),
+    )
+    monkeypatch.setattr(
+        route_module, "exec_regular_route", lambda *_args: executed.append("route")
+    )
+    monkeypatch.setattr(
+        route_module,
+        "exec_regular_fallback",
+        lambda *_args: executed.append("fallback"),
+    )
+
+    assert route_module.main(["--launcher", "regular", "--", "resume"]) == 1
+    assert executed == []
+    captured = capsys.readouterr()
+    assert "session not started" in captured.err
+    assert "mesh_probe_stale" in captured.err
+
+
+@pytest.mark.parametrize("arguments", (["login"], ["--version"], ["--help"]))
+def test_norman_management_commands_skip_capacity_preflight(
+    route_module, monkeypatch, arguments
+):
+    route = route_by_key(route_module, "norman")
+    preflight_calls = []
+    fallback_calls = []
+
+    monkeypatch.setattr(route_module, "resolve_route", lambda _cwd: route)
+    monkeypatch.setattr(
+        route_module,
+        "preflight_route_capacity",
+        lambda _route: preflight_calls.append(_route.key) or (True, ""),
+    )
+    monkeypatch.setattr(
+        route_module,
+        "exec_regular_fallback",
+        lambda codex_args: fallback_calls.append(codex_args),
+    )
+
+    assert route_module.main(["--launcher", "regular", "--", *arguments]) == 0
+    assert preflight_calls == []
+    assert fallback_calls == [arguments]

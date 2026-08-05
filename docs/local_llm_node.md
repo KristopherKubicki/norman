@@ -44,6 +44,37 @@ Current hardware roles:
   `llm.[INTERNAL_DOMAIN]`; direct worker addresses are backend/diagnostic
   addresses, not the normal client contract.
 
+## Norman-Code Capacity
+
+`norman-code` is a heavy coding route. It is available only when `spark-150`
+or `spark-151` is reachable and advertises
+`qwen3-coder:30b-a3b-q4_K_M`. The Mac mini remains useful for tiny local work
+and as the logical front door, but it is deliberately ineligible for
+`norman-code`; a healthy Mac mini must not make the coding route appear ready.
+
+Use `codex --verify` from the Norman checkout to perform the authenticated,
+non-invoking models and capacity checks. The capacity endpoint is also
+available at `/v1/norman/capacity?model=norman-code` through the normal
+authenticated Norman gateway. It probes mesh metadata only and does not warm
+the coding model.
+
+| Capacity reason | Meaning | Operator action |
+| --- | --- | --- |
+| `available` | A reachable Spark advertises the coding model. | Start or resume the Norman TUI. |
+| `mesh_probe_stale` | Only stale mesh state remains. | Recheck the front door and workers, then retry. |
+| `mesh_probe_failed` | No current mesh state. | Check Norman, Caddy, DNS, and Norllama. |
+| `local_frontdoor_unreachable` | The local LLM front door is down. | Restore the front door and Caddy path. |
+| `no_eligible_workers_configured` | No Spark worker is in mesh policy. | Repair route policy and registration. |
+| `no_eligible_worker_reachable` | Spark coding workers are unreachable. | Restore one Spark gateway, then verify. |
+| `model_not_available_on_eligible_workers` | No Spark has the coding model. | Deploy the model, then refresh policy. |
+
+The response includes `eligible_workers`, `ineligible_workers`, `frontdoor`,
+and cache age so the operator can distinguish a workers-down event from a
+front-door or stale-probe issue. `cloud_fallback` is always `false` for this
+lane. The launcher blocks a new interactive session before Codex starts when
+capacity is unavailable, instead of allowing the client to present a generic
+hosted-model capacity message.
+
 ## Norman Front Door
 
 The live front door is rendered by:

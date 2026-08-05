@@ -95,3 +95,14 @@ def test_reply_tail_button_intents_are_explicit() -> None:
         assert classify_key_terms(prompt)["deterministic_block"] == (
             f"deterministic_action_{expected_button}"
         )
+
+
+def test_handoff_references_in_paths_or_prose_are_not_transfer_commands() -> None:
+    prompt = (
+        "Can you review ~/code/norman/docs/"
+        "spark_network_dhcp_incident_handoff.md and give recommendations?"
+    )
+
+    assert requested_action(prompt) == "operator_prompt"
+    assert button_intent(prompt) == ""
+    assert operator_intent_class(prompt) == "operator_prompt"

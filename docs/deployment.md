@@ -286,6 +286,67 @@ kill -TERM -- <codex-pid>  # Cancel the paused session
 Review the report before resuming work. The BBS alert is a notification and
 audit trail; the human decides whether to resume, cancel, or investigate.
 
+### Norman Codex Capacity Contract
+
+Every mapped Codex route is local-only for `norman-code`. Before an interactive
+session starts, the launcher obtains one brokered gateway token and checks:
+
+1. `/v1/models` accepts that token.
+2. `/v1/norman/capacity?model=norman-code` reports a reachable Spark that
+   advertises the coding model.
+
+The capacity endpoint performs only a fresh mesh probe; it does not send a
+prompt, load a model, or create model residency. The route starts only if the
+endpoint reports `available: true` and `cloud_fallback: false`. A failed
+preflight exits before Codex starts with a specific message such as:
+
+```text
+codex-route: norman session not started: local coding capacity is unavailable
+(no_eligible_worker_reachable); retry later
+```
+
+This avoids presenting a local Spark outage as a generic hosted-model
+high-demand condition. `codex --verify` checks the same two endpoints without
+starting a TUI, including from Networking and the other routed checkouts.
+`login`, `logout`, `--help`, and `--version` do not require capacity, so
+recovery and diagnostics remain available while the model lane is down.
+
+The API requires the normal route identity injected by Caddy and a valid
+brokered bearer token. A successful capacity response is always HTTP 200; use
+its `available`, `reason`, `retryable`, `eligible_workers`, `ineligible_workers`,
+`frontdoor`, and `cache` fields to decide recovery. It intentionally treats
+the Mac mini fallback node as ineligible for `norman-code`.
+
+Local generation failures use the normal OpenAI-compatible error envelope and
+always include `error.norman.cloud_fallback: false`. No local failure forwards
+the prompt to a cloud model.
+
+| Code | HTTP status | Meaning | Retry |
+| --- | --- | --- | --- |
+| `local_capacity_exhausted` | 503 | A worker reported no capacity. | Yes; respects `Retry-After`. |
+| `local_capacity_unavailable` | 503 | The coding worker lane is unavailable. | Yes. |
+| `local_model_unavailable` | 503 | No eligible worker has the coding model. | Yes after worker/model recovery. |
+| `local_model_timeout` | 504 | A local model request exceeded its deadline. | Yes. |
+| `local_gateway_unreachable` | 503 | Norman could not reach the local model gateway. | Yes. |
+| `local_gateway_unavailable` | 503 | The local gateway returned an upstream 5xx failure. | Yes. |
+| `local_gateway_auth_failed` | 503 | Gateway credentials are invalid or expired. | No; repair credentials. |
+| `local_gateway_bad_response` | 502 | The gateway response is invalid. | Usually no for HTTP 4xx; inspect logs. |
+| `empty_local_response` | 502 | The local model completed with no usable text. | Yes. |
+| `local_model_not_installed` | 422 | The selected model is not installed. | No; deploy a supported model. |
+
+The capacity endpoint can also return `unsupported_capacity_model` (400) for a
+model alias outside the local catalog. Authentication and route-identity errors
+remain explicit: `proxy_token_not_configured` (503), `invalid_api_key` (401),
+and `gateway_route_*` (403).
+
+Proxy events are persisted as JSONL at
+`/var/lib/norman/state/proxy-events.jsonl` by default. The active log rotates
+at 5 MiB into one prior generation, `proxy-events.jsonl.1`. Set
+`NORMAN_PROXY_EVENT_LOG` to a different path, or set it to `0`, `false`, `none`,
+`off`, or `disabled` to opt out. Set `NORMAN_PROXY_EVENT_LOG_MAX_BYTES` to
+adjust rotation between 4 KiB and 100 MiB. The in-process dashboard and alerts
+count local capacity failures, model timeouts, and gateway failures separately.
+
 ## Running the Application
 
 Before starting a service, configure the deployment's database, authentication,

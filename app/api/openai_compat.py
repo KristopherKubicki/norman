@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -15,10 +16,13 @@ from pydantic import BaseModel, Field
 from app.services.prompt_load_balancer import prompt_load_balancer_capabilities
 from app.services.prompt_provider_facade import (
     FacadeError,
+    capacity_model_for,
     chat_completion_stream_chunks,
     execute_openai_chat_facade,
     execute_openai_responses_facade,
 )
+from app.services.norllama import capacity as norllama_capacity
+from app.services.norllama import mesh_cache as norllama_mesh_cache
 from app.services.proxy_observability import (
     proxy_alerts,
     proxy_dashboard,
@@ -134,18 +138,20 @@ def _openai_error(
     code: str,
     param: str | None = None,
     headers: dict[str, str] | None = None,
+    norman: dict[str, Any] | None = None,
 ) -> JSONResponse:
+    error = {
+        "message": message,
+        "type": error_type,
+        "param": param,
+        "code": code,
+    }
+    if norman:
+        error["norman"] = norman
     return JSONResponse(
         status_code=status_code,
         headers=headers,
-        content={
-            "error": {
-                "message": message,
-                "type": error_type,
-                "param": param,
-                "code": code,
-            }
-        },
+        content={"error": error},
     )
 
 
@@ -176,16 +182,21 @@ def _facade_error_response(exc: FacadeError) -> JSONResponse:
         error_type=exc.error_type,
         code=exc.code,
         param=exc.param,
+        headers=dict(exc.headers),
+        norman=dict(exc.norman),
     )
 
 
 def _facade_error_payload(exc: FacadeError) -> dict[str, Any]:
-    return {
+    payload = {
         "message": exc.message,
         "type": exc.error_type,
         "param": exc.param,
         "code": exc.code,
     }
+    if exc.norman:
+        payload["norman"] = dict(exc.norman)
+    return payload
 
 
 def _facade_error_status(exc: FacadeError) -> str:
@@ -193,6 +204,14 @@ def _facade_error_status(exc: FacadeError) -> str:
         return "unsupported"
     if exc.error_type == "policy_blocked" or "blocked" in exc.code:
         return "blocked"
+    if exc.code.startswith("local_capacity_"):
+        return "capacity_unavailable"
+    if exc.code == "local_model_unavailable":
+        return "model_unavailable"
+    if exc.code == "local_model_timeout":
+        return "local_timeout"
+    if exc.code.startswith("local_gateway_"):
+        return "local_gateway_error"
     return "error"
 
 
@@ -422,6 +441,82 @@ async def openai_compat_models(request: Request):
                 "gateway": _gateway_context(gateway_route),
             }
         },
+        latency_ms=(time.time() - started_at) * 1000.0,
+    )
+    return response
+
+
+@router.get("/v1/norman/capacity", response_model=None)
+async def openai_compat_capacity(request: Request, model: str = "norman-code"):
+    """Return a non-invoking capacity check for a supported local model alias."""
+
+    started_at = time.time()
+    endpoint = "/v1/norman/capacity"
+    gateway_route, auth_error = _authorize_gateway_request(
+        request=request,
+        endpoint=endpoint,
+        started_at=started_at,
+    )
+    if auth_error is not None:
+        return auth_error
+    try:
+        requested_model, selected_model = capacity_model_for(model)
+    except FacadeError as exc:
+        record_proxy_event(
+            endpoint=endpoint,
+            method=request.method,
+            request_id=_request_id(request),
+            status=_facade_error_status(exc),
+            http_status=exc.status_code,
+            payload={"model": model},
+            headers=_request_headers(request),
+            error=_facade_error_payload(exc),
+            latency_ms=(time.time() - started_at) * 1000.0,
+        )
+        return _facade_error_response(exc)
+
+    try:
+        mesh = await asyncio.to_thread(
+            norllama_mesh_cache.get_mesh_overview,
+            force_refresh=True,
+            timeout_seconds=2,
+        )
+        snapshot = norllama_capacity.build_capacity_snapshot(
+            mesh,
+            requested_model=requested_model,
+            selected_model=selected_model,
+        )
+    except Exception:
+        logger.warning(
+            "Norman capacity probe failed model=%s", selected_model, exc_info=True
+        )
+        snapshot = norllama_capacity.unavailable_capacity_snapshot(
+            requested_model=requested_model,
+            selected_model=selected_model,
+            reason="mesh_probe_failed",
+        )
+
+    response = {
+        **snapshot,
+        "gateway": _gateway_context(gateway_route),
+    }
+    record_proxy_event(
+        endpoint=endpoint,
+        method=request.method,
+        request_id=_request_id(request),
+        status="capacity_available"
+        if snapshot["available"]
+        else "capacity_unavailable",
+        http_status=200,
+        payload={"model": requested_model},
+        headers=_request_headers(request),
+        response={
+            "norman": {
+                "gateway": _gateway_context(gateway_route),
+                "capacity": snapshot,
+            }
+        },
+        error={} if snapshot["available"] else {"code": snapshot["reason"]},
         latency_ms=(time.time() - started_at) * 1000.0,
     )
     return response

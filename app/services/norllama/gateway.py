@@ -3,7 +3,7 @@ from __future__ import annotations
 import ipaddress
 import time
 import warnings
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import requests
@@ -15,9 +15,19 @@ from app.core.config import settings
 class NorllamaGatewayError(RuntimeError):
     """A non-success response returned by the Norllama gateway."""
 
-    def __init__(self, status_code: int, payload: dict[str, Any] | None = None):
+    def __init__(
+        self,
+        status_code: int,
+        payload: dict[str, Any] | None = None,
+        headers: Mapping[str, Any] | None = None,
+    ):
         self.status_code = int(status_code)
         self.payload = dict(payload or {})
+        self.headers = {
+            "Retry-After": _clean(value)
+            for key, value in dict(headers or {}).items()
+            if _clean(key).lower() == "retry-after" and _clean(value)
+        }
         error = _clean(self.payload.get("error"))
         message = f"Norllama gateway returned HTTP {self.status_code}"
         if error:
@@ -321,7 +331,11 @@ def invoke_text_chat(
     payload = response_payload if isinstance(response_payload, dict) else {}
     status_code = int(getattr(response, "status_code", 0) or 0)
     if not 200 <= status_code < 300:
-        raise NorllamaGatewayError(status_code, payload)
+        raise NorllamaGatewayError(
+            status_code,
+            payload,
+            headers=getattr(response, "headers", None),
+        )
     text = _clean(payload.get("response"))
     if not text:
         raise RuntimeError("Norllama returned an empty response")

@@ -13,8 +13,13 @@ from typing import Any, Mapping
 
 MAX_EVENTS = 500
 EVENT_LOG_ENV = "NORMAN_PROXY_EVENT_LOG"
+EVENT_LOG_MAX_BYTES_ENV = "NORMAN_PROXY_EVENT_LOG_MAX_BYTES"
+DEFAULT_EVENT_LOG_PATH = Path("/var/lib/norman/state/proxy-events.jsonl")
+DEFAULT_EVENT_LOG_MAX_BYTES = 5 * 1024 * 1024
+DISABLED_EVENT_LOG_VALUES = frozenset({"0", "false", "none", "off", "disabled"})
 
 _LOCK = threading.RLock()
+_EVENT_LOG_LOCK = threading.RLock()
 _EVENTS: deque[dict[str, Any]] = deque(maxlen=MAX_EVENTS)
 
 
@@ -151,9 +156,35 @@ def _usage_from_response(response: Mapping[str, Any]) -> dict[str, int]:
 
 def _event_log_path() -> Path | None:
     configured = _clean(os.environ.get(EVENT_LOG_ENV))
-    if not configured:
+    if configured.lower() in DISABLED_EVENT_LOG_VALUES:
         return None
-    return Path(configured).expanduser()
+    return Path(configured).expanduser() if configured else DEFAULT_EVENT_LOG_PATH
+
+
+def _event_log_max_bytes() -> int:
+    try:
+        configured = int(os.environ.get(EVENT_LOG_MAX_BYTES_ENV, 0) or 0)
+    except (TypeError, ValueError):
+        configured = 0
+    return max(
+        4096,
+        min(configured or DEFAULT_EVENT_LOG_MAX_BYTES, 100 * 1024 * 1024),
+    )
+
+
+def _rotate_event_log(path: Path, *, incoming_bytes: int) -> None:
+    """Keep a current event log and one prior generation."""
+
+    try:
+        if not path.exists():
+            return
+        if path.stat().st_size + incoming_bytes <= _event_log_max_bytes():
+            return
+        previous = path.with_name(f"{path.name}.1")
+        previous.unlink(missing_ok=True)
+        path.replace(previous)
+    except OSError:
+        return
 
 
 def _append_jsonl(event: Mapping[str, Any]) -> None:
@@ -161,10 +192,12 @@ def _append_jsonl(event: Mapping[str, Any]) -> None:
     if path is None:
         return
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(event, sort_keys=True, separators=(",", ":")))
-            handle.write("\n")
+        serialized = json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n"
+        with _EVENT_LOG_LOCK:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _rotate_event_log(path, incoming_bytes=len(serialized.encode("utf-8")))
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(serialized)
     except OSError:
         # Observability must never break the proxy path. The in-memory ring still
         # exposes current process evidence when durable logging is unavailable.
@@ -213,6 +246,8 @@ def record_proxy_event(
     receipt_audit = _mapping(receipt.get("receipt_audit"))
     completion_gate = _mapping(receipt.get("completion_gate"))
     usage = _usage_from_response(response)
+    error_payload = dict(error or {})
+    error_norman = _mapping(error_payload.get("norman"))
     now = time.time()
     event = {
         "schema": "norman.proxy.event.v1",
@@ -274,7 +309,9 @@ def record_proxy_event(
         "route_authority": _clean(receipt.get("route_authority")),
         "usage": usage,
         "latency_ms": round(float(latency_ms or 0), 3),
-        "error": dict(error or {}),
+        "error": error_payload,
+        "error_code": _clean(error_payload.get("code")),
+        "retryable": _flag(error_norman.get("retryable")),
         **request_fingerprint(payload),
     }
     with _LOCK:
@@ -304,6 +341,11 @@ def proxy_observability_summary(limit: int = 100) -> dict[str, Any]:
     events = proxy_events_snapshot(limit=limit)
     total = len(events)
     statuses = Counter(_clean(event.get("status")) or "unknown" for event in events)
+    error_codes = Counter(
+        _clean(event.get("error_code"))
+        for event in events
+        if _clean(event.get("error_code"))
+    )
     by_endpoint = Counter(_clean(event.get("endpoint")) for event in events)
     by_client = Counter(_clean(event.get("client")) for event in events)
     by_worker = Counter(
@@ -362,6 +404,23 @@ def proxy_observability_summary(limit: int = 100) -> dict[str, Any]:
         for event in events
         if event.get("status") == "success" and not _clean(event.get("request_id"))
     )
+    capacity_unavailable_count = sum(
+        1
+        for event in events
+        if event.get("status") == "capacity_unavailable"
+        or _clean(event.get("error_code")).startswith("local_capacity_")
+    )
+    local_timeout_count = sum(
+        1
+        for event in events
+        if _clean(event.get("error_code")) == "local_model_timeout"
+    )
+    local_gateway_error_count = sum(
+        1
+        for event in events
+        if event.get("status") == "local_gateway_error"
+        or _clean(event.get("error_code")).startswith("local_gateway_")
+    )
     usage_totals = {
         "local_tokens": sum(
             _int(_mapping(event.get("usage")).get("local_tokens")) for event in events
@@ -388,6 +447,7 @@ def proxy_observability_summary(limit: int = 100) -> dict[str, Any]:
         "event_count": total,
         "window_limit": max(1, min(int(limit or 100), MAX_EVENTS)),
         "statuses": dict(statuses),
+        "error_codes": dict(error_codes),
         "by_endpoint": dict(by_endpoint),
         "by_client": dict(by_client),
         "by_worker": dict(by_worker),
@@ -401,6 +461,9 @@ def proxy_observability_summary(limit: int = 100) -> dict[str, Any]:
         "completion_gate_failed_success_count": completion_gate_failed_success_count,
         "unknown_execution_mode_success_count": unknown_execution_mode_success_count,
         "request_id_missing_success_count": request_id_missing_success_count,
+        "capacity_unavailable_count": capacity_unavailable_count,
+        "local_timeout_count": local_timeout_count,
+        "local_gateway_error_count": local_gateway_error_count,
         "cloud_forward_count": cloud_forward_count,
         "cloud_proxy_count": cloud_proxy_count,
         "workerless_local_success_count": workerless_count,
@@ -542,6 +605,36 @@ def proxy_alerts(
                 "severity": "warn",
                 "kind": "proxy_execution_errors",
                 "message": f"{errors} proxy execution error(s) were recorded.",
+            }
+        )
+    capacity_unavailable = int(summary.get("capacity_unavailable_count") or 0)
+    if capacity_unavailable:
+        alerts.append(
+            {
+                "severity": "warn",
+                "kind": "proxy_local_capacity_unavailable",
+                "message": (
+                    f"{capacity_unavailable} local capacity-unavailable event(s) "
+                    "were recorded."
+                ),
+            }
+        )
+    local_timeouts = int(summary.get("local_timeout_count") or 0)
+    if local_timeouts:
+        alerts.append(
+            {
+                "severity": "warn",
+                "kind": "proxy_local_model_timeouts",
+                "message": f"{local_timeouts} local model timeout(s) were recorded.",
+            }
+        )
+    gateway_errors = int(summary.get("local_gateway_error_count") or 0)
+    if gateway_errors:
+        alerts.append(
+            {
+                "severity": "warn",
+                "kind": "proxy_local_gateway_errors",
+                "message": f"{gateway_errors} local gateway error(s) were recorded.",
             }
         )
     return {

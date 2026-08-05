@@ -12,10 +12,11 @@ import subprocess
 import sys
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 
 HOME = Path.home()
@@ -208,6 +209,7 @@ MANAGEMENT_COMMANDS = frozenset(
         "version",
     }
 )
+NON_SESSION_FLAGS = frozenset({"--help", "--version", "-V", "-h"})
 OPTIONS_WITH_VALUE = frozenset(
     {
         "--add-dir",
@@ -387,6 +389,8 @@ def command_name(arguments: Sequence[str]) -> str:
 
 
 def starts_session(arguments: Sequence[str]) -> bool:
+    if any(argument in NON_SESSION_FLAGS for argument in arguments):
+        return False
     command = command_name(arguments)
     return not command or command not in MANAGEMENT_COMMANDS
 
@@ -504,12 +508,13 @@ def route_payload(route: Route | None, launcher: str, cwd: Path) -> dict[str, ob
     return payload
 
 
-def verify_route(route: Route) -> tuple[bool, str]:
-    """Prove the endpoint accepts a brokered token without logging that token."""
+def brokered_gateway_token(route: Route) -> tuple[str, str]:
+    """Resolve one short-lived gateway token without exposing it to callers."""
+
     if not GATEWAY_TOKEN_HELPER.is_file() or not os.access(
         GATEWAY_TOKEN_HELPER, os.X_OK
     ):
-        return False, f"gateway token helper is unavailable: {GATEWAY_TOKEN_HELPER}"
+        return "", f"gateway token helper is unavailable: {GATEWAY_TOKEN_HELPER}"
     try:
         token_result = subprocess.run(
             (str(GATEWAY_TOKEN_HELPER), "--secret", route.resolved_token_secret),
@@ -519,28 +524,88 @@ def verify_route(route: Route) -> tuple[bool, str]:
             timeout=10,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        return False, f"broker lookup failed: {exc}"
+        return "", f"broker lookup failed: {exc}"
     token = token_result.stdout.strip() if token_result.returncode == 0 else ""
     if not token:
-        return False, "broker lookup returned no token"
+        return "", "broker lookup returned no token"
+    return token, ""
+
+
+def gateway_get_json(
+    endpoint: str,
+    path: str,
+    *,
+    token: str,
+) -> tuple[int, dict[str, Any], str]:
+    """Read a gateway JSON endpoint while preserving no response body details."""
 
     request = urllib.request.Request(
-        f"{route.endpoint.rstrip('/')}/models",
+        f"{endpoint.rstrip('/')}/{path.lstrip('/')}",
         headers={"Accept": "application/json", "Authorization": f"Bearer {token}"},
         method="GET",
     )
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
-            status = response.status
+            status = int(response.status)
+            body = response.read()
     except urllib.error.HTTPError as exc:
-        return False, f"gateway returned HTTP {exc.code}"
+        return int(exc.code), {}, f"gateway returned HTTP {exc.code}"
     except (OSError, TimeoutError, urllib.error.URLError) as exc:
-        return False, f"gateway request failed: {exc}"
-    return status == 200, (
-        "authenticated Responses gateway verified"
-        if status == 200
-        else f"gateway returned HTTP {status}"
+        return 0, {}, f"gateway request failed: {exc}"
+    if status != 200:
+        return status, {}, f"gateway returned HTTP {status}"
+    try:
+        payload = json.loads(body.decode("utf-8")) if body else {}
+    except (TypeError, UnicodeDecodeError, ValueError):
+        return status, {}, "gateway returned malformed JSON"
+    if not isinstance(payload, dict):
+        return status, {}, "gateway returned an unexpected JSON response"
+    return status, payload, ""
+
+
+def verify_norman_capacity(route: Route, *, token: str) -> tuple[bool, str]:
+    """Prove the Norman coding lane has a reachable eligible local worker."""
+
+    query = urllib.parse.urlencode({"model": DEFAULT_ROUTER_MODEL})
+    status, payload, detail = gateway_get_json(
+        route.endpoint,
+        f"norman/capacity?{query}",
+        token=token,
     )
+    if status != 200:
+        return False, detail
+    if payload.get("cloud_fallback") is not False:
+        return False, "capacity report does not enforce local-only execution"
+    if payload.get("available") is True:
+        return True, "local coding capacity verified"
+    reason = str(payload.get("reason") or "unknown").strip() or "unknown"
+    retryable = bool(payload.get("retryable"))
+    retry_hint = "retry later" if retryable else "operator action is required"
+    return False, f"local coding capacity is unavailable ({reason}); {retry_hint}"
+
+
+def preflight_route_capacity(route: Route) -> tuple[bool, str]:
+    """Check local coding capacity before starting a mapped interactive session."""
+
+    token, detail = brokered_gateway_token(route)
+    if not token:
+        return False, detail
+    return verify_norman_capacity(route, token=token)
+
+
+def verify_route(route: Route) -> tuple[bool, str]:
+    """Prove the endpoint accepts a brokered token and has local capacity."""
+
+    token, detail = brokered_gateway_token(route)
+    if not token:
+        return False, detail
+    status, _payload, detail = gateway_get_json(route.endpoint, "models", token=token)
+    if status != 200:
+        return False, detail
+    available, detail = verify_norman_capacity(route, token=token)
+    if not available:
+        return False, detail
+    return True, "authenticated Responses gateway and local coding capacity verified"
 
 
 def work_environment() -> dict[str, str]:
@@ -684,6 +749,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments_error:
             print(f"codex-route: {arguments_error}", file=sys.stderr)
             return 2
+        capacity_available, capacity_detail = preflight_route_capacity(route)
+        if not capacity_available:
+            print(
+                f"codex-route: {route.key} session not started: {capacity_detail}",
+                file=sys.stderr,
+            )
+            return 1
         if parsed.launcher == "work":
             exec_work_route(route, parsed.codex_args)
         exec_regular_route(route, parsed.codex_args)

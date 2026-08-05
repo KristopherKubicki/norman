@@ -11,6 +11,7 @@ from typing import Any, Mapping
 import requests
 
 from app.core.config import settings
+from app.services.norllama import capacity as norllama_capacity
 from app.services.norllama import gateway as norllama_gateway
 from app.services.norllama.route_proof import (
     audit_route_receipt,
@@ -75,6 +76,7 @@ SUPPORTED_REASONING_EFFORTS = frozenset(
     {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 )
 SUPPORTED_REASONING_SUMMARIES = frozenset({"auto", "concise", "detailed", "none"})
+SUPPORTED_REASONING_CONTEXTS = frozenset({"auto", "current_turn", "all_turns"})
 SUPPORTED_RESPONSES_INCLUDE_VALUES = frozenset({"reasoning.encrypted_content"})
 MAX_FACADE_TOKENS = 4096
 MAX_RESPONSE_STATE = 200
@@ -106,6 +108,8 @@ class FacadeError(RuntimeError):
         error_type: str = "invalid_request_error",
         code: str = "invalid_request",
         param: str | None = None,
+        norman: Mapping[str, Any] | None = None,
+        headers: Mapping[str, str] | None = None,
     ) -> None:
         super().__init__(message)
         self.message = message
@@ -113,6 +117,12 @@ class FacadeError(RuntimeError):
         self.error_type = error_type
         self.code = code
         self.param = param
+        self.norman = dict(norman or {})
+        self.headers = {
+            str(key): str(value)
+            for key, value in dict(headers or {}).items()
+            if _clean(key) and _clean(value)
+        }
 
 
 @dataclass(frozen=True)
@@ -155,6 +165,190 @@ def _flag(value: Any, default: bool = False) -> bool:
 
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def capacity_model_for(requested_model: Any = "") -> tuple[str, str]:
+    """Resolve a public Norman model alias for a non-invoking capacity probe."""
+
+    requested = _clean(requested_model) or "norman-code"
+    selected = MODEL_ALIASES.get(requested.lower())
+    if selected is None:
+        raise FacadeError(
+            "Norman capacity is available only for supported local model aliases",
+            status_code=400,
+            error_type="invalid_request_error",
+            code="unsupported_capacity_model",
+            param="model",
+        )
+    return requested, selected or ROUTE_POLICY_MODELS["router"]
+
+
+def _local_failure_context(
+    *,
+    request_id: str,
+    requested_model: str,
+    selected_model: str,
+    retryable: bool,
+) -> dict[str, Any]:
+    return {
+        "schema": "norman.local-gateway-error.v1",
+        "request_id": request_id,
+        "requested_model": requested_model or "norman-code",
+        "selected_model": selected_model,
+        "retryable": retryable,
+        "cloud_fallback": False,
+        **norllama_capacity.heavy_coding_capacity_policy(),
+    }
+
+
+def _retry_after(headers: Mapping[str, Any] | None) -> str:
+    values = {
+        str(key).lower(): _clean(value) for key, value in dict(headers or {}).items()
+    }
+    try:
+        return str(max(1, min(int(values.get("retry-after") or 5), 3600)))
+    except (TypeError, ValueError):
+        return "5"
+
+
+def _classified_gateway_error(
+    exc: Exception,
+    *,
+    request_id: str,
+    requested_model: str,
+    selected_model: str,
+) -> FacadeError:
+    status_code = 0
+    response_headers: Mapping[str, Any] | None = None
+    payload: Mapping[str, Any] = {}
+    if isinstance(exc, norllama_gateway.NorllamaGatewayError):
+        status_code = exc.status_code
+        response_headers = exc.headers
+        payload = exc.payload
+    else:
+        response = getattr(exc, "response", None)
+        try:
+            status_code = int(getattr(response, "status_code", 0) or 0)
+        except (TypeError, ValueError):
+            status_code = 0
+        response_headers = getattr(response, "headers", None)
+
+    payload_error = _lower(_mapping(payload.get("error")).get("code")) or _lower(
+        payload.get("error")
+    )
+    if status_code == 422 and payload_error == "local_model_not_installed":
+        return FacadeError(
+            "Requested local model is not installed",
+            status_code=422,
+            error_type="invalid_request_error",
+            code="local_model_not_installed",
+            norman=_local_failure_context(
+                request_id=request_id,
+                requested_model=requested_model,
+                selected_model=selected_model,
+                retryable=False,
+            ),
+        )
+
+    if payload_error in {"ollama_model_unavailable", "no_upstream_candidates"}:
+        return FacadeError(
+            "Local coding model is unavailable on eligible workers",
+            status_code=503,
+            error_type="server_error",
+            code="local_model_unavailable",
+            norman=_local_failure_context(
+                request_id=request_id,
+                requested_model=requested_model,
+                selected_model=selected_model,
+                retryable=True,
+            ),
+        )
+
+    def local_error(
+        *,
+        message: str,
+        status: int,
+        code: str,
+        retryable: bool,
+        headers: Mapping[str, str] | None = None,
+    ) -> FacadeError:
+        return FacadeError(
+            message,
+            status_code=status,
+            error_type="server_error",
+            code=code,
+            norman=_local_failure_context(
+                request_id=request_id,
+                requested_model=requested_model,
+                selected_model=selected_model,
+                retryable=retryable,
+            ),
+            headers=headers,
+        )
+
+    if status_code == 429:
+        return local_error(
+            message="Local coding capacity is exhausted",
+            status=503,
+            code="local_capacity_exhausted",
+            retryable=True,
+            headers={"Retry-After": _retry_after(response_headers)},
+        )
+    if status_code == 503:
+        return local_error(
+            message="Local coding capacity is unavailable",
+            status=503,
+            code="local_capacity_unavailable",
+            retryable=True,
+        )
+    if status_code == 504 or isinstance(exc, (requests.Timeout, TimeoutError)):
+        return local_error(
+            message="Local model request timed out",
+            status=504,
+            code="local_model_timeout",
+            retryable=True,
+        )
+    if status_code in {401, 403}:
+        return local_error(
+            message="Local model gateway authentication is unavailable",
+            status=503,
+            code="local_gateway_auth_failed",
+            retryable=False,
+        )
+    if status_code >= 500:
+        return local_error(
+            message="Local model gateway is unavailable",
+            status=503,
+            code="local_gateway_unavailable",
+            retryable=True,
+        )
+    if status_code >= 400:
+        return local_error(
+            message="Local model gateway returned an invalid response",
+            status=502,
+            code="local_gateway_bad_response",
+            retryable=False,
+        )
+    if isinstance(exc, requests.RequestException):
+        return local_error(
+            message="Local model gateway is unreachable",
+            status=503,
+            code="local_gateway_unreachable",
+            retryable=True,
+        )
+    if "empty response" in _lower(exc):
+        return local_error(
+            message="Local model returned empty content",
+            status=502,
+            code="empty_local_response",
+            retryable=True,
+        )
+    return local_error(
+        message="Local model gateway returned an invalid response",
+        status=502,
+        code="local_gateway_bad_response",
+        retryable=True,
+    )
 
 
 def _messages(value: Any) -> list[dict[str, Any]]:
@@ -505,7 +699,7 @@ def _validate_supported_fields(
 
 
 def _responses_reasoning_advisory(payload: Mapping[str, Any]) -> dict[str, str]:
-    """Validate the supported Responses reasoning hint without emulating hidden output."""
+    """Validate Responses reasoning metadata without emulating hidden output."""
 
     if "reasoning" not in payload:
         return {}
@@ -518,7 +712,7 @@ def _responses_reasoning_advisory(payload: Mapping[str, Any]) -> dict[str, str]:
             param="reasoning",
         )
     unsupported = sorted(
-        str(key) for key in reasoning if key not in {"effort", "summary"}
+        str(key) for key in reasoning if key not in {"context", "effort", "summary"}
     )
     if unsupported:
         raise FacadeError(
@@ -553,9 +747,21 @@ def _responses_reasoning_advisory(payload: Mapping[str, Any]) -> dict[str, str]:
                 param="reasoning.summary",
             )
         advisory["summary"] = summary
+    if "context" in reasoning:
+        context = _lower(reasoning.get("context"))
+        if context not in SUPPORTED_REASONING_CONTEXTS:
+            allowed = ", ".join(sorted(SUPPORTED_REASONING_CONTEXTS))
+            raise FacadeError(
+                f"Unsupported Responses reasoning context: {context or '<blank>'}. "
+                f"Expected one of: {allowed}",
+                status_code=400,
+                code="invalid_reasoning_context",
+                param="reasoning.context",
+            )
+        advisory["context"] = context
     if not advisory:
         raise FacadeError(
-            "Responses reasoning must specify effort or summary",
+            "Responses reasoning must specify context, effort, or summary",
             status_code=400,
             code="invalid_reasoning",
             param="reasoning",
@@ -1023,6 +1229,10 @@ def _execute_authorized_chat(
         correlation_headers["X-Norman-Requested-Reasoning-Effort"] = reasoning_advisory[
             "effort"
         ]
+    if "context" in reasoning_advisory:
+        correlation_headers["X-Norman-Requested-Reasoning-Context"] = (
+            reasoning_advisory["context"]
+        )
     try:
         result = norllama_gateway.invoke_text_chat(
             messages=messages,
@@ -1035,29 +1245,17 @@ def _execute_authorized_chat(
             ),
             correlation_headers=correlation_headers,
         )
-    except norllama_gateway.NorllamaGatewayError as exc:
-        if (
-            exc.status_code == 422
-            and _clean(exc.payload.get("error")) == "local_model_not_installed"
-        ):
-            raise FacadeError(
-                "Requested local model is not installed",
-                status_code=422,
-                error_type="invalid_request_error",
-                code="local_model_not_installed",
-            ) from exc
-        raise FacadeError(
-            "Local model gateway is unavailable",
-            status_code=502,
-            error_type="server_error",
-            code="local_model_unavailable",
-        ) from exc
-    except (requests.RequestException, RuntimeError) as exc:
-        raise FacadeError(
-            "Local model gateway is unavailable",
-            status_code=502,
-            error_type="server_error",
-            code="local_model_unavailable",
+    except (
+        norllama_gateway.NorllamaGatewayError,
+        requests.RequestException,
+        RuntimeError,
+        TimeoutError,
+    ) as exc:
+        raise _classified_gateway_error(
+            exc,
+            request_id=invocation_id,
+            requested_model=_requested_model(provider_payload),
+            selected_model=authorization.model,
         ) from exc
     text = _choice_text(result)
     if not text:
@@ -1066,6 +1264,12 @@ def _execute_authorized_chat(
             status_code=502,
             error_type="server_error",
             code="empty_local_response",
+            norman=_local_failure_context(
+                request_id=invocation_id,
+                requested_model=_requested_model(provider_payload),
+                selected_model=authorization.model,
+                retryable=True,
+            ),
         )
     usage = _usage(result)
     gateway_attribution = _gateway_attribution(

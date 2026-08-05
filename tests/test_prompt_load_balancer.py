@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 import httpx
+import pytest
 import requests
 
 from app.services.prompt_load_balancer import (
@@ -10,6 +11,7 @@ from app.services.prompt_load_balancer import (
     prompt_load_balancer_capabilities,
     provider_adapter_decision,
 )
+from app.services.norllama import gateway as norllama_gateway
 from app.services.prompt_provider_facade import (
     FacadeError,
     execute_openai_chat_facade,
@@ -520,6 +522,27 @@ def test_openai_responses_adapter_classifies_latest_user_turn_only():
     assert result["norman_route"]["recommendation"]["execution_allowed"] is True
 
 
+def test_openai_responses_adapter_routes_incident_handoff_filename_as_read_only():
+    prompt = (
+        "Can you look into this incident and give me recommendations? "
+        "~/code/norman/docs/spark_network_dhcp_incident_handoff.md"
+    )
+    result = provider_adapter_decision(
+        provider="openai",
+        endpoint="openai.responses",
+        payload={
+            "model": "gpt-5.6-terra",
+            "input": prompt,
+        },
+    )
+
+    assert result["normalized_prompt"] == prompt
+    assert result["norman_route"]["classification"]["risk_class"] == "read_only"
+    assert result["norman_route"]["classification"]["intent"] != "handoff_or_relay"
+    assert result["norman_route"]["recommendation"]["requires_approval"] is False
+    assert result["norman_route"]["recommendation"]["execution_allowed"] is True
+
+
 def test_openai_responses_adapter_still_blocks_mutating_latest_user_turn():
     result = provider_adapter_decision(
         provider="openai",
@@ -681,6 +704,60 @@ def _local_route_envelope(**overrides):
     return envelope
 
 
+def _capacity_mesh(
+    *,
+    frontdoor_reachable=True,
+    spark_150_reachable=True,
+    spark_151_reachable=True,
+    spark_150_models=None,
+    spark_151_models=None,
+    cache_status="refresh",
+):
+    model = "qwen3-coder:30b-a3b-q4_K_M"
+    return {
+        "frontdoor": {
+            "reachable": frontdoor_reachable,
+            "status": "ok" if frontdoor_reachable else "error",
+            "models": [model],
+        },
+        "workers": [
+            {
+                "id": "mac-mini-133",
+                "role": "fallback",
+                "memory_gb": 16,
+                "reachable": True,
+                "status": "ok",
+                "models": [model],
+            },
+            {
+                "id": "spark-150",
+                "role": "production",
+                "memory_gb": 128,
+                "reachable": spark_150_reachable,
+                "status": "ok" if spark_150_reachable else "error",
+                "models": list(
+                    spark_150_models if spark_150_models is not None else [model]
+                ),
+            },
+            {
+                "id": "spark-151",
+                "role": "production",
+                "memory_gb": 128,
+                "reachable": spark_151_reachable,
+                "status": "ok" if spark_151_reachable else "error",
+                "models": list(
+                    spark_151_models if spark_151_models is not None else [model]
+                ),
+            },
+        ],
+        "cache": {
+            "status": cache_status,
+            "age_seconds": 0,
+            "ttl_seconds": 15,
+        },
+    }
+
+
 def test_openai_compat_chat_completions_routes_local_first(test_app, monkeypatch):
     from app.services.prompt_provider_facade import norllama_gateway
 
@@ -794,16 +871,33 @@ def test_openai_compat_responses_returns_gateway_failure(test_app, monkeypatch):
 
     response = test_app.post(
         "/v1/responses",
-        headers=headers,
+        headers={**headers, "X-Request-Id": "gateway-unavailable-test"},
         json={"model": "gpt-5.5", "input": "status?"},
     )
 
-    assert response.status_code == 502
-    assert response.json()["error"] == {
-        "message": "Local model gateway is unavailable",
-        "type": "server_error",
-        "param": None,
-        "code": "local_model_unavailable",
+    assert response.status_code == 503
+    error = response.json()["error"]
+    assert error["message"] == "Local model gateway is unavailable"
+    assert error["type"] == "server_error"
+    assert error["param"] is None
+    assert error["code"] == "local_gateway_unavailable"
+    assert error["norman"] == {
+        "schema": "norman.local-gateway-error.v1",
+        "request_id": "gateway-unavailable-test",
+        "requested_model": "gpt-5.5",
+        "selected_model": "qwen3-coder:30b-a3b-q4_K_M",
+        "retryable": True,
+        "cloud_fallback": False,
+        "eligible_workers": [
+            {"id": "spark-150", "role": "production"},
+            {"id": "spark-151", "role": "production"},
+        ],
+        "ineligible_workers": [
+            {
+                "id": "mac-mini-133",
+                "reason": "ineligible_for_heavy_coding",
+            }
+        ],
     }
 
 
@@ -875,12 +969,322 @@ def test_openai_compat_responses_preserves_missing_local_model(test_app, monkeyp
     )
 
     assert response.status_code == 422
-    assert response.json()["error"] == {
-        "message": "Requested local model is not installed",
-        "type": "invalid_request_error",
-        "param": None,
-        "code": "local_model_not_installed",
-    }
+    error = response.json()["error"]
+    assert error["message"] == "Requested local model is not installed"
+    assert error["type"] == "invalid_request_error"
+    assert error["param"] is None
+    assert error["code"] == "local_model_not_installed"
+    assert error["norman"]["cloud_fallback"] is False
+    assert error["norman"]["retryable"] is False
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_status", "expected_code", "retryable", "retry_after"),
+    (
+        (
+            lambda: norllama_gateway.NorllamaGatewayError(
+                429,
+                {"error": "capacity"},
+                {"Retry-After": "9"},
+            ),
+            503,
+            "local_capacity_exhausted",
+            True,
+            "9",
+        ),
+        (
+            lambda: norllama_gateway.NorllamaGatewayError(
+                429,
+                {"error": "capacity"},
+                {"Retry-After": "not-a-number"},
+            ),
+            503,
+            "local_capacity_exhausted",
+            True,
+            "5",
+        ),
+        (
+            lambda: norllama_gateway.NorllamaGatewayError(
+                503,
+                {"error": "workers unavailable"},
+            ),
+            503,
+            "local_capacity_unavailable",
+            True,
+            "",
+        ),
+        (
+            lambda: norllama_gateway.NorllamaGatewayError(
+                504,
+                {"error": "worker timeout"},
+            ),
+            504,
+            "local_model_timeout",
+            True,
+            "",
+        ),
+        (
+            lambda: requests.Timeout("gateway timeout"),
+            504,
+            "local_model_timeout",
+            True,
+            "",
+        ),
+        (
+            lambda: TimeoutError("gateway timeout"),
+            504,
+            "local_model_timeout",
+            True,
+            "",
+        ),
+        (
+            lambda: norllama_gateway.NorllamaGatewayError(
+                401,
+                {"error": "expired gateway credential"},
+            ),
+            503,
+            "local_gateway_auth_failed",
+            False,
+            "",
+        ),
+        (
+            lambda: norllama_gateway.NorllamaGatewayError(
+                403,
+                {"error": "gateway route denied"},
+            ),
+            503,
+            "local_gateway_auth_failed",
+            False,
+            "",
+        ),
+        (
+            lambda: norllama_gateway.NorllamaGatewayError(
+                502,
+                {"error": "bad upstream response"},
+            ),
+            503,
+            "local_gateway_unavailable",
+            True,
+            "",
+        ),
+        (
+            lambda: norllama_gateway.NorllamaGatewayError(
+                502,
+                {"error": "ollama_model_unavailable"},
+            ),
+            503,
+            "local_model_unavailable",
+            True,
+            "",
+        ),
+        (
+            lambda: requests.ConnectionError("front door refused connection"),
+            503,
+            "local_gateway_unreachable",
+            True,
+            "",
+        ),
+        (
+            lambda: RuntimeError("malformed local response"),
+            502,
+            "local_gateway_bad_response",
+            True,
+            "",
+        ),
+    ),
+)
+def test_openai_compat_responses_classifies_local_gateway_failures(
+    test_app,
+    monkeypatch,
+    failure,
+    expected_status,
+    expected_code,
+    retryable,
+    retry_after,
+):
+    from app.services.prompt_provider_facade import norllama_gateway
+
+    headers = _proxy_headers(monkeypatch, route="gold-book")
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat",
+        lambda **_kwargs: (_ for _ in ()).throw(failure()),
+    )
+
+    response = test_app.post(
+        "/v1/responses",
+        headers={**headers, "X-Request-Id": f"failure-{expected_code}"},
+        json={"model": "norman-code", "input": "status?"},
+    )
+
+    assert response.status_code == expected_status
+    error = response.json()["error"]
+    assert error["code"] == expected_code
+    assert error["type"] == "server_error"
+    assert error["norman"]["cloud_fallback"] is False
+    assert error["norman"]["retryable"] is retryable
+    if retry_after:
+        assert response.headers["Retry-After"] == retry_after
+    else:
+        assert "Retry-After" not in response.headers
+
+
+def test_openai_compat_responses_reports_empty_local_response(test_app, monkeypatch):
+    from app.services.prompt_provider_facade import norllama_gateway
+
+    headers = _proxy_headers(monkeypatch, route="gold-book")
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat",
+        lambda **_kwargs: {
+            "model": "qwen3-coder:30b-a3b-q4_K_M",
+            "choices": [{"message": {"content": ""}}],
+            "usage": {},
+            "headers": {},
+        },
+    )
+
+    response = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={"model": "norman-code", "input": "status?"},
+    )
+
+    assert response.status_code == 502
+    error = response.json()["error"]
+    assert error["code"] == "empty_local_response"
+    assert error["norman"]["cloud_fallback"] is False
+    assert error["norman"]["retryable"] is True
+
+
+def test_openai_compat_capacity_requires_gateway_authentication(test_app, monkeypatch):
+    headers = _proxy_headers(monkeypatch)
+    headers["Authorization"] = "Bearer invalid-token"
+
+    response = test_app.get(
+        "/v1/norman/capacity?model=norman-code",
+        headers=headers,
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "invalid_api_key"
+
+
+@pytest.mark.parametrize(
+    ("mesh", "expected_available", "expected_reason"),
+    (
+        (_capacity_mesh(), True, "available"),
+        (
+            _capacity_mesh(
+                spark_150_reachable=False,
+                spark_151_reachable=False,
+            ),
+            False,
+            "no_eligible_worker_reachable",
+        ),
+        (
+            _capacity_mesh(cache_status="stale_error"),
+            False,
+            "mesh_probe_stale",
+        ),
+    ),
+)
+def test_openai_compat_capacity_reports_live_worker_state_without_invoking_a_model(
+    test_app,
+    monkeypatch,
+    mesh,
+    expected_available,
+    expected_reason,
+):
+    from app.api import openai_compat
+    from app.services.prompt_provider_facade import norllama_gateway
+
+    headers = _proxy_headers(monkeypatch)
+    invocations = []
+    monkeypatch.setattr(
+        openai_compat.norllama_mesh_cache,
+        "get_mesh_overview",
+        lambda **_kwargs: mesh,
+    )
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat",
+        lambda **_kwargs: invocations.append(_kwargs),
+    )
+
+    response = test_app.get(
+        "/v1/norman/capacity?model=norman-code",
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["available"] is expected_available
+    assert payload["reason"] == expected_reason
+    assert payload["cloud_fallback"] is False
+    assert payload["gateway"]["gateway_route"] == "norman"
+    assert invocations == []
+
+
+def test_openai_compat_capacity_reports_probe_failure_without_invoking_a_model(
+    test_app,
+    monkeypatch,
+):
+    from app.api import openai_compat
+    from app.services.prompt_provider_facade import norllama_gateway
+
+    headers = _proxy_headers(monkeypatch)
+    invocations = []
+
+    def failed_probe(**_kwargs):
+        raise RuntimeError("mesh connection failed")
+
+    monkeypatch.setattr(
+        openai_compat.norllama_mesh_cache,
+        "get_mesh_overview",
+        failed_probe,
+    )
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat",
+        lambda **_kwargs: invocations.append(_kwargs),
+    )
+
+    response = test_app.get(
+        "/v1/norman/capacity?model=norman-code",
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["available"] is False
+    assert payload["reason"] == "mesh_probe_failed"
+    assert payload["cloud_fallback"] is False
+    assert invocations == []
+
+
+def test_openai_compat_capacity_rejects_unsupported_model_before_mesh_probe(
+    test_app,
+    monkeypatch,
+):
+    from app.api import openai_compat
+
+    headers = _proxy_headers(monkeypatch)
+    probes = []
+    monkeypatch.setattr(
+        openai_compat.norllama_mesh_cache,
+        "get_mesh_overview",
+        lambda **_kwargs: probes.append(_kwargs),
+    )
+
+    response = test_app.get(
+        "/v1/norman/capacity?model=not-a-norman-model",
+        headers=headers,
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "unsupported_capacity_model"
+    assert probes == []
 
 
 def test_openai_compat_responses_ignores_codex_compatibility_metadata(
@@ -901,11 +1305,15 @@ def test_openai_compat_responses_ignores_codex_compatibility_metadata(
         "/v1/responses",
         headers=headers,
         json={
-            "model": "norman-code",
+            "model": "gpt-5.6-terra",
             "input": "status?",
             "parallel_tool_calls": True,
             "prompt_cache_key": "codex-session-cache-key",
-            "reasoning": {"effort": "medium", "summary": "auto"},
+            "reasoning": {
+                "context": "all_turns",
+                "effort": "medium",
+                "summary": "auto",
+            },
             "include": ["reasoning.encrypted_content"],
             "store": False,
             "client_metadata": {
@@ -923,6 +1331,7 @@ def test_openai_compat_responses_ignores_codex_compatibility_metadata(
         "gold-book"
     )
     assert payload["norman"]["responses_compatibility"]["reasoning_advisory"] == {
+        "context": "all_turns",
         "effort": "medium",
         "summary": "auto",
     }
@@ -936,12 +1345,17 @@ def test_openai_compat_responses_ignores_codex_compatibility_metadata(
     assert "untrusted-client-metadata" not in json.dumps(payload["norman"])
     receipt = payload["norman"]["facade_receipt"]
     assert receipt["metadata"]["codex_reasoning_advisory"] == {
+        "context": "all_turns",
         "effort": "medium",
         "summary": "auto",
     }
     assert (
         invocations[0]["correlation_headers"]["X-Norman-Requested-Reasoning-Effort"]
         == "medium"
+    )
+    assert (
+        invocations[0]["correlation_headers"]["X-Norman-Requested-Reasoning-Context"]
+        == "all_turns"
     )
 
 
@@ -982,13 +1396,25 @@ def test_openai_compat_responses_rejects_invalid_reasoning_advisory(
     assert invalid_summary.status_code == 400
     assert invalid_summary.json()["error"]["code"] == "invalid_reasoning_summary"
 
+    invalid_context = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={
+            "model": "norman-code",
+            "input": "status?",
+            "reasoning": {"context": "forever"},
+        },
+    )
+    assert invalid_context.status_code == 400
+    assert invalid_context.json()["error"]["code"] == "invalid_reasoning_context"
+
     unsupported_option = test_app.post(
         "/v1/responses",
         headers=headers,
         json={
             "model": "norman-code",
             "input": "status?",
-            "reasoning": {"effort": "medium", "context": "all_turns"},
+            "reasoning": {"effort": "medium", "token_budget": 100},
         },
     )
     assert unsupported_option.status_code == 501
