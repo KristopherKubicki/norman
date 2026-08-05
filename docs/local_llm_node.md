@@ -226,8 +226,11 @@ python3 scripts/render_mac_mini_llm_launchd.py \
 ```
 
 The gateway source deployed at `/Users/k/norllama/norllama_gateway.py` is
-repo-owned at `scripts/norllama/norllama_gateway.py`. Use the deploy helper to
-copy that exact source and restart the front-door service:
+repo-owned at `scripts/norllama/norllama_gateway.py`. Its route-policy runtime
+is deployed from `app/services/norllama/route_policy.py` and
+`app/services/norllama/route_policy_artifact.py` as the same bundle. Use the
+deploy helper to stage, compile, validate, publish, and restart the front-door
+service:
 
 ```bash
 scripts/norllama/deploy_gateway.sh --mac-only
@@ -239,9 +242,11 @@ When the Spark peer services should receive the same gateway code, use:
 scripts/norllama/deploy_gateway.sh --all
 ```
 
-The Spark restart path uses `sudo -n systemctl restart norllama-gateway.service`;
-if passwordless sudo is not configured, copy/compile still works but the worker
-restart must be brokered by the operator.
+The helper validates the staged policy with the staged runtime before it writes
+to a worker. It also waits for `/healthz`, `/readyz`, and `/v1/models` after
+each restart. The Spark restart path uses `sudo -n systemctl restart
+norllama-gateway.service`; if passwordless sudo is not configured, the bundle
+is not treated as deployed until an operator-approved restart completes.
 
 ### Route Policy Refresh
 
