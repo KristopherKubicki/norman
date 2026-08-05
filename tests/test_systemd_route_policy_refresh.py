@@ -17,6 +17,19 @@ def test_production_refreshes_the_shared_route_policy_before_starting() -> None:
     )
 
 
+def test_tmpfiles_normalizes_legacy_policy_artifact_ownership() -> None:
+    source = (ROOT / "scripts" / "tmpfiles.d" / "norman-production.conf").read_text(
+        encoding="utf-8"
+    )
+
+    assert "d /var/lib/norman/norllama 0750 kristopher kristopher -" in source
+    assert "Z /var/lib/norman/norllama 0750 kristopher kristopher -" in source
+    assert (
+        "z /var/lib/norman/norllama/route_policy.json 0640 kristopher kristopher -"
+        in source
+    )
+
+
 def test_canary_uses_an_isolated_runtime_policy_artifact() -> None:
     source = (SYSTEMD_DIR / "norman-release@.service").read_text(encoding="utf-8")
 

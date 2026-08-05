@@ -125,9 +125,10 @@ sudo systemd-tmpfiles --create /etc/tmpfiles.d/norman-production.conf
 ```
 
 The compiled Norllama route-policy artifact is owned by the production service
-user. `norman-production@.service` refreshes it before the API starts, so the
-facade never starts with a policy version that does not match its deployed
-runtime. Install the periodic refresh service and timer as well:
+user. The tmpfiles rules normalize ownership during upgrades, and
+`norman-production@.service` refreshes it before the API starts, so the facade
+never starts with a policy version that does not match its deployed runtime.
+Install the periodic refresh service and timer as well:
 
 ```bash
 sudo install -D -m 0755 scripts/systemd/norman-refresh-active-route-policy \
