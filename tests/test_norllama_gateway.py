@@ -638,6 +638,81 @@ def test_fetch_capabilities_accepts_openai_model_list():
     assert payload["supports"]["streaming"] is True
 
 
+def test_probe_mesh_worker_advertises_authoritative_local_api_tags_models(monkeypatch):
+    model = "qwen3-coder:30b-a3b-q4_K_M"
+    monkeypatch.setattr(
+        gateway,
+        "fetch_overview",
+        lambda **_kwargs: {"status": "ok"},
+    )
+    monkeypatch.setattr(
+        gateway,
+        "fetch_capabilities",
+        lambda **_kwargs: {"models": [], "supports": {}},
+    )
+
+    def fake_get(url, headers, timeout, verify):
+        if url.endswith("/api/tags"):
+            return FakeResponse({"models": [{"model": model}]})
+        if url.endswith("/api/ps"):
+            return FakeResponse({"models": []})
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(gateway.requests, "get", fake_get)
+
+    worker = gateway.probe_mesh_worker(
+        {
+            "id": "spark-150",
+            "role": "production",
+            "base_url": "http://192.168.2.150:18151",
+        },
+        timeout_seconds=1,
+    )
+
+    assert worker["reachable"] is True
+    assert worker["models"] == [model]
+    assert worker["model_inventory_source"] == "api/tags"
+
+
+def test_probe_mesh_worker_rejects_peer_discovered_models_when_api_tags_is_empty(
+    monkeypatch,
+):
+    model = "qwen3-coder:30b-a3b-q4_K_M"
+    monkeypatch.setattr(
+        gateway,
+        "fetch_overview",
+        lambda **_kwargs: {"status": "ok", "models": [model]},
+    )
+    monkeypatch.setattr(
+        gateway,
+        "fetch_capabilities",
+        # This mirrors a peer-discovered /v1/models response.
+        lambda **_kwargs: {"models": [model], "supports": {}},
+    )
+
+    def fake_get(url, headers, timeout, verify):
+        if url.endswith("/api/tags"):
+            return FakeResponse({"models": []})
+        if url.endswith("/api/ps"):
+            return FakeResponse({"models": []})
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(gateway.requests, "get", fake_get)
+
+    worker = gateway.probe_mesh_worker(
+        {
+            "id": "spark-151",
+            "role": "production",
+            "base_url": "http://192.168.2.151:18151",
+        },
+        timeout_seconds=1,
+    )
+
+    assert worker["reachable"] is True
+    assert worker["models"] == []
+    assert worker["model_inventory_source"] == "api/tags"
+
+
 def test_build_mesh_overview_reports_degraded_worker_roster(monkeypatch):
     def fake_get(url, headers, timeout, verify):
         if "192.168.2.151" in url:

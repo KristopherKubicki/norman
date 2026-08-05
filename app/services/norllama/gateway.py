@@ -148,6 +148,10 @@ def _api_ps_url(base_url: str) -> str:
     return _frontdoor_url(base_url, "api/ps")
 
 
+def _api_tags_url(base_url: str) -> str:
+    return _frontdoor_url(base_url, "api/tags")
+
+
 def _prefetch_url(base_url: str) -> str:
     return _frontdoor_url(base_url, "v1/prefetch")
 
@@ -1263,6 +1267,39 @@ def _overview_model_names(payload: dict[str, Any]) -> list[str]:
     return []
 
 
+def fetch_local_model_inventory(
+    *,
+    base_url: str,
+    api_key: str = "",
+    timeout_seconds: float | None = None,
+) -> list[str] | None:
+    """Return a worker-local Ollama inventory, or None when it is unavailable."""
+
+    if not _clean(base_url):
+        return None
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    timeout = timeout_seconds or max(
+        1, min(float(settings.llm_provider_timeout_seconds), 30.0)
+    )
+    try:
+        response = _requests_get(
+            _api_tags_url(base_url),
+            headers=headers,
+            timeout=timeout,
+        )
+        if response.status_code in {404, 405, 501}:
+            return None
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, ValueError):
+        return None
+    if not isinstance(payload, dict) or "models" not in payload:
+        return None
+    return _model_names(payload.get("models"))
+
+
 def fetch_overview(
     *,
     base_url: str,
@@ -1317,6 +1354,7 @@ def probe_mesh_worker(
         "latency_ms": 0,
         "models": [],
         "model_count": 0,
+        "model_inventory_source": "unknown",
         "active_models": [],
         "active_model_count": 0,
         "capabilities": {},
@@ -1329,6 +1367,11 @@ def probe_mesh_worker(
         return result
     try:
         overview = fetch_overview(
+            base_url=base_url,
+            api_key=api_key,
+            timeout_seconds=timeout,
+        )
+        local_models = fetch_local_model_inventory(
             base_url=base_url,
             api_key=api_key,
             timeout_seconds=timeout,
@@ -1350,7 +1393,18 @@ def probe_mesh_worker(
             )
         except requests.RequestException:
             active_payload = {}
-        models = capabilities.get("models") or _overview_model_names(overview)
+        if local_models is None:
+            models = capabilities.get("models") or _overview_model_names(overview)
+            model_inventory_source = (
+                "capabilities"
+                if capabilities.get("models")
+                else "overview"
+                if models
+                else "unavailable"
+            )
+        else:
+            models = local_models
+            model_inventory_source = "api/tags"
         active_models = _active_model_names(active_payload)
         result.update(
             {
@@ -1359,6 +1413,7 @@ def probe_mesh_worker(
                 "latency_ms": int((time.perf_counter() - started) * 1000),
                 "models": list(models)[:40],
                 "model_count": len(models),
+                "model_inventory_source": model_inventory_source,
                 "active_models": active_models[:20],
                 "active_model_count": len(active_models),
                 "capabilities": {

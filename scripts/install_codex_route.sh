@@ -6,6 +6,7 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="${CODEX_ROUTER_BIN_DIR:-$HOME/.local/bin}"
 LIB_DIR="${CODEX_ROUTER_LIB_DIR:-$HOME/.local/lib/norman-codex-route}"
 BASHRC_PATH="${CODEX_ROUTER_BASHRC:-$HOME/.bashrc}"
+BASH_PROFILE_PATH="${CODEX_ROUTER_BASH_PROFILE:-$HOME/.bash_profile}"
 install_shell_path=1
 
 usage() {
@@ -60,9 +61,17 @@ install -m 0700 "$SCRIPT_DIR/codex_work_wrapper.sh" "$BIN_DIR/codex-work"
 
 if [[ "$install_shell_path" -eq 1 ]]; then
   path_line='export PATH="$HOME/.local/bin:$PATH"'
-  touch "$BASHRC_PATH"
-  if ! grep -Fqx "$path_line" "$BASHRC_PATH"; then
-    printf '\n# Local Codex checkout router.\n%s\n' "$path_line" >>"$BASHRC_PATH"
+  install_path_line() {
+    local shell_path="$1"
+    touch "$shell_path"
+    if ! grep -Fqx "$path_line" "$shell_path"; then
+      printf '\n# Local Codex checkout router.\n%s\n' "$path_line" >>"$shell_path"
+    fi
+  }
+
+  install_path_line "$BASHRC_PATH"
+  if [[ -f "$BASH_PROFILE_PATH" ]]; then
+    install_path_line "$BASH_PROFILE_PATH"
   fi
 fi
 

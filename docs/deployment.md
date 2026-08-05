@@ -200,8 +200,9 @@ exec "$SHELL" -l
 The installer copies the router and token helper to
 `~/.local/lib/norman-codex-route`, installs the wrappers at
 `~/.local/bin/codex` and `~/.local/bin/codex-work`, and ensures that local bin
-directory precedes the NVM Codex binary. Mapped checkouts fail closed if the
-wrong launcher or a provider-changing override is supplied.
+directory precedes the NVM Codex binary in `.bashrc` and any existing
+`.bash_profile`. Mapped checkouts fail closed if the wrong launcher or a
+provider-changing override is supplied.
 
 Every mapped TUI needs a matching logical Norman Keys alias:
 

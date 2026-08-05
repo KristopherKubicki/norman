@@ -97,6 +97,11 @@ def test_route_proof_retries_only_until_a_route_succeeds():
 
 def test_installer_creates_private_runtime_and_idempotent_shell_path(tmp_path):
     home = tmp_path / "home"
+    home.mkdir()
+    (home / ".bash_profile").write_text(
+        'export PATH="$HOME/.nvm/bin:$PATH"\n',
+        encoding="utf-8",
+    )
     environment = os.environ.copy()
     environment["HOME"] = str(home)
 
@@ -121,6 +126,9 @@ def test_installer_creates_private_runtime_and_idempotent_shell_path(tmp_path):
     assert stat.S_IMODE((bin_dir / "codex").stat().st_mode) == 0o700
     assert stat.S_IMODE((bin_dir / "codex-work").stat().st_mode) == 0o700
     assert (home / ".bashrc").read_text(encoding="utf-8").count(
+        'export PATH="$HOME/.local/bin:$PATH"'
+    ) == 1
+    assert (home / ".bash_profile").read_text(encoding="utf-8").count(
         'export PATH="$HOME/.local/bin:$PATH"'
     ) == 1
 
