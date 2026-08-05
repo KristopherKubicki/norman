@@ -1,5 +1,6 @@
 import asyncio
 import json
+import threading
 from pathlib import Path
 
 import httpx
@@ -851,6 +852,73 @@ def test_openai_compat_responses_routes_local_first(test_app, monkeypatch):
     assert payload["output_text"] == "local ok"
     assert payload["usage"]["total_tokens"] == 6
     assert payload["norman"]["local_execution"] is True
+
+
+@pytest.mark.parametrize(
+    ("path", "payload", "facade_name", "facade_response"),
+    [
+        (
+            "/v1/chat/completions",
+            {
+                "model": "norman-code",
+                "messages": [{"role": "user", "content": "status?"}],
+            },
+            "execute_openai_chat_facade",
+            {"object": "chat.completion"},
+        ),
+        (
+            "/v1/responses",
+            {"model": "norman-code", "input": "status?"},
+            "execute_openai_responses_facade",
+            {"object": "response"},
+        ),
+    ],
+)
+def test_openai_compat_facade_wait_does_not_block_models_endpoint(
+    test_app,
+    monkeypatch,
+    path,
+    payload,
+    facade_name,
+    facade_response,
+):
+    from app.api import openai_compat
+
+    headers = _proxy_headers(monkeypatch)
+    facade_started = threading.Event()
+    release_facade = threading.Event()
+
+    def blocking_facade(*args, **kwargs):
+        facade_started.set()
+        assert release_facade.wait(timeout=2)
+        return facade_response
+
+    monkeypatch.setattr(openai_compat, facade_name, blocking_facade)
+
+    async def assert_models_remain_available():
+        transport = httpx.ASGITransport(app=test_app.app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
+            facade_task = asyncio.create_task(
+                client.post(path, headers=headers, json=payload)
+            )
+            try:
+                assert await asyncio.to_thread(facade_started.wait, 0.5)
+                assert not facade_task.done()
+                models = await asyncio.wait_for(
+                    client.get("/v1/models", headers=headers),
+                    timeout=0.5,
+                )
+            finally:
+                release_facade.set()
+
+            assert models.status_code == 200
+            facade_response = await asyncio.wait_for(facade_task, timeout=0.5)
+            assert facade_response.status_code == 200
+
+    asyncio.run(assert_models_remain_available())
 
 
 def test_openai_compat_responses_returns_gateway_failure(test_app, monkeypatch):

@@ -537,7 +537,8 @@ async def openai_compat_chat_completions(
         return auth_error
     request_payload = _request_payload(request_body)
     try:
-        response = execute_openai_chat_facade(
+        response = await asyncio.to_thread(
+            execute_openai_chat_facade,
             request_payload,
             request_id=_request_id(request),
             trusted_context=_gateway_context(gateway_route),
@@ -615,7 +616,8 @@ async def openai_compat_responses(
         return auth_error
     request_payload = _request_payload(request_body)
     try:
-        response = execute_openai_responses_facade(
+        response = await asyncio.to_thread(
+            execute_openai_responses_facade,
             request_payload,
             request_id=_request_id(request),
             trusted_context=_gateway_context(gateway_route),
