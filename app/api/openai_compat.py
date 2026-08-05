@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from ipaddress import ip_address
@@ -27,6 +28,7 @@ from app.services.proxy_observability import (
 )
 
 router = APIRouter(tags=["openai_compat"])
+logger = logging.getLogger(__name__)
 GATEWAY_ROUTE_HEADER = "x-norman-gateway-route"
 GATEWAY_ROUTE_IDS = frozenset(
     {
@@ -192,6 +194,47 @@ def _facade_error_status(exc: FacadeError) -> str:
     if exc.error_type == "policy_blocked" or "blocked" in exc.code:
         return "blocked"
     return "error"
+
+
+def _unexpected_facade_error(
+    *,
+    request: Request,
+    endpoint: str,
+    started_at: float,
+    payload: dict[str, Any],
+    gateway_route: str,
+) -> JSONResponse:
+    request_id = _request_id(request)
+    logger.exception(
+        "Unexpected local OpenAI facade failure endpoint=%s request_id=%s gateway_route=%s",
+        endpoint,
+        request_id or "missing",
+        gateway_route,
+    )
+    error = {
+        "message": "Local Responses gateway encountered an unexpected error",
+        "type": "server_error",
+        "param": None,
+        "code": "internal_error",
+    }
+    record_proxy_event(
+        endpoint=endpoint,
+        method=request.method,
+        request_id=request_id,
+        status="error",
+        http_status=500,
+        payload=payload,
+        headers=_request_headers(request),
+        response={"norman": {"gateway": _gateway_context(gateway_route)}},
+        error=error,
+        latency_ms=(time.time() - started_at) * 1000.0,
+    )
+    return _openai_error(
+        status_code=500,
+        message=error["message"],
+        error_type=error["type"],
+        code=error["code"],
+    )
 
 
 def _request_id(request: Request) -> str:
@@ -417,6 +460,14 @@ async def openai_compat_chat_completions(
             latency_ms=(time.time() - started_at) * 1000.0,
         )
         return _facade_error_response(exc)
+    except Exception:
+        return _unexpected_facade_error(
+            request=request,
+            endpoint="/v1/chat/completions",
+            started_at=started_at,
+            payload=request_payload,
+            gateway_route=gateway_route,
+        )
     record_proxy_event(
         endpoint="/v1/chat/completions",
         method=request.method,
@@ -487,6 +538,14 @@ async def openai_compat_responses(
             latency_ms=(time.time() - started_at) * 1000.0,
         )
         return _facade_error_response(exc)
+    except Exception:
+        return _unexpected_facade_error(
+            request=request,
+            endpoint="/v1/responses",
+            started_at=started_at,
+            payload=request_payload,
+            gateway_route=gateway_route,
+        )
     record_proxy_event(
         endpoint="/v1/responses",
         method=request.method,
