@@ -969,6 +969,152 @@ def test_openai_compat_responses_streams_incremental_sse_with_admission_feedback
     assert response.closed is True
 
 
+def test_openai_compat_responses_streams_queue_progress_without_output_text(
+    test_app, monkeypatch
+):
+    response = _MockNativeStreamResponse(
+        [
+            (
+                '{"norllama":{"schema":"norllama.stream-admission.v1",'
+                '"event":"queued","admission":"queued","queue_wait_ms":0,'
+                '"queue_depth":1,"queue_limit":1,"active":1,'
+                '"active_limit":1,"retry_after_seconds":10}}'
+            ),
+            (
+                '{"norllama":{"schema":"norllama.stream-admission.v1",'
+                '"event":"admitted","admission":"queued","queue_wait_ms":31,'
+                '"queue_depth":0,"queue_limit":1,"active":1,'
+                '"active_limit":1,"retry_after_seconds":10}}'
+            ),
+            '{"model":"qwen3-coder:30b","response":"ready"}',
+            (
+                '{"model":"qwen3-coder:30b","done":true,'
+                '"prompt_eval_count":4,"eval_count":1}'
+            ),
+        ],
+        headers={
+            "X-Norllama-Admission": "queued",
+            "X-Norllama-Queue-Wait-Ms": "0",
+            "X-Norllama-Queue-Depth": "1",
+            "X-Norllama-Queue-Limit": "1",
+            "X-Norllama-Active": "1",
+            "X-Norllama-Active-Limit": "1",
+        },
+    )
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat_stream",
+        lambda **kwargs: norllama_gateway.NorllamaTextStream(
+            response,
+            model=kwargs["model"],
+        ),
+    )
+
+    result = test_app.post(
+        "/v1/responses",
+        headers=_proxy_headers(monkeypatch),
+        json={"model": "norman-code", "input": "say ready", "stream": True},
+    )
+
+    assert result.status_code == 200
+    events = _response_sse_events(result.text)
+    payloads = [
+        json.loads(data) for event, data in events if event and data != "[DONE]"
+    ]
+    progress = [
+        payload["response"]["norman"]["stream_admission"]
+        for payload in payloads
+        if payload["type"] == "response.in_progress"
+        and payload["response"].get("norman")
+    ]
+    deltas = [
+        payload["delta"]
+        for payload in payloads
+        if payload["type"] == "response.output_text.delta"
+    ]
+    completed = next(
+        payload["response"]
+        for payload in payloads
+        if payload["type"] == "response.completed"
+    )
+
+    assert [item["state"] for item in progress] == [
+        "queued",
+        "queued",
+        "admitted",
+    ]
+    assert progress[-1] == {
+        "schema": "norman.stream-admission.v1",
+        "state": "admitted",
+        "queue_wait_ms": 31,
+        "queue_depth": 0,
+        "queue_limit": 1,
+        "active": 1,
+        "active_limit": 1,
+        "retry_after_seconds": 10,
+    }
+    assert deltas == ["ready"]
+    assert completed["norman"]["stream_admission"]["state"] == "admitted"
+    assert response.closed is True
+
+
+def test_openai_compat_responses_stream_reports_queued_capacity_expiry(
+    test_app, monkeypatch
+):
+    response = _MockNativeStreamResponse(
+        [
+            (
+                '{"norllama":{"schema":"norllama.stream-admission.v1",'
+                '"event":"queued","admission":"queued","queue_wait_ms":0,'
+                '"queue_depth":1,"queue_limit":1,"active":1,'
+                '"active_limit":1,"retry_after_seconds":10}}'
+            ),
+            (
+                '{"error":"local_capacity_exhausted","done":true,'
+                '"norllama":{"schema":"norllama.capacity.v1","active":1,'
+                '"active_limit":1,"queue_depth":0,"queue_limit":1,'
+                '"retry_after_seconds":10}}'
+            ),
+        ],
+        headers={"X-Norllama-Admission": "queued"},
+    )
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat_stream",
+        lambda **kwargs: norllama_gateway.NorllamaTextStream(
+            response,
+            model=kwargs["model"],
+        ),
+    )
+
+    result = test_app.post(
+        "/v1/responses",
+        headers=_proxy_headers(monkeypatch),
+        json={"model": "norman-code", "input": "say ready", "stream": True},
+    )
+
+    assert result.status_code == 200
+    events = _response_sse_events(result.text)
+    payloads = [
+        json.loads(data) for event, data in events if event and data != "[DONE]"
+    ]
+    failed = next(
+        payload["response"]
+        for payload in payloads
+        if payload["type"] == "response.failed"
+    )
+
+    assert any(payload["type"] == "response.in_progress" for payload in payloads)
+    assert not any(
+        payload["type"] == "response.output_text.delta" for payload in payloads
+    )
+    assert failed["status"] == "failed"
+    assert failed["error"]["code"] == "local_capacity_exhausted"
+    assert failed["error"]["norman"]["capacity"]["retry_after_seconds"] == 10
+    assert events[-1] == ("", "[DONE]")
+    assert response.closed is True
+
+
 def test_openai_compat_responses_stream_capacity_error_is_json_with_retry_hint(
     test_app, monkeypatch
 ):

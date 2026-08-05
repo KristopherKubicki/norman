@@ -200,6 +200,7 @@ DEFAULT_CHAT_MAX_ACTIVE = 1
 DEFAULT_CHAT_QUEUE_LIMIT = 1
 DEFAULT_CHAT_QUEUE_WAIT_S = 10
 DEFAULT_CHAT_RETRY_AFTER_S = 10
+DEFAULT_CHAT_QUEUE_UPDATE_S = 1
 ADMISSION_RESPONSE_HEADERS = {
     "x-norllama-admission",
     "x-norllama-queue-wait-ms",
@@ -1492,6 +1493,43 @@ def is_loopback_base_url(base_url: str) -> bool:
     return (hostname or "").lower() in {"127.0.0.1", "localhost", "::1"}
 
 
+class ChatAdmissionReservation:
+    """A cancellable active or queued local-generation admission."""
+
+    def __init__(
+        self,
+        controller: "ChatAdmissionController",
+        *,
+        state: str,
+        queued_at: float,
+        deadline: float,
+    ) -> None:
+        self._controller = controller
+        self._state = state
+        self._was_queued = state == "queued"
+        self._queued_at = queued_at
+        self._deadline = deadline
+        self._closed = False
+
+    @property
+    def queued(self) -> bool:
+        return self._state == "queued" and not self._closed
+
+    @property
+    def queued_at(self) -> float:
+        return self._queued_at
+
+    @property
+    def was_queued(self) -> bool:
+        return self._was_queued
+
+    def wait(self, *, timeout_s: float) -> tuple[str, dict[str, int]]:
+        return self._controller.wait_for_reservation(self, timeout_s=timeout_s)
+
+    def release(self) -> None:
+        self._controller.release_reservation(self)
+
+
 class ChatAdmissionController:
     """Bound concurrent local generations without serializing peer workers."""
 
@@ -1514,6 +1552,94 @@ class ChatAdmissionController:
     def snapshot(self) -> dict[str, int]:
         with self._condition:
             return self._snapshot_locked()
+
+    def reserve(self) -> tuple[ChatAdmissionReservation | None, dict[str, int]]:
+        """Reserve an active or queued slot without blocking the HTTP response."""
+
+        with self._condition:
+            now = time.monotonic()
+            if self._active < self.max_active:
+                self._active += 1
+                return (
+                    ChatAdmissionReservation(
+                        self,
+                        state="active",
+                        queued_at=now,
+                        deadline=now,
+                    ),
+                    self._snapshot_locked(),
+                )
+            if self.queue_limit <= self._queued or self.queue_wait_s <= 0:
+                return None, self._snapshot_locked()
+
+            self._queued += 1
+            return (
+                ChatAdmissionReservation(
+                    self,
+                    state="queued",
+                    queued_at=now,
+                    deadline=now + self.queue_wait_s,
+                ),
+                self._snapshot_locked(),
+            )
+
+    def wait_for_reservation(
+        self,
+        reservation: ChatAdmissionReservation,
+        *,
+        timeout_s: float,
+    ) -> tuple[str, dict[str, int]]:
+        """Wait briefly for a reserved queued slot without losing cancellation."""
+
+        with self._condition:
+            if reservation._closed:
+                return "cancelled", self._snapshot_locked()
+            if reservation._state == "active":
+                return "admitted", self._snapshot_locked()
+            if reservation._state != "queued":
+                return "cancelled", self._snapshot_locked()
+
+            now = time.monotonic()
+            if now >= reservation._deadline:
+                self._queued = max(0, self._queued - 1)
+                reservation._state = "expired"
+                self._condition.notify_all()
+                return "expired", self._snapshot_locked()
+
+            wait_s = min(
+                max(0.0, float(timeout_s)),
+                max(0.0, reservation._deadline - now),
+            )
+            if wait_s:
+                self._condition.wait(wait_s)
+
+            if reservation._closed:
+                return "cancelled", self._snapshot_locked()
+            if reservation._state != "queued":
+                return "cancelled", self._snapshot_locked()
+            if self._active < self.max_active:
+                self._queued = max(0, self._queued - 1)
+                self._active += 1
+                reservation._state = "active"
+                return "admitted", self._snapshot_locked()
+            if time.monotonic() >= reservation._deadline:
+                self._queued = max(0, self._queued - 1)
+                reservation._state = "expired"
+                self._condition.notify_all()
+                return "expired", self._snapshot_locked()
+            return "queued", self._snapshot_locked()
+
+    def release_reservation(self, reservation: ChatAdmissionReservation) -> None:
+        with self._condition:
+            if reservation._closed:
+                return
+            reservation._closed = True
+            if reservation._state == "active":
+                self._active = max(0, self._active - 1)
+            elif reservation._state == "queued":
+                self._queued = max(0, self._queued - 1)
+            reservation._state = "released"
+            self._condition.notify_all()
 
     def acquire(self) -> tuple[bool, dict[str, int]]:
         with self._condition:
@@ -1637,6 +1763,12 @@ class App:
                 minimum=1.0,
                 maximum=300.0,
             ),
+        )
+        self.chat_queue_update_s = env_float(
+            "NORLLAMA_CHAT_QUEUE_UPDATE_S",
+            DEFAULT_CHAT_QUEUE_UPDATE_S,
+            minimum=0.25,
+            maximum=10.0,
         )
         self.expose_upstream_details = env_flag(
             "NORLLAMA_EXPOSE_UPSTREAM_DETAILS", False
@@ -5415,6 +5547,29 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.close_connection = True
 
+        content_length, disconnected = self.copy_upstream_stream_body(upstream)
+
+        activity_extra = dict(getattr(self, "_activity_extra", {}) or {})
+        activity_extra["streaming"] = True
+        if disconnected:
+            activity_extra["client_disconnected"] = True
+        self._activity_extra = activity_extra
+        upstream_base = ""
+        attempts = ""
+        if extra_headers:
+            upstream_base = extra_headers.get("X-Norllama-Upstream", "")
+            attempts = extra_headers.get("X-Norllama-Attempts", "")
+        self.emit_request_log(
+            status=status,
+            content_length=content_length,
+            content_type=headers.get("Content-Type", "application/octet-stream"),
+            upstream=upstream_base,
+            attempts=attempts,
+        )
+
+    def copy_upstream_stream_body(self, upstream: UpstreamStream) -> tuple[int, bool]:
+        """Copy an already-open upstream stream and always release its lease."""
+
         content_length = 0
         disconnected = False
         try:
@@ -5434,24 +5589,7 @@ class Handler(BaseHTTPRequestHandler):
             disconnected = True
         finally:
             upstream.close()
-
-        activity_extra = dict(getattr(self, "_activity_extra", {}) or {})
-        activity_extra["streaming"] = True
-        if disconnected:
-            activity_extra["client_disconnected"] = True
-        self._activity_extra = activity_extra
-        upstream_base = ""
-        attempts = ""
-        if extra_headers:
-            upstream_base = extra_headers.get("X-Norllama-Upstream", "")
-            attempts = extra_headers.get("X-Norllama-Attempts", "")
-        self.emit_request_log(
-            status=status,
-            content_length=content_length,
-            content_type=headers.get("Content-Type", "application/octet-stream"),
-            upstream=upstream_base,
-            attempts=attempts,
-        )
+        return content_length, disconnected
 
     def send_head_only(
         self, status: int, *, content_type: str, content_length: int
@@ -5577,6 +5715,198 @@ class Handler(BaseHTTPRequestHandler):
             "X-Norllama-Active-Limit": str(max(0, snapshot.get("active_limit", 0))),
         }
 
+    def local_stream_admission_frame(
+        self,
+        *,
+        event: str,
+        reservation: ChatAdmissionReservation,
+        snapshot: dict[str, int],
+    ) -> dict[str, object]:
+        queue_wait_ms = max(
+            0,
+            min(int((time.monotonic() - reservation.queued_at) * 1000), 3600000),
+        )
+        return {
+            "norllama": {
+                "schema": "norllama.stream-admission.v1",
+                "event": event,
+                "admission": "queued" if reservation.was_queued else "immediate",
+                "queue_wait_ms": queue_wait_ms,
+                **snapshot,
+            }
+        }
+
+    def local_stream_capacity_frame(
+        self,
+        *,
+        body: bytes | None,
+        snapshot: dict[str, int],
+        model_hint: str | None = None,
+    ) -> dict[str, object]:
+        model = (
+            self.extract_ollama_model(body or b"")
+            or str(model_hint or "").strip()
+            or getattr(self, "_model_hint", "")
+        )
+        return {
+            "error": "local_capacity_exhausted",
+            "done": True,
+            "model": model,
+            "norllama": {
+                "schema": "norllama.capacity.v1",
+                **snapshot,
+            },
+        }
+
+    def write_stream_frame(self, payload: dict[str, object]) -> int:
+        chunk = json.dumps(payload, sort_keys=True).encode("utf-8") + b"\n"
+        self.wfile.write(chunk)
+        self.wfile.flush()
+        return len(chunk)
+
+    def send_queued_local_generation_stream(
+        self,
+        *,
+        reservation: ChatAdmissionReservation,
+        snapshot: dict[str, int],
+        base_url: str,
+        upstream_path: str,
+        headers: dict[str, str] | None,
+        body: bytes | None,
+        method: str | None,
+        model_hint: str | None,
+        attempts: list[str],
+    ) -> None:
+        """Keep an admitted queue reservation visible until its stream opens."""
+
+        admission_headers = self.local_admission_headers(snapshot, queue_wait_s=0)
+        admission_headers["X-Norllama-Admission"] = "queued"
+        content_length = 0
+        disconnected = False
+        upstream: UpstreamStream | None = None
+        try:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+            self.send_header("X-Norllama-Request-Id", getattr(self, "_request_id", ""))
+            self.send_header(
+                "X-Norllama-Priority-Applied", getattr(self, "_priority", "normal")
+            )
+            for key, value in admission_headers.items():
+                self.send_header(key, value)
+            if self.app.expose_upstream_details:
+                self.send_header("X-Norllama-Upstream", base_url)
+                self.send_header("X-Norllama-Attempts", ",".join(attempts))
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            content_length += self.write_stream_frame(
+                self.local_stream_admission_frame(
+                    event="queued",
+                    reservation=reservation,
+                    snapshot=snapshot,
+                )
+            )
+            while True:
+                state, updated_snapshot = reservation.wait(
+                    timeout_s=self.app.chat_queue_update_s
+                )
+                if state == "queued":
+                    content_length += self.write_stream_frame(
+                        self.local_stream_admission_frame(
+                            event="queued",
+                            reservation=reservation,
+                            snapshot=updated_snapshot,
+                        )
+                    )
+                    continue
+                if state == "admitted":
+                    content_length += self.write_stream_frame(
+                        self.local_stream_admission_frame(
+                            event="admitted",
+                            reservation=reservation,
+                            snapshot=updated_snapshot,
+                        )
+                    )
+                    try:
+                        upstream = self.open_upstream_stream(
+                            base_url,
+                            upstream_path,
+                            headers=headers,
+                            body=body,
+                            method=method,
+                            model_hint=model_hint,
+                            admission_reservation=reservation,
+                        )
+                    except Exception as exc:
+                        content_length += self.write_stream_frame(
+                            {
+                                "error": "upstream_unavailable",
+                                "detail": str(exc),
+                                "done": True,
+                            }
+                        )
+                        return
+                    if 200 <= upstream.status < 300:
+                        copied_length, disconnected = self.copy_upstream_stream_body(
+                            upstream
+                        )
+                        content_length += copied_length
+                        upstream = None
+                        return
+                    try:
+                        response_body = upstream.read()
+                    finally:
+                        upstream.close()
+                        upstream = None
+                    payload = extract_jsonish_final_object(response_body) or {
+                        "error": "upstream_unavailable"
+                    }
+                    if not payload.get("done"):
+                        payload["done"] = True
+                    content_length += self.write_stream_frame(payload)
+                    return
+                if state == "expired":
+                    content_length += self.write_stream_frame(
+                        self.local_stream_capacity_frame(
+                            body=body,
+                            snapshot=updated_snapshot,
+                            model_hint=model_hint,
+                        )
+                    )
+                return
+        except (
+            BrokenPipeError,
+            ConnectionAbortedError,
+            ConnectionResetError,
+            OSError,
+        ):
+            disconnected = True
+        finally:
+            if upstream is not None:
+                upstream.close()
+            reservation.release()
+
+            activity_extra = dict(getattr(self, "_activity_extra", {}) or {})
+            activity_extra.update(
+                {
+                    "streaming": True,
+                    "stream_admission": "queued",
+                    "stream_admission_visible": True,
+                }
+            )
+            if disconnected:
+                activity_extra["client_disconnected"] = True
+            self._activity_extra = activity_extra
+            self.emit_request_log(
+                status=HTTPStatus.OK,
+                content_length=content_length,
+                content_type="application/x-ndjson; charset=utf-8",
+                upstream=base_url,
+                attempts=",".join(attempts),
+            )
+
     def candidate_is_retryable(self, status: int, body: bytes) -> bool:
         if status == 503 or status >= 500:
             return True
@@ -5699,6 +6029,34 @@ class Handler(BaseHTTPRequestHandler):
                 is_peer = bool(peer_bases and normalize_base_url(base) in peer_bases)
                 if is_peer:
                     request_headers = self.peer_forward_headers(request_headers)
+                admission_reservation: ChatAdmissionReservation | None = None
+                if urllib.parse.urlsplit(
+                    upstream_path
+                ).path == "/api/generate" and self.local_generation_request(
+                    base, upstream_path
+                ):
+                    admission_reservation, snapshot = self.app.chat_admission.reserve()
+                    if admission_reservation is None:
+                        last = self.local_capacity_response(
+                            body=body,
+                            snapshot=snapshot,
+                            model_hint=model_hint,
+                        )
+                        last_base = base
+                        continue
+                    if admission_reservation.queued:
+                        self.send_queued_local_generation_stream(
+                            reservation=admission_reservation,
+                            snapshot=snapshot,
+                            base_url=base,
+                            upstream_path=upstream_path,
+                            headers=request_headers or None,
+                            body=body,
+                            method=method,
+                            model_hint=model_hint,
+                            attempts=attempted,
+                        )
+                        return
                 upstream = self.open_upstream_stream(
                     base,
                     upstream_path,
@@ -5706,6 +6064,7 @@ class Handler(BaseHTTPRequestHandler):
                     body=body,
                     method=method,
                     model_hint=model_hint,
+                    admission_reservation=admission_reservation,
                 )
             except Exception as exc:
                 last = (
@@ -5827,6 +6186,7 @@ class Handler(BaseHTTPRequestHandler):
         body: bytes | None = None,
         method: str | None = None,
         model_hint: str | None = None,
+        admission_reservation: ChatAdmissionReservation | None = None,
     ) -> UpstreamStream:
         outgoing_headers: dict[str, str] = {}
         for key, value in self.headers.items():
@@ -5839,38 +6199,56 @@ class Handler(BaseHTTPRequestHandler):
         release: Callable[[], None] | None = None
         admission_headers: dict[str, str] = {}
         if self.local_generation_request(base_url, upstream_path):
-            wait_started_at = time.monotonic()
-            admitted, snapshot = self.app.chat_admission.acquire()
-            admitted_at = time.monotonic()
-            if not admitted:
-                status, response_headers, response_body = self.local_capacity_response(
-                    body=body, snapshot=snapshot, model_hint=model_hint
+            if admission_reservation is not None:
+                if admission_reservation.queued:
+                    raise RuntimeError("queued reservation must be admitted before use")
+                release = admission_reservation.release
+                admission_headers = self.local_admission_headers(
+                    self.app.chat_admission.snapshot(),
+                    queue_wait_s=(
+                        time.monotonic() - admission_reservation.queued_at
+                        if admission_reservation.was_queued
+                        else 0
+                    ),
                 )
+            else:
+                wait_started_at = time.monotonic()
+                admitted, snapshot = self.app.chat_admission.acquire()
+                admitted_at = time.monotonic()
+                if not admitted:
+                    status, response_headers, response_body = (
+                        self.local_capacity_response(
+                            body=body, snapshot=snapshot, model_hint=model_hint
+                        )
+                    )
 
-                class LocalCapacityBody:
-                    def __init__(self, payload: bytes) -> None:
-                        self.payload = payload
+                    class LocalCapacityBody:
+                        def __init__(self, payload: bytes) -> None:
+                            self.payload = payload
 
-                    def read(self, size: int = -1) -> bytes:
-                        if size is None or size < 0:
-                            result, self.payload = self.payload, b""
+                        def read(self, size: int = -1) -> bytes:
+                            if size is None or size < 0:
+                                result, self.payload = self.payload, b""
+                                return result
+                            result, self.payload = (
+                                self.payload[:size],
+                                self.payload[size:],
+                            )
                             return result
-                        result, self.payload = self.payload[:size], self.payload[size:]
-                        return result
 
-                    def close(self) -> None:
-                        self.payload = b""
+                        def close(self) -> None:
+                            self.payload = b""
 
-                return UpstreamStream(
-                    status=status,
-                    headers=response_headers,
-                    response=LocalCapacityBody(response_body),
+                    return UpstreamStream(
+                        status=status,
+                        headers=response_headers,
+                        response=LocalCapacityBody(response_body),
+                    )
+                release = self.app.chat_admission.release
+                admission_headers = self.local_admission_headers(
+                    snapshot,
+                    queue_wait_s=admitted_at - wait_started_at,
                 )
-            release = self.app.chat_admission.release
-            admission_headers = self.local_admission_headers(
-                snapshot,
-                queue_wait_s=admitted_at - wait_started_at,
-            )
 
         request = urllib.request.Request(
             base_url.rstrip("/") + upstream_path,

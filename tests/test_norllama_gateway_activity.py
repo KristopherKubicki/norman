@@ -9,6 +9,7 @@ import time
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -60,6 +61,121 @@ def test_chat_admission_timeout_removes_expired_waiter():
     }
 
     controller.release()
+
+
+def test_chat_admission_reservation_tracks_queue_and_releases_cancelled_waiter():
+    module = load_gateway_module()
+    controller = module.ChatAdmissionController(
+        max_active=1,
+        queue_limit=1,
+        queue_wait_s=1,
+        retry_after_s=7,
+    )
+
+    active, snapshot = controller.reserve()
+    assert active is not None
+    assert active.queued is False
+    assert snapshot["active"] == 1
+
+    queued, snapshot = controller.reserve()
+    assert queued is not None
+    assert queued.queued is True
+    assert queued.was_queued is True
+    assert snapshot["active"] == 1
+    assert snapshot["queue_depth"] == 1
+
+    state, snapshot = queued.wait(timeout_s=0)
+    assert state == "queued"
+    assert snapshot["active"] == 1
+    assert snapshot["queue_depth"] == 1
+
+    queued.release()
+    assert controller.snapshot()["queue_depth"] == 0
+
+    replacement, snapshot = controller.reserve()
+    assert replacement is not None
+    assert replacement.queued is True
+    assert snapshot["active"] == 1
+    assert snapshot["queue_depth"] == 1
+
+    replacement.release()
+    active.release()
+    assert controller.snapshot()["active"] == 0
+
+
+def test_chat_admission_reservation_becomes_active_without_second_generation():
+    module = load_gateway_module()
+    controller = module.ChatAdmissionController(
+        max_active=1,
+        queue_limit=1,
+        queue_wait_s=1,
+        retry_after_s=7,
+    )
+
+    active, _ = controller.reserve()
+    queued, _ = controller.reserve()
+    assert active is not None
+    assert queued is not None
+    assert queued.queued is True
+
+    active.release()
+    state, snapshot = queued.wait(timeout_s=0.1)
+
+    assert state == "admitted"
+    assert queued.queued is False
+    assert snapshot["active"] == 1
+    assert snapshot["active_limit"] == 1
+    assert snapshot["queue_depth"] == 0
+
+    queued.release()
+    assert controller.snapshot()["active"] == 0
+
+
+def test_queued_stream_disconnect_during_headers_releases_reservation():
+    module = load_gateway_module()
+    controller = module.ChatAdmissionController(
+        max_active=1,
+        queue_limit=1,
+        queue_wait_s=1,
+        retry_after_s=7,
+    )
+    active, _ = controller.reserve()
+    queued, snapshot = controller.reserve()
+    assert active is not None
+    assert queued is not None
+    assert queued.queued is True
+
+    handler = object.__new__(module.Handler)
+    handler.server = SimpleNamespace(
+        app=SimpleNamespace(
+            chat_queue_update_s=1,
+            expose_upstream_details=False,
+        )
+    )
+    handler._request_id = "req-test"
+    handler._priority = "normal"
+    handler.send_response = lambda _status: None
+    handler.send_header = lambda _key, _value: None
+    handler.end_headers = lambda: (_ for _ in ()).throw(BrokenPipeError())
+    handler.emit_request_log = lambda **_kwargs: None
+
+    handler.send_queued_local_generation_stream(
+        reservation=queued,
+        snapshot=snapshot,
+        base_url="http://spark-a",
+        upstream_path="/api/generate",
+        headers=None,
+        body=b'{"model":"qwen3-coder:30b"}',
+        method="POST",
+        model_hint="qwen3-coder:30b",
+        attempts=["http://spark-a"],
+    )
+
+    assert controller.snapshot()["active"] == 1
+    assert controller.snapshot()["queue_depth"] == 0
+
+    active.release()
+    assert controller.snapshot()["active"] == 0
 
 
 def test_chat_admission_full_queue_returns_fast_capacity_response():

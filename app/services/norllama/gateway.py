@@ -319,7 +319,9 @@ class NorllamaTextStream:
         self.raw: dict[str, Any] = {}
         self._closed = False
 
-    def iter_text(self) -> Iterator[str]:
+    def iter_events(self) -> Iterator[dict[str, Any]]:
+        """Yield text and gateway control events from a native generate stream."""
+
         for line in self._response.iter_lines(decode_unicode=True):
             if isinstance(line, bytes):
                 line = line.decode("utf-8", errors="replace")
@@ -332,11 +334,52 @@ class NorllamaTextStream:
             if not isinstance(payload, dict):
                 raise RuntimeError("Norllama returned invalid streaming payload")
             self.raw = payload
+            metadata = payload.get("norllama")
+            schema = (
+                _clean(metadata.get("schema")) if isinstance(metadata, dict) else ""
+            )
+            if schema == "norllama.stream-admission.v1":
+                yield {
+                    "type": "admission",
+                    "admission": dict(metadata),
+                }
+                continue
+
+            error = _clean(payload.get("error"))
+            if error and bool(payload.get("done")):
+                status_code = (
+                    429
+                    if error in {"local_capacity_exhausted", "capacity_exhausted"}
+                    else 502
+                )
+                error_headers: dict[str, str] = {}
+                if isinstance(metadata, dict):
+                    try:
+                        retry_after = int(metadata.get("retry_after_seconds") or 0)
+                    except (TypeError, ValueError):
+                        retry_after = 0
+                    if retry_after > 0:
+                        error_headers["Retry-After"] = str(retry_after)
+                raise NorllamaGatewayError(
+                    status_code,
+                    payload,
+                    headers=error_headers,
+                )
+
             self.model = _clean(payload.get("model")) or self.model
             self.usage = _usage_from_ollama(payload)
             fragment = payload.get("response")
             if isinstance(fragment, str) and fragment:
-                yield fragment
+                yield {"type": "text", "text": fragment}
+
+    def iter_text(self) -> Iterator[str]:
+        """Yield generated text only for callers that do not handle controls."""
+
+        for event in self.iter_events():
+            if event.get("type") == "text":
+                fragment = event.get("text")
+                if isinstance(fragment, str) and fragment:
+                    yield fragment
 
     def result(self, text: str) -> dict[str, Any]:
         return {

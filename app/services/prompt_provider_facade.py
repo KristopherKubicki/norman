@@ -1609,12 +1609,13 @@ class FacadeResponsesStream:
         self.response_id = f"resp-norman-{uuid.uuid4().hex}"
         self.created_at = int(time.time())
         self.output_item_id = f"msg-norman-{uuid.uuid4().hex}"
+        self._stream_admission = self._admission_metadata_from_headers()
 
     @property
     def model(self) -> str:
         return self.stream.model or self.invocation.authorization.model
 
-    def admission_metadata(self) -> dict[str, Any]:
+    def _admission_metadata_from_headers(self) -> dict[str, Any]:
         headers = self.stream.headers
         admission = _clean(headers.get("x-norllama-admission"))
         if admission not in {"immediate", "queued"}:
@@ -1637,8 +1638,53 @@ class FacadeResponsesStream:
             metadata[field] = max(0, min(value, 3600000))
         return metadata
 
+    def admission_metadata(self) -> dict[str, Any]:
+        return dict(self._stream_admission)
+
+    def update_admission_metadata(self, frame: Mapping[str, Any]) -> None:
+        if _clean(frame.get("schema")) != "norllama.stream-admission.v1":
+            return
+        event = _clean(frame.get("event"))
+        state = _clean(frame.get("state"))
+        if event == "queued":
+            state = "queued"
+        elif event == "admitted":
+            state = "admitted"
+        if state not in {"queued", "admitted", "immediate"}:
+            return
+        metadata: dict[str, Any] = {
+            "schema": "norman.stream-admission.v1",
+            "state": state,
+        }
+        for field in (
+            "queue_wait_ms",
+            "queue_depth",
+            "queue_limit",
+            "active",
+            "active_limit",
+            "retry_after_seconds",
+        ):
+            try:
+                value = int(frame.get(field) or 0)
+            except (TypeError, ValueError):
+                continue
+            metadata[field] = max(0, min(value, 3600000))
+        self._stream_admission = metadata
+
+    def iter_events(self):
+        for event in self.stream.iter_events():
+            if event.get("type") == "admission":
+                admission = event.get("admission")
+                if isinstance(admission, Mapping):
+                    self.update_admission_metadata(admission)
+            yield event
+
     def iter_text(self):
-        yield from self.stream.iter_text()
+        for event in self.iter_events():
+            if event.get("type") == "text":
+                fragment = event.get("text")
+                if isinstance(fragment, str) and fragment:
+                    yield fragment
 
     def complete(self, text: str) -> dict[str, Any]:
         chat_response = _complete_authorized_chat(

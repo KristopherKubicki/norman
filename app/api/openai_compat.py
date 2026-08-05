@@ -677,7 +677,22 @@ def _response_sse(stream: Any):
             "response.in_progress",
             {"type": "response.in_progress", "response": initial},
         )
-        for fragment in stream.iter_text():
+        for stream_event in stream.iter_events():
+            if stream_event.get("type") == "admission":
+                snapshot = _response_stream_snapshot(stream, status="in_progress")
+                yield _response_sse_event(
+                    "response.in_progress",
+                    {
+                        "type": "response.in_progress",
+                        "response": snapshot,
+                    },
+                )
+                continue
+            if stream_event.get("type") != "text":
+                continue
+            fragment = stream_event.get("text")
+            if not isinstance(fragment, str) or not fragment:
+                continue
             text_parts.append(fragment)
             if tools_declared and not text_item_started:
                 buffered_prefix += fragment
