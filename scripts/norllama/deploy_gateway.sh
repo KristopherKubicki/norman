@@ -4,9 +4,17 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source_path="${repo_root}/scripts/norllama/norllama_gateway.py"
 temp_policy_path="$(mktemp "${repo_root}/scripts/norllama/route_policy.XXXXXX.json")"
-PYTHONPATH="$repo_root${PYTHONPATH:+:$PYTHONPATH}" \
-  python3 "${repo_root}/scripts/norllama/refresh_route_policy.py" --path "$temp_policy_path"
+python_bin="${NORMAN_PYTHON:-}"
+if [[ -z "$python_bin" ]]; then
+  if [[ -x "${repo_root}/.venv/bin/python" ]]; then
+    python_bin="${repo_root}/.venv/bin/python"
+  else
+    python_bin="python3"
+  fi
+fi
 trap 'rm -f "$temp_policy_path"' EXIT
+PYTHONPATH="$repo_root${PYTHONPATH:+:$PYTHONPATH}" \
+  "$python_bin" "${repo_root}/scripts/norllama/refresh_route_policy.py" --path "$temp_policy_path"
 
 mac_target="${NORLLAMA_MAC_TARGET:-k@192.168.2.133}"
 mac_path="${NORLLAMA_MAC_PATH:-/Users/k/norllama/norllama_gateway.py}"
@@ -29,6 +37,7 @@ optionally, the Spark peer gateways. The script uses existing SSH credentials
 and never embeds secrets.
 
 Environment overrides:
+  NORMAN_PYTHON              local Python interpreter for policy generation
   NORLLAMA_MAC_TARGET       default k@192.168.2.133
   NORLLAMA_MAC_PATH         default /Users/k/norllama/norllama_gateway.py
   NORLLAMA_MAC_SERVICE      default org.lollie.norllama
@@ -63,7 +72,7 @@ for arg in "$@"; do
   esac
 done
 
-python3 -m py_compile "$source_path"
+"$python_bin" -m py_compile "$source_path"
 
 if [[ "$deploy_mac" == "1" ]]; then
   echo "Deploying Mac front door: ${mac_target}:${mac_path}"
