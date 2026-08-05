@@ -50,6 +50,33 @@ def test_event_log_writes_jsonl_to_configured_path(tmp_path, monkeypatch):
     assert "private prompt text" not in event_log.read_text(encoding="utf-8")
 
 
+def test_event_log_restores_bounded_events_after_a_facade_restart(
+    tmp_path, monkeypatch
+):
+    event_log = tmp_path / "proxy-events.jsonl"
+    monkeypatch.setenv(proxy_observability.EVENT_LOG_ENV, str(event_log))
+    proxy_observability.reset_proxy_events()
+
+    _record_event(
+        status="local_timeout",
+        error={
+            "code": "local_model_timeout",
+            "norman": {
+                "selected_model": "qwen3-coder:30b-a3b-q4_K_M",
+                "retryable": True,
+            },
+        },
+    )
+    proxy_observability.reset_proxy_events()
+
+    assert proxy_observability.proxy_events_snapshot() == []
+    assert proxy_observability.restore_proxy_events_from_log(force=True) == 1
+    restored = proxy_observability.proxy_events_snapshot()
+    assert len(restored) == 1
+    assert restored[0]["selected_model"] == "qwen3-coder:30b-a3b-q4_K_M"
+    assert restored[0]["error_code"] == "local_model_timeout"
+
+
 def test_event_log_rotates_to_one_prior_generation(tmp_path, monkeypatch):
     event_log = tmp_path / "proxy-events.jsonl"
     monkeypatch.setenv(proxy_observability.EVENT_LOG_ENV, str(event_log))

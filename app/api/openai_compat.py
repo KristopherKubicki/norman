@@ -33,6 +33,7 @@ from app.services.proxy_observability import (
 
 router = APIRouter(tags=["openai_compat"])
 logger = logging.getLogger(__name__)
+MAX_PROXY_EVENT_CAPACITY_WINDOW = 200
 GATEWAY_ROUTE_HEADER = "x-norman-gateway-route"
 GATEWAY_ROUTE_IDS = frozenset(
     {
@@ -485,6 +486,9 @@ async def openai_compat_capacity(request: Request, model: str = "norman-code"):
             mesh,
             requested_model=requested_model,
             selected_model=selected_model,
+            route_outcomes=norllama_capacity.proxy_event_route_outcomes(
+                proxy_events_snapshot(limit=MAX_PROXY_EVENT_CAPACITY_WINDOW)
+            ),
         )
     except Exception:
         logger.warning(

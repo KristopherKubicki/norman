@@ -1266,7 +1266,10 @@ def test_openai_compat_capacity_reports_live_worker_state_without_invoking_a_mod
 ):
     from app.api import openai_compat
     from app.services.prompt_provider_facade import norllama_gateway
+    from app.services.proxy_observability import reset_proxy_events
 
+    monkeypatch.setenv("NORMAN_PROXY_EVENT_LOG", "0")
+    reset_proxy_events()
     headers = _proxy_headers(monkeypatch)
     invocations = []
     monkeypatch.setattr(
@@ -1328,6 +1331,59 @@ def test_openai_compat_capacity_reports_probe_failure_without_invoking_a_model(
     assert payload["available"] is False
     assert payload["reason"] == "mesh_probe_failed"
     assert payload["cloud_fallback"] is False
+    assert invocations == []
+
+
+def test_openai_compat_capacity_blocks_recent_local_model_timeout(
+    test_app,
+    monkeypatch,
+):
+    from app.api import openai_compat
+    from app.services.prompt_provider_facade import norllama_gateway
+    from app.services.proxy_observability import record_proxy_event, reset_proxy_events
+
+    monkeypatch.setenv("NORMAN_PROXY_EVENT_LOG", "0")
+    reset_proxy_events()
+    headers = _proxy_headers(monkeypatch)
+    invocations = []
+    record_proxy_event(
+        endpoint="/v1/responses",
+        method="POST",
+        request_id="timed-out-codex-request",
+        status="local_timeout",
+        http_status=504,
+        payload={"model": "norman-code"},
+        error={
+            "code": "local_model_timeout",
+            "norman": {
+                "selected_model": "qwen3-coder:30b-a3b-q4_K_M",
+                "retryable": True,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        openai_compat.norllama_mesh_cache,
+        "get_mesh_overview",
+        lambda **_kwargs: _capacity_mesh(),
+    )
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat",
+        lambda **_kwargs: invocations.append(_kwargs),
+    )
+
+    response = test_app.get(
+        "/v1/norman/capacity?model=norman-code",
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["available"] is False
+    assert payload["reason"] == "recent_local_model_timeout"
+    assert payload["retryable"] is True
+    assert payload["cooldown"]["status"] == "timeout"
+    assert payload["cooldown"]["remaining_seconds"] > 0
     assert invocations == []
 
 
@@ -1681,7 +1737,9 @@ def test_openai_compat_rejects_unsupported_tool_parameters(test_app, monkeypatch
     assert error["param"] == "tools"
 
 
-def test_openai_compat_blocks_requires_approval_before_model_call(monkeypatch):
+def test_openai_compat_responses_uses_requires_approval_as_local_advisory(
+    test_app, monkeypatch
+):
     import app.services.prompt_provider_facade as facade
 
     calls = []
@@ -1698,16 +1756,31 @@ def test_openai_compat_blocks_requires_approval_before_model_call(monkeypatch):
         lambda **kwargs: calls.append(kwargs) or _mock_local_chat([], "qwen3.6:27b"),
     )
 
-    try:
-        execute_openai_chat_facade(
-            {"model": "gpt-5.5", "messages": [{"role": "user", "content": "restart"}]}
-        )
-    except FacadeError as exc:
-        assert exc.code == "facade_policy_blocked"
-    else:
-        raise AssertionError("expected facade policy block")
+    response = test_app.post(
+        "/v1/responses",
+        headers=_proxy_headers(monkeypatch),
+        json={
+            "model": "norman-code",
+            "input": "restart the service after approval",
+            "reasoning": {"context": "all_turns", "effort": "medium"},
+        },
+    )
 
-    assert calls == []
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["output_text"] == "local ok"
+    assert payload["norman"]["local_execution"] is True
+    assert payload["norman"]["cloud_forwarding"] is False
+    assert payload["norman"]["authorization"]["execution_advisory"] == {
+        "execution_allowed": False,
+        "requires_approval": True,
+    }
+    assert payload["norman"]["responses_compatibility"]["reasoning_advisory"] == {
+        "context": "all_turns",
+        "effort": "medium",
+    }
+    assert len(calls) == 1
+    assert calls[0]["model"] == "qwen3.6:35b-a3b-q4_K_M"
 
 
 def test_openai_compat_rejects_inconsistent_or_cloud_proxy_routes(monkeypatch):

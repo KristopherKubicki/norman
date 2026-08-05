@@ -132,6 +132,7 @@ class FacadeAuthorization:
     reason: str
     route: dict[str, Any]
     route_authorization: dict[str, Any]
+    execution_advisory: dict[str, bool]
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -139,6 +140,7 @@ class FacadeAuthorization:
             "model": self.model,
             "reason": self.reason,
             "route_authorization": self.route_authorization,
+            "execution_advisory": self.execution_advisory,
         }
 
 
@@ -1155,10 +1157,6 @@ def authorize_facade_execution(
         failures.append("cloud_proxy_route")
     if not _flag(decision.get("allowed"), default=True):
         failures.append("route_decision_blocked")
-    if not _flag(recommendation.get("execution_allowed"), default=True):
-        failures.append("execution_not_allowed")
-    if _flag(recommendation.get("requires_approval")):
-        failures.append("approval_required")
     lifecycle = _lower(route_authorization.get("lifecycle_state"))
     if route_authorization:
         if not _flag(route_authorization.get("allowed"), default=True):
@@ -1187,6 +1185,15 @@ def authorize_facade_execution(
         reason="local_route_authorized",
         route=dict(route_envelope),
         route_authorization=route_authorization,
+        # This facade only performs local text generation. These fields classify
+        # a requested external action and stay advisory until a tool or session
+        # executor reaches its own approval boundary.
+        execution_advisory={
+            "execution_allowed": _flag(
+                recommendation.get("execution_allowed"), default=True
+            ),
+            "requires_approval": _flag(recommendation.get("requires_approval")),
+        },
     )
 
 

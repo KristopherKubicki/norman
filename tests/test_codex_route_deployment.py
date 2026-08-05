@@ -5,12 +5,16 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from scripts import codex_route
 from scripts import codex_route_proof
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALLER_PATH = REPO_ROOT / "scripts" / "install_codex_route.sh"
+REGULAR_WRAPPER_PATH = REPO_ROOT / "scripts" / "codex_cli_wrapper.sh"
+WORK_WRAPPER_PATH = REPO_ROOT / "scripts" / "codex_work_wrapper.sh"
 
 
 def test_route_proof_reports_selected_routes_in_configured_order():
@@ -151,3 +155,41 @@ def test_installer_creates_private_runtime_and_idempotent_shell_path(tmp_path):
     assert any(
         route["route"] == "infra" and route["launcher"] == "work" for route in routes
     )
+
+
+@pytest.mark.parametrize(
+    ("wrapper_path", "launcher"),
+    (
+        (REGULAR_WRAPPER_PATH, "regular"),
+        (WORK_WRAPPER_PATH, "work"),
+    ),
+)
+def test_wrappers_dispatch_router_diagnostics_before_starting_codex(
+    tmp_path, wrapper_path, launcher
+):
+    router = tmp_path / "router.py"
+    router.write_text(
+        "import json\nimport sys\nprint(json.dumps(sys.argv[1:]))\n",
+        encoding="utf-8",
+    )
+    environment = os.environ.copy()
+    environment["CODEX_ROUTER_SCRIPT"] = str(router)
+
+    result = subprocess.run(
+        [str(wrapper_path), "--verify", "--cd", "/tmp/networking"],
+        cwd=REPO_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == [
+        "--launcher",
+        launcher,
+        "--verify",
+        "--",
+        "--cd",
+        "/tmp/networking",
+    ]

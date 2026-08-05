@@ -1,15 +1,17 @@
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from app.services.norllama.route_policy import (
     ROUTE_POLICY_FALLBACKS,
     ROUTE_POLICY_MODELS,
     ROUTE_POLICY_PLACEMENT,
 )
+from app.services.norllama.route_outcomes import local_route_cooldown
 
 
 CAPACITY_SCHEMA = "norman.norllama.capacity.v1"
+CAPACITY_ROUTE_OUTCOME_COOLDOWN_SECONDS = 900
 HEAVY_CODING_MODEL = ROUTE_POLICY_MODELS["coding_operator"]
 HEAVY_CODING_WORKER_IDS = frozenset(
     {
@@ -47,6 +49,62 @@ def _is_heavy_coding_model(model: Any) -> bool:
 
 def _is_eligible_heavy_worker(worker: Mapping[str, Any]) -> bool:
     return _clean(worker.get("id")) in HEAVY_CODING_WORKER_IDS
+
+
+def proxy_event_route_outcomes(
+    events: Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Normalize local facade events into cooldown outcomes for capacity checks."""
+
+    failure_statuses = {
+        "empty_local_response": "empty-response",
+        "local_capacity_exhausted": "request-failed",
+        "local_capacity_unavailable": "request-failed",
+        "local_model_timeout": "timeout",
+        "local_model_unavailable": "request-failed",
+    }
+    outcomes: list[dict[str, Any]] = []
+    for event in events:
+        endpoint = _clean(event.get("endpoint"))
+        if endpoint not in {"/v1/chat/completions", "/v1/responses"}:
+            continue
+        error = _mapping(event.get("error"))
+        error_norman = _mapping(error.get("norman"))
+        model = _clean(event.get("selected_model")) or _clean(
+            error_norman.get("selected_model")
+        )
+        if not model:
+            continue
+        error_code = _clean(event.get("error_code")) or _clean(error.get("code"))
+        if error_code in failure_statuses:
+            status = failure_statuses[error_code]
+            ok = False
+        elif _clean(event.get("status")) == "success" and bool(
+            event.get("local_execution")
+        ):
+            status = "ok"
+            ok = True
+        else:
+            continue
+        worker_id = (
+            _clean(event.get("observed_worker"))
+            or _clean(event.get("gateway_selected_worker"))
+            or _clean(event.get("target_worker"))
+        )
+        outcomes.append(
+            {
+                "recorded_at": _int(event.get("created_at")),
+                "source": "openai-compat-facade",
+                "status": status,
+                "ok": ok,
+                "provider": "norllama",
+                "model": model,
+                "endpoint": endpoint,
+                "worker_id": worker_id,
+                "reason": error_code,
+            }
+        )
+    return outcomes
 
 
 def _worker_row(
@@ -121,6 +179,9 @@ def build_capacity_snapshot(
     *,
     requested_model: str,
     selected_model: str,
+    route_outcomes: Iterable[Mapping[str, Any]] | None = None,
+    cooldown_seconds: int = CAPACITY_ROUTE_OUTCOME_COOLDOWN_SECONDS,
+    now: int | None = None,
 ) -> dict[str, Any]:
     """Build a model-specific capacity view from direct worker probe state."""
 
@@ -174,6 +235,18 @@ def build_capacity_snapshot(
     else:
         reason = "available"
 
+    cooldown = {}
+    if reason == "available":
+        cooldown = local_route_cooldown(
+            route_outcomes or [],
+            model=selected_model,
+            cooldown_seconds=cooldown_seconds,
+            now=now,
+        )
+        if cooldown.get("active"):
+            status = _clean(cooldown.get("status")).replace("-", "_") or "failure"
+            reason = f"recent_local_model_{status}"
+
     return {
         "schema": CAPACITY_SCHEMA,
         "available": reason == "available",
@@ -190,4 +263,5 @@ def build_capacity_snapshot(
         },
         "cloud_fallback": bool(ROUTE_POLICY_FALLBACKS["allow_cloud_fallback"]),
         "retryable": reason != "available",
+        "cooldown": cooldown,
     }

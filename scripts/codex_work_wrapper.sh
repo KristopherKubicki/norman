@@ -8,6 +8,14 @@ readonly CODEX_WORK_AWS_REGION="${CODEX_WORK_AWS_REGION:-us-east-2}"
 readonly CODEX_WORK_DISABLE_APPS="${CODEX_WORK_DISABLE_APPS:-0}"
 readonly OPS_OPENBRAND_MCP_LAUNCHER="$HOME/code/control_plane/scripts/with_ops_openbrand_mcp.sh"
 
+case "${1-}" in
+  --print-route|--routes|--verify)
+    router_command="$1"
+    shift
+    exec python3 "$ROUTER_SCRIPT" --launcher work "$router_command" -- "$@"
+    ;;
+esac
+
 if [[ "${CODEX_ROUTER_RESOLVED:-}" != "1" ]]; then
   exec python3 "$ROUTER_SCRIPT" \
     --launcher work \

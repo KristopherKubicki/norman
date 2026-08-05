@@ -38,11 +38,12 @@ def _mesh(*, frontdoor_reachable=True, workers=None, cache_status="refresh"):
     }
 
 
-def _snapshot(mesh):
+def _snapshot(mesh, **kwargs):
     return capacity.build_capacity_snapshot(
         mesh,
         requested_model="norman-code",
         selected_model=MODEL,
+        **kwargs,
     )
 
 
@@ -168,3 +169,54 @@ def test_failed_mesh_probe_has_a_safe_unavailable_capacity_contract():
         "cloud_fallback": False,
         "retryable": True,
     }
+
+
+def test_recent_model_timeout_blocks_capacity_until_a_later_success():
+    timeout = {
+        "recorded_at": 1000,
+        "status": "timeout",
+        "ok": False,
+        "model": MODEL,
+        "reason": "local_model_timeout",
+    }
+    timed_out = _snapshot(
+        _mesh(workers=[_worker("spark-150")]),
+        route_outcomes=[timeout],
+        now=1050,
+    )
+
+    assert timed_out["available"] is False
+    assert timed_out["reason"] == "recent_local_model_timeout"
+    assert timed_out["retryable"] is True
+    assert timed_out["cooldown"] == {
+        "active": True,
+        "model": MODEL,
+        "endpoint": "",
+        "status": "timeout",
+        "reason": "local_model_timeout",
+        "recorded_at": 1000,
+        "age_seconds": 50,
+        "cooldown_seconds": 900,
+        "remaining_seconds": 850,
+        "worker_id": "",
+        "worker_endpoint": "",
+        "upstream": "",
+    }
+
+    recovered = _snapshot(
+        _mesh(workers=[_worker("spark-150")]),
+        route_outcomes=[
+            timeout,
+            {
+                "recorded_at": 1010,
+                "status": "ok",
+                "ok": True,
+                "model": MODEL,
+            },
+        ],
+        now=1050,
+    )
+
+    assert recovered["available"] is True
+    assert recovered["reason"] == "available"
+    assert recovered["cooldown"] == {}

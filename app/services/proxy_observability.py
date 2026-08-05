@@ -21,6 +21,7 @@ DISABLED_EVENT_LOG_VALUES = frozenset({"0", "false", "none", "off", "disabled"})
 _LOCK = threading.RLock()
 _EVENT_LOG_LOCK = threading.RLock()
 _EVENTS: deque[dict[str, Any]] = deque(maxlen=MAX_EVENTS)
+_EVENTS_RESTORED = False
 
 
 def _clean(value: Any) -> str:
@@ -204,6 +205,60 @@ def _append_jsonl(event: Mapping[str, Any]) -> None:
         return
 
 
+def _read_event_log(path: Path) -> list[dict[str, Any]]:
+    records: deque[dict[str, Any]] = deque(maxlen=MAX_EVENTS)
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    value = json.loads(line)
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(value, Mapping):
+                    records.append(dict(value))
+    except OSError:
+        return []
+    return list(records)
+
+
+def restore_proxy_events_from_log(*, force: bool = False) -> int:
+    """Restore the bounded durable event window after a facade restart."""
+
+    global _EVENTS_RESTORED
+    with _LOCK:
+        if _EVENTS_RESTORED and not force:
+            return 0
+        existing = list(_EVENTS)
+
+    path = _event_log_path()
+    restored: list[dict[str, Any]] = []
+    if path is not None:
+        previous = path.with_name(f"{path.name}.1")
+        with _EVENT_LOG_LOCK:
+            restored.extend(_read_event_log(previous))
+            restored.extend(_read_event_log(path))
+
+    with _LOCK:
+        if _EVENTS_RESTORED and not force:
+            return 0
+        merged: dict[str, dict[str, Any]] = {}
+        for event in [*restored, *existing, *list(_EVENTS)]:
+            event_id = _clean(event.get("event_id"))
+            key = event_id or json.dumps(event, sort_keys=True, default=str)
+            merged[key] = event
+        ordered = sorted(
+            merged.values(),
+            key=lambda event: (
+                float(event.get("created_at") or 0),
+                _clean(event.get("event_id")),
+            ),
+        )[-MAX_EVENTS:]
+        _EVENTS.clear()
+        _EVENTS.extend(ordered)
+        _EVENTS_RESTORED = True
+    return len(restored)
+
+
 def _client_from_headers(headers: Mapping[str, Any] | None) -> dict[str, str]:
     headers = headers or {}
     normalized = {_lower(key): _clean(value) for key, value in headers.items()}
@@ -256,7 +311,9 @@ def record_proxy_event(
         "created_at_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
         "endpoint": endpoint,
         "method": method.upper(),
-        "request_id": request_id or _clean(norman.get("request_id")),
+        "request_id": request_id
+        or _clean(norman.get("request_id"))
+        or _clean(error_norman.get("request_id")),
         "gateway_route": _clean(norman.get("gateway_route"))
         or _clean(gateway.get("gateway_route")),
         "source_tui": _clean(gateway.get("source_tui")),
@@ -267,11 +324,13 @@ def record_proxy_event(
         "status": status,
         "http_status": int(http_status),
         **_client_from_headers(headers),
-        "requested_model": _clean(payload.get("model")),
+        "requested_model": _clean(payload.get("model"))
+        or _clean(error_norman.get("requested_model")),
         "selected_runtime": _clean(route_envelope.get("selected_runtime")),
         "selected_provider": _clean(route_envelope.get("selected_provider")),
         "selected_model": _clean(route_envelope.get("selected_model"))
-        or _clean(response.get("model")),
+        or _clean(response.get("model"))
+        or _clean(error_norman.get("selected_model")),
         "intent": _clean(classification.get("intent")),
         "task_kind": _clean(classification.get("task_kind")),
         "routing_strategy": _clean(strategy.get("strategy")),
@@ -321,11 +380,14 @@ def record_proxy_event(
 
 
 def reset_proxy_events() -> None:
+    global _EVENTS_RESTORED
     with _LOCK:
         _EVENTS.clear()
+        _EVENTS_RESTORED = True
 
 
 def proxy_events_snapshot(limit: int = 100) -> list[dict[str, Any]]:
+    restore_proxy_events_from_log()
     limit = max(1, min(int(limit or 100), MAX_EVENTS))
     with _LOCK:
         return list(_EVENTS)[-limit:]

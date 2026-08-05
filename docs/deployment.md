@@ -318,9 +318,12 @@ session starts, the launcher obtains one brokered gateway token and checks:
 2. `/v1/norman/capacity?model=norman-code` reports a reachable Spark that
    advertises the coding model.
 
-The capacity endpoint performs only a fresh mesh probe; it does not send a
-prompt, load a model, or create model residency. The route starts only if the
-endpoint reports `available: true` and `cloud_fallback: false`. A failed
+The capacity endpoint performs a fresh mesh probe and checks the bounded
+recent local facade-outcome window; it does not send a prompt, load a model,
+or create model residency. A local model timeout, unavailable-model error,
+capacity error, or empty response holds that model unavailable for 15 minutes.
+A later successful local response clears the hold. The route starts only if
+the endpoint reports `available: true` and `cloud_fallback: false`. A failed
 preflight exits before Codex starts with a specific message such as:
 
 ```text
