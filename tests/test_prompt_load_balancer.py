@@ -807,6 +807,50 @@ def test_openai_compat_responses_returns_gateway_failure(test_app, monkeypatch):
     }
 
 
+def test_openai_compat_responses_records_unexpected_gateway_failure(
+    test_app, monkeypatch
+):
+    from app.api import openai_compat
+    from app.services.proxy_observability import reset_proxy_events
+
+    reset_proxy_events()
+    headers = {
+        **_proxy_headers(monkeypatch, route="gold-book"),
+        "X-Request-Id": "unexpected-response-test",
+    }
+
+    def unexpected_failure(*args, **kwargs):
+        raise RuntimeError("do not expose this implementation detail")
+
+    monkeypatch.setattr(
+        openai_compat, "execute_openai_responses_facade", unexpected_failure
+    )
+
+    response = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={"model": "gpt-5.5", "input": "status?"},
+    )
+
+    assert response.status_code == 500
+    assert response.json()["error"] == {
+        "message": "Local Responses gateway encountered an unexpected error",
+        "type": "server_error",
+        "param": None,
+        "code": "internal_error",
+    }
+    assert "implementation detail" not in response.text
+
+    events = test_app.get("/v1/norman/proxy/events", headers=headers).json()["events"]
+    assert len(events) == 1
+    assert events[0]["endpoint"] == "/v1/responses"
+    assert events[0]["request_id"] == "unexpected-response-test"
+    assert events[0]["gateway_route"] == "gold-book"
+    assert events[0]["status"] == "error"
+    assert events[0]["http_status"] == 500
+    assert events[0]["error"] == response.json()["error"]
+
+
 def test_openai_compat_responses_preserves_missing_local_model(test_app, monkeypatch):
     from app.services.prompt_provider_facade import norllama_gateway
 
