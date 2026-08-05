@@ -191,8 +191,9 @@ def _local_failure_context(
     requested_model: str,
     selected_model: str,
     retryable: bool,
+    capacity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    context = {
         "schema": "norman.local-gateway-error.v1",
         "request_id": request_id,
         "requested_model": requested_model or "norman-code",
@@ -201,6 +202,28 @@ def _local_failure_context(
         "cloud_fallback": False,
         **norllama_capacity.heavy_coding_capacity_policy(),
     }
+    if capacity:
+        context["capacity"] = dict(capacity)
+    return context
+
+
+def _safe_capacity_context(payload: Mapping[str, Any]) -> dict[str, Any]:
+    raw = _mapping(payload.get("norllama"))
+    if _clean(raw.get("schema")) != "norllama.capacity.v1":
+        return {}
+    result: dict[str, Any] = {"schema": "norllama.capacity.v1"}
+    for field, upper_bound in (
+        ("active", 64),
+        ("active_limit", 64),
+        ("queue_depth", 1024),
+        ("queue_limit", 1024),
+        ("retry_after_seconds", 3600),
+    ):
+        try:
+            result[field] = max(0, min(int(raw.get(field) or 0), upper_bound))
+        except (TypeError, ValueError):
+            continue
+    return result
 
 
 def _retry_after(headers: Mapping[str, Any] | None) -> str:
@@ -238,6 +261,7 @@ def _classified_gateway_error(
     payload_error = _lower(_mapping(payload.get("error")).get("code")) or _lower(
         payload.get("error")
     )
+    capacity = _safe_capacity_context(payload)
     if status_code == 422 and payload_error == "local_model_not_installed":
         return FacadeError(
             "Requested local model is not installed",
@@ -284,6 +308,7 @@ def _classified_gateway_error(
                 requested_model=requested_model,
                 selected_model=selected_model,
                 retryable=retryable,
+                capacity=capacity,
             ),
             headers=headers,
         )
@@ -513,7 +538,8 @@ def _choice_text(payload: Mapping[str, Any]) -> str:
         return ""
     first = choices[0] if isinstance(choices[0], dict) else {}
     message = first.get("message") if isinstance(first.get("message"), dict) else {}
-    return _clean(message.get("content"))
+    content = message.get("content")
+    return content if isinstance(content, str) else _clean(content)
 
 
 def _norman_options(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -960,12 +986,13 @@ def _response_output_items(
     *,
     text: str,
     tool_calls: list[dict[str, Any]],
+    output_item_id: str = "",
 ) -> list[dict[str, Any]]:
     if tool_calls:
         return [dict(item) for item in tool_calls]
     return [
         {
-            "id": f"msg-norman-{uuid.uuid4().hex}",
+            "id": output_item_id or f"msg-norman-{uuid.uuid4().hex}",
             "type": "message",
             "status": "completed",
             "role": "assistant",
@@ -1197,13 +1224,22 @@ def authorize_facade_execution(
     )
 
 
-def _execute_authorized_chat(
+@dataclass(frozen=True)
+class AuthorizedChatInvocation:
+    authorization: FacadeAuthorization
+    max_tokens: int
+    invocation_id: str
+    trusted_context: dict[str, Any]
+    reasoning_advisory: dict[str, str]
+    correlation_headers: dict[str, str]
+
+
+def _prepare_authorized_chat_invocation(
     *,
     provider_payload: Mapping[str, Any],
     route_envelope: Mapping[str, Any],
-    messages: list[dict[str, Any]],
     request_id: str,
-) -> dict[str, Any]:
+) -> AuthorizedChatInvocation:
     authorization = authorize_facade_execution(
         route_envelope,
         provider_payload=provider_payload,
@@ -1240,30 +1276,28 @@ def _execute_authorized_chat(
         correlation_headers["X-Norman-Requested-Reasoning-Context"] = (
             reasoning_advisory["context"]
         )
-    try:
-        result = norllama_gateway.invoke_text_chat(
-            messages=messages,
-            model=authorization.model,
-            base_url=str(getattr(settings, "llm_offline_base_url", "") or ""),
-            api_key=str(getattr(settings, "llm_offline_api_key", "") or ""),
-            max_tokens=max_tokens,
-            timeout_seconds=float(
-                getattr(settings, "llm_provider_timeout_seconds", 45)
-            ),
-            correlation_headers=correlation_headers,
-        )
-    except (
-        norllama_gateway.NorllamaGatewayError,
-        requests.RequestException,
-        RuntimeError,
-        TimeoutError,
-    ) as exc:
-        raise _classified_gateway_error(
-            exc,
-            request_id=invocation_id,
-            requested_model=_requested_model(provider_payload),
-            selected_model=authorization.model,
-        ) from exc
+    return AuthorizedChatInvocation(
+        authorization=authorization,
+        max_tokens=max_tokens,
+        invocation_id=invocation_id,
+        trusted_context=trusted_context,
+        reasoning_advisory=reasoning_advisory,
+        correlation_headers=correlation_headers,
+    )
+
+
+def _complete_authorized_chat(
+    *,
+    provider_payload: Mapping[str, Any],
+    route_envelope: Mapping[str, Any],
+    messages: list[dict[str, Any]],
+    invocation: AuthorizedChatInvocation,
+    result: Mapping[str, Any],
+) -> dict[str, Any]:
+    authorization = invocation.authorization
+    invocation_id = invocation.invocation_id
+    trusted_context = invocation.trusted_context
+    reasoning_advisory = invocation.reasoning_advisory
     text = _choice_text(result)
     if not text:
         raise FacadeError(
@@ -1328,6 +1362,90 @@ def _execute_authorized_chat(
     }
 
 
+def _execute_authorized_chat(
+    *,
+    provider_payload: Mapping[str, Any],
+    route_envelope: Mapping[str, Any],
+    messages: list[dict[str, Any]],
+    request_id: str,
+) -> dict[str, Any]:
+    invocation = _prepare_authorized_chat_invocation(
+        provider_payload=provider_payload,
+        route_envelope=route_envelope,
+        request_id=request_id,
+    )
+    try:
+        result = norllama_gateway.invoke_text_chat(
+            messages=messages,
+            model=invocation.authorization.model,
+            base_url=str(getattr(settings, "llm_offline_base_url", "") or ""),
+            api_key=str(getattr(settings, "llm_offline_api_key", "") or ""),
+            max_tokens=invocation.max_tokens,
+            timeout_seconds=float(
+                getattr(settings, "llm_provider_timeout_seconds", 45)
+            ),
+            correlation_headers=invocation.correlation_headers,
+        )
+    except (
+        norllama_gateway.NorllamaGatewayError,
+        requests.RequestException,
+        RuntimeError,
+        TimeoutError,
+    ) as exc:
+        raise _classified_gateway_error(
+            exc,
+            request_id=invocation.invocation_id,
+            requested_model=_requested_model(provider_payload),
+            selected_model=invocation.authorization.model,
+        ) from exc
+    return _complete_authorized_chat(
+        provider_payload=provider_payload,
+        route_envelope=route_envelope,
+        messages=messages,
+        invocation=invocation,
+        result=result,
+    )
+
+
+def _start_authorized_chat_stream(
+    *,
+    provider_payload: Mapping[str, Any],
+    route_envelope: Mapping[str, Any],
+    messages: list[dict[str, Any]],
+    request_id: str,
+) -> tuple[AuthorizedChatInvocation, norllama_gateway.NorllamaTextStream]:
+    invocation = _prepare_authorized_chat_invocation(
+        provider_payload=provider_payload,
+        route_envelope=route_envelope,
+        request_id=request_id,
+    )
+    try:
+        stream = norllama_gateway.invoke_text_chat_stream(
+            messages=messages,
+            model=invocation.authorization.model,
+            base_url=str(getattr(settings, "llm_offline_base_url", "") or ""),
+            api_key=str(getattr(settings, "llm_offline_api_key", "") or ""),
+            max_tokens=invocation.max_tokens,
+            timeout_seconds=float(
+                getattr(settings, "llm_provider_timeout_seconds", 45)
+            ),
+            correlation_headers=invocation.correlation_headers,
+        )
+    except (
+        norllama_gateway.NorllamaGatewayError,
+        requests.RequestException,
+        RuntimeError,
+        TimeoutError,
+    ) as exc:
+        raise _classified_gateway_error(
+            exc,
+            request_id=invocation.invocation_id,
+            requested_model=_requested_model(provider_payload),
+            selected_model=invocation.authorization.model,
+        ) from exc
+    return invocation, stream
+
+
 def execute_openai_chat_facade(
     payload: Mapping[str, Any],
     *,
@@ -1355,14 +1473,22 @@ def execute_openai_chat_facade(
     )
 
 
-def execute_openai_responses_facade(
+@dataclass(frozen=True)
+class PreparedResponsesExecution:
+    provider_payload: dict[str, Any]
+    route_payload: dict[str, Any]
+    route_envelope: dict[str, Any]
+    messages: list[dict[str, Any]]
+    previous_messages: list[dict[str, Any]]
+    client_metadata_ignored: bool
+    store_requested: bool
+
+
+def _prepare_responses_execution(
     payload: Mapping[str, Any],
     *,
-    request_id: str = "",
     trusted_context: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Execute the OpenAI Responses local text subset with one route decision."""
-
+) -> PreparedResponsesExecution:
     _validate_supported_fields(payload, supported_fields=SUPPORTED_RESPONSES_FIELDS)
     provider_payload = _prepare_payload(payload)
     reasoning_advisory = _responses_reasoning_advisory(provider_payload)
@@ -1391,19 +1517,38 @@ def execute_openai_responses_facade(
         payload=route_payload,
         trusted_context=trusted_context,
     )
-    chat_response = _execute_authorized_chat(
-        provider_payload=route_payload,
+    return PreparedResponsesExecution(
+        provider_payload=provider_payload,
+        route_payload=route_payload,
         route_envelope=route_envelope,
         messages=messages,
-        request_id=request_id or f"norman-openai-response-{uuid.uuid4().hex}",
+        previous_messages=previous_messages,
+        client_metadata_ignored=client_metadata_ignored,
+        store_requested=store_requested,
     )
-    text = _clean(chat_response["choices"][0]["message"]["content"])
+
+
+def _responses_response_from_chat(
+    chat_response: Mapping[str, Any],
+    *,
+    prepared: PreparedResponsesExecution,
+    response_id: str = "",
+    created_at: int | None = None,
+    output_item_id: str = "",
+) -> dict[str, Any]:
+    provider_payload = prepared.provider_payload
+    chat_response = dict(chat_response)
+    text = _choice_text(chat_response)
     tools = _tools(provider_payload)
     tool_calls = _extract_tool_calls(text, tools=tools)
-    output_items = _response_output_items(text=text, tool_calls=tool_calls)
+    output_items = _response_output_items(
+        text=text,
+        tool_calls=tool_calls,
+        output_item_id=output_item_id,
+    )
     output_text = "" if tool_calls else text
-    response_id = f"resp-norman-{uuid.uuid4().hex}"
-    created = int(time.time())
+    response_id = response_id or f"resp-norman-{uuid.uuid4().hex}"
+    created = created_at or int(time.time())
     response = {
         "id": response_id,
         "object": "response",
@@ -1424,7 +1569,7 @@ def execute_openai_responses_facade(
                 "previous_response_id": _clean(
                     provider_payload.get("previous_response_id")
                 ),
-                "history_replayed": bool(previous_messages),
+                "history_replayed": bool(prepared.previous_messages),
                 "tools_declared": len(tools),
                 "tool_calls_returned": len(tool_calls),
                 "tool_call_mode": "explicit_json_envelope" if tools else "none",
@@ -1433,19 +1578,151 @@ def execute_openai_responses_facade(
                 ),
                 "reasoning_advisory": _responses_reasoning_advisory(provider_payload),
                 "include_advisory": _responses_include_advisory(provider_payload),
-                "client_metadata_ignored": client_metadata_ignored,
-                "store_requested": store_requested,
+                "client_metadata_ignored": prepared.client_metadata_ignored,
+                "store_requested": prepared.store_requested,
             },
         },
     }
-    if store_requested:
+    if prepared.store_requested:
         _store_response_state(
             response_id,
-            messages=messages,
+            messages=prepared.messages,
             output_text=output_text or text,
             output_items=output_items,
         )
     return response
+
+
+class FacadeResponsesStream:
+    """An admitted local response stream with final facade response assembly."""
+
+    def __init__(
+        self,
+        *,
+        prepared: PreparedResponsesExecution,
+        invocation: AuthorizedChatInvocation,
+        stream: norllama_gateway.NorllamaTextStream,
+    ) -> None:
+        self.prepared = prepared
+        self.invocation = invocation
+        self.stream = stream
+        self.response_id = f"resp-norman-{uuid.uuid4().hex}"
+        self.created_at = int(time.time())
+        self.output_item_id = f"msg-norman-{uuid.uuid4().hex}"
+
+    @property
+    def model(self) -> str:
+        return self.stream.model or self.invocation.authorization.model
+
+    def admission_metadata(self) -> dict[str, Any]:
+        headers = self.stream.headers
+        admission = _clean(headers.get("x-norllama-admission"))
+        if admission not in {"immediate", "queued"}:
+            return {}
+        metadata: dict[str, Any] = {
+            "schema": "norman.stream-admission.v1",
+            "state": admission,
+        }
+        for header, field in (
+            ("x-norllama-queue-wait-ms", "queue_wait_ms"),
+            ("x-norllama-queue-depth", "queue_depth"),
+            ("x-norllama-queue-limit", "queue_limit"),
+            ("x-norllama-active", "active"),
+            ("x-norllama-active-limit", "active_limit"),
+        ):
+            try:
+                value = int(headers.get(header) or 0)
+            except (TypeError, ValueError):
+                continue
+            metadata[field] = max(0, min(value, 3600000))
+        return metadata
+
+    def iter_text(self):
+        yield from self.stream.iter_text()
+
+    def complete(self, text: str) -> dict[str, Any]:
+        chat_response = _complete_authorized_chat(
+            provider_payload=self.prepared.route_payload,
+            route_envelope=self.prepared.route_envelope,
+            messages=self.prepared.messages,
+            invocation=self.invocation,
+            result=self.stream.result(text),
+        )
+        norman = _mapping(chat_response.get("norman"))
+        norman["streaming_mode"] = "incremental_sse"
+        admission = self.admission_metadata()
+        if admission:
+            norman["stream_admission"] = admission
+        chat_response["norman"] = norman
+        return _responses_response_from_chat(
+            chat_response,
+            prepared=self.prepared,
+            response_id=self.response_id,
+            created_at=self.created_at,
+            output_item_id=self.output_item_id,
+        )
+
+    def classify_error(self, exc: Exception) -> FacadeError:
+        if isinstance(exc, FacadeError):
+            return exc
+        return _classified_gateway_error(
+            exc,
+            request_id=self.invocation.invocation_id,
+            requested_model=_requested_model(self.prepared.route_payload),
+            selected_model=self.invocation.authorization.model,
+        )
+
+    def close(self) -> None:
+        self.stream.close()
+
+
+def execute_openai_responses_facade(
+    payload: Mapping[str, Any],
+    *,
+    request_id: str = "",
+    trusted_context: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Execute the OpenAI Responses local text subset with one route decision."""
+
+    prepared = _prepare_responses_execution(
+        payload,
+        trusted_context=trusted_context,
+    )
+    chat_response = _execute_authorized_chat(
+        provider_payload=prepared.route_payload,
+        route_envelope=prepared.route_envelope,
+        messages=prepared.messages,
+        request_id=request_id or f"norman-openai-response-{uuid.uuid4().hex}",
+    )
+    return _responses_response_from_chat(
+        chat_response,
+        prepared=prepared,
+    )
+
+
+def open_openai_responses_stream(
+    payload: Mapping[str, Any],
+    *,
+    request_id: str = "",
+    trusted_context: Mapping[str, Any] | None = None,
+) -> FacadeResponsesStream:
+    """Authorize and open the local upstream before returning a response stream."""
+
+    prepared = _prepare_responses_execution(
+        payload,
+        trusted_context=trusted_context,
+    )
+    invocation, stream = _start_authorized_chat_stream(
+        provider_payload=prepared.route_payload,
+        route_envelope=prepared.route_envelope,
+        messages=prepared.messages,
+        request_id=request_id or f"norman-openai-response-{uuid.uuid4().hex}",
+    )
+    return FacadeResponsesStream(
+        prepared=prepared,
+        invocation=invocation,
+        stream=stream,
+    )
 
 
 def chat_completion_stream_chunks(response: Mapping[str, Any]) -> list[dict[str, Any]]:

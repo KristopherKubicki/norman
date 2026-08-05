@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import time
 import warnings
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import requests
@@ -243,6 +244,31 @@ def _requests_post(
         )
 
 
+def _requests_post_stream(
+    url: str, *, headers: dict[str, str], json: dict[str, Any], timeout: float
+):
+    verify = _verify_tls_for_url(url)
+    if verify:
+        return requests.post(
+            url,
+            headers=headers,
+            json=json,
+            timeout=timeout,
+            verify=True,
+            stream=True,
+        )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", InsecureRequestWarning)
+        return requests.post(
+            url,
+            headers=headers,
+            json=json,
+            timeout=timeout,
+            verify=False,
+            stream=True,
+        )
+
+
 def _requests_post_bytes(
     url: str, *, headers: dict[str, str], data: bytes, timeout: float
 ):
@@ -280,6 +306,54 @@ def _routing_headers(response: Any) -> dict[str, str]:
 def _disable_native_thinking(model: str) -> bool:
     clean = _clean(model).lower()
     return clean.startswith(("qwen3-coder:", "qwen3.6:", "qwen3.5:"))
+
+
+class NorllamaTextStream:
+    """Incrementally decode a native Ollama generate stream."""
+
+    def __init__(self, response: Any, *, model: str) -> None:
+        self._response = response
+        self.model = model
+        self.usage = {"prompt_tokens": 0, "completion_tokens": 0}
+        self.headers = _routing_headers(response)
+        self.raw: dict[str, Any] = {}
+        self._closed = False
+
+    def iter_text(self) -> Iterator[str]:
+        for line in self._response.iter_lines(decode_unicode=True):
+            if isinstance(line, bytes):
+                line = line.decode("utf-8", errors="replace")
+            if not isinstance(line, str) or not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError("Norllama returned invalid streaming JSON") from exc
+            if not isinstance(payload, dict):
+                raise RuntimeError("Norllama returned invalid streaming payload")
+            self.raw = payload
+            self.model = _clean(payload.get("model")) or self.model
+            self.usage = _usage_from_ollama(payload)
+            fragment = payload.get("response")
+            if isinstance(fragment, str) and fragment:
+                yield fragment
+
+    def result(self, text: str) -> dict[str, Any]:
+        return {
+            "model": self.model,
+            "choices": [{"message": {"content": text}}],
+            "usage": dict(self.usage),
+            "headers": dict(self.headers),
+            "raw": dict(self.raw),
+        }
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        close = getattr(self._response, "close", None)
+        if callable(close):
+            close()
 
 
 def invoke_text_chat(
@@ -350,6 +424,69 @@ def invoke_text_chat(
         "headers": _routing_headers(response),
         "raw": payload,
     }
+
+
+def invoke_text_chat_stream(
+    *,
+    messages: list[dict[str, Any]],
+    model: str,
+    base_url: str,
+    max_tokens: int,
+    api_key: str = "",
+    timeout_seconds: float | None = None,
+    correlation_headers: dict[str, Any] | None = None,
+) -> NorllamaTextStream:
+    """Open a native Ollama text stream without buffering generated tokens."""
+
+    if not _clean(base_url):
+        raise RuntimeError("Norllama base URL is not configured")
+    if not _clean(model):
+        raise RuntimeError("Norllama model is not configured")
+
+    headers = {"Content-Type": "application/json"}
+    for key, value in dict(correlation_headers or {}).items():
+        clean_key = _clean(key)
+        clean_value = _clean(value)
+        if (
+            clean_key.startswith(("X-Request-Id", "X-Norman-", "X-Norllama-"))
+            and clean_value
+        ):
+            headers[clean_key] = clean_value
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    request_payload: dict[str, Any] = {
+        "model": model,
+        "prompt": messages_to_prompt(messages),
+        "stream": True,
+        "options": {
+            "temperature": 0,
+            "num_predict": max(1, int(max_tokens or 1)),
+        },
+    }
+    if _disable_native_thinking(model):
+        request_payload["think"] = False
+    response = _requests_post_stream(
+        _generate_url(base_url),
+        headers=headers,
+        json=request_payload,
+        timeout=timeout_seconds
+        or max(1, min(float(settings.llm_provider_timeout_seconds), 120.0)),
+    )
+    status_code = int(getattr(response, "status_code", 0) or 0)
+    if 200 <= status_code < 300:
+        return NorllamaTextStream(response, model=model)
+    try:
+        response_payload = response.json()
+    except (TypeError, ValueError):
+        response_payload = {}
+    finally:
+        response.close()
+    payload = response_payload if isinstance(response_payload, dict) else {}
+    raise NorllamaGatewayError(
+        status_code,
+        payload,
+        headers=getattr(response, "headers", None),
+    )
 
 
 def rerank_documents(

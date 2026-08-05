@@ -24,6 +24,23 @@ class EmptyResponse(FakeResponse):
         super().__init__({}, status_code=status_code)
 
 
+class StreamingResponse(FakeResponse):
+    def __init__(self, lines, *, status_code=200, headers=None):
+        super().__init__({}, status_code=status_code, headers=headers)
+        self._lines = list(lines)
+        self.closed = False
+
+    def iter_lines(self, decode_unicode=False):
+        for line in self._lines:
+            if decode_unicode or not isinstance(line, str):
+                yield line
+            else:
+                yield line.encode("utf-8")
+
+    def close(self):
+        self.closed = True
+
+
 def test_tls_verification_stays_on_for_public_https():
     assert gateway._verify_tls_for_url("https://api.openai.com/v1/models") is True
     assert gateway._verify_tls_for_url("http://192.168.2.150:18151/v1/overview") is True
@@ -247,6 +264,67 @@ def test_prefetch_model_posts_to_frontdoor(monkeypatch):
     assert calls[0][2]["model"] == "gemma4:26b-a4b-it-q4_K_M"
     assert calls[0][3] == 4
     assert calls[0][4] is False
+
+
+def test_invoke_text_chat_stream_preserves_fragments_and_closes(monkeypatch):
+    calls = []
+    response = StreamingResponse(
+        [
+            '{"model":"qwen3-coder:30b","response":"hello "}',
+            '{"model":"qwen3-coder:30b","response":"world\\n"}',
+            (
+                '{"model":"qwen3-coder:30b","done":true,'
+                '"prompt_eval_count":4,"eval_count":2}'
+            ),
+        ],
+        headers={"X-Norllama-Admission": "queued"},
+    )
+
+    def fake_post(url, headers, json, timeout, verify, stream):
+        calls.append(
+            {
+                "url": url,
+                "headers": headers,
+                "json": json,
+                "timeout": timeout,
+                "verify": verify,
+                "stream": stream,
+            }
+        )
+        return response
+
+    monkeypatch.setattr(gateway.requests, "post", fake_post)
+
+    stream = gateway.invoke_text_chat_stream(
+        messages=[{"role": "user", "content": "Say hello"}],
+        model="qwen3-coder:30b",
+        base_url="https://llm.home.arpa/v1",
+        max_tokens=20,
+        api_key="token",
+        correlation_headers={"X-Request-Id": "stream-test"},
+    )
+
+    assert list(stream.iter_text()) == ["hello ", "world\n"]
+    assert calls[0]["url"] == "https://llm.home.arpa/api/generate"
+    assert calls[0]["json"]["stream"] is True
+    assert calls[0]["headers"]["X-Request-Id"] == "stream-test"
+    assert calls[0]["stream"] is True
+    assert stream.result("hello world\n") == {
+        "model": "qwen3-coder:30b",
+        "choices": [{"message": {"content": "hello world\n"}}],
+        "usage": {"prompt_tokens": 4, "completion_tokens": 2},
+        "headers": {"x-norllama-admission": "queued"},
+        "raw": {
+            "model": "qwen3-coder:30b",
+            "done": True,
+            "prompt_eval_count": 4,
+            "eval_count": 2,
+        },
+    }
+
+    stream.close()
+
+    assert response.closed is True
 
 
 def test_prefetch_model_includes_target_worker_hints(monkeypatch):

@@ -20,6 +20,7 @@ from app.services.prompt_provider_facade import (
     chat_completion_stream_chunks,
     execute_openai_chat_facade,
     execute_openai_responses_facade,
+    open_openai_responses_stream,
 )
 from app.services.norllama import capacity as norllama_capacity
 from app.services.norllama import mesh_cache as norllama_mesh_cache
@@ -587,22 +588,200 @@ async def openai_compat_chat_completions(
     return response
 
 
-def _response_sse(response: dict[str, Any]) -> Iterable[str]:
-    text = _clean(response.get("output_text"))
-    response_id = _clean(response.get("id"))
-    yield (
-        "event: response.created\n"
-        f"data: {json.dumps({'type': 'response.created', 'response_id': response_id}, separators=(',', ':'))}\n\n"
+def _response_sse_event(event_type: str, payload: dict[str, Any]) -> str:
+    return (
+        f"event: {event_type}\n"
+        f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
     )
-    yield (
-        "event: response.output_text.delta\n"
-        f"data: {json.dumps({'type': 'response.output_text.delta', 'delta': text, 'response_id': response_id}, separators=(',', ':'))}\n\n"
-    )
-    yield (
-        "event: response.completed\n"
-        f"data: {json.dumps({'type': 'response.completed', 'response': response}, separators=(',', ':'))}\n\n"
-    )
-    yield "data: [DONE]\n\n"
+
+
+def _response_stream_snapshot(stream: Any, *, status: str) -> dict[str, Any]:
+    snapshot = {
+        "id": stream.response_id,
+        "object": "response",
+        "created_at": stream.created_at,
+        "status": status,
+        "model": stream.model,
+        "output": [],
+    }
+    admission = stream.admission_metadata()
+    if admission:
+        snapshot["norman"] = {"stream_admission": admission}
+    return snapshot
+
+
+def _response_sse(stream: Any):
+    """Translate the native Ollama stream into incremental Responses events."""
+
+    initial = _response_stream_snapshot(stream, status="in_progress")
+    text_parts: list[str] = []
+    buffered_prefix = ""
+    text_item_started = False
+    tool_envelope = False
+    tool_prefixes = ('{"tool_call"', '{"tool_calls"')
+    tools_declared = bool(stream.prepared.provider_payload.get("tools"))
+
+    def begin_text_item() -> Iterable[str]:
+        nonlocal text_item_started
+        if text_item_started:
+            return
+        text_item_started = True
+        item = {
+            "id": stream.output_item_id,
+            "type": "message",
+            "status": "in_progress",
+            "role": "assistant",
+            "content": [],
+        }
+        yield _response_sse_event(
+            "response.output_item.added",
+            {
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": item,
+            },
+        )
+        yield _response_sse_event(
+            "response.content_part.added",
+            {
+                "type": "response.content_part.added",
+                "item_id": stream.output_item_id,
+                "output_index": 0,
+                "content_index": 0,
+                "part": {
+                    "type": "output_text",
+                    "text": "",
+                    "annotations": [],
+                },
+            },
+        )
+
+    def text_delta(delta: str) -> str:
+        return _response_sse_event(
+            "response.output_text.delta",
+            {
+                "type": "response.output_text.delta",
+                "item_id": stream.output_item_id,
+                "output_index": 0,
+                "content_index": 0,
+                "delta": delta,
+            },
+        )
+
+    try:
+        yield _response_sse_event(
+            "response.created",
+            {"type": "response.created", "response": initial},
+        )
+        yield _response_sse_event(
+            "response.in_progress",
+            {"type": "response.in_progress", "response": initial},
+        )
+        for fragment in stream.iter_text():
+            text_parts.append(fragment)
+            if tools_declared and not text_item_started:
+                buffered_prefix += fragment
+                candidate = buffered_prefix.lstrip()
+                if not candidate or any(
+                    prefix.startswith(candidate) for prefix in tool_prefixes
+                ):
+                    continue
+                if any(candidate.startswith(prefix) for prefix in tool_prefixes):
+                    tool_envelope = True
+                    continue
+                for event in begin_text_item():
+                    yield event
+                yield text_delta(buffered_prefix)
+                buffered_prefix = ""
+                continue
+            if tool_envelope:
+                continue
+            for event in begin_text_item():
+                yield event
+            yield text_delta(fragment)
+
+        text = "".join(text_parts)
+        response = stream.complete(text)
+        output = response.get("output")
+        output_item = output[0] if isinstance(output, list) and output else {}
+        if isinstance(output_item, dict) and output_item.get("type") == "function_call":
+            yield _response_sse_event(
+                "response.output_item.added",
+                {
+                    "type": "response.output_item.added",
+                    "output_index": 0,
+                    "item": output_item,
+                },
+            )
+            yield _response_sse_event(
+                "response.output_item.done",
+                {
+                    "type": "response.output_item.done",
+                    "output_index": 0,
+                    "item": output_item,
+                },
+            )
+        else:
+            if not text_item_started:
+                for event in begin_text_item():
+                    yield event
+                if text:
+                    yield text_delta(text)
+            final_item = output_item if isinstance(output_item, dict) else {}
+            yield _response_sse_event(
+                "response.output_text.done",
+                {
+                    "type": "response.output_text.done",
+                    "item_id": stream.output_item_id,
+                    "output_index": 0,
+                    "content_index": 0,
+                    "text": response.get("output_text")
+                    if isinstance(response.get("output_text"), str)
+                    else "",
+                },
+            )
+            yield _response_sse_event(
+                "response.content_part.done",
+                {
+                    "type": "response.content_part.done",
+                    "item_id": stream.output_item_id,
+                    "output_index": 0,
+                    "content_index": 0,
+                    "part": {
+                        "type": "output_text",
+                        "text": response.get("output_text")
+                        if isinstance(response.get("output_text"), str)
+                        else "",
+                        "annotations": [],
+                    },
+                },
+            )
+            yield _response_sse_event(
+                "response.output_item.done",
+                {
+                    "type": "response.output_item.done",
+                    "output_index": 0,
+                    "item": final_item,
+                },
+            )
+        yield _response_sse_event(
+            "response.completed",
+            {"type": "response.completed", "response": response},
+        )
+        yield "data: [DONE]\n\n"
+        return response, None
+    except Exception as exc:
+        error = stream.classify_error(exc)
+        failed = _response_stream_snapshot(stream, status="failed")
+        failed["error"] = _facade_error_payload(error)
+        yield _response_sse_event(
+            "response.failed",
+            {"type": "response.failed", "response": failed},
+        )
+        yield "data: [DONE]\n\n"
+        return None, error
+    finally:
+        stream.close()
 
 
 @router.post("/v1/responses", response_model=None)
@@ -619,6 +798,88 @@ async def openai_compat_responses(
     if auth_error is not None:
         return auth_error
     request_payload = _request_payload(request_body)
+    if request_body.stream:
+        try:
+            stream = await asyncio.to_thread(
+                open_openai_responses_stream,
+                request_payload,
+                request_id=_request_id(request),
+                trusted_context=_gateway_context(gateway_route),
+            )
+        except FacadeError as exc:
+            record_proxy_event(
+                endpoint="/v1/responses",
+                method=request.method,
+                request_id=_request_id(request),
+                status=_facade_error_status(exc),
+                http_status=exc.status_code,
+                payload=request_payload,
+                headers=_request_headers(request),
+                error=_facade_error_payload(exc),
+                latency_ms=(time.time() - started_at) * 1000.0,
+            )
+            return _facade_error_response(exc)
+        except Exception:
+            return _unexpected_facade_error(
+                request=request,
+                endpoint="/v1/responses",
+                started_at=started_at,
+                payload=request_payload,
+                gateway_route=gateway_route,
+            )
+
+        def response_events():
+            terminal = False
+            try:
+                response, error = yield from _response_sse(stream)
+                terminal = True
+                if response is not None:
+                    record_proxy_event(
+                        endpoint="/v1/responses",
+                        method=request.method,
+                        request_id=_request_id(request),
+                        status="success",
+                        http_status=200,
+                        payload=request_payload,
+                        response=response,
+                        headers=_request_headers(request),
+                        latency_ms=(time.time() - started_at) * 1000.0,
+                    )
+                elif error is not None:
+                    record_proxy_event(
+                        endpoint="/v1/responses",
+                        method=request.method,
+                        request_id=_request_id(request),
+                        status=_facade_error_status(error),
+                        http_status=error.status_code,
+                        payload=request_payload,
+                        headers=_request_headers(request),
+                        error=_facade_error_payload(error),
+                        latency_ms=(time.time() - started_at) * 1000.0,
+                    )
+            finally:
+                stream.close()
+                if not terminal:
+                    record_proxy_event(
+                        endpoint="/v1/responses",
+                        method=request.method,
+                        request_id=_request_id(request),
+                        status="client_disconnected",
+                        http_status=499,
+                        payload=request_payload,
+                        headers=_request_headers(request),
+                        error={"code": "client_disconnected"},
+                        latency_ms=(time.time() - started_at) * 1000.0,
+                    )
+
+        return StreamingResponse(
+            response_events(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
     try:
         response = await asyncio.to_thread(
             execute_openai_responses_facade,
@@ -658,10 +919,6 @@ async def openai_compat_responses(
         headers=_request_headers(request),
         latency_ms=(time.time() - started_at) * 1000.0,
     )
-    if request_body.stream:
-        return StreamingResponse(
-            _response_sse(response), media_type="text/event-stream"
-        )
     return response
 
 

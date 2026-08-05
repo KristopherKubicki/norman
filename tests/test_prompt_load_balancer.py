@@ -656,6 +656,38 @@ def _mock_local_chat(messages, model, **kwargs):
     }
 
 
+class _MockNativeStreamResponse:
+    def __init__(self, lines, *, headers=None):
+        self._lines = list(lines)
+        self.headers = dict(headers or {})
+        self.closed = False
+
+    def iter_lines(self, decode_unicode=False):
+        for line in self._lines:
+            if decode_unicode or not isinstance(line, str):
+                yield line
+            else:
+                yield line.encode("utf-8")
+
+    def close(self):
+        self.closed = True
+
+
+def _response_sse_events(body):
+    events = []
+    for block in body.split("\n\n"):
+        event = ""
+        data = ""
+        for line in block.splitlines():
+            if line.startswith("event: "):
+                event = line.removeprefix("event: ")
+            elif line.startswith("data: "):
+                data = line.removeprefix("data: ")
+        if data:
+            events.append((event, data))
+    return events
+
+
 def _gateway_headers(route: str = "norman"):
     return {"X-Norman-Gateway-Route": route}
 
@@ -852,6 +884,182 @@ def test_openai_compat_responses_routes_local_first(test_app, monkeypatch):
     assert payload["output_text"] == "local ok"
     assert payload["usage"]["total_tokens"] == 6
     assert payload["norman"]["local_execution"] is True
+
+
+def test_openai_compat_responses_streams_incremental_sse_with_admission_feedback(
+    test_app, monkeypatch
+):
+    response = _MockNativeStreamResponse(
+        [
+            '{"model":"qwen3-coder:30b","response":"Hello, "}',
+            '{"model":"qwen3-coder:30b","response":"world!\\n"}',
+            (
+                '{"model":"qwen3-coder:30b","done":true,'
+                '"prompt_eval_count":4,"eval_count":2}'
+            ),
+        ],
+        headers={
+            "X-Norllama-Admission": "queued",
+            "X-Norllama-Queue-Wait-Ms": "42",
+            "X-Norllama-Queue-Depth": "1",
+            "X-Norllama-Queue-Limit": "1",
+            "X-Norllama-Active": "1",
+            "X-Norllama-Active-Limit": "1",
+        },
+    )
+    invocations = []
+
+    def invoke_local_stream(**kwargs):
+        invocations.append(kwargs)
+        return norllama_gateway.NorllamaTextStream(
+            response,
+            model=kwargs["model"],
+        )
+
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat_stream",
+        invoke_local_stream,
+    )
+
+    result = test_app.post(
+        "/v1/responses",
+        headers=_proxy_headers(monkeypatch),
+        json={"model": "norman-code", "input": "say hello", "stream": True},
+    )
+
+    assert result.status_code == 200
+    assert result.headers["cache-control"] == "no-cache"
+    assert result.headers["x-accel-buffering"] == "no"
+    events = _response_sse_events(result.text)
+    event_types = [event for event, _data in events]
+    payloads = [
+        json.loads(data) for event, data in events if event and data != "[DONE]"
+    ]
+    deltas = [
+        payload["delta"]
+        for payload in payloads
+        if payload["type"] == "response.output_text.delta"
+    ]
+    completed = next(
+        payload["response"]
+        for payload in payloads
+        if payload["type"] == "response.completed"
+    )
+    admission = {
+        "schema": "norman.stream-admission.v1",
+        "state": "queued",
+        "queue_wait_ms": 42,
+        "queue_depth": 1,
+        "queue_limit": 1,
+        "active": 1,
+        "active_limit": 1,
+    }
+
+    assert event_types[:2] == ["response.created", "response.in_progress"]
+    assert event_types[-2:] == ["response.completed", ""]
+    assert "".join(deltas) == "Hello, world!\n"
+    assert completed["output_text"] == "Hello, world!\n"
+    assert completed["norman"]["streaming_mode"] == "incremental_sse"
+    assert completed["norman"]["stream_admission"] == admission
+    assert payloads[0]["response"]["norman"]["stream_admission"] == admission
+    assert invocations[0]["correlation_headers"]["X-Norman-Execution-Mode"] == (
+        "prompt_intermediary_openai_facade"
+    )
+    assert response.closed is True
+
+
+def test_openai_compat_responses_stream_capacity_error_is_json_with_retry_hint(
+    test_app, monkeypatch
+):
+    def exhausted_local_stream(**_kwargs):
+        raise norllama_gateway.NorllamaGatewayError(
+            429,
+            {
+                "error": "local_capacity_exhausted",
+                "norllama": {
+                    "schema": "norllama.capacity.v1",
+                    "active": 1,
+                    "active_limit": 1,
+                    "queue_depth": 1,
+                    "queue_limit": 1,
+                    "retry_after_seconds": 12,
+                },
+            },
+            headers={"Retry-After": "12"},
+        )
+
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat_stream",
+        exhausted_local_stream,
+    )
+
+    result = test_app.post(
+        "/v1/responses",
+        headers=_proxy_headers(monkeypatch),
+        json={"model": "norman-code", "input": "say hello", "stream": True},
+    )
+
+    assert result.status_code == 503
+    assert result.headers["retry-after"] == "12"
+    error = result.json()["error"]
+    assert error["code"] == "local_capacity_exhausted"
+    assert error["norman"]["capacity"] == {
+        "schema": "norllama.capacity.v1",
+        "active": 1,
+        "active_limit": 1,
+        "queue_depth": 1,
+        "queue_limit": 1,
+        "retry_after_seconds": 12,
+    }
+
+
+def test_openai_compat_responses_stream_reports_midstream_failure(
+    test_app, monkeypatch
+):
+    response = _MockNativeStreamResponse(
+        [
+            '{"model":"qwen3-coder:30b","response":"partial "}',
+            "not-json",
+        ]
+    )
+
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat_stream",
+        lambda **kwargs: norllama_gateway.NorllamaTextStream(
+            response,
+            model=kwargs["model"],
+        ),
+    )
+
+    result = test_app.post(
+        "/v1/responses",
+        headers=_proxy_headers(monkeypatch),
+        json={"model": "norman-code", "input": "say hello", "stream": True},
+    )
+
+    assert result.status_code == 200
+    events = _response_sse_events(result.text)
+    payloads = [
+        json.loads(data) for event, data in events if event and data != "[DONE]"
+    ]
+    failed = next(
+        payload["response"]
+        for payload in payloads
+        if payload["type"] == "response.failed"
+    )
+
+    assert any(
+        payload["type"] == "response.output_text.delta"
+        and payload["delta"] == "partial "
+        for payload in payloads
+    )
+    assert failed["status"] == "failed"
+    assert failed["error"]["code"] == "local_gateway_bad_response"
+    assert events[-1] == ("", "[DONE]")
+    assert response.closed is True
 
 
 @pytest.mark.parametrize(
