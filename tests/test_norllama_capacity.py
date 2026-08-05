@@ -241,3 +241,24 @@ def test_recent_capacity_failure_keeps_the_longer_cooldown():
     assert snapshot["reason"] == "recent_local_model_request_failed"
     assert snapshot["cooldown"]["cooldown_seconds"] == 900
     assert snapshot["cooldown"]["remaining_seconds"] == 850
+
+
+def test_recent_capacity_unavailable_uses_the_short_recovery_cooldown():
+    unavailable = {
+        "recorded_at": 1000,
+        "status": "request-failed",
+        "ok": False,
+        "model": MODEL,
+        "reason": "local_capacity_unavailable",
+    }
+
+    snapshot = _snapshot(
+        _mesh(workers=[_worker("spark-150")]),
+        route_outcomes=[unavailable],
+        now=1050,
+    )
+
+    assert snapshot["available"] is False
+    assert snapshot["reason"] == "recent_local_model_request_failed"
+    assert snapshot["cooldown"]["cooldown_seconds"] == 60
+    assert snapshot["cooldown"]["remaining_seconds"] == 10

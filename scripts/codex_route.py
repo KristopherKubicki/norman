@@ -1037,6 +1037,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments_error:
             print(f"codex-route: {arguments_error}", file=sys.stderr)
             return 2
+        if parsed.launcher == "work" and not os.getenv("CODEX_WORK_OPS_BINDING_LOADED"):
+            # The work launcher re-enters through the Ops binding loader. Defer
+            # preflight output until the bound process so it is emitted once.
+            exec_work_route(route, parsed.codex_args)
+            return 0
         capacity_available, capacity_detail = preflight_route_capacity(route)
         if not capacity_available:
             print(

@@ -340,6 +340,7 @@ def test_capacity_unavailable_warns_then_starts_routed_session(
     route = route_by_key(route_module, "control-plane")
     executed = []
 
+    monkeypatch.setenv("CODEX_WORK_OPS_BINDING_LOADED", "1")
     monkeypatch.setattr(route_module, "resolve_route", lambda _cwd: route)
     monkeypatch.setattr(
         route_module,
@@ -369,6 +370,27 @@ def test_capacity_unavailable_warns_then_starts_routed_session(
     assert "Starting Codex anyway; use /model" in captured.err
     assert "subscription: Short window 68% left" in captured.err
     assert "metered (Aug 01 to Sep 01): ~$1.25" in captured.err
+
+
+def test_unbound_work_route_reenters_before_preflight(route_module, monkeypatch):
+    route = route_by_key(route_module, "control-plane")
+    executed = []
+    preflight_calls = []
+
+    monkeypatch.delenv("CODEX_WORK_OPS_BINDING_LOADED", raising=False)
+    monkeypatch.setattr(route_module, "resolve_route", lambda _cwd: route)
+    monkeypatch.setattr(
+        route_module,
+        "preflight_route_capacity",
+        lambda _route: preflight_calls.append(_route.key) or (True, ""),
+    )
+    monkeypatch.setattr(
+        route_module, "exec_work_route", lambda *_args: executed.append("reenter")
+    )
+
+    assert route_module.main(["--launcher", "work", "--", "resume"]) == 0
+    assert executed == ["reenter"]
+    assert preflight_calls == []
 
 
 def test_startup_usage_notices_report_fresh_capacity_and_metered_month(

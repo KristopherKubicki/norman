@@ -11,6 +11,7 @@ DEFAULT_COOLDOWN_STATUSES = {
 }
 DEFAULT_PLANNER_PREFLIGHT_COLD_LOAD_COOLDOWN_SECONDS = 60
 DEFAULT_LOCAL_MODEL_TIMEOUT_COOLDOWN_SECONDS = 60
+DEFAULT_LOCAL_CAPACITY_UNAVAILABLE_COOLDOWN_SECONDS = 60
 
 
 def _clean(value: Any) -> str:
@@ -128,6 +129,11 @@ def _effective_cooldown_seconds(
     override = _as_int(outcome.get("cooldown_seconds"))
     if override > 0:
         return min(configured, override)
+    if _clean(outcome.get("reason")) == "local_capacity_unavailable":
+        return min(
+            configured,
+            DEFAULT_LOCAL_CAPACITY_UNAVAILABLE_COOLDOWN_SECONDS,
+        )
     if _clean(outcome.get("reason")) == "local_model_timeout":
         return min(configured, DEFAULT_LOCAL_MODEL_TIMEOUT_COOLDOWN_SECONDS)
     if (
