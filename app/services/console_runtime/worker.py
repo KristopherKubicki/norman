@@ -38,6 +38,10 @@ from app.services.reasoning_orchestrator import (
     build_reasoning_receipt,
     plan_reasoning_turn,
 )
+from app.services.work_classification import (
+    classify_work,
+    sanitize_work_classification,
+)
 from app.services.norllama.routing import build_task_receipt, route_task
 from app.services.norllama.route_proof import (
     audit_route_receipt,
@@ -62,6 +66,24 @@ DEFAULT_WORKSPACE_PREFLIGHT_COMMANDS = [
     "git branch --show-current",
 ]
 CLOUD_TOKEN_REQUEST_OVERHEAD = 32
+ADVISORY_EXECUTION_MODE = "advisory"
+ADVISORY_ROUTE_POLICY = {
+    "provider": "norllama",
+    "preferred_provider": "norllama",
+    "runtime": "norllama",
+    "local_first": True,
+    "cloud_llm_disabled": True,
+    "allow_cloud_proxy": False,
+    "allow_cloud_tool_proxy": False,
+    "task_kind": "chat",
+    "planner_kind": "chat",
+    "goal_phase_sequence": ["chat"],
+    "route_proof_required": False,
+    "require_route_proof": False,
+    "require_verifier_for_completion": False,
+    "verification_required": False,
+    "verifier_can_stop": False,
+}
 GOAL_PHASE_TASK_KIND = {
     "chat": "chat",
     "compact": "compact",
@@ -297,7 +319,7 @@ def _runtime_reasoning_plan(
     route_policy: dict[str, Any],
     options: "ConsoleRuntimeRunOptions",
     task_kind: str = "",
-) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
     classification = classify_prompt(job.contract.objective)
     if task_kind:
         classification = {**classification, "task_kind": task_kind}
@@ -315,6 +337,13 @@ def _runtime_reasoning_plan(
             "background_loop": route_policy.get("background_loop"),
         },
     )
+    work_classification = _runtime_work_classification(
+        classification=classification,
+        route_policy=route_policy,
+        options=options,
+        context=context,
+        task_kind=task_kind,
+    )
     plan = plan_reasoning_turn(
         prompt=job.contract.objective,
         classification=classification,
@@ -325,8 +354,43 @@ def _runtime_reasoning_plan(
             or context.get("session_name")
             or context.get("console_runtime_session")
         ),
+        work_classification=work_classification,
     )
-    return classification, plan, build_reasoning_receipt(plan)
+    return classification, work_classification, plan, build_reasoning_receipt(plan)
+
+
+def _runtime_work_classification(
+    *,
+    classification: dict[str, Any],
+    route_policy: dict[str, Any],
+    options: "ConsoleRuntimeRunOptions",
+    context: dict[str, Any],
+    task_kind: str,
+    selected_provider: str = "",
+) -> dict[str, Any]:
+    requested_runtime = _clean(
+        options.metadata.get("requested_runtime")
+        or route_policy.get("runtime")
+        or route_policy.get("provider")
+    )
+    active_work = bool(
+        context.get("active_job_count")
+        or context.get("active_job_id")
+        or context.get("pending_action_kind")
+    )
+    return classify_work(
+        prompt_classification=classification,
+        active_work=active_work,
+        route_locked=_route_lock_enabled(route_policy, options),
+        force_requested_runtime=(
+            _flag(options.metadata.get("force_requested_runtime"))
+            or _flag(route_policy.get("force_requested_runtime"))
+        ),
+        requested_runtime=requested_runtime,
+        effective_runtime=selected_provider,
+        selected_provider=selected_provider,
+        task_kind=task_kind,
+    )
 
 
 def _receipt_audit(route_receipt: dict[str, Any]) -> dict[str, Any]:
@@ -337,11 +401,148 @@ def _route_proof_required(
     route_policy: dict[str, Any],
     options: "ConsoleRuntimeRunOptions",
 ) -> bool:
+    if options.execution_mode == ADVISORY_EXECUTION_MODE:
+        return False
     return (
         not options.dry_run
         or _flag(route_policy.get("route_proof_required"))
         or _flag(route_policy.get("require_route_proof"))
     )
+
+
+def _advisory_sources(
+    job: Any, options: "ConsoleRuntimeRunOptions"
+) -> list[dict[str, Any]]:
+    contract = getattr(job, "contract", None)
+    return [
+        value
+        for value in (
+            getattr(contract, "route_policy", {}),
+            getattr(contract, "metadata", {}),
+            getattr(job, "metadata", {}),
+            options.route_policy,
+            options.metadata,
+        )
+        if isinstance(value, dict)
+    ]
+
+
+def _advisory_invalid_reason(job: Any, options: "ConsoleRuntimeRunOptions") -> str:
+    """Reject execution-shaped state before an advisory job can be leased."""
+
+    for source in _advisory_sources(job, options):
+        for key, expected in (
+            ("cloud_token_budget", 0),
+            ("max_steps", 1),
+        ):
+            value = source.get(key)
+            if value in (None, ""):
+                continue
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                return f"advisory execution cannot include invalid {key}"
+            if parsed != expected:
+                return f"advisory execution requires {key}={expected}"
+
+        for key in (
+            "continuous",
+            "dry_run",
+            "include_capabilities",
+            "live_execution_approved",
+        ):
+            if _flag(source.get(key)):
+                return f"advisory execution cannot enable {key}"
+
+        for key in ("execution_mode", "mode", "task_mode"):
+            value = _clean(source.get(key)).lower().replace("-", "_")
+            if value and value not in {ADVISORY_EXECUTION_MODE, "static_advice"}:
+                return f"advisory execution cannot use {key}={value!r}"
+
+        for key in ("provider", "preferred_provider", "runtime"):
+            value = _clean(source.get(key)).lower().replace("_", "-")
+            if value and value != "norllama":
+                return f"advisory execution cannot use {key}={value!r}"
+
+        for key in (
+            "command",
+            "shell_command",
+            "commands",
+            "shell_commands",
+            "preflight_commands",
+            "kernel_preflight_commands",
+        ):
+            if _string_list(source.get(key)):
+                return f"advisory execution cannot include {key}"
+
+        for key in ("route_lock", "strict_route", "operator_model_override"):
+            if _flag(source.get(key)):
+                return f"advisory execution cannot include {key}"
+
+        for key in (
+            "route_proof_required",
+            "require_route_proof",
+            "require_verifier_for_completion",
+            "verification_required",
+            "verifier_can_stop",
+            "kernel_verifier_can_stop",
+            "require_verification_receipt",
+            "reasoning_tool_gate_required",
+            "require_reasoning_tool_gate",
+        ):
+            if _flag(source.get(key)):
+                return f"advisory execution cannot include {key}"
+
+        for key in (
+            "allow_cloud_proxy",
+            "allow_cloud_tool_proxy",
+            "cloud_proxy",
+            "cloud_tool_proxy",
+            "cloud_execution",
+            "use_capability_catalog",
+            "include_capabilities",
+            "tool_lane",
+            "workspace_preflight",
+            "kernel_workspace_preflight",
+            "kernel_preflight",
+            "live_execution_approved",
+            "live_execution",
+            "executable",
+        ):
+            if _flag(source.get(key)):
+                return f"advisory execution cannot enable {key}"
+
+        for key in (
+            "required_tools",
+            "verification_tools",
+            "tools",
+            "tool_plan",
+            "capabilities",
+            "capability_catalog",
+            "capability_contracts",
+        ):
+            value = source.get(key)
+            if isinstance(value, (dict, list, tuple, set)):
+                if value:
+                    return f"advisory execution cannot include {key}"
+            elif _clean(value):
+                return f"advisory execution cannot include {key}"
+
+        mode = _clean(
+            source.get("execution_mode")
+            or source.get("mode")
+            or source.get("task_mode")
+        ).lower()
+        if mode and mode not in {"advisory", "static_advice"}:
+            return f"advisory execution cannot include mode={mode!r}"
+    return ""
+
+
+def _canonical_advisory_route_policy() -> dict[str, Any]:
+    return {
+        **ADVISORY_ROUTE_POLICY,
+        "goal_phase_sequence": list(ADVISORY_ROUTE_POLICY["goal_phase_sequence"]),
+    }
 
 
 def _route_lock_enabled(
@@ -606,6 +807,7 @@ def _cloud_budget_plan(
 @dataclass
 class ConsoleRuntimeRunOptions:
     worker_id: str = "runtime-api-worker"
+    execution_mode: str = "standard"
     dry_run: bool = True
     complete: bool = True
     continuous: bool = False
@@ -624,6 +826,9 @@ class ConsoleRuntimeRunOptions:
 
     def __post_init__(self) -> None:
         self.worker_id = _clean(self.worker_id) or "runtime-api-worker"
+        self.execution_mode = _clean(self.execution_mode).lower() or "standard"
+        if self.execution_mode not in {"standard", ADVISORY_EXECUTION_MODE}:
+            raise ValueError("execution_mode must be standard or advisory")
         self.planner_kind = _clean(self.planner_kind) or "plan"
         self.model = _clean(self.model)
         self.max_steps = max(1, min(int(self.max_steps or 1), 50))
@@ -636,6 +841,38 @@ class ConsoleRuntimeRunOptions:
         self.max_output_tokens = max(1, int(self.max_output_tokens or 1))
         self.route_policy = dict(self.route_policy or {})
         self.metadata = dict(self.metadata or {})
+        if self.execution_mode == ADVISORY_EXECUTION_MODE:
+            if self.dry_run:
+                raise ValueError("advisory execution cannot be dry_run")
+            if self.live_execution_approved:
+                raise ValueError(
+                    "advisory execution cannot request live execution approval"
+                )
+            if self.continuous:
+                raise ValueError("advisory execution cannot be continuous")
+            if self.max_steps != 1:
+                raise ValueError("advisory execution requires max_steps=1")
+            if self.include_capabilities:
+                raise ValueError(
+                    "advisory execution cannot include capability discovery"
+                )
+            if self.cloud_token_budget != 0:
+                raise ValueError("advisory execution requires cloud_token_budget=0")
+            if self.planner_kind != "chat":
+                raise ValueError("advisory execution requires planner_kind=chat")
+            if self.goal_phase_sequence != ["chat"]:
+                raise ValueError(
+                    "advisory execution requires goal_phase_sequence=['chat']"
+                )
+            self.dry_run = False
+            self.complete = True
+            self.continuous = False
+            self.max_steps = 1
+            self.cloud_token_budget = 0
+            self.planner_kind = "chat"
+            self.goal_phase_sequence = ["chat"]
+            self.include_capabilities = False
+            self.live_execution_approved = False
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -778,6 +1015,10 @@ class DbConsoleRuntimeWorker:
     ) -> dict[str, Any]:
         opts = options or ConsoleRuntimeRunOptions()
         job = self.store.get_job(db, user_id=user_id, job_id=job_id)
+        if opts.execution_mode == ADVISORY_EXECUTION_MODE:
+            invalid_reason = _advisory_invalid_reason(job, opts)
+            if invalid_reason:
+                raise ValueError(invalid_reason)
         canceled = self._finalize_cancellation_if_requested(
             db,
             user_id=user_id,
@@ -823,6 +1064,17 @@ class DbConsoleRuntimeWorker:
             if canceled is not None:
                 return canceled
         attempt_id, lease_epoch = self._attempt_tokens(job)
+        if opts.execution_mode == ADVISORY_EXECUTION_MODE:
+            return self._run_advisory_once(
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                job=job,
+                options=opts,
+                adapter=adapter,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
 
         route_policy = _local_first_route_policy(
             _merge_dicts(job.contract.route_policy, opts.route_policy)
@@ -833,13 +1085,16 @@ class DbConsoleRuntimeWorker:
             or opts.planner_kind,
             opts.planner_kind,
         )
-        reasoning_classification, reasoning_plan, reasoning_receipt = (
-            _runtime_reasoning_plan(
-                job=job,
-                route_policy=route_policy,
-                options=opts,
-                task_kind=initial_task_kind,
-            )
+        (
+            reasoning_classification,
+            work_classification,
+            reasoning_plan,
+            reasoning_receipt,
+        ) = _runtime_reasoning_plan(
+            job=job,
+            route_policy=route_policy,
+            options=opts,
+            task_kind=initial_task_kind,
         )
         self.store.append_event(
             db,
@@ -854,6 +1109,7 @@ class DbConsoleRuntimeWorker:
                 "worker_id": opts.worker_id,
                 "dry_run": opts.dry_run,
                 "reasoning_classification": reasoning_classification,
+                "work_classification": work_classification,
                 "reasoning_orchestration": reasoning_plan,
                 "reasoning_receipt": reasoning_receipt,
             },
@@ -929,6 +1185,23 @@ class DbConsoleRuntimeWorker:
             },
         )
         route = route_task(task)
+        work_classification = _runtime_work_classification(
+            classification=reasoning_classification,
+            route_policy=route_policy,
+            options=opts,
+            context=_merge_dicts(
+                job.metadata,
+                job.contract.metadata,
+                opts.metadata,
+            ),
+            task_kind=task_kind,
+            selected_provider=route.provider,
+        )
+        reasoning_plan = {
+            **reasoning_plan,
+            "work_classification": work_classification,
+        }
+        reasoning_receipt = build_reasoning_receipt(reasoning_plan)
         receipt = build_task_receipt(
             task,
             route,
@@ -974,6 +1247,7 @@ class DbConsoleRuntimeWorker:
                     reasoning_plan.get("selected_skill_ids") or []
                 ),
                 "tool_plan": reasoning_plan.get("tool_plan") or {},
+                "work_classification": work_classification,
             },
         )
         self.store.record_route_decision(
@@ -1152,6 +1426,7 @@ class DbConsoleRuntimeWorker:
                 "route_decision_id": decision.decision_id,
                 "reasoning_plan_id": reasoning_plan.get("plan_id"),
                 "reasoning_orchestration": reasoning_plan,
+                "work_classification": work_classification,
                 "selected_skill_ids": list(
                     reasoning_plan.get("selected_skill_ids") or []
                 ),
@@ -1262,6 +1537,7 @@ class DbConsoleRuntimeWorker:
                     (reasoning_plan.get("tool_plan") or {}).get("verification_tools")
                     or []
                 ),
+                "work_classification": work_classification,
             },
             summary=f"Started {model_adapter.name}",
             detail=request.route_key,
@@ -1285,6 +1561,7 @@ class DbConsoleRuntimeWorker:
                 "max_tool_iterations": (reasoning_plan.get("tool_plan") or {}).get(
                     "max_tool_iterations"
                 ),
+                "work_classification": work_classification,
             },
             summary=f"Requested {model_adapter.name}",
             attempt_id=attempt_id,
@@ -1338,6 +1615,7 @@ class DbConsoleRuntimeWorker:
                     "error": error,
                     "route": route_payload,
                     "route_receipt": failed_route_receipt,
+                    "work_classification": work_classification,
                 },
                 summary=f"{model_adapter.name} failed",
                 detail=error,
@@ -1353,6 +1631,7 @@ class DbConsoleRuntimeWorker:
                     "invocation_id": invocation_id,
                     "tool_name": "model_adapter.invoke",
                     "error": error,
+                    "work_classification": work_classification,
                 },
                 summary="Model adapter failed",
                 detail=error,
@@ -1738,6 +2017,8 @@ class DbConsoleRuntimeWorker:
         adapter: ModelAdapter | None = None,
     ) -> dict[str, Any]:
         opts = options or ConsoleRuntimeRunOptions(continuous=True)
+        if opts.execution_mode == ADVISORY_EXECUTION_MODE:
+            raise ValueError("advisory execution cannot run continuously")
         opts = replace(opts, continuous=True)
         job = self.store.get_job(db, user_id=user_id, job_id=job_id)
         max_runtime_seconds = (
@@ -1937,6 +2218,273 @@ class DbConsoleRuntimeWorker:
                 "cloud_tokens": cloud_tokens,
                 "cloud_evidence_count": cloud_evidence,
             },
+        }
+
+    def _run_advisory_once(
+        self,
+        db: Session,
+        *,
+        user_id: int,
+        job_id: str,
+        job: Any,
+        options: ConsoleRuntimeRunOptions,
+        adapter: ModelAdapter | None,
+        attempt_id: str,
+        lease_epoch: int | None,
+    ) -> dict[str, Any]:
+        """Run the deliberately non-executing static-advice lane."""
+
+        route_policy = _canonical_advisory_route_policy()
+        model = options.model or _clean(getattr(settings, "llm_offline_model", ""))
+        invocation_id = ":".join(
+            part for part in (options.worker_id, job_id, "advisory", "model") if part
+        )
+        route = {
+            "lane": "chat",
+            "provider": "norllama",
+            "provider_kind": "llm",
+            "capability": "text_chat",
+            "model": model,
+            "endpoint": _clean(getattr(settings, "llm_offline_base_url", "")),
+            "mode": "offline_local",
+            "local": True,
+            "cloud_proxy": False,
+            "tool_lane": False,
+            "requires_receipt": False,
+            "reason": "static advisory response",
+        }
+        request = ModelRequest(
+            messages=[
+                {"role": "system", "content": self._advisory_system_prompt()},
+                {"role": "user", "content": job.contract.objective},
+            ],
+            model=model,
+            route_key="chat",
+            budget=ModelBudget(
+                max_runtime_seconds=options.max_runtime_seconds
+                or job.contract.max_runtime_seconds,
+                max_output_tokens=options.max_output_tokens,
+            ),
+            metadata={
+                "execution_mode": ADVISORY_EXECUTION_MODE,
+                "advisory_only": True,
+                "route_policy": route_policy,
+                "norllama_route": route,
+                "norllama_task_kind": "chat",
+                "required_tools": [],
+                "verification_tools": [],
+                "runtime_job_id": job_id,
+                "console_runtime_job_id": job_id,
+                "attempt_id": attempt_id,
+                "lease_epoch": lease_epoch or 0,
+                "worker_id": options.worker_id,
+                "invocation_id": invocation_id,
+                "request_id": invocation_id,
+            },
+        )
+        model_adapter = adapter or self._default_adapter(
+            options, job.contract.objective
+        )
+        self.store.append_event(
+            db,
+            user_id=user_id,
+            job_id=job_id,
+            event_type="execution.advisory_only",
+            payload={
+                "execution_mode": ADVISORY_EXECUTION_MODE,
+                "provider": "norllama",
+                "model": model,
+                "invocation_id": invocation_id,
+                "tool_access": False,
+                "current_state_access": False,
+            },
+            summary="Started local static advisory response.",
+            detail="No shell, tool, capability, route-proof, or verifier access.",
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
+        )
+        effect_key = f"{attempt_id}:{invocation_id}"
+        effect, should_invoke = self.store.begin_effect(
+            db,
+            user_id=user_id,
+            job_id=job_id,
+            effect_key=effect_key,
+            kind="model.invoke",
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
+            preconditions={
+                "provider": "norllama",
+                "model": request.model,
+                "route_key": request.route_key,
+                "invocation_id": invocation_id,
+                "execution_mode": ADVISORY_EXECUTION_MODE,
+            },
+        )
+        if not should_invoke:
+            summary = (
+                "Static advisory checkpointed because its one model invocation "
+                "was already reserved."
+            )
+            checkpointed = self.store.checkpoint_job(
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                summary=summary,
+                capsule=self._checkpoint_capsule(
+                    job,
+                    summary=summary,
+                    attempt_id=attempt_id,
+                    lease_epoch=lease_epoch,
+                    route_receipt={},
+                ),
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
+            snapshot = self.store.activity_snapshot(db, user_id=user_id, job_id=job_id)
+            return {
+                "job": checkpointed.as_dict(),
+                "model_result": None,
+                "snapshot": snapshot,
+                "dry_run": False,
+                "worker_id": options.worker_id,
+                "advisory_only": True,
+                "effect_reconciliation_required": True,
+                "effect": effect.as_dict(),
+            }
+        self.store.append_event(
+            db,
+            user_id=user_id,
+            job_id=job_id,
+            event_type="model.requested",
+            payload={
+                "provider": "norllama",
+                "model": request.model,
+                "route_key": request.route_key,
+                "execution_mode": ADVISORY_EXECUTION_MODE,
+            },
+            summary="Requested Norllama static advice.",
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
+        )
+        canceled = self._finalize_cancellation_if_requested(
+            db,
+            user_id=user_id,
+            job_id=job_id,
+            options=options,
+            reason="Cancellation requested before static advisory invocation",
+            effect_key=effect_key,
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
+        )
+        if canceled is not None:
+            return canceled
+        try:
+            result = model_adapter.invoke(request)
+        except Exception as exc:
+            error = str(exc)
+            self.store.fail_effect(
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                effect_key=effect_key,
+                error=error,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
+            self.store.append_event(
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                event_type="model.failed",
+                payload={
+                    "provider": "norllama",
+                    "error": error,
+                    "execution_mode": ADVISORY_EXECUTION_MODE,
+                },
+                summary="Norllama static advice failed.",
+                detail=error,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
+            failed = self.store.fail_job(
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                error=error,
+                retry_class=RetryClass.TRANSIENT_TRANSPORT,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )
+            snapshot = self.store.activity_snapshot(db, user_id=user_id, job_id=job_id)
+            return {
+                "job": failed.as_dict(),
+                "model_result": None,
+                "snapshot": snapshot,
+                "dry_run": False,
+                "worker_id": options.worker_id,
+                "advisory_only": True,
+                "model_failed": True,
+                "error": error,
+                "failure_class": "model_adapter_failed",
+            }
+
+        # The adapter may internally construct a Norllama receipt; it is not a
+        # runtime route receipt in this non-executing lane and is not persisted.
+        result = ModelResult(
+            provider=result.provider or "norllama",
+            model=result.model or model,
+            text=result.text,
+            stop_reason=result.stop_reason,
+            usage=result.usage,
+            metadata={
+                "execution_mode": ADVISORY_EXECUTION_MODE,
+                "advisory_only": True,
+            },
+        )
+        self.store.complete_effect(
+            db,
+            user_id=user_id,
+            job_id=job_id,
+            effect_key=effect_key,
+            receipt={
+                "invocation_id": invocation_id,
+                "provider": result.provider,
+                "model": result.model,
+                "stop_reason": result.stop_reason,
+                "usage": result.usage.as_dict(),
+                "execution_mode": ADVISORY_EXECUTION_MODE,
+            },
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
+        )
+        self._record_model_result(
+            db,
+            user_id=user_id,
+            job_id=job_id,
+            invocation_id=invocation_id,
+            adapter_name="norllama",
+            result=result,
+            task_contract={},
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
+            advisory_only=True,
+        )
+        final_job = self.store.complete_job(
+            db,
+            user_id=user_id,
+            job_id=job_id,
+            summary="Static advisory response completed.",
+            attempt_id=attempt_id,
+            lease_epoch=lease_epoch,
+        )
+        snapshot = self.store.activity_snapshot(db, user_id=user_id, job_id=job_id)
+        return {
+            "job": final_job.as_dict(),
+            "model_result": result.as_dict(),
+            "snapshot": snapshot,
+            "dry_run": False,
+            "worker_id": options.worker_id,
+            "advisory_only": True,
         }
 
     def _run_shell_once(
@@ -2586,6 +3134,8 @@ class DbConsoleRuntimeWorker:
     def _wants_shell(
         self, route_policy: dict[str, Any], options: ConsoleRuntimeRunOptions
     ) -> bool:
+        if options.execution_mode == ADVISORY_EXECUTION_MODE:
+            return False
         runtime = _clean(route_policy.get("runtime")).lower()
         provider = _clean(route_policy.get("provider")).lower()
         if runtime == "shell" or provider == "shell":
@@ -2662,6 +3212,16 @@ class DbConsoleRuntimeWorker:
         return (
             "You are Norman's runtime worker. Return a concise execution note "
             "for this phase."
+        )
+
+    @staticmethod
+    def _advisory_system_prompt() -> str:
+        return (
+            "You are Norman's static command advisor. Answer only from general "
+            "knowledge. You have no shell, tools, files, network, history, or "
+            "current-state access. Do not claim that you inspected, ran, "
+            "verified, or changed anything. Give a concise command suggestion "
+            "and any essential generic caveat."
         )
 
     def _prior_model_output_context(
@@ -2815,6 +3375,8 @@ class DbConsoleRuntimeWorker:
         *,
         route: Any | None = None,
     ) -> ModelAdapter:
+        if options.execution_mode == ADVISORY_EXECUTION_MODE:
+            return NorllamaModelAdapter()
         if options.dry_run:
             return FakeModelAdapter(
                 responses=[
@@ -2877,10 +3439,27 @@ class DbConsoleRuntimeWorker:
         task_contract: dict[str, Any] | None = None,
         attempt_id: str = "",
         lease_epoch: int | None = None,
+        advisory_only: bool = False,
     ) -> None:
         preview = _preview(result.text)
         metadata = dict(result.metadata or {})
         reasoning_plan = dict(reasoning_plan or {})
+        work_classification = sanitize_work_classification(
+            reasoning_plan.get("work_classification")
+        )
+        if result.provider and result.provider != "norllama":
+            result_classification = classify_work(
+                prompt_classification={
+                    "risk_class": reasoning_plan.get("risk_class"),
+                    "risk_level": reasoning_plan.get("risk_level"),
+                },
+                effective_runtime=result.provider,
+                selected_provider=result.provider,
+                task_kind=_clean(reasoning_plan.get("task_kind")),
+            )
+            if result_classification["work_class"] == "frontier":
+                work_classification = result_classification
+                reasoning_plan["work_classification"] = work_classification
         reasoning_receipt = (
             build_reasoning_receipt(
                 reasoning_plan,
@@ -2926,8 +3505,12 @@ class DbConsoleRuntimeWorker:
             "metadata": metadata,
             "output_preview": preview,
         }
+        if advisory_only:
+            payload["execution_mode"] = ADVISORY_EXECUTION_MODE
+            payload["advisory_only"] = True
         if reasoning_plan:
             payload["reasoning_plan_id"] = reasoning_plan.get("plan_id")
+            payload["work_classification"] = work_classification
             payload["selected_skill_ids"] = list(
                 reasoning_plan.get("selected_skill_ids") or []
             )
@@ -2938,7 +3521,7 @@ class DbConsoleRuntimeWorker:
                 (reasoning_plan.get("tool_plan") or {}).get("verification_tools") or []
             )
             payload["reasoning_receipt"] = reasoning_receipt
-        if route_receipt:
+        if route_receipt and not advisory_only:
             route_receipt = {
                 **route_receipt,
                 "invocation_id": route_receipt.get("invocation_id") or invocation_id,
@@ -2975,7 +3558,7 @@ class DbConsoleRuntimeWorker:
             payload["client_request_id"] = route_receipt.get("client_request_id")
             payload["gateway_request_id"] = route_receipt.get("gateway_request_id")
             payload["invocation_id"] = route_receipt.get("invocation_id")
-        if route:
+        if route and not advisory_only:
             payload["route"] = route
             payload["attribution"] = attribution
             payload["local"] = bool(route.get("local"))
@@ -3002,9 +3585,11 @@ class DbConsoleRuntimeWorker:
                     "text": preview,
                     "provider": result.provider,
                     "model": result.model,
+                    "execution_mode": ADVISORY_EXECUTION_MODE if advisory_only else "",
                     "reasoning_plan_id": reasoning_plan.get("plan_id")
                     if reasoning_plan
                     else "",
+                    "work_classification": work_classification,
                 },
                 summary="Model output",
                 detail=preview,
@@ -3012,23 +3597,25 @@ class DbConsoleRuntimeWorker:
                 attempt_id=attempt_id,
                 lease_epoch=lease_epoch,
             )
-        self.store.append_event(
-            db,
-            user_id=user_id,
-            job_id=job_id,
-            event_type="tool.completed",
-            payload={
-                "invocation_id": invocation_id,
-                "tool_name": "model_adapter.invoke",
-                "provider": adapter_name,
-                "output_preview": preview,
-                "reasoning_plan_id": reasoning_plan.get("plan_id")
-                if reasoning_plan
-                else "",
-                "reasoning_receipt": reasoning_receipt,
-            },
-            summary="Model adapter completed",
-            detail=preview,
-            attempt_id=attempt_id,
-            lease_epoch=lease_epoch,
-        )
+        if not advisory_only:
+            self.store.append_event(
+                db,
+                user_id=user_id,
+                job_id=job_id,
+                event_type="tool.completed",
+                payload={
+                    "invocation_id": invocation_id,
+                    "tool_name": "model_adapter.invoke",
+                    "provider": adapter_name,
+                    "output_preview": preview,
+                    "reasoning_plan_id": reasoning_plan.get("plan_id")
+                    if reasoning_plan
+                    else "",
+                    "reasoning_receipt": reasoning_receipt,
+                    "work_classification": work_classification,
+                },
+                summary="Model adapter completed",
+                detail=preview,
+                attempt_id=attempt_id,
+                lease_epoch=lease_epoch,
+            )

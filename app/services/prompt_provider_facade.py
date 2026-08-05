@@ -1035,6 +1035,23 @@ def _execute_authorized_chat(
             ),
             correlation_headers=correlation_headers,
         )
+    except norllama_gateway.NorllamaGatewayError as exc:
+        if (
+            exc.status_code == 422
+            and _clean(exc.payload.get("error")) == "local_model_not_installed"
+        ):
+            raise FacadeError(
+                "Requested local model is not installed",
+                status_code=422,
+                error_type="invalid_request_error",
+                code="local_model_not_installed",
+            ) from exc
+        raise FacadeError(
+            "Local model gateway is unavailable",
+            status_code=502,
+            error_type="server_error",
+            code="local_model_unavailable",
+        ) from exc
     except (requests.RequestException, RuntimeError) as exc:
         raise FacadeError(
             "Local model gateway is unavailable",

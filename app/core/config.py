@@ -242,7 +242,7 @@ class Settings(BaseSettings):
     llm_offline_provider: str = "openai_compatible"
     llm_offline_api_key: str = "ollama"
     llm_offline_base_url: str = "https://llm.home.arpa/v1"
-    llm_offline_model: str = "qwen3.6:27b"
+    llm_offline_model: str = "qwen3-coder:30b-a3b-q4_K_M"
     llm_provider_timeout_seconds: int = 45
     console_runtime_norllama_timeout_seconds: int = 180
     console_runtime_bedrock_timeout_seconds: int = 300

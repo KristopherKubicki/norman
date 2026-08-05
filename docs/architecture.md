@@ -121,6 +121,21 @@ Norllama capability, local mesh wait/prefetch/failover, then an explicitly
 authorized cloud route. A route receipt records the selection, model or tool,
 endpoint class, fallback outcome, and policy context.
 
+### Deterministic TUI Read Lane
+
+The web TUI may answer an exact status request from durable state without
+calling a model. It may also execute one exact command from a small read-only
+allowlist: `pwd`, `date`, `date -Is`, `git status --short`, `git branch
+--show-current`, `git diff --stat`, and `git log -1 --oneline`. Commands are
+parsed as fixed argv only, run with `shell=False`, and have a short timeout.
+
+This is not a natural-language command interface. A route lock, attachment,
+or active prompt disables the lane, as do unlisted or compound commands.
+Mutations, deploys, secret access, network/external calls, and policy changes
+remain governed by the Console Runtime approval path. Deterministic receipts
+record zero tokens plus the avoided local and frontier calls so reporting can
+separate actual inference from work answered without it.
+
 For detailed modes, egress classes, and failure handling, see
 [Provider And Routing Resilience](llm_runtime_fallback.md).
 

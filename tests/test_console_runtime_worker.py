@@ -174,17 +174,29 @@ def test_db_console_runtime_worker_completes_one_dry_run_step(db):
     model_completed = next(
         event for event in events if event.event_type == "model.completed"
     )
+    route_decided = next(
+        event for event in events if event.event_type == "route.decided"
+    )
     tool_completed = next(
         event for event in events if event.event_type == "tool.completed"
     )
 
     plan = behavior.payload["reasoning_orchestration"]
+    work_classification = behavior.payload["work_classification"]
     assert plan["schema"] == "norman.reasoning-orchestrator.plan.v1"
     assert plan["plan_id"]
+    assert work_classification["work_class"] == "local_review"
+    assert plan["work_classification"] == work_classification
     assert result["reasoning_orchestration"]["plan_id"] == plan["plan_id"]
     assert model_requested.payload["reasoning_plan_id"] == plan["plan_id"]
     assert model_completed.payload["reasoning_plan_id"] == plan["plan_id"]
     assert tool_completed.payload["reasoning_plan_id"] == plan["plan_id"]
+    assert route_decided.payload["metadata"]["work_classification"] == (
+        work_classification
+    )
+    assert model_requested.payload["work_classification"] == work_classification
+    assert model_completed.payload["work_classification"] == work_classification
+    assert tool_completed.payload["work_classification"] == work_classification
     assert model_completed.payload["reasoning_receipt"]["schema"] == (
         "norman.reasoning-orchestrator.receipt.v1"
     )

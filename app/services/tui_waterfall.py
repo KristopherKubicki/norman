@@ -24,6 +24,7 @@ _STAGES = {
     "bedrock_manual",
     "route_lock",
     "deterministic_status",
+    "deterministic_command",
     "blocked",
     "blocked_manual_bedrock",
 }
@@ -93,6 +94,13 @@ _STAGE_METADATA = {
         "fallback_reason": "",
         "charge_basis": "zero_token_deterministic",
         "attempts": ("deterministic_status",),
+    },
+    "deterministic_command": {
+        "route_source": "deterministic_tui_command",
+        "reason": "fixed read-only TUI command executed without a model call",
+        "fallback_reason": "",
+        "charge_basis": "zero_token_deterministic",
+        "attempts": ("deterministic_command",),
     },
     "blocked": {
         "route_source": "waterfall_guard",
@@ -256,12 +264,25 @@ def sanitize_tui_waterfall_decision(value: Any) -> dict[str, Any]:
         route_lock and selected_runtime and selected_model and selected_service_tier
     ):
         return {}
-    if stage == "deterministic_status" and not (
-        selected_runtime == "localllm"
-        and selected_model == "deterministic-status"
-        and selected_service_tier == "default"
-        and not route_lock
-    ):
+    if stage in {"deterministic_status", "deterministic_command"}:
+        expected_model = (
+            "deterministic-status"
+            if stage == "deterministic_status"
+            else "deterministic-command"
+        )
+        if not (
+            _text(source.get("requested_runtime")) == "localllm"
+            and _text(source.get("requested_model")) == expected_model
+            and _text(source.get("requested_service_tier")) == "default"
+            and selected_runtime == "localllm"
+            and selected_model == expected_model
+            and selected_service_tier == "default"
+            and not route_lock
+        ):
+            return {}
+    if stage == "deterministic_status" and selected_model != "deterministic-status":
+        return {}
+    if stage == "deterministic_command" and selected_model != "deterministic-command":
         return {}
 
     metadata = _STAGE_METADATA[stage]
@@ -424,6 +445,7 @@ def build_tui_waterfall(
     manual_bedrock_available: bool | None = None,
     direct_tier_usage_limit_recovery: bool = False,
     deterministic_status: bool = False,
+    deterministic_command: bool = False,
 ) -> dict[str, Any]:
     """Choose the only automatic path from ChatGPT capacity to Bedrock.
 
@@ -450,6 +472,8 @@ def build_tui_waterfall(
         if manual_bedrock_available is None
         else bool(manual_bedrock_available)
     )
+    if deterministic_status and deterministic_command:
+        return {}
     if deterministic_status:
         if not (
             requested_runtime == base_runtime == "localllm"
@@ -471,6 +495,32 @@ def build_tui_waterfall(
             reason="durable TUI state answered status without a model call",
             fallback_reason="",
             attempts=["deterministic_status"],
+            route_lock=False,
+            bedrock_auto_authorized=False,
+            subscription_capacity=capacity,
+            charge_basis="zero_token_deterministic",
+        )
+    if deterministic_command:
+        if not (
+            requested_runtime == base_runtime == "localllm"
+            and requested_model == base_model == "deterministic-command"
+            and base_service_tier == "default"
+        ):
+            return {}
+        return _decision(
+            requested_runtime=requested_runtime,
+            requested_model=requested_model,
+            requested_service_tier=requested_service_tier,
+            selected=True,
+            blocked=False,
+            selected_runtime="localllm",
+            selected_model="deterministic-command",
+            selected_service_tier="default",
+            stage="deterministic_command",
+            route_source="deterministic_tui_command",
+            reason="fixed read-only TUI command executed without a model call",
+            fallback_reason="",
+            attempts=["deterministic_command"],
             route_lock=False,
             bedrock_auto_authorized=False,
             subscription_capacity=capacity,

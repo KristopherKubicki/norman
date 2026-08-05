@@ -568,13 +568,13 @@ def test_live_core_agent_result_records_chat_receipt(monkeypatch):
     def fake_http_json_request(*args, **kwargs):
         assert args[0] == "POST"
         assert args[1] == "https://llm.home.arpa/v1/chat/completions"
-        assert kwargs["payload"]["model"] == "qwen3.6:35b-a3b-q4_K_M"
+        assert kwargs["payload"]["model"] == "qwen3-coder:30b-a3b-q4_K_M"
         assert kwargs["headers"]["X-Capability-Suite-Id"] == "planner_router"
         assert kwargs["headers"]["X-Capability-Case-Id"] == "planner-router-test"
         return runner.HttpResponse(
             status=200,
             payload={
-                "model": "qwen3.6:35b-a3b-q4_K_M",
+                "model": "qwen3-coder:30b-a3b-q4_K_M",
                 "choices": [{"message": {"role": "assistant", "content": content}}],
                 "usage": {
                     "prompt_tokens": 37,
@@ -582,15 +582,15 @@ def test_live_core_agent_result_records_chat_receipt(monkeypatch):
                     "total_tokens": 56,
                 },
                 "norllama": {
-                    "selected_worker": "spark151",
-                    "upstream": "http://192.168.2.151:11434",
+                    "selected_worker": "spark150",
+                    "upstream": "http://192.168.2.150:11434",
                     "usage_bucket": "offline_local",
                     "cloud_proxy": False,
-                    "peer_path": ["llm.home.arpa", "spark-151"],
+                    "peer_path": ["llm.home.arpa", "spark-150"],
                 },
             },
             headers={
-                "x-norllama-upstream": "http://192.168.2.151:11434",
+                "x-norllama-upstream": "http://192.168.2.150:11434",
                 "x-request-id": "gateway-core-1",
             },
         )
@@ -607,8 +607,8 @@ def test_live_core_agent_result_records_chat_receipt(monkeypatch):
 
     assert result["status"] == "passed"
     assert result["capability_quality_passed"] is True
-    assert result["observed_worker"] == "spark-151"
-    assert result["requested_model"] == "qwen3.6:35b-a3b-q4_K_M"
+    assert result["observed_worker"] == "spark-150"
+    assert result["requested_model"] == "qwen3-coder:30b-a3b-q4_K_M"
     assert result["output_preview"] == content
     assert result["local_tokens"] == 56
     assert result["local_work_unit_type"] == "model_completion"

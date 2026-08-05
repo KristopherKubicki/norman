@@ -215,6 +215,9 @@ Exit criteria:
 
 Deliverables:
 
+- Keep exact TUI status reads and a fixed read-only command allowlist in a
+  zero-model lane. The lane uses fixed argv, `shell=False`, and a bounded
+  timeout; it does not interpret natural-language shell requests.
 - Use Norllama capabilities for scout/planner/filter/compact/verify/rerank.
 - Shift safe self-contained work to local models by default.
 - Escalate to higher/cloud models only with a receipt explaining why.
@@ -223,9 +226,13 @@ Deliverables:
 Exit criteria:
 
 - Kernel route decisions include cost and capability reasons.
+- Zero-model receipts report zero tokens and avoided local/frontier calls.
 - Cloud calls have a local preflight receipt except for explicit exceptions.
 - Local model failures degrade to wait/fallback rules rather than silent cloud
   spend.
+- Writes, deploys, secrets, external calls, policy changes, and commands
+  outside the fixed read-only lane remain behind command policy and human
+  approval.
 
 ### Phase 5: Estate Rollout
 

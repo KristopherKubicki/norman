@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from app.services.norllama import gateway
 
 
@@ -529,6 +531,49 @@ def test_invoke_text_chat_preserves_norllama_routing_headers(monkeypatch):
     }
     assert calls[0][2]["think"] is False
     assert "secret" not in str(payload)
+
+
+def test_invoke_text_chat_disables_native_thinking_for_coder(monkeypatch):
+    calls = []
+
+    def fake_post(url, headers, json, timeout, verify):
+        calls.append(json)
+        return FakeResponse({"model": json["model"], "response": "hello"})
+
+    monkeypatch.setattr(gateway.requests, "post", fake_post)
+
+    gateway.invoke_text_chat(
+        messages=[{"role": "user", "content": "hi"}],
+        model="qwen3-coder:30b-a3b-q4_K_M",
+        base_url="https://llm.home.arpa/v1",
+        max_tokens=32,
+    )
+
+    assert calls[0]["think"] is False
+
+
+def test_invoke_text_chat_preserves_gateway_failure_payload(monkeypatch):
+    def fake_post(url, headers, json, timeout, verify):
+        return FakeResponse(
+            {"error": "local_model_not_installed", "model": json["model"]},
+            status_code=422,
+        )
+
+    monkeypatch.setattr(gateway.requests, "post", fake_post)
+
+    with pytest.raises(gateway.NorllamaGatewayError) as error:
+        gateway.invoke_text_chat(
+            messages=[{"role": "user", "content": "hi"}],
+            model="missing-model:latest",
+            base_url="https://llm.home.arpa/v1",
+            max_tokens=32,
+        )
+
+    assert error.value.status_code == 422
+    assert error.value.payload == {
+        "error": "local_model_not_installed",
+        "model": "missing-model:latest",
+    }
 
 
 def test_normalize_capabilities_payload_accepts_ollama_tags():

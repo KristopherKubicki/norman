@@ -12,6 +12,19 @@ from urllib3.exceptions import InsecureRequestWarning
 from app.core.config import settings
 
 
+class NorllamaGatewayError(RuntimeError):
+    """A non-success response returned by the Norllama gateway."""
+
+    def __init__(self, status_code: int, payload: dict[str, Any] | None = None):
+        self.status_code = int(status_code)
+        self.payload = dict(payload or {})
+        error = _clean(self.payload.get("error"))
+        message = f"Norllama gateway returned HTTP {self.status_code}"
+        if error:
+            message = f"{message}: {error}"
+        super().__init__(message)
+
+
 def _clean(value: Any) -> str:
     return str(value or "").strip()
 
@@ -252,7 +265,7 @@ def _routing_headers(response: Any) -> dict[str, str]:
 
 def _disable_native_thinking(model: str) -> bool:
     clean = _clean(model).lower()
-    return clean.startswith("qwen3.6:") or clean.startswith("qwen3.5:")
+    return clean.startswith(("qwen3-coder:", "qwen3.6:", "qwen3.5:"))
 
 
 def invoke_text_chat(
@@ -301,8 +314,14 @@ def invoke_text_chat(
         timeout=timeout_seconds
         or max(1, min(float(settings.llm_provider_timeout_seconds), 120.0)),
     )
-    response.raise_for_status()
-    payload = response.json()
+    try:
+        response_payload = response.json()
+    except (TypeError, ValueError):
+        response_payload = {}
+    payload = response_payload if isinstance(response_payload, dict) else {}
+    status_code = int(getattr(response, "status_code", 0) or 0)
+    if not 200 <= status_code < 300:
+        raise NorllamaGatewayError(status_code, payload)
     text = _clean(payload.get("response"))
     if not text:
         raise RuntimeError("Norllama returned an empty response")

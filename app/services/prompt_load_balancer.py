@@ -11,6 +11,7 @@ from app.services.reasoning_orchestrator import (
     kpi_background_loop_plan,
     plan_reasoning_turn,
 )
+from app.services.work_classification import classify_work
 from app.services import tui_route_intent
 
 PROMPT_LOAD_BALANCER_SCHEMA = "norman.prompt-load-balancer.v1"
@@ -875,15 +876,6 @@ def balance_prompt(
                 *stateful_control["blockers"],
             ]
     reasoning = _reasoning_profile(classification, prompt=clean_prompt)
-    orchestration_plan = plan_reasoning_turn(
-        prompt=clean_prompt,
-        classification=classification,
-        context=context,
-        artifacts=[dict(item) for item in artifacts or [] if isinstance(item, Mapping)],
-        source=source,
-        session=session,
-    )
-    reasoning_receipt = build_reasoning_receipt(orchestration_plan)
     strategy = _strategy_for_prompt(
         classification,
         reasoning,
@@ -932,6 +924,33 @@ def balance_prompt(
             "context": dict(context or {}),
         },
     )
+    context_payload = _dict(context)
+    active_work = bool(
+        context_payload.get("active_job_count")
+        or context_payload.get("active_job_id")
+        or context_payload.get("pending_action_kind")
+    )
+    work_classification = classify_work(
+        prompt_classification=classification,
+        attachment_count=len(artifacts or []),
+        active_work=active_work,
+        route_locked=_flag(policy.get("route_lock")),
+        force_requested_runtime=force_requested_runtime,
+        requested_runtime=requested_runtime,
+        effective_runtime=route.provider,
+        selected_provider=route.provider,
+        task_kind=task_kind,
+    )
+    orchestration_plan = plan_reasoning_turn(
+        prompt=clean_prompt,
+        classification=classification,
+        context=context,
+        artifacts=[dict(item) for item in artifacts or [] if isinstance(item, Mapping)],
+        source=source,
+        session=session,
+        work_classification=work_classification,
+    )
+    reasoning_receipt = build_reasoning_receipt(orchestration_plan)
     receipt = build_task_receipt(
         task_request,
         route,
@@ -970,6 +989,7 @@ def balance_prompt(
         "source": source,
         "session": session,
         "classification": classification,
+        "work_classification": work_classification,
         "stateful_control": stateful_control,
         "reasoning_profile": reasoning,
         "reasoning_orchestration": orchestration_plan,
@@ -1006,6 +1026,7 @@ def balance_prompt(
             "selected_model": route.model,
             "selected_lane": route.lane,
             "task_kind": task_kind,
+            "work_classification": work_classification,
             "reasoning_tier": reasoning["tier"],
             "routing_strategy": strategy["strategy"],
             "primary_executor": strategy["primary_executor"],
@@ -1049,6 +1070,7 @@ def balance_prompt(
             "execution_performed": False,
             "norllama_route_receipt": receipt.get("route_receipt", {}),
             "reasoning_receipt": reasoning_receipt,
+            "work_classification": work_classification,
         },
     }
 

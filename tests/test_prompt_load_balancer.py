@@ -40,6 +40,15 @@ def test_prompt_load_balancer_routes_typo_status_prompts_local_first():
     assert result["recommendation"]["primary_executor"] == "deterministic_prompt_gate"
     assert result["recommendation"]["next_hop"] == "console_runtime_kernel"
     assert result["reasoning_orchestration"]["reasoning_tier"]["tier"] == "instant"
+    assert result["work_classification"]["work_class"] == "local"
+    assert (
+        result["recommendation"]["work_classification"]
+        == (result["work_classification"])
+    )
+    assert (
+        result["route_receipt_preview"]["work_classification"]
+        == (result["work_classification"])
+    )
     assert (
         "kpi.status_snapshot" in result["reasoning_orchestration"]["selected_skill_ids"]
     )
@@ -68,6 +77,11 @@ def test_prompt_load_balancer_routes_broad_tui_planning_to_local_reasoning():
     assert result["route"]["cloud_proxy"] is False
     assert result["recommendation"]["selected_runtime"] == "localllm"
     assert result["recommendation"]["cloud_last_resort"] is True
+    assert result["work_classification"]["work_class"] == "local_review"
+    assert (
+        result["reasoning_orchestration"]["work_classification"]
+        == (result["work_classification"])
+    )
 
 
 def test_prompt_load_balancer_routes_reply_tail_buttons() -> None:
@@ -195,6 +209,7 @@ def test_prompt_load_balancer_requires_preflight_for_external_mutations():
     assert result["recommendation"]["execution_allowed"] is False
     assert result["recommendation"]["next_hop"] == "local_preflight_or_approval"
     assert result["recommendation"]["cloud_last_resort"] is True
+    assert result["work_classification"]["work_class"] == "approval_required"
 
 
 def test_prompt_load_balancer_routes_artifacts_to_local_specialist_strategy():
@@ -280,6 +295,8 @@ def test_prompt_load_balancer_only_uses_cloud_when_explicitly_forced():
     assert result["route"]["local"] is False
     assert result["recommendation"]["selected_runtime"] == "aws-bedrock"
     assert result["recommendation"]["cloud_last_resort"] is True
+    assert result["work_classification"]["work_class"] == "frontier"
+    assert "effective_frontier_runtime" in result["work_classification"]["reason_codes"]
 
 
 def test_openai_chat_adapter_routes_status_local_first():
@@ -689,7 +706,7 @@ def test_openai_compat_chat_completions_routes_local_first(test_app, monkeypatch
     payload = response.json()
     assert payload["object"] == "chat.completion"
     assert payload["choices"][0]["message"]["content"] == "local ok"
-    assert payload["model"].startswith("qwen3.6")
+    assert payload["model"] == "qwen3-coder:30b-a3b-q4_K_M"
     assert payload["usage"]["total_tokens"] == 6
     assert payload["norman"]["local_execution"] is True
     assert payload["norman"]["cloud_forwarding"] is False
@@ -787,6 +804,38 @@ def test_openai_compat_responses_returns_gateway_failure(test_app, monkeypatch):
         "type": "server_error",
         "param": None,
         "code": "local_model_unavailable",
+    }
+
+
+def test_openai_compat_responses_preserves_missing_local_model(test_app, monkeypatch):
+    from app.services.prompt_provider_facade import norllama_gateway
+
+    headers = _proxy_headers(monkeypatch, route="gold-book")
+
+    def missing_local_model(**kwargs):
+        raise norllama_gateway.NorllamaGatewayError(
+            422,
+            {"error": "local_model_not_installed"},
+        )
+
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat",
+        missing_local_model,
+    )
+
+    response = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={"model": "gpt-5.5", "input": "status?"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"] == {
+        "message": "Requested local model is not installed",
+        "type": "invalid_request_error",
+        "param": None,
+        "code": "local_model_not_installed",
     }
 
 

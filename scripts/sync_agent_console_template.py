@@ -367,18 +367,14 @@ LOCAL_RERANK_FRONTDOOR_URL = (
     ).strip()
     or "https://llm.home.arpa/v1/rerank"
 )
-LOCAL_PLANNER_POLICY_MODELS: tuple[str, ...] = (
-    "qwen3.6:35b-a3b-q4_K_M",
-    "qwen3.6:27b",
-    "qwen3.5:27b-q4_K_M",
-)
-LOCAL_PLANNER_POLICY_MAX_CANDIDATES = 3
+LOCAL_PLANNER_POLICY_MODELS: tuple[str, ...] = ("qwen3-coder:30b-a3b-q4_K_M",)
+LOCAL_PLANNER_POLICY_MAX_CANDIDATES = 1
 LOCAL_ROUTE_INTENT_CLASSIFIER_MODEL = (
     os.environ.get(
         "NORMAN_SYNC_LOCAL_ROUTE_INTENT_CLASSIFIER_MODEL",
-        "qwen3.6:35b-a3b-q4_K_M",
+        "qwen3-coder:30b-a3b-q4_K_M",
     ).strip()
-    or "qwen3.6:35b-a3b-q4_K_M"
+    or "qwen3-coder:30b-a3b-q4_K_M"
 )
 WORK_BEDROCK_DEFAULT_INSTANCES: tuple[str, ...] = (
     "compere",
@@ -533,30 +529,28 @@ def _local_llm_inventory() -> (
             if not isinstance(models, list):
                 continue
             for model in models:
-                name = str(model or "").strip()
+                raw_name = str(model or "").strip()
+                if not raw_name:
+                    continue
+                name = (
+                    "qwen3-coder:30b-a3b-q4_K_M"
+                    if raw_name.lower() == "qwen/qwen3-coder-30b-a3b"
+                    or raw_name.lower() == "qwen3-coder:30b-a3b-q4_k_m"
+                    else ""
+                )
                 if not name:
                     continue
                 model_endpoints.setdefault(name, [])
                 if endpoint not in model_endpoints[name]:
                     model_endpoints[name].append(endpoint)
 
-    priority = {
-        "gpt-oss:120b": 0,
-        "qwen3.5:122b-a10b-q4_K_M": 1,
-        "meta-llama/Llama-3.1-70B-Instruct": 2,
-    }
-    model_endpoints = {
-        model: endpoints
-        for model, endpoints in model_endpoints.items()
-        if model in priority
-    }
-    models = tuple(
-        sorted(
-            model_endpoints,
-            key=lambda item: (priority.get(item, 1000), item.lower()),
-        )
+    model_endpoints = (
+        {"qwen3-coder:30b-a3b-q4_K_M": model_endpoints["qwen3-coder:30b-a3b-q4_K_M"]}
+        if "qwen3-coder:30b-a3b-q4_K_M" in model_endpoints
+        else {}
     )
-    default = models[0] if models else ""
+    models = tuple(model_endpoints)
+    default = "qwen3-coder:30b-a3b-q4_K_M" if models else ""
     return models, tuple(endpoints), model_endpoints, default
 
 
@@ -2202,11 +2196,6 @@ def _unique_models(values: list[str]) -> list[str]:
     return selected
 
 
-def _planner_model_disabled(model: str) -> bool:
-    clean = str(model or "").strip().lower()
-    return clean == "llama3.2" or clean.startswith("llama3.2:")
-
-
 def planner_models_for_instance(
     host: DiscoveryHost, instance: ConsoleInstance
 ) -> list[str]:
@@ -2221,25 +2210,10 @@ def planner_models_for_instance(
             values.get("NORMAN_LOCAL_LLM_MODEL", ""),
         ]
     )
-    available = {
-        model.lower(): model
-        for model in configured
-        if not _planner_model_disabled(model)
-    }
-    selected = [
-        available[preferred.lower()]
-        for preferred in LOCAL_PLANNER_POLICY_MODELS
-        if preferred.lower() in available
-    ]
-    selected.extend(
-        model
-        for model in configured
-        if model.lower() not in {item.lower() for item in selected}
-        and not _planner_model_disabled(model)
-    )
-    if not selected:
-        selected = list(LOCAL_PLANNER_POLICY_MODELS)
-    return _unique_models(selected)[:LOCAL_PLANNER_POLICY_MAX_CANDIDATES]
+    available = {model.lower() for model in configured}
+    return [
+        model for model in LOCAL_PLANNER_POLICY_MODELS if model.lower() in available
+    ] or list(LOCAL_PLANNER_POLICY_MODELS)
 
 
 def read_instance_env_values(

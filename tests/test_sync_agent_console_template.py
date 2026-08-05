@@ -816,28 +816,24 @@ def test_origin_sync_exports_discovered_local_llm_inventory(
 
     monkeypatch.setattr(module, "capture", fake_capture)
 
-    assert module.LOCAL_LLM_DEFAULT_MODEL == "gpt-oss:120b"
-    assert module.LOCAL_LLM_MODELS == (
-        "gpt-oss:120b",
-        "qwen3.5:122b-a10b-q4_K_M",
-        "meta-llama/Llama-3.1-70B-Instruct",
-    )
+    assert module.LOCAL_LLM_DEFAULT_MODEL == "qwen3-coder:30b-a3b-q4_K_M"
+    assert module.LOCAL_LLM_MODELS == ("qwen3-coder:30b-a3b-q4_K_M",)
     assert module.LOCAL_LLM_ENDPOINTS == (
         "http://192.168.2.151:11434",
         "http://192.168.2.152:11434",
         "http://spark-1.home.arpa:8000",
     )
-    assert module.LOCAL_LLM_MODEL_ENDPOINTS["gpt-oss:120b"] == [
-        "http://192.168.2.151:11434",
-        "http://192.168.2.152:11434",
+    assert module.LOCAL_LLM_MODEL_ENDPOINTS["qwen3-coder:30b-a3b-q4_K_M"] == [
+        "http://spark-1.home.arpa:8000",
     ]
+    assert "gpt-oss:120b" not in module.LOCAL_LLM_MODEL_ENDPOINTS
     assert "qwen3-coder-next:q4_K_M" not in module.LOCAL_LLM_MODEL_ENDPOINTS
     assert "Qwen/Qwen3-Coder-30B-A3B" not in module.LOCAL_LLM_MODEL_ENDPOINTS
     assert module.sync_instance_origin_settings(_host(module), panelbot) is True
 
     script = captured["script"]
     assert '"NORMAN_LOCAL_LLM_DISABLED_MODELS":"llama3.2,llama3.2:*"' in script
-    assert '"NORMAN_LOCAL_LLM_MODEL":"gpt-oss:120b"' in script
+    assert '"NORMAN_LOCAL_LLM_MODEL":"qwen3-coder:30b-a3b-q4_K_M"' in script
     assert '"NORMAN_LOCAL_LLM_MODELS":"' in script
     assert (
         '"NORMAN_LOCAL_LLM_ENDPOINTS":"http://192.168.2.151:11434,http://192.168.2.152:11434,http://spark-1.home.arpa:8000"'
@@ -845,7 +841,7 @@ def test_origin_sync_exports_discovered_local_llm_inventory(
     )
     assert '"NORMAN_LOCAL_LLM_MODEL_ENDPOINTS":"' in script
     assert "http://spark-1.home.arpa:8000" in script
-    assert "qwen3.5:122b-a10b-q4_K_M" in script
+    assert "qwen3.5:122b-a10b-q4_K_M" not in script
     assert "Qwen/Qwen3-Coder-30B-A3B" not in script
     assert "qwen3-coder-next:q4_K_M" not in script
     assert "qwen3-vl:30b-a3b-instruct-q4_K_M" not in script
@@ -1050,15 +1046,12 @@ def test_local_llm_foreground_sync_configures_intent_classifier(
 
     synced = env_path.read_text(encoding="utf-8")
     assert "NORMAN_LOCAL_LLM_FILTER_MODELS" not in synced
-    assert (
-        "NORMAN_LOCAL_LLM_PLANNER_MODELS="
-        "qwen3.6:35b-a3b-q4_K_M,qwen3.6:27b,qwen3.5:27b-q4_K_M"
-    ) in synced
+    assert ("NORMAN_LOCAL_LLM_PLANNER_MODELS=qwen3-coder:30b-a3b-q4_K_M") in synced
     assert "NORMAN_LOCAL_PLANNER_PREFLIGHT_TIMEOUT_SECONDS=18" in synced
     assert "NORMAN_LOCAL_PLANNER_PREFLIGHT_MAX_OUTPUT_TOKENS=96" in synced
-    assert "NORMAN_LOCAL_PLANNER_PREFLIGHT_MAX_CANDIDATES=3" in synced
+    assert "NORMAN_LOCAL_PLANNER_PREFLIGHT_MAX_CANDIDATES=1" in synced
     assert (
-        "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MODEL=" "qwen3.6:35b-a3b-q4_K_M"
+        "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MODEL=" "qwen3-coder:30b-a3b-q4_K_M"
     ) in synced
     assert "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MAX_OUTPUT_TOKENS=192" in synced
     assert "NORMAN_TUI_TOKEN_CAPACITY_USAGE_WINDOW_SECONDS=3600" in synced
@@ -2012,7 +2005,7 @@ def test_norman_switchboard_uses_its_dedicated_web_source(monkeypatch) -> None:
 def test_web_sources_must_share_ui_version(monkeypatch, tmp_path: Path) -> None:
     module = _load_sync_script(monkeypatch)
 
-    assert module.validate_web_source_versions() == "2026.07.31.5"
+    assert module.validate_web_source_versions() == "2026.08.04.1"
 
     stale_switchboard = tmp_path / "norman_codex_web.py"
     stale_switchboard.write_text(
@@ -2026,7 +2019,7 @@ def test_web_sources_must_share_ui_version(monkeypatch, tmp_path: Path) -> None:
     except RuntimeError as exc:
         assert str(exc) == (
             "Web UI source versions must match: "
-            "norman-switchboard=v2026.07.16.06, web=v2026.07.31.5"
+            "norman-switchboard=v2026.07.16.06, web=v2026.08.04.1"
         )
     else:
         raise AssertionError("expected mismatched web sources to be rejected")

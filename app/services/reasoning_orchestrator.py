@@ -4,6 +4,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
+from app.services.work_classification import sanitize_work_classification
+
 REASONING_PLAN_SCHEMA = "norman.reasoning-orchestrator.plan.v1"
 REASONING_RECEIPT_SCHEMA = "norman.reasoning-orchestrator.receipt.v1"
 SKILL_REGISTRY_SCHEMA = "norman.skill-registry.v1"
@@ -430,6 +432,7 @@ def plan_reasoning_turn(
     artifacts: list[dict[str, Any]] | None = None,
     source: str = "",
     session: str = "",
+    work_classification: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a deterministic tool/reasoning plan for a TUI turn."""
 
@@ -539,6 +542,7 @@ def plan_reasoning_turn(
         },
         "background_loop_candidates": background_candidates,
         "artifacts_observed": len(artifacts or []),
+        "work_classification": sanitize_work_classification(work_classification),
         "receipt_required": True,
     }
 
@@ -577,6 +581,9 @@ def build_reasoning_receipt(
         "verifier_result": verifier_result,
         "completion_state": "planned" if verifier_result == "planned" else "observed",
         "cloud_policy": plan.get("cloud_policy") or {},
+        "work_classification": sanitize_work_classification(
+            plan.get("work_classification")
+        ),
         "receipt_complete": verifier_result != "planned"
         and not skipped_required
         and bool(executed_tools),

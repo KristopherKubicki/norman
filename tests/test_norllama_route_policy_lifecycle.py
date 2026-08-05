@@ -86,6 +86,45 @@ def _load_gateway_module():
     return module
 
 
+def _load_resident_warmer_module():
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "norllama"
+        / "norllama_resident_warmer.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "norllama_resident_warmer_lifecycle",
+        script,
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_resident_warmer_skips_manual_only_model_before_any_probe(
+    monkeypatch, tmp_path, capsys
+):
+    _install_policy(monkeypatch, tmp_path)
+    module = _load_resident_warmer_module()
+    model = "qwen3.5:122b-a10b-q4_K_M"
+    monkeypatch.setenv("NORLLAMA_WARM_CHAT_MODELS", model)
+    monkeypatch.setenv("NORLLAMA_WARM_EMBED_MODELS", "")
+
+    def unexpected_probe(*_args, **_kwargs):
+        raise AssertionError("manual-only models must not be probed or warmed")
+
+    monkeypatch.setattr(module, "_free_mib", unexpected_probe)
+    monkeypatch.setattr(module, "_warm_chat_model", unexpected_probe)
+
+    assert module.main() == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["results"] == [{"model": model, "status": "skipped_manual_only"}]
+
+
 def test_policy_valid_allows_default_model_selection(monkeypatch, tmp_path):
     _install_policy(monkeypatch, tmp_path)
     loaded = load_route_policy_artifact()

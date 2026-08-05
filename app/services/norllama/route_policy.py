@@ -6,9 +6,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 ROUTE_POLICY_SCHEMA = "norman.norllama.route-policy.v1"
-ROUTE_POLICY_VERSION = "2026.07.13.lifecycle-v2"
-ROUTE_POLICY_COMPILED_AT = "2026-07-13T00:00:00Z"
-ROUTE_POLICY_EXPIRES_AT = "2026-07-20T00:00:00Z"
+ROUTE_POLICY_VERSION = "2026.08.04.coder-runtime-v1"
+ROUTE_POLICY_COMPILED_AT = "2026-08-04T00:00:00Z"
+ROUTE_POLICY_EXPIRES_AT = "2026-08-11T00:00:00Z"
 ROUTE_POLICY_EXPIRY_WARN_SECONDS = 72 * 60 * 60
 ROUTE_POLICY_EXPIRED_STATE = "expired_blocked"
 
@@ -44,20 +44,20 @@ QWEN35_HEAVY_JUDGE_MODEL_NEEDLES = (
 QWEN35_HEAVY_JUDGE_ALLOWED_LANES = frozenset({"judge", "verifier"})
 
 ROUTE_POLICY_MODELS = {
-    "general_reasoning_floor": "qwen3.6/qwen3.5-class",
-    "router": "qwen3.6:35b-a3b-q4_K_M",
-    "coding_operator": "qwen3.6:27b",
-    "local_heavyweight_judge": "qwen3.5:122b-a10b-q4_K_M",
+    "general_reasoning_floor": "qwen3-coder-30b-class",
+    "router": "qwen3-coder:30b-a3b-q4_K_M",
+    "coding_operator": "qwen3-coder:30b-a3b-q4_K_M",
+    "local_heavyweight_judge": "qwen3.5:122b-a10b-q4_K_M (manual-only)",
     "fallback_small": "gemma4-or-qwen-tiny-class",
 }
 
 ROUTE_POLICY_LANES = {
-    "planner": {"class": "qwen3.6", "gate": "production"},
-    "coder": {"class": "qwen3.6", "gate": "production"},
-    "summarizer": {"class": "qwen3.6", "gate": "production"},
-    "filter": {"class": "qwen3.6", "gate": "production"},
-    "verifier": {"class": "qwen3.5-or-qwen3.6", "gate": "production"},
-    "judge": {"class": "qwen3.5-heavy", "gate": "production"},
+    "planner": {"class": "qwen3-coder", "gate": "production"},
+    "coder": {"class": "qwen3-coder", "gate": "production"},
+    "summarizer": {"class": "qwen3-coder", "gate": "production"},
+    "filter": {"class": "qwen3-coder", "gate": "production"},
+    "verifier": {"class": "qwen3-coder", "gate": "production"},
+    "judge": {"class": "manual-only-qwen3.5-heavy", "gate": "production"},
     "specialist": {"class": "lane-specific", "gate": "smoke-or-better"},
     "lab": {"class": "explicit-request-only", "gate": "lab"},
 }
@@ -65,16 +65,17 @@ ROUTE_POLICY_LANES = {
 ROUTE_POLICY_PLACEMENT = {
     "frontdoor": "https://llm.home.arpa",
     "router_node": "mac-mini-133",
-    "primary_brain_worker": "spark-151",
-    "specialist_worker": "spark-150",
+    "primary_brain_worker": "spark-150",
+    "specialist_worker": "spark-151",
     "fallback_node": "mac-mini-133",
     "qwen35_122b_allowed_lanes": sorted(QWEN35_HEAVY_JUDGE_ALLOWED_LANES),
     "fallback_node_heavy_models_allowed": False,
 }
 
 ROUTE_POLICY_RESIDENCY = {
-    "resident": ["qwen3.6-router", "qwen3.6-code", "rerank", "safety"],
-    "warm_on_demand": ["qwen3.5-122b-judge", "ocr", "asr", "doc-parse"],
+    "resident": ["qwen3-coder-30b", "rerank", "safety"],
+    "warm_on_demand": ["ocr", "doc-parse"],
+    "manual_only": ["qwen3.5-122b-judge"],
     "lab": ["world", "graph", "packet", "forecasting", "gui-grounding"],
 }
 

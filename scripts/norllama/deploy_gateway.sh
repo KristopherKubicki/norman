@@ -3,6 +3,10 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source_path="${repo_root}/scripts/norllama/norllama_gateway.py"
+temp_policy_path="$(mktemp "${repo_root}/scripts/norllama/route_policy.XXXXXX.json")"
+PYTHONPATH="$repo_root${PYTHONPATH:+:$PYTHONPATH}" \
+  python3 "${repo_root}/scripts/norllama/refresh_route_policy.py" --path "$temp_policy_path"
+trap 'rm -f "$temp_policy_path"' EXIT
 
 mac_target="${NORLLAMA_MAC_TARGET:-k@192.168.2.133}"
 mac_path="${NORLLAMA_MAC_PATH:-/Users/k/norllama/norllama_gateway.py}"
@@ -63,18 +67,22 @@ python3 -m py_compile "$source_path"
 
 if [[ "$deploy_mac" == "1" ]]; then
   echo "Deploying Mac front door: ${mac_target}:${mac_path}"
+  mac_policy_path="$(dirname "$mac_path")/route_policy.json"
   scp -q "$source_path" "${mac_target}:${mac_path}"
+  scp -q "$temp_policy_path" "${mac_target}:${mac_policy_path}"
   ssh "$mac_target" \
-    "python3 -m py_compile '$mac_path' && launchctl kickstart -k gui/\$(id -u)/'$mac_service' && sleep 2 && curl -fsS --max-time 5 http://127.0.0.1:18151/healthz >/dev/null"
+    "python3 -m py_compile '$mac_path' && launchctl kickstart -k gui/\$(id -u)/'$mac_service' && sleep 2 && curl -fsS --max-time 5 http://127.0.0.1:18151/healthz >/dev/null && curl -fsS --max-time 5 http://127.0.0.1:18151/readyz >/dev/null && curl -fsS --max-time 5 http://127.0.0.1:18151/v1/models >/dev/null"
 fi
 
 if [[ "$deploy_sparks" == "1" ]]; then
   for target in $spark_targets; do
     echo "Deploying Spark peer: ${target}:${spark_path}"
+    spark_policy_path="$(dirname "$spark_path")/route_policy.json"
     scp -q "$source_path" "${target}:${spark_path}"
+    scp -q "$temp_policy_path" "${target}:${spark_policy_path}"
     ssh "$target" "python3 -m py_compile '$spark_path'"
     if ! ssh "$target" \
-      "sudo -n systemctl restart '$spark_service' && sleep 2 && curl -fsS --max-time 5 http://127.0.0.1:18151/healthz >/dev/null"; then
+      "sudo -n systemctl restart '$spark_service' && sleep 2 && curl -fsS --max-time 5 http://127.0.0.1:18151/healthz >/dev/null && curl -fsS --max-time 5 http://127.0.0.1:18151/readyz >/dev/null && curl -fsS --max-time 5 http://127.0.0.1:18151/v1/models >/dev/null"; then
       echo \
         "Gateway source copied to ${target}, but ${spark_service} requires an operator-approved sudo restart." \
         >&2
