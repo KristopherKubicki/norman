@@ -329,11 +329,13 @@ def _classified_gateway_error(
             retryable=True,
         )
     if status_code == 504 or isinstance(exc, (requests.Timeout, TimeoutError)):
+        retry_after = norllama_capacity.LOCAL_MODEL_TIMEOUT_COOLDOWN_SECONDS
         return local_error(
-            message="Local model request timed out",
+            message=f"Local model request timed out; retry in {retry_after} seconds",
             status=504,
             code="local_model_timeout",
             retryable=True,
+            headers={"Retry-After": str(retry_after)},
         )
     if status_code in {401, 403}:
         return local_error(

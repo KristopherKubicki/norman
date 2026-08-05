@@ -7,11 +7,15 @@ from app.services.norllama.route_policy import (
     ROUTE_POLICY_MODELS,
     ROUTE_POLICY_PLACEMENT,
 )
-from app.services.norllama.route_outcomes import local_route_cooldown
+from app.services.norllama.route_outcomes import (
+    DEFAULT_LOCAL_MODEL_TIMEOUT_COOLDOWN_SECONDS,
+    local_route_cooldown,
+)
 
 
 CAPACITY_SCHEMA = "norman.norllama.capacity.v1"
 CAPACITY_ROUTE_OUTCOME_COOLDOWN_SECONDS = 900
+LOCAL_MODEL_TIMEOUT_COOLDOWN_SECONDS = DEFAULT_LOCAL_MODEL_TIMEOUT_COOLDOWN_SECONDS
 HEAVY_CODING_MODEL = ROUTE_POLICY_MODELS["coding_operator"]
 HEAVY_CODING_WORKER_IDS = frozenset(
     {

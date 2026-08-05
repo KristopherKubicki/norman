@@ -11,10 +11,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -30,6 +32,35 @@ LOCAL_CODEX_WRAPPER = LOCAL_BIN / "codex"
 LOCAL_CODEX_WORK_WRAPPER = LOCAL_BIN / "codex-work"
 ROUTER_PROFILE_PREFIX = "router-"
 DEFAULT_ROUTER_MODEL = "norman-code"
+STATE_DIR = (
+    Path(value).expanduser()
+    if (value := os.environ.get("NORMAN_CODEX_STATE_DIR", "").strip())
+    else None
+)
+USAGE_HISTORY_PATH = (
+    Path(value).expanduser()
+    if (value := os.environ.get("NORMAN_CODEX_USAGE_PATH", "").strip())
+    else None
+)
+USAGE_LEDGER_PATH = (
+    Path(value).expanduser()
+    if (value := os.environ.get("NORMAN_CODEX_USAGE_LEDGER_PATH", "").strip())
+    else None
+)
+CODEX_ACCOUNT_CAPACITY_PATH = (
+    Path(value).expanduser()
+    if (value := os.environ.get("NORMAN_CODEX_ACCOUNT_CAPACITY_PATH", "").strip())
+    else None
+)
+USAGE_STATE_READ_LIMIT_BYTES = 2 * 1024 * 1024
+ACCOUNT_CAPACITY_FRESH_SECONDS = max(
+    60,
+    int(os.environ.get("NORMAN_CODEX_ACCOUNT_CAPACITY_FRESH_SECONDS", "1800")),
+)
+PLAN_LEDGER_KIND = "chatgpt_codex_credit_estimate"
+METERED_LEDGER_KINDS = frozenset(
+    {"api_rate_card_estimate", "provider_invoice_estimate"}
+)
 
 
 @dataclass(frozen=True)
@@ -585,12 +616,269 @@ def verify_norman_capacity(route: Route, *, token: str) -> tuple[bool, str]:
 
 
 def preflight_route_capacity(route: Route) -> tuple[bool, str]:
-    """Check local coding capacity before starting a mapped interactive session."""
+    """Report local coding capacity before starting a mapped interactive session."""
 
     token, detail = brokered_gateway_token(route)
     if not token:
         return False, detail
     return verify_norman_capacity(route, token=token)
+
+
+def _coerce_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _coerce_float(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        if path.stat().st_size > USAGE_STATE_READ_LIMIT_BYTES:
+            return {}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    """Load bounded JSONL state without making startup depend on it."""
+
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            if size > USAGE_STATE_READ_LIMIT_BYTES:
+                handle.seek(-USAGE_STATE_READ_LIMIT_BYTES, os.SEEK_END)
+                handle.readline()
+            data = handle.read(USAGE_STATE_READ_LIMIT_BYTES)
+    except OSError:
+        return []
+
+    entries: list[dict[str, Any]] = []
+    for line in data.decode("utf-8", errors="ignore").splitlines():
+        try:
+            payload = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(payload, dict):
+            entries.append(payload)
+    return entries
+
+
+def usage_state_paths(route: Route | None = None) -> tuple[Path, Path, Path]:
+    """Return the routed profile's web-bridge state, honoring explicit overrides."""
+
+    state_dir = STATE_DIR
+    if state_dir is None:
+        state_dir = (
+            route_home(route) / "web-bridge"
+            if route is not None
+            else HOME / ".codex" / "web-bridge"
+        )
+    return (
+        USAGE_LEDGER_PATH or state_dir / "usage-ledger.jsonl",
+        USAGE_HISTORY_PATH or state_dir / "usage.jsonl",
+        CODEX_ACCOUNT_CAPACITY_PATH or state_dir / "codex_account_capacity.json",
+    )
+
+
+def _usage_entries(route: Route | None = None) -> list[dict[str, Any]]:
+    """Prefer the durable ledger; history remains a compatibility fallback."""
+
+    ledger_path, history_path, _capacity_path = usage_state_paths(route)
+    entries = _read_jsonl(ledger_path)
+    return entries if entries else _read_jsonl(history_path)
+
+
+def _monthly_cycle_bounds(observed_at: int) -> tuple[int, int, str]:
+    current = datetime.fromtimestamp(observed_at).astimezone()
+    starts = current.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if starts.month == 12:
+        ends = starts.replace(year=starts.year + 1, month=1)
+    else:
+        ends = starts.replace(month=starts.month + 1)
+    return (
+        int(starts.timestamp()),
+        int(ends.timestamp()),
+        f"{starts:%b %d} to {ends:%b %d}",
+    )
+
+
+def _entry_estimate(entry: dict[str, Any], key: str) -> float | None:
+    candidates: list[Any] = [entry.get(key)]
+    for parent_key in ("cost", "billing", "estimate"):
+        parent = entry.get(parent_key)
+        if isinstance(parent, dict):
+            candidates.append(parent.get(key))
+    for candidate in candidates:
+        value = _coerce_float(candidate)
+        if value is not None and value >= 0:
+            return value
+    return None
+
+
+def _entry_tokens(entry: dict[str, Any]) -> int:
+    total = _coerce_int(entry.get("total_tokens"))
+    if total > 0:
+        return total
+    return max(
+        0,
+        _coerce_int(entry.get("input_tokens"))
+        + max(
+            _coerce_int(entry.get("output_tokens")),
+            _coerce_int(entry.get("reasoning_output_tokens")),
+        ),
+    )
+
+
+def _format_compact_number(value: float) -> str:
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}m"
+    if value >= 1_000:
+        return f"{value / 1_000:.1f}k"
+    return f"{value:.0f}"
+
+
+def _format_usd(value: float) -> str:
+    if value < 0.01:
+        return f"${value:.4f}".rstrip("0").rstrip(".")
+    if value < 10:
+        return f"${value:.2f}"
+    return f"${value:,.0f}"
+
+
+def _capacity_usage_notice(capacity: dict[str, Any], *, observed_at: int) -> str:
+    observed = _coerce_int(capacity.get("observed_at"))
+    source = str(capacity.get("source") or "").strip().lower()
+    state = str(capacity.get("state") or "").strip().lower()
+    if (
+        source != "interactive_usage"
+        or state not in {"available", "blocked"}
+        or observed <= 0
+        or observed_at - observed > ACCOUNT_CAPACITY_FRESH_SECONDS
+    ):
+        return ""
+
+    windows = capacity.get("windows")
+    window_parts: list[str] = []
+    if isinstance(windows, list):
+        for raw_window in windows[:3]:
+            if not isinstance(raw_window, dict):
+                continue
+            label = (
+                re.sub(
+                    r"[^A-Za-z0-9 ._-]+", "", str(raw_window.get("label") or "")
+                ).strip()[:48]
+                or "Current"
+            )
+            percent_left = min(100, max(0, _coerce_int(raw_window.get("percent_left"))))
+            reset_hint = re.sub(
+                r"[^A-Za-z0-9 .:_-]+", "", str(raw_window.get("reset_hint") or "")
+            ).strip()[:96]
+            detail = f"{label} {percent_left}% left"
+            if reset_hint:
+                detail += f" (resets {reset_hint})"
+            window_parts.append(detail)
+    if not window_parts:
+        percent_left = capacity.get("minimum_window_percent_left")
+        if percent_left is None:
+            return ""
+        window_parts.append(
+            f"Current {min(100, max(0, _coerce_int(percent_left)))}% left"
+        )
+    return "subscription: " + "; ".join(window_parts)
+
+
+def startup_usage_notices(
+    route: Route | None = None, *, observed_at: int | None = None
+) -> list[str]:
+    """Summarize local subscription and metered state before a TUI starts."""
+
+    now = _coerce_int(observed_at) or int(time.time())
+    cycle_start, cycle_end, cycle_label = _monthly_cycle_bounds(now)
+    entries = [
+        entry
+        for entry in _usage_entries(route)
+        if cycle_start <= _coerce_int(entry.get("finished_at")) < cycle_end
+    ]
+    _ledger_path, _history_path, capacity_path = usage_state_paths(route)
+    capacity_notice = _capacity_usage_notice(_read_json(capacity_path), observed_at=now)
+
+    plan_entries = [
+        entry
+        for entry in entries
+        if str(entry.get("charge_ledger_kind") or "").strip() == PLAN_LEDGER_KIND
+    ]
+    metered_entries = [
+        entry
+        for entry in entries
+        if str(entry.get("charge_ledger_kind") or "").strip() in METERED_LEDGER_KINDS
+    ]
+    notices: list[str] = []
+    if capacity_notice:
+        notices.append(capacity_notice)
+
+    if plan_entries and not capacity_notice:
+        estimates = [
+            estimate
+            for entry in plan_entries
+            if (estimate := _entry_estimate(entry, "estimated_credits")) is not None
+        ]
+        if estimates:
+            notices.append(
+                f"subscription ({cycle_label}): ~{_format_compact_number(sum(estimates))} "
+                "locally estimated credits used"
+            )
+        else:
+            notices.append(
+                f"subscription ({cycle_label}): {len(plan_entries)} tracked plan turn(s)"
+            )
+
+    if metered_entries:
+        estimates = [
+            estimate
+            for entry in metered_entries
+            if (estimate := _entry_estimate(entry, "estimated_usd")) is not None
+        ]
+        if estimates:
+            notices.append(
+                f"metered ({cycle_label}): ~{_format_usd(sum(estimates))} "
+                f"local estimate across {len(metered_entries)} turn(s)"
+            )
+        else:
+            tokens = sum(_entry_tokens(entry) for entry in metered_entries)
+            detail = f"{len(metered_entries)} tracked metered turn(s)"
+            if tokens:
+                detail += f", {_format_compact_number(float(tokens))} tokens"
+            notices.append(
+                f"metered ({cycle_label}): {detail}; pricing estimate unavailable"
+            )
+
+    if not notices:
+        notices.append(
+            "no locally captured subscription or metered usage for this profile yet"
+        )
+    return notices
+
+
+def print_startup_usage_notices(route: Route) -> None:
+    for notice in startup_usage_notices(route):
+        print(
+            f"codex-route: usage - {notice}. "
+            "Local usage data; not a provider billing record.",
+            file=sys.stderr,
+        )
 
 
 def verify_route(route: Route) -> tuple[bool, str]:
@@ -752,13 +1040,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         capacity_available, capacity_detail = preflight_route_capacity(route)
         if not capacity_available:
             print(
-                f"codex-route: {route.key} session not started: {capacity_detail}",
+                f"codex-route: {route.key} local capacity warning: "
+                f"{capacity_detail}. Starting Codex anyway; use /model to choose "
+                "another permitted model.",
                 file=sys.stderr,
             )
-            return 1
+        print_startup_usage_notices(route)
         if parsed.launcher == "work":
             exec_work_route(route, parsed.codex_args)
-        exec_regular_route(route, parsed.codex_args)
+        else:
+            exec_regular_route(route, parsed.codex_args)
+        return 0
 
     if parsed.launcher == "work":
         exec_work_fallback(parsed.reenter, parsed.codex_args)

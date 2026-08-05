@@ -1443,21 +1443,21 @@ def test_openai_compat_responses_preserves_missing_local_model(test_app, monkeyp
             504,
             "local_model_timeout",
             True,
-            "",
+            "60",
         ),
         (
             lambda: requests.Timeout("gateway timeout"),
             504,
             "local_model_timeout",
             True,
-            "",
+            "60",
         ),
         (
             lambda: TimeoutError("gateway timeout"),
             504,
             "local_model_timeout",
             True,
-            "",
+            "60",
         ),
         (
             lambda: norllama_gateway.NorllamaGatewayError(
@@ -1737,6 +1737,8 @@ def test_openai_compat_capacity_blocks_recent_local_model_timeout(
     assert payload["reason"] == "recent_local_model_timeout"
     assert payload["retryable"] is True
     assert payload["cooldown"]["status"] == "timeout"
+    assert payload["cooldown"]["cooldown_seconds"] == 60
+    assert payload["cooldown"]["remaining_seconds"] <= 60
     assert payload["cooldown"]["remaining_seconds"] > 0
     assert invocations == []
 

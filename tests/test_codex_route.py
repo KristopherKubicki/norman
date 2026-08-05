@@ -1,7 +1,9 @@
 import importlib.util
+import json
 import os
 import sys
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -332,10 +334,10 @@ def test_norman_route_verify_checks_models_then_local_capacity_once(
     ]
 
 
-def test_norman_capacity_unavailable_blocks_session_before_exec(
+def test_capacity_unavailable_warns_then_starts_routed_session(
     route_module, monkeypatch, capsys
 ):
-    route = route_by_key(route_module, "norman")
+    route = route_by_key(route_module, "control-plane")
     executed = []
 
     monkeypatch.setattr(route_module, "resolve_route", lambda _cwd: route)
@@ -348,19 +350,127 @@ def test_norman_capacity_unavailable_blocks_session_before_exec(
         ),
     )
     monkeypatch.setattr(
-        route_module, "exec_regular_route", lambda *_args: executed.append("route")
+        route_module,
+        "startup_usage_notices",
+        lambda *_args: [
+            "subscription: Short window 68% left",
+            "metered (Aug 01 to Sep 01): ~$1.25 local estimate across 1 turn(s)",
+        ],
     )
     monkeypatch.setattr(
-        route_module,
-        "exec_regular_fallback",
-        lambda *_args: executed.append("fallback"),
+        route_module, "exec_work_route", lambda *_args: executed.append("route")
     )
 
-    assert route_module.main(["--launcher", "regular", "--", "resume"]) == 1
-    assert executed == []
+    assert route_module.main(["--launcher", "work", "--", "resume"]) == 0
+    assert executed == ["route"]
     captured = capsys.readouterr()
-    assert "session not started" in captured.err
+    assert "control-plane local capacity warning" in captured.err
     assert "mesh_probe_stale" in captured.err
+    assert "Starting Codex anyway; use /model" in captured.err
+    assert "subscription: Short window 68% left" in captured.err
+    assert "metered (Aug 01 to Sep 01): ~$1.25" in captured.err
+
+
+def test_startup_usage_notices_report_fresh_capacity_and_metered_month(
+    route_module, monkeypatch, tmp_path
+):
+    observed_at = int(datetime(2026, 8, 5, 12, tzinfo=timezone.utc).timestamp())
+    capacity_path = tmp_path / "codex_account_capacity.json"
+    ledger_path = tmp_path / "usage-ledger.jsonl"
+    capacity_path.write_text(
+        json.dumps(
+            {
+                "source": "interactive_usage",
+                "state": "available",
+                "observed_at": observed_at - 30,
+                "windows": [
+                    {
+                        "label": "Short window",
+                        "percent_left": 68,
+                        "reset_hint": "in 2 hours",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    ledger_path.write_text(
+        "\n".join(
+            (
+                json.dumps(
+                    {
+                        "finished_at": observed_at - 60,
+                        "charge_ledger_kind": "chatgpt_codex_credit_estimate",
+                        "estimated_credits": 100,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "finished_at": observed_at - 120,
+                        "charge_ledger_kind": "api_rate_card_estimate",
+                        "cost": {"estimated_usd": 1.25},
+                    }
+                ),
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(route_module, "CODEX_ACCOUNT_CAPACITY_PATH", capacity_path)
+    monkeypatch.setattr(route_module, "USAGE_LEDGER_PATH", ledger_path)
+    monkeypatch.setattr(route_module, "USAGE_HISTORY_PATH", tmp_path / "usage.jsonl")
+
+    assert route_module.startup_usage_notices(observed_at=observed_at) == [
+        "subscription: Short window 68% left (resets in 2 hours)",
+        "metered (Aug 01 to Sep 01): ~$1.25 local estimate across 1 turn(s)",
+    ]
+
+
+def test_startup_usage_notices_explain_when_no_local_usage_is_available(
+    route_module, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        route_module,
+        "CODEX_ACCOUNT_CAPACITY_PATH",
+        tmp_path / "codex_account_capacity.json",
+    )
+    monkeypatch.setattr(
+        route_module, "USAGE_LEDGER_PATH", tmp_path / "usage-ledger.jsonl"
+    )
+    monkeypatch.setattr(route_module, "USAGE_HISTORY_PATH", tmp_path / "usage.jsonl")
+
+    assert route_module.startup_usage_notices(observed_at=1_775_664_000) == [
+        "no locally captured subscription or metered usage for this profile yet"
+    ]
+
+
+def test_startup_usage_notices_use_the_routed_profile_web_bridge(
+    route_module, monkeypatch, tmp_path
+):
+    observed_at = int(datetime(2026, 8, 5, 12, tzinfo=timezone.utc).timestamp())
+    route = route_by_key(route_module, "control-plane")
+    state_dir = tmp_path / ".codex-cp" / "web-bridge"
+    state_dir.mkdir(parents=True)
+    (state_dir / "usage-ledger.jsonl").write_text(
+        json.dumps(
+            {
+                "finished_at": observed_at - 60,
+                "charge_ledger_kind": "provider_invoice_estimate",
+                "estimated_usd": 3.5,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(route_module, "route_home", lambda _route: state_dir.parent)
+    monkeypatch.setattr(route_module, "STATE_DIR", None)
+    monkeypatch.setattr(route_module, "USAGE_LEDGER_PATH", None)
+    monkeypatch.setattr(route_module, "USAGE_HISTORY_PATH", None)
+    monkeypatch.setattr(route_module, "CODEX_ACCOUNT_CAPACITY_PATH", None)
+
+    assert route_module.startup_usage_notices(route, observed_at=observed_at) == [
+        "metered (Aug 01 to Sep 01): ~$3.50 local estimate across 1 turn(s)"
+    ]
 
 
 @pytest.mark.parametrize("arguments", (["login"], ["--version"], ["--help"]))

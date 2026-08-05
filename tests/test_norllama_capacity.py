@@ -196,8 +196,8 @@ def test_recent_model_timeout_blocks_capacity_until_a_later_success():
         "reason": "local_model_timeout",
         "recorded_at": 1000,
         "age_seconds": 50,
-        "cooldown_seconds": 900,
-        "remaining_seconds": 850,
+        "cooldown_seconds": 60,
+        "remaining_seconds": 10,
         "worker_id": "",
         "worker_endpoint": "",
         "upstream": "",
@@ -220,3 +220,24 @@ def test_recent_model_timeout_blocks_capacity_until_a_later_success():
     assert recovered["available"] is True
     assert recovered["reason"] == "available"
     assert recovered["cooldown"] == {}
+
+
+def test_recent_capacity_failure_keeps_the_longer_cooldown():
+    exhausted = {
+        "recorded_at": 1000,
+        "status": "request-failed",
+        "ok": False,
+        "model": MODEL,
+        "reason": "local_capacity_exhausted",
+    }
+
+    snapshot = _snapshot(
+        _mesh(workers=[_worker("spark-150")]),
+        route_outcomes=[exhausted],
+        now=1050,
+    )
+
+    assert snapshot["available"] is False
+    assert snapshot["reason"] == "recent_local_model_request_failed"
+    assert snapshot["cooldown"]["cooldown_seconds"] == 900
+    assert snapshot["cooldown"]["remaining_seconds"] == 850

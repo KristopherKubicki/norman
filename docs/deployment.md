@@ -320,22 +320,35 @@ session starts, the launcher obtains one brokered gateway token and checks:
 
 The capacity endpoint performs a fresh mesh probe and checks the bounded
 recent local facade-outcome window; it does not send a prompt, load a model,
-or create model residency. A local model timeout, unavailable-model error,
-capacity error, or empty response holds that model unavailable for 15 minutes.
-A later successful local response clears the hold. The route starts only if
-the endpoint reports `available: true` and `cloud_fallback: false`. A failed
-preflight exits before Codex starts with a specific message such as:
+or create model residency. A local model timeout holds that model unavailable
+for 60 seconds. Unavailable-model, capacity, or empty-response errors retain
+the 15-minute hold. A later successful local response clears the hold. Before
+each interactive launch, the router checks this endpoint and reports an
+unavailable local coding lane as an advisory. It still starts Codex with the
+isolated routed profile so the operator can use `/model` to select another
+permitted gateway model; it never changes the provider or bypasses the route
+policy. For example:
 
 ```text
-codex-route: norman session not started: local coding capacity is unavailable
-(no_eligible_worker_reachable); retry later
+codex-route: norman local capacity warning: local coding capacity is unavailable
+(no_eligible_worker_reachable); retry later. Starting Codex anyway; use /model
+to choose another permitted model.
 ```
 
-This avoids presenting a local Spark outage as a generic hosted-model
-high-demand condition. `codex --verify` checks the same two endpoints without
-starting a TUI, including from Networking and the other routed checkouts.
-`login`, `logout`, `--help`, and `--version` do not require capacity, so
-recovery and diagnostics remain available while the model lane is down.
+The pre-TUI output also shows the freshest locally captured subscription
+capacity windows plus the current calendar-month metered estimate when those
+state files are available. The router reads the `web-bridge` state below that
+routed profile's `CODEX_HOME` (for example, `~/.codex-cp/web-bridge`), so
+unrelated profile activity is not mixed into the reminder. `NORMAN_CODEX_STATE_DIR`,
+`NORMAN_CODEX_USAGE_PATH`, `NORMAN_CODEX_USAGE_LEDGER_PATH`, and
+`NORMAN_CODEX_ACCOUNT_CAPACITY_PATH` provide explicit read-only diagnostic
+overrides. Those labels are local usage data, not a provider-reported billing
+balance or invoice. This avoids presenting a local Spark outage as a generic
+hosted-model high-demand condition. `codex --verify` checks the same two
+endpoints without starting a TUI, including from Networking and the other
+routed checkouts. `login`, `logout`, `--help`, and `--version` do not require
+capacity, so recovery and diagnostics remain available while the model lane is
+down.
 
 The API requires the normal route identity injected by Caddy and a valid
 brokered bearer token. A successful capacity response is always HTTP 200; use
