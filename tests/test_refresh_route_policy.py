@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -69,3 +70,26 @@ def test_refresh_command_returns_nonzero_when_refresh_is_not_eligible(
     assert summary["status"] == "blocked"
     assert summary["validation_state"] == "expired_blocked"
     assert summary["error"] == "simulated write failure"
+
+
+def test_refresh_command_runs_outside_the_checkout(tmp_path):
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "norllama"
+        / "refresh_route_policy.py"
+    )
+    policy_path = tmp_path / "route_policy.json"
+
+    result = subprocess.run(
+        [sys.executable, str(script), "--path", str(policy_path)],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    summary = json.loads(result.stdout)
+    assert summary["status"] == "ok"
+    assert summary["path"] == str(policy_path)

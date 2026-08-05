@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+systemctl_bin="${NORMAN_SYSTEMCTL_BIN:-/usr/bin/systemctl}"
+mapfile -t active_units < <(
+  "$systemctl_bin" list-units \
+    --type=service \
+    --state=active \
+    --no-legend \
+    'norman-production@*.service' |
+    awk '{print $1}'
+)
+
+if ((${#active_units[@]} == 0)); then
+  echo "No active Norman production release; route-policy refresh skipped."
+  exit 0
+fi
+
+if ((${#active_units[@]} != 1)); then
+  printf 'Expected one active Norman production release, found: %s\n' \
+    "${active_units[*]}" >&2
+  exit 1
+fi
+
+unit="${active_units[0]}"
+if [[ ! "$unit" =~ ^norman-production@([0-9a-f]{7,64})\.service$ ]]; then
+  printf 'Unexpected Norman production unit: %s\n' "$unit" >&2
+  exit 1
+fi
+
+release_sha="${BASH_REMATCH[1]}"
+release_root="/home/kristopher/releases/norman-${release_sha}"
+python_bin="${release_root}/.venv-3.10/bin/python"
+refresh_script="${release_root}/scripts/norllama/refresh_route_policy.py"
+
+if [[ ! -x "$python_bin" || ! -f "$refresh_script" ]]; then
+  printf 'Release %s has no usable route-policy refresh command.\n' "$release_sha" >&2
+  exit 1
+fi
+
+cd "$release_root"
+exec "$python_bin" "$refresh_script" \
+  --path /var/lib/norman/norllama/route_policy.json

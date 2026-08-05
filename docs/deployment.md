@@ -124,6 +124,26 @@ sudo install -D -m 0644 scripts/tmpfiles.d/norman-production.conf \
 sudo systemd-tmpfiles --create /etc/tmpfiles.d/norman-production.conf
 ```
 
+The compiled Norllama route-policy artifact is owned by the production service
+user. `norman-production@.service` refreshes it before the API starts, so the
+facade never starts with a policy version that does not match its deployed
+runtime. Install the periodic refresh service and timer as well:
+
+```bash
+sudo install -D -m 0755 scripts/systemd/norman-refresh-active-route-policy \
+  /usr/local/libexec/norman-refresh-active-route-policy
+sudo install -D -m 0644 scripts/systemd/norman-route-policy-refresh.service \
+  /etc/systemd/system/norman-route-policy-refresh.service
+sudo install -D -m 0644 scripts/systemd/norman-route-policy-refresh.timer \
+  /etc/systemd/system/norman-route-policy-refresh.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now norman-route-policy-refresh.timer
+```
+
+The loopback `norman-release@.service` canary writes a separate policy under
+`/run/norman-release-<release-sha>/`. It cannot replace the policy used by the
+active production facade.
+
 The unit reads only non-secret identities from
 `/etc/norman/runtime-identities.env`. Store the following logical aliases in
 the approved Norman Keys resolver or the encrypted `cred` migration vault:
@@ -153,6 +173,7 @@ systemctl is-active norman-production@<release-sha>
 curl -fsS http://127.0.0.1:8000/health
 curl -fsS https://norman.home.arpa/health
 curl -fsS https://llm.home.arpa/v1/models
+systemctl status norman-route-policy-refresh.timer
 ```
 
 To roll back a bad production release, stop and disable the SHA-specific unit,
