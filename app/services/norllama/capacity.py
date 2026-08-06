@@ -6,6 +6,7 @@ from app.services.norllama.route_policy import (
     ROUTE_POLICY_FALLBACKS,
     ROUTE_POLICY_MODELS,
     ROUTE_POLICY_PLACEMENT,
+    cloud_fallback_allowed_for_alias,
 )
 from app.services.norllama.route_outcomes import (
     DEFAULT_LOCAL_MODEL_TIMEOUT_COOLDOWN_SECONDS,
@@ -173,7 +174,10 @@ def unavailable_capacity_snapshot(
         },
         **heavy_coding_capacity_policy(),
         "cache": {"status": "unavailable"},
-        "cloud_fallback": bool(ROUTE_POLICY_FALLBACKS["allow_cloud_fallback"]),
+        "cloud_fallback": cloud_fallback_allowed_for_alias(
+            requested_model,
+            fallback_policy=ROUTE_POLICY_FALLBACKS,
+        ),
         "retryable": True,
     }
 
@@ -265,7 +269,10 @@ def build_capacity_snapshot(
             "age_seconds": _int(cache.get("age_seconds")),
             "ttl_seconds": _int(cache.get("ttl_seconds")),
         },
-        "cloud_fallback": bool(ROUTE_POLICY_FALLBACKS["allow_cloud_fallback"]),
+        "cloud_fallback": cloud_fallback_allowed_for_alias(
+            requested_model,
+            fallback_policy=ROUTE_POLICY_FALLBACKS,
+        ),
         "retryable": reason != "available",
         "cooldown": cooldown,
     }

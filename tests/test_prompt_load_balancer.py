@@ -7,6 +7,7 @@ import httpx
 import pytest
 import requests
 
+from app.services.console_runtime.types import ModelResult, ModelUsage
 from app.services.prompt_load_balancer import (
     balance_prompt,
     prompt_load_balancer_capabilities,
@@ -656,6 +657,45 @@ def _mock_local_chat(messages, model, **kwargs):
     }
 
 
+def _mock_bedrock_result(
+    text: str = "cloud ok",
+    *,
+    metadata: dict | None = None,
+) -> ModelResult:
+    return ModelResult(
+        provider="bedrock",
+        model="openai.gpt-5.6-terra",
+        text=text,
+        usage=ModelUsage(input_tokens=7, output_tokens=3, total_tokens=10),
+        metadata=metadata or {},
+    )
+
+
+def _install_bedrock_stub(
+    monkeypatch,
+    *,
+    result: ModelResult | None = None,
+    error: Exception | None = None,
+):
+    from app.services import prompt_provider_facade
+
+    calls = []
+
+    class StubBedrockModelAdapter:
+        def invoke(self, request):
+            calls.append(request)
+            if error is not None:
+                raise error
+            return result or _mock_bedrock_result()
+
+    monkeypatch.setattr(
+        prompt_provider_facade,
+        "BedrockModelAdapter",
+        StubBedrockModelAdapter,
+    )
+    return calls
+
+
 class _MockNativeStreamResponse:
     def __init__(self, lines, *, headers=None):
         self._lines = list(lines)
@@ -1058,7 +1098,7 @@ def test_openai_compat_responses_streams_queue_progress_without_output_text(
     assert response.closed is True
 
 
-def test_openai_compat_responses_stream_reports_queued_capacity_expiry(
+def test_openai_compat_responses_stream_falls_back_after_queued_capacity_expiry(
     test_app, monkeypatch
 ):
     response = _MockNativeStreamResponse(
@@ -1086,6 +1126,10 @@ def test_openai_compat_responses_stream_reports_queued_capacity_expiry(
             model=kwargs["model"],
         ),
     )
+    bedrock_calls = _install_bedrock_stub(
+        monkeypatch,
+        result=_mock_bedrock_result("cloud ready"),
+    )
 
     result = test_app.post(
         "/v1/responses",
@@ -1098,24 +1142,45 @@ def test_openai_compat_responses_stream_reports_queued_capacity_expiry(
     payloads = [
         json.loads(data) for event, data in events if event and data != "[DONE]"
     ]
-    failed = next(
+    progress = [
         payload["response"]
         for payload in payloads
-        if payload["type"] == "response.failed"
+        if payload["type"] == "response.in_progress"
+    ]
+    completed = next(
+        payload["response"]
+        for payload in payloads
+        if payload["type"] == "response.completed"
     )
 
-    assert any(payload["type"] == "response.in_progress" for payload in payloads)
-    assert not any(
-        payload["type"] == "response.output_text.delta" for payload in payloads
+    assert not any(payload["type"] == "response.failed" for payload in payloads)
+    assert any(
+        snapshot.get("norman", {}).get("cloud_fallback", {}).get("state") == "started"
+        for snapshot in progress
     )
-    assert failed["status"] == "failed"
-    assert failed["error"]["code"] == "local_capacity_exhausted"
-    assert failed["error"]["norman"]["capacity"]["retry_after_seconds"] == 10
+    assert [
+        payload["delta"]
+        for payload in payloads
+        if payload["type"] == "response.output_text.delta"
+    ] == ["cloud ready"]
+    assert completed["model"] == "openai.gpt-5.6-terra"
+    assert completed["norman"]["cloud_fallback"]["state"] == "completed"
+    assert completed["norman"]["cloud_fallback"]["local_failure_code"] == (
+        "local_capacity_exhausted"
+    )
+    assert len(bedrock_calls) == 1
+    fallback_request = bedrock_calls[0]
+    assert fallback_request.model == "openai.gpt-5.6-terra"
+    assert fallback_request.metadata["execution_mode"] == (
+        "prompt_intermediary_openai_facade_cloud_fallback"
+    )
+    assert fallback_request.metadata["route_policy"]["allow_cloud_proxy"] is False
+    assert fallback_request.metadata["norllama_route"]["provider"] == "aws-bedrock"
     assert events[-1] == ("", "[DONE]")
     assert response.closed is True
 
 
-def test_openai_compat_responses_stream_capacity_error_is_json_with_retry_hint(
+def test_openai_compat_responses_stream_falls_back_when_local_stream_cannot_open(
     test_app, monkeypatch
 ):
     def exhausted_local_stream(**_kwargs):
@@ -1140,6 +1205,10 @@ def test_openai_compat_responses_stream_capacity_error_is_json_with_retry_hint(
         "invoke_text_chat_stream",
         exhausted_local_stream,
     )
+    bedrock_calls = _install_bedrock_stub(
+        monkeypatch,
+        result=_mock_bedrock_result("cloud hello"),
+    )
 
     result = test_app.post(
         "/v1/responses",
@@ -1147,23 +1216,40 @@ def test_openai_compat_responses_stream_capacity_error_is_json_with_retry_hint(
         json={"model": "norman-code", "input": "say hello", "stream": True},
     )
 
-    assert result.status_code == 503
-    assert result.headers["retry-after"] == "12"
-    error = result.json()["error"]
-    assert error["code"] == "local_capacity_exhausted"
-    assert error["norman"]["capacity"] == {
-        "schema": "norllama.capacity.v1",
-        "active": 1,
-        "active_limit": 1,
-        "queue_depth": 1,
-        "queue_limit": 1,
-        "retry_after_seconds": 12,
-    }
+    assert result.status_code == 200
+    events = _response_sse_events(result.text)
+    payloads = [
+        json.loads(data) for event, data in events if event and data != "[DONE]"
+    ]
+    progress = [
+        payload["response"]
+        for payload in payloads
+        if payload["type"] == "response.in_progress"
+    ]
+    completed = next(
+        payload["response"]
+        for payload in payloads
+        if payload["type"] == "response.completed"
+    )
+
+    assert any(
+        snapshot.get("norman", {}).get("cloud_fallback", {}).get("local_failure_code")
+        == "local_capacity_exhausted"
+        for snapshot in progress
+    )
+    assert any(
+        payload["type"] == "response.output_text.delta"
+        and payload["delta"] == "cloud hello"
+        for payload in payloads
+    )
+    assert completed["norman"]["cloud_fallback"]["state"] == "completed"
+    assert len(bedrock_calls) == 1
 
 
 def test_openai_compat_responses_stream_reports_midstream_failure(
     test_app, monkeypatch
 ):
+    bedrock_calls = _install_bedrock_stub(monkeypatch)
     response = _MockNativeStreamResponse(
         [
             '{"model":"qwen3-coder:30b","response":"partial "}',
@@ -1204,6 +1290,7 @@ def test_openai_compat_responses_stream_reports_midstream_failure(
     )
     assert failed["status"] == "failed"
     assert failed["error"]["code"] == "local_gateway_bad_response"
+    assert bedrock_calls == []
     assert events[-1] == ("", "[DONE]")
     assert response.closed is True
 
@@ -1536,7 +1623,7 @@ def test_openai_compat_responses_classifies_local_gateway_failures(
     response = test_app.post(
         "/v1/responses",
         headers={**headers, "X-Request-Id": f"failure-{expected_code}"},
-        json={"model": "norman-code", "input": "status?"},
+        json={"model": "norman-fast", "input": "status?"},
     )
 
     assert response.status_code == expected_status
@@ -1569,7 +1656,7 @@ def test_openai_compat_responses_reports_empty_local_response(test_app, monkeypa
     response = test_app.post(
         "/v1/responses",
         headers=headers,
-        json={"model": "norman-code", "input": "status?"},
+        json={"model": "norman-fast", "input": "status?"},
     )
 
     assert response.status_code == 502
@@ -1577,6 +1664,126 @@ def test_openai_compat_responses_reports_empty_local_response(test_app, monkeypa
     assert error["code"] == "empty_local_response"
     assert error["norman"]["cloud_fallback"] is False
     assert error["norman"]["retryable"] is True
+
+
+def test_openai_compat_responses_retries_retryable_norman_code_failure_in_bedrock(
+    test_app, monkeypatch
+):
+    from app.services.prompt_provider_facade import norllama_gateway
+
+    headers = _proxy_headers(monkeypatch, route="gold-book")
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            norllama_gateway.NorllamaGatewayError(
+                503,
+                {"error": "workers unavailable"},
+            )
+        ),
+    )
+    bedrock_calls = _install_bedrock_stub(
+        monkeypatch,
+        result=_mock_bedrock_result(
+            "cloud result",
+            metadata={
+                "norllama_receipt": {
+                    "route_receipt": {
+                        "provider": "aws-bedrock",
+                        "credentials": "must-not-leak",
+                    },
+                    "authorization": "must-not-leak",
+                }
+            },
+        ),
+    )
+
+    response = test_app.post(
+        "/v1/responses",
+        headers={**headers, "X-Request-Id": "fallback-response-test"},
+        json={"model": "norman-code", "input": "status?"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["output_text"] == "cloud result"
+    assert payload["model"] == "openai.gpt-5.6-terra"
+    assert payload["norman"]["local_execution"] is False
+    assert payload["norman"]["cloud_forwarding"] is True
+    assert payload["norman"]["cloud_fallback"] == {
+        "schema": "norman.cloud-fallback.v1",
+        "state": "completed",
+        "fallback_attempted": True,
+        "local_failure_code": "local_capacity_unavailable",
+        "fallback_provider": "aws-bedrock",
+        "fallback_model": "openai.gpt-5.6-terra",
+        "request_id": "fallback-response-test",
+    }
+    assert "must-not-leak" not in response.text
+    assert len(bedrock_calls) == 1
+
+
+def test_openai_compat_responses_does_not_fallback_for_nonretryable_failure(
+    test_app, monkeypatch
+):
+    from app.services.prompt_provider_facade import norllama_gateway
+
+    headers = _proxy_headers(monkeypatch)
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            norllama_gateway.NorllamaGatewayError(
+                401,
+                {"error": "expired gateway credential"},
+            )
+        ),
+    )
+    bedrock_calls = _install_bedrock_stub(monkeypatch)
+
+    response = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={"model": "norman-code", "input": "status?"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "local_gateway_auth_failed"
+    assert bedrock_calls == []
+
+
+def test_openai_compat_responses_sanitizes_bedrock_fallback_failures(
+    test_app, monkeypatch
+):
+    from app.services.prompt_provider_facade import norllama_gateway
+
+    headers = _proxy_headers(monkeypatch)
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            norllama_gateway.NorllamaGatewayError(
+                429,
+                {"error": "local_capacity_exhausted"},
+            )
+        ),
+    )
+    _install_bedrock_stub(
+        monkeypatch,
+        error=RuntimeError("bedrock token=must-not-leak"),
+    )
+
+    response = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={"model": "norman-code", "input": "status?"},
+    )
+
+    assert response.status_code == 503
+    error = response.json()["error"]
+    assert error["code"] == "cloud_fallback_failed"
+    assert error["norman"]["cloud_fallback"]["state"] == "failed"
+    assert "must-not-leak" not in response.text
 
 
 def test_openai_compat_capacity_requires_gateway_authentication(test_app, monkeypatch):
@@ -1646,7 +1853,7 @@ def test_openai_compat_capacity_reports_live_worker_state_without_invoking_a_mod
     payload = response.json()
     assert payload["available"] is expected_available
     assert payload["reason"] == expected_reason
-    assert payload["cloud_fallback"] is False
+    assert payload["cloud_fallback"] is True
     assert payload["gateway"]["gateway_route"] == "norman"
     assert invocations == []
 
@@ -1684,7 +1891,7 @@ def test_openai_compat_capacity_reports_probe_failure_without_invoking_a_model(
     payload = response.json()
     assert payload["available"] is False
     assert payload["reason"] == "mesh_probe_failed"
-    assert payload["cloud_fallback"] is False
+    assert payload["cloud_fallback"] is True
     assert invocations == []
 
 

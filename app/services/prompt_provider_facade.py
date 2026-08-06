@@ -11,8 +11,11 @@ from typing import Any, Mapping
 import requests
 
 from app.core.config import settings
+from app.services.console_runtime.adapters.bedrock import BedrockModelAdapter
+from app.services.console_runtime.types import ModelBudget, ModelRequest, ModelResult
 from app.services.norllama import capacity as norllama_capacity
 from app.services.norllama import gateway as norllama_gateway
+from app.services.norllama.route_policy import cloud_fallback_allowed_for_alias
 from app.services.norllama.route_proof import (
     audit_route_receipt,
     receipt_completion_gate_passes,
@@ -80,6 +83,11 @@ SUPPORTED_REASONING_CONTEXTS = frozenset({"auto", "current_turn", "all_turns"})
 SUPPORTED_RESPONSES_INCLUDE_VALUES = frozenset({"reasoning.encrypted_content"})
 MAX_FACADE_TOKENS = 4096
 MAX_RESPONSE_STATE = 200
+CLOUD_FALLBACK_SCHEMA = "norman.cloud-fallback.v1"
+CLOUD_FALLBACK_MARKER_SCHEMA = "norman.facade-cloud-fallback.v1"
+CLOUD_FALLBACK_PROVIDER = "aws-bedrock"
+CLOUD_FALLBACK_MODEL = "openai.gpt-5.6-terra"
+CLOUD_FALLBACK_LANE = "coder"
 MODEL_ALIASES = {
     "norman-code": ROUTE_POLICY_MODELS["coding_operator"],
     "norman-fast": ROUTE_POLICY_MODELS["router"],
@@ -1236,6 +1244,348 @@ class AuthorizedChatInvocation:
     correlation_headers: dict[str, str]
 
 
+@dataclass(frozen=True)
+class CloudFallbackPlan:
+    requested_alias: str
+    provider: str
+    model: str
+    lane: str
+    route_policy: dict[str, Any]
+    route: NorllamaRoute
+
+
+def _cloud_fallback_plan(
+    *,
+    provider_payload: Mapping[str, Any],
+    route_envelope: Mapping[str, Any],
+    local_error: FacadeError,
+) -> CloudFallbackPlan | None:
+    """Return the single allowed cloud retry route for a classified local failure."""
+
+    requested_alias = _requested_model(provider_payload)
+    if not _flag(local_error.norman.get("retryable")):
+        return None
+    route_policy = _nested_dict(
+        route_envelope,
+        "norman_route",
+        "decision",
+        "metadata",
+        "route_policy",
+    )
+    artifact = _mapping(route_policy.get("route_policy_artifact"))
+    fallbacks = _mapping(artifact.get("fallbacks"))
+    provider = _lower(fallbacks.get("cloud_fallback_provider")).replace("_", "-")
+    model = _clean(fallbacks.get("cloud_fallback_model"))
+    lane = _lower(fallbacks.get("cloud_fallback_lane"))
+    if (
+        not artifact
+        or not cloud_fallback_allowed_for_alias(
+            requested_alias,
+            fallback_policy=fallbacks,
+        )
+        or provider != CLOUD_FALLBACK_PROVIDER
+        or model != CLOUD_FALLBACK_MODEL
+        or lane != CLOUD_FALLBACK_LANE
+    ):
+        return None
+
+    fallback_route_policy = {
+        **route_policy,
+        "provider": provider,
+        "preferred_provider": provider,
+        "provider_surface": provider,
+        "model_proxy": provider,
+        "model": model,
+        "preferred_model": model,
+        "lane": lane,
+        "preferred_lane": lane,
+        # This is a server-owned, narrowly authorized retry rather than a
+        # general cloud proxy permission.
+        "allow_cloud_proxy": False,
+        "fallbacks": fallbacks,
+        "route_policy_artifact": artifact,
+    }
+    route = NorllamaRoute(
+        lane=lane,
+        provider=provider,
+        provider_kind=provider,
+        capability="chat",
+        model=model,
+        mode="cloud_proxy",
+        local=False,
+        cloud_proxy=True,
+        tool_lane=False,
+        requires_receipt=True,
+        reason=f"facade fallback after {local_error.code}",
+        attribution={
+            "fallback": "local_capacity_pre_output",
+            "requested_alias": requested_alias,
+            "local_failure_code": local_error.code,
+        },
+    )
+    return CloudFallbackPlan(
+        requested_alias=requested_alias,
+        provider=provider,
+        model=model,
+        lane=lane,
+        route_policy=fallback_route_policy,
+        route=route,
+    )
+
+
+def _cloud_fallback_metadata(
+    *,
+    plan: CloudFallbackPlan,
+    invocation: AuthorizedChatInvocation,
+    local_error: FacadeError,
+    state: str,
+) -> dict[str, Any]:
+    return {
+        "schema": CLOUD_FALLBACK_SCHEMA,
+        "state": state,
+        "fallback_attempted": True,
+        "local_failure_code": local_error.code,
+        "fallback_provider": plan.provider,
+        "fallback_model": plan.model,
+        "request_id": invocation.invocation_id,
+    }
+
+
+def _cloud_fallback_marker(
+    *,
+    plan: CloudFallbackPlan,
+    local_error: FacadeError,
+) -> dict[str, Any]:
+    return {
+        "schema": CLOUD_FALLBACK_MARKER_SCHEMA,
+        "attempt": 1,
+        "requested_alias": plan.requested_alias,
+        "local_failure_code": local_error.code,
+    }
+
+
+def _fallback_temperature(provider_payload: Mapping[str, Any]) -> float | None:
+    value = provider_payload.get("temperature")
+    if isinstance(value, bool):
+        return None
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _cloud_fallback_request(
+    *,
+    plan: CloudFallbackPlan,
+    invocation: AuthorizedChatInvocation,
+    messages: list[dict[str, Any]],
+    provider_payload: Mapping[str, Any],
+    local_error: FacadeError,
+) -> ModelRequest:
+    try:
+        timeout_seconds = int(
+            float(getattr(settings, "llm_provider_timeout_seconds", 45) or 45)
+        )
+    except (TypeError, ValueError):
+        timeout_seconds = 45
+    return ModelRequest(
+        messages=messages,
+        model=plan.model,
+        route_key=plan.requested_alias,
+        temperature=_fallback_temperature(provider_payload),
+        budget=ModelBudget(
+            max_model_calls=1,
+            max_runtime_seconds=max(1, timeout_seconds),
+            max_output_tokens=invocation.max_tokens,
+        ),
+        metadata={
+            "request_id": invocation.invocation_id,
+            "invocation_id": invocation.invocation_id,
+            "norllama_task_kind": "chat",
+            "execution_mode": "prompt_intermediary_openai_facade_cloud_fallback",
+            "requested_model": plan.model,
+            "route_selected_model": plan.model,
+            "route_policy": plan.route_policy,
+            "norllama_route": plan.route.as_dict(),
+            "norman_facade_cloud_fallback": _cloud_fallback_marker(
+                plan=plan,
+                local_error=local_error,
+            ),
+            "codex_reasoning_advisory": invocation.reasoning_advisory,
+            **invocation.trusted_context,
+        },
+    )
+
+
+def _is_cloud_receipt_sensitive_key(value: Any) -> bool:
+    key = _lower(value).replace("-", "_")
+    return key in {
+        "raw",
+        "credentials",
+        "cloud_credentials",
+        "bedrock_credentials",
+        "authorization",
+        "api_key",
+        "api_token",
+        "access_key",
+        "access_key_id",
+        "secret",
+        "secret_access_key",
+        "session_token",
+        "password",
+    }
+
+
+def _sanitize_cloud_receipt(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _sanitize_cloud_receipt(item)
+            for key, item in value.items()
+            if not _is_cloud_receipt_sensitive_key(key)
+        }
+    if isinstance(value, list):
+        return [_sanitize_cloud_receipt(item) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_cloud_receipt(item) for item in value]
+    return value
+
+
+def _sanitized_cloud_receipts(
+    result: ModelResult,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    metadata = _mapping(result.metadata)
+    receipt = _sanitize_cloud_receipt(_mapping(metadata.get("norllama_receipt")))
+    safe_receipt = _mapping(receipt)
+    return safe_receipt, _mapping(safe_receipt.get("route_receipt"))
+
+
+def _cloud_fallback_error(
+    *,
+    plan: CloudFallbackPlan,
+    invocation: AuthorizedChatInvocation,
+    local_error: FacadeError,
+    code: str,
+) -> FacadeError:
+    message = (
+        "Cloud fallback is not authorized"
+        if code == "cloud_fallback_not_authorized"
+        else "Cloud fallback could not complete"
+    )
+    cloud_fallback = _cloud_fallback_metadata(
+        plan=plan,
+        invocation=invocation,
+        local_error=local_error,
+        state="failed",
+    )
+    return FacadeError(
+        message,
+        status_code=503,
+        error_type="server_error",
+        code=code,
+        norman={
+            "cloud_fallback": cloud_fallback,
+            "fallback_attempted": True,
+            "local_failure_code": local_error.code,
+        },
+    )
+
+
+def _execute_cloud_fallback(
+    *,
+    plan: CloudFallbackPlan,
+    provider_payload: Mapping[str, Any],
+    route_envelope: Mapping[str, Any],
+    messages: list[dict[str, Any]],
+    invocation: AuthorizedChatInvocation,
+    local_error: FacadeError,
+) -> dict[str, Any]:
+    """Run the one approved Bedrock fallback and return a facade chat response."""
+
+    try:
+        result = BedrockModelAdapter().invoke(
+            _cloud_fallback_request(
+                plan=plan,
+                invocation=invocation,
+                messages=messages,
+                provider_payload=provider_payload,
+                local_error=local_error,
+            )
+        )
+    except Exception as exc:
+        raise _cloud_fallback_error(
+            plan=plan,
+            invocation=invocation,
+            local_error=local_error,
+            code="cloud_fallback_failed",
+        ) from exc
+    if result.stop_reason == "policy_blocked":
+        raise _cloud_fallback_error(
+            plan=plan,
+            invocation=invocation,
+            local_error=local_error,
+            code="cloud_fallback_not_authorized",
+        )
+    if not result.text:
+        raise _cloud_fallback_error(
+            plan=plan,
+            invocation=invocation,
+            local_error=local_error,
+            code="cloud_fallback_failed",
+        )
+    facade_receipt, route_receipt = _sanitized_cloud_receipts(result)
+    usage = {
+        "prompt_tokens": result.usage.input_tokens,
+        "completion_tokens": result.usage.output_tokens,
+        "total_tokens": result.usage.total_tokens,
+    }
+    return {
+        "id": f"chatcmpl-norman-{uuid.uuid4().hex}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": result.model or plan.model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": result.text},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": usage,
+        "norman": {
+            "schema": "norman.openai-compatible-facade.v1",
+            "request_id": invocation.invocation_id,
+            "route": dict(route_envelope),
+            "gateway": invocation.trusted_context,
+            "authorization": invocation.authorization.as_dict(),
+            "local_execution": False,
+            "cloud_forwarding": True,
+            "cloud_fallback": _cloud_fallback_metadata(
+                plan=plan,
+                invocation=invocation,
+                local_error=local_error,
+                state="completed",
+            ),
+            "fallback_attempted": True,
+            "local_failure_code": local_error.code,
+            "fallback_provider": plan.provider,
+            "fallback_model": plan.model,
+            "streaming_mode": "buffered_sse"
+            if provider_payload.get("stream")
+            else "none",
+            "norllama": {
+                "target_worker": "",
+                "gateway_selected_worker": "",
+                "observed_worker": "",
+                "observed_worker_source": "cloud_fallback",
+                "headers": {},
+            },
+            "gateway_headers": {},
+            "facade_receipt": facade_receipt,
+            "route_receipt": route_receipt,
+        },
+    }
+
+
 def _prepare_authorized_chat_invocation(
     *,
     provider_payload: Mapping[str, Any],
@@ -1394,19 +1744,51 @@ def _execute_authorized_chat(
         RuntimeError,
         TimeoutError,
     ) as exc:
-        raise _classified_gateway_error(
+        local_error = _classified_gateway_error(
             exc,
             request_id=invocation.invocation_id,
             requested_model=_requested_model(provider_payload),
             selected_model=invocation.authorization.model,
-        ) from exc
-    return _complete_authorized_chat(
-        provider_payload=provider_payload,
-        route_envelope=route_envelope,
-        messages=messages,
-        invocation=invocation,
-        result=result,
-    )
+        )
+        plan = _cloud_fallback_plan(
+            provider_payload=provider_payload,
+            route_envelope=route_envelope,
+            local_error=local_error,
+        )
+        if plan is None:
+            raise local_error from exc
+        return _execute_cloud_fallback(
+            plan=plan,
+            provider_payload=provider_payload,
+            route_envelope=route_envelope,
+            messages=messages,
+            invocation=invocation,
+            local_error=local_error,
+        )
+    try:
+        return _complete_authorized_chat(
+            provider_payload=provider_payload,
+            route_envelope=route_envelope,
+            messages=messages,
+            invocation=invocation,
+            result=result,
+        )
+    except FacadeError as local_error:
+        plan = _cloud_fallback_plan(
+            provider_payload=provider_payload,
+            route_envelope=route_envelope,
+            local_error=local_error,
+        )
+        if plan is None:
+            raise
+        return _execute_cloud_fallback(
+            plan=plan,
+            provider_payload=provider_payload,
+            route_envelope=route_envelope,
+            messages=messages,
+            invocation=invocation,
+            local_error=local_error,
+        )
 
 
 def _start_authorized_chat_stream(
@@ -1415,7 +1797,11 @@ def _start_authorized_chat_stream(
     route_envelope: Mapping[str, Any],
     messages: list[dict[str, Any]],
     request_id: str,
-) -> tuple[AuthorizedChatInvocation, norllama_gateway.NorllamaTextStream]:
+) -> tuple[
+    AuthorizedChatInvocation,
+    norllama_gateway.NorllamaTextStream | None,
+    FacadeError | None,
+]:
     invocation = _prepare_authorized_chat_invocation(
         provider_payload=provider_payload,
         route_envelope=route_envelope,
@@ -1439,13 +1825,17 @@ def _start_authorized_chat_stream(
         RuntimeError,
         TimeoutError,
     ) as exc:
-        raise _classified_gateway_error(
-            exc,
-            request_id=invocation.invocation_id,
-            requested_model=_requested_model(provider_payload),
-            selected_model=invocation.authorization.model,
-        ) from exc
-    return invocation, stream
+        return (
+            invocation,
+            None,
+            _classified_gateway_error(
+                exc,
+                request_id=invocation.invocation_id,
+                requested_model=_requested_model(provider_payload),
+                selected_model=invocation.authorization.model,
+            ),
+        )
+    return invocation, stream, None
 
 
 def execute_openai_chat_facade(
@@ -1603,21 +1993,34 @@ class FacadeResponsesStream:
         *,
         prepared: PreparedResponsesExecution,
         invocation: AuthorizedChatInvocation,
-        stream: norllama_gateway.NorllamaTextStream,
+        stream: norllama_gateway.NorllamaTextStream | None,
+        pending_local_error: FacadeError | None = None,
     ) -> None:
         self.prepared = prepared
         self.invocation = invocation
         self.stream = stream
+        self.pending_local_error = pending_local_error
         self.response_id = f"resp-norman-{uuid.uuid4().hex}"
         self.created_at = int(time.time())
         self.output_item_id = f"msg-norman-{uuid.uuid4().hex}"
         self._stream_admission = self._admission_metadata_from_headers()
+        self._cloud_chat_response: dict[str, Any] | None = None
+        self._cloud_fallback_attempted = False
 
     @property
     def model(self) -> str:
-        return self.stream.model or self.invocation.authorization.model
+        if self._cloud_chat_response is not None:
+            return (
+                _clean(self._cloud_chat_response.get("model"))
+                or self.invocation.authorization.model
+            )
+        if self.stream is not None:
+            return self.stream.model or self.invocation.authorization.model
+        return self.invocation.authorization.model
 
     def _admission_metadata_from_headers(self) -> dict[str, Any]:
+        if self.stream is None:
+            return {}
         headers = self.stream.headers
         admission = _clean(headers.get("x-norllama-admission"))
         if admission not in {"immediate", "queued"}:
@@ -1673,13 +2076,82 @@ class FacadeResponsesStream:
             metadata[field] = max(0, min(value, 3600000))
         self._stream_admission = metadata
 
+    def _empty_local_response_error(self) -> FacadeError:
+        return FacadeError(
+            "Local model returned empty content",
+            status_code=502,
+            error_type="server_error",
+            code="empty_local_response",
+            norman=_local_failure_context(
+                request_id=self.invocation.invocation_id,
+                requested_model=_requested_model(self.prepared.route_payload),
+                selected_model=self.invocation.authorization.model,
+                retryable=True,
+            ),
+        )
+
+    def _cloud_fallback_events(self, local_error: FacadeError):
+        plan = _cloud_fallback_plan(
+            provider_payload=self.prepared.route_payload,
+            route_envelope=self.prepared.route_envelope,
+            local_error=local_error,
+        )
+        if plan is None or self._cloud_fallback_attempted:
+            raise local_error
+        self._cloud_fallback_attempted = True
+        if self.stream is not None:
+            self.stream.close()
+        yield {
+            "type": "cloud_fallback",
+            "cloud_fallback": _cloud_fallback_metadata(
+                plan=plan,
+                invocation=self.invocation,
+                local_error=local_error,
+                state="started",
+            ),
+        }
+        self._cloud_chat_response = _execute_cloud_fallback(
+            plan=plan,
+            provider_payload=self.prepared.route_payload,
+            route_envelope=self.prepared.route_envelope,
+            messages=self.prepared.messages,
+            invocation=self.invocation,
+            local_error=local_error,
+        )
+        text = _choice_text(self._cloud_chat_response)
+        if text:
+            yield {"type": "text", "text": text}
+
     def iter_events(self):
-        for event in self.stream.iter_events():
-            if event.get("type") == "admission":
-                admission = event.get("admission")
-                if isinstance(admission, Mapping):
-                    self.update_admission_metadata(admission)
-            yield event
+        if self.pending_local_error is not None:
+            yield from self._cloud_fallback_events(self.pending_local_error)
+            return
+        if self.stream is None:
+            raise RuntimeError("Local response stream was not initialized")
+
+        emitted_local_text = False
+        try:
+            for event in self.stream.iter_events():
+                if event.get("type") == "admission":
+                    admission = event.get("admission")
+                    if isinstance(admission, Mapping):
+                        self.update_admission_metadata(admission)
+                if (
+                    event.get("type") == "text"
+                    and isinstance(event.get("text"), str)
+                    and event["text"]
+                ):
+                    emitted_local_text = True
+                yield event
+        except Exception as exc:
+            local_error = self.classify_error(exc)
+            if emitted_local_text:
+                raise local_error from exc
+            yield from self._cloud_fallback_events(local_error)
+            return
+
+        if not emitted_local_text:
+            yield from self._cloud_fallback_events(self._empty_local_response_error())
 
     def iter_text(self):
         for event in self.iter_events():
@@ -1689,15 +2161,21 @@ class FacadeResponsesStream:
                     yield fragment
 
     def complete(self, text: str) -> dict[str, Any]:
-        chat_response = _complete_authorized_chat(
-            provider_payload=self.prepared.route_payload,
-            route_envelope=self.prepared.route_envelope,
-            messages=self.prepared.messages,
-            invocation=self.invocation,
-            result=self.stream.result(text),
-        )
+        if self._cloud_chat_response is not None:
+            chat_response = dict(self._cloud_chat_response)
+        else:
+            if self.stream is None:
+                raise RuntimeError("Local response stream was not initialized")
+            chat_response = _complete_authorized_chat(
+                provider_payload=self.prepared.route_payload,
+                route_envelope=self.prepared.route_envelope,
+                messages=self.prepared.messages,
+                invocation=self.invocation,
+                result=self.stream.result(text),
+            )
         norman = _mapping(chat_response.get("norman"))
-        norman["streaming_mode"] = "incremental_sse"
+        if self._cloud_chat_response is None:
+            norman["streaming_mode"] = "incremental_sse"
         admission = self.admission_metadata()
         if admission:
             norman["stream_admission"] = admission
@@ -1721,7 +2199,8 @@ class FacadeResponsesStream:
         )
 
     def close(self) -> None:
-        self.stream.close()
+        if self.stream is not None:
+            self.stream.close()
 
 
 def execute_openai_responses_facade(
@@ -1760,7 +2239,7 @@ def open_openai_responses_stream(
         payload,
         trusted_context=trusted_context,
     )
-    invocation, stream = _start_authorized_chat_stream(
+    invocation, stream, pending_local_error = _start_authorized_chat_stream(
         provider_payload=prepared.route_payload,
         route_envelope=prepared.route_envelope,
         messages=prepared.messages,
@@ -1770,6 +2249,7 @@ def open_openai_responses_stream(
         prepared=prepared,
         invocation=invocation,
         stream=stream,
+        pending_local_error=pending_local_error,
     )
 
 

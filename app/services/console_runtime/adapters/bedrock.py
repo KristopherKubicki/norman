@@ -26,6 +26,7 @@ from app.services.norllama.route_policy_artifact import (
     authorize_route_under_policy,
     policy_block_response,
 )
+from app.services.norllama.route_policy import cloud_fallback_allowed_for_alias
 from app.services.norllama.routing import build_task_receipt, route_task
 from app.services.norllama.types import (
     NorllamaRoute,
@@ -47,6 +48,10 @@ TASK_KIND_ALIASES = {
 
 def _clean(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
 
 
 def _flag(value: Any) -> bool:
@@ -100,6 +105,46 @@ def _route_from_metadata(metadata: dict[str, Any]) -> NorllamaRoute | None:
 def _route_policy(metadata: dict[str, Any]) -> dict[str, Any]:
     value = metadata.get("route_policy")
     return dict(value) if isinstance(value, dict) else {}
+
+
+def _facade_cloud_fallback_allowed(
+    metadata: dict[str, Any],
+    route_policy: dict[str, Any],
+    *,
+    provider: str,
+    model: str,
+    lane: str,
+) -> bool:
+    """Accept only the narrow, signed fallback path owned by the facade."""
+
+    marker = _mapping(metadata.get("norman_facade_cloud_fallback"))
+    artifact = _mapping(route_policy.get("route_policy_artifact"))
+    artifact_fallbacks = _mapping(artifact.get("fallbacks"))
+    route_fallbacks = _mapping(route_policy.get("fallbacks"))
+    try:
+        attempt = int(marker.get("attempt") or 0)
+    except (TypeError, ValueError):
+        attempt = 0
+    return bool(
+        marker.get("schema") == "norman.facade-cloud-fallback.v1"
+        and _clean(metadata.get("execution_mode"))
+        == "prompt_intermediary_openai_facade_cloud_fallback"
+        and attempt == 1
+        and _clean(marker.get("requested_alias")).lower() == "norman-code"
+        and _clean(marker.get("local_failure_code"))
+        and _clean(provider).lower().replace("_", "-") == "aws-bedrock"
+        and _clean(model) == "openai.gpt-5.6-terra"
+        and _clean(lane) == "coder"
+        and artifact_fallbacks == route_fallbacks
+        and cloud_fallback_allowed_for_alias(
+            marker.get("requested_alias"),
+            fallback_policy=artifact_fallbacks,
+        )
+        and _clean(artifact_fallbacks.get("cloud_fallback_provider")) == "aws-bedrock"
+        and _clean(artifact_fallbacks.get("cloud_fallback_model"))
+        == "openai.gpt-5.6-terra"
+        and _clean(artifact_fallbacks.get("cloud_fallback_lane")) == "coder"
+    )
 
 
 def _route_policy_provider(route_policy: dict[str, Any]) -> str:
@@ -206,6 +251,7 @@ def _route_authorization(
     provider: str,
     model: str,
     lane: str,
+    metadata: dict[str, Any],
 ) -> dict[str, Any]:
     authorization = authorize_route_under_policy(
         policy_artifact=route_policy.get("route_policy_artifact")
@@ -223,7 +269,14 @@ def _route_authorization(
         return _deny_authorization(
             authorization, "bedrock_route_not_selected_by_policy"
         )
-    if not _flag(route_policy.get("allow_cloud_proxy")):
+    cloud_fallback = _facade_cloud_fallback_allowed(
+        metadata,
+        route_policy,
+        provider=provider,
+        model=model,
+        lane=lane,
+    )
+    if not _flag(route_policy.get("allow_cloud_proxy")) and not cloud_fallback:
         return _deny_authorization(
             authorization, "bedrock_cloud_proxy_not_explicitly_allowed"
         )
@@ -231,7 +284,10 @@ def _route_authorization(
         return _deny_authorization(
             authorization, "bedrock_cloud_llm_disabled_by_policy"
         )
-    return authorization
+    return {
+        **authorization,
+        "cloud_fallback_authorized": cloud_fallback,
+    }
 
 
 def _route_with_attribution(
@@ -351,6 +407,7 @@ class BedrockModelAdapter:
             provider=provider,
             model=model,
             lane=route.lane,
+            metadata=metadata,
         )
         if not authorization.get("allowed"):
             return self._policy_block_result(task, route, authorization)

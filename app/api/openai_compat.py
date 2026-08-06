@@ -688,6 +688,25 @@ def _response_sse(stream: Any):
                     },
                 )
                 continue
+            if stream_event.get("type") == "cloud_fallback":
+                cloud_fallback = stream_event.get("cloud_fallback")
+                if isinstance(cloud_fallback, dict):
+                    snapshot = _response_stream_snapshot(stream, status="in_progress")
+                    norman = (
+                        dict(snapshot.get("norman"))
+                        if isinstance(snapshot.get("norman"), dict)
+                        else {}
+                    )
+                    norman["cloud_fallback"] = dict(cloud_fallback)
+                    snapshot["norman"] = norman
+                    yield _response_sse_event(
+                        "response.in_progress",
+                        {
+                            "type": "response.in_progress",
+                            "response": snapshot,
+                        },
+                    )
+                continue
             if stream_event.get("type") != "text":
                 continue
             fragment = stream_event.get("text")

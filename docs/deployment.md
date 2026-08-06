@@ -311,8 +311,8 @@ audit trail; the human decides whether to resume, cancel, or investigate.
 
 ### Norman Codex Capacity Contract
 
-Every mapped Codex route is local-only for `norman-code`. Before an interactive
-session starts, the launcher obtains one brokered gateway token and checks:
+`norman-code` is local-first. Before an interactive session starts, the
+launcher obtains one brokered gateway token and checks:
 
 1. `/v1/models` accepts that token.
 2. `/v1/norman/capacity?model=norman-code` reports a reachable Spark that
@@ -356,9 +356,13 @@ its `available`, `reason`, `retryable`, `eligible_workers`, `ineligible_workers`
 `frontdoor`, and `cache` fields to decide recovery. It intentionally treats
 the Mac mini fallback node as ineligible for `norman-code`.
 
-Local generation failures use the normal OpenAI-compatible error envelope and
-always include `error.norman.cloud_fallback: false`. No local failure forwards
-the prompt to a cloud model.
+For `norman-code` only, the `/v1/responses` facade makes one server-owned
+Bedrock retry when a retryable local failure occurs before the local model has
+emitted text. The fallback is buffered, so the response stream first reports
+that the retry has started and then emits the cloud result. It never switches
+providers after local text has begun, and no other public alias is eligible.
+Failures that cannot use the retry retain the normal OpenAI-compatible error
+envelope.
 
 | Code | HTTP status | Meaning | Retry |
 | --- | --- | --- | --- |

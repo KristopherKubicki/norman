@@ -79,7 +79,7 @@ def test_heavy_coding_capacity_requires_a_reachable_spark_with_the_model():
             "reason": "ineligible_for_heavy_coding",
         }
     ]
-    assert snapshot["cloud_fallback"] is False
+    assert snapshot["cloud_fallback"] is True
 
 
 def test_heavy_coding_capacity_distinguishes_unavailable_conditions():
@@ -166,7 +166,7 @@ def test_failed_mesh_probe_has_a_safe_unavailable_capacity_contract():
             }
         ],
         "cache": {"status": "unavailable"},
-        "cloud_fallback": False,
+        "cloud_fallback": True,
         "retryable": True,
     }
 

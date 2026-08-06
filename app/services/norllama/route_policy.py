@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping
 
 ROUTE_POLICY_SCHEMA = "norman.norllama.route-policy.v1"
 ROUTE_POLICY_VERSION = "2026.08.04.coder-runtime-v1"
@@ -81,7 +81,11 @@ ROUTE_POLICY_RESIDENCY = {
 
 ROUTE_POLICY_FALLBACKS = {
     "worker_mismatch_requires_receipt_fallback": True,
-    "allow_cloud_fallback": False,
+    "allow_cloud_fallback": True,
+    "cloud_fallback_aliases": ["norman-code"],
+    "cloud_fallback_provider": "aws-bedrock",
+    "cloud_fallback_model": "openai.gpt-5.6-terra",
+    "cloud_fallback_lane": "coder",
     "allow_local_degraded_fallback": True,
     "fallback_reason_required": True,
 }
@@ -106,6 +110,23 @@ ROUTE_POLICY_LIFECYCLE_POLICY = {
 
 def _clean(value: Any) -> str:
     return str(value or "").strip()
+
+
+def cloud_fallback_allowed_for_alias(
+    requested_model: Any,
+    *,
+    fallback_policy: Mapping[str, Any] | None = None,
+) -> bool:
+    """Return whether the signed fallback policy covers this public alias."""
+
+    policy = dict(fallback_policy or ROUTE_POLICY_FALLBACKS)
+    aliases = policy.get("cloud_fallback_aliases")
+    if not isinstance(aliases, list):
+        return False
+    requested = _clean(requested_model).lower()
+    return bool(policy.get("allow_cloud_fallback")) and requested in {
+        _clean(alias).lower() for alias in aliases if _clean(alias)
+    }
 
 
 def _int(value: Any) -> int:
