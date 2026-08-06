@@ -142,8 +142,9 @@ sudo systemctl enable --now norman-route-policy-refresh.timer
 ```
 
 The loopback `norman-release@.service` canary writes a separate policy under
-`/run/norman-release-<release-sha>/`. It cannot replace the policy used by the
-active production facade.
+`/run/norman-release-<release-sha>/` and resolves its runtime service tokens
+through the same encrypted credential wrapper as production. It cannot replace
+the policy used by the active production facade.
 
 The unit reads only non-secret identities from
 `/etc/norman/runtime-identities.env`. Store the following logical aliases in
