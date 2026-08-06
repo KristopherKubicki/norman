@@ -36,6 +36,7 @@ from app.services.proxy_observability import (
 router = APIRouter(tags=["openai_compat"])
 logger = logging.getLogger(__name__)
 MAX_PROXY_EVENT_CAPACITY_WINDOW = 200
+CAPACITY_MESH_PROBE_TIMEOUT_SECONDS = 3.0
 GATEWAY_ROUTE_HEADER = "x-norman-gateway-route"
 GATEWAY_ROUTE_IDS = frozenset(
     {
@@ -479,10 +480,13 @@ async def openai_compat_capacity(request: Request, model: str = "norman-code"):
         return _facade_error_response(exc)
 
     try:
-        mesh = await asyncio.to_thread(
-            norllama_mesh_cache.get_mesh_overview,
-            force_refresh=True,
-            timeout_seconds=2,
+        mesh = await asyncio.wait_for(
+            asyncio.to_thread(
+                norllama_mesh_cache.get_mesh_overview,
+                force_refresh=True,
+                timeout_seconds=2,
+            ),
+            timeout=CAPACITY_MESH_PROBE_TIMEOUT_SECONDS,
         )
         snapshot = norllama_capacity.build_capacity_snapshot(
             mesh,
@@ -491,6 +495,16 @@ async def openai_compat_capacity(request: Request, model: str = "norman-code"):
             route_outcomes=norllama_capacity.proxy_event_route_outcomes(
                 proxy_events_snapshot(limit=MAX_PROXY_EVENT_CAPACITY_WINDOW)
             ),
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Norman capacity probe timed out model=%s",
+            selected_model,
+        )
+        snapshot = norllama_capacity.unavailable_capacity_snapshot(
+            requested_model=requested_model,
+            selected_model=selected_model,
+            reason="mesh_probe_timeout",
         )
     except Exception:
         logger.warning(

@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from pathlib import Path
 
 import httpx
@@ -1993,6 +1994,66 @@ def test_openai_compat_capacity_reports_probe_failure_without_invoking_a_model(
     assert payload["available"] is False
     assert payload["reason"] == "mesh_probe_failed"
     assert payload["cloud_fallback"] is False
+    assert invocations == []
+
+
+def test_openai_compat_capacity_times_out_blocked_mesh_probe_without_invoking_a_model(
+    test_app,
+    monkeypatch,
+):
+    from app.api import openai_compat
+    from app.services.prompt_provider_facade import norllama_gateway
+
+    headers = _proxy_headers(monkeypatch)
+    invocations = []
+    probe_started = threading.Event()
+    release_probe = threading.Event()
+
+    def blocked_probe(**_kwargs):
+        probe_started.set()
+        release_probe.wait(timeout=1)
+        return _capacity_mesh()
+
+    monkeypatch.setattr(
+        openai_compat.norllama_mesh_cache,
+        "get_mesh_overview",
+        blocked_probe,
+    )
+    monkeypatch.setattr(
+        openai_compat,
+        "CAPACITY_MESH_PROBE_TIMEOUT_SECONDS",
+        0.01,
+    )
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat",
+        lambda **_kwargs: invocations.append(_kwargs),
+    )
+
+    def release_after_deadline():
+        probe_started.wait(timeout=1)
+        time.sleep(0.05)
+        release_probe.set()
+
+    releaser = threading.Thread(target=release_after_deadline, daemon=True)
+    releaser.start()
+    started_at = time.monotonic()
+    try:
+        response = test_app.get(
+            "/v1/norman/capacity?model=norman-code",
+            headers=headers,
+        )
+    finally:
+        release_probe.set()
+        releaser.join(timeout=1)
+    elapsed_seconds = time.monotonic() - started_at
+
+    assert probe_started.is_set()
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["available"] is False
+    assert payload["reason"] == "mesh_probe_timeout"
+    assert elapsed_seconds < 0.5
     assert invocations == []
 
 
