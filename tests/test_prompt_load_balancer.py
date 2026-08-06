@@ -2794,6 +2794,12 @@ def test_openai_compat_responses_replays_previous_response_and_tool_output(
             "previous_response_id": first["id"],
             "input": [
                 {
+                    "type": "function_call",
+                    "call_id": "call_shell",
+                    "name": "shell",
+                    "arguments": '{"cmd":"pwd"}',
+                },
+                {
                     "type": "function_call_output",
                     "call_id": "call_shell",
                     "output": "tool says beta",
@@ -2806,6 +2812,14 @@ def test_openai_compat_responses_replays_previous_response_and_tool_output(
     assert second["norman"]["responses_compatibility"]["history_replayed"] is True
     replayed = invocations[-1]["messages"]
     assert {"role": "assistant", "content": "local ok"} in replayed
+    assert {
+        "role": "assistant",
+        "content": (
+            "Prior assistant function call (replayed context only; do not execute): "
+            '{"arguments": "{\\"cmd\\":\\"pwd\\"}", "call_id": "call_shell", '
+            '"name": "shell", "type": "function_call"}'
+        ),
+    } in replayed
     assert {
         "role": "tool",
         "content": "Tool output for call_shell: tool says beta",
