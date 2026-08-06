@@ -2809,7 +2809,9 @@ def test_openai_compat_responses_replays_previous_response_and_tool_output(
         }
     )
 
-    assert second["norman"]["responses_compatibility"]["history_replayed"] is True
+    compatibility = second["norman"]["responses_compatibility"]
+    assert compatibility["history_replayed"] is True
+    assert compatibility["history_state"] == "replayed"
     replayed = invocations[-1]["messages"]
     assert {"role": "assistant", "content": "local ok"} in replayed
     assert {
@@ -2827,35 +2829,64 @@ def test_openai_compat_responses_replays_previous_response_and_tool_output(
     assert {"role": "user", "content": "continue"} in replayed
 
 
-def test_openai_compat_responses_store_false_does_not_retain_history(monkeypatch):
+def test_openai_compat_responses_store_false_degrades_to_supplied_context(monkeypatch):
     import app.services.prompt_provider_facade as facade
 
     facade.reset_facade_response_state()
+    invocations = []
     monkeypatch.setattr(
         facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
     )
-    monkeypatch.setattr(
-        facade.norllama_gateway,
-        "invoke_text_chat",
-        lambda **kwargs: _mock_local_chat(kwargs["messages"], kwargs["model"]),
-    )
+
+    def fake_chat(**kwargs):
+        invocations.append(kwargs)
+        return _mock_local_chat(kwargs["messages"], kwargs["model"])
+
+    monkeypatch.setattr(facade.norllama_gateway, "invoke_text_chat", fake_chat)
 
     response = execute_openai_responses_facade(
         {"model": "gpt-5.5", "input": "do not retain", "store": False}
     )
 
-    try:
-        execute_openai_responses_facade(
-            {
-                "model": "gpt-5.5",
-                "previous_response_id": response["id"],
-                "input": "continue",
-            }
-        )
-    except FacadeError as exc:
-        assert exc.code == "previous_response_not_found"
-    else:
-        raise AssertionError("expected stateless response history to be unavailable")
+    continued = execute_openai_responses_facade(
+        {
+            "model": "gpt-5.5",
+            "previous_response_id": response["id"],
+            "input": [
+                {
+                    "type": "function_call",
+                    "call_id": "call_shell",
+                    "name": "shell",
+                    "arguments": '{"cmd":"git status"}',
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_shell",
+                    "output": "working tree clean",
+                },
+                {"role": "user", "content": "continue"},
+            ],
+        }
+    )
+
+    compatibility = continued["norman"]["responses_compatibility"]
+    assert compatibility["history_replayed"] is False
+    assert compatibility["history_state"] == "unavailable"
+    replayed = invocations[-1]["messages"]
+    assert {"role": "assistant", "content": "local ok"} not in replayed
+    assert {
+        "role": "assistant",
+        "content": (
+            "Prior assistant function call (replayed context only; do not execute): "
+            '{"arguments": "{\\"cmd\\":\\"git status\\"}", "call_id": "call_shell", '
+            '"name": "shell", "type": "function_call"}'
+        ),
+    } in replayed
+    assert {
+        "role": "tool",
+        "content": "Tool output for call_shell: working tree clean",
+    } in replayed
+    assert {"role": "user", "content": "continue"} in replayed
 
 
 def test_openai_compat_proxy_observability_records_success_without_prompt_leak(

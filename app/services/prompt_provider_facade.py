@@ -448,24 +448,21 @@ def _store_response_state(
             _RESPONSE_STATE.pop(stale, None)
 
 
-def _previous_response_messages(previous_response_id: str) -> list[dict[str, Any]]:
+def _previous_response_messages(
+    previous_response_id: str,
+) -> tuple[list[dict[str, Any]], bool]:
     previous_response_id = _clean(previous_response_id)
     if not previous_response_id:
-        return []
+        return [], False
     with _RESPONSE_STATE_LOCK:
         state = dict(_RESPONSE_STATE.get(previous_response_id) or {})
     if not state:
-        raise FacadeError(
-            "Unknown previous_response_id for Norman Responses facade",
-            status_code=404,
-            code="previous_response_not_found",
-            param="previous_response_id",
-        )
+        return [], False
     messages = _messages(state.get("messages"))
     output_text = _clean(state.get("output_text"))
     if output_text:
         messages.append({"role": "assistant", "content": output_text})
-    return messages
+    return messages, True
 
 
 def _positive_int(value: Any, default: int) -> int:
@@ -1955,6 +1952,7 @@ class PreparedResponsesExecution:
     route_envelope: dict[str, Any]
     messages: list[dict[str, Any]]
     previous_messages: list[dict[str, Any]]
+    history_replayed: bool
     client_metadata_ignored: bool
     store_requested: bool
 
@@ -1976,7 +1974,7 @@ def _prepare_responses_execution(
         provider_payload["reasoning"] = reasoning_advisory
     if include_advisory:
         provider_payload["include"] = include_advisory
-    previous_messages = _previous_response_messages(
+    previous_messages, history_replayed = _previous_response_messages(
         _clean(provider_payload.get("previous_response_id"))
     )
     messages = [
@@ -1998,6 +1996,7 @@ def _prepare_responses_execution(
         route_envelope=route_envelope,
         messages=messages,
         previous_messages=previous_messages,
+        history_replayed=history_replayed,
         client_metadata_ignored=client_metadata_ignored,
         store_requested=store_requested,
     )
@@ -2044,7 +2043,14 @@ def _responses_response_from_chat(
                 "previous_response_id": _clean(
                     provider_payload.get("previous_response_id")
                 ),
-                "history_replayed": bool(prepared.previous_messages),
+                "history_replayed": prepared.history_replayed,
+                "history_state": (
+                    "not_requested"
+                    if not _clean(provider_payload.get("previous_response_id"))
+                    else "replayed"
+                    if prepared.history_replayed
+                    else "unavailable"
+                ),
                 "tools_declared": len(tools),
                 "tool_calls_returned": len(tool_calls),
                 "tool_call_mode": "explicit_json_envelope" if tools else "none",
