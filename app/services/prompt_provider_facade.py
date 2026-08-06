@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 import uuid
@@ -88,6 +89,7 @@ CLOUD_FALLBACK_MARKER_SCHEMA = "norman.facade-cloud-fallback.v1"
 CLOUD_FALLBACK_PROVIDER = "aws-bedrock"
 CLOUD_FALLBACK_MODEL = "openai.gpt-5.6-terra"
 CLOUD_FALLBACK_LANE = "coder"
+logger = logging.getLogger(__name__)
 MODEL_ALIASES = {
     "norman-code": ROUTE_POLICY_MODELS["coding_operator"],
     "norman-fast": ROUTE_POLICY_MODELS["router"],
@@ -175,6 +177,29 @@ def _flag(value: Any, default: bool = False) -> bool:
 
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def cloud_fallback_execution_configured() -> bool:
+    """Return whether the narrowly authorized Bedrock retry can execute."""
+
+    return (
+        _flag(
+            getattr(settings, "prompt_facade_cloud_fallback_enabled", False),
+            default=False,
+        )
+        and bool(
+            _clean(getattr(settings, "prompt_facade_cloud_fallback_aws_region", ""))
+        )
+        and bool(
+            _clean(
+                getattr(
+                    settings,
+                    "prompt_facade_cloud_fallback_credentials_secret",
+                    "",
+                )
+            )
+        )
+    )
 
 
 def capacity_model_for(requested_model: Any = "") -> tuple[str, str]:
@@ -1279,6 +1304,7 @@ def _cloud_fallback_plan(
     lane = _lower(fallbacks.get("cloud_fallback_lane"))
     if (
         not artifact
+        or not cloud_fallback_execution_configured()
         or not cloud_fallback_allowed_for_alias(
             requested_alias,
             fallback_policy=fallbacks,
@@ -1304,6 +1330,16 @@ def _cloud_fallback_plan(
         "allow_cloud_proxy": False,
         "fallbacks": fallbacks,
         "route_policy_artifact": artifact,
+        "aws_region": _clean(
+            getattr(settings, "prompt_facade_cloud_fallback_aws_region", "")
+        ),
+        "aws_credentials_secret": _clean(
+            getattr(
+                settings,
+                "prompt_facade_cloud_fallback_credentials_secret",
+                "",
+            )
+        ),
     }
     route = NorllamaRoute(
         lane=lane,
@@ -1490,6 +1526,24 @@ def _cloud_fallback_error(
     )
 
 
+def _log_cloud_fallback_failure(
+    *,
+    category: str,
+    plan: CloudFallbackPlan,
+    invocation: AuthorizedChatInvocation,
+    error: Exception | None = None,
+) -> None:
+    logger.warning(
+        "Norman cloud fallback failed category=%s request_id=%s "
+        "fallback_provider=%s fallback_model=%s exception_class=%s",
+        category,
+        invocation.invocation_id,
+        plan.provider,
+        plan.model,
+        type(error).__name__ if error is not None else "none",
+    )
+
+
 def _execute_cloud_fallback(
     *,
     plan: CloudFallbackPlan,
@@ -1512,6 +1566,12 @@ def _execute_cloud_fallback(
             )
         )
     except Exception as exc:
+        _log_cloud_fallback_failure(
+            category="invoke_failed",
+            plan=plan,
+            invocation=invocation,
+            error=exc,
+        )
         raise _cloud_fallback_error(
             plan=plan,
             invocation=invocation,
@@ -1519,6 +1579,11 @@ def _execute_cloud_fallback(
             code="cloud_fallback_failed",
         ) from exc
     if result.stop_reason == "policy_blocked":
+        _log_cloud_fallback_failure(
+            category="policy_blocked",
+            plan=plan,
+            invocation=invocation,
+        )
         raise _cloud_fallback_error(
             plan=plan,
             invocation=invocation,
@@ -1526,6 +1591,11 @@ def _execute_cloud_fallback(
             code="cloud_fallback_not_authorized",
         )
     if not result.text:
+        _log_cloud_fallback_failure(
+            category="empty_response",
+            plan=plan,
+            invocation=invocation,
+        )
         raise _cloud_fallback_error(
             plan=plan,
             invocation=invocation,

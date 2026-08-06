@@ -334,6 +334,66 @@ def test_norman_route_verify_checks_models_then_local_capacity_once(
     ]
 
 
+def test_gateway_json_probe_uses_bounded_gateway_timeout(route_module, monkeypatch):
+    observed = {}
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"object": "list"}'
+
+    def fake_urlopen(request, *, timeout):
+        observed["url"] = request.full_url
+        observed["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(route_module.urllib.request, "urlopen", fake_urlopen)
+
+    assert route_module.gateway_get_json(
+        "https://cp.kris.openbrand.com/v1", "models", token="short-lived-token"
+    ) == (200, {"object": "list"}, "")
+    assert observed == {
+        "url": "https://cp.kris.openbrand.com/v1/models",
+        "timeout": route_module.GATEWAY_REQUEST_TIMEOUT_SECONDS,
+    }
+    assert route_module.GATEWAY_REQUEST_TIMEOUT_SECONDS == 20
+
+
+def test_unavailable_local_capacity_reports_approved_bedrock_fallback(
+    route_module, monkeypatch
+):
+    route = route_by_key(route_module, "control-plane")
+
+    monkeypatch.setattr(
+        route_module,
+        "gateway_get_json",
+        lambda *_args, **_kwargs: (
+            200,
+            {
+                "available": False,
+                "cloud_fallback": True,
+                "reason": "recent_local_model_request_failed",
+                "retryable": True,
+            },
+            "",
+        ),
+    )
+
+    assert route_module.verify_norman_capacity(route, token="short-lived-token") == (
+        False,
+        "local coding capacity is unavailable "
+        "(recent_local_model_request_failed); approved Bedrock fallback will be "
+        "attempted before any local output; retry later",
+    )
+
+
 def test_capacity_unavailable_warns_then_starts_routed_session(
     route_module, monkeypatch, capsys
 ):

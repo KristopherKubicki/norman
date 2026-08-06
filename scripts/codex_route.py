@@ -57,6 +57,7 @@ ACCOUNT_CAPACITY_FRESH_SECONDS = max(
     60,
     int(os.environ.get("NORMAN_CODEX_ACCOUNT_CAPACITY_FRESH_SECONDS", "1800")),
 )
+GATEWAY_REQUEST_TIMEOUT_SECONDS = 20
 PLAN_LEDGER_KIND = "chatgpt_codex_credit_estimate"
 METERED_LEDGER_KINDS = frozenset(
     {"api_rate_card_estimate", "provider_invoice_estimate"}
@@ -576,7 +577,9 @@ def gateway_get_json(
         method="GET",
     )
     try:
-        with urllib.request.urlopen(request, timeout=10) as response:
+        with urllib.request.urlopen(
+            request, timeout=GATEWAY_REQUEST_TIMEOUT_SECONDS
+        ) as response:
             status = int(response.status)
             body = response.read()
     except urllib.error.HTTPError as exc:
@@ -595,7 +598,7 @@ def gateway_get_json(
 
 
 def verify_norman_capacity(route: Route, *, token: str) -> tuple[bool, str]:
-    """Prove the Norman coding lane has a reachable eligible local worker."""
+    """Report Norman coding capacity and whether approved cloud fallback exists."""
 
     query = urllib.parse.urlencode({"model": DEFAULT_ROUTER_MODEL})
     status, payload, detail = gateway_get_json(
@@ -605,13 +608,21 @@ def verify_norman_capacity(route: Route, *, token: str) -> tuple[bool, str]:
     )
     if status != 200:
         return False, detail
-    if payload.get("cloud_fallback") is not False:
-        return False, "capacity report does not enforce local-only execution"
+    cloud_fallback = payload.get("cloud_fallback")
+    if not isinstance(cloud_fallback, bool):
+        return False, "capacity report has an invalid cloud fallback policy"
     if payload.get("available") is True:
         return True, "local coding capacity verified"
     reason = str(payload.get("reason") or "unknown").strip() or "unknown"
     retryable = bool(payload.get("retryable"))
     retry_hint = "retry later" if retryable else "operator action is required"
+    if cloud_fallback:
+        return (
+            False,
+            "local coding capacity is unavailable "
+            f"({reason}); approved Bedrock fallback will be attempted before "
+            f"any local output; {retry_hint}",
+        )
     return False, f"local coding capacity is unavailable ({reason}); {retry_hint}"
 
 

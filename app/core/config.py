@@ -246,6 +246,9 @@ class Settings(BaseSettings):
     llm_provider_timeout_seconds: int = 45
     console_runtime_norllama_timeout_seconds: int = 180
     console_runtime_bedrock_timeout_seconds: int = 300
+    prompt_facade_cloud_fallback_enabled: bool = False
+    prompt_facade_cloud_fallback_aws_region: str = ""
+    prompt_facade_cloud_fallback_credentials_secret: str = ""
     llm_mesh_cache_ttl_seconds: int = 15
     llm_mesh_cache_stale_seconds: int = 300
     llm_mesh_workers: List[Dict[str, Any]] = [

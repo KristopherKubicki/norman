@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import threading
 from pathlib import Path
 
@@ -679,6 +680,24 @@ def _install_bedrock_stub(
 ):
     from app.services import prompt_provider_facade
 
+    monkeypatch.setattr(
+        prompt_provider_facade.settings,
+        "prompt_facade_cloud_fallback_enabled",
+        True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        prompt_provider_facade.settings,
+        "prompt_facade_cloud_fallback_aws_region",
+        "us-east-2",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        prompt_provider_facade.settings,
+        "prompt_facade_cloud_fallback_credentials_secret",
+        "test/bedrock-fallback",
+        raising=False,
+    )
     calls = []
 
     class StubBedrockModelAdapter:
@@ -1175,6 +1194,11 @@ def test_openai_compat_responses_stream_falls_back_after_queued_capacity_expiry(
         "prompt_intermediary_openai_facade_cloud_fallback"
     )
     assert fallback_request.metadata["route_policy"]["allow_cloud_proxy"] is False
+    assert fallback_request.metadata["route_policy"]["aws_region"] == "us-east-2"
+    assert (
+        fallback_request.metadata["route_policy"]["aws_credentials_secret"]
+        == "test/bedrock-fallback"
+    )
     assert fallback_request.metadata["norllama_route"]["provider"] == "aws-bedrock"
     assert events[-1] == ("", "[DONE]")
     assert response.closed is True
@@ -1753,8 +1777,9 @@ def test_openai_compat_responses_does_not_fallback_for_nonretryable_failure(
 
 
 def test_openai_compat_responses_sanitizes_bedrock_fallback_failures(
-    test_app, monkeypatch
+    test_app, monkeypatch, caplog
 ):
+    from app.services import prompt_provider_facade
     from app.services.prompt_provider_facade import norllama_gateway
 
     headers = _proxy_headers(monkeypatch)
@@ -1772,6 +1797,82 @@ def test_openai_compat_responses_sanitizes_bedrock_fallback_failures(
         monkeypatch,
         error=RuntimeError("bedrock token=must-not-leak"),
     )
+    monkeypatch.setattr(
+        prompt_provider_facade.settings,
+        "prompt_facade_cloud_fallback_credentials_secret",
+        "credentials-alias-must-not-leak",
+        raising=False,
+    )
+
+    with caplog.at_level(
+        logging.WARNING,
+        logger="app.services.prompt_provider_facade",
+    ):
+        response = test_app.post(
+            "/v1/responses",
+            headers=headers,
+            json={"model": "norman-code", "input": "status?"},
+        )
+
+    assert response.status_code == 503
+    error = response.json()["error"]
+    assert error["code"] == "cloud_fallback_failed"
+    assert error["norman"]["cloud_fallback"]["state"] == "failed"
+    assert "must-not-leak" not in response.text
+    assert "credentials-alias-must-not-leak" not in response.text
+    assert "must-not-leak" not in caplog.text
+    assert "credentials-alias-must-not-leak" not in caplog.text
+    assert "category=invoke_failed" in caplog.text
+    assert "exception_class=RuntimeError" in caplog.text
+
+
+def test_openai_compat_responses_does_not_attempt_unconfigured_cloud_fallback(
+    test_app, monkeypatch
+):
+    from app.services import prompt_provider_facade
+    from app.services.prompt_provider_facade import norllama_gateway
+
+    headers = _proxy_headers(monkeypatch)
+    monkeypatch.setattr(
+        prompt_provider_facade.settings,
+        "prompt_facade_cloud_fallback_enabled",
+        False,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        prompt_provider_facade.settings,
+        "prompt_facade_cloud_fallback_aws_region",
+        "",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        prompt_provider_facade.settings,
+        "prompt_facade_cloud_fallback_credentials_secret",
+        "",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            norllama_gateway.NorllamaGatewayError(
+                503,
+                {"error": "workers unavailable"},
+            )
+        ),
+    )
+    bedrock_calls = []
+
+    class StubBedrockModelAdapter:
+        def invoke(self, request):
+            bedrock_calls.append(request)
+            return _mock_bedrock_result()
+
+    monkeypatch.setattr(
+        prompt_provider_facade,
+        "BedrockModelAdapter",
+        StubBedrockModelAdapter,
+    )
 
     response = test_app.post(
         "/v1/responses",
@@ -1781,9 +1882,9 @@ def test_openai_compat_responses_sanitizes_bedrock_fallback_failures(
 
     assert response.status_code == 503
     error = response.json()["error"]
-    assert error["code"] == "cloud_fallback_failed"
-    assert error["norman"]["cloud_fallback"]["state"] == "failed"
-    assert "must-not-leak" not in response.text
+    assert error["code"] == "local_capacity_unavailable"
+    assert error["norman"]["cloud_fallback"] is False
+    assert bedrock_calls == []
 
 
 def test_openai_compat_capacity_requires_gateway_authentication(test_app, monkeypatch):
@@ -1853,7 +1954,7 @@ def test_openai_compat_capacity_reports_live_worker_state_without_invoking_a_mod
     payload = response.json()
     assert payload["available"] is expected_available
     assert payload["reason"] == expected_reason
-    assert payload["cloud_fallback"] is True
+    assert payload["cloud_fallback"] is False
     assert payload["gateway"]["gateway_route"] == "norman"
     assert invocations == []
 
@@ -1891,8 +1992,54 @@ def test_openai_compat_capacity_reports_probe_failure_without_invoking_a_model(
     payload = response.json()
     assert payload["available"] is False
     assert payload["reason"] == "mesh_probe_failed"
-    assert payload["cloud_fallback"] is True
+    assert payload["cloud_fallback"] is False
     assert invocations == []
+
+
+def test_openai_compat_capacity_reports_executable_cloud_fallback(
+    test_app,
+    monkeypatch,
+):
+    from app.api import openai_compat
+    from app.services import prompt_provider_facade
+
+    headers = _proxy_headers(monkeypatch)
+    monkeypatch.setattr(
+        prompt_provider_facade.settings,
+        "prompt_facade_cloud_fallback_enabled",
+        True,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        prompt_provider_facade.settings,
+        "prompt_facade_cloud_fallback_aws_region",
+        "us-east-2",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        prompt_provider_facade.settings,
+        "prompt_facade_cloud_fallback_credentials_secret",
+        "test/bedrock-fallback",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        openai_compat.norllama_mesh_cache,
+        "get_mesh_overview",
+        lambda **_kwargs: _capacity_mesh(
+            spark_150_reachable=False,
+            spark_151_reachable=False,
+        ),
+    )
+
+    response = test_app.get(
+        "/v1/norman/capacity?model=norman-code",
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["available"] is False
+    assert payload["cloud_fallback"] is True
 
 
 def test_openai_compat_capacity_blocks_recent_local_model_timeout(

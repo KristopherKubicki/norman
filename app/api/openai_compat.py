@@ -18,6 +18,7 @@ from app.services.prompt_provider_facade import (
     FacadeError,
     capacity_model_for,
     chat_completion_stream_chunks,
+    cloud_fallback_execution_configured,
     execute_openai_chat_facade,
     execute_openai_responses_facade,
     open_openai_responses_stream,
@@ -500,6 +501,7 @@ async def openai_compat_capacity(request: Request, model: str = "norman-code"):
             selected_model=selected_model,
             reason="mesh_probe_failed",
         )
+    snapshot["cloud_fallback"] = cloud_fallback_execution_configured()
 
     response = {
         **snapshot,
