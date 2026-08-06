@@ -272,6 +272,7 @@ def test_bedrock_credentials_can_use_norman_secret_command(monkeypatch):
     monkeypatch.delenv("NORMAN_KEYS_URL", raising=False)
     monkeypatch.delenv("NORMAN_KEYS_API_BASE", raising=False)
     monkeypatch.delenv("NORMAN_KEYS_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("NORMAN_CONFIG_SECRET_CMD", raising=False)
     monkeypatch.setenv("NORMAN_SECRET_CMD", "keysctl read {name}")
     calls: list[tuple[list[str], dict]] = []
 
@@ -317,6 +318,41 @@ def test_bedrock_credentials_can_use_norman_secret_command(monkeypatch):
             },
         )
     ]
+
+
+def test_bedrock_credentials_can_reuse_managed_config_secret_command(monkeypatch):
+    monkeypatch.delenv("NORMAN_KEYS_URL", raising=False)
+    monkeypatch.delenv("NORMAN_KEYS_API_BASE", raising=False)
+    monkeypatch.delenv("NORMAN_KEYS_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("NORMAN_SECRET_CMD", raising=False)
+    monkeypatch.setenv("NORMAN_CONFIG_SECRET_CMD", "keysctl read {name}")
+    calls: list[tuple[list[str], dict]] = []
+
+    class Result:
+        stdout = json.dumps(
+            {
+                "AccessKeyId": "TEST_AWS_ACCESS_KEY",
+                "SecretAccessKey": "TEST_AWS_SECRET_KEY",
+            }
+        )
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return Result()
+
+    monkeypatch.setattr(bedrock_module.subprocess, "run", fake_run)
+
+    credentials = bedrock_module.resolve_bedrock_credentials(
+        {"aws_credentials_secret": "norman/bedrock-fallback"},
+        timeout_seconds=12,
+    )
+
+    assert credentials is not None
+    assert credentials.receipt_metadata() == {
+        "source": "secret_command",
+        "secret_name": "norman/bedrock-fallback",
+    }
+    assert calls[0][0] == ["keysctl", "read", "norman/bedrock-fallback"]
 
 
 def test_bedrock_adapter_propagates_native_converse_failure():

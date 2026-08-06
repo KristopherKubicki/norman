@@ -16,7 +16,10 @@ from app.services.console_runtime.adapters.bedrock import BedrockModelAdapter
 from app.services.console_runtime.types import ModelBudget, ModelRequest, ModelResult
 from app.services.norllama import capacity as norllama_capacity
 from app.services.norllama import gateway as norllama_gateway
-from app.services.norllama.route_policy import cloud_fallback_allowed_for_alias
+from app.services.norllama.route_policy import (
+    CLOUD_FALLBACK_BEDROCK_MODEL,
+    cloud_fallback_allowed_for_alias,
+)
 from app.services.norllama.route_proof import (
     audit_route_receipt,
     receipt_completion_gate_passes,
@@ -87,7 +90,7 @@ MAX_RESPONSE_STATE = 200
 CLOUD_FALLBACK_SCHEMA = "norman.cloud-fallback.v1"
 CLOUD_FALLBACK_MARKER_SCHEMA = "norman.facade-cloud-fallback.v1"
 CLOUD_FALLBACK_PROVIDER = "aws-bedrock"
-CLOUD_FALLBACK_MODEL = "openai.gpt-5.6-terra"
+CLOUD_FALLBACK_MODEL = CLOUD_FALLBACK_BEDROCK_MODEL
 CLOUD_FALLBACK_LANE = "coder"
 logger = logging.getLogger(__name__)
 MODEL_ALIASES = {

@@ -157,7 +157,7 @@ def _keys_timeout_seconds(timeout_seconds: float = 0) -> float:
 
 
 def _secret_command(secret_name: str) -> list[str]:
-    configured = _clean(os.getenv("NORMAN_SECRET_CMD"))
+    configured = _first_env("NORMAN_SECRET_CMD", "NORMAN_CONFIG_SECRET_CMD")
     if not configured:
         return []
     command = shlex.split(configured)

@@ -26,7 +26,10 @@ from app.services.norllama.route_policy_artifact import (
     authorize_route_under_policy,
     policy_block_response,
 )
-from app.services.norllama.route_policy import cloud_fallback_allowed_for_alias
+from app.services.norllama.route_policy import (
+    CLOUD_FALLBACK_BEDROCK_MODEL,
+    cloud_fallback_allowed_for_alias,
+)
 from app.services.norllama.routing import build_task_receipt, route_task
 from app.services.norllama.types import (
     NorllamaRoute,
@@ -133,7 +136,7 @@ def _facade_cloud_fallback_allowed(
         and _clean(marker.get("requested_alias")).lower() == "norman-code"
         and _clean(marker.get("local_failure_code"))
         and _clean(provider).lower().replace("_", "-") == "aws-bedrock"
-        and _clean(model) == "openai.gpt-5.6-terra"
+        and _clean(model) == CLOUD_FALLBACK_BEDROCK_MODEL
         and _clean(lane) == "coder"
         and artifact_fallbacks == route_fallbacks
         and cloud_fallback_allowed_for_alias(
@@ -142,7 +145,7 @@ def _facade_cloud_fallback_allowed(
         )
         and _clean(artifact_fallbacks.get("cloud_fallback_provider")) == "aws-bedrock"
         and _clean(artifact_fallbacks.get("cloud_fallback_model"))
-        == "openai.gpt-5.6-terra"
+        == CLOUD_FALLBACK_BEDROCK_MODEL
         and _clean(artifact_fallbacks.get("cloud_fallback_lane")) == "coder"
     )
 

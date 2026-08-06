@@ -79,12 +79,14 @@ ROUTE_POLICY_RESIDENCY = {
     "lab": ["world", "graph", "packet", "forecasting", "gui-grounding"],
 }
 
+CLOUD_FALLBACK_BEDROCK_MODEL = "qwen.qwen3-coder-480b-a35b-v1:0"
+
 ROUTE_POLICY_FALLBACKS = {
     "worker_mismatch_requires_receipt_fallback": True,
     "allow_cloud_fallback": True,
     "cloud_fallback_aliases": ["norman-code"],
     "cloud_fallback_provider": "aws-bedrock",
-    "cloud_fallback_model": "openai.gpt-5.6-terra",
+    "cloud_fallback_model": CLOUD_FALLBACK_BEDROCK_MODEL,
     "cloud_fallback_lane": "coder",
     "allow_local_degraded_fallback": True,
     "fallback_reason_required": True,
