@@ -619,8 +619,8 @@ def _tool_envelope_prefix_state(text: str) -> str:
     """Classify a buffered Responses tool-call envelope prefix.
 
     Local models emit a JSON envelope instead of native tool calls. Hold back
-    only a possible first JSON key so a valid envelope is never streamed as
-    assistant text before the completed response becomes a function_call.
+    a possible standalone envelope so a valid call never becomes assistant
+    text before the completed response becomes a function_call.
     """
 
     if len(text) >= MAX_TOOL_ENVELOPE_PREFIX_CHARS:
@@ -647,6 +647,18 @@ def _tool_envelope_prefix_state(text: str) -> str:
     return "tool" if remainder.startswith(":") else "text"
 
 
+def _tool_envelope_candidate_start(text: str, previous_character: str) -> int:
+    """Return the first standalone JSON-object start in buffered stream text."""
+
+    for index, character in enumerate(text):
+        if character != "{":
+            continue
+        preceding = text[index - 1] if index else previous_character
+        if not preceding or preceding.isspace():
+            return index
+    return -1
+
+
 def _response_stream_snapshot(stream: Any, *, status: str) -> dict[str, Any]:
     snapshot = {
         "id": stream.response_id,
@@ -667,7 +679,8 @@ def _response_sse(stream: Any):
 
     initial = _response_stream_snapshot(stream, status="in_progress")
     text_parts: list[str] = []
-    buffered_prefix = ""
+    buffered_text = ""
+    emitted_text_parts: list[str] = []
     text_item_started = False
     tool_envelope = False
 
@@ -715,6 +728,50 @@ def _response_sse(stream: Any):
                 "output_index": 0,
                 "content_index": 0,
                 "delta": delta,
+            },
+        )
+
+    def emit_text(delta: str) -> Iterable[str]:
+        if not delta:
+            return
+        for event in begin_text_item():
+            yield event
+        emitted_text_parts.append(delta)
+        yield text_delta(delta)
+
+    def finish_text_item(final_item: dict[str, Any]) -> Iterable[str]:
+        response_text = response.get("output_text")
+        text = response_text if isinstance(response_text, str) else ""
+        yield _response_sse_event(
+            "response.output_text.done",
+            {
+                "type": "response.output_text.done",
+                "item_id": stream.output_item_id,
+                "output_index": 0,
+                "content_index": 0,
+                "text": text,
+            },
+        )
+        yield _response_sse_event(
+            "response.content_part.done",
+            {
+                "type": "response.content_part.done",
+                "item_id": stream.output_item_id,
+                "output_index": 0,
+                "content_index": 0,
+                "part": {
+                    "type": "output_text",
+                    "text": text,
+                    "annotations": [],
+                },
+            },
+        )
+        yield _response_sse_event(
+            "response.output_item.done",
+            {
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": final_item,
             },
         )
 
@@ -782,24 +839,41 @@ def _response_sse(stream: Any):
             if not isinstance(fragment, str) or not fragment:
                 continue
             text_parts.append(fragment)
-            if not text_item_started:
-                buffered_prefix += fragment
-                prefix_state = _tool_envelope_prefix_state(buffered_prefix)
-                if prefix_state == "pending":
-                    continue
-                if prefix_state == "tool":
-                    tool_envelope = True
-                    continue
-                for event in begin_text_item():
-                    yield event
-                yield text_delta(buffered_prefix)
-                buffered_prefix = ""
-                continue
             if tool_envelope:
                 continue
-            for event in begin_text_item():
-                yield event
-            yield text_delta(fragment)
+            buffered_text += fragment
+            while buffered_text:
+                previous_character = (
+                    emitted_text_parts[-1][-1] if emitted_text_parts else ""
+                )
+                candidate_start = _tool_envelope_candidate_start(
+                    buffered_text,
+                    previous_character,
+                )
+                if candidate_start < 0:
+                    if not text_item_started and not buffered_text.strip():
+                        break
+                    for event in emit_text(buffered_text):
+                        yield event
+                    buffered_text = ""
+                    break
+                prefix = buffered_text[:candidate_start]
+                if prefix and (prefix.strip() or text_item_started):
+                    for event in emit_text(prefix):
+                        yield event
+                    buffered_text = buffered_text[candidate_start:]
+                    continue
+                prefix_state = _tool_envelope_prefix_state(buffered_text)
+                if prefix_state == "pending":
+                    break
+                if prefix_state == "tool":
+                    tool_envelope = True
+                    buffered_text = ""
+                    break
+                for event in emit_text(buffered_text):
+                    yield event
+                buffered_text = ""
+                break
 
         text = "".join(text_parts)
         response = stream.complete(text)
@@ -815,6 +889,13 @@ def _response_sse(stream: Any):
             if item.get("type") == "function_call"
         ]
         if function_call_items:
+            message_item = next(
+                (item for item in output_items if item.get("type") == "message"),
+                {},
+            )
+            if text_item_started:
+                for event in finish_text_item(message_item):
+                    yield event
             for output_index, output_item in function_call_items:
                 arguments = output_item.get("arguments")
                 arguments = arguments if isinstance(arguments, str) else ""
@@ -866,49 +947,19 @@ def _response_sse(stream: Any):
                     },
                 )
         else:
-            response_text = _clean(response.get("output_text"))
-            if not text_item_started:
-                for event in begin_text_item():
-                    yield event
-                if response_text:
-                    yield text_delta(response_text)
+            response_text = response.get("output_text")
+            response_text = response_text if isinstance(response_text, str) else ""
+            emitted_text = "".join(emitted_text_parts)
+            remaining_text = (
+                response_text[len(emitted_text) :]
+                if response_text.startswith(emitted_text)
+                else response_text
+            )
+            for event in emit_text(remaining_text):
+                yield event
             final_item = output_items[0] if output_items else {}
-            yield _response_sse_event(
-                "response.output_text.done",
-                {
-                    "type": "response.output_text.done",
-                    "item_id": stream.output_item_id,
-                    "output_index": 0,
-                    "content_index": 0,
-                    "text": response.get("output_text")
-                    if isinstance(response.get("output_text"), str)
-                    else "",
-                },
-            )
-            yield _response_sse_event(
-                "response.content_part.done",
-                {
-                    "type": "response.content_part.done",
-                    "item_id": stream.output_item_id,
-                    "output_index": 0,
-                    "content_index": 0,
-                    "part": {
-                        "type": "output_text",
-                        "text": response.get("output_text")
-                        if isinstance(response.get("output_text"), str)
-                        else "",
-                        "annotations": [],
-                    },
-                },
-            )
-            yield _response_sse_event(
-                "response.output_item.done",
-                {
-                    "type": "response.output_item.done",
-                    "output_index": 0,
-                    "item": final_item,
-                },
-            )
+            for event in finish_text_item(final_item):
+                yield event
         yield _response_sse_event(
             "response.completed",
             {"type": "response.completed", "response": response},

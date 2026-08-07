@@ -774,20 +774,49 @@ def _tool_chain_context(
     )
 
 
-def _json_tool_call_envelope(text: str) -> list[dict[str, Any]]:
+def _trailing_json_tool_call_envelope(
+    text: str,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Split an optional prose preamble from a final JSON tool envelope.
+
+    Some local models announce an action before emitting the tool JSON. The
+    envelope is only meaningful when it is a complete, standalone final object
+    so ordinary JSON answers remain assistant text.
+    """
+
     if not text:
-        return []
-    try:
-        payload = json.loads(text)
-    except (TypeError, ValueError):
-        return []
-    raw_calls: list[Any] = []
-    if isinstance(payload, Mapping):
-        if isinstance(payload.get("tool_call"), Mapping):
-            raw_calls = [payload["tool_call"]]
-        elif isinstance(payload.get("tool_calls"), list):
-            raw_calls = payload["tool_calls"]
-    return [dict(call) for call in raw_calls if isinstance(call, Mapping)]
+        return "", []
+    decoder = json.JSONDecoder()
+    start = text.rfind("{")
+    while start >= 0:
+        if start and not text[start - 1].isspace():
+            start = text.rfind("{", 0, start)
+            continue
+        try:
+            payload, end = decoder.raw_decode(text[start:])
+        except (TypeError, ValueError):
+            start = text.rfind("{", 0, start)
+            continue
+        if text[start + end :].strip():
+            start = text.rfind("{", 0, start)
+            continue
+        raw_calls: list[Any] = []
+        if isinstance(payload, Mapping):
+            if isinstance(payload.get("tool_call"), Mapping):
+                raw_calls = [payload["tool_call"]]
+            elif isinstance(payload.get("tool_calls"), list):
+                raw_calls = payload["tool_calls"]
+        calls = [dict(call) for call in raw_calls if isinstance(call, Mapping)]
+        if calls:
+            preamble = text[:start]
+            return (preamble if preamble.strip() else ""), calls
+        start = text.rfind("{", 0, start)
+    return text, []
+
+
+def _json_tool_call_envelope(text: str) -> list[dict[str, Any]]:
+    _, calls = _trailing_json_tool_call_envelope(text)
+    return calls
 
 
 def _tool_chain_watchdog_reason(
@@ -1329,11 +1358,13 @@ def _extract_tool_calls(
     *,
     tools: list[dict[str, Any]],
     allow_implicit_tools: bool = False,
+    raw_calls: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     names = _tool_names(tools)
     if not text or (not names and not allow_implicit_tools):
         return []
-    raw_calls = _json_tool_call_envelope(text)
+    if raw_calls is None:
+        raw_calls = _json_tool_call_envelope(text)
     calls: list[dict[str, Any]] = []
     for raw in raw_calls:
         if not isinstance(raw, Mapping):
@@ -1377,23 +1408,22 @@ def _response_output_items(
     tool_calls: list[dict[str, Any]],
     output_item_id: str = "",
 ) -> list[dict[str, Any]]:
+    message_item = {
+        "id": output_item_id or f"msg-norman-{uuid.uuid4().hex}",
+        "type": "message",
+        "status": "completed",
+        "role": "assistant",
+        "content": [
+            {
+                "type": "output_text",
+                "text": text,
+                "annotations": [],
+            }
+        ],
+    }
     if tool_calls:
-        return [dict(item) for item in tool_calls]
-    return [
-        {
-            "id": output_item_id or f"msg-norman-{uuid.uuid4().hex}",
-            "type": "message",
-            "status": "completed",
-            "role": "assistant",
-            "content": [
-                {
-                    "type": "output_text",
-                    "text": text,
-                    "annotations": [],
-                }
-            ],
-        }
-    ]
+        return ([message_item] if text else []) + [dict(item) for item in tool_calls]
+    return [message_item]
 
 
 def _route_from_envelope(
@@ -2851,6 +2881,7 @@ def _responses_response_from_chat(
     chat_response = dict(chat_response)
     text = _choice_text(chat_response)
     tools = _tools(provider_payload)
+    preamble, raw_calls = _trailing_json_tool_call_envelope(text)
     tool_calls = _extract_tool_calls(
         text,
         tools=tools,
@@ -2858,13 +2889,15 @@ def _responses_response_from_chat(
         # client-side and omit a top-level Responses tools list. The TUI still
         # validates the returned call before it can execute anything.
         allow_implicit_tools=not bool(_tool_names(tools)),
+        raw_calls=raw_calls,
     )
+    visible_text = preamble if tool_calls else text
     output_items = _response_output_items(
-        text=text,
+        text=visible_text,
         tool_calls=tool_calls,
         output_item_id=output_item_id,
     )
-    output_text = "" if tool_calls else text
+    output_text = visible_text
     watchdog = dict(tool_chain_watchdog or {})
     tool_chain = _tool_chain_telemetry(
         context=prepared.tool_chain_context,

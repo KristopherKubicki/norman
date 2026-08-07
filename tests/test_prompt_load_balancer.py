@@ -1463,6 +1463,90 @@ def test_openai_compat_responses_stream_converts_mcp_resource_discovery(
     assert response.closed is True
 
 
+def test_openai_compat_responses_stream_converts_trailing_tool_envelope_after_preamble(
+    test_app, monkeypatch
+):
+    response = _MockNativeStreamResponse(
+        [
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "response": "I will check the available tools.\n",
+                }
+            ),
+            json.dumps({"model": "qwen3-coder:30b", "response": "{"}),
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "response": (
+                        '"tool_call":{"name":"list_mcp_resources",'
+                        '"arguments":{"server":"codex_apps"}}}'
+                    ),
+                }
+            ),
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "done": True,
+                    "prompt_eval_count": 4,
+                    "eval_count": 2,
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat_stream",
+        lambda **kwargs: norllama_gateway.NorllamaTextStream(
+            response,
+            model=kwargs["model"],
+        ),
+    )
+
+    result = test_app.post(
+        "/v1/responses",
+        headers=_proxy_headers(monkeypatch),
+        json={
+            "model": "norman-code",
+            "input": "What tools are available?",
+            "stream": True,
+        },
+    )
+
+    assert result.status_code == 200
+    events = _response_sse_events(result.text)
+    payloads = [
+        json.loads(data) for event, data in events if event and data != "[DONE]"
+    ]
+    output_deltas = [
+        payload["delta"]
+        for payload in payloads
+        if payload["type"] == "response.output_text.delta"
+    ]
+    output_items = [
+        payload["item"]
+        for payload in payloads
+        if payload["type"] == "response.output_item.added"
+    ]
+    completed = next(
+        payload["response"]
+        for payload in payloads
+        if payload["type"] == "response.completed"
+    )
+
+    assert "".join(output_deltas) == "I will check the available tools.\n"
+    assert not any("list_mcp_resources" in delta for delta in output_deltas)
+    assert [item["type"] for item in output_items] == ["message", "function_call"]
+    assert output_items[1]["name"] == "tool_search"
+    assert completed["output_text"] == "I will check the available tools.\n"
+    assert [item["type"] for item in completed["output"]] == [
+        "message",
+        "function_call",
+    ]
+    assert completed["output"][1]["name"] == "tool_search"
+    assert response.closed is True
+
+
 def test_openai_compat_responses_stream_repairs_stale_tool_call_after_result(
     test_app, monkeypatch
 ):
@@ -3408,6 +3492,55 @@ def test_openai_compat_responses_can_return_explicit_tool_call(monkeypatch):
     assert response["norman"]["route_receipt"]["schema"] == (
         "norman.norllama.route-receipt.v1"
     )
+
+
+def test_openai_compat_responses_converts_trailing_tool_envelope_after_preamble(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: _mock_local_chat(
+            kwargs["messages"],
+            kwargs["model"],
+        )
+        | {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            "I will check the available tools.\n\n"
+                            '{"tool_call":{"name":"list_mcp_resources",'
+                            '"arguments":{"server":"codex_apps"}}}'
+                        )
+                    }
+                }
+            ]
+        },
+    )
+
+    response = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "What tools are available?",
+        }
+    )
+
+    assert response["output_text"] == "I will check the available tools.\n\n"
+    assert [item["type"] for item in response["output"]] == [
+        "message",
+        "function_call",
+    ]
+    assert response["output"][1]["name"] == "tool_search"
+    assert json.loads(response["output"][1]["arguments"]) == {
+        "query": "Find the executable tool for the codex_apps MCP server"
+    }
+    assert "list_mcp_resources" not in response["output_text"]
 
 
 def test_openai_compat_converts_implicit_codex_apps_calls_to_tool_search():
