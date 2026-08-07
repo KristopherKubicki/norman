@@ -180,6 +180,9 @@ def test_canary_systemd_wrapper_uses_the_encrypted_credential_path():
     assert "norman/prompt-proxy-token" in wrapper
     assert "--passphrase-file" in wrapper
     assert "NORMAN_PROMPT_PROXY_TOKEN" in wrapper
+    assert "/usr/local/libexec/tui_tool_chain_canary.py" in wrapper
+    assert "/home/kristopher/code/norman" not in wrapper
     assert "http://127.0.0.1:8000/v1/responses" in service
     assert "LoadCredentialEncrypted=norman-cred-passphrase" in service
+    assert "WorkingDirectory=" not in service
     assert "OnUnitActiveSec=1h" in timer

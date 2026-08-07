@@ -9,6 +9,6 @@ export NORMAN_PROMPT_PROXY_TOKEN="$(
         get norman/prompt-proxy-token
 )"
 
-: "${NORMAN_TUI_TOOL_CHAIN_CANARY_SCRIPT:=/home/kristopher/code/norman/scripts/tui_tool_chain_canary.py}"
+: "${NORMAN_TUI_TOOL_CHAIN_CANARY_SCRIPT:=/usr/local/libexec/tui_tool_chain_canary.py}"
 
 exec /usr/bin/python3 "$NORMAN_TUI_TOOL_CHAIN_CANARY_SCRIPT" "$@"

@@ -7,7 +7,6 @@ Wants=network-online.target
 Type=oneshot
 User=kristopher
 Group=kristopher
-WorkingDirectory=/home/kristopher/code/norman
 Environment=NORMAN_TUI_TOOL_CHAIN_CANARY_ENDPOINT=http://127.0.0.1:8000/v1/responses
 Environment=NORMAN_TUI_TOOL_CHAIN_CANARY_OUTPUT_JSON=/home/kristopher/.local/state/norman/tui-tool-chain-canary.json
 LoadCredentialEncrypted=norman-cred-passphrase:/etc/norman/credentials/norman-cred-passphrase.cred

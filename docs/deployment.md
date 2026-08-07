@@ -274,6 +274,12 @@ IDs, timings, tool names, counts, and tool-chain status:
 ```bash
 sudo install -D -m 0755 scripts/run_norman_tui_tool_chain_canary.sh \
   /usr/local/libexec/norman-tui-tool-chain-canary
+sudo install -D -m 0644 scripts/tui_tool_chain_canary.py \
+  /usr/local/libexec/tui_tool_chain_canary.py
+sudo install -D -m 0644 scripts/tui_host_pressure_guard.py \
+  /usr/local/libexec/tui_host_pressure_guard.py
+sudo install -D -m 0644 scripts/tui_host_recovery.py \
+  /usr/local/libexec/tui_host_recovery.py
 sudo install -D -m 0644 scripts/systemd/norman-tui-tool-chain-canary.service \
   /etc/systemd/system/norman-tui-tool-chain-canary.service
 sudo install -D -m 0644 scripts/systemd/norman-tui-tool-chain-canary.timer \
