@@ -145,16 +145,22 @@ def resolve_token(secret_name: str) -> tuple[str, list[str]]:
             if token:
                 return token, errors
 
-    command = _secret_command(secret_name)
-    command_label = "Norman secret broker command"
-    if not command:
-        command = _installed_broker_command(secret_name)
-        command_label = "installed Norman Codex gateway broker"
-    if command:
+    configured_command = _secret_command(secret_name)
+    if configured_command:
         try:
-            token = _resolve_from_command(command)
+            token = _resolve_from_command(configured_command)
         except (OSError, subprocess.SubprocessError, TimeoutError, ValueError):
-            errors.append(f"{command_label} lookup failed")
+            errors.append("Norman secret broker command lookup failed")
+        else:
+            if token:
+                return token, errors
+
+    installed_command = _installed_broker_command(secret_name)
+    if installed_command and installed_command != configured_command:
+        try:
+            token = _resolve_from_command(installed_command)
+        except (OSError, subprocess.SubprocessError, TimeoutError, ValueError):
+            errors.append("installed Norman Codex gateway broker lookup failed")
         else:
             if token:
                 return token, errors

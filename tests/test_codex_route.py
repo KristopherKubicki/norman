@@ -50,6 +50,18 @@ def route_by_key(module, key):
     return next(route for route in module.ROUTES if route.key == key)
 
 
+def tool_capable_catalog(module):
+    return {
+        "object": "list",
+        "models": [
+            {
+                "slug": module.DEFAULT_ROUTER_MODEL,
+                **module.REQUIRED_CODEX_MODEL_CAPABILITIES,
+            }
+        ],
+    }
+
+
 def test_route_table_assigns_each_checkout_to_its_expected_launcher(route_module):
     actual = {
         route.key: (route.launcher, route.endpoint) for route in route_module.ROUTES
@@ -156,6 +168,19 @@ def test_explicit_gateway_profile_and_model_are_not_overridden(
     ]
     assert captured["environment"]["CODEX_HOME"].endswith(".codex-norman")
     assert captured["environment"]["NORMAN_TUI_NO_DIRECT_VAULT"] == "1"
+
+
+def test_route_environment_hides_raw_secret_configuration_from_every_tui(
+    route_module, monkeypatch
+):
+    for name in route_module.MODEL_HIDDEN_SECRET_ENVIRONMENT_KEYS:
+        monkeypatch.setenv(name, f"configured-{name.lower()}")
+
+    environment = route_module.route_environment(
+        route_by_key(route_module, "networking")
+    )
+
+    assert not (route_module.MODEL_HIDDEN_SECRET_ENVIRONMENT_KEYS & environment.keys())
 
 
 def test_mapped_checkout_rejects_profile_or_provider_overrides(
@@ -297,6 +322,45 @@ def test_generated_profile_uses_brokered_auth_without_storing_a_token(
     assert "Never create or migrate a vault" in agents_path.read_text(encoding="utf-8")
 
 
+def test_generated_profile_restores_managed_model_and_refreshes_stale_catalog_cache(
+    route_module, monkeypatch, tmp_path
+):
+    route = route_by_key(route_module, "control-plane")
+    helper = tmp_path / "gateway-token"
+    helper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    helper.chmod(0o700)
+    home = tmp_path / "codex"
+    home.mkdir()
+    profile = home / f"{route.profile}.config.toml"
+    profile.write_text(
+        'model_provider = "router_control_plane"\nmodel = "gpt-5.6-terra"\n',
+        encoding="utf-8",
+    )
+    cache = home / "models_cache.json"
+    cache.write_text('{"models":[{"slug":"norman-code"}]}\n', encoding="utf-8")
+    monkeypatch.setattr(route_module, "GATEWAY_TOKEN_HELPER", helper)
+    monkeypatch.setattr(route_module, "route_home", lambda _route: home)
+
+    route_module.write_gateway_profile(route)
+
+    contents = profile.read_text(encoding="utf-8")
+    assert 'model = "norman-code"' in contents
+    assert "gpt-5.6-terra" not in contents
+    assert not cache.exists()
+    backups = list(home.glob("models_cache.json.stale-*"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == (
+        '{"models":[{"slug":"norman-code"}]}\n'
+    )
+    assert route_module.model_catalog_contract_stamp_path(route).read_text(
+        encoding="utf-8"
+    ).strip() == route_module._model_catalog_contract_stamp(route)
+
+    route_module.write_gateway_profile(route)
+
+    assert list(home.glob("models_cache.json.stale-*")) == backups
+
+
 def test_generated_policy_preserves_route_local_instructions(route_module, tmp_path):
     home = tmp_path / "codex"
     home.mkdir()
@@ -387,7 +451,7 @@ def test_mapped_route_verify_checks_models_then_local_capacity_once(
     def fake_gateway_get(endpoint, path, *, token):
         calls.append((endpoint, path, token))
         if path == "models":
-            return 200, {"object": "list"}, ""
+            return 200, tool_capable_catalog(route_module), ""
         return 200, {"available": True, "cloud_fallback": False}, ""
 
     monkeypatch.setattr(route_module, "gateway_get_json", fake_gateway_get)
@@ -420,7 +484,7 @@ def test_norman_route_verify_checks_models_then_local_capacity_once(
     def fake_gateway_get(endpoint, path, *, token):
         calls.append((endpoint, path, token))
         if path == "models":
-            return 200, {"object": "list"}, ""
+            return 200, tool_capable_catalog(route_module), ""
         return 200, {"available": True, "cloud_fallback": False}, ""
 
     monkeypatch.setattr(route_module, "brokered_gateway_token", fake_broker)
@@ -439,6 +503,41 @@ def test_norman_route_verify_checks_models_then_local_capacity_once(
             "short-lived-token",
         ),
     ]
+
+
+def test_route_verify_rejects_model_catalog_without_coding_tools(
+    route_module, monkeypatch
+):
+    route = route_by_key(route_module, "networking")
+    monkeypatch.setattr(
+        route_module, "brokered_gateway_token", lambda _route: ("short-lived-token", "")
+    )
+    monkeypatch.setattr(
+        route_module,
+        "gateway_get_json",
+        lambda *_args, **_kwargs: (
+            200,
+            {
+                "object": "list",
+                "models": [
+                    {
+                        "slug": "norman-code",
+                        "shell_type": "shell_command",
+                        "apply_patch_tool_type": None,
+                        "supports_parallel_tool_calls": False,
+                    }
+                ],
+            },
+            "",
+        ),
+    )
+
+    assert route_module.verify_route(route) == (
+        False,
+        "gateway model catalog is incompatible with local coding tools: "
+        "'norman-code' advertises apply_patch_tool_type=None, expected "
+        "'freeform'; deploy the catalog fix and start a new chat",
+    )
 
 
 def test_gateway_json_probe_uses_bounded_gateway_timeout(route_module, monkeypatch):
@@ -518,6 +617,11 @@ def test_capacity_unavailable_warns_then_starts_routed_session(
     monkeypatch.setattr(route_module, "resolve_route", lambda _cwd: route)
     monkeypatch.setattr(
         route_module,
+        "verify_route_model_contract",
+        lambda _route: (True, "tool-capable gateway model catalog verified"),
+    )
+    monkeypatch.setattr(
+        route_module,
         "preflight_route_capacity",
         lambda _route: (
             False,
@@ -544,6 +648,38 @@ def test_capacity_unavailable_warns_then_starts_routed_session(
     assert "Starting Codex normally" in captured.err
     assert "subscription: Short window 68% left" in captured.err
     assert "metered (Aug 01 to Sep 01): ~$1.25" in captured.err
+
+
+def test_incompatible_catalog_blocks_routed_session_before_capacity_preflight(
+    route_module, monkeypatch, capsys
+):
+    route = route_by_key(route_module, "control-plane")
+    preflight_calls = []
+    executed = []
+
+    monkeypatch.setenv("CODEX_WORK_OPS_BINDING_LOADED", "1")
+    monkeypatch.setattr(route_module, "resolve_route", lambda _cwd: route)
+    monkeypatch.setattr(
+        route_module,
+        "verify_route_model_contract",
+        lambda _route: (
+            False,
+            "gateway model catalog is incompatible with local coding tools",
+        ),
+    )
+    monkeypatch.setattr(
+        route_module,
+        "preflight_route_capacity",
+        lambda _route: preflight_calls.append(_route.key) or (True, ""),
+    )
+    monkeypatch.setattr(
+        route_module, "exec_work_route", lambda *_args: executed.append("route")
+    )
+
+    assert route_module.main(["--launcher", "work", "--", "resume"]) == 1
+    assert preflight_calls == []
+    assert executed == []
+    assert "startup blocked" in capsys.readouterr().err
 
 
 def test_unbound_work_route_reenters_before_preflight(route_module, monkeypatch):

@@ -20,9 +20,11 @@ except ModuleNotFoundError:  # pragma: no cover - exercised on Python < 3.11
 
 
 DENY_REASON = (
-    "Direct local secret access is disabled for Norman TUIs. Use the approved "
-    "Norman Keys path when credentialed work is necessary, or report the "
-    "action blocked. Never initialize a vault or request a vault passphrase."
+    "Direct local secret access and raw secret-broker calls are disabled for "
+    "Norman TUIs because values could enter the agent transcript. Read-only "
+    "work never needs credentials. For a credentialed action, use an approved "
+    "injected executor or report the logical alias as blocked. Never initialize "
+    "a vault or request a vault passphrase."
 )
 SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "(", ")"})
 CONTROL_WORDS = frozenset(
@@ -51,7 +53,30 @@ CONTROL_WORDS = frozenset(
 SHELL_COMMANDS = frozenset({"bash", "dash", "fish", "ksh", "sh", "zsh"})
 DIRECT_CRED_BASENAMES = frozenset({"cred", "cred_vault.py", "cred-vault"})
 DIRECT_SECRET_RESOLVER_BASENAMES = frozenset({"secret_resolver.py", "secret_get.sh"})
-PROTECTED_SECRET_BASENAMES = DIRECT_CRED_BASENAMES | DIRECT_SECRET_RESOLVER_BASENAMES
+RAW_SECRET_BROKER_BASENAMES = frozenset(
+    {
+        "norman-codex-gateway-broker",
+        "norman-networking-secret-broker",
+        "norman_codex_gateway_broker.py",
+        "norman_codex_gateway_broker.sh",
+        "norman_codex_gateway_token.py",
+        "norman_networking_secret_broker.py",
+        "norman_networking_secret_broker.sh",
+    }
+)
+PROTECTED_SECRET_BASENAMES = (
+    DIRECT_CRED_BASENAMES
+    | DIRECT_SECRET_RESOLVER_BASENAMES
+    | RAW_SECRET_BROKER_BASENAMES
+)
+EXECUTABLE_SECRET_COMMAND_VARIABLES = frozenset(
+    {
+        "$NORMAN_CONFIG_SECRET_CMD",
+        "$NORMAN_SECRET_CMD",
+        "${NORMAN_CONFIG_SECRET_CMD}",
+        "${NORMAN_SECRET_CMD}",
+    }
+)
 ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 REDIRECTION_RE = re.compile(r"^(?:\d+)?(?:>>?|<<?|<>|>&|<&).*$")
 DEFAULT_REQUIREMENTS_PATH = Path("/etc/codex/requirements.toml")
@@ -86,6 +111,13 @@ def _is_redirection(token: str) -> bool:
 
 def _is_protected_secret_target(token: str) -> bool:
     return os.path.basename(token) in PROTECTED_SECRET_BASENAMES
+
+
+def _is_secret_command_variable(token: str) -> bool:
+    return token in EXECUTABLE_SECRET_COMMAND_VARIABLES or any(
+        token.startswith(f"{variable} ")
+        for variable in EXECUTABLE_SECRET_COMMAND_VARIABLES
+    )
 
 
 def _contains_protected_python_code(code: str) -> bool:
@@ -275,6 +307,8 @@ def _segment_uses_direct_cred(tokens: Sequence[str]) -> bool:
             continue
 
         command = os.path.basename(token)
+        if _is_secret_command_variable(token):
+            return True
         if _is_protected_secret_target(token):
             return True
         if command in SHELL_COMMANDS:

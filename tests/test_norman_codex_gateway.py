@@ -190,6 +190,38 @@ def test_gateway_token_helper_uses_installed_broker_by_default(
     ]
 
 
+def test_gateway_token_helper_falls_back_when_scoped_broker_rejects_token_alias(
+    monkeypatch, capsys, tmp_path
+) -> None:
+    module = _load_token_helper()
+    _clear_gateway_broker_environment(monkeypatch)
+    scoped_broker = tmp_path / "networking-broker"
+    installed_broker = tmp_path / "gateway-broker"
+    for broker in (scoped_broker, installed_broker):
+        broker.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        broker.chmod(0o700)
+    monkeypatch.setenv("NORMAN_SECRET_CMD", str(scoped_broker))
+    monkeypatch.setattr(module, "DEFAULT_BROKER_COMMAND", installed_broker)
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        if command[0] == str(scoped_broker):
+            raise subprocess.CalledProcessError(1, command, stderr="alias denied")
+        return SimpleNamespace(stdout="brokered-token\n")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    assert module.main(["--secret", "networking/prompt-proxy-token"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "brokered-token\n"
+    assert captured.err == ""
+    assert [command for command, _kwargs in calls] == [
+        [str(scoped_broker), "get", "networking/prompt-proxy-token"],
+        [str(installed_broker), "get", "networking/prompt-proxy-token"],
+    ]
+
+
 def test_gateway_token_helper_does_not_use_cred_as_a_fallback(
     monkeypatch, capsys, tmp_path
 ) -> None:

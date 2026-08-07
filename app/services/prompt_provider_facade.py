@@ -103,7 +103,7 @@ MCP_RESOURCE_DISCOVERY_TOOL_NAMES = frozenset(
         "list_mcp_resource_templates",
     }
 )
-REPLAYED_FUNCTION_CALL_PREFIX = (
+LEGACY_REPLAYED_FUNCTION_CALL_PREFIX = (
     "Prior assistant function call (replayed context only; do not execute): "
 )
 TOOL_CHAIN_SCHEMA = "norman.responses-tool-chain.v1"
@@ -462,15 +462,28 @@ def _store_response_state(
     *,
     messages: list[dict[str, Any]],
     output_text: str,
-    output_items: list[dict[str, Any]],
+    function_calls: Mapping[str, str],
+    tool_outputs: set[tuple[str, str]],
 ) -> None:
     if not response_id:
         return
+    stored_function_calls = [
+        {"type": "function_call", "call_id": call_id, "name": name}
+        for call_id, name in sorted(function_calls.items())
+        if call_id and name
+    ]
+    stored_tool_outputs = [
+        {"call_id": call_id, "output": output}
+        for call_id, output in sorted(tool_outputs)
+    ]
     with _RESPONSE_STATE_LOCK:
         _RESPONSE_STATE[response_id] = {
             "messages": [dict(message) for message in messages],
             "output_text": output_text,
-            "output_items": [dict(item) for item in output_items],
+            # Keep only non-actionable tool lineage. Function arguments may contain
+            # stale shell commands and must never be replayed into model context.
+            "function_calls": stored_function_calls,
+            "tool_outputs": stored_tool_outputs,
             "created_at": time.time(),
         }
         _RESPONSE_STATE_ORDER.append(response_id)
@@ -479,39 +492,101 @@ def _store_response_state(
             _RESPONSE_STATE.pop(stale, None)
 
 
-def _previous_response_messages(
-    previous_response_id: str,
-) -> tuple[list[dict[str, Any]], bool]:
+@dataclass(frozen=True)
+class ResponseHistory:
+    messages: list[dict[str, Any]]
+    function_calls: dict[str, str]
+    tool_outputs: set[tuple[str, str]]
+    replayed: bool
+
+
+def _function_call_metadata(item: Mapping[str, Any]) -> tuple[str, str]:
+    return _clean(item.get("call_id")), _clean(item.get("name"))
+
+
+def _function_calls_from_items(items: list[dict[str, Any]]) -> dict[str, str]:
+    calls: dict[str, str] = {}
+    for item in items:
+        if _clean(item.get("type")) != "function_call":
+            continue
+        call_id, name = _function_call_metadata(item)
+        if call_id and name:
+            calls[call_id] = name
+    return calls
+
+
+def _function_calls_from_state(state: Mapping[str, Any]) -> dict[str, str]:
+    calls = _function_calls_from_items(_messages(state.get("function_calls")))
+    # States created before call metadata was compacted retained full output items.
+    # Read their ID/name fields only so continuing an existing session cannot replay
+    # old call arguments into the model.
+    calls.update(_function_calls_from_items(_messages(state.get("output_items"))))
+    return calls
+
+
+def _legacy_replayed_function_call(message: Mapping[str, Any]) -> tuple[str, str]:
+    if _clean(message.get("role")) != "assistant":
+        return "", ""
+    content = _clean(message.get("content"))
+    if not content.startswith(LEGACY_REPLAYED_FUNCTION_CALL_PREFIX):
+        return "", ""
+    try:
+        call = json.loads(content.removeprefix(LEGACY_REPLAYED_FUNCTION_CALL_PREFIX))
+    except (TypeError, ValueError):
+        return "", ""
+    if not isinstance(call, Mapping):
+        return "", ""
+    return _function_call_metadata(call)
+
+
+def _tool_output_metadata(item: Mapping[str, Any]) -> tuple[str, str]:
+    return _clean(item.get("call_id")), _clean(item.get("output"))
+
+
+def _tool_outputs_from_state(state: Mapping[str, Any]) -> set[tuple[str, str]]:
+    outputs: set[tuple[str, str]] = set()
+    for item in _messages(state.get("tool_outputs")):
+        outputs.add(_tool_output_metadata(item))
+    return outputs
+
+
+def _legacy_tool_output_metadata(message: Mapping[str, Any]) -> tuple[str, str]:
+    if _clean(message.get("role")) != "tool":
+        return "", ""
+    content = _clean(message.get("content"))
+    prefix = "Tool output for "
+    if not content.startswith(prefix):
+        return "", ""
+    call_id, separator, output = content.removeprefix(prefix).partition(": ")
+    if not separator:
+        return "", ""
+    return _clean(call_id), output
+
+
+def _previous_response_history(previous_response_id: str) -> ResponseHistory:
     previous_response_id = _clean(previous_response_id)
     if not previous_response_id:
-        return [], False
+        return ResponseHistory([], {}, set(), False)
     with _RESPONSE_STATE_LOCK:
         state = dict(_RESPONSE_STATE.get(previous_response_id) or {})
     if not state:
-        return [], False
-    messages = _messages(state.get("messages"))
-    for output_item in _messages(state.get("output_items")):
-        if _clean(output_item.get("type")) != "function_call":
+        return ResponseHistory([], {}, set(), False)
+    function_calls = _function_calls_from_state(state)
+    tool_outputs = _tool_outputs_from_state(state)
+    messages: list[dict[str, Any]] = []
+    for message in _messages(state.get("messages")):
+        call_id, name = _legacy_replayed_function_call(message)
+        if call_id and name:
+            function_calls[call_id] = name
             continue
-        function_call = {
-            "arguments": output_item.get("arguments", ""),
-            "call_id": _clean(output_item.get("call_id")),
-            "name": _clean(output_item.get("name")),
-            "type": "function_call",
-        }
-        messages.append(
-            {
-                "role": "assistant",
-                "content": (
-                    REPLAYED_FUNCTION_CALL_PREFIX
-                    + f"{json.dumps(function_call, ensure_ascii=True, sort_keys=True)}"
-                ),
-            }
-        )
+        messages.append(message)
+        legacy_tool_output = _legacy_tool_output_metadata(message)
+        if legacy_tool_output != ("", ""):
+            tool_outputs.add(legacy_tool_output)
     output_text = _clean(state.get("output_text"))
     if output_text:
         messages.append({"role": "assistant", "content": output_text})
-    return messages, True
+    return ResponseHistory(messages, function_calls, tool_outputs, True)
 
 
 def _positive_int(value: Any, default: int) -> int:
@@ -660,35 +735,15 @@ class ToolChainContext:
         )
 
 
-def _replayed_function_calls(messages: list[dict[str, Any]]) -> dict[str, str]:
-    calls: dict[str, str] = {}
-    for message in messages:
-        if _clean(message.get("role")) != "assistant":
-            continue
-        content = _clean(message.get("content"))
-        if not content.startswith(REPLAYED_FUNCTION_CALL_PREFIX):
-            continue
-        try:
-            call = json.loads(content.removeprefix(REPLAYED_FUNCTION_CALL_PREFIX))
-        except (TypeError, ValueError):
-            continue
-        if not isinstance(call, Mapping):
-            continue
-        call_id = _clean(call.get("call_id"))
-        name = _clean(call.get("name"))
-        if call_id and name:
-            calls[call_id] = name
-    return calls
-
-
 def _tool_chain_context(
     payload: Mapping[str, Any],
     *,
-    previous_messages: list[dict[str, Any]],
+    previous_function_calls: Mapping[str, str],
 ) -> ToolChainContext:
-    calls = _replayed_function_calls(previous_messages)
+    calls = dict(previous_function_calls)
     raw_input = payload.get("input", payload.get("prompt"))
     supplied_result_ids: list[str] = []
+    seen_tool_outputs: set[tuple[str, str]] = set()
     if isinstance(raw_input, list):
         for item in raw_input:
             if not isinstance(item, Mapping):
@@ -700,7 +755,11 @@ def _tool_chain_context(
                 if call_id and name:
                     calls[call_id] = name
             elif item_type == "function_call_output":
-                supplied_result_ids.append(_clean(item.get("call_id")))
+                tool_output = _tool_output_metadata(item)
+                if tool_output in seen_tool_outputs:
+                    continue
+                seen_tool_outputs.add(tool_output)
+                supplied_result_ids.append(tool_output[0])
     matched_result_names = [
         calls[call_id]
         for call_id in supplied_result_ids
@@ -1143,8 +1202,33 @@ def _text_part_text(part: Mapping[str, Any]) -> str:
     )
 
 
-def response_input_to_messages(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _response_input_function_calls(payload: Mapping[str, Any]) -> dict[str, str]:
+    raw_input = payload.get("input", payload.get("prompt"))
+    if not isinstance(raw_input, list):
+        return {}
+    return _function_calls_from_items(_messages(raw_input))
+
+
+def _response_input_tool_outputs(
+    payload: Mapping[str, Any],
+) -> set[tuple[str, str]]:
+    raw_input = payload.get("input", payload.get("prompt"))
+    if not isinstance(raw_input, list):
+        return set()
+    outputs: set[tuple[str, str]] = set()
+    for item in _messages(raw_input):
+        if _clean(item.get("type")) == "function_call_output":
+            outputs.add(_tool_output_metadata(item))
+    return outputs
+
+
+def response_input_to_messages(
+    payload: Mapping[str, Any],
+    *,
+    known_tool_outputs: set[tuple[str, str]] | None = None,
+) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
+    seen_tool_outputs = set(known_tool_outputs or ())
     instructions = _clean(payload.get("instructions"))
     if instructions:
         messages.append({"role": "system", "content": instructions})
@@ -1162,29 +1246,20 @@ def response_input_to_messages(payload: Mapping[str, Any]) -> list[dict[str, Any
                 )
             item_type = _clean(item.get("type"))
             if item_type == "function_call":
-                function_call = {
-                    "arguments": item.get("arguments", ""),
-                    "call_id": _clean(item.get("call_id")),
-                    "name": _clean(item.get("name")),
-                    "type": "function_call",
-                }
-                messages.append(
-                    {
-                        "role": "assistant",
-                        "content": (
-                            REPLAYED_FUNCTION_CALL_PREFIX
-                            + f"{json.dumps(function_call, ensure_ascii=True, sort_keys=True)}"
-                        ),
-                    }
-                )
+                # Responses clients may resubmit prior function calls on a
+                # continuation. Preserve their ID/name server-side, but never
+                # expose call arguments as assistant instructions to the model.
                 continue
             if item_type == "function_call_output":
-                call_id = _clean(item.get("call_id"))
-                output = item.get("output")
+                call_id, output = _tool_output_metadata(item)
+                tool_output = (call_id, output)
+                if tool_output in seen_tool_outputs:
+                    continue
+                seen_tool_outputs.add(tool_output)
                 messages.append(
                     {
                         "role": "tool",
-                        "content": f"Tool output for {call_id}: {_clean(output)}",
+                        "content": f"Tool output for {call_id}: {output}",
                     }
                 )
                 continue
@@ -1573,6 +1648,16 @@ def _looks_like_cloud_model_selection(requested_model: Any) -> bool:
     return requested.startswith("gpt-") or requested.startswith("openai.gpt-")
 
 
+def _tui_tool_contract_required(route_envelope: Mapping[str, Any]) -> bool:
+    """Return whether the trusted request context belongs to a Codex TUI."""
+
+    trusted_context = _mapping(route_envelope.get("trusted_gateway_context"))
+    return bool(
+        _clean(trusted_context.get("source_tui"))
+        or _lower(trusted_context.get("policy_scope")).startswith("tui:")
+    )
+
+
 def _explicit_cloud_selection_plan(
     *,
     provider_payload: Mapping[str, Any],
@@ -1592,6 +1677,22 @@ def _explicit_cloud_selection_plan(
                 param="model",
             )
         return None
+
+    if _tui_tool_contract_required(route_envelope):
+        raise FacadeError(
+            "This Codex route requires shell and filesystem tools. Use "
+            "norman-code; it will use the approved cloud fallback when local "
+            "coding capacity is unavailable.",
+            status_code=400,
+            error_type="invalid_request_error",
+            code="tool_capable_model_required",
+            param="model",
+            norman={
+                "selected_model": requested_alias,
+                "required_model": "norman-code",
+                "cloud_fallback": "automatic_for_retryable_local_failure",
+            },
+        )
 
     route_policy = _nested_dict(
         route_envelope,
@@ -2613,6 +2714,8 @@ class PreparedResponsesExecution:
     route_envelope: dict[str, Any]
     messages: list[dict[str, Any]]
     previous_messages: list[dict[str, Any]]
+    function_calls: dict[str, str]
+    tool_outputs: set[tuple[str, str]]
     tool_chain_context: ToolChainContext
     history_replayed: bool
     client_metadata_ignored: bool
@@ -2636,18 +2739,24 @@ def _prepare_responses_execution(
         provider_payload["reasoning"] = reasoning_advisory
     if include_advisory:
         provider_payload["include"] = include_advisory
-    previous_messages, history_replayed = _previous_response_messages(
+    history = _previous_response_history(
         _clean(provider_payload.get("previous_response_id"))
     )
+    function_calls = dict(history.function_calls)
+    function_calls.update(_response_input_function_calls(provider_payload))
+    tool_outputs = history.tool_outputs | _response_input_tool_outputs(provider_payload)
     tool_chain_context = _tool_chain_context(
         provider_payload,
-        previous_messages=previous_messages,
+        previous_function_calls=function_calls,
     )
     messages = [
-        *previous_messages,
+        *history.messages,
         *_tool_contract_message(provider_payload),
         *_structured_output_message(provider_payload),
-        *response_input_to_messages(provider_payload),
+        *response_input_to_messages(
+            provider_payload,
+            known_tool_outputs=history.tool_outputs,
+        ),
     ]
     route_payload = {**provider_payload, "input": messages}
     route_envelope = provider_adapter_decision(
@@ -2661,9 +2770,11 @@ def _prepare_responses_execution(
         route_payload=route_payload,
         route_envelope=route_envelope,
         messages=messages,
-        previous_messages=previous_messages,
+        previous_messages=history.messages,
+        function_calls=function_calls,
+        tool_outputs=tool_outputs,
         tool_chain_context=tool_chain_context,
-        history_replayed=history_replayed,
+        history_replayed=history.replayed,
         client_metadata_ignored=client_metadata_ignored,
         store_requested=store_requested,
     )
@@ -2813,11 +2924,14 @@ def _responses_response_from_chat(
         },
     }
     if prepared.store_requested:
+        function_calls = dict(prepared.function_calls)
+        function_calls.update(_function_calls_from_items(output_items))
         _store_response_state(
             response_id,
             messages=prepared.messages,
             output_text=output_text,
-            output_items=output_items,
+            function_calls=function_calls,
+            tool_outputs=prepared.tool_outputs,
         )
     return response
 

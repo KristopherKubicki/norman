@@ -37,6 +37,12 @@ LOCAL_CODEX_WRAPPER = LOCAL_BIN / "codex"
 LOCAL_CODEX_WORK_WRAPPER = LOCAL_BIN / "codex-work"
 ROUTER_PROFILE_PREFIX = "router-"
 DEFAULT_ROUTER_MODEL = "norman-code"
+MODEL_CATALOG_CONTRACT_VERSION = "2026-08-tool-capable-v1"
+REQUIRED_CODEX_MODEL_CAPABILITIES = {
+    "shell_type": "shell_command",
+    "apply_patch_tool_type": "freeform",
+    "supports_parallel_tool_calls": True,
+}
 STATE_DIR = (
     Path(value).expanduser()
     if (value := os.environ.get("NORMAN_CODEX_STATE_DIR", "").strip())
@@ -70,20 +76,39 @@ METERED_LEDGER_KINDS = frozenset(
 ROUTED_TUI_SECRET_POLICY = """# Norman TUI Secret Policy
 
 - Treat read-only analysis, review, status checks, and recommendations as non-credentialed work. Do not access a secret unless a credentialed action is necessary.
-- Before credentialed work, explain why the capability is needed. Use the approved Norman Keys alias and broker path (`NORMAN_KEYS_URL` or `NORMAN_SECRET_CMD`) with the smallest available approval or lease.
-- If approved broker access is unavailable, report the action as blocked with the logical alias or capability needed. Do not substitute a local vault or plaintext file.
+- Do not inspect or probe `NORMAN_KEYS_URL`, `NORMAN_SECRET_CMD`, or any other secret configuration for read-only work, even when a document mentions protected systems or credentials.
+- Raw secret retrieval is unavailable in an agent terminal. Never manually invoke a secret broker, capture its output, or pass a broker command through another shell or remote command.
+- Before a credentialed action, explain the required capability and logical alias. Use only a task-specific approved executor or an injected tool; if neither is available, report the action blocked with the logical alias or capability needed.
 - Do not directly invoke `cred`, even for reads. Never run `cred init`, bootstrap, migration, rotation, or put/set/remove/rm operations.
 - Never create or migrate a vault, and never ask for, accept, or enter a vault passphrase.
 """
 ROUTED_TUI_DEVELOPER_INSTRUCTIONS = (
-    "Norman TUI secret policy: Read-only analysis never needs secret access. "
-    "Before a credentialed action, explain the need and use the approved Norman "
-    "Keys alias and broker path. If that path is unavailable, report the action "
-    "blocked. Do not directly invoke cred, initialize or migrate a vault, or "
-    "request a vault passphrase."
+    "Norman TUI secret policy: Read-only analysis never needs secret access; do "
+    "not inspect or probe NORMAN_KEYS_URL, NORMAN_SECRET_CMD, or other secret "
+    "configuration, even when a document mentions credentials. Raw secret "
+    "retrieval is never allowed in the agent terminal: do not manually execute "
+    "a broker or use its output. Before a credentialed action, state the "
+    "required capability and logical alias; use only a task-specific approved "
+    "executor or injected tool, otherwise report that action blocked. Do not "
+    "directly invoke cred, initialize or migrate a vault, or request a vault "
+    "passphrase."
 )
 ROUTED_TUI_POLICY_BEGIN = "<!-- BEGIN NORMAN TUI SECRET POLICY -->"
 ROUTED_TUI_POLICY_END = "<!-- END NORMAN TUI SECRET POLICY -->"
+MODEL_HIDDEN_SECRET_ENVIRONMENT_KEYS = frozenset(
+    {
+        "CREDENTIALS_DIRECTORY",
+        "NORMAN_CONFIG_SECRET_CMD",
+        "NORMAN_CRED_BIN",
+        "NORMAN_KEYS_API_BASE",
+        "NORMAN_KEYS_API_TOKEN",
+        "NORMAN_KEYS_TOKEN",
+        "NORMAN_KEYS_URL",
+        "NORMAN_NETWORKING_KEYS_URL",
+        "NORMAN_NETWORKING_SECRET_BROKER_HOST",
+        "NORMAN_SECRET_CMD",
+    }
+)
 PROTECTED_HOOK_CONFIG_KEYS = frozenset(
     {
         "allow_managed_hooks_only",
@@ -490,6 +515,26 @@ def profile_path(route: Route) -> Path:
     return route_home(route) / f"{route.profile}.config.toml"
 
 
+def models_cache_path(route: Route) -> Path:
+    return route_home(route) / "models_cache.json"
+
+
+def model_catalog_contract_stamp_path(route: Route) -> Path:
+    return route_home(route) / ".router-model-catalog-contract"
+
+
+def _model_catalog_contract_stamp(route: Route) -> str:
+    return json.dumps(
+        {
+            "endpoint": route.endpoint,
+            "model": DEFAULT_ROUTER_MODEL,
+            "version": MODEL_CATALOG_CONTRACT_VERSION,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 def _write_private_text(path: Path, contents: str) -> None:
     """Atomically replace a route-local file without exposing its contents."""
     fd, temporary_name = tempfile.mkstemp(
@@ -504,6 +549,48 @@ def _write_private_text(path: Path, contents: str) -> None:
     except Exception:
         temporary_path.unlink(missing_ok=True)
         raise
+
+
+def refresh_model_catalog_cache(route: Route) -> bool:
+    """Discard stale Codex model metadata after the contract changes.
+
+    Codex caches gateway model capabilities under each route home. A stale
+    cache can cause it to omit local tools even after the gateway has been
+    fixed, so invalidate it once per managed contract version. Existing chats
+    retain their in-memory configuration and are not restarted.
+    """
+
+    stamp_path = model_catalog_contract_stamp_path(route)
+    expected_stamp = _model_catalog_contract_stamp(route)
+    try:
+        current_stamp = stamp_path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        current_stamp = ""
+    except OSError as exc:
+        raise RuntimeError(
+            f"Unable to read the Codex model-catalog stamp at {stamp_path}."
+        ) from exc
+    if current_stamp == expected_stamp:
+        return False
+
+    cache_path = models_cache_path(route)
+    if cache_path.exists():
+        timestamp = int(time.time())
+        backup_path = cache_path.with_name(f"{cache_path.name}.stale-{timestamp}")
+        suffix = 1
+        while backup_path.exists():
+            backup_path = cache_path.with_name(
+                f"{cache_path.name}.stale-{timestamp}-{suffix}"
+            )
+            suffix += 1
+        try:
+            cache_path.replace(backup_path)
+        except OSError as exc:
+            raise RuntimeError(
+                f"Unable to refresh stale Codex model metadata at {cache_path}."
+            ) from exc
+    _write_private_text(stamp_path, f"{expected_stamp}\n")
+    return True
 
 
 def write_routed_tui_secret_policy(home: Path) -> Path:
@@ -568,6 +655,7 @@ def write_gateway_profile(route: Route) -> Path:
         )
     )
     _write_private_text(path, contents)
+    refresh_model_catalog_cache(route)
     return path
 
 
@@ -733,6 +821,54 @@ def verify_norman_capacity(route: Route, *, token: str) -> tuple[bool, str]:
             f"local output; {retry_hint}",
         )
     return False, f"{condition_detail} ({reason}){lane_detail}; {retry_hint}"
+
+
+def model_catalog_contract_error(payload: dict[str, Any]) -> str:
+    """Return an actionable error when a route cannot provision coding tools."""
+
+    models = payload.get("models")
+    if not isinstance(models, list):
+        return (
+            "gateway model catalog is missing the Codex models list; "
+            "deploy the catalog fix before starting a new chat"
+        )
+    selected = next(
+        (
+            model
+            for model in models
+            if isinstance(model, dict) and model.get("slug") == DEFAULT_ROUTER_MODEL
+        ),
+        None,
+    )
+    if selected is None:
+        return (
+            f"gateway model catalog does not advertise {DEFAULT_ROUTER_MODEL!r}; "
+            "deploy the catalog fix before starting a new chat"
+        )
+    for key, expected in REQUIRED_CODEX_MODEL_CAPABILITIES.items():
+        actual = selected.get(key)
+        if (expected is True and actual is not True) or actual != expected:
+            return (
+                "gateway model catalog is incompatible with local coding tools: "
+                f"{DEFAULT_ROUTER_MODEL!r} advertises {key}={actual!r}, "
+                f"expected {expected!r}; deploy the catalog fix and start a new chat"
+            )
+    return ""
+
+
+def verify_route_model_contract(route: Route) -> tuple[bool, str]:
+    """Check that a mapped gateway can provision the local coding toolset."""
+
+    token, detail = brokered_gateway_token(route)
+    if not token:
+        return False, detail
+    status, payload, detail = gateway_get_json(route.endpoint, "models", token=token)
+    if status != 200:
+        return False, detail
+    contract_error = model_catalog_contract_error(payload)
+    if contract_error:
+        return False, contract_error
+    return True, "tool-capable gateway model catalog verified"
 
 
 def preflight_route_capacity(route: Route) -> tuple[bool, str]:
@@ -1007,13 +1143,25 @@ def verify_route(route: Route) -> tuple[bool, str]:
     token, detail = brokered_gateway_token(route)
     if not token:
         return False, detail
-    status, _payload, detail = gateway_get_json(route.endpoint, "models", token=token)
+    status, payload, detail = gateway_get_json(route.endpoint, "models", token=token)
     if status != 200:
         return False, detail
+    contract_error = model_catalog_contract_error(payload)
+    if contract_error:
+        return False, contract_error
     available, detail = verify_norman_capacity(route, token=token)
     if not available:
         return False, detail
     return True, "authenticated Responses gateway and local coding capacity verified"
+
+
+def route_environment(route: Route) -> dict[str, str]:
+    """Build a mapped TUI environment without model-visible secret plumbing."""
+
+    environment = os.environ.copy()
+    for name in MODEL_HIDDEN_SECRET_ENVIRONMENT_KEYS:
+        environment.pop(name, None)
+    return environment
 
 
 def work_environment() -> dict[str, str]:
@@ -1080,7 +1228,7 @@ def exec_work_route(route: Route, arguments: list[str]) -> None:
 
     verify_managed_tui_secret_policy()
     write_gateway_profile(route)
-    environment = os.environ.copy()
+    environment = route_environment(route)
     environment["CODEX_HOME"] = str(route_home(route))
     environment["CODEX_REAL_BIN"] = str(resolve_real_codex())
     environment["NORMAN_TUI_NO_DIRECT_VAULT"] = "1"
@@ -1096,7 +1244,7 @@ def exec_work_route(route: Route, arguments: list[str]) -> None:
 def exec_regular_route(route: Route, arguments: list[str]) -> None:
     verify_managed_tui_secret_policy()
     write_gateway_profile(route)
-    environment = os.environ.copy()
+    environment = route_environment(route)
     environment["CODEX_HOME"] = str(route_home(route))
     environment["CODEX_REAL_BIN"] = str(resolve_real_codex())
     environment["NORMAN_TUI_NO_DIRECT_VAULT"] = "1"
@@ -1222,6 +1370,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             # preflight output until the bound process so it is emitted once.
             exec_work_route(route, parsed.codex_args)
             return 0
+        contract_available, contract_detail = verify_route_model_contract(route)
+        if not contract_available:
+            print(
+                f"codex-route: {route.key} startup blocked: {contract_detail}.",
+                file=sys.stderr,
+            )
+            return 1
         capacity_available, capacity_detail = preflight_route_capacity(route)
         if not capacity_available:
             print(

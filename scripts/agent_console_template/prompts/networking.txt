@@ -32,8 +32,9 @@ Access posture:
 
 Secrets / approvals:
 - Read-only analysis, review, status checks, and recommendations never access secrets.
-- For necessary credentialed work, use approved Norman Keys aliases and broker paths with the smallest available approval or lease.
-- If the broker is unavailable, report the action blocked with the required logical alias or capability.
+- Do not inspect or probe `NORMAN_KEYS_URL`, `NORMAN_SECRET_CMD`, or other secret configuration for read-only work, even if a document mentions protected systems or credentials.
+- Raw secret retrieval is unavailable in the agent terminal. Never manually invoke a secret broker, capture its output, or pass a broker command through another shell or remote command.
+- For necessary credentialed work, explain the required capability and logical alias. Use only a task-specific approved executor or injected tool; otherwise, report the action blocked with the required logical alias or capability.
 - Never invoke `cred`, initialize or migrate a vault, request a vault passphrase, or add plaintext secret access.
 
 Bot-to-bot ACL:

@@ -383,6 +383,9 @@ def _codex_model_catalog() -> list[dict[str, Any]]:
             "display_name": "Norman Code",
             "description": "Norman local-first coding route.",
             "priority": 1,
+            # Codex uses these capabilities to provision its local coding tools.
+            "apply_patch_tool_type": "freeform",
+            "supports_parallel_tool_calls": True,
         },
         {
             **common,

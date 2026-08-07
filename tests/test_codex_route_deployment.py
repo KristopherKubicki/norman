@@ -134,6 +134,11 @@ def test_route_proof_retries_only_until_a_route_succeeds():
 def test_installer_creates_private_runtime_and_idempotent_shell_path(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
+    nvm_bin = home / ".nvm" / "bin"
+    nvm_bin.mkdir(parents=True)
+    nvm_codex = nvm_bin / "codex"
+    nvm_codex.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    nvm_codex.chmod(0o755)
     (home / ".bash_profile").write_text(
         'export PATH="$HOME/.nvm/bin:$PATH"\n',
         encoding="utf-8",
@@ -141,6 +146,7 @@ def test_installer_creates_private_runtime_and_idempotent_shell_path(tmp_path):
     environment = os.environ.copy()
     environment["HOME"] = str(home)
 
+    shell_contents = None
     for _ in range(2):
         result = subprocess.run(
             [str(INSTALLER_PATH)],
@@ -151,6 +157,14 @@ def test_installer_creates_private_runtime_and_idempotent_shell_path(tmp_path):
             check=False,
         )
         assert result.returncode == 0, result.stderr
+        current_shell_contents = {
+            shell_path: shell_path.read_text(encoding="utf-8")
+            for shell_path in (home / ".bashrc", home / ".bash_profile")
+        }
+        if shell_contents is None:
+            shell_contents = current_shell_contents
+        else:
+            assert current_shell_contents == shell_contents
 
     lib_dir = home / ".local" / "lib" / "norman-codex-route"
     bin_dir = home / ".local" / "bin"
@@ -158,6 +172,7 @@ def test_installer_creates_private_runtime_and_idempotent_shell_path(tmp_path):
     assert (lib_dir / "norman_codex_secret_guard.py").is_file()
     assert (lib_dir / "norman_codex_gateway_token.py").is_file()
     assert (lib_dir / "norman_codex_gateway_broker.sh").is_file()
+    assert (lib_dir / "norman_networking_secret_broker.sh").is_file()
     assert (lib_dir / "codex_session_pressure.py").is_file()
     assert (lib_dir / "codex_session_prune.py").is_file()
     assert (bin_dir / "codex").is_file()
@@ -167,12 +182,40 @@ def test_installer_creates_private_runtime_and_idempotent_shell_path(tmp_path):
     assert (
         stat.S_IMODE((lib_dir / "norman_codex_secret_guard.py").stat().st_mode) == 0o700
     )
+    assert (
+        stat.S_IMODE((lib_dir / "norman_networking_secret_broker.sh").stat().st_mode)
+        == 0o700
+    )
     assert (home / ".bashrc").read_text(encoding="utf-8").count(
         'export PATH="$HOME/.local/bin:$PATH"'
     ) == 1
     assert (home / ".bash_profile").read_text(encoding="utf-8").count(
         'export PATH="$HOME/.local/bin:$PATH"'
     ) == 1
+    assert (home / ".bashrc").read_text(encoding="utf-8").count(
+        "# >>> Norman Codex checkout router >>>"
+    ) == 1
+    assert (home / ".bash_profile").read_text(encoding="utf-8").count(
+        "# >>> Norman Codex checkout router >>>"
+    ) == 1
+
+    for shell_path in (home / ".bashrc", home / ".bash_profile"):
+        shell = subprocess.run(
+            [
+                "bash",
+                "--noprofile",
+                "--norc",
+                "-c",
+                f'source "{shell_path}"; command -v codex',
+            ],
+            cwd=REPO_ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert shell.returncode == 0, shell.stderr
+        assert shell.stdout.strip() == str(bin_dir / "codex")
 
     router = subprocess.run(
         [
