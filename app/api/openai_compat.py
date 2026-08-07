@@ -863,11 +863,12 @@ def _response_sse(stream: Any):
                     },
                 )
         else:
+            response_text = _clean(response.get("output_text"))
             if not text_item_started:
                 for event in begin_text_item():
                     yield event
-                if text:
-                    yield text_delta(text)
+                if response_text:
+                    yield text_delta(response_text)
             final_item = output_items[0] if output_items else {}
             yield _response_sse_event(
                 "response.output_text.done",

@@ -128,3 +128,103 @@ def test_capacity_timeout_and_gateway_errors_are_counted_and_alerted(monkeypatch
     assert "proxy_local_capacity_unavailable" in alert_kinds
     assert "proxy_local_model_timeouts" in alert_kinds
     assert "proxy_local_gateway_errors" in alert_kinds
+
+
+def test_tool_chain_observability_is_sanitized_and_alerted(monkeypatch):
+    monkeypatch.setenv(proxy_observability.EVENT_LOG_ENV, "0")
+    proxy_observability.reset_proxy_events()
+
+    repaired = {
+        "norman": {
+            "responses_compatibility": {
+                "tool_chain": {
+                    "schema": "norman.responses-tool-chain.v1",
+                    "turn_type": "after_tool_result",
+                    "chain_depth": 1,
+                    "tool_results_supplied": 1,
+                    "tool_results_matched": 1,
+                    "tool_calls_returned": 1,
+                    "outcome": "tool_call",
+                    "watchdog": {
+                        "state": "repaired",
+                        "attempts": 1,
+                        "reason": "undeclared_tool",
+                    },
+                    "raw_tool_name": "atlassian_rovo.search",
+                    "raw_arguments": {"query": "private ticket"},
+                }
+            }
+        }
+    }
+    exhausted_error = {
+        "message": "Tool continuation remained invalid after repair.",
+        "type": "server_error",
+        "code": "tool_chain_watchdog_exhausted",
+        "norman": {
+            "responses_compatibility": {
+                "tool_chain": {
+                    "schema": "norman.responses-tool-chain.v1",
+                    "turn_type": "after_tool_result",
+                    "chain_depth": 1,
+                    "tool_results_supplied": 1,
+                    "tool_results_matched": 1,
+                    "tool_calls_returned": 0,
+                    "outcome": "invalid_or_unresolved",
+                    "watchdog": {
+                        "state": "exhausted",
+                        "attempts": 1,
+                        "reason": "undeclared_tool",
+                    },
+                    "tool_name": "mcp__codex_apps__atlassian_rovo.search",
+                    "arguments": {"query": "private ticket"},
+                    "tool_output": "private tool result",
+                    "call_id": "call_private",
+                },
+                "safe_marker": "preserved",
+            },
+        },
+    }
+
+    proxy_observability.record_proxy_event(
+        endpoint="/v1/responses",
+        method="POST",
+        request_id="repaired",
+        status="success",
+        http_status=200,
+        response=repaired,
+    )
+    exhausted = proxy_observability.record_proxy_event(
+        endpoint="/v1/responses",
+        method="POST",
+        request_id="exhausted",
+        status="error",
+        http_status=502,
+        error=exhausted_error,
+    )
+
+    assert exhausted["tool_chain"] == {
+        "schema": "norman.responses-tool-chain.v1",
+        "turn_type": "after_tool_result",
+        "chain_depth": 1,
+        "tool_results_supplied": 1,
+        "tool_results_matched": 1,
+        "tool_calls_returned": 0,
+        "outcome": "invalid_or_unresolved",
+        "watchdog_state": "exhausted",
+        "watchdog_attempts": 1,
+    }
+    assert exhausted["error"]["norman"]["responses_compatibility"] == {
+        "safe_marker": "preserved"
+    }
+    serialized = json.dumps(exhausted, sort_keys=True)
+    assert "mcp__codex_apps__" not in serialized
+    assert "private ticket" not in serialized
+    assert "private tool result" not in serialized
+    assert "call_private" not in serialized
+
+    summary = proxy_observability.proxy_observability_summary()
+    alert_kinds = {alert["kind"] for alert in summary["alerts"]}
+    assert summary["tool_chain_event_count"] == 2
+    assert summary["tool_chain_repaired_count"] == 1
+    assert summary["tool_chain_exhausted_count"] == 1
+    assert "proxy_tool_chain_watchdog_exhausted" in alert_kinds

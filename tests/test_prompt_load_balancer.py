@@ -1527,6 +1527,125 @@ def test_openai_compat_responses_stream_converts_mcp_resource_discovery(
     assert response.closed is True
 
 
+def test_openai_compat_responses_stream_repairs_stale_tool_call_after_result(
+    test_app, monkeypatch
+):
+    import app.services.prompt_provider_facade as facade
+
+    facade.reset_facade_response_state()
+    stale_call = (
+        '{"tool_call":{"name":"mcp__codex_apps__atlassian_rovo.'
+        'search_company_knowledge","arguments":{"query":"priority"}}}'
+    )
+    repaired_call = (
+        '{"tool_call":{"name":"atlassian_rovo.search",'
+        '"arguments":{"query":"priority"}}}'
+    )
+    monkeypatch.setattr(
+        facade,
+        "provider_adapter_decision",
+        lambda **kwargs: _local_route_envelope(),
+    )
+
+    def fake_chat(**kwargs):
+        content = (
+            repaired_call
+            if any(
+                message["role"] == "system"
+                and message["content"].startswith("Norman tool-chain repair:")
+                for message in kwargs["messages"]
+            )
+            else stale_call
+        )
+        return _mock_local_chat(kwargs["messages"], kwargs["model"]) | {
+            "choices": [{"message": {"content": content}}]
+        }
+
+    monkeypatch.setattr(facade.norllama_gateway, "invoke_text_chat", fake_chat)
+    first = execute_openai_responses_facade(
+        {"model": "norman-code", "input": "find the priority ticket"}
+    )
+    tool_search_call = first["output"][0]
+    assert tool_search_call["name"] == "tool_search"
+
+    native_response = _MockNativeStreamResponse(
+        [
+            json.dumps({"model": "qwen3-coder:30b", "response": stale_call}),
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "done": True,
+                    "prompt_eval_count": 4,
+                    "eval_count": 2,
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat_stream",
+        lambda **kwargs: facade.norllama_gateway.NorllamaTextStream(
+            native_response,
+            model=kwargs["model"],
+        ),
+    )
+
+    result = test_app.post(
+        "/v1/responses",
+        headers=_proxy_headers(monkeypatch),
+        json={
+            "model": "norman-code",
+            "previous_response_id": first["id"],
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": tool_search_call["call_id"],
+                    "output": '{"tools":[{"name":"atlassian_rovo.search"}]}',
+                }
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "atlassian_rovo.search",
+                    "description": "Search Jira tickets.",
+                    "parameters": {"type": "object"},
+                }
+            ],
+            "stream": True,
+        },
+    )
+
+    assert result.status_code == 200
+    events = _response_sse_events(result.text)
+    payloads = [
+        json.loads(data) for event, data in events if event and data != "[DONE]"
+    ]
+    completed = next(
+        payload["response"]
+        for payload in payloads
+        if payload["type"] == "response.completed"
+    )
+    function_items = [
+        payload["item"]
+        for payload in payloads
+        if payload["type"] == "response.output_item.done"
+        and payload["item"]["type"] == "function_call"
+    ]
+
+    assert "mcp__codex_apps__" not in result.text
+    assert not any(
+        payload["type"] == "response.output_text.delta" for payload in payloads
+    )
+    assert [item["name"] for item in function_items] == ["atlassian_rovo.search"]
+    assert completed["output_text"] == ""
+    assert completed["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] == {
+        "state": "repaired",
+        "attempts": 1,
+        "reason": "undeclared_tool",
+    }
+    assert native_response.closed is True
+
+
 def test_openai_compat_responses_streams_normal_json_text_with_tools_declared(
     test_app, monkeypatch
 ):
@@ -3554,6 +3673,20 @@ def test_openai_compat_allows_discovered_codex_apps_tool_on_continuation(
     assert json.loads(second["output"][0]["arguments"]) == {
         "query": "highest priority jira ticket"
     }
+    assert second["norman"]["responses_compatibility"]["tool_chain"] == {
+        "schema": "norman.responses-tool-chain.v1",
+        "turn_type": "after_tool_result",
+        "chain_depth": 1,
+        "tool_results_supplied": 1,
+        "tool_results_matched": 1,
+        "tool_calls_returned": 1,
+        "outcome": "tool_call",
+        "watchdog": {
+            "state": "not_required",
+            "attempts": 0,
+            "reason": "",
+        },
+    }
 
     jira_search_call = second["output"][0]
     third = execute_openai_responses_facade(
@@ -3691,6 +3824,20 @@ def test_openai_compat_responses_replays_saved_function_call_for_tool_output(
     )
 
     assert second["output_text"] == "local ok"
+    assert second["norman"]["responses_compatibility"]["tool_chain"] == {
+        "schema": "norman.responses-tool-chain.v1",
+        "turn_type": "after_tool_result",
+        "chain_depth": 1,
+        "tool_results_supplied": 1,
+        "tool_results_matched": 1,
+        "tool_calls_returned": 0,
+        "outcome": "final_after_tool",
+        "watchdog": {
+            "state": "not_required",
+            "attempts": 0,
+            "reason": "",
+        },
+    }
     replayed = invocations[-1]["messages"]
     expected_function_call = json.dumps(
         {
@@ -3720,6 +3867,84 @@ def test_openai_compat_responses_replays_saved_function_call_for_tool_output(
         message["role"] == "assistant" and '{"tool_call":' in message["content"]
         for message in replayed
     )
+
+
+def test_openai_compat_exhausts_invalid_tool_continuation_watchdog(monkeypatch):
+    import app.services.prompt_provider_facade as facade
+
+    facade.reset_facade_response_state()
+    responses = iter(
+        [
+            (
+                '{"tool_call":{"name":"mcp__codex_apps__atlassian_rovo.'
+                'search_company_knowledge","arguments":{"query":"priority"}}}'
+            ),
+            (
+                '{"tool_call":{"name":"mcp__codex_apps__atlassian_rovo.'
+                'search_company_knowledge","arguments":{"query":"priority"}}}'
+            ),
+            (
+                '{"tool_call":{"name":"mcp__codex_apps__atlassian_rovo.'
+                'search_company_knowledge","arguments":{"query":"priority"}}}'
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        facade,
+        "provider_adapter_decision",
+        lambda **kwargs: _local_route_envelope(),
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: _mock_local_chat(kwargs["messages"], kwargs["model"])
+        | {"choices": [{"message": {"content": next(responses)}}]},
+    )
+
+    first = execute_openai_responses_facade(
+        {"model": "norman-code", "input": "find the priority ticket"}
+    )
+    tool_search_call = first["output"][0]
+
+    with pytest.raises(FacadeError) as raised:
+        execute_openai_responses_facade(
+            {
+                "model": "norman-code",
+                "previous_response_id": first["id"],
+                "input": [
+                    {
+                        "type": "function_call_output",
+                        "call_id": tool_search_call["call_id"],
+                        "output": '{"tools":[{"name":"atlassian_rovo.search"}]}',
+                    }
+                ],
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "atlassian_rovo.search",
+                        "description": "Search Jira tickets.",
+                        "parameters": {"type": "object"},
+                    }
+                ],
+            }
+        )
+
+    assert raised.value.status_code == 502
+    assert raised.value.code == "tool_chain_watchdog_exhausted"
+    assert raised.value.norman["responses_compatibility"]["tool_chain"] == {
+        "schema": "norman.responses-tool-chain.v1",
+        "turn_type": "after_tool_result",
+        "chain_depth": 1,
+        "tool_results_supplied": 1,
+        "tool_results_matched": 1,
+        "tool_calls_returned": 0,
+        "outcome": "invalid_or_unresolved",
+        "watchdog": {
+            "state": "exhausted",
+            "attempts": 1,
+            "reason": "undeclared_tool",
+        },
+    }
 
 
 def test_openai_compat_responses_replays_previous_response_and_tool_output(

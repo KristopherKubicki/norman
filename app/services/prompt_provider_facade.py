@@ -103,6 +103,11 @@ MCP_RESOURCE_DISCOVERY_TOOL_NAMES = frozenset(
         "list_mcp_resource_templates",
     }
 )
+REPLAYED_FUNCTION_CALL_PREFIX = (
+    "Prior assistant function call (replayed context only; do not execute): "
+)
+TOOL_CHAIN_SCHEMA = "norman.responses-tool-chain.v1"
+TOOL_CHAIN_WATCHDOG_MAX_ATTEMPTS = 1
 logger = logging.getLogger(__name__)
 MODEL_ALIASES = {
     "norman-code": ROUTE_POLICY_MODELS["coding_operator"],
@@ -498,9 +503,8 @@ def _previous_response_messages(
             {
                 "role": "assistant",
                 "content": (
-                    "Prior assistant function call "
-                    "(replayed context only; do not execute): "
-                    f"{json.dumps(function_call, ensure_ascii=True, sort_keys=True)}"
+                    REPLAYED_FUNCTION_CALL_PREFIX
+                    + f"{json.dumps(function_call, ensure_ascii=True, sort_keys=True)}"
                 ),
             }
         )
@@ -639,6 +643,168 @@ def _tool_name(tool: Mapping[str, Any]) -> str:
 
 def _tool_names(tools: list[dict[str, Any]]) -> set[str]:
     return {_tool_name(tool) for tool in tools if _tool_name(tool)}
+
+
+@dataclass(frozen=True)
+class ToolChainContext:
+    declared_tool_names: tuple[str, ...]
+    chain_depth: int
+    tool_results_supplied: int
+    tool_results_matched: int
+    tool_search_completed: bool
+
+    @property
+    def executable_tools_declared(self) -> bool:
+        return any(
+            name != IMPLICIT_TOOL_SEARCH_NAME for name in self.declared_tool_names
+        )
+
+
+def _replayed_function_calls(messages: list[dict[str, Any]]) -> dict[str, str]:
+    calls: dict[str, str] = {}
+    for message in messages:
+        if _clean(message.get("role")) != "assistant":
+            continue
+        content = _clean(message.get("content"))
+        if not content.startswith(REPLAYED_FUNCTION_CALL_PREFIX):
+            continue
+        try:
+            call = json.loads(content.removeprefix(REPLAYED_FUNCTION_CALL_PREFIX))
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(call, Mapping):
+            continue
+        call_id = _clean(call.get("call_id"))
+        name = _clean(call.get("name"))
+        if call_id and name:
+            calls[call_id] = name
+    return calls
+
+
+def _tool_chain_context(
+    payload: Mapping[str, Any],
+    *,
+    previous_messages: list[dict[str, Any]],
+) -> ToolChainContext:
+    calls = _replayed_function_calls(previous_messages)
+    raw_input = payload.get("input", payload.get("prompt"))
+    supplied_result_ids: list[str] = []
+    if isinstance(raw_input, list):
+        for item in raw_input:
+            if not isinstance(item, Mapping):
+                continue
+            item_type = _clean(item.get("type"))
+            if item_type == "function_call":
+                call_id = _clean(item.get("call_id"))
+                name = _clean(item.get("name"))
+                if call_id and name:
+                    calls[call_id] = name
+            elif item_type == "function_call_output":
+                supplied_result_ids.append(_clean(item.get("call_id")))
+    matched_result_names = [
+        calls[call_id]
+        for call_id in supplied_result_ids
+        if call_id and call_id in calls
+    ]
+    return ToolChainContext(
+        declared_tool_names=tuple(sorted(_tool_names(_tools(payload)))),
+        chain_depth=len(calls),
+        tool_results_supplied=len(supplied_result_ids),
+        tool_results_matched=len(matched_result_names),
+        tool_search_completed=IMPLICIT_TOOL_SEARCH_NAME in matched_result_names,
+    )
+
+
+def _json_tool_call_envelope(text: str) -> list[dict[str, Any]]:
+    if not text:
+        return []
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        return []
+    raw_calls: list[Any] = []
+    if isinstance(payload, Mapping):
+        if isinstance(payload.get("tool_call"), Mapping):
+            raw_calls = [payload["tool_call"]]
+        elif isinstance(payload.get("tool_calls"), list):
+            raw_calls = payload["tool_calls"]
+    return [dict(call) for call in raw_calls if isinstance(call, Mapping)]
+
+
+def _tool_chain_watchdog_reason(
+    *,
+    text: str,
+    context: ToolChainContext,
+) -> str:
+    if not context.tool_results_supplied or not context.declared_tool_names:
+        return ""
+    raw_calls = _json_tool_call_envelope(text)
+    if not raw_calls:
+        return ""
+    names = {_clean(call.get("name")) for call in raw_calls if _clean(call.get("name"))}
+    if any(name not in context.declared_tool_names for name in names):
+        return "undeclared_tool"
+    if context.tool_search_completed and context.executable_tools_declared:
+        if any(
+            name == IMPLICIT_TOOL_SEARCH_NAME or name.startswith(CODEX_APPS_TOOL_PREFIX)
+            for name in names
+        ):
+            return "discovery_not_advanced"
+    return ""
+
+
+def _tool_chain_repair_message(
+    *,
+    context: ToolChainContext,
+    reason: str,
+) -> dict[str, str]:
+    declared = ", ".join(context.declared_tool_names)
+    return {
+        "role": "system",
+        "content": (
+            "Norman tool-chain repair: a tool result is already available and the "
+            "previous tool call cannot be returned. Continue this same task now. "
+            "Return either a final answer or exactly one JSON tool envelope using "
+            "only one declared tool. Do not call an internal mcp__codex_apps__ "
+            "name, list MCP resources, or repeat tool_search after discovery when "
+            "an executable tool is declared. Declared tools: "
+            f"{declared}. Repair reason: {reason}."
+        ),
+    }
+
+
+def _tool_chain_telemetry(
+    *,
+    context: ToolChainContext,
+    tool_calls: list[dict[str, Any]],
+    watchdog_state: str,
+    watchdog_attempts: int,
+    watchdog_reason: str = "",
+    outcome: str = "",
+) -> dict[str, Any]:
+    if not outcome:
+        if tool_calls:
+            outcome = "tool_call"
+        elif context.tool_results_supplied:
+            outcome = "final_after_tool"
+        else:
+            outcome = "final_without_tool"
+    return {
+        "schema": TOOL_CHAIN_SCHEMA,
+        "turn_type": (
+            "after_tool_result" if context.tool_results_supplied else "initial_or_text"
+        ),
+        "chain_depth": context.chain_depth,
+        "tool_results_supplied": context.tool_results_supplied,
+        "tool_results_matched": context.tool_results_matched,
+        "tool_calls_returned": len(tool_calls),
+        "outcome": outcome,
+        "watchdog": {
+            "state": watchdog_state,
+            "attempts": watchdog_attempts,
+            "reason": watchdog_reason,
+        },
+    }
 
 
 def _tool_contract_message(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -1006,9 +1172,8 @@ def response_input_to_messages(payload: Mapping[str, Any]) -> list[dict[str, Any
                     {
                         "role": "assistant",
                         "content": (
-                            "Prior assistant function call "
-                            "(replayed context only; do not execute): "
-                            f"{json.dumps(function_call, ensure_ascii=True, sort_keys=True)}"
+                            REPLAYED_FUNCTION_CALL_PREFIX
+                            + f"{json.dumps(function_call, ensure_ascii=True, sort_keys=True)}"
                         ),
                     }
                 )
@@ -1093,16 +1258,7 @@ def _extract_tool_calls(
     names = _tool_names(tools)
     if not text or (not names and not allow_implicit_tools):
         return []
-    try:
-        payload = json.loads(text)
-    except (TypeError, ValueError):
-        return []
-    raw_calls: list[Any] = []
-    if isinstance(payload, Mapping):
-        if isinstance(payload.get("tool_call"), Mapping):
-            raw_calls = [payload["tool_call"]]
-        elif isinstance(payload.get("tool_calls"), list):
-            raw_calls = payload["tool_calls"]
+    raw_calls = _json_tool_call_envelope(text)
     calls: list[dict[str, Any]] = []
     for raw in raw_calls:
         if not isinstance(raw, Mapping):
@@ -2457,6 +2613,7 @@ class PreparedResponsesExecution:
     route_envelope: dict[str, Any]
     messages: list[dict[str, Any]]
     previous_messages: list[dict[str, Any]]
+    tool_chain_context: ToolChainContext
     history_replayed: bool
     client_metadata_ignored: bool
     store_requested: bool
@@ -2482,6 +2639,10 @@ def _prepare_responses_execution(
     previous_messages, history_replayed = _previous_response_messages(
         _clean(provider_payload.get("previous_response_id"))
     )
+    tool_chain_context = _tool_chain_context(
+        provider_payload,
+        previous_messages=previous_messages,
+    )
     messages = [
         *previous_messages,
         *_tool_contract_message(provider_payload),
@@ -2501,10 +2662,69 @@ def _prepare_responses_execution(
         route_envelope=route_envelope,
         messages=messages,
         previous_messages=previous_messages,
+        tool_chain_context=tool_chain_context,
         history_replayed=history_replayed,
         client_metadata_ignored=client_metadata_ignored,
         store_requested=store_requested,
     )
+
+
+def _resolve_tool_chain_watchdog(
+    *,
+    chat_response: Mapping[str, Any],
+    prepared: PreparedResponsesExecution,
+    request_id: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    response = dict(chat_response)
+    reason = _tool_chain_watchdog_reason(
+        text=_choice_text(response),
+        context=prepared.tool_chain_context,
+    )
+    if not reason:
+        return response, {
+            "state": "not_required",
+            "attempts": 0,
+            "reason": "",
+        }
+
+    repair_messages = [
+        *prepared.messages,
+        _tool_chain_repair_message(
+            context=prepared.tool_chain_context,
+            reason=reason,
+        ),
+    ]
+    repaired = _execute_authorized_chat(
+        provider_payload=prepared.route_payload,
+        route_envelope=prepared.route_envelope,
+        messages=repair_messages,
+        request_id=f"{request_id}-tool-chain-repair",
+    )
+    repair_reason = _tool_chain_watchdog_reason(
+        text=_choice_text(repaired),
+        context=prepared.tool_chain_context,
+    )
+    if repair_reason:
+        telemetry = _tool_chain_telemetry(
+            context=prepared.tool_chain_context,
+            tool_calls=[],
+            watchdog_state="exhausted",
+            watchdog_attempts=TOOL_CHAIN_WATCHDOG_MAX_ATTEMPTS,
+            watchdog_reason=repair_reason,
+            outcome="invalid_or_unresolved",
+        )
+        raise FacadeError(
+            "Tool continuation remained invalid after the bounded Norman repair.",
+            status_code=502,
+            error_type="server_error",
+            code="tool_chain_watchdog_exhausted",
+            norman={"responses_compatibility": {"tool_chain": telemetry}},
+        )
+    return dict(repaired), {
+        "state": "repaired",
+        "attempts": TOOL_CHAIN_WATCHDOG_MAX_ATTEMPTS,
+        "reason": reason,
+    }
 
 
 def _responses_response_from_chat(
@@ -2514,6 +2734,7 @@ def _responses_response_from_chat(
     response_id: str = "",
     created_at: int | None = None,
     output_item_id: str = "",
+    tool_chain_watchdog: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     provider_payload = prepared.provider_payload
     chat_response = dict(chat_response)
@@ -2533,6 +2754,14 @@ def _responses_response_from_chat(
         output_item_id=output_item_id,
     )
     output_text = "" if tool_calls else text
+    watchdog = dict(tool_chain_watchdog or {})
+    tool_chain = _tool_chain_telemetry(
+        context=prepared.tool_chain_context,
+        tool_calls=tool_calls,
+        watchdog_state=_clean(watchdog.get("state")) or "not_required",
+        watchdog_attempts=int(watchdog.get("attempts") or 0),
+        watchdog_reason=_clean(watchdog.get("reason")),
+    )
     response_id = response_id or f"resp-norman-{uuid.uuid4().hex}"
     created = created_at or int(time.time())
     response = {
@@ -2565,6 +2794,7 @@ def _responses_response_from_chat(
                 ),
                 "tools_declared": len(tools),
                 "tool_calls_returned": len(tool_calls),
+                "tool_chain": tool_chain,
                 "tool_call_mode": (
                     "explicit_json_envelope"
                     if _tool_names(tools)
@@ -2802,6 +3032,11 @@ class FacadeResponsesStream:
                 invocation=self.invocation,
                 result=self.stream.result(text),
             )
+        chat_response, tool_chain_watchdog = _resolve_tool_chain_watchdog(
+            chat_response=chat_response,
+            prepared=self.prepared,
+            request_id=self.invocation.invocation_id,
+        )
         norman = _mapping(chat_response.get("norman"))
         if self._cloud_chat_response is None:
             norman["streaming_mode"] = "incremental_sse"
@@ -2815,6 +3050,7 @@ class FacadeResponsesStream:
             response_id=self.response_id,
             created_at=self.created_at,
             output_item_id=self.output_item_id,
+            tool_chain_watchdog=tool_chain_watchdog,
         )
 
     def classify_error(self, exc: Exception) -> FacadeError:
@@ -2844,15 +3080,22 @@ def execute_openai_responses_facade(
         payload,
         trusted_context=trusted_context,
     )
+    facade_request_id = request_id or f"norman-openai-response-{uuid.uuid4().hex}"
     chat_response = _execute_authorized_chat(
         provider_payload=prepared.route_payload,
         route_envelope=prepared.route_envelope,
         messages=prepared.messages,
-        request_id=request_id or f"norman-openai-response-{uuid.uuid4().hex}",
+        request_id=facade_request_id,
+    )
+    chat_response, tool_chain_watchdog = _resolve_tool_chain_watchdog(
+        chat_response=chat_response,
+        prepared=prepared,
+        request_id=facade_request_id,
     )
     return _responses_response_from_chat(
         chat_response,
         prepared=prepared,
+        tool_chain_watchdog=tool_chain_watchdog,
     )
 
 

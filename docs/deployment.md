@@ -263,6 +263,31 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now norman-codex-route-proof.timer
 ```
 
+To catch broken Responses tool continuations before they strand a TUI session,
+install the synthetic loopback canary. It makes three authenticated
+`/v1/responses` requests against `127.0.0.1:8000`, using only synthetic
+tool-search and tool-result payloads. It never invokes a real MCP, Codex App,
+or external service. The unit obtains `norman/prompt-proxy-token` only through
+the encrypted systemd credential and writes a sanitized receipt with response
+IDs, timings, tool names, counts, and tool-chain status:
+
+```bash
+sudo install -D -m 0755 scripts/run_norman_tui_tool_chain_canary.sh \
+  /usr/local/libexec/norman-tui-tool-chain-canary
+sudo install -D -m 0644 scripts/systemd/norman-tui-tool-chain-canary.service \
+  /etc/systemd/system/norman-tui-tool-chain-canary.service
+sudo install -D -m 0644 scripts/systemd/norman-tui-tool-chain-canary.timer \
+  /etc/systemd/system/norman-tui-tool-chain-canary.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now norman-tui-tool-chain-canary.timer
+sudo systemctl start norman-tui-tool-chain-canary.service
+```
+
+The timer runs no more than once per hour. It skips the check when the local
+host-pressure guard defers or blocks new work. Inspect the latest result at
+`$HOME/.local/state/norman/tui-tool-chain-canary.json`; it deliberately omits
+prompts, response text, arguments, tool output, tokens, and credentials.
+
 ### Temporary Workspace Cleanup
 
 Agent tasks can create large disposable worktrees, browser profiles, archives,

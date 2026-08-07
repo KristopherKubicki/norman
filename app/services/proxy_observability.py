@@ -17,6 +17,17 @@ EVENT_LOG_MAX_BYTES_ENV = "NORMAN_PROXY_EVENT_LOG_MAX_BYTES"
 DEFAULT_EVENT_LOG_PATH = Path("/var/lib/norman/state/proxy-events.jsonl")
 DEFAULT_EVENT_LOG_MAX_BYTES = 5 * 1024 * 1024
 DISABLED_EVENT_LOG_VALUES = frozenset({"0", "false", "none", "off", "disabled"})
+TOOL_CHAIN_SCHEMA = "norman.responses-tool-chain.v1"
+TOOL_CHAIN_TURN_TYPES = frozenset({"after_tool_result", "initial_or_text"})
+TOOL_CHAIN_OUTCOMES = frozenset(
+    {
+        "final_after_tool",
+        "final_without_tool",
+        "invalid_or_unresolved",
+        "tool_call",
+    }
+)
+TOOL_CHAIN_WATCHDOG_STATES = frozenset({"not_required", "repaired", "exhausted"})
 
 _LOCK = threading.RLock()
 _EVENT_LOG_LOCK = threading.RLock()
@@ -71,6 +82,63 @@ def _route_receipt(response: Mapping[str, Any]) -> dict[str, Any]:
     if direct:
         return direct
     return _nested(norman, "facade_receipt", "route_receipt")
+
+
+def _safe_tool_chain_metadata(
+    response: Mapping[str, Any],
+    error: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Extract only bounded, non-content tool-chain observability fields."""
+
+    raw_tool_chain: dict[str, Any] = {}
+    for source in (response, error):
+        norman = _mapping(source.get("norman"))
+        compatibility = _mapping(norman.get("responses_compatibility"))
+        candidate = _mapping(compatibility.get("tool_chain"))
+        if candidate:
+            raw_tool_chain = candidate
+            break
+    if _clean(raw_tool_chain.get("schema")) != TOOL_CHAIN_SCHEMA:
+        return {}
+
+    watchdog = _mapping(raw_tool_chain.get("watchdog"))
+    turn_type = _clean(raw_tool_chain.get("turn_type"))
+    outcome = _clean(raw_tool_chain.get("outcome"))
+    watchdog_state = _clean(watchdog.get("state"))
+    return {
+        "schema": TOOL_CHAIN_SCHEMA,
+        "turn_type": turn_type if turn_type in TOOL_CHAIN_TURN_TYPES else "unknown",
+        "chain_depth": _int(raw_tool_chain.get("chain_depth")),
+        "tool_results_supplied": _int(raw_tool_chain.get("tool_results_supplied")),
+        "tool_results_matched": _int(raw_tool_chain.get("tool_results_matched")),
+        "tool_calls_returned": _int(raw_tool_chain.get("tool_calls_returned")),
+        "outcome": outcome if outcome in TOOL_CHAIN_OUTCOMES else "unknown",
+        "watchdog_state": (
+            watchdog_state
+            if watchdog_state in TOOL_CHAIN_WATCHDOG_STATES
+            else "unknown"
+        ),
+        "watchdog_attempts": _int(watchdog.get("attempts")),
+    }
+
+
+def _sanitized_error_payload(error: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep normal error metadata while excluding raw tool-chain content."""
+
+    payload = dict(error)
+    norman = _mapping(payload.get("norman"))
+    if not norman:
+        return payload
+    compatibility = _mapping(norman.get("responses_compatibility"))
+    if "tool_chain" not in compatibility:
+        return payload
+    compatibility.pop("tool_chain", None)
+    if compatibility:
+        norman["responses_compatibility"] = compatibility
+    else:
+        norman.pop("responses_compatibility", None)
+    payload["norman"] = norman
+    return payload
 
 
 def _receipt_audit_passed(receipt: Mapping[str, Any]) -> bool:
@@ -301,7 +369,9 @@ def record_proxy_event(
     receipt_audit = _mapping(receipt.get("receipt_audit"))
     completion_gate = _mapping(receipt.get("completion_gate"))
     usage = _usage_from_response(response)
-    error_payload = dict(error or {})
+    raw_error_payload = dict(error or {})
+    tool_chain = _safe_tool_chain_metadata(response, raw_error_payload)
+    error_payload = _sanitized_error_payload(raw_error_payload)
     error_norman = _mapping(error_payload.get("norman"))
     now = time.time()
     event = {
@@ -367,6 +437,7 @@ def record_proxy_event(
         ),
         "route_authority": _clean(receipt.get("route_authority")),
         "usage": usage,
+        "tool_chain": tool_chain,
         "latency_ms": round(float(latency_ms or 0), 3),
         "error": error_payload,
         "error_code": _clean(error_payload.get("code")),
@@ -483,6 +554,21 @@ def proxy_observability_summary(limit: int = 100) -> dict[str, Any]:
         if event.get("status") == "local_gateway_error"
         or _clean(event.get("error_code")).startswith("local_gateway_")
     )
+    tool_chain_events = [
+        _mapping(event.get("tool_chain"))
+        for event in events
+        if _clean(_mapping(event.get("tool_chain")).get("schema")) == TOOL_CHAIN_SCHEMA
+    ]
+    tool_chain_repaired_count = sum(
+        1
+        for tool_chain in tool_chain_events
+        if _clean(tool_chain.get("watchdog_state")) == "repaired"
+    )
+    tool_chain_exhausted_count = sum(
+        1
+        for tool_chain in tool_chain_events
+        if _clean(tool_chain.get("watchdog_state")) == "exhausted"
+    )
     usage_totals = {
         "local_tokens": sum(
             _int(_mapping(event.get("usage")).get("local_tokens")) for event in events
@@ -526,6 +612,9 @@ def proxy_observability_summary(limit: int = 100) -> dict[str, Any]:
         "capacity_unavailable_count": capacity_unavailable_count,
         "local_timeout_count": local_timeout_count,
         "local_gateway_error_count": local_gateway_error_count,
+        "tool_chain_event_count": len(tool_chain_events),
+        "tool_chain_repaired_count": tool_chain_repaired_count,
+        "tool_chain_exhausted_count": tool_chain_exhausted_count,
         "cloud_forward_count": cloud_forward_count,
         "cloud_proxy_count": cloud_proxy_count,
         "workerless_local_success_count": workerless_count,
@@ -697,6 +786,18 @@ def proxy_alerts(
                 "severity": "warn",
                 "kind": "proxy_local_gateway_errors",
                 "message": f"{gateway_errors} local gateway error(s) were recorded.",
+            }
+        )
+    tool_chain_exhausted = int(summary.get("tool_chain_exhausted_count") or 0)
+    if tool_chain_exhausted:
+        alerts.append(
+            {
+                "severity": "critical",
+                "kind": "proxy_tool_chain_watchdog_exhausted",
+                "message": (
+                    f"{tool_chain_exhausted} tool-chain continuation(s) remained "
+                    "invalid after the bounded repair."
+                ),
             }
         )
     return {

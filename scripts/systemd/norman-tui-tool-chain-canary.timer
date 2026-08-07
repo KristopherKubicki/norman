@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodically run the synthetic Norman Responses tool-chain canary
+
+[Timer]
+OnBootSec=12min
+OnUnitActiveSec=1h
+AccuracySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
