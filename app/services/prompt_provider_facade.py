@@ -1399,6 +1399,26 @@ def _internal_mcp_tool_search_query(name: str, arguments: Any) -> str:
     return "Find the executable tool for the requested connected MCP server"
 
 
+def _normalize_internal_mcp_server_argument(arguments: Any) -> Any:
+    parsed_arguments = arguments
+    if isinstance(arguments, str):
+        try:
+            parsed_arguments = json.loads(arguments)
+        except (TypeError, ValueError):
+            return arguments
+    if not isinstance(parsed_arguments, Mapping):
+        return arguments
+    server = _clean(parsed_arguments.get("server"))
+    if not server.startswith(INTERNAL_MCP_TOOL_PREFIX):
+        return arguments
+    normalized_server = server.removeprefix(INTERNAL_MCP_TOOL_PREFIX)
+    if not normalized_server:
+        return arguments
+    normalized_arguments = dict(parsed_arguments)
+    normalized_arguments["server"] = normalized_server
+    return normalized_arguments
+
+
 def _extract_tool_calls(
     text: str,
     *,
@@ -1418,7 +1438,7 @@ def _extract_tool_calls(
         name = _clean(raw.get("name"))
         if not name:
             continue
-        arguments = raw.get("arguments", {})
+        arguments = _normalize_internal_mcp_server_argument(raw.get("arguments", {}))
         if name.startswith(CODEX_APPS_TOOL_PREFIX) and name not in names:
             # Codex Apps tools must be discovered before invocation. Some
             # local models emit a stale internal Apps name even when the

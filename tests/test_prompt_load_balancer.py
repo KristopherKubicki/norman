@@ -3459,9 +3459,9 @@ def test_openai_compat_responses_routes_once_and_preserves_instructions(
                 "available tool when it advances the request, then return "
                 "the final answer only after no further tool call is needed. "
                 "Do not stop merely to announce a discovered tool. "
-                "For an external Codex Apps capability, call tool_search first "
-                'with {"query":"what you need"}; do not call '
-                "mcp__codex_apps__..., list_mcp_resources, or "
+                "For any MCP capability, call tool_search first with "
+                '{"query":"what you need"}; do not call an internal mcp__ '
+                "name, list_mcp_resources, or "
                 "list_mcp_resource_templates directly. Once tool_search output "
                 "is in the conversation and its executable tool is declared, "
                 "use that tool directly; do not rediscover it. Otherwise "
@@ -3684,6 +3684,33 @@ def test_openai_compat_converts_implicit_internal_mcp_server_calls_to_tool_searc
     assert json.loads(calls[0]["arguments"]) == {
         "query": "Find the executable tool for lookup on the ops_openbrand MCP server"
     }
+
+
+def test_openai_compat_normalizes_declared_internal_mcp_server_argument():
+    import app.services.prompt_provider_facade as facade
+
+    calls = facade._extract_tool_calls(
+        json.dumps(
+            {
+                "tool_call": {
+                    "name": "mcp__ops_openbrand.list_mcp_resources",
+                    "arguments": {"server": "mcp__ops_openbrand"},
+                }
+            }
+        ),
+        tools=[
+            {
+                "type": "function",
+                "name": "mcp__ops_openbrand.list_mcp_resources",
+                "description": "List resources for an MCP server.",
+                "parameters": {"type": "object"},
+            }
+        ],
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["name"] == "mcp__ops_openbrand.list_mcp_resources"
+    assert json.loads(calls[0]["arguments"]) == {"server": "ops_openbrand"}
 
 
 def test_openai_compat_converts_mcp_resource_discovery_to_tool_search():
