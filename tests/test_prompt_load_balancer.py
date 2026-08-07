@@ -662,11 +662,12 @@ def _mock_local_chat(messages, model, **kwargs):
 def _mock_bedrock_result(
     text: str = "cloud ok",
     *,
+    model: str = "qwen.qwen3-coder-480b-a35b-v1:0",
     metadata: dict | None = None,
 ) -> ModelResult:
     return ModelResult(
         provider="bedrock",
-        model="qwen.qwen3-coder-480b-a35b-v1:0",
+        model=model,
         text=text,
         usage=ModelUsage(input_tokens=7, output_tokens=3, total_tokens=10),
         metadata=metadata or {},
@@ -867,7 +868,7 @@ def test_openai_compat_chat_completions_routes_local_first(test_app, monkeypatch
         "/v1/chat/completions",
         headers=headers,
         json={
-            "model": "gpt-5.5",
+            "model": "norman-code",
             "messages": [{"role": "user", "content": "status?"}],
         },
     )
@@ -913,7 +914,7 @@ def test_openai_compat_chat_completions_streams_sse(test_app, monkeypatch):
         "/v1/chat/completions",
         headers=headers,
         json={
-            "model": "gpt-5.5",
+            "model": "norman-code",
             "messages": [{"role": "user", "content": "status?"}],
             "stream": True,
         },
@@ -934,7 +935,7 @@ def test_openai_compat_responses_routes_local_first(test_app, monkeypatch):
     response = test_app.post(
         "/v1/responses",
         headers=headers,
-        json={"model": "gpt-5.5", "input": "status?"},
+        json={"model": "norman-code", "input": "status?"},
     )
 
     assert response.status_code == 200
@@ -944,6 +945,133 @@ def test_openai_compat_responses_routes_local_first(test_app, monkeypatch):
     assert payload["output_text"] == "local ok"
     assert payload["usage"]["total_tokens"] == 6
     assert payload["norman"]["local_execution"] is True
+
+
+def test_openai_compat_responses_routes_explicit_cloud_model_without_local_admission(
+    test_app, monkeypatch
+):
+    from app.services.prompt_provider_facade import norllama_gateway
+
+    headers = _proxy_headers(monkeypatch)
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("explicit cloud selection must not invoke local gateway")
+        ),
+    )
+    bedrock_calls = _install_bedrock_stub(
+        monkeypatch,
+        result=_mock_bedrock_result(
+            "cloud selection ready",
+            model="openai.gpt-5.6-sol",
+        ),
+    )
+
+    response = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={"model": "gpt-5.6-sol", "input": "status?"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["output_text"] == "cloud selection ready"
+    assert payload["model"] == "openai.gpt-5.6-sol"
+    assert payload["norman"]["local_execution"] is False
+    assert payload["norman"]["cloud_forwarding"] is True
+    assert payload["norman"]["explicit_cloud_selection"]["state"] == "completed"
+    assert "cloud_fallback" not in payload["norman"]
+    assert len(bedrock_calls) == 1
+    assert bedrock_calls[0].model == "openai.gpt-5.6-sol"
+    assert bedrock_calls[0].route_key == "gpt-5.6-sol"
+
+
+def test_openai_compat_responses_streams_explicit_cloud_selection_progress(
+    test_app, monkeypatch
+):
+    from app.services.prompt_provider_facade import norllama_gateway
+
+    headers = _proxy_headers(monkeypatch)
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat_stream",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("explicit cloud selection must not open a local stream")
+        ),
+    )
+    bedrock_calls = _install_bedrock_stub(
+        monkeypatch,
+        result=_mock_bedrock_result(
+            "cloud selection streaming",
+            model="openai.gpt-5.6-sol",
+        ),
+    )
+
+    response = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={"model": "gpt-5.6-sol", "input": "status?", "stream": True},
+    )
+
+    assert response.status_code == 200
+    events = _response_sse_events(response.text)
+    payloads = [json.loads(data) for _event, data in events if data != "[DONE]"]
+    progress = [
+        payload["response"]
+        for payload in payloads
+        if payload["type"] == "response.in_progress"
+    ]
+    completed = next(
+        payload["response"]
+        for payload in payloads
+        if payload["type"] == "response.completed"
+    )
+
+    assert any(
+        snapshot.get("norman", {}).get("explicit_cloud_selection", {}).get("state")
+        == "started"
+        for snapshot in progress
+    )
+    assert any(
+        payload["type"] == "response.output_text.delta"
+        and payload["delta"] == "cloud selection streaming"
+        for payload in payloads
+    )
+    assert completed["norman"]["local_execution"] is False
+    assert completed["norman"]["explicit_cloud_selection"]["state"] == "completed"
+    assert "cloud_fallback" not in completed["norman"]
+    assert not any(
+        "stream_admission" in snapshot.get("norman", {}) for snapshot in progress
+    )
+    assert len(bedrock_calls) == 1
+    assert events[-1] == ("", "[DONE]")
+
+
+def test_openai_compat_rejects_unapproved_explicit_cloud_model(test_app, monkeypatch):
+    from app.services.prompt_provider_facade import norllama_gateway
+
+    headers = _proxy_headers(monkeypatch)
+    local_calls = []
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: local_calls.append(kwargs) or _mock_local_chat([], ""),
+    )
+    bedrock_calls = _install_bedrock_stub(monkeypatch)
+
+    response = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={"model": "gpt-unknown", "input": "status?"},
+    )
+
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["code"] == "unsupported_model"
+    assert error["param"] == "model"
+    assert local_calls == []
+    assert bedrock_calls == []
 
 
 def test_openai_compat_responses_streams_incremental_sse_with_admission_feedback(
@@ -1406,7 +1534,7 @@ def test_openai_compat_responses_returns_gateway_failure(test_app, monkeypatch):
     response = test_app.post(
         "/v1/responses",
         headers={**headers, "X-Request-Id": "gateway-unavailable-test"},
-        json={"model": "gpt-5.5", "input": "status?"},
+        json={"model": "norman-code", "input": "status?"},
     )
 
     assert response.status_code == 503
@@ -1418,7 +1546,7 @@ def test_openai_compat_responses_returns_gateway_failure(test_app, monkeypatch):
     assert error["norman"] == {
         "schema": "norman.local-gateway-error.v1",
         "request_id": "gateway-unavailable-test",
-        "requested_model": "gpt-5.5",
+        "requested_model": "norman-code",
         "selected_model": "qwen3-coder:30b-a3b-q4_K_M",
         "retryable": True,
         "cloud_fallback": False,
@@ -1457,7 +1585,7 @@ def test_openai_compat_responses_records_unexpected_gateway_failure(
     response = test_app.post(
         "/v1/responses",
         headers=headers,
-        json={"model": "gpt-5.5", "input": "status?"},
+        json={"model": "norman-code", "input": "status?"},
     )
 
     assert response.status_code == 500
@@ -1499,7 +1627,7 @@ def test_openai_compat_responses_preserves_missing_local_model(test_app, monkeyp
     response = test_app.post(
         "/v1/responses",
         headers=headers,
-        json={"model": "gpt-5.5", "input": "status?"},
+        json={"model": "norman-code", "input": "status?"},
     )
 
     assert response.status_code == 422
@@ -2200,7 +2328,7 @@ def test_openai_compat_responses_ignores_codex_compatibility_metadata(
         "/v1/responses",
         headers=headers,
         json={
-            "model": "gpt-5.6-terra",
+            "model": "norman-code",
             "input": "status?",
             "parallel_tool_calls": True,
             "prompt_cache_key": "codex-session-cache-key",
@@ -2574,7 +2702,7 @@ def test_openai_compat_rejects_inconsistent_or_cloud_proxy_routes(monkeypatch):
         try:
             execute_openai_chat_facade(
                 {
-                    "model": "gpt-5.5",
+                    "model": "norman-code",
                     "messages": [{"role": "user", "content": "status?"}],
                 }
             )
@@ -2627,7 +2755,7 @@ def test_openai_compat_responses_routes_once_and_preserves_instructions(
 
     response = execute_openai_responses_facade(
         {
-            "model": "gpt-5.5",
+            "model": "norman-code",
             "instructions": "Answer briefly.",
             "store": False,
             "input": [
@@ -2741,7 +2869,7 @@ def test_openai_compat_responses_can_return_explicit_tool_call(monkeypatch):
 
     response = execute_openai_responses_facade(
         {
-            "model": "gpt-5.5",
+            "model": "norman-code",
             "input": "check the repo",
             "tools": [
                 {
@@ -2786,11 +2914,11 @@ def test_openai_compat_responses_replays_previous_response_and_tool_output(
     monkeypatch.setattr(facade.norllama_gateway, "invoke_text_chat", fake_chat)
 
     first = execute_openai_responses_facade(
-        {"model": "gpt-5.5", "input": "remember alpha"}
+        {"model": "norman-code", "input": "remember alpha"}
     )
     second = execute_openai_responses_facade(
         {
-            "model": "gpt-5.5",
+            "model": "norman-code",
             "previous_response_id": first["id"],
             "input": [
                 {
@@ -2845,12 +2973,12 @@ def test_openai_compat_responses_store_false_degrades_to_supplied_context(monkey
     monkeypatch.setattr(facade.norllama_gateway, "invoke_text_chat", fake_chat)
 
     response = execute_openai_responses_facade(
-        {"model": "gpt-5.5", "input": "do not retain", "store": False}
+        {"model": "norman-code", "input": "do not retain", "store": False}
     )
 
     continued = execute_openai_responses_facade(
         {
-            "model": "gpt-5.5",
+            "model": "norman-code",
             "previous_response_id": response["id"],
             "input": [
                 {
@@ -2908,7 +3036,7 @@ def test_openai_compat_proxy_observability_records_success_without_prompt_leak(
         "/v1/chat/completions",
         headers=headers,
         json={
-            "model": "gpt-5.5",
+            "model": "norman-code",
             "messages": [{"role": "user", "content": "status? secret-value"}],
         },
     )

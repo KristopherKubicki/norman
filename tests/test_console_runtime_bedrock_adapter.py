@@ -12,8 +12,9 @@ from app.services.console_runtime.worker import (
     DbConsoleRuntimeWorker,
 )
 from app.services.norllama import bedrock as bedrock_module
+from app.services.norllama.route_policy_artifact import generate_route_policy_artifact
 from app.services.norllama.routing import route_task
-from app.services.norllama.types import NorllamaTaskRequest
+from app.services.norllama.types import NorllamaRoute, NorllamaTaskRequest
 
 
 class _FakeBedrockClient:
@@ -52,6 +53,65 @@ def _request() -> ModelRequest:
                 "allow_cloud_proxy": True,
                 "aws_region": "us-east-2",
                 "aws_profile": "norman-bedrock",
+            },
+        },
+    )
+
+
+def _explicit_cloud_selection_request(
+    *,
+    marker: dict | None = None,
+    artifact_cloud_policy: dict | None = None,
+) -> ModelRequest:
+    artifact = generate_route_policy_artifact()
+    if artifact_cloud_policy is not None:
+        artifact["cloud_policy"] = artifact_cloud_policy
+    cloud_policy = dict(artifact["cloud_policy"])
+    route = NorllamaRoute(
+        lane="coder",
+        provider="aws-bedrock",
+        provider_kind="aws-bedrock",
+        capability="chat",
+        model="openai.gpt-5.6-sol",
+        mode="cloud_proxy",
+        local=False,
+        cloud_proxy=True,
+        tool_lane=False,
+        requires_receipt=True,
+        reason="test explicit cloud selection",
+    )
+    return ModelRequest(
+        messages=[{"role": "user", "content": "Return the status."}],
+        model="openai.gpt-5.6-sol",
+        route_key="gpt-5.6-sol",
+        budget=ModelBudget(max_output_tokens=321),
+        metadata={
+            "request_id": "explicit-cloud-selection-1",
+            "invocation_id": "explicit-cloud-selection-1",
+            "norllama_task_kind": "chat",
+            "execution_mode": "prompt_intermediary_openai_facade_explicit_cloud",
+            "requested_model": "openai.gpt-5.6-sol",
+            "route_selected_model": "openai.gpt-5.6-sol",
+            "route_policy": {
+                "provider": "aws-bedrock",
+                "preferred_provider": "aws-bedrock",
+                "model": "openai.gpt-5.6-sol",
+                "preferred_model": "openai.gpt-5.6-sol",
+                "lane": "coder",
+                "allow_cloud_proxy": False,
+                "cloud_policy": cloud_policy,
+                "route_policy_artifact": artifact,
+                "aws_region": "us-east-2",
+                "aws_profile": "norman-bedrock",
+            },
+            "norllama_route": route.as_dict(),
+            "norman_facade_explicit_cloud_selection": marker
+            or {
+                "schema": "norman.facade-explicit-cloud-selection.v1",
+                "requested_alias": "gpt-5.6-sol",
+                "provider": "aws-bedrock",
+                "model": "openai.gpt-5.6-sol",
+                "lane": "coder",
             },
         },
     )
@@ -428,6 +488,98 @@ def test_bedrock_adapter_blocks_before_brokered_credential_lookup(monkeypatch):
     assert result.metadata["policy_authorization"]["reason"] == (
         "bedrock_cloud_proxy_not_explicitly_allowed"
     )
+
+
+def test_bedrock_adapter_authorizes_exact_facade_explicit_cloud_selection():
+    client = _FakeBedrockClient(
+        {
+            "stopReason": "end_turn",
+            "usage": {
+                "inputTokens": 4,
+                "outputTokens": 2,
+                "totalTokens": 6,
+            },
+            "output": {
+                "message": {"content": [{"text": "Selected cloud model completed."}]}
+            },
+        }
+    )
+
+    result = BedrockModelAdapter(client_factory=lambda **_kwargs: client).invoke(
+        _explicit_cloud_selection_request()
+    )
+
+    assert client.calls[0]["modelId"] == "openai.gpt-5.6-sol"
+    assert result.text == "Selected cloud model completed."
+    assert (
+        result.metadata["policy_authorization"]["explicit_cloud_selection_authorized"]
+        is True
+    )
+    assert result.metadata["policy_authorization"]["cloud_fallback_authorized"] is False
+
+
+def test_bedrock_adapter_blocks_forged_explicit_cloud_marker_before_credentials(
+    monkeypatch,
+):
+    client = _FakeBedrockClient()
+    request = _explicit_cloud_selection_request(
+        marker={
+            "schema": "norman.facade-explicit-cloud-selection.v1",
+            "requested_alias": "gpt-5.6-sol",
+            "provider": "aws-bedrock",
+            "model": "openai.gpt-5.6-terra",
+            "lane": "coder",
+        }
+    )
+    request.metadata["route_policy"]["aws_credentials_secret"] = "networking/bedrock"
+    monkeypatch.setenv("NORMAN_KEYS_URL", "http://keys.norman.test")
+    monkeypatch.delenv("NORMAN_SECRET_CMD", raising=False)
+
+    def unexpected_broker_lookup(*_args, **_kwargs):
+        raise AssertionError("blocked Bedrock route must not request credentials")
+
+    monkeypatch.setattr(
+        bedrock_module.urllib_request,
+        "urlopen",
+        unexpected_broker_lookup,
+    )
+
+    result = BedrockModelAdapter(client_factory=lambda **_kwargs: client).invoke(
+        request
+    )
+
+    assert client.calls == []
+    assert result.stop_reason == "policy_blocked"
+    assert result.metadata["policy_authorization"]["reason"] == (
+        "bedrock_cloud_proxy_not_explicitly_allowed"
+    )
+
+
+def test_bedrock_adapter_blocks_empty_explicit_cloud_policy_before_credentials(
+    monkeypatch,
+):
+    client = _FakeBedrockClient()
+    request = _explicit_cloud_selection_request(artifact_cloud_policy={})
+    request.metadata["route_policy"]["aws_credentials_secret"] = "networking/bedrock"
+    monkeypatch.setenv("NORMAN_KEYS_URL", "http://keys.norman.test")
+    monkeypatch.delenv("NORMAN_SECRET_CMD", raising=False)
+
+    def unexpected_broker_lookup(*_args, **_kwargs):
+        raise AssertionError("blocked Bedrock route must not request credentials")
+
+    monkeypatch.setattr(
+        bedrock_module.urllib_request,
+        "urlopen",
+        unexpected_broker_lookup,
+    )
+
+    result = BedrockModelAdapter(client_factory=lambda **_kwargs: client).invoke(
+        request
+    )
+
+    assert client.calls == []
+    assert result.stop_reason == "policy_blocked"
+    assert result.metadata["policy_authorization"]["allowed"] is False
 
 
 def test_bedrock_adapter_rejects_serialized_route_when_policy_selects_norllama():

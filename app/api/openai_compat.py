@@ -723,6 +723,25 @@ def _response_sse(stream: Any):
                         },
                     )
                 continue
+            if stream_event.get("type") == "explicit_cloud_selection":
+                selection = stream_event.get("explicit_cloud_selection")
+                if isinstance(selection, dict):
+                    snapshot = _response_stream_snapshot(stream, status="in_progress")
+                    norman = (
+                        dict(snapshot.get("norman"))
+                        if isinstance(snapshot.get("norman"), dict)
+                        else {}
+                    )
+                    norman["explicit_cloud_selection"] = dict(selection)
+                    snapshot["norman"] = norman
+                    yield _response_sse_event(
+                        "response.in_progress",
+                        {
+                            "type": "response.in_progress",
+                            "response": snapshot,
+                        },
+                    )
+                continue
             if stream_event.get("type") != "text":
                 continue
             fragment = stream_event.get("text")

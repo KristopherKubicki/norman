@@ -19,6 +19,7 @@ from app.services.norllama import gateway as norllama_gateway
 from app.services.norllama.route_policy import (
     CLOUD_FALLBACK_BEDROCK_MODEL,
     cloud_fallback_allowed_for_alias,
+    explicit_cloud_selection_for_model,
 )
 from app.services.norllama.route_proof import (
     audit_route_receipt,
@@ -92,6 +93,8 @@ CLOUD_FALLBACK_MARKER_SCHEMA = "norman.facade-cloud-fallback.v1"
 CLOUD_FALLBACK_PROVIDER = "aws-bedrock"
 CLOUD_FALLBACK_MODEL = CLOUD_FALLBACK_BEDROCK_MODEL
 CLOUD_FALLBACK_LANE = "coder"
+EXPLICIT_CLOUD_SELECTION_SCHEMA = "norman.explicit-cloud-selection.v1"
+EXPLICIT_CLOUD_SELECTION_MARKER_SCHEMA = "norman.facade-explicit-cloud-selection.v1"
 logger = logging.getLogger(__name__)
 MODEL_ALIASES = {
     "norman-code": ROUTE_POLICY_MODELS["coding_operator"],
@@ -1280,6 +1283,16 @@ class AuthorizedChatInvocation:
 
 
 @dataclass(frozen=True)
+class ExplicitCloudSelectionPlan:
+    requested_alias: str
+    provider: str
+    model: str
+    lane: str
+    route_policy: dict[str, Any]
+    route: NorllamaRoute
+
+
+@dataclass(frozen=True)
 class CloudFallbackPlan:
     requested_alias: str
     provider: str
@@ -1287,6 +1300,109 @@ class CloudFallbackPlan:
     lane: str
     route_policy: dict[str, Any]
     route: NorllamaRoute
+
+
+def _looks_like_cloud_model_selection(requested_model: Any) -> bool:
+    requested = _lower(requested_model)
+    return requested.startswith("gpt-") or requested.startswith("openai.gpt-")
+
+
+def _explicit_cloud_selection_plan(
+    *,
+    provider_payload: Mapping[str, Any],
+    route_envelope: Mapping[str, Any],
+) -> ExplicitCloudSelectionPlan | None:
+    """Build the one exact cloud route declared by the signed route policy."""
+
+    requested_alias = _requested_model(provider_payload).lower()
+    compiled_selection = explicit_cloud_selection_for_model(requested_alias)
+    if compiled_selection is None:
+        if _looks_like_cloud_model_selection(requested_alias):
+            raise FacadeError(
+                "The requested cloud model is not an approved Norman model alias",
+                status_code=400,
+                error_type="invalid_request_error",
+                code="unsupported_model",
+                param="model",
+            )
+        return None
+
+    route_policy = _nested_dict(
+        route_envelope,
+        "norman_route",
+        "decision",
+        "metadata",
+        "route_policy",
+    )
+    artifact = _mapping(route_policy.get("route_policy_artifact"))
+    artifact_cloud_policy = _mapping(artifact.get("cloud_policy"))
+    route_cloud_policy = _mapping(route_policy.get("cloud_policy"))
+    artifact_selection = explicit_cloud_selection_for_model(
+        requested_alias,
+        cloud_policy=artifact_cloud_policy,
+    )
+    if (
+        not artifact
+        or artifact_selection != compiled_selection
+        or route_cloud_policy != artifact_cloud_policy
+    ):
+        raise FacadeError(
+            "Norman policy does not authorize the requested cloud model",
+            status_code=403,
+            error_type="policy_blocked",
+            code="explicit_cloud_selection_not_authorized",
+            param="model",
+        )
+
+    provider = compiled_selection["provider"]
+    model = compiled_selection["model"]
+    lane = compiled_selection["lane"]
+    explicit_route_policy = {
+        **route_policy,
+        "provider": provider,
+        "preferred_provider": provider,
+        "provider_surface": provider,
+        "model_proxy": provider,
+        "model": model,
+        "preferred_model": model,
+        "lane": lane,
+        # The adapter accepts this only with the exact signed selection marker.
+        "allow_cloud_proxy": False,
+        "cloud_policy": artifact_cloud_policy,
+        "route_policy_artifact": artifact,
+        "aws_region": _clean(
+            getattr(settings, "prompt_facade_cloud_fallback_aws_region", "")
+        ),
+        "aws_credentials_secret": _clean(
+            getattr(
+                settings,
+                "prompt_facade_cloud_fallback_credentials_secret",
+                "",
+            )
+        ),
+    }
+    route = NorllamaRoute(
+        lane=lane,
+        provider=provider,
+        provider_kind=provider,
+        capability="chat",
+        model=model,
+        mode="cloud_proxy",
+        local=False,
+        cloud_proxy=True,
+        tool_lane=False,
+        requires_receipt=True,
+        reason="facade explicit approved cloud model selection",
+        attribution={"requested_alias": requested_alias},
+    )
+    return ExplicitCloudSelectionPlan(
+        requested_alias=requested_alias,
+        provider=provider,
+        model=model,
+        lane=lane,
+        route_policy=explicit_route_policy,
+        route=route,
+    )
 
 
 def _cloud_fallback_plan(
@@ -1666,6 +1782,258 @@ def _execute_cloud_fallback(
     }
 
 
+def _explicit_cloud_selection_metadata(
+    *,
+    plan: ExplicitCloudSelectionPlan,
+    invocation: AuthorizedChatInvocation,
+    state: str,
+) -> dict[str, Any]:
+    return {
+        "schema": EXPLICIT_CLOUD_SELECTION_SCHEMA,
+        "state": state,
+        "requested_alias": plan.requested_alias,
+        "provider": plan.provider,
+        "model": plan.model,
+        "lane": plan.lane,
+        "request_id": invocation.invocation_id,
+    }
+
+
+def _explicit_cloud_selection_marker(
+    *,
+    plan: ExplicitCloudSelectionPlan,
+) -> dict[str, Any]:
+    return {
+        "schema": EXPLICIT_CLOUD_SELECTION_MARKER_SCHEMA,
+        "requested_alias": plan.requested_alias,
+        "provider": plan.provider,
+        "model": plan.model,
+        "lane": plan.lane,
+    }
+
+
+def _explicit_cloud_selection_request(
+    *,
+    plan: ExplicitCloudSelectionPlan,
+    invocation: AuthorizedChatInvocation,
+    messages: list[dict[str, Any]],
+    provider_payload: Mapping[str, Any],
+) -> ModelRequest:
+    try:
+        timeout_seconds = int(
+            float(getattr(settings, "llm_provider_timeout_seconds", 45) or 45)
+        )
+    except (TypeError, ValueError):
+        timeout_seconds = 45
+    return ModelRequest(
+        messages=messages,
+        model=plan.model,
+        route_key=plan.requested_alias,
+        temperature=_fallback_temperature(provider_payload),
+        budget=ModelBudget(
+            max_model_calls=1,
+            max_runtime_seconds=max(1, timeout_seconds),
+            max_output_tokens=invocation.max_tokens,
+        ),
+        metadata={
+            "request_id": invocation.invocation_id,
+            "invocation_id": invocation.invocation_id,
+            "norllama_task_kind": "chat",
+            "execution_mode": "prompt_intermediary_openai_facade_explicit_cloud",
+            "requested_model": plan.model,
+            "route_selected_model": plan.model,
+            "route_policy": plan.route_policy,
+            "norllama_route": plan.route.as_dict(),
+            "norman_facade_explicit_cloud_selection": (
+                _explicit_cloud_selection_marker(plan=plan)
+            ),
+            "codex_reasoning_advisory": invocation.reasoning_advisory,
+            **invocation.trusted_context,
+        },
+    )
+
+
+def _explicit_cloud_selection_error(
+    *,
+    plan: ExplicitCloudSelectionPlan,
+    invocation: AuthorizedChatInvocation,
+    code: str,
+) -> FacadeError:
+    message = (
+        "The selected cloud model is not authorized"
+        if code == "explicit_cloud_selection_not_authorized"
+        else "The selected cloud model could not complete"
+    )
+    return FacadeError(
+        message,
+        status_code=503,
+        error_type="server_error",
+        code=code,
+        norman={
+            "explicit_cloud_selection": _explicit_cloud_selection_metadata(
+                plan=plan,
+                invocation=invocation,
+                state="failed",
+            )
+        },
+    )
+
+
+def _execute_explicit_cloud_selection(
+    *,
+    plan: ExplicitCloudSelectionPlan,
+    provider_payload: Mapping[str, Any],
+    route_envelope: Mapping[str, Any],
+    messages: list[dict[str, Any]],
+    invocation: AuthorizedChatInvocation,
+) -> dict[str, Any]:
+    """Run a user-selected cloud model without probing local capacity."""
+
+    try:
+        result = BedrockModelAdapter().invoke(
+            _explicit_cloud_selection_request(
+                plan=plan,
+                invocation=invocation,
+                messages=messages,
+                provider_payload=provider_payload,
+            )
+        )
+    except Exception as exc:
+        logger.warning(
+            "Norman explicit cloud selection failed request_id=%s provider=%s "
+            "model=%s exception_class=%s",
+            invocation.invocation_id,
+            plan.provider,
+            plan.model,
+            type(exc).__name__,
+        )
+        raise _explicit_cloud_selection_error(
+            plan=plan,
+            invocation=invocation,
+            code="explicit_cloud_selection_failed",
+        ) from exc
+    if result.stop_reason == "policy_blocked":
+        raise _explicit_cloud_selection_error(
+            plan=plan,
+            invocation=invocation,
+            code="explicit_cloud_selection_not_authorized",
+        )
+    if not result.text:
+        raise _explicit_cloud_selection_error(
+            plan=plan,
+            invocation=invocation,
+            code="explicit_cloud_selection_failed",
+        )
+    facade_receipt, route_receipt = _sanitized_cloud_receipts(result)
+    usage = {
+        "prompt_tokens": result.usage.input_tokens,
+        "completion_tokens": result.usage.output_tokens,
+        "total_tokens": result.usage.total_tokens,
+    }
+    return {
+        "id": f"chatcmpl-norman-{uuid.uuid4().hex}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": result.model or plan.model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": result.text},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": usage,
+        "norman": {
+            "schema": "norman.openai-compatible-facade.v1",
+            "request_id": invocation.invocation_id,
+            "route": dict(route_envelope),
+            "gateway": invocation.trusted_context,
+            "authorization": invocation.authorization.as_dict(),
+            "local_execution": False,
+            "cloud_forwarding": True,
+            "explicit_cloud_selection": _explicit_cloud_selection_metadata(
+                plan=plan,
+                invocation=invocation,
+                state="completed",
+            ),
+            "streaming_mode": "buffered_sse"
+            if provider_payload.get("stream")
+            else "none",
+            "norllama": {
+                "target_worker": "",
+                "gateway_selected_worker": "",
+                "observed_worker": "",
+                "observed_worker_source": "explicit_cloud_selection",
+                "headers": {},
+            },
+            "gateway_headers": {},
+            "facade_receipt": facade_receipt,
+            "route_receipt": route_receipt,
+        },
+    }
+
+
+def _prepare_explicit_cloud_selection_invocation(
+    *,
+    plan: ExplicitCloudSelectionPlan,
+    provider_payload: Mapping[str, Any],
+    route_envelope: Mapping[str, Any],
+    request_id: str,
+) -> AuthorizedChatInvocation:
+    recommendation = _nested_dict(route_envelope, "norman_route", "recommendation")
+    artifact = _mapping(plan.route_policy.get("route_policy_artifact"))
+    trusted_context = _mapping(route_envelope.get("trusted_gateway_context"))
+    reasoning_advisory = _responses_reasoning_advisory(provider_payload)
+    invocation_id = request_id or f"norman-openai-facade-{uuid.uuid4().hex}"
+    authorization = FacadeAuthorization(
+        allowed=True,
+        model=plan.model,
+        reason="explicit_cloud_selection_authorized",
+        route=dict(route_envelope),
+        route_authorization={
+            "schema": "norman.facade-explicit-cloud-selection.authorization.v1",
+            "allowed": True,
+            "policy_id": _clean(artifact.get("policy_id")),
+            "policy_hash": _clean(artifact.get("policy_hash")),
+            "reason": "adapter_authorization_required_before_egress",
+        },
+        execution_advisory={
+            "execution_allowed": _flag(
+                recommendation.get("execution_allowed"), default=True
+            ),
+            "requires_approval": _flag(recommendation.get("requires_approval")),
+        },
+    )
+    correlation_headers = {
+        "X-Request-Id": invocation_id,
+        "X-Norman-Execution-Mode": ("prompt_intermediary_openai_facade_explicit_cloud"),
+        "X-Norman-Phase": "chat",
+        "X-Norman-Route-Authority": "prompt_intermediary",
+        "X-Norman-Request-Production-Eligible": "false",
+    }
+    if _clean(trusted_context.get("gateway_route")):
+        correlation_headers.update(
+            {
+                "X-Norman-Gateway-Route": _clean(trusted_context.get("gateway_route")),
+                "X-Norman-Source-Tui": _clean(trusted_context.get("source_tui")),
+                "X-Norman-Policy-Scope": _clean(trusted_context.get("policy_scope")),
+            }
+        )
+    return AuthorizedChatInvocation(
+        authorization=authorization,
+        max_tokens=_positive_int(
+            provider_payload.get("max_completion_tokens")
+            or provider_payload.get("max_output_tokens")
+            or provider_payload.get("max_tokens"),
+            1024,
+        ),
+        invocation_id=invocation_id,
+        trusted_context=trusted_context,
+        reasoning_advisory=reasoning_advisory,
+        correlation_headers=correlation_headers,
+    )
+
+
 def _prepare_authorized_chat_invocation(
     *,
     provider_payload: Mapping[str, Any],
@@ -1801,6 +2169,25 @@ def _execute_authorized_chat(
     messages: list[dict[str, Any]],
     request_id: str,
 ) -> dict[str, Any]:
+    explicit_cloud_plan = _explicit_cloud_selection_plan(
+        provider_payload=provider_payload,
+        route_envelope=route_envelope,
+    )
+    if explicit_cloud_plan is not None:
+        invocation = _prepare_explicit_cloud_selection_invocation(
+            plan=explicit_cloud_plan,
+            provider_payload=provider_payload,
+            route_envelope=route_envelope,
+            request_id=request_id,
+        )
+        return _execute_explicit_cloud_selection(
+            plan=explicit_cloud_plan,
+            provider_payload=provider_payload,
+            route_envelope=route_envelope,
+            messages=messages,
+            invocation=invocation,
+        )
+
     invocation = _prepare_authorized_chat_invocation(
         provider_payload=provider_payload,
         route_envelope=route_envelope,
@@ -2084,11 +2471,13 @@ class FacadeResponsesStream:
         invocation: AuthorizedChatInvocation,
         stream: norllama_gateway.NorllamaTextStream | None,
         pending_local_error: FacadeError | None = None,
+        explicit_cloud_plan: ExplicitCloudSelectionPlan | None = None,
     ) -> None:
         self.prepared = prepared
         self.invocation = invocation
         self.stream = stream
         self.pending_local_error = pending_local_error
+        self.explicit_cloud_plan = explicit_cloud_plan
         self.response_id = f"resp-norman-{uuid.uuid4().hex}"
         self.created_at = int(time.time())
         self.output_item_id = f"msg-norman-{uuid.uuid4().hex}"
@@ -2212,6 +2601,26 @@ class FacadeResponsesStream:
             yield {"type": "text", "text": text}
 
     def iter_events(self):
+        if self.explicit_cloud_plan is not None:
+            yield {
+                "type": "explicit_cloud_selection",
+                "explicit_cloud_selection": _explicit_cloud_selection_metadata(
+                    plan=self.explicit_cloud_plan,
+                    invocation=self.invocation,
+                    state="started",
+                ),
+            }
+            self._cloud_chat_response = _execute_explicit_cloud_selection(
+                plan=self.explicit_cloud_plan,
+                provider_payload=self.prepared.route_payload,
+                route_envelope=self.prepared.route_envelope,
+                messages=self.prepared.messages,
+                invocation=self.invocation,
+            )
+            text = _choice_text(self._cloud_chat_response)
+            if text:
+                yield {"type": "text", "text": text}
+            return
         if self.pending_local_error is not None:
             yield from self._cloud_fallback_events(self.pending_local_error)
             return
@@ -2328,6 +2737,23 @@ def open_openai_responses_stream(
         payload,
         trusted_context=trusted_context,
     )
+    explicit_cloud_plan = _explicit_cloud_selection_plan(
+        provider_payload=prepared.route_payload,
+        route_envelope=prepared.route_envelope,
+    )
+    if explicit_cloud_plan is not None:
+        invocation = _prepare_explicit_cloud_selection_invocation(
+            plan=explicit_cloud_plan,
+            provider_payload=prepared.route_payload,
+            route_envelope=prepared.route_envelope,
+            request_id=request_id or f"norman-openai-response-{uuid.uuid4().hex}",
+        )
+        return FacadeResponsesStream(
+            prepared=prepared,
+            invocation=invocation,
+            stream=None,
+            explicit_cloud_plan=explicit_cloud_plan,
+        )
     invocation, stream, pending_local_error = _start_authorized_chat_stream(
         provider_payload=prepared.route_payload,
         route_envelope=prepared.route_envelope,

@@ -29,6 +29,7 @@ from app.services.norllama.route_policy_artifact import (
 from app.services.norllama.route_policy import (
     CLOUD_FALLBACK_BEDROCK_MODEL,
     cloud_fallback_allowed_for_alias,
+    explicit_cloud_selection_for_model,
 )
 from app.services.norllama.routing import build_task_receipt, route_task
 from app.services.norllama.types import (
@@ -150,6 +151,49 @@ def _facade_cloud_fallback_allowed(
     )
 
 
+def _facade_explicit_cloud_selection_allowed(
+    request: ModelRequest,
+    route: NorllamaRoute,
+    metadata: dict[str, Any],
+    route_policy: dict[str, Any],
+    *,
+    provider: str,
+    model: str,
+    lane: str,
+) -> bool:
+    """Accept a facade-owned exact cloud selection only when policy agrees."""
+
+    marker = _mapping(metadata.get("norman_facade_explicit_cloud_selection"))
+    artifact = _mapping(route_policy.get("route_policy_artifact"))
+    artifact_cloud_policy = _mapping(artifact.get("cloud_policy"))
+    route_cloud_policy = _mapping(route_policy.get("cloud_policy"))
+    requested_alias = _clean(marker.get("requested_alias")).lower()
+    selection = explicit_cloud_selection_for_model(
+        requested_alias,
+        cloud_policy=artifact_cloud_policy,
+    )
+    if not selection:
+        return False
+    return bool(
+        marker.get("schema") == "norman.facade-explicit-cloud-selection.v1"
+        and _clean(metadata.get("execution_mode"))
+        == "prompt_intermediary_openai_facade_explicit_cloud"
+        and _clean(request.route_key).lower() == requested_alias
+        and _clean(request.model) == selection["model"]
+        and _clean(route.provider).lower().replace("_", "-") == selection["provider"]
+        and _clean(route.model) == selection["model"]
+        and _clean(route.lane).lower() == selection["lane"]
+        and _clean(marker.get("provider")).lower().replace("_", "-")
+        == selection["provider"]
+        and _clean(marker.get("model")) == selection["model"]
+        and _clean(marker.get("lane")).lower() == selection["lane"]
+        and _clean(provider).lower().replace("_", "-") == selection["provider"]
+        and _clean(model) == selection["model"]
+        and _clean(lane).lower() == selection["lane"]
+        and artifact_cloud_policy == route_cloud_policy
+    )
+
+
 def _route_policy_provider(route_policy: dict[str, Any]) -> str:
     for key in (
         "provider",
@@ -251,6 +295,8 @@ def _bedrock_route(
 def _route_authorization(
     route_policy: dict[str, Any],
     *,
+    request: ModelRequest,
+    route: NorllamaRoute,
     provider: str,
     model: str,
     lane: str,
@@ -279,7 +325,20 @@ def _route_authorization(
         model=model,
         lane=lane,
     )
-    if not _flag(route_policy.get("allow_cloud_proxy")) and not cloud_fallback:
+    explicit_cloud_selection = _facade_explicit_cloud_selection_allowed(
+        request,
+        route,
+        metadata,
+        route_policy,
+        provider=provider,
+        model=model,
+        lane=lane,
+    )
+    if (
+        not _flag(route_policy.get("allow_cloud_proxy"))
+        and not cloud_fallback
+        and not explicit_cloud_selection
+    ):
         return _deny_authorization(
             authorization, "bedrock_cloud_proxy_not_explicitly_allowed"
         )
@@ -290,6 +349,7 @@ def _route_authorization(
     return {
         **authorization,
         "cloud_fallback_authorized": cloud_fallback,
+        "explicit_cloud_selection_authorized": explicit_cloud_selection,
     }
 
 
@@ -407,6 +467,8 @@ class BedrockModelAdapter:
         )
         authorization = _route_authorization(
             route_policy,
+            request=request,
+            route=route,
             provider=provider,
             model=model,
             lane=route.lane,

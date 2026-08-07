@@ -6,8 +6,8 @@ from datetime import datetime, timezone
 from typing import Any, Mapping
 
 ROUTE_POLICY_SCHEMA = "norman.norllama.route-policy.v1"
-ROUTE_POLICY_VERSION = "2026.08.04.coder-runtime-v1"
-ROUTE_POLICY_COMPILED_AT = "2026-08-04T00:00:00Z"
+ROUTE_POLICY_VERSION = "2026.08.06.explicit-cloud-v1"
+ROUTE_POLICY_COMPILED_AT = "2026-08-06T00:00:00Z"
 ROUTE_POLICY_EXPIRES_AT = "2026-08-11T00:00:00Z"
 ROUTE_POLICY_EXPIRY_WARN_SECONDS = 72 * 60 * 60
 ROUTE_POLICY_EXPIRED_STATE = "expired_blocked"
@@ -97,6 +97,58 @@ ROUTE_POLICY_CLOUD_POLICY = {
     "cloud_escalation": "explicit_policy_or_user_authorized_only",
     "cloud_proxy_counts_as_cloud": True,
     "perplexity_web_is_search_not_cloud_llm": True,
+    "explicit_cloud_models": {
+        "gpt-5.4": {
+            "provider": "aws-bedrock",
+            "model": "openai.gpt-5.4",
+            "lane": "coder",
+        },
+        "openai.gpt-5.4": {
+            "provider": "aws-bedrock",
+            "model": "openai.gpt-5.4",
+            "lane": "coder",
+        },
+        "gpt-5.5": {
+            "provider": "aws-bedrock",
+            "model": "openai.gpt-5.5",
+            "lane": "coder",
+        },
+        "openai.gpt-5.5": {
+            "provider": "aws-bedrock",
+            "model": "openai.gpt-5.5",
+            "lane": "coder",
+        },
+        "gpt-5.6-luna": {
+            "provider": "aws-bedrock",
+            "model": "openai.gpt-5.6-luna",
+            "lane": "coder",
+        },
+        "openai.gpt-5.6-luna": {
+            "provider": "aws-bedrock",
+            "model": "openai.gpt-5.6-luna",
+            "lane": "coder",
+        },
+        "gpt-5.6-terra": {
+            "provider": "aws-bedrock",
+            "model": "openai.gpt-5.6-terra",
+            "lane": "coder",
+        },
+        "openai.gpt-5.6-terra": {
+            "provider": "aws-bedrock",
+            "model": "openai.gpt-5.6-terra",
+            "lane": "coder",
+        },
+        "gpt-5.6-sol": {
+            "provider": "aws-bedrock",
+            "model": "openai.gpt-5.6-sol",
+            "lane": "coder",
+        },
+        "openai.gpt-5.6-sol": {
+            "provider": "aws-bedrock",
+            "model": "openai.gpt-5.6-sol",
+            "lane": "coder",
+        },
+    },
 }
 
 ROUTE_POLICY_LIFECYCLE_POLICY = {
@@ -128,6 +180,35 @@ def cloud_fallback_allowed_for_alias(
     requested = _clean(requested_model).lower()
     return bool(policy.get("allow_cloud_fallback")) and requested in {
         _clean(alias).lower() for alias in aliases if _clean(alias)
+    }
+
+
+def explicit_cloud_selection_for_model(
+    requested_model: Any,
+    *,
+    cloud_policy: Mapping[str, Any] | None = None,
+) -> dict[str, str] | None:
+    """Resolve an exact, policy-approved public cloud model alias."""
+
+    requested = _clean(requested_model).lower()
+    policy = (
+        dict(ROUTE_POLICY_CLOUD_POLICY) if cloud_policy is None else dict(cloud_policy)
+    )
+    selections = policy.get("explicit_cloud_models")
+    if not requested or not isinstance(selections, Mapping):
+        return None
+    selected = selections.get(requested)
+    if not isinstance(selected, Mapping):
+        return None
+    provider = _clean(selected.get("provider")).lower().replace("_", "-")
+    model = _clean(selected.get("model"))
+    lane = _clean(selected.get("lane")).lower()
+    if provider != "aws-bedrock" or not model or not lane:
+        return None
+    return {
+        "provider": provider,
+        "model": model,
+        "lane": lane,
     }
 
 
