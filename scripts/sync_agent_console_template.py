@@ -614,6 +614,39 @@ RUNTIME_BRIDGE_LEGACY_TOKEN_KEYS: tuple[str, ...] = (
     "NORMAN_CONSOLE_RUNTIME_TOKEN",
     "NORMAN_API_TOKEN",
 )
+RUNTIME_BRIDGE_SETTINGS_STDIN_SCRIPT = """
+from pathlib import Path
+import json
+import re
+import sys
+
+path = Path(sys.argv[1])
+payload = json.load(sys.stdin)
+updates = payload["updates"]
+remove_keys = payload["remove_keys"]
+text = path.read_text(encoding="utf-8")
+changed = False
+for key in remove_keys:
+    pattern = re.compile(rf"^{re.escape(key)}=.*\\n?", re.M)
+    updated = pattern.sub("", text)
+    if updated != text:
+        text = updated
+        changed = True
+for key, value in updates.items():
+    line = f"{key}={value}"
+    pattern = re.compile(rf"^{re.escape(key)}=.*$", re.M)
+    if pattern.search(text):
+        updated = pattern.sub(line, text, count=1)
+    else:
+        updated = text if text.endswith("\\n") else text + "\\n"
+        updated += line + "\\n"
+    if updated != text:
+        text = updated
+        changed = True
+if changed:
+    path.write_text(text, encoding="utf-8")
+print("changed" if changed else "unchanged")
+"""
 
 INSTANCE_LABEL_OVERRIDES = {
     "autocamera": "Autocamera",
@@ -721,6 +754,18 @@ def capture(cmd: list[str]) -> str:
         cmd,
         check=True,
         text=True,
+        capture_output=True,
+        timeout=REMOTE_COMMAND_TIMEOUT_S,
+    )
+    return completed.stdout
+
+
+def capture_with_stdin(cmd: list[str], stdin: str) -> str:
+    completed = subprocess.run(
+        cmd,
+        check=True,
+        text=True,
+        input=stdin,
         capture_output=True,
         timeout=REMOTE_COMMAND_TIMEOUT_S,
     )
@@ -2429,43 +2474,20 @@ def sync_instance_runtime_bridge_settings(
 ) -> bool:
     updates = runtime_bridge_operational_settings()
     updates.update(bridge_settings)
-    payload = json.dumps(updates, separators=(",", ":"))
     remove_keys = RUNTIME_BRIDGE_LEGACY_TOKEN_KEYS if bridge_settings else ()
-    remove_payload = json.dumps(remove_keys, separators=(",", ":"))
-    script = f"""
-python3 - <<'PY'
-from pathlib import Path
-import json
-import re
-
-path = Path({instance.env_file!r})
-updates = json.loads({payload!r})
-remove_keys = json.loads({remove_payload!r})
-text = path.read_text(encoding="utf-8")
-changed = False
-for key in remove_keys:
-    pattern = re.compile(rf"^{{re.escape(key)}}=.*\\n?", re.M)
-    updated = pattern.sub("", text)
-    if updated != text:
-        text = updated
-        changed = True
-for key, value in updates.items():
-    line = f"{{key}}={{value}}"
-    pattern = re.compile(rf"^{{re.escape(key)}}=.*$", re.M)
-    if pattern.search(text):
-        updated = pattern.sub(line, text, count=1)
-    else:
-        updated = text if text.endswith("\\n") else text + "\\n"
-        updated += line + "\\n"
-    if updated != text:
-        text = updated
-        changed = True
-if changed:
-    path.write_text(text, encoding="utf-8")
-print("changed" if changed else "unchanged")
-PY
-"""
-    return capture(ssh_command(host, script)).strip() == "changed"
+    payload = json.dumps(
+        {
+            "updates": updates,
+            "remove_keys": remove_keys,
+        },
+        separators=(",", ":"),
+    )
+    script = (
+        "python3 -c "
+        f"{shlex.quote(RUNTIME_BRIDGE_SETTINGS_STDIN_SCRIPT)} "
+        f"{shlex.quote(instance.env_file)}"
+    )
+    return capture_with_stdin(ssh_command(host, script), payload).strip() == "changed"
 
 
 def sync_instance_kaizen_pilot_settings(

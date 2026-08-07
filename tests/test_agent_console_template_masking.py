@@ -5618,13 +5618,14 @@ def test_runtime_bridge_sync_writes_broker_env_without_direct_token(
         prompt_file="/etc/scout/codex-system-prompt.txt",
         codex_home="/home/kristopher/.codex-scout",
     )
-    captured: list[list[str]] = []
+    captured: dict[str, object] = {}
 
-    def fake_capture(cmd):
-        captured.append(cmd)
+    def fake_capture_with_stdin(cmd, stdin):
+        captured["cmd"] = cmd
+        captured["stdin"] = stdin
         return "changed"
 
-    monkeypatch.setattr(module, "capture", fake_capture)
+    monkeypatch.setattr(module, "capture_with_stdin", fake_capture_with_stdin)
 
     changed = module.sync_instance_runtime_bridge_settings(
         module.HOSTS["work-special"],
@@ -5641,15 +5642,21 @@ def test_runtime_bridge_sync_writes_broker_env_without_direct_token(
     )
 
     assert changed is True
-    rendered_command = " ".join(captured[0])
-    assert "NORMAN_KEYS_TOKEN" in rendered_command
-    assert "NORMAN_CONSOLE_RUNTIME_TOKEN_SECRET" in rendered_command
-    assert "remove_keys = json.loads" in rendered_command
+    rendered_command = " ".join(captured["cmd"])
+    payload = json.loads(captured["stdin"])
+    assert "keys-token" not in rendered_command
+    assert "NORMAN_KEYS_TOKEN" not in rendered_command
+    assert "NORMAN_CONSOLE_RUNTIME_TOKEN_SECRET" not in rendered_command
+    assert "json.load(sys.stdin)" in rendered_command
     assert "for key in remove_keys" in rendered_command
+    assert payload["updates"]["NORMAN_KEYS_TOKEN"] == "keys-token"
+    assert (
+        payload["updates"]["NORMAN_CONSOLE_RUNTIME_TOKEN_SECRET"]
+        == "norman/console-runtime-token"
+    )
     for key in module.RUNTIME_BRIDGE_LEGACY_TOKEN_KEYS:
-        assert key in rendered_command
-    assert '"NORMAN_CONSOLE_RUNTIME_TOKEN":' not in rendered_command
-    assert '"NORMAN_API_TOKEN":' not in rendered_command
+        assert key in payload["remove_keys"]
+        assert key not in rendered_command
 
 
 def test_runtime_bridge_sync_applies_polling_guards_without_broker_reference(
@@ -5672,13 +5679,14 @@ def test_runtime_bridge_sync_applies_polling_guards_without_broker_reference(
         prompt_file="/etc/autocamera/codex-system-prompt.txt",
         codex_home="/home/kristopher/.codex-autocamera",
     )
-    captured: list[list[str]] = []
+    captured: dict[str, object] = {}
 
-    def fake_capture(cmd):
-        captured.append(cmd)
+    def fake_capture_with_stdin(cmd, stdin):
+        captured["cmd"] = cmd
+        captured["stdin"] = stdin
         return "changed"
 
-    monkeypatch.setattr(module, "capture", fake_capture)
+    monkeypatch.setattr(module, "capture_with_stdin", fake_capture_with_stdin)
 
     changed = module.sync_instance_runtime_bridge_settings(
         module.HOSTS["hal"],
@@ -5687,19 +5695,21 @@ def test_runtime_bridge_sync_applies_polling_guards_without_broker_reference(
     )
 
     assert changed is True
-    rendered_command = " ".join(captured[0])
-    assert '"NORMAN_CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS":"60"' in rendered_command
+    rendered_command = " ".join(captured["cmd"])
+    payload = json.loads(captured["stdin"])
+    assert payload["updates"]["NORMAN_CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS"] == "60"
     assert (
-        '"NORMAN_CONSOLE_RUNTIME_TOKEN_AUTH_RETRY_SECONDS":"3600"' in rendered_command
+        payload["updates"]["NORMAN_CONSOLE_RUNTIME_TOKEN_AUTH_RETRY_SECONDS"] == "3600"
     )
     assert (
-        '"NORMAN_CONSOLE_RUNTIME_WORKSTREAM_RETRY_SECONDS":"21600"' in rendered_command
+        payload["updates"]["NORMAN_CONSOLE_RUNTIME_WORKSTREAM_RETRY_SECONDS"] == "21600"
     )
     assert "NORMAN_KEYS_TOKEN" not in rendered_command
     assert "NORMAN_CONSOLE_RUNTIME_TOKEN_SECRET" not in rendered_command
-    assert "remove_keys = json.loads('[]')" in rendered_command
-    assert '"NORMAN_CONSOLE_RUNTIME_TOKEN"' not in rendered_command
-    assert '"NORMAN_API_TOKEN"' not in rendered_command
+    assert "json.load(sys.stdin)" in rendered_command
+    assert payload["remove_keys"] == []
+    assert "NORMAN_CONSOLE_RUNTIME_TOKEN" not in rendered_command
+    assert "NORMAN_API_TOKEN" not in rendered_command
 
 
 def test_kernel_rollout_sync_writes_backend_env(monkeypatch) -> None:
