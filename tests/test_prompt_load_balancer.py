@@ -1221,6 +1221,181 @@ def test_openai_compat_responses_streams_incremental_sse_with_admission_feedback
     assert response.closed is True
 
 
+@pytest.mark.parametrize(
+    "fragments",
+    [
+        pytest.param(
+            [
+                "{",
+                '"tool',
+                '_call":{"name":"ticket_search","arguments":{"query":"P0"}}}',
+            ],
+            id="split-after-object-open",
+        ),
+        pytest.param(
+            [
+                " \n{ \n",
+                '"tool',
+                '_call" : { "name" : "ticket_search", '
+                '"arguments" : { "query" : "P0" } } }',
+            ],
+            id="whitespace-and-split-tool-key",
+        ),
+        pytest.param(
+            [
+                " \n\t",
+                "{",
+                ' "tool_call"',
+                ':{"name":"ticket_search","arguments":{"query":"P0"}}}',
+            ],
+            id="leading-whitespace-in-own-chunk",
+        ),
+    ],
+)
+def test_openai_compat_responses_stream_keeps_tool_envelopes_out_of_text(
+    test_app, monkeypatch, fragments
+):
+    response = _MockNativeStreamResponse(
+        [
+            *[
+                json.dumps(
+                    {
+                        "model": "qwen3-coder:30b",
+                        "response": fragment,
+                    }
+                )
+                for fragment in fragments
+            ],
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "done": True,
+                    "prompt_eval_count": 4,
+                    "eval_count": 2,
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat_stream",
+        lambda **kwargs: norllama_gateway.NorllamaTextStream(
+            response,
+            model=kwargs["model"],
+        ),
+    )
+
+    result = test_app.post(
+        "/v1/responses",
+        headers=_proxy_headers(monkeypatch),
+        json={
+            "model": "norman-code",
+            "input": "Find the highest priority ticket.",
+            "stream": True,
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "ticket_search",
+                    "description": "Search Jira tickets.",
+                    "parameters": {"type": "object"},
+                }
+            ],
+        },
+    )
+
+    assert result.status_code == 200
+    events = _response_sse_events(result.text)
+    payloads = [
+        json.loads(data) for event, data in events if event and data != "[DONE]"
+    ]
+    output_items = [
+        payload["item"]
+        for payload in payloads
+        if payload["type"] == "response.output_item.added"
+    ]
+    completed = next(
+        payload["response"]
+        for payload in payloads
+        if payload["type"] == "response.completed"
+    )
+
+    assert not any(
+        payload["type"] == "response.output_text.delta" for payload in payloads
+    )
+    assert [item["type"] for item in output_items] == ["function_call"]
+    assert output_items[0]["name"] == "ticket_search"
+    assert output_items[0]["arguments"] == '{"query":"P0"}'
+    assert completed["output_text"] == ""
+    assert completed["output"][0]["type"] == "function_call"
+    assert response.closed is True
+
+
+def test_openai_compat_responses_streams_normal_json_text_with_tools_declared(
+    test_app, monkeypatch
+):
+    response = _MockNativeStreamResponse(
+        [
+            json.dumps({"model": "qwen3-coder:30b", "response": '{"status":'}),
+            json.dumps({"model": "qwen3-coder:30b", "response": '"ready"}'}),
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "done": True,
+                    "prompt_eval_count": 4,
+                    "eval_count": 2,
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat_stream",
+        lambda **kwargs: norllama_gateway.NorllamaTextStream(
+            response,
+            model=kwargs["model"],
+        ),
+    )
+
+    result = test_app.post(
+        "/v1/responses",
+        headers=_proxy_headers(monkeypatch),
+        json={
+            "model": "norman-code",
+            "input": "Return the current status.",
+            "stream": True,
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "ticket_search",
+                    "description": "Search Jira tickets.",
+                    "parameters": {"type": "object"},
+                }
+            ],
+        },
+    )
+
+    assert result.status_code == 200
+    events = _response_sse_events(result.text)
+    payloads = [
+        json.loads(data) for event, data in events if event and data != "[DONE]"
+    ]
+    deltas = [
+        payload["delta"]
+        for payload in payloads
+        if payload["type"] == "response.output_text.delta"
+    ]
+    completed = next(
+        payload["response"]
+        for payload in payloads
+        if payload["type"] == "response.completed"
+    )
+
+    assert "".join(deltas) == '{"status":"ready"}'
+    assert completed["output_text"] == '{"status":"ready"}'
+    assert completed["output"][0]["type"] == "message"
+    assert response.closed is True
+
+
 def test_openai_compat_responses_streams_queue_progress_without_output_text(
     test_app, monkeypatch
 ):

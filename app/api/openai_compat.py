@@ -37,6 +37,7 @@ router = APIRouter(tags=["openai_compat"])
 logger = logging.getLogger(__name__)
 MAX_PROXY_EVENT_CAPACITY_WINDOW = 200
 CAPACITY_MESH_PROBE_TIMEOUT_SECONDS = 3.0
+MAX_TOOL_ENVELOPE_PREFIX_CHARS = 256
 GATEWAY_ROUTE_HEADER = "x-norman-gateway-route"
 GATEWAY_ROUTE_IDS = frozenset(
     {
@@ -611,6 +612,38 @@ def _response_sse_event(event_type: str, payload: dict[str, Any]) -> str:
     )
 
 
+def _tool_envelope_prefix_state(text: str) -> str:
+    """Classify a buffered Responses tool-call envelope prefix.
+
+    Local models emit a JSON envelope instead of native tool calls. Hold back
+    only a possible first JSON key so a valid envelope is never streamed as
+    assistant text before the completed response becomes a function_call.
+    """
+
+    if len(text) >= MAX_TOOL_ENVELOPE_PREFIX_CHARS:
+        return "text"
+    candidate = text.lstrip()
+    if not candidate:
+        return "pending"
+    if not candidate.startswith("{"):
+        return "text"
+    object_prefix = candidate[1:].lstrip()
+    if not object_prefix:
+        return "pending"
+    if not object_prefix.startswith('"'):
+        return "text"
+    try:
+        key, key_end = json.JSONDecoder().raw_decode(object_prefix)
+    except json.JSONDecodeError:
+        return "pending"
+    if key not in {"tool_call", "tool_calls"}:
+        return "text"
+    remainder = object_prefix[key_end:].lstrip()
+    if not remainder:
+        return "pending"
+    return "tool" if remainder.startswith(":") else "text"
+
+
 def _response_stream_snapshot(stream: Any, *, status: str) -> dict[str, Any]:
     snapshot = {
         "id": stream.response_id,
@@ -634,7 +667,6 @@ def _response_sse(stream: Any):
     buffered_prefix = ""
     text_item_started = False
     tool_envelope = False
-    tool_prefixes = ('{"tool_call"', '{"tool_calls"')
     tools_declared = bool(stream.prepared.provider_payload.get("tools"))
 
     def begin_text_item() -> Iterable[str]:
@@ -750,12 +782,10 @@ def _response_sse(stream: Any):
             text_parts.append(fragment)
             if tools_declared and not text_item_started:
                 buffered_prefix += fragment
-                candidate = buffered_prefix.lstrip()
-                if not candidate or any(
-                    prefix.startswith(candidate) for prefix in tool_prefixes
-                ):
+                prefix_state = _tool_envelope_prefix_state(buffered_prefix)
+                if prefix_state == "pending":
                     continue
-                if any(candidate.startswith(prefix) for prefix in tool_prefixes):
+                if prefix_state == "tool":
                     tool_envelope = True
                     continue
                 for event in begin_text_item():
