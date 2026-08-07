@@ -104,6 +104,11 @@ def test_run_canary_exercises_the_three_turn_synthetic_tool_chain():
     assert (
         requests[2][1]["input"][0]["output"] == '{"status":"ok","source":"synthetic"}'
     )
+    assert (
+        requests[2][1]["input"][1]["content"]
+        == "The synthetic result has been supplied. Return a concise final health "
+        "result now. Do not call another tool."
+    )
 
     serialized = json.dumps(receipt, sort_keys=True)
     assert "private-token" not in serialized

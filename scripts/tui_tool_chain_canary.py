@@ -367,7 +367,15 @@ def run_canary(
                         "type": "function_call_output",
                         "call_id": synthetic_call_id,
                         "output": '{"status":"ok","source":"synthetic"}',
-                    }
+                    },
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": (
+                            "The synthetic result has been supplied. Return a "
+                            "concise final health result now. Do not call another tool."
+                        ),
+                    },
                 ],
                 "tools": [_synthetic_status_definition()],
             },
