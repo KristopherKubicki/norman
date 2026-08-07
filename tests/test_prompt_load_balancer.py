@@ -1448,6 +1448,85 @@ def test_openai_compat_responses_stream_converts_implicit_tool_envelopes(
     assert response.closed is True
 
 
+def test_openai_compat_responses_stream_converts_mcp_resource_discovery(
+    test_app, monkeypatch
+):
+    response = _MockNativeStreamResponse(
+        [
+            json.dumps({"model": "qwen3-coder:30b", "response": "{"}),
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "response": (
+                        '"tool_call":{"name":"list_mcp_resources",'
+                        '"arguments":{"server":"salesdesk"}}}'
+                    ),
+                }
+            ),
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "done": True,
+                    "prompt_eval_count": 4,
+                    "eval_count": 2,
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat_stream",
+        lambda **kwargs: norllama_gateway.NorllamaTextStream(
+            response,
+            model=kwargs["model"],
+        ),
+    )
+
+    result = test_app.post(
+        "/v1/responses",
+        headers=_proxy_headers(monkeypatch),
+        json={
+            "model": "norman-code",
+            "input": "Find the Salesdesk ticket.",
+            "stream": True,
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "tool_search",
+                    "description": "Discover a connected tool.",
+                    "parameters": {"type": "object"},
+                }
+            ],
+        },
+    )
+
+    assert result.status_code == 200
+    events = _response_sse_events(result.text)
+    payloads = [
+        json.loads(data) for event, data in events if event and data != "[DONE]"
+    ]
+    output_items = [
+        payload["item"]
+        for payload in payloads
+        if payload["type"] == "response.output_item.added"
+    ]
+    completed = next(
+        payload["response"]
+        for payload in payloads
+        if payload["type"] == "response.completed"
+    )
+
+    assert not any(
+        payload["type"] == "response.output_text.delta" for payload in payloads
+    )
+    assert [item["name"] for item in output_items] == ["tool_search"]
+    assert json.loads(completed["output"][0]["arguments"]) == {
+        "query": "Find the executable tool for the salesdesk MCP server"
+    }
+    assert completed["output_text"] == ""
+    assert response.closed is True
+
+
 def test_openai_compat_responses_streams_normal_json_text_with_tools_declared(
     test_app, monkeypatch
 ):
@@ -3140,7 +3219,8 @@ def test_openai_compat_responses_routes_once_and_preserves_instructions(
                 '{"tool_call":{"name":"tool_name","arguments":{}}}. '
                 "For an external Codex Apps capability, call tool_search first "
                 'with {"query":"what you need"}; do not call '
-                "mcp__codex_apps__... directly. Otherwise answer normally."
+                "mcp__codex_apps__..., list_mcp_resources, or "
+                "list_mcp_resource_templates directly. Otherwise answer normally."
             ),
         },
         {"role": "system", "content": "Answer briefly."},
@@ -3286,6 +3366,35 @@ def test_openai_compat_converts_implicit_codex_apps_calls_to_tool_search():
     assert calls[0]["name"] == "tool_search"
     assert json.loads(calls[0]["arguments"]) == {
         "query": "highest priority jira ticket"
+    }
+
+
+def test_openai_compat_converts_mcp_resource_discovery_to_tool_search():
+    import app.services.prompt_provider_facade as facade
+
+    calls = facade._extract_tool_calls(
+        json.dumps(
+            {
+                "tool_call": {
+                    "name": "list_mcp_resources",
+                    "arguments": {"server": "salesdesk"},
+                }
+            }
+        ),
+        tools=[
+            {
+                "type": "function",
+                "name": "tool_search",
+                "description": "Discover a connected tool.",
+                "parameters": {"type": "object"},
+            }
+        ],
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["name"] == "tool_search"
+    assert json.loads(calls[0]["arguments"]) == {
+        "query": "Find the executable tool for the salesdesk MCP server"
     }
 
 

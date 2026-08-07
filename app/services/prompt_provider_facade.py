@@ -97,6 +97,12 @@ EXPLICIT_CLOUD_SELECTION_SCHEMA = "norman.explicit-cloud-selection.v1"
 EXPLICIT_CLOUD_SELECTION_MARKER_SCHEMA = "norman.facade-explicit-cloud-selection.v1"
 CODEX_APPS_TOOL_PREFIX = "mcp__codex_apps__"
 IMPLICIT_TOOL_SEARCH_NAME = "tool_search"
+MCP_RESOURCE_DISCOVERY_TOOL_NAMES = frozenset(
+    {
+        "list_mcp_resources",
+        "list_mcp_resource_templates",
+    }
+)
 logger = logging.getLogger(__name__)
 MODEL_ALIASES = {
     "norman-code": ROUTE_POLICY_MODELS["coding_operator"],
@@ -647,7 +653,8 @@ def _tool_contract_message(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
                     '{"tool_call":{"name":"tool_name","arguments":{}}}. '
                     "For an external Codex Apps capability, call tool_search first "
                     'with {"query":"what you need"}; do not call '
-                    "mcp__codex_apps__... directly. Otherwise answer normally."
+                    "mcp__codex_apps__..., list_mcp_resources, or "
+                    "list_mcp_resource_templates directly. Otherwise answer normally."
                 ),
             }
         ]
@@ -1052,6 +1059,20 @@ def _codex_apps_tool_search_query(name: str, arguments: Any) -> str:
     return "Find the executable Codex Apps tool for " + capability
 
 
+def _mcp_resource_discovery_tool_search_query(arguments: Any) -> str:
+    parsed_arguments = arguments
+    if isinstance(arguments, str):
+        try:
+            parsed_arguments = json.loads(arguments)
+        except (TypeError, ValueError):
+            parsed_arguments = {}
+    if isinstance(parsed_arguments, Mapping):
+        server = _clean(parsed_arguments.get("server"))
+        if server:
+            return "Find the executable tool for the " + server + " MCP server"
+    return "Find the executable tool for the requested connected MCP server"
+
+
 def _extract_tool_calls(
     text: str,
     *,
@@ -1084,6 +1105,11 @@ def _extract_tool_calls(
             # local models emit a stale internal Apps name even when the
             # request includes a partial built-in tool registry.
             arguments = {"query": _codex_apps_tool_search_query(name, arguments)}
+            name = IMPLICIT_TOOL_SEARCH_NAME
+        elif name in MCP_RESOURCE_DISCOVERY_TOOL_NAMES and name not in names:
+            # Resource listing is a client-internal discovery primitive. The
+            # facade exposes tool_search as the supported discovery lifecycle.
+            arguments = {"query": _mcp_resource_discovery_tool_search_query(arguments)}
             name = IMPLICIT_TOOL_SEARCH_NAME
         elif names and name not in names:
             continue
