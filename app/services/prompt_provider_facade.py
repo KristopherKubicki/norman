@@ -95,6 +95,8 @@ CLOUD_FALLBACK_MODEL = CLOUD_FALLBACK_BEDROCK_MODEL
 CLOUD_FALLBACK_LANE = "coder"
 EXPLICIT_CLOUD_SELECTION_SCHEMA = "norman.explicit-cloud-selection.v1"
 EXPLICIT_CLOUD_SELECTION_MARKER_SCHEMA = "norman.facade-explicit-cloud-selection.v1"
+CODEX_APPS_TOOL_PREFIX = "mcp__codex_apps__"
+IMPLICIT_TOOL_SEARCH_NAME = "tool_search"
 logger = logging.getLogger(__name__)
 MODEL_ALIASES = {
     "norman-code": ROUTE_POLICY_MODELS["coding_operator"],
@@ -636,7 +638,19 @@ def _tool_names(tools: list[dict[str, Any]]) -> set[str]:
 def _tool_contract_message(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
     tools = _tools(payload)
     if not tools:
-        return []
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "Norman facade tool contract: if a tool is required, respond "
+                    "with JSON only in this shape: "
+                    '{"tool_call":{"name":"tool_name","arguments":{}}}. '
+                    "For an external Codex Apps capability, call tool_search first "
+                    'with {"query":"what you need"}; do not call '
+                    "mcp__codex_apps__... directly. Otherwise answer normally."
+                ),
+            }
+        ]
     compact = []
     for tool in tools:
         name = _tool_name(tool)
@@ -1022,6 +1036,22 @@ def response_input_to_messages(payload: Mapping[str, Any]) -> list[dict[str, Any
     return messages
 
 
+def _codex_apps_tool_search_query(name: str, arguments: Any) -> str:
+    parsed_arguments = arguments
+    if isinstance(arguments, str):
+        try:
+            parsed_arguments = json.loads(arguments)
+        except (TypeError, ValueError):
+            parsed_arguments = {}
+    if isinstance(parsed_arguments, Mapping):
+        query = _clean(parsed_arguments.get("query"))
+        if query:
+            return query
+    capability = name.removeprefix(CODEX_APPS_TOOL_PREFIX)
+    capability = capability.replace(".", " ").replace("_", " ")
+    return "Find the executable Codex Apps tool for " + capability
+
+
 def _extract_tool_calls(
     text: str,
     *,
@@ -1049,6 +1079,13 @@ def _extract_tool_calls(
         if not name or (names and name not in names):
             continue
         arguments = raw.get("arguments", {})
+        if (
+            allow_implicit_tools
+            and not names
+            and name.startswith(CODEX_APPS_TOOL_PREFIX)
+        ):
+            arguments = {"query": _codex_apps_tool_search_query(name, arguments)}
+            name = IMPLICIT_TOOL_SEARCH_NAME
         call_id = _clean(raw.get("call_id")) or f"call_{uuid.uuid4().hex}"
         calls.append(
             {

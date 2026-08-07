@@ -3132,6 +3132,17 @@ def test_openai_compat_responses_routes_once_and_preserves_instructions(
     assert "store" not in decisions[0]["payload"]
     assert response["norman"]["responses_compatibility"]["store_requested"] is False
     assert invocations[0]["messages"] == [
+        {
+            "role": "system",
+            "content": (
+                "Norman facade tool contract: if a tool is required, respond "
+                "with JSON only in this shape: "
+                '{"tool_call":{"name":"tool_name","arguments":{}}}. '
+                "For an external Codex Apps capability, call tool_search first "
+                'with {"query":"what you need"}; do not call '
+                "mcp__codex_apps__... directly. Otherwise answer normally."
+            ),
+        },
         {"role": "system", "content": "Answer briefly."},
         {"role": "developer", "content": "Preserve this role."},
         {"role": "user", "content": "status?"},
@@ -3251,6 +3262,126 @@ def test_openai_compat_responses_can_return_explicit_tool_call(monkeypatch):
     assert response["norman"]["route_receipt"]["schema"] == (
         "norman.norllama.route-receipt.v1"
     )
+
+
+def test_openai_compat_converts_implicit_codex_apps_calls_to_tool_search():
+    import app.services.prompt_provider_facade as facade
+
+    calls = facade._extract_tool_calls(
+        json.dumps(
+            {
+                "tool_call": {
+                    "name": (
+                        "mcp__codex_apps__atlassian_rovo." "search_company_knowledge"
+                    ),
+                    "arguments": {"query": "highest priority jira ticket"},
+                }
+            }
+        ),
+        tools=[],
+        allow_implicit_tools=True,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["name"] == "tool_search"
+    assert json.loads(calls[0]["arguments"]) == {
+        "query": "highest priority jira ticket"
+    }
+
+
+def test_openai_compat_keeps_implicit_local_calls_and_derives_app_search_query():
+    import app.services.prompt_provider_facade as facade
+
+    local_calls = facade._extract_tool_calls(
+        '{"tool_call":{"name":"exec_command","arguments":{"cmd":"pwd"}}}',
+        tools=[],
+        allow_implicit_tools=True,
+    )
+    app_calls = facade._extract_tool_calls(
+        (
+            '{"tool_call":{"name":"mcp__codex_apps__atlassian_rovo.'
+            'search_company_knowledge","arguments":{}}}'
+        ),
+        tools=[],
+        allow_implicit_tools=True,
+    )
+
+    assert local_calls[0]["name"] == "exec_command"
+    assert json.loads(local_calls[0]["arguments"]) == {"cmd": "pwd"}
+    assert app_calls[0]["name"] == "tool_search"
+    assert json.loads(app_calls[0]["arguments"]) == {
+        "query": (
+            "Find the executable Codex Apps tool for "
+            "atlassian rovo search company knowledge"
+        )
+    }
+
+
+def test_openai_compat_allows_discovered_codex_apps_tool_on_continuation(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    facade.reset_facade_response_state()
+    responses = iter(
+        [
+            (
+                '{"tool_call":{"name":"mcp__codex_apps__atlassian_rovo.'
+                'search_company_knowledge","arguments":{"query":"highest '
+                'priority jira ticket"}}}'
+            ),
+            (
+                '{"tool_call":{"name":"atlassian_rovo.search",'
+                '"arguments":{"query":"highest priority jira ticket"}}}'
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        facade,
+        "provider_adapter_decision",
+        lambda **kwargs: _local_route_envelope(),
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: _mock_local_chat(kwargs["messages"], kwargs["model"])
+        | {"choices": [{"message": {"content": next(responses)}}]},
+    )
+
+    first = execute_openai_responses_facade(
+        {"model": "norman-code", "input": "highest priority jira ticket"}
+    )
+    tool_search_call = first["output"][0]
+    second = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "previous_response_id": first["id"],
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": tool_search_call["call_id"],
+                    "output": (
+                        '{"tools":[{"name":"atlassian_rovo.search",'
+                        '"description":"Search Jira"}]}'
+                    ),
+                }
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "atlassian_rovo.search",
+                    "description": "Search Jira tickets.",
+                    "parameters": {"type": "object"},
+                }
+            ],
+        }
+    )
+
+    assert tool_search_call["name"] == "tool_search"
+    assert second["output"][0]["name"] == "atlassian_rovo.search"
+    assert json.loads(second["output"][0]["arguments"]) == {
+        "query": "highest priority jira ticket"
+    }
 
 
 def test_openai_compat_responses_replays_saved_function_call_for_tool_output(
