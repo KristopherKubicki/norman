@@ -22,6 +22,7 @@ except Exception:  # pragma: no cover - optional dependency
 BedrockClientFactory = Callable[..., Any]
 BedrockSessionFactory = Callable[..., Any]
 BedrockConfigFactory = Callable[..., Any]
+BEDROCK_MANTLE_MIN_MAX_OUTPUT_TOKENS = 16
 
 
 @dataclass(frozen=True, repr=False)
@@ -886,8 +887,11 @@ def build_bedrock_mantle_responses_request(
     return {
         "model": clean_model,
         "input": bedrock_mantle_responses_input(messages, system=system),
-        "max_output_tokens": _positive_int(max_tokens, 1024),
-        "temperature": _number(temperature, 0.0),
+        # Mantle currently rejects lower values and does not accept temperature.
+        "max_output_tokens": max(
+            BEDROCK_MANTLE_MIN_MAX_OUTPUT_TOKENS,
+            _positive_int(max_tokens, 1024),
+        ),
     }
 
 

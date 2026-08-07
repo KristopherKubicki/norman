@@ -625,7 +625,6 @@ def test_bedrock_adapter_routes_authorized_explicit_gpt_selection_through_mantle
         ],
         "max_output_tokens": 321,
         "model": "openai.gpt-5.6-sol",
-        "temperature": 0.0,
     }
     assert result.text == "Selected cloud model completed."
     assert result.usage.as_dict() == {
@@ -655,6 +654,18 @@ def test_bedrock_adapter_routes_authorized_explicit_gpt_selection_through_mantle
         sort_keys=True,
     )
     assert mantle_key not in serialized
+
+
+def test_bedrock_mantle_request_uses_supported_parameters():
+    payload = bedrock_module.build_bedrock_mantle_responses_request(
+        model="openai.gpt-5.6-sol",
+        messages=[{"role": "user", "content": "Return the status."}],
+        max_tokens=8,
+        temperature=0.7,
+    )
+
+    assert payload["max_output_tokens"] == 16
+    assert "temperature" not in payload
 
 
 def test_bedrock_adapter_sanitizes_mantle_provider_failure(monkeypatch):
