@@ -651,10 +651,17 @@ def _tool_contract_message(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
                     "Norman facade tool contract: if a tool is required, respond "
                     "with JSON only in this shape: "
                     '{"tool_call":{"name":"tool_name","arguments":{}}}. '
+                    "After every tool result, continue the task: use the next "
+                    "available tool when it advances the request, then return "
+                    "the final answer only after no further tool call is needed. "
+                    "Do not stop merely to announce a discovered tool. "
                     "For an external Codex Apps capability, call tool_search first "
                     'with {"query":"what you need"}; do not call '
                     "mcp__codex_apps__..., list_mcp_resources, or "
-                    "list_mcp_resource_templates directly. Otherwise answer normally."
+                    "list_mcp_resource_templates directly. Once tool_search output "
+                    "is in the conversation and its executable tool is declared, "
+                    "use that tool directly; do not rediscover it. Otherwise "
+                    "answer normally."
                 ),
             }
         ]
@@ -685,7 +692,11 @@ def _tool_contract_message(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "Norman facade tool contract: if a tool is required, respond "
                 "with JSON only in this shape: "
                 '{"tool_call":{"name":"tool_name","arguments":{}}}. '
-                "Otherwise answer normally. Available tools: " + _json_dumps(compact)
+                "After every tool result, continue the task: use the next "
+                "available tool when it advances the request, then return the "
+                "final answer only after no further tool call is needed. Do not "
+                "stop merely to announce a discovered tool. Otherwise answer "
+                "normally. Available tools: " + _json_dumps(compact)
             ),
         }
     ]

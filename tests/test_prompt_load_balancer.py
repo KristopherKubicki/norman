@@ -3217,10 +3217,17 @@ def test_openai_compat_responses_routes_once_and_preserves_instructions(
                 "Norman facade tool contract: if a tool is required, respond "
                 "with JSON only in this shape: "
                 '{"tool_call":{"name":"tool_name","arguments":{}}}. '
+                "After every tool result, continue the task: use the next "
+                "available tool when it advances the request, then return "
+                "the final answer only after no further tool call is needed. "
+                "Do not stop merely to announce a discovered tool. "
                 "For an external Codex Apps capability, call tool_search first "
                 'with {"query":"what you need"}; do not call '
                 "mcp__codex_apps__..., list_mcp_resources, or "
-                "list_mcp_resource_templates directly. Otherwise answer normally."
+                "list_mcp_resource_templates directly. Once tool_search output "
+                "is in the conversation and its executable tool is declared, "
+                "use that tool directly; do not rediscover it. Otherwise "
+                "answer normally."
             ),
         },
         {"role": "system", "content": "Answer briefly."},
@@ -3484,6 +3491,7 @@ def test_openai_compat_allows_discovered_codex_apps_tool_on_continuation(
     import app.services.prompt_provider_facade as facade
 
     facade.reset_facade_response_state()
+    invocations = []
     responses = iter(
         [
             (
@@ -3495,6 +3503,7 @@ def test_openai_compat_allows_discovered_codex_apps_tool_on_continuation(
                 '{"tool_call":{"name":"atlassian_rovo.search",'
                 '"arguments":{"query":"highest priority jira ticket"}}}'
             ),
+            "OPS-123 is the highest priority Jira ticket.",
         ]
     )
     monkeypatch.setattr(
@@ -3502,12 +3511,14 @@ def test_openai_compat_allows_discovered_codex_apps_tool_on_continuation(
         "provider_adapter_decision",
         lambda **kwargs: _local_route_envelope(),
     )
-    monkeypatch.setattr(
-        facade.norllama_gateway,
-        "invoke_text_chat",
-        lambda **kwargs: _mock_local_chat(kwargs["messages"], kwargs["model"])
-        | {"choices": [{"message": {"content": next(responses)}}]},
-    )
+
+    def fake_chat(**kwargs):
+        invocations.append(kwargs)
+        return _mock_local_chat(kwargs["messages"], kwargs["model"]) | {
+            "choices": [{"message": {"content": next(responses)}}]
+        }
+
+    monkeypatch.setattr(facade.norllama_gateway, "invoke_text_chat", fake_chat)
 
     first = execute_openai_responses_facade(
         {"model": "norman-code", "input": "highest priority jira ticket"}
@@ -3543,6 +3554,83 @@ def test_openai_compat_allows_discovered_codex_apps_tool_on_continuation(
     assert json.loads(second["output"][0]["arguments"]) == {
         "query": "highest priority jira ticket"
     }
+
+    jira_search_call = second["output"][0]
+    third = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "previous_response_id": second["id"],
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": jira_search_call["call_id"],
+                    "output": ('{"issues":[{"key":"OPS-123","priority":"Highest"}]}'),
+                }
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "atlassian_rovo.search",
+                    "description": "Search Jira tickets.",
+                    "parameters": {"type": "object"},
+                }
+            ],
+        }
+    )
+
+    assert third["output_text"] == "OPS-123 is the highest priority Jira ticket."
+    replayed = invocations[-1]["messages"]
+    assert {"role": "user", "content": "highest priority jira ticket"} in replayed
+    assert {
+        "role": "tool",
+        "content": (
+            "Tool output for "
+            f'{tool_search_call["call_id"]}: '
+            '{"tools":[{"name":"atlassian_rovo.search","description":"Search Jira"}]}'
+        ),
+    } in replayed
+    assert {
+        "role": "tool",
+        "content": (
+            "Tool output for "
+            f'{jira_search_call["call_id"]}: '
+            '{"issues":[{"key":"OPS-123","priority":"Highest"}]}'
+        ),
+    } in replayed
+    replayed_calls = [
+        json.loads(
+            message["content"].removeprefix(
+                "Prior assistant function call "
+                "(replayed context only; do not execute): "
+            )
+        )
+        for message in replayed
+        if message["role"] == "assistant"
+        and message["content"].startswith("Prior assistant function call ")
+    ]
+    assert {
+        "arguments": tool_search_call["arguments"],
+        "call_id": tool_search_call["call_id"],
+        "name": "tool_search",
+        "type": "function_call",
+    } in replayed_calls
+    assert {
+        "arguments": jira_search_call["arguments"],
+        "call_id": jira_search_call["call_id"],
+        "name": "atlassian_rovo.search",
+        "type": "function_call",
+    } in replayed_calls
+    contracts = [
+        message["content"]
+        for message in replayed
+        if message["role"] == "system"
+        and message["content"].startswith("Norman facade tool contract:")
+    ]
+    assert any(
+        "Once tool_search output is in the conversation" in contract
+        for contract in contracts
+    )
+    assert any("Available tools:" in contract for contract in contracts)
 
 
 def test_openai_compat_responses_replays_saved_function_call_for_tool_output(
