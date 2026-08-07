@@ -17558,7 +17558,7 @@ def clear_console_runtime_token() -> None:
             CONSOLE_RUNTIME_TOKEN = ""
 
 
-def _console_runtime_headers() -> dict[str, str]:
+def _console_runtime_headers(*, require_token: bool = False) -> dict[str, str]:
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
@@ -17568,6 +17568,8 @@ def _console_runtime_headers() -> dict[str, str]:
     token = console_runtime_token()
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    elif require_token:
+        raise urllib_error.URLError("console runtime authorization token unavailable")
     return headers
 
 
@@ -17584,7 +17586,7 @@ def _console_runtime_json_request(
     request = urllib_request.Request(
         _console_runtime_api_url(path),
         data=data,
-        headers=_console_runtime_headers(),
+        headers=_console_runtime_headers(require_token=True),
         method=method.upper(),
     )
     timeout = (
@@ -28316,7 +28318,7 @@ def emit_kaizen_tui_snapshot(snapshot: dict[str, Any]) -> bool:
         request = urllib_request.Request(
             _kaizen_tui_snapshot_url(),
             data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
-            headers=_console_runtime_headers(),
+            headers=_console_runtime_headers(require_token=True),
             method="POST",
         )
         with urllib_request.urlopen(

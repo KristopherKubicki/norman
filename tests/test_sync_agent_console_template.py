@@ -582,6 +582,34 @@ def test_restart_selected_web_services_can_force_guarded_web_restart(
     )
 
 
+def test_staged_web_restart_instances_selects_only_staged_services(
+    monkeypatch,
+) -> None:
+    module = _load_sync_script(monkeypatch)
+    panelbot = _instance(module, "panelbot")
+    control_plane = _instance(module, "control-plane")
+    monkeypatch.setattr(
+        module,
+        "ui_versions",
+        lambda host, instances: {
+            "panelbot": module.UiVersionStatus(
+                version="2026.05.31.1",
+                web_restart_required=True,
+            ),
+            "control-plane": module.UiVersionStatus(
+                version="2026.05.31.1",
+                web_restart_required=False,
+            ),
+        },
+    )
+
+    selected = module.staged_web_restart_instances(
+        module.HOSTS["work-special"], [panelbot, control_plane]
+    )
+
+    assert selected == [panelbot]
+
+
 def test_restart_block_reason_ignores_dead_stale_child_pid(monkeypatch) -> None:
     module = _load_sync_script(monkeypatch)
 

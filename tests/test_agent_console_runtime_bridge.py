@@ -893,6 +893,39 @@ def test_console_runtime_token_retries_after_startup_resolution_failure(
     assert module.CONSOLE_RUNTIME_TOKEN == "brokered-runtime-token"
 
 
+def test_console_runtime_request_is_not_sent_without_broker_token(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_API_BASE", "http://norman.local/api/v1")
+    monkeypatch.delenv("NORMAN_CONSOLE_RUNTIME_TOKEN", raising=False)
+    monkeypatch.delenv("NORMAN_API_TOKEN", raising=False)
+    monkeypatch.setenv("NORMAN_KEYS_URL", "http://norman.local")
+    monkeypatch.setenv("NORMAN_KEYS_TOKEN", "keys-token")
+    monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_TOKEN_SECRET", "norman/runtime-token")
+    monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_TOKEN_RETRY_SECONDS", "0")
+    requests = []
+
+    def unavailable_keys(request, timeout):
+        requests.append((request, timeout))
+        raise TimeoutError("keys unavailable")
+
+    monkeypatch.setattr(urllib_request, "urlopen", unavailable_keys)
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    try:
+        module._console_runtime_json_request("GET", "/console-runtime/capabilities")
+    except urllib_error.URLError as exc:
+        assert "authorization token unavailable" in str(exc)
+    else:
+        raise AssertionError("runtime request was sent without an authorization token")
+
+    assert len(requests) == 2
+    assert all(
+        request.full_url == "http://norman.local/v1/secrets/get"
+        for request, _timeout in requests
+    )
+
+
 def test_console_runtime_job_advertises_kernel_shadow_backend(monkeypatch, tmp_path):
     monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_API_BASE", "http://norman.local/api/v1")
     monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_TOKEN", "runtime-token")

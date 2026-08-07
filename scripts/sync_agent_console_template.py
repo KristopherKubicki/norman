@@ -3068,6 +3068,17 @@ def restart_selected_web_services(
         )
 
 
+def staged_web_restart_instances(
+    host: DiscoveryHost, instances: list[ConsoleInstance]
+) -> list[ConsoleInstance]:
+    statuses = ui_versions(host, instances)
+    return [
+        instance
+        for instance in instances
+        if bool((status := statuses.get(instance.name)) and status.web_restart_required)
+    ]
+
+
 def health_check_instances(
     host: DiscoveryHost, instances: list[ConsoleInstance]
 ) -> None:
@@ -3660,6 +3671,22 @@ def main() -> int:
 
         if not changed_paths and not changed_instances and not changed_static_paths:
             print("  - no template changes detected", flush=True)
+            if not args.restart_web_only:
+                continue
+            restart_scope_list = staged_web_restart_instances(host, selected_instances)
+            if not restart_scope_list:
+                print("  - no staged web restarts selected", flush=True)
+                continue
+            restart_names = " ".join(instance.name for instance in restart_scope_list)
+            print(f"  - restarting staged web services {restart_names}", flush=True)
+            restart_selected_web_services(
+                {host_name: restart_scope_list},
+                force_restart=args.force_restart,
+                check_health=not args.no_health,
+            )
+            if not args.no_health:
+                print("  - version parity", flush=True)
+                verify_ui_version_parity(host, restart_scope_list)
             continue
 
         restart_scope = {
