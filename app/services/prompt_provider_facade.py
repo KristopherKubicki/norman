@@ -96,6 +96,7 @@ CLOUD_FALLBACK_LANE = "coder"
 EXPLICIT_CLOUD_SELECTION_SCHEMA = "norman.explicit-cloud-selection.v1"
 EXPLICIT_CLOUD_SELECTION_MARKER_SCHEMA = "norman.facade-explicit-cloud-selection.v1"
 CODEX_APPS_TOOL_PREFIX = "mcp__codex_apps__"
+INTERNAL_MCP_TOOL_PREFIX = "mcp__"
 IMPLICIT_TOOL_SEARCH_NAME = "tool_search"
 MCP_RESOURCE_DISCOVERY_TOOL_NAMES = frozenset(
     {
@@ -854,8 +855,8 @@ def _tool_chain_repair_message(
             "Norman tool-chain repair: a tool result is already available and the "
             "previous tool call cannot be returned. Continue this same task now. "
             "Return either a final answer or exactly one JSON tool envelope using "
-            "only one declared tool. Do not call an internal mcp__codex_apps__ "
-            "name, list MCP resources, or repeat tool_search after discovery when "
+            "only one declared tool. Do not call an internal mcp__ name, list MCP "
+            "resources, or repeat tool_search after discovery when "
             "an executable tool is declared. Declared tools: "
             f"{declared}. Repair reason: {reason}."
         ),
@@ -910,9 +911,9 @@ def _tool_contract_message(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
                     "available tool when it advances the request, then return "
                     "the final answer only after no further tool call is needed. "
                     "Do not stop merely to announce a discovered tool. "
-                    "For an external Codex Apps capability, call tool_search first "
-                    'with {"query":"what you need"}; do not call '
-                    "mcp__codex_apps__..., list_mcp_resources, or "
+                    "For any MCP capability, call tool_search first with "
+                    '{"query":"what you need"}; do not call an internal mcp__ '
+                    "name, list_mcp_resources, or "
                     "list_mcp_resource_templates directly. Once tool_search output "
                     "is in the conversation and its executable tool is declared, "
                     "use that tool directly; do not rediscover it. Otherwise "
@@ -1363,6 +1364,41 @@ def _mcp_resource_discovery_tool_search_query(arguments: Any) -> str:
     return "Find the executable tool for the requested connected MCP server"
 
 
+def _internal_mcp_tool_search_query(name: str, arguments: Any) -> str:
+    parsed_arguments = arguments
+    if isinstance(arguments, str):
+        try:
+            parsed_arguments = json.loads(arguments)
+        except (TypeError, ValueError):
+            parsed_arguments = {}
+    internal_name = name.removeprefix(INTERNAL_MCP_TOOL_PREFIX)
+    server, separator, capability = internal_name.partition("__")
+    server = _clean(server)
+    capability = capability.replace(".", " ").replace("_", " ") if separator else ""
+    operation = ""
+    if isinstance(parsed_arguments, Mapping):
+        operation = _clean(parsed_arguments.get("operation"))
+    if server and capability:
+        return (
+            "Find the executable tool for "
+            + capability
+            + " on the "
+            + server
+            + " MCP server"
+        )
+    if server and operation:
+        return (
+            "Find the executable tool for "
+            + operation
+            + " on the "
+            + server
+            + " MCP server"
+        )
+    if server:
+        return "Find the executable tool for the " + server + " MCP server"
+    return "Find the executable tool for the requested connected MCP server"
+
+
 def _extract_tool_calls(
     text: str,
     *,
@@ -1393,6 +1429,12 @@ def _extract_tool_calls(
             # Generic MCP resource operations are client-internal primitives.
             # The facade exposes tool_search as the supported lifecycle.
             arguments = {"query": _mcp_resource_discovery_tool_search_query(arguments)}
+            name = IMPLICIT_TOOL_SEARCH_NAME
+        elif name.startswith(INTERNAL_MCP_TOOL_PREFIX) and name not in names:
+            # MCP server names are client-internal routing details, not
+            # executable Responses function names. Discover the client-exposed
+            # capability before returning a call to Codex.
+            arguments = {"query": _internal_mcp_tool_search_query(name, arguments)}
             name = IMPLICIT_TOOL_SEARCH_NAME
         elif names and name not in names:
             continue

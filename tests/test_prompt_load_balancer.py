@@ -3663,6 +3663,29 @@ def test_openai_compat_converts_implicit_codex_apps_calls_to_tool_search():
     }
 
 
+def test_openai_compat_converts_implicit_internal_mcp_server_calls_to_tool_search():
+    import app.services.prompt_provider_facade as facade
+
+    calls = facade._extract_tool_calls(
+        json.dumps(
+            {
+                "tool_call": {
+                    "name": "mcp__ops_openbrand",
+                    "arguments": {"operation": "lookup", "query": "test"},
+                }
+            }
+        ),
+        tools=[],
+        allow_implicit_tools=True,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["name"] == "tool_search"
+    assert json.loads(calls[0]["arguments"]) == {
+        "query": "Find the executable tool for lookup on the ops_openbrand MCP server"
+    }
+
+
 def test_openai_compat_converts_mcp_resource_discovery_to_tool_search():
     import app.services.prompt_provider_facade as facade
 
@@ -3776,6 +3799,46 @@ def test_openai_compat_converts_codex_apps_call_with_declared_tool_search(
     assert response["output"][0]["name"] == "tool_search"
     assert json.loads(response["output"][0]["arguments"]) == {
         "query": "highest priority jira ticket"
+    }
+
+
+def test_openai_compat_never_returns_implicit_internal_mcp_server_call(monkeypatch):
+    import app.services.prompt_provider_facade as facade
+
+    monkeypatch.setattr(
+        facade,
+        "provider_adapter_decision",
+        lambda **kwargs: _local_route_envelope(),
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: _mock_local_chat(kwargs["messages"], kwargs["model"])
+        | {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"tool_call":{"name":"mcp__ops_openbrand",'
+                            '"arguments":{"operation":"lookup","query":"test"}}}'
+                        )
+                    }
+                }
+            ]
+        },
+    )
+
+    response = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "Run a safe Ops MCP lookup.",
+        }
+    )
+
+    assert response["output_text"] == ""
+    assert [item["name"] for item in response["output"]] == ["tool_search"]
+    assert json.loads(response["output"][0]["arguments"]) == {
+        "query": "Find the executable tool for lookup on the ops_openbrand MCP server"
     }
 
 
