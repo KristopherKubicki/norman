@@ -1007,9 +1007,10 @@ def _extract_tool_calls(
     text: str,
     *,
     tools: list[dict[str, Any]],
+    allow_implicit_tools: bool = False,
 ) -> list[dict[str, Any]]:
     names = _tool_names(tools)
-    if not text or not names:
+    if not text or (not names and not allow_implicit_tools):
         return []
     try:
         payload = json.loads(text)
@@ -1026,7 +1027,7 @@ def _extract_tool_calls(
         if not isinstance(raw, Mapping):
             continue
         name = _clean(raw.get("name"))
-        if name not in names:
+        if not name or (names and name not in names):
             continue
         arguments = raw.get("arguments", {})
         call_id = _clean(raw.get("call_id")) or f"call_{uuid.uuid4().hex}"
@@ -2424,7 +2425,14 @@ def _responses_response_from_chat(
     chat_response = dict(chat_response)
     text = _choice_text(chat_response)
     tools = _tools(provider_payload)
-    tool_calls = _extract_tool_calls(text, tools=tools)
+    tool_calls = _extract_tool_calls(
+        text,
+        tools=tools,
+        # Some Codex TUI request forms keep their executable tool registry
+        # client-side and omit a top-level Responses tools list. The TUI still
+        # validates the returned call before it can execute anything.
+        allow_implicit_tools=not bool(_tool_names(tools)),
+    )
     output_items = _response_output_items(
         text=text,
         tool_calls=tool_calls,
@@ -2463,7 +2471,13 @@ def _responses_response_from_chat(
                 ),
                 "tools_declared": len(tools),
                 "tool_calls_returned": len(tool_calls),
-                "tool_call_mode": "explicit_json_envelope" if tools else "none",
+                "tool_call_mode": (
+                    "explicit_json_envelope"
+                    if _tool_names(tools)
+                    else "implicit_json_envelope"
+                    if tool_calls
+                    else "none"
+                ),
                 "structured_output_requested": bool(
                     _mapping(provider_payload.get("text")).get("format")
                 ),

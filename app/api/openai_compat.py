@@ -667,7 +667,6 @@ def _response_sse(stream: Any):
     buffered_prefix = ""
     text_item_started = False
     tool_envelope = False
-    tools_declared = bool(stream.prepared.provider_payload.get("tools"))
 
     def begin_text_item() -> Iterable[str]:
         nonlocal text_item_started
@@ -780,7 +779,7 @@ def _response_sse(stream: Any):
             if not isinstance(fragment, str) or not fragment:
                 continue
             text_parts.append(fragment)
-            if tools_declared and not text_item_started:
+            if not text_item_started:
                 buffered_prefix += fragment
                 prefix_state = _tool_envelope_prefix_state(buffered_prefix)
                 if prefix_state == "pending":
