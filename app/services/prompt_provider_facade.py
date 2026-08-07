@@ -101,6 +101,7 @@ MCP_RESOURCE_DISCOVERY_TOOL_NAMES = frozenset(
     {
         "list_mcp_resources",
         "list_mcp_resource_templates",
+        "read_mcp_resource",
     }
 )
 LEGACY_REPLAYED_FUNCTION_CALL_PREFIX = (
@@ -1348,6 +1349,15 @@ def _mcp_resource_discovery_tool_search_query(arguments: Any) -> str:
             parsed_arguments = {}
     if isinstance(parsed_arguments, Mapping):
         server = _clean(parsed_arguments.get("server"))
+        uri = _clean(parsed_arguments.get("uri"))
+        if server and uri:
+            return (
+                "Find the executable tool for reading resource "
+                + uri
+                + " from the "
+                + server
+                + " MCP server"
+            )
         if server:
             return "Find the executable tool for the " + server + " MCP server"
     return "Find the executable tool for the requested connected MCP server"
@@ -1380,8 +1390,8 @@ def _extract_tool_calls(
             arguments = {"query": _codex_apps_tool_search_query(name, arguments)}
             name = IMPLICIT_TOOL_SEARCH_NAME
         elif name in MCP_RESOURCE_DISCOVERY_TOOL_NAMES and name not in names:
-            # Resource listing is a client-internal discovery primitive. The
-            # facade exposes tool_search as the supported discovery lifecycle.
+            # Generic MCP resource operations are client-internal primitives.
+            # The facade exposes tool_search as the supported lifecycle.
             arguments = {"query": _mcp_resource_discovery_tool_search_query(arguments)}
             name = IMPLICIT_TOOL_SEARCH_NAME
         elif names and name not in names:
