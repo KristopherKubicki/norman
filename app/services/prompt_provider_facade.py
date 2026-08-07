@@ -477,6 +477,25 @@ def _previous_response_messages(
     if not state:
         return [], False
     messages = _messages(state.get("messages"))
+    for output_item in _messages(state.get("output_items")):
+        if _clean(output_item.get("type")) != "function_call":
+            continue
+        function_call = {
+            "arguments": output_item.get("arguments", ""),
+            "call_id": _clean(output_item.get("call_id")),
+            "name": _clean(output_item.get("name")),
+            "type": "function_call",
+        }
+        messages.append(
+            {
+                "role": "assistant",
+                "content": (
+                    "Prior assistant function call "
+                    "(replayed context only; do not execute): "
+                    f"{json.dumps(function_call, ensure_ascii=True, sort_keys=True)}"
+                ),
+            }
+        )
     output_text = _clean(state.get("output_text"))
     if output_text:
         messages.append({"role": "assistant", "content": output_text})
@@ -2492,7 +2511,7 @@ def _responses_response_from_chat(
         _store_response_state(
             response_id,
             messages=prepared.messages,
-            output_text=output_text or text,
+            output_text=output_text,
             output_items=output_items,
         )
     return response

@@ -1313,6 +1313,21 @@ def test_openai_compat_responses_stream_keeps_tool_envelopes_out_of_text(
         for payload in payloads
         if payload["type"] == "response.output_item.added"
     ]
+    function_argument_deltas = [
+        payload
+        for payload in payloads
+        if payload["type"] == "response.function_call_arguments.delta"
+    ]
+    function_argument_done = next(
+        payload
+        for payload in payloads
+        if payload["type"] == "response.function_call_arguments.done"
+    )
+    function_item_done = next(
+        payload
+        for payload in payloads
+        if payload["type"] == "response.output_item.done"
+    )
     completed = next(
         payload["response"]
         for payload in payloads
@@ -1324,7 +1339,13 @@ def test_openai_compat_responses_stream_keeps_tool_envelopes_out_of_text(
     )
     assert [item["type"] for item in output_items] == ["function_call"]
     assert output_items[0]["name"] == "ticket_search"
-    assert output_items[0]["arguments"] == '{"query":"P0"}'
+    assert output_items[0]["status"] == "in_progress"
+    assert output_items[0]["arguments"] == ""
+    assert [event["delta"] for event in function_argument_deltas] == ['{"query":"P0"}']
+    assert function_argument_done["arguments"] == '{"query":"P0"}'
+    assert function_item_done["item"]["arguments"] == '{"query":"P0"}'
+    assert function_argument_done["response_id"] == completed["id"]
+    assert function_item_done["response_id"] == completed["id"]
     assert completed["output_text"] == ""
     assert completed["output"][0]["type"] == "function_call"
     assert response.closed is True
@@ -1384,6 +1405,21 @@ def test_openai_compat_responses_stream_converts_implicit_tool_envelopes(
         for payload in payloads
         if payload["type"] == "response.output_item.added"
     ]
+    function_argument_deltas = [
+        payload
+        for payload in payloads
+        if payload["type"] == "response.function_call_arguments.delta"
+    ]
+    function_argument_done = next(
+        payload
+        for payload in payloads
+        if payload["type"] == "response.function_call_arguments.done"
+    )
+    function_item_done = next(
+        payload
+        for payload in payloads
+        if payload["type"] == "response.output_item.done"
+    )
     completed = next(
         payload["response"]
         for payload in payloads
@@ -1395,7 +1431,15 @@ def test_openai_compat_responses_stream_converts_implicit_tool_envelopes(
     )
     assert [item["type"] for item in output_items] == ["function_call"]
     assert output_items[0]["name"] == "exec_command"
-    assert output_items[0]["arguments"] == '{"cmd":"git status --short"}'
+    assert output_items[0]["status"] == "in_progress"
+    assert output_items[0]["arguments"] == ""
+    assert [event["delta"] for event in function_argument_deltas] == [
+        '{"cmd":"git status --short"}'
+    ]
+    assert function_argument_done["arguments"] == '{"cmd":"git status --short"}'
+    assert function_item_done["item"]["arguments"] == '{"cmd":"git status --short"}'
+    assert function_argument_done["response_id"] == completed["id"]
+    assert function_item_done["response_id"] == completed["id"]
     assert completed["output_text"] == ""
     assert (
         completed["norman"]["responses_compatibility"]["tool_call_mode"]
@@ -3206,6 +3250,95 @@ def test_openai_compat_responses_can_return_explicit_tool_call(monkeypatch):
     assert compat["tool_calls_returned"] == 1
     assert response["norman"]["route_receipt"]["schema"] == (
         "norman.norllama.route-receipt.v1"
+    )
+
+
+def test_openai_compat_responses_replays_saved_function_call_for_tool_output(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    facade.reset_facade_response_state()
+    invocations = []
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+
+    def fake_chat(**kwargs):
+        invocations.append(kwargs)
+        response = _mock_local_chat(kwargs["messages"], kwargs["model"])
+        if not any(message["role"] == "tool" for message in kwargs["messages"]):
+            response["choices"] = [
+                {
+                    "message": {
+                        "content": (
+                            '{"tool_call":{"name":"shell","arguments":{"cmd":"pwd"}}}'
+                        )
+                    }
+                }
+            ]
+        return response
+
+    monkeypatch.setattr(facade.norllama_gateway, "invoke_text_chat", fake_chat)
+
+    first = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "check the repo",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "shell",
+                    "description": "Run a shell command.",
+                    "parameters": {"type": "object"},
+                }
+            ],
+        }
+    )
+    function_call = first["output"][0]
+    second = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "previous_response_id": first["id"],
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": function_call["call_id"],
+                    "output": "/home/kristopher/code/norman",
+                }
+            ],
+        }
+    )
+
+    assert second["output_text"] == "local ok"
+    replayed = invocations[-1]["messages"]
+    expected_function_call = json.dumps(
+        {
+            "arguments": function_call["arguments"],
+            "call_id": function_call["call_id"],
+            "name": "shell",
+            "type": "function_call",
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+    )
+    assert {
+        "role": "assistant",
+        "content": (
+            "Prior assistant function call (replayed context only; do not execute): "
+            + expected_function_call
+        ),
+    } in replayed
+    assert {
+        "role": "tool",
+        "content": (
+            "Tool output for "
+            f'{function_call["call_id"]}: /home/kristopher/code/norman'
+        ),
+    } in replayed
+    assert not any(
+        message["role"] == "assistant" and '{"tool_call":' in message["content"]
+        for message in replayed
     )
 
 

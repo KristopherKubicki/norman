@@ -801,31 +801,74 @@ def _response_sse(stream: Any):
         text = "".join(text_parts)
         response = stream.complete(text)
         output = response.get("output")
-        output_item = output[0] if isinstance(output, list) and output else {}
-        if isinstance(output_item, dict) and output_item.get("type") == "function_call":
-            yield _response_sse_event(
-                "response.output_item.added",
-                {
-                    "type": "response.output_item.added",
-                    "output_index": 0,
-                    "item": output_item,
-                },
-            )
-            yield _response_sse_event(
-                "response.output_item.done",
-                {
-                    "type": "response.output_item.done",
-                    "output_index": 0,
-                    "item": output_item,
-                },
-            )
+        output_items = (
+            [dict(item) for item in output if isinstance(item, dict)]
+            if isinstance(output, list)
+            else []
+        )
+        function_call_items = [
+            (output_index, item)
+            for output_index, item in enumerate(output_items)
+            if item.get("type") == "function_call"
+        ]
+        if function_call_items:
+            for output_index, output_item in function_call_items:
+                arguments = output_item.get("arguments")
+                arguments = arguments if isinstance(arguments, str) else ""
+                in_progress_item = {
+                    "type": "function_call",
+                    "id": output_item.get("id"),
+                    "status": "in_progress",
+                    "call_id": output_item.get("call_id"),
+                    "name": output_item.get("name"),
+                    "arguments": "",
+                }
+                yield _response_sse_event(
+                    "response.output_item.added",
+                    {
+                        "type": "response.output_item.added",
+                        "response_id": stream.response_id,
+                        "output_index": output_index,
+                        "item": in_progress_item,
+                    },
+                )
+                if arguments:
+                    yield _response_sse_event(
+                        "response.function_call_arguments.delta",
+                        {
+                            "type": "response.function_call_arguments.delta",
+                            "response_id": stream.response_id,
+                            "item_id": output_item.get("id"),
+                            "output_index": output_index,
+                            "delta": arguments,
+                        },
+                    )
+                yield _response_sse_event(
+                    "response.function_call_arguments.done",
+                    {
+                        "type": "response.function_call_arguments.done",
+                        "response_id": stream.response_id,
+                        "item_id": output_item.get("id"),
+                        "output_index": output_index,
+                        "arguments": arguments,
+                    },
+                )
+                yield _response_sse_event(
+                    "response.output_item.done",
+                    {
+                        "type": "response.output_item.done",
+                        "response_id": stream.response_id,
+                        "output_index": output_index,
+                        "item": output_item,
+                    },
+                )
         else:
             if not text_item_started:
                 for event in begin_text_item():
                     yield event
                 if text:
                     yield text_delta(text)
-            final_item = output_item if isinstance(output_item, dict) else {}
+            final_item = output_items[0] if output_items else {}
             yield _response_sse_event(
                 "response.output_text.done",
                 {
