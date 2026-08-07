@@ -228,6 +228,9 @@ console_runtime_norllama_timeout_seconds: 180
 prompt_facade_cloud_fallback_enabled: false
 prompt_facade_cloud_fallback_aws_region: ""
 prompt_facade_cloud_fallback_credentials_secret: ""
+# Logical Norman Keys alias for approved explicit GPT model selections through
+# Bedrock Mantle. Never put an API key value in this configuration.
+prompt_facade_explicit_cloud_mantle_api_key_secret: ""
 llm_mesh_cache_ttl_seconds: 15
 llm_mesh_cache_stale_seconds: 300
 llm_mesh_workers:

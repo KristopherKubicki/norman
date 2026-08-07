@@ -96,6 +96,12 @@ def _agent_console_launch_source() -> str:
     ).read_text(encoding="utf-8")
 
 
+def _norman_codex_launch_source() -> str:
+    return (
+        Path(__file__).resolve().parents[1] / "scripts" / "norman_codex_launch.sh"
+    ).read_text(encoding="utf-8")
+
+
 def _agent_console_supervisor_source() -> str:
     return (
         Path(__file__).resolve().parents[1]
@@ -3116,6 +3122,67 @@ def test_launch_template_includes_norman_broker_policy() -> None:
     assert "treat the current conversation as the live party line" in source
 
 
+def test_all_tui_launchers_enforce_norman_secret_guard_policy() -> None:
+    networking_prompt = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "agent_console_template"
+        / "prompts"
+        / "networking.txt"
+    ).read_text(encoding="utf-8")
+    uplink_prompt = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "agent_console_template"
+        / "prompts"
+        / "uplink.txt"
+    ).read_text(encoding="utf-8")
+
+    for source in (_agent_console_launch_source(), _norman_codex_launch_source()):
+        assert (
+            'SECRET_GUARD_SCRIPT="${LAUNCH_SCRIPT_DIR}/norman_codex_secret_guard.py"'
+            in source
+        )
+        assert "verify_managed_secret_guard" in source
+        assert "--verify-managed-policy" in source
+        assert "NORMAN_TUI_NO_DIRECT_VAULT=1" in source
+        assert '"$CODEX_HOME/hooks.json"' not in source
+        assert "--dangerously-bypass-hook-trust" not in source
+        assert (
+            "Read-only analysis, review, status checks, and recommendations never access secrets."
+            in source
+        )
+        assert (
+            "Never invoke `cred`, create or migrate a vault, or ask for a vault passphrase."
+            in source
+        )
+
+    for prompt in (networking_prompt, uplink_prompt):
+        assert "machine-local `cred` vault" not in prompt
+        assert (
+            "Read-only analysis, review, status checks, and recommendations never access secrets."
+            in prompt
+        )
+        assert "Never invoke `cred`, initialize or migrate a vault" in prompt
+
+
+def test_all_tui_launchers_cap_pytest_xdist_auto_workers() -> None:
+    for source in (_agent_console_launch_source(), _norman_codex_launch_source()):
+        assert (
+            'PYTEST_XDIST_AUTO_NUM_WORKERS="${NORMAN_CODEX_PYTEST_XDIST_AUTO_WORKERS:-4}"'
+            in source
+        )
+        assert (
+            'if [[ ! "$PYTEST_XDIST_AUTO_NUM_WORKERS" =~ ^[1-9][0-9]*$ ]]; then'
+            in source
+        )
+        assert (
+            "NORMAN_CODEX_PYTEST_XDIST_AUTO_WORKERS must be a positive integer."
+            in source
+        )
+        assert "export PYTEST_XDIST_AUTO_NUM_WORKERS" in source
+
+
 def test_launch_template_quarantines_external_auth_symlinks() -> None:
     source = _agent_console_launch_source()
 
@@ -5683,13 +5750,15 @@ def test_local_sync_systemd_units_target_the_local_host() -> None:
     timer = _systemd_unit_source("norman-agent-console-sync-local.timer")
 
     assert "sync_agent_console_template.py --targets %H --restart-web-only" in service
-    assert "User=kristopher" in service
-    assert "Group=kristopher" in service
+    assert "User=root" in service
+    assert "Group=root" in service
     assert "RuntimeDirectory=norman-agent-console-sync" in service
     assert "/run/norman-agent-console-sync/sync-local.lock" in service
     assert "PYTHONPATH=/home/kristopher/code/norman" in service
     assert "NORMAN_SYNC_EXECUTION_HOST=%H" in service
     assert "/home/kristopher/code/norman/.venv/bin/python" in service
+    assert "PYTHONPATH=%h/code/norman" in user_service
+    assert "%h/code/norman/.venv/bin/python" in user_service
     profile_source = (
         "NORMAN_SYNC_NON_WORK_BEDROCK_PROFILE_SOURCE="
         "/home/kristopher/.codex-nonwork/personal-bedrock.config.toml"

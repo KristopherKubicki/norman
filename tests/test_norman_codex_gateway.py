@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -10,10 +11,15 @@ import uuid
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LAUNCH_SCRIPT = REPO_ROOT / "scripts" / "norman_codex_launch.sh"
 TOKEN_HELPER = REPO_ROOT / "scripts" / "norman_codex_gateway_token.py"
+TEMPLATE_LAUNCH_SCRIPT = (
+    REPO_ROOT / "scripts" / "agent_console_template" / "agent_console_launch.sh"
+)
 
 
 def _load_token_helper():
@@ -141,7 +147,6 @@ def test_gateway_token_helper_fails_closed_without_approved_broker(
 ) -> None:
     module = _load_token_helper()
     _clear_gateway_broker_environment(monkeypatch)
-    monkeypatch.setattr(module, "DEFAULT_CRED_BIN", Path("/missing/cred"))
     monkeypatch.setattr(module, "DEFAULT_BROKER_COMMAND", Path("/missing/broker"))
     monkeypatch.setenv("NORMAN_PROMPT_PROXY_TOKEN", "must-not-be-read")
 
@@ -160,7 +165,6 @@ def test_gateway_token_helper_uses_installed_broker_by_default(
     broker.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     broker.chmod(0o700)
     monkeypatch.setattr(module, "DEFAULT_BROKER_COMMAND", broker)
-    monkeypatch.setattr(module, "DEFAULT_CRED_BIN", Path("/missing/cred"))
     calls = []
 
     def fake_run(command, **kwargs):
@@ -186,7 +190,7 @@ def test_gateway_token_helper_uses_installed_broker_by_default(
     ]
 
 
-def test_gateway_token_helper_uses_encrypted_cred_fallback(
+def test_gateway_token_helper_does_not_use_cred_as_a_fallback(
     monkeypatch, capsys, tmp_path
 ) -> None:
     module = _load_token_helper()
@@ -194,8 +198,8 @@ def test_gateway_token_helper_uses_encrypted_cred_fallback(
     cred = tmp_path / "cred"
     cred.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     cred.chmod(0o700)
-    monkeypatch.setattr(module, "DEFAULT_CRED_BIN", cred)
     monkeypatch.setattr(module, "DEFAULT_BROKER_COMMAND", Path("/missing/broker"))
+    monkeypatch.setenv("NORMAN_CRED_BIN", str(cred))
     calls = []
 
     def fake_run(command, **kwargs):
@@ -204,21 +208,11 @@ def test_gateway_token_helper_uses_encrypted_cred_fallback(
 
     monkeypatch.setattr(module.subprocess, "run", fake_run)
 
-    assert module.main(["--secret", "norman/prompt-proxy-token"]) == 0
+    assert module.main(["--secret", "norman/prompt-proxy-token"]) == 1
     captured = capsys.readouterr()
-    assert captured.out == "vault-token\n"
-    assert captured.err == ""
-    assert calls == [
-        (
-            [str(cred), "get", "norman/prompt-proxy-token"],
-            {
-                "check": True,
-                "capture_output": True,
-                "text": True,
-                "timeout": 5.0,
-            },
-        )
-    ]
+    assert captured.out == ""
+    assert "no approved broker is configured" in captured.err
+    assert calls == []
 
 
 def _write_codex_stub(path: Path) -> None:
@@ -230,10 +224,54 @@ import sys
 
 with open(os.environ["CODEX_ARGS_PATH"], "w", encoding="utf-8") as handle:
     json.dump(sys.argv[1:], handle)
+if os.environ.get("CODEX_ENV_PATH"):
+    with open(os.environ["CODEX_ENV_PATH"], "w", encoding="utf-8") as handle:
+        json.dump(
+            {
+                "PYTEST_XDIST_AUTO_NUM_WORKERS": os.environ.get(
+                    "PYTEST_XDIST_AUTO_NUM_WORKERS"
+                ),
+                "NORMAN_TUI_NO_DIRECT_VAULT": os.environ.get(
+                    "NORMAN_TUI_NO_DIRECT_VAULT"
+                ),
+            },
+            handle,
+        )
 """,
         encoding="utf-8",
     )
     path.chmod(0o755)
+
+
+def _install_test_managed_secret_policy(
+    tmp_path: Path, environment: dict[str, str]
+) -> None:
+    requirements_path = tmp_path / "requirements.toml"
+    managed_guard_path = tmp_path / "managed" / "norman_codex_secret_guard.py"
+    managed_guard_path.parent.mkdir()
+    shutil.copy2(
+        REPO_ROOT / "scripts" / "norman_codex_secret_guard.py",
+        managed_guard_path,
+    )
+    managed_guard_path.chmod(0o755)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(managed_guard_path),
+            "--install-managed-policy",
+            "--requirements-path",
+            str(requirements_path),
+            "--managed-guard-path",
+            str(managed_guard_path),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    environment["NORMAN_CODEX_REQUIREMENTS_PATH"] = str(requirements_path)
+    environment["NORMAN_CODEX_MANAGED_SECRET_GUARD"] = str(managed_guard_path)
 
 
 def _launcher_environment(tmp_path: Path, codex_binary: Path) -> dict[str, str]:
@@ -256,12 +294,17 @@ def _launcher_environment(tmp_path: Path, codex_binary: Path) -> dict[str, str]:
             "NORMAN_CODEX_WORKDIR": str(tmp_path),
         }
     )
+    _install_test_managed_secret_policy(tmp_path, environment)
     return environment
 
 
-def _run_launcher(tmp_path: Path, environment: dict[str, str]) -> list[str]:
+def _run_launcher(
+    tmp_path: Path,
+    environment: dict[str, str],
+    launch_script: Path = LAUNCH_SCRIPT,
+) -> list[str]:
     result = subprocess.run(
-        [str(LAUNCH_SCRIPT)],
+        [str(launch_script)],
         cwd=REPO_ROOT,
         env=environment,
         check=False,
@@ -271,6 +314,84 @@ def _run_launcher(tmp_path: Path, environment: dict[str, str]) -> list[str]:
     )
     assert result.returncode == 0, result.stderr
     return json.loads((tmp_path / "codex-args.json").read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize("launch_source", (LAUNCH_SCRIPT, TEMPLATE_LAUNCH_SCRIPT))
+def test_launchers_require_the_managed_secret_guard(
+    tmp_path: Path, launch_source: Path
+) -> None:
+    codex_binary = tmp_path / "codex"
+    _write_codex_stub(codex_binary)
+    environment = _launcher_environment(tmp_path, codex_binary)
+    launch_dir = tmp_path / "launch"
+    launch_dir.mkdir()
+    launch_script = launch_dir / launch_source.name
+    shutil.copy2(launch_source, launch_script)
+    shutil.copy2(
+        REPO_ROOT / "scripts" / "norman_codex_secret_guard.py",
+        launch_dir / "norman_codex_secret_guard.py",
+    )
+    launch_script.chmod(0o700)
+    arguments = _run_launcher(tmp_path, environment, launch_script)
+
+    assert "--dangerously-bypass-hook-trust" not in arguments
+    assert "features.hooks=true" not in arguments
+    assert not (tmp_path / "codex-home" / "hooks.json").exists()
+
+
+@pytest.mark.parametrize("launch_source", (LAUNCH_SCRIPT, TEMPLATE_LAUNCH_SCRIPT))
+def test_launchers_export_bounded_pytest_xdist_auto_workers(
+    tmp_path: Path, launch_source: Path
+) -> None:
+    codex_binary = tmp_path / "codex"
+    _write_codex_stub(codex_binary)
+    environment = _launcher_environment(tmp_path, codex_binary)
+    environment["CODEX_ENV_PATH"] = str(tmp_path / "codex-env.json")
+    launch_dir = tmp_path / "launch"
+    launch_dir.mkdir()
+    launch_script = launch_dir / launch_source.name
+    shutil.copy2(launch_source, launch_script)
+    shutil.copy2(
+        REPO_ROOT / "scripts" / "norman_codex_secret_guard.py",
+        launch_dir / "norman_codex_secret_guard.py",
+    )
+    launch_script.chmod(0o700)
+
+    _run_launcher(tmp_path, environment, launch_script)
+
+    exported_environment = json.loads(
+        (tmp_path / "codex-env.json").read_text(encoding="utf-8")
+    )
+    assert exported_environment == {
+        "PYTEST_XDIST_AUTO_NUM_WORKERS": "4",
+        "NORMAN_TUI_NO_DIRECT_VAULT": "1",
+    }
+
+
+@pytest.mark.parametrize("launch_source", (LAUNCH_SCRIPT, TEMPLATE_LAUNCH_SCRIPT))
+def test_launchers_reject_invalid_pytest_xdist_auto_worker_count(
+    tmp_path: Path, launch_source: Path
+) -> None:
+    codex_binary = tmp_path / "codex"
+    _write_codex_stub(codex_binary)
+    environment = _launcher_environment(tmp_path, codex_binary)
+    environment["NORMAN_CODEX_PYTEST_XDIST_AUTO_WORKERS"] = "0"
+
+    result = subprocess.run(
+        [str(launch_source)],
+        cwd=REPO_ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+
+    assert result.returncode == 2
+    assert (
+        "NORMAN_CODEX_PYTEST_XDIST_AUTO_WORKERS must be a positive integer."
+        in result.stderr
+    )
 
 
 def test_launcher_keeps_direct_bedrock_as_the_default(tmp_path) -> None:

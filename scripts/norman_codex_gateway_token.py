@@ -18,7 +18,6 @@ from typing import Any
 
 DEFAULT_SECRET = "norman/prompt-proxy-token"
 DEFAULT_TIMEOUT_SECONDS = 5.0
-DEFAULT_CRED_BIN = Path.home() / ".local" / "bin" / "cred"
 DEFAULT_BROKER_COMMAND = (
     Path(__file__).resolve().with_name("norman_codex_gateway_broker.sh")
 )
@@ -68,14 +67,6 @@ def _secret_command(secret_name: str) -> list[str]:
     if "{name}" in configured:
         return [part.replace("{name}", secret_name) for part in command]
     return [*command, "get", secret_name]
-
-
-def _encrypted_cred_command(secret_name: str) -> list[str]:
-    configured = _first_env("NORMAN_CRED_BIN")
-    candidate = Path(configured).expanduser() if configured else DEFAULT_CRED_BIN
-    if not candidate.is_file() or not os.access(candidate, os.X_OK):
-        return []
-    return [str(candidate), "get", secret_name]
 
 
 def _installed_broker_command(secret_name: str) -> list[str]:
@@ -159,9 +150,6 @@ def resolve_token(secret_name: str) -> tuple[str, list[str]]:
     if not command:
         command = _installed_broker_command(secret_name)
         command_label = "installed Norman Codex gateway broker"
-    if not command:
-        command = _encrypted_cred_command(secret_name)
-        command_label = "encrypted cred vault"
     if command:
         try:
             token = _resolve_from_command(command)

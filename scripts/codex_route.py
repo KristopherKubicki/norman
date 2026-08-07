@@ -24,6 +24,11 @@ from typing import Any, Sequence
 HOME = Path.home()
 SCRIPT_DIR = Path(__file__).resolve().parent
 GATEWAY_TOKEN_HELPER = SCRIPT_DIR / "norman_codex_gateway_token.py"
+SECRET_GUARD = SCRIPT_DIR / "norman_codex_secret_guard.py"
+MANAGED_CODEX_REQUIREMENTS = Path("/etc/codex/requirements.toml")
+MANAGED_SECRET_GUARD = Path(
+    "/usr/local/lib/norman-codex-route/norman_codex_secret_guard.py"
+)
 OPS_OPENBRAND_MCP_LAUNCHER = (
     HOME / "code" / "control_plane" / "scripts" / "with_ops_openbrand_mcp.sh"
 )
@@ -61,6 +66,32 @@ GATEWAY_REQUEST_TIMEOUT_SECONDS = 20
 PLAN_LEDGER_KIND = "chatgpt_codex_credit_estimate"
 METERED_LEDGER_KINDS = frozenset(
     {"api_rate_card_estimate", "provider_invoice_estimate"}
+)
+ROUTED_TUI_SECRET_POLICY = """# Norman TUI Secret Policy
+
+- Treat read-only analysis, review, status checks, and recommendations as non-credentialed work. Do not access a secret unless a credentialed action is necessary.
+- Before credentialed work, explain why the capability is needed. Use the approved Norman Keys alias and broker path (`NORMAN_KEYS_URL` or `NORMAN_SECRET_CMD`) with the smallest available approval or lease.
+- If approved broker access is unavailable, report the action as blocked with the logical alias or capability needed. Do not substitute a local vault or plaintext file.
+- Do not directly invoke `cred`, even for reads. Never run `cred init`, bootstrap, migration, rotation, or put/set/remove/rm operations.
+- Never create or migrate a vault, and never ask for, accept, or enter a vault passphrase.
+"""
+ROUTED_TUI_DEVELOPER_INSTRUCTIONS = (
+    "Norman TUI secret policy: Read-only analysis never needs secret access. "
+    "Before a credentialed action, explain the need and use the approved Norman "
+    "Keys alias and broker path. If that path is unavailable, report the action "
+    "blocked. Do not directly invoke cred, initialize or migrate a vault, or "
+    "request a vault passphrase."
+)
+ROUTED_TUI_POLICY_BEGIN = "<!-- BEGIN NORMAN TUI SECRET POLICY -->"
+ROUTED_TUI_POLICY_END = "<!-- END NORMAN TUI SECRET POLICY -->"
+PROTECTED_HOOK_CONFIG_KEYS = frozenset(
+    {
+        "allow_managed_hooks_only",
+        "features.hooks",
+        "features.codex_hooks",
+        "hooks",
+        "rules",
+    }
 )
 
 
@@ -384,12 +415,36 @@ def route_arguments_error(route: Route, arguments: Sequence[str]) -> str:
         "provider",
         "wire_api",
     }
+    protected_keys = {"developer_instructions"} | PROTECTED_HOOK_CONFIG_KEYS
     for override in config_overrides(arguments):
         key = config_key(override)
         if key in routed_keys or key.startswith("model_providers."):
             return (
                 f"{route.key} does not allow --config to override {key!r}; "
                 "that would bypass its TUI route."
+            )
+        if key in protected_keys:
+            return (
+                f"{route.key} does not allow --config to override {key!r}; "
+                "that would weaken its required Norman TUI secret guard."
+            )
+    return ""
+
+
+def secret_guard_arguments_error(arguments: Sequence[str]) -> str:
+    """Reject session overrides that could suppress the mandatory hook."""
+    for override in config_overrides(arguments):
+        key = config_key(override)
+        if (
+            key in PROTECTED_HOOK_CONFIG_KEYS
+            or key.startswith("features.hooks.")
+            or key.startswith("features.codex_hooks.")
+            or key.startswith("hooks.")
+            or key.startswith("rules.")
+        ):
+            return (
+                f"Codex does not allow --config to override {key!r}; "
+                "that would weaken its required Norman TUI secret guard."
             )
     return ""
 
@@ -435,6 +490,51 @@ def profile_path(route: Route) -> Path:
     return route_home(route) / f"{route.profile}.config.toml"
 
 
+def _write_private_text(path: Path, contents: str) -> None:
+    """Atomically replace a route-local file without exposing its contents."""
+    fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", dir=path.parent, text=True
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(contents)
+        temporary_path.chmod(0o600)
+        temporary_path.replace(path)
+    except Exception:
+        temporary_path.unlink(missing_ok=True)
+        raise
+
+
+def write_routed_tui_secret_policy(home: Path) -> Path:
+    """Install managed secret rules without discarding route-local instructions."""
+    path = home / "AGENTS.md"
+    try:
+        existing = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        existing = ""
+    except OSError as exc:
+        raise RuntimeError(
+            f"Unable to read route-local instructions at {path}."
+        ) from exc
+
+    managed = (
+        f"{ROUTED_TUI_POLICY_BEGIN}\n{ROUTED_TUI_SECRET_POLICY}"
+        f"{ROUTED_TUI_POLICY_END}\n"
+    )
+    start = existing.find(ROUTED_TUI_POLICY_BEGIN)
+    end = existing.find(ROUTED_TUI_POLICY_END, start + len(ROUTED_TUI_POLICY_BEGIN))
+    if start >= 0 and end >= 0:
+        end += len(ROUTED_TUI_POLICY_END)
+        contents = f"{existing[:start]}{managed}{existing[end:]}"
+    elif existing.strip():
+        contents = f"{existing.rstrip()}\n\n{managed}"
+    else:
+        contents = managed
+    _write_private_text(path, contents)
+    return path
+
+
 def write_gateway_profile(route: Route) -> Path:
     """Create/refresh a profile without ever storing a bearer token."""
     if not GATEWAY_TOKEN_HELPER.is_file() or not os.access(
@@ -443,14 +543,15 @@ def write_gateway_profile(route: Route) -> Path:
         raise RuntimeError(
             f"Gateway token helper is unavailable at {GATEWAY_TOKEN_HELPER}."
         )
-
     home = route_home(route)
     home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    write_routed_tui_secret_policy(home)
     path = profile_path(route)
     contents = "\n".join(
         (
             f'model_provider = "{route.provider}"',
             f'model = "{DEFAULT_ROUTER_MODEL}"',
+            f"developer_instructions = {json.dumps(ROUTED_TUI_DEVELOPER_INSTRUCTIONS)}",
             "",
             f"[model_providers.{route.provider}]",
             f"name = {json.dumps(route.key + ' TUI model gateway')}",
@@ -466,18 +567,7 @@ def write_gateway_profile(route: Route) -> Path:
             "",
         )
     )
-    fd, temporary_name = tempfile.mkstemp(
-        prefix=f".{route.profile}.", dir=home, text=True
-    )
-    temporary_path = Path(temporary_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(contents)
-        temporary_path.chmod(0o600)
-        temporary_path.replace(path)
-    except Exception:
-        temporary_path.unlink(missing_ok=True)
-        raise
+    _write_private_text(path, contents)
     return path
 
 
@@ -911,7 +1001,43 @@ def work_environment() -> dict[str, str]:
     environment = os.environ.copy()
     environment.pop("OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY", None)
     environment["CODEX_WORK_OPS_BINDING_LOADED"] = "1"
+    environment["NORMAN_TUI_NO_DIRECT_VAULT"] = "1"
     return environment
+
+
+def verify_managed_tui_secret_policy() -> None:
+    """Fail closed unless the root-managed secret guard is active."""
+    if not SECRET_GUARD.is_file() or not os.access(SECRET_GUARD, os.R_OK):
+        raise RuntimeError(
+            f"Norman TUI secret guard verifier is unavailable at {SECRET_GUARD}."
+        )
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SECRET_GUARD),
+                "--verify-managed-policy",
+                "--requirements-path",
+                str(MANAGED_CODEX_REQUIREMENTS),
+                "--managed-guard-path",
+                str(MANAGED_SECRET_GUARD),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(
+            "Unable to verify the enforced Norman TUI credential policy."
+        ) from exc
+    if result.returncode != 0:
+        detail = result.stderr.strip() or "managed policy verification failed"
+        raise RuntimeError(
+            "Norman TUI credential policy is not enforced "
+            f"({detail}). Install it with "
+            "sudo -n ~/code/norman/scripts/deploy_codex_tui_secret_guard.sh."
+        )
 
 
 def exec_work_route(route: Route, arguments: list[str]) -> None:
@@ -933,10 +1059,12 @@ def exec_work_route(route: Route, arguments: list[str]) -> None:
         )
         os.execve(str(OPS_OPENBRAND_MCP_LAUNCHER), command, work_environment())
 
+    verify_managed_tui_secret_policy()
     write_gateway_profile(route)
     environment = os.environ.copy()
     environment["CODEX_HOME"] = str(route_home(route))
     environment["CODEX_REAL_BIN"] = str(resolve_real_codex())
+    environment["NORMAN_TUI_NO_DIRECT_VAULT"] = "1"
     command = [environment["CODEX_REAL_BIN"]]
     if not has_explicit_profile(arguments) and starts_session(arguments):
         command.extend(("--profile", route.profile))
@@ -947,10 +1075,12 @@ def exec_work_route(route: Route, arguments: list[str]) -> None:
 
 
 def exec_regular_route(route: Route, arguments: list[str]) -> None:
+    verify_managed_tui_secret_policy()
     write_gateway_profile(route)
     environment = os.environ.copy()
     environment["CODEX_HOME"] = str(route_home(route))
     environment["CODEX_REAL_BIN"] = str(resolve_real_codex())
+    environment["NORMAN_TUI_NO_DIRECT_VAULT"] = "1"
     command = [environment["CODEX_REAL_BIN"]]
     if not has_explicit_profile(arguments) and starts_session(arguments):
         command.extend(("--profile", route.profile))
@@ -960,9 +1090,23 @@ def exec_regular_route(route: Route, arguments: list[str]) -> None:
     os.execve(command[0], command, environment)
 
 
+def generic_codex_home() -> Path:
+    configured = os.getenv("CODEX_HOME", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    return HOME / ".codex"
+
+
 def exec_regular_fallback(arguments: list[str]) -> None:
     real_codex = str(resolve_real_codex())
-    os.execve(real_codex, [real_codex, *arguments], os.environ.copy())
+    environment = os.environ.copy()
+    command = [real_codex]
+    if starts_session(arguments):
+        verify_managed_tui_secret_policy()
+        environment["CODEX_HOME"] = str(generic_codex_home())
+        environment["NORMAN_TUI_NO_DIRECT_VAULT"] = "1"
+    command.extend(arguments)
+    os.execve(real_codex, command, environment)
 
 
 def exec_work_fallback(reenter: str, arguments: list[str]) -> None:
@@ -1034,6 +1178,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         success, detail = verify_route(route)
         print(f"{route.key}: {detail}", file=sys.stderr)
         return 0 if success else 1
+
+    if starts_session(parsed.codex_args):
+        arguments_error = secret_guard_arguments_error(parsed.codex_args)
+        if arguments_error:
+            print(f"codex-route: {arguments_error}", file=sys.stderr)
+            return 2
 
     if route is not None and starts_session(parsed.codex_args):
         if route.launcher != parsed.launcher:

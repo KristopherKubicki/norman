@@ -216,10 +216,9 @@ bearer token accepted by that route's `/v1` gateway. Configure the user shell
 or the proof service with an approved `NORMAN_SECRET_CMD` or leased
 `NORMAN_KEYS_URL` resolver. Do not store a gateway bearer token in shell
 startup files, Codex profiles, systemd environment files, or the checkout.
-When neither resolver is configured, the helper automatically uses the
-machine-local encrypted `~/.local/bin/cred` vault when available. This fallback
-also needs those logical aliases and is only intended during the Norman Keys
-migration.
+When neither resolver is configured, the helper fails closed and reports that
+approved broker access is unavailable. Codex TUIs do not fall back to `cred`
+or ask for a vault passphrase.
 
 After broker provisioning, prove every route without sending a prompt:
 
@@ -309,6 +308,81 @@ kill -TERM -- <codex-pid>  # Cancel the paused session
 
 Review the report before resuming work. The BBS alert is a notification and
 audit trail; the human decides whether to resume, cancel, or investigate.
+
+### Codex Session Pressure and History Retention
+
+Long-lived `codex resume` sessions can load very large JSONL histories into a
+single TUI process. When several are retained simultaneously, memory pages are
+moved to swap and the TUI becomes sluggish even when the machine still reports
+available RAM. The session guard prevents this failure mode without deleting or
+terminating active work:
+
+```bash
+scripts/deploy_codex_session_guard.sh
+```
+
+The deployment installs a `codex-work resume` guard, an every-15-minute
+session-pressure report, and a daily retention job. The report is written to:
+
+```text
+~/.local/state/norman/codex-session-pressure.json
+~/.local/state/norman/codex-session-prune.json
+```
+
+Direct `codex-work resume --last` and `codex-work resume <session-id>` calls
+are blocked when their JSONL exceeds the configured 512 MiB limit. Bare
+`codex-work resume` still opens Codex's native picker, so it warns instead of
+trying to filter the picker. The deliberate escape hatch is:
+
+```bash
+CODEX_WORK_ALLOW_OVERSIZE_RESUME=1 codex-work resume <session-id>
+```
+
+Do not use the override as a normal workflow. Preserve a concise handoff in
+the worktree or BBS, exit the oversized session normally, and start a fresh
+session. The pressure monitor reports active PID PSS and SwapPss, but never
+signals, terminates, or deletes an active session.
+
+New `codex-work` sessions and both Norman TUI launchers also export
+`PYTEST_XDIST_AUTO_NUM_WORKERS=4`. pytest-xdist honors that variable only for
+`pytest -n auto`, preventing an agent test run from claiming every CPU on the
+interactive host. Deliberate capacity-test overrides are available per entry
+point:
+
+```bash
+CODEX_WORK_PYTEST_XDIST_AUTO_WORKERS=8 codex-work
+NORMAN_CODEX_PYTEST_XDIST_AUTO_WORKERS=8 scripts/norman_codex_launch.sh
+```
+
+Prefer a bounded worker count or the normal test command when the local host
+pressure report is not healthy.
+
+The pruning job keeps the 20 newest session files per Codex home and removes
+only files older than 14 days. Before deletion it inspects open file
+descriptors and skips every active JSONL, including one held by a process other
+than Codex. It replaces the former date-directory-only pruning job.
+
+The existing local host pressure guard now treats sustained 95%+ swap use as a
+failure and defers background work. It remains non-destructive. Once active
+oversized sessions have been handed off and closed, stale swap can be cleared
+without a reboot:
+
+```bash
+sudo swapoff -a
+sudo swapon -a
+free -h
+swapon --show
+cat /proc/pressure/io
+```
+
+BBS posting is intentionally disabled until an approved BBS-scoped secret
+broker is configured. Install a non-secret
+`/etc/norman/tui-fleet-alerts.env` based on
+`scripts/systemd/norman-tui-fleet-alerts.env.example`; the broker must resolve
+the logical alias `bbs.norman.post-token`. Do not point it at the Codex gateway
+broker, whose policy deliberately permits only `*/prompt-proxy-token` aliases.
+Without this configuration the alert services are skipped cleanly rather than
+failing repeatedly.
 
 ### Norman Codex Capacity Contract
 

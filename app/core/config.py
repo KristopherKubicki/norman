@@ -249,6 +249,7 @@ class Settings(BaseSettings):
     prompt_facade_cloud_fallback_enabled: bool = False
     prompt_facade_cloud_fallback_aws_region: str = ""
     prompt_facade_cloud_fallback_credentials_secret: str = ""
+    prompt_facade_explicit_cloud_mantle_api_key_secret: str = ""
     llm_mesh_cache_ttl_seconds: int = 15
     llm_mesh_cache_stale_seconds: int = 300
     llm_mesh_workers: List[Dict[str, Any]] = [

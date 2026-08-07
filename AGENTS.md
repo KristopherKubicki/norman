@@ -10,6 +10,9 @@
   unbounded scans such as `find /`, `find /home`, or `rg ... /home`.
 - Use the narrowest practical path plus a timeout for expensive discovery,
   verification, conversion, or browser automation tasks.
+- Do not use `pytest -n auto` on this shared interactive host. Use the normal
+  test command or a bounded worker count; `codex-work` limits xdist auto mode
+  to four workers for new sessions.
 - Stop or clean up temporary workers, browser tabs, and disposable artifacts
   when a task finishes; do not leave idle resource consumers behind.
 - When host pressure is reported, inspect the local pressure guard report before

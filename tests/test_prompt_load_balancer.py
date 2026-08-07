@@ -700,6 +700,12 @@ def _install_bedrock_stub(
         "test/bedrock-fallback",
         raising=False,
     )
+    monkeypatch.setattr(
+        prompt_provider_facade.settings,
+        "prompt_facade_explicit_cloud_mantle_api_key_secret",
+        "test/bedrock-mantle",
+        raising=False,
+    )
     calls = []
 
     class StubBedrockModelAdapter:
@@ -985,6 +991,64 @@ def test_openai_compat_responses_routes_explicit_cloud_model_without_local_admis
     assert len(bedrock_calls) == 1
     assert bedrock_calls[0].model == "openai.gpt-5.6-sol"
     assert bedrock_calls[0].route_key == "gpt-5.6-sol"
+    assert (
+        bedrock_calls[0].metadata["route_policy"]["bedrock_mantle_api_key_secret"]
+        == "test/bedrock-mantle"
+    )
+    assert "aws_credentials_secret" not in bedrock_calls[0].metadata["route_policy"]
+
+
+def test_openai_compat_responses_reports_unconfigured_explicit_cloud_selection(
+    test_app, monkeypatch
+):
+    from app.services import prompt_provider_facade
+    from app.services.prompt_provider_facade import norllama_gateway
+
+    headers = _proxy_headers(monkeypatch)
+    monkeypatch.setattr(
+        prompt_provider_facade.settings,
+        "prompt_facade_cloud_fallback_aws_region",
+        "us-east-2",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        prompt_provider_facade.settings,
+        "prompt_facade_explicit_cloud_mantle_api_key_secret",
+        "",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("explicit cloud selection must not invoke local gateway")
+        ),
+    )
+    bedrock_calls = []
+
+    class StubBedrockModelAdapter:
+        def invoke(self, request):
+            bedrock_calls.append(request)
+            raise AssertionError("unconfigured selection must not invoke Bedrock")
+
+    monkeypatch.setattr(
+        prompt_provider_facade,
+        "BedrockModelAdapter",
+        StubBedrockModelAdapter,
+    )
+
+    response = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={"model": "gpt-5.6-sol", "input": "status?"},
+    )
+
+    assert response.status_code == 503
+    error = response.json()["error"]
+    assert error["code"] == "explicit_cloud_selection_unavailable"
+    assert error["param"] == "model"
+    assert "mantle" not in response.text.lower()
+    assert bedrock_calls == []
 
 
 def test_openai_compat_responses_streams_explicit_cloud_selection_progress(

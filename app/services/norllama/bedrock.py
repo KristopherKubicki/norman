@@ -51,6 +51,31 @@ class BedrockCredentials:
         }
 
 
+@dataclass(frozen=True, repr=False)
+class BedrockMantleApiKey:
+    """Opaque Bedrock Mantle API key resolved through Norman Keys."""
+
+    api_key: str
+    source: str = ""
+    secret_name: str = ""
+    lease_id: str = ""
+    request_id: str = ""
+    expires_at: str = ""
+
+    def receipt_metadata(self) -> dict[str, str]:
+        return {
+            key: value
+            for key, value in {
+                "source": self.source,
+                "secret_name": self.secret_name,
+                "lease_id": self.lease_id,
+                "request_id": self.request_id,
+                "expires_at": self.expires_at,
+            }.items()
+            if value
+        }
+
+
 def _clean(value: Any) -> str:
     return str(value or "").strip()
 
@@ -136,6 +161,15 @@ def bedrock_credentials_secret(
     )
 
 
+def bedrock_mantle_api_key_secret(
+    route_policy: Mapping[str, Any] | None = None,
+) -> str:
+    policy = route_policy or {}
+    return _clean(policy.get("bedrock_mantle_api_key_secret")) or _clean(
+        policy.get("bedrock_mantle_api_key_secret_name")
+    )
+
+
 def _keys_secret_get_url() -> str:
     base = _first_env("NORMAN_KEYS_URL", "NORMAN_KEYS_API_BASE").rstrip("/")
     if not base:
@@ -176,13 +210,14 @@ def _broker_secret_from_http(
     lane: str,
     target_host: str,
     timeout_seconds: float,
+    reason: str = "Native Bedrock runtime credentials",
 ) -> tuple[str, dict[str, str]]:
     url = _keys_secret_get_url()
     if not url:
         raise RuntimeError("Norman Keys HTTP broker is not configured")
     payload = {
         "name": secret_name,
-        "reason": "Native Bedrock runtime credentials",
+        "reason": reason,
         "requester_id": requester_id,
         "session_id": session_id,
         "lane": lane,
@@ -421,6 +456,85 @@ def resolve_bedrock_credentials(
     raise RuntimeError("Bedrock brokered credential lookup failed")
 
 
+def resolve_bedrock_mantle_api_key(
+    route_policy: Mapping[str, Any] | None = None,
+    *,
+    timeout_seconds: float = 0,
+    requester_id: str = "",
+    session_id: str = "",
+    lane: str = "",
+    target_host: str = "",
+) -> BedrockMantleApiKey:
+    """Resolve an explicit Bedrock Mantle API key through Norman Keys."""
+
+    policy = route_policy or {}
+    secret_name = bedrock_mantle_api_key_secret(policy)
+    if not secret_name:
+        raise RuntimeError("Bedrock Mantle API key alias is not configured")
+    context = _credential_request_context(
+        policy,
+        requester_id=requester_id,
+        session_id=session_id,
+        lane=lane,
+        target_host=target_host,
+    )
+    broker_timeout = _keys_timeout_seconds(timeout_seconds)
+    failures = 0
+    if _keys_secret_get_url():
+        try:
+            raw_value, metadata = _broker_secret_from_http(
+                secret_name,
+                requester_id=context["requester_id"],
+                session_id=context["session_id"],
+                lane=context["lane"],
+                target_host=context["target_host"],
+                timeout_seconds=broker_timeout,
+                reason="Bedrock Mantle Responses API key",
+            )
+            return BedrockMantleApiKey(
+                api_key=raw_value,
+                source="norman_keys",
+                secret_name=secret_name,
+                lease_id=_clean(metadata.get("lease_id")),
+                request_id=_clean(metadata.get("request_id")),
+                expires_at=_clean(metadata.get("expires_at")),
+            )
+        except (
+            json.JSONDecodeError,
+            OSError,
+            TimeoutError,
+            urllib_error.URLError,
+            ValueError,
+        ):
+            failures += 1
+    if _secret_command(secret_name):
+        try:
+            raw_value, metadata = _broker_secret_from_command(
+                secret_name,
+                timeout_seconds=broker_timeout,
+            )
+            return BedrockMantleApiKey(
+                api_key=raw_value,
+                source="secret_command",
+                secret_name=secret_name,
+                lease_id=_clean(metadata.get("lease_id")),
+                request_id=_clean(metadata.get("request_id")),
+                expires_at=_clean(metadata.get("expires_at")),
+            )
+        except (
+            OSError,
+            subprocess.SubprocessError,
+            subprocess.TimeoutExpired,
+            ValueError,
+        ):
+            failures += 1
+    if not failures:
+        raise RuntimeError(
+            "Bedrock Mantle API key requires NORMAN_KEYS_URL or NORMAN_SECRET_CMD"
+        )
+    raise RuntimeError("Bedrock Mantle API key lookup failed")
+
+
 def _content_text(value: Any) -> str:
     if isinstance(value, str):
         return value.strip()
@@ -655,6 +769,178 @@ def normalize_bedrock_converse_response(response: Mapping[str, Any]) -> dict[str
     return {
         "text": "\n".join(text_parts),
         "stop_reason": _clean(response.get("stopReason")) or "stop",
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+        },
+    }
+
+
+def bedrock_mantle_responses_url(region: str) -> str:
+    clean_region = _clean(region)
+    if not clean_region:
+        raise ValueError("Bedrock Mantle route is missing an AWS region")
+    return f"https://bedrock-mantle.{clean_region}.api.aws/openai/v1/responses"
+
+
+def bedrock_mantle_responses_input(
+    messages: Sequence[Mapping[str, Any]] | None,
+    *,
+    system: str = "",
+) -> list[dict[str, Any]]:
+    """Convert generic chat messages to the OpenAI-compatible Responses input."""
+
+    converted: list[dict[str, Any]] = []
+    if _clean(system):
+        converted.append(
+            {
+                "role": "developer",
+                "content": [{"type": "input_text", "text": _clean(system)}],
+            }
+        )
+    for message in messages or []:
+        role = _clean(message.get("role")).lower()
+        text = _content_text(message.get("content"))
+        if not text:
+            continue
+        if role in {"system", "developer"}:
+            mantle_role = "developer"
+            content_type = "input_text"
+        elif role == "assistant":
+            mantle_role = "assistant"
+            content_type = "output_text"
+        elif role == "tool":
+            mantle_role = "user"
+            content_type = "input_text"
+            text = f"Prior tool output (replayed context only): {text}"
+        else:
+            mantle_role = "user"
+            content_type = "input_text"
+        converted.append(
+            {
+                "role": mantle_role,
+                "content": [{"type": content_type, "text": text}],
+            }
+        )
+    if not converted:
+        raise ValueError("Bedrock Mantle Responses requires at least one message")
+    return converted
+
+
+def build_bedrock_mantle_responses_request(
+    *,
+    model: str,
+    messages: Sequence[Mapping[str, Any]] | None,
+    system: str = "",
+    max_tokens: int = 1024,
+    temperature: float | None = None,
+) -> dict[str, Any]:
+    clean_model = _clean(model)
+    if not clean_model:
+        raise ValueError("Bedrock Mantle route is missing a model")
+    return {
+        "model": clean_model,
+        "input": bedrock_mantle_responses_input(messages, system=system),
+        "max_output_tokens": _positive_int(max_tokens, 1024),
+        "temperature": _number(temperature, 0.0),
+    }
+
+
+def invoke_bedrock_mantle_responses(
+    *,
+    model: str,
+    messages: Sequence[Mapping[str, Any]] | None,
+    api_key: BedrockMantleApiKey,
+    system: str = "",
+    max_tokens: int = 1024,
+    temperature: float | None = None,
+    region: str = "",
+    timeout_seconds: float = 0,
+) -> dict[str, Any]:
+    payload = build_bedrock_mantle_responses_request(
+        model=model,
+        messages=messages,
+        system=system,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+    request = urllib_request.Request(
+        bedrock_mantle_responses_url(region),
+        data=json.dumps(payload, sort_keys=True).encode("utf-8"),
+        headers={
+            "Accept": "application/json",
+            "Authorization": f"Bearer {api_key.api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib_request.urlopen(
+            request,
+            timeout=max(0.1, _timeout_seconds(timeout_seconds) or 45.0),
+        ) as response:
+            raw_response = response.read().decode("utf-8", errors="replace")
+    except urllib_error.HTTPError as exc:
+        raise RuntimeError(
+            f"Bedrock Mantle Responses request failed with HTTP {exc.code}"
+        ) from exc
+    except (OSError, TimeoutError, urllib_error.URLError) as exc:
+        raise RuntimeError("Bedrock Mantle Responses request failed") from exc
+    try:
+        parsed = json.loads(raw_response) if raw_response else {}
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            "Bedrock Mantle Responses returned an invalid JSON response"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError("Bedrock Mantle Responses returned a non-object response")
+    return parsed
+
+
+def _mantle_response_text(response: Mapping[str, Any]) -> str:
+    output_text = _clean(response.get("output_text"))
+    if output_text:
+        return output_text
+    text_parts: list[str] = []
+    output = response.get("output")
+    if not isinstance(output, Sequence) or isinstance(output, (str, bytes, bytearray)):
+        return ""
+    for item in output:
+        if not isinstance(item, Mapping):
+            continue
+        content = item.get("content")
+        if not isinstance(content, Sequence) or isinstance(
+            content, (str, bytes, bytearray)
+        ):
+            continue
+        for part in content:
+            if not isinstance(part, Mapping):
+                continue
+            text = part.get("text")
+            if isinstance(text, Mapping):
+                text = text.get("value")
+            clean_text = _clean(text)
+            if clean_text:
+                text_parts.append(clean_text)
+    return "\n".join(text_parts)
+
+
+def normalize_bedrock_mantle_responses(response: Mapping[str, Any]) -> dict[str, Any]:
+    usage = response.get("usage")
+    usage = usage if isinstance(usage, Mapping) else {}
+    input_tokens = _nonnegative_int(usage.get("input_tokens", usage.get("inputTokens")))
+    output_tokens = _nonnegative_int(
+        usage.get("output_tokens", usage.get("outputTokens"))
+    )
+    total_tokens = max(
+        _nonnegative_int(usage.get("total_tokens", usage.get("totalTokens"))),
+        input_tokens + output_tokens,
+    )
+    status = _clean(response.get("status")).lower()
+    return {
+        "text": _mantle_response_text(response),
+        "stop_reason": "stop" if status in {"", "completed"} else status,
         "usage": {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,

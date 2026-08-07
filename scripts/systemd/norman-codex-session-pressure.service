@@ -1,0 +1,16 @@
+[Unit]
+Description=Report Norman Codex session pressure
+After=local-fs.target
+
+[Service]
+Type=oneshot
+User=kristopher
+Group=kristopher
+UMask=0077
+WorkingDirectory=/home/kristopher/code/norman
+Nice=19
+IOSchedulingClass=idle
+IOSchedulingPriority=7
+TimeoutStartSec=30s
+ExecStartPre=/usr/bin/mkdir -p /home/kristopher/.local/state/norman
+ExecStart=/usr/bin/python3 /home/kristopher/code/norman/scripts/codex_session_pressure.py --output-json /home/kristopher/.local/state/norman/codex-session-pressure.json

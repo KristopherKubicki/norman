@@ -19,8 +19,11 @@ from app.services.norllama.bedrock import (
     bedrock_profile,
     bedrock_region,
     invoke_bedrock_converse,
+    invoke_bedrock_mantle_responses,
     normalize_bedrock_converse_response,
+    normalize_bedrock_mantle_responses,
     resolve_bedrock_credentials,
+    resolve_bedrock_mantle_api_key,
 )
 from app.services.norllama.route_policy_artifact import (
     authorize_route_under_policy,
@@ -372,6 +375,18 @@ def _credential_metadata(credentials: Any) -> dict[str, str]:
     return credentials.receipt_metadata() if credentials is not None else {}
 
 
+def _uses_bedrock_mantle_responses(
+    model: str,
+    authorization: dict[str, Any],
+) -> bool:
+    """Use Mantle only for the explicit GPT selection authorized by the facade."""
+
+    return bool(
+        authorization.get("explicit_cloud_selection_authorized")
+        and _clean(model).lower().startswith("openai.gpt-5.")
+    )
+
+
 def _request_credentials(
     route_policy: dict[str, Any],
     metadata: dict[str, Any],
@@ -383,6 +398,31 @@ def _request_credentials(
         timeout_seconds=timeout_seconds,
         requester_id=_metadata_value(
             metadata,
+            "aws_credentials_requester_id",
+            "bedrock_credentials_requester_id",
+        ),
+        session_id=_metadata_value(
+            metadata,
+            "console_runtime_job_id",
+            "request_id",
+            "invocation_id",
+        ),
+        lane=route.lane,
+    )
+
+
+def _request_mantle_api_key(
+    route_policy: dict[str, Any],
+    metadata: dict[str, Any],
+    route: NorllamaRoute,
+    timeout_seconds: float,
+) -> Any:
+    return resolve_bedrock_mantle_api_key(
+        route_policy,
+        timeout_seconds=timeout_seconds,
+        requester_id=_metadata_value(
+            metadata,
+            "bedrock_mantle_api_key_requester_id",
             "aws_credentials_requester_id",
             "bedrock_credentials_requester_id",
         ),
@@ -499,6 +539,17 @@ class BedrockModelAdapter:
         authorization: dict[str, Any],
     ) -> ModelResult:
         timeout_seconds = _model_timeout_seconds(request)
+        if _uses_bedrock_mantle_responses(model, authorization):
+            return self._invoke_mantle_authorized(
+                request,
+                metadata=metadata,
+                route_policy=route_policy,
+                task=task,
+                route=route,
+                model=model,
+                authorization=authorization,
+                timeout_seconds=timeout_seconds,
+            )
         credentials = _request_credentials(
             route_policy,
             metadata,
@@ -529,6 +580,56 @@ class BedrockModelAdapter:
             response=response,
             timeout_seconds=timeout_seconds,
             credential_metadata=credential_metadata,
+            authorization=authorization,
+        )
+
+    def _invoke_mantle_authorized(
+        self,
+        request: ModelRequest,
+        *,
+        metadata: dict[str, Any],
+        route_policy: dict[str, Any],
+        task: NorllamaTaskRequest,
+        route: NorllamaRoute,
+        model: str,
+        authorization: dict[str, Any],
+        timeout_seconds: float,
+    ) -> ModelResult:
+        api_key = _request_mantle_api_key(
+            route_policy,
+            metadata,
+            route,
+            timeout_seconds,
+        )
+        api_key_metadata = _credential_metadata(api_key)
+        route = _route_with_attribution(
+            route,
+            authorization=authorization,
+            credential_metadata=api_key_metadata,
+        )
+        response = invoke_bedrock_mantle_responses(
+            model=model,
+            messages=request.messages,
+            api_key=api_key,
+            system=request.system,
+            max_tokens=request.budget.max_output_tokens,
+            temperature=_temperature(request, route_policy),
+            region=bedrock_region(route_policy),
+            timeout_seconds=timeout_seconds,
+        )
+        normalized = normalize_bedrock_mantle_responses(response)
+        return self._completed_result(
+            task=task,
+            route=route,
+            metadata=metadata,
+            route_policy=route_policy,
+            model=model,
+            normalized=normalized,
+            response=response,
+            timeout_seconds=timeout_seconds,
+            credential_metadata=api_key_metadata,
+            credential_metadata_key="bedrock_mantle_api_key",
+            transport="bedrock_mantle_responses",
             authorization=authorization,
         )
 
@@ -568,6 +669,8 @@ class BedrockModelAdapter:
         response: dict[str, Any],
         timeout_seconds: float,
         credential_metadata: dict[str, str],
+        credential_metadata_key: str = "bedrock_credentials",
+        transport: str = "aws_bedrock_converse",
         authorization: dict[str, Any],
     ) -> ModelResult:
         usage = normalized["usage"]
@@ -597,7 +700,8 @@ class BedrockModelAdapter:
                     "" if credential_metadata else bedrock_profile(route_policy)
                 ),
                 "bedrock_timeout_seconds": timeout_seconds,
-                "bedrock_credentials": credential_metadata,
+                "bedrock_transport": transport,
+                credential_metadata_key: credential_metadata,
                 "policy_authorization": authorization,
             },
             raw=response,

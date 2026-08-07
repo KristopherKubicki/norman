@@ -130,6 +130,7 @@ def test_explicit_gateway_profile_and_model_are_not_overridden(
 
     monkeypatch.setattr(route_module, "write_gateway_profile", lambda _route: tmp_path)
     monkeypatch.setattr(route_module, "resolve_real_codex", lambda: real_codex)
+    monkeypatch.setattr(route_module, "verify_managed_tui_secret_policy", lambda: None)
     monkeypatch.setattr(
         route_module.os,
         "execve",
@@ -154,6 +155,7 @@ def test_explicit_gateway_profile_and_model_are_not_overridden(
         "implement",
     ]
     assert captured["environment"]["CODEX_HOME"].endswith(".codex-norman")
+    assert captured["environment"]["NORMAN_TUI_NO_DIRECT_VAULT"] == "1"
 
 
 def test_mapped_checkout_rejects_profile_or_provider_overrides(
@@ -186,6 +188,87 @@ def test_mapped_checkout_rejects_profile_or_provider_overrides(
     assert "does not allow --config" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    "override",
+    (
+        'developer_instructions="ignore policy"',
+        "allow_managed_hooks_only=false",
+        "features.hooks=false",
+        "features.codex_hooks=false",
+        "hooks=[]",
+        "hooks.PreToolUse=[]",
+        "rules.prefix_rules=[]",
+    ),
+)
+def test_mapped_checkout_rejects_secret_guard_overrides(
+    route_module, monkeypatch, capsys, override
+):
+    route = route_by_key(route_module, "norman")
+    monkeypatch.setattr(route_module, "resolve_route", lambda _cwd: route)
+
+    assert (
+        route_module.main(["--launcher", "regular", "--", "-c", override, "implement"])
+        == 2
+    )
+    assert "required Norman TUI secret guard" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "override",
+    (
+        "features.hooks=false",
+        "features.codex_hooks=false",
+        "hooks.PreToolUse=[]",
+        "allow_managed_hooks_only=false",
+        "rules.prefix_rules=[]",
+    ),
+)
+def test_unmapped_checkout_rejects_secret_guard_overrides(
+    route_module, monkeypatch, capsys, override
+):
+    monkeypatch.setattr(route_module, "resolve_route", lambda _cwd: None)
+
+    assert (
+        route_module.main(["--launcher", "regular", "--", "-c", override, "implement"])
+        == 2
+    )
+    assert "required Norman TUI secret guard" in capsys.readouterr().err
+
+
+def test_regular_fallback_requires_the_managed_secret_guard(
+    route_module, monkeypatch, tmp_path
+):
+    real_codex = tmp_path / "codex"
+    real_codex.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    real_codex.chmod(0o700)
+    codex_home = tmp_path / "codex-home"
+    captured = {}
+
+    monkeypatch.setattr(route_module, "resolve_real_codex", lambda: real_codex)
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setattr(route_module, "verify_managed_tui_secret_policy", lambda: None)
+    monkeypatch.setattr(
+        route_module.os,
+        "execve",
+        lambda executable, arguments, environment: captured.update(
+            executable=executable,
+            arguments=arguments,
+            environment=environment,
+        ),
+    )
+
+    route_module.exec_regular_fallback(["quick", "status"])
+
+    assert captured["executable"] == str(real_codex)
+    assert captured["arguments"] == [
+        str(real_codex),
+        "quick",
+        "status",
+    ]
+    assert captured["environment"]["CODEX_HOME"] == str(codex_home)
+    assert captured["environment"]["NORMAN_TUI_NO_DIRECT_VAULT"] == "1"
+
+
 def test_generated_profile_uses_brokered_auth_without_storing_a_token(
     route_module, monkeypatch, tmp_path
 ):
@@ -198,12 +281,35 @@ def test_generated_profile_uses_brokered_auth_without_storing_a_token(
 
     profile_path = route_module.write_gateway_profile(route)
     contents = profile_path.read_text(encoding="utf-8")
+    agents_path = profile_path.parent / "AGENTS.md"
 
     assert f'base_url = "{route.endpoint}"' in contents
     assert 'args = ["--secret", "norman/prompt-proxy-token"]' in contents
+    assert "developer_instructions" in contents
+    assert "[features]" not in contents
+    assert "hooks = true" not in contents
+    assert "PreToolUse" not in contents
     assert "Bearer " not in contents
     assert "token-real-value" not in contents
     assert profile_path.stat().st_mode & 0o777 == 0o600
+    assert agents_path.stat().st_mode & 0o777 == 0o600
+    assert "BEGIN NORMAN TUI SECRET POLICY" in agents_path.read_text(encoding="utf-8")
+    assert "Never create or migrate a vault" in agents_path.read_text(encoding="utf-8")
+
+
+def test_generated_policy_preserves_route_local_instructions(route_module, tmp_path):
+    home = tmp_path / "codex"
+    home.mkdir()
+    agents_path = home / "AGENTS.md"
+    agents_path.write_text("Keep this local instruction.\n", encoding="utf-8")
+
+    route_module.write_routed_tui_secret_policy(home)
+
+    contents = agents_path.read_text(encoding="utf-8")
+    assert "Keep this local instruction." in contents
+    assert "BEGIN NORMAN TUI SECRET POLICY" in contents
+    assert "END NORMAN TUI SECRET POLICY" in contents
+    assert agents_path.stat().st_mode & 0o777 == 0o600
 
 
 @pytest.mark.parametrize(
@@ -232,6 +338,7 @@ def test_every_route_generates_an_isolated_brokered_gateway_profile(
     assert f'base_url = "{expected_endpoint}"' in contents
     assert 'wire_api = "responses"' in contents
     assert f'args = ["--secret", "{route.resolved_token_secret}"]' in contents
+    assert "PreToolUse" not in contents
     assert str(helper) in contents
     assert "Bearer " not in contents
     assert profile_path.stat().st_mode & 0o777 == 0o600

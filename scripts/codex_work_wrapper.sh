@@ -2,10 +2,15 @@
 set -euo pipefail
 
 readonly ROUTER_SCRIPT="${CODEX_ROUTER_SCRIPT:-$HOME/.local/lib/norman-codex-route/codex_route.py}"
+readonly CODEX_SESSION_PRESSURE_SCRIPT="${CODEX_SESSION_PRESSURE_SCRIPT:-$HOME/.local/lib/norman-codex-route/codex_session_pressure.py}"
+readonly CODEX_SECRET_GUARD_SCRIPT="${CODEX_SECRET_GUARD_SCRIPT:-$HOME/.local/lib/norman-codex-route/norman_codex_secret_guard.py}"
+readonly CODEX_MANAGED_REQUIREMENTS="${NORMAN_CODEX_REQUIREMENTS_PATH:-/etc/codex/requirements.toml}"
+readonly CODEX_MANAGED_SECRET_GUARD="${NORMAN_CODEX_MANAGED_SECRET_GUARD:-/usr/local/lib/norman-codex-route/norman_codex_secret_guard.py}"
 readonly CODEX_WORK_HOME="${CODEX_WORK_HOME:-$HOME/.codex-work}"
 readonly CODEX_WORK_AWS_PROFILE="${CODEX_WORK_AWS_PROFILE:-ob-openbrand-admin}"
 readonly CODEX_WORK_AWS_REGION="${CODEX_WORK_AWS_REGION:-us-east-2}"
 readonly CODEX_WORK_DISABLE_APPS="${CODEX_WORK_DISABLE_APPS:-0}"
+readonly CODEX_WORK_PYTEST_XDIST_AUTO_WORKERS="${CODEX_WORK_PYTEST_XDIST_AUTO_WORKERS:-4}"
 readonly OPS_OPENBRAND_MCP_LAUNCHER="$HOME/code/control_plane/scripts/with_ops_openbrand_mcp.sh"
 
 case "${1-}" in
@@ -26,6 +31,15 @@ unset CODEX_ROUTER_RESOLVED
 
 export CODEX_HOME="$CODEX_WORK_HOME"
 
+if [[ ! "$CODEX_WORK_PYTEST_XDIST_AUTO_WORKERS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "codex-work: CODEX_WORK_PYTEST_XDIST_AUTO_WORKERS must be a positive integer." >&2
+  exit 2
+fi
+
+# pytest-xdist reads this only for `pytest -n auto`; leave explicit worker
+# selections alone while preserving capacity for interactive TUIs.
+export PYTEST_XDIST_AUTO_NUM_WORKERS="$CODEX_WORK_PYTEST_XDIST_AUTO_WORKERS"
+
 case "$CODEX_WORK_DISABLE_APPS" in
   0|1)
     ;;
@@ -43,6 +57,128 @@ run_codex() {
   exec "$codex_bin" "$@"
 }
 
+run_guarded_codex() {
+  if [[ ! -r "$CODEX_SECRET_GUARD_SCRIPT" ]]; then
+    echo "codex-work: Norman TUI secret guard verifier is unavailable at $CODEX_SECRET_GUARD_SCRIPT." >&2
+    exit 1
+  fi
+  if ! python3 "$CODEX_SECRET_GUARD_SCRIPT" \
+    --verify-managed-policy \
+    --requirements-path "$CODEX_MANAGED_REQUIREMENTS" \
+    --managed-guard-path "$CODEX_MANAGED_SECRET_GUARD"; then
+    echo "codex-work: managed Norman credential policy is unavailable. Run sudo -n ~/code/norman/scripts/deploy_codex_tui_secret_guard.sh." >&2
+    exit 1
+  fi
+  export NORMAN_TUI_NO_DIRECT_VAULT=1
+  run_codex "$@"
+}
+
+resume_target() {
+  local value=""
+
+  shift
+  while [[ "$#" -gt 0 ]]; do
+    value="$1"
+    shift
+    case "$value" in
+      --last)
+        printf '%s\n' "last"
+        return
+        ;;
+      --help|-h)
+        return
+        ;;
+      --)
+        if [[ "$#" -gt 0 ]]; then
+          printf '%s\n' "$1"
+        fi
+        return
+        ;;
+      -c|--config|--enable|--disable|--remote|--remote-auth-token-env|\
+      -i|--image|-m|--model|--local-provider|-p|--profile|-s|--sandbox|\
+      -C|--cd|--add-dir|-a|--ask-for-approval)
+        if [[ "$#" -gt 0 ]]; then
+          shift
+        fi
+        ;;
+      --config=*|--enable=*|--disable=*|--remote=*|--remote-auth-token-env=*|\
+      --image=*|--model=*|--local-provider=*|--profile=*|--sandbox=*|\
+      --cd=*|--add-dir=*|--ask-for-approval=*)
+        ;;
+      -c?*|-i?*|-m?*|-p?*|-s?*|-C?*|-a?*)
+        ;;
+      -*)
+        ;;
+      *)
+        printf '%s\n' "$value"
+        return
+        ;;
+    esac
+  done
+}
+
+guard_resume() {
+  [[ "${1-}" == "resume" ]] || return
+
+  for argument in "$@"; do
+    case "$argument" in
+      --help|-h)
+        return
+        ;;
+    esac
+  done
+
+  case "${CODEX_WORK_ALLOW_OVERSIZE_RESUME:-0}" in
+    0)
+      ;;
+    1)
+      return
+      ;;
+    *)
+      echo "codex-work: CODEX_WORK_ALLOW_OVERSIZE_RESUME must be 0 or 1." >&2
+      exit 2
+      ;;
+  esac
+
+  if [[ ! -f "$CODEX_SESSION_PRESSURE_SCRIPT" ]]; then
+    echo "codex-work: session-pressure guard is unavailable at $CODEX_SESSION_PRESSURE_SCRIPT; continuing without a resume size check." >&2
+    return
+  fi
+
+  local target
+  target="$(resume_target "$@")"
+  local guard_status=0
+  if python3 "$CODEX_SESSION_PRESSURE_SCRIPT" \
+    --codex-home "$CODEX_HOME" \
+    --resume-target "$target"; then
+    return
+  else
+    guard_status=$?
+  fi
+
+  if [[ "$guard_status" -eq 3 ]]; then
+    cat >&2 <<'EOF'
+codex-work: oversized session resume blocked to protect host responsiveness.
+Preserve a concise handoff, start a fresh session, and resume only the required
+work. Set CODEX_WORK_ALLOW_OVERSIZE_RESUME=1 only for a deliberate override.
+EOF
+    exit 3
+  fi
+
+  echo "codex-work: session-pressure check failed; continuing without a resume size check." >&2
+}
+
+is_help_request() {
+  for argument in "$@"; do
+    case "$argument" in
+      --help|-h)
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
 # The loader exports the subject-bound Ops Portal binding only to this process.
 if [[ "${CODEX_WORK_OPS_BINDING_LOADED:-}" != "1" ]]; then
   exec env -u OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY \
@@ -57,6 +193,8 @@ unset AWS_WEB_IDENTITY_TOKEN_FILE AWS_ROLE_ARN
 export AWS_PROFILE="$CODEX_WORK_AWS_PROFILE"
 export AWS_REGION="$CODEX_WORK_AWS_REGION"
 export AWS_DEFAULT_REGION="$CODEX_WORK_AWS_REGION"
+
+guard_resume "$@"
 
 profile_name=""
 expect_profile_name=0
@@ -108,15 +246,17 @@ else
 fi
 
 needs_bedrock_preflight=0
-case "${1-}" in
-  --help|-h|help|version|--version|-V|login|logout|mcp|debug|sandbox|features|cloud|config)
-    ;;
-  *)
-    if [[ "$uses_work_profile" -eq 1 ]]; then
-      needs_bedrock_preflight=1
-    fi
-    ;;
-esac
+if ! is_help_request "$@"; then
+  case "${1-}" in
+    help|version|--version|-V|login|logout|mcp|debug|sandbox|features|cloud|config)
+      ;;
+    *)
+      if [[ "$uses_work_profile" -eq 1 ]]; then
+        needs_bedrock_preflight=1
+      fi
+      ;;
+  esac
+fi
 
 if [[ "$needs_bedrock_preflight" -eq 1 ]]; then
   if ! command -v aws >/dev/null 2>&1; then
@@ -138,7 +278,7 @@ EOF
 fi
 
 if [[ -n "$profile_name" ]]; then
-  run_codex "$@"
+  run_guarded_codex "$@"
 fi
 
 case "${1-}" in
@@ -147,11 +287,11 @@ case "${1-}" in
     ;;
   debug)
     if [[ "${2-}" == "prompt-input" ]]; then
-      run_codex --profile work "$@"
+      run_guarded_codex --profile work "$@"
     fi
     run_codex "$@"
     ;;
   *)
-    run_codex --profile work "$@"
+    run_guarded_codex --profile work "$@"
     ;;
 esac

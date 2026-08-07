@@ -4,6 +4,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
+import socket
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -26,16 +29,12 @@ DEFAULT_STATE_PATH = Path(
 )
 DEFAULT_BBS_URL = os.environ.get("SWITCHBOARD_URL", "http://127.0.0.1:8765").rstrip("/")
 DEFAULT_ACTOR = os.environ.get("NORMAN_TUI_FLEET_ALERT_ACTOR", "norman")
-DEFAULT_ACTOR_ENV = Path(
-    os.environ.get(
-        "NORMAN_TUI_FLEET_ALERT_ACTOR_ENV",
-        f"/root/.config/networking/switchboard-bbs/actors/{DEFAULT_ACTOR}.env",
-    )
-)
+DEFAULT_TOKEN_SECRET = os.environ.get("NORMAN_TUI_FLEET_ALERT_TOKEN_SECRET", "")
 DEFAULT_THREAD_ID = os.environ.get(
     "NORMAN_TUI_FLEET_ALERT_THREAD_ID", "th_tui_fleet_health"
 )
 DEFAULT_WARN_THRESHOLD = 2
+DEFAULT_SECRET_TIMEOUT_SECONDS = 5.0
 
 
 def _load_json(path: Path, default: Any) -> Any:
@@ -54,26 +53,130 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     )
 
 
-def _load_env_file(path: Path) -> dict[str, str]:
-    values: dict[str, str] = {}
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        values[key.strip()] = value.strip().strip("\"'")
-    return values
+def _clean(value: object) -> str:
+    return str(value or "").strip()
 
 
-def _token_from_env(path: Path) -> str:
-    env = _load_env_file(path)
-    token = str(env.get("SWITCHBOARD_TOKEN") or "").strip()
-    if token:
-        return token
-    token_file = str(env.get("SWITCHBOARD_TOKEN_FILE") or "").strip()
-    if token_file:
-        return Path(token_file).expanduser().read_text(encoding="utf-8").strip()
-    raise RuntimeError(f"{path} has no SWITCHBOARD_TOKEN or SWITCHBOARD_TOKEN_FILE")
+def _first_env(*names: str) -> str:
+    for name in names:
+        value = _clean(os.environ.get(name))
+        if value:
+            return value
+    return ""
+
+
+def _keys_secret_get_url() -> str:
+    base_url = _first_env("NORMAN_KEYS_URL", "NORMAN_KEYS_API_BASE").rstrip("/")
+    if not base_url:
+        return ""
+    if base_url.endswith("/v1/secrets/get"):
+        return base_url
+    if base_url.endswith("/v1"):
+        return f"{base_url}/secrets/get"
+    return f"{base_url}/v1/secrets/get"
+
+
+def _secret_timeout_seconds() -> float:
+    configured = _first_env(
+        "NORMAN_TUI_FLEET_ALERT_SECRET_TIMEOUT_SECONDS",
+        "NORMAN_KEYS_TIMEOUT_SECONDS",
+    )
+    try:
+        return max(0.1, float(configured or DEFAULT_SECRET_TIMEOUT_SECONDS))
+    except ValueError:
+        return DEFAULT_SECRET_TIMEOUT_SECONDS
+
+
+def _secret_command(secret_name: str) -> list[str]:
+    configured = _first_env("NORMAN_SECRET_CMD")
+    if not configured:
+        return []
+    command = shlex.split(configured)
+    if not command:
+        return []
+    if "{name}" in configured:
+        return [part.replace("{name}", secret_name) for part in command]
+    return [*command, "get", secret_name]
+
+
+def _resolve_from_norman_keys(secret_name: str) -> str:
+    url = _keys_secret_get_url()
+    if not url:
+        return ""
+    payload = {
+        "name": secret_name,
+        "reason": "Post deduplicated Norman TUI health alerts to Switchboard BBS",
+        "requester_id": _first_env("NORMAN_KEYS_REQUESTER_ID") or "tui-fleet-alerts",
+        "session_id": _first_env("NORMAN_KEYS_SESSION_ID") or "tui-fleet-alerts",
+        "lane": _first_env("NORMAN_KEYS_LANE") or "observability",
+        "target_host": _first_env("NORMAN_KEYS_TARGET_HOST") or socket.gethostname(),
+    }
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    broker_token = _first_env("NORMAN_KEYS_TOKEN", "NORMAN_KEYS_API_TOKEN")
+    if broker_token:
+        headers["Authorization"] = f"Bearer {broker_token}"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload, sort_keys=True).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=_secret_timeout_seconds()) as response:
+        body = response.read().decode("utf-8", errors="replace")
+    parsed = json.loads(body) if body.strip() else {}
+    if not isinstance(parsed, dict):
+        raise ValueError("Norman Keys returned an invalid secret response")
+    token = _clean(parsed.get("value") or parsed.get("secret"))
+    if not token:
+        raise ValueError("Norman Keys returned an empty secret response")
+    return token
+
+
+def _resolve_from_secret_command(command: list[str]) -> str:
+    result = subprocess.run(
+        command,
+        check=True,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=_secret_timeout_seconds(),
+    )
+    token = _clean(result.stdout)
+    if not token:
+        raise ValueError("Norman secret broker command returned an empty secret")
+    return token
+
+
+def resolve_brokered_token(secret_name: str) -> tuple[str, list[str]]:
+    """Resolve a BBS token without touching actor env files or local plaintext."""
+
+    errors: list[str] = []
+    if _keys_secret_get_url():
+        try:
+            token = _resolve_from_norman_keys(secret_name)
+        except (
+            json.JSONDecodeError,
+            OSError,
+            TimeoutError,
+            urllib.error.URLError,
+            ValueError,
+        ):
+            errors.append("Norman Keys HTTP broker request failed")
+        else:
+            if token:
+                return token, errors
+
+    command = _secret_command(secret_name)
+    if command:
+        try:
+            token = _resolve_from_secret_command(command)
+        except (OSError, subprocess.SubprocessError, TimeoutError, ValueError):
+            errors.append("Norman secret broker command lookup failed")
+        else:
+            if token:
+                return token, errors
+
+    return "", errors
 
 
 def _join_url(base_url: str, path: str) -> str:
@@ -427,7 +530,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--state", type=Path, default=DEFAULT_STATE_PATH)
     parser.add_argument("--url", default=DEFAULT_BBS_URL)
     parser.add_argument("--actor", default=DEFAULT_ACTOR)
-    parser.add_argument("--actor-env", type=Path, default=DEFAULT_ACTOR_ENV)
+    parser.add_argument(
+        "--token-secret",
+        default=DEFAULT_TOKEN_SECRET,
+        help=(
+            "Logical Norman Keys secret for the BBS post token. Defaults to "
+            "bbs.<actor>.post-token."
+        ),
+    )
     parser.add_argument("--thread-id", default=DEFAULT_THREAD_ID)
     parser.add_argument("--title", default="TUI fleet health")
     parser.add_argument(
@@ -456,11 +566,21 @@ def main(argv: list[str] | None = None) -> int:
         health, state, warn_threshold=max(1, int(args.warn_threshold or 1))
     )
     if decision["new_alerts"] and not args.dry_run:
-        token = _token_from_env(args.actor_env)
+        actor = _clean(args.actor)
+        token_secret = _clean(args.token_secret) or f"bbs.{actor}.post-token"
+        token, errors = resolve_brokered_token(token_secret)
+        if not token:
+            detail = "; ".join(errors) if errors else "no approved broker is configured"
+            print(
+                "unable to resolve Switchboard BBS token "
+                f"for logical secret {token_secret}: {detail}.",
+                file=sys.stderr,
+            )
+            return 1
         post_alert(
             base_url=str(args.url).rstrip("/"),
             token=token,
-            actor=str(args.actor),
+            actor=actor,
             thread_id=str(args.thread_id),
             health=health,
             decision=decision,

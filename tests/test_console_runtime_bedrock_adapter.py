@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import json
+from urllib import error as urllib_error
 
 import pytest
 
@@ -103,6 +105,7 @@ def _explicit_cloud_selection_request(
                 "route_policy_artifact": artifact,
                 "aws_region": "us-east-2",
                 "aws_profile": "norman-bedrock",
+                "bedrock_mantle_api_key_secret": "test/bedrock-mantle",
             },
             "norllama_route": route.as_dict(),
             "norman_facade_explicit_cloud_selection": marker
@@ -490,32 +493,155 @@ def test_bedrock_adapter_blocks_before_brokered_credential_lookup(monkeypatch):
     )
 
 
-def test_bedrock_adapter_authorizes_exact_facade_explicit_cloud_selection():
-    client = _FakeBedrockClient(
-        {
-            "stopReason": "end_turn",
-            "usage": {
-                "inputTokens": 4,
-                "outputTokens": 2,
-                "totalTokens": 6,
-            },
-            "output": {
-                "message": {"content": [{"text": "Selected cloud model completed."}]}
-            },
-        }
-    )
+def test_bedrock_adapter_routes_authorized_explicit_gpt_selection_through_mantle(
+    monkeypatch,
+):
+    monkeypatch.setenv("NORMAN_KEYS_URL", "http://keys.norman.test")
+    monkeypatch.delenv("NORMAN_SECRET_CMD", raising=False)
+    requests: list[tuple[object, float]] = []
+    mantle_key = "test-mantle-api-key"
 
-    result = BedrockModelAdapter(client_factory=lambda **_kwargs: client).invoke(
-        _explicit_cloud_selection_request()
-    )
+    class Response:
+        def __init__(self, payload: dict) -> None:
+            self.payload = payload
 
-    assert client.calls[0]["modelId"] == "openai.gpt-5.6-sol"
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode()
+
+    def fake_urlopen(request, timeout):
+        requests.append((request, timeout))
+        if request.full_url == "http://keys.norman.test/v1/secrets/get":
+            return Response(
+                {
+                    "value": mantle_key,
+                    "lease_id": "lease-mantle-1",
+                    "request_id": "keys-mantle-1",
+                }
+            )
+        assert (
+            request.full_url
+            == "https://bedrock-mantle.us-east-2.api.aws/openai/v1/responses"
+        )
+        return Response(
+            {
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": "Selected cloud model completed.",
+                            }
+                        ],
+                    }
+                ],
+                "usage": {
+                    "input_tokens": 4,
+                    "output_tokens": 2,
+                    "total_tokens": 6,
+                },
+            }
+        )
+
+    monkeypatch.setattr(bedrock_module.urllib_request, "urlopen", fake_urlopen)
+    client_factory_calls: list[dict] = []
+
+    result = BedrockModelAdapter(
+        client_factory=lambda **kwargs: client_factory_calls.append(kwargs)
+    ).invoke(_explicit_cloud_selection_request())
+
+    assert client_factory_calls == []
+    assert len(requests) == 2
+    broker_request, broker_timeout = requests[0]
+    assert broker_request.full_url == "http://keys.norman.test/v1/secrets/get"
+    assert broker_timeout == 2.0
+    assert json.loads(broker_request.data.decode())["name"] == "test/bedrock-mantle"
+    mantle_request, mantle_timeout = requests[1]
+    assert mantle_timeout == 300.0
+    assert mantle_request.get_header("Authorization").startswith("Bearer ")
+    assert json.loads(mantle_request.data.decode()) == {
+        "input": [
+            {
+                "content": [{"text": "Return the status.", "type": "input_text"}],
+                "role": "user",
+            }
+        ],
+        "max_output_tokens": 321,
+        "model": "openai.gpt-5.6-sol",
+        "temperature": 0.0,
+    }
     assert result.text == "Selected cloud model completed."
+    assert result.usage.as_dict() == {
+        "input_tokens": 4,
+        "output_tokens": 2,
+        "total_tokens": 6,
+    }
+    assert result.metadata["bedrock_transport"] == "bedrock_mantle_responses"
+    assert result.metadata["bedrock_mantle_api_key"] == {
+        "source": "norman_keys",
+        "secret_name": "test/bedrock-mantle",
+        "lease_id": "lease-mantle-1",
+        "request_id": "keys-mantle-1",
+    }
+    assert "bedrock_credentials" not in result.metadata
     assert (
         result.metadata["policy_authorization"]["explicit_cloud_selection_authorized"]
         is True
     )
     assert result.metadata["policy_authorization"]["cloud_fallback_authorized"] is False
+    serialized = json.dumps(
+        {
+            "metadata": result.metadata,
+            "receipt": result.metadata["norllama_receipt"],
+            "raw": result.raw,
+        },
+        sort_keys=True,
+    )
+    assert mantle_key not in serialized
+
+
+def test_bedrock_adapter_sanitizes_mantle_provider_failure(monkeypatch):
+    monkeypatch.setenv("NORMAN_KEYS_URL", "http://keys.norman.test")
+    monkeypatch.delenv("NORMAN_SECRET_CMD", raising=False)
+    mantle_key = "test-mantle-api-key"
+    provider_body = "upstream message with token=must-not-leak"
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps({"value": mantle_key}).encode()
+
+    def fake_urlopen(request, timeout):
+        if request.full_url == "http://keys.norman.test/v1/secrets/get":
+            return Response()
+        raise urllib_error.HTTPError(
+            request.full_url,
+            429,
+            "provider response",
+            hdrs=None,
+            fp=io.BytesIO(provider_body.encode()),
+        )
+
+    monkeypatch.setattr(bedrock_module.urllib_request, "urlopen", fake_urlopen)
+
+    with pytest.raises(RuntimeError) as error:
+        BedrockModelAdapter().invoke(_explicit_cloud_selection_request())
+
+    assert str(error.value) == "Bedrock Mantle Responses request failed with HTTP 429"
+    assert mantle_key not in str(error.value)
+    assert provider_body not in str(error.value)
 
 
 def test_bedrock_adapter_blocks_forged_explicit_cloud_marker_before_credentials(
@@ -531,12 +657,14 @@ def test_bedrock_adapter_blocks_forged_explicit_cloud_marker_before_credentials(
             "lane": "coder",
         }
     )
-    request.metadata["route_policy"]["aws_credentials_secret"] = "networking/bedrock"
+    request.metadata["route_policy"]["bedrock_mantle_api_key_secret"] = (
+        "networking/bedrock-mantle"
+    )
     monkeypatch.setenv("NORMAN_KEYS_URL", "http://keys.norman.test")
     monkeypatch.delenv("NORMAN_SECRET_CMD", raising=False)
 
     def unexpected_broker_lookup(*_args, **_kwargs):
-        raise AssertionError("blocked Bedrock route must not request credentials")
+        raise AssertionError("blocked Bedrock route must not request a Mantle key")
 
     monkeypatch.setattr(
         bedrock_module.urllib_request,

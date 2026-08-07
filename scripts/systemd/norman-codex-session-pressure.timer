@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodically report Norman Codex session pressure
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=15min
+AccuracySec=1min
+Persistent=true
+Unit=norman-codex-session-pressure.service
+
+[Install]
+WantedBy=timers.target

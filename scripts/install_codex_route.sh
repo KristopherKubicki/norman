@@ -38,6 +38,9 @@ done
 
 for source in \
   "$SCRIPT_DIR/codex_route.py" \
+  "$SCRIPT_DIR/codex_session_pressure.py" \
+  "$SCRIPT_DIR/codex_session_prune.py" \
+  "$SCRIPT_DIR/norman_codex_secret_guard.py" \
   "$SCRIPT_DIR/norman_codex_gateway_token.py" \
   "$SCRIPT_DIR/norman_codex_gateway_broker.sh" \
   "$SCRIPT_DIR/codex_cli_wrapper.sh" \
@@ -50,6 +53,15 @@ done
 
 install -d -m 0700 "$BIN_DIR" "$LIB_DIR"
 install -m 0700 "$SCRIPT_DIR/codex_route.py" "$LIB_DIR/codex_route.py"
+install -m 0700 \
+  "$SCRIPT_DIR/codex_session_pressure.py" \
+  "$LIB_DIR/codex_session_pressure.py"
+install -m 0700 \
+  "$SCRIPT_DIR/codex_session_prune.py" \
+  "$LIB_DIR/codex_session_prune.py"
+install -m 0700 \
+  "$SCRIPT_DIR/norman_codex_secret_guard.py" \
+  "$LIB_DIR/norman_codex_secret_guard.py"
 install -m 0700 \
   "$SCRIPT_DIR/norman_codex_gateway_token.py" \
   "$LIB_DIR/norman_codex_gateway_token.py"

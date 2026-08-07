@@ -208,6 +208,21 @@ def cloud_fallback_execution_configured() -> bool:
     )
 
 
+def explicit_cloud_selection_execution_configured() -> bool:
+    """Return whether an approved explicit GPT selection can use Mantle."""
+
+    return bool(
+        _clean(getattr(settings, "prompt_facade_cloud_fallback_aws_region", ""))
+        and _clean(
+            getattr(
+                settings,
+                "prompt_facade_explicit_cloud_mantle_api_key_secret",
+                "",
+            )
+        )
+    )
+
+
 def capacity_model_for(requested_model: Any = "") -> tuple[str, str]:
     """Resolve a public Norman model alias for a non-invoking capacity probe."""
 
@@ -1353,6 +1368,14 @@ def _explicit_cloud_selection_plan(
             code="explicit_cloud_selection_not_authorized",
             param="model",
         )
+    if not explicit_cloud_selection_execution_configured():
+        raise FacadeError(
+            "The selected cloud model is temporarily unavailable",
+            status_code=503,
+            error_type="server_error",
+            code="explicit_cloud_selection_unavailable",
+            param="model",
+        )
 
     provider = compiled_selection["provider"]
     model = compiled_selection["model"]
@@ -1373,10 +1396,10 @@ def _explicit_cloud_selection_plan(
         "aws_region": _clean(
             getattr(settings, "prompt_facade_cloud_fallback_aws_region", "")
         ),
-        "aws_credentials_secret": _clean(
+        "bedrock_mantle_api_key_secret": _clean(
             getattr(
                 settings,
-                "prompt_facade_cloud_fallback_credentials_secret",
+                "prompt_facade_explicit_cloud_mantle_api_key_secret",
                 "",
             )
         ),

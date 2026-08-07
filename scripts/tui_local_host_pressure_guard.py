@@ -40,6 +40,9 @@ DEFAULT_SCAN_READ_BYTES_PER_SECOND = int(
 DEFAULT_SUSTAINED_SAMPLES = int(
     os.environ.get("NORMAN_TUI_LOCAL_HOST_SUSTAINED_SAMPLES", "2")
 )
+DEFAULT_SWAP_USED_RATIO_THRESHOLD = float(
+    os.environ.get("NORMAN_TUI_LOCAL_HOST_SWAP_USED_RATIO_THRESHOLD", "0.95")
+)
 DEFAULT_MIN_ROOT_FREE_BYTES = int(
     os.environ.get(
         "NORMAN_TUI_LOCAL_HOST_MIN_ROOT_FREE_BYTES",
@@ -568,6 +571,7 @@ def evaluate(
     io_full_threshold: float = DEFAULT_IO_FULL_THRESHOLD,
     min_read_bytes_per_second: int = DEFAULT_SCAN_READ_BYTES_PER_SECOND,
     sustained_samples: int = DEFAULT_SUSTAINED_SAMPLES,
+    swap_used_ratio_threshold: float = DEFAULT_SWAP_USED_RATIO_THRESHOLD,
     broad_roots: tuple[str, ...] = DEFAULT_BROAD_ROOTS,
     min_root_free_bytes: int = DEFAULT_MIN_ROOT_FREE_BYTES,
     min_root_free_ratio: float = DEFAULT_MIN_ROOT_FREE_RATIO,
@@ -711,8 +715,29 @@ def evaluate(
     )
     disk_count = _coerce_int(next_state.get("root_disk_low_count"))
     disk_count = disk_count + 1 if disk_low else 0
+    memory = observation.get("memory")
+    if not isinstance(memory, dict):
+        memory = {}
+    swap_used_ratio = _coerce_float(memory.get("swap_used_ratio"))
+    swap_total_bytes = _coerce_int(memory.get("swap_total_bytes"))
+    swap_exhausted = swap_total_bytes > 0 and swap_used_ratio >= max(
+        0.0, swap_used_ratio_threshold
+    )
+    swap_count = _coerce_int(next_state.get("swap_exhaustion_count"))
+    swap_count = swap_count + 1 if swap_exhausted else 0
 
     issues: list[dict[str, str]] = []
+    if swap_count >= threshold:
+        issues.append(
+            _make_issue(
+                severity="fail",
+                check="swap_exhaustion",
+                detail=(
+                    "local swap is saturated; preserve active Codex handoffs, "
+                    "exit oversized sessions normally, then recycle swap"
+                ),
+            )
+        )
     if pressure_count >= threshold and not action_plans:
         issues.append(
             _make_issue(
@@ -797,6 +822,12 @@ def evaluate(
             "action": "defer_background_work",
             "reason": "sustained local I/O pressure",
         }
+    elif swap_count >= threshold:
+        status = "degraded"
+        admission = {
+            "action": "defer_background_work",
+            "reason": "sustained local swap exhaustion",
+        }
     elif io_pressure or disk_low:
         status = "watching"
         admission = {
@@ -819,8 +850,8 @@ def evaluate(
         "summary": {
             "active": len(processes),
             "expected": len(processes),
-            "fail": 0,
-            "warn": len(issues),
+            "fail": sum(issue["severity"] == "fail" for issue in issues),
+            "warn": sum(issue["severity"] == "warn" for issue in issues),
             "scan_candidates": len(scan_candidates),
             "unconfirmed_high_io": len(unconfirmed_high_io),
             "actions_ready": len(action_plans),
@@ -829,16 +860,11 @@ def evaluate(
         "kpis": {
             "io_full_avg10": round(io_full, 2),
             "io_pressure_samples": pressure_count,
-            "memory_available_bytes": _coerce_int(
-                (observation.get("memory") or {}).get("available_bytes")
-                if isinstance(observation.get("memory"), dict)
-                else 0
-            ),
-            "swap_used_ratio": _coerce_float(
-                (observation.get("memory") or {}).get("swap_used_ratio")
-                if isinstance(observation.get("memory"), dict)
-                else 0
-            ),
+            "swap_exhaustion_samples": swap_count,
+            "memory_available_bytes": _coerce_int(memory.get("available_bytes")),
+            "swap_used_ratio": swap_used_ratio,
+            "swap_used_bytes": _coerce_int(memory.get("swap_used_bytes")),
+            "swap_free_bytes": _coerce_int(memory.get("swap_free_bytes")),
             "root_free_bytes": _coerce_int(root_filesystem.get("free_bytes")),
             "root_free_ratio": _coerce_float(root_filesystem.get("free_ratio")),
         },
@@ -865,6 +891,7 @@ def evaluate(
             "last_observed_at_epoch": observed_at,
             "io_pressure_count": pressure_count,
             "root_disk_low_count": disk_count,
+            "swap_exhaustion_count": swap_count,
             "process_samples": process_samples,
         }
     )
@@ -995,6 +1022,7 @@ def run_guard(
     io_full_threshold: float = DEFAULT_IO_FULL_THRESHOLD,
     min_read_bytes_per_second: int = DEFAULT_SCAN_READ_BYTES_PER_SECOND,
     sustained_samples: int = DEFAULT_SUSTAINED_SAMPLES,
+    swap_used_ratio_threshold: float = DEFAULT_SWAP_USED_RATIO_THRESHOLD,
     min_root_free_bytes: int = DEFAULT_MIN_ROOT_FREE_BYTES,
     min_root_free_ratio: float = DEFAULT_MIN_ROOT_FREE_RATIO,
     signal_fn: SignalFn = os.kill,
@@ -1009,6 +1037,7 @@ def run_guard(
         io_full_threshold=io_full_threshold,
         min_read_bytes_per_second=min_read_bytes_per_second,
         sustained_samples=sustained_samples,
+        swap_used_ratio_threshold=swap_used_ratio_threshold,
         min_root_free_bytes=min_root_free_bytes,
         min_root_free_ratio=min_root_free_ratio,
     )
@@ -1070,6 +1099,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--sustained-samples", type=int, default=DEFAULT_SUSTAINED_SAMPLES
     )
     parser.add_argument(
+        "--swap-used-ratio-threshold",
+        type=float,
+        default=DEFAULT_SWAP_USED_RATIO_THRESHOLD,
+    )
+    parser.add_argument(
         "--min-root-free-bytes", type=int, default=DEFAULT_MIN_ROOT_FREE_BYTES
     )
     parser.add_argument(
@@ -1088,6 +1122,7 @@ def main(argv: list[str] | None = None) -> int:
         io_full_threshold=max(0.0, args.io_full_threshold),
         min_read_bytes_per_second=max(0, args.scan_read_bytes_per_second),
         sustained_samples=max(1, args.sustained_samples),
+        swap_used_ratio_threshold=max(0.0, args.swap_used_ratio_threshold),
         min_root_free_bytes=max(0, args.min_root_free_bytes),
         min_root_free_ratio=max(0.0, args.min_root_free_ratio),
     )
