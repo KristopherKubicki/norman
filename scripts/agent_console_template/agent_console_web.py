@@ -18767,7 +18767,15 @@ def console_runtime_kernel_primary_run_shape(
         cloud_authorized=False,
         enforcement="kernel_hard",
     )
-    if prompt_is_literal_response_request(prompt):
+    workload = classify_prompt_workload(str(prompt or ""))
+    durable_workstream = workload in {
+        "implementation",
+        "verification",
+        "analysis",
+        "long_work",
+        "explicit",
+    } or prompt_requests_investigation(prompt)
+    if workload == "literal_response":
         return {
             "task_kind": "literal_response",
             "planner_kind": "literal_response",
@@ -18775,6 +18783,22 @@ def console_runtime_kernel_primary_run_shape(
             "max_steps": 1,
             "max_output_tokens": token_capacity_plan["execution_output_cap"],
             "output_shape_expected": "literal_response",
+            "workload": workload,
+            "durable_workstream": False,
+            "continuous_goal_candidate": False,
+            "token_capacity_plan": token_capacity_plan,
+        }
+    if not durable_workstream:
+        return {
+            "task_kind": "chat",
+            "planner_kind": "chat",
+            "goal_phase_sequence": ["chat"],
+            "max_steps": 1,
+            "max_output_tokens": token_capacity_plan["execution_output_cap"],
+            "output_shape_expected": "chat",
+            "workload": workload,
+            "durable_workstream": False,
+            "continuous_goal_candidate": False,
             "token_capacity_plan": token_capacity_plan,
         }
     return {
@@ -18782,7 +18806,7 @@ def console_runtime_kernel_primary_run_shape(
         "planner_kind": "plan",
         "goal_phase_sequence": ["plan", "work", "verify"],
         "max_steps": max(
-            1,
+            3,
             min(
                 _coerce_int(os.environ.get("NORMAN_TUI_KERNEL_PRIMARY_MAX_STEPS")) or 5,
                 10,
@@ -18790,6 +18814,9 @@ def console_runtime_kernel_primary_run_shape(
         ),
         "max_output_tokens": token_capacity_plan["execution_output_cap"],
         "output_shape_expected": "complete",
+        "workload": workload,
+        "durable_workstream": True,
+        "continuous_goal_candidate": True,
         "token_capacity_plan": token_capacity_plan,
     }
 
@@ -18828,6 +18855,9 @@ def console_runtime_turn_route_policy(
         if isinstance(turn_plan, dict)
         else run_shape.get("token_capacity_plan")
     )
+    durable_workstream = bool(
+        run_shape["durable_workstream"] and TUI_KERNEL_EXECUTION_ENABLED
+    )
     return {
         "runtime": "kernel_shadow",
         "visible_runtime": normalized_runtime,
@@ -18855,16 +18885,17 @@ def console_runtime_turn_route_policy(
         "route_lock": route_lock,
         "strict_route": route_lock,
         "operator_model_override": route_lock,
-        "route_proof_required": bool(TUI_KERNEL_EXECUTION_ENABLED),
-        "require_verifier_for_completion": bool(TUI_KERNEL_EXECUTION_ENABLED),
+        "route_proof_required": durable_workstream,
+        "require_verifier_for_completion": durable_workstream,
         "cost_posture": "local_token_first",
-        "continuous_goal_candidate": True,
+        "durable_workstream": durable_workstream,
+        "durable_workstream_candidate": bool(run_shape["durable_workstream"]),
+        "continuous_goal_candidate": bool(run_shape["continuous_goal_candidate"]),
         "task_kind": run_shape["task_kind"],
         "planner_kind": run_shape["planner_kind"],
         "goal_phase_sequence": list(run_shape["goal_phase_sequence"]),
         "output_shape_expected": run_shape["output_shape_expected"],
-        "route_proof_required": bool(TUI_KERNEL_EXECUTION_ENABLED),
-        "require_verifier_for_completion": bool(TUI_KERNEL_EXECUTION_ENABLED),
+        "workload": run_shape["workload"],
         "local_token_budget": token_capacity_plan["local_token_budget"],
         "cloud_token_budget": 0,
         "token_capacity_plan": token_capacity_plan,
@@ -18903,6 +18934,9 @@ def console_runtime_turn_metadata(
         if isinstance(turn_plan, dict)
         else run_shape.get("token_capacity_plan")
     )
+    durable_workstream = bool(
+        run_shape["durable_workstream"] and TUI_KERNEL_EXECUTION_ENABLED
+    )
     return {
         "source": "agent_console_web",
         "kind": "tui_turn_shadow",
@@ -18926,11 +18960,14 @@ def console_runtime_turn_metadata(
         "kernel_execution_enabled": TUI_KERNEL_EXECUTION_ENABLED,
         "kernel_execution_candidate": TUI_KERNEL_EXECUTION_ENABLED,
         "kernel_owned_turn": TUI_KERNEL_OWNED_TURN_ENABLED,
-        "continuous_goal_candidate": True,
+        "durable_workstream": durable_workstream,
+        "durable_workstream_candidate": bool(run_shape["durable_workstream"]),
+        "continuous_goal_candidate": bool(run_shape["continuous_goal_candidate"]),
         "task_kind": run_shape["task_kind"],
         "planner_kind": run_shape["planner_kind"],
         "goal_phase_sequence": list(run_shape["goal_phase_sequence"]),
         "output_shape_expected": run_shape["output_shape_expected"],
+        "workload": run_shape["workload"],
         "local_token_budget": token_capacity_plan["local_token_budget"],
         "cloud_token_budget": 0,
         "token_capacity_plan": token_capacity_plan,
@@ -19001,9 +19038,23 @@ def ensure_console_runtime_turn_shadow_job(
     )
     objective = console_runtime_execution_objective(prompt, normalized_attachments)
     objective_summary = planner_understood_task(prompt, normalized_attachments)
+    run_shape = console_runtime_kernel_primary_run_shape(
+        prompt,
+        detail=(
+            _coerce_int(turn_plan.get("detail")) if isinstance(turn_plan, dict) else 0
+        ),
+        job_budget=(
+            str(turn_plan.get("job_budget") or "")
+            if isinstance(turn_plan, dict)
+            else job_budget
+        ),
+    )
     payload = {
         "job_id": job_id,
         "objective": objective,
+        "durable_workstream": bool(
+            run_shape["durable_workstream"] and TUI_KERNEL_EXECUTION_ENABLED
+        ),
         "done_when": [
             "The visible TUI turn has recorded route, planner, model, tool, and completion evidence.",
         ],
@@ -19031,6 +19082,7 @@ def ensure_console_runtime_turn_shadow_job(
             "kernel_execution_enabled": TUI_KERNEL_EXECUTION_ENABLED,
             "kernel_execution_candidate": TUI_KERNEL_EXECUTION_ENABLED,
             "kernel_owned_turn": TUI_KERNEL_OWNED_TURN_ENABLED,
+            "durable_workstream_candidate": bool(run_shape["durable_workstream"]),
         },
         "route_policy": route_policy,
         "metadata": {**metadata, "session_job_id": session_job_id},
@@ -38094,11 +38146,15 @@ def _execute_console_runtime_kernel_prompt(
     token_capacity_plan = normalize_provider_token_budget_plan(
         run_shape.get("token_capacity_plan")
     )
+    durable_workstream = bool(
+        run_shape["durable_workstream"] and TUI_KERNEL_EXECUTION_ENABLED
+    )
     payload = {
         "worker_id": f"tui-kernel-primary-{HOST_NAME}-{SESSION}"[:96],
         "dry_run": False,
         "complete": True,
-        "continuous": True,
+        "continuous": durable_workstream,
+        "durable_workstream": durable_workstream,
         "max_steps": run_shape["max_steps"],
         "max_runtime_seconds": max_runtime_seconds,
         "local_token_budget": token_capacity_plan["local_token_budget"],
@@ -38129,13 +38185,17 @@ def _execute_console_runtime_kernel_prompt(
             "tui_backend": TUI_BACKEND,
             "kernel_primary": True,
             "kernel_owned_turn": TUI_KERNEL_OWNED_TURN_ENABLED,
-            "verifier_can_stop": True,
-            "route_proof_required": True,
-            "require_verifier_for_completion": True,
+            "verifier_can_stop": durable_workstream,
+            "route_proof_required": durable_workstream,
+            "require_verifier_for_completion": durable_workstream,
+            "durable_workstream": durable_workstream,
+            "durable_workstream_candidate": bool(run_shape["durable_workstream"]),
+            "continuous_goal_candidate": bool(run_shape["continuous_goal_candidate"]),
             "task_kind": run_shape["task_kind"],
             "planner_kind": run_shape["planner_kind"],
             "goal_phase_sequence": list(run_shape["goal_phase_sequence"]),
             "output_shape_expected": run_shape["output_shape_expected"],
+            "workload": run_shape["workload"],
             "local_token_budget": token_capacity_plan["local_token_budget"],
             "cloud_token_budget": 0,
             "token_capacity_plan": token_capacity_plan,
@@ -38159,13 +38219,17 @@ def _execute_console_runtime_kernel_prompt(
             "optimization_mode": normalize_optimization_mode(optimization_mode),
             "kernel_primary": True,
             "kernel_owned_turn": TUI_KERNEL_OWNED_TURN_ENABLED,
-            "verifier_can_stop": True,
-            "route_proof_required": True,
-            "require_verifier_for_completion": True,
+            "verifier_can_stop": durable_workstream,
+            "route_proof_required": durable_workstream,
+            "require_verifier_for_completion": durable_workstream,
+            "durable_workstream": durable_workstream,
+            "durable_workstream_candidate": bool(run_shape["durable_workstream"]),
+            "continuous_goal_candidate": bool(run_shape["continuous_goal_candidate"]),
             "task_kind": run_shape["task_kind"],
             "planner_kind": run_shape["planner_kind"],
             "goal_phase_sequence": list(run_shape["goal_phase_sequence"]),
             "output_shape_expected": run_shape["output_shape_expected"],
+            "workload": run_shape["workload"],
             "local_token_budget": token_capacity_plan["local_token_budget"],
             "cloud_token_budget": 0,
             "token_capacity_plan": token_capacity_plan,

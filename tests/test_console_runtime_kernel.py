@@ -743,6 +743,29 @@ def test_verification_receipt_is_required_before_completion():
     assert completed.status == ConsoleJobStatus.DONE
 
 
+def test_durable_authority_flag_requires_verification_before_completion():
+    kernel = ConsoleRuntimeKernel()
+    kernel.create_job(
+        _contract(authority_flags={"durable_workstream": True}),
+        job_id="job-test",
+    )
+
+    with pytest.raises(InvalidTransitionError, match="verification receipt"):
+        kernel.complete_job("job-test")
+
+    kernel.record_verification(
+        "job-test",
+        receipt={
+            "verifier": "contract-checker",
+            "status": "pass",
+            "evidence_refs": ["artifacts/verification.json"],
+        },
+    )
+    completed = kernel.complete_job("job-test")
+
+    assert completed.status == ConsoleJobStatus.DONE
+
+
 def test_completed_model_effect_replays_without_a_second_invocation():
     kernel = ConsoleRuntimeKernel()
     kernel.create_job(_contract(), job_id="job-test")

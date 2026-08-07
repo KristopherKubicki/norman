@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
+
 from app import crud
 from app.schemas.user import UserCreate
 from app.services.console_runtime import (
@@ -9,6 +11,7 @@ from app.services.console_runtime import (
     ConsoleJobStatus,
     ConsoleSubtaskContract,
     ConsoleTaskResult,
+    InvalidTransitionError,
 )
 from app.services.console_runtime.store import DbConsoleRuntimeStore
 from app.services.norllama.specialist_lanes import specialist_cascade_template
@@ -70,6 +73,48 @@ def test_db_console_runtime_store_persists_jobs_and_events(db):
     assert event.sequence == events[1].sequence
     assert snapshot["category_counts"] == {"job": 1, "model": 1}
     assert snapshot["latest_event"]["summary"] == "Norllama completed"
+
+
+def test_db_console_runtime_store_requires_verification_for_durable_workstream(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    job_id = f"job-store-durable-verification-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Complete only after durable verification",
+            durable_workstream=True,
+        ),
+    )
+
+    with pytest.raises(InvalidTransitionError, match="verification receipt"):
+        store.complete_job(
+            db,
+            user_id=user.id,
+            job_id=job_id,
+            summary="Premature durable completion",
+        )
+
+    store.record_verification(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        receipt={
+            "verifier": "contract-checker",
+            "status": "pass",
+            "evidence_refs": ["artifacts/verification.json"],
+        },
+    )
+    completed = store.complete_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        summary="Durable verification completed",
+    )
+
+    assert completed.status == ConsoleJobStatus.DONE
 
 
 def test_db_console_runtime_store_coordinates_dependent_subtasks_and_results(db):
@@ -1115,11 +1160,13 @@ def test_db_console_runtime_store_excludes_tui_stream_jobs_from_runnable(db):
         contract=ConsoleJobContract(
             objective="Execute a safe local-first TUI turn through the kernel",
             question_budget=0,
+            durable_workstream=True,
             authority_flags={
                 "source": "agent_console_web",
                 "kind": "tui_turn_shadow",
                 "kernel_execution_enabled": True,
                 "kernel_execution_candidate": True,
+                "durable_workstream": True,
             },
             route_policy={
                 "provider": "norllama",
@@ -1128,6 +1175,7 @@ def test_db_console_runtime_store_excludes_tui_stream_jobs_from_runnable(db):
                 "turn_shadow": True,
                 "kernel_execution_enabled": True,
                 "kernel_execution_candidate": True,
+                "durable_workstream": True,
                 "continuous_goal_candidate": True,
             },
             metadata={
@@ -1135,6 +1183,7 @@ def test_db_console_runtime_store_excludes_tui_stream_jobs_from_runnable(db):
                 "kind": "tui_turn_shadow",
                 "kernel_execution_enabled": True,
                 "kernel_execution_candidate": True,
+                "durable_workstream": True,
                 "continuous_goal_candidate": True,
             },
         ),
@@ -1143,6 +1192,7 @@ def test_db_console_runtime_store_excludes_tui_stream_jobs_from_runnable(db):
             "kind": "tui_turn_shadow",
             "kernel_execution_enabled": True,
             "kernel_execution_candidate": True,
+            "durable_workstream": True,
             "continuous_goal_candidate": True,
         },
     )

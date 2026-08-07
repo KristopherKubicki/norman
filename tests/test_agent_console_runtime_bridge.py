@@ -1220,22 +1220,18 @@ def test_console_runtime_turn_shadow_creates_per_turn_job(monkeypatch, tmp_path)
     assert create_payload["route_policy"]["turn_shadow"] is True
     assert create_payload["route_policy"]["kernel_execution_enabled"] is False
     assert create_payload["route_policy"]["kernel_execution_candidate"] is False
-    assert create_payload["route_policy"]["continuous_goal_candidate"] is True
-    assert create_payload["route_policy"]["goal_phase_sequence"] == [
-        "plan",
-        "work",
-        "verify",
-    ]
+    assert create_payload["durable_workstream"] is False
+    assert create_payload["route_policy"]["durable_workstream"] is False
+    assert create_payload["route_policy"]["continuous_goal_candidate"] is False
+    assert create_payload["route_policy"]["goal_phase_sequence"] == ["chat"]
+    assert create_payload["route_policy"]["planner_kind"] == "chat"
     assert create_payload["route_policy"]["cloud_token_budget"] == 0
     assert create_payload["route_policy"]["selected_runtime"] == "localllm"
     assert create_payload["metadata"]["kernel_execution_enabled"] is False
     assert create_payload["metadata"]["kernel_execution_candidate"] is False
-    assert create_payload["metadata"]["continuous_goal_candidate"] is True
-    assert create_payload["metadata"]["goal_phase_sequence"] == [
-        "plan",
-        "work",
-        "verify",
-    ]
+    assert create_payload["metadata"]["durable_workstream"] is False
+    assert create_payload["metadata"]["continuous_goal_candidate"] is False
+    assert create_payload["metadata"]["goal_phase_sequence"] == ["chat"]
     receipt_payload = json.loads(requests[3][0].data.decode())
     assert receipt_payload["include_capabilities"] is False
     assert receipt_payload["output"]["planner_role"] == "shadow_frontdoor"
@@ -1482,46 +1478,13 @@ def test_kernel_primary_runtime_can_return_visible_response(monkeypatch, tmp_pat
         requests.append((method, path, payload or {}, timeout_seconds))
         assert path.endswith("/console-runtime/jobs/turn-kernel-primary/runs")
         return {
-            "continuous": True,
-            "stop_reason": "done",
-            "steps_completed": 3,
-            "usage": {"local_tokens": 42, "cloud_tokens": 0},
-            "last_result": {
-                "model_result": {
-                    "provider": "norllama",
-                    "model": "qwen3.5:32b-q4_K_M",
-                    "text": "Verified local answer.",
-                    "usage": {"input_tokens": 30, "output_tokens": 12},
-                }
+            "model_result": {
+                "provider": "norllama",
+                "model": "qwen3.5:32b-q4_K_M",
+                "text": "Verified local answer.",
+                "usage": {"input_tokens": 30, "output_tokens": 12},
             },
-            "snapshot": {
-                "events": [
-                    {
-                        "event_type": "model.delta",
-                        "payload": {"text": "Plan locally."},
-                    },
-                    {
-                        "event_type": "goal.step_completed",
-                        "payload": {"phase": "plan"},
-                    },
-                    {
-                        "event_type": "model.delta",
-                        "payload": {"text": "Do the local work."},
-                    },
-                    {
-                        "event_type": "goal.step_completed",
-                        "payload": {"phase": "work"},
-                    },
-                    {
-                        "event_type": "model.delta",
-                        "payload": {"text": "Verified local answer."},
-                    },
-                    {
-                        "event_type": "goal.step_completed",
-                        "payload": {"phase": "verify"},
-                    },
-                ]
-            },
+            "snapshot": {"events": []},
         }
 
     monkeypatch.setattr(module, "_console_runtime_json_request", fake_json_request)
@@ -1547,8 +1510,9 @@ def test_kernel_primary_runtime_can_return_visible_response(monkeypatch, tmp_pat
     assert usage["kernel_cloud_tokens"] == 0
     assert requests[0][0] == "POST"
     assert requests[0][2]["dry_run"] is False
-    assert requests[0][2]["continuous"] is True
-    assert requests[0][2]["max_steps"] == 5
+    assert requests[0][2]["continuous"] is False
+    assert requests[0][2]["durable_workstream"] is False
+    assert requests[0][2]["max_steps"] == 1
     assert requests[0][2]["local_token_budget"] > 0
     assert requests[0][2]["cloud_token_budget"] == 0
     assert (
@@ -1559,7 +1523,8 @@ def test_kernel_primary_runtime_can_return_visible_response(monkeypatch, tmp_pat
         "kernel_hard"
     )
     assert requests[0][2]["model"] == "qwen3.5:32b-q4_K_M"
-    assert requests[0][2]["route_policy"]["verifier_can_stop"] is True
+    assert requests[0][2]["route_policy"]["verifier_can_stop"] is False
+    assert requests[0][2]["route_policy"]["route_proof_required"] is False
     assert requests[0][2]["route_policy"]["model_timeout_seconds"] == 595.0
     assert requests[0][2]["metadata"]["provider_timeout_seconds"] == 595.0
     assert requests[0][2]["confirm_live_execution"] == "ENABLE LIVE RUNTIME"

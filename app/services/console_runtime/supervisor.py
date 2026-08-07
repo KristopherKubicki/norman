@@ -313,17 +313,22 @@ class ConsoleRuntimeWorkerService:
         contract_metadata = dict(
             getattr(getattr(job, "contract", None), "metadata", {})
         )
+        authority_flags = dict(
+            getattr(getattr(job, "contract", None), "authority_flags", {})
+        )
         job_metadata = dict(getattr(job, "metadata", {}))
-        metadata = {**job_metadata, **contract_metadata}
-        continuous_candidate = self._job_flag(
+        metadata = {**job_metadata, **authority_flags, **contract_metadata}
+        durable_workstream = bool(
+            getattr(getattr(job, "contract", None), "durable_workstream", False)
+        ) or self._job_flag(
             route_policy,
             metadata,
-            "continuous_goal_candidate",
+            "durable_workstream",
             default=False,
         )
         continuous_enabled = (
             bool(getattr(settings, "console_runtime_worker_continuous_enabled", False))
-            or continuous_candidate
+            or durable_workstream
         )
         return ConsoleRuntimeRunOptions(
             worker_id=str(
@@ -337,6 +342,7 @@ class ConsoleRuntimeWorkerService:
                 )
             ),
             continuous=continuous_enabled,
+            durable_workstream=durable_workstream,
             max_steps=self._job_int(
                 route_policy,
                 metadata,

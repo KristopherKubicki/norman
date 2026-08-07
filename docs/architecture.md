@@ -76,7 +76,10 @@ the operator control plane. The separation must be contract-first; see
 1. A TUI, CLI, BBS message, connector, API caller, or scheduler creates or
    updates a work request.
 2. Norman classifies the request's source, realm, risk, required artifacts,
-   budget, and completion criteria.
+   budget, completion criteria, and run shape. Compact status/chat/canary and
+   deterministic read requests stay one-step; substantive implementation,
+   investigation, analysis, reporting, and explicitly long work become
+   durable workstreams.
 3. The Console Runtime creates a durable job or workstream and records ordered
    events. A worker leases only work it is eligible to execute.
 4. Policy applies hard safety and approval blocks, operating mode, egress
@@ -85,9 +88,14 @@ the operator control plane. The separation must be contract-first; see
    needed, it asks Norllama for a permitted local capability or route.
 6. Norllama returns route and invocation evidence. A cloud route requires
    explicit authorization and is still subject to Norman policy.
-7. The worker stores outputs, checkpoints, verification evidence, and a final
+7. A durable workstream progresses through bounded `plan`, `work`, and
+   `verify` phases. Its verifier can complete it only with an exact standalone
+   `STATUS: COMPLETE` line and a passing route-proof gate; all other outcomes
+   are checkpoints. Repeated output or repeated verifier deferral produces a
+   visible no-progress pause rather than unbounded retries.
+8. The worker stores outputs, checkpoints, verification evidence, and a final
    result. It waits for approval instead of performing a blocked effect.
-8. Clients observe progress through the runtime event stream and resume from
+9. Clients observe progress through the runtime event stream and resume from
    durable state rather than owning hidden work in a browser process.
 
 ## Human Approval Boundary
@@ -163,11 +171,13 @@ The architecture records enough state to answer what ran, why it was selected,
 and what needs operator attention:
 
 - Runtime events and SSE show planner, model, tool, shell, verification, and
-  approval progress.
+  approval progress. SSE is an observation channel, not an external
+  notification delivery guarantee.
 - Route receipts capture route selection, model/tool attribution, egress, and
   fallback information.
 - Worker leases and checkpoints support resumption after a process or client
-  failure.
+  failure. Durable checkpoints include their phase, verifier state, and a
+  progress fingerprint so a repeated result can pause safely.
 - Health, capability, warm-policy, and mesh reports make local availability
   visible before a cloud escalation is attempted.
 - KPI and Kaizen collectors use deterministic evidence first and have separate
