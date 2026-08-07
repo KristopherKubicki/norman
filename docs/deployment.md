@@ -163,6 +163,29 @@ or shell history. The machine-local `cred` bridge is a migration fallback;
 move these aliases to a networked Norman Keys backend with short-lived leases
 when that backend is available.
 
+### Explicit Bedrock Mantle fallback
+
+The explicitly selected `gpt-5.6-*` Bedrock Mantle fallback uses a separate
+broker from the generic Norman Keys resolver. It accepts only the public-facing
+logical alias `networking/bedrock-mantle`, reads
+`norman/bedrock-fallback` through the encrypted systemd credential, and mints
+a fresh bearer token in memory for each request. It never stores the bearer
+token in a file, environment variable, configuration secret, or log.
+
+After the release virtualenv has been installed, configure the release
+environment with the exact release path and approved region:
+
+```text
+NORMAN_BEDROCK_MANTLE_REGION=us-east-2
+NORMAN_BEDROCK_MANTLE_SECRET_CMD=/home/kristopher/releases/norman-<release-sha>/.venv-3.10/bin/python /home/kristopher/releases/norman-<release-sha>/scripts/norman_bedrock_mantle_broker.py get {name}
+```
+
+Set `prompt_facade_explicit_cloud_mantle_api_key_secret:
+networking/bedrock-mantle` in `norman/runtime-config`. Keep the fallback
+disabled unless an explicitly approved cloud model is selected. The token
+generator's stable API creates a fresh token with a 12-hour validity; it is
+not cached or persisted by Norman.
+
 The legacy `norman.service` rollback path must use the same identity file.
 Install `scripts/systemd/norman.service.d/10-runtime-env.conf` before removing
 the legacy plaintext token file.

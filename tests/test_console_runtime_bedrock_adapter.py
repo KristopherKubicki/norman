@@ -418,6 +418,56 @@ def test_bedrock_credentials_can_reuse_managed_config_secret_command(monkeypatch
     assert calls[0][0] == ["keysctl", "read", "norman/bedrock-fallback"]
 
 
+def test_mantle_dedicated_broker_precedes_generic_secret_resolvers(monkeypatch):
+    monkeypatch.setenv(
+        "NORMAN_BEDROCK_MANTLE_SECRET_CMD",
+        "mantle-broker get {name}",
+    )
+    monkeypatch.setenv("NORMAN_SECRET_CMD", "generic-broker get {name}")
+    monkeypatch.setenv("NORMAN_KEYS_URL", "http://keys.norman.test")
+    monkeypatch.delenv("NORMAN_CONFIG_SECRET_CMD", raising=False)
+    calls: list[tuple[list[str], dict]] = []
+
+    class Result:
+        stdout = "fresh-mantle-bearer\n"
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return Result()
+
+    def unexpected_http_lookup(*_args, **_kwargs):
+        raise AssertionError("dedicated Mantle broker must resolve before HTTP")
+
+    monkeypatch.setattr(bedrock_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        bedrock_module.urllib_request,
+        "urlopen",
+        unexpected_http_lookup,
+    )
+
+    api_key = bedrock_module.resolve_bedrock_mantle_api_key(
+        {"bedrock_mantle_api_key_secret": "networking/bedrock-mantle"},
+        timeout_seconds=12,
+    )
+
+    assert api_key.api_key == "fresh-mantle-bearer"
+    assert api_key.receipt_metadata() == {
+        "source": "bedrock_mantle_secret_command",
+        "secret_name": "networking/bedrock-mantle",
+    }
+    assert calls == [
+        (
+            ["mantle-broker", "get", "networking/bedrock-mantle"],
+            {
+                "check": True,
+                "capture_output": True,
+                "text": True,
+                "timeout": 2.0,
+            },
+        )
+    ]
+
+
 def test_bedrock_adapter_propagates_native_converse_failure():
     client = _FakeBedrockClient(error=RuntimeError("AccessDeniedException"))
 

@@ -190,8 +190,7 @@ def _keys_timeout_seconds(timeout_seconds: float = 0) -> float:
     return max(0.1, timeout)
 
 
-def _secret_command(secret_name: str) -> list[str]:
-    configured = _first_env("NORMAN_SECRET_CMD", "NORMAN_CONFIG_SECRET_CMD")
+def _command_from_config(configured: str, secret_name: str) -> list[str]:
     if not configured:
         return []
     command = shlex.split(configured)
@@ -200,6 +199,22 @@ def _secret_command(secret_name: str) -> list[str]:
     if "{name}" in configured:
         return [part.replace("{name}", secret_name) for part in command]
     return [*command, "get", secret_name]
+
+
+def _secret_command(secret_name: str) -> list[str]:
+    return _command_from_config(
+        _first_env("NORMAN_SECRET_CMD", "NORMAN_CONFIG_SECRET_CMD"),
+        secret_name,
+    )
+
+
+def _bedrock_mantle_secret_command(secret_name: str) -> list[str]:
+    """Resolve only the dedicated Mantle token broker command, when configured."""
+
+    return _command_from_config(
+        _first_env("NORMAN_BEDROCK_MANTLE_SECRET_CMD"),
+        secret_name,
+    )
 
 
 def _broker_secret_from_http(
@@ -249,13 +264,18 @@ def _broker_secret_from_http(
 
 
 def _broker_secret_from_command(
-    secret_name: str, *, timeout_seconds: float
+    secret_name: str,
+    *,
+    timeout_seconds: float,
+    command: Sequence[str] | None = None,
 ) -> tuple[str, dict[str, str]]:
-    command = _secret_command(secret_name)
-    if not command:
+    resolved_command = (
+        list(command) if command is not None else _secret_command(secret_name)
+    )
+    if not resolved_command:
         raise RuntimeError("Norman Keys broker command is not configured")
     result = subprocess.run(
-        command,
+        resolved_command,
         check=True,
         capture_output=True,
         text=True,
@@ -480,6 +500,29 @@ def resolve_bedrock_mantle_api_key(
     )
     broker_timeout = _keys_timeout_seconds(timeout_seconds)
     failures = 0
+    dedicated_command = _bedrock_mantle_secret_command(secret_name)
+    if dedicated_command:
+        try:
+            raw_value, metadata = _broker_secret_from_command(
+                secret_name,
+                timeout_seconds=broker_timeout,
+                command=dedicated_command,
+            )
+            return BedrockMantleApiKey(
+                api_key=raw_value,
+                source="bedrock_mantle_secret_command",
+                secret_name=secret_name,
+                lease_id=_clean(metadata.get("lease_id")),
+                request_id=_clean(metadata.get("request_id")),
+                expires_at=_clean(metadata.get("expires_at")),
+            )
+        except (
+            OSError,
+            subprocess.SubprocessError,
+            subprocess.TimeoutExpired,
+            ValueError,
+        ):
+            failures += 1
     if _keys_secret_get_url():
         try:
             raw_value, metadata = _broker_secret_from_http(
@@ -530,7 +573,8 @@ def resolve_bedrock_mantle_api_key(
             failures += 1
     if not failures:
         raise RuntimeError(
-            "Bedrock Mantle API key requires NORMAN_KEYS_URL or NORMAN_SECRET_CMD"
+            "Bedrock Mantle API key requires NORMAN_BEDROCK_MANTLE_SECRET_CMD, "
+            "NORMAN_KEYS_URL, or NORMAN_SECRET_CMD"
         )
     raise RuntimeError("Bedrock Mantle API key lookup failed")
 
