@@ -487,6 +487,12 @@ def test_unavailable_local_capacity_reports_approved_bedrock_fallback(
                 "available": False,
                 "cloud_fallback": True,
                 "reason": "recent_local_model_request_failed",
+                "condition": "recent_local_failure",
+                "local_lane": {
+                    "eligible_worker_count": 2,
+                    "model_ready_worker_count": 1,
+                    "redundancy": "single_worker",
+                },
                 "retryable": True,
             },
             "",
@@ -495,9 +501,10 @@ def test_unavailable_local_capacity_reports_approved_bedrock_fallback(
 
     assert route_module.verify_norman_capacity(route, token="short-lived-token") == (
         False,
-        "local coding capacity is unavailable "
-        "(recent_local_model_request_failed); approved Bedrock fallback will be "
-        "attempted before any local output; retry later",
+        "the local lane was paused after a recent failed request "
+        "(recent_local_model_request_failed); 1/2 model-ready worker(s), "
+        "single worker; approved Bedrock fallback is ready and will run before "
+        "any local output; retry later",
     )
 
 
@@ -534,7 +541,7 @@ def test_capacity_unavailable_warns_then_starts_routed_session(
     captured = capsys.readouterr()
     assert "control-plane local capacity warning" in captured.err
     assert "mesh_probe_stale" in captured.err
-    assert "Starting Codex anyway; use /model" in captured.err
+    assert "Starting Codex normally" in captured.err
     assert "subscription: Short window 68% left" in captured.err
     assert "metered (Aug 01 to Sep 01): ~$1.25" in captured.err
 

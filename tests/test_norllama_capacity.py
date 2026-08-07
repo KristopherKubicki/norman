@@ -64,6 +64,13 @@ def test_heavy_coding_capacity_requires_a_reachable_spark_with_the_model():
 
     assert snapshot["available"] is True
     assert snapshot["reason"] == "available"
+    assert snapshot["condition"] == "available"
+    assert snapshot["local_lane"] == {
+        "eligible_worker_count": 2,
+        "reachable_worker_count": 1,
+        "model_ready_worker_count": 1,
+        "redundancy": "single_worker",
+    }
     assert [worker["id"] for worker in snapshot["eligible_workers"]] == [
         "spark-150",
         "spark-151",
@@ -86,6 +93,7 @@ def test_heavy_coding_capacity_distinguishes_unavailable_conditions():
     cases = [
         (
             "no_eligible_workers_configured",
+            "worker_configuration",
             _mesh(
                 workers=[
                     _worker(
@@ -98,6 +106,7 @@ def test_heavy_coding_capacity_distinguishes_unavailable_conditions():
         ),
         (
             "no_eligible_worker_reachable",
+            "worker_reachability",
             _mesh(
                 workers=[
                     _worker("spark-150", reachable=False, status="error"),
@@ -107,6 +116,7 @@ def test_heavy_coding_capacity_distinguishes_unavailable_conditions():
         ),
         (
             "model_not_available_on_eligible_workers",
+            "model_placement",
             _mesh(
                 workers=[
                     _worker("spark-150", models=[]),
@@ -116,6 +126,7 @@ def test_heavy_coding_capacity_distinguishes_unavailable_conditions():
         ),
         (
             "local_frontdoor_unreachable",
+            "frontdoor_reachability",
             _mesh(
                 frontdoor_reachable=False,
                 workers=[_worker("spark-150")],
@@ -123,6 +134,7 @@ def test_heavy_coding_capacity_distinguishes_unavailable_conditions():
         ),
         (
             "mesh_probe_stale",
+            "mesh_probe",
             _mesh(
                 workers=[_worker("spark-150")],
                 cache_status="stale_error",
@@ -130,11 +142,23 @@ def test_heavy_coding_capacity_distinguishes_unavailable_conditions():
         ),
     ]
 
-    for expected_reason, mesh in cases:
+    for expected_reason, expected_condition, mesh in cases:
         snapshot = _snapshot(mesh)
         assert snapshot["available"] is False
         assert snapshot["reason"] == expected_reason
+        assert snapshot["condition"] == expected_condition
         assert snapshot["retryable"] is True
+
+
+def test_heavy_coding_capacity_reports_redundant_model_placement():
+    snapshot = _snapshot(_mesh(workers=[_worker("spark-150"), _worker("spark-151")]))
+
+    assert snapshot["local_lane"] == {
+        "eligible_worker_count": 2,
+        "reachable_worker_count": 2,
+        "model_ready_worker_count": 2,
+        "redundancy": "redundant",
+    }
 
 
 def test_failed_mesh_probe_has_a_safe_unavailable_capacity_contract():
@@ -154,6 +178,13 @@ def test_failed_mesh_probe_has_a_safe_unavailable_capacity_contract():
             "reachable": False,
             "status": "unknown",
             "model_advertised": False,
+        },
+        "condition": "mesh_probe",
+        "local_lane": {
+            "eligible_worker_count": 2,
+            "reachable_worker_count": 0,
+            "model_ready_worker_count": 0,
+            "redundancy": "unavailable",
         },
         "eligible_workers": [
             {"id": "spark-150", "role": "production"},
@@ -239,6 +270,7 @@ def test_recent_capacity_failure_keeps_the_longer_cooldown():
 
     assert snapshot["available"] is False
     assert snapshot["reason"] == "recent_local_model_request_failed"
+    assert snapshot["condition"] == "recent_local_failure"
     assert snapshot["cooldown"]["cooldown_seconds"] == 900
     assert snapshot["cooldown"]["remaining_seconds"] == 850
 

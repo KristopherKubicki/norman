@@ -400,14 +400,16 @@ for 60 seconds. Unavailable-model, capacity, or empty-response errors retain
 the 15-minute hold. A later successful local response clears the hold. Before
 each interactive launch, the router checks this endpoint and reports an
 unavailable local coding lane as an advisory. It still starts Codex with the
-isolated routed profile so the operator can use `/model` to select another
-permitted gateway model; it never changes the provider or bypasses the route
-policy. For example:
+isolated routed profile; it never changes the provider or bypasses the route
+policy. When the capacity response approves the Bedrock fallback, the advisory
+states that it will run before local output if the request cannot use the local
+lane. For example:
 
 ```text
-codex-route: norman local capacity warning: local coding capacity is unavailable
-(no_eligible_worker_reachable); retry later. Starting Codex anyway; use /model
-to choose another permitted model.
+codex-route: norman local capacity warning: no eligible coding worker is
+reachable (no_eligible_worker_reachable); 0/2 model-ready worker(s),
+unavailable; approved Bedrock fallback is ready and will run before any local
+output; retry later. Starting Codex normally.
 ```
 
 The pre-TUI output also shows the freshest locally captured subscription
@@ -427,9 +429,12 @@ down.
 
 The API requires the normal route identity injected by Caddy and a valid
 brokered bearer token. A successful capacity response is always HTTP 200; use
-its `available`, `reason`, `retryable`, `eligible_workers`, `ineligible_workers`,
-`frontdoor`, and `cache` fields to decide recovery. It intentionally treats
-the Mac mini fallback node as ineligible for `norman-code`.
+its `available`, `reason`, `condition`, `local_lane`, `retryable`,
+`eligible_workers`, `ineligible_workers`, `frontdoor`, and `cache` fields to
+decide recovery. `local_lane` reports eligible, reachable, and model-ready
+worker counts plus whether the coding lane is redundant, limited to one worker,
+or unavailable. It intentionally treats the Mac mini fallback node as
+ineligible for `norman-code`.
 
 For `norman-code` only, the `/v1/responses` facade makes one server-owned
 Bedrock retry when a retryable local failure occurs before the local model has

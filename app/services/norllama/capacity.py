@@ -136,6 +136,44 @@ def _worker_row(
     return row
 
 
+def _redundancy_state(model_worker_count: int) -> str:
+    if model_worker_count >= 2:
+        return "redundant"
+    if model_worker_count == 1:
+        return "single_worker"
+    return "unavailable"
+
+
+def _capacity_condition(reason: str) -> str:
+    conditions = {
+        "available": "available",
+        "local_frontdoor_unreachable": "frontdoor_reachability",
+        "no_eligible_workers_configured": "worker_configuration",
+        "no_eligible_worker_reachable": "worker_reachability",
+        "model_not_available_on_eligible_workers": "model_placement",
+        "mesh_probe_stale": "mesh_probe",
+        "mesh_probe_timeout": "mesh_probe",
+        "mesh_probe_failed": "mesh_probe",
+    }
+    if reason.startswith("recent_local_model_"):
+        return "recent_local_failure"
+    return conditions.get(reason, "unknown")
+
+
+def _local_lane_summary(
+    *,
+    eligible_worker_count: int,
+    reachable_worker_count: int,
+    model_worker_count: int,
+) -> dict[str, Any]:
+    return {
+        "eligible_worker_count": eligible_worker_count,
+        "reachable_worker_count": reachable_worker_count,
+        "model_ready_worker_count": model_worker_count,
+        "redundancy": _redundancy_state(model_worker_count),
+    }
+
+
 def heavy_coding_capacity_policy() -> dict[str, list[dict[str, str]]]:
     """Return the stable worker policy included in safe failure payloads."""
 
@@ -172,6 +210,12 @@ def unavailable_capacity_snapshot(
             "status": "unknown",
             "model_advertised": False,
         },
+        "condition": _capacity_condition(reason),
+        "local_lane": _local_lane_summary(
+            eligible_worker_count=len(HEAVY_CODING_WORKER_IDS),
+            reachable_worker_count=0,
+            model_worker_count=0,
+        ),
         **heavy_coding_capacity_policy(),
         "cache": {"status": "unavailable"},
         "cloud_fallback": cloud_fallback_allowed_for_alias(
@@ -259,9 +303,15 @@ def build_capacity_snapshot(
         "schema": CAPACITY_SCHEMA,
         "available": reason == "available",
         "reason": reason,
+        "condition": _capacity_condition(reason),
         "requested_model": requested_model,
         "selected_model": selected_model,
         "frontdoor": frontdoor_summary,
+        "local_lane": _local_lane_summary(
+            eligible_worker_count=len(eligible_workers),
+            reachable_worker_count=len(reachable_workers),
+            model_worker_count=len(model_workers),
+        ),
         "eligible_workers": eligible_workers,
         "ineligible_workers": ineligible_workers,
         "cache": {

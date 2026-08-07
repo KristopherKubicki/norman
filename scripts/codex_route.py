@@ -701,19 +701,38 @@ def verify_norman_capacity(route: Route, *, token: str) -> tuple[bool, str]:
     cloud_fallback = payload.get("cloud_fallback")
     if not isinstance(cloud_fallback, bool):
         return False, "capacity report has an invalid cloud fallback policy"
+    local_lane = payload.get("local_lane")
+    local_lane = local_lane if isinstance(local_lane, dict) else {}
+    condition = str(payload.get("condition") or "").strip()
+    ready_workers = _coerce_int(local_lane.get("model_ready_worker_count"))
+    eligible_workers = _coerce_int(local_lane.get("eligible_worker_count"))
+    redundancy = str(local_lane.get("redundancy") or "").strip()
+    lane_detail = ""
+    if eligible_workers:
+        lane_detail = f"; {ready_workers}/{eligible_workers} model-ready worker(s)" + (
+            f", {redundancy.replace('_', ' ')}" if redundancy else ""
+        )
     if payload.get("available") is True:
-        return True, "local coding capacity verified"
+        return True, f"local coding capacity verified{lane_detail}"
     reason = str(payload.get("reason") or "unknown").strip() or "unknown"
     retryable = bool(payload.get("retryable"))
     retry_hint = "retry later" if retryable else "operator action is required"
+    condition_detail = {
+        "recent_local_failure": "the local lane was paused after a recent failed request",
+        "model_placement": "the coding model is not placed on a reachable worker",
+        "worker_reachability": "no eligible coding worker is reachable",
+        "worker_configuration": "no eligible coding worker is configured",
+        "frontdoor_reachability": "the local model front door is unreachable",
+        "mesh_probe": "the local model-health probe is unavailable",
+    }.get(condition, "the local coding lane is unavailable")
     if cloud_fallback:
         return (
             False,
-            "local coding capacity is unavailable "
-            f"({reason}); approved Bedrock fallback will be attempted before "
-            f"any local output; {retry_hint}",
+            f"{condition_detail} ({reason}){lane_detail}; "
+            "approved Bedrock fallback is ready and will run before any "
+            f"local output; {retry_hint}",
         )
-    return False, f"local coding capacity is unavailable ({reason}); {retry_hint}"
+    return False, f"{condition_detail} ({reason}){lane_detail}; {retry_hint}"
 
 
 def preflight_route_capacity(route: Route) -> tuple[bool, str]:
@@ -1207,8 +1226,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not capacity_available:
             print(
                 f"codex-route: {route.key} local capacity warning: "
-                f"{capacity_detail}. Starting Codex anyway; use /model to choose "
-                "another permitted model.",
+                f"{capacity_detail}. Starting Codex normally.",
                 file=sys.stderr,
             )
         print_startup_usage_notices(route)
