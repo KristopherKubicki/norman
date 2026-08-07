@@ -3289,6 +3289,58 @@ def test_openai_compat_converts_implicit_codex_apps_calls_to_tool_search():
     }
 
 
+def test_openai_compat_converts_codex_apps_call_with_declared_tool_search(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    facade.reset_facade_response_state()
+    monkeypatch.setattr(
+        facade,
+        "provider_adapter_decision",
+        lambda **kwargs: _local_route_envelope(),
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: _mock_local_chat(kwargs["messages"], kwargs["model"])
+        | {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"tool_call":{"name":"mcp__codex_apps__'
+                            'atlassian_rovo.search_company_knowledge",'
+                            '"arguments":{"query":"highest priority jira ticket"}}}'
+                        )
+                    }
+                }
+            ]
+        },
+    )
+
+    response = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "highest priority jira ticket",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "tool_search",
+                    "description": "Discover a connected tool.",
+                    "parameters": {"type": "object"},
+                }
+            ],
+        }
+    )
+
+    assert response["output_text"] == ""
+    assert response["output"][0]["name"] == "tool_search"
+    assert json.loads(response["output"][0]["arguments"]) == {
+        "query": "highest priority jira ticket"
+    }
+
+
 def test_openai_compat_keeps_implicit_local_calls_and_derives_app_search_query():
     import app.services.prompt_provider_facade as facade
 

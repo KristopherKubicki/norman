@@ -1076,16 +1076,17 @@ def _extract_tool_calls(
         if not isinstance(raw, Mapping):
             continue
         name = _clean(raw.get("name"))
-        if not name or (names and name not in names):
+        if not name:
             continue
         arguments = raw.get("arguments", {})
-        if (
-            allow_implicit_tools
-            and not names
-            and name.startswith(CODEX_APPS_TOOL_PREFIX)
-        ):
+        if name.startswith(CODEX_APPS_TOOL_PREFIX) and name not in names:
+            # Codex Apps tools must be discovered before invocation. Some
+            # local models emit a stale internal Apps name even when the
+            # request includes a partial built-in tool registry.
             arguments = {"query": _codex_apps_tool_search_query(name, arguments)}
             name = IMPLICIT_TOOL_SEARCH_NAME
+        elif names and name not in names:
+            continue
         call_id = _clean(raw.get("call_id")) or f"call_{uuid.uuid4().hex}"
         calls.append(
             {
