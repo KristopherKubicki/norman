@@ -42,6 +42,8 @@ def test_broker_client_uses_an_explicit_non_root_account():
 
     assert 'NORMAN_CODEX_GATEWAY_BROKER_USER:-kristopher' in client
     assert '-l "$BROKER_USER"' in client
+    assert "is_local_broker_host()" in client
+    assert 'exec sudo --non-interactive "$BROKER_COMMAND" "$1" "$2"' in client
 
 
 def test_broker_denies_unapproved_alias(monkeypatch, capsys):
