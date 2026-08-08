@@ -1547,6 +1547,91 @@ def test_openai_compat_responses_stream_converts_trailing_tool_envelope_after_pr
     assert response.closed is True
 
 
+def test_openai_compat_responses_stream_converts_trailing_codex_apps_call_after_preamble(
+    test_app, monkeypatch
+):
+    response = _MockNativeStreamResponse(
+        [
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "response": "I will run the requested checks.\n\n",
+                }
+            ),
+            json.dumps({"model": "qwen3-coder:30b", "response": "{"}),
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "response": (
+                        '"tool_call":{"name":"mcp__codex_apps__atlassian_rovo.'
+                        'search_company_knowledge","arguments":{"query":'
+                        '"How to run checks on Jira and our data according to '
+                        'company guidelines"}}}'
+                    ),
+                }
+            ),
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "done": True,
+                    "prompt_eval_count": 4,
+                    "eval_count": 2,
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat_stream",
+        lambda **kwargs: norllama_gateway.NorllamaTextStream(
+            response,
+            model=kwargs["model"],
+        ),
+    )
+
+    result = test_app.post(
+        "/v1/responses",
+        headers=_proxy_headers(monkeypatch),
+        json={
+            "model": "norman-code",
+            "input": "Run checks on Jira and our data.",
+            "stream": True,
+        },
+    )
+
+    assert result.status_code == 200
+    events = _response_sse_events(result.text)
+    payloads = [
+        json.loads(data) for event, data in events if event and data != "[DONE]"
+    ]
+    output_deltas = [
+        payload["delta"]
+        for payload in payloads
+        if payload["type"] == "response.output_text.delta"
+    ]
+    output_items = [
+        payload["item"]
+        for payload in payloads
+        if payload["type"] == "response.output_item.added"
+    ]
+    completed = next(
+        payload["response"]
+        for payload in payloads
+        if payload["type"] == "response.completed"
+    )
+
+    assert "".join(output_deltas) == "I will run the requested checks.\n\n"
+    assert not any("mcp__codex_apps__" in delta for delta in output_deltas)
+    assert [item["type"] for item in output_items] == ["message", "function_call"]
+    assert output_items[1]["name"] == "tool_search"
+    assert json.loads(completed["output"][1]["arguments"]) == {
+        "query": "How to run checks on Jira and our data according to company guidelines"
+    }
+    assert completed["output_text"] == "I will run the requested checks.\n\n"
+    assert "mcp__codex_apps__" not in completed["output_text"]
+    assert response.closed is True
+
+
 def test_openai_compat_responses_stream_converts_trailing_resource_read_after_preamble(
     test_app, monkeypatch
 ):
