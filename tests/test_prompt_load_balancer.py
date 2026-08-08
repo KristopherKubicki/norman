@@ -1710,7 +1710,7 @@ def test_openai_compat_discovers_ops_tool_before_initial_local_exploration(
             ),
             (
                 '{"tool_call":{"name":"ops_openbrand.lookup","arguments":'
-                '{"query":"run checks on Jira and our data"}}}'
+                '{"query":"Jira data checks"}}}'
             ),
         ]
     )

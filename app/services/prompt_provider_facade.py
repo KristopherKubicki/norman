@@ -1407,6 +1407,52 @@ def _initial_ops_tool_preference(
     return None
 
 
+def _discovered_ops_lookup_preference(
+    *,
+    prepared: PreparedResponsesExecution,
+    raw_calls: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Preserve the broad request on its first discovered read-only lookup."""
+
+    context = prepared.tool_chain_context
+    if (
+        context.chain_depth != 1
+        or not context.tool_search_completed
+        or context.discovered_declared_tool_names != ("ops_openbrand.lookup",)
+    ):
+        return None
+    if (
+        len(raw_calls) != 1
+        or _clean(raw_calls[0].get("name")) != "ops_openbrand.lookup"
+    ):
+        return None
+    request = _tool_chain_operator_request(prepared.messages)
+    if not _tool_chain_is_broad_ops_request(request):
+        return None
+    lookup = next(
+        (
+            tool
+            for tool in tools
+            if _tool_name(tool) == "ops_openbrand.lookup"
+            and _tool_chain_discovered_tool_is_read_only(tool)
+        ),
+        None,
+    )
+    if lookup is None:
+        return None
+    arguments = _tool_chain_safe_discovered_arguments(
+        tool=lookup,
+        request=request,
+    )
+    if arguments is None:
+        return None
+    return {
+        "name": "ops_openbrand.lookup",
+        "arguments": arguments,
+    }
+
+
 def _tool_chain_discovered_declared_tool_fallback(
     *,
     prepared: PreparedResponsesExecution,
@@ -3590,14 +3636,21 @@ def _resolve_tool_chain_watchdog(
     response = dict(chat_response)
     text = _choice_text(response)
     raw_calls = _json_tool_call_envelope(text)
-    if (
-        _initial_ops_tool_preference(
-            prepared=prepared,
-            text=text,
-            raw_calls=raw_calls,
-            tools=_tools(prepared.provider_payload),
+    if any(
+        preference is not None
+        for preference in (
+            _initial_ops_tool_preference(
+                prepared=prepared,
+                text=text,
+                raw_calls=raw_calls,
+                tools=_tools(prepared.provider_payload),
+            ),
+            _discovered_ops_lookup_preference(
+                prepared=prepared,
+                raw_calls=raw_calls,
+                tools=_tools(prepared.provider_payload),
+            ),
         )
-        is not None
     ):
         # The response adapter will replace this clear first-turn action
         # announcement with the declared read-only call below.
@@ -3678,6 +3731,10 @@ def _responses_response_from_chat(
     preferred_call = _initial_ops_tool_preference(
         prepared=prepared,
         text=text,
+        raw_calls=raw_calls,
+        tools=tools,
+    ) or _discovered_ops_lookup_preference(
+        prepared=prepared,
         raw_calls=raw_calls,
         tools=tools,
     )
