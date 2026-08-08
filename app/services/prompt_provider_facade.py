@@ -859,7 +859,32 @@ def _tool_name(tool: Mapping[str, Any]) -> str:
 
 
 def _tool_names(tools: list[dict[str, Any]]) -> set[str]:
-    return {_tool_name(tool) for tool in tools if _tool_name(tool)}
+    names: set[str] = set()
+    for tool in tools:
+        if _clean(tool.get("type")) != "namespace":
+            name = _tool_name(tool)
+            if name:
+                names.add(name)
+            continue
+
+        namespace = _clean(tool.get("name"))
+        members = tool.get("tools")
+        if not namespace or not isinstance(members, list):
+            continue
+        for member in members:
+            if not isinstance(member, Mapping):
+                continue
+            member_type = _clean(member.get("type"))
+            if member_type and member_type != "function":
+                continue
+            member_name = _tool_name(member)
+            if not member_name:
+                continue
+            if member_name.startswith(f"{namespace}."):
+                names.add(member_name)
+            else:
+                names.add(f"{namespace}.{member_name}")
+    return names
 
 
 @dataclass(frozen=True)
@@ -1630,7 +1655,7 @@ def _extract_tool_calls(
         if not name:
             continue
         arguments = raw.get("arguments", {})
-        if names and name not in names:
+        if name not in names and not allow_implicit_tools:
             continue
         call_id = _clean(raw.get("call_id")) or f"call_{uuid.uuid4().hex}"
         calls.append(
@@ -1668,7 +1693,7 @@ def _response_tool_calls(
             # Some Codex TUI request forms keep their executable tool registry
             # client-side and omit a top-level Responses tools list. The TUI still
             # validates the returned call before it can execute anything.
-            allow_implicit_tools=not bool(_tool_names(tools)),
+            allow_implicit_tools="tools" not in provider_payload,
             raw_calls=raw_calls,
         ),
     )

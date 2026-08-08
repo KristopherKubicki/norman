@@ -1293,30 +1293,22 @@ def test_openai_compat_responses_stream_keeps_tool_envelopes_out_of_text(
 def test_openai_compat_responses_stream_keeps_native_function_call_out_of_text(
     test_app, monkeypatch
 ):
-    native_call_id = "call_native_exec_command"
-    native_item_id = "fc_native_exec_command"
-    native_arguments = (
-        '{"cmd":"mkdir -p jira_check_output",'
-        '"workdir":"/home/kristopher/code/control_plane"}'
-    )
+    native_call_id = "call_native_ops_health"
+    native_item_id = "fc_native_ops_health"
+    native_arguments = "{}"
+    native_name = "mcp__ops_openbrand.system_health"
     response = _MockNativeStreamResponse(
         [
             json.dumps(
                 {
                     "model": "qwen3-coder:30b",
-                    "response": (
-                        '{"arguments":"{\\"cmd\\":\\"mkdir -p ' 'jira_check_output\\",'
-                    ),
+                    "response": '{"arguments":"{}",',
                 }
             ),
             json.dumps(
                 {
                     "model": "qwen3-coder:30b",
-                    "response": (
-                        '\\"workdir\\":\\"/home/kristopher/code/'
-                        'control_plane\\"}",'
-                        f'"call_id":"{native_call_id}",'
-                    ),
+                    "response": f'"call_id":"{native_call_id}",',
                 }
             ),
             json.dumps(
@@ -1324,7 +1316,7 @@ def test_openai_compat_responses_stream_keeps_native_function_call_out_of_text(
                     "model": "qwen3-coder:30b",
                     "response": (
                         f'"id":"{native_item_id}",'
-                        '"name":"exec_command","type":"function_call"}'
+                        f'"name":"{native_name}","type":"function_call"}}'
                     ),
                 }
             ),
@@ -1352,14 +1344,20 @@ def test_openai_compat_responses_stream_keeps_native_function_call_out_of_text(
         headers=_proxy_headers(monkeypatch),
         json={
             "model": "norman-code",
-            "input": "Create the output directory.",
+            "input": "Check the internal system health.",
             "stream": True,
             "tools": [
                 {
-                    "type": "function",
-                    "name": "exec_command",
-                    "description": "Run a shell command.",
-                    "parameters": {"type": "object"},
+                    "type": "namespace",
+                    "name": "mcp__ops_openbrand",
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": "system_health",
+                            "description": "Read the current system health.",
+                            "parameters": {"type": "object"},
+                        }
+                    ],
                 }
             ],
         },
@@ -1400,7 +1398,7 @@ def test_openai_compat_responses_stream_keeps_native_function_call_out_of_text(
         "id": native_item_id,
         "status": "in_progress",
         "call_id": native_call_id,
-        "name": "exec_command",
+        "name": native_name,
         "arguments": "",
     }
     assert [event["delta"] for event in function_argument_deltas] == [native_arguments]
@@ -1412,7 +1410,7 @@ def test_openai_compat_responses_stream_keeps_native_function_call_out_of_text(
             "type": "function_call",
             "status": "completed",
             "call_id": native_call_id,
-            "name": "exec_command",
+            "name": native_name,
             "arguments": native_arguments,
         }
     ]
@@ -3864,6 +3862,131 @@ def test_openai_compat_responses_can_return_native_function_call(monkeypatch):
             "arguments": native_arguments,
         }
     ]
+
+
+def test_openai_compat_responses_can_return_declared_mcp_namespace_function_call(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    native_call_id = "call_ops_health"
+    native_item_id = "fc_ops_health"
+    native_arguments = "{}"
+    native_name = "mcp__ops_openbrand.system_health"
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: _mock_local_chat(
+            kwargs["messages"],
+            kwargs["model"],
+        )
+        | {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "arguments": native_arguments,
+                                "call_id": native_call_id,
+                                "id": native_item_id,
+                                "name": native_name,
+                                "type": "function_call",
+                            }
+                        )
+                    }
+                }
+            ]
+        },
+    )
+
+    response = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "Check the internal system health.",
+            "tools": [
+                {
+                    "type": "namespace",
+                    "name": "mcp__ops_openbrand",
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": "system_health",
+                            "description": "Read the current system health.",
+                            "parameters": {"type": "object"},
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert response["output_text"] == ""
+    assert response["output"] == [
+        {
+            "id": native_item_id,
+            "type": "function_call",
+            "status": "completed",
+            "call_id": native_call_id,
+            "name": native_name,
+            "arguments": native_arguments,
+        }
+    ]
+
+
+def test_openai_compat_responses_keeps_undeclared_mcp_namespace_call_as_text(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    model_text = json.dumps(
+        {
+            "arguments": "{}",
+            "call_id": "call_undeclared_ops",
+            "id": "fc_undeclared_ops",
+            "name": "mcp__ops_openbrand.write_system_state",
+            "type": "function_call",
+        }
+    )
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: _mock_local_chat(
+            kwargs["messages"],
+            kwargs["model"],
+        )
+        | {"choices": [{"message": {"content": model_text}}]},
+    )
+
+    response = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "Check the internal system health.",
+            "tools": [
+                {
+                    "type": "namespace",
+                    "name": "mcp__ops_openbrand",
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": "system_health",
+                            "description": "Read the current system health.",
+                            "parameters": {"type": "object"},
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert response["output_text"] == model_text
+    assert [item["type"] for item in response["output"]] == ["message"]
+    assert response["output"][0]["content"][0]["text"] == model_text
 
 
 def test_openai_compat_responses_preserves_declared_codex_apps_tool_call(
