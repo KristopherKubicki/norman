@@ -131,6 +131,10 @@ TOOL_CHAIN_GENERIC_CLARIFICATION_MARKERS = (
     "please specify what",
 )
 TOOL_CHAIN_NEXT_STEP_PREFIXES = (
+    "first let me ",
+    "first, let me ",
+    "first i will ",
+    "first, i will ",
     "now let me ",
     "now, let me ",
     "let me now ",
@@ -172,6 +176,49 @@ TOOL_CHAIN_NEXT_STEP_ACTION_VERBS = (
     "examine",
     "try",
     "using",
+)
+TOOL_CHAIN_READ_ONLY_TOOL_TOKENS = frozenset(
+    {
+        "context",
+        "evidence",
+        "fetch",
+        "find",
+        "get",
+        "health",
+        "inspect",
+        "list",
+        "lookup",
+        "metadata",
+        "query",
+        "read",
+        "retrieve",
+        "search",
+        "status",
+    }
+)
+TOOL_CHAIN_MUTATING_TOOL_TOKENS = frozenset(
+    {
+        "archive",
+        "cancel",
+        "commit",
+        "create",
+        "delete",
+        "deploy",
+        "disable",
+        "edit",
+        "execute",
+        "merge",
+        "modify",
+        "patch",
+        "publish",
+        "remove",
+        "restart",
+        "start",
+        "stop",
+        "trigger",
+        "update",
+        "write",
+    }
 )
 logger = logging.getLogger(__name__)
 MODEL_ALIASES = {
@@ -788,6 +835,7 @@ def _tool_names(tools: list[dict[str, Any]]) -> set[str]:
 @dataclass(frozen=True)
 class ToolChainContext:
     declared_tool_names: tuple[str, ...]
+    discovered_declared_tool_names: tuple[str, ...]
     chain_depth: int
     tool_results_supplied: int
     tool_results_matched: int
@@ -799,6 +847,47 @@ class ToolChainContext:
         return any(
             name != IMPLICIT_TOOL_SEARCH_NAME for name in self.declared_tool_names
         )
+
+
+def _discovered_declared_tool_names(
+    *,
+    supplied_results: list[tuple[str, str]],
+    calls: Mapping[str, str],
+    declared_tool_names: set[str],
+) -> tuple[str, ...]:
+    """Return executable declared tools exposed by successful tool_search output."""
+
+    declared_by_normalized_name = {
+        _lower(name): name
+        for name in declared_tool_names
+        if name != IMPLICIT_TOOL_SEARCH_NAME
+    }
+    discovered: set[str] = set()
+    for call_id, output in supplied_results:
+        if calls.get(call_id) != IMPLICIT_TOOL_SEARCH_NAME:
+            continue
+        if not _tool_output_is_successful(output):
+            continue
+        try:
+            payload = json.loads(output)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(payload, Mapping):
+            continue
+        raw_tools = payload.get("tools")
+        if not isinstance(raw_tools, list):
+            continue
+        for raw_tool in raw_tools:
+            if isinstance(raw_tool, str):
+                name = _clean(raw_tool)
+            elif isinstance(raw_tool, Mapping):
+                name = _tool_name(raw_tool)
+            else:
+                name = ""
+            declared_name = declared_by_normalized_name.get(_lower(name))
+            if declared_name:
+                discovered.add(declared_name)
+    return tuple(sorted(discovered))
 
 
 def _tool_chain_context(
@@ -836,13 +925,23 @@ def _tool_chain_context(
         for call_id, output in supplied_results
         if call_id in calls and _tool_output_is_successful(output)
     )
+    declared_tool_names = _tool_names(_tools(payload))
     return ToolChainContext(
-        declared_tool_names=tuple(sorted(_tool_names(_tools(payload)))),
+        declared_tool_names=tuple(sorted(declared_tool_names)),
+        discovered_declared_tool_names=_discovered_declared_tool_names(
+            supplied_results=supplied_results,
+            calls=calls,
+            declared_tool_names=declared_tool_names,
+        ),
         chain_depth=len(calls),
         tool_results_supplied=len(supplied_results),
         tool_results_matched=len(matched_result_names),
         successful_tool_results=successful_tool_results,
-        tool_search_completed=IMPLICIT_TOOL_SEARCH_NAME in matched_result_names,
+        tool_search_completed=any(
+            calls.get(call_id) == IMPLICIT_TOOL_SEARCH_NAME
+            and _tool_output_is_successful(output)
+            for call_id, output in supplied_results
+        ),
     )
 
 
@@ -1014,6 +1113,13 @@ def _tool_chain_repair_message(
     reason: str,
 ) -> dict[str, str]:
     declared = ", ".join(context.declared_tool_names)
+    discovered = ", ".join(context.discovered_declared_tool_names)
+    discovered_instruction = (
+        " The successful tool_search result exposed this declared executable "
+        f"tool: {discovered}. Call it now with safe arguments."
+        if len(context.discovered_declared_tool_names) == 1
+        else ""
+    )
     return {
         "role": "system",
         "content": (
@@ -1028,7 +1134,7 @@ def _tool_chain_repair_message(
             "executable tool. Do not call an undeclared internal mcp__ name, list "
             "MCP resources, or repeat tool_search after discovery when an "
             "executable tool is declared. Declared tools: "
-            f"{declared}. Repair reason: {reason}."
+            f"{declared}.{discovered_instruction} Repair reason: {reason}."
         ),
     }
 
@@ -1069,6 +1175,139 @@ def _tool_chain_declared_tool_fallback(
     if len(matches) != 1:
         return None
     return matches[0], raw_call.get("arguments", {})
+
+
+def _tool_parameters(tool: Mapping[str, Any]) -> Mapping[str, Any]:
+    function = _mapping(tool.get("function"))
+    parameters = function.get("parameters") or tool.get("parameters")
+    return parameters if isinstance(parameters, Mapping) else {}
+
+
+def _tool_chain_operator_request(messages: list[dict[str, Any]]) -> str:
+    """Return the most recent operator request, bounded for a tool query."""
+
+    for message in reversed(messages):
+        if _clean(message.get("role")) != "user":
+            continue
+        content = _clean(message.get("content"))
+        if content:
+            return content[:1200]
+    return ""
+
+
+def _tool_chain_schema_default(parameter: Mapping[str, Any]) -> tuple[bool, Any]:
+    if "default" not in parameter:
+        return False, None
+    value = parameter.get("default")
+    if value is None or isinstance(value, (str, int, float, bool, list, dict)):
+        return True, value
+    return False, None
+
+
+def _tool_chain_schema_enum_value(
+    parameter: Mapping[str, Any],
+    *,
+    request: str,
+) -> tuple[bool, Any]:
+    values = parameter.get("enum")
+    if not isinstance(values, list):
+        return False, None
+    normalized_request = _lower(request)
+    matches = [
+        value
+        for value in values
+        if isinstance(value, str)
+        and value
+        and re.search(rf"\b{re.escape(_lower(value))}\b", normalized_request)
+    ]
+    return (True, matches[0]) if len(matches) == 1 else (False, None)
+
+
+def _tool_chain_safe_discovered_arguments(
+    *,
+    tool: Mapping[str, Any],
+    request: str,
+) -> dict[str, Any] | None:
+    """Build only schema-supported read arguments for a discovered tool."""
+
+    schema = _tool_parameters(tool)
+    properties = _mapping(schema.get("properties"))
+    required = tuple(
+        name
+        for name in schema.get("required", [])
+        if isinstance(name, str) and name in properties
+    )
+    arguments: dict[str, Any] = {}
+    if request:
+        for name in ("query", "question", "search", "q", "prompt", "term"):
+            if name in properties:
+                arguments[name] = request
+                break
+    for name in required:
+        if name in arguments:
+            continue
+        parameter = _mapping(properties.get(name))
+        has_default, default = _tool_chain_schema_default(parameter)
+        if has_default:
+            arguments[name] = default
+            continue
+        has_enum_value, enum_value = _tool_chain_schema_enum_value(
+            parameter,
+            request=request,
+        )
+        if has_enum_value:
+            arguments[name] = enum_value
+            continue
+        return None
+    return arguments
+
+
+def _tool_chain_discovered_tool_is_read_only(tool: Mapping[str, Any]) -> bool:
+    """Permit automatic advancement only for clearly read-only tools."""
+
+    function = _mapping(tool.get("function"))
+    name = _tool_name(tool)
+    description = _clean(function.get("description") or tool.get("description"))
+    normalized = _lower(f"{name} {description}")
+    words = set(re.findall(r"[a-z0-9]+", normalized))
+    if words & TOOL_CHAIN_MUTATING_TOOL_TOKENS:
+        return False
+    return bool(
+        words & TOOL_CHAIN_READ_ONLY_TOOL_TOKENS
+        or "read-only" in normalized
+        or "read only" in normalized
+    )
+
+
+def _tool_chain_discovered_declared_tool_fallback(
+    *,
+    prepared: PreparedResponsesExecution,
+) -> tuple[str, dict[str, Any]] | None:
+    """Advance one unambiguous executable tool exposed by tool_search."""
+
+    discovered = prepared.tool_chain_context.discovered_declared_tool_names
+    if len(discovered) != 1:
+        return None
+    name = discovered[0]
+    tool = next(
+        (
+            candidate
+            for candidate in _tools(prepared.provider_payload)
+            if _tool_name(candidate) == name
+        ),
+        None,
+    )
+    if tool is None:
+        return None
+    if not _tool_chain_discovered_tool_is_read_only(tool):
+        return None
+    arguments = _tool_chain_safe_discovered_arguments(
+        tool=tool,
+        request=_tool_chain_operator_request(prepared.messages),
+    )
+    if arguments is None:
+        return None
+    return name, arguments
 
 
 def _tool_chain_fallback_tool_search_query(text: str) -> str:
@@ -1129,9 +1368,16 @@ def _tool_chain_fallback_response(
         name, arguments = declared_fallback
         fallback = "declared_tool"
     else:
-        name = IMPLICIT_TOOL_SEARCH_NAME
-        arguments = {"query": _tool_chain_fallback_tool_search_query(repaired_text)}
-        fallback = "tool_search"
+        discovered_fallback = _tool_chain_discovered_declared_tool_fallback(
+            prepared=prepared,
+        )
+        if discovered_fallback is not None:
+            name, arguments = discovered_fallback
+            fallback = "discovered_declared_tool"
+        else:
+            name = IMPLICIT_TOOL_SEARCH_NAME
+            arguments = {"query": _tool_chain_fallback_tool_search_query(repaired_text)}
+            fallback = "tool_search"
     response = dict(repaired)
     response["norman"] = _redact_tool_chain_fallback_reply(
         _mapping(response.get("norman")),
