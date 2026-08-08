@@ -99,6 +99,13 @@ EXPLICIT_CLOUD_SELECTION_MARKER_SCHEMA = "norman.facade-explicit-cloud-selection
 CODEX_APPS_TOOL_PREFIX = "mcp__codex_apps__"
 INTERNAL_MCP_TOOL_PREFIX = "mcp__"
 IMPLICIT_TOOL_SEARCH_NAME = "tool_search"
+IMPLICIT_CLIENT_LOCAL_TOOL_NAMES = frozenset(
+    {
+        "apply_patch",
+        "exec_command",
+        "write_stdin",
+    }
+)
 MCP_RESOURCE_DISCOVERY_TOOL_NAMES = frozenset(
     {
         "list_mcp_resources",
@@ -176,6 +183,21 @@ TOOL_CHAIN_NEXT_STEP_ACTION_VERBS = (
     "examine",
     "try",
     "using",
+)
+TOOL_CHAIN_OPS_REQUEST_MARKERS = (
+    "airflow",
+    "dashboard",
+    "gapi",
+    "gold book",
+    "jira",
+    "ops mcp",
+    "openbrand",
+    "our data",
+    "product library",
+    "quicksight",
+    "salesdesk",
+    "specmaster",
+    "webgoat",
 )
 TOOL_CHAIN_READ_ONLY_TOOL_TOKENS = frozenset(
     {
@@ -957,6 +979,16 @@ def _trailing_json_tool_call_envelope(
 
     if not text:
         return "", []
+    fenced_envelope = _trailing_fenced_json_tool_call_envelope(text)
+    if fenced_envelope is not None:
+        preamble, fenced_json = fenced_envelope
+        try:
+            payload = json.loads(fenced_json)
+        except (TypeError, ValueError):
+            payload = None
+        calls = _tool_calls_from_envelope_payload(payload)
+        if calls:
+            return preamble, calls
     decoder = json.JSONDecoder()
     start = text.rfind("{")
     while start >= 0:
@@ -971,18 +1003,35 @@ def _trailing_json_tool_call_envelope(
         if text[start + end :].strip():
             start = text.rfind("{", 0, start)
             continue
-        raw_calls: list[Any] = []
-        if isinstance(payload, Mapping):
-            if isinstance(payload.get("tool_call"), Mapping):
-                raw_calls = [payload["tool_call"]]
-            elif isinstance(payload.get("tool_calls"), list):
-                raw_calls = payload["tool_calls"]
-        calls = [dict(call) for call in raw_calls if isinstance(call, Mapping)]
+        calls = _tool_calls_from_envelope_payload(payload)
         if calls:
             preamble = text[:start]
             return (preamble if preamble.strip() else ""), calls
         start = text.rfind("{", 0, start)
     return text, []
+
+
+def _trailing_fenced_json_tool_call_envelope(text: str) -> tuple[str, str] | None:
+    """Return the prose and JSON from a final generic or JSON fenced block."""
+
+    match = re.fullmatch(
+        r"(?s)(.*)```(?i:json)?[ \t]*\r?\n(.*?)\r?\n?```[ \t]*",
+        text,
+    )
+    if match is None:
+        return None
+    return match.group(1), match.group(2)
+
+
+def _tool_calls_from_envelope_payload(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, Mapping):
+        return []
+    raw_calls: list[Any] = []
+    if isinstance(payload.get("tool_call"), Mapping):
+        raw_calls = [payload["tool_call"]]
+    elif isinstance(payload.get("tool_calls"), list):
+        raw_calls = payload["tool_calls"]
+    return [dict(call) for call in raw_calls if isinstance(call, Mapping)]
 
 
 def _json_tool_call_envelope(text: str) -> list[dict[str, Any]]:
@@ -1277,6 +1326,59 @@ def _tool_chain_discovered_tool_is_read_only(tool: Mapping[str, Any]) -> bool:
         or "read-only" in normalized
         or "read only" in normalized
     )
+
+
+def _tool_chain_is_broad_ops_request(request: str) -> bool:
+    normalized = _lower(request)
+    return any(marker in normalized for marker in TOOL_CHAIN_OPS_REQUEST_MARKERS)
+
+
+def _initial_ops_tool_preference(
+    *,
+    prepared: PreparedResponsesExecution,
+    raw_calls: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Favor a declared read-only Ops lookup over an implicit local shell call."""
+
+    context = prepared.tool_chain_context
+    if context.chain_depth or context.tool_results_supplied:
+        return None
+    names = _tool_names(tools)
+    if not any(
+        _clean(raw_call.get("name")) in IMPLICIT_CLIENT_LOCAL_TOOL_NAMES
+        and _clean(raw_call.get("name")) not in names
+        for raw_call in raw_calls
+    ):
+        return None
+    request = _tool_chain_operator_request(prepared.messages)
+    if not _tool_chain_is_broad_ops_request(request):
+        return None
+    lookup = next(
+        (
+            tool
+            for tool in tools
+            if _tool_name(tool) == "ops_openbrand.lookup"
+            and _tool_chain_discovered_tool_is_read_only(tool)
+        ),
+        None,
+    )
+    if lookup is not None:
+        arguments = _tool_chain_safe_discovered_arguments(
+            tool=lookup,
+            request=request,
+        )
+        if arguments is not None:
+            return {
+                "name": "ops_openbrand.lookup",
+                "arguments": arguments,
+            }
+    if IMPLICIT_TOOL_SEARCH_NAME in names:
+        return {
+            "name": IMPLICIT_TOOL_SEARCH_NAME,
+            "arguments": {"query": request},
+        }
+    return None
 
 
 def _tool_chain_discovered_declared_tool_fallback(
@@ -2025,7 +2127,9 @@ def _extract_tool_calls(
             # capability before returning a call to Codex.
             arguments = {"query": _internal_mcp_tool_search_query(name, arguments)}
             name = IMPLICIT_TOOL_SEARCH_NAME
-        elif names and name not in names:
+        elif (
+            names and name not in names and name not in IMPLICIT_CLIENT_LOCAL_TOOL_NAMES
+        ):
             continue
         call_id = _clean(raw.get("call_id")) or f"call_{uuid.uuid4().hex}"
         calls.append(
@@ -3527,6 +3631,13 @@ def _responses_response_from_chat(
     text = _choice_text(chat_response)
     tools = _tools(provider_payload)
     preamble, raw_calls = _trailing_json_tool_call_envelope(text)
+    preferred_call = _initial_ops_tool_preference(
+        prepared=prepared,
+        raw_calls=raw_calls,
+        tools=tools,
+    )
+    if preferred_call is not None:
+        raw_calls = [preferred_call]
     tool_calls = _extract_tool_calls(
         text,
         tools=tools,

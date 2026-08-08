@@ -1384,6 +1384,242 @@ def test_openai_compat_responses_stream_converts_implicit_tool_envelopes(
     assert response.closed is True
 
 
+def test_openai_compat_responses_stream_converts_implicit_shell_call_with_partial_registry(
+    test_app, monkeypatch
+):
+    response = _MockNativeStreamResponse(
+        [
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "response": "I will inspect the working tree.\n\n",
+                }
+            ),
+            json.dumps({"model": "qwen3-coder:30b", "response": "{"}),
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "response": (
+                        '"tool_call":{"name":"exec_command",'
+                        '"arguments":{"cmd":"git status --short"}}}'
+                    ),
+                }
+            ),
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "done": True,
+                    "prompt_eval_count": 4,
+                    "eval_count": 2,
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat_stream",
+        lambda **kwargs: norllama_gateway.NorllamaTextStream(
+            response,
+            model=kwargs["model"],
+        ),
+    )
+
+    result = test_app.post(
+        "/v1/responses",
+        headers=_proxy_headers(monkeypatch),
+        json={
+            "model": "norman-code",
+            "input": "Check the working tree.",
+            "stream": True,
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "tool_search",
+                    "description": "Discover a connected tool.",
+                    "parameters": {"type": "object"},
+                }
+            ],
+        },
+    )
+
+    assert result.status_code == 200
+    events = _response_sse_events(result.text)
+    payloads = [
+        json.loads(data) for event, data in events if event and data != "[DONE]"
+    ]
+    output_deltas = [
+        payload["delta"]
+        for payload in payloads
+        if payload["type"] == "response.output_text.delta"
+    ]
+    function_items = [
+        payload["item"]
+        for payload in payloads
+        if payload["type"] == "response.output_item.done"
+        and payload["item"]["type"] == "function_call"
+    ]
+    completed = next(
+        payload["response"]
+        for payload in payloads
+        if payload["type"] == "response.completed"
+    )
+
+    assert "".join(output_deltas) == "I will inspect the working tree.\n\n"
+    assert "exec_command" not in "".join(output_deltas)
+    assert [item["name"] for item in function_items] == ["exec_command"]
+    assert json.loads(function_items[0]["arguments"]) == {"cmd": "git status --short"}
+    assert completed["output_text"] == "I will inspect the working tree.\n\n"
+    assert "exec_command" not in completed["output_text"]
+    assert response.closed is True
+
+
+def test_openai_compat_prefers_declared_ops_lookup_over_implicit_shell_call(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    monkeypatch.setattr(
+        facade,
+        "provider_adapter_decision",
+        lambda **kwargs: _local_route_envelope(),
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: _mock_local_chat(kwargs["messages"], kwargs["model"])
+        | {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"tool_call":{"name":"exec_command","arguments":'
+                            '{"cmd":"ls -la scripts | grep -E '
+                            "'(jira|check|analyze|audit)'\"}}}"
+                        )
+                    }
+                }
+            ]
+        },
+    )
+
+    response = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "run checks on Jira and our data",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "tool_search",
+                    "description": "Discover a connected tool.",
+                    "parameters": {"type": "object"},
+                },
+                {
+                    "type": "function",
+                    "name": "ops_openbrand.lookup",
+                    "description": "Run a broad read-only operations lookup.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                        "required": ["query"],
+                    },
+                },
+            ],
+        }
+    )
+
+    assert response["output_text"] == ""
+    assert [item["name"] for item in response["output"]] == ["ops_openbrand.lookup"]
+    assert json.loads(response["output"][0]["arguments"]) == {
+        "query": "run checks on Jira and our data"
+    }
+    assert "exec_command" not in json.dumps(response["output"])
+
+
+def test_openai_compat_converts_final_fenced_shell_envelope_with_partial_registry(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    monkeypatch.setattr(
+        facade,
+        "provider_adapter_decision",
+        lambda **kwargs: _local_route_envelope(),
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: _mock_local_chat(kwargs["messages"], kwargs["model"])
+        | {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            "I will inspect the working tree.\n"
+                            "```json\n"
+                            '{"tool_call":{"name":"exec_command",'
+                            '"arguments":{"cmd":"git status --short"}}}\n'
+                            "```"
+                        )
+                    }
+                }
+            ]
+        },
+    )
+
+    response = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "Check the working tree.",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "tool_search",
+                    "description": "Discover a connected tool.",
+                    "parameters": {"type": "object"},
+                }
+            ],
+        }
+    )
+
+    assert response["output_text"] == "I will inspect the working tree.\n"
+    assert [
+        item["name"] for item in response["output"] if item["type"] == "function_call"
+    ] == ["exec_command"]
+    assert json.loads(response["output"][1]["arguments"]) == {
+        "cmd": "git status --short"
+    }
+    assert "```" not in response["output_text"]
+
+
+def test_openai_compat_keeps_non_tool_fenced_json_as_assistant_text():
+    import app.services.prompt_provider_facade as facade
+
+    text = 'Here is the status.\n```json\n{"status":"healthy"}\n```'
+
+    preamble, calls = facade._trailing_json_tool_call_envelope(text)
+
+    assert preamble == text
+    assert calls == []
+
+
+def test_openai_compat_rejects_unknown_implicit_tool_with_partial_registry():
+    import app.services.prompt_provider_facade as facade
+
+    calls = facade._extract_tool_calls(
+        '{"tool_call":{"name":"shell","arguments":{"cmd":"pwd"}}}',
+        tools=[
+            {
+                "type": "function",
+                "name": "tool_search",
+                "description": "Discover a connected tool.",
+                "parameters": {"type": "object"},
+            }
+        ],
+    )
+
+    assert calls == []
+
+
 def test_openai_compat_responses_stream_converts_mcp_resource_discovery(
     test_app, monkeypatch
 ):
