@@ -81,6 +81,15 @@ BEHAVIOR_BEARING_UNSUPPORTED_FIELDS = {
     "tool_choice",
     "tools",
 }
+UNSUPPORTED_RESPONSES_SEMANTIC_FIELDS = frozenset(
+    {
+        "background",
+        "conversation",
+        "modalities",
+        "response_format",
+        "stream_options",
+    }
+)
 SUPPORTED_REASONING_EFFORTS = frozenset(
     {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
 )
@@ -96,28 +105,12 @@ CLOUD_FALLBACK_MODEL = CLOUD_FALLBACK_BEDROCK_MODEL
 CLOUD_FALLBACK_LANE = "coder"
 EXPLICIT_CLOUD_SELECTION_SCHEMA = "norman.explicit-cloud-selection.v1"
 EXPLICIT_CLOUD_SELECTION_MARKER_SCHEMA = "norman.facade-explicit-cloud-selection.v1"
-CODEX_APPS_TOOL_PREFIX = "mcp__codex_apps__"
-INTERNAL_MCP_TOOL_PREFIX = "mcp__"
-IMPLICIT_TOOL_SEARCH_NAME = "tool_search"
-IMPLICIT_CLIENT_LOCAL_TOOL_NAMES = frozenset(
-    {
-        "apply_patch",
-        "exec_command",
-        "write_stdin",
-    }
-)
-MCP_RESOURCE_DISCOVERY_TOOL_NAMES = frozenset(
-    {
-        "list_mcp_resources",
-        "list_mcp_resource_templates",
-        "read_mcp_resource",
-    }
-)
 LEGACY_REPLAYED_FUNCTION_CALL_PREFIX = (
     "Prior assistant function call (replayed context only; do not execute): "
 )
 TOOL_CHAIN_SCHEMA = "norman.responses-tool-chain.v1"
-TOOL_CHAIN_WATCHDOG_MAX_ATTEMPTS = 1
+TOOL_CONTRACT_CONTEXT_MARKER = "_norman_responses_context"
+TOOL_CONTRACT_CONTEXT_KIND = "tool_contract"
 TOOL_OUTPUT_FAILURE_MARKERS = (
     "access denied",
     "permission denied",
@@ -126,196 +119,6 @@ TOOL_OUTPUT_FAILURE_MARKERS = (
     "execution_not_allowed",
     "tool failed",
     "failed to execute",
-)
-TOOL_CHAIN_GENERIC_CLARIFICATION_MARKERS = (
-    "what specific test",
-    "what specific tests",
-    "what specific functionality",
-    "what specific aspect",
-    "which specific test",
-    "which specific tests",
-    "could you specify what",
-    "please specify what",
-)
-TOOL_CHAIN_NEXT_STEP_PREFIXES = (
-    "first let me ",
-    "first, let me ",
-    "first i will ",
-    "first, i will ",
-    "first i'll ",
-    "first, i'll ",
-    "now let me ",
-    "now, let me ",
-    "let me now ",
-    "next let me ",
-    "next, let me ",
-    "let me try ",
-    "let me ",
-    "now i will ",
-    "now, i will ",
-    "i will now ",
-    "next i will ",
-    "next, i will ",
-    "i will ",
-    "now i'll ",
-    "now, i'll ",
-    "i'll now ",
-    "next i'll ",
-    "next, i'll ",
-    "i'll ",
-)
-TOOL_CHAIN_NEXT_STEP_ACTION_VERBS = (
-    "check",
-    "search",
-    "inspect",
-    "look",
-    "query",
-    "review",
-    "read",
-    "retrieve",
-    "run",
-    "test",
-    "gather",
-    "find",
-    "verify",
-    "use",
-    "call",
-    "fetch",
-    "analyze",
-    "examine",
-    "try",
-    "using",
-)
-TOOL_CHAIN_OPS_REQUEST_MARKERS = (
-    "airflow",
-    "dashboard",
-    "gapi",
-    "gold book",
-    "jira",
-    "ops mcp",
-    "openbrand",
-    "our data",
-    "product library",
-    "quicksight",
-    "salesdesk",
-    "specmaster",
-    "webgoat",
-)
-INITIAL_OPS_TOOL_SEARCH_QUERY = (
-    "Find the executable read-only Ops MCP tool for Jira and OpenBrand data checks"
-)
-TOOL_CHAIN_READ_ONLY_TOOL_TOKENS = frozenset(
-    {
-        "context",
-        "evidence",
-        "fetch",
-        "find",
-        "get",
-        "health",
-        "inspect",
-        "list",
-        "lookup",
-        "metadata",
-        "query",
-        "read",
-        "retrieve",
-        "search",
-        "status",
-    }
-)
-TOOL_CHAIN_MUTATING_TOOL_TOKENS = frozenset(
-    {
-        "archive",
-        "cancel",
-        "commit",
-        "create",
-        "delete",
-        "deploy",
-        "disable",
-        "edit",
-        "execute",
-        "merge",
-        "modify",
-        "patch",
-        "publish",
-        "remove",
-        "restart",
-        "start",
-        "stop",
-        "trigger",
-        "update",
-        "write",
-    }
-)
-TOOL_CHAIN_EXTERNAL_REQUEST_MARKERS = frozenset(
-    {
-        "account",
-        "calendar",
-        "connector",
-        "customer",
-        "dashboard",
-        "data",
-        "email",
-        "gmail",
-        "inbox",
-        "integration",
-        "issue",
-        "jira",
-        "mcp",
-        "record",
-        "ticket",
-        "workspace",
-    }
-)
-TOOL_CHAIN_LOCAL_CODING_REQUEST_MARKERS = frozenset(
-    {
-        "build",
-        "code",
-        "commit",
-        "directory",
-        "file",
-        "fix",
-        "git",
-        "implement",
-        "repository",
-        "repo",
-        "script",
-        "test",
-        "working tree",
-    }
-)
-TOOL_CHAIN_COMMON_WORDS = frozenset(
-    {
-        "a",
-        "an",
-        "and",
-        "at",
-        "can",
-        "check",
-        "do",
-        "for",
-        "from",
-        "get",
-        "help",
-        "i",
-        "in",
-        "is",
-        "it",
-        "me",
-        "my",
-        "of",
-        "on",
-        "our",
-        "please",
-        "run",
-        "some",
-        "the",
-        "this",
-        "to",
-        "use",
-        "with",
-        "you",
-    }
 )
 logger = logging.getLogger(__name__)
 MODEL_ALIASES = {
@@ -671,27 +474,29 @@ def _store_response_state(
     *,
     messages: list[dict[str, Any]],
     output_text: str,
-    function_calls: Mapping[str, str],
+    function_call_items: Mapping[str, Mapping[str, Any]],
+    response_function_call_items: list[Mapping[str, Any]],
     tool_outputs: set[tuple[str, str]],
 ) -> None:
     if not response_id:
         return
-    stored_function_calls = [
-        {"type": "function_call", "call_id": call_id, "name": name}
-        for call_id, name in sorted(function_calls.items())
-        if call_id and name
-    ]
+    stored_messages = [dict(message) for message in messages]
+    if output_text:
+        stored_messages.append({"role": "assistant", "content": output_text})
+    for function_call in response_function_call_items:
+        stored_messages.append(_function_call_context_message(function_call))
     stored_tool_outputs = [
         {"call_id": call_id, "output": output}
         for call_id, output in sorted(tool_outputs)
     ]
     with _RESPONSE_STATE_LOCK:
         _RESPONSE_STATE[response_id] = {
-            "messages": [dict(message) for message in messages],
+            "messages": stored_messages,
             "output_text": output_text,
-            # Keep only non-actionable tool lineage. Function arguments may contain
-            # stale shell commands and must never be replayed into model context.
-            "function_calls": stored_function_calls,
+            "messages_include_response_output": True,
+            "function_calls": [
+                dict(function_call) for function_call in function_call_items.values()
+            ],
             "tool_outputs": stored_tool_outputs,
             "created_at": time.time(),
         }
@@ -705,12 +510,85 @@ def _store_response_state(
 class ResponseHistory:
     messages: list[dict[str, Any]]
     function_calls: dict[str, str]
+    function_call_items: dict[str, dict[str, Any]]
     tool_outputs: set[tuple[str, str]]
     replayed: bool
 
 
+def _function_call_arguments(item: Mapping[str, Any]) -> str:
+    arguments = item.get("arguments", "")
+    if isinstance(arguments, str):
+        return arguments
+    if isinstance(arguments, (Mapping, list)):
+        return _json_dumps(arguments)
+    if arguments is None:
+        return ""
+    raise FacadeError(
+        "Responses function_call arguments must be a JSON string",
+        status_code=400,
+        code="invalid_function_call_arguments",
+        param="input",
+    )
+
+
 def _function_call_metadata(item: Mapping[str, Any]) -> tuple[str, str]:
     return _clean(item.get("call_id")), _clean(item.get("name"))
+
+
+def _function_call_item(
+    item: Mapping[str, Any],
+    *,
+    strict: bool = False,
+) -> dict[str, Any]:
+    call_id, name = _function_call_metadata(item)
+    if not call_id or not name:
+        if strict:
+            raise FacadeError(
+                "Responses function_call items require call_id and name",
+                status_code=400,
+                code="invalid_function_call",
+                param="input",
+            )
+        return {}
+    function_call = {
+        "type": "function_call",
+        "call_id": call_id,
+        "name": name,
+        "arguments": _function_call_arguments(item),
+    }
+    for field in ("id", "status"):
+        value = item.get(field)
+        if isinstance(value, str) and value:
+            function_call[field] = value
+    return function_call
+
+
+def _function_call_context_message(item: Mapping[str, Any]) -> dict[str, Any]:
+    function_call = _function_call_item(item)
+    if not function_call:
+        raise ValueError("Function call context requires call_id and name")
+    return {
+        "role": "assistant",
+        "content": _json_dumps(function_call),
+        **function_call,
+    }
+
+
+def _function_call_output_context_message(
+    *,
+    call_id: str,
+    output: str,
+) -> dict[str, Any]:
+    function_call_output = {
+        "type": "function_call_output",
+        "call_id": call_id,
+        "output": output,
+    }
+    return {
+        "role": "tool",
+        "content": _json_dumps(function_call_output),
+        **function_call_output,
+    }
 
 
 def _function_calls_from_items(items: list[dict[str, Any]]) -> dict[str, str]:
@@ -724,12 +602,33 @@ def _function_calls_from_items(items: list[dict[str, Any]]) -> dict[str, str]:
     return calls
 
 
+def _function_call_items_from_items(
+    items: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    calls: dict[str, dict[str, Any]] = {}
+    for item in items:
+        if _clean(item.get("type")) != "function_call":
+            continue
+        function_call = _function_call_item(item)
+        if function_call:
+            calls[function_call["call_id"]] = function_call
+    return calls
+
+
 def _function_calls_from_state(state: Mapping[str, Any]) -> dict[str, str]:
     calls = _function_calls_from_items(_messages(state.get("function_calls")))
     # States created before call metadata was compacted retained full output items.
-    # Read their ID/name fields only so continuing an existing session cannot replay
-    # old call arguments into the model.
     calls.update(_function_calls_from_items(_messages(state.get("output_items"))))
+    calls.update(_function_calls_from_items(_messages(state.get("messages"))))
+    return calls
+
+
+def _function_call_items_from_state(
+    state: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    calls = _function_call_items_from_items(_messages(state.get("function_calls")))
+    calls.update(_function_call_items_from_items(_messages(state.get("output_items"))))
+    calls.update(_function_call_items_from_items(_messages(state.get("messages"))))
     return calls
 
 
@@ -749,7 +648,17 @@ def _legacy_replayed_function_call(message: Mapping[str, Any]) -> tuple[str, str
 
 
 def _tool_output_metadata(item: Mapping[str, Any]) -> tuple[str, str]:
-    return _clean(item.get("call_id")), _clean(item.get("output"))
+    """Return a valid tool result without altering its output bytes."""
+
+    output = item.get("output")
+    if not isinstance(output, str):
+        raise FacadeError(
+            "Responses function_call_output output must be a string",
+            status_code=400,
+            code="invalid_function_call_output",
+            param="input",
+        )
+    return _clean(item.get("call_id")), output
 
 
 def _tool_outputs_from_state(state: Mapping[str, Any]) -> set[tuple[str, str]]:
@@ -775,27 +684,51 @@ def _legacy_tool_output_metadata(message: Mapping[str, Any]) -> tuple[str, str]:
 def _previous_response_history(previous_response_id: str) -> ResponseHistory:
     previous_response_id = _clean(previous_response_id)
     if not previous_response_id:
-        return ResponseHistory([], {}, set(), False)
+        return ResponseHistory([], {}, {}, set(), False)
     with _RESPONSE_STATE_LOCK:
         state = dict(_RESPONSE_STATE.get(previous_response_id) or {})
     if not state:
-        return ResponseHistory([], {}, set(), False)
+        return ResponseHistory([], {}, {}, set(), False)
     function_calls = _function_calls_from_state(state)
+    function_call_items = _function_call_items_from_state(state)
     tool_outputs = _tool_outputs_from_state(state)
     messages: list[dict[str, Any]] = []
     for message in _messages(state.get("messages")):
         call_id, name = _legacy_replayed_function_call(message)
         if call_id and name:
             function_calls[call_id] = name
+            function_call_items.setdefault(
+                call_id,
+                {
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "name": name,
+                    "arguments": "",
+                },
+            )
             continue
         messages.append(message)
         legacy_tool_output = _legacy_tool_output_metadata(message)
         if legacy_tool_output != ("", ""):
             tool_outputs.add(legacy_tool_output)
     output_text = _clean(state.get("output_text"))
-    if output_text:
+    if output_text and not _flag(state.get("messages_include_response_output")):
         messages.append({"role": "assistant", "content": output_text})
-    return ResponseHistory(messages, function_calls, tool_outputs, True)
+    existing_call_ids = {
+        _clean(message.get("call_id"))
+        for message in messages
+        if _clean(message.get("type")) == "function_call"
+    }
+    for call_id, function_call in function_call_items.items():
+        if call_id not in existing_call_ids:
+            messages.append(_function_call_context_message(function_call))
+    return ResponseHistory(
+        messages,
+        function_calls,
+        function_call_items,
+        tool_outputs,
+        True,
+    )
 
 
 def _positive_int(value: Any, default: int) -> int:
@@ -931,61 +864,10 @@ def _tool_names(tools: list[dict[str, Any]]) -> set[str]:
 
 @dataclass(frozen=True)
 class ToolChainContext:
-    declared_tool_names: tuple[str, ...]
-    discovered_declared_tool_names: tuple[str, ...]
-    successful_tool_names: tuple[str, ...]
     chain_depth: int
     tool_results_supplied: int
     tool_results_matched: int
     successful_tool_results: int
-    tool_search_completed: bool
-
-    @property
-    def executable_tools_declared(self) -> bool:
-        return any(
-            name != IMPLICIT_TOOL_SEARCH_NAME for name in self.declared_tool_names
-        )
-
-
-def _discovered_declared_tool_names(
-    *,
-    supplied_results: list[tuple[str, str]],
-    calls: Mapping[str, str],
-    declared_tool_names: set[str],
-) -> tuple[str, ...]:
-    """Return executable declared tools exposed by successful tool_search output."""
-
-    declared_by_normalized_name = {
-        _lower(name): name
-        for name in declared_tool_names
-        if name != IMPLICIT_TOOL_SEARCH_NAME
-    }
-    discovered: set[str] = set()
-    for call_id, output in supplied_results:
-        if calls.get(call_id) != IMPLICIT_TOOL_SEARCH_NAME:
-            continue
-        if not _tool_output_is_successful(output):
-            continue
-        try:
-            payload = json.loads(output)
-        except (TypeError, ValueError):
-            continue
-        if not isinstance(payload, Mapping):
-            continue
-        raw_tools = payload.get("tools")
-        if not isinstance(raw_tools, list):
-            continue
-        for raw_tool in raw_tools:
-            if isinstance(raw_tool, str):
-                name = _clean(raw_tool)
-            elif isinstance(raw_tool, Mapping):
-                name = _tool_name(raw_tool)
-            else:
-                name = ""
-            declared_name = declared_by_normalized_name.get(_lower(name))
-            if declared_name:
-                discovered.add(declared_name)
-    return tuple(sorted(discovered))
 
 
 def _tool_chain_context(
@@ -1023,33 +905,11 @@ def _tool_chain_context(
         for call_id, output in supplied_results
         if call_id in calls and _tool_output_is_successful(output)
     )
-    successful_tool_names = tuple(
-        sorted(
-            {
-                calls[call_id]
-                for call_id, output in supplied_results
-                if call_id in calls and _tool_output_is_successful(output)
-            }
-        )
-    )
-    declared_tool_names = _tool_names(_tools(payload))
     return ToolChainContext(
-        declared_tool_names=tuple(sorted(declared_tool_names)),
-        discovered_declared_tool_names=_discovered_declared_tool_names(
-            supplied_results=supplied_results,
-            calls=calls,
-            declared_tool_names=declared_tool_names,
-        ),
-        successful_tool_names=successful_tool_names,
         chain_depth=len(calls),
         tool_results_supplied=len(supplied_results),
         tool_results_matched=len(matched_result_names),
         successful_tool_results=successful_tool_results,
-        tool_search_completed=any(
-            calls.get(call_id) == IMPLICIT_TOOL_SEARCH_NAME
-            and _tool_output_is_successful(output)
-            for call_id, output in supplied_results
-        ),
     )
 
 
@@ -1126,7 +986,7 @@ def _json_tool_call_envelope(text: str) -> list[dict[str, Any]]:
 
 
 def _tool_output_is_successful(output: str) -> bool:
-    """Keep the continuation guard from overruling a genuine tool failure."""
+    """Classify a supplied result for passive Responses telemetry."""
 
     normalized = _lower(output)
     if not normalized:
@@ -1146,809 +1006,10 @@ def _tool_output_is_successful(output: str) -> bool:
     return not any(marker in normalized for marker in TOOL_OUTPUT_FAILURE_MARKERS)
 
 
-def _is_mcp_resource_discovery_tool_name(name: str) -> bool:
-    """Identify client resource primitives regardless of their namespace."""
-
-    normalized = _clean(name)
-    if normalized in MCP_RESOURCE_DISCOVERY_TOOL_NAMES:
-        return True
-    return normalized.rsplit(".", 1)[-1] in MCP_RESOURCE_DISCOVERY_TOOL_NAMES
-
-
-def _announces_next_tool_step(text: str) -> bool:
-    """Return whether a response stops at a clear next-action announcement."""
-
-    normalized = _lower(text).replace("\u2018", "'").replace("\u2019", "'").strip()
-    if not normalized:
-        return False
-    clauses = re.split(r"(?:\r?\n+|(?<=[.!?])\s+)", normalized)
-    for clause in reversed(clauses):
-        announcement = clause.strip().rstrip(":.;!?").strip()
-        if not announcement:
-            continue
-        for prefix in TOOL_CHAIN_NEXT_STEP_PREFIXES:
-            if not announcement.startswith(prefix):
-                continue
-            action = announcement[len(prefix) :].lstrip()
-            if action.startswith(TOOL_CHAIN_NEXT_STEP_ACTION_VERBS):
-                return True
-        return False
-    return False
-
-
-def _tool_chain_premature_stop_reason(
-    *,
-    text: str,
-    context: ToolChainContext,
-) -> str:
-    """Identify clear hallucinated stops after a successful tool result."""
-
-    if not context.successful_tool_results:
-        return ""
-    normalized = _lower(text)
-    if any(marker in normalized for marker in TOOL_CHAIN_GENERIC_CLARIFICATION_MARKERS):
-        return "generic_clarification_after_successful_tool"
-    if _announces_next_tool_step(text):
-        return "announced_next_step_after_successful_tool"
-    if "mcp" in normalized and (
-        ("direct call" in normalized and "not supported" in normalized)
-        or ("direct access" in normalized and "not supported" in normalized)
-        or ("mcp" in normalized and "unavailable" in normalized)
-    ):
-        return "contradicts_successful_mcp_tool"
-    return ""
-
-
-def _tool_chain_watchdog_reason(
-    *,
-    text: str,
-    context: ToolChainContext,
-) -> str:
-    raw_calls = _json_tool_call_envelope(text)
-    if not raw_calls:
-        reason = _tool_chain_premature_stop_reason(text=text, context=context)
-        if reason:
-            return reason
-        if _announces_next_tool_step(text) and (
-            context.declared_tool_names or context.chain_depth
-        ):
-            return (
-                "announced_next_step_after_successful_tool"
-                if context.successful_tool_results
-                else "announced_next_step_without_tool_call"
-            )
-        return ""
-    if any(
-        _is_mcp_resource_discovery_tool_name(_clean(call.get("name")))
-        for call in raw_calls
-        if isinstance(call, Mapping)
-    ):
-        if context.tool_results_supplied:
-            return "direct_mcp_resource_discovery_after_tool"
-        return ""
-    if not context.tool_results_supplied:
-        return ""
-    if not context.declared_tool_names:
-        return ""
-    names = {_clean(call.get("name")) for call in raw_calls if _clean(call.get("name"))}
-    if any(name not in context.declared_tool_names for name in names):
-        return "undeclared_tool"
-    if context.tool_search_completed and context.executable_tools_declared:
-        if any(
-            name == IMPLICIT_TOOL_SEARCH_NAME or name.startswith(CODEX_APPS_TOOL_PREFIX)
-            for name in names
-        ):
-            return "discovery_not_advanced"
-    return ""
-
-
-def _tool_chain_repair_message(
-    *,
-    context: ToolChainContext,
-    reason: str,
-) -> dict[str, str]:
-    declared = ", ".join(context.declared_tool_names)
-    discovered = ", ".join(context.discovered_declared_tool_names)
-    discovered_instruction = (
-        " The successful tool_search result exposed this declared executable "
-        f"tool: {discovered}. Call it now with safe arguments."
-        if len(context.discovered_declared_tool_names) == 1
-        else ""
-    )
-    return {
-        "role": "system",
-        "content": (
-            "Norman tool-chain repair: a tool result is already available and the "
-            "previous response stopped incorrectly. Continue this same task now. "
-            "A successful prior tool result proves that its declared access path "
-            "works. Do not claim that MCP access is unsupported and do not ask a "
-            "generic clarification for a clear, read-only request. Choose one "
-            "safe, bounded next read that advances the request. Return exactly "
-            "one JSON tool envelope: use one declared executable tool when "
-            "available; otherwise return tool_search to discover the next "
-            "executable tool. Do not call an undeclared internal mcp__ name, list "
-            "MCP resources, or repeat tool_search after discovery when an "
-            "executable tool is declared. Declared tools: "
-            f"{declared}.{discovered_instruction} Repair reason: {reason}."
-        ),
-    }
-
-
-def _tool_chain_declared_tool_fallback(
-    *,
-    text: str,
-    tools: list[dict[str, Any]],
-) -> tuple[str, Any] | None:
-    """Recover one stale internal call when it maps unambiguously to a tool."""
-
-    raw_calls = _json_tool_call_envelope(text)
-    if len(raw_calls) != 1:
-        return None
-    raw_call = raw_calls[0]
-    raw_name = _clean(raw_call.get("name"))
-    if not raw_name:
-        return None
-    declared = sorted(
-        name for name in _tool_names(tools) if name != IMPLICIT_TOOL_SEARCH_NAME
-    )
-    if not declared:
-        return None
-    normalized_name = raw_name
-    if normalized_name.startswith(CODEX_APPS_TOOL_PREFIX):
-        normalized_name = normalized_name.removeprefix(CODEX_APPS_TOOL_PREFIX)
-    elif normalized_name.startswith(INTERNAL_MCP_TOOL_PREFIX):
-        normalized_name = normalized_name.removeprefix(INTERNAL_MCP_TOOL_PREFIX)
-        normalized_name = normalized_name.replace("__", ".", 1)
-    normalized_name = _lower(normalized_name)
-    matches = [
-        name
-        for name in declared
-        if normalized_name == _lower(name)
-        or normalized_name.startswith(f"{_lower(name)}.")
-        or normalized_name.startswith(f"{_lower(name)}_")
-    ]
-    if len(matches) != 1:
-        return None
-    return matches[0], raw_call.get("arguments", {})
-
-
-def _tool_parameters(tool: Mapping[str, Any]) -> Mapping[str, Any]:
-    function = _mapping(tool.get("function"))
-    parameters = function.get("parameters") or tool.get("parameters")
-    return parameters if isinstance(parameters, Mapping) else {}
-
-
-def _tool_chain_operator_request(messages: list[dict[str, Any]]) -> str:
-    """Return the most recent operator request, bounded for a tool query."""
-
-    for message in reversed(messages):
-        if _clean(message.get("role")) != "user":
-            continue
-        content = _clean(message.get("content"))
-        if content:
-            return content[:1200]
-    return ""
-
-
-def _tool_chain_schema_default(parameter: Mapping[str, Any]) -> tuple[bool, Any]:
-    if "default" not in parameter:
-        return False, None
-    value = parameter.get("default")
-    if value is None or isinstance(value, (str, int, float, bool, list, dict)):
-        return True, value
-    return False, None
-
-
-def _tool_chain_schema_enum_value(
-    parameter: Mapping[str, Any],
-    *,
-    request: str,
-) -> tuple[bool, Any]:
-    values = parameter.get("enum")
-    if not isinstance(values, list):
-        return False, None
-    normalized_request = _lower(request)
-    matches = [
-        value
-        for value in values
-        if isinstance(value, str)
-        and value
-        and re.search(rf"\b{re.escape(_lower(value))}\b", normalized_request)
-    ]
-    return (True, matches[0]) if len(matches) == 1 else (False, None)
-
-
-def _tool_chain_safe_discovered_arguments(
-    *,
-    tool: Mapping[str, Any],
-    request: str,
-) -> dict[str, Any] | None:
-    """Build only schema-supported read arguments for a discovered tool."""
-
-    schema = _tool_parameters(tool)
-    properties = _mapping(schema.get("properties"))
-    required = tuple(
-        name
-        for name in schema.get("required", [])
-        if isinstance(name, str) and name in properties
-    )
-    arguments: dict[str, Any] = {}
-    if request:
-        for name in ("query", "question", "search", "q", "prompt", "term"):
-            if name in properties:
-                arguments[name] = request
-                break
-    for name in required:
-        if name in arguments:
-            continue
-        parameter = _mapping(properties.get(name))
-        has_default, default = _tool_chain_schema_default(parameter)
-        if has_default:
-            arguments[name] = default
-            continue
-        has_enum_value, enum_value = _tool_chain_schema_enum_value(
-            parameter,
-            request=request,
-        )
-        if has_enum_value:
-            arguments[name] = enum_value
-            continue
-        return None
-    return arguments
-
-
-def _tool_chain_discovered_tool_is_read_only(tool: Mapping[str, Any]) -> bool:
-    """Permit automatic advancement only for clearly read-only tools."""
-
-    function = _mapping(tool.get("function"))
-    name = _tool_name(tool)
-    description = _clean(function.get("description") or tool.get("description"))
-    normalized = _lower(f"{name} {description}")
-    words = set(re.findall(r"[a-z0-9]+", normalized))
-    if words & TOOL_CHAIN_MUTATING_TOOL_TOKENS:
-        return False
-    return bool(
-        words & TOOL_CHAIN_READ_ONLY_TOOL_TOKENS
-        or "read-only" in normalized
-        or "read only" in normalized
-    )
-
-
-@dataclass(frozen=True)
-class ToolChainControlDecision:
-    """One deterministic correction for an otherwise stalled tool workflow."""
-
-    name: str = ""
-    arguments: dict[str, Any] | None = None
-    reason: str = ""
-    failure_message: str = ""
-
-    @property
-    def is_tool_call(self) -> bool:
-        return bool(self.name)
-
-
-def _tool_chain_is_local_execution_tool(name: str) -> bool:
-    """Identify local client tools that should never win an external workflow."""
-
-    normalized = _lower(name).replace("-", "_")
-    if normalized in IMPLICIT_CLIENT_LOCAL_TOOL_NAMES:
-        return True
-    return normalized in {
-        "bash",
-        "command",
-        "exec",
-        "run_command",
-        "shell",
-        "terminal",
-    }
-
-
-def _tool_chain_words(value: str) -> set[str]:
-    return {
-        word
-        for word in re.findall(r"[a-z0-9]+", _lower(value))
-        if len(word) > 1 and word not in TOOL_CHAIN_COMMON_WORDS
-    }
-
-
-def _tool_chain_external_request_signal(
-    *,
-    request: str,
-    candidate_scores: list[tuple[int, Mapping[str, Any], dict[str, Any]]],
-) -> bool:
-    """Require evidence before preferring a connected tool over local coding."""
-
-    normalized = _lower(request)
-    request_words = _tool_chain_words(request)
-    has_explicit_external_marker = bool(
-        request_words & TOOL_CHAIN_EXTERNAL_REQUEST_MARKERS
-    )
-    has_local_coding_marker = any(
-        marker in normalized for marker in TOOL_CHAIN_LOCAL_CODING_REQUEST_MARKERS
-    )
-    best_score = candidate_scores[0][0] if candidate_scores else 0
-    if has_local_coding_marker:
-        return False
-    return has_explicit_external_marker or best_score >= 2
-
-
-def _tool_chain_read_only_external_candidates(
-    *,
-    prepared: PreparedResponsesExecution,
-) -> list[tuple[int, Mapping[str, Any], dict[str, Any]]]:
-    """Rank declared read-only connected tools by request relevance."""
-
-    request = _tool_chain_operator_request(prepared.messages)
-    request_words = _tool_chain_words(request)
-    completed = set(prepared.tool_chain_context.successful_tool_names)
-    candidates: list[tuple[int, Mapping[str, Any], dict[str, Any]]] = []
-    for tool in _tools(prepared.provider_payload):
-        name = _tool_name(tool)
-        if (
-            not name
-            or name == IMPLICIT_TOOL_SEARCH_NAME
-            or name in completed
-            or _tool_chain_is_local_execution_tool(name)
-            or not _tool_chain_discovered_tool_is_read_only(tool)
-        ):
-            continue
-        arguments = _tool_chain_safe_discovered_arguments(
-            tool=tool,
-            request=request,
-        )
-        if arguments is None:
-            continue
-        function = _mapping(tool.get("function"))
-        descriptor = " ".join(
-            (
-                name,
-                _clean(function.get("description") or tool.get("description")),
-            )
-        )
-        score = len(request_words & _tool_chain_words(descriptor))
-        candidates.append((score, tool, arguments))
-    return sorted(
-        candidates,
-        key=lambda candidate: (-candidate[0], _tool_name(candidate[1])),
-    )
-
-
-def _tool_chain_select_external_continuation(
-    *,
-    prepared: PreparedResponsesExecution,
-) -> tuple[str, dict[str, Any]] | None:
-    """Choose exactly one safe external continuation, never a guessed mutation."""
-
-    candidates = _tool_chain_read_only_external_candidates(prepared=prepared)
-    if not candidates:
-        return None
-    request = _tool_chain_operator_request(prepared.messages)
-    context = prepared.tool_chain_context
-    discovered = set(context.discovered_declared_tool_names)
-    discovered_candidates = [
-        candidate for candidate in candidates if _tool_name(candidate[1]) in discovered
-    ]
-    if len(discovered_candidates) == 1:
-        _, tool, arguments = discovered_candidates[0]
-        return _tool_name(tool), arguments
-    if not _tool_chain_external_request_signal(
-        request=request,
-        candidate_scores=candidates,
-    ):
-        return None
-    if len(candidates) == 1:
-        _, tool, arguments = candidates[0]
-        return _tool_name(tool), arguments
-    top_score, top_tool, top_arguments = candidates[0]
-    next_score = candidates[1][0]
-    if top_score >= 2 and top_score > next_score:
-        return _tool_name(top_tool), top_arguments
-    return None
-
-
-def _tool_chain_external_discovery_query(request: str) -> str:
-    compact_request = " ".join(request.split())[:480]
-    if compact_request:
-        return "Find the read-only connected tool needed to handle: " + compact_request
-    return "Find the read-only connected tool needed to continue this task"
-
-
-def _tool_chain_bounded_failure_message(
-    *,
-    context: ToolChainContext,
-) -> str:
-    if context.successful_tool_results:
-        return (
-            "Norman received the prior tool result but cannot safely choose one "
-            "next read-only capability from the declared tools. No mutation was "
-            "run; select a specific read-only capability or request the required "
-            "approval."
-        )
-    return (
-        "Norman cannot safely choose a connected capability for this request. "
-        "No local command or mutation was run; make the required read-only tool "
-        "available or select the intended capability."
-    )
-
-
-def _tool_chain_controller_decision(
-    *,
-    prepared: PreparedResponsesExecution,
-    text: str,
-) -> ToolChainControlDecision | None:
-    """Turn an obvious stalled external workflow into one valid client action."""
-
-    raw_calls = _json_tool_call_envelope(text)
-    context = prepared.tool_chain_context
-    watchdog_reason = _tool_chain_watchdog_reason(text=text, context=context)
-    has_local_call = any(
-        _tool_chain_is_local_execution_tool(_clean(call.get("name")))
-        for call in raw_calls
-        if isinstance(call, Mapping)
-    )
-    announced = _announces_next_tool_step(text)
-    generic_clarification = bool(
-        context.successful_tool_results
-        and any(
-            marker in _lower(text)
-            for marker in TOOL_CHAIN_GENERIC_CLARIFICATION_MARKERS
-        )
-    )
-    request = _tool_chain_operator_request(prepared.messages)
-    candidates = _tool_chain_read_only_external_candidates(prepared=prepared)
-    external_request = _tool_chain_external_request_signal(
-        request=request,
-        candidate_scores=candidates,
-    )
-    external_workflow = external_request or any(
-        name != IMPLICIT_TOOL_SEARCH_NAME
-        and not _tool_chain_is_local_execution_tool(name)
-        for name in context.successful_tool_names
-    )
-    initial_problem = (
-        not context.tool_results_supplied
-        and external_request
-        and (has_local_call or announced)
-    )
-    continuation_problem = bool(
-        context.successful_tool_results
-        and external_workflow
-        and (watchdog_reason or has_local_call or announced or generic_clarification)
-    )
-    if not initial_problem and not continuation_problem:
-        return None
-    continuation = _tool_chain_select_external_continuation(prepared=prepared)
-    if continuation is not None:
-        name, arguments = continuation
-        reason = (
-            "initial_external_workflow_preferred"
-            if initial_problem
-            else "external_workflow_continued"
-        )
-        return ToolChainControlDecision(
-            name=name,
-            arguments=arguments,
-            reason=reason,
-        )
-    if initial_problem or not context.tool_search_completed:
-        return ToolChainControlDecision(
-            name=IMPLICIT_TOOL_SEARCH_NAME,
-            arguments={"query": _tool_chain_external_discovery_query(request)},
-            reason=(
-                "initial_external_workflow_discovery"
-                if initial_problem
-                else "external_workflow_discovery"
-            ),
-        )
-    return ToolChainControlDecision(
-        reason="bounded_external_workflow_failure",
-        failure_message=_tool_chain_bounded_failure_message(context=context),
-    )
-
-
-def _tool_chain_control_response(
-    *,
-    chat_response: Mapping[str, Any],
-    decision: ToolChainControlDecision,
-) -> dict[str, Any]:
-    """Replace non-actionable model prose with one controlled response."""
-
-    response = dict(chat_response)
-    if decision.is_tool_call:
-        controlled_content = _json_dumps(
-            {
-                "tool_call": {
-                    "name": decision.name,
-                    "arguments": decision.arguments or {},
-                }
-            }
-        )
-    else:
-        controlled_content = decision.failure_message
-    choices = list(response.get("choices", []))
-    first_choice = (
-        dict(choices[0]) if choices and isinstance(choices[0], Mapping) else {}
-    )
-    message = _mapping(first_choice.get("message"))
-    message["content"] = controlled_content
-    first_choice["message"] = message
-    if choices:
-        choices[0] = first_choice
-    else:
-        choices = [first_choice]
-    response["choices"] = choices
-    norman = dict(_mapping(response.get("norman")))
-    receipt = dict(_mapping(norman.get("facade_receipt")))
-    receipt_output = dict(_mapping(receipt.get("output")))
-    if receipt_output:
-        # The facade receipt travels with Responses completions. Once the
-        # controller replaces an invalid model action, it must not expose that
-        # stale action through receipt text after removing it from output_text.
-        receipt_output["summary"] = controlled_content
-        receipt_output["text"] = controlled_content
-        receipt["output"] = receipt_output
-        norman["facade_receipt"] = receipt
-    response["norman"] = norman
-    return response
-
-
-def _tool_chain_is_broad_ops_request(request: str) -> bool:
-    normalized = _lower(request)
-    return any(marker in normalized for marker in TOOL_CHAIN_OPS_REQUEST_MARKERS)
-
-
-def _declared_nonlocal_executable_tool_names(names: set[str]) -> set[str]:
-    """Return declared tools that can satisfy an external Ops request directly."""
-
-    return {
-        name
-        for name in names
-        if name not in IMPLICIT_CLIENT_LOCAL_TOOL_NAMES
-        and name != IMPLICIT_TOOL_SEARCH_NAME
-    }
-
-
-def _initial_ops_tool_preference(
-    *,
-    prepared: PreparedResponsesExecution,
-    text: str,
-    raw_calls: list[dict[str, Any]],
-    tools: list[dict[str, Any]],
-) -> dict[str, Any] | None:
-    """Favor declared read-only Ops tools over a stalled initial action reply."""
-
-    context = prepared.tool_chain_context
-    if context.chain_depth or context.tool_results_supplied:
-        return None
-    names = _tool_names(tools)
-    has_local_call = any(
-        _clean(raw_call.get("name")) in IMPLICIT_CLIENT_LOCAL_TOOL_NAMES
-        for raw_call in raw_calls
-    )
-    has_stalled_action_announcement = not raw_calls and _announces_next_tool_step(text)
-    has_initial_tool_search = any(
-        _clean(raw_call.get("name")) == IMPLICIT_TOOL_SEARCH_NAME
-        for raw_call in raw_calls
-    )
-    if (
-        not has_local_call
-        and not has_stalled_action_announcement
-        and not has_initial_tool_search
-    ):
-        return None
-    request = _tool_chain_operator_request(prepared.messages)
-    if not _tool_chain_is_broad_ops_request(request):
-        return None
-    lookup = next(
-        (
-            tool
-            for tool in tools
-            if _tool_name(tool) == "ops_openbrand.lookup"
-            and _tool_chain_discovered_tool_is_read_only(tool)
-        ),
-        None,
-    )
-    if lookup is not None:
-        arguments = _tool_chain_safe_discovered_arguments(
-            tool=lookup,
-            request=request,
-        )
-        if arguments is not None:
-            return {
-                "name": "ops_openbrand.lookup",
-                "arguments": arguments,
-            }
-    if not _declared_nonlocal_executable_tool_names(names):
-        return {
-            "name": IMPLICIT_TOOL_SEARCH_NAME,
-            "arguments": {"query": INITIAL_OPS_TOOL_SEARCH_QUERY},
-        }
-    return None
-
-
-def _discovered_ops_lookup_preference(
-    *,
-    prepared: PreparedResponsesExecution,
-    raw_calls: list[dict[str, Any]],
-    tools: list[dict[str, Any]],
-) -> dict[str, Any] | None:
-    """Preserve the broad request on its first discovered read-only lookup."""
-
-    context = prepared.tool_chain_context
-    if (
-        context.chain_depth != 1
-        or context.tool_results_supplied != 1
-        or context.successful_tool_results != 1
-    ):
-        return None
-    if (
-        len(raw_calls) != 1
-        or _clean(raw_calls[0].get("name")) != "ops_openbrand.lookup"
-    ):
-        return None
-    request = _tool_chain_operator_request(prepared.messages)
-    if not _tool_chain_is_broad_ops_request(request):
-        return None
-    lookup = next(
-        (
-            tool
-            for tool in tools
-            if _tool_name(tool) == "ops_openbrand.lookup"
-            and _tool_chain_discovered_tool_is_read_only(tool)
-        ),
-        None,
-    )
-    if lookup is None:
-        return None
-    arguments = _tool_chain_safe_discovered_arguments(
-        tool=lookup,
-        request=request,
-    )
-    if arguments is None:
-        return None
-    return {
-        "name": "ops_openbrand.lookup",
-        "arguments": arguments,
-    }
-
-
-def _tool_chain_discovered_declared_tool_fallback(
-    *,
-    prepared: PreparedResponsesExecution,
-) -> tuple[str, dict[str, Any]] | None:
-    """Advance one unambiguous executable tool exposed by tool_search."""
-
-    discovered = prepared.tool_chain_context.discovered_declared_tool_names
-    if len(discovered) != 1:
-        return None
-    name = discovered[0]
-    tool = next(
-        (
-            candidate
-            for candidate in _tools(prepared.provider_payload)
-            if _tool_name(candidate) == name
-        ),
-        None,
-    )
-    if tool is None:
-        return None
-    if not _tool_chain_discovered_tool_is_read_only(tool):
-        return None
-    arguments = _tool_chain_safe_discovered_arguments(
-        tool=tool,
-        request=_tool_chain_operator_request(prepared.messages),
-    )
-    if arguments is None:
-        return None
-    return name, arguments
-
-
-def _tool_chain_fallback_tool_search_query(text: str) -> str:
-    """Derive a safe discovery query without retaining model prose in telemetry."""
-
-    for raw_call in _json_tool_call_envelope(text):
-        name = _clean(raw_call.get("name"))
-        arguments = raw_call.get("arguments", {})
-        if name.startswith(CODEX_APPS_TOOL_PREFIX):
-            return _codex_apps_tool_search_query(name, arguments)
-        if _is_mcp_resource_discovery_tool_name(name):
-            return _mcp_resource_discovery_tool_search_query(arguments)
-        if name.startswith(INTERNAL_MCP_TOOL_PREFIX):
-            return _internal_mcp_tool_search_query(name, arguments)
-        parsed_arguments = arguments
-        if isinstance(arguments, str):
-            try:
-                parsed_arguments = json.loads(arguments)
-            except (TypeError, ValueError):
-                parsed_arguments = {}
-        if isinstance(parsed_arguments, Mapping):
-            query = _clean(parsed_arguments.get("query"))
-            if query:
-                return query
-    return "Find the next executable tool needed to continue the pending task"
-
-
-def _redact_tool_chain_fallback_reply(value: Any, *, reply: str) -> Any:
-    """Remove a rejected model reply from client-visible fallback metadata."""
-
-    if isinstance(value, Mapping):
-        return {
-            str(key): _redact_tool_chain_fallback_reply(item, reply=reply)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_redact_tool_chain_fallback_reply(item, reply=reply) for item in value]
-    if isinstance(value, tuple):
-        return tuple(
-            _redact_tool_chain_fallback_reply(item, reply=reply) for item in value
-        )
-    return "" if reply and value == reply else value
-
-
-def _tool_chain_fallback_response(
-    *,
-    repaired: Mapping[str, Any],
-    prepared: PreparedResponsesExecution,
-) -> tuple[dict[str, Any], str]:
-    """Return a client-executable continuation after the one repair attempt."""
-
-    repaired_text = _choice_text(repaired)
-    declared_fallback = _tool_chain_declared_tool_fallback(
-        text=repaired_text,
-        tools=_tools(prepared.provider_payload),
-    )
-    if declared_fallback is not None:
-        name, arguments = declared_fallback
-        fallback = "declared_tool"
-    else:
-        discovered_fallback = _tool_chain_discovered_declared_tool_fallback(
-            prepared=prepared,
-        )
-        if discovered_fallback is not None:
-            name, arguments = discovered_fallback
-            fallback = "discovered_declared_tool"
-        else:
-            name = IMPLICIT_TOOL_SEARCH_NAME
-            arguments = {"query": _tool_chain_fallback_tool_search_query(repaired_text)}
-            fallback = "tool_search"
-    response = dict(repaired)
-    response["norman"] = _redact_tool_chain_fallback_reply(
-        _mapping(response.get("norman")),
-        reply=repaired_text,
-    )
-    choices = list(response.get("choices", []))
-    first_choice = (
-        dict(choices[0]) if choices and isinstance(choices[0], Mapping) else {}
-    )
-    message = _mapping(first_choice.get("message"))
-    message["content"] = _json_dumps(
-        {
-            "tool_call": {
-                "name": name,
-                "arguments": arguments,
-            }
-        }
-    )
-    first_choice["message"] = message
-    if choices:
-        choices[0] = first_choice
-    else:
-        choices = [first_choice]
-    response["choices"] = choices
-    return response, fallback
-
-
 def _tool_chain_telemetry(
     *,
     context: ToolChainContext,
     tool_calls: list[dict[str, Any]],
-    watchdog_state: str,
-    watchdog_attempts: int,
-    watchdog_reason: str = "",
-    watchdog_repair_reason: str = "",
-    watchdog_fallback: str = "",
-    watchdog_controller: str = "",
     outcome: str = "",
 ) -> dict[str, Any]:
     if not outcome:
@@ -1958,17 +1019,6 @@ def _tool_chain_telemetry(
             outcome = "final_after_tool"
         else:
             outcome = "final_without_tool"
-    watchdog = {
-        "state": watchdog_state,
-        "attempts": watchdog_attempts,
-        "reason": watchdog_reason,
-    }
-    if watchdog_repair_reason:
-        watchdog["repair_reason"] = watchdog_repair_reason
-    if watchdog_fallback:
-        watchdog["fallback"] = watchdog_fallback
-    if watchdog_controller:
-        watchdog["controller"] = watchdog_controller
     return {
         "schema": TOOL_CHAIN_SCHEMA,
         "turn_type": (
@@ -1977,37 +1027,15 @@ def _tool_chain_telemetry(
         "chain_depth": context.chain_depth,
         "tool_results_supplied": context.tool_results_supplied,
         "tool_results_matched": context.tool_results_matched,
+        "successful_tool_results": context.successful_tool_results,
         "tool_calls_returned": len(tool_calls),
         "outcome": outcome,
-        "watchdog": watchdog,
+        "watchdog": {"state": "not_applied", "attempts": 0},
     }
 
 
-def _tool_contract_message(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _tool_contract_definition(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
     tools = _tools(payload)
-    if not tools:
-        return [
-            {
-                "role": "system",
-                "content": (
-                    "Norman facade tool contract: if a tool is required, respond "
-                    "with JSON only in this shape: "
-                    '{"tool_call":{"name":"tool_name","arguments":{}}}. '
-                    "After every tool result, continue the task: use the next "
-                    "available tool when it advances the request, then return "
-                    "the final answer only after no further tool call is needed. "
-                    "Do not stop merely to announce a discovered tool. "
-                    "Only client-declared tool names are executable. For an "
-                    "undeclared MCP capability, call tool_search first with "
-                    '{"query":"what you need"}; do not call an internal mcp__ '
-                    "name, list_mcp_resources, or "
-                    "list_mcp_resource_templates directly. Once tool_search output "
-                    "is in the conversation and its executable tool is declared, "
-                    "use that tool directly; do not rediscover it. Otherwise "
-                    "answer normally."
-                ),
-            }
-        ]
     compact = []
     for tool in tools:
         name = _tool_name(tool)
@@ -2026,30 +1054,88 @@ def _tool_contract_message(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
                 or {},
             }
         )
+    return compact
+
+
+def _tool_contract_message(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    compact = _tool_contract_definition(payload)
     if not compact:
         return []
     return [
         {
             "role": "system",
             "content": (
-                "Norman facade tool contract: if a tool is required, respond "
-                "with JSON only in this shape: "
-                '{"tool_call":{"name":"tool_name","arguments":{}}}. '
-                "After every tool result, continue the task: use the next "
-                "available tool when it advances the request, then return the "
-                "final answer only after no further tool call is needed. Do not "
-                "stop merely to announce a discovered tool. A declared tool whose "
-                "name begins mcp__ is an executable client-provided tool, not an "
-                "internal undeclared name: call it directly. The generic "
-                "list_mcp_resources, list_mcp_resource_templates, and "
-                "read_mcp_resource primitives are not executable workflow "
-                "steps; use tool_search to discover the requested capability "
-                "instead. Do not claim that a declared MCP tool or its "
-                "successful output is unsupported. Otherwise answer normally. "
-                "Available tools: " + _json_dumps(compact)
+                "When calling tools, return only one JSON object using either "
+                '{"tool_call":{"name":"tool_name","arguments":{}}} or '
+                '{"tool_calls":[{"name":"tool_name","arguments":{}}]}. '
+                "Use only a tool name declared below. Available tools: "
+                + _json_dumps(compact)
             ),
+            TOOL_CONTRACT_CONTEXT_MARKER: {
+                "kind": TOOL_CONTRACT_CONTEXT_KIND,
+                "tools": compact,
+            },
         }
     ]
+
+
+def _is_tool_contract_message(message: Mapping[str, Any]) -> bool:
+    marker = _mapping(message.get(TOOL_CONTRACT_CONTEXT_MARKER))
+    return _clean(marker.get("kind")) == TOOL_CONTRACT_CONTEXT_KIND
+
+
+def _message_has_tool_contract(
+    message: Mapping[str, Any],
+    *,
+    definition: list[dict[str, Any]],
+) -> bool:
+    marker = _mapping(message.get(TOOL_CONTRACT_CONTEXT_MARKER))
+    if _clean(marker.get("kind")) != TOOL_CONTRACT_CONTEXT_KIND:
+        return False
+    return _messages(marker.get("tools")) == definition
+
+
+def _messages_with_current_tool_contract(
+    messages: list[dict[str, Any]],
+    payload: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Keep one generated tool contract across a stored Responses history."""
+
+    definition = _tool_contract_definition(payload)
+    if not definition:
+        return (
+            [
+                dict(message)
+                for message in messages
+                if not _is_tool_contract_message(message)
+            ],
+            [],
+        )
+    contract_indexes = [
+        index
+        for index, message in enumerate(messages)
+        if _is_tool_contract_message(message)
+    ]
+    if len(contract_indexes) == 1 and _message_has_tool_contract(
+        messages[contract_indexes[0]],
+        definition=definition,
+    ):
+        return [dict(message) for message in messages], []
+    if not contract_indexes:
+        return [dict(message) for message in messages], _tool_contract_message(payload)
+
+    # A client may change its tool registry between turns. Replace the first
+    # generated contract in place so the chronological history stays intact,
+    # while removing stale duplicates created by older facade versions.
+    replacement = _tool_contract_message(payload)
+    retained: list[dict[str, Any]] = []
+    first_contract_index = contract_indexes[0]
+    for index, message in enumerate(messages):
+        if not _is_tool_contract_message(message):
+            retained.append(dict(message))
+        elif index == first_contract_index:
+            retained.extend(replacement)
+    return retained, []
 
 
 def _structured_output_message(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -2180,6 +1266,26 @@ def _validate_supported_fields(
         )
 
 
+def _validate_supported_responses_fields(payload: Mapping[str, Any]) -> None:
+    """Reject only Responses semantics the local facade cannot safely emulate.
+
+    Responses evolves independently of this facade. Unknown request fields are
+    intentionally opaque: they remain available to route policy and must not
+    turn a newer Codex client into a preflight failure.
+    """
+
+    for key in payload:
+        if key not in UNSUPPORTED_RESPONSES_SEMANTIC_FIELDS:
+            continue
+        raise FacadeError(
+            f"Unsupported OpenAI-compatible facade parameter: {key}",
+            status_code=501,
+            error_type="unsupported_parameter",
+            code="unsupported_parameter",
+            param=key,
+        )
+
+
 def _responses_reasoning_advisory(payload: Mapping[str, Any]) -> dict[str, str]:
     """Validate Responses reasoning metadata without emulating hidden output."""
 
@@ -2193,66 +1299,22 @@ def _responses_reasoning_advisory(payload: Mapping[str, Any]) -> dict[str, str]:
             code="invalid_reasoning",
             param="reasoning",
         )
-    unsupported = sorted(
-        str(key) for key in reasoning if key not in {"context", "effort", "summary"}
-    )
-    if unsupported:
-        raise FacadeError(
-            "Unsupported Responses reasoning option: " + ", ".join(unsupported),
-            status_code=501,
-            error_type="unsupported_parameter",
-            code="unsupported_reasoning_option",
-            param=f"reasoning.{unsupported[0]}",
-        )
     advisory: dict[str, str] = {}
-    if "effort" in reasoning:
-        effort = _lower(reasoning.get("effort"))
-        if effort not in SUPPORTED_REASONING_EFFORTS:
-            allowed = ", ".join(sorted(SUPPORTED_REASONING_EFFORTS))
-            raise FacadeError(
-                f"Unsupported Responses reasoning effort: {effort or '<blank>'}. "
-                f"Expected one of: {allowed}",
-                status_code=400,
-                code="invalid_reasoning_effort",
-                param="reasoning.effort",
-            )
-        advisory["effort"] = effort
-    if "summary" in reasoning:
-        summary = _lower(reasoning.get("summary"))
-        if summary not in SUPPORTED_REASONING_SUMMARIES:
-            allowed = ", ".join(sorted(SUPPORTED_REASONING_SUMMARIES))
-            raise FacadeError(
-                f"Unsupported Responses reasoning summary: {summary or '<blank>'}. "
-                f"Expected one of: {allowed}",
-                status_code=400,
-                code="invalid_reasoning_summary",
-                param="reasoning.summary",
-            )
-        advisory["summary"] = summary
-    if "context" in reasoning:
-        context = _lower(reasoning.get("context"))
-        if context not in SUPPORTED_REASONING_CONTEXTS:
-            allowed = ", ".join(sorted(SUPPORTED_REASONING_CONTEXTS))
-            raise FacadeError(
-                f"Unsupported Responses reasoning context: {context or '<blank>'}. "
-                f"Expected one of: {allowed}",
-                status_code=400,
-                code="invalid_reasoning_context",
-                param="reasoning.context",
-            )
-        advisory["context"] = context
-    if not advisory:
-        raise FacadeError(
-            "Responses reasoning must specify context, effort, or summary",
-            status_code=400,
-            code="invalid_reasoning",
-            param="reasoning",
-        )
+    known_values = {
+        "effort": SUPPORTED_REASONING_EFFORTS,
+        "summary": SUPPORTED_REASONING_SUMMARIES,
+        "context": SUPPORTED_REASONING_CONTEXTS,
+    }
+    for key, supported_values in known_values.items():
+        value = reasoning.get(key)
+        normalized = _lower(value) if isinstance(value, str) else ""
+        if normalized in supported_values:
+            advisory[key] = normalized
     return advisory
 
 
 def _responses_include_advisory(payload: Mapping[str, Any]) -> list[str]:
-    """Validate legacy Responses include values that do not affect local execution."""
+    """Return opaque Responses include metadata without constraining its values."""
 
     if "include" not in payload:
         return []
@@ -2266,19 +1328,7 @@ def _responses_include_advisory(payload: Mapping[str, Any]) -> list[str]:
             code="invalid_include",
             param="include",
         )
-    requested = sorted({_lower(value) for value in include})
-    unsupported = sorted(
-        value for value in requested if value not in SUPPORTED_RESPONSES_INCLUDE_VALUES
-    )
-    if unsupported:
-        raise FacadeError(
-            "Unsupported Responses include value: " + ", ".join(unsupported),
-            status_code=501,
-            error_type="unsupported_parameter",
-            code="unsupported_include_value",
-            param="include",
-        )
-    return requested
+    return list(include)
 
 
 def _responses_client_metadata_ignored(payload: Mapping[str, Any]) -> bool:
@@ -2315,9 +1365,11 @@ def _responses_store_requested(payload: Mapping[str, Any]) -> bool:
 def _text_part_text(part: Mapping[str, Any]) -> str:
     part_type = _clean(part.get("type"))
     if part_type in {"input_text", "text"}:
-        return _clean(part.get("text"))
+        text = part.get("text")
+        return text if isinstance(text, str) else _clean(text)
     if part_type in {"output_text"}:
-        return _clean(part.get("text"))
+        text = part.get("text")
+        return text if isinstance(text, str) else _clean(text)
     raise FacadeError(
         f"Unsupported Responses input content item type: {part_type or '<blank>'}",
         status_code=501,
@@ -2327,11 +1379,27 @@ def _text_part_text(part: Mapping[str, Any]) -> str:
     )
 
 
-def _response_input_function_calls(payload: Mapping[str, Any]) -> dict[str, str]:
+def _response_input_function_call_items(
+    payload: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
     raw_input = payload.get("input", payload.get("prompt"))
     if not isinstance(raw_input, list):
         return {}
-    return _function_calls_from_items(_messages(raw_input))
+    function_calls: dict[str, dict[str, Any]] = {}
+    for item in _messages(raw_input):
+        if _clean(item.get("type")) != "function_call":
+            continue
+        function_call = _function_call_item(item, strict=True)
+        previous = function_calls.get(function_call["call_id"])
+        if previous and previous != function_call:
+            raise FacadeError(
+                "Responses input contains conflicting function_call items",
+                status_code=400,
+                code="function_call_mismatch",
+                param="input",
+            )
+        function_calls[function_call["call_id"]] = function_call
+    return function_calls
 
 
 def _response_input_tool_outputs(
@@ -2347,13 +1415,83 @@ def _response_input_tool_outputs(
     return outputs
 
 
+def _validate_response_tool_continuation(
+    payload: Mapping[str, Any],
+    *,
+    known_function_call_items: Mapping[str, Mapping[str, Any]],
+    known_tool_outputs: set[tuple[str, str]],
+) -> dict[str, dict[str, Any]]:
+    """Validate caller-supplied call/output linkage without repairing it."""
+
+    function_call_items = {
+        call_id: dict(item)
+        for call_id, item in known_function_call_items.items()
+        if call_id
+    }
+    for call_id, function_call in _response_input_function_call_items(payload).items():
+        known = function_call_items.get(call_id)
+        if known and (
+            _clean(known.get("name")) != function_call["name"]
+            or _function_call_arguments(known) != function_call["arguments"]
+        ):
+            raise FacadeError(
+                "Responses function_call does not match its prior call_id",
+                status_code=400,
+                code="function_call_mismatch",
+                param="input",
+            )
+        function_call_items[call_id] = function_call
+
+    raw_input = payload.get("input", payload.get("prompt"))
+    if not isinstance(raw_input, list):
+        return function_call_items
+    seen_outputs: dict[str, str] = {}
+    for call_id, output in known_tool_outputs:
+        previous_output = seen_outputs.get(call_id)
+        if previous_output is not None and previous_output != output:
+            raise FacadeError(
+                "Responses history contains conflicting function_call_output items",
+                status_code=400,
+                code="function_call_output_mismatch",
+                param="previous_response_id",
+            )
+        seen_outputs[call_id] = output
+    for item in _messages(raw_input):
+        if _clean(item.get("type")) != "function_call_output":
+            continue
+        call_id, output = _tool_output_metadata(item)
+        if not call_id or call_id not in function_call_items:
+            raise FacadeError(
+                "Responses function_call_output must reference a known call_id",
+                status_code=400,
+                code="unknown_function_call_id",
+                param="input",
+            )
+        previous_output = seen_outputs.get(call_id)
+        if previous_output is not None and previous_output != output:
+            raise FacadeError(
+                "Responses input contains conflicting function_call_output items",
+                status_code=400,
+                code="function_call_output_mismatch",
+                param="input",
+            )
+        seen_outputs[call_id] = output
+    return function_call_items
+
+
 def response_input_to_messages(
     payload: Mapping[str, Any],
     *,
     known_tool_outputs: set[tuple[str, str]] | None = None,
+    known_function_call_items: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
     seen_tool_outputs = set(known_tool_outputs or ())
+    function_call_items = {
+        call_id: dict(item)
+        for call_id, item in dict(known_function_call_items or {}).items()
+        if call_id
+    }
     instructions = _clean(payload.get("instructions"))
     if instructions:
         messages.append({"role": "system", "content": instructions})
@@ -2371,22 +1509,51 @@ def response_input_to_messages(
                 )
             item_type = _clean(item.get("type"))
             if item_type == "function_call":
-                # Responses clients may resubmit prior function calls on a
-                # continuation. Preserve their ID/name server-side, but never
-                # expose call arguments as assistant instructions to the model.
+                function_call = _function_call_item(item, strict=True)
+                existing = function_call_items.get(function_call["call_id"])
+                if existing:
+                    if (
+                        _clean(existing.get("name")) != function_call["name"]
+                        or _function_call_arguments(existing)
+                        != function_call["arguments"]
+                    ):
+                        raise FacadeError(
+                            "Responses function_call does not match its prior call_id",
+                            status_code=400,
+                            code="function_call_mismatch",
+                            param="input",
+                        )
+                    # Codex may resend a prior call item with its output. The
+                    # stored conversation already contains it in order.
+                    continue
+                function_call_items[function_call["call_id"]] = function_call
+                messages.append(_function_call_context_message(function_call))
                 continue
             if item_type == "function_call_output":
                 call_id, output = _tool_output_metadata(item)
+                if not call_id or call_id not in function_call_items:
+                    raise FacadeError(
+                        "Responses function_call_output must reference a known call_id",
+                        status_code=400,
+                        code="unknown_function_call_id",
+                        param="input",
+                    )
                 tool_output = (call_id, output)
                 if tool_output in seen_tool_outputs:
                     continue
                 seen_tool_outputs.add(tool_output)
                 messages.append(
-                    {
-                        "role": "tool",
-                        "content": f"Tool output for {call_id}: {output}",
-                    }
+                    _function_call_output_context_message(
+                        call_id=call_id,
+                        output=output,
+                    )
                 )
+                continue
+            if item_type:
+                # Generated Responses items such as reasoning are opaque to
+                # this text-only local lane. They are not user messages and
+                # must not turn an otherwise valid tool continuation into a
+                # compatibility error.
                 continue
             role = _clean(item.get("role")) or "user"
             content = item.get("content", "")
@@ -2419,100 +1586,6 @@ def response_input_to_messages(
     return messages
 
 
-def _codex_apps_tool_search_query(name: str, arguments: Any) -> str:
-    parsed_arguments = arguments
-    if isinstance(arguments, str):
-        try:
-            parsed_arguments = json.loads(arguments)
-        except (TypeError, ValueError):
-            parsed_arguments = {}
-    if isinstance(parsed_arguments, Mapping):
-        query = _clean(parsed_arguments.get("query"))
-        if query:
-            return query
-    capability = name.removeprefix(CODEX_APPS_TOOL_PREFIX)
-    capability = capability.replace(".", " ").replace("_", " ")
-    return "Find the executable Codex Apps tool for " + capability
-
-
-def _mcp_resource_discovery_tool_search_query(arguments: Any) -> str:
-    parsed_arguments = arguments
-    if isinstance(arguments, str):
-        try:
-            parsed_arguments = json.loads(arguments)
-        except (TypeError, ValueError):
-            parsed_arguments = {}
-    if isinstance(parsed_arguments, Mapping):
-        server = _clean(parsed_arguments.get("server"))
-        uri = _clean(parsed_arguments.get("uri"))
-        if server and uri:
-            return (
-                "Find the executable tool for reading resource "
-                + uri
-                + " from the "
-                + server
-                + " MCP server"
-            )
-        if server:
-            return "Find the executable tool for the " + server + " MCP server"
-    return "Find the executable tool for the requested connected MCP server"
-
-
-def _internal_mcp_tool_search_query(name: str, arguments: Any) -> str:
-    parsed_arguments = arguments
-    if isinstance(arguments, str):
-        try:
-            parsed_arguments = json.loads(arguments)
-        except (TypeError, ValueError):
-            parsed_arguments = {}
-    internal_name = name.removeprefix(INTERNAL_MCP_TOOL_PREFIX)
-    server, separator, capability = internal_name.partition("__")
-    server = _clean(server)
-    capability = capability.replace(".", " ").replace("_", " ") if separator else ""
-    operation = ""
-    if isinstance(parsed_arguments, Mapping):
-        operation = _clean(parsed_arguments.get("operation"))
-    if server and capability:
-        return (
-            "Find the executable tool for "
-            + capability
-            + " on the "
-            + server
-            + " MCP server"
-        )
-    if server and operation:
-        return (
-            "Find the executable tool for "
-            + operation
-            + " on the "
-            + server
-            + " MCP server"
-        )
-    if server:
-        return "Find the executable tool for the " + server + " MCP server"
-    return "Find the executable tool for the requested connected MCP server"
-
-
-def _normalize_internal_mcp_server_argument(arguments: Any) -> Any:
-    parsed_arguments = arguments
-    if isinstance(arguments, str):
-        try:
-            parsed_arguments = json.loads(arguments)
-        except (TypeError, ValueError):
-            return arguments
-    if not isinstance(parsed_arguments, Mapping):
-        return arguments
-    server = _clean(parsed_arguments.get("server"))
-    if not server.startswith(INTERNAL_MCP_TOOL_PREFIX):
-        return arguments
-    normalized_server = server.removeprefix(INTERNAL_MCP_TOOL_PREFIX)
-    if not normalized_server:
-        return arguments
-    normalized_arguments = dict(parsed_arguments)
-    normalized_arguments["server"] = normalized_server
-    return normalized_arguments
-
-
 def _extract_tool_calls(
     text: str,
     *,
@@ -2526,45 +1599,14 @@ def _extract_tool_calls(
     if raw_calls is None:
         raw_calls = _json_tool_call_envelope(text)
     calls: list[dict[str, Any]] = []
-    seen_resource_discovery_calls: set[str] = set()
     for raw in raw_calls:
         if not isinstance(raw, Mapping):
             continue
         name = _clean(raw.get("name"))
         if not name:
             continue
-        arguments = _normalize_internal_mcp_server_argument(raw.get("arguments", {}))
-        if name == IMPLICIT_TOOL_SEARCH_NAME:
-            # tool_search is a client-provided discovery primitive. It can be
-            # returned as the bounded watchdog fallback even when the TUI's
-            # partial top-level registry omits it.
-            pass
-        elif name.startswith(CODEX_APPS_TOOL_PREFIX) and name not in names:
-            # Codex Apps tools must be discovered before invocation. Some
-            # local models emit a stale internal Apps name even when the
-            # request includes a partial built-in tool registry.
-            arguments = {"query": _codex_apps_tool_search_query(name, arguments)}
-            name = IMPLICIT_TOOL_SEARCH_NAME
-        elif _is_mcp_resource_discovery_tool_name(name):
-            # Generic MCP resource operations are client-internal primitives,
-            # including namespaced forms exposed by some Codex clients. Route
-            # them through tool_search so the client returns one executable
-            # capability instead of repeatedly dumping the same resource list.
-            arguments = {"query": _mcp_resource_discovery_tool_search_query(arguments)}
-            name = IMPLICIT_TOOL_SEARCH_NAME
-            discovery_key = _json_dumps(arguments)
-            if discovery_key in seen_resource_discovery_calls:
-                continue
-            seen_resource_discovery_calls.add(discovery_key)
-        elif name.startswith(INTERNAL_MCP_TOOL_PREFIX) and name not in names:
-            # MCP server names are client-internal routing details, not
-            # executable Responses function names. Discover the client-exposed
-            # capability before returning a call to Codex.
-            arguments = {"query": _internal_mcp_tool_search_query(name, arguments)}
-            name = IMPLICIT_TOOL_SEARCH_NAME
-        elif (
-            names and name not in names and name not in IMPLICIT_CLIENT_LOCAL_TOOL_NAMES
-        ):
+        arguments = raw.get("arguments", {})
+        if names and name not in names:
             continue
         call_id = _clean(raw.get("call_id")) or f"call_{uuid.uuid4().hex}"
         calls.append(
@@ -2580,6 +1622,174 @@ def _extract_tool_calls(
             }
         )
     return calls
+
+
+@dataclass(frozen=True)
+class NormalizedResponsesOutput:
+    """Canonical Responses output derived from one model text stream."""
+
+    raw_text: str
+    visible_text: str
+    raw_tool_calls: list[dict[str, Any]]
+
+
+class ResponsesStreamNormalizer:
+    """Keep local text tool envelopes out of Responses text events.
+
+    Local providers do not expose native Responses function-call events. This
+    adapter recognizes only a final, standalone ``tool_call``/``tool_calls``
+    JSON envelope and leaves every other byte as assistant text. It buffers a
+    possible envelope across arbitrary upstream fragment boundaries so the
+    streamed text and completed response can be built from the same result.
+    """
+
+    _MAX_PENDING_PREFIX_CHARS = 256
+
+    def __init__(self) -> None:
+        self._raw_parts: list[str] = []
+        self._pending = ""
+        self._emitted_parts: list[str] = []
+        self._finalized: NormalizedResponsesOutput | None = None
+
+    @property
+    def raw_text(self) -> str:
+        return "".join(self._raw_parts)
+
+    @property
+    def emitted_text(self) -> str:
+        return "".join(self._emitted_parts)
+
+    def feed(self, fragment: str) -> list[str]:
+        """Return assistant-text deltas that are safe to send immediately."""
+
+        if self._finalized is not None:
+            raise RuntimeError("Responses stream normalizer is already finalized")
+        if not fragment:
+            return []
+        self._raw_parts.append(fragment)
+        self._pending += fragment
+        return self._drain_pending()
+
+    def finalize(self) -> NormalizedResponsesOutput:
+        """Freeze the canonical text/tool split after the upstream completes."""
+
+        if self._finalized is not None:
+            return self._finalized
+        visible_text, raw_tool_calls = _trailing_json_tool_call_envelope(self.raw_text)
+        emitted_text = self.emitted_text
+        if raw_tool_calls and not visible_text.startswith(emitted_text):
+            # A malformed or non-trailing candidate may have already been
+            # streamed as text. Preserve that text instead of retracting it.
+            visible_text = self.raw_text
+            raw_tool_calls = []
+        self._finalized = NormalizedResponsesOutput(
+            raw_text=self.raw_text,
+            visible_text=visible_text if raw_tool_calls else self.raw_text,
+            raw_tool_calls=[dict(call) for call in raw_tool_calls],
+        )
+        return self._finalized
+
+    def _drain_pending(self) -> list[str]:
+        deltas: list[str] = []
+        while self._pending:
+            candidate_start = self._candidate_start(self._pending)
+            if candidate_start < 0:
+                if not self._emitted_parts and not self._pending.strip():
+                    break
+                deltas.append(self._emit_pending())
+                break
+            if candidate_start:
+                # Keep leading whitespace buffered while the following object
+                # is still a possible tool envelope. A completed Responses
+                # tool call has no message item, so that whitespace cannot be
+                # emitted before we know whether it belongs to prose.
+                if (
+                    not self._emitted_parts
+                    and not self._pending[:candidate_start].strip()
+                ):
+                    state = self._candidate_state(self._pending[candidate_start:])
+                    if state in {"pending", "tool"}:
+                        break
+                deltas.append(self._emit_pending(candidate_start))
+                continue
+            state = self._candidate_state(self._pending)
+            if state in {"pending", "tool"}:
+                break
+            deltas.append(self._emit_pending())
+        return [delta for delta in deltas if delta]
+
+    def _emit_pending(self, length: int | None = None) -> str:
+        if length is None:
+            length = len(self._pending)
+        delta = self._pending[:length]
+        self._pending = self._pending[length:]
+        if delta:
+            self._emitted_parts.append(delta)
+        return delta
+
+    def _candidate_start(self, text: str) -> int:
+        previous_character = self.emitted_text[-1:] if self._emitted_parts else ""
+        starts: list[int] = []
+        for index, character in enumerate(text):
+            if character == "{" and self._is_standalone_start(
+                text, index, previous_character
+            ):
+                starts.append(index)
+            if (
+                character == "`"
+                and text[index : index + 3] == "```"
+                and self._is_standalone_start(text, index, previous_character)
+            ):
+                starts.append(index)
+        return min(starts) if starts else -1
+
+    @staticmethod
+    def _is_standalone_start(
+        text: str,
+        index: int,
+        previous_character: str,
+    ) -> bool:
+        preceding = text[index - 1] if index else previous_character
+        return not preceding or preceding.isspace()
+
+    def _candidate_state(self, text: str) -> str:
+        if text.startswith("```"):
+            return self._fenced_candidate_state(text)
+        return self._json_candidate_state(text)
+
+    def _json_candidate_state(self, text: str) -> str:
+        if not text.startswith("{"):
+            return "text"
+        object_prefix = text[1:].lstrip()
+        if not object_prefix:
+            return "pending"
+        if not object_prefix.startswith('"'):
+            return "text"
+        for key in ("tool_call", "tool_calls"):
+            encoded_key = json.dumps(key)
+            if encoded_key.startswith(object_prefix):
+                return (
+                    "pending" if len(text) < self._MAX_PENDING_PREFIX_CHARS else "text"
+                )
+        try:
+            key, key_end = json.JSONDecoder().raw_decode(object_prefix)
+        except json.JSONDecodeError:
+            return "text"
+        if key not in {"tool_call", "tool_calls"}:
+            return "text"
+        remainder = object_prefix[key_end:].lstrip()
+        if not remainder:
+            return "pending"
+        return "tool" if remainder.startswith(":") else "text"
+
+    def _fenced_candidate_state(self, text: str) -> str:
+        match = re.match(r"```(?i:json)?[ \t]*\r?\n", text)
+        if match is None:
+            return "pending" if len(text) < self._MAX_PENDING_PREFIX_CHARS else "text"
+        body = text[match.end() :]
+        if not body:
+            return "pending"
+        return self._json_candidate_state(body)
 
 
 def _response_output_items(
@@ -3925,6 +3135,7 @@ class PreparedResponsesExecution:
     messages: list[dict[str, Any]]
     previous_messages: list[dict[str, Any]]
     function_calls: dict[str, str]
+    function_call_items: dict[str, dict[str, Any]]
     tool_outputs: set[tuple[str, str]]
     tool_chain_context: ToolChainContext
     history_replayed: bool
@@ -3937,7 +3148,7 @@ def _prepare_responses_execution(
     *,
     trusted_context: Mapping[str, Any] | None = None,
 ) -> PreparedResponsesExecution:
-    _validate_supported_fields(payload, supported_fields=SUPPORTED_RESPONSES_FIELDS)
+    _validate_supported_responses_fields(payload)
     provider_payload = _prepare_payload(payload)
     reasoning_advisory = _responses_reasoning_advisory(provider_payload)
     include_advisory = _responses_include_advisory(provider_payload)
@@ -3945,27 +3156,36 @@ def _prepare_responses_execution(
     store_requested = _responses_store_requested(provider_payload)
     provider_payload.pop("client_metadata", None)
     provider_payload.pop("store", None)
-    if reasoning_advisory:
-        provider_payload["reasoning"] = reasoning_advisory
-    if include_advisory:
-        provider_payload["include"] = include_advisory
     history = _previous_response_history(
         _clean(provider_payload.get("previous_response_id"))
     )
-    function_calls = dict(history.function_calls)
-    function_calls.update(_response_input_function_calls(provider_payload))
+    function_call_items = _validate_response_tool_continuation(
+        provider_payload,
+        known_function_call_items=history.function_call_items,
+        known_tool_outputs=history.tool_outputs,
+    )
+    function_calls = {
+        call_id: _clean(function_call.get("name"))
+        for call_id, function_call in function_call_items.items()
+        if _clean(function_call.get("name"))
+    }
     tool_outputs = history.tool_outputs | _response_input_tool_outputs(provider_payload)
     tool_chain_context = _tool_chain_context(
         provider_payload,
         previous_function_calls=function_calls,
     )
+    history_messages, tool_contract_messages = _messages_with_current_tool_contract(
+        history.messages,
+        provider_payload,
+    )
     messages = [
-        *history.messages,
-        *_tool_contract_message(provider_payload),
+        *history_messages,
+        *tool_contract_messages,
         *_structured_output_message(provider_payload),
         *response_input_to_messages(
             provider_payload,
             known_tool_outputs=history.tool_outputs,
+            known_function_call_items=history.function_call_items,
         ),
     ]
     route_payload = {**provider_payload, "input": messages}
@@ -3982,124 +3202,13 @@ def _prepare_responses_execution(
         messages=messages,
         previous_messages=history.messages,
         function_calls=function_calls,
+        function_call_items=function_call_items,
         tool_outputs=tool_outputs,
         tool_chain_context=tool_chain_context,
         history_replayed=history.replayed,
         client_metadata_ignored=client_metadata_ignored,
         store_requested=store_requested,
     )
-
-
-def _resolve_tool_chain_watchdog(
-    *,
-    chat_response: Mapping[str, Any],
-    prepared: PreparedResponsesExecution,
-    request_id: str,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    response = dict(chat_response)
-    text = _choice_text(response)
-    raw_calls = _json_tool_call_envelope(text)
-    if any(
-        preference is not None
-        for preference in (
-            _initial_ops_tool_preference(
-                prepared=prepared,
-                text=text,
-                raw_calls=raw_calls,
-                tools=_tools(prepared.provider_payload),
-            ),
-            _discovered_ops_lookup_preference(
-                prepared=prepared,
-                raw_calls=raw_calls,
-                tools=_tools(prepared.provider_payload),
-            ),
-        )
-    ):
-        # The response adapter will replace this clear first-turn action
-        # announcement with the declared read-only call below.
-        return response, {
-            "state": "not_required",
-            "attempts": 0,
-            "reason": "",
-        }
-    controller = _tool_chain_controller_decision(
-        prepared=prepared,
-        text=text,
-    )
-    if controller is not None:
-        response = _tool_chain_control_response(
-            chat_response=response,
-            decision=controller,
-        )
-        logger.warning(
-            "Norman tool-chain controller request_id=%s reason=%s tool=%s",
-            request_id,
-            controller.reason,
-            controller.name or "bounded_failure",
-        )
-        return response, {
-            "state": "controlled",
-            "attempts": 0,
-            "reason": controller.reason,
-            "controller": (
-                "read_only_external_tool"
-                if controller.is_tool_call
-                else "bounded_failure"
-            ),
-        }
-    reason = _tool_chain_watchdog_reason(
-        text=text,
-        context=prepared.tool_chain_context,
-    )
-    if not reason:
-        return response, {
-            "state": "not_required",
-            "attempts": 0,
-            "reason": "",
-        }
-
-    repair_messages = [
-        *prepared.messages,
-        _tool_chain_repair_message(
-            context=prepared.tool_chain_context,
-            reason=reason,
-        ),
-    ]
-    repaired = _execute_authorized_chat(
-        provider_payload=prepared.route_payload,
-        route_envelope=prepared.route_envelope,
-        messages=repair_messages,
-        request_id=f"{request_id}-tool-chain-repair",
-    )
-    repair_reason = _tool_chain_watchdog_reason(
-        text=_choice_text(repaired),
-        context=prepared.tool_chain_context,
-    )
-    if repair_reason:
-        response, fallback = _tool_chain_fallback_response(
-            repaired=repaired,
-            prepared=prepared,
-        )
-        logger.warning(
-            "Norman tool-chain watchdog fallback request_id=%s reason=%s "
-            "repair_reason=%s fallback=%s",
-            request_id,
-            reason,
-            repair_reason,
-            fallback,
-        )
-        return response, {
-            "state": "fallback",
-            "attempts": TOOL_CHAIN_WATCHDOG_MAX_ATTEMPTS,
-            "reason": reason,
-            "repair_reason": repair_reason,
-            "fallback": fallback,
-        }
-    return dict(repaired), {
-        "state": "repaired",
-        "attempts": TOOL_CHAIN_WATCHDOG_MAX_ATTEMPTS,
-        "reason": reason,
-    }
 
 
 def _responses_response_from_chat(
@@ -4109,29 +3218,17 @@ def _responses_response_from_chat(
     response_id: str = "",
     created_at: int | None = None,
     output_item_id: str = "",
-    tool_chain_watchdog: Mapping[str, Any] | None = None,
+    normalized_output: NormalizedResponsesOutput | None = None,
 ) -> dict[str, Any]:
     provider_payload = prepared.provider_payload
     chat_response = dict(chat_response)
     text = _choice_text(chat_response)
     tools = _tools(provider_payload)
-    preamble, raw_calls = _trailing_json_tool_call_envelope(text)
-    preferred_call = _initial_ops_tool_preference(
-        prepared=prepared,
-        text=text,
-        raw_calls=raw_calls,
-        tools=tools,
-    ) or _discovered_ops_lookup_preference(
-        prepared=prepared,
-        raw_calls=raw_calls,
-        tools=tools,
-    )
-    if preferred_call is not None:
-        # This call replaces a prose-only action announcement. It has no
-        # genuine preamble to preserve, and returning it as assistant text
-        # makes Responses clients stop before executing the call.
-        preamble = ""
-        raw_calls = [preferred_call]
+    if normalized_output is not None and normalized_output.raw_text == text:
+        preamble = normalized_output.visible_text
+        raw_calls = [dict(call) for call in normalized_output.raw_tool_calls]
+    else:
+        preamble, raw_calls = _trailing_json_tool_call_envelope(text)
     tool_calls = _extract_tool_calls(
         text,
         tools=tools,
@@ -4148,16 +3245,9 @@ def _responses_response_from_chat(
         output_item_id=output_item_id,
     )
     output_text = visible_text
-    watchdog = dict(tool_chain_watchdog or {})
     tool_chain = _tool_chain_telemetry(
         context=prepared.tool_chain_context,
         tool_calls=tool_calls,
-        watchdog_state=_clean(watchdog.get("state")) or "not_required",
-        watchdog_attempts=int(watchdog.get("attempts") or 0),
-        watchdog_reason=_clean(watchdog.get("reason")),
-        watchdog_repair_reason=_clean(watchdog.get("repair_reason")),
-        watchdog_fallback=_clean(watchdog.get("fallback")),
-        watchdog_controller=_clean(watchdog.get("controller")),
     )
     response_id = response_id or f"resp-norman-{uuid.uuid4().hex}"
     created = created_at or int(time.time())
@@ -4210,13 +3300,18 @@ def _responses_response_from_chat(
         },
     }
     if prepared.store_requested:
-        function_calls = dict(prepared.function_calls)
-        function_calls.update(_function_calls_from_items(output_items))
+        function_call_items = dict(prepared.function_call_items)
+        function_call_items.update(_function_call_items_from_items(output_items))
         _store_response_state(
             response_id,
             messages=prepared.messages,
             output_text=output_text,
-            function_calls=function_calls,
+            function_call_items=function_call_items,
+            response_function_call_items=[
+                item
+                for item in output_items
+                if _clean(item.get("type")) == "function_call"
+            ],
             tool_outputs=prepared.tool_outputs,
         )
     return response
@@ -4419,7 +3514,12 @@ class FacadeResponsesStream:
                 if isinstance(fragment, str) and fragment:
                     yield fragment
 
-    def complete(self, text: str) -> dict[str, Any]:
+    def complete(
+        self,
+        text: str,
+        *,
+        normalized_output: NormalizedResponsesOutput | None = None,
+    ) -> dict[str, Any]:
         if self._cloud_chat_response is not None:
             chat_response = dict(self._cloud_chat_response)
         else:
@@ -4432,11 +3532,6 @@ class FacadeResponsesStream:
                 invocation=self.invocation,
                 result=self.stream.result(text),
             )
-        chat_response, tool_chain_watchdog = _resolve_tool_chain_watchdog(
-            chat_response=chat_response,
-            prepared=self.prepared,
-            request_id=self.invocation.invocation_id,
-        )
         norman = _mapping(chat_response.get("norman"))
         if self._cloud_chat_response is None:
             norman["streaming_mode"] = "incremental_sse"
@@ -4450,7 +3545,7 @@ class FacadeResponsesStream:
             response_id=self.response_id,
             created_at=self.created_at,
             output_item_id=self.output_item_id,
-            tool_chain_watchdog=tool_chain_watchdog,
+            normalized_output=normalized_output,
         )
 
     def classify_error(self, exc: Exception) -> FacadeError:
@@ -4487,15 +3582,9 @@ def execute_openai_responses_facade(
         messages=prepared.messages,
         request_id=facade_request_id,
     )
-    chat_response, tool_chain_watchdog = _resolve_tool_chain_watchdog(
-        chat_response=chat_response,
-        prepared=prepared,
-        request_id=facade_request_id,
-    )
     return _responses_response_from_chat(
         chat_response,
         prepared=prepared,
-        tool_chain_watchdog=tool_chain_watchdog,
     )
 
 

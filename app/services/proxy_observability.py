@@ -27,7 +27,9 @@ TOOL_CHAIN_OUTCOMES = frozenset(
         "tool_call",
     }
 )
-TOOL_CHAIN_WATCHDOG_STATES = frozenset({"not_required", "repaired", "exhausted"})
+TOOL_CHAIN_WATCHDOG_STATES = frozenset(
+    {"not_applied", "not_required", "repaired", "exhausted"}
+)
 SAFE_TOOL_CHAIN_CALL_NAMES = frozenset({"tool_search"})
 LOCAL_TOOL_CHAIN_CALL_NAMES = {
     "apply_patch": "local_file_patch",

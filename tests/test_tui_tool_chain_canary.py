@@ -30,15 +30,45 @@ def _tool_response(response_id: str, name: str, call_id: str) -> dict:
                     "tool_calls_returned": 1,
                     "outcome": "tool_call",
                     "watchdog": {
-                        "state": "repaired",
-                        "attempts": 1,
-                        "reason": "undeclared_tool",
+                        "state": "not_applied",
+                        "attempts": 0,
                     },
                     "arguments": {"private": "arguments"},
                 }
             }
         },
     }
+
+
+def _stream_response(
+    response: dict,
+    *,
+    native_calls: list[dict] | None = None,
+    completed: bool = True,
+    done: bool = True,
+    failed: bool = False,
+    raw_tool_envelope_text: bool = False,
+) -> dict:
+    streamed = dict(response)
+    streamed["_canary_stream"] = {
+        "completed": completed,
+        "done": done,
+        "failed": failed,
+        "native_function_calls": (
+            native_calls
+            if native_calls is not None
+            else [
+                {
+                    "name": item["name"],
+                    "call_id": item["call_id"],
+                }
+                for item in response.get("output", [])
+                if item.get("type") == "function_call"
+            ]
+        ),
+        "raw_tool_envelope_text": raw_tool_envelope_text,
+    }
+    return streamed
 
 
 def test_run_canary_exercises_the_three_turn_synthetic_tool_chain():
@@ -68,9 +98,8 @@ def test_run_canary_exercises_the_three_turn_synthetic_tool_chain():
                             "tool_calls_returned": 0,
                             "outcome": "final_after_tool",
                             "watchdog": {
-                                "state": "not_required",
+                                "state": "not_applied",
                                 "attempts": 0,
-                                "reason": "",
                             },
                         }
                     }
@@ -116,6 +145,153 @@ def test_run_canary_exercises_the_three_turn_synthetic_tool_chain():
     assert "Synthetic status is healthy." not in serialized
     assert "total_tokens" not in serialized
     assert "undeclared_tool" not in serialized
+
+
+def test_run_canary_streaming_exercises_native_sse_tool_calls():
+    requests = []
+    responses = iter(
+        [
+            _stream_response(
+                _tool_response("resp-search", "tool_search", "call-search")
+            ),
+            _stream_response(
+                _tool_response(
+                    "resp-synthetic",
+                    "synthetic.status_lookup",
+                    "call-synthetic",
+                )
+            ),
+            _stream_response(
+                {
+                    "id": "resp-final",
+                    "status": "completed",
+                    "output": [{"type": "message"}],
+                    "output_text": "Synthetic status is healthy.",
+                }
+            ),
+        ]
+    )
+
+    def stream_request_fn(endpoint, payload, token, timeout_seconds):
+        requests.append((endpoint, payload, token, timeout_seconds))
+        return 200, next(responses)
+
+    receipt = canary.run_canary(
+        endpoint="https://cp.kris.openbrand.com/v1/responses",
+        token="private-token",
+        pressure_guard=lambda: {"admission": {"action": "accept_new_work"}},
+        streaming=True,
+        stream_request_fn=stream_request_fn,
+    )
+
+    assert receipt["state"] == "passed"
+    assert receipt["mode"] == "streaming"
+    assert all(request[1]["stream"] is True for request in requests)
+    assert receipt["turns"][0]["stream"] == {
+        "completed": True,
+        "done": True,
+        "failed": False,
+        "native_function_call_count": 1,
+        "native_tool_names": ["tool_search"],
+        "raw_tool_envelope_text": False,
+    }
+    assert receipt["turns"][2]["stream"]["native_function_call_count"] == 0
+    serialized = json.dumps(receipt, sort_keys=True)
+    assert "private-token" not in serialized
+    assert "private" not in serialized
+
+
+def test_run_canary_streaming_fails_without_a_native_function_call_event():
+    receipt = canary.run_canary(
+        endpoint="https://cp.kris.openbrand.com/v1/responses",
+        token="private-token",
+        pressure_guard=lambda: {},
+        streaming=True,
+        stream_request_fn=lambda *args: (
+            200,
+            _stream_response(
+                _tool_response("resp-search", "tool_search", "call-search"),
+                native_calls=[],
+            ),
+        ),
+    )
+
+    assert receipt["state"] == "failed"
+    assert receipt["failure_kind"] == "missing_native_function_event"
+    assert receipt["turns"][0]["stream"]["native_function_call_count"] == 0
+
+
+def test_safe_tool_chain_reports_unknown_legacy_watchdog_state():
+    response = _tool_response("resp-legacy", "tool_search", "call-search")
+    response["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] = {
+        "state": "controlled",
+        "attempts": 0,
+        "reason": "external_workflow_continued",
+    }
+
+    assert canary._safe_tool_chain(response)["watchdog_state"] == "unknown"
+
+
+def test_run_canary_streaming_fails_when_raw_tool_json_reaches_output_text():
+    receipt = canary.run_canary(
+        endpoint="https://cp.kris.openbrand.com/v1/responses",
+        token="private-token",
+        pressure_guard=lambda: {},
+        streaming=True,
+        stream_request_fn=lambda *args: (
+            200,
+            _stream_response(
+                _tool_response("resp-search", "tool_search", "call-search"),
+                raw_tool_envelope_text=True,
+            ),
+        ),
+    )
+
+    assert receipt["state"] == "failed"
+    assert receipt["failure_kind"] == "raw_tool_envelope_text"
+    assert receipt["turns"][0]["stream"]["raw_tool_envelope_text"] is True
+    assert '{"tool_call"' not in json.dumps(receipt, sort_keys=True)
+
+
+def test_sse_parser_tracks_native_calls_and_completion_markers():
+    function_item = {
+        "type": "function_call",
+        "name": "tool_search",
+        "call_id": "private-call-id",
+        "arguments": "",
+    }
+    completed = {
+        "id": "resp-private",
+        "status": "completed",
+        "output": [
+            {
+                **function_item,
+                "arguments": '{"query":"private"}',
+            }
+        ],
+        "output_text": "",
+    }
+    body = "\n\n".join(
+        [
+            "event: response.output_item.added\n"
+            f"data: {json.dumps({'type': 'response.output_item.added', 'item': function_item})}",
+            "event: response.completed\n"
+            f"data: {json.dumps({'type': 'response.completed', 'response': completed})}",
+            "data: [DONE]",
+        ]
+    )
+
+    parsed = canary._parse_sse_events(body)
+    response = canary._stream_response_from_sse_events(parsed)
+
+    stream = response["_canary_stream"]
+    assert stream["completed"] is True
+    assert stream["done"] is True
+    assert stream["failed"] is False
+    assert stream["raw_tool_envelope_text"] is False
+    assert stream["native_function_calls"] == [
+        {"name": "tool_search", "call_id": "private-call-id"}
+    ]
 
 
 def test_run_canary_skips_without_making_requests_when_pressure_defers_work():
@@ -171,6 +347,9 @@ def test_run_canary_sanitizes_a_failed_unexpected_tool_response():
 
 def test_canary_systemd_wrapper_uses_the_encrypted_credential_path():
     root = canary.Path(__file__).resolve().parents[1]
+    installer = (root / "scripts/deploy_norman_tui_tool_chain_canary.sh").read_text(
+        encoding="utf-8"
+    )
     wrapper = (root / "scripts/run_norman_tui_tool_chain_canary.sh").read_text(
         encoding="utf-8"
     )
@@ -181,13 +360,25 @@ def test_canary_systemd_wrapper_uses_the_encrypted_credential_path():
         encoding="utf-8"
     )
 
-    assert "CREDENTIALS_DIRECTORY" in wrapper
-    assert "norman/prompt-proxy-token" in wrapper
-    assert "--passphrase-file" in wrapper
+    assert "NORMAN_TUI_TOOL_CHAIN_TOKEN_HELPER" in wrapper
+    assert "control-plane/prompt-proxy-token" in wrapper
+    assert "--secret" in wrapper
     assert "NORMAN_PROMPT_PROXY_TOKEN" in wrapper
+    assert "/usr/local/libexec/norman_codex_gateway_token.py" in wrapper
     assert "/usr/local/libexec/tui_tool_chain_canary.py" in wrapper
     assert "/home/kristopher/code/norman" not in wrapper
-    assert "http://127.0.0.1:8000/v1/responses" in service
-    assert "LoadCredentialEncrypted=norman-cred-passphrase" in service
+    assert "https://cp.kris.openbrand.com/v1/responses" in service
+    assert "norman-tui-tool-chain-canary --stream" in service
+    assert "EnvironmentFile=-/etc/norman/codex-route-proof.env" in service
+    assert (
+        "NORMAN_TUI_TOOL_CHAIN_CANARY_TOKEN_SECRET=control-plane/prompt-proxy-token"
+        in service
+    )
     assert "WorkingDirectory=" not in service
     assert "OnUnitActiveSec=1h" in timer
+    assert "sudo --non-interactive" in installer
+    assert "norman_codex_gateway_token.py" in installer
+    assert "norman_codex_gateway_broker.sh" in installer
+    assert "codex-route-proof.env" in installer
+    assert "systemctl start norman-tui-tool-chain-canary.service" in installer
+    assert 'receipt.get("state") != "passed"' in installer

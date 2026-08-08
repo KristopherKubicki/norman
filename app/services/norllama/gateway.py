@@ -50,7 +50,8 @@ def messages_to_prompt(messages: list[dict[str, Any]]) -> str:
     parts: list[str] = []
     for message in messages:
         role = _clean(message.get("role")) or "user"
-        content = _clean(message.get("content"))
+        raw_content = message.get("content")
+        content = raw_content if isinstance(raw_content, str) else _clean(raw_content)
         if content:
             parts.append(f"{role.upper()}:\n{content}")
     return "\n\n".join(parts)

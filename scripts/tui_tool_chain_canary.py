@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -17,7 +18,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 
-SCHEMA = "norman.tui.tool-chain-canary.v1"
+SCHEMA = "norman.tui.tool-chain-canary.v2"
 DEFAULT_ENDPOINT = "http://127.0.0.1:8000/v1/responses"
 DEFAULT_OUTPUT_JSON = Path(
     "/home/kristopher/.local/state/norman/tui-tool-chain-canary.json"
@@ -36,10 +37,14 @@ SAFE_TOOL_CHAIN_OUTCOMES = frozenset(
         "tool_call",
     }
 )
-SAFE_WATCHDOG_STATES = frozenset({"not_required", "repaired", "exhausted"})
+SAFE_WATCHDOG_STATES = frozenset({"not_applied"})
 
 RequestFn = Callable[[str, dict[str, Any], str, float], tuple[int, dict[str, Any]]]
+StreamRequestFn = Callable[
+    [str, dict[str, Any], str, float], tuple[int, dict[str, Any]]
+]
 PressureGuardFn = Callable[[], dict[str, Any]]
+RAW_TOOL_ENVELOPE_PATTERN = re.compile(r'\{\s*"tool_calls?"\s*:')
 
 
 class CanaryError(RuntimeError):
@@ -111,6 +116,128 @@ def _post_json(
     if status != 200:
         raise CanaryError("unexpected_http_status", http_status=status)
     return status, parsed
+
+
+def _parse_sse_events(raw: str) -> list[dict[str, Any]]:
+    """Parse a complete SSE body into event names and JSON payloads."""
+
+    events: list[dict[str, Any]] = []
+    event_name = ""
+    data_lines: list[str] = []
+
+    def finish_event() -> None:
+        nonlocal event_name, data_lines
+        if not data_lines:
+            event_name = ""
+            return
+        data = "\n".join(data_lines)
+        if data == "[DONE]":
+            events.append({"event": event_name, "data": "[DONE]"})
+        else:
+            try:
+                payload = json.loads(data)
+            except json.JSONDecodeError as exc:
+                raise CanaryError("invalid_sse_event") from exc
+            if not isinstance(payload, Mapping):
+                raise CanaryError("invalid_sse_event")
+            events.append({"event": event_name, "data": dict(payload)})
+        event_name = ""
+        data_lines = []
+
+    for line in raw.splitlines():
+        if not line:
+            finish_event()
+            continue
+        if line.startswith(":"):
+            continue
+        field, separator, value = line.partition(":")
+        if not separator:
+            continue
+        value = value[1:] if value.startswith(" ") else value
+        if field == "event":
+            event_name = value
+        elif field == "data":
+            data_lines.append(value)
+    finish_event()
+    return events
+
+
+def _stream_response_from_sse_events(events: list[dict[str, Any]]) -> dict[str, Any]:
+    """Retain only the completion response plus protocol-safe stream metadata."""
+
+    completed_response: dict[str, Any] = {}
+    native_calls: list[dict[str, str]] = []
+    saw_completion = False
+    saw_done = False
+    saw_failure = False
+    raw_tool_envelope_text = False
+
+    for event in events:
+        data = event.get("data")
+        if data == "[DONE]":
+            saw_done = True
+            continue
+        payload = _mapping(data)
+        event_type = _clean(payload.get("type")) or _clean(event.get("event"))
+        if event_type == "response.output_item.added":
+            item = _mapping(payload.get("item"))
+            if _clean(item.get("type")) == "function_call":
+                native_calls.append(
+                    {
+                        "name": _clean(item.get("name")),
+                        "call_id": _clean(item.get("call_id")),
+                    }
+                )
+        elif event_type == "response.output_text.delta":
+            if RAW_TOOL_ENVELOPE_PATTERN.search(_clean(payload.get("delta"))):
+                raw_tool_envelope_text = True
+        elif event_type == "response.completed":
+            completed_response = _mapping(payload.get("response"))
+            saw_completion = True
+        elif event_type in {"response.failed", "error"}:
+            saw_failure = True
+
+    if RAW_TOOL_ENVELOPE_PATTERN.search(_clean(completed_response.get("output_text"))):
+        raw_tool_envelope_text = True
+    completed_response["_canary_stream"] = {
+        "completed": saw_completion,
+        "done": saw_done,
+        "failed": saw_failure,
+        "native_function_calls": native_calls,
+        "raw_tool_envelope_text": raw_tool_envelope_text,
+    }
+    return completed_response
+
+
+def _post_sse(
+    endpoint: str,
+    payload: dict[str, Any],
+    token: str,
+    timeout_seconds: float,
+) -> tuple[int, dict[str, Any]]:
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    request = urllib.request.Request(
+        endpoint,
+        data=body,
+        headers={
+            "Accept": "text/event-stream",
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "X-Norman-Gateway-Route": "norman",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            status = int(getattr(response, "status", 200) or 200)
+            raw = response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        raise CanaryError("http_error", http_status=exc.code) from exc
+    except (urllib.error.URLError, OSError, TimeoutError) as exc:
+        raise CanaryError("transport_error") from exc
+    if status != 200:
+        raise CanaryError("unexpected_http_status", http_status=status)
+    return status, _stream_response_from_sse_events(_parse_sse_events(raw))
 
 
 def _pressure_guard(
@@ -199,6 +326,13 @@ def _turn_receipt(
     output = response.get("output")
     output_count = len(output) if isinstance(output, list) else 0
     calls = _function_calls(response)
+    stream = _mapping(response.get("_canary_stream"))
+    stream_calls = stream.get("native_function_calls")
+    native_calls = (
+        [dict(call) for call in stream_calls if isinstance(call, Mapping)]
+        if isinstance(stream_calls, list)
+        else []
+    )
     return {
         "turn": turn,
         "http_status": int(status),
@@ -209,14 +343,51 @@ def _turn_receipt(
         "function_call_count": len(calls),
         "tool_names": [_safe_tool_name(call.get("name")) for call in calls],
         "tool_chain": _safe_tool_chain(response),
+        "stream": {
+            "completed": bool(stream.get("completed")),
+            "done": bool(stream.get("done")),
+            "failed": bool(stream.get("failed")),
+            "native_function_call_count": len(native_calls),
+            "native_tool_names": [
+                _safe_tool_name(call.get("name")) for call in native_calls
+            ],
+            "raw_tool_envelope_text": bool(stream.get("raw_tool_envelope_text")),
+        }
+        if stream
+        else {},
     }
+
+
+def _require_stream_integrity(response: Mapping[str, Any]) -> None:
+    stream = _mapping(response.get("_canary_stream"))
+    if not stream:
+        raise CanaryError("missing_stream_metadata")
+    if bool(stream.get("failed")):
+        raise CanaryError("stream_failed")
+    if not bool(stream.get("completed")):
+        raise CanaryError("missing_stream_completion")
+    if not bool(stream.get("done")):
+        raise CanaryError("missing_stream_done")
+    if bool(stream.get("raw_tool_envelope_text")):
+        raise CanaryError("raw_tool_envelope_text")
 
 
 def _require_exact_function_call(
     response: Mapping[str, Any],
     *,
     name: str,
+    streaming: bool = False,
 ) -> str:
+    if streaming:
+        _require_stream_integrity(response)
+        stream = _mapping(response.get("_canary_stream"))
+        native_calls = stream.get("native_function_calls")
+        if (
+            not isinstance(native_calls, list)
+            or len(native_calls) != 1
+            or _clean(_mapping(native_calls[0]).get("name")) != name
+        ):
+            raise CanaryError("missing_native_function_event")
     output = response.get("output")
     calls = _function_calls(response)
     if (
@@ -232,7 +403,11 @@ def _require_exact_function_call(
     return call_id
 
 
-def _require_final_answer(response: Mapping[str, Any]) -> None:
+def _require_final_answer(
+    response: Mapping[str, Any], *, streaming: bool = False
+) -> None:
+    if streaming:
+        _require_stream_integrity(response)
     if _function_calls(response) or not _clean(response.get("output_text")):
         raise CanaryError("unexpected_final_response")
 
@@ -274,6 +449,8 @@ def run_canary(
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     pressure_guard: PressureGuardFn | None = None,
     request_fn: RequestFn = _post_json,
+    streaming: bool = False,
+    stream_request_fn: StreamRequestFn = _post_sse,
 ) -> dict[str, Any]:
     started_at = time.monotonic()
     receipt: dict[str, Any] = {
@@ -282,6 +459,7 @@ def run_canary(
         "endpoint": endpoint,
         "gateway_route": "norman",
         "model": "norman-code",
+        "mode": "streaming" if streaming else "non_streaming",
         "state": "failed",
         "elapsed_ms": 0.0,
         "turns": [],
@@ -306,7 +484,11 @@ def run_canary(
 
     def execute_turn(turn: str, payload: dict[str, Any]) -> dict[str, Any]:
         turn_started_at = time.monotonic()
-        status, response = request_fn(
+        payload = dict(payload)
+        if streaming:
+            payload["stream"] = True
+        execute_request = stream_request_fn if streaming else request_fn
+        status, response = execute_request(
             endpoint,
             payload,
             token,
@@ -334,6 +516,7 @@ def run_canary(
         tool_search_call_id = _require_exact_function_call(
             discovery,
             name="tool_search",
+            streaming=streaming,
         )
         tool_call = execute_turn(
             "synthetic_status_lookup",
@@ -356,6 +539,7 @@ def run_canary(
         synthetic_call_id = _require_exact_function_call(
             tool_call,
             name="synthetic.status_lookup",
+            streaming=streaming,
         )
         final = execute_turn(
             "final_answer",
@@ -380,7 +564,7 @@ def run_canary(
                 "tools": [_synthetic_status_definition()],
             },
         )
-        _require_final_answer(final)
+        _require_final_answer(final, streaming=streaming)
     except CanaryError as exc:
         receipt["failure_kind"] = exc.kind
         if exc.http_status:
@@ -440,6 +624,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--pressure-target", default=DEFAULT_PRESSURE_TARGET)
     parser.add_argument("--skip-pressure-guard", action="store_true")
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        help="Exercise the SSE streaming path used by Codex TUIs.",
+    )
     return parser.parse_args(argv)
 
 
@@ -459,6 +648,7 @@ def main(argv: list[str] | None = None) -> int:
         token=_clean(os.environ.get("NORMAN_PROMPT_PROXY_TOKEN")),
         timeout_seconds=args.timeout_seconds,
         pressure_guard=pressure_guard,
+        streaming=bool(args.stream),
     )
     write_receipt(args.output_json, receipt)
     print(

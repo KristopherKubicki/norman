@@ -16,8 +16,7 @@ from pydantic import BaseModel, Field
 from app.services.prompt_load_balancer import prompt_load_balancer_capabilities
 from app.services.prompt_provider_facade import (
     FacadeError,
-    TOOL_CHAIN_NEXT_STEP_ACTION_VERBS,
-    TOOL_CHAIN_NEXT_STEP_PREFIXES,
+    ResponsesStreamNormalizer,
     capacity_model_for,
     chat_completion_stream_chunks,
     cloud_fallback_execution_configured,
@@ -39,8 +38,6 @@ router = APIRouter(tags=["openai_compat"])
 logger = logging.getLogger(__name__)
 MAX_PROXY_EVENT_CAPACITY_WINDOW = 200
 CAPACITY_MESH_PROBE_TIMEOUT_SECONDS = 3.0
-MAX_TOOL_ENVELOPE_PREFIX_CHARS = 256
-MAX_NEXT_STEP_ANNOUNCEMENT_PREFIX_CHARS = 512
 GATEWAY_ROUTE_HEADER = "x-norman-gateway-route"
 GATEWAY_ROUTE_IDS = frozenset(
     {
@@ -618,85 +615,6 @@ def _response_sse_event(event_type: str, payload: dict[str, Any]) -> str:
     )
 
 
-def _tool_envelope_prefix_state(text: str) -> str:
-    """Classify a buffered Responses tool-call envelope prefix.
-
-    Local models emit a JSON envelope instead of native tool calls. Hold back
-    a possible standalone envelope so a valid call never becomes assistant
-    text before the completed response becomes a function_call.
-    """
-
-    candidate = text.lstrip()
-    if not candidate:
-        return "pending"
-    if not candidate.startswith("{"):
-        return "text"
-    object_prefix = candidate[1:].lstrip()
-    if not object_prefix:
-        return "pending"
-    if not object_prefix.startswith('"'):
-        return "text"
-    try:
-        key, key_end = json.JSONDecoder().raw_decode(object_prefix)
-    except json.JSONDecodeError:
-        return "text" if len(text) >= MAX_TOOL_ENVELOPE_PREFIX_CHARS else "pending"
-    if key not in {"tool_call", "tool_calls"}:
-        return "text"
-    remainder = object_prefix[key_end:].lstrip()
-    if not remainder:
-        return "pending"
-    return "tool" if remainder.startswith(":") else "text"
-
-
-def _tool_envelope_candidate_start(text: str, previous_character: str) -> int:
-    """Return the first standalone JSON-object start in buffered stream text."""
-
-    for index, character in enumerate(text):
-        if character != "{":
-            continue
-        preceding = text[index - 1] if index else previous_character
-        if not preceding or preceding.isspace():
-            return index
-    return -1
-
-
-def _leading_next_step_announcement_state(text: str) -> str:
-    """Keep a leading action promise private until it becomes prose or a tool."""
-
-    candidate = text.lstrip()
-    normalized = candidate.lower()
-    if not normalized or len(candidate) >= MAX_NEXT_STEP_ANNOUNCEMENT_PREFIX_CHARS:
-        return "text"
-    if any(prefix.startswith(normalized) for prefix in TOOL_CHAIN_NEXT_STEP_PREFIXES):
-        return "pending"
-    for prefix in TOOL_CHAIN_NEXT_STEP_PREFIXES:
-        if not normalized.startswith(prefix):
-            continue
-        action = normalized[len(prefix) :]
-        if not action or any(
-            verb.startswith(action) for verb in TOOL_CHAIN_NEXT_STEP_ACTION_VERBS
-        ):
-            return "pending"
-        if not action.startswith(TOOL_CHAIN_NEXT_STEP_ACTION_VERBS):
-            return "text"
-        terminator = candidate.find(":")
-        if terminator < 0:
-            for index, character in enumerate(candidate):
-                if character not in ".!?":
-                    continue
-                if index + 1 == len(candidate) or candidate[index + 1].isspace():
-                    terminator = index
-                    break
-        if terminator < 0:
-            return "pending"
-        remainder = candidate[terminator + 1 :]
-        if not remainder.strip():
-            return "defer"
-        envelope_state = _tool_envelope_prefix_state(remainder)
-        return "defer" if envelope_state in {"pending", "tool"} else "text"
-    return "text"
-
-
 def _response_stream_snapshot(stream: Any, *, status: str) -> dict[str, Any]:
     snapshot = {
         "id": stream.response_id,
@@ -713,14 +631,20 @@ def _response_stream_snapshot(stream: Any, *, status: str) -> dict[str, Any]:
 
 
 def _response_sse(stream: Any):
-    """Translate the native Ollama stream into incremental Responses events."""
+    """Serialize one canonical facade stream as Responses SSE events."""
 
     initial = _response_stream_snapshot(stream, status="in_progress")
-    text_parts: list[str] = []
-    buffered_text = ""
+    normalizer = ResponsesStreamNormalizer()
     emitted_text_parts: list[str] = []
     text_item_started = False
-    tool_envelope = False
+    sequence_number = 0
+
+    def emit(event_type: str, payload: dict[str, Any]) -> str:
+        nonlocal sequence_number
+        event_payload = dict(payload)
+        event_payload.setdefault("sequence_number", sequence_number)
+        sequence_number += 1
+        return _response_sse_event(event_type, event_payload)
 
     def begin_text_item() -> Iterable[str]:
         nonlocal text_item_started
@@ -734,18 +658,20 @@ def _response_sse(stream: Any):
             "role": "assistant",
             "content": [],
         }
-        yield _response_sse_event(
+        yield emit(
             "response.output_item.added",
             {
                 "type": "response.output_item.added",
+                "response_id": stream.response_id,
                 "output_index": 0,
                 "item": item,
             },
         )
-        yield _response_sse_event(
+        yield emit(
             "response.content_part.added",
             {
                 "type": "response.content_part.added",
+                "response_id": stream.response_id,
                 "item_id": stream.output_item_id,
                 "output_index": 0,
                 "content_index": 0,
@@ -758,10 +684,11 @@ def _response_sse(stream: Any):
         )
 
     def text_delta(delta: str) -> str:
-        return _response_sse_event(
+        return emit(
             "response.output_text.delta",
             {
                 "type": "response.output_text.delta",
+                "response_id": stream.response_id,
                 "item_id": stream.output_item_id,
                 "output_index": 0,
                 "content_index": 0,
@@ -780,20 +707,22 @@ def _response_sse(stream: Any):
     def finish_text_item(final_item: dict[str, Any]) -> Iterable[str]:
         response_text = response.get("output_text")
         text = response_text if isinstance(response_text, str) else ""
-        yield _response_sse_event(
+        yield emit(
             "response.output_text.done",
             {
                 "type": "response.output_text.done",
+                "response_id": stream.response_id,
                 "item_id": stream.output_item_id,
                 "output_index": 0,
                 "content_index": 0,
                 "text": text,
             },
         )
-        yield _response_sse_event(
+        yield emit(
             "response.content_part.done",
             {
                 "type": "response.content_part.done",
+                "response_id": stream.response_id,
                 "item_id": stream.output_item_id,
                 "output_index": 0,
                 "content_index": 0,
@@ -804,28 +733,29 @@ def _response_sse(stream: Any):
                 },
             },
         )
-        yield _response_sse_event(
+        yield emit(
             "response.output_item.done",
             {
                 "type": "response.output_item.done",
+                "response_id": stream.response_id,
                 "output_index": 0,
                 "item": final_item,
             },
         )
 
     try:
-        yield _response_sse_event(
+        yield emit(
             "response.created",
             {"type": "response.created", "response": initial},
         )
-        yield _response_sse_event(
+        yield emit(
             "response.in_progress",
             {"type": "response.in_progress", "response": initial},
         )
         for stream_event in stream.iter_events():
             if stream_event.get("type") == "admission":
                 snapshot = _response_stream_snapshot(stream, status="in_progress")
-                yield _response_sse_event(
+                yield emit(
                     "response.in_progress",
                     {
                         "type": "response.in_progress",
@@ -844,7 +774,7 @@ def _response_sse(stream: Any):
                     )
                     norman["cloud_fallback"] = dict(cloud_fallback)
                     snapshot["norman"] = norman
-                    yield _response_sse_event(
+                    yield emit(
                         "response.in_progress",
                         {
                             "type": "response.in_progress",
@@ -863,7 +793,7 @@ def _response_sse(stream: Any):
                     )
                     norman["explicit_cloud_selection"] = dict(selection)
                     snapshot["norman"] = norman
-                    yield _response_sse_event(
+                    yield emit(
                         "response.in_progress",
                         {
                             "type": "response.in_progress",
@@ -876,49 +806,15 @@ def _response_sse(stream: Any):
             fragment = stream_event.get("text")
             if not isinstance(fragment, str) or not fragment:
                 continue
-            text_parts.append(fragment)
-            if tool_envelope:
-                continue
-            buffered_text += fragment
-            while buffered_text:
-                if not text_item_started and _leading_next_step_announcement_state(
-                    buffered_text
-                ) in {"pending", "defer"}:
-                    break
-                previous_character = (
-                    emitted_text_parts[-1][-1] if emitted_text_parts else ""
-                )
-                candidate_start = _tool_envelope_candidate_start(
-                    buffered_text,
-                    previous_character,
-                )
-                if candidate_start < 0:
-                    if not text_item_started and not buffered_text.strip():
-                        break
-                    for event in emit_text(buffered_text):
-                        yield event
-                    buffered_text = ""
-                    break
-                prefix = buffered_text[:candidate_start]
-                if prefix and (prefix.strip() or text_item_started):
-                    for event in emit_text(prefix):
-                        yield event
-                    buffered_text = buffered_text[candidate_start:]
-                    continue
-                prefix_state = _tool_envelope_prefix_state(buffered_text)
-                if prefix_state == "pending":
-                    break
-                if prefix_state == "tool":
-                    tool_envelope = True
-                    buffered_text = ""
-                    break
-                for event in emit_text(buffered_text):
+            for delta in normalizer.feed(fragment):
+                for event in emit_text(delta):
                     yield event
-                buffered_text = ""
-                break
 
-        text = "".join(text_parts)
-        response = stream.complete(text)
+        normalized_output = normalizer.finalize()
+        response = stream.complete(
+            normalized_output.raw_text,
+            normalized_output=normalized_output,
+        )
         output = response.get("output")
         output_items = (
             [dict(item) for item in output if isinstance(item, dict)]
@@ -930,79 +826,77 @@ def _response_sse(stream: Any):
             for output_index, item in enumerate(output_items)
             if item.get("type") == "function_call"
         ]
-        if function_call_items:
-            message_item = next(
-                (item for item in output_items if item.get("type") == "message"),
-                {},
+
+        response_text = response.get("output_text")
+        response_text = response_text if isinstance(response_text, str) else ""
+        emitted_text = "".join(emitted_text_parts)
+        remaining_text = (
+            response_text[len(emitted_text) :]
+            if response_text.startswith(emitted_text)
+            else response_text
+        )
+        for event in emit_text(remaining_text):
+            yield event
+        message_item = next(
+            (item for item in output_items if item.get("type") == "message"),
+            {},
+        )
+        if text_item_started:
+            for event in finish_text_item(message_item):
+                yield event
+
+        for output_index, output_item in function_call_items:
+            arguments = output_item.get("arguments")
+            arguments = arguments if isinstance(arguments, str) else ""
+            in_progress_item = {
+                "type": "function_call",
+                "id": output_item.get("id"),
+                "status": "in_progress",
+                "call_id": output_item.get("call_id"),
+                "name": output_item.get("name"),
+                "arguments": "",
+            }
+            yield emit(
+                "response.output_item.added",
+                {
+                    "type": "response.output_item.added",
+                    "response_id": stream.response_id,
+                    "output_index": output_index,
+                    "item": in_progress_item,
+                },
             )
-            if text_item_started:
-                for event in finish_text_item(message_item):
-                    yield event
-            for output_index, output_item in function_call_items:
-                arguments = output_item.get("arguments")
-                arguments = arguments if isinstance(arguments, str) else ""
-                in_progress_item = {
-                    "type": "function_call",
-                    "id": output_item.get("id"),
-                    "status": "in_progress",
-                    "call_id": output_item.get("call_id"),
-                    "name": output_item.get("name"),
-                    "arguments": "",
-                }
-                yield _response_sse_event(
-                    "response.output_item.added",
+            if arguments:
+                yield emit(
+                    "response.function_call_arguments.delta",
                     {
-                        "type": "response.output_item.added",
-                        "response_id": stream.response_id,
-                        "output_index": output_index,
-                        "item": in_progress_item,
-                    },
-                )
-                if arguments:
-                    yield _response_sse_event(
-                        "response.function_call_arguments.delta",
-                        {
-                            "type": "response.function_call_arguments.delta",
-                            "response_id": stream.response_id,
-                            "item_id": output_item.get("id"),
-                            "output_index": output_index,
-                            "delta": arguments,
-                        },
-                    )
-                yield _response_sse_event(
-                    "response.function_call_arguments.done",
-                    {
-                        "type": "response.function_call_arguments.done",
+                        "type": "response.function_call_arguments.delta",
                         "response_id": stream.response_id,
                         "item_id": output_item.get("id"),
                         "output_index": output_index,
-                        "arguments": arguments,
+                        "delta": arguments,
                     },
                 )
-                yield _response_sse_event(
-                    "response.output_item.done",
-                    {
-                        "type": "response.output_item.done",
-                        "response_id": stream.response_id,
-                        "output_index": output_index,
-                        "item": output_item,
-                    },
-                )
-        else:
-            response_text = response.get("output_text")
-            response_text = response_text if isinstance(response_text, str) else ""
-            emitted_text = "".join(emitted_text_parts)
-            remaining_text = (
-                response_text[len(emitted_text) :]
-                if response_text.startswith(emitted_text)
-                else response_text
+            yield emit(
+                "response.function_call_arguments.done",
+                {
+                    "type": "response.function_call_arguments.done",
+                    "response_id": stream.response_id,
+                    "item_id": output_item.get("id"),
+                    "output_index": output_index,
+                    "name": output_item.get("name"),
+                    "arguments": arguments,
+                },
             )
-            for event in emit_text(remaining_text):
-                yield event
-            final_item = output_items[0] if output_items else {}
-            for event in finish_text_item(final_item):
-                yield event
-        yield _response_sse_event(
+            yield emit(
+                "response.output_item.done",
+                {
+                    "type": "response.output_item.done",
+                    "response_id": stream.response_id,
+                    "output_index": output_index,
+                    "item": output_item,
+                },
+            )
+        yield emit(
             "response.completed",
             {"type": "response.completed", "response": response},
         )
@@ -1012,7 +906,7 @@ def _response_sse(stream: Any):
         error = stream.classify_error(exc)
         failed = _response_stream_snapshot(stream, status="failed")
         failed["error"] = _facade_error_payload(error)
-        yield _response_sse_event(
+        yield emit(
             "response.failed",
             {"type": "response.failed", "response": failed},
         )

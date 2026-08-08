@@ -1,12 +1,12 @@
 #!/bin/sh
 set -eu
 
-: "${CREDENTIALS_DIRECTORY:?systemd credentials directory is required}"
+: "${NORMAN_TUI_TOOL_CHAIN_TOKEN_HELPER:=/usr/local/libexec/norman_codex_gateway_token.py}"
+: "${NORMAN_TUI_TOOL_CHAIN_CANARY_TOKEN_SECRET:=control-plane/prompt-proxy-token}"
 
 export NORMAN_PROMPT_PROXY_TOKEN="$(
-    /usr/local/bin/cred \
-        --passphrase-file "$CREDENTIALS_DIRECTORY/norman-cred-passphrase" \
-        get norman/prompt-proxy-token
+    /usr/bin/python3 "$NORMAN_TUI_TOOL_CHAIN_TOKEN_HELPER" \
+        --secret "$NORMAN_TUI_TOOL_CHAIN_CANARY_TOKEN_SECRET"
 )"
 
 : "${NORMAN_TUI_TOOL_CHAIN_CANARY_SCRIPT:=/usr/local/libexec/tui_tool_chain_canary.py}"
