@@ -1418,8 +1418,8 @@ def _discovered_ops_lookup_preference(
     context = prepared.tool_chain_context
     if (
         context.chain_depth != 1
-        or not context.tool_search_completed
-        or context.discovered_declared_tool_names != ("ops_openbrand.lookup",)
+        or context.tool_results_supplied != 1
+        or context.successful_tool_results != 1
     ):
         return None
     if (
