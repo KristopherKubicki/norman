@@ -32,10 +32,17 @@ DEFAULT_CRITICAL_THRESHOLD = int(
 ObserveFn = Callable[[recovery.RecoveryTarget], dict[str, Any]]
 
 
+def _read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
 def _load_json(path: Path, default: Any) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (OSError, json.JSONDecodeError):
         return default
 
 
@@ -61,6 +68,73 @@ def _ratio(used: Any, total: Any) -> float:
     return min(1.0, _coerce_float(used) / total_value)
 
 
+def _psi_avg10(path: Path, category: str) -> float | None:
+    for raw in _read_text(path).splitlines():
+        fields = raw.split()
+        if not fields or fields[0] != category:
+            continue
+        for field in fields[1:]:
+            key, separator, value = field.partition("=")
+            if key != "avg10" or not separator:
+                continue
+            try:
+                return max(0.0, float(value))
+            except ValueError:
+                return None
+    return None
+
+
+def _meminfo_values(proc_root: Path) -> dict[str, int]:
+    values: dict[str, int] = {}
+    for raw in _read_text(proc_root / "meminfo").splitlines():
+        key, separator, raw_value = raw.partition(":")
+        if not separator:
+            continue
+        fields = raw_value.split()
+        if not fields:
+            continue
+        try:
+            values[key] = max(0, int(fields[0]) * 1024)
+        except ValueError:
+            continue
+    return values
+
+
+def local_pressure_status(*, proc_root: Path = Path("/proc")) -> dict[str, Any]:
+    """Return host pressure only when the remote status API omits it."""
+
+    meminfo = _meminfo_values(proc_root)
+    total_memory = int(meminfo.get("MemTotal") or 0)
+    available_memory = int(meminfo.get("MemAvailable") or 0)
+    total_swap = int(meminfo.get("SwapTotal") or 0)
+    free_swap = int(meminfo.get("SwapFree") or 0)
+    return {
+        "mem": max(0, total_memory - available_memory),
+        "maxmem": total_memory,
+        "swap": max(0, total_swap - free_swap),
+        "maxswap": total_swap,
+        "pressurecpusome": _psi_avg10(proc_root / "pressure" / "cpu", "some"),
+        "pressureiosome": _psi_avg10(proc_root / "pressure" / "io", "some"),
+        "pressurememorysome": _psi_avg10(proc_root / "pressure" / "memory", "some"),
+        "pressurememoryfull": _psi_avg10(proc_root / "pressure" / "memory", "full"),
+        "pressureiofull": _psi_avg10(proc_root / "pressure" / "io", "full"),
+    }
+
+
+def _sample_value(
+    current: dict[str, Any],
+    local_current: dict[str, Any],
+    key: str,
+) -> tuple[Any, str]:
+    value = current.get(key)
+    if value is not None and str(value).strip() != "":
+        return value, "pvesh"
+    value = local_current.get(key)
+    if value is not None and str(value).strip() != "":
+        return value, "local"
+    return None, "unavailable"
+
+
 def _target_state(state: dict[str, Any], target_name: str) -> dict[str, Any]:
     targets = state.setdefault("targets", {})
     if not isinstance(targets, dict):
@@ -71,26 +145,39 @@ def _target_state(state: dict[str, Any], target_name: str) -> dict[str, Any]:
     return item
 
 
-def pressure_sample(current: dict[str, Any]) -> dict[str, Any]:
+def pressure_sample(
+    current: dict[str, Any],
+    *,
+    local_current: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    local_current = local_current or {}
+    values_and_sources = {
+        key: _sample_value(current, local_current, key)
+        for key in (
+            "mem",
+            "maxmem",
+            "swap",
+            "maxswap",
+            "pressurecpusome",
+            "pressureiosome",
+            "pressurememorysome",
+            "pressurememoryfull",
+            "pressureiofull",
+        )
+    }
+    values = {key: item[0] for key, item in values_and_sources.items()}
     return {
-        "memory_used_ratio": _ratio(current.get("mem"), current.get("maxmem")),
-        "swap_used_ratio": _ratio(current.get("swap"), current.get("maxswap")),
-        "cpu_some": _coerce_float(current.get("pressurecpusome")),
-        "io_some": _coerce_float(current.get("pressureiosome")),
-        "memory_some": _coerce_float(current.get("pressurememorysome")),
-        "memory_full": _coerce_float(current.get("pressurememoryfull")),
-        "io_full": _coerce_float(current.get("pressureiofull")),
+        "memory_used_ratio": _ratio(values["mem"], values["maxmem"]),
+        "swap_used_ratio": _ratio(values["swap"], values["maxswap"]),
+        "cpu_some": _coerce_float(values["pressurecpusome"]),
+        "io_some": _coerce_float(values["pressureiosome"]),
+        "memory_some": _coerce_float(values["pressurememorysome"]),
+        "memory_full": _coerce_float(values["pressurememoryfull"]),
+        "io_full": _coerce_float(values["pressureiofull"]),
         "raw": {
-            "mem": current.get("mem"),
-            "maxmem": current.get("maxmem"),
-            "swap": current.get("swap"),
-            "maxswap": current.get("maxswap"),
-            "pressurecpusome": current.get("pressurecpusome"),
-            "pressureiosome": current.get("pressureiosome"),
-            "pressurememorysome": current.get("pressurememorysome"),
-            "pressurememoryfull": current.get("pressurememoryfull"),
-            "pressureiofull": current.get("pressureiofull"),
+            **values,
         },
+        "sources": {key: item[1] for key, item in values_and_sources.items()},
     }
 
 
@@ -133,6 +220,7 @@ def evaluate(
     target_name: str,
     critical_threshold: int,
     observed_at: int | None = None,
+    local_current: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     observed_at = int(time.time()) if observed_at is None else int(observed_at)
     next_state = dict(state) if isinstance(state, dict) else {}
@@ -140,7 +228,7 @@ def evaluate(
     current = observation.get("pvesh_status_json")
     if not isinstance(current, dict):
         current = {}
-    sample = pressure_sample(current)
+    sample = pressure_sample(current, local_current=local_current)
     watch_reasons, critical_reasons = pressure_reasons(sample)
     critical_count = int(target_state.get("critical_count") or 0)
     if critical_reasons:
@@ -221,6 +309,7 @@ def main(
         state,
         target_name=args.target,
         critical_threshold=max(1, int(args.threshold or 1)),
+        local_current=local_pressure_status(),
     )
     _write_json(args.state, next_state)
     _write_json(args.json_output, decision)

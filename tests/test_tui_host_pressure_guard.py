@@ -103,6 +103,87 @@ def test_pressure_guard_blocks_after_repeated_critical_pressure(monkeypatch) -> 
     assert state["targets"]["work-special"]["critical_count"] == 2
 
 
+def test_pressure_guard_falls_back_to_local_pressure_when_pvesh_omits_metrics(
+    monkeypatch,
+) -> None:
+    module = _load_guard(monkeypatch)
+
+    decision, _state = module.evaluate(
+        _observation(
+            mem=None,
+            maxmem=None,
+            swap=None,
+            maxswap=None,
+            pressurememorysome=None,
+            pressurememoryfull=None,
+            pressureiosome=None,
+            pressureiofull=None,
+        ),
+        {},
+        target_name="work-special",
+        critical_threshold=2,
+        observed_at=100,
+        local_current={
+            "mem": 5 * 1024**3,
+            "maxmem": 6 * 1024**3,
+            "swap": 1536 * 1024**2,
+            "maxswap": 2 * 1024**3,
+            "pressurememorysome": 61.0,
+            "pressurememoryfull": 22.0,
+            "pressureiosome": 92.0,
+            "pressureiofull": 60.0,
+        },
+    )
+
+    assert decision["status"] == "critical_watching"
+    assert decision["admission"]["action"] == "defer_heavy_work"
+    assert "io_some>=80" in decision["critical_reasons"]
+    assert "memory_full>=20" in decision["critical_reasons"]
+    assert decision["sample"]["sources"]["pressureiosome"] == "local"
+    assert decision["sample"]["sources"]["mem"] == "local"
+
+
+def test_local_pressure_status_reads_proc_psi_and_memory(monkeypatch, tmp_path) -> None:
+    module = _load_guard(monkeypatch)
+    pressure_dir = tmp_path / "pressure"
+    pressure_dir.mkdir()
+    (tmp_path / "meminfo").write_text(
+        "MemTotal:        8192 kB\n"
+        "MemAvailable:    2048 kB\n"
+        "SwapTotal:       4096 kB\n"
+        "SwapFree:        1024 kB\n",
+        encoding="utf-8",
+    )
+    (pressure_dir / "cpu").write_text(
+        "some avg10=1.50 avg60=1.00 avg300=0.50 total=1\n",
+        encoding="utf-8",
+    )
+    (pressure_dir / "io").write_text(
+        "some avg10=92.00 avg60=1.00 avg300=0.50 total=1\n"
+        "full avg10=60.00 avg60=1.00 avg300=0.50 total=1\n",
+        encoding="utf-8",
+    )
+    (pressure_dir / "memory").write_text(
+        "some avg10=23.00 avg60=1.00 avg300=0.50 total=1\n"
+        "full avg10=22.00 avg60=1.00 avg300=0.50 total=1\n",
+        encoding="utf-8",
+    )
+
+    current = module.local_pressure_status(proc_root=tmp_path)
+
+    assert current == {
+        "mem": 6 * 1024**2,
+        "maxmem": 8 * 1024**2,
+        "swap": 3 * 1024**2,
+        "maxswap": 4 * 1024**2,
+        "pressurecpusome": 1.5,
+        "pressureiosome": 92.0,
+        "pressurememorysome": 23.0,
+        "pressurememoryfull": 22.0,
+        "pressureiofull": 60.0,
+    }
+
+
 def test_pressure_guard_systemd_timer_is_non_destructive() -> None:
     root = Path(__file__).resolve().parents[1]
     service = (
