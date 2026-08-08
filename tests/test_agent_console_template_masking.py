@@ -5659,6 +5659,56 @@ def test_runtime_bridge_sync_writes_broker_env_without_direct_token(
         assert key not in rendered_command
 
 
+def test_runtime_bridge_stdin_sync_deduplicates_env_entries(tmp_path: Path) -> None:
+    module = _load_sync_agent_console_template()
+    env_file = tmp_path / "codex-web.env"
+    env_file.write_text(
+        (
+            "KEEP=one\n"
+            "NORMAN_CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS=120\n"
+            "UNCHANGED=value\n"
+            "NORMAN_CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS=999\n"
+            "NORMAN_CONSOLE_RUNTIME_TOKEN=legacy-token\n"
+            "NORMAN_API_TOKEN=legacy-api-token\n"
+            "TRAILING=without-newline"
+        ),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            module.RUNTIME_BRIDGE_SETTINGS_STDIN_SCRIPT,
+            str(env_file),
+        ],
+        input=json.dumps(
+            {
+                "updates": {
+                    "NORMAN_CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS": "60",
+                },
+                "remove_keys": list(module.RUNTIME_BRIDGE_LEGACY_TOKEN_KEYS),
+            }
+        ),
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+
+    updated = env_file.read_text(encoding="utf-8")
+    assert completed.stdout == "changed\n"
+    assert updated.count("NORMAN_CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS=") == 1
+    assert "NORMAN_CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS=60\n" in updated
+    assert "NORMAN_CONSOLE_RUNTIME_TOKEN=" not in updated
+    assert "NORMAN_API_TOKEN=" not in updated
+    assert updated == (
+        "KEEP=one\n"
+        "NORMAN_CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS=60\n"
+        "UNCHANGED=value\n"
+        "TRAILING=without-newline"
+    )
+
+
 def test_runtime_bridge_sync_applies_polling_guards_without_broker_reference(
     monkeypatch,
 ) -> None:

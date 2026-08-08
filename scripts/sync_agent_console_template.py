@@ -636,7 +636,18 @@ for key, value in updates.items():
     line = f"{key}={value}"
     pattern = re.compile(rf"^{re.escape(key)}=.*$", re.M)
     if pattern.search(text):
-        updated = pattern.sub(line, text, count=1)
+        seen = False
+        updated_lines = []
+        for raw_line in text.splitlines(keepends=True):
+            if not raw_line.startswith(f"{key}="):
+                updated_lines.append(raw_line)
+                continue
+            if seen:
+                continue
+            line_ending = raw_line[len(raw_line.rstrip("\\r\\n")):]
+            updated_lines.append(line + line_ending)
+            seen = True
+        updated = "".join(updated_lines)
     else:
         updated = text if text.endswith("\\n") else text + "\\n"
         updated += line + "\\n"
