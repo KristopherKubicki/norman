@@ -679,10 +679,17 @@ def _leading_next_step_announcement_state(text: str) -> str:
             return "pending"
         if not action.startswith(TOOL_CHAIN_NEXT_STEP_ACTION_VERBS):
             return "text"
-        colon = candidate.find(":")
-        if colon < 0:
+        terminator = candidate.find(":")
+        if terminator < 0:
+            for index, character in enumerate(candidate):
+                if character not in ".!?":
+                    continue
+                if index + 1 == len(candidate) or candidate[index + 1].isspace():
+                    terminator = index
+                    break
+        if terminator < 0:
             return "pending"
-        remainder = candidate[colon + 1 :]
+        remainder = candidate[terminator + 1 :]
         if not remainder.strip():
             return "defer"
         envelope_state = _tool_envelope_prefix_state(remainder)

@@ -1980,8 +1980,8 @@ def test_openai_compat_responses_stream_repairs_announced_next_step_after_result
                 {
                     "model": "qwen3-coder:30b",
                     "response": (
-                        "Now let me check what other Jira-related skills are "
-                        "available:"
+                        "Let me try using the Jira status skill to inspect the "
+                        "available data."
                     ),
                 }
             ),
@@ -3991,7 +3991,7 @@ def test_openai_compat_converts_implicit_internal_mcp_server_calls_to_tool_searc
     }
 
 
-def test_openai_compat_normalizes_declared_internal_mcp_server_argument():
+def test_openai_compat_routes_declared_internal_mcp_resource_discovery_through_search():
     import app.services.prompt_provider_facade as facade
 
     calls = facade._extract_tool_calls(
@@ -4014,8 +4014,44 @@ def test_openai_compat_normalizes_declared_internal_mcp_server_argument():
     )
 
     assert len(calls) == 1
-    assert calls[0]["name"] == "mcp__ops_openbrand.list_mcp_resources"
-    assert json.loads(calls[0]["arguments"]) == {"server": "ops_openbrand"}
+    assert calls[0]["name"] == "tool_search"
+    assert json.loads(calls[0]["arguments"]) == {
+        "query": "Find the executable tool for the ops_openbrand MCP server"
+    }
+
+
+def test_openai_compat_deduplicates_namespaced_mcp_resource_discovery():
+    import app.services.prompt_provider_facade as facade
+
+    calls = facade._extract_tool_calls(
+        json.dumps(
+            {
+                "tool_calls": [
+                    {
+                        "name": "codex.list_mcp_resources",
+                        "arguments": {"server": "codex_apps"},
+                    },
+                    {
+                        "name": "codex.list_mcp_resources",
+                        "arguments": {"server": "codex_apps"},
+                    },
+                ]
+            }
+        ),
+        tools=[
+            {
+                "type": "function",
+                "name": "codex.list_mcp_resources",
+                "description": "List connected MCP resources.",
+                "parameters": {"type": "object"},
+            }
+        ],
+    )
+
+    assert [call["name"] for call in calls] == ["tool_search"]
+    assert json.loads(calls[0]["arguments"]) == {
+        "query": "Find the executable tool for the codex_apps MCP server"
+    }
 
 
 def test_openai_compat_converts_mcp_resource_discovery_to_tool_search():
@@ -4529,7 +4565,10 @@ def test_openai_compat_repairs_announced_next_step_after_successful_tool(
     responses = iter(
         [
             '{"tool_call":{"name":"tool_search","arguments":{"query":"Ops MCP"}}}',
-            "Now let me check what other Jira-related skills are available:",
+            (
+                "I found an applicable skill. Let me try using the Jira status "
+                "skill to inspect the available data."
+            ),
             (
                 '{"tool_call":{"name":"ops_openbrand.data_status_get",'
                 '"arguments":{"scope":"jira"}}}'
@@ -4603,6 +4642,99 @@ def test_openai_compat_repairs_announced_next_step_after_successful_tool(
         "state": "repaired",
         "attempts": 1,
         "reason": "announced_next_step_after_successful_tool",
+    }
+
+
+def test_openai_compat_repairs_direct_resource_discovery_after_tool_result(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    facade.reset_facade_response_state()
+    invocations = []
+    responses = iter(
+        [
+            '{"tool_call":{"name":"tool_search","arguments":{"query":"Ops MCP"}}}',
+            (
+                '{"tool_call":{"name":"codex.list_mcp_resources",'
+                '"arguments":{"server":"codex_apps"}}}'
+            ),
+            (
+                '{"tool_call":{"name":"atlassian_rovo.search",'
+                '"arguments":{"query":"highest priority jira ticket"}}}'
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        facade,
+        "provider_adapter_decision",
+        lambda **kwargs: _local_route_envelope(),
+    )
+
+    def fake_chat(**kwargs):
+        invocations.append(kwargs)
+        return _mock_local_chat(kwargs["messages"], kwargs["model"]) | {
+            "choices": [{"message": {"content": next(responses)}}]
+        }
+
+    monkeypatch.setattr(facade.norllama_gateway, "invoke_text_chat", fake_chat)
+
+    first = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "Find the highest priority Jira ticket.",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "tool_search",
+                    "description": "Discover a connected tool.",
+                    "parameters": {"type": "object"},
+                }
+            ],
+        }
+    )
+    tool_search_call = first["output"][0]
+    second = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "previous_response_id": first["id"],
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": tool_search_call["call_id"],
+                    "output": (
+                        '{"tools":[{"name":"atlassian_rovo.search",'
+                        '"description":"Search Jira tickets."}]}'
+                    ),
+                }
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "codex.list_mcp_resources",
+                    "description": "List connected MCP resources.",
+                    "parameters": {"type": "object"},
+                },
+                {
+                    "type": "function",
+                    "name": "atlassian_rovo.search",
+                    "description": "Search Jira tickets.",
+                    "parameters": {"type": "object"},
+                },
+            ],
+        }
+    )
+
+    assert second["output_text"] == ""
+    assert [item["name"] for item in second["output"]] == ["atlassian_rovo.search"]
+    assert json.loads(second["output"][0]["arguments"]) == {
+        "query": "highest priority jira ticket"
+    }
+    assert len(invocations) == 3
+    assert second["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] == {
+        "state": "repaired",
+        "attempts": 1,
+        "reason": "direct_mcp_resource_discovery_after_tool",
     }
 
 

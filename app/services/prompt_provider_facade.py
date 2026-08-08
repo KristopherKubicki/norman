@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
 import uuid
@@ -135,16 +136,20 @@ TOOL_CHAIN_NEXT_STEP_PREFIXES = (
     "let me now ",
     "next let me ",
     "next, let me ",
+    "let me try ",
+    "let me ",
     "now i will ",
     "now, i will ",
     "i will now ",
     "next i will ",
     "next, i will ",
+    "i will ",
     "now i'll ",
     "now, i'll ",
     "i'll now ",
     "next i'll ",
     "next, i'll ",
+    "i'll ",
 )
 TOOL_CHAIN_NEXT_STEP_ACTION_VERBS = (
     "check",
@@ -165,6 +170,8 @@ TOOL_CHAIN_NEXT_STEP_ACTION_VERBS = (
     "fetch",
     "analyze",
     "examine",
+    "try",
+    "using",
 )
 logger = logging.getLogger(__name__)
 MODEL_ALIASES = {
@@ -905,19 +912,33 @@ def _tool_output_is_successful(output: str) -> bool:
     return not any(marker in normalized for marker in TOOL_OUTPUT_FAILURE_MARKERS)
 
 
+def _is_mcp_resource_discovery_tool_name(name: str) -> bool:
+    """Identify client resource primitives regardless of their namespace."""
+
+    normalized = _clean(name)
+    if normalized in MCP_RESOURCE_DISCOVERY_TOOL_NAMES:
+        return True
+    return normalized.rsplit(".", 1)[-1] in MCP_RESOURCE_DISCOVERY_TOOL_NAMES
+
+
 def _announces_next_tool_step(text: str) -> bool:
     """Return whether a response stops at a clear next-action announcement."""
 
-    normalized = _lower(text)
-    if not normalized.endswith(":"):
+    normalized = _lower(text).strip()
+    if not normalized:
         return False
-    announcement = normalized[:-1].strip()
-    for prefix in TOOL_CHAIN_NEXT_STEP_PREFIXES:
-        if not announcement.startswith(prefix):
+    clauses = re.split(r"(?:\r?\n+|(?<=[.!?])\s+)", normalized)
+    for clause in reversed(clauses):
+        announcement = clause.strip().rstrip(":.;!?").strip()
+        if not announcement:
             continue
-        action = announcement[len(prefix) :]
-        if action.startswith(TOOL_CHAIN_NEXT_STEP_ACTION_VERBS):
-            return True
+        for prefix in TOOL_CHAIN_NEXT_STEP_PREFIXES:
+            if not announcement.startswith(prefix):
+                continue
+            action = announcement[len(prefix) :].lstrip()
+            if action.startswith(TOOL_CHAIN_NEXT_STEP_ACTION_VERBS):
+                return True
+        return False
     return False
 
 
@@ -949,11 +970,30 @@ def _tool_chain_watchdog_reason(
     text: str,
     context: ToolChainContext,
 ) -> str:
-    if not context.tool_results_supplied:
-        return ""
     raw_calls = _json_tool_call_envelope(text)
     if not raw_calls:
-        return _tool_chain_premature_stop_reason(text=text, context=context)
+        reason = _tool_chain_premature_stop_reason(text=text, context=context)
+        if reason:
+            return reason
+        if _announces_next_tool_step(text) and (
+            context.declared_tool_names or context.chain_depth
+        ):
+            return (
+                "announced_next_step_after_successful_tool"
+                if context.successful_tool_results
+                else "announced_next_step_without_tool_call"
+            )
+        return ""
+    if any(
+        _is_mcp_resource_discovery_tool_name(_clean(call.get("name")))
+        for call in raw_calls
+        if isinstance(call, Mapping)
+    ):
+        if context.tool_results_supplied:
+            return "direct_mcp_resource_discovery_after_tool"
+        return ""
+    if not context.tool_results_supplied:
+        return ""
     if not context.declared_tool_names:
         return ""
     names = {_clean(call.get("name")) for call in raw_calls if _clean(call.get("name"))}
@@ -1084,9 +1124,13 @@ def _tool_contract_message(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "final answer only after no further tool call is needed. Do not "
                 "stop merely to announce a discovered tool. A declared tool whose "
                 "name begins mcp__ is an executable client-provided tool, not an "
-                "internal undeclared name: call it directly. Do not claim that a "
-                "declared MCP tool or its successful output is unsupported. "
-                "Otherwise answer normally. Available tools: " + _json_dumps(compact)
+                "internal undeclared name: call it directly. The generic "
+                "list_mcp_resources, list_mcp_resource_templates, and "
+                "read_mcp_resource primitives are not executable workflow "
+                "steps; use tool_search to discover the requested capability "
+                "instead. Do not claim that a declared MCP tool or its "
+                "successful output is unsupported. Otherwise answer normally. "
+                "Available tools: " + _json_dumps(compact)
             ),
         }
     ]
@@ -1566,6 +1610,7 @@ def _extract_tool_calls(
     if raw_calls is None:
         raw_calls = _json_tool_call_envelope(text)
     calls: list[dict[str, Any]] = []
+    seen_resource_discovery_calls: set[str] = set()
     for raw in raw_calls:
         if not isinstance(raw, Mapping):
             continue
@@ -1579,11 +1624,17 @@ def _extract_tool_calls(
             # request includes a partial built-in tool registry.
             arguments = {"query": _codex_apps_tool_search_query(name, arguments)}
             name = IMPLICIT_TOOL_SEARCH_NAME
-        elif name in MCP_RESOURCE_DISCOVERY_TOOL_NAMES and name not in names:
-            # Generic MCP resource operations are client-internal primitives.
-            # The facade exposes tool_search as the supported lifecycle.
+        elif _is_mcp_resource_discovery_tool_name(name):
+            # Generic MCP resource operations are client-internal primitives,
+            # including namespaced forms exposed by some Codex clients. Route
+            # them through tool_search so the client returns one executable
+            # capability instead of repeatedly dumping the same resource list.
             arguments = {"query": _mcp_resource_discovery_tool_search_query(arguments)}
             name = IMPLICIT_TOOL_SEARCH_NAME
+            discovery_key = _json_dumps(arguments)
+            if discovery_key in seen_resource_discovery_calls:
+                continue
+            seen_resource_discovery_calls.add(discovery_key)
         elif name.startswith(INTERNAL_MCP_TOOL_PREFIX) and name not in names:
             # MCP server names are client-internal routing details, not
             # executable Responses function names. Discover the client-exposed
