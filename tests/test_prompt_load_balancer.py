@@ -4213,7 +4213,7 @@ def test_openai_compat_responses_ignores_generated_reasoning_in_continuation(
     )
 
 
-def test_openai_compat_responses_replaces_tool_contract_in_historical_position():
+def test_openai_compat_responses_preserves_historical_tool_contracts():
     import app.services.prompt_provider_facade as facade
 
     first_tools = [
@@ -4247,16 +4247,129 @@ def test_openai_compat_responses_replaces_tool_contract_in_historical_position()
     contracts = [
         message for message in updated if facade._is_tool_contract_message(message)
     ]
-    assert extras == []
-    assert len(contracts) == 1
-    assert updated.index(contracts[0]) == 1
-    assert contracts[0][facade.TOOL_CONTRACT_CONTEXT_MARKER]["tools"][0]["name"] == (
+    assert len(contracts) == 2
+    assert updated == messages
+    assert len(extras) == 1
+    assert extras[0][facade.TOOL_CONTRACT_CONTEXT_MARKER]["tools"][0]["name"] == (
         "second_tool"
     )
     assert [message["content"] for message in updated if message["role"] == "user"] == [
         "before contract",
         "after duplicate",
     ]
+
+
+def test_openai_compat_responses_replays_typed_message_after_tool_output(monkeypatch):
+    import app.services.prompt_provider_facade as facade
+
+    facade.reset_facade_response_state()
+    invocations = []
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+
+    def fake_chat(**kwargs):
+        invocations.append(kwargs)
+        response = _mock_local_chat(kwargs["messages"], kwargs["model"])
+        if len(invocations) == 1:
+            response["choices"] = [
+                {
+                    "message": {
+                        "content": (
+                            '{"tool_call":{"name":"tool_search",'
+                            '"arguments":{"query":"synthetic health"}}}'
+                        )
+                    }
+                }
+            ]
+        elif len(invocations) == 2:
+            response["choices"] = [
+                {
+                    "message": {
+                        "content": (
+                            '{"tool_call":{"name":"synthetic.status_lookup",'
+                            '"arguments":{}}}'
+                        )
+                    }
+                }
+            ]
+        else:
+            assert kwargs["messages"][-1] == {
+                "role": "user",
+                "content": "Return a concise final health result now.",
+            }
+        return response
+
+    monkeypatch.setattr(facade.norllama_gateway, "invoke_text_chat", fake_chat)
+    discovery_tools = [
+        {
+            "type": "function",
+            "name": "tool_search",
+            "parameters": {"type": "object"},
+        }
+    ]
+    status_tools = [
+        {
+            "type": "function",
+            "name": "synthetic.status_lookup",
+            "parameters": {"type": "object"},
+        }
+    ]
+
+    first = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "Run the synthetic health check.",
+            "tools": discovery_tools,
+        }
+    )
+    second = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "previous_response_id": first["id"],
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": first["output"][0]["call_id"],
+                    "output": '{"tools":["synthetic.status_lookup"]}',
+                }
+            ],
+            "tools": status_tools,
+        }
+    )
+    final = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "previous_response_id": second["id"],
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": second["output"][0]["call_id"],
+                    "output": '{"status":"ok"}',
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": "Return a concise final health result now.",
+                },
+            ],
+            "tools": status_tools,
+        }
+    )
+
+    assert final["output_text"] == "local ok"
+    assert len(invocations) == 3
+    third_messages = invocations[2]["messages"]
+    tool_contracts = [
+        message
+        for message in third_messages
+        if facade._is_tool_contract_message(message)
+    ]
+    assert [
+        message[facade.TOOL_CONTRACT_CONTEXT_MARKER]["tools"][0]["name"]
+        for message in tool_contracts
+    ] == ["tool_search", "synthetic.status_lookup"]
+    assert third_messages[-2]["type"] == "function_call_output"
 
 
 def test_openai_compat_proxy_observability_records_success_without_prompt_leak(

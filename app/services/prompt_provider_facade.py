@@ -1068,8 +1068,11 @@ def _tool_contract_message(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "When calling tools, return only one JSON object using either "
                 '{"tool_call":{"name":"tool_name","arguments":{}}} or '
                 '{"tool_calls":[{"name":"tool_name","arguments":{}}]}. '
-                "Use only a tool name declared below. Available tools: "
-                + _json_dumps(compact)
+                "Use only a tool name declared below. After a tool result, "
+                "continue with another tool only when the result establishes "
+                "that additional work is needed; otherwise return the final "
+                "assistant answer. Do not repeat a completed call merely "
+                "because it remains available. Available tools: " + _json_dumps(compact)
             ),
             TOOL_CONTRACT_CONTEXT_MARKER: {
                 "kind": TOOL_CONTRACT_CONTEXT_KIND,
@@ -1099,43 +1102,33 @@ def _messages_with_current_tool_contract(
     messages: list[dict[str, Any]],
     payload: Mapping[str, Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Keep one generated tool contract across a stored Responses history."""
+    """Preserve historical tool contracts and append a changed current registry.
+
+    A Responses continuation may change its tool registry between turns. The
+    prior registry remains part of the model history, while the new registry
+    applies to the current turn. Rewriting an old contract makes historical
+    function calls appear invalid and can cause the local model to repeat a
+    completed tool call.
+    """
 
     definition = _tool_contract_definition(payload)
+    history = [dict(message) for message in messages]
     if not definition:
-        return (
-            [
-                dict(message)
-                for message in messages
-                if not _is_tool_contract_message(message)
-            ],
-            [],
-        )
-    contract_indexes = [
-        index
-        for index, message in enumerate(messages)
-        if _is_tool_contract_message(message)
-    ]
-    if len(contract_indexes) == 1 and _message_has_tool_contract(
-        messages[contract_indexes[0]],
+        return history, []
+    latest_contract = next(
+        (
+            message
+            for message in reversed(history)
+            if _is_tool_contract_message(message)
+        ),
+        None,
+    )
+    if latest_contract and _message_has_tool_contract(
+        latest_contract,
         definition=definition,
     ):
-        return [dict(message) for message in messages], []
-    if not contract_indexes:
-        return [dict(message) for message in messages], _tool_contract_message(payload)
-
-    # A client may change its tool registry between turns. Replace the first
-    # generated contract in place so the chronological history stays intact,
-    # while removing stale duplicates created by older facade versions.
-    replacement = _tool_contract_message(payload)
-    retained: list[dict[str, Any]] = []
-    first_contract_index = contract_indexes[0]
-    for index, message in enumerate(messages):
-        if not _is_tool_contract_message(message):
-            retained.append(dict(message))
-        elif index == first_contract_index:
-            retained.extend(replacement)
-    return retained, []
+        return history, []
+    return history, _tool_contract_message(payload)
 
 
 def _structured_output_message(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -1549,7 +1542,7 @@ def response_input_to_messages(
                     )
                 )
                 continue
-            if item_type:
+            if item_type not in {"", "message"}:
                 # Generated Responses items such as reasoning are opaque to
                 # this text-only local lane. They are not user messages and
                 # must not turn an otherwise valid tool continuation into a
