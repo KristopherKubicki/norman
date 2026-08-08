@@ -270,19 +270,20 @@ synthetic tool-search and tool-result payloads. It never invokes a real MCP,
 Codex App, or external service. The canary requires native function-call SSE
 events, `response.completed`, and `[DONE]` on every turn, and fails if raw tool
 JSON appears in output text. The unit uses the same approved resolver
-configuration as the route proof, obtains only
-`control-plane/prompt-proxy-token`, and writes a sanitized receipt with
-response IDs, timings, tool names, counts, and tool-chain status:
+configuration as the route proof when configured, otherwise its installed
+local broker. It obtains only `control-plane/prompt-proxy-token` and writes a
+sanitized receipt with response IDs, timings, tool names, counts, and
+tool-chain status:
 
 ```bash
 scripts/deploy_norman_tui_tool_chain_canary.sh
 ```
 
-The installer requires noninteractive sudo and the existing non-secret route
-proof resolver configuration, but never reads a secret into the shell. It
-starts one immediate check, then enables the timer to run no more than once per
-hour. The canary skips the check when the local host-pressure guard defers or
-blocks new work. Inspect the latest result at
+The installer requires noninteractive sudo, but no route-proof configuration
+file. It never reads a secret into the shell. It starts one immediate check,
+then enables the timer to run no more than once per hour. The canary skips the
+check when the local host-pressure guard defers or blocks new work. Inspect the
+latest result at
 `$HOME/.local/state/norman/tui-tool-chain-canary.json`; it deliberately omits
 prompts, response text, arguments, tool output, tokens, and credentials.
 

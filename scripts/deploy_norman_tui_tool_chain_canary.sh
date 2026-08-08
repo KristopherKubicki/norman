@@ -19,9 +19,6 @@ for source in \
   }
 done
 
-sudo --non-interactive test -r \
-  /etc/norman/codex-route-proof.env
-
 sudo --non-interactive install -D -o root -g root -m 0755 \
   "$SCRIPT_DIR/run_norman_tui_tool_chain_canary.sh" \
   /usr/local/libexec/norman-tui-tool-chain-canary

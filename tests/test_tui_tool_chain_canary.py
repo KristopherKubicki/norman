@@ -383,6 +383,6 @@ def test_canary_systemd_wrapper_uses_the_encrypted_credential_path():
     assert "sudo --non-interactive" in installer
     assert "norman_codex_gateway_token.py" in installer
     assert "norman_codex_gateway_broker.sh" in installer
-    assert "codex-route-proof.env" in installer
+    assert "codex-route-proof.env" not in installer
     assert "systemctl start norman-tui-tool-chain-canary.service" in installer
     assert 'receipt.get("state") != "passed"' in installer

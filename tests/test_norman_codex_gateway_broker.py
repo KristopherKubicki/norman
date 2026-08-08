@@ -15,6 +15,14 @@ BROKER_PATH = (
 BROKER_CLIENT_PATH = (
     Path(__file__).resolve().parents[1] / "scripts" / "norman_codex_gateway_broker.sh"
 )
+DEPLOY_PATH = (
+    Path(__file__).resolve().parents[1] / "scripts" / "deploy_codex_gateway_broker.sh"
+)
+SUDOERS_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "scripts"
+    / "norman_codex_gateway_broker.sudoers"
+)
 
 
 def _load_broker_module():
@@ -42,6 +50,35 @@ def test_broker_client_uses_an_explicit_non_root_account():
     assert '-l "$BROKER_USER"' in client
     assert "is_local_broker_host()" in client
     assert 'exec sudo --non-interactive "$BROKER_COMMAND" "$1" "$2"' in client
+
+
+def test_gateway_broker_uses_encrypted_credential_with_narrow_sudo():
+    launcher = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "norman_codex_gateway_broker_launch.sh"
+    ).read_text(encoding="utf-8")
+    sudoers = SUDOERS_PATH.read_text(encoding="utf-8")
+
+    assert "LoadCredentialEncrypted=norman-cred-passphrase:" in launcher
+    assert "--property=User=kristopher" in launcher
+    assert (
+        "kristopher ALL=(root) NOPASSWD: "
+        "/usr/local/sbin/norman-codex-gateway-broker" in sudoers
+    )
+    assert "ALL" not in sudoers.split("NOPASSWD:", 1)[1]
+
+
+def test_gateway_broker_deployer_installs_validated_sudoers_noninteractively():
+    deployer = DEPLOY_PATH.read_text(encoding="utf-8")
+
+    assert 'REMOTE_SUDOERS="/etc/sudoers.d/norman-codex-gateway-broker"' in deployer
+    assert '"$SCRIPT_DIR/norman_codex_gateway_broker.sudoers"' in deployer
+    assert "remote_tmp_sudoers=" in deployer
+    assert deployer.count("scp -q -o BatchMode=yes -o ConnectTimeout=5") == 3
+    assert deployer.count("ssh -o BatchMode=yes -o ConnectTimeout=5") == 2
+    assert "install -o root -g root -m 0440" in deployer
+    assert "visudo -cf '$REMOTE_SUDOERS'" in deployer
 
 
 def test_broker_denies_unapproved_alias(monkeypatch, capsys):

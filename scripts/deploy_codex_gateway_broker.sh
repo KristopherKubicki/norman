@@ -5,6 +5,7 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 NORMAN_HOST="${NORMAN_CODEX_GATEWAY_BROKER_HOST:-192.168.2.241}"
 REMOTE_PROGRAM="/usr/local/libexec/norman-codex-gateway-broker"
 REMOTE_LAUNCHER="/usr/local/sbin/norman-codex-gateway-broker"
+REMOTE_SUDOERS="/etc/sudoers.d/norman-codex-gateway-broker"
 
 usage() {
   cat <<'EOF'
@@ -41,6 +42,7 @@ done
 for source in \
   "$SCRIPT_DIR/norman_codex_gateway_broker.py" \
   "$SCRIPT_DIR/norman_codex_gateway_broker_launch.sh" \
+  "$SCRIPT_DIR/norman_codex_gateway_broker.sudoers" \
   "$SCRIPT_DIR/install_codex_route.sh" \
   "$SCRIPT_DIR/systemd/norman-codex-route-proof.env" \
   "$SCRIPT_DIR/systemd/norman-codex-route-proof.service" \
@@ -53,19 +55,28 @@ done
 
 remote_tmp_program="/tmp/norman-codex-gateway-broker.$$"
 remote_tmp_launcher="/tmp/norman-codex-gateway-broker-launch.$$"
+remote_tmp_sudoers="/tmp/norman-codex-gateway-broker-sudoers.$$"
 cleanup_remote() {
   ssh -o BatchMode=yes -o ConnectTimeout=5 "$NORMAN_HOST" \
-    "rm -f '$remote_tmp_program' '$remote_tmp_launcher'" >/dev/null 2>&1 || true
+    "rm -f '$remote_tmp_program' '$remote_tmp_launcher' '$remote_tmp_sudoers'" \
+    >/dev/null 2>&1 || true
 }
 trap cleanup_remote EXIT
 
-scp -q "$SCRIPT_DIR/norman_codex_gateway_broker.py" \
+scp -q -o BatchMode=yes -o ConnectTimeout=5 \
+  "$SCRIPT_DIR/norman_codex_gateway_broker.py" \
   "${NORMAN_HOST}:${remote_tmp_program}"
-scp -q "$SCRIPT_DIR/norman_codex_gateway_broker_launch.sh" \
+scp -q -o BatchMode=yes -o ConnectTimeout=5 \
+  "$SCRIPT_DIR/norman_codex_gateway_broker_launch.sh" \
   "${NORMAN_HOST}:${remote_tmp_launcher}"
+scp -q -o BatchMode=yes -o ConnectTimeout=5 \
+  "$SCRIPT_DIR/norman_codex_gateway_broker.sudoers" \
+  "${NORMAN_HOST}:${remote_tmp_sudoers}"
 ssh -o BatchMode=yes -o ConnectTimeout=5 "$NORMAN_HOST" \
   "sudo --non-interactive install -o root -g root -m 0755 '$remote_tmp_program' '$REMOTE_PROGRAM' && \
    sudo --non-interactive install -o root -g root -m 0755 '$remote_tmp_launcher' '$REMOTE_LAUNCHER' && \
+   sudo --non-interactive install -o root -g root -m 0440 '$remote_tmp_sudoers' '$REMOTE_SUDOERS' && \
+   sudo --non-interactive visudo -cf '$REMOTE_SUDOERS' && \
    sudo --non-interactive '$REMOTE_LAUNCHER' provision"
 
 "$SCRIPT_DIR/install_codex_route.sh" --no-shell-path
