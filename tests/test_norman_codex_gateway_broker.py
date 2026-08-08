@@ -12,6 +12,11 @@ from scripts import codex_route
 BROKER_PATH = (
     Path(__file__).resolve().parents[1] / "scripts" / "norman_codex_gateway_broker.py"
 )
+BROKER_CLIENT_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "scripts"
+    / "norman_codex_gateway_broker.sh"
+)
 
 
 def _load_broker_module():
@@ -30,6 +35,13 @@ def test_broker_aliases_match_the_checkout_route_table():
     expected = {route.resolved_token_secret for route in codex_route.ROUTES}
 
     assert module.ROUTE_SECRETS == expected
+
+
+def test_broker_client_uses_an_explicit_non_root_account():
+    client = BROKER_CLIENT_PATH.read_text(encoding="utf-8")
+
+    assert 'NORMAN_CODEX_GATEWAY_BROKER_USER:-kristopher' in client
+    assert '-l "$BROKER_USER"' in client
 
 
 def test_broker_denies_unapproved_alias(monkeypatch, capsys):
