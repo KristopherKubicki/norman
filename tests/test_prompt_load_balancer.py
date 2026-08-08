@@ -1290,6 +1290,135 @@ def test_openai_compat_responses_stream_keeps_tool_envelopes_out_of_text(
     assert response.closed is True
 
 
+def test_openai_compat_responses_stream_keeps_native_function_call_out_of_text(
+    test_app, monkeypatch
+):
+    native_call_id = "call_native_exec_command"
+    native_item_id = "fc_native_exec_command"
+    native_arguments = (
+        '{"cmd":"mkdir -p jira_check_output",'
+        '"workdir":"/home/kristopher/code/control_plane"}'
+    )
+    response = _MockNativeStreamResponse(
+        [
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "response": (
+                        '{"arguments":"{\\"cmd\\":\\"mkdir -p ' 'jira_check_output\\",'
+                    ),
+                }
+            ),
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "response": (
+                        '\\"workdir\\":\\"/home/kristopher/code/'
+                        'control_plane\\"}",'
+                        f'"call_id":"{native_call_id}",'
+                    ),
+                }
+            ),
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "response": (
+                        f'"id":"{native_item_id}",'
+                        '"name":"exec_command","type":"function_call"}'
+                    ),
+                }
+            ),
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "done": True,
+                    "prompt_eval_count": 4,
+                    "eval_count": 2,
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat_stream",
+        lambda **kwargs: norllama_gateway.NorllamaTextStream(
+            response,
+            model=kwargs["model"],
+        ),
+    )
+
+    result = test_app.post(
+        "/v1/responses",
+        headers=_proxy_headers(monkeypatch),
+        json={
+            "model": "norman-code",
+            "input": "Create the output directory.",
+            "stream": True,
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "exec_command",
+                    "description": "Run a shell command.",
+                    "parameters": {"type": "object"},
+                }
+            ],
+        },
+    )
+
+    assert result.status_code == 200
+    events = _response_sse_events(result.text)
+    payloads = [
+        json.loads(data) for event, data in events if event and data != "[DONE]"
+    ]
+    function_item = next(
+        payload["item"]
+        for payload in payloads
+        if payload["type"] == "response.output_item.added"
+        and payload["item"]["type"] == "function_call"
+    )
+    function_argument_deltas = [
+        payload
+        for payload in payloads
+        if payload["type"] == "response.function_call_arguments.delta"
+    ]
+    function_argument_done = next(
+        payload
+        for payload in payloads
+        if payload["type"] == "response.function_call_arguments.done"
+    )
+    completed = next(
+        payload["response"]
+        for payload in payloads
+        if payload["type"] == "response.completed"
+    )
+
+    assert not any(
+        payload["type"] == "response.output_text.delta" for payload in payloads
+    )
+    assert function_item == {
+        "type": "function_call",
+        "id": native_item_id,
+        "status": "in_progress",
+        "call_id": native_call_id,
+        "name": "exec_command",
+        "arguments": "",
+    }
+    assert [event["delta"] for event in function_argument_deltas] == [native_arguments]
+    assert function_argument_done["arguments"] == native_arguments
+    assert completed["output_text"] == ""
+    assert completed["output"] == [
+        {
+            "id": native_item_id,
+            "type": "function_call",
+            "status": "completed",
+            "call_id": native_call_id,
+            "name": "exec_command",
+            "arguments": native_arguments,
+        }
+    ]
+    assert response.closed is True
+
+
 def test_openai_compat_responses_stream_continues_native_tool_call(
     test_app, monkeypatch
 ):
@@ -3498,6 +3627,71 @@ def test_openai_compat_responses_can_return_explicit_tool_call(monkeypatch):
     )
 
 
+def test_openai_compat_responses_can_return_native_function_call(monkeypatch):
+    import app.services.prompt_provider_facade as facade
+
+    native_call_id = "call_native_shell"
+    native_item_id = "fc_native_shell"
+    native_arguments = '{"cmd":"pwd"}'
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: _mock_local_chat(
+            kwargs["messages"],
+            kwargs["model"],
+        )
+        | {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "arguments": native_arguments,
+                                "call_id": native_call_id,
+                                "id": native_item_id,
+                                "name": "shell",
+                                "type": "function_call",
+                            }
+                        )
+                    }
+                }
+            ]
+        },
+    )
+
+    response = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "check the repo",
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "shell",
+                        "description": "Run a shell command.",
+                        "parameters": {"type": "object"},
+                    },
+                }
+            ],
+        }
+    )
+
+    assert response["output_text"] == ""
+    assert response["output"] == [
+        {
+            "id": native_item_id,
+            "type": "function_call",
+            "status": "completed",
+            "call_id": native_call_id,
+            "name": "shell",
+            "arguments": native_arguments,
+        }
+    ]
+
+
 def test_openai_compat_responses_preserves_declared_codex_apps_tool_call(
     monkeypatch,
 ):
@@ -3617,6 +3811,53 @@ def test_openai_compat_responses_keeps_undeclared_tool_envelope_as_text(
         }
     ]
     assert "tool_search" not in json.dumps(response["output"])
+
+
+def test_openai_compat_responses_keeps_undeclared_native_function_call_as_text(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    model_text = json.dumps(
+        {
+            "arguments": '{"query":"highest priority jira ticket"}',
+            "call_id": "call_undeclared",
+            "id": "fc_undeclared",
+            "name": "mcp__codex_apps__atlassian_rovo.search_company_knowledge",
+            "type": "function_call",
+        }
+    )
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: _mock_local_chat(
+            kwargs["messages"],
+            kwargs["model"],
+        )
+        | {"choices": [{"message": {"content": model_text}}]},
+    )
+
+    response = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "Tell me the highest priority Jira ticket right now.",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "ticket_search",
+                    "description": "Search Jira tickets.",
+                    "parameters": {"type": "object"},
+                }
+            ],
+        }
+    )
+
+    assert response["output_text"] == model_text
+    assert [item["type"] for item in response["output"]] == ["message"]
+    assert response["output"][0]["content"][0]["text"] == model_text
 
 
 def test_openai_compat_responses_does_not_advance_repeated_declared_tool_call(

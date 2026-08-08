@@ -294,6 +294,39 @@ def test_sse_parser_tracks_native_calls_and_completion_markers():
     ]
 
 
+def test_sse_parser_flags_native_function_call_json_leaked_as_text():
+    leaked_native_call = json.dumps(
+        {
+            "arguments": '{"query":"synthetic"}',
+            "call_id": "private-call-id",
+            "id": "fc-private",
+            "name": "tool_search",
+            "type": "function_call",
+        }
+    )
+    completed = {
+        "id": "resp-private",
+        "status": "completed",
+        "output": [{"type": "message"}],
+        "output_text": leaked_native_call,
+    }
+    body = "\n\n".join(
+        [
+            "event: response.output_text.delta\n"
+            "data: "
+            f"{json.dumps({'type': 'response.output_text.delta', 'delta': leaked_native_call})}",
+            "event: response.completed\n"
+            f"data: {json.dumps({'type': 'response.completed', 'response': completed})}",
+            "data: [DONE]",
+        ]
+    )
+
+    parsed = canary._parse_sse_events(body)
+    response = canary._stream_response_from_sse_events(parsed)
+
+    assert response["_canary_stream"]["raw_tool_envelope_text"] is True
+
+
 def test_run_canary_skips_without_making_requests_when_pressure_defers_work():
     calls = []
 

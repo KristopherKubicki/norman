@@ -69,6 +69,21 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
 
+def _is_raw_tool_payload_text(value: Any) -> bool:
+    text = _clean(value)
+    if RAW_TOOL_ENVELOPE_PATTERN.search(text):
+        return True
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError):
+        return False
+    return (
+        isinstance(payload, Mapping)
+        and _clean(payload.get("type")) == "function_call"
+        and bool(_clean(payload.get("name")))
+    )
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -189,7 +204,7 @@ def _stream_response_from_sse_events(events: list[dict[str, Any]]) -> dict[str, 
                     }
                 )
         elif event_type == "response.output_text.delta":
-            if RAW_TOOL_ENVELOPE_PATTERN.search(_clean(payload.get("delta"))):
+            if _is_raw_tool_payload_text(payload.get("delta")):
                 raw_tool_envelope_text = True
         elif event_type == "response.completed":
             completed_response = _mapping(payload.get("response"))
@@ -197,7 +212,7 @@ def _stream_response_from_sse_events(events: list[dict[str, Any]]) -> dict[str, 
         elif event_type in {"response.failed", "error"}:
             saw_failure = True
 
-    if RAW_TOOL_ENVELOPE_PATTERN.search(_clean(completed_response.get("output_text"))):
+    if _is_raw_tool_payload_text(completed_response.get("output_text")):
         raw_tool_envelope_text = True
     completed_response["_canary_stream"] = {
         "completed": saw_completion,

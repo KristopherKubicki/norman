@@ -977,6 +977,10 @@ def _tool_calls_from_envelope_payload(payload: Any) -> list[dict[str, Any]]:
         raw_calls = [payload["tool_call"]]
     elif isinstance(payload.get("tool_calls"), list):
         raw_calls = payload["tool_calls"]
+    elif _clean(payload.get("type")) == "function_call" and _clean(payload.get("name")):
+        # Some local model adapters return a native Responses output item
+        # directly instead of wrapping it in a local ``tool_call`` envelope.
+        raw_calls = [payload]
     return [dict(call) for call in raw_calls if isinstance(call, Mapping)]
 
 
@@ -1604,7 +1608,7 @@ def _extract_tool_calls(
         call_id = _clean(raw.get("call_id")) or f"call_{uuid.uuid4().hex}"
         calls.append(
             {
-                "id": f"fc_{uuid.uuid4().hex}",
+                "id": _clean(raw.get("id")) or f"fc_{uuid.uuid4().hex}",
                 "type": "function_call",
                 "status": "completed",
                 "call_id": call_id,
@@ -1630,13 +1634,18 @@ class ResponsesStreamNormalizer:
     """Keep local text tool envelopes out of Responses text events.
 
     Local providers do not expose native Responses function-call events. This
-    adapter recognizes only a final, standalone ``tool_call``/``tool_calls``
-    JSON envelope and leaves every other byte as assistant text. It buffers a
-    possible envelope across arbitrary upstream fragment boundaries so the
-    streamed text and completed response can be built from the same result.
+    adapter recognizes final, standalone local ``tool_call``/``tool_calls``
+    envelopes and native ``function_call`` output items. It buffers a possible
+    call across arbitrary upstream fragment boundaries so the streamed text
+    and completed response can be built from the same result.
     """
 
     _MAX_PENDING_PREFIX_CHARS = 256
+    _MAX_PENDING_NATIVE_FUNCTION_CALL_CHARS = 1_048_576
+    _TOOL_ENVELOPE_KEYS = frozenset({"tool_call", "tool_calls"})
+    _NATIVE_FUNCTION_CALL_KEYS = frozenset(
+        {"arguments", "call_id", "id", "name", "status", "type"}
+    )
 
     def __init__(self) -> None:
         self._raw_parts: list[str] = []
@@ -1758,7 +1767,8 @@ class ResponsesStreamNormalizer:
             return "pending"
         if not object_prefix.startswith('"'):
             return "text"
-        for key in ("tool_call", "tool_calls"):
+        candidate_keys = self._TOOL_ENVELOPE_KEYS | self._NATIVE_FUNCTION_CALL_KEYS
+        for key in candidate_keys:
             encoded_key = json.dumps(key)
             if encoded_key.startswith(object_prefix):
                 return (
@@ -1768,12 +1778,28 @@ class ResponsesStreamNormalizer:
             key, key_end = json.JSONDecoder().raw_decode(object_prefix)
         except json.JSONDecodeError:
             return "text"
-        if key not in {"tool_call", "tool_calls"}:
+        if key not in candidate_keys:
             return "text"
         remainder = object_prefix[key_end:].lstrip()
         if not remainder:
             return "pending"
-        return "tool" if remainder.startswith(":") else "text"
+        if not remainder.startswith(":"):
+            return "text"
+        if key in self._TOOL_ENVELOPE_KEYS:
+            return "tool"
+
+        # Native function-call items do not have a stable first key. Retain
+        # candidates whose first field is one of the native item fields until
+        # the complete object tells us whether it is actually a function call.
+        try:
+            payload, _ = json.JSONDecoder().raw_decode(text)
+        except json.JSONDecodeError:
+            return (
+                "pending"
+                if len(text) < self._MAX_PENDING_NATIVE_FUNCTION_CALL_CHARS
+                else "text"
+            )
+        return "tool" if _tool_calls_from_envelope_payload(payload) else "text"
 
     def _fenced_candidate_state(self, text: str) -> str:
         match = re.match(r"```(?i:json)?[ \t]*\r?\n", text)
