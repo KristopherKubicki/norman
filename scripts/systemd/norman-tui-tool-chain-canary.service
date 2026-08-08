@@ -11,7 +11,6 @@ EnvironmentFile=-/etc/norman/codex-route-proof.env
 Environment=NORMAN_TUI_TOOL_CHAIN_CANARY_ENDPOINT=https://cp.kris.openbrand.com/v1/responses
 Environment=NORMAN_TUI_TOOL_CHAIN_CANARY_TOKEN_SECRET=control-plane/prompt-proxy-token
 Environment=NORMAN_TUI_TOOL_CHAIN_CANARY_OUTPUT_JSON=/home/kristopher/.local/state/norman/tui-tool-chain-canary.json
-LoadCredentialEncrypted=norman-cred-passphrase:/etc/norman/credentials/norman-cred-passphrase.cred
 ExecStartPre=/usr/bin/mkdir -p /home/kristopher/.local/state/norman
 ExecStart=/usr/local/libexec/norman-tui-tool-chain-canary --stream
 TimeoutStartSec=3min

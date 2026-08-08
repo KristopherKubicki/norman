@@ -377,7 +377,7 @@ def test_run_canary_sanitizes_a_failed_unexpected_tool_response():
     assert "private" not in serialized
 
 
-def test_canary_systemd_wrapper_uses_the_encrypted_credential_path():
+def test_canary_systemd_wrapper_uses_the_brokered_token_path():
     root = canary.Path(__file__).resolve().parents[1]
     installer = (root / "scripts/deploy_norman_tui_tool_chain_canary.sh").read_text(
         encoding="utf-8"
@@ -402,10 +402,7 @@ def test_canary_systemd_wrapper_uses_the_encrypted_credential_path():
     assert "https://cp.kris.openbrand.com/v1/responses" in service
     assert "norman-tui-tool-chain-canary --stream" in service
     assert "EnvironmentFile=-/etc/norman/codex-route-proof.env" in service
-    assert (
-        "LoadCredentialEncrypted=norman-cred-passphrase:"
-        "/etc/norman/credentials/norman-cred-passphrase.cred" in service
-    )
+    assert "LoadCredentialEncrypted=" not in service
     assert (
         "NORMAN_TUI_TOOL_CHAIN_CANARY_TOKEN_SECRET=control-plane/prompt-proxy-token"
         in service
