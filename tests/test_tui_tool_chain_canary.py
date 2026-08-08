@@ -371,6 +371,10 @@ def test_canary_systemd_wrapper_uses_the_encrypted_credential_path():
     assert "norman-tui-tool-chain-canary --stream" in service
     assert "EnvironmentFile=-/etc/norman/codex-route-proof.env" in service
     assert (
+        "LoadCredentialEncrypted=norman-cred-passphrase:"
+        "/etc/norman/credentials/norman-cred-passphrase.cred" in service
+    )
+    assert (
         "NORMAN_TUI_TOOL_CHAIN_CANARY_TOKEN_SECRET=control-plane/prompt-proxy-token"
         in service
     )
