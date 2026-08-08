@@ -1033,6 +1033,132 @@ def _tool_chain_repair_message(
     }
 
 
+def _tool_chain_declared_tool_fallback(
+    *,
+    text: str,
+    tools: list[dict[str, Any]],
+) -> tuple[str, Any] | None:
+    """Recover one stale internal call when it maps unambiguously to a tool."""
+
+    raw_calls = _json_tool_call_envelope(text)
+    if len(raw_calls) != 1:
+        return None
+    raw_call = raw_calls[0]
+    raw_name = _clean(raw_call.get("name"))
+    if not raw_name:
+        return None
+    declared = sorted(
+        name for name in _tool_names(tools) if name != IMPLICIT_TOOL_SEARCH_NAME
+    )
+    if not declared:
+        return None
+    normalized_name = raw_name
+    if normalized_name.startswith(CODEX_APPS_TOOL_PREFIX):
+        normalized_name = normalized_name.removeprefix(CODEX_APPS_TOOL_PREFIX)
+    elif normalized_name.startswith(INTERNAL_MCP_TOOL_PREFIX):
+        normalized_name = normalized_name.removeprefix(INTERNAL_MCP_TOOL_PREFIX)
+        normalized_name = normalized_name.replace("__", ".", 1)
+    normalized_name = _lower(normalized_name)
+    matches = [
+        name
+        for name in declared
+        if normalized_name == _lower(name)
+        or normalized_name.startswith(f"{_lower(name)}.")
+        or normalized_name.startswith(f"{_lower(name)}_")
+    ]
+    if len(matches) != 1:
+        return None
+    return matches[0], raw_call.get("arguments", {})
+
+
+def _tool_chain_fallback_tool_search_query(text: str) -> str:
+    """Derive a safe discovery query without retaining model prose in telemetry."""
+
+    for raw_call in _json_tool_call_envelope(text):
+        name = _clean(raw_call.get("name"))
+        arguments = raw_call.get("arguments", {})
+        if name.startswith(CODEX_APPS_TOOL_PREFIX):
+            return _codex_apps_tool_search_query(name, arguments)
+        if _is_mcp_resource_discovery_tool_name(name):
+            return _mcp_resource_discovery_tool_search_query(arguments)
+        if name.startswith(INTERNAL_MCP_TOOL_PREFIX):
+            return _internal_mcp_tool_search_query(name, arguments)
+        parsed_arguments = arguments
+        if isinstance(arguments, str):
+            try:
+                parsed_arguments = json.loads(arguments)
+            except (TypeError, ValueError):
+                parsed_arguments = {}
+        if isinstance(parsed_arguments, Mapping):
+            query = _clean(parsed_arguments.get("query"))
+            if query:
+                return query
+    return "Find the next executable tool needed to continue the pending task"
+
+
+def _redact_tool_chain_fallback_reply(value: Any, *, reply: str) -> Any:
+    """Remove a rejected model reply from client-visible fallback metadata."""
+
+    if isinstance(value, Mapping):
+        return {
+            str(key): _redact_tool_chain_fallback_reply(item, reply=reply)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_tool_chain_fallback_reply(item, reply=reply) for item in value]
+    if isinstance(value, tuple):
+        return tuple(
+            _redact_tool_chain_fallback_reply(item, reply=reply) for item in value
+        )
+    return "" if reply and value == reply else value
+
+
+def _tool_chain_fallback_response(
+    *,
+    repaired: Mapping[str, Any],
+    prepared: PreparedResponsesExecution,
+) -> tuple[dict[str, Any], str]:
+    """Return a client-executable continuation after the one repair attempt."""
+
+    repaired_text = _choice_text(repaired)
+    declared_fallback = _tool_chain_declared_tool_fallback(
+        text=repaired_text,
+        tools=_tools(prepared.provider_payload),
+    )
+    if declared_fallback is not None:
+        name, arguments = declared_fallback
+        fallback = "declared_tool"
+    else:
+        name = IMPLICIT_TOOL_SEARCH_NAME
+        arguments = {"query": _tool_chain_fallback_tool_search_query(repaired_text)}
+        fallback = "tool_search"
+    response = dict(repaired)
+    response["norman"] = _redact_tool_chain_fallback_reply(
+        _mapping(response.get("norman")),
+        reply=repaired_text,
+    )
+    choices = list(response.get("choices", []))
+    first_choice = (
+        dict(choices[0]) if choices and isinstance(choices[0], Mapping) else {}
+    )
+    message = _mapping(first_choice.get("message"))
+    message["content"] = _json_dumps(
+        {
+            "tool_call": {
+                "name": name,
+                "arguments": arguments,
+            }
+        }
+    )
+    first_choice["message"] = message
+    if choices:
+        choices[0] = first_choice
+    else:
+        choices = [first_choice]
+    response["choices"] = choices
+    return response, fallback
+
+
 def _tool_chain_telemetry(
     *,
     context: ToolChainContext,
@@ -1040,6 +1166,8 @@ def _tool_chain_telemetry(
     watchdog_state: str,
     watchdog_attempts: int,
     watchdog_reason: str = "",
+    watchdog_repair_reason: str = "",
+    watchdog_fallback: str = "",
     outcome: str = "",
 ) -> dict[str, Any]:
     if not outcome:
@@ -1049,6 +1177,15 @@ def _tool_chain_telemetry(
             outcome = "final_after_tool"
         else:
             outcome = "final_without_tool"
+    watchdog = {
+        "state": watchdog_state,
+        "attempts": watchdog_attempts,
+        "reason": watchdog_reason,
+    }
+    if watchdog_repair_reason:
+        watchdog["repair_reason"] = watchdog_repair_reason
+    if watchdog_fallback:
+        watchdog["fallback"] = watchdog_fallback
     return {
         "schema": TOOL_CHAIN_SCHEMA,
         "turn_type": (
@@ -1059,11 +1196,7 @@ def _tool_chain_telemetry(
         "tool_results_matched": context.tool_results_matched,
         "tool_calls_returned": len(tool_calls),
         "outcome": outcome,
-        "watchdog": {
-            "state": watchdog_state,
-            "attempts": watchdog_attempts,
-            "reason": watchdog_reason,
-        },
+        "watchdog": watchdog,
     }
 
 
@@ -1618,7 +1751,12 @@ def _extract_tool_calls(
         if not name:
             continue
         arguments = _normalize_internal_mcp_server_argument(raw.get("arguments", {}))
-        if name.startswith(CODEX_APPS_TOOL_PREFIX) and name not in names:
+        if name == IMPLICIT_TOOL_SEARCH_NAME:
+            # tool_search is a client-provided discovery primitive. It can be
+            # returned as the bounded watchdog fallback even when the TUI's
+            # partial top-level registry omits it.
+            pass
+        elif name.startswith(CODEX_APPS_TOOL_PREFIX) and name not in names:
             # Codex Apps tools must be discovered before invocation. Some
             # local models emit a stale internal Apps name even when the
             # request includes a partial built-in tool registry.
@@ -3103,21 +3241,25 @@ def _resolve_tool_chain_watchdog(
         context=prepared.tool_chain_context,
     )
     if repair_reason:
-        telemetry = _tool_chain_telemetry(
-            context=prepared.tool_chain_context,
-            tool_calls=[],
-            watchdog_state="exhausted",
-            watchdog_attempts=TOOL_CHAIN_WATCHDOG_MAX_ATTEMPTS,
-            watchdog_reason=repair_reason,
-            outcome="invalid_or_unresolved",
+        response, fallback = _tool_chain_fallback_response(
+            repaired=repaired,
+            prepared=prepared,
         )
-        raise FacadeError(
-            "Tool continuation remained invalid after the bounded Norman repair.",
-            status_code=502,
-            error_type="server_error",
-            code="tool_chain_watchdog_exhausted",
-            norman={"responses_compatibility": {"tool_chain": telemetry}},
+        logger.warning(
+            "Norman tool-chain watchdog fallback request_id=%s reason=%s "
+            "repair_reason=%s fallback=%s",
+            request_id,
+            reason,
+            repair_reason,
+            fallback,
         )
+        return response, {
+            "state": "fallback",
+            "attempts": TOOL_CHAIN_WATCHDOG_MAX_ATTEMPTS,
+            "reason": reason,
+            "repair_reason": repair_reason,
+            "fallback": fallback,
+        }
     return dict(repaired), {
         "state": "repaired",
         "attempts": TOOL_CHAIN_WATCHDOG_MAX_ATTEMPTS,
@@ -3162,6 +3304,8 @@ def _responses_response_from_chat(
         watchdog_state=_clean(watchdog.get("state")) or "not_required",
         watchdog_attempts=int(watchdog.get("attempts") or 0),
         watchdog_reason=_clean(watchdog.get("reason")),
+        watchdog_repair_reason=_clean(watchdog.get("repair_reason")),
+        watchdog_fallback=_clean(watchdog.get("fallback")),
     )
     response_id = response_id or f"resp-norman-{uuid.uuid4().hex}"
     created = created_at or int(time.time())
