@@ -28,6 +28,12 @@ TOOL_CHAIN_OUTCOMES = frozenset(
     }
 )
 TOOL_CHAIN_WATCHDOG_STATES = frozenset({"not_required", "repaired", "exhausted"})
+SAFE_TOOL_CHAIN_CALL_NAMES = frozenset({"tool_search"})
+LOCAL_TOOL_CHAIN_CALL_NAMES = {
+    "apply_patch": "local_file_patch",
+    "exec_command": "local_shell",
+    "write_stdin": "local_process_input",
+}
 
 _LOCK = threading.RLock()
 _EVENT_LOG_LOCK = threading.RLock()
@@ -84,6 +90,55 @@ def _route_receipt(response: Mapping[str, Any]) -> dict[str, Any]:
     return _nested(norman, "facade_receipt", "route_receipt")
 
 
+def _safe_tool_chain_call_name(value: Any) -> str:
+    """Classify a returned tool name without retaining arbitrary model output."""
+
+    name = _lower(value)
+    if name in SAFE_TOOL_CHAIN_CALL_NAMES:
+        return name
+    if name in LOCAL_TOOL_CHAIN_CALL_NAMES:
+        return LOCAL_TOOL_CHAIN_CALL_NAMES[name]
+    if name.startswith("ops_openbrand."):
+        suffix = name.removeprefix("ops_openbrand.")
+        if suffix and suffix.replace("_", "").replace(".", "").isalnum():
+            return f"ops_openbrand.{suffix}"
+    if name.startswith("mcp__"):
+        return "internal_mcp"
+    return "connected_tool"
+
+
+def _safe_response_tool_call_names(response: Mapping[str, Any]) -> list[str]:
+    """Return at most eight sanitized function-call names from a response."""
+
+    names: list[str] = []
+    for item in response.get("output", []):
+        if not isinstance(item, Mapping):
+            continue
+        if _clean(item.get("type")) != "function_call":
+            continue
+        name = _safe_tool_chain_call_name(item.get("name"))
+        if name in names:
+            continue
+        names.append(name)
+        if len(names) == 8:
+            break
+    return names
+
+
+def _tool_chain_completion_classification(outcome: str) -> str:
+    """Make terminal-vs-continuation state explicit in event records."""
+
+    if outcome == "tool_call":
+        return "continuation_required"
+    if outcome == "final_after_tool":
+        return "completed_after_tool"
+    if outcome == "final_without_tool":
+        return "completed_without_tool"
+    if outcome == "invalid_or_unresolved":
+        return "unresolved"
+    return "unknown"
+
+
 def _safe_tool_chain_metadata(
     response: Mapping[str, Any],
     error: Mapping[str, Any],
@@ -105,6 +160,7 @@ def _safe_tool_chain_metadata(
     turn_type = _clean(raw_tool_chain.get("turn_type"))
     outcome = _clean(raw_tool_chain.get("outcome"))
     watchdog_state = _clean(watchdog.get("state"))
+    safe_outcome = outcome if outcome in TOOL_CHAIN_OUTCOMES else "unknown"
     return {
         "schema": TOOL_CHAIN_SCHEMA,
         "turn_type": turn_type if turn_type in TOOL_CHAIN_TURN_TYPES else "unknown",
@@ -112,7 +168,11 @@ def _safe_tool_chain_metadata(
         "tool_results_supplied": _int(raw_tool_chain.get("tool_results_supplied")),
         "tool_results_matched": _int(raw_tool_chain.get("tool_results_matched")),
         "tool_calls_returned": _int(raw_tool_chain.get("tool_calls_returned")),
-        "outcome": outcome if outcome in TOOL_CHAIN_OUTCOMES else "unknown",
+        "tool_call_names": _safe_response_tool_call_names(response),
+        "outcome": safe_outcome,
+        "completion_classification": _tool_chain_completion_classification(
+            safe_outcome
+        ),
         "watchdog_state": (
             watchdog_state
             if watchdog_state in TOOL_CHAIN_WATCHDOG_STATES

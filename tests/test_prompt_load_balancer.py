@@ -1621,6 +1621,107 @@ def test_openai_compat_advances_initial_ops_action_announcement_to_tool_search(
     assert response["output_text"] == ""
     assert [item["name"] for item in response["output"]] == ["tool_search"]
     assert json.loads(response["output"][0]["arguments"]) == {
+        "query": (
+            "Find the executable read-only Ops MCP tool for Jira and OpenBrand "
+            "data checks"
+        )
+    }
+
+
+@pytest.mark.parametrize(
+    "tools",
+    (
+        [],
+        [
+            {
+                "type": "function",
+                "name": "exec_command",
+                "description": "Run a local shell command.",
+                "parameters": {"type": "object"},
+            }
+        ],
+    ),
+)
+def test_openai_compat_discovers_ops_tool_before_initial_local_exploration(
+    monkeypatch,
+    tools,
+):
+    import app.services.prompt_provider_facade as facade
+
+    facade.reset_facade_response_state()
+    responses = iter(
+        [
+            (
+                '{"tool_call":{"name":"exec_command","arguments":'
+                '{"cmd":"rg -n \\"jira\\" ."}}}'
+            ),
+            (
+                '{"tool_call":{"name":"ops_openbrand.lookup","arguments":'
+                '{"query":"run checks on Jira and our data"}}}'
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        facade,
+        "provider_adapter_decision",
+        lambda **kwargs: _local_route_envelope(),
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: _mock_local_chat(kwargs["messages"], kwargs["model"])
+        | {"choices": [{"message": {"content": next(responses)}}]},
+    )
+
+    first = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "run checks on Jira and our data",
+            "tools": tools,
+        }
+    )
+
+    assert first["output_text"] == ""
+    assert [item["name"] for item in first["output"]] == ["tool_search"]
+    assert json.loads(first["output"][0]["arguments"]) == {
+        "query": (
+            "Find the executable read-only Ops MCP tool for Jira and OpenBrand "
+            "data checks"
+        )
+    }
+
+    second = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "previous_response_id": first["id"],
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": first["output"][0]["call_id"],
+                    "output": (
+                        '{"tools":[{"name":"ops_openbrand.lookup",'
+                        '"description":"Run a broad read-only operations lookup."}]}'
+                    ),
+                }
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "ops_openbrand.lookup",
+                    "description": "Run a broad read-only operations lookup.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                        "required": ["query"],
+                    },
+                }
+            ],
+        }
+    )
+
+    assert second["output_text"] == ""
+    assert [item["name"] for item in second["output"]] == ["ops_openbrand.lookup"]
+    assert json.loads(second["output"][0]["arguments"]) == {
         "query": "run checks on Jira and our data"
     }
 

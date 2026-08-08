@@ -201,6 +201,9 @@ TOOL_CHAIN_OPS_REQUEST_MARKERS = (
     "specmaster",
     "webgoat",
 )
+INITIAL_OPS_TOOL_SEARCH_QUERY = (
+    "Find the executable read-only Ops MCP tool for Jira and OpenBrand data checks"
+)
 TOOL_CHAIN_READ_ONLY_TOOL_TOKENS = frozenset(
     {
         "context",
@@ -1335,6 +1338,17 @@ def _tool_chain_is_broad_ops_request(request: str) -> bool:
     return any(marker in normalized for marker in TOOL_CHAIN_OPS_REQUEST_MARKERS)
 
 
+def _declared_nonlocal_executable_tool_names(names: set[str]) -> set[str]:
+    """Return declared tools that can satisfy an external Ops request directly."""
+
+    return {
+        name
+        for name in names
+        if name not in IMPLICIT_CLIENT_LOCAL_TOOL_NAMES
+        and name != IMPLICIT_TOOL_SEARCH_NAME
+    }
+
+
 def _initial_ops_tool_preference(
     *,
     prepared: PreparedResponsesExecution,
@@ -1348,13 +1362,12 @@ def _initial_ops_tool_preference(
     if context.chain_depth or context.tool_results_supplied:
         return None
     names = _tool_names(tools)
-    has_implicit_local_call = any(
+    has_local_call = any(
         _clean(raw_call.get("name")) in IMPLICIT_CLIENT_LOCAL_TOOL_NAMES
-        and _clean(raw_call.get("name")) not in names
         for raw_call in raw_calls
     )
     has_stalled_action_announcement = not raw_calls and _announces_next_tool_step(text)
-    if not has_implicit_local_call and not has_stalled_action_announcement:
+    if not has_local_call and not has_stalled_action_announcement:
         return None
     request = _tool_chain_operator_request(prepared.messages)
     if not _tool_chain_is_broad_ops_request(request):
@@ -1378,10 +1391,10 @@ def _initial_ops_tool_preference(
                 "name": "ops_openbrand.lookup",
                 "arguments": arguments,
             }
-    if IMPLICIT_TOOL_SEARCH_NAME in names:
+    if not _declared_nonlocal_executable_tool_names(names):
         return {
             "name": IMPLICIT_TOOL_SEARCH_NAME,
-            "arguments": {"query": request},
+            "arguments": {"query": INITIAL_OPS_TOOL_SEARCH_QUERY},
         }
     return None
 

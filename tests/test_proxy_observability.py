@@ -135,6 +135,13 @@ def test_tool_chain_observability_is_sanitized_and_alerted(monkeypatch):
     proxy_observability.reset_proxy_events()
 
     repaired = {
+        "output": [
+            {
+                "type": "function_call",
+                "name": "ops_openbrand.lookup",
+                "arguments": '{"query":"private ticket"}',
+            }
+        ],
         "norman": {
             "responses_compatibility": {
                 "tool_chain": {
@@ -154,7 +161,7 @@ def test_tool_chain_observability_is_sanitized_and_alerted(monkeypatch):
                     "raw_arguments": {"query": "private ticket"},
                 }
             }
-        }
+        },
     }
     exhausted_error = {
         "message": "Tool continuation remained invalid after repair.",
@@ -185,7 +192,7 @@ def test_tool_chain_observability_is_sanitized_and_alerted(monkeypatch):
         },
     }
 
-    proxy_observability.record_proxy_event(
+    repaired_event = proxy_observability.record_proxy_event(
         endpoint="/v1/responses",
         method="POST",
         request_id="repaired",
@@ -209,14 +216,21 @@ def test_tool_chain_observability_is_sanitized_and_alerted(monkeypatch):
         "tool_results_supplied": 1,
         "tool_results_matched": 1,
         "tool_calls_returned": 0,
+        "tool_call_names": [],
         "outcome": "invalid_or_unresolved",
+        "completion_classification": "unresolved",
         "watchdog_state": "exhausted",
         "watchdog_attempts": 1,
     }
+    assert repaired_event["tool_chain"]["tool_call_names"] == ["ops_openbrand.lookup"]
+    assert (
+        repaired_event["tool_chain"]["completion_classification"]
+        == "continuation_required"
+    )
     assert exhausted["error"]["norman"]["responses_compatibility"] == {
         "safe_marker": "preserved"
     }
-    serialized = json.dumps(exhausted, sort_keys=True)
+    serialized = json.dumps([repaired_event, exhausted], sort_keys=True)
     assert "mcp__codex_apps__" not in serialized
     assert "private ticket" not in serialized
     assert "private tool result" not in serialized
