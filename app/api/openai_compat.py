@@ -623,8 +623,6 @@ def _tool_envelope_prefix_state(text: str) -> str:
     text before the completed response becomes a function_call.
     """
 
-    if len(text) >= MAX_TOOL_ENVELOPE_PREFIX_CHARS:
-        return "text"
     candidate = text.lstrip()
     if not candidate:
         return "pending"
@@ -638,7 +636,7 @@ def _tool_envelope_prefix_state(text: str) -> str:
     try:
         key, key_end = json.JSONDecoder().raw_decode(object_prefix)
     except json.JSONDecodeError:
-        return "pending"
+        return "text" if len(text) >= MAX_TOOL_ENVELOPE_PREFIX_CHARS else "pending"
     if key not in {"tool_call", "tool_calls"}:
         return "text"
     remainder = object_prefix[key_end:].lstrip()

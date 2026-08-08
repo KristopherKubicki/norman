@@ -1632,6 +1632,87 @@ def test_openai_compat_responses_stream_converts_trailing_codex_apps_call_after_
     assert response.closed is True
 
 
+def test_openai_compat_responses_stream_converts_large_bare_codex_apps_call(
+    test_app, monkeypatch
+):
+    query = (
+        "Check Jira for critical or blocker tickets that changed recently, include "
+        "the issue key, priority, current assignee, affected OpenBrand system, "
+        "and the concrete next action for the on-call engineer."
+    )
+    envelope = json.dumps(
+        {
+            "tool_call": {
+                "name": "mcp__codex_apps__atlassian_rovo",
+                "arguments": {"query": query, "limit": 5},
+            }
+        }
+    )
+    assert len(envelope) >= 256
+    response = _MockNativeStreamResponse(
+        [
+            json.dumps({"model": "qwen3-coder:30b", "response": envelope}),
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "done": True,
+                    "prompt_eval_count": 4,
+                    "eval_count": 2,
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat_stream",
+        lambda **kwargs: norllama_gateway.NorllamaTextStream(
+            response,
+            model=kwargs["model"],
+        ),
+    )
+
+    result = test_app.post(
+        "/v1/responses",
+        headers=_proxy_headers(monkeypatch),
+        json={
+            "model": "norman-code",
+            "input": "Check for critical Jira tickets.",
+            "stream": True,
+        },
+    )
+
+    assert result.status_code == 200
+    events = _response_sse_events(result.text)
+    payloads = [
+        json.loads(data) for event, data in events if event and data != "[DONE]"
+    ]
+    output_deltas = [
+        payload["delta"]
+        for payload in payloads
+        if payload["type"] == "response.output_text.delta"
+    ]
+    output_items = [
+        payload["item"]
+        for payload in payloads
+        if payload["type"] == "response.output_item.added"
+    ]
+    completed = next(
+        payload["response"]
+        for payload in payloads
+        if payload["type"] == "response.completed"
+    )
+
+    assert not output_deltas
+    assert [item["type"] for item in output_items] == ["function_call"]
+    assert output_items[0]["name"] == "tool_search"
+    assert json.loads(completed["output"][0]["arguments"]) == {
+        "query": query,
+    }
+    assert completed["output_text"] == ""
+    assert "mcp__codex_apps__" not in completed["output_text"]
+    assert response.closed is True
+
+
 def test_openai_compat_responses_stream_converts_trailing_resource_read_after_preamble(
     test_app, monkeypatch
 ):
