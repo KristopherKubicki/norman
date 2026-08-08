@@ -868,35 +868,36 @@ class ToolChainContext:
     tool_results_supplied: int
     tool_results_matched: int
     successful_tool_results: int
+    successful_call_signatures: frozenset[tuple[str, str]]
 
 
 def _tool_chain_context(
     payload: Mapping[str, Any],
     *,
-    previous_function_calls: Mapping[str, str],
+    function_call_items: Mapping[str, Mapping[str, Any]],
+    known_tool_outputs: set[tuple[str, str]],
 ) -> ToolChainContext:
-    calls = dict(previous_function_calls)
+    calls: dict[str, dict[str, Any]] = {}
+    for call_id, function_call in function_call_items.items():
+        normalized_call = _function_call_item(function_call)
+        if call_id and normalized_call:
+            calls[call_id] = normalized_call
     raw_input = payload.get("input", payload.get("prompt"))
-    supplied_results: list[tuple[str, str]] = []
-    seen_tool_outputs: set[tuple[str, str]] = set()
+    supplied_results = set(known_tool_outputs)
     if isinstance(raw_input, list):
         for item in raw_input:
             if not isinstance(item, Mapping):
                 continue
             item_type = _clean(item.get("type"))
             if item_type == "function_call":
-                call_id = _clean(item.get("call_id"))
-                name = _clean(item.get("name"))
-                if call_id and name:
-                    calls[call_id] = name
+                function_call = _function_call_item(item)
+                if function_call:
+                    calls[function_call["call_id"]] = function_call
             elif item_type == "function_call_output":
                 tool_output = _tool_output_metadata(item)
-                if tool_output in seen_tool_outputs:
-                    continue
-                seen_tool_outputs.add(tool_output)
-                supplied_results.append(tool_output)
+                supplied_results.add(tool_output)
     matched_result_names = [
-        calls[call_id]
+        calls[call_id]["name"]
         for call_id, _ in supplied_results
         if call_id and call_id in calls
     ]
@@ -905,11 +906,17 @@ def _tool_chain_context(
         for call_id, output in supplied_results
         if call_id in calls and _tool_output_is_successful(output)
     )
+    successful_call_signatures = frozenset(
+        _function_call_signature(calls[call_id])
+        for call_id, output in supplied_results
+        if call_id in calls and _tool_output_is_successful(output)
+    )
     return ToolChainContext(
         chain_depth=len(calls),
         tool_results_supplied=len(supplied_results),
         tool_results_matched=len(matched_result_names),
         successful_tool_results=successful_tool_results,
+        successful_call_signatures=successful_call_signatures,
     )
 
 
@@ -1010,11 +1017,28 @@ def _tool_output_is_successful(output: str) -> bool:
     return not any(marker in normalized for marker in TOOL_OUTPUT_FAILURE_MARKERS)
 
 
+def _canonical_function_call_arguments(arguments: Any) -> str:
+    raw_arguments = arguments if isinstance(arguments, str) else _json_dumps(arguments)
+    try:
+        return _json_dumps(json.loads(raw_arguments))
+    except (TypeError, ValueError):
+        return _clean(raw_arguments)
+
+
+def _function_call_signature(item: Mapping[str, Any]) -> tuple[str, str]:
+    return (
+        _clean(item.get("name")),
+        _canonical_function_call_arguments(item.get("arguments")),
+    )
+
+
 def _tool_chain_telemetry(
     *,
     context: ToolChainContext,
     tool_calls: list[dict[str, Any]],
     outcome: str = "",
+    watchdog_state: str = "normal",
+    watchdog_attempts: int = 0,
 ) -> dict[str, Any]:
     if not outcome:
         if tool_calls:
@@ -1034,7 +1058,10 @@ def _tool_chain_telemetry(
         "successful_tool_results": context.successful_tool_results,
         "tool_calls_returned": len(tool_calls),
         "outcome": outcome,
-        "watchdog": {"state": "not_applied", "attempts": 0},
+        "watchdog": {
+            "state": watchdog_state,
+            "attempts": max(0, watchdog_attempts),
+        },
     }
 
 
@@ -1619,6 +1646,90 @@ def _extract_tool_calls(
             }
         )
     return calls
+
+
+def _response_tool_calls(
+    text: str,
+    *,
+    provider_payload: Mapping[str, Any],
+    normalized_output: NormalizedResponsesOutput | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    tools = _tools(provider_payload)
+    if normalized_output is not None and normalized_output.raw_text == text:
+        preamble = normalized_output.visible_text
+        raw_calls = [dict(call) for call in normalized_output.raw_tool_calls]
+    else:
+        preamble, raw_calls = _trailing_json_tool_call_envelope(text)
+    return (
+        preamble,
+        _extract_tool_calls(
+            text,
+            tools=tools,
+            # Some Codex TUI request forms keep their executable tool registry
+            # client-side and omit a top-level Responses tools list. The TUI still
+            # validates the returned call before it can execute anything.
+            allow_implicit_tools=not bool(_tool_names(tools)),
+            raw_calls=raw_calls,
+        ),
+    )
+
+
+def _repeats_successful_tool_call(
+    text: str,
+    *,
+    prepared: PreparedResponsesExecution,
+    normalized_output: NormalizedResponsesOutput | None = None,
+) -> bool:
+    if not prepared.tool_chain_context.successful_call_signatures:
+        return False
+    _, tool_calls = _response_tool_calls(
+        text,
+        provider_payload=prepared.provider_payload,
+        normalized_output=normalized_output,
+    )
+    return any(
+        _function_call_signature(tool_call)
+        in prepared.tool_chain_context.successful_call_signatures
+        for tool_call in tool_calls
+    )
+
+
+_TOOL_CONTINUATION_REPAIR_MESSAGE = (
+    "A prior tool result is authoritative. Do not repeat an equivalent completed "
+    "function call. Return the final answer, or issue only a materially different "
+    "function call that is still necessary."
+)
+
+
+def _tool_continuation_repair_messages(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [
+        *messages,
+        {"role": "system", "content": _TOOL_CONTINUATION_REPAIR_MESSAGE},
+    ]
+
+
+def _tool_continuation_exhausted_error(
+    prepared: PreparedResponsesExecution,
+) -> FacadeError:
+    return FacadeError(
+        "Tool continuation remained invalid after the bounded Norman repair.",
+        status_code=502,
+        error_type="server_error",
+        code="tool_continuation_exhausted",
+        norman={
+            "responses_compatibility": {
+                "tool_chain": _tool_chain_telemetry(
+                    context=prepared.tool_chain_context,
+                    tool_calls=[],
+                    outcome="invalid_or_unresolved",
+                    watchdog_state="exhausted",
+                    watchdog_attempts=1,
+                )
+            }
+        },
+    )
 
 
 @dataclass(frozen=True)
@@ -3072,6 +3183,35 @@ def _execute_authorized_chat(
         )
 
 
+def _resolve_tool_continuation_response(
+    *,
+    prepared: PreparedResponsesExecution,
+    chat_response: Mapping[str, Any],
+    request_id: str,
+) -> tuple[dict[str, Any], str, int]:
+    """Apply one bounded repair when a completed tool call is repeated."""
+
+    resolved = dict(chat_response)
+    if not _repeats_successful_tool_call(
+        _choice_text(resolved),
+        prepared=prepared,
+    ):
+        return resolved, "normal", 0
+
+    repaired = _execute_authorized_chat(
+        provider_payload=prepared.route_payload,
+        route_envelope=prepared.route_envelope,
+        messages=_tool_continuation_repair_messages(prepared.messages),
+        request_id=f"{request_id}-tool-continuation-repair",
+    )
+    if _repeats_successful_tool_call(
+        _choice_text(repaired),
+        prepared=prepared,
+    ):
+        raise _tool_continuation_exhausted_error(prepared)
+    return repaired, "repaired", 1
+
+
 def _start_authorized_chat_stream(
     *,
     provider_payload: Mapping[str, Any],
@@ -3191,7 +3331,8 @@ def _prepare_responses_execution(
     tool_outputs = history.tool_outputs | _response_input_tool_outputs(provider_payload)
     tool_chain_context = _tool_chain_context(
         provider_payload,
-        previous_function_calls=function_calls,
+        function_call_items=function_call_items,
+        known_tool_outputs=tool_outputs,
     )
     history_messages, tool_contract_messages = _messages_with_current_tool_contract(
         history.messages,
@@ -3238,24 +3379,18 @@ def _responses_response_from_chat(
     created_at: int | None = None,
     output_item_id: str = "",
     normalized_output: NormalizedResponsesOutput | None = None,
+    watchdog_state: str = "normal",
+    watchdog_attempts: int = 0,
+    store_response: bool = True,
 ) -> dict[str, Any]:
     provider_payload = prepared.provider_payload
     chat_response = dict(chat_response)
     text = _choice_text(chat_response)
     tools = _tools(provider_payload)
-    if normalized_output is not None and normalized_output.raw_text == text:
-        preamble = normalized_output.visible_text
-        raw_calls = [dict(call) for call in normalized_output.raw_tool_calls]
-    else:
-        preamble, raw_calls = _trailing_json_tool_call_envelope(text)
-    tool_calls = _extract_tool_calls(
+    preamble, tool_calls = _response_tool_calls(
         text,
-        tools=tools,
-        # Some Codex TUI request forms keep their executable tool registry
-        # client-side and omit a top-level Responses tools list. The TUI still
-        # validates the returned call before it can execute anything.
-        allow_implicit_tools=not bool(_tool_names(tools)),
-        raw_calls=raw_calls,
+        provider_payload=provider_payload,
+        normalized_output=normalized_output,
     )
     visible_text = preamble if tool_calls else text
     output_items = _response_output_items(
@@ -3267,6 +3402,8 @@ def _responses_response_from_chat(
     tool_chain = _tool_chain_telemetry(
         context=prepared.tool_chain_context,
         tool_calls=tool_calls,
+        watchdog_state=watchdog_state,
+        watchdog_attempts=watchdog_attempts,
     )
     response_id = response_id or f"resp-norman-{uuid.uuid4().hex}"
     created = created_at or int(time.time())
@@ -3298,7 +3435,7 @@ def _responses_response_from_chat(
                     if prepared.history_replayed
                     else "unavailable"
                 ),
-                "tools_declared": len(tools),
+                "tools_declared": len(_tools(provider_payload)),
                 "tool_calls_returned": len(tool_calls),
                 "tool_chain": tool_chain,
                 "tool_call_mode": (
@@ -3318,7 +3455,7 @@ def _responses_response_from_chat(
             },
         },
     }
-    if prepared.store_requested:
+    if prepared.store_requested and store_response:
         function_call_items = dict(prepared.function_call_items)
         function_call_items.update(_function_call_items_from_items(output_items))
         _store_response_state(
@@ -3358,10 +3495,21 @@ class FacadeResponsesStream:
         self.output_item_id = f"msg-norman-{uuid.uuid4().hex}"
         self._stream_admission = self._admission_metadata_from_headers()
         self._cloud_chat_response: dict[str, Any] | None = None
+        self._completed_chat_response: dict[str, Any] | None = None
         self._cloud_fallback_attempted = False
+        self._watchdog_state = "normal"
+        self._watchdog_attempts = 0
+        self._buffer_tool_continuation = bool(
+            prepared.tool_chain_context.successful_call_signatures
+        )
 
     @property
     def model(self) -> str:
+        if self._completed_chat_response is not None:
+            return (
+                _clean(self._completed_chat_response.get("model"))
+                or self.invocation.authorization.model
+            )
         if self._cloud_chat_response is not None:
             return (
                 _clean(self._cloud_chat_response.get("model"))
@@ -3443,6 +3591,21 @@ class FacadeResponsesStream:
             ),
         )
 
+    def _resolve_tool_continuation_response(
+        self,
+        chat_response: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        (
+            self._completed_chat_response,
+            self._watchdog_state,
+            self._watchdog_attempts,
+        ) = _resolve_tool_continuation_response(
+            prepared=self.prepared,
+            chat_response=chat_response,
+            request_id=self.invocation.invocation_id,
+        )
+        return dict(self._completed_chat_response)
+
     def _cloud_fallback_events(self, local_error: FacadeError):
         plan = _cloud_fallback_plan(
             provider_payload=self.prepared.route_payload,
@@ -3471,7 +3634,10 @@ class FacadeResponsesStream:
             invocation=self.invocation,
             local_error=local_error,
         )
-        text = _choice_text(self._cloud_chat_response)
+        chat_response = self._resolve_tool_continuation_response(
+            self._cloud_chat_response
+        )
+        text = _choice_text(chat_response)
         if text:
             yield {"type": "text", "text": text}
 
@@ -3492,7 +3658,10 @@ class FacadeResponsesStream:
                 messages=self.prepared.messages,
                 invocation=self.invocation,
             )
-            text = _choice_text(self._cloud_chat_response)
+            chat_response = self._resolve_tool_continuation_response(
+                self._cloud_chat_response
+            )
+            text = _choice_text(chat_response)
             if text:
                 yield {"type": "text", "text": text}
             return
@@ -3503,6 +3672,7 @@ class FacadeResponsesStream:
             raise RuntimeError("Local response stream was not initialized")
 
         emitted_local_text = False
+        buffered_text_parts: list[str] = []
         try:
             for event in self.stream.iter_events():
                 if event.get("type") == "admission":
@@ -3514,6 +3684,9 @@ class FacadeResponsesStream:
                     and isinstance(event.get("text"), str)
                     and event["text"]
                 ):
+                    if self._buffer_tool_continuation:
+                        buffered_text_parts.append(event["text"])
+                        continue
                     emitted_local_text = True
                 yield event
         except Exception as exc:
@@ -3521,6 +3694,20 @@ class FacadeResponsesStream:
             if emitted_local_text:
                 raise local_error from exc
             yield from self._cloud_fallback_events(local_error)
+            return
+
+        if self._buffer_tool_continuation and buffered_text_parts:
+            chat_response = _complete_authorized_chat(
+                provider_payload=self.prepared.route_payload,
+                route_envelope=self.prepared.route_envelope,
+                messages=self.prepared.messages,
+                invocation=self.invocation,
+                result=self.stream.result("".join(buffered_text_parts)),
+            )
+            resolved = self._resolve_tool_continuation_response(chat_response)
+            text = _choice_text(resolved)
+            if text:
+                yield {"type": "text", "text": text}
             return
 
         if not emitted_local_text:
@@ -3539,7 +3726,9 @@ class FacadeResponsesStream:
         *,
         normalized_output: NormalizedResponsesOutput | None = None,
     ) -> dict[str, Any]:
-        if self._cloud_chat_response is not None:
+        if self._completed_chat_response is not None:
+            chat_response = dict(self._completed_chat_response)
+        elif self._cloud_chat_response is not None:
             chat_response = dict(self._cloud_chat_response)
         else:
             if self.stream is None:
@@ -3551,9 +3740,12 @@ class FacadeResponsesStream:
                 invocation=self.invocation,
                 result=self.stream.result(text),
             )
+            chat_response = self._resolve_tool_continuation_response(chat_response)
         norman = _mapping(chat_response.get("norman"))
         if self._cloud_chat_response is None:
-            norman["streaming_mode"] = "incremental_sse"
+            norman["streaming_mode"] = (
+                "buffered_sse" if self._buffer_tool_continuation else "incremental_sse"
+            )
         admission = self.admission_metadata()
         if admission:
             norman["stream_admission"] = admission
@@ -3565,6 +3757,8 @@ class FacadeResponsesStream:
             created_at=self.created_at,
             output_item_id=self.output_item_id,
             normalized_output=normalized_output,
+            watchdog_state=self._watchdog_state,
+            watchdog_attempts=self._watchdog_attempts,
         )
 
     def classify_error(self, exc: Exception) -> FacadeError:
@@ -3601,9 +3795,20 @@ def execute_openai_responses_facade(
         messages=prepared.messages,
         request_id=facade_request_id,
     )
+    (
+        chat_response,
+        watchdog_state,
+        watchdog_attempts,
+    ) = _resolve_tool_continuation_response(
+        prepared=prepared,
+        chat_response=chat_response,
+        request_id=facade_request_id,
+    )
     return _responses_response_from_chat(
         chat_response,
         prepared=prepared,
+        watchdog_state=watchdog_state,
+        watchdog_attempts=watchdog_attempts,
     )
 
 

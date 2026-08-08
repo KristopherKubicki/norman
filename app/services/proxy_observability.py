@@ -28,7 +28,7 @@ TOOL_CHAIN_OUTCOMES = frozenset(
     }
 )
 TOOL_CHAIN_WATCHDOG_STATES = frozenset(
-    {"not_applied", "not_required", "repaired", "exhausted"}
+    {"normal", "not_applied", "not_required", "repaired", "exhausted"}
 )
 SAFE_TOOL_CHAIN_CALL_NAMES = frozenset({"tool_search"})
 LOCAL_TOOL_CHAIN_CALL_NAMES = {

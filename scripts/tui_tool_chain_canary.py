@@ -37,7 +37,7 @@ SAFE_TOOL_CHAIN_OUTCOMES = frozenset(
         "tool_call",
     }
 )
-SAFE_WATCHDOG_STATES = frozenset({"not_applied"})
+SAFE_WATCHDOG_STATES = frozenset({"normal", "repaired", "exhausted"})
 
 RequestFn = Callable[[str, dict[str, Any], str, float], tuple[int, dict[str, Any]]]
 StreamRequestFn = Callable[
@@ -482,7 +482,7 @@ def run_canary(
     pressure_state = _mapping((pressure_guard or (lambda: {}))())
     admission = _mapping(pressure_state.get("admission"))
     action = _clean(admission.get("action"))
-    if action in {"defer_heavy_work", "block_new_work"}:
+    if action == "block_new_work":
         receipt.update(
             state="skipped",
             skip_reason="host_pressure",

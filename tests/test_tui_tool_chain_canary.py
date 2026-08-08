@@ -30,7 +30,7 @@ def _tool_response(response_id: str, name: str, call_id: str) -> dict:
                     "tool_calls_returned": 1,
                     "outcome": "tool_call",
                     "watchdog": {
-                        "state": "not_applied",
+                        "state": "normal",
                         "attempts": 0,
                     },
                     "arguments": {"private": "arguments"},
@@ -98,7 +98,7 @@ def test_run_canary_exercises_the_three_turn_synthetic_tool_chain():
                             "tool_calls_returned": 0,
                             "outcome": "final_after_tool",
                             "watchdog": {
-                                "state": "not_applied",
+                                "state": "normal",
                                 "attempts": 0,
                             },
                         }
@@ -327,7 +327,7 @@ def test_sse_parser_flags_native_function_call_json_leaked_as_text():
     assert response["_canary_stream"]["raw_tool_envelope_text"] is True
 
 
-def test_run_canary_skips_without_making_requests_when_pressure_defers_work():
+def test_run_canary_runs_when_pressure_defers_heavy_work():
     calls = []
 
     receipt = canary.run_canary(
@@ -337,10 +337,9 @@ def test_run_canary_skips_without_making_requests_when_pressure_defers_work():
         request_fn=lambda *args: calls.append(args) or (200, {}),
     )
 
-    assert receipt["state"] == "skipped"
-    assert receipt["skip_reason"] == "host_pressure"
-    assert receipt["pressure_admission"] == "defer_heavy_work"
-    assert calls == []
+    assert receipt["state"] == "failed"
+    assert receipt["failure_kind"] == "unexpected_function_call"
+    assert len(calls) == 1
 
 
 def test_run_canary_ignores_an_invalid_pressure_guard_result():

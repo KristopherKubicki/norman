@@ -1575,6 +1575,180 @@ def test_openai_compat_responses_stream_continues_native_tool_call(
     assert second_upstream.closed is True
 
 
+def test_openai_compat_responses_stream_repairs_repeated_tool_call(
+    test_app, monkeypatch
+):
+    import app.services.prompt_provider_facade as facade
+
+    facade.reset_facade_response_state()
+    stream_invocations = []
+    repair_invocations = []
+    tool_name = "tool_search"
+    tool_arguments = {"query": "Jira health"}
+    first_upstream = _MockNativeStreamResponse(
+        [
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "response": json.dumps(
+                        {
+                            "tool_call": {
+                                "name": tool_name,
+                                "arguments": tool_arguments,
+                            }
+                        }
+                    ),
+                }
+            ),
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "done": True,
+                    "prompt_eval_count": 4,
+                    "eval_count": 2,
+                }
+            ),
+        ]
+    )
+    repeated_upstream = _MockNativeStreamResponse(
+        [
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "response": json.dumps(
+                        {
+                            "tool_call": {
+                                "name": tool_name,
+                                "arguments": tool_arguments,
+                            }
+                        }
+                    ),
+                }
+            ),
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "done": True,
+                    "prompt_eval_count": 7,
+                    "eval_count": 2,
+                }
+            ),
+        ]
+    )
+    upstreams = iter([first_upstream, repeated_upstream])
+
+    def invoke_local_stream(**kwargs):
+        stream_invocations.append(kwargs)
+        return norllama_gateway.NorllamaTextStream(
+            next(upstreams),
+            model=kwargs["model"],
+        )
+
+    def invoke_repair_chat(**kwargs):
+        repair_invocations.append(kwargs)
+        return _mock_local_chat(kwargs["messages"], kwargs["model"]) | {
+            "choices": [{"message": {"content": "Jira health checks are complete."}}]
+        }
+
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat_stream",
+        invoke_local_stream,
+    )
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat",
+        invoke_repair_chat,
+    )
+    headers = _proxy_headers(monkeypatch)
+    tools = [
+        {
+            "type": "function",
+            "name": tool_name,
+            "description": "Discover an available tool.",
+            "parameters": {"type": "object"},
+        }
+    ]
+
+    first_result = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={
+            "model": "norman-code",
+            "input": "Check Jira health.",
+            "stream": True,
+            "tools": tools,
+        },
+    )
+    assert first_result.status_code == 200
+    first_payloads = [
+        json.loads(data)
+        for event, data in _response_sse_events(first_result.text)
+        if event and data != "[DONE]"
+    ]
+    first_completed = next(
+        payload["response"]
+        for payload in first_payloads
+        if payload["type"] == "response.completed"
+    )
+    first_call = next(
+        payload["item"]
+        for payload in first_payloads
+        if payload["type"] == "response.output_item.added"
+        and payload["item"]["type"] == "function_call"
+    )
+
+    second_result = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={
+            "model": "norman-code",
+            "previous_response_id": first_completed["id"],
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": first_call["call_id"],
+                    "output": '{"status":"ok"}',
+                }
+            ],
+            "stream": True,
+            "tools": tools,
+        },
+    )
+
+    assert second_result.status_code == 200
+    second_payloads = [
+        json.loads(data)
+        for event, data in _response_sse_events(second_result.text)
+        if event and data != "[DONE]"
+    ]
+    second_completed = next(
+        payload["response"]
+        for payload in second_payloads
+        if payload["type"] == "response.completed"
+    )
+
+    assert second_completed["output_text"] == "Jira health checks are complete."
+    assert all(
+        not (
+            payload["type"] == "response.output_item.added"
+            and payload["item"]["type"] == "function_call"
+        )
+        for payload in second_payloads
+    )
+    assert second_completed["norman"]["responses_compatibility"]["tool_chain"][
+        "watchdog"
+    ] == {"state": "repaired", "attempts": 1}
+    assert len(stream_invocations) == 2
+    assert len(repair_invocations) == 1
+    assert repair_invocations[0]["messages"][-1] == {
+        "role": "system",
+        "content": facade._TOOL_CONTINUATION_REPAIR_MESSAGE,
+    }
+    assert first_upstream.closed is True
+    assert repeated_upstream.closed is True
+
+
 def test_openai_compat_responses_stream_converts_implicit_tool_envelopes(
     test_app, monkeypatch
 ):
@@ -3860,7 +4034,84 @@ def test_openai_compat_responses_keeps_undeclared_native_function_call_as_text(
     assert response["output"][0]["content"][0]["text"] == model_text
 
 
-def test_openai_compat_responses_does_not_advance_repeated_declared_tool_call(
+def test_openai_compat_responses_repairs_repeated_declared_tool_call(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    facade.reset_facade_response_state()
+    invocations = []
+    tool_name = "tool_search"
+    tool_arguments = {"query": "Jira data checks"}
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+
+    def fake_chat(**kwargs):
+        invocations.append(kwargs)
+        content = (
+            "Jira data checks are complete."
+            if len(invocations) == 3
+            else json.dumps(
+                {
+                    "tool_call": {
+                        "name": tool_name,
+                        "arguments": tool_arguments,
+                    }
+                }
+            )
+        )
+        return _mock_local_chat(kwargs["messages"], kwargs["model"]) | {
+            "choices": [{"message": {"content": content}}]
+        }
+
+    monkeypatch.setattr(facade.norllama_gateway, "invoke_text_chat", fake_chat)
+    tools = [
+        {
+            "type": "function",
+            "name": tool_name,
+            "description": "Discover a connected tool.",
+            "parameters": {"type": "object"},
+        }
+    ]
+
+    first = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "Run checks on Jira and our data.",
+            "tools": tools,
+        }
+    )
+    function_call = first["output"][0]
+    second = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "previous_response_id": first["id"],
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": function_call["call_id"],
+                    "output": '{"tools":[{"name":"ticket_search"}]}',
+                }
+            ],
+            "tools": tools,
+        }
+    )
+
+    assert len(invocations) == 3
+    assert second["output_text"] == "Jira data checks are complete."
+    assert [item["type"] for item in second["output"]] == ["message"]
+    assert second["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] == {
+        "state": "repaired",
+        "attempts": 1,
+    }
+    assert invocations[-1]["messages"][-1] == {
+        "role": "system",
+        "content": facade._TOOL_CONTINUATION_REPAIR_MESSAGE,
+    }
+
+
+def test_openai_compat_responses_rejects_repeated_tool_call_after_repair(
     monkeypatch,
 ):
     import app.services.prompt_provider_facade as facade
@@ -3910,27 +4161,30 @@ def test_openai_compat_responses_does_not_advance_repeated_declared_tool_call(
         }
     )
     function_call = first["output"][0]
-    second = execute_openai_responses_facade(
-        {
-            "model": "norman-code",
-            "previous_response_id": first["id"],
-            "input": [
-                {
-                    "type": "function_call_output",
-                    "call_id": function_call["call_id"],
-                    "output": '{"tools":[{"name":"ticket_search"}]}',
-                }
-            ],
-            "tools": tools,
-        }
-    )
 
-    assert len(invocations) == 2
-    assert [item["name"] for item in second["output"]] == [tool_name]
-    assert json.loads(second["output"][0]["arguments"]) == tool_arguments
-    assert second["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] == {
-        "state": "not_applied",
-        "attempts": 0,
+    with pytest.raises(FacadeError) as captured:
+        execute_openai_responses_facade(
+            {
+                "model": "norman-code",
+                "previous_response_id": first["id"],
+                "input": [
+                    {
+                        "type": "function_call_output",
+                        "call_id": function_call["call_id"],
+                        "output": '{"tools":[{"name":"ticket_search"}]}',
+                    }
+                ],
+                "tools": tools,
+            }
+        )
+
+    assert len(invocations) == 3
+    error = captured.value
+    assert error.status_code == 502
+    assert error.code == "tool_continuation_exhausted"
+    assert error.norman["responses_compatibility"]["tool_chain"]["watchdog"] == {
+        "state": "exhausted",
+        "attempts": 1,
     }
 
 
@@ -4002,7 +4256,7 @@ def test_openai_compat_responses_keeps_saved_call_metadata_server_side(
         "tool_calls_returned": 0,
         "outcome": "final_after_tool",
         "watchdog": {
-            "state": "not_applied",
+            "state": "normal",
             "attempts": 0,
         },
     }
