@@ -1535,6 +1535,140 @@ def test_openai_compat_prefers_declared_ops_lookup_over_implicit_shell_call(
     assert "exec_command" not in json.dumps(response["output"])
 
 
+def test_openai_compat_advances_initial_ops_action_announcement_to_lookup(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    monkeypatch.setattr(
+        facade,
+        "provider_adapter_decision",
+        lambda **kwargs: _local_route_envelope(),
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: _mock_local_chat(kwargs["messages"], kwargs["model"])
+        | {
+            "choices": [
+                {"message": {"content": "First, I'll inspect Jira and our data."}}
+            ]
+        },
+    )
+
+    response = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "run checks on Jira and our data",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "ops_openbrand.lookup",
+                    "description": "Run a broad read-only operations lookup.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                        "required": ["query"],
+                    },
+                },
+            ],
+        }
+    )
+
+    assert response["output_text"] == ""
+    assert [item["name"] for item in response["output"]] == ["ops_openbrand.lookup"]
+    assert json.loads(response["output"][0]["arguments"]) == {
+        "query": "run checks on Jira and our data"
+    }
+
+
+def test_openai_compat_advances_initial_ops_action_announcement_to_tool_search(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    monkeypatch.setattr(
+        facade,
+        "provider_adapter_decision",
+        lambda **kwargs: _local_route_envelope(),
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: _mock_local_chat(kwargs["messages"], kwargs["model"])
+        | {
+            "choices": [
+                {"message": {"content": "Let me inspect the available Jira data now."}}
+            ]
+        },
+    )
+
+    response = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "run checks on Jira and our data",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "tool_search",
+                    "description": "Discover a connected tool.",
+                    "parameters": {"type": "object"},
+                },
+            ],
+        }
+    )
+
+    assert response["output_text"] == ""
+    assert [item["name"] for item in response["output"]] == ["tool_search"]
+    assert json.loads(response["output"][0]["arguments"]) == {
+        "query": "run checks on Jira and our data"
+    }
+
+
+def test_openai_compat_preserves_initial_ops_information_reply(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    monkeypatch.setattr(
+        facade,
+        "provider_adapter_decision",
+        lambda **kwargs: _local_route_envelope(),
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: _mock_local_chat(kwargs["messages"], kwargs["model"])
+        | {
+            "choices": [
+                {"message": {"content": "Jira is the issue tracker used by OpenBrand."}}
+            ]
+        },
+    )
+
+    response = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "What is Jira in our OpenBrand data stack?",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "ops_openbrand.lookup",
+                    "description": "Run a broad read-only operations lookup.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                        "required": ["query"],
+                    },
+                },
+            ],
+        }
+    )
+
+    assert response["output_text"] == "Jira is the issue tracker used by OpenBrand."
+    assert [item["type"] for item in response["output"]] == ["message"]
+
+
 def test_openai_compat_converts_final_fenced_shell_envelope_with_partial_registry(
     monkeypatch,
 ):

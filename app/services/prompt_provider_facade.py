@@ -142,6 +142,8 @@ TOOL_CHAIN_NEXT_STEP_PREFIXES = (
     "first, let me ",
     "first i will ",
     "first, i will ",
+    "first i'll ",
+    "first, i'll ",
     "now let me ",
     "now, let me ",
     "let me now ",
@@ -1072,7 +1074,7 @@ def _is_mcp_resource_discovery_tool_name(name: str) -> bool:
 def _announces_next_tool_step(text: str) -> bool:
     """Return whether a response stops at a clear next-action announcement."""
 
-    normalized = _lower(text).strip()
+    normalized = _lower(text).replace("\u2018", "'").replace("\u2019", "'").strip()
     if not normalized:
         return False
     clauses = re.split(r"(?:\r?\n+|(?<=[.!?])\s+)", normalized)
@@ -1336,20 +1338,23 @@ def _tool_chain_is_broad_ops_request(request: str) -> bool:
 def _initial_ops_tool_preference(
     *,
     prepared: PreparedResponsesExecution,
+    text: str,
     raw_calls: list[dict[str, Any]],
     tools: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
-    """Favor a declared read-only Ops lookup over an implicit local shell call."""
+    """Favor declared read-only Ops tools over a stalled initial action reply."""
 
     context = prepared.tool_chain_context
     if context.chain_depth or context.tool_results_supplied:
         return None
     names = _tool_names(tools)
-    if not any(
+    has_implicit_local_call = any(
         _clean(raw_call.get("name")) in IMPLICIT_CLIENT_LOCAL_TOOL_NAMES
         and _clean(raw_call.get("name")) not in names
         for raw_call in raw_calls
-    ):
+    )
+    has_stalled_action_announcement = not raw_calls and _announces_next_tool_step(text)
+    if not has_implicit_local_call and not has_stalled_action_announcement:
         return None
     request = _tool_chain_operator_request(prepared.messages)
     if not _tool_chain_is_broad_ops_request(request):
@@ -3562,8 +3567,26 @@ def _resolve_tool_chain_watchdog(
     request_id: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     response = dict(chat_response)
+    text = _choice_text(response)
+    raw_calls = _json_tool_call_envelope(text)
+    if (
+        _initial_ops_tool_preference(
+            prepared=prepared,
+            text=text,
+            raw_calls=raw_calls,
+            tools=_tools(prepared.provider_payload),
+        )
+        is not None
+    ):
+        # The response adapter will replace this clear first-turn action
+        # announcement with the declared read-only call below.
+        return response, {
+            "state": "not_required",
+            "attempts": 0,
+            "reason": "",
+        }
     reason = _tool_chain_watchdog_reason(
-        text=_choice_text(response),
+        text=text,
         context=prepared.tool_chain_context,
     )
     if not reason:
@@ -3633,10 +3656,15 @@ def _responses_response_from_chat(
     preamble, raw_calls = _trailing_json_tool_call_envelope(text)
     preferred_call = _initial_ops_tool_preference(
         prepared=prepared,
+        text=text,
         raw_calls=raw_calls,
         tools=tools,
     )
     if preferred_call is not None:
+        # This call replaces a prose-only action announcement. It has no
+        # genuine preamble to preserve, and returning it as assistant text
+        # makes Responses clients stop before executing the call.
+        preamble = ""
         raw_calls = [preferred_call]
     tool_calls = _extract_tool_calls(
         text,
