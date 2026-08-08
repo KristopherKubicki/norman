@@ -15,5 +15,4 @@ LoadCredentialEncrypted=norman-cred-passphrase:/etc/norman/credentials/norman-cr
 ExecStartPre=/usr/bin/mkdir -p /home/kristopher/.local/state/norman
 ExecStart=/usr/local/libexec/norman-tui-tool-chain-canary --stream
 TimeoutStartSec=3min
-NoNewPrivileges=true
 PrivateTmp=true

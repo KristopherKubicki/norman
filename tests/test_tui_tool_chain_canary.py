@@ -378,6 +378,7 @@ def test_canary_systemd_wrapper_uses_the_encrypted_credential_path():
         "NORMAN_TUI_TOOL_CHAIN_CANARY_TOKEN_SECRET=control-plane/prompt-proxy-token"
         in service
     )
+    assert "NoNewPrivileges=true" not in service
     assert "WorkingDirectory=" not in service
     assert "OnUnitActiveSec=1h" in timer
     assert "sudo --non-interactive" in installer
