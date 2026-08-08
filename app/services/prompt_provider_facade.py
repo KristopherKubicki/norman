@@ -110,6 +110,25 @@ LEGACY_REPLAYED_FUNCTION_CALL_PREFIX = (
 )
 TOOL_CHAIN_SCHEMA = "norman.responses-tool-chain.v1"
 TOOL_CHAIN_WATCHDOG_MAX_ATTEMPTS = 1
+TOOL_OUTPUT_FAILURE_MARKERS = (
+    "access denied",
+    "permission denied",
+    "unauthorized",
+    "forbidden",
+    "execution_not_allowed",
+    "tool failed",
+    "failed to execute",
+)
+TOOL_CHAIN_GENERIC_CLARIFICATION_MARKERS = (
+    "what specific test",
+    "what specific tests",
+    "what specific functionality",
+    "what specific aspect",
+    "which specific test",
+    "which specific tests",
+    "could you specify what",
+    "please specify what",
+)
 logger = logging.getLogger(__name__)
 MODEL_ALIASES = {
     "norman-code": ROUTE_POLICY_MODELS["coding_operator"],
@@ -728,6 +747,7 @@ class ToolChainContext:
     chain_depth: int
     tool_results_supplied: int
     tool_results_matched: int
+    successful_tool_results: int
     tool_search_completed: bool
 
     @property
@@ -744,7 +764,7 @@ def _tool_chain_context(
 ) -> ToolChainContext:
     calls = dict(previous_function_calls)
     raw_input = payload.get("input", payload.get("prompt"))
-    supplied_result_ids: list[str] = []
+    supplied_results: list[tuple[str, str]] = []
     seen_tool_outputs: set[tuple[str, str]] = set()
     if isinstance(raw_input, list):
         for item in raw_input:
@@ -761,17 +781,23 @@ def _tool_chain_context(
                 if tool_output in seen_tool_outputs:
                     continue
                 seen_tool_outputs.add(tool_output)
-                supplied_result_ids.append(tool_output[0])
+                supplied_results.append(tool_output)
     matched_result_names = [
         calls[call_id]
-        for call_id in supplied_result_ids
+        for call_id, _ in supplied_results
         if call_id and call_id in calls
     ]
+    successful_tool_results = sum(
+        1
+        for call_id, output in supplied_results
+        if call_id in calls and _tool_output_is_successful(output)
+    )
     return ToolChainContext(
         declared_tool_names=tuple(sorted(_tool_names(_tools(payload)))),
         chain_depth=len(calls),
-        tool_results_supplied=len(supplied_result_ids),
+        tool_results_supplied=len(supplied_results),
         tool_results_matched=len(matched_result_names),
+        successful_tool_results=successful_tool_results,
         tool_search_completed=IMPLICIT_TOOL_SEARCH_NAME in matched_result_names,
     )
 
@@ -821,15 +847,59 @@ def _json_tool_call_envelope(text: str) -> list[dict[str, Any]]:
     return calls
 
 
+def _tool_output_is_successful(output: str) -> bool:
+    """Keep the continuation guard from overruling a genuine tool failure."""
+
+    normalized = _lower(output)
+    if not normalized:
+        return False
+    try:
+        parsed = json.loads(output)
+    except (TypeError, ValueError):
+        parsed = None
+    if isinstance(parsed, Mapping):
+        error = parsed.get("error")
+        if error not in (None, "", {}, []):
+            return False
+        for field in ("status", "status_code", "statusCode"):
+            value = parsed.get(field)
+            if isinstance(value, int) and value >= 400:
+                return False
+    return not any(marker in normalized for marker in TOOL_OUTPUT_FAILURE_MARKERS)
+
+
+def _tool_chain_premature_stop_reason(
+    *,
+    text: str,
+    context: ToolChainContext,
+) -> str:
+    """Identify clear hallucinated stops after a successful tool result."""
+
+    if not context.successful_tool_results:
+        return ""
+    normalized = _lower(text)
+    if any(marker in normalized for marker in TOOL_CHAIN_GENERIC_CLARIFICATION_MARKERS):
+        return "generic_clarification_after_successful_tool"
+    if "mcp" in normalized and (
+        ("direct call" in normalized and "not supported" in normalized)
+        or ("direct access" in normalized and "not supported" in normalized)
+        or ("mcp" in normalized and "unavailable" in normalized)
+    ):
+        return "contradicts_successful_mcp_tool"
+    return ""
+
+
 def _tool_chain_watchdog_reason(
     *,
     text: str,
     context: ToolChainContext,
 ) -> str:
-    if not context.tool_results_supplied or not context.declared_tool_names:
+    if not context.tool_results_supplied:
         return ""
     raw_calls = _json_tool_call_envelope(text)
     if not raw_calls:
+        return _tool_chain_premature_stop_reason(text=text, context=context)
+    if not context.declared_tool_names:
         return ""
     names = {_clean(call.get("name")) for call in raw_calls if _clean(call.get("name"))}
     if any(name not in context.declared_tool_names for name in names):
@@ -853,11 +923,16 @@ def _tool_chain_repair_message(
         "role": "system",
         "content": (
             "Norman tool-chain repair: a tool result is already available and the "
-            "previous tool call cannot be returned. Continue this same task now. "
-            "Return either a final answer or exactly one JSON tool envelope using "
-            "only one declared tool. Do not call an internal mcp__ name, list MCP "
-            "resources, or repeat tool_search after discovery when "
-            "an executable tool is declared. Declared tools: "
+            "previous response stopped incorrectly. Continue this same task now. "
+            "A successful prior tool result proves that its declared access path "
+            "works. Do not claim that MCP access is unsupported and do not ask a "
+            "generic clarification for a clear, read-only request. Choose one "
+            "safe, bounded next read that advances the request. Return exactly "
+            "one JSON tool envelope: use one declared executable tool when "
+            "available; otherwise return tool_search to discover the next "
+            "executable tool. Do not call an undeclared internal mcp__ name, list "
+            "MCP resources, or repeat tool_search after discovery when an "
+            "executable tool is declared. Declared tools: "
             f"{declared}. Repair reason: {reason}."
         ),
     }
@@ -911,7 +986,8 @@ def _tool_contract_message(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
                     "available tool when it advances the request, then return "
                     "the final answer only after no further tool call is needed. "
                     "Do not stop merely to announce a discovered tool. "
-                    "For any MCP capability, call tool_search first with "
+                    "Only client-declared tool names are executable. For an "
+                    "undeclared MCP capability, call tool_search first with "
                     '{"query":"what you need"}; do not call an internal mcp__ '
                     "name, list_mcp_resources, or "
                     "list_mcp_resource_templates directly. Once tool_search output "
@@ -951,8 +1027,11 @@ def _tool_contract_message(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "After every tool result, continue the task: use the next "
                 "available tool when it advances the request, then return the "
                 "final answer only after no further tool call is needed. Do not "
-                "stop merely to announce a discovered tool. Otherwise answer "
-                "normally. Available tools: " + _json_dumps(compact)
+                "stop merely to announce a discovered tool. A declared tool whose "
+                "name begins mcp__ is an executable client-provided tool, not an "
+                "internal undeclared name: call it directly. Do not claim that a "
+                "declared MCP tool or its successful output is unsupported. "
+                "Otherwise answer normally. Available tools: " + _json_dumps(compact)
             ),
         }
     ]

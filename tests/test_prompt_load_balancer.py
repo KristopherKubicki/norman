@@ -3459,7 +3459,8 @@ def test_openai_compat_responses_routes_once_and_preserves_instructions(
                 "available tool when it advances the request, then return "
                 "the final answer only after no further tool call is needed. "
                 "Do not stop merely to announce a discovered tool. "
-                "For any MCP capability, call tool_search first with "
+                "Only client-declared tool names are executable. For an "
+                "undeclared MCP capability, call tool_search first with "
                 '{"query":"what you need"}; do not call an internal mcp__ '
                 "name, list_mcp_resources, or "
                 "list_mcp_resource_templates directly. Once tool_search output "
@@ -4125,6 +4126,151 @@ def test_openai_compat_responses_keeps_saved_call_metadata_server_side(
         or function_call["arguments"] in message["content"]
         for message in replayed
     )
+
+
+def test_openai_compat_repairs_generic_clarification_after_successful_tool(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    facade.reset_facade_response_state()
+    invocations = []
+    responses = iter(
+        [
+            '{"tool_call":{"name":"tool_search","arguments":{"query":"Ops MCP"}}}',
+            "What specific tests would you like me to perform?",
+            (
+                '{"tool_call":{"name":"ops_openbrand.data_status_get",'
+                '"arguments":{"scope":"jira"}}}'
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        facade,
+        "provider_adapter_decision",
+        lambda **kwargs: _local_route_envelope(),
+    )
+
+    def fake_chat(**kwargs):
+        invocations.append(kwargs)
+        return _mock_local_chat(kwargs["messages"], kwargs["model"]) | {
+            "choices": [{"message": {"content": next(responses)}}]
+        }
+
+    monkeypatch.setattr(facade.norllama_gateway, "invoke_text_chat", fake_chat)
+
+    first = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "Run safe read-only checks on the Ops MCP.",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "tool_search",
+                    "description": "Discover a connected tool.",
+                    "parameters": {"type": "object"},
+                }
+            ],
+        }
+    )
+    tool_search_call = first["output"][0]
+    second = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "previous_response_id": first["id"],
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": tool_search_call["call_id"],
+                    "output": (
+                        '{"tools":[{"name":"ops_openbrand.data_status_get",'
+                        '"description":"Read data freshness and Jira status."}]}'
+                    ),
+                }
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "ops_openbrand.data_status_get",
+                    "description": "Read data freshness and Jira status.",
+                    "parameters": {"type": "object"},
+                }
+            ],
+        }
+    )
+
+    assert second["output_text"] == ""
+    assert second["output"][0]["name"] == "ops_openbrand.data_status_get"
+    assert json.loads(second["output"][0]["arguments"]) == {"scope": "jira"}
+    assert len(invocations) == 3
+    assert any(
+        message["role"] == "system"
+        and "generic_clarification_after_successful_tool" in message["content"]
+        for message in invocations[-1]["messages"]
+    )
+    assert second["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] == {
+        "state": "repaired",
+        "attempts": 1,
+        "reason": "generic_clarification_after_successful_tool",
+    }
+
+
+def test_openai_compat_repairs_false_mcp_unavailable_claim_without_tool_registry(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    facade.reset_facade_response_state()
+    responses = iter(
+        [
+            '{"tool_call":{"name":"lookup","arguments":{"query":"Ops MCP"}}}',
+            "Direct calls to the ops_openbrand MCP are not supported in this environment.",
+            (
+                '{"tool_call":{"name":"tool_search",'
+                '"arguments":{"query":"safe read-only Ops Jira metrics"}}}'
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        facade,
+        "provider_adapter_decision",
+        lambda **kwargs: _local_route_envelope(),
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: _mock_local_chat(kwargs["messages"], kwargs["model"])
+        | {"choices": [{"message": {"content": next(responses)}}]},
+    )
+
+    first = execute_openai_responses_facade(
+        {"model": "norman-code", "input": "Check the Ops MCP."}
+    )
+    lookup_call = first["output"][0]
+    second = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "previous_response_id": first["id"],
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": lookup_call["call_id"],
+                    "output": '{"status":"ok","source":"ops_openbrand"}',
+                }
+            ],
+        }
+    )
+
+    assert second["output_text"] == ""
+    assert second["output"][0]["name"] == "tool_search"
+    assert json.loads(second["output"][0]["arguments"]) == {
+        "query": "safe read-only Ops Jira metrics"
+    }
+    assert second["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] == {
+        "state": "repaired",
+        "attempts": 1,
+        "reason": "contradicts_successful_mcp_tool",
+    }
 
 
 def test_openai_compat_responses_deduplicates_replayed_tool_history(monkeypatch):
