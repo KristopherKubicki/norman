@@ -247,6 +247,76 @@ TOOL_CHAIN_MUTATING_TOOL_TOKENS = frozenset(
         "write",
     }
 )
+TOOL_CHAIN_EXTERNAL_REQUEST_MARKERS = frozenset(
+    {
+        "account",
+        "calendar",
+        "connector",
+        "customer",
+        "dashboard",
+        "data",
+        "email",
+        "gmail",
+        "inbox",
+        "integration",
+        "issue",
+        "jira",
+        "mcp",
+        "record",
+        "ticket",
+        "workspace",
+    }
+)
+TOOL_CHAIN_LOCAL_CODING_REQUEST_MARKERS = frozenset(
+    {
+        "build",
+        "code",
+        "commit",
+        "directory",
+        "file",
+        "fix",
+        "git",
+        "implement",
+        "repository",
+        "repo",
+        "script",
+        "test",
+        "working tree",
+    }
+)
+TOOL_CHAIN_COMMON_WORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "at",
+        "can",
+        "check",
+        "do",
+        "for",
+        "from",
+        "get",
+        "help",
+        "i",
+        "in",
+        "is",
+        "it",
+        "me",
+        "my",
+        "of",
+        "on",
+        "our",
+        "please",
+        "run",
+        "some",
+        "the",
+        "this",
+        "to",
+        "use",
+        "with",
+        "you",
+    }
+)
 logger = logging.getLogger(__name__)
 MODEL_ALIASES = {
     "norman-code": ROUTE_POLICY_MODELS["coding_operator"],
@@ -863,6 +933,7 @@ def _tool_names(tools: list[dict[str, Any]]) -> set[str]:
 class ToolChainContext:
     declared_tool_names: tuple[str, ...]
     discovered_declared_tool_names: tuple[str, ...]
+    successful_tool_names: tuple[str, ...]
     chain_depth: int
     tool_results_supplied: int
     tool_results_matched: int
@@ -952,6 +1023,15 @@ def _tool_chain_context(
         for call_id, output in supplied_results
         if call_id in calls and _tool_output_is_successful(output)
     )
+    successful_tool_names = tuple(
+        sorted(
+            {
+                calls[call_id]
+                for call_id, output in supplied_results
+                if call_id in calls and _tool_output_is_successful(output)
+            }
+        )
+    )
     declared_tool_names = _tool_names(_tools(payload))
     return ToolChainContext(
         declared_tool_names=tuple(sorted(declared_tool_names)),
@@ -960,6 +1040,7 @@ def _tool_chain_context(
             calls=calls,
             declared_tool_names=declared_tool_names,
         ),
+        successful_tool_names=successful_tool_names,
         chain_depth=len(calls),
         tool_results_supplied=len(supplied_results),
         tool_results_matched=len(matched_result_names),
@@ -1333,6 +1414,285 @@ def _tool_chain_discovered_tool_is_read_only(tool: Mapping[str, Any]) -> bool:
     )
 
 
+@dataclass(frozen=True)
+class ToolChainControlDecision:
+    """One deterministic correction for an otherwise stalled tool workflow."""
+
+    name: str = ""
+    arguments: dict[str, Any] | None = None
+    reason: str = ""
+    failure_message: str = ""
+
+    @property
+    def is_tool_call(self) -> bool:
+        return bool(self.name)
+
+
+def _tool_chain_is_local_execution_tool(name: str) -> bool:
+    """Identify local client tools that should never win an external workflow."""
+
+    normalized = _lower(name).replace("-", "_")
+    if normalized in IMPLICIT_CLIENT_LOCAL_TOOL_NAMES:
+        return True
+    return normalized in {
+        "bash",
+        "command",
+        "exec",
+        "run_command",
+        "shell",
+        "terminal",
+    }
+
+
+def _tool_chain_words(value: str) -> set[str]:
+    return {
+        word
+        for word in re.findall(r"[a-z0-9]+", _lower(value))
+        if len(word) > 1 and word not in TOOL_CHAIN_COMMON_WORDS
+    }
+
+
+def _tool_chain_external_request_signal(
+    *,
+    request: str,
+    candidate_scores: list[tuple[int, Mapping[str, Any], dict[str, Any]]],
+) -> bool:
+    """Require evidence before preferring a connected tool over local coding."""
+
+    normalized = _lower(request)
+    request_words = _tool_chain_words(request)
+    has_explicit_external_marker = bool(
+        request_words & TOOL_CHAIN_EXTERNAL_REQUEST_MARKERS
+    )
+    has_local_coding_marker = any(
+        marker in normalized for marker in TOOL_CHAIN_LOCAL_CODING_REQUEST_MARKERS
+    )
+    best_score = candidate_scores[0][0] if candidate_scores else 0
+    if has_local_coding_marker:
+        return False
+    return has_explicit_external_marker or best_score >= 2
+
+
+def _tool_chain_read_only_external_candidates(
+    *,
+    prepared: PreparedResponsesExecution,
+) -> list[tuple[int, Mapping[str, Any], dict[str, Any]]]:
+    """Rank declared read-only connected tools by request relevance."""
+
+    request = _tool_chain_operator_request(prepared.messages)
+    request_words = _tool_chain_words(request)
+    completed = set(prepared.tool_chain_context.successful_tool_names)
+    candidates: list[tuple[int, Mapping[str, Any], dict[str, Any]]] = []
+    for tool in _tools(prepared.provider_payload):
+        name = _tool_name(tool)
+        if (
+            not name
+            or name == IMPLICIT_TOOL_SEARCH_NAME
+            or name in completed
+            or _tool_chain_is_local_execution_tool(name)
+            or not _tool_chain_discovered_tool_is_read_only(tool)
+        ):
+            continue
+        arguments = _tool_chain_safe_discovered_arguments(
+            tool=tool,
+            request=request,
+        )
+        if arguments is None:
+            continue
+        function = _mapping(tool.get("function"))
+        descriptor = " ".join(
+            (
+                name,
+                _clean(function.get("description") or tool.get("description")),
+            )
+        )
+        score = len(request_words & _tool_chain_words(descriptor))
+        candidates.append((score, tool, arguments))
+    return sorted(
+        candidates,
+        key=lambda candidate: (-candidate[0], _tool_name(candidate[1])),
+    )
+
+
+def _tool_chain_select_external_continuation(
+    *,
+    prepared: PreparedResponsesExecution,
+) -> tuple[str, dict[str, Any]] | None:
+    """Choose exactly one safe external continuation, never a guessed mutation."""
+
+    candidates = _tool_chain_read_only_external_candidates(prepared=prepared)
+    if not candidates:
+        return None
+    request = _tool_chain_operator_request(prepared.messages)
+    context = prepared.tool_chain_context
+    discovered = set(context.discovered_declared_tool_names)
+    discovered_candidates = [
+        candidate for candidate in candidates if _tool_name(candidate[1]) in discovered
+    ]
+    if len(discovered_candidates) == 1:
+        _, tool, arguments = discovered_candidates[0]
+        return _tool_name(tool), arguments
+    if not _tool_chain_external_request_signal(
+        request=request,
+        candidate_scores=candidates,
+    ):
+        return None
+    if len(candidates) == 1:
+        _, tool, arguments = candidates[0]
+        return _tool_name(tool), arguments
+    top_score, top_tool, top_arguments = candidates[0]
+    next_score = candidates[1][0]
+    if top_score >= 2 and top_score > next_score:
+        return _tool_name(top_tool), top_arguments
+    return None
+
+
+def _tool_chain_external_discovery_query(request: str) -> str:
+    compact_request = " ".join(request.split())[:480]
+    if compact_request:
+        return "Find the read-only connected tool needed to handle: " + compact_request
+    return "Find the read-only connected tool needed to continue this task"
+
+
+def _tool_chain_bounded_failure_message(
+    *,
+    context: ToolChainContext,
+) -> str:
+    if context.successful_tool_results:
+        return (
+            "Norman received the prior tool result but cannot safely choose one "
+            "next read-only capability from the declared tools. No mutation was "
+            "run; select a specific read-only capability or request the required "
+            "approval."
+        )
+    return (
+        "Norman cannot safely choose a connected capability for this request. "
+        "No local command or mutation was run; make the required read-only tool "
+        "available or select the intended capability."
+    )
+
+
+def _tool_chain_controller_decision(
+    *,
+    prepared: PreparedResponsesExecution,
+    text: str,
+) -> ToolChainControlDecision | None:
+    """Turn an obvious stalled external workflow into one valid client action."""
+
+    raw_calls = _json_tool_call_envelope(text)
+    context = prepared.tool_chain_context
+    watchdog_reason = _tool_chain_watchdog_reason(text=text, context=context)
+    has_local_call = any(
+        _tool_chain_is_local_execution_tool(_clean(call.get("name")))
+        for call in raw_calls
+        if isinstance(call, Mapping)
+    )
+    announced = _announces_next_tool_step(text)
+    generic_clarification = bool(
+        context.successful_tool_results
+        and any(
+            marker in _lower(text)
+            for marker in TOOL_CHAIN_GENERIC_CLARIFICATION_MARKERS
+        )
+    )
+    request = _tool_chain_operator_request(prepared.messages)
+    candidates = _tool_chain_read_only_external_candidates(prepared=prepared)
+    external_request = _tool_chain_external_request_signal(
+        request=request,
+        candidate_scores=candidates,
+    )
+    external_workflow = external_request or any(
+        name != IMPLICIT_TOOL_SEARCH_NAME
+        and not _tool_chain_is_local_execution_tool(name)
+        for name in context.successful_tool_names
+    )
+    initial_problem = (
+        not context.tool_results_supplied
+        and external_request
+        and (has_local_call or announced)
+    )
+    continuation_problem = bool(
+        context.successful_tool_results
+        and external_workflow
+        and (watchdog_reason or has_local_call or announced or generic_clarification)
+    )
+    if not initial_problem and not continuation_problem:
+        return None
+    continuation = _tool_chain_select_external_continuation(prepared=prepared)
+    if continuation is not None:
+        name, arguments = continuation
+        reason = (
+            "initial_external_workflow_preferred"
+            if initial_problem
+            else "external_workflow_continued"
+        )
+        return ToolChainControlDecision(
+            name=name,
+            arguments=arguments,
+            reason=reason,
+        )
+    if initial_problem or not context.tool_search_completed:
+        return ToolChainControlDecision(
+            name=IMPLICIT_TOOL_SEARCH_NAME,
+            arguments={"query": _tool_chain_external_discovery_query(request)},
+            reason=(
+                "initial_external_workflow_discovery"
+                if initial_problem
+                else "external_workflow_discovery"
+            ),
+        )
+    return ToolChainControlDecision(
+        reason="bounded_external_workflow_failure",
+        failure_message=_tool_chain_bounded_failure_message(context=context),
+    )
+
+
+def _tool_chain_control_response(
+    *,
+    chat_response: Mapping[str, Any],
+    decision: ToolChainControlDecision,
+) -> dict[str, Any]:
+    """Replace non-actionable model prose with one controlled response."""
+
+    response = dict(chat_response)
+    if decision.is_tool_call:
+        controlled_content = _json_dumps(
+            {
+                "tool_call": {
+                    "name": decision.name,
+                    "arguments": decision.arguments or {},
+                }
+            }
+        )
+    else:
+        controlled_content = decision.failure_message
+    choices = list(response.get("choices", []))
+    first_choice = (
+        dict(choices[0]) if choices and isinstance(choices[0], Mapping) else {}
+    )
+    message = _mapping(first_choice.get("message"))
+    message["content"] = controlled_content
+    first_choice["message"] = message
+    if choices:
+        choices[0] = first_choice
+    else:
+        choices = [first_choice]
+    response["choices"] = choices
+    norman = dict(_mapping(response.get("norman")))
+    receipt = dict(_mapping(norman.get("facade_receipt")))
+    receipt_output = dict(_mapping(receipt.get("output")))
+    if receipt_output:
+        # The facade receipt travels with Responses completions. Once the
+        # controller replaces an invalid model action, it must not expose that
+        # stale action through receipt text after removing it from output_text.
+        receipt_output["summary"] = controlled_content
+        receipt_output["text"] = controlled_content
+        receipt["output"] = receipt_output
+        norman["facade_receipt"] = receipt
+    response["norman"] = norman
+    return response
+
+
 def _tool_chain_is_broad_ops_request(request: str) -> bool:
     normalized = _lower(request)
     return any(marker in normalized for marker in TOOL_CHAIN_OPS_REQUEST_MARKERS)
@@ -1588,6 +1948,7 @@ def _tool_chain_telemetry(
     watchdog_reason: str = "",
     watchdog_repair_reason: str = "",
     watchdog_fallback: str = "",
+    watchdog_controller: str = "",
     outcome: str = "",
 ) -> dict[str, Any]:
     if not outcome:
@@ -1606,6 +1967,8 @@ def _tool_chain_telemetry(
         watchdog["repair_reason"] = watchdog_repair_reason
     if watchdog_fallback:
         watchdog["fallback"] = watchdog_fallback
+    if watchdog_controller:
+        watchdog["controller"] = watchdog_controller
     return {
         "schema": TOOL_CHAIN_SCHEMA,
         "turn_type": (
@@ -3659,6 +4022,31 @@ def _resolve_tool_chain_watchdog(
             "attempts": 0,
             "reason": "",
         }
+    controller = _tool_chain_controller_decision(
+        prepared=prepared,
+        text=text,
+    )
+    if controller is not None:
+        response = _tool_chain_control_response(
+            chat_response=response,
+            decision=controller,
+        )
+        logger.warning(
+            "Norman tool-chain controller request_id=%s reason=%s tool=%s",
+            request_id,
+            controller.reason,
+            controller.name or "bounded_failure",
+        )
+        return response, {
+            "state": "controlled",
+            "attempts": 0,
+            "reason": controller.reason,
+            "controller": (
+                "read_only_external_tool"
+                if controller.is_tool_call
+                else "bounded_failure"
+            ),
+        }
     reason = _tool_chain_watchdog_reason(
         text=text,
         context=prepared.tool_chain_context,
@@ -3769,6 +4157,7 @@ def _responses_response_from_chat(
         watchdog_reason=_clean(watchdog.get("reason")),
         watchdog_repair_reason=_clean(watchdog.get("repair_reason")),
         watchdog_fallback=_clean(watchdog.get("fallback")),
+        watchdog_controller=_clean(watchdog.get("controller")),
     )
     response_id = response_id or f"resp-norman-{uuid.uuid4().hex}"
     created = created_at or int(time.time())

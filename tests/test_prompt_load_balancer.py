@@ -1582,6 +1582,222 @@ def test_openai_compat_advances_initial_ops_action_announcement_to_lookup(
     }
 
 
+def test_openai_compat_prefers_generic_connected_read_over_local_exploration(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    monkeypatch.setattr(
+        facade,
+        "provider_adapter_decision",
+        lambda **kwargs: _local_route_envelope(),
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: _mock_local_chat(kwargs["messages"], kwargs["model"])
+        | {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"tool_call":{"name":"exec_command","arguments":'
+                            '{"cmd":"ls -la scripts"}}}'
+                        )
+                    }
+                }
+            ]
+        },
+    )
+
+    response = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "Check my connected calendar for today's meetings.",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "exec_command",
+                    "description": "Run a local shell command.",
+                    "parameters": {"type": "object"},
+                },
+                {
+                    "type": "function",
+                    "name": "calendar.search_events",
+                    "description": "Search connected calendar events.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                        "required": ["query"],
+                    },
+                },
+            ],
+        }
+    )
+
+    assert response["output_text"] == ""
+    assert [item["name"] for item in response["output"]] == ["calendar.search_events"]
+    assert json.loads(response["output"][0]["arguments"]) == {
+        "query": "Check my connected calendar for today's meetings."
+    }
+    assert response["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] == {
+        "state": "controlled",
+        "attempts": 0,
+        "reason": "initial_external_workflow_preferred",
+        "controller": "read_only_external_tool",
+    }
+
+
+def test_openai_compat_keeps_local_coding_tool_for_local_coding_request(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    monkeypatch.setattr(
+        facade,
+        "provider_adapter_decision",
+        lambda **kwargs: _local_route_envelope(),
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: _mock_local_chat(kwargs["messages"], kwargs["model"])
+        | {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"tool_call":{"name":"exec_command","arguments":'
+                            '{"cmd":"rg -n \\"calendar\\" app"}}}'
+                        )
+                    }
+                }
+            ]
+        },
+    )
+
+    response = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "Implement a test for the calendar parser.",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "exec_command",
+                    "description": "Run a local shell command.",
+                    "parameters": {"type": "object"},
+                },
+                {
+                    "type": "function",
+                    "name": "calendar.search_events",
+                    "description": "Search connected calendar events.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                        "required": ["query"],
+                    },
+                },
+            ],
+        }
+    )
+
+    assert [item["name"] for item in response["output"]] == ["exec_command"]
+    assert json.loads(response["output"][0]["arguments"]) == {
+        "cmd": 'rg -n "calendar" app'
+    }
+    assert response["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] == {
+        "state": "not_required",
+        "attempts": 0,
+        "reason": "",
+    }
+
+
+def test_openai_compat_continues_generic_discovered_read_without_repair(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    facade.reset_facade_response_state()
+    responses = iter(
+        [
+            '{"tool_call":{"name":"tool_search","arguments":'
+            '{"query":"connected calendar"}}}',
+            "Let me check the available calendar events now.",
+        ]
+    )
+    invocations = []
+    monkeypatch.setattr(
+        facade,
+        "provider_adapter_decision",
+        lambda **kwargs: _local_route_envelope(),
+    )
+
+    def fake_chat(**kwargs):
+        invocations.append(kwargs)
+        return _mock_local_chat(kwargs["messages"], kwargs["model"]) | {
+            "choices": [{"message": {"content": next(responses)}}]
+        }
+
+    monkeypatch.setattr(facade.norllama_gateway, "invoke_text_chat", fake_chat)
+
+    first = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "Check my connected calendar for today's meetings.",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "tool_search",
+                    "description": "Discover a connected tool.",
+                    "parameters": {"type": "object"},
+                }
+            ],
+        }
+    )
+    tool_search_call = first["output"][0]
+    second = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "previous_response_id": first["id"],
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": tool_search_call["call_id"],
+                    "output": (
+                        '{"tools":[{"name":"calendar.search_events",'
+                        '"description":"Search connected calendar events."}]}'
+                    ),
+                }
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "calendar.search_events",
+                    "description": "Search connected calendar events.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                        "required": ["query"],
+                    },
+                }
+            ],
+        }
+    )
+
+    assert len(invocations) == 2
+    assert second["output_text"] == ""
+    assert [item["name"] for item in second["output"]] == ["calendar.search_events"]
+    assert json.loads(second["output"][0]["arguments"]) == {
+        "query": "Check my connected calendar for today's meetings."
+    }
+    assert second["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] == {
+        "state": "controlled",
+        "attempts": 0,
+        "reason": "external_workflow_continued",
+        "controller": "read_only_external_tool",
+    }
+
+
 def test_openai_compat_advances_initial_ops_action_announcement_to_tool_search(
     monkeypatch,
 ):
@@ -2444,9 +2660,10 @@ def test_openai_compat_responses_stream_repairs_stale_tool_call_after_result(
     assert [item["name"] for item in function_items] == ["atlassian_rovo.search"]
     assert completed["output_text"] == ""
     assert completed["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] == {
-        "state": "repaired",
-        "attempts": 1,
-        "reason": "undeclared_tool",
+        "state": "controlled",
+        "attempts": 0,
+        "reason": "external_workflow_continued",
+        "controller": "read_only_external_tool",
     }
     assert native_response.closed is True
 
@@ -2547,11 +2764,10 @@ def test_openai_compat_responses_stream_falls_back_after_invalid_repair(
     assert [item["name"] for item in function_items] == ["atlassian_rovo.search"]
     assert completed["output_text"] == ""
     assert completed["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] == {
-        "state": "fallback",
-        "attempts": 1,
-        "reason": "undeclared_tool",
-        "repair_reason": "undeclared_tool",
-        "fallback": "declared_tool",
+        "state": "controlled",
+        "attempts": 0,
+        "reason": "external_workflow_continued",
+        "controller": "read_only_external_tool",
     }
     assert native_response.closed is True
 
@@ -2677,11 +2893,10 @@ def test_openai_compat_responses_stream_advances_single_discovered_tool_after_re
     }
     assert completed["output_text"] == ""
     assert completed["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] == {
-        "state": "fallback",
-        "attempts": 1,
-        "reason": "discovery_not_advanced",
-        "repair_reason": "discovery_not_advanced",
-        "fallback": "discovered_declared_tool",
+        "state": "controlled",
+        "attempts": 0,
+        "reason": "external_workflow_continued",
+        "controller": "read_only_external_tool",
     }
     assert native_response.closed is True
 
@@ -2817,9 +3032,10 @@ def test_openai_compat_responses_stream_repairs_announced_next_step_after_result
     ]
     assert completed["output_text"] == ""
     assert completed["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] == {
-        "state": "repaired",
-        "attempts": 1,
-        "reason": "announced_next_step_after_successful_tool",
+        "state": "controlled",
+        "attempts": 0,
+        "reason": "external_workflow_continued",
+        "controller": "read_only_external_tool",
     }
     assert native_response.closed is True
 
@@ -5300,17 +5516,13 @@ def test_openai_compat_repairs_generic_clarification_after_successful_tool(
 
     assert second["output_text"] == ""
     assert second["output"][0]["name"] == "ops_openbrand.data_status_get"
-    assert json.loads(second["output"][0]["arguments"]) == {"scope": "jira"}
-    assert len(invocations) == 3
-    assert any(
-        message["role"] == "system"
-        and "generic_clarification_after_successful_tool" in message["content"]
-        for message in invocations[-1]["messages"]
-    )
+    assert json.loads(second["output"][0]["arguments"]) == {}
+    assert len(invocations) == 2
     assert second["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] == {
-        "state": "repaired",
-        "attempts": 1,
-        "reason": "generic_clarification_after_successful_tool",
+        "state": "controlled",
+        "attempts": 0,
+        "reason": "external_workflow_continued",
+        "controller": "read_only_external_tool",
     }
 
 
@@ -5390,17 +5602,13 @@ def test_openai_compat_repairs_announced_next_step_after_successful_tool(
 
     assert second["output_text"] == ""
     assert second["output"][0]["name"] == "ops_openbrand.data_status_get"
-    assert json.loads(second["output"][0]["arguments"]) == {"scope": "jira"}
-    assert len(invocations) == 3
-    assert any(
-        message["role"] == "system"
-        and "announced_next_step_after_successful_tool" in message["content"]
-        for message in invocations[-1]["messages"]
-    )
+    assert json.loads(second["output"][0]["arguments"]) == {}
+    assert len(invocations) == 2
     assert second["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] == {
-        "state": "repaired",
-        "attempts": 1,
-        "reason": "announced_next_step_after_successful_tool",
+        "state": "controlled",
+        "attempts": 0,
+        "reason": "external_workflow_continued",
+        "controller": "read_only_external_tool",
     }
 
 
@@ -5486,14 +5694,13 @@ def test_openai_compat_repairs_direct_resource_discovery_after_tool_result(
 
     assert second["output_text"] == ""
     assert [item["name"] for item in second["output"]] == ["atlassian_rovo.search"]
-    assert json.loads(second["output"][0]["arguments"]) == {
-        "query": "highest priority jira ticket"
-    }
-    assert len(invocations) == 3
+    assert json.loads(second["output"][0]["arguments"]) == {}
+    assert len(invocations) == 2
     assert second["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] == {
-        "state": "repaired",
-        "attempts": 1,
-        "reason": "direct_mcp_resource_discovery_after_tool",
+        "state": "controlled",
+        "attempts": 0,
+        "reason": "external_workflow_continued",
+        "controller": "read_only_external_tool",
     }
 
 
@@ -5546,12 +5753,15 @@ def test_openai_compat_repairs_false_mcp_unavailable_claim_without_tool_registry
     assert second["output_text"] == ""
     assert second["output"][0]["name"] == "tool_search"
     assert json.loads(second["output"][0]["arguments"]) == {
-        "query": "safe read-only Ops Jira metrics"
+        "query": (
+            "Find the read-only connected tool needed to handle: " "Check the Ops MCP."
+        )
     }
     assert second["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] == {
-        "state": "repaired",
-        "attempts": 1,
-        "reason": "contradicts_successful_mcp_tool",
+        "state": "controlled",
+        "attempts": 0,
+        "reason": "external_workflow_discovery",
+        "controller": "read_only_external_tool",
     }
 
 
@@ -5718,7 +5928,7 @@ def test_openai_compat_falls_back_to_matching_declared_tool_after_invalid_repair
 
     assert second["output_text"] == ""
     assert [item["name"] for item in second["output"]] == ["atlassian_rovo.search"]
-    assert json.loads(second["output"][0]["arguments"]) == {"query": "priority"}
+    assert json.loads(second["output"][0]["arguments"]) == {}
     assert second["norman"]["responses_compatibility"]["tool_chain"] == {
         "schema": "norman.responses-tool-chain.v1",
         "turn_type": "after_tool_result",
@@ -5728,11 +5938,10 @@ def test_openai_compat_falls_back_to_matching_declared_tool_after_invalid_repair
         "tool_calls_returned": 1,
         "outcome": "tool_call",
         "watchdog": {
-            "state": "fallback",
-            "attempts": 1,
-            "reason": "undeclared_tool",
-            "repair_reason": "undeclared_tool",
-            "fallback": "declared_tool",
+            "state": "controlled",
+            "attempts": 0,
+            "reason": "external_workflow_continued",
+            "controller": "read_only_external_tool",
         },
     }
 
@@ -5799,17 +6008,15 @@ def test_openai_compat_falls_back_to_tool_search_after_repeated_action_promises(
         }
     )
 
-    assert second["output_text"] == ""
-    assert [item["name"] for item in second["output"]] == ["tool_search"]
-    assert json.loads(second["output"][0]["arguments"]) == {
-        "query": "Find the next executable tool needed to continue the pending task"
-    }
+    assert second["output_text"].startswith(
+        "Norman received the prior tool result but cannot safely choose"
+    )
+    assert [item["type"] for item in second["output"]] == ["message"]
     assert second["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] == {
-        "state": "fallback",
-        "attempts": 1,
-        "reason": "announced_next_step_after_successful_tool",
-        "repair_reason": "announced_next_step_after_successful_tool",
-        "fallback": "tool_search",
+        "state": "controlled",
+        "attempts": 0,
+        "reason": "bounded_external_workflow_failure",
+        "controller": "bounded_failure",
     }
 
 
@@ -5900,11 +6107,10 @@ def test_openai_compat_advances_single_discovered_tool_after_repeated_discovery(
         "query": "run checks on Jira and our data"
     }
     assert second["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] == {
-        "state": "fallback",
-        "attempts": 1,
-        "reason": "discovery_not_advanced",
-        "repair_reason": "discovery_not_advanced",
-        "fallback": "discovered_declared_tool",
+        "state": "controlled",
+        "attempts": 0,
+        "reason": "external_workflow_continued",
+        "controller": "read_only_external_tool",
     }
 
 
@@ -5983,11 +6189,10 @@ def test_openai_compat_advances_single_discovered_tool_after_repeated_action_pro
         "query": "run checks on Jira and our data"
     }
     assert second["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] == {
-        "state": "fallback",
-        "attempts": 1,
-        "reason": "announced_next_step_after_successful_tool",
-        "repair_reason": "announced_next_step_after_successful_tool",
-        "fallback": "discovered_declared_tool",
+        "state": "controlled",
+        "attempts": 0,
+        "reason": "external_workflow_continued",
+        "controller": "read_only_external_tool",
     }
 
 
@@ -6072,13 +6277,15 @@ def test_openai_compat_does_not_advance_discovered_mutating_tool(
         }
     )
 
-    assert [item["name"] for item in second["output"]] == ["tool_search"]
+    assert second["output_text"].startswith(
+        "Norman received the prior tool result but cannot safely choose"
+    )
+    assert [item["type"] for item in second["output"]] == ["message"]
     assert second["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] == {
-        "state": "fallback",
-        "attempts": 1,
-        "reason": "discovery_not_advanced",
-        "repair_reason": "discovery_not_advanced",
-        "fallback": "tool_search",
+        "state": "controlled",
+        "attempts": 0,
+        "reason": "bounded_external_workflow_failure",
+        "controller": "bounded_failure",
     }
 
 
