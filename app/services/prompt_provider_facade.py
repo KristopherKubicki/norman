@@ -1367,7 +1367,15 @@ def _initial_ops_tool_preference(
         for raw_call in raw_calls
     )
     has_stalled_action_announcement = not raw_calls and _announces_next_tool_step(text)
-    if not has_local_call and not has_stalled_action_announcement:
+    has_initial_tool_search = any(
+        _clean(raw_call.get("name")) == IMPLICIT_TOOL_SEARCH_NAME
+        for raw_call in raw_calls
+    )
+    if (
+        not has_local_call
+        and not has_stalled_action_announcement
+        and not has_initial_tool_search
+    ):
         return None
     request = _tool_chain_operator_request(prepared.messages)
     if not _tool_chain_is_broad_ops_request(request):
