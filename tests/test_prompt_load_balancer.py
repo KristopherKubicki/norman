@@ -1927,6 +1927,144 @@ def test_openai_compat_responses_stream_repairs_stale_tool_call_after_result(
     assert native_response.closed is True
 
 
+def test_openai_compat_responses_stream_repairs_announced_next_step_after_result(
+    test_app, monkeypatch
+):
+    import app.services.prompt_provider_facade as facade
+
+    facade.reset_facade_response_state()
+    repaired_call = (
+        '{"tool_call":{"name":"ops_openbrand.data_status_get",'
+        '"arguments":{"scope":"jira"}}}'
+    )
+    monkeypatch.setattr(
+        facade,
+        "provider_adapter_decision",
+        lambda **kwargs: _local_route_envelope(),
+    )
+
+    def fake_chat(**kwargs):
+        content = (
+            repaired_call
+            if any(
+                message["role"] == "system"
+                and message["content"].startswith("Norman tool-chain repair:")
+                for message in kwargs["messages"]
+            )
+            else '{"tool_call":{"name":"tool_search","arguments":{"query":"Ops MCP"}}}'
+        )
+        return _mock_local_chat(kwargs["messages"], kwargs["model"]) | {
+            "choices": [{"message": {"content": content}}]
+        }
+
+    monkeypatch.setattr(facade.norllama_gateway, "invoke_text_chat", fake_chat)
+    first = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "Run safe read-only checks on the Ops MCP.",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "tool_search",
+                    "description": "Discover a connected tool.",
+                    "parameters": {"type": "object"},
+                }
+            ],
+        }
+    )
+    tool_search_call = first["output"][0]
+
+    native_response = _MockNativeStreamResponse(
+        [
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "response": (
+                        "Now let me check what other Jira-related skills are "
+                        "available:"
+                    ),
+                }
+            ),
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "done": True,
+                    "prompt_eval_count": 4,
+                    "eval_count": 2,
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat_stream",
+        lambda **kwargs: facade.norllama_gateway.NorllamaTextStream(
+            native_response,
+            model=kwargs["model"],
+        ),
+    )
+
+    result = test_app.post(
+        "/v1/responses",
+        headers=_proxy_headers(monkeypatch),
+        json={
+            "model": "norman-code",
+            "previous_response_id": first["id"],
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": tool_search_call["call_id"],
+                    "output": (
+                        '{"tools":[{"name":"ops_openbrand.data_status_get",'
+                        '"description":"Read data freshness and Jira status."}]}'
+                    ),
+                }
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "ops_openbrand.data_status_get",
+                    "description": "Read data freshness and Jira status.",
+                    "parameters": {"type": "object"},
+                }
+            ],
+            "stream": True,
+        },
+    )
+
+    assert result.status_code == 200
+    events = _response_sse_events(result.text)
+    payloads = [
+        json.loads(data) for event, data in events if event and data != "[DONE]"
+    ]
+    completed = next(
+        payload["response"]
+        for payload in payloads
+        if payload["type"] == "response.completed"
+    )
+    function_items = [
+        payload["item"]
+        for payload in payloads
+        if payload["type"] == "response.output_item.done"
+        and isinstance(payload.get("item"), dict)
+        and payload["item"].get("type") == "function_call"
+    ]
+
+    assert not any(
+        payload["type"] == "response.output_text.delta" for payload in payloads
+    )
+    assert [item["name"] for item in function_items] == [
+        "ops_openbrand.data_status_get"
+    ]
+    assert completed["output_text"] == ""
+    assert completed["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] == {
+        "state": "repaired",
+        "attempts": 1,
+        "reason": "announced_next_step_after_successful_tool",
+    }
+    assert native_response.closed is True
+
+
 def test_openai_compat_responses_streams_normal_json_text_with_tools_declared(
     test_app, monkeypatch
 ):
@@ -4378,6 +4516,93 @@ def test_openai_compat_repairs_generic_clarification_after_successful_tool(
         "state": "repaired",
         "attempts": 1,
         "reason": "generic_clarification_after_successful_tool",
+    }
+
+
+def test_openai_compat_repairs_announced_next_step_after_successful_tool(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    facade.reset_facade_response_state()
+    invocations = []
+    responses = iter(
+        [
+            '{"tool_call":{"name":"tool_search","arguments":{"query":"Ops MCP"}}}',
+            "Now let me check what other Jira-related skills are available:",
+            (
+                '{"tool_call":{"name":"ops_openbrand.data_status_get",'
+                '"arguments":{"scope":"jira"}}}'
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        facade,
+        "provider_adapter_decision",
+        lambda **kwargs: _local_route_envelope(),
+    )
+
+    def fake_chat(**kwargs):
+        invocations.append(kwargs)
+        return _mock_local_chat(kwargs["messages"], kwargs["model"]) | {
+            "choices": [{"message": {"content": next(responses)}}]
+        }
+
+    monkeypatch.setattr(facade.norllama_gateway, "invoke_text_chat", fake_chat)
+
+    first = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "Run safe read-only checks on the Ops MCP.",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "tool_search",
+                    "description": "Discover a connected tool.",
+                    "parameters": {"type": "object"},
+                }
+            ],
+        }
+    )
+    tool_search_call = first["output"][0]
+    second = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "previous_response_id": first["id"],
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": tool_search_call["call_id"],
+                    "output": (
+                        '{"tools":[{"name":"ops_openbrand.data_status_get",'
+                        '"description":"Read data freshness and Jira status."}]}'
+                    ),
+                }
+            ],
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "ops_openbrand.data_status_get",
+                    "description": "Read data freshness and Jira status.",
+                    "parameters": {"type": "object"},
+                }
+            ],
+        }
+    )
+
+    assert second["output_text"] == ""
+    assert second["output"][0]["name"] == "ops_openbrand.data_status_get"
+    assert json.loads(second["output"][0]["arguments"]) == {"scope": "jira"}
+    assert len(invocations) == 3
+    assert any(
+        message["role"] == "system"
+        and "announced_next_step_after_successful_tool" in message["content"]
+        for message in invocations[-1]["messages"]
+    )
+    assert second["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] == {
+        "state": "repaired",
+        "attempts": 1,
+        "reason": "announced_next_step_after_successful_tool",
     }
 
 

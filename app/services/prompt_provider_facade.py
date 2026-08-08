@@ -129,6 +129,43 @@ TOOL_CHAIN_GENERIC_CLARIFICATION_MARKERS = (
     "could you specify what",
     "please specify what",
 )
+TOOL_CHAIN_NEXT_STEP_PREFIXES = (
+    "now let me ",
+    "now, let me ",
+    "let me now ",
+    "next let me ",
+    "next, let me ",
+    "now i will ",
+    "now, i will ",
+    "i will now ",
+    "next i will ",
+    "next, i will ",
+    "now i'll ",
+    "now, i'll ",
+    "i'll now ",
+    "next i'll ",
+    "next, i'll ",
+)
+TOOL_CHAIN_NEXT_STEP_ACTION_VERBS = (
+    "check",
+    "search",
+    "inspect",
+    "look",
+    "query",
+    "review",
+    "read",
+    "retrieve",
+    "run",
+    "test",
+    "gather",
+    "find",
+    "verify",
+    "use",
+    "call",
+    "fetch",
+    "analyze",
+    "examine",
+)
 logger = logging.getLogger(__name__)
 MODEL_ALIASES = {
     "norman-code": ROUTE_POLICY_MODELS["coding_operator"],
@@ -868,6 +905,22 @@ def _tool_output_is_successful(output: str) -> bool:
     return not any(marker in normalized for marker in TOOL_OUTPUT_FAILURE_MARKERS)
 
 
+def _announces_next_tool_step(text: str) -> bool:
+    """Return whether a response stops at a clear next-action announcement."""
+
+    normalized = _lower(text)
+    if not normalized.endswith(":"):
+        return False
+    announcement = normalized[:-1].strip()
+    for prefix in TOOL_CHAIN_NEXT_STEP_PREFIXES:
+        if not announcement.startswith(prefix):
+            continue
+        action = announcement[len(prefix) :]
+        if action.startswith(TOOL_CHAIN_NEXT_STEP_ACTION_VERBS):
+            return True
+    return False
+
+
 def _tool_chain_premature_stop_reason(
     *,
     text: str,
@@ -880,6 +933,8 @@ def _tool_chain_premature_stop_reason(
     normalized = _lower(text)
     if any(marker in normalized for marker in TOOL_CHAIN_GENERIC_CLARIFICATION_MARKERS):
         return "generic_clarification_after_successful_tool"
+    if _announces_next_tool_step(text):
+        return "announced_next_step_after_successful_tool"
     if "mcp" in normalized and (
         ("direct call" in normalized and "not supported" in normalized)
         or ("direct access" in normalized and "not supported" in normalized)

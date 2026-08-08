@@ -16,6 +16,8 @@ from pydantic import BaseModel, Field
 from app.services.prompt_load_balancer import prompt_load_balancer_capabilities
 from app.services.prompt_provider_facade import (
     FacadeError,
+    TOOL_CHAIN_NEXT_STEP_ACTION_VERBS,
+    TOOL_CHAIN_NEXT_STEP_PREFIXES,
     capacity_model_for,
     chat_completion_stream_chunks,
     cloud_fallback_execution_configured,
@@ -38,6 +40,7 @@ logger = logging.getLogger(__name__)
 MAX_PROXY_EVENT_CAPACITY_WINDOW = 200
 CAPACITY_MESH_PROBE_TIMEOUT_SECONDS = 3.0
 MAX_TOOL_ENVELOPE_PREFIX_CHARS = 256
+MAX_NEXT_STEP_ANNOUNCEMENT_PREFIX_CHARS = 512
 GATEWAY_ROUTE_HEADER = "x-norman-gateway-route"
 GATEWAY_ROUTE_IDS = frozenset(
     {
@@ -657,6 +660,36 @@ def _tool_envelope_candidate_start(text: str, previous_character: str) -> int:
     return -1
 
 
+def _leading_next_step_announcement_state(text: str) -> str:
+    """Keep a leading action promise private until it becomes prose or a tool."""
+
+    candidate = text.lstrip()
+    normalized = candidate.lower()
+    if not normalized or len(candidate) >= MAX_NEXT_STEP_ANNOUNCEMENT_PREFIX_CHARS:
+        return "text"
+    if any(prefix.startswith(normalized) for prefix in TOOL_CHAIN_NEXT_STEP_PREFIXES):
+        return "pending"
+    for prefix in TOOL_CHAIN_NEXT_STEP_PREFIXES:
+        if not normalized.startswith(prefix):
+            continue
+        action = normalized[len(prefix) :]
+        if not action or any(
+            verb.startswith(action) for verb in TOOL_CHAIN_NEXT_STEP_ACTION_VERBS
+        ):
+            return "pending"
+        if not action.startswith(TOOL_CHAIN_NEXT_STEP_ACTION_VERBS):
+            return "text"
+        colon = candidate.find(":")
+        if colon < 0:
+            return "pending"
+        remainder = candidate[colon + 1 :]
+        if not remainder.strip():
+            return "defer"
+        envelope_state = _tool_envelope_prefix_state(remainder)
+        return "defer" if envelope_state in {"pending", "tool"} else "text"
+    return "text"
+
+
 def _response_stream_snapshot(stream: Any, *, status: str) -> dict[str, Any]:
     snapshot = {
         "id": stream.response_id,
@@ -841,6 +874,10 @@ def _response_sse(stream: Any):
                 continue
             buffered_text += fragment
             while buffered_text:
+                if not text_item_started and _leading_next_step_announcement_state(
+                    buffered_text
+                ) in {"pending", "defer"}:
+                    break
                 previous_character = (
                     emitted_text_parts[-1][-1] if emitted_text_parts else ""
                 )
