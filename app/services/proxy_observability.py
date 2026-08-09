@@ -18,6 +18,7 @@ DEFAULT_EVENT_LOG_PATH = Path("/var/lib/norman/state/proxy-events.jsonl")
 DEFAULT_EVENT_LOG_MAX_BYTES = 5 * 1024 * 1024
 DISABLED_EVENT_LOG_VALUES = frozenset({"0", "false", "none", "off", "disabled"})
 TOOL_CHAIN_SCHEMA = "norman.responses-tool-chain.v1"
+PROMPT_CONTEXT_SCHEMA = "norman.responses-prompt-context.v1"
 TOOL_CHAIN_TURN_TYPES = frozenset({"after_tool_result", "initial_or_text"})
 TOOL_CHAIN_OUTCOMES = frozenset(
     {
@@ -38,8 +39,21 @@ TOOL_CHAIN_WATCHDOG_STATES = frozenset(
     }
 )
 BRIDGE_MODES = frozenset({"transparent", "governed"})
-BRIDGE_TOOL_TRANSPORTS = frozenset({"local_text_adapter"})
+BRIDGE_TOOL_TRANSPORTS = frozenset({"bedrock_mantle_responses", "local_text_adapter"})
 BRIDGE_STATE_RETENTIONS = frozenset({"ephemeral", "session"})
+PROMPT_CONTEXT_GROUPS = (
+    "history",
+    "tool_contract",
+    "structured_output",
+    "current_input",
+)
+PROMPT_CONTEXT_GROUP_FIELDS = (
+    "message_count",
+    "chars",
+    "tool_output_chars",
+    "function_call_chars",
+    "text_chars",
+)
 SAFE_TOOL_CHAIN_CALL_NAMES = frozenset({"tool_search"})
 LOCAL_TOOL_CHAIN_CALL_NAMES = {
     "apply_patch": "local_file_patch",
@@ -155,6 +169,43 @@ def _safe_identifier(value: Any, *, maximum: int = 192) -> str:
     return candidate[:maximum]
 
 
+def _safe_prompt_context_metadata(compatibility: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep numerical prompt sizing details without retaining model content."""
+
+    prompt_context = _mapping(compatibility.get("prompt_context"))
+    if _clean(prompt_context.get("schema")) != PROMPT_CONTEXT_SCHEMA:
+        return {}
+    raw_groups = _mapping(prompt_context.get("groups"))
+    groups: dict[str, dict[str, int]] = {}
+    for name in PROMPT_CONTEXT_GROUPS:
+        raw_group = _mapping(raw_groups.get(name))
+        groups[name] = {
+            field: _bounded_int(
+                raw_group.get(field),
+                maximum=10_000 if field == "message_count" else 4_000_000,
+            )
+            for field in PROMPT_CONTEXT_GROUP_FIELDS
+        }
+    return {
+        "schema": PROMPT_CONTEXT_SCHEMA,
+        "transport": (
+            _clean(prompt_context.get("transport"))
+            if _clean(prompt_context.get("transport")) in BRIDGE_TOOL_TRANSPORTS
+            else "unknown"
+        ),
+        "groups": groups,
+        "total_message_count": _bounded_int(
+            prompt_context.get("total_message_count"), maximum=10_000
+        ),
+        "total_content_chars": _bounded_int(
+            prompt_context.get("total_content_chars"), maximum=4_000_000
+        ),
+        "rendered_prompt_chars": _bounded_int(
+            prompt_context.get("rendered_prompt_chars"), maximum=4_000_000
+        ),
+    }
+
+
 def _safe_bridge_metadata(
     response: Mapping[str, Any],
     error: Mapping[str, Any],
@@ -201,6 +252,7 @@ def _safe_bridge_metadata(
                 "effective": _bounded_int(budget.get("effective")),
                 "maximum": _bounded_int(budget.get("maximum")),
             },
+            "prompt_context": _safe_prompt_context_metadata(compatibility),
             "fallback_reason": _safe_identifier(
                 fallback.get("local_failure_code"), maximum=96
             ),

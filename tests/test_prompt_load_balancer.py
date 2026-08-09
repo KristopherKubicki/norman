@@ -1105,6 +1105,15 @@ def test_openai_compat_responses_preserves_native_terra_tools_and_continuation(
         first_payload["norman"]["responses_compatibility"]["tool_transport"]
         == "bedrock_mantle_responses"
     )
+    first_prompt_context = first_payload["norman"]["responses_compatibility"][
+        "prompt_context"
+    ]
+    assert first_prompt_context["transport"] == "bedrock_mantle_responses"
+    assert first_prompt_context["groups"]["tool_contract"]["message_count"] == 1
+    assert first_prompt_context["groups"]["tool_contract"]["chars"] > 0
+    assert first_prompt_context["groups"]["current_input"]["chars"] > 0
+    assert "Check the repository." not in json.dumps(first_prompt_context)
+    assert "Read the repository status." not in json.dumps(first_prompt_context)
     first_request = bedrock_calls[0]
     assert first_request.responses_options == {
         "tools": [tool],
@@ -1138,6 +1147,15 @@ def test_openai_compat_responses_preserves_native_terra_tools_and_continuation(
     assert second.status_code == 200
     second_payload = second.json()
     assert second_payload["output_text"] == "Repository is clean."
+    second_prompt_context = second_payload["norman"]["responses_compatibility"][
+        "prompt_context"
+    ]
+    assert second_prompt_context["transport"] == "bedrock_mantle_responses"
+    assert second_prompt_context["groups"]["history"]["function_call_chars"] > 0
+    assert second_prompt_context["groups"]["history"]["text_chars"] > 0
+    assert second_prompt_context["groups"]["current_input"]["tool_output_chars"] > 0
+    assert "opaque-reasoning-state" not in json.dumps(second_prompt_context)
+    assert "branch" not in json.dumps(second_prompt_context)
     second_request = bedrock_calls[1]
     assert second_request.responses_options["tools"] == [
         tool,
@@ -4355,6 +4373,18 @@ def test_openai_compat_responses_can_return_explicit_tool_call(monkeypatch):
     compat = response["norman"]["responses_compatibility"]
     assert compat["tools_declared"] == 1
     assert compat["tool_calls_returned"] == 1
+    prompt_context = compat["prompt_context"]
+    assert prompt_context["schema"] == "norman.responses-prompt-context.v1"
+    assert prompt_context["transport"] == "local_text_adapter"
+    assert prompt_context["groups"]["history"]["message_count"] == 0
+    assert prompt_context["groups"]["tool_contract"]["message_count"] == 1
+    assert prompt_context["groups"]["current_input"]["message_count"] == 1
+    assert prompt_context["groups"]["current_input"]["chars"] == len("check the repo")
+    assert (
+        prompt_context["rendered_prompt_chars"] >= prompt_context["total_content_chars"]
+    )
+    assert "check the repo" not in json.dumps(prompt_context)
+    assert "Run a shell command." not in json.dumps(prompt_context)
     assert response["norman"]["route_receipt"]["schema"] == (
         "norman.norllama.route-receipt.v1"
     )
@@ -5943,6 +5973,15 @@ def test_openai_compat_responses_replays_typed_message_after_tool_output(monkeyp
         for message in tool_contracts
     ] == ["synthetic.status_lookup"]
     assert third_messages[-2]["type"] == "function_call_output"
+    prompt_context = final["norman"]["responses_compatibility"]["prompt_context"]
+    assert prompt_context["transport"] == "local_text_adapter"
+    assert prompt_context["groups"]["history"]["message_count"] == 4
+    assert prompt_context["groups"]["tool_contract"]["message_count"] == 1
+    assert prompt_context["groups"]["current_input"]["message_count"] == 2
+    assert prompt_context["groups"]["history"]["tool_output_chars"] > 0
+    assert prompt_context["groups"]["current_input"]["tool_output_chars"] > 0
+    assert "synthetic health" not in json.dumps(prompt_context)
+    assert "status" not in json.dumps(prompt_context)
 
 
 def test_openai_compat_proxy_observability_records_success_without_prompt_leak(
