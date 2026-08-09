@@ -8,7 +8,7 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import requests
 
@@ -120,6 +120,10 @@ TOOL_OUTPUT_FAILURE_MARKERS = (
     "tool failed",
     "failed to execute",
 )
+CLOUD_STREAM_HEARTBEAT_INTERVAL_SECONDS = 5.0
+CLOUD_STREAM_MAX_ACTIVE_INVOCATIONS = 4
+LOCAL_STREAM_OPEN_HEARTBEAT_INTERVAL_SECONDS = 5.0
+LOCAL_STREAM_OPEN_MAX_ACTIVE_INVOCATIONS = 4
 logger = logging.getLogger(__name__)
 MODEL_ALIASES = {
     "norman-code": ROUTE_POLICY_MODELS["coding_operator"],
@@ -138,6 +142,12 @@ RAW_LOCAL_MODEL_MARKERS = (
 _RESPONSE_STATE_LOCK = threading.RLock()
 _RESPONSE_STATE: dict[str, dict[str, Any]] = {}
 _RESPONSE_STATE_ORDER: deque[str] = deque()
+_CLOUD_STREAM_WORKER_SLOTS = threading.BoundedSemaphore(
+    CLOUD_STREAM_MAX_ACTIVE_INVOCATIONS
+)
+_LOCAL_STREAM_OPEN_WORKER_SLOTS = threading.BoundedSemaphore(
+    LOCAL_STREAM_OPEN_MAX_ACTIVE_INVOCATIONS
+)
 
 
 class FacadeError(RuntimeError):
@@ -208,6 +218,100 @@ def _flag(value: Any, default: bool = False) -> bool:
 
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _run_bounded_invocation_with_progress(
+    *,
+    operation: Callable[[], Any],
+    progress_event: Callable[[str, int], dict[str, Any]],
+    worker_slots: threading.BoundedSemaphore,
+    worker_name: str,
+    heartbeat_interval_seconds: float,
+):
+    """Run a bounded blocking operation while keeping an SSE response live."""
+
+    started_at = time.monotonic()
+    interval_seconds = max(0.001, float(heartbeat_interval_seconds))
+    acquired = worker_slots.acquire(blocking=False)
+    while not acquired:
+        yield progress_event(
+            "queued",
+            max(0, int((time.monotonic() - started_at) * 1000)),
+        )
+        acquired = worker_slots.acquire(timeout=interval_seconds)
+
+    completed = threading.Event()
+    outcome: dict[str, Any] = {}
+    errors: list[Exception] = []
+
+    def run_operation() -> None:
+        try:
+            outcome["result"] = operation()
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            completed.set()
+            worker_slots.release()
+
+    worker = threading.Thread(
+        target=run_operation,
+        name=worker_name,
+        daemon=True,
+    )
+    try:
+        worker.start()
+    except Exception:
+        worker_slots.release()
+        raise
+
+    yield progress_event(
+        "in_progress",
+        max(0, int((time.monotonic() - started_at) * 1000)),
+    )
+    while not completed.wait(interval_seconds):
+        yield progress_event(
+            "in_progress",
+            max(0, int((time.monotonic() - started_at) * 1000)),
+        )
+    if errors:
+        raise errors[0]
+    return outcome["result"]
+
+
+def _run_cloud_invocation_with_progress(
+    *,
+    operation: Callable[[], dict[str, Any]],
+    progress_event: Callable[[str, int], dict[str, Any]],
+):
+    """Run one bounded cloud call while keeping an SSE response live."""
+
+    return (
+        yield from _run_bounded_invocation_with_progress(
+            operation=operation,
+            progress_event=progress_event,
+            worker_slots=_CLOUD_STREAM_WORKER_SLOTS,
+            worker_name="norman-cloud-stream",
+            heartbeat_interval_seconds=CLOUD_STREAM_HEARTBEAT_INTERVAL_SECONDS,
+        )
+    )
+
+
+def _run_local_stream_open_with_progress(
+    *,
+    operation: Callable[[], norllama_gateway.NorllamaTextStream],
+    progress_event: Callable[[str, int], dict[str, Any]],
+):
+    """Open a local stream in a bounded worker while keeping SSE live."""
+
+    return (
+        yield from _run_bounded_invocation_with_progress(
+            operation=operation,
+            progress_event=progress_event,
+            worker_slots=_LOCAL_STREAM_OPEN_WORKER_SLOTS,
+            worker_name="norman-local-stream-open",
+            heartbeat_interval_seconds=LOCAL_STREAM_OPEN_HEARTBEAT_INTERVAL_SECONDS,
+        )
+    )
 
 
 def cloud_fallback_execution_configured() -> bool:
@@ -2451,8 +2555,10 @@ def _cloud_fallback_metadata(
     invocation: AuthorizedChatInvocation,
     local_error: FacadeError,
     state: str,
+    elapsed_ms: int | None = None,
+    heartbeat: bool = False,
 ) -> dict[str, Any]:
-    return {
+    metadata: dict[str, Any] = {
         "schema": CLOUD_FALLBACK_SCHEMA,
         "state": state,
         "fallback_attempted": True,
@@ -2461,6 +2567,11 @@ def _cloud_fallback_metadata(
         "fallback_model": plan.model,
         "request_id": invocation.invocation_id,
     }
+    if elapsed_ms is not None:
+        metadata["elapsed_ms"] = max(0, min(int(elapsed_ms), 3600000))
+    if heartbeat:
+        metadata["heartbeat"] = True
+    return metadata
 
 
 def _cloud_fallback_marker(
@@ -2737,8 +2848,10 @@ def _explicit_cloud_selection_metadata(
     plan: ExplicitCloudSelectionPlan,
     invocation: AuthorizedChatInvocation,
     state: str,
+    elapsed_ms: int | None = None,
+    heartbeat: bool = False,
 ) -> dict[str, Any]:
-    return {
+    metadata: dict[str, Any] = {
         "schema": EXPLICIT_CLOUD_SELECTION_SCHEMA,
         "state": state,
         "requested_alias": plan.requested_alias,
@@ -2747,6 +2860,11 @@ def _explicit_cloud_selection_metadata(
         "lane": plan.lane,
         "request_id": invocation.invocation_id,
     }
+    if elapsed_ms is not None:
+        metadata["elapsed_ms"] = max(0, min(int(elapsed_ms), 3600000))
+    if heartbeat:
+        metadata["heartbeat"] = True
+    return metadata
 
 
 def _explicit_cloud_selection_marker(
@@ -3237,24 +3355,16 @@ def _resolve_tool_continuation_response(
     return repaired, "repaired", 1
 
 
-def _start_authorized_chat_stream(
+def _open_authorized_chat_stream(
     *,
     provider_payload: Mapping[str, Any],
-    route_envelope: Mapping[str, Any],
     messages: list[dict[str, Any]],
-    request_id: str,
-) -> tuple[
-    AuthorizedChatInvocation,
-    norllama_gateway.NorllamaTextStream | None,
-    FacadeError | None,
-]:
-    invocation = _prepare_authorized_chat_invocation(
-        provider_payload=provider_payload,
-        route_envelope=route_envelope,
-        request_id=request_id,
-    )
+    invocation: AuthorizedChatInvocation,
+) -> norllama_gateway.NorllamaTextStream:
+    """Open the already-authorized local stream or classify its failure."""
+
     try:
-        stream = norllama_gateway.invoke_text_chat_stream(
+        return norllama_gateway.invoke_text_chat_stream(
             messages=messages,
             model=invocation.authorization.model,
             base_url=str(getattr(settings, "llm_offline_base_url", "") or ""),
@@ -3271,17 +3381,12 @@ def _start_authorized_chat_stream(
         RuntimeError,
         TimeoutError,
     ) as exc:
-        return (
-            invocation,
-            None,
-            _classified_gateway_error(
-                exc,
-                request_id=invocation.invocation_id,
-                requested_model=_requested_model(provider_payload),
-                selected_model=invocation.authorization.model,
-            ),
-        )
-    return invocation, stream, None
+        raise _classified_gateway_error(
+            exc,
+            request_id=invocation.invocation_id,
+            requested_model=_requested_model(provider_payload),
+            selected_model=invocation.authorization.model,
+        ) from exc
 
 
 def execute_openai_chat_facade(
@@ -3499,7 +3604,7 @@ def _responses_response_from_chat(
 
 
 class FacadeResponsesStream:
-    """An admitted local response stream with final facade response assembly."""
+    """A deferred local response stream with final facade response assembly."""
 
     def __init__(
         self,
@@ -3571,6 +3676,48 @@ class FacadeResponsesStream:
 
     def admission_metadata(self) -> dict[str, Any]:
         return dict(self._stream_admission)
+
+    def _local_stream_open_metadata(
+        self,
+        *,
+        state: str,
+        elapsed_ms: int,
+        heartbeat: bool,
+    ) -> dict[str, Any]:
+        return {
+            "schema": "norman.local-stream-open.v1",
+            "state": state,
+            "model": self.invocation.authorization.model,
+            "elapsed_ms": max(0, min(int(elapsed_ms), 3600000)),
+            "heartbeat": heartbeat,
+        }
+
+    def _open_local_stream_events(self):
+        started_at = time.monotonic()
+        self.stream = yield from _run_local_stream_open_with_progress(
+            operation=lambda: _open_authorized_chat_stream(
+                provider_payload=self.prepared.route_payload,
+                messages=self.prepared.messages,
+                invocation=self.invocation,
+            ),
+            progress_event=lambda state, elapsed_ms: {
+                "type": "local_stream_open",
+                "local_stream_open": self._local_stream_open_metadata(
+                    state=state,
+                    elapsed_ms=elapsed_ms,
+                    heartbeat=True,
+                ),
+            },
+        )
+        self._stream_admission = self._admission_metadata_from_headers()
+        yield {
+            "type": "local_stream_open",
+            "local_stream_open": self._local_stream_open_metadata(
+                state="ready",
+                elapsed_ms=max(0, int((time.monotonic() - started_at) * 1000)),
+                heartbeat=False,
+            ),
+        }
 
     def update_admission_metadata(self, frame: Mapping[str, Any]) -> None:
         if _clean(frame.get("schema")) != "norllama.stream-admission.v1":
@@ -3651,13 +3798,26 @@ class FacadeResponsesStream:
                 state="started",
             ),
         }
-        self._cloud_chat_response = _execute_cloud_fallback(
-            plan=plan,
-            provider_payload=self.prepared.route_payload,
-            route_envelope=self.prepared.route_envelope,
-            messages=self.prepared.messages,
-            invocation=self.invocation,
-            local_error=local_error,
+        self._cloud_chat_response = yield from _run_cloud_invocation_with_progress(
+            operation=lambda: _execute_cloud_fallback(
+                plan=plan,
+                provider_payload=self.prepared.route_payload,
+                route_envelope=self.prepared.route_envelope,
+                messages=self.prepared.messages,
+                invocation=self.invocation,
+                local_error=local_error,
+            ),
+            progress_event=lambda state, elapsed_ms: {
+                "type": "cloud_fallback",
+                "cloud_fallback": _cloud_fallback_metadata(
+                    plan=plan,
+                    invocation=self.invocation,
+                    local_error=local_error,
+                    state=state,
+                    elapsed_ms=elapsed_ms,
+                    heartbeat=True,
+                ),
+            },
         )
         chat_response = self._resolve_tool_continuation_response(
             self._cloud_chat_response
@@ -3676,12 +3836,24 @@ class FacadeResponsesStream:
                     state="started",
                 ),
             }
-            self._cloud_chat_response = _execute_explicit_cloud_selection(
-                plan=self.explicit_cloud_plan,
-                provider_payload=self.prepared.route_payload,
-                route_envelope=self.prepared.route_envelope,
-                messages=self.prepared.messages,
-                invocation=self.invocation,
+            self._cloud_chat_response = yield from _run_cloud_invocation_with_progress(
+                operation=lambda: _execute_explicit_cloud_selection(
+                    plan=self.explicit_cloud_plan,
+                    provider_payload=self.prepared.route_payload,
+                    route_envelope=self.prepared.route_envelope,
+                    messages=self.prepared.messages,
+                    invocation=self.invocation,
+                ),
+                progress_event=lambda state, elapsed_ms: {
+                    "type": "explicit_cloud_selection",
+                    "explicit_cloud_selection": _explicit_cloud_selection_metadata(
+                        plan=self.explicit_cloud_plan,
+                        invocation=self.invocation,
+                        state=state,
+                        elapsed_ms=elapsed_ms,
+                        heartbeat=True,
+                    ),
+                },
             )
             chat_response = self._resolve_tool_continuation_response(
                 self._cloud_chat_response
@@ -3694,7 +3866,11 @@ class FacadeResponsesStream:
             yield from self._cloud_fallback_events(self.pending_local_error)
             return
         if self.stream is None:
-            raise RuntimeError("Local response stream was not initialized")
+            try:
+                yield from self._open_local_stream_events()
+            except Exception as exc:
+                yield from self._cloud_fallback_events(self.classify_error(exc))
+                return
 
         emitted_local_text = False
         buffered_text_parts: list[str] = []
@@ -3843,7 +4019,7 @@ def open_openai_responses_stream(
     request_id: str = "",
     trusted_context: Mapping[str, Any] | None = None,
 ) -> FacadeResponsesStream:
-    """Authorize and open the local upstream before returning a response stream."""
+    """Authorize a response stream before its local upstream is opened."""
 
     prepared = _prepare_responses_execution(
         payload,
@@ -3866,17 +4042,15 @@ def open_openai_responses_stream(
             stream=None,
             explicit_cloud_plan=explicit_cloud_plan,
         )
-    invocation, stream, pending_local_error = _start_authorized_chat_stream(
+    invocation = _prepare_authorized_chat_invocation(
         provider_payload=prepared.route_payload,
         route_envelope=prepared.route_envelope,
-        messages=prepared.messages,
         request_id=request_id or f"norman-openai-response-{uuid.uuid4().hex}",
     )
     return FacadeResponsesStream(
         prepared=prepared,
         invocation=invocation,
-        stream=stream,
-        pending_local_error=pending_local_error,
+        stream=None,
     )
 
 

@@ -136,6 +136,16 @@ def _post_json(
 def _parse_sse_events(raw: str) -> list[dict[str, Any]]:
     """Parse a complete SSE body into event names and JSON payloads."""
 
+    return _parse_sse_event_lines(raw.splitlines())
+
+
+def _parse_sse_event_lines(
+    lines: Any,
+    *,
+    started_at: float | None = None,
+) -> list[dict[str, Any]]:
+    """Parse SSE lines and retain local arrival timing when available."""
+
     events: list[dict[str, Any]] = []
     event_name = ""
     data_lines: list[str] = []
@@ -147,7 +157,7 @@ def _parse_sse_events(raw: str) -> list[dict[str, Any]]:
             return
         data = "\n".join(data_lines)
         if data == "[DONE]":
-            events.append({"event": event_name, "data": "[DONE]"})
+            event: dict[str, Any] = {"event": event_name, "data": "[DONE]"}
         else:
             try:
                 payload = json.loads(data)
@@ -155,11 +165,22 @@ def _parse_sse_events(raw: str) -> list[dict[str, Any]]:
                 raise CanaryError("invalid_sse_event") from exc
             if not isinstance(payload, Mapping):
                 raise CanaryError("invalid_sse_event")
-            events.append({"event": event_name, "data": dict(payload)})
+            event = {"event": event_name, "data": dict(payload)}
+        if started_at is not None:
+            event["_received_ms"] = round(
+                max(0.0, (time.monotonic() - started_at) * 1000.0),
+                3,
+            )
+        events.append(event)
         event_name = ""
         data_lines = []
 
-    for line in raw.splitlines():
+    for raw_line in lines:
+        line = (
+            raw_line.decode("utf-8", errors="replace")
+            if isinstance(raw_line, bytes)
+            else str(raw_line)
+        ).rstrip("\r\n")
         if not line:
             finish_event()
             continue
@@ -175,6 +196,69 @@ def _parse_sse_events(raw: str) -> list[dict[str, Any]]:
             data_lines.append(value)
     finish_event()
     return events
+
+
+def _stream_timing(events: list[dict[str, Any]]) -> dict[str, Any]:
+    timestamps = [
+        float(event["_received_ms"])
+        for event in events
+        if isinstance(event.get("_received_ms"), (int, float))
+    ]
+    if not timestamps:
+        return {}
+
+    cloud_heartbeat_times: list[float] = []
+    local_stream_open_heartbeat_times: list[float] = []
+    cloud_progress_count = 0
+    local_stream_open_progress_count = 0
+    for event in events:
+        data = _mapping(event.get("data"))
+        if _clean(data.get("type")) != "response.in_progress":
+            continue
+        norman = _mapping(_mapping(data.get("response")).get("norman"))
+        metadata = _mapping(norman.get("cloud_fallback"))
+        if not metadata:
+            metadata = _mapping(norman.get("explicit_cloud_selection"))
+        if not metadata:
+            metadata = _mapping(norman.get("local_stream_open"))
+            if metadata:
+                local_stream_open_progress_count += 1
+                if bool(metadata.get("heartbeat")) and isinstance(
+                    event.get("_received_ms"), (int, float)
+                ):
+                    local_stream_open_heartbeat_times.append(
+                        float(event["_received_ms"])
+                    )
+            continue
+        cloud_progress_count += 1
+        if bool(metadata.get("heartbeat")) and isinstance(
+            event.get("_received_ms"), (int, float)
+        ):
+            cloud_heartbeat_times.append(float(event["_received_ms"]))
+
+    gaps = [current - previous for previous, current in zip(timestamps, timestamps[1:])]
+    timing: dict[str, Any] = {
+        "event_count": len(timestamps),
+        "time_to_first_event_ms": round(timestamps[0], 3),
+        "max_inter_event_gap_ms": round(max(gaps, default=0.0), 3),
+        "cloud_progress_count": cloud_progress_count,
+        "cloud_heartbeat_count": len(cloud_heartbeat_times),
+        "local_stream_open_progress_count": local_stream_open_progress_count,
+        "local_stream_open_heartbeat_count": len(local_stream_open_heartbeat_times),
+    }
+    if cloud_heartbeat_times:
+        timing["first_cloud_heartbeat_ms"] = round(cloud_heartbeat_times[0], 3)
+        timing["last_cloud_heartbeat_ms"] = round(cloud_heartbeat_times[-1], 3)
+    if local_stream_open_heartbeat_times:
+        timing["first_local_stream_open_heartbeat_ms"] = round(
+            local_stream_open_heartbeat_times[0],
+            3,
+        )
+        timing["last_local_stream_open_heartbeat_ms"] = round(
+            local_stream_open_heartbeat_times[-1],
+            3,
+        )
+    return timing
 
 
 def _stream_response_from_sse_events(events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -221,6 +305,9 @@ def _stream_response_from_sse_events(events: list[dict[str, Any]]) -> dict[str, 
         "native_function_calls": native_calls,
         "raw_tool_envelope_text": raw_tool_envelope_text,
     }
+    timing = _stream_timing(events)
+    if timing:
+        completed_response["_canary_stream"]["timing"] = timing
     return completed_response
 
 
@@ -230,6 +317,7 @@ def _post_sse(
     token: str,
     timeout_seconds: float,
 ) -> tuple[int, dict[str, Any]]:
+    started_at = time.monotonic()
     body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     request = urllib.request.Request(
         endpoint,
@@ -245,14 +333,14 @@ def _post_sse(
     try:
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             status = int(getattr(response, "status", 200) or 200)
-            raw = response.read().decode("utf-8", errors="replace")
+            events = _parse_sse_event_lines(response, started_at=started_at)
     except urllib.error.HTTPError as exc:
         raise CanaryError("http_error", http_status=exc.code) from exc
     except (urllib.error.URLError, OSError, TimeoutError) as exc:
         raise CanaryError("transport_error") from exc
     if status != 200:
         raise CanaryError("unexpected_http_status", http_status=status)
-    return status, _stream_response_from_sse_events(_parse_sse_events(raw))
+    return status, _stream_response_from_sse_events(events)
 
 
 def _pressure_guard(
@@ -348,6 +436,19 @@ def _turn_receipt(
         if isinstance(stream_calls, list)
         else []
     )
+    stream_receipt = {
+        "completed": bool(stream.get("completed")),
+        "done": bool(stream.get("done")),
+        "failed": bool(stream.get("failed")),
+        "native_function_call_count": len(native_calls),
+        "native_tool_names": [
+            _safe_tool_name(call.get("name")) for call in native_calls
+        ],
+        "raw_tool_envelope_text": bool(stream.get("raw_tool_envelope_text")),
+    }
+    timing = _mapping(stream.get("timing"))
+    if timing:
+        stream_receipt["timing"] = timing
     return {
         "turn": turn,
         "http_status": int(status),
@@ -358,18 +459,7 @@ def _turn_receipt(
         "function_call_count": len(calls),
         "tool_names": [_safe_tool_name(call.get("name")) for call in calls],
         "tool_chain": _safe_tool_chain(response),
-        "stream": {
-            "completed": bool(stream.get("completed")),
-            "done": bool(stream.get("done")),
-            "failed": bool(stream.get("failed")),
-            "native_function_call_count": len(native_calls),
-            "native_tool_names": [
-                _safe_tool_name(call.get("name")) for call in native_calls
-            ],
-            "raw_tool_envelope_text": bool(stream.get("raw_tool_envelope_text")),
-        }
-        if stream
-        else {},
+        "stream": stream_receipt if stream else {},
     }
 
 

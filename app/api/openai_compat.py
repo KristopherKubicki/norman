@@ -763,6 +763,25 @@ def _response_sse(stream: Any):
                     },
                 )
                 continue
+            if stream_event.get("type") == "local_stream_open":
+                local_stream_open = stream_event.get("local_stream_open")
+                if isinstance(local_stream_open, dict):
+                    snapshot = _response_stream_snapshot(stream, status="in_progress")
+                    norman = (
+                        dict(snapshot.get("norman"))
+                        if isinstance(snapshot.get("norman"), dict)
+                        else {}
+                    )
+                    norman["local_stream_open"] = dict(local_stream_open)
+                    snapshot["norman"] = norman
+                    yield emit(
+                        "response.in_progress",
+                        {
+                            "type": "response.in_progress",
+                            "response": snapshot,
+                        },
+                    )
+                continue
             if stream_event.get("type") == "cloud_fallback":
                 cloud_fallback = stream_event.get("cloud_fallback")
                 if isinstance(cloud_fallback, dict):

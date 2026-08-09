@@ -305,6 +305,133 @@ def test_sse_parser_tracks_native_calls_and_completion_markers():
     ]
 
 
+def test_sse_parser_records_sanitized_stream_liveness_timing():
+    completed = {
+        "id": "resp-private",
+        "status": "completed",
+        "output": [{"type": "message"}],
+        "output_text": "private final output",
+    }
+    events = [
+        {
+            "event": "response.in_progress",
+            "data": {
+                "type": "response.in_progress",
+                "response": {
+                    "norman": {
+                        "cloud_fallback": {
+                            "request_id": "private-request-id",
+                            "state": "in_progress",
+                            "heartbeat": True,
+                        }
+                    }
+                },
+            },
+            "_received_ms": 7.0,
+        },
+        {
+            "event": "response.in_progress",
+            "data": {
+                "type": "response.in_progress",
+                "response": {
+                    "norman": {
+                        "cloud_fallback": {
+                            "request_id": "private-request-id",
+                            "state": "in_progress",
+                            "heartbeat": True,
+                        }
+                    }
+                },
+            },
+            "_received_ms": 18.5,
+        },
+        {
+            "event": "response.completed",
+            "data": {
+                "type": "response.completed",
+                "response": completed,
+            },
+            "_received_ms": 25.0,
+        },
+        {"event": "", "data": "[DONE]", "_received_ms": 31.5},
+    ]
+
+    response = canary._stream_response_from_sse_events(events)
+
+    assert response["_canary_stream"]["timing"] == {
+        "event_count": 4,
+        "time_to_first_event_ms": 7.0,
+        "max_inter_event_gap_ms": 11.5,
+        "cloud_progress_count": 2,
+        "cloud_heartbeat_count": 2,
+        "local_stream_open_progress_count": 0,
+        "local_stream_open_heartbeat_count": 0,
+        "first_cloud_heartbeat_ms": 7.0,
+        "last_cloud_heartbeat_ms": 18.5,
+    }
+    serialized = json.dumps(response["_canary_stream"], sort_keys=True)
+    assert "private-request-id" not in serialized
+    assert "private final output" not in serialized
+
+
+def test_sse_parser_counts_local_stream_open_heartbeats():
+    events = [
+        {
+            "event": "response.in_progress",
+            "data": {
+                "type": "response.in_progress",
+                "response": {
+                    "norman": {
+                        "local_stream_open": {
+                            "state": "in_progress",
+                            "heartbeat": True,
+                        }
+                    }
+                },
+            },
+            "_received_ms": 4.0,
+        },
+        {
+            "event": "response.in_progress",
+            "data": {
+                "type": "response.in_progress",
+                "response": {
+                    "norman": {
+                        "local_stream_open": {
+                            "state": "in_progress",
+                            "heartbeat": True,
+                        }
+                    }
+                },
+            },
+            "_received_ms": 12.0,
+        },
+        {
+            "event": "response.completed",
+            "data": {
+                "type": "response.completed",
+                "response": {"status": "completed"},
+            },
+            "_received_ms": 18.0,
+        },
+        {"event": "", "data": "[DONE]", "_received_ms": 20.0},
+    ]
+
+    response = canary._stream_response_from_sse_events(events)
+
+    assert response["_canary_stream"]["timing"] == {
+        "event_count": 4,
+        "time_to_first_event_ms": 4.0,
+        "max_inter_event_gap_ms": 8.0,
+        "cloud_progress_count": 0,
+        "cloud_heartbeat_count": 0,
+        "local_stream_open_progress_count": 2,
+        "local_stream_open_heartbeat_count": 2,
+        "first_local_stream_open_heartbeat_ms": 4.0,
+        "last_local_stream_open_heartbeat_ms": 12.0,
+    }
+
+
 def test_sse_parser_flags_native_function_call_json_leaked_as_text():
     leaked_native_call = json.dumps(
         {

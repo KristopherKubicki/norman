@@ -679,6 +679,7 @@ def _install_bedrock_stub(
     *,
     result: ModelResult | None = None,
     error: Exception | None = None,
+    delay_seconds: float = 0.0,
 ):
     from app.services import prompt_provider_facade
 
@@ -711,6 +712,8 @@ def _install_bedrock_stub(
     class StubBedrockModelAdapter:
         def invoke(self, request):
             calls.append(request)
+            if delay_seconds:
+                time.sleep(delay_seconds)
             if error is not None:
                 raise error
             return result or _mock_bedrock_result()
@@ -1153,7 +1156,12 @@ def test_openai_compat_responses_streams_incremental_sse_with_admission_feedback
     assert completed["output_text"] == "Hello, world!\n"
     assert completed["norman"]["streaming_mode"] == "incremental_sse"
     assert completed["norman"]["stream_admission"] == admission
-    assert payloads[0]["response"]["norman"]["stream_admission"] == admission
+    assert "stream_admission" not in payloads[0]["response"].get("norman", {})
+    assert any(
+        payload["response"].get("norman", {}).get("stream_admission") == admission
+        for payload in payloads
+        if payload["type"] == "response.in_progress"
+    )
     assert invocations[0]["correlation_headers"]["X-Norman-Execution-Mode"] == (
         "prompt_intermediary_openai_facade"
     )
@@ -2040,7 +2048,7 @@ def test_openai_compat_responses_streams_queue_progress_without_output_text(
         payload["response"]["norman"]["stream_admission"]
         for payload in payloads
         if payload["type"] == "response.in_progress"
-        and payload["response"].get("norman")
+        and payload["response"].get("norman", {}).get("stream_admission")
     ]
     deltas = [
         payload["delta"]
@@ -2224,6 +2232,150 @@ def test_openai_compat_responses_stream_falls_back_when_local_stream_cannot_open
     )
     assert completed["norman"]["cloud_fallback"]["state"] == "completed"
     assert len(bedrock_calls) == 1
+
+
+def test_openai_compat_responses_stream_keeps_slow_cloud_fallback_live(
+    test_app, monkeypatch
+):
+    from app.services import prompt_provider_facade
+
+    def exhausted_local_stream(**_kwargs):
+        raise norllama_gateway.NorllamaGatewayError(
+            429,
+            {"error": "local_capacity_exhausted"},
+        )
+
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat_stream",
+        exhausted_local_stream,
+    )
+    monkeypatch.setattr(
+        prompt_provider_facade,
+        "CLOUD_STREAM_HEARTBEAT_INTERVAL_SECONDS",
+        0.005,
+    )
+    bedrock_calls = _install_bedrock_stub(
+        monkeypatch,
+        result=_mock_bedrock_result("cloud remains live"),
+        delay_seconds=0.04,
+    )
+
+    result = test_app.post(
+        "/v1/responses",
+        headers=_proxy_headers(monkeypatch),
+        json={"model": "norman-code", "input": "say hello", "stream": True},
+    )
+
+    assert result.status_code == 200
+    payloads = [
+        json.loads(data)
+        for event, data in _response_sse_events(result.text)
+        if event and data != "[DONE]"
+    ]
+    heartbeats = [
+        payload["response"]["norman"]["cloud_fallback"]
+        for payload in payloads
+        if payload["type"] == "response.in_progress"
+        and payload["response"]
+        .get("norman", {})
+        .get("cloud_fallback", {})
+        .get("heartbeat")
+    ]
+
+    assert len(heartbeats) >= 3
+    assert {heartbeat["state"] for heartbeat in heartbeats} == {"in_progress"}
+    elapsed = [heartbeat["elapsed_ms"] for heartbeat in heartbeats]
+    assert elapsed == sorted(elapsed)
+    assert elapsed[-1] >= 15
+    assert [
+        payload["delta"]
+        for payload in payloads
+        if payload["type"] == "response.output_text.delta"
+    ] == ["cloud remains live"]
+    assert len(bedrock_calls) == 1
+
+
+def test_openai_compat_responses_stream_keeps_slow_local_open_live(
+    test_app, monkeypatch
+):
+    from app.services import prompt_provider_facade
+
+    response = _MockNativeStreamResponse(
+        [
+            '{"model":"qwen3-coder:30b","response":"local stream is ready"}',
+            '{"model":"qwen3-coder:30b","done":true}',
+        ],
+    )
+
+    def slow_local_stream(**kwargs):
+        time.sleep(0.04)
+        return norllama_gateway.NorllamaTextStream(
+            response,
+            model=kwargs["model"],
+        )
+
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat_stream",
+        slow_local_stream,
+    )
+    monkeypatch.setattr(
+        prompt_provider_facade,
+        "LOCAL_STREAM_OPEN_HEARTBEAT_INTERVAL_SECONDS",
+        0.005,
+    )
+
+    result = test_app.post(
+        "/v1/responses",
+        headers=_proxy_headers(monkeypatch),
+        json={"model": "norman-code", "input": "say hello", "stream": True},
+    )
+
+    assert result.status_code == 200
+    payloads = [
+        json.loads(data)
+        for event, data in _response_sse_events(result.text)
+        if event and data != "[DONE]"
+    ]
+    local_open_progress = [
+        payload["response"]["norman"]["local_stream_open"]
+        for payload in payloads
+        if payload["type"] == "response.in_progress"
+        and payload["response"]
+        .get("norman", {})
+        .get("local_stream_open", {})
+        .get("heartbeat")
+    ]
+    created_index = next(
+        index
+        for index, payload in enumerate(payloads)
+        if payload["type"] == "response.created"
+    )
+    first_progress_index = next(
+        index
+        for index, payload in enumerate(payloads)
+        if payload["type"] == "response.in_progress"
+        and payload["response"].get("norman", {}).get("local_stream_open")
+    )
+    first_delta_index = next(
+        index
+        for index, payload in enumerate(payloads)
+        if payload["type"] == "response.output_text.delta"
+    )
+
+    assert len(local_open_progress) >= 3
+    assert {progress["state"] for progress in local_open_progress} == {"in_progress"}
+    elapsed = [progress["elapsed_ms"] for progress in local_open_progress]
+    assert elapsed == sorted(elapsed)
+    assert elapsed[-1] >= 15
+    assert created_index < first_progress_index < first_delta_index
+    assert [
+        payload["delta"]
+        for payload in payloads
+        if payload["type"] == "response.output_text.delta"
+    ] == ["local stream is ready"]
+    assert response.closed is True
 
 
 def test_openai_compat_responses_stream_reports_midstream_failure(
