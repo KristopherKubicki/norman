@@ -324,6 +324,10 @@ to `$HOME/.local/state/norman/codex-bridge-parity.{json,md}`; prompts, event
 streams, and model answers remain in a temporary directory and are deleted
 when the run ends.
 
+Route homes expose only their relevant managed skills. For example, the
+Control Plane route receives its Control Plane and Ops skills, not unrelated
+work-route skill inventories.
+
 Run it without `--live` to validate the task set and report plumbing without
 calling either model route. Set `CODEX_REAL_BIN` or pass
 `--native-codex-bin` if the direct Codex executable cannot be resolved

@@ -99,6 +99,10 @@ SUPPORTED_RESPONSES_INCLUDE_VALUES = frozenset({"reasoning.encrypted_content"})
 DEFAULT_FACADE_TOKENS = 16384
 MAX_FACADE_TOKENS = 32768
 MAX_RESPONSE_STATE = 200
+MAX_REPLAYED_HISTORY_CHARS = 96_000
+MAX_REPLAYED_HISTORY_ANCHOR_CHARS = 16_000
+MAX_REPLAYED_TOOL_OUTPUT_CHARS = 12_000
+MAX_REPLAYED_TOOL_OUTPUTS = 2
 CLOUD_FALLBACK_SCHEMA = "norman.cloud-fallback.v1"
 CLOUD_FALLBACK_MARKER_SCHEMA = "norman.facade-cloud-fallback.v1"
 CLOUD_FALLBACK_PROVIDER = "aws-bedrock"
@@ -112,6 +116,12 @@ LEGACY_REPLAYED_FUNCTION_CALL_PREFIX = (
 TOOL_CHAIN_SCHEMA = "norman.responses-tool-chain.v1"
 TOOL_CONTRACT_CONTEXT_MARKER = "_norman_responses_context"
 TOOL_CONTRACT_CONTEXT_KIND = "tool_contract"
+REPLAYED_CONTEXT_OMITTED = (
+    "\n[Norman omitted older replayed context to fit the local model window.]\n"
+)
+REPLAYED_TOOL_OUTPUT_OMITTED = (
+    "[Norman omitted older replayed tool output to fit the local model window.]"
+)
 TOOL_OUTPUT_FAILURE_MARKERS = (
     "access denied",
     "permission denied",
@@ -792,6 +802,138 @@ def _legacy_tool_output_metadata(message: Mapping[str, Any]) -> tuple[str, str]:
     return _clean(call_id), output
 
 
+def _message_context_chars(message: Mapping[str, Any]) -> int:
+    """Measure only the prompt content the local text adapter receives."""
+
+    content = message.get("content", "")
+    if isinstance(content, str):
+        return len(content)
+    return len(_json_dumps(content))
+
+
+def _compact_replayed_text(text: str, *, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    if limit <= len(REPLAYED_CONTEXT_OMITTED):
+        return REPLAYED_CONTEXT_OMITTED[:limit]
+    retained = limit - len(REPLAYED_CONTEXT_OMITTED)
+    prefix_chars = retained // 2
+    suffix_chars = retained - prefix_chars
+    return text[:prefix_chars] + REPLAYED_CONTEXT_OMITTED + text[-suffix_chars:]
+
+
+def _compact_replayed_message(
+    message: Mapping[str, Any],
+    *,
+    limit: int,
+) -> dict[str, Any]:
+    compacted = dict(message)
+    content = compacted.get("content", "")
+    if not isinstance(content, str):
+        content = _json_dumps(content)
+    compacted["content"] = _compact_replayed_text(content, limit=limit)
+    return compacted
+
+
+def _compact_replayed_tool_output(
+    message: Mapping[str, Any],
+    *,
+    limit: int,
+) -> dict[str, Any]:
+    call_id = _clean(message.get("call_id"))
+    output = message.get("output")
+    if not call_id or not isinstance(output, str):
+        return _compact_replayed_message(message, limit=limit)
+    if limit <= 0:
+        return _function_call_output_context_message(
+            call_id=call_id,
+            output=REPLAYED_TOOL_OUTPUT_OMITTED,
+        )
+    return _function_call_output_context_message(
+        call_id=call_id,
+        output=_compact_replayed_text(output, limit=limit),
+    )
+
+
+def _compact_replayed_history(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Bound prompt-only replay without changing authoritative call state.
+
+    Function-call metadata and exact tool outputs are retained separately in
+    response state for continuation validation. This function only constrains
+    the text copy sent back through the local text adapter on a later turn.
+    """
+
+    replayed = [
+        dict(message) for message in messages if not _is_tool_contract_message(message)
+    ]
+    replayed_chars = sum(_message_context_chars(message) for message in replayed)
+    if replayed_chars <= MAX_REPLAYED_HISTORY_CHARS:
+        return replayed
+
+    tool_output_indexes = [
+        index
+        for index, message in enumerate(replayed)
+        if _clean(message.get("type")) == "function_call_output"
+    ]
+    retained_tool_outputs = set(tool_output_indexes[-MAX_REPLAYED_TOOL_OUTPUTS:])
+    for index in tool_output_indexes:
+        output_limit = (
+            MAX_REPLAYED_TOOL_OUTPUT_CHARS if index in retained_tool_outputs else 0
+        )
+        replayed[index] = _compact_replayed_tool_output(
+            replayed[index],
+            limit=output_limit,
+        )
+
+    replayed_chars = sum(_message_context_chars(message) for message in replayed)
+    if replayed_chars <= MAX_REPLAYED_HISTORY_CHARS:
+        return replayed
+
+    # Retain the opening instructions/task plus the newest conversation
+    # context. Historical tool contracts are always regenerated below from the
+    # current request, so they never consume the replay budget.
+    anchor_indexes: list[int] = []
+    for index, message in enumerate(replayed):
+        if _is_tool_contract_message(message):
+            continue
+        if _clean(message.get("role")) not in {"system", "user"}:
+            continue
+        anchor_indexes.append(index)
+        if len(anchor_indexes) == 3:
+            break
+
+    compacted: dict[int, dict[str, Any]] = {}
+    remaining = MAX_REPLAYED_HISTORY_CHARS
+    for index in anchor_indexes:
+        message = _compact_replayed_message(
+            replayed[index],
+            limit=min(MAX_REPLAYED_HISTORY_ANCHOR_CHARS, remaining),
+        )
+        compacted[index] = message
+        remaining -= _message_context_chars(message)
+
+    for index in range(len(replayed) - 1, -1, -1):
+        if index in compacted or _is_tool_contract_message(replayed[index]):
+            continue
+        message = replayed[index]
+        message_chars = _message_context_chars(message)
+        if message_chars <= remaining:
+            compacted[index] = message
+            remaining -= message_chars
+            continue
+        if remaining <= len(REPLAYED_CONTEXT_OMITTED):
+            continue
+        compacted[index] = _compact_replayed_message(
+            message,
+            limit=remaining,
+        )
+        break
+
+    return [compacted[index] for index in sorted(compacted)]
+
+
 def _previous_response_history(previous_response_id: str) -> ResponseHistory:
     previous_response_id = _clean(previous_response_id)
     if not previous_response_id:
@@ -834,7 +976,7 @@ def _previous_response_history(previous_response_id: str) -> ResponseHistory:
         if call_id not in existing_call_ids:
             messages.append(_function_call_context_message(function_call))
     return ResponseHistory(
-        messages,
+        _compact_replayed_history(messages),
         function_calls,
         function_call_items,
         tool_outputs,
@@ -1398,32 +1540,20 @@ def _messages_with_current_tool_contract(
     *,
     bridge_mode: str = TRANSPARENT_BRIDGE_MODE,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Preserve historical tool contracts and append a changed current registry.
+    """Replay ordinary history and send exactly one current tool registry.
 
-    A Responses continuation may change its tool registry between turns. The
-    prior registry remains part of the model history, while the new registry
-    applies to the current turn. Rewriting an old contract makes historical
-    function calls appear invalid and can cause the local model to repeat a
-    completed tool call.
+    The local text adapter cannot consume native structured tool definitions,
+    so each registry is rendered as a system message. Old rendered registries
+    are prompt-only compatibility data, not authoritative call state; keeping
+    them makes every continuation resend an expanding catalog. Exact call
+    metadata remains in server-side response state for validation.
     """
 
     definition = _tool_contract_definition(payload)
-    history = [dict(message) for message in messages]
+    history = [
+        dict(message) for message in messages if not _is_tool_contract_message(message)
+    ]
     if not definition:
-        return history, []
-    latest_contract = next(
-        (
-            message
-            for message in reversed(history)
-            if _is_tool_contract_message(message)
-        ),
-        None,
-    )
-    if latest_contract and _message_has_tool_contract(
-        latest_contract,
-        definition=definition,
-        bridge_mode=bridge_mode,
-    ):
         return history, []
     return history, _tool_contract_message(payload, bridge_mode=bridge_mode)
 
