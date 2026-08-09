@@ -171,16 +171,16 @@ def _route_proof(
     return module.build_tui_waterfall(**options)
 
 
-def test_agent_console_templates_default_to_gpt_55() -> None:
+def test_agent_console_templates_default_to_gpt_56_terra() -> None:
     launch_source = _agent_console_launch_source()
 
-    assert 'MODEL="${HOUSEBOT_CODEX_MODEL:-gpt-5.5}"' in launch_source
+    assert 'MODEL="${HOUSEBOT_CODEX_MODEL:-openai.gpt-5.6-terra}"' in launch_source
     assert 'CODEX_BIN="${HOUSEBOT_CODEX_BIN:-}"' in launch_source
     assert "/opt/node-v20.19.6/bin/codex" in launch_source
     assert "/home/kristopher/.nvm/versions/node/v20.19.6/bin/codex" in launch_source
     assert '"$CODEX_BIN" \\' in launch_source
     assert (
-        'MODEL = os.environ.get("HOUSEBOT_CODEX_MODEL", "gpt-5.5")'
+        'MODEL = os.environ.get("HOUSEBOT_CODEX_MODEL", "gpt-5.6-terra")'
         in _agent_console_web_source()
     )
 
@@ -364,15 +364,15 @@ def test_agent_console_promotes_stale_codex_model_setting_to_floor() -> None:
     )
 
 
-def test_agent_console_can_explicitly_enable_legacy_codex_compat_model(
+def test_agent_console_cannot_reenable_legacy_codex_compat_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("NORMAN_CODEX_ALLOW_BELOW_FLOOR_SWITCHABLE", "1")
     module = _load_agent_console_web()
 
-    assert module.normalize_runtime_model("codex", "openai.gpt-5.4") == "openai.gpt-5.4"
-    assert any(
-        item["key"] == "codex-bedrock-5-4"
+    assert module.normalize_runtime_model("codex", "openai.gpt-5.4") == module.MODEL
+    assert all(
+        item["key"] not in {"codex-openai-5-4", "codex-bedrock-5-4"}
         for item in module.model_route_presets_payload()
     )
 

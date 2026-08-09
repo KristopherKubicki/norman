@@ -199,9 +199,9 @@ connectors: []
 broadcast_connectors: ""
 
 openai_api_key:
-openai_default_model: "gpt-5.5"
+openai_default_model: "gpt-5.6-terra"
 openai_available_models:
-  - gpt-5.5
+  - gpt-5.6-terra
   - gpt-5-mini
   - o3
 openai_max_tokens: 150
@@ -261,9 +261,9 @@ llm_ping_targets:
   # Optional extra model health checks beyond the primary/backup/offline chain.
   # Prefer api_key_env for third-party keys; do not commit plaintext secrets.
   # - id: "openai-55"
-  #   name: "OpenAI 5.5"
+  #   name: "OpenAI GPT-5.6 Terra"
   #   provider: "openai"
-  #   model: "gpt-5.5"  # Replace with the exact OpenAI model id to check.
+  #   model: "gpt-5.6-terra"  # Replace with the exact OpenAI model id to check.
   #   api_key_env: "OPENAI_API_KEY"
   # - id: "claude-main"
   #   name: "Claude"

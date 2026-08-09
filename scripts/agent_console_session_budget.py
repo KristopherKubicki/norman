@@ -39,8 +39,8 @@ def normalize_reasoning_effort(value: Any, default: str = "high") -> str:
 
 
 def model_requires_named_escalation(value: Any) -> bool:
-    model = str(value or "").strip().lower()
-    return "gpt-5.5" in model or "openai.gpt-5.5" in model
+    """Terra is the standard route; only elevated reasoning needs escalation."""
+    return False
 
 
 def is_context_checkpoint_prompt(value: Any) -> bool:
@@ -246,8 +246,8 @@ def evaluate_admission(
                 "action": "deny",
                 "reason_code": "named_escalation_required",
                 "reason": (
-                    "GPT-5.5 and xhigh requests require a named escalation reason "
-                    "before work is admitted."
+                    "xhigh requests require a named escalation reason before work "
+                    "is admitted."
                 ),
             }
         )

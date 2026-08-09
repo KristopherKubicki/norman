@@ -74,7 +74,7 @@ def _explicit_cloud_selection_request(
         provider="aws-bedrock",
         provider_kind="aws-bedrock",
         capability="chat",
-        model="openai.gpt-5.6-sol",
+        model="openai.gpt-5.6-terra",
         mode="cloud_proxy",
         local=False,
         cloud_proxy=True,
@@ -84,21 +84,21 @@ def _explicit_cloud_selection_request(
     )
     return ModelRequest(
         messages=[{"role": "user", "content": "Return the status."}],
-        model="openai.gpt-5.6-sol",
-        route_key="gpt-5.6-sol",
+        model="openai.gpt-5.6-terra",
+        route_key="gpt-5.6-terra",
         budget=ModelBudget(max_output_tokens=321),
         metadata={
             "request_id": "explicit-cloud-selection-1",
             "invocation_id": "explicit-cloud-selection-1",
             "norllama_task_kind": "chat",
             "execution_mode": "prompt_intermediary_openai_facade_explicit_cloud",
-            "requested_model": "openai.gpt-5.6-sol",
-            "route_selected_model": "openai.gpt-5.6-sol",
+            "requested_model": "openai.gpt-5.6-terra",
+            "route_selected_model": "openai.gpt-5.6-terra",
             "route_policy": {
                 "provider": "aws-bedrock",
                 "preferred_provider": "aws-bedrock",
-                "model": "openai.gpt-5.6-sol",
-                "preferred_model": "openai.gpt-5.6-sol",
+                "model": "openai.gpt-5.6-terra",
+                "preferred_model": "openai.gpt-5.6-terra",
                 "lane": "coder",
                 "allow_cloud_proxy": False,
                 "cloud_policy": cloud_policy,
@@ -111,9 +111,9 @@ def _explicit_cloud_selection_request(
             "norman_facade_explicit_cloud_selection": marker
             or {
                 "schema": "norman.facade-explicit-cloud-selection.v1",
-                "requested_alias": "gpt-5.6-sol",
+                "requested_alias": "gpt-5.6-terra",
                 "provider": "aws-bedrock",
-                "model": "openai.gpt-5.6-sol",
+                "model": "openai.gpt-5.6-terra",
                 "lane": "coder",
             },
         },
@@ -624,7 +624,7 @@ def test_bedrock_adapter_routes_authorized_explicit_gpt_selection_through_mantle
             }
         ],
         "max_output_tokens": 321,
-        "model": "openai.gpt-5.6-sol",
+        "model": "openai.gpt-5.6-terra",
     }
     assert result.text == "Selected cloud model completed."
     assert result.usage.as_dict() == {

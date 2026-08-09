@@ -26,7 +26,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const payload = {
       name: botName.value.trim(),
       description: botDescription.value.trim(),
-      gpt_model: 'gpt-5.5',
+      gpt_model: 'gpt-5.6-terra',
     };
 
     if (!payload.name) {

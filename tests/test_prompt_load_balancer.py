@@ -662,7 +662,7 @@ def _mock_local_chat(messages, model, **kwargs):
 def _mock_bedrock_result(
     text: str = "cloud ok",
     *,
-    model: str = "qwen.qwen3-coder-480b-a35b-v1:0",
+    model: str = "openai.gpt-5.6-terra",
     metadata: dict | None = None,
 ) -> ModelResult:
     return ModelResult(
@@ -957,7 +957,7 @@ def test_openai_compat_responses_routes_local_first(test_app, monkeypatch):
 
 
 @pytest.mark.parametrize("model", ["gpt-5.6-terra", "openai.gpt-5.6-terra"])
-def test_openai_compat_responses_rejects_explicit_cloud_model_for_tui(
+def test_openai_compat_responses_routes_explicit_cloud_model_for_tui(
     test_app, monkeypatch, model
 ):
     from app.services.prompt_provider_facade import norllama_gateway
@@ -977,21 +977,19 @@ def test_openai_compat_responses_rejects_explicit_cloud_model_for_tui(
         json={"model": model, "input": "status?"},
     )
 
-    assert response.status_code == 400
-    error = response.json()["error"]
-    assert error["code"] == "tool_capable_model_required"
-    assert error["param"] == "model"
-    assert "Use norman-code" in error["message"]
-    assert error["norman"] == {
-        "selected_model": model,
-        "required_model": "norman-code",
-        "cloud_fallback": "automatic_for_retryable_local_failure",
-    }
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["output_text"] == "cloud ok"
+    assert payload["norman"]["local_execution"] is False
+    assert payload["norman"]["cloud_forwarding"] is True
+    assert payload["norman"]["explicit_cloud_selection"]["model"] == (
+        "openai.gpt-5.6-terra"
+    )
     assert local_calls == []
-    assert bedrock_calls == []
+    assert len(bedrock_calls) == 1
 
 
-def test_openai_compat_responses_rejects_streaming_explicit_cloud_model_for_tui(
+def test_openai_compat_responses_streams_explicit_cloud_model_for_tui(
     test_app, monkeypatch
 ):
     from app.services.prompt_provider_facade import norllama_gateway
@@ -1008,18 +1006,16 @@ def test_openai_compat_responses_rejects_streaming_explicit_cloud_model_for_tui(
     response = test_app.post(
         "/v1/responses",
         headers=headers,
-        json={"model": "gpt-5.6-sol", "input": "status?", "stream": True},
+        json={"model": "openai.gpt-5.6-terra", "input": "status?", "stream": True},
     )
 
-    assert response.status_code == 400
-    error = response.json()["error"]
-    assert error["code"] == "tool_capable_model_required"
-    assert error["param"] == "model"
+    assert response.status_code == 200
+    assert "cloud ok" in response.text
     assert local_calls == []
-    assert bedrock_calls == []
+    assert len(bedrock_calls) == 1
 
 
-def test_openai_compat_chat_completions_rejects_explicit_cloud_model_for_tui(
+def test_openai_compat_chat_completions_routes_explicit_cloud_model_for_tui(
     test_app, monkeypatch
 ):
     from app.services.prompt_provider_facade import norllama_gateway
@@ -1042,13 +1038,13 @@ def test_openai_compat_chat_completions_rejects_explicit_cloud_model_for_tui(
         },
     )
 
-    assert response.status_code == 400
-    error = response.json()["error"]
-    assert error["code"] == "tool_capable_model_required"
-    assert error["param"] == "model"
-    assert "Use norman-code" in error["message"]
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["choices"][0]["message"]["content"] == "cloud ok"
+    assert payload["norman"]["local_execution"] is False
+    assert payload["norman"]["cloud_forwarding"] is True
     assert local_calls == []
-    assert bedrock_calls == []
+    assert len(bedrock_calls) == 1
 
 
 def test_openai_compat_rejects_unapproved_explicit_cloud_model(test_app, monkeypatch):
@@ -2146,14 +2142,14 @@ def test_openai_compat_responses_stream_falls_back_after_queued_capacity_expiry(
         for payload in payloads
         if payload["type"] == "response.output_text.delta"
     ] == ["cloud ready"]
-    assert completed["model"] == "qwen.qwen3-coder-480b-a35b-v1:0"
+    assert completed["model"] == "openai.gpt-5.6-terra"
     assert completed["norman"]["cloud_fallback"]["state"] == "completed"
     assert completed["norman"]["cloud_fallback"]["local_failure_code"] == (
         "local_capacity_exhausted"
     )
     assert len(bedrock_calls) == 1
     fallback_request = bedrock_calls[0]
-    assert fallback_request.model == "qwen.qwen3-coder-480b-a35b-v1:0"
+    assert fallback_request.model == "openai.gpt-5.6-terra"
     assert fallback_request.metadata["execution_mode"] == (
         "prompt_intermediary_openai_facade_cloud_fallback"
     )
@@ -2839,7 +2835,7 @@ def test_openai_compat_responses_retries_retryable_norman_code_failure_in_bedroc
     assert response.status_code == 200
     payload = response.json()
     assert payload["output_text"] == "cloud result"
-    assert payload["model"] == "qwen.qwen3-coder-480b-a35b-v1:0"
+    assert payload["model"] == "openai.gpt-5.6-terra"
     assert payload["norman"]["local_execution"] is False
     assert payload["norman"]["cloud_forwarding"] is True
     assert payload["norman"]["cloud_fallback"] == {
@@ -2848,7 +2844,7 @@ def test_openai_compat_responses_retries_retryable_norman_code_failure_in_bedroc
         "fallback_attempted": True,
         "local_failure_code": "local_capacity_unavailable",
         "fallback_provider": "aws-bedrock",
-        "fallback_model": "qwen.qwen3-coder-480b-a35b-v1:0",
+        "fallback_model": "openai.gpt-5.6-terra",
         "request_id": "fallback-response-test",
     }
     assert "must-not-leak" not in response.text
@@ -3576,6 +3572,7 @@ def test_openai_compat_models_requires_proxy_token_when_configured(
     payload = allowed.json()
     assert payload["object"] == "list"
     assert {item["id"] for item in payload["data"]} >= {
+        "openai.gpt-5.6-terra",
         "norman-code",
         "norman-code-governed",
         "norman-local",
@@ -3592,11 +3589,18 @@ def test_openai_compat_models_advertises_codex_catalog(test_app, monkeypatch):
     assert response.status_code == 200
     models = response.json()["models"]
     assert [model["slug"] for model in models] == [
+        "openai.gpt-5.6-terra",
         "norman-code",
         "norman-code-governed",
         "norman-local",
     ]
     models_by_slug = {model["slug"]: model for model in models}
+    assert models_by_slug["openai.gpt-5.6-terra"]["apply_patch_tool_type"] == (
+        "freeform"
+    )
+    assert (
+        models_by_slug["openai.gpt-5.6-terra"]["supports_parallel_tool_calls"] is True
+    )
     assert models_by_slug["norman-code"]["apply_patch_tool_type"] == "freeform"
     assert models_by_slug["norman-code"]["supports_parallel_tool_calls"] is True
     assert models_by_slug["norman-code"]["default_reasoning_level"] == "high"

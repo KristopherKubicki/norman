@@ -2533,7 +2533,7 @@ def test_agent_console_web_accepts_norman_codex_env_prefix(monkeypatch, tmp_path
     assert module.PORT == 9797
     assert module.TOKEN == "norman-token"
     assert module.AGENT_NAME == "Norman"
-    assert module.MODEL == "gpt-norman"
+    assert module.MODEL == "gpt-5.6-terra"
 
 
 def test_console_template_prefers_structured_runtime_activity():

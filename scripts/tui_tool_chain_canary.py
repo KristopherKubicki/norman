@@ -1058,7 +1058,7 @@ def run_canary(
         "checked_at": _now(),
         "endpoint": endpoint,
         "gateway_route": "norman",
-        "model": "norman-code",
+        "model": "openai.gpt-5.6-terra",
         "mode": "streaming" if streaming else "non_streaming",
         "workflow": "ops_mcp" if ops_mcp else "synthetic",
         "state": "failed",
@@ -1117,7 +1117,7 @@ def run_canary(
             tool_call = execute_turn(
                 "ops_portal_health",
                 {
-                    "model": "norman-code",
+                    "model": "openai.gpt-5.6-terra",
                     "input": _ops_mcp_canary_prompt(),
                     "tools": [_ops_portal_health_namespace()],
                 },
@@ -1131,7 +1131,7 @@ def run_canary(
             final = execute_turn(
                 "ops_final_answer",
                 {
-                    "model": "norman-code",
+                    "model": "openai.gpt-5.6-terra",
                     "previous_response_id": _clean(tool_call.get("id")),
                     "input": [
                         *_streamed_function_call_replay_items(ops_call),
@@ -1162,7 +1162,7 @@ def run_canary(
             discovery = execute_turn(
                 "tool_search",
                 {
-                    "model": "norman-code",
+                    "model": "openai.gpt-5.6-terra",
                     "input": _canary_prompt(),
                     "tools": [_tool_search_definition()],
                 },
@@ -1176,7 +1176,7 @@ def run_canary(
             tool_call = execute_turn(
                 "synthetic_status_lookup",
                 {
-                    "model": "norman-code",
+                    "model": "openai.gpt-5.6-terra",
                     "previous_response_id": _clean(discovery.get("id")),
                     "input": [
                         *_streamed_function_call_replay_items(tool_search_call),
@@ -1201,7 +1201,7 @@ def run_canary(
             final = execute_turn(
                 "final_answer",
                 {
-                    "model": "norman-code",
+                    "model": "openai.gpt-5.6-terra",
                     "previous_response_id": _clean(tool_call.get("id")),
                     "input": [
                         *_streamed_function_call_replay_items(synthetic_call),

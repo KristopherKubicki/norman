@@ -13,7 +13,7 @@ LOCAL_USAGE_BUCKETS = {"offline_local", "offline"}
 LOCAL_READY_STATES = {"available", "ready"}
 SAFE_MUTATION_RISKS = {"", "0", "false", "none", "read_only", "read-only"}
 LUNA_RATE_PER_MILLION = {"input": 1.0, "cached_input": 0.10, "output": 6.0}
-GPT_55_RATE_PER_MILLION = {"input": 5.0, "cached_input": 0.50, "output": 30.0}
+TERRA_RATE_PER_MILLION = {"input": 5.0, "cached_input": 0.50, "output": 30.0}
 MINIMUM_SAVINGS_USD = 0.001
 MINIMUM_SAVINGS_RATIO = 0.20
 FAST_LANE_KINDS = ("luna", "local")
@@ -239,9 +239,11 @@ def _token_cost(receipt: dict[str, Any], rates: dict[str, float]) -> float:
 
 
 def _savings(receipt: dict[str, Any], lane_kind: str) -> dict[str, Any]:
-    baseline = _number(receipt.get("baseline_all_5_5_cost_usd"))
+    baseline = _number(receipt.get("baseline_all_terra_cost_usd"))
     if baseline <= 0:
-        baseline = _token_cost(receipt, GPT_55_RATE_PER_MILLION)
+        baseline = _number(receipt.get("baseline_all_5_5_cost_usd"))
+    if baseline <= 0:
+        baseline = _token_cost(receipt, TERRA_RATE_PER_MILLION)
     estimated = _number(receipt.get("estimated_cost_usd"))
     estimated_basis = "receipt"
     if lane_kind == "local":

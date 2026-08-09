@@ -137,6 +137,7 @@ LOCAL_STREAM_OPEN_HEARTBEAT_INTERVAL_SECONDS = 5.0
 LOCAL_STREAM_OPEN_MAX_ACTIVE_INVOCATIONS = 4
 logger = logging.getLogger(__name__)
 MODEL_ALIASES = {
+    # Legacy local aliases remain available outside the Terra-only Codex work route.
     "norman-code": ROUTE_POLICY_MODELS["coding_operator"],
     "norman-code-governed": ROUTE_POLICY_MODELS["coding_operator"],
     "norman-fast": ROUTE_POLICY_MODELS["router"],
@@ -2631,16 +2632,6 @@ def _looks_like_cloud_model_selection(requested_model: Any) -> bool:
     return requested.startswith("gpt-") or requested.startswith("openai.gpt-")
 
 
-def _tui_tool_contract_required(route_envelope: Mapping[str, Any]) -> bool:
-    """Return whether the trusted request context belongs to a Codex TUI."""
-
-    trusted_context = _mapping(route_envelope.get("trusted_gateway_context"))
-    return bool(
-        _clean(trusted_context.get("source_tui"))
-        or _lower(trusted_context.get("policy_scope")).startswith("tui:")
-    )
-
-
 def _explicit_cloud_selection_plan(
     *,
     provider_payload: Mapping[str, Any],
@@ -2649,7 +2640,8 @@ def _explicit_cloud_selection_plan(
     """Build the one exact cloud route declared by the signed route policy."""
 
     requested_alias = _requested_model(provider_payload).lower()
-    compiled_selection = explicit_cloud_selection_for_model(requested_alias)
+    selected_alias = MODEL_ALIASES.get(requested_alias, requested_alias)
+    compiled_selection = explicit_cloud_selection_for_model(selected_alias)
     if compiled_selection is None:
         if _looks_like_cloud_model_selection(requested_alias):
             raise FacadeError(
@@ -2660,22 +2652,6 @@ def _explicit_cloud_selection_plan(
                 param="model",
             )
         return None
-
-    if _tui_tool_contract_required(route_envelope):
-        raise FacadeError(
-            "This Codex route requires shell and filesystem tools. Use "
-            "norman-code; it will use the approved cloud fallback when local "
-            "coding capacity is unavailable.",
-            status_code=400,
-            error_type="invalid_request_error",
-            code="tool_capable_model_required",
-            param="model",
-            norman={
-                "selected_model": requested_alias,
-                "required_model": "norman-code",
-                "cloud_fallback": "automatic_for_retryable_local_failure",
-            },
-        )
 
     route_policy = _nested_dict(
         route_envelope,
@@ -2688,7 +2664,7 @@ def _explicit_cloud_selection_plan(
     artifact_cloud_policy = _mapping(artifact.get("cloud_policy"))
     route_cloud_policy = _mapping(route_policy.get("cloud_policy"))
     artifact_selection = explicit_cloud_selection_for_model(
-        requested_alias,
+        selected_alias,
         cloud_policy=artifact_cloud_policy,
     )
     if (
@@ -2751,7 +2727,10 @@ def _explicit_cloud_selection_plan(
         tool_lane=False,
         requires_receipt=True,
         reason="facade explicit approved cloud model selection",
-        attribution={"requested_alias": requested_alias},
+        attribution={
+            "requested_alias": requested_alias,
+            "selected_alias": selected_alias,
+        },
     )
     return ExplicitCloudSelectionPlan(
         requested_alias=requested_alias,

@@ -229,7 +229,7 @@ document.addEventListener('DOMContentLoaded', () => {
       try {
         let bot;
         try {
-          bot = await addBot(name, description, "gpt-5.5");
+          bot = await addBot(name, description, "gpt-5.6-terra");
         } catch (err) {
           if (String(err.message || '').includes('Invalid GPT model')) {
             bot = await addBot(name, description, null);

@@ -352,7 +352,7 @@ def _sse(lines: Iterable[dict[str, Any]]) -> Iterable[str]:
 
 
 def _codex_model_catalog() -> list[dict[str, Any]]:
-    """Return the minimal Codex model catalog for the local facade."""
+    """Return the Codex model catalog with Terra as the routed work default."""
     common = {
         "default_reasoning_level": "high",
         "supported_reasoning_levels": [
@@ -378,10 +378,20 @@ def _codex_model_catalog() -> list[dict[str, Any]]:
     return [
         {
             **common,
+            "slug": "openai.gpt-5.6-terra",
+            "display_name": "GPT-5.6 Terra",
+            "description": "GPT-5.6 Terra through Norman's transparent tool bridge.",
+            "priority": 1,
+            # Codex uses these capabilities to provision its local coding tools.
+            "apply_patch_tool_type": "freeform",
+            "supports_parallel_tool_calls": True,
+        },
+        {
+            **common,
             "slug": "norman-code",
             "display_name": "Norman Code",
-            "description": "Norman transparent local-first coding route.",
-            "priority": 1,
+            "description": "Legacy local coding route for non-TUI compatibility.",
+            "priority": 2,
             # Codex uses these capabilities to provision its local coding tools.
             "apply_patch_tool_type": "freeform",
             "supports_parallel_tool_calls": True,
@@ -390,8 +400,8 @@ def _codex_model_catalog() -> list[dict[str, Any]]:
             **common,
             "slug": "norman-code-governed",
             "display_name": "Norman Code (Governed)",
-            "description": "Norman coding route with explicit governed tool behavior.",
-            "priority": 2,
+            "description": "Legacy governed local route for non-TUI compatibility.",
+            "priority": 3,
             "apply_patch_tool_type": "freeform",
             "supports_parallel_tool_calls": True,
         },
@@ -400,7 +410,7 @@ def _codex_model_catalog() -> list[dict[str, Any]]:
             "slug": "norman-local",
             "display_name": "Norman Local",
             "description": "Norman local text route.",
-            "priority": 3,
+            "priority": 4,
         },
     ]
 
@@ -420,6 +430,12 @@ async def openai_compat_models(request: Request):
     response = {
         "object": "list",
         "data": [
+            {
+                "id": "openai.gpt-5.6-terra",
+                "object": "model",
+                "created": 0,
+                "owned_by": "openai",
+            },
             {
                 "id": "norman-code",
                 "object": "model",
@@ -443,8 +459,8 @@ async def openai_compat_models(request: Request):
         "norman": {
             "schema": "norman.openai-compatible-models.v1",
             "base_url": "/v1",
-            "local_first": True,
-            "cloud_forwarding": False,
+            "local_first": False,
+            "cloud_forwarding": True,
             "capabilities": capabilities,
             "gateway": _gateway_context(gateway_route),
         },

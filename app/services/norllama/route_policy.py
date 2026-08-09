@@ -6,9 +6,9 @@ from datetime import datetime, timezone
 from typing import Any, Mapping
 
 ROUTE_POLICY_SCHEMA = "norman.norllama.route-policy.v1"
-ROUTE_POLICY_VERSION = "2026.08.06.explicit-cloud-v1"
-ROUTE_POLICY_COMPILED_AT = "2026-08-06T00:00:00Z"
-ROUTE_POLICY_EXPIRES_AT = "2026-08-11T00:00:00Z"
+ROUTE_POLICY_VERSION = "2026.08.09.terra-codex-v2"
+ROUTE_POLICY_COMPILED_AT = "2026-08-09T00:00:00Z"
+ROUTE_POLICY_EXPIRES_AT = "2026-09-09T00:00:00Z"
 ROUTE_POLICY_EXPIRY_WARN_SECONDS = 72 * 60 * 60
 ROUTE_POLICY_EXPIRED_STATE = "expired_blocked"
 
@@ -79,7 +79,7 @@ ROUTE_POLICY_RESIDENCY = {
     "lab": ["world", "graph", "packet", "forecasting", "gui-grounding"],
 }
 
-CLOUD_FALLBACK_BEDROCK_MODEL = "qwen.qwen3-coder-480b-a35b-v1:0"
+CLOUD_FALLBACK_BEDROCK_MODEL = "openai.gpt-5.6-terra"
 
 ROUTE_POLICY_FALLBACKS = {
     "worker_mismatch_requires_receipt_fallback": True,
@@ -98,36 +98,6 @@ ROUTE_POLICY_CLOUD_POLICY = {
     "cloud_proxy_counts_as_cloud": True,
     "perplexity_web_is_search_not_cloud_llm": True,
     "explicit_cloud_models": {
-        "gpt-5.4": {
-            "provider": "aws-bedrock",
-            "model": "openai.gpt-5.4",
-            "lane": "coder",
-        },
-        "openai.gpt-5.4": {
-            "provider": "aws-bedrock",
-            "model": "openai.gpt-5.4",
-            "lane": "coder",
-        },
-        "gpt-5.5": {
-            "provider": "aws-bedrock",
-            "model": "openai.gpt-5.5",
-            "lane": "coder",
-        },
-        "openai.gpt-5.5": {
-            "provider": "aws-bedrock",
-            "model": "openai.gpt-5.5",
-            "lane": "coder",
-        },
-        "gpt-5.6-luna": {
-            "provider": "aws-bedrock",
-            "model": "openai.gpt-5.6-luna",
-            "lane": "coder",
-        },
-        "openai.gpt-5.6-luna": {
-            "provider": "aws-bedrock",
-            "model": "openai.gpt-5.6-luna",
-            "lane": "coder",
-        },
         "gpt-5.6-terra": {
             "provider": "aws-bedrock",
             "model": "openai.gpt-5.6-terra",
@@ -136,16 +106,6 @@ ROUTE_POLICY_CLOUD_POLICY = {
         "openai.gpt-5.6-terra": {
             "provider": "aws-bedrock",
             "model": "openai.gpt-5.6-terra",
-            "lane": "coder",
-        },
-        "gpt-5.6-sol": {
-            "provider": "aws-bedrock",
-            "model": "openai.gpt-5.6-sol",
-            "lane": "coder",
-        },
-        "openai.gpt-5.6-sol": {
-            "provider": "aws-bedrock",
-            "model": "openai.gpt-5.6-sol",
             "lane": "coder",
         },
     },

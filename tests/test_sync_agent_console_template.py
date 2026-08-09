@@ -759,20 +759,17 @@ def test_origin_sync_exports_bbs_env_file_without_raw_token(monkeypatch) -> None
     assert "us-east-1" not in script
     assert '"NORMAN_CODEX_ZERO_TOKEN_PROVIDER_MAX_RETRIES":"1"' in script
     assert "traqline-bedrock" in script
-    assert "openai.gpt-5.5" in script
+    assert "openai.gpt-5.5" not in script
     assert "NORMAN_CODEX_FLEX_MODEL" in script
     assert "NORMAN_CODEX_PRIORITY_MODEL" in script
     assert "NORMAN_CODEX_SWITCHABLE_MODELS" in script
     assert "openai.gpt-5.6-terra" in script
     assert "gpt-5.6-terra" in script
-    assert module.WORK_SWITCHABLE_MODELS == (
-        "openai.gpt-5.6-terra,openai.gpt-5.5,openai.gpt-5.4,"
-        "gpt-5.6-terra,gpt-5.5,gpt-5.4"
-    )
+    assert module.WORK_SWITCHABLE_MODELS == "openai.gpt-5.6-terra,gpt-5.6-terra"
     assert module.WORK_STANDARD_MODEL == "openai.gpt-5.6-terra"
     assert module.WORK_STANDARD_AWS_REGION == "us-east-2"
     assert module.WORK_DIRECT_MODEL == "gpt-5.6-terra"
-    assert module.WORK_FINAL_AUTHORITY_MODEL == "openai.gpt-5.5"
+    assert module.WORK_FINAL_AUTHORITY_MODEL == "openai.gpt-5.6-terra"
     assert '"NORMAN_CODEX_TAILSCALE_REQUIRED":"0"' in script
     assert '"NORMAN_CODEX_DIRECT_TIERS_ENABLED":"1"' in script
     assert "ob-traqline-admin" in script
@@ -909,10 +906,7 @@ def test_work_runtime_default_model_reset_migrates_old_default(
     script = captured["script"]
     assert "runtime_settings.json" in script
     assert "desired_model = 'gpt-5.6-terra'" in script
-    assert (
-        "switchable_models = ['openai.gpt-5.6-terra', 'openai.gpt-5.5', "
-        "'openai.gpt-5.4', 'gpt-5.6-terra', 'gpt-5.5', 'gpt-5.4']" in script
-    )
+    assert "switchable_models = ['openai.gpt-5.6-terra', 'gpt-5.6-terra']" in script
     assert 'payload["service_tier"] = "default"' in script
 
 
@@ -1392,16 +1386,10 @@ def test_work_bedrock_defaults_can_be_disabled_and_cleaned(monkeypatch) -> None:
     assert '"NORMAN_CODEX_FLEX_MODEL":"gpt-5.6-terra"' in script
     assert '"NORMAN_CODEX_PRIORITY_MODEL":"gpt-5.6-terra"' in script
     assert (
-        '"NORMAN_CODEX_SWITCHABLE_MODELS":"'
-        "openai.gpt-5.4,openai.gpt-5.5,"
-        "openai.gpt-5.6-luna,openai.gpt-5.6-terra,openai.gpt-5.6-sol,"
-        'gpt-5.4,gpt-5.5,gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol"'
+        '"NORMAN_CODEX_SWITCHABLE_MODELS":"openai.gpt-5.6-terra,gpt-5.6-terra"'
     ) in script
     assert (
-        '"NORMAN_CODEX_AVAILABLE_MODELS":"'
-        "openai.gpt-5.4,openai.gpt-5.5,"
-        "openai.gpt-5.6-luna,openai.gpt-5.6-terra,openai.gpt-5.6-sol,"
-        'gpt-5.4,gpt-5.5,gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol"'
+        '"NORMAN_CODEX_AVAILABLE_MODELS":"openai.gpt-5.6-terra,gpt-5.6-terra"'
     ) in script
     assert "ob-traqline-admin" not in script
 
@@ -1674,16 +1662,10 @@ def test_non_work_bedrock_defaults_can_be_disabled_and_cleaned(
     assert '"NORMAN_CODEX_FLEX_MODEL":"gpt-5.6-terra"' in script
     assert '"NORMAN_CODEX_PRIORITY_MODEL":"gpt-5.6-terra"' in script
     assert (
-        '"NORMAN_CODEX_SWITCHABLE_MODELS":"'
-        "openai.gpt-5.4,openai.gpt-5.5,"
-        "openai.gpt-5.6-luna,openai.gpt-5.6-terra,openai.gpt-5.6-sol,"
-        'gpt-5.4,gpt-5.5,gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol"'
+        '"NORMAN_CODEX_SWITCHABLE_MODELS":"openai.gpt-5.6-terra,gpt-5.6-terra"'
     ) in script
     assert (
-        '"NORMAN_CODEX_AVAILABLE_MODELS":"'
-        "openai.gpt-5.4,openai.gpt-5.5,"
-        "openai.gpt-5.6-luna,openai.gpt-5.6-terra,openai.gpt-5.6-sol,"
-        'gpt-5.4,gpt-5.5,gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol"'
+        '"NORMAN_CODEX_AVAILABLE_MODELS":"openai.gpt-5.6-terra,gpt-5.6-terra"'
     ) in script
 
 
@@ -1866,16 +1848,10 @@ def test_netops_preserves_bedrock_when_profile_source_is_unavailable(
     assert '"NORMAN_CODEX_FLEX_MODEL":"openai.gpt-5.6-terra"' in script
     assert '"NORMAN_CODEX_PRIORITY_MODEL":"openai.gpt-5.6-terra"' in script
     assert (
-        '"NORMAN_CODEX_SWITCHABLE_MODELS":"'
-        "openai.gpt-5.4,openai.gpt-5.5,"
-        "openai.gpt-5.6-luna,openai.gpt-5.6-terra,openai.gpt-5.6-sol,"
-        'gpt-5.4,gpt-5.5,gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol"'
+        '"NORMAN_CODEX_SWITCHABLE_MODELS":"openai.gpt-5.6-terra,gpt-5.6-terra"'
     ) in script
     assert (
-        '"NORMAN_CODEX_AVAILABLE_MODELS":"'
-        "openai.gpt-5.4,openai.gpt-5.5,"
-        "openai.gpt-5.6-luna,openai.gpt-5.6-terra,openai.gpt-5.6-sol,"
-        'gpt-5.4,gpt-5.5,gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol"'
+        '"NORMAN_CODEX_AVAILABLE_MODELS":"openai.gpt-5.6-terra,gpt-5.6-terra"'
     ) in script
     assert "NORMAN_CODEX_STANDARD_PROFILE_V2" not in script
     assert "traqline-bedrock" not in script

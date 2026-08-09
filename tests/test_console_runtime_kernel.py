@@ -555,7 +555,7 @@ def test_model_completion_exposes_verified_luna_fast_lane_outcome():
                     "validator_gate": "pass",
                     "validator_passed": True,
                     "estimated_cost_usd": 0.004,
-                    "baseline_all_5_5_cost_usd": 0.02,
+                    "baseline_all_terra_cost_usd": 0.02,
                 }
             }
         },
