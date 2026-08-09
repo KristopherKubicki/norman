@@ -28,6 +28,7 @@ dependencies = [
   "python-multipart>=0.0.22,<1",
   "email-validator>=2.3.0",
   "pyjwt>=2.11.0",
+  "PyYAML>=6.0,<7",
 ]
 
 [project.scripts]
@@ -57,7 +58,6 @@ dev = [
   "pre-commit>=4.5,<5",
   "hypothesis>=6.151,<7",
   "httpx2>=2.10,<3",
-  "PyYAML",
 ]
 
 [tool.ruff]
