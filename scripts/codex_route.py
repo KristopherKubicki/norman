@@ -55,10 +55,9 @@ LOCAL_BIN = HOME / ".local" / "bin"
 LOCAL_CODEX_WRAPPER = LOCAL_BIN / "codex"
 LOCAL_CODEX_WORK_WRAPPER = LOCAL_BIN / "codex-work"
 ROUTER_PROFILE_PREFIX = "router-"
-DEFAULT_ROUTER_MODEL = "norman-code"
-GOVERNED_ROUTER_MODEL = "norman-code-governed"
-ROUTER_MODELS = frozenset({DEFAULT_ROUTER_MODEL, GOVERNED_ROUTER_MODEL})
-MODEL_CATALOG_CONTRACT_VERSION = "2026-08-transparent-bridge-v1"
+DEFAULT_ROUTER_MODEL = "openai.gpt-5.6-terra"
+ROUTER_MODELS = frozenset({DEFAULT_ROUTER_MODEL, "gpt-5.6-terra"})
+MODEL_CATALOG_CONTRACT_VERSION = "2026-08-terra-codex-v1"
 REQUIRED_CODEX_MODEL_CAPABILITIES = {
     "shell_type": "shell_command",
     "apply_patch_tool_type": "freeform",
@@ -459,9 +458,8 @@ def route_arguments_error(route: Route, arguments: Sequence[str]) -> str:
 
     if any(model not in ROUTER_MODELS for model in explicit_models(arguments)):
         return (
-            f"{route.key} only supports the {DEFAULT_ROUTER_MODEL!r} or "
-            f"{GOVERNED_ROUTER_MODEL!r} TUI models; the gateway selects its "
-            "approved fallback so coding tools remain available."
+            f"{route.key} only supports the {DEFAULT_ROUTER_MODEL!r} TUI model; "
+            "the gateway preserves its transparent tool bridge for that model."
         )
 
     routed_keys = {
@@ -772,25 +770,16 @@ def _routed_model_catalog_entry(
 
 
 def routed_model_catalog() -> dict[str, object]:
-    """Return the transparent default and an explicit governed bridge mode."""
+    """Return the Terra model contract for routed Codex sessions."""
     return {
         "models": [
             _routed_model_catalog_entry(
                 slug=DEFAULT_ROUTER_MODEL,
-                display_name="Norman Code",
+                display_name="GPT-5.6 Terra",
                 description=(
-                    "Transparent local text-adapter coding route with approved "
-                    "local-first cloud fallback."
+                    "GPT-5.6 Terra through Norman's transparent coding tool bridge."
                 ),
                 priority=1,
-            ),
-            _routed_model_catalog_entry(
-                slug=GOVERNED_ROUTER_MODEL,
-                display_name="Norman Code (Governed)",
-                description=(
-                    "Norman coding route with explicit governed tool-bridge behavior."
-                ),
-                priority=2,
             ),
         ]
     }
@@ -1223,7 +1212,7 @@ def model_catalog_contract_error(payload: dict[str, Any]) -> str:
         actual = selected.get(key)
         if (expected is True and actual is not True) or actual != expected:
             return (
-                "gateway model catalog is incompatible with local coding tools: "
+                "gateway model catalog is incompatible with coding tools: "
                 f"{DEFAULT_ROUTER_MODEL!r} advertises {key}={actual!r}, "
                 f"expected {expected!r}; deploy the catalog fix and start a new chat"
             )
@@ -1240,12 +1229,18 @@ def verify_route_model_contract(_route: Route) -> tuple[bool, str]:
 
 
 def preflight_route_capacity(route: Route) -> tuple[bool, str]:
-    """Report local coding capacity before starting a mapped interactive session."""
+    """Verify that the gateway advertises the routed Terra model."""
 
     token, detail = brokered_gateway_token(route)
     if not token:
         return False, detail
-    return verify_norman_capacity(route, token=token)
+    status, payload, detail = gateway_get_json(route.endpoint, "models", token=token)
+    if status != 200:
+        return False, detail
+    contract_error = model_catalog_contract_error(payload)
+    if contract_error:
+        return False, contract_error
+    return True, "GPT-5.6 Terra route verified"
 
 
 def _coerce_int(value: Any) -> int:
@@ -1506,7 +1501,7 @@ def print_startup_usage_notices(route: Route) -> None:
 
 
 def verify_route(route: Route) -> tuple[bool, str]:
-    """Prove the endpoint accepts a brokered token and has local capacity."""
+    """Prove the endpoint accepts a brokered token and advertises Terra."""
 
     token, detail = brokered_gateway_token(route)
     if not token:
@@ -1517,10 +1512,7 @@ def verify_route(route: Route) -> tuple[bool, str]:
     contract_error = model_catalog_contract_error(payload)
     if contract_error:
         return False, contract_error
-    available, detail = verify_norman_capacity(route, token=token)
-    if not available:
-        return False, detail
-    return True, "authenticated Responses gateway and local coding capacity verified"
+    return True, "authenticated Responses gateway and GPT-5.6 Terra route verified"
 
 
 def route_environment(route: Route) -> dict[str, str]:
@@ -1751,11 +1743,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     file=sys.stderr,
                 )
                 return 1
-            capacity_available, capacity_detail = preflight_route_capacity(route)
-            if not capacity_available:
+            route_available, route_detail = preflight_route_capacity(route)
+            if not route_available:
                 print(
-                    f"codex-route: {route.key} local capacity warning: "
-                    f"{capacity_detail}. Starting Codex normally.",
+                    f"codex-route: {route.key} model-route warning: "
+                    f"{route_detail}. Starting Codex normally.",
                     file=sys.stderr,
                 )
             print_startup_usage_notices(route)

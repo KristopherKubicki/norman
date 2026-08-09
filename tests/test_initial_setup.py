@@ -76,6 +76,8 @@ def test_ensure_user_config_does_not_log_bootstrap_credentials(
     monkeypatch, tmp_path: Path, caplog
 ):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("NORMAN_CONFIG_PATH", raising=False)
+    monkeypatch.delenv("NORMAN_CONFIG_SECRET", raising=False)
     (tmp_path / "config.yaml.dist").write_text(
         yaml.safe_dump(
             {

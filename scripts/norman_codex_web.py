@@ -710,8 +710,10 @@ WORKDIR = os.environ.get("NORMAN_CODEX_WORKDIR", "/opt/housebot")
 CODEX_HOME = os.environ.get("NORMAN_CODEX_HOME", "/root/.codex-housebot")
 CODEX_AUTH_PATH = Path(CODEX_HOME) / "auth.json"
 CODEX_MODEL_FLOOR = (
-    os.environ.get("NORMAN_CODEX_MODEL_FLOOR", "gpt-5.5").strip() or "gpt-5.5"
+    os.environ.get("NORMAN_CODEX_MODEL_FLOOR", "gpt-5.6-terra").strip()
+    or "gpt-5.6-terra"
 )
+CODEX_ACTIVE_MODEL_ALIASES = frozenset({"openai.gpt-5.6-terra", "gpt-5.6-terra"})
 
 
 def _codex_model_version(value: Any) -> tuple[int, int] | None:
@@ -745,17 +747,17 @@ def _codex_model_aliases(value: Any) -> set[str]:
 
 
 def codex_model_switchable_below_floor(value: Any) -> bool:
-    aliases = _codex_model_aliases(value)
-    if not aliases:
-        return False
-    raw = os.environ.get(
-        "NORMAN_CODEX_SWITCHABLE_MODELS",
-        "openai.gpt-5.5,openai.gpt-5.4,gpt-5.5,gpt-5.4",
-    )
-    for item in raw.split(","):
-        if aliases & _codex_model_aliases(item):
-            return True
+    """Legacy compatibility hook; active Codex selection is Terra-only."""
     return False
+
+
+def codex_model_is_active(value: Any) -> bool:
+    return bool(_codex_model_aliases(value) & CODEX_ACTIVE_MODEL_ALIASES)
+
+
+def _active_codex_model_fallback(value: Any) -> str:
+    fallback = str(value or "").strip()
+    return fallback if codex_model_is_active(fallback) else CODEX_MODEL_FLOOR
 
 
 def normalize_codex_model_name(
@@ -767,11 +769,9 @@ def normalize_codex_model_name(
 ) -> str:
     clean = str(value or "").strip()
     if not clean:
-        return "" if allow_blank else str(fallback or CODEX_MODEL_FLOOR).strip()
-    if codex_model_below_floor(clean):
-        if allow_switchable and codex_model_switchable_below_floor(clean):
-            return clean
-        return str(fallback or CODEX_MODEL_FLOOR).strip() or CODEX_MODEL_FLOOR
+        return "" if allow_blank else _active_codex_model_fallback(fallback)
+    if not codex_model_is_active(clean):
+        return _active_codex_model_fallback(fallback)
     return clean
 
 
@@ -799,15 +799,22 @@ CODEX_SWITCHABLE_MODELS = _dedupe_models(
     normalize_codex_model_name(item, fallback=MODEL, allow_switchable=True)
     for item in os.environ.get(
         "NORMAN_CODEX_SWITCHABLE_MODELS",
-        "openai.gpt-5.5,openai.gpt-5.4,gpt-5.5,gpt-5.4",
+        "openai.gpt-5.6-terra,gpt-5.6-terra",
     ).split(",")
     if item.strip()
 ) or [MODEL]
 AVAILABLE_MODELS = _dedupe_models(
-    normalize_codex_model_name(item, fallback=MODEL, allow_switchable=True)
-    for item in os.environ.get("NORMAN_CODEX_AVAILABLE_MODELS", MODEL).split(",")
-    if item.strip()
-) + CODEX_SWITCHABLE_MODELS or [MODEL]
+    [
+        *(
+            normalize_codex_model_name(item, fallback=MODEL, allow_switchable=True)
+            for item in os.environ.get("NORMAN_CODEX_AVAILABLE_MODELS", MODEL).split(
+                ","
+            )
+            if item.strip()
+        ),
+        *CODEX_SWITCHABLE_MODELS,
+    ]
+) or [MODEL]
 LOCAL_LLM_DEFAULT_MODEL = (
     os.environ.get("NORMAN_LOCAL_LLM_MODEL", "local-llm").strip() or "local-llm"
 )
@@ -5263,8 +5270,6 @@ def turn_control_authority_class(
 ) -> str:
     if route_receipt_requires_operator_approval(prompt):
         return "approval_required"
-    if "5_5" in str(selected_model_tier or ""):
-        return "final_authority"
     risk = str(mutation_risk or "none")
     if risk in {"deploy_restart", "external_write", "billing_secret"}:
         return "approval_required"
@@ -6350,29 +6355,10 @@ def model_route_presets_payload() -> list[dict[str, Any]]:
         lane="openai-direct",
     )
     add_preset(
-        "codex-openai-5-4",
-        "Codex OpenAI 5.4",
-        runtime="codex",
-        model=codex_direct_model_name("gpt-5.4"),
-        service_tier="flex",
-        provider=CODEX_DIRECT_PROVIDER_LABEL,
-        can_execute=CODEX_DIRECT_TIERS_ENABLED,
-        status="Fallback" if CODEX_DIRECT_TIERS_ENABLED else "Disabled",
-        hint=(
-            "Codex GPT-5.4 via the OpenAI direct route after Bedrock routes fail."
-            if CODEX_DIRECT_TIERS_ENABLED
-            else "OpenAI direct tiers are disabled for this TUI."
-        ),
-        role="compat fallback",
-        tools="codex",
-        confidence="medium",
-        lane="openai-direct",
-    )
-    add_preset(
         "codex-bedrock",
         "Codex Bedrock Default",
         runtime="codex",
-        model=codex_bedrock_model_name(CODEX_STANDARD_MODEL or "openai.gpt-5.4"),
+        model=codex_bedrock_model_name(CODEX_STANDARD_MODEL or "openai.gpt-5.6-terra"),
         service_tier="default",
         provider=CODEX_STANDARD_PROVIDER_LABEL,
         can_execute=bool(CODEX_STANDARD_PROFILE_V2),
@@ -6385,44 +6371,6 @@ def model_route_presets_payload() -> list[dict[str, Any]]:
         role="work default",
         tools="codex",
         confidence="high",
-        lane="aws-bedrock",
-    )
-    add_preset(
-        "codex-bedrock-5-4",
-        "Codex Bedrock 5.4",
-        runtime="codex",
-        model=codex_bedrock_model_name("openai.gpt-5.4"),
-        service_tier="default",
-        provider=CODEX_STANDARD_PROVIDER_LABEL,
-        can_execute=bool(CODEX_STANDARD_PROFILE_V2),
-        status="Stable" if CODEX_STANDARD_PROFILE_V2 else "Offline",
-        hint=(
-            f"Codex GPT-5.4 via profile-v2 {CODEX_STANDARD_PROFILE_V2}. Stable default lane for normal work."
-            if CODEX_STANDARD_PROFILE_V2
-            else "Codex Bedrock fallback needs a standard profile-v2 before it can run."
-        ),
-        role="standard lane",
-        tools="codex",
-        confidence="high",
-        lane="aws-bedrock",
-    )
-    add_preset(
-        "codex-bedrock-frontier-5-5",
-        "Codex Bedrock 5.5",
-        runtime="codex",
-        model=codex_bedrock_model_name("openai.gpt-5.5"),
-        service_tier="default",
-        provider=CODEX_STANDARD_PROVIDER_LABEL,
-        can_execute=bool(CODEX_STANDARD_PROFILE_V2),
-        status="Frontier" if CODEX_STANDARD_PROFILE_V2 else "Offline",
-        hint=(
-            f"Codex GPT-5.5 via profile-v2 {CODEX_STANDARD_PROFILE_V2}. Use only for frontier/tiebreaker work when availability is acceptable."
-            if CODEX_STANDARD_PROFILE_V2
-            else "Codex Bedrock 5.5 needs a standard profile-v2 before it can run."
-        ),
-        role="tie breaker",
-        tools="codex",
-        confidence="limited availability",
         lane="aws-bedrock",
     )
     add_preset(
@@ -11642,6 +11590,8 @@ def zero_token_provider_retry_model(
     if not normalized_usage.get("zero_token_provider_failure"):
         return normalized_model
     standard_model = codex_bedrock_model_name(CODEX_STANDARD_MODEL or MODEL)
+    if normalized_model == standard_model:
+        return ""
     current_version = _codex_model_version(normalized_model)
     standard_version = _codex_model_version(standard_model)
     if current_version and standard_version and current_version > standard_version:
@@ -16307,6 +16257,14 @@ def _codex_credit_rates_for_model(model: Any) -> dict[str, Any]:
     clean = normalize_codex_model_name(
         model or configured_chat_model(), fallback=MODEL
     ).lower()
+    if clean.startswith(("gpt-5.6-terra", "openai.gpt-5.6-terra")):
+        return {
+            "configured": True,
+            "source": "OpenAI Codex GPT-5.6 Terra credit rate card",
+            "input_credits_per_1m": 125.0,
+            "cached_input_credits_per_1m": 12.5,
+            "output_credits_per_1m": 750.0,
+        }
     if clean.startswith(("gpt-5.4", "openai.gpt-5.4")):
         return {
             "configured": True,
@@ -17212,7 +17170,7 @@ def estimate_usage_entries_cost(
         estimate = _estimate_usage_cost_with_rates(entry, rates)
         approximate = approximate or bool(estimate.get("approximate"))
         long_context = long_context or bool(estimate.get("long_context"))
-        if estimate["configured"]:
+        if ledger_kind != "chatgpt_codex_credit_estimate" and estimate["configured"]:
             configured_entries += 1
             total_usd += float(estimate["usd"])
         credit_estimate = _estimate_usage_codex_credits(entry, model=model)
@@ -17232,7 +17190,7 @@ def estimate_usage_entries_cost(
         confidence = "approximate_rate_card" if approximate else "configured_local_rate"
     elif configured_entries:
         confidence = "partial_rate_card"
-    if configured_entries and not credit_configured_entries:
+    if configured_entries:
         display_unit = "usd_equivalent"
     elif credit_configured_entries and not configured_entries:
         display_unit = "credits"
@@ -17596,7 +17554,7 @@ ROUTE_RECEIPT_REQUIRED_FIELDS = (
     "escalation_trigger",
     "fallback_used",
     "estimated_cost_usd",
-    "baseline_all_5_5_cost_usd",
+    "baseline_all_terra_cost_usd",
     "input_tokens",
     "cached_input_tokens",
     "output_tokens",
@@ -17740,8 +17698,10 @@ def route_receipt_model_tier(model: Any, service_tier: Any) -> str:
     if clean_model in {"deterministic-status", "deterministic-command"}:
         return "deterministic_tool"
     bedrock_surface = tier in {"default", "standard"}
-    if "5.5" in clean_model:
-        return "bedrock_5_5_xhigh_final" if bedrock_surface else "frontier_5_5_final"
+    if "5.6-terra" in clean_model:
+        return (
+            "bedrock_5_6_terra_final" if bedrock_surface else "frontier_5_6_terra_final"
+        )
     if "5.4" in clean_model:
         return "bedrock_5_4_verifier" if bedrock_surface else "frontier_5_4_verifier"
     if any(token in clean_model for token in ("mini", "small", "nano")):
@@ -17754,7 +17714,7 @@ def route_receipt_model_tier(model: Any, service_tier: Any) -> str:
 def route_receipt_allowed_role(selected_model_tier: str) -> str:
     if selected_model_tier == "deterministic_tool":
         return "deterministic_read"
-    if "5_5" in selected_model_tier:
+    if "5_6_terra" in selected_model_tier:
         return "final_authority"
     if "5_4" in selected_model_tier:
         return "verifier"
@@ -17908,9 +17868,7 @@ def build_route_receipt(
         requested_action=requested_action,
     )
     final_authority_required = (
-        allowed_role == "final_authority"
-        or operator_approval_required
-        or authority_class == "final_authority"
+        operator_approval_required or authority_class == "final_authority"
     )
     live_write_attempted = route_receipt_text_has_any(
         f"{prompt}\n{visible_response}\n{error_text}", ROUTE_RECEIPT_LIVE_WRITE_MARKERS
@@ -17948,8 +17906,8 @@ def build_route_receipt(
     estimated_cost_usd = route_receipt_cost_usd(
         usage_entry, model=normalized_model, service_tier=normalized_service_tier
     )
-    baseline_all_5_5_cost_usd = route_receipt_cost_usd(
-        usage_entry, model="openai.gpt-5.5", service_tier="default"
+    baseline_all_terra_cost_usd = route_receipt_cost_usd(
+        usage_entry, model="openai.gpt-5.6-terra", service_tier="default"
     )
     if boundary_violation:
         validator_gate = "boundary_violation"
@@ -18085,7 +18043,7 @@ def build_route_receipt(
         "escalation_trigger": escalation_trigger,
         "fallback_used": fallback_used,
         "estimated_cost_usd": estimated_cost_usd,
-        "baseline_all_5_5_cost_usd": baseline_all_5_5_cost_usd,
+        "baseline_all_terra_cost_usd": baseline_all_terra_cost_usd,
         "input_tokens": _coerce_int(usage_entry.get("input_tokens")),
         "cached_input_tokens": _coerce_int(usage_entry.get("cached_input_tokens")),
         "output_tokens": _coerce_int(usage_entry.get("output_tokens")),
@@ -18413,7 +18371,15 @@ def route_receipt_status_snapshot() -> dict[str, Any]:
 
 def append_route_receipt_entry(entry: dict[str, Any]) -> None:
     prepare_route_receipt_for_append(entry, ROUTE_RECEIPT_PATH)
-    missing = [field for field in ROUTE_RECEIPT_REQUIRED_FIELDS if field not in entry]
+    missing = [
+        field
+        for field in ROUTE_RECEIPT_REQUIRED_FIELDS
+        if field not in entry
+        and not (
+            field == "baseline_all_terra_cost_usd"
+            and "baseline_all_5_5_cost_usd" in entry
+        )
+    ]
     if missing:
         raise ValueError(f"route receipt missing required fields: {', '.join(missing)}")
     mirror_route_receipt_to_state_db(entry)
@@ -37229,7 +37195,7 @@ class Handler(BaseHTTPRequestHandler):
             )
 
         def render_model_floor_pill(model: str) -> str:
-            title = "Codex model. GPT-5.4 is the stable default; GPT-5.5 is a frontier/tiebreaker lane."
+            title = "Codex model. GPT-5.6 Terra is the active Codex model."
             active = " active" if model == active_model else ""
             return (
                 f'<button type="button" class="ghost setting-pill model-floor-pill{active}" '
@@ -50744,7 +50710,7 @@ class Handler(BaseHTTPRequestHandler):
             settings_runtime_routes_html
         }</div>
           <div class="settings-row model-floor-row">{settings_model_buttons_html}</div>
-          <div class="settings-note">Presets pick runtime, model, and provider lane together. Codex Bedrock 5.4 is the stable work-special default; Codex Bedrock 5.5 is a frontier/tiebreaker lane for rare high-judgment work. Claude is executable only where Bedrock Converse is enabled and currently uses brokered tools. Kimi, Qwen, and DeepSeek are benchmark routes until a live adapter/tool policy is wired. {
+          <div class="settings-note">Presets pick runtime, model, and provider lane together. GPT-5.6 Terra is the active Codex model. Claude is executable only where Bedrock Converse is enabled and currently uses brokered tools. Kimi, Qwen, and DeepSeek are benchmark routes until a live adapter/tool policy is wired. {
             "Model update available"
             if chat_model_update_available()
             else "Model current"
@@ -57104,6 +57070,15 @@ class Handler(BaseHTTPRequestHandler):
 
     function codexCreditRatesForModel(model) {{
       const clean = String(model || CHAT_MODEL || DEFAULT_MODEL || "").trim().toLowerCase();
+      if (clean.startsWith("gpt-5.6-terra") || clean.startsWith("openai.gpt-5.6-terra")) {{
+        return {{
+          configured: true,
+          input: 125,
+          cachedInput: 12.5,
+          output: 750,
+          source: "OpenAI Codex GPT-5.6 Terra credit rate card",
+        }};
+      }}
       if (clean.startsWith("gpt-5.4") || clean.startsWith("openai.gpt-5.4")) {{
         return {{
           configured: true,
@@ -57604,7 +57579,7 @@ class Handler(BaseHTTPRequestHandler):
 
     function modelNameLooksFrontier(value) {{
       const lower = String(value || "").trim().toLowerCase();
-      return lower.includes("gpt-5.5") || lower.includes("openai.gpt-5.5") || lower.includes("5.5");
+      return lower.includes("gpt-5.6-terra") || lower.includes("openai.gpt-5.6-terra");
     }}
 
     function estimateToolCallBudgetForTurn(item, usage) {{
@@ -64709,7 +64684,7 @@ class Handler(BaseHTTPRequestHandler):
         return "Codex needs a fresh sign-in. Reauthenticate this bot home.";
       }}
       if (containsCodexRouteMismatchError(text)) {{
-        return "Model route mismatch: OpenAI direct got a Bedrock model id. Retry after selecting Codex OpenAI (gpt-5.5), or switch to Codex Bedrock.";
+        return "Model route mismatch: OpenAI direct got a Bedrock model id. Retry after selecting Codex OpenAI (gpt-5.6-terra), or switch to Codex Bedrock.";
       }}
       if (containsCodexCliUpgradeError(text)) {{
         return "Codex CLI was stale for this turn. Upgrade/restart the bot, then retry.";

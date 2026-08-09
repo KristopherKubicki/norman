@@ -478,83 +478,29 @@ broker, whose policy deliberately permits only `*/prompt-proxy-token` aliases.
 Without this configuration the alert services are skipped cleanly rather than
 failing repeatedly.
 
-### Norman Codex Capacity Contract
+### Norman Codex Terra Contract
 
-`norman-code` is local-first. Before an interactive session starts, the
-launcher obtains one brokered gateway token and checks:
+`codex-work` launches `openai.gpt-5.6-terra` through the Norman Responses
+facade. The facade preserves the TUI bridge, route receipts, and tool protocol;
+it does not select a local coding model or make a server-owned local fallback.
 
-1. `/v1/models` accepts that token.
-2. `/v1/norman/capacity?model=norman-code` reports a reachable Spark that
-   advertises the coding model.
+Before an interactive session starts, the launcher obtains one brokered gateway
+token and verifies that `/v1/models` accepts it and advertises the Terra model.
+`codex --verify` performs that same non-invoking check. `login`, `logout`,
+`--help`, and `--version` remain available without a gateway check.
 
-The capacity endpoint performs a fresh mesh probe and checks the bounded
-recent local facade-outcome window; it does not send a prompt, load a model,
-or create model residency. A local model timeout holds that model unavailable
-for 60 seconds. Unavailable-model, capacity, or empty-response errors retain
-the 15-minute hold. A later successful local response clears the hold. Before
-each interactive launch, the router checks this endpoint and reports an
-unavailable local coding lane as an advisory. It still starts Codex with the
-isolated routed profile; it never changes the provider or bypasses the route
-policy. When the capacity response approves the Bedrock fallback, the advisory
-states that it will run before local output if the request cannot use the local
-lane. For example:
+The API still exposes local-model aliases and `/v1/norman/capacity` for
+non-TUI compatibility and local-operations diagnostics. They are not valid
+`codex-work` selections and must not be used as a fallback for a Terra session.
+If Terra cannot be reached, the TUI fails explicitly and the route receipt
+records the effective provider, model, bridge mode, and failure reason.
 
-```text
-codex-route: norman local capacity warning: no eligible coding worker is
-reachable (no_eligible_worker_reachable); 0/2 model-ready worker(s),
-unavailable; approved Bedrock fallback is ready and will run before any local
-output; retry later. Starting Codex normally.
-```
-
-The pre-TUI output also shows the freshest locally captured subscription
-capacity windows plus the current calendar-month metered estimate when those
-state files are available. The router reads the `web-bridge` state below that
-routed profile's `CODEX_HOME` (for example, `~/.codex-cp/web-bridge`), so
-unrelated profile activity is not mixed into the reminder. `NORMAN_CODEX_STATE_DIR`,
-`NORMAN_CODEX_USAGE_PATH`, `NORMAN_CODEX_USAGE_LEDGER_PATH`, and
-`NORMAN_CODEX_ACCOUNT_CAPACITY_PATH` provide explicit read-only diagnostic
-overrides. Those labels are local usage data, not a provider-reported billing
-balance or invoice. This avoids presenting a local Spark outage as a generic
-hosted-model high-demand condition. `codex --verify` checks the same two
-endpoints without starting a TUI, including from Networking and the other
-routed checkouts. `login`, `logout`, `--help`, and `--version` do not require
-capacity, so recovery and diagnostics remain available while the model lane is
-down.
-
-The API requires the normal route identity injected by Caddy and a valid
-brokered bearer token. A successful capacity response is always HTTP 200; use
-its `available`, `reason`, `condition`, `local_lane`, `retryable`,
-`eligible_workers`, `ineligible_workers`, `frontdoor`, and `cache` fields to
-decide recovery. `local_lane` reports eligible, reachable, and model-ready
-worker counts plus whether the coding lane is redundant, limited to one worker,
-or unavailable. It intentionally treats the Mac mini fallback node as
-ineligible for `norman-code`.
-
-For `norman-code` only, the `/v1/responses` facade makes one server-owned
-Bedrock retry when a retryable local failure occurs before the local model has
-emitted text. The fallback is buffered, so the response stream first reports
-that the retry has started and then emits the cloud result. It never switches
-providers after local text has begun, and no other public alias is eligible.
-Failures that cannot use the retry retain the normal OpenAI-compatible error
-envelope.
-
-| Code | HTTP status | Meaning | Retry |
-| --- | --- | --- | --- |
-| `local_capacity_exhausted` | 503 | A worker reported no capacity. | Yes; respects `Retry-After`. |
-| `local_capacity_unavailable` | 503 | The coding worker lane is unavailable. | Yes. |
-| `local_model_unavailable` | 503 | No eligible worker has the coding model. | Yes after worker/model recovery. |
-| `local_model_timeout` | 504 | A local model request exceeded its deadline. | Yes. |
-| `local_gateway_unreachable` | 503 | Norman could not reach the local model gateway. | Yes. |
-| `local_gateway_unavailable` | 503 | The local gateway returned an upstream 5xx failure. | Yes. |
-| `local_gateway_auth_failed` | 503 | Gateway credentials are invalid or expired. | No; repair credentials. |
-| `local_gateway_bad_response` | 502 | The gateway response is invalid. | Usually no for HTTP 4xx; inspect logs. |
-| `empty_local_response` | 502 | The local model completed with no usable text. | Yes. |
-| `local_model_not_installed` | 422 | The selected model is not installed. | No; deploy a supported model. |
-
-The capacity endpoint can also return `unsupported_capacity_model` (400) for a
-model alias outside the local catalog. Authentication and route-identity errors
-remain explicit: `proxy_token_not_configured` (503), `invalid_api_key` (401),
-and `gateway_route_*` (403).
+The pre-TUI output may show locally captured subscription capacity windows and
+the current calendar-month metered estimate when those state files are
+available. Those are local usage data, not a provider-reported billing balance
+or invoice. `NORMAN_CODEX_STATE_DIR`, `NORMAN_CODEX_USAGE_PATH`,
+`NORMAN_CODEX_USAGE_LEDGER_PATH`, and `NORMAN_CODEX_ACCOUNT_CAPACITY_PATH`
+provide explicit read-only diagnostic overrides.
 
 Proxy events are persisted as JSONL at
 `/var/lib/norman/state/proxy-events.jsonl` by default. The active log rotates

@@ -231,8 +231,8 @@ class Settings(BaseSettings):
     connectors: List[Dict[str, Any]] = []
     broadcast_connectors: str = ""
     openai_api_key: Optional[str]
-    openai_default_model: str = "gpt-5.5"
-    openai_available_models: List[str] = ["gpt-5.5", "gpt-5-mini", "o3"]
+    openai_default_model: str = "gpt-5.6-terra"
+    openai_available_models: List[str] = ["gpt-5.6-terra", "gpt-5-mini", "o3"]
     openai_max_tokens: int = 150
     llm_primary_provider: str = "openai"
     llm_primary_api_key: str = ""

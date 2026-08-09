@@ -224,16 +224,16 @@ def test_mapped_checkout_rejects_profile_or_provider_overrides(
     ("arguments", "expected"),
     (
         (
-            ["--model", "gpt-5.6-terra"],
-            "only supports the 'norman-code' or 'norman-code-governed' TUI models",
+            ["--model", "norman-code"],
+            "only supports the 'openai.gpt-5.6-terra' TUI model",
         ),
         (
-            ["--model=gpt-5.6-terra"],
-            "only supports the 'norman-code' or 'norman-code-governed' TUI models",
+            ["--model=norman-code-governed"],
+            "only supports the 'openai.gpt-5.6-terra' TUI model",
         ),
         (
-            ["-mgpt-5.6-terra"],
-            "only supports the 'norman-code' or 'norman-code-governed' TUI models",
+            ["-mnorman-local"],
+            "only supports the 'openai.gpt-5.6-terra' TUI model",
         ),
         (["--config", 'model="gpt-5.6-terra"'], "does not allow --config"),
         (
@@ -252,7 +252,7 @@ def test_mapped_checkout_rejects_model_or_catalog_overrides(
     assert expected in message
 
 
-@pytest.mark.parametrize("model_name", ("norman-code", "norman-code-governed"))
+@pytest.mark.parametrize("model_name", ("gpt-5.6-terra", "openai.gpt-5.6-terra"))
 def test_mapped_checkout_allows_the_managed_models(route_module, model_name):
     route = route_by_key(route_module, "norman")
 
@@ -371,8 +371,7 @@ def test_generated_profile_uses_brokered_auth_without_storing_a_token(
     catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
     assert catalog_path.stat().st_mode & 0o777 == 0o600
     assert [model["slug"] for model in catalog["models"]] == [
-        "norman-code",
-        "norman-code-governed",
+        "openai.gpt-5.6-terra",
     ]
     assert catalog["models"][0]["apply_patch_tool_type"] == "freeform"
     assert catalog["models"][0]["supports_parallel_tool_calls"] is True
@@ -634,8 +633,7 @@ def test_generated_profile_restores_managed_model_and_refreshes_stale_catalog_ca
     route_module.write_gateway_profile(route)
 
     contents = profile.read_text(encoding="utf-8")
-    assert 'model = "norman-code"' in contents
-    assert "gpt-5.6-terra" not in contents
+    assert 'model = "openai.gpt-5.6-terra"' in contents
     assert not cache.exists()
     backups = list(home.glob("models_cache.json.stale-*"))
     assert len(backups) == 1
@@ -748,15 +746,10 @@ def test_mapped_route_verify_checks_models_then_local_capacity_once(
 
     assert route_module.verify_route(route) == (
         True,
-        "authenticated Responses gateway and local coding capacity verified",
+        "authenticated Responses gateway and GPT-5.6 Terra route verified",
     )
     assert calls == [
         (route.endpoint, "models", "short-lived-token"),
-        (
-            route.endpoint,
-            "norman/capacity?model=norman-code",
-            "short-lived-token",
-        ),
     ]
 
 
@@ -782,16 +775,11 @@ def test_norman_route_verify_checks_models_then_local_capacity_once(
 
     assert route_module.verify_route(route) == (
         True,
-        "authenticated Responses gateway and local coding capacity verified",
+        "authenticated Responses gateway and GPT-5.6 Terra route verified",
     )
     assert broker_calls == ["norman"]
     assert calls == [
         (route.endpoint, "models", "short-lived-token"),
-        (
-            route.endpoint,
-            "norman/capacity?model=norman-code",
-            "short-lived-token",
-        ),
     ]
 
 
@@ -811,7 +799,7 @@ def test_route_verify_rejects_model_catalog_without_coding_tools(
                 "object": "list",
                 "models": [
                     {
-                        "slug": "norman-code",
+                        "slug": "openai.gpt-5.6-terra",
                         "shell_type": "shell_command",
                         "apply_patch_tool_type": None,
                         "supports_parallel_tool_calls": False,
@@ -824,8 +812,8 @@ def test_route_verify_rejects_model_catalog_without_coding_tools(
 
     assert route_module.verify_route(route) == (
         False,
-        "gateway model catalog is incompatible with local coding tools: "
-        "'norman-code' advertises apply_patch_tool_type=None, expected "
+        "gateway model catalog is incompatible with coding tools: "
+        "'openai.gpt-5.6-terra' advertises apply_patch_tool_type=None, expected "
         "'freeform'; deploy the catalog fix and start a new chat",
     )
 
@@ -914,7 +902,7 @@ def test_unavailable_local_capacity_reports_approved_bedrock_fallback(
     )
 
 
-def test_capacity_unavailable_warns_then_starts_routed_session(
+def test_model_route_unavailable_warns_then_starts_routed_session(
     route_module, monkeypatch, capsys
 ):
     route = route_by_key(route_module, "control-plane")
@@ -932,7 +920,7 @@ def test_capacity_unavailable_warns_then_starts_routed_session(
         "preflight_route_capacity",
         lambda _route: (
             False,
-            "local coding capacity is unavailable (mesh_probe_stale); retry later",
+            "gateway model catalog is unavailable; retry later",
         ),
     )
     monkeypatch.setattr(
@@ -950,8 +938,8 @@ def test_capacity_unavailable_warns_then_starts_routed_session(
     assert route_module.main(["--launcher", "work", "--", "resume"]) == 0
     assert executed == ["route"]
     captured = capsys.readouterr()
-    assert "control-plane local capacity warning" in captured.err
-    assert "mesh_probe_stale" in captured.err
+    assert "control-plane model-route warning" in captured.err
+    assert "gateway model catalog is unavailable" in captured.err
     assert "Starting Codex normally" in captured.err
     assert "subscription: Short window 68% left" in captured.err
     assert "metered (Aug 01 to Sep 01): ~$1.25" in captured.err

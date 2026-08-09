@@ -339,8 +339,8 @@ def route_policy(generated_at: str) -> dict[str, object]:
             "policy_hash": codex_policy["policy_hash"],
         },
         "operator_goal": (
-            "Make GPT-5.4 carry long workflows with stability close to GPT-5.5, "
-            "reserving GPT-5.5 for rare final-authority/tiebreaker work."
+            "Keep all active Codex work on GPT-5.6 Terra through the governed "
+            "Bedrock route."
         ),
         "work_special_default": {
             "model": work_standard["model"],
@@ -348,9 +348,9 @@ def route_policy(generated_at: str) -> dict[str, object]:
             "provider": work_standard["provider"],
             "profile_v2": work_standard["profile_v2"],
             "failover_order": [
-                "Bedrock openai.gpt-5.4 primary region",
-                "Bedrock openai.gpt-5.4 secondary region",
-                "Bedrock openai.gpt-5.4 tertiary region",
+                "Bedrock openai.gpt-5.6-terra primary region",
+                "Bedrock openai.gpt-5.6-terra secondary region",
+                "Bedrock openai.gpt-5.6-terra tertiary region",
                 f"OpenAI direct {work_direct['model']}",
             ],
         },

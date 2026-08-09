@@ -1,10 +1,10 @@
 {
   "schema": "norman.codex-role-policy.v1",
-  "version": "2026.07.15.role-v1",
-  "policy_id": "2026.07.15.role-v1:845a9d1e0ec4",
-  "policy_hash": "845a9d1e0ec49adf4fe4b6d0c707b2a94d81b442b60ea9e31cb8203b48277fc2",
-  "issued_at": "2026-07-22T00:00:00Z",
-  "default_policy": "local-first, GPT-5.6 Terra Bedrock baseline and personal final authority, GPT-5.5 work final-authority only",
+  "version": "2026.08.09.terra-only-v1",
+  "policy_id": "2026.08.09.terra-only-v1:afdb1f51a193",
+  "policy_hash": "afdb1f51a1935e0d4218e683ca67b54d1a2bad26f393f05fd6969f3391560823",
+  "issued_at": "2026-08-09T00:00:00Z",
+  "default_policy": "GPT-5.6 Terra is the only active Codex model for work and personal sessions",
   "roles": {
     "work_standard": {
       "provider": "aws-bedrock",
@@ -13,24 +13,24 @@
       "aws_region": "us-east-2",
       "model": "openai.gpt-5.6-terra",
       "service_tier": "default",
-      "allowed_use": "normal work-special cloud fallback after local-first routing; Bedrock GPT-5.6 Terra is the fleet baseline",
+      "allowed_use": "normal work Codex route; Bedrock GPT-5.6 Terra is the fleet baseline",
       "production_default": true
     },
     "work_direct": {
       "provider": "openai",
       "model": "gpt-5.6-terra",
       "service_tier": "default",
-      "allowed_use": "direct GPT-5.6 Terra compatibility route when Bedrock is unavailable",
+      "allowed_use": "direct GPT-5.6 Terra route when Bedrock transport is unavailable",
       "production_default": true
     },
     "work_final_authority": {
       "provider": "aws-bedrock",
       "profile_v2": "traqline-bedrock",
       "aws_profile": "ob-traqline-admin",
-      "model": "openai.gpt-5.5",
+      "model": "openai.gpt-5.6-terra",
       "service_tier": "priority",
-      "allowed_use": "high-regret final authority, tiebreaker, safety boundary, or failed evidence gate",
-      "production_default": false
+      "allowed_use": "priority GPT-5.6 Terra route for high-regret work and evidence gates",
+      "production_default": true
     },
     "personal_default": {
       "provider": "aws-bedrock",
@@ -39,14 +39,14 @@
       "aws_region_env": "NORMAN_SYNC_NON_WORK_BEDROCK_AWS_REGION",
       "model": "openai.gpt-5.6-terra",
       "service_tier": "default",
-      "allowed_use": "personal/non-work cloud fallback after local-first routing; Bedrock GPT-5.6 Terra is the validated personal baseline",
+      "allowed_use": "normal personal Codex route; Bedrock GPT-5.6 Terra is the validated baseline",
       "production_default": true
     },
     "personal_direct": {
       "provider": "openai",
       "model": "gpt-5.6-terra",
       "service_tier": "default",
-      "allowed_use": "direct GPT-5.6 Terra compatibility route when personal Bedrock is unavailable or disabled",
+      "allowed_use": "direct GPT-5.6 Terra route when personal Bedrock transport is unavailable",
       "production_default": true
     },
     "personal_final_authority": {
@@ -56,45 +56,32 @@
       "aws_region_env": "NORMAN_SYNC_NON_WORK_BEDROCK_AWS_REGION",
       "model": "openai.gpt-5.6-terra",
       "service_tier": "priority",
-      "allowed_use": "personal high-regret final authority; GPT-5.6 Terra is the personal baseline",
-      "production_default": false
+      "allowed_use": "priority GPT-5.6 Terra route for high-regret personal work",
+      "production_default": true
     }
   },
   "switchable_models": {
     "work": [
       "openai.gpt-5.6-terra",
-      "openai.gpt-5.5",
-      "openai.gpt-5.4",
-      "gpt-5.6-terra",
-      "gpt-5.5",
-      "gpt-5.4"
+      "gpt-5.6-terra"
     ],
     "personal": [
-      "openai.gpt-5.4",
-      "openai.gpt-5.5",
-      "openai.gpt-5.6-luna",
       "openai.gpt-5.6-terra",
-      "openai.gpt-5.6-sol",
-      "gpt-5.4",
-      "gpt-5.5",
-      "gpt-5.6-luna",
-      "gpt-5.6-terra",
-      "gpt-5.6-sol"
+      "gpt-5.6-terra"
     ]
   },
   "rules": {
     "cloud_default": "gpt-5.6-terra",
-    "gpt_5_5_scope": "final_authority_only",
-    "cloud_is_last_resort_after_local": true,
+    "active_codex_model": "gpt-5.6-terra",
+    "cloud_is_last_resort_after_local": false,
     "promotion_source": "live_receipts_and_policy_gates",
     "no_dry_run_cutover_promotion": true,
     "tui_routing_waterfall": [
-      "fresh_verified_chatgpt_subscription_to_flex",
-      "verified_exhaustion_to_norllama_pool",
-      "verified_exhaustion_without_safe_norllama_to_bedrock",
-      "block_automatic_bedrock_when_capacity_is_stale_unknown_disabled_or_auth_mismatched"
+      "gpt_5_6_terra_via_bedrock",
+      "gpt_5_6_terra_via_direct_compatibility_route",
+      "fail_explicitly_when_terra_is_unavailable"
     ],
-    "bedrock_automatic_fallback_requires_verified_subscription_exhaustion": true,
-    "norllama_pool_persistence_is_generic": true
+    "bedrock_automatic_fallback_requires_verified_subscription_exhaustion": false,
+    "norllama_pool_persistence_is_generic": false
   }
 }

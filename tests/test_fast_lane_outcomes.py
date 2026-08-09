@@ -17,7 +17,7 @@ def _luna_receipt(**overrides):
         "validator_gate": "pass",
         "validator_passed": True,
         "estimated_cost_usd": 0.004,
-        "baseline_all_5_5_cost_usd": 0.02,
+        "baseline_all_terra_cost_usd": 0.02,
         "input_tokens": 1_000,
         "output_tokens": 500,
         "latency_ms": 220,
@@ -99,7 +99,7 @@ def test_insufficient_savings_requires_review() -> None:
     outcome = evaluate_fast_lane_outcome(
         _luna_receipt(
             estimated_cost_usd=0.0195,
-            baseline_all_5_5_cost_usd=0.02,
+            baseline_all_terra_cost_usd=0.02,
         )
     )
 
