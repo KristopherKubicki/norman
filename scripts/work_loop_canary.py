@@ -462,7 +462,7 @@ def _fetch_json(url: str, timeout: float) -> dict[str, Any]:
 
 def _bbs_url_for_status_url(url: str) -> str:
     if url.endswith("/api/status"):
-        return f"{url[:-len('/api/status')]}/api/bbs/summary?refresh=1"
+        return f"{url[: -len('/api/status')]}/api/bbs/summary?refresh=1"
     if "/api/status?" in url:
         return f"{url.split('/api/status?', 1)[0]}/api/bbs/summary?refresh=1"
     return url.rstrip("/") + "/api/bbs/summary?refresh=1"

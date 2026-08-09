@@ -809,7 +809,7 @@ async def start_channel_feed(
     channel = crud.channel.get_for_user(db, channel_id, current_user.id)
     if not channel:
         raise HTTPException(status_code=404, detail="Channel not found")
-    return start_feed(channel_id, payload.dict())
+    return start_feed(channel_id, payload.model_dump())
 
 
 @router.post("/{channel_id}/feeds/stop")

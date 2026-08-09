@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from app import crud, models
 from app.schemas.connector import ConnectorCreate
@@ -178,7 +178,7 @@ def test_operator_state_office_motion_expires_after_ten_minutes(db):
         user_id=user.id,
     )
 
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
     _seed_passive_job(
         db,
         user_id=user.id,

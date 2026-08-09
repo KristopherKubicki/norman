@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import ConfigDict, BaseModel, Field
 
 
 class SecretAliasOut(BaseModel):
@@ -14,8 +14,7 @@ class SecretAliasOut(BaseModel):
     allow_raw_reveal: bool
     provider_id: int
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class SecretRequestCreate(BaseModel):
@@ -57,8 +56,7 @@ class SecretLeaseOut(BaseModel):
     revoked_at: Optional[datetime] = None
     revoked_by: Optional[int] = None
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class SecretRequestOut(BaseModel):
@@ -83,8 +81,7 @@ class SecretRequestOut(BaseModel):
     decided_at: Optional[datetime] = None
     decided_by: Optional[int] = None
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class SecretRequestResult(BaseModel):
@@ -130,8 +127,7 @@ class SecretAuditEventOut(BaseModel):
     metadata_json: Optional[dict[str, Any]] = None
     created_at: Optional[datetime] = None
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class SecretStashCreate(BaseModel):

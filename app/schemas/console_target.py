@@ -1,6 +1,6 @@
 from typing import Optional
 
-from pydantic import BaseModel, Field, constr
+from pydantic import ConfigDict, BaseModel, Field, constr
 
 
 class ConsoleTargetBase(BaseModel):
@@ -26,5 +26,4 @@ class ConsoleTargetOut(ConsoleTargetBase):
     id: int
     user_id: int
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)

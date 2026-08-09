@@ -84,18 +84,18 @@ def test_probe_host_accepts_matching_redirect(monkeypatch) -> None:
     monkeypatch.setattr(
         module,
         "fetch_tls_snapshot",
-        lambda host,
-        port=443,
-        timeout=module.DEFAULT_TIMEOUT_SECONDS: module.TlsSnapshot(
-            issuer="organizationName=Caddy Local Authority",
-            not_before="Apr 24 04:15:13 2026 GMT",
-            not_after="Apr 30 04:15:13 2026 GMT",
-            san_dns=("keystone.home.arpa",),
-            san_ip_addresses=(),
-            hostname_matches=True,
-            days_remaining=5.7,
-            tls_version="TLSv1.3",
-            cipher="TLS_AES_256_GCM_SHA384",
+        lambda host, port=443, timeout=module.DEFAULT_TIMEOUT_SECONDS: (
+            module.TlsSnapshot(
+                issuer="organizationName=Caddy Local Authority",
+                not_before="Apr 24 04:15:13 2026 GMT",
+                not_after="Apr 30 04:15:13 2026 GMT",
+                san_dns=("keystone.home.arpa",),
+                san_ip_addresses=(),
+                hostname_matches=True,
+                days_remaining=5.7,
+                tls_version="TLSv1.3",
+                cipher="TLS_AES_256_GCM_SHA384",
+            )
         ),
     )
     monkeypatch.setattr(
@@ -106,14 +106,13 @@ def test_probe_host_accepts_matching_redirect(monkeypatch) -> None:
     monkeypatch.setattr(
         module,
         "fetch_http_snapshot",
-        lambda host,
-        port=443,
-        path="/",
-        timeout=module.DEFAULT_TIMEOUT_SECONDS: module.HttpSnapshot(
-            status=308,
-            reason="Permanent Redirect",
-            location="https://keystone.kris.openbrand.com/",
-            server="Caddy",
+        lambda host, port=443, path="/", timeout=module.DEFAULT_TIMEOUT_SECONDS: (
+            module.HttpSnapshot(
+                status=308,
+                reason="Permanent Redirect",
+                location="https://keystone.kris.openbrand.com/",
+                server="Caddy",
+            )
         ),
     )
 
@@ -152,18 +151,18 @@ def test_probe_host_accepts_expected_networking_dns_paths(monkeypatch) -> None:
     monkeypatch.setattr(
         module,
         "fetch_tls_snapshot",
-        lambda host,
-        port=443,
-        timeout=module.DEFAULT_TIMEOUT_SECONDS: module.TlsSnapshot(
-            issuer="organizationName=Caddy Local Authority",
-            not_before="Apr 24 04:15:13 2026 GMT",
-            not_after="Apr 30 04:15:13 2026 GMT",
-            san_dns=("housebot.home.arpa",),
-            san_ip_addresses=(),
-            hostname_matches=True,
-            days_remaining=5.7,
-            tls_version="TLSv1.3",
-            cipher="TLS_AES_256_GCM_SHA384",
+        lambda host, port=443, timeout=module.DEFAULT_TIMEOUT_SECONDS: (
+            module.TlsSnapshot(
+                issuer="organizationName=Caddy Local Authority",
+                not_before="Apr 24 04:15:13 2026 GMT",
+                not_after="Apr 30 04:15:13 2026 GMT",
+                san_dns=("housebot.home.arpa",),
+                san_ip_addresses=(),
+                hostname_matches=True,
+                days_remaining=5.7,
+                tls_version="TLSv1.3",
+                cipher="TLS_AES_256_GCM_SHA384",
+            )
         ),
     )
     monkeypatch.setattr(
@@ -174,14 +173,13 @@ def test_probe_host_accepts_expected_networking_dns_paths(monkeypatch) -> None:
     monkeypatch.setattr(
         module,
         "fetch_http_snapshot",
-        lambda host,
-        port=443,
-        path="/",
-        timeout=module.DEFAULT_TIMEOUT_SECONDS: module.HttpSnapshot(
-            status=200,
-            reason="OK",
-            location="",
-            server="Caddy",
+        lambda host, port=443, path="/", timeout=module.DEFAULT_TIMEOUT_SECONDS: (
+            module.HttpSnapshot(
+                status=200,
+                reason="OK",
+                location="",
+                server="Caddy",
+            )
         ),
     )
 
@@ -224,18 +222,18 @@ def test_probe_host_flags_dohio_udp_dns_failure(monkeypatch) -> None:
     monkeypatch.setattr(
         module,
         "fetch_tls_snapshot",
-        lambda host,
-        port=443,
-        timeout=module.DEFAULT_TIMEOUT_SECONDS: module.TlsSnapshot(
-            issuer="organizationName=Caddy Local Authority",
-            not_before="Apr 24 04:15:13 2026 GMT",
-            not_after="Apr 30 04:15:13 2026 GMT",
-            san_dns=("housebot.home.arpa",),
-            san_ip_addresses=(),
-            hostname_matches=True,
-            days_remaining=5.7,
-            tls_version="TLSv1.3",
-            cipher="TLS_AES_256_GCM_SHA384",
+        lambda host, port=443, timeout=module.DEFAULT_TIMEOUT_SECONDS: (
+            module.TlsSnapshot(
+                issuer="organizationName=Caddy Local Authority",
+                not_before="Apr 24 04:15:13 2026 GMT",
+                not_after="Apr 30 04:15:13 2026 GMT",
+                san_dns=("housebot.home.arpa",),
+                san_ip_addresses=(),
+                hostname_matches=True,
+                days_remaining=5.7,
+                tls_version="TLSv1.3",
+                cipher="TLS_AES_256_GCM_SHA384",
+            )
         ),
     )
     monkeypatch.setattr(
@@ -246,14 +244,13 @@ def test_probe_host_flags_dohio_udp_dns_failure(monkeypatch) -> None:
     monkeypatch.setattr(
         module,
         "fetch_http_snapshot",
-        lambda host,
-        port=443,
-        path="/",
-        timeout=module.DEFAULT_TIMEOUT_SECONDS: module.HttpSnapshot(
-            status=200,
-            reason="OK",
-            location="",
-            server="Caddy",
+        lambda host, port=443, path="/", timeout=module.DEFAULT_TIMEOUT_SECONDS: (
+            module.HttpSnapshot(
+                status=200,
+                reason="OK",
+                location="",
+                server="Caddy",
+            )
         ),
     )
 
@@ -280,38 +277,37 @@ def test_probe_host_flags_trust_lifetime_and_redirect_failures(monkeypatch) -> N
     monkeypatch.setattr(
         module,
         "fetch_tls_snapshot",
-        lambda host,
-        port=443,
-        timeout=module.DEFAULT_TIMEOUT_SECONDS: module.TlsSnapshot(
-            issuer="organizationName=Caddy Local Authority",
-            not_before="Apr 24 04:15:13 2026 GMT",
-            not_after="Apr 24 16:15:13 2026 GMT",
-            san_dns=("kpis.home.arpa",),
-            san_ip_addresses=(),
-            hostname_matches=True,
-            days_remaining=0.4,
-            tls_version="TLSv1.3",
-            cipher="TLS_AES_256_GCM_SHA384",
+        lambda host, port=443, timeout=module.DEFAULT_TIMEOUT_SECONDS: (
+            module.TlsSnapshot(
+                issuer="organizationName=Caddy Local Authority",
+                not_before="Apr 24 04:15:13 2026 GMT",
+                not_after="Apr 24 16:15:13 2026 GMT",
+                san_dns=("kpis.home.arpa",),
+                san_ip_addresses=(),
+                hostname_matches=True,
+                days_remaining=0.4,
+                tls_version="TLSv1.3",
+                cipher="TLS_AES_256_GCM_SHA384",
+            )
         ),
     )
     monkeypatch.setattr(
         module,
         "check_system_trust",
-        lambda host,
-        port=443,
-        timeout=module.DEFAULT_TIMEOUT_SECONDS: "SSLCertVerificationError: self-signed certificate",
+        lambda host, port=443, timeout=module.DEFAULT_TIMEOUT_SECONDS: (
+            "SSLCertVerificationError: self-signed certificate"
+        ),
     )
     monkeypatch.setattr(
         module,
         "fetch_http_snapshot",
-        lambda host,
-        port=443,
-        path="/",
-        timeout=module.DEFAULT_TIMEOUT_SECONDS: module.HttpSnapshot(
-            status=200,
-            reason="OK",
-            location="",
-            server="Caddy",
+        lambda host, port=443, path="/", timeout=module.DEFAULT_TIMEOUT_SECONDS: (
+            module.HttpSnapshot(
+                status=200,
+                reason="OK",
+                location="",
+                server="Caddy",
+            )
         ),
     )
 
@@ -341,18 +337,18 @@ def test_probe_host_warns_on_backend_5xx_without_failing(monkeypatch) -> None:
     monkeypatch.setattr(
         module,
         "fetch_tls_snapshot",
-        lambda host,
-        port=443,
-        timeout=module.DEFAULT_TIMEOUT_SECONDS: module.TlsSnapshot(
-            issuer="organizationName=Caddy Local Authority",
-            not_before="Apr 24 04:15:13 2026 GMT",
-            not_after="Apr 30 04:15:13 2026 GMT",
-            san_dns=("networking.home.arpa",),
-            san_ip_addresses=(),
-            hostname_matches=True,
-            days_remaining=5.7,
-            tls_version="TLSv1.3",
-            cipher="TLS_AES_256_GCM_SHA384",
+        lambda host, port=443, timeout=module.DEFAULT_TIMEOUT_SECONDS: (
+            module.TlsSnapshot(
+                issuer="organizationName=Caddy Local Authority",
+                not_before="Apr 24 04:15:13 2026 GMT",
+                not_after="Apr 30 04:15:13 2026 GMT",
+                san_dns=("networking.home.arpa",),
+                san_ip_addresses=(),
+                hostname_matches=True,
+                days_remaining=5.7,
+                tls_version="TLSv1.3",
+                cipher="TLS_AES_256_GCM_SHA384",
+            )
         ),
     )
     monkeypatch.setattr(
@@ -363,14 +359,13 @@ def test_probe_host_warns_on_backend_5xx_without_failing(monkeypatch) -> None:
     monkeypatch.setattr(
         module,
         "fetch_http_snapshot",
-        lambda host,
-        port=443,
-        path="/",
-        timeout=module.DEFAULT_TIMEOUT_SECONDS: module.HttpSnapshot(
-            status=501,
-            reason="Not Implemented",
-            location="",
-            server="Caddy",
+        lambda host, port=443, path="/", timeout=module.DEFAULT_TIMEOUT_SECONDS: (
+            module.HttpSnapshot(
+                status=501,
+                reason="Not Implemented",
+                location="",
+                server="Caddy",
+            )
         ),
     )
 

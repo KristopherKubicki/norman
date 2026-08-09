@@ -22,9 +22,7 @@ def test_hal_caddy_uses_automatic_lollie_acme_and_keeps_active_routes() -> None:
 
     rendered = module.render_caddy()
 
-    assert (
-        "{\n" "    acme_ca https://ca.home.arpa/acme/acme/directory\n" "}"
-    ) in rendered
+    assert ("{\n    acme_ca https://ca.home.arpa/acme/acme/directory\n}") in rendered
     assert (
         "(hal_internal_tls) {\n"
         "    tls {\n"
@@ -43,10 +41,7 @@ def test_hal_caddy_uses_automatic_lollie_acme_and_keeps_active_routes() -> None:
         "    }"
     ) in rendered
     assert (
-        "camera.localhost {\n"
-        "    tls internal\n"
-        "    reverse_proxy 127.0.0.1:9007\n"
-        "}"
+        "camera.localhost {\n    tls internal\n    reverse_proxy 127.0.0.1:9007\n}"
     ) in rendered
 
 

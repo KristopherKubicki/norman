@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 
 from app import crud
 from app.models.routing import RoutingEvent, RoutingJob
@@ -47,7 +47,7 @@ def test_routing_events_endpoint_serializes_datetime(test_app, db):
         delivery_status="queued",
         error=None,
         delivery_error=None,
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(UTC),
     )
     event = crud.routing.create_event(db, event)
 
@@ -118,7 +118,7 @@ def test_routing_event_trace_endpoint_returns_rule_bot_and_job_context(test_app,
         delivery_status="dead_letter",
         error="retry budget exhausted",
         delivery_error="connector timed out",
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(UTC),
         idempotency_key="routing_trace_event",
     )
     event = crud.routing.create_event(db, event)

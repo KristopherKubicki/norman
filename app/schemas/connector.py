@@ -1,5 +1,5 @@
 from typing import List, Dict, Any, Optional
-from pydantic import BaseModel, constr, Field
+from pydantic import ConfigDict, BaseModel, constr, Field
 
 
 class ConnectorBase(BaseModel):
@@ -24,5 +24,4 @@ class Connector(ConnectorBase):
     id: int
     user_id: int
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)

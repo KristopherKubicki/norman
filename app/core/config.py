@@ -1,6 +1,3 @@
-from pathlib import Path
-from typing import Any, Dict, Optional, List
-from pydantic import BaseSettings, validator
 import logging
 import json
 import os
@@ -8,14 +5,20 @@ import secrets
 import shlex
 import shutil
 import subprocess
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
 import yaml
+from pydantic import ValidationInfo, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 # should this move to schemas?
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+
     secret_key: str
     app_name: str
     ui_theme: str = "default"
@@ -402,7 +405,7 @@ class Settings(BaseSettings):
     # Performance
     cache_ttl_seconds: int = 60
 
-    @validator("secret_key", pre=True)
+    @field_validator("secret_key", mode="before")
     def validate_secret_key(cls, v):
         """Ensure a real secret key is provided outside of tests."""
         import sys
@@ -415,62 +418,62 @@ class Settings(BaseSettings):
         )
         return v
 
-    @validator("admin_setup_key", pre=True)
+    @field_validator("admin_setup_key", mode="before")
     def validate_admin_setup_key(cls, v):
         """Require a real setup key outside of tests."""
         import sys
 
         if "pytest" in sys.modules:
             return v
-        assert (
-            v != "change_me_setup_key"
-        ), "You must set admin_setup_key in config.yaml for first-time setup."
+        assert v != "change_me_setup_key", (
+            "You must set admin_setup_key in config.yaml for first-time setup."
+        )
         return v
 
-    @validator("initial_admin_password", pre=True)
-    def validate_secret_admin(cls, v, values):
+    @field_validator("initial_admin_password", mode="before")
+    def validate_secret_admin(cls, v, info: ValidationInfo):
         """Validate admin password unless running under pytest."""
         import sys
 
         if "pytest" in sys.modules:
             return v
-        setup_key = values.get("admin_setup_key")
+        setup_key = info.data.get("admin_setup_key")
         if setup_key and setup_key != "change_me_setup_key":
             return v
-        assert (
-            v != "change_me_too"
-        ), "You must set an admin password in the config.yaml!"
+        assert v != "change_me_too", (
+            "You must set an admin password in the config.yaml!"
+        )
         return v
 
-    @validator("initial_admin_email", pre=True)
-    def validate_secret_email(cls, v, values):
+    @field_validator("initial_admin_email", mode="before")
+    def validate_secret_email(cls, v, info: ValidationInfo):
         """Validate admin email unless running under pytest."""
         import sys
 
         if "pytest" in sys.modules:
             return v
-        setup_key = values.get("admin_setup_key")
+        setup_key = info.data.get("admin_setup_key")
         if setup_key and setup_key != "change_me_setup_key":
             return v
-        assert (
-            v != "admin@example.com"
-        ), "You must set an admin email in the config.yaml!"
+        assert v != "admin@example.com", (
+            "You must set an admin email in the config.yaml!"
+        )
         return v
 
-    @validator("initial_admin_username", pre=True)
-    def validate_admin_username(cls, v, values):
+    @field_validator("initial_admin_username", mode="before")
+    def validate_admin_username(cls, v, info: ValidationInfo):
         """Validate admin username unless running under pytest."""
         import sys
 
         if "pytest" in sys.modules:
             return v
-        setup_key = values.get("admin_setup_key")
+        setup_key = info.data.get("admin_setup_key")
         if setup_key and setup_key != "change_me_setup_key":
             return v
         assert v != "admin", "You must set an admin username in the config.yaml!"
         return v
 
-    @validator("log_level", pre=True)
+    @field_validator("log_level", mode="before")
     def validate_log_level(cls, v):
         if isinstance(v, str):
             level = v.upper()
@@ -479,21 +482,17 @@ class Settings(BaseSettings):
             return level
         return v
 
-    @validator("llm_ping_targets", pre=True)
+    @field_validator("llm_ping_targets", mode="before")
     def validate_llm_ping_targets(cls, v):
         if v is None:
             return []
         return v
 
-    @validator("llm_mesh_workers", pre=True)
+    @field_validator("llm_mesh_workers", mode="before")
     def validate_llm_mesh_workers(cls, v):
         if v is None:
             return []
         return v
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
 
 
 logger = logging.getLogger(__name__)

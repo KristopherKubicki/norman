@@ -41,6 +41,11 @@ def _load_norman_codex_web(monkeypatch, tmp_path, **overrides):
     monkeypatch.setenv("NORMAN_CODEX_LATEST_MODEL", "gpt-5.5")
     monkeypatch.setenv("NORMAN_CODEX_AVAILABLE_MODELS", "gpt-5.5")
     monkeypatch.setenv("NORMAN_CODEX_BBS_SUMMARY_ENABLED", "0")
+    if "NORMAN_CODEX_HOST_PRESSURE_GUARD_PATH" not in overrides:
+        monkeypatch.setenv(
+            "NORMAN_CODEX_HOST_PRESSURE_GUARD_PATH",
+            str(tmp_path / "pressure-guard.json"),
+        )
     if "NORMAN_CODEX_REQUIRE_NAMED_ESCALATION" not in overrides:
         monkeypatch.setenv("NORMAN_CODEX_REQUIRE_NAMED_ESCALATION", "0")
     if "NORMAN_CODEX_ALLOW_OPENAI_API_SPEND" not in overrides:
@@ -3785,8 +3790,10 @@ def test_ensure_session_does_not_wait_when_service_start_fails(
     monkeypatch.setattr(
         module,
         "run",
-        lambda cmd, input_text=None, check=False: commands.append(cmd)
-        or SimpleNamespace(returncode=1, stdout="", stderr="Access denied"),
+        lambda cmd, input_text=None, check=False: (
+            commands.append(cmd)
+            or SimpleNamespace(returncode=1, stdout="", stderr="Access denied")
+        ),
     )
     monkeypatch.setattr(module.time, "sleep", lambda seconds: sleeps.append(seconds))
 
@@ -4200,9 +4207,11 @@ def test_api_ask_completes_allowlisted_command_without_model_call(
     monkeypatch.setattr(
         module,
         "start_web_prompt",
-        lambda *_args, **_kwargs: start_calls.append(True)
-        or (_ for _ in ()).throw(
-            AssertionError("allowlisted command should not start a model prompt")
+        lambda *_args, **_kwargs: (
+            start_calls.append(True)
+            or (_ for _ in ()).throw(
+                AssertionError("allowlisted command should not start a model prompt")
+            )
         ),
     )
     monkeypatch.setattr(

@@ -21,7 +21,7 @@ def create(
     """Create a new connector."""
     if user_id is None:
         raise ValueError("user_id is required")
-    db_obj = ConnectorModel(**obj_in.dict(), user_id=user_id)
+    db_obj = ConnectorModel(**obj_in.model_dump(), user_id=user_id)
     db.add(db_obj)
     db.commit()
     db.refresh(db_obj)
@@ -45,7 +45,7 @@ def update(
     db: Session, db_obj: ConnectorModel, obj_in: ConnectorUpdate
 ) -> ConnectorModel:
     """Update an existing connector."""
-    for field, value in obj_in.dict(exclude_unset=True).items():
+    for field, value in obj_in.model_dump(exclude_unset=True).items():
         setattr(db_obj, field, value)
     db.commit()
     db.refresh(db_obj)

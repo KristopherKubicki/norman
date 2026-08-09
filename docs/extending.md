@@ -75,13 +75,16 @@ Hooks are defined in `app.core.hooks`:
 ```python
 from app.core import hooks
 
+
 def my_pre_hook(message: str, context: dict) -> tuple[str, dict]:
     # Modify or reject the message here
     return message, context
 
+
 def my_post_hook(reply: str, context: dict) -> tuple[str, dict]:
     # Inspect or alter the assistant reply
     return reply, context
+
 
 hooks.register_pre_hook(my_pre_hook)
 hooks.register_post_hook(my_post_hook)

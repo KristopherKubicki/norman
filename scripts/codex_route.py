@@ -768,8 +768,7 @@ def routed_model_catalog() -> dict[str, object]:
                 slug=GOVERNED_ROUTER_MODEL,
                 display_name="Norman Code (Governed)",
                 description=(
-                    "Norman coding route with explicit governed tool-bridge "
-                    "behavior."
+                    "Norman coding route with explicit governed tool-bridge behavior."
                 ),
                 priority=2,
             ),

@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import ConfigDict, BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_console_runtime_user, get_db
@@ -301,8 +301,8 @@ class ConsoleRuntimeSubtaskCreate(BaseModel):
 class ConsoleRuntimeSubtaskBatchCreate(BaseModel):
     subtasks: list[ConsoleRuntimeSubtaskCreate] = Field(
         default_factory=list,
-        min_items=1,
-        max_items=100,
+        min_length=1,
+        max_length=100,
     )
 
 
@@ -336,8 +336,7 @@ class ConsoleRuntimeRouteOutcomeCreate(BaseModel):
     host: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
 
-    class Config:
-        extra = "allow"
+    model_config = ConfigDict(extra="allow")
 
     def as_outcome(self) -> dict[str, Any]:
         data = dict(self.__dict__)

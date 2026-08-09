@@ -3852,19 +3852,21 @@ def test_openai_compat_responses_accepts_benign_codex_context(monkeypatch):
     monkeypatch.setattr(
         facade.norllama_gateway,
         "invoke_text_chat",
-        lambda **kwargs: _mock_local_chat(
-            kwargs["messages"],
-            kwargs["model"],
-        )
-        | {
-            "choices": [
-                {
-                    "message": {
-                        "content": "route-ok",
+        lambda **kwargs: (
+            _mock_local_chat(
+                kwargs["messages"],
+                kwargs["model"],
+            )
+            | {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "route-ok",
+                        }
                     }
-                }
-            ]
-        },
+                ]
+            }
+        ),
     )
 
     response = execute_openai_responses_facade(
@@ -3915,21 +3917,23 @@ def test_openai_compat_responses_can_return_explicit_tool_call(monkeypatch):
     monkeypatch.setattr(
         facade.norllama_gateway,
         "invoke_text_chat",
-        lambda **kwargs: _mock_local_chat(
-            kwargs["messages"],
-            kwargs["model"],
-        )
-        | {
-            "choices": [
-                {
-                    "message": {
-                        "content": (
-                            '{"tool_call":{"name":"shell","arguments":{"cmd":"pwd"}}}'
-                        )
+        lambda **kwargs: (
+            _mock_local_chat(
+                kwargs["messages"],
+                kwargs["model"],
+            )
+            | {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"tool_call":{"name":"shell","arguments":{"cmd":"pwd"}}}'
+                            )
+                        }
                     }
-                }
-            ]
-        },
+                ]
+            }
+        ),
     )
 
     response = execute_openai_responses_facade(
@@ -3973,27 +3977,29 @@ def test_openai_compat_responses_can_return_native_function_call(monkeypatch):
     monkeypatch.setattr(
         facade.norllama_gateway,
         "invoke_text_chat",
-        lambda **kwargs: _mock_local_chat(
-            kwargs["messages"],
-            kwargs["model"],
-        )
-        | {
-            "choices": [
-                {
-                    "message": {
-                        "content": json.dumps(
-                            {
-                                "arguments": native_arguments,
-                                "call_id": native_call_id,
-                                "id": native_item_id,
-                                "name": "shell",
-                                "type": "function_call",
-                            }
-                        )
+        lambda **kwargs: (
+            _mock_local_chat(
+                kwargs["messages"],
+                kwargs["model"],
+            )
+            | {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "arguments": native_arguments,
+                                    "call_id": native_call_id,
+                                    "id": native_item_id,
+                                    "name": "shell",
+                                    "type": "function_call",
+                                }
+                            )
+                        }
                     }
-                }
-            ]
-        },
+                ]
+            }
+        ),
     )
 
     response = execute_openai_responses_facade(
@@ -4041,27 +4047,29 @@ def test_openai_compat_responses_can_return_declared_mcp_namespace_function_call
     monkeypatch.setattr(
         facade.norllama_gateway,
         "invoke_text_chat",
-        lambda **kwargs: _mock_local_chat(
-            kwargs["messages"],
-            kwargs["model"],
-        )
-        | {
-            "choices": [
-                {
-                    "message": {
-                        "content": json.dumps(
-                            {
-                                "arguments": native_arguments,
-                                "call_id": native_call_id,
-                                "id": native_item_id,
-                                "name": native_name,
-                                "type": "function_call",
-                            }
-                        )
+        lambda **kwargs: (
+            _mock_local_chat(
+                kwargs["messages"],
+                kwargs["model"],
+            )
+            | {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "arguments": native_arguments,
+                                    "call_id": native_call_id,
+                                    "id": native_item_id,
+                                    "name": native_name,
+                                    "type": "function_call",
+                                }
+                            )
+                        }
                     }
-                }
-            ]
-        },
+                ]
+            }
+        ),
     )
 
     response = execute_openai_responses_facade(
@@ -4177,11 +4185,13 @@ def test_openai_compat_responses_keeps_undeclared_mcp_namespace_call_as_text(
     monkeypatch.setattr(
         facade.norllama_gateway,
         "invoke_text_chat",
-        lambda **kwargs: _mock_local_chat(
-            kwargs["messages"],
-            kwargs["model"],
-        )
-        | {"choices": [{"message": {"content": model_text}}]},
+        lambda **kwargs: (
+            _mock_local_chat(
+                kwargs["messages"],
+                kwargs["model"],
+            )
+            | {"choices": [{"message": {"content": model_text}}]}
+        ),
     )
 
     response = execute_openai_responses_facade(
@@ -4351,11 +4361,13 @@ def test_openai_compat_responses_keeps_undeclared_native_function_call_as_text(
     monkeypatch.setattr(
         facade.norllama_gateway,
         "invoke_text_chat",
-        lambda **kwargs: _mock_local_chat(
-            kwargs["messages"],
-            kwargs["model"],
-        )
-        | {"choices": [{"message": {"content": model_text}}]},
+        lambda **kwargs: (
+            _mock_local_chat(
+                kwargs["messages"],
+                kwargs["model"],
+            )
+            | {"choices": [{"message": {"content": model_text}}]}
+        ),
     )
 
     response = execute_openai_responses_facade(

@@ -36,7 +36,7 @@ def _enable_kaizen(monkeypatch) -> None:
 
 
 def _shadow_candidate(now: datetime) -> KaizenShadowCandidatePayload:
-    return KaizenShadowCandidatePayload.parse_obj(
+    return KaizenShadowCandidatePayload.model_validate(
         {
             "schema": "norman.kaizen-candidate.v1",
             "lane": "runbook",

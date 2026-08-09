@@ -193,8 +193,7 @@ def test_import_redacts_secret_values_before_search_and_vector_index(
                     f"{bearer_value} and NETWORK_API_TOKEN={env_value}."
                 ),
                 "response": (
-                    f"Do not store {aws_value} or "
-                    f"aws_secret_access_key={access_value}."
+                    f"Do not store {aws_value} or aws_secret_access_key={access_value}."
                 ),
                 "usage": {"total_tokens": 100},
             }

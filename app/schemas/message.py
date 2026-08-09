@@ -1,5 +1,5 @@
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import ConfigDict, BaseModel
 from datetime import datetime
 
 
@@ -23,8 +23,7 @@ class MessageInDBBase(MessageBase):
     created_at: datetime
     source: str
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class Message(MessageInDBBase):

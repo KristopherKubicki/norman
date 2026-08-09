@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from app import crud, models
 from app.schemas.connector import ConnectorCreate
@@ -39,7 +39,7 @@ def test_routing_jobs_endpoint_exposes_dead_letter_context(test_app, db):
         delivery_status="dead_letter",
         error="retry budget exhausted",
         delivery_error="connector timed out",
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(UTC),
         idempotency_key="routing_job_dead_letter",
     )
     event = crud.routing.create_event(db, event)
@@ -49,7 +49,7 @@ def test_routing_jobs_endpoint_exposes_dead_letter_context(test_app, db):
         status="dead",
         attempts=5,
         max_attempts=5,
-        next_attempt_at=datetime.utcnow() + timedelta(minutes=5),
+        next_attempt_at=datetime.now(UTC) + timedelta(minutes=5),
         last_error="connector timed out",
     )
     job = crud.routing.create_job(db, job)
@@ -87,7 +87,7 @@ def test_retry_routing_job_resets_dead_letter_state(test_app, db):
         delivery_status="dead_letter",
         error="dead letter",
         delivery_error="socket hangup",
-        created_at=datetime.utcnow(),
+        created_at=datetime.now(UTC),
         idempotency_key="routing_job_retry",
     )
     event = crud.routing.create_event(db, event)
@@ -97,7 +97,7 @@ def test_retry_routing_job_resets_dead_letter_state(test_app, db):
         status="dead",
         attempts=3,
         max_attempts=3,
-        next_attempt_at=datetime.utcnow() + timedelta(hours=1),
+        next_attempt_at=datetime.now(UTC) + timedelta(hours=1),
         last_error="socket hangup",
     )
     job = crud.routing.create_job(db, job)

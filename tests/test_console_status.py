@@ -199,6 +199,5 @@ def test_fetch_console_audit_uses_explicit_access_token(monkeypatch) -> None:
     )
 
     assert seen["url"] == (
-        "https://keystone.home.arpa/api/audit"
-        "?token=collector-token&since=100&limit=25"
+        "https://keystone.home.arpa/api/audit?token=collector-token&since=100&limit=25"
     )

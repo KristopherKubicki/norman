@@ -490,7 +490,7 @@ def test_console_runtime_api_exposes_route_summary(test_app):
     assert embedded["local_first_kpi"]["status"] == "on_target"
 
     response = test_app.get(
-        "/api/v1/console-runtime/route-summary" "?job_id=job-visible-api-route-summary"
+        "/api/v1/console-runtime/route-summary?job_id=job-visible-api-route-summary"
     )
     assert response.status_code == 200
     summary = response.json()

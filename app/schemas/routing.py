@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import ConfigDict, BaseModel
 
 
 class RoutingRuleBase(BaseModel):
@@ -35,8 +35,7 @@ class RoutingRuleOut(RoutingRuleBase):
     id: int
     user_id: int
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class RoutingEventOut(BaseModel):
@@ -55,8 +54,7 @@ class RoutingEventOut(BaseModel):
     delivery_error: Optional[str]
     created_at: Optional[datetime]
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class RoutingJobOut(BaseModel):

@@ -1258,10 +1258,7 @@ def test_db_console_runtime_worker_structured_requirements_override_complete_sig
     )
     adapter = FakeModelAdapter(
         responses=[
-            (
-                "STATUS: COMPLETE\n\n"
-                '{"unhealthy_service":"billing","evidence":"timeout"}'
-            )
+            ('STATUS: COMPLETE\n\n{"unhealthy_service":"billing","evidence":"timeout"}')
         ],
         name="runtime-dry-run",
         model="runtime-dry-run",
@@ -1355,7 +1352,7 @@ def test_db_console_runtime_worker_structured_verify_reuses_valid_prior_candidat
     job_id = f"job-worker-structured-prior-{uuid.uuid4().hex}"
     nonce = "prior-json-nonce"
     candidate = (
-        '{"unhealthy_service":"billing","evidence":"timeout",' f'"nonce":"{nonce}"}}'
+        f'{{"unhealthy_service":"billing","evidence":"timeout","nonce":"{nonce}"}}'
     )
     store.create_job(
         db,
