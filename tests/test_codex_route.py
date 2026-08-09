@@ -411,7 +411,6 @@ def test_work_profile_registers_ops_mcp_without_forcing_workflow(
     "route_key",
     (
         "compere",
-        "control-plane",
         "earlybird",
         "gold-book",
         "infra",
@@ -445,6 +444,39 @@ def test_work_routes_link_every_canonical_work_skill(
         assert linked_skill.is_symlink()
         assert linked_skill.resolve() == skill
     assert not (home / "skills" / "personal-only").exists()
+
+
+def test_control_plane_route_links_only_its_selected_work_skills(
+    route_module, monkeypatch, tmp_path
+):
+    work_root = tmp_path / "work-skills"
+    control_plane_skill = write_skill(
+        work_root,
+        "control-plane-gdrive-pricing-review",
+    )
+    ops_skill = write_skill(work_root, "ops-openbrand-mcp-ops")
+    unrelated_skill = write_skill(work_root, "webgoat-smoke-monitor-ops")
+    route = route_by_key(route_module, "control-plane")
+    home = tmp_path / route.key
+    skills_home = home / "skills"
+    built_in = skills_home / ".system"
+    built_in.mkdir(parents=True)
+    stale_link = skills_home / unrelated_skill.name
+    stale_link.symlink_to(unrelated_skill, target_is_directory=True)
+    monkeypatch.setattr(route_module, "WORK_SKILLS_SOURCE_ROOT", work_root)
+    monkeypatch.setattr(
+        route_module, "PERSONAL_SKILLS_SOURCE_ROOT", tmp_path / "personal-skills"
+    )
+    monkeypatch.setattr(route_module, "route_home", lambda _route: home)
+
+    route_module.sync_scoped_skills(route)
+
+    assert built_in.is_dir()
+    for skill in (control_plane_skill, ops_skill):
+        linked_skill = skills_home / skill.name
+        assert linked_skill.is_symlink()
+        assert linked_skill.resolve() == skill
+    assert not stale_link.exists()
 
 
 @pytest.mark.parametrize(
@@ -504,7 +536,7 @@ def test_skill_sync_preserves_conflicting_unmanaged_entries(
 ):
     work_root = tmp_path / "work-skills"
     managed_skill = write_skill(work_root, "same-name", "managed\n")
-    route = route_by_key(route_module, "control-plane")
+    route = route_by_key(route_module, "earlybird")
     home = tmp_path / route.key
     conflicting_skill = write_skill(home / "skills", managed_skill.name, "user-owned\n")
     monkeypatch.setattr(route_module, "WORK_SKILLS_SOURCE_ROOT", work_root)
@@ -520,7 +552,7 @@ def test_skill_sync_preserves_conflicting_unmanaged_entries(
     assert conflicting_skill.joinpath("SKILL.md").read_text(encoding="utf-8") == (
         "user-owned\n"
     )
-    assert "skill conflict for control-plane" in capsys.readouterr().err
+    assert "skill conflict for earlybird" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

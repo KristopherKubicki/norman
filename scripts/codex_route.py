@@ -140,6 +140,7 @@ class Route:
     repo_names: tuple[str, ...]
     root_paths: tuple[str, ...] = ()
     token_secret: str = ""
+    managed_skill_names: tuple[str, ...] = ()
 
     @property
     def profile(self) -> str:
@@ -187,6 +188,10 @@ ROUTES: tuple[Route, ...] = (
         endpoint="https://cp.kris.openbrand.com/v1",
         codex_home="~/.codex-cp",
         repo_names=("control-plane", "control_plane"),
+        managed_skill_names=(
+            "control-plane-gdrive-pricing-review",
+            "ops-openbrand-mcp-ops",
+        ),
     ),
     Route(
         key="earlybird",
@@ -596,7 +601,11 @@ def _managed_skill_link(path: Path) -> bool:
     )
 
 
-def _skill_source_entries(source_root: Path) -> dict[str, Path]:
+def _skill_source_entries(
+    source_root: Path,
+    *,
+    selected_names: frozenset[str] | None = None,
+) -> dict[str, Path]:
     try:
         entries = list(source_root.iterdir())
     except FileNotFoundError:
@@ -612,7 +621,11 @@ def _skill_source_entries(source_root: Path) -> dict[str, Path]:
     return {
         entry.name: entry
         for entry in sorted(entries, key=lambda candidate: candidate.name)
-        if entry.is_dir() and (entry / "SKILL.md").is_file()
+        if (
+            entry.is_dir()
+            and (entry / "SKILL.md").is_file()
+            and (selected_names is None or entry.name in selected_names)
+        )
     }
 
 
@@ -642,7 +655,14 @@ def sync_scoped_skills(route: Route) -> None:
         )
         return
 
-    source_entries = _skill_source_entries(source_root) if source_root else {}
+    selected_names = (
+        frozenset(route.managed_skill_names) if route.managed_skill_names else None
+    )
+    source_entries = (
+        _skill_source_entries(source_root, selected_names=selected_names)
+        if source_root
+        else {}
+    )
 
     try:
         destination_entries = list(skill_home.iterdir())
