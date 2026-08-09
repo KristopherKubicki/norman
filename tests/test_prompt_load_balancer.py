@@ -4844,6 +4844,86 @@ def test_openai_compat_responses_rejects_changed_or_unknown_call_before_invocati
     assert len(invocations) == 1
 
 
+def test_openai_compat_responses_accepts_replayed_call_metadata_changes(monkeypatch):
+    import app.services.prompt_provider_facade as facade
+
+    facade.reset_facade_response_state()
+    invocations = []
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+
+    def fake_chat(**kwargs):
+        invocations.append(kwargs)
+        response = _mock_local_chat(kwargs["messages"], kwargs["model"])
+        if not any(message["role"] == "tool" for message in kwargs["messages"]):
+            response["choices"] = [
+                {
+                    "message": {
+                        "content": (
+                            '{"tool_call":{"name":"shell","arguments":{"cmd":"pwd"}}}'
+                        )
+                    }
+                }
+            ]
+        return response
+
+    monkeypatch.setattr(facade.norllama_gateway, "invoke_text_chat", fake_chat)
+    first = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "check the repo",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "shell",
+                    "parameters": {"type": "object"},
+                }
+            ],
+        }
+    )
+    function_call = first["output"][0]
+
+    second = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "previous_response_id": first["id"],
+            "input": [
+                {
+                    "type": "function_call",
+                    "id": "fc-client-replay",
+                    "status": "in_progress",
+                    "call_id": function_call["call_id"],
+                    "name": "shell",
+                    "arguments": '{ "cmd": "pwd" }',
+                },
+                {
+                    "type": "function_call",
+                    "id": "fc-client-completed",
+                    "status": "completed",
+                    "call_id": function_call["call_id"],
+                    "name": "shell",
+                    "arguments": '{"cmd":"pwd"}',
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": function_call["call_id"],
+                    "output": "/home/kristopher/code/control_plane",
+                },
+            ],
+        }
+    )
+
+    assert second["output_text"] == "local ok"
+    replayed_calls = [
+        message
+        for message in invocations[-1]["messages"]
+        if message.get("type") == "function_call"
+        and message.get("call_id") == function_call["call_id"]
+    ]
+    assert len(replayed_calls) == 1
+
+
 def test_openai_compat_responses_rejects_changed_historical_tool_output(
     monkeypatch,
 ):

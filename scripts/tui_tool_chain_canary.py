@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the authenticated Responses tool continuation without real tools."""
+"""Exercise authenticated Responses tool continuations through the Norman facade."""
 
 from __future__ import annotations
 
@@ -26,7 +26,19 @@ DEFAULT_OUTPUT_JSON = Path(
 DEFAULT_PRESSURE_GUARD = Path(__file__).with_name("tui_host_pressure_guard.py")
 DEFAULT_PRESSURE_TARGET = "work-special"
 DEFAULT_TIMEOUT_SECONDS = 45.0
-KNOWN_TOOL_NAMES = frozenset({"tool_search", "mcp__norman_canary.status_lookup"})
+DEFAULT_OPS_MCP_SMOKE_COMMAND = (
+    "/home/kristopher/code/control_plane/scripts/with_ops_openbrand_mcp.sh",
+    "/home/kristopher/code/control_plane/.venv/bin/python",
+    "/home/kristopher/code/control_plane/scripts/ops_portal_connection_smoke.py",
+    "--timings",
+)
+KNOWN_TOOL_NAMES = frozenset(
+    {
+        "tool_search",
+        "mcp__norman_canary.status_lookup",
+        "mcp__ops_openbrand.ops_portal_health",
+    }
+)
 SAFE_TOOL_CHAIN_SCHEMA = "norman.responses-tool-chain.v1"
 SAFE_TOOL_CHAIN_TURN_TYPES = frozenset({"after_tool_result", "initial_or_text"})
 SAFE_TOOL_CHAIN_OUTCOMES = frozenset(
@@ -44,7 +56,21 @@ StreamRequestFn = Callable[
     [str, dict[str, Any], str, float], tuple[int, dict[str, Any]]
 ]
 PressureGuardFn = Callable[[], dict[str, Any]]
+OpsDirectSmokeFn = Callable[[float], Mapping[str, Any]]
 RAW_TOOL_ENVELOPE_PATTERN = re.compile(r'\{\s*"tool_calls?"\s*:')
+SAFE_OPS_LABEL_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
+SAFE_OPS_TIMING_KEYS = frozenset(
+    {
+        "transport_ready",
+        "initialize",
+        "tools_list",
+        "ops_portal_health",
+        "read_only_policy",
+        "session_start",
+        "list_capabilities",
+        "total",
+    }
+)
 
 
 class CanaryError(RuntimeError):
@@ -376,6 +402,83 @@ def _pressure_guard(
     return dict(parsed) if isinstance(parsed, Mapping) else {}
 
 
+def _bounded_count(value: Any) -> int:
+    return min(10_000, _int(value))
+
+
+def _safe_ops_label(value: Any) -> str:
+    label = _clean(value).lower()
+    return label if SAFE_OPS_LABEL_PATTERN.fullmatch(label) else "unknown"
+
+
+def _safe_ops_timings(value: Any) -> dict[str, int]:
+    timings = _mapping(value)
+    return {
+        key: min(300_000, _int(timings.get(key)))
+        for key in SAFE_OPS_TIMING_KEYS
+        if key in timings
+    }
+
+
+def _safe_ops_mcp_evidence(result: Mapping[str, Any]) -> dict[str, Any]:
+    """Retain only bounded direct-MCP health evidence for the facade continuation."""
+
+    status = _clean(result.get("status")).lower()
+    evidence: dict[str, Any] = {
+        "status": status if status in {"ok", "error"} else "unknown",
+        "portal_status": _safe_ops_label(result.get("portal_status")),
+        "portal_lane": _safe_ops_label(result.get("portal_lane")),
+        "read_only": result.get("read_only") is True,
+        "mutations_supported": result.get("mutations_supported") is True,
+        "mutation_tool_count": _bounded_count(result.get("mutation_tool_count")),
+        "identity_verified": result.get("identity_verified") is True,
+        "tool_count": _bounded_count(result.get("tool_count")),
+        "capability_count": _bounded_count(result.get("capability_count")),
+    }
+    timings = _safe_ops_timings(result.get("timings_ms"))
+    if timings:
+        evidence["timings_ms"] = timings
+    return evidence
+
+
+def _require_healthy_ops_mcp_evidence(evidence: Mapping[str, Any]) -> None:
+    if (
+        _clean(evidence.get("status")) != "ok"
+        or evidence.get("read_only") is not True
+        or evidence.get("mutations_supported") is not False
+        or _int(evidence.get("mutation_tool_count")) != 0
+        or evidence.get("identity_verified") is not True
+        or _int(evidence.get("tool_count")) < 2
+    ):
+        raise CanaryError("ops_direct_smoke_failed")
+
+
+def _run_ops_direct_smoke(timeout_seconds: float) -> Mapping[str, Any]:
+    """Run the brokered direct smoke without retaining its credentials or raw output."""
+
+    try:
+        result = subprocess.run(
+            list(DEFAULT_OPS_MCP_SMOKE_COMMAND),
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=_bounded_timeout(timeout_seconds),
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise CanaryError("ops_direct_smoke_failed") from exc
+    if result.returncode != 0:
+        raise CanaryError("ops_direct_smoke_failed")
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise CanaryError("ops_direct_smoke_invalid_response") from exc
+    if not isinstance(payload, Mapping):
+        raise CanaryError("ops_direct_smoke_invalid_response")
+    return payload
+
+
 def _safe_tool_chain(response: Mapping[str, Any]) -> dict[str, Any]:
     norman = _mapping(response.get("norman"))
     compatibility = _mapping(norman.get("responses_compatibility"))
@@ -517,6 +620,16 @@ def _require_final_answer(
         raise CanaryError("unexpected_final_response")
 
 
+def _require_concise_normal_final_answer(
+    response: Mapping[str, Any], *, streaming: bool = False
+) -> None:
+    _require_final_answer(response, streaming=streaming)
+    if len(_clean(response.get("output_text"))) > 1_200:
+        raise CanaryError("ops_final_response_not_concise")
+    if _safe_tool_chain(response).get("watchdog_state") != "normal":
+        raise CanaryError("ops_watchdog_not_normal")
+
+
 def _tool_search_definition() -> dict[str, Any]:
     return {
         "type": "function",
@@ -547,12 +660,34 @@ def _synthetic_status_namespace() -> dict[str, Any]:
     }
 
 
+def _ops_portal_health_namespace() -> dict[str, Any]:
+    return {
+        "type": "namespace",
+        "name": "mcp__ops_openbrand",
+        "tools": [
+            {
+                "type": "function",
+                "name": "ops_portal_health",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ],
+    }
+
+
 def _canary_prompt() -> str:
     return (
         "Run the Norman tool-chain health check. First call tool_search to discover "
         "mcp__norman_canary.status_lookup. After its synthetic result is supplied, "
         "call mcp__norman_canary.status_lookup. Do not call any real MCP or "
         "external tool."
+    )
+
+
+def _ops_mcp_canary_prompt() -> str:
+    return (
+        "Run the approved read-only Ops Portal health check. Call "
+        "mcp__ops_openbrand.ops_portal_health exactly once. Do not call any "
+        "other tool."
     )
 
 
@@ -565,6 +700,8 @@ def run_canary(
     request_fn: RequestFn = _post_json,
     streaming: bool = False,
     stream_request_fn: StreamRequestFn = _post_sse,
+    ops_mcp: bool = False,
+    ops_direct_smoke: OpsDirectSmokeFn | None = None,
 ) -> dict[str, Any]:
     started_at = time.monotonic()
     receipt: dict[str, Any] = {
@@ -574,6 +711,7 @@ def run_canary(
         "gateway_route": "norman",
         "model": "norman-code",
         "mode": "streaming" if streaming else "non_streaming",
+        "workflow": "ops_mcp" if ops_mcp else "synthetic",
         "state": "failed",
         "elapsed_ms": 0.0,
         "turns": [],
@@ -619,66 +757,117 @@ def run_canary(
         return response
 
     try:
-        discovery = execute_turn(
-            "tool_search",
-            {
-                "model": "norman-code",
-                "input": _canary_prompt(),
-                "tools": [_tool_search_definition()],
-            },
-        )
-        tool_search_call_id = _require_exact_function_call(
-            discovery,
-            name="tool_search",
-            streaming=streaming,
-        )
-        tool_call = execute_turn(
-            "synthetic_status_lookup",
-            {
-                "model": "norman-code",
-                "previous_response_id": _clean(discovery.get("id")),
-                "input": [
-                    {
-                        "type": "function_call_output",
-                        "call_id": tool_search_call_id,
-                        "output": (
-                            '{"tools":[{"name":"mcp__norman_canary.status_lookup",'
-                            '"description":"Synthetic canary status lookup"}]}'
-                        ),
-                    }
-                ],
-                "tools": [_synthetic_status_namespace()],
-            },
-        )
-        synthetic_call_id = _require_exact_function_call(
-            tool_call,
-            name="mcp__norman_canary.status_lookup",
-            streaming=streaming,
-        )
-        final = execute_turn(
-            "final_answer",
-            {
-                "model": "norman-code",
-                "previous_response_id": _clean(tool_call.get("id")),
-                "input": [
-                    {
-                        "type": "function_call_output",
-                        "call_id": synthetic_call_id,
-                        "output": '{"status":"ok","source":"synthetic"}',
-                    },
-                    {
-                        "type": "message",
-                        "role": "user",
-                        "content": (
-                            "The synthetic result has been supplied. Return a "
-                            "concise final health result now. Do not call another tool."
-                        ),
-                    },
-                ],
-                "tools": [_synthetic_status_namespace()],
-            },
-        )
-        _require_final_answer(final, streaming=streaming)
+        if ops_mcp:
+            direct_smoke = ops_direct_smoke or _run_ops_direct_smoke
+            ops_evidence = _safe_ops_mcp_evidence(
+                direct_smoke(_bounded_timeout(timeout_seconds))
+            )
+            _require_healthy_ops_mcp_evidence(ops_evidence)
+            receipt["ops_mcp_evidence"] = ops_evidence
+            tool_call = execute_turn(
+                "ops_portal_health",
+                {
+                    "model": "norman-code",
+                    "input": _ops_mcp_canary_prompt(),
+                    "tools": [_ops_portal_health_namespace()],
+                },
+            )
+            ops_call_id = _require_exact_function_call(
+                tool_call,
+                name="mcp__ops_openbrand.ops_portal_health",
+                streaming=streaming,
+            )
+            final = execute_turn(
+                "ops_final_answer",
+                {
+                    "model": "norman-code",
+                    "previous_response_id": _clean(tool_call.get("id")),
+                    "input": [
+                        {
+                            "type": "function_call_output",
+                            "call_id": ops_call_id,
+                            "output": json.dumps(
+                                ops_evidence,
+                                separators=(",", ":"),
+                                sort_keys=True,
+                            ),
+                        },
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": (
+                                "The approved read-only Ops health evidence has been "
+                                "supplied. Return a concise status now. Do not call "
+                                "another tool."
+                            ),
+                        },
+                    ],
+                    "tools": [_ops_portal_health_namespace()],
+                },
+            )
+            _require_concise_normal_final_answer(final, streaming=streaming)
+        else:
+            discovery = execute_turn(
+                "tool_search",
+                {
+                    "model": "norman-code",
+                    "input": _canary_prompt(),
+                    "tools": [_tool_search_definition()],
+                },
+            )
+            tool_search_call_id = _require_exact_function_call(
+                discovery,
+                name="tool_search",
+                streaming=streaming,
+            )
+            tool_call = execute_turn(
+                "synthetic_status_lookup",
+                {
+                    "model": "norman-code",
+                    "previous_response_id": _clean(discovery.get("id")),
+                    "input": [
+                        {
+                            "type": "function_call_output",
+                            "call_id": tool_search_call_id,
+                            "output": (
+                                '{"tools":[{"name":"mcp__norman_canary.status_lookup",'
+                                '"description":"Synthetic canary status lookup"}]}'
+                            ),
+                        }
+                    ],
+                    "tools": [_synthetic_status_namespace()],
+                },
+            )
+            synthetic_call_id = _require_exact_function_call(
+                tool_call,
+                name="mcp__norman_canary.status_lookup",
+                streaming=streaming,
+            )
+            final = execute_turn(
+                "final_answer",
+                {
+                    "model": "norman-code",
+                    "previous_response_id": _clean(tool_call.get("id")),
+                    "input": [
+                        {
+                            "type": "function_call_output",
+                            "call_id": synthetic_call_id,
+                            "output": '{"status":"ok","source":"synthetic"}',
+                        },
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": (
+                                "The synthetic result has been supplied. Return a "
+                                "concise final health result now. Do not call another "
+                                "tool."
+                            ),
+                        },
+                    ],
+                    "tools": [_synthetic_status_namespace()],
+                },
+            )
+            _require_final_answer(final, streaming=streaming)
     except CanaryError as exc:
         receipt["failure_kind"] = exc.kind
         if exc.http_status:
@@ -743,6 +932,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Exercise the SSE streaming path used by Codex TUIs.",
     )
+    parser.add_argument(
+        "--ops-mcp",
+        action="store_true",
+        help=(
+            "Run the deploy-time read-only Ops MCP continuation canary. "
+            "This always exercises streaming."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -769,7 +966,8 @@ def main(argv: list[str] | None = None) -> int:
         token=_clean(os.environ.get("NORMAN_PROMPT_PROXY_TOKEN")),
         timeout_seconds=args.timeout_seconds,
         pressure_guard=pressure_guard,
-        streaming=bool(args.stream),
+        streaming=bool(args.stream or args.ops_mcp),
+        ops_mcp=bool(args.ops_mcp),
     )
     write_receipt(args.output_json, receipt)
     print(

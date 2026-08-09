@@ -241,4 +241,5 @@ def test_tool_chain_observability_is_sanitized_and_alerted(monkeypatch):
     assert summary["tool_chain_event_count"] == 2
     assert summary["tool_chain_repaired_count"] == 1
     assert summary["tool_chain_exhausted_count"] == 1
+    assert "proxy_tool_chain_watchdog_repaired" in alert_kinds
     assert "proxy_tool_chain_watchdog_exhausted" in alert_kinds

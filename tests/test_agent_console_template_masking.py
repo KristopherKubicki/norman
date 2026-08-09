@@ -4919,10 +4919,23 @@ def test_norman_frontdoor_caddy_serves_shortcuts_locally() -> None:
         "    }"
     ) in rendered
     assert "tls /etc/caddy/certs/norman-lollie.crt" not in rendered
+    responses_position = rendered.index("handle /v1/responses {")
     gateway_position = rendered.index("handle /v1/* {")
     root_redirect_position = rendered.index("@norman_root path /")
     fallback_position = rendered.index("handle {\n        reverse_proxy 127.0.0.1:8000")
-    assert gateway_position < root_redirect_position < fallback_position
+    assert (
+        responses_position
+        < gateway_position
+        < root_redirect_position
+        < fallback_position
+    )
+    assert (
+        "handle /v1/responses {\n"
+        "        reverse_proxy 127.0.0.1:8000 {\n"
+        "            flush_interval -1\n"
+        "            header_up X-Norman-Gateway-Route norman\n"
+        "            header_up X-Forwarded-For 127.0.0.2"
+    ) in rendered
     assert "header_up X-Norman-Gateway-Route norman" in rendered
     assert "header_up X-Forwarded-For 127.0.0.2" in rendered
 
@@ -5019,8 +5032,8 @@ def test_bot_proxy_caddy_routes_canonical_codex_hosts_to_gateway_before_console(
     assert module.GATEWAY_ROUTES == route_keys - {"norman"}
     for route_key in sorted(module.GATEWAY_ROUTES):
         assert f"header_up X-Norman-Gateway-Route {route_key}" in rendered
-    assert rendered.count("header_up X-Forwarded-For 127.0.0.2") == len(
-        module.GATEWAY_ROUTES
+    assert rendered.count("header_up X-Forwarded-For 127.0.0.2") == (
+        len(module.GATEWAY_ROUTES) * 2
     )
 
     def host_block(host: str) -> str:
@@ -5029,18 +5042,26 @@ def test_bot_proxy_caddy_routes_canonical_codex_hosts_to_gateway_before_console(
         return rendered[start:] if end == -1 else rendered[start:end]
 
     gold_book = host_block("goldbook.kris.openbrand.com")
+    assert "handle /v1/responses {" in gold_book
     assert "handle /v1/* {" in gold_book
+    assert "flush_interval -1" in gold_book
     assert "header_up X-Norman-Gateway-Route gold-book" in gold_book
-    assert gold_book.index("handle /v1/* {") < gold_book.index(
-        "handle {\n        reverse_proxy"
+    assert (
+        gold_book.index("handle /v1/responses {")
+        < gold_book.index("handle /v1/* {")
+        < gold_book.index("handle {\n        reverse_proxy")
     )
 
     infra = host_block("infra.kris.openbrand.com")
     assert "@knox_allowed remote_ip" in infra
+    assert "handle /v1/responses {" in infra
     assert "handle /v1/* {" in infra
+    assert "flush_interval -1" in infra
     assert "header_up X-Norman-Gateway-Route infra" in infra
-    assert infra.index("handle /v1/* {") < infra.index(
-        "handle {\n            reverse_proxy"
+    assert (
+        infra.index("handle /v1/responses {")
+        < infra.index("handle /v1/* {")
+        < infra.index("handle {\n            reverse_proxy")
     )
 
 

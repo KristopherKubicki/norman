@@ -850,6 +850,18 @@ def proxy_alerts(
                 "message": f"{gateway_errors} local gateway error(s) were recorded.",
             }
         )
+    tool_chain_repaired = int(summary.get("tool_chain_repaired_count") or 0)
+    if tool_chain_repaired:
+        alerts.append(
+            {
+                "severity": "warn",
+                "kind": "proxy_tool_chain_watchdog_repaired",
+                "message": (
+                    f"{tool_chain_repaired} tool-chain continuation(s) required "
+                    "the bounded repair."
+                ),
+            }
+        )
     tool_chain_exhausted = int(summary.get("tool_chain_exhausted_count") or 0)
     if tool_chain_exhausted:
         alerts.append(

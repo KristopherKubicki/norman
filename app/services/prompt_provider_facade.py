@@ -1161,6 +1161,23 @@ def _function_call_signature(item: Mapping[str, Any]) -> tuple[str, str]:
     )
 
 
+def _function_call_contract_matches(
+    left: Mapping[str, Any],
+    right: Mapping[str, Any],
+) -> bool:
+    """Compare the executable portion of a Responses function-call item.
+
+    Codex may replay a completed function call alongside its output while
+    changing transport metadata such as the output item ``id`` or ``status``.
+    Those fields do not affect which tool is invoked, so they must not make a
+    valid continuation look conflicting.
+    """
+
+    return _clean(left.get("call_id")) == _clean(
+        right.get("call_id")
+    ) and _function_call_signature(left) == _function_call_signature(right)
+
+
 def _tool_chain_telemetry(
     *,
     context: ToolChainContext,
@@ -1544,7 +1561,7 @@ def _response_input_function_call_items(
             continue
         function_call = _function_call_item(item, strict=True)
         previous = function_calls.get(function_call["call_id"])
-        if previous and previous != function_call:
+        if previous and not _function_call_contract_matches(previous, function_call):
             raise FacadeError(
                 "Responses input contains conflicting function_call items",
                 status_code=400,
@@ -1583,10 +1600,7 @@ def _validate_response_tool_continuation(
     }
     for call_id, function_call in _response_input_function_call_items(payload).items():
         known = function_call_items.get(call_id)
-        if known and (
-            _clean(known.get("name")) != function_call["name"]
-            or _function_call_arguments(known) != function_call["arguments"]
-        ):
+        if known and not _function_call_contract_matches(known, function_call):
             raise FacadeError(
                 "Responses function_call does not match its prior call_id",
                 status_code=400,
@@ -1665,11 +1679,7 @@ def response_input_to_messages(
                 function_call = _function_call_item(item, strict=True)
                 existing = function_call_items.get(function_call["call_id"])
                 if existing:
-                    if (
-                        _clean(existing.get("name")) != function_call["name"]
-                        or _function_call_arguments(existing)
-                        != function_call["arguments"]
-                    ):
+                    if not _function_call_contract_matches(existing, function_call):
                         raise FacadeError(
                             "Responses function_call does not match its prior call_id",
                             status_code=400,

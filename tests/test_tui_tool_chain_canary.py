@@ -232,6 +232,153 @@ def test_run_canary_streaming_fails_without_a_native_function_call_event():
     assert receipt["turns"][0]["stream"]["native_function_call_count"] == 0
 
 
+def test_run_canary_ops_mcp_exercises_read_only_native_sse_continuation():
+    requests = []
+    direct_smoke_result = {
+        "status": "ok",
+        "portal_status": "ok",
+        "portal_lane": "production",
+        "read_only": True,
+        "mutations_supported": False,
+        "mutation_tool_count": 0,
+        "principal": "private-user@example.com",
+        "roles": ["private-role"],
+        "identity_verified": True,
+        "tool_count": 9,
+        "capability_count": 14,
+        "timings_ms": {
+            "initialize": 12,
+            "ops_portal_health": 18,
+            "private_phase": 99,
+        },
+    }
+    responses = iter(
+        [
+            _stream_response(
+                _tool_response(
+                    "resp-ops",
+                    "mcp__ops_openbrand.ops_portal_health",
+                    "call-ops",
+                )
+            ),
+            _stream_response(
+                {
+                    "id": "resp-final",
+                    "status": "completed",
+                    "output": [{"type": "message"}],
+                    "output_text": "Ops health is normal.",
+                    "norman": {
+                        "responses_compatibility": {
+                            "tool_chain": {
+                                "schema": "norman.responses-tool-chain.v1",
+                                "turn_type": "after_tool_result",
+                                "chain_depth": 1,
+                                "tool_results_supplied": 1,
+                                "tool_results_matched": 1,
+                                "tool_calls_returned": 0,
+                                "outcome": "final_after_tool",
+                                "watchdog": {
+                                    "state": "normal",
+                                    "attempts": 0,
+                                },
+                            }
+                        }
+                    },
+                }
+            ),
+        ]
+    )
+
+    def stream_request_fn(endpoint, payload, token, timeout_seconds):
+        requests.append((endpoint, payload, token, timeout_seconds))
+        return 200, next(responses)
+
+    receipt = canary.run_canary(
+        endpoint="https://cp.kris.openbrand.com/v1/responses",
+        token="private-token",
+        pressure_guard=lambda: {"admission": {"action": "accept_new_work"}},
+        streaming=True,
+        stream_request_fn=stream_request_fn,
+        ops_mcp=True,
+        ops_direct_smoke=lambda timeout_seconds: direct_smoke_result,
+    )
+
+    assert receipt["state"] == "passed"
+    assert receipt["workflow"] == "ops_mcp"
+    assert [turn["turn"] for turn in receipt["turns"]] == [
+        "ops_portal_health",
+        "ops_final_answer",
+    ]
+    assert receipt["turns"][0]["tool_names"] == ["mcp__ops_openbrand.ops_portal_health"]
+    assert receipt["turns"][0]["stream"]["native_tool_names"] == [
+        "mcp__ops_openbrand.ops_portal_health"
+    ]
+    assert receipt["turns"][1]["tool_chain"]["watchdog_state"] == "normal"
+    assert requests[0][1]["tools"] == [
+        {
+            "type": "namespace",
+            "name": "mcp__ops_openbrand",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "ops_portal_health",
+                    "parameters": {"type": "object", "properties": {}},
+                }
+            ],
+        }
+    ]
+    assert json.loads(requests[1][1]["input"][0]["output"]) == {
+        "status": "ok",
+        "portal_status": "ok",
+        "portal_lane": "production",
+        "read_only": True,
+        "mutations_supported": False,
+        "mutation_tool_count": 0,
+        "identity_verified": True,
+        "tool_count": 9,
+        "capability_count": 14,
+        "timings_ms": {
+            "initialize": 12,
+            "ops_portal_health": 18,
+        },
+    }
+
+    serialized = json.dumps(receipt, sort_keys=True)
+    assert "private-token" not in serialized
+    assert "private-user@example.com" not in serialized
+    assert "private-role" not in serialized
+    assert "private_phase" not in serialized
+    assert "call-ops" not in serialized
+
+
+def test_run_canary_ops_mcp_stops_before_public_call_when_direct_smoke_fails():
+    receipt = canary.run_canary(
+        endpoint="https://cp.kris.openbrand.com/v1/responses",
+        token="private-token",
+        pressure_guard=lambda: {},
+        ops_mcp=True,
+        ops_direct_smoke=lambda timeout_seconds: {
+            "status": "error",
+            "error_message": "private direct MCP failure",
+            "read_only": False,
+            "mutations_supported": True,
+        },
+        request_fn=lambda *args: (_ for _ in ()).throw(AssertionError("not called")),
+    )
+
+    assert receipt["state"] == "failed"
+    assert receipt["failure_kind"] == "ops_direct_smoke_failed"
+    assert receipt["turns"] == []
+    assert "private direct MCP failure" not in json.dumps(receipt, sort_keys=True)
+
+
+def test_ops_mcp_cli_flag_enables_the_streaming_canary():
+    args = canary.parse_args(["--ops-mcp"])
+
+    assert args.ops_mcp is True
+    assert args.stream is False
+
+
 def test_safe_tool_chain_reports_unknown_legacy_watchdog_state():
     response = _tool_response("resp-legacy", "tool_search", "call-search")
     response["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] = {
