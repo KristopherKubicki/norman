@@ -1514,12 +1514,18 @@ class ConsoleRuntimeKernel:
         return value
 
     def _verification_required_locked(self, job: ConsoleJob) -> bool:
-        values = (job.contract.route_policy, job.contract.metadata, job.metadata)
+        values = (
+            job.contract.route_policy,
+            job.contract.metadata,
+            job.contract.authority_flags,
+            job.metadata,
+        )
         return any(
             self._policy_flag(value.get(key))
             for value in values
             if isinstance(value, dict)
             for key in (
+                "durable_workstream",
                 "require_verification_receipt",
                 "require_verifier_for_completion",
                 "verification_required",

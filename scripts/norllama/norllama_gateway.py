@@ -21,6 +21,7 @@ from email.parser import BytesParser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from typing import Callable
 
 if not os.getenv("NORMAN_NORLLAMA_ROUTE_POLICY_PATH"):
     local_policy_artifact = Path(__file__).with_name("route_policy.json")
@@ -195,6 +196,19 @@ DEFAULT_PEER_TIMEOUT_S = 1.0
 DEFAULT_MAX_PEER_HOPS = 1
 DEFAULT_PREFETCH_JOB_TTL_S = 3600
 DEFAULT_PREFETCH_JOB_LIMIT = 100
+DEFAULT_CHAT_MAX_ACTIVE = 1
+DEFAULT_CHAT_QUEUE_LIMIT = 1
+DEFAULT_CHAT_QUEUE_WAIT_S = 10
+DEFAULT_CHAT_RETRY_AFTER_S = 10
+DEFAULT_CHAT_QUEUE_UPDATE_S = 1
+ADMISSION_RESPONSE_HEADERS = {
+    "x-norllama-admission",
+    "x-norllama-queue-wait-ms",
+    "x-norllama-queue-depth",
+    "x-norllama-queue-limit",
+    "x-norllama-active",
+    "x-norllama-active-limit",
+}
 DEFAULT_EMBEDDING_MODEL = os.getenv("NORLLAMA_DEFAULT_EMBEDDING_MODEL", "bge-m3:latest")
 BGE_RERANKER_MODEL = os.getenv(
     "NORLLAMA_NATIVE_RERANK_MODEL", "BAAI/bge-reranker-v2-m3"
@@ -570,6 +584,28 @@ def env_flag(name: str, default: bool = False) -> bool:
     if not raw:
         return default
     return raw in {"1", "true", "yes", "on"}
+
+
+def env_int(name: str, default: int, *, minimum: int = 0, maximum: int = 3600) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+def env_float(
+    name: str,
+    default: float,
+    *,
+    minimum: float = 0.0,
+    maximum: float = 3600.0,
+) -> float:
+    try:
+        value = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
 
 
 def unique_items(values: list[str]) -> list[str]:
@@ -1449,6 +1485,239 @@ def extract_ollama_metrics(body: bytes, content_type: str) -> dict[str, object]:
     return metrics
 
 
+def is_loopback_base_url(base_url: str) -> bool:
+    try:
+        hostname = urllib.parse.urlsplit(base_url).hostname
+    except ValueError:
+        return False
+    return (hostname or "").lower() in {"127.0.0.1", "localhost", "::1"}
+
+
+class ChatAdmissionReservation:
+    """A cancellable active or queued local-generation admission."""
+
+    def __init__(
+        self,
+        controller: "ChatAdmissionController",
+        *,
+        state: str,
+        queued_at: float,
+        deadline: float,
+    ) -> None:
+        self._controller = controller
+        self._state = state
+        self._was_queued = state == "queued"
+        self._queued_at = queued_at
+        self._deadline = deadline
+        self._closed = False
+
+    @property
+    def queued(self) -> bool:
+        return self._state == "queued" and not self._closed
+
+    @property
+    def queued_at(self) -> float:
+        return self._queued_at
+
+    @property
+    def was_queued(self) -> bool:
+        return self._was_queued
+
+    def wait(self, *, timeout_s: float) -> tuple[str, dict[str, int]]:
+        return self._controller.wait_for_reservation(self, timeout_s=timeout_s)
+
+    def release(self) -> None:
+        self._controller.release_reservation(self)
+
+
+class ChatAdmissionController:
+    """Bound concurrent local generations without serializing peer workers."""
+
+    def __init__(
+        self,
+        *,
+        max_active: int,
+        queue_limit: int,
+        queue_wait_s: float,
+        retry_after_s: float,
+    ) -> None:
+        self.max_active = max(1, int(max_active))
+        self.queue_limit = max(0, int(queue_limit))
+        self.queue_wait_s = max(0.0, float(queue_wait_s))
+        self.retry_after_s = max(1.0, float(retry_after_s))
+        self._condition = threading.Condition()
+        self._active = 0
+        self._queued = 0
+
+    def snapshot(self) -> dict[str, int]:
+        with self._condition:
+            return self._snapshot_locked()
+
+    def reserve(self) -> tuple[ChatAdmissionReservation | None, dict[str, int]]:
+        """Reserve an active or queued slot without blocking the HTTP response."""
+
+        with self._condition:
+            now = time.monotonic()
+            if self._active < self.max_active:
+                self._active += 1
+                return (
+                    ChatAdmissionReservation(
+                        self,
+                        state="active",
+                        queued_at=now,
+                        deadline=now,
+                    ),
+                    self._snapshot_locked(),
+                )
+            if self.queue_limit <= self._queued or self.queue_wait_s <= 0:
+                return None, self._snapshot_locked()
+
+            self._queued += 1
+            return (
+                ChatAdmissionReservation(
+                    self,
+                    state="queued",
+                    queued_at=now,
+                    deadline=now + self.queue_wait_s,
+                ),
+                self._snapshot_locked(),
+            )
+
+    def wait_for_reservation(
+        self,
+        reservation: ChatAdmissionReservation,
+        *,
+        timeout_s: float,
+    ) -> tuple[str, dict[str, int]]:
+        """Wait briefly for a reserved queued slot without losing cancellation."""
+
+        with self._condition:
+            if reservation._closed:
+                return "cancelled", self._snapshot_locked()
+            if reservation._state == "active":
+                return "admitted", self._snapshot_locked()
+            if reservation._state != "queued":
+                return "cancelled", self._snapshot_locked()
+
+            now = time.monotonic()
+            if now >= reservation._deadline:
+                self._queued = max(0, self._queued - 1)
+                reservation._state = "expired"
+                self._condition.notify_all()
+                return "expired", self._snapshot_locked()
+
+            wait_s = min(
+                max(0.0, float(timeout_s)),
+                max(0.0, reservation._deadline - now),
+            )
+            if wait_s:
+                self._condition.wait(wait_s)
+
+            if reservation._closed:
+                return "cancelled", self._snapshot_locked()
+            if reservation._state != "queued":
+                return "cancelled", self._snapshot_locked()
+            if self._active < self.max_active:
+                self._queued = max(0, self._queued - 1)
+                self._active += 1
+                reservation._state = "active"
+                return "admitted", self._snapshot_locked()
+            if time.monotonic() >= reservation._deadline:
+                self._queued = max(0, self._queued - 1)
+                reservation._state = "expired"
+                self._condition.notify_all()
+                return "expired", self._snapshot_locked()
+            return "queued", self._snapshot_locked()
+
+    def release_reservation(self, reservation: ChatAdmissionReservation) -> None:
+        with self._condition:
+            if reservation._closed:
+                return
+            reservation._closed = True
+            if reservation._state == "active":
+                self._active = max(0, self._active - 1)
+            elif reservation._state == "queued":
+                self._queued = max(0, self._queued - 1)
+            reservation._state = "released"
+            self._condition.notify_all()
+
+    def acquire(self) -> tuple[bool, dict[str, int]]:
+        with self._condition:
+            if self._active < self.max_active:
+                self._active += 1
+                return True, self._snapshot_locked()
+            if self.queue_limit <= self._queued or self.queue_wait_s <= 0:
+                return False, self._snapshot_locked()
+
+            self._queued += 1
+            queued = True
+            deadline = time.monotonic() + self.queue_wait_s
+            try:
+                while True:
+                    if self._active < self.max_active:
+                        self._queued -= 1
+                        queued = False
+                        self._active += 1
+                        return True, self._snapshot_locked()
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        self._queued -= 1
+                        queued = False
+                        return False, self._snapshot_locked()
+                    self._condition.wait(remaining)
+            finally:
+                if queued:
+                    self._queued -= 1
+                    self._condition.notify_all()
+
+    def release(self) -> None:
+        with self._condition:
+            if self._active:
+                self._active -= 1
+            self._condition.notify_all()
+
+    def _snapshot_locked(self) -> dict[str, int]:
+        return {
+            "active": self._active,
+            "active_limit": self.max_active,
+            "queue_depth": self._queued,
+            "queue_limit": self.queue_limit,
+            "retry_after_seconds": max(1, int(self.retry_after_s)),
+        }
+
+
+class UpstreamStream:
+    """Own an open upstream response and the local admission lease, if any."""
+
+    def __init__(
+        self,
+        *,
+        status: int,
+        headers: dict[str, str],
+        response: object,
+        release: Callable[[], None] | None = None,
+    ) -> None:
+        self.status = int(status)
+        self.headers = dict(headers)
+        self.response = response
+        self._release = release
+        self._closed = False
+
+    def read(self) -> bytes:
+        return self.response.read()  # type: ignore[no-any-return, union-attr]
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.response.close()  # type: ignore[union-attr]
+        finally:
+            if self._release is not None:
+                self._release()
+                self._release = None
+
+
 class App:
     def __init__(self) -> None:
         self.bind = os.getenv("NORLLAMA_BIND", DEFAULT_BIND).strip() or DEFAULT_BIND
@@ -1468,6 +1737,38 @@ class App:
         )
         self.prefetch_job_limit = int(
             os.getenv("NORLLAMA_PREFETCH_JOB_LIMIT", str(DEFAULT_PREFETCH_JOB_LIMIT))
+        )
+        self.chat_admission = ChatAdmissionController(
+            max_active=env_int(
+                "NORLLAMA_CHAT_MAX_ACTIVE",
+                DEFAULT_CHAT_MAX_ACTIVE,
+                minimum=1,
+                maximum=16,
+            ),
+            queue_limit=env_int(
+                "NORLLAMA_CHAT_QUEUE_LIMIT",
+                DEFAULT_CHAT_QUEUE_LIMIT,
+                minimum=0,
+                maximum=128,
+            ),
+            queue_wait_s=env_float(
+                "NORLLAMA_CHAT_QUEUE_WAIT_S",
+                DEFAULT_CHAT_QUEUE_WAIT_S,
+                minimum=0.0,
+                maximum=300.0,
+            ),
+            retry_after_s=env_float(
+                "NORLLAMA_CHAT_RETRY_AFTER_S",
+                DEFAULT_CHAT_RETRY_AFTER_S,
+                minimum=1.0,
+                maximum=300.0,
+            ),
+        )
+        self.chat_queue_update_s = env_float(
+            "NORLLAMA_CHAT_QUEUE_UPDATE_S",
+            DEFAULT_CHAT_QUEUE_UPDATE_S,
+            minimum=0.25,
+            maximum=10.0,
         )
         self.expose_upstream_details = env_flag(
             "NORLLAMA_EXPOSE_UPSTREAM_DETAILS", False
@@ -5128,7 +5429,10 @@ class Handler(BaseHTTPRequestHandler):
             if (
                 lower_key in HOP_HEADERS
                 or lower_key in {"server", "date"}
-                or lower_key.startswith("x-norllama-")
+                or (
+                    lower_key.startswith("x-norllama-")
+                    and lower_key not in ADMISSION_RESPONSE_HEADERS
+                )
             ):
                 continue
             self.send_header(key, value)
@@ -5180,6 +5484,112 @@ class Handler(BaseHTTPRequestHandler):
             upstream=upstream,
             attempts=attempts,
         )
+
+    def send_upstream_stream(
+        self,
+        upstream: UpstreamStream,
+        *,
+        extra_headers: dict[str, str] | None = None,
+    ) -> None:
+        status = upstream.status
+        headers = upstream.headers
+        self.send_response(status)
+        for key, value in headers.items():
+            lower_key = key.lower()
+            if (
+                lower_key in HOP_HEADERS
+                or lower_key
+                in {
+                    "content-length",
+                    "connection",
+                    "server",
+                    "date",
+                }
+                or (
+                    lower_key.startswith("x-norllama-")
+                    and lower_key not in ADMISSION_RESPONSE_HEADERS
+                )
+            ):
+                continue
+            self.send_header(key, value)
+        self.send_header("X-Norllama-Request-Id", getattr(self, "_request_id", ""))
+        self.send_header(
+            "X-Norllama-Priority-Applied", getattr(self, "_priority", "normal")
+        )
+        if self.app.expose_upstream_details:
+            worker_endpoint = ""
+            if extra_headers:
+                upstream_base = extra_headers.get("X-Norllama-Upstream", "")
+                normalized_upstream = (
+                    normalize_base_url(upstream_base) if upstream_base else ""
+                )
+                if normalized_upstream and normalized_upstream in set(
+                    self.app.peer_bases
+                ):
+                    worker_endpoint = normalized_upstream
+            if not worker_endpoint:
+                worker_endpoint = (
+                    self.app.self_base_urls[0] if self.app.self_base_urls else ""
+                )
+            if worker_endpoint:
+                self.send_header("X-Norllama-Worker-Endpoint", worker_endpoint)
+        if extra_headers:
+            for key, value in extra_headers.items():
+                if not self.app.expose_upstream_details and key in {
+                    "X-Norllama-Upstream",
+                    "X-Norllama-Attempts",
+                }:
+                    continue
+                self.send_header(key, value)
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.close_connection = True
+
+        content_length, disconnected = self.copy_upstream_stream_body(upstream)
+
+        activity_extra = dict(getattr(self, "_activity_extra", {}) or {})
+        activity_extra["streaming"] = True
+        if disconnected:
+            activity_extra["client_disconnected"] = True
+        self._activity_extra = activity_extra
+        upstream_base = ""
+        attempts = ""
+        if extra_headers:
+            upstream_base = extra_headers.get("X-Norllama-Upstream", "")
+            attempts = extra_headers.get("X-Norllama-Attempts", "")
+        self.emit_request_log(
+            status=status,
+            content_length=content_length,
+            content_type=headers.get("Content-Type", "application/octet-stream"),
+            upstream=upstream_base,
+            attempts=attempts,
+        )
+
+    def copy_upstream_stream_body(self, upstream: UpstreamStream) -> tuple[int, bool]:
+        """Copy an already-open upstream stream and always release its lease."""
+
+        content_length = 0
+        disconnected = False
+        try:
+            while True:
+                chunk = upstream.response.read(64 * 1024)  # type: ignore[union-attr]
+                if not chunk:
+                    break
+                content_length += len(chunk)
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        except (
+            BrokenPipeError,
+            ConnectionAbortedError,
+            ConnectionResetError,
+            OSError,
+        ):
+            disconnected = True
+        finally:
+            upstream.close()
+        return content_length, disconnected
 
     def send_head_only(
         self, status: int, *, content_type: str, content_length: int
@@ -5240,6 +5650,281 @@ class Handler(BaseHTTPRequestHandler):
             extra_headers={"X-Norllama-Upstream": base_url},
         )
 
+    def request_wants_stream(self, upstream_path: str, body: bytes | None) -> bool:
+        path = urllib.parse.urlsplit(upstream_path).path
+        if path not in {"/api/chat", "/api/generate", "/v1/chat/completions"}:
+            return False
+        try:
+            payload = json.loads((body or b"{}").decode("utf-8"))
+        except (TypeError, ValueError, UnicodeDecodeError):
+            return False
+        return isinstance(payload, dict) and bool(payload.get("stream"))
+
+    def local_generation_request(self, base_url: str, upstream_path: str) -> bool:
+        return is_loopback_base_url(base_url) and urllib.parse.urlsplit(
+            upstream_path
+        ).path in {"/api/chat", "/api/generate", "/v1/chat/completions"}
+
+    def local_capacity_response(
+        self,
+        *,
+        body: bytes | None,
+        snapshot: dict[str, int],
+        model_hint: str | None = None,
+    ) -> tuple[int, dict[str, str], bytes]:
+        model = (
+            self.extract_ollama_model(body or b"")
+            or str(model_hint or "").strip()
+            or getattr(self, "_model_hint", "")
+        )
+        retry_after = str(max(1, int(self.app.chat_admission.retry_after_s)))
+        payload = {
+            "ok": False,
+            "error": "local_capacity_exhausted",
+            "message": (
+                "Local coding capacity is busy; retry after " f"{retry_after} seconds"
+            ),
+            "model": model,
+            "norllama": {
+                "schema": "norllama.capacity.v1",
+                **snapshot,
+            },
+        }
+        return (
+            int(HTTPStatus.TOO_MANY_REQUESTS),
+            {
+                "Content-Type": "application/json; charset=utf-8",
+                "Retry-After": retry_after,
+            },
+            json.dumps(payload, sort_keys=True).encode("utf-8"),
+        )
+
+    def local_admission_headers(
+        self,
+        snapshot: dict[str, int],
+        *,
+        queue_wait_s: float,
+    ) -> dict[str, str]:
+        queue_wait_ms = max(0, min(int(queue_wait_s * 1000), 3600000))
+        return {
+            "X-Norllama-Admission": "queued" if queue_wait_ms else "immediate",
+            "X-Norllama-Queue-Wait-Ms": str(queue_wait_ms),
+            "X-Norllama-Queue-Depth": str(max(0, snapshot.get("queue_depth", 0))),
+            "X-Norllama-Queue-Limit": str(max(0, snapshot.get("queue_limit", 0))),
+            "X-Norllama-Active": str(max(0, snapshot.get("active", 0))),
+            "X-Norllama-Active-Limit": str(max(0, snapshot.get("active_limit", 0))),
+        }
+
+    def local_stream_admission_frame(
+        self,
+        *,
+        event: str,
+        reservation: ChatAdmissionReservation,
+        snapshot: dict[str, int],
+    ) -> dict[str, object]:
+        queue_wait_ms = max(
+            0,
+            min(int((time.monotonic() - reservation.queued_at) * 1000), 3600000),
+        )
+        return {
+            "norllama": {
+                "schema": "norllama.stream-admission.v1",
+                "event": event,
+                "admission": "queued" if reservation.was_queued else "immediate",
+                "queue_wait_ms": queue_wait_ms,
+                **snapshot,
+            }
+        }
+
+    def local_stream_capacity_frame(
+        self,
+        *,
+        body: bytes | None,
+        snapshot: dict[str, int],
+        model_hint: str | None = None,
+    ) -> dict[str, object]:
+        model = (
+            self.extract_ollama_model(body or b"")
+            or str(model_hint or "").strip()
+            or getattr(self, "_model_hint", "")
+        )
+        return {
+            "error": "local_capacity_exhausted",
+            "done": True,
+            "model": model,
+            "norllama": {
+                "schema": "norllama.capacity.v1",
+                **snapshot,
+            },
+        }
+
+    def write_stream_frame(self, payload: dict[str, object]) -> int:
+        chunk = json.dumps(payload, sort_keys=True).encode("utf-8") + b"\n"
+        self.wfile.write(chunk)
+        self.wfile.flush()
+        return len(chunk)
+
+    def send_queued_local_generation_stream(
+        self,
+        *,
+        reservation: ChatAdmissionReservation,
+        snapshot: dict[str, int],
+        base_url: str,
+        upstream_path: str,
+        headers: dict[str, str] | None,
+        body: bytes | None,
+        method: str | None,
+        model_hint: str | None,
+        attempts: list[str],
+    ) -> None:
+        """Keep an admitted queue reservation visible until its stream opens."""
+
+        admission_headers = self.local_admission_headers(snapshot, queue_wait_s=0)
+        admission_headers["X-Norllama-Admission"] = "queued"
+        content_length = 0
+        disconnected = False
+        upstream: UpstreamStream | None = None
+        try:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+            self.send_header("X-Norllama-Request-Id", getattr(self, "_request_id", ""))
+            self.send_header(
+                "X-Norllama-Priority-Applied", getattr(self, "_priority", "normal")
+            )
+            for key, value in admission_headers.items():
+                self.send_header(key, value)
+            if self.app.expose_upstream_details:
+                self.send_header("X-Norllama-Upstream", base_url)
+                self.send_header("X-Norllama-Attempts", ",".join(attempts))
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            content_length += self.write_stream_frame(
+                self.local_stream_admission_frame(
+                    event="queued",
+                    reservation=reservation,
+                    snapshot=snapshot,
+                )
+            )
+            while True:
+                state, updated_snapshot = reservation.wait(
+                    timeout_s=self.app.chat_queue_update_s
+                )
+                if state == "queued":
+                    content_length += self.write_stream_frame(
+                        self.local_stream_admission_frame(
+                            event="queued",
+                            reservation=reservation,
+                            snapshot=updated_snapshot,
+                        )
+                    )
+                    continue
+                if state == "admitted":
+                    content_length += self.write_stream_frame(
+                        self.local_stream_admission_frame(
+                            event="admitted",
+                            reservation=reservation,
+                            snapshot=updated_snapshot,
+                        )
+                    )
+                    try:
+                        upstream = self.open_upstream_stream(
+                            base_url,
+                            upstream_path,
+                            headers=headers,
+                            body=body,
+                            method=method,
+                            model_hint=model_hint,
+                            admission_reservation=reservation,
+                        )
+                    except Exception as exc:
+                        content_length += self.write_stream_frame(
+                            {
+                                "error": "upstream_unavailable",
+                                "detail": str(exc),
+                                "done": True,
+                            }
+                        )
+                        return
+                    if 200 <= upstream.status < 300:
+                        copied_length, disconnected = self.copy_upstream_stream_body(
+                            upstream
+                        )
+                        content_length += copied_length
+                        upstream = None
+                        return
+                    try:
+                        response_body = upstream.read()
+                    finally:
+                        upstream.close()
+                        upstream = None
+                    payload = extract_jsonish_final_object(response_body) or {
+                        "error": "upstream_unavailable"
+                    }
+                    if not payload.get("done"):
+                        payload["done"] = True
+                    content_length += self.write_stream_frame(payload)
+                    return
+                if state == "expired":
+                    content_length += self.write_stream_frame(
+                        self.local_stream_capacity_frame(
+                            body=body,
+                            snapshot=updated_snapshot,
+                            model_hint=model_hint,
+                        )
+                    )
+                return
+        except (
+            BrokenPipeError,
+            ConnectionAbortedError,
+            ConnectionResetError,
+            OSError,
+        ):
+            disconnected = True
+        finally:
+            if upstream is not None:
+                upstream.close()
+            reservation.release()
+
+            activity_extra = dict(getattr(self, "_activity_extra", {}) or {})
+            activity_extra.update(
+                {
+                    "streaming": True,
+                    "stream_admission": "queued",
+                    "stream_admission_visible": True,
+                }
+            )
+            if disconnected:
+                activity_extra["client_disconnected"] = True
+            self._activity_extra = activity_extra
+            self.emit_request_log(
+                status=HTTPStatus.OK,
+                content_length=content_length,
+                content_type="application/x-ndjson; charset=utf-8",
+                upstream=base_url,
+                attempts=",".join(attempts),
+            )
+
+    def candidate_is_retryable(self, status: int, body: bytes) -> bool:
+        if status == 503 or status >= 500:
+            return True
+        if status != HTTPStatus.TOO_MANY_REQUESTS:
+            return False
+        payload = extract_jsonish_final_object(body) or {}
+        raw_error = payload.get("error")
+        error = (
+            (
+                str(raw_error.get("code") or raw_error.get("type") or "")
+                if isinstance(raw_error, dict)
+                else str(raw_error or "")
+            )
+            .strip()
+            .lower()
+        )
+        return error in {"local_capacity_exhausted", "capacity_exhausted"}
+
     def forward_candidates(
         self,
         bases: list[str],
@@ -5251,6 +5936,17 @@ class Handler(BaseHTTPRequestHandler):
         peer_bases: set[str] | None = None,
         model_hint: str | None = None,
     ) -> None:
+        if self.request_wants_stream(upstream_path, body):
+            self.forward_candidates_stream(
+                bases,
+                upstream_path,
+                headers=headers,
+                body=body,
+                method=method,
+                peer_bases=peer_bases,
+                model_hint=model_hint,
+            )
+            return
         attempted: list[str] = []
         last: tuple[int, dict[str, str], bytes] | None = None
         last_base = ""
@@ -5267,6 +5963,7 @@ class Handler(BaseHTTPRequestHandler):
                     headers=request_headers or None,
                     body=body,
                     method=method,
+                    model_hint=model_hint,
                 )
             except Exception as exc:
                 last = (
@@ -5284,7 +5981,7 @@ class Handler(BaseHTTPRequestHandler):
                 continue
             last = result
             last_base = base
-            if result[0] == 503 or result[0] >= 500:
+            if self.candidate_is_retryable(result[0], result[2]):
                 continue
             self.send_upstream(
                 result[0],
@@ -5311,6 +6008,123 @@ class Handler(BaseHTTPRequestHandler):
             },
         )
 
+    def forward_candidates_stream(
+        self,
+        bases: list[str],
+        upstream_path: str,
+        *,
+        headers: dict[str, str] | None = None,
+        body: bytes | None = None,
+        method: str | None = None,
+        peer_bases: set[str] | None = None,
+        model_hint: str | None = None,
+    ) -> None:
+        attempted: list[str] = []
+        last: tuple[int, dict[str, str], bytes] | None = None
+        last_base = ""
+        for base in bases:
+            attempted.append(base)
+            try:
+                request_headers = dict(headers or {})
+                is_peer = bool(peer_bases and normalize_base_url(base) in peer_bases)
+                if is_peer:
+                    request_headers = self.peer_forward_headers(request_headers)
+                admission_reservation: ChatAdmissionReservation | None = None
+                if urllib.parse.urlsplit(
+                    upstream_path
+                ).path == "/api/generate" and self.local_generation_request(
+                    base, upstream_path
+                ):
+                    admission_reservation, snapshot = self.app.chat_admission.reserve()
+                    if admission_reservation is None:
+                        last = self.local_capacity_response(
+                            body=body,
+                            snapshot=snapshot,
+                            model_hint=model_hint,
+                        )
+                        last_base = base
+                        continue
+                    if admission_reservation.queued:
+                        self.send_queued_local_generation_stream(
+                            reservation=admission_reservation,
+                            snapshot=snapshot,
+                            base_url=base,
+                            upstream_path=upstream_path,
+                            headers=request_headers or None,
+                            body=body,
+                            method=method,
+                            model_hint=model_hint,
+                            attempts=attempted,
+                        )
+                        return
+                upstream = self.open_upstream_stream(
+                    base,
+                    upstream_path,
+                    headers=request_headers or None,
+                    body=body,
+                    method=method,
+                    model_hint=model_hint,
+                    admission_reservation=admission_reservation,
+                )
+            except Exception as exc:
+                last = (
+                    int(HTTPStatus.BAD_GATEWAY),
+                    {"Content-Type": "application/json; charset=utf-8"},
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "error": "upstream_unavailable",
+                            "detail": str(exc),
+                        }
+                    ).encode("utf-8"),
+                )
+                last_base = base
+                continue
+
+            if 200 <= upstream.status < 300:
+                self.send_upstream_stream(
+                    upstream,
+                    extra_headers={
+                        "X-Norllama-Upstream": base,
+                        "X-Norllama-Attempts": ",".join(attempted),
+                    },
+                )
+                return
+
+            try:
+                response_body = upstream.read()
+            finally:
+                upstream.close()
+            last = (upstream.status, upstream.headers, response_body)
+            last_base = base
+            if self.candidate_is_retryable(upstream.status, response_body):
+                continue
+            self.send_upstream(
+                upstream.status,
+                upstream.headers,
+                response_body,
+                extra_headers={
+                    "X-Norllama-Upstream": base,
+                    "X-Norllama-Attempts": ",".join(attempted),
+                },
+            )
+            return
+
+        if last is None:
+            self.send_json(
+                HTTPStatus.BAD_GATEWAY, {"ok": False, "error": "no_upstream_candidates"}
+            )
+            return
+        self.send_upstream(
+            last[0],
+            last[1],
+            last[2],
+            extra_headers={
+                "X-Norllama-Upstream": last_base,
+                "X-Norllama-Attempts": ",".join(attempted),
+            },
+        )
+
     def request_upstream(
         self,
         base_url: str,
@@ -5320,6 +6134,7 @@ class Handler(BaseHTTPRequestHandler):
         body: bytes | None = None,
         method: str | None = None,
         timeout_s: float | None = None,
+        model_hint: str | None = None,
     ) -> tuple[int, dict[str, str], bytes]:
         outgoing_headers: dict[str, str] = {}
         for key, value in self.headers.items():
@@ -5328,6 +6143,32 @@ class Handler(BaseHTTPRequestHandler):
             outgoing_headers[key] = value
         if headers:
             outgoing_headers.update(headers)
+        if self.local_generation_request(base_url, upstream_path):
+            wait_started_at = time.monotonic()
+            admitted, snapshot = self.app.chat_admission.acquire()
+            admitted_at = time.monotonic()
+            if not admitted:
+                return self.local_capacity_response(
+                    body=body, snapshot=snapshot, model_hint=model_hint
+                )
+            try:
+                status, response_headers, response_body = fetch_url(
+                    base_url.rstrip("/") + upstream_path,
+                    method=method or self.command,
+                    headers=outgoing_headers,
+                    body=body,
+                    timeout_s=self.app.timeout_s if timeout_s is None else timeout_s,
+                )
+                response_headers = dict(response_headers)
+                response_headers.update(
+                    self.local_admission_headers(
+                        snapshot,
+                        queue_wait_s=admitted_at - wait_started_at,
+                    )
+                )
+                return status, response_headers, response_body
+            finally:
+                self.app.chat_admission.release()
         return fetch_url(
             base_url.rstrip("/") + upstream_path,
             method=method or self.command,
@@ -5335,6 +6176,105 @@ class Handler(BaseHTTPRequestHandler):
             body=body,
             timeout_s=self.app.timeout_s if timeout_s is None else timeout_s,
         )
+
+    def open_upstream_stream(
+        self,
+        base_url: str,
+        upstream_path: str,
+        *,
+        headers: dict[str, str] | None = None,
+        body: bytes | None = None,
+        method: str | None = None,
+        model_hint: str | None = None,
+        admission_reservation: ChatAdmissionReservation | None = None,
+    ) -> UpstreamStream:
+        outgoing_headers: dict[str, str] = {}
+        for key, value in self.headers.items():
+            if key.lower() in HOP_HEADERS or key.lower() == "authorization":
+                continue
+            outgoing_headers[key] = value
+        if headers:
+            outgoing_headers.update(headers)
+
+        release: Callable[[], None] | None = None
+        admission_headers: dict[str, str] = {}
+        if self.local_generation_request(base_url, upstream_path):
+            if admission_reservation is not None:
+                if admission_reservation.queued:
+                    raise RuntimeError("queued reservation must be admitted before use")
+                release = admission_reservation.release
+                admission_headers = self.local_admission_headers(
+                    self.app.chat_admission.snapshot(),
+                    queue_wait_s=(
+                        time.monotonic() - admission_reservation.queued_at
+                        if admission_reservation.was_queued
+                        else 0
+                    ),
+                )
+            else:
+                wait_started_at = time.monotonic()
+                admitted, snapshot = self.app.chat_admission.acquire()
+                admitted_at = time.monotonic()
+                if not admitted:
+                    status, response_headers, response_body = (
+                        self.local_capacity_response(
+                            body=body, snapshot=snapshot, model_hint=model_hint
+                        )
+                    )
+
+                    class LocalCapacityBody:
+                        def __init__(self, payload: bytes) -> None:
+                            self.payload = payload
+
+                        def read(self, size: int = -1) -> bytes:
+                            if size is None or size < 0:
+                                result, self.payload = self.payload, b""
+                                return result
+                            result, self.payload = (
+                                self.payload[:size],
+                                self.payload[size:],
+                            )
+                            return result
+
+                        def close(self) -> None:
+                            self.payload = b""
+
+                    return UpstreamStream(
+                        status=status,
+                        headers=response_headers,
+                        response=LocalCapacityBody(response_body),
+                    )
+                release = self.app.chat_admission.release
+                admission_headers = self.local_admission_headers(
+                    snapshot,
+                    queue_wait_s=admitted_at - wait_started_at,
+                )
+
+        request = urllib.request.Request(
+            base_url.rstrip("/") + upstream_path,
+            data=body,
+            method=method or self.command,
+            headers={"User-Agent": USER_AGENT, **outgoing_headers},
+        )
+        try:
+            response = urllib.request.urlopen(request, timeout=self.app.timeout_s)
+            return UpstreamStream(
+                status=int(response.status),
+                headers={**dict(response.headers.items()), **admission_headers},
+                response=response,
+                release=release,
+            )
+        except urllib.error.HTTPError as exc:
+            return UpstreamStream(
+                status=int(exc.code),
+                headers={**dict(exc.headers.items()), **admission_headers},
+                response=exc,
+                release=release,
+            )
+        except Exception:
+            if release is not None:
+                release()
+            raise
 
     def extract_ollama_model(self, body: bytes) -> str | None:
         content_type = (
@@ -6473,7 +7413,7 @@ class Handler(BaseHTTPRequestHandler):
                 continue
             last = (status, response_headers, response_body)
             last_base = base
-            if status == 503 or status >= 500:
+            if self.candidate_is_retryable(status, response_body):
                 continue
             if status < 200 or status >= 300:
                 self.send_upstream(

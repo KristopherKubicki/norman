@@ -3,11 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Mapping
 
 ROUTE_POLICY_SCHEMA = "norman.norllama.route-policy.v1"
-ROUTE_POLICY_VERSION = "2026.08.04.coder-runtime-v1"
-ROUTE_POLICY_COMPILED_AT = "2026-08-04T00:00:00Z"
+ROUTE_POLICY_VERSION = "2026.08.06.explicit-cloud-v1"
+ROUTE_POLICY_COMPILED_AT = "2026-08-06T00:00:00Z"
 ROUTE_POLICY_EXPIRES_AT = "2026-08-11T00:00:00Z"
 ROUTE_POLICY_EXPIRY_WARN_SECONDS = 72 * 60 * 60
 ROUTE_POLICY_EXPIRED_STATE = "expired_blocked"
@@ -79,9 +79,15 @@ ROUTE_POLICY_RESIDENCY = {
     "lab": ["world", "graph", "packet", "forecasting", "gui-grounding"],
 }
 
+CLOUD_FALLBACK_BEDROCK_MODEL = "qwen.qwen3-coder-480b-a35b-v1:0"
+
 ROUTE_POLICY_FALLBACKS = {
     "worker_mismatch_requires_receipt_fallback": True,
-    "allow_cloud_fallback": False,
+    "allow_cloud_fallback": True,
+    "cloud_fallback_aliases": ["norman-code", "norman-code-governed"],
+    "cloud_fallback_provider": "aws-bedrock",
+    "cloud_fallback_model": CLOUD_FALLBACK_BEDROCK_MODEL,
+    "cloud_fallback_lane": "coder",
     "allow_local_degraded_fallback": True,
     "fallback_reason_required": True,
 }
@@ -91,6 +97,58 @@ ROUTE_POLICY_CLOUD_POLICY = {
     "cloud_escalation": "explicit_policy_or_user_authorized_only",
     "cloud_proxy_counts_as_cloud": True,
     "perplexity_web_is_search_not_cloud_llm": True,
+    "explicit_cloud_models": {
+        "gpt-5.4": {
+            "provider": "aws-bedrock",
+            "model": "openai.gpt-5.4",
+            "lane": "coder",
+        },
+        "openai.gpt-5.4": {
+            "provider": "aws-bedrock",
+            "model": "openai.gpt-5.4",
+            "lane": "coder",
+        },
+        "gpt-5.5": {
+            "provider": "aws-bedrock",
+            "model": "openai.gpt-5.5",
+            "lane": "coder",
+        },
+        "openai.gpt-5.5": {
+            "provider": "aws-bedrock",
+            "model": "openai.gpt-5.5",
+            "lane": "coder",
+        },
+        "gpt-5.6-luna": {
+            "provider": "aws-bedrock",
+            "model": "openai.gpt-5.6-luna",
+            "lane": "coder",
+        },
+        "openai.gpt-5.6-luna": {
+            "provider": "aws-bedrock",
+            "model": "openai.gpt-5.6-luna",
+            "lane": "coder",
+        },
+        "gpt-5.6-terra": {
+            "provider": "aws-bedrock",
+            "model": "openai.gpt-5.6-terra",
+            "lane": "coder",
+        },
+        "openai.gpt-5.6-terra": {
+            "provider": "aws-bedrock",
+            "model": "openai.gpt-5.6-terra",
+            "lane": "coder",
+        },
+        "gpt-5.6-sol": {
+            "provider": "aws-bedrock",
+            "model": "openai.gpt-5.6-sol",
+            "lane": "coder",
+        },
+        "openai.gpt-5.6-sol": {
+            "provider": "aws-bedrock",
+            "model": "openai.gpt-5.6-sol",
+            "lane": "coder",
+        },
+    },
 }
 
 ROUTE_POLICY_LIFECYCLE_POLICY = {
@@ -106,6 +164,52 @@ ROUTE_POLICY_LIFECYCLE_POLICY = {
 
 def _clean(value: Any) -> str:
     return str(value or "").strip()
+
+
+def cloud_fallback_allowed_for_alias(
+    requested_model: Any,
+    *,
+    fallback_policy: Mapping[str, Any] | None = None,
+) -> bool:
+    """Return whether the signed fallback policy covers this public alias."""
+
+    policy = dict(fallback_policy or ROUTE_POLICY_FALLBACKS)
+    aliases = policy.get("cloud_fallback_aliases")
+    if not isinstance(aliases, list):
+        return False
+    requested = _clean(requested_model).lower()
+    return bool(policy.get("allow_cloud_fallback")) and requested in {
+        _clean(alias).lower() for alias in aliases if _clean(alias)
+    }
+
+
+def explicit_cloud_selection_for_model(
+    requested_model: Any,
+    *,
+    cloud_policy: Mapping[str, Any] | None = None,
+) -> dict[str, str] | None:
+    """Resolve an exact, policy-approved public cloud model alias."""
+
+    requested = _clean(requested_model).lower()
+    policy = (
+        dict(ROUTE_POLICY_CLOUD_POLICY) if cloud_policy is None else dict(cloud_policy)
+    )
+    selections = policy.get("explicit_cloud_models")
+    if not requested or not isinstance(selections, Mapping):
+        return None
+    selected = selections.get(requested)
+    if not isinstance(selected, Mapping):
+        return None
+    provider = _clean(selected.get("provider")).lower().replace("_", "-")
+    model = _clean(selected.get("model"))
+    lane = _clean(selected.get("lane")).lower()
+    if provider != "aws-bedrock" or not model or not lane:
+        return None
+    return {
+        "provider": provider,
+        "model": model,
+        "lane": lane,
+    }
 
 
 def _int(value: Any) -> int:

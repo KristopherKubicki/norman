@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import time
@@ -192,6 +193,29 @@ def _verification_signal(text: Any) -> str:
     ):
         return "complete"
     return ""
+
+
+def _durable_verification_signal(text: Any) -> str:
+    """Parse the explicit status contract required to close durable work."""
+
+    match = re.search(
+        r"(?im)^\s*STATUS\s*:\s*(COMPLETE|NEEDS_MORE_WORK)\s*$",
+        _clean(text),
+    )
+    if not match:
+        return ""
+    return "complete" if match.group(1).upper() == "COMPLETE" else "needs_more_work"
+
+
+def _progress_fingerprint(text: Any, phase: Any) -> str:
+    """Return a stable, phase-aware fingerprint for model progress detection."""
+
+    normalized_text = " ".join(_clean(text).lower().split())
+    normalized_phase = _clean(phase).lower()
+    if not normalized_text:
+        return ""
+    value = f"{normalized_phase}\n{normalized_text}".encode("utf-8")
+    return hashlib.sha256(value).hexdigest()
 
 
 def _literal_response_expected(objective: Any) -> str:
@@ -811,6 +835,7 @@ class ConsoleRuntimeRunOptions:
     dry_run: bool = True
     complete: bool = True
     continuous: bool = False
+    durable_workstream: bool = False
     max_steps: int = 1
     max_runtime_seconds: int = 0
     local_token_budget: int = 0
@@ -829,6 +854,7 @@ class ConsoleRuntimeRunOptions:
         self.execution_mode = _clean(self.execution_mode).lower() or "standard"
         if self.execution_mode not in {"standard", ADVISORY_EXECUTION_MODE}:
             raise ValueError("execution_mode must be standard or advisory")
+        self.durable_workstream = bool(self.durable_workstream)
         self.planner_kind = _clean(self.planner_kind) or "plan"
         self.model = _clean(self.model)
         self.max_steps = max(1, min(int(self.max_steps or 1), 50))
@@ -850,6 +876,8 @@ class ConsoleRuntimeRunOptions:
                 )
             if self.continuous:
                 raise ValueError("advisory execution cannot be continuous")
+            if self.durable_workstream:
+                raise ValueError("advisory execution cannot be a durable workstream")
             if self.max_steps != 1:
                 raise ValueError("advisory execution requires max_steps=1")
             if self.include_capabilities:
@@ -867,6 +895,7 @@ class ConsoleRuntimeRunOptions:
             self.dry_run = False
             self.complete = True
             self.continuous = False
+            self.durable_workstream = False
             self.max_steps = 1
             self.cloud_token_budget = 0
             self.planner_kind = "chat"
@@ -898,6 +927,7 @@ class DbConsoleRuntimeWorker:
         values = (
             getattr(contract, "route_policy", {}),
             getattr(contract, "metadata", {}),
+            getattr(contract, "authority_flags", {}),
             getattr(job, "metadata", {}),
         )
         return any(
@@ -912,6 +942,66 @@ class DbConsoleRuntimeWorker:
         )
 
     @staticmethod
+    def _is_durable_workstream(
+        job: Any, options: ConsoleRuntimeRunOptions | None = None
+    ) -> bool:
+        """Return whether this run must finish through an explicit verifier."""
+
+        if options is not None and options.durable_workstream:
+            return True
+        contract = getattr(job, "contract", None)
+        if bool(getattr(contract, "durable_workstream", False)):
+            return True
+        values = (
+            getattr(contract, "route_policy", {}),
+            getattr(contract, "metadata", {}),
+            getattr(contract, "authority_flags", {}),
+            getattr(job, "metadata", {}),
+        )
+        return any(
+            _flag(value.get("durable_workstream"))
+            for value in values
+            if isinstance(value, dict)
+        )
+
+    @staticmethod
+    def _checkpoint_facts(
+        job: Any,
+        *,
+        phase: str,
+        durable_workstream: bool,
+        verification_signal: str,
+    ) -> list[str]:
+        """Build durable checkpoint facts from the active work state."""
+
+        facts = [
+            "A bounded runtime attempt completed.",
+            f"Worker: {_clean(getattr(getattr(job, 'lease', None), 'worker_id', ''))}",
+        ]
+        if phase:
+            facts.append(f"Phase: {phase}")
+        if durable_workstream:
+            verifier_state = verification_signal or "pending"
+            facts.append(f"Verifier state: {verifier_state}")
+        return facts
+
+    @staticmethod
+    def _checkpoint_next_safe_action(*, phase: str, durable_workstream: bool) -> str:
+        """Describe the safe next action for a checkpointed work item."""
+
+        if not durable_workstream:
+            return "Resume from this checkpoint with the active route policy."
+        if phase == "verify":
+            return (
+                "Resolve remaining verification criteria, then emit "
+                "STATUS: COMPLETE from the verifier."
+            )
+        return (
+            "Continue the durable workstream from the recorded phase; do not "
+            "mark it done before verifier completion."
+        )
+
+    @staticmethod
     def _checkpoint_capsule(
         job: Any,
         *,
@@ -920,6 +1010,10 @@ class DbConsoleRuntimeWorker:
         lease_epoch: int | None,
         route_receipt: dict[str, Any] | None = None,
         completed_clauses: list[str] | None = None,
+        goal_phase: str = "",
+        verification_signal: str = "",
+        progress_fingerprint: str = "",
+        durable_workstream: bool | None = None,
     ) -> ConsoleCheckpointCapsule:
         receipt = dict(route_receipt or {})
         receipt_ref = _clean(
@@ -927,22 +1021,36 @@ class DbConsoleRuntimeWorker:
             or receipt.get("client_request_id")
             or receipt.get("invocation_id")
         )
+        durable_workstream = (
+            DbConsoleRuntimeWorker._is_durable_workstream(job)
+            if durable_workstream is None
+            else durable_workstream
+        )
+        phase = _clean(goal_phase)
+        verifier_state = _clean(verification_signal) or "pending"
+        remaining_clauses = list(getattr(job.contract, "done_when", []) or [])
         return ConsoleCheckpointCapsule(
             summary=summary,
-            facts=[
-                "A bounded runtime attempt completed.",
-                f"Worker: {_clean(getattr(getattr(job, 'lease', None), 'worker_id', ''))}",
-            ],
+            facts=DbConsoleRuntimeWorker._checkpoint_facts(
+                job,
+                phase=phase,
+                durable_workstream=durable_workstream,
+                verification_signal=verifier_state,
+            ),
             evidence_refs=[receipt_ref] if receipt_ref else [],
             completed_clauses=list(completed_clauses or []),
-            remaining_clauses=list(getattr(job.contract, "done_when", []) or []),
-            next_safe_action="Resume from this checkpoint with the active route policy.",
+            remaining_clauses=remaining_clauses,
+            next_safe_action=DbConsoleRuntimeWorker._checkpoint_next_safe_action(
+                phase=phase,
+                durable_workstream=durable_workstream,
+            ),
             route_receipt_ref=receipt_ref,
             approval_state=getattr(getattr(job, "status", None), "value", "")
             or _clean(getattr(job, "status", "")),
             attempt_id=attempt_id,
             lease_epoch=lease_epoch or 0,
             trace_id=_clean(getattr(job, "metadata", {}).get("trace_id")),
+            progress_fingerprint=progress_fingerprint,
         )
 
     def _finalize_cancellation_if_requested(
@@ -1321,6 +1429,7 @@ class DbConsoleRuntimeWorker:
             or job.contract.authority_flags.get("session_name")
         )
         completion_requested = _completion_requested_for_step(opts)
+        durable_workstream = self._is_durable_workstream(job, opts)
         verifier_required = bool(
             completion_requested
             and _verifier_required_for_completion(route_policy, opts)
@@ -1341,6 +1450,7 @@ class DbConsoleRuntimeWorker:
                     user_id=user_id,
                     job=job,
                     phase=goal_phase,
+                    durable_workstream=durable_workstream,
                 ),
             },
         ]
@@ -1502,6 +1612,7 @@ class DbConsoleRuntimeWorker:
                     attempt_id=attempt_id,
                     lease_epoch=lease_epoch,
                     route_receipt={"invocation_id": invocation_id},
+                    durable_workstream=self._is_durable_workstream(job, opts),
                 ),
                 attempt_id=attempt_id,
                 lease_epoch=lease_epoch,
@@ -1664,31 +1775,36 @@ class DbConsoleRuntimeWorker:
             _clean(opts.metadata.get("goal_phase")) or opts.planner_kind
         ).lower()
         verification_signal = ""
-        if goal_phase == "literal_response":
+        if goal_phase == "literal_response" and not durable_workstream:
             verification_signal = _literal_response_signal(
                 job.contract.objective,
                 result.text,
             )
-        elif self._verifier_can_stop(route_policy, opts) and goal_phase == "verify":
-            verification_signal = _verification_signal(result.text)
-            structured_signal = _structured_response_signal(
-                job.contract.objective,
-                result.text,
-            )
-            if structured_signal == "needs_more_work":
-                structured_candidate = self._structured_candidate_from_history(
-                    db,
-                    user_id=user_id,
-                    job_id=job_id,
-                    objective=job.contract.objective,
+        elif (
+            self._verifier_can_stop(job, route_policy, opts) and goal_phase == "verify"
+        ):
+            if durable_workstream:
+                verification_signal = _durable_verification_signal(result.text)
+            else:
+                verification_signal = _verification_signal(result.text)
+                structured_signal = _structured_response_signal(
+                    job.contract.objective,
+                    result.text,
                 )
-                if structured_candidate:
-                    result.text = structured_candidate
-                    verification_signal = "complete"
-                else:
-                    verification_signal = "needs_more_work"
-            elif not verification_signal:
-                verification_signal = structured_signal
+                if structured_signal == "needs_more_work":
+                    structured_candidate = self._structured_candidate_from_history(
+                        db,
+                        user_id=user_id,
+                        job_id=job_id,
+                        objective=job.contract.objective,
+                    )
+                    if structured_candidate:
+                        result.text = structured_candidate
+                        verification_signal = "complete"
+                    else:
+                        verification_signal = "needs_more_work"
+                elif not verification_signal:
+                    verification_signal = structured_signal
         result_route_receipt = _route_receipt_from_result(result)
         self.store.complete_effect(
             db,
@@ -1728,7 +1844,7 @@ class DbConsoleRuntimeWorker:
                 "output_tokens": result.usage.output_tokens,
                 "total_tokens": result.usage.total_tokens,
             }
-        require_proof = _route_proof_required(route_policy, opts)
+        require_proof = durable_workstream or _route_proof_required(route_policy, opts)
         require_verifier = verifier_required
 
         if verification_signal:
@@ -1904,13 +2020,14 @@ class DbConsoleRuntimeWorker:
         )
         should_complete_from_step = (
             opts.complete
+            and not durable_workstream
             and not missing
             and verification_signal != "needs_more_work"
             and completion_gate["gate_passed"]
             and reasoning_tool_gate["completion_allowed"]
             and verification_receipt_ready
         )
-        if self._requires_verification_receipt(job) and (
+        if (self._requires_verification_receipt(job) or durable_workstream) and (
             should_complete_from_verifier or should_complete_from_step
         ):
             evidence_refs = [invocation_id]
@@ -1961,7 +2078,12 @@ class DbConsoleRuntimeWorker:
                 lease_epoch=lease_epoch,
             )
         else:
-            if not reasoning_tool_gate["completion_allowed"]:
+            if durable_workstream:
+                checkpoint_reason = (
+                    "Durable workstream checkpointed pending explicit verifier "
+                    "completion."
+                )
+            elif not reasoning_tool_gate["completion_allowed"]:
                 checkpoint_reason = (
                     "Runtime worker checkpointed after reasoning tool gate."
                 )
@@ -1989,6 +2111,10 @@ class DbConsoleRuntimeWorker:
                         if verification_signal == "complete"
                         else []
                     ),
+                    goal_phase=goal_phase,
+                    verification_signal=verification_signal,
+                    progress_fingerprint=_progress_fingerprint(result.text, goal_phase),
+                    durable_workstream=durable_workstream,
                 ),
                 attempt_id=attempt_id,
                 lease_epoch=lease_epoch,
@@ -2001,6 +2127,8 @@ class DbConsoleRuntimeWorker:
             "snapshot": snapshot,
             "dry_run": opts.dry_run,
             "worker_id": opts.worker_id,
+            "durable_workstream": durable_workstream,
+            "verification_signal": verification_signal,
             "route_proof": completion_gate,
             "reasoning_orchestration": reasoning_plan,
             "reasoning_receipt": reasoning_receipt,
@@ -2021,6 +2149,7 @@ class DbConsoleRuntimeWorker:
             raise ValueError("advisory execution cannot run continuously")
         opts = replace(opts, continuous=True)
         job = self.store.get_job(db, user_id=user_id, job_id=job_id)
+        durable_workstream = self._is_durable_workstream(job, opts)
         max_runtime_seconds = (
             opts.max_runtime_seconds or job.contract.max_runtime_seconds
         )
@@ -2046,6 +2175,7 @@ class DbConsoleRuntimeWorker:
                 "local_token_budget": opts.local_token_budget,
                 "cloud_token_budget": opts.cloud_token_budget,
                 "goal_phase_sequence": list(opts.goal_phase_sequence),
+                "durable_workstream": durable_workstream,
                 "local_first": True,
             },
             summary="Goal loop started",
@@ -2053,6 +2183,8 @@ class DbConsoleRuntimeWorker:
         )
 
         last_result: dict[str, Any] | None = None
+        previous_progress_fingerprint = ""
+        previous_verification_signal = ""
         for step_index in range(1, opts.max_steps + 1):
             canceled = self._finalize_cancellation_if_requested(
                 db,
@@ -2090,7 +2222,11 @@ class DbConsoleRuntimeWorker:
             )
             step_options = replace(
                 opts,
-                complete=bool(opts.complete and step_index >= opts.max_steps),
+                complete=bool(
+                    opts.complete
+                    and not durable_workstream
+                    and step_index >= opts.max_steps
+                ),
                 continuous=False,
                 planner_kind=goal_task_kind,
                 cloud_token_budget=remaining_cloud_budget,
@@ -2122,15 +2258,32 @@ class DbConsoleRuntimeWorker:
                 local_tokens += usage
 
             status = str((result.get("job") or {}).get("status", ""))
+            result_text = str((result.get("model_result") or {}).get("text") or "")
+            progress_fingerprint = _progress_fingerprint(result_text, goal_phase)
+            verification_signal = _clean(result.get("verification_signal"))
+            repeated_output = bool(
+                progress_fingerprint
+                and progress_fingerprint == previous_progress_fingerprint
+            )
+            repeated_needs_more_work = (
+                verification_signal == "needs_more_work"
+                and previous_verification_signal == "needs_more_work"
+            )
+            no_progress = durable_workstream and (
+                repeated_output or repeated_needs_more_work
+            )
             step_summary = {
                 "step": step_index,
                 "phase": goal_phase,
                 "task_kind": goal_task_kind,
                 "status": status,
+                "progress_fingerprint": progress_fingerprint,
+                "verification_signal": verification_signal,
                 "stop_flags": {
                     "approval_required": bool(result.get("approval_required")),
                     "route_blocked": bool(result.get("route_blocked")),
                     "cloud_evidence": step_cloud,
+                    "no_progress": no_progress,
                 },
                 "usage": {
                     "step_tokens": usage,
@@ -2153,6 +2306,30 @@ class DbConsoleRuntimeWorker:
                 lease_epoch=step_lease_epoch,
             )
 
+            if no_progress:
+                self.store.append_event(
+                    db,
+                    user_id=user_id,
+                    job_id=job_id,
+                    event_type="goal.no_progress",
+                    payload={
+                        "step": step_index,
+                        "phase": goal_phase,
+                        "progress_fingerprint": progress_fingerprint,
+                        "verification_signal": verification_signal,
+                        "reason": (
+                            "repeated_needs_more_work"
+                            if repeated_needs_more_work
+                            else "repeated_model_output"
+                        ),
+                    },
+                    summary="Durable workstream paused after no progress.",
+                    detail="Resume with a different safe action or updated evidence.",
+                    attempt_id=step_attempt_id,
+                    lease_epoch=step_lease_epoch,
+                )
+                stop_reason = "no_progress"
+                break
             if result.get("approval_required"):
                 stop_reason = "approval_required"
                 break
@@ -2171,6 +2348,9 @@ class DbConsoleRuntimeWorker:
             if opts.local_token_budget and local_tokens >= opts.local_token_budget:
                 stop_reason = "local_budget"
                 break
+            previous_progress_fingerprint = progress_fingerprint
+            if verification_signal:
+                previous_verification_signal = verification_signal
 
         if not stop_reason:
             stop_reason = "max_steps"
@@ -2191,6 +2371,7 @@ class DbConsoleRuntimeWorker:
                 "elapsed_ms": elapsed_ms,
                 "job_status": final_job.status.value,
                 "goal_phase_sequence": list(opts.goal_phase_sequence),
+                "durable_workstream": durable_workstream,
                 "usage": {
                     "local_tokens": local_tokens,
                     "cloud_tokens": cloud_tokens,
@@ -2210,6 +2391,7 @@ class DbConsoleRuntimeWorker:
             "dry_run": opts.dry_run,
             "worker_id": opts.worker_id,
             "continuous": True,
+            "durable_workstream": durable_workstream,
             "steps": steps,
             "steps_completed": len(steps),
             "stop_reason": stop_reason,
@@ -3021,10 +3203,13 @@ class DbConsoleRuntimeWorker:
             isinstance(receipt, dict) and receipt.get("status") == "pass"
             for receipt in finalized.verification_receipts
         )
-        completion_blocked_by_verification = (
-            options.complete
-            and self._requires_verification_receipt(finalized)
-            and not has_verification_receipt
+        durable_workstream = self._is_durable_workstream(finalized, options)
+        completion_blocked_by_verification = options.complete and (
+            durable_workstream
+            or (
+                self._requires_verification_receipt(finalized)
+                and not has_verification_receipt
+            )
         )
         if options.complete and not completion_blocked_by_verification:
             final_job = self.store.complete_job(
@@ -3037,7 +3222,11 @@ class DbConsoleRuntimeWorker:
             )
         else:
             checkpoint_summary = (
-                "Runtime worker checkpointed shell step pending verification receipt."
+                "Durable workstream checkpointed shell step pending explicit "
+                "verifier completion."
+                if durable_workstream
+                else "Runtime worker checkpointed shell step pending verification "
+                "receipt."
                 if completion_blocked_by_verification
                 else "Runtime worker checkpointed after shell step."
             )
@@ -3060,6 +3249,7 @@ class DbConsoleRuntimeWorker:
                         if not completion_blocked_by_verification
                         else []
                     ),
+                    durable_workstream=durable_workstream,
                 ),
                 attempt_id=attempt_id,
                 lease_epoch=lease_epoch,
@@ -3073,6 +3263,7 @@ class DbConsoleRuntimeWorker:
             "snapshot": snapshot,
             "dry_run": options.dry_run,
             "worker_id": options.worker_id,
+            "durable_workstream": durable_workstream,
         }
 
     def _is_delegated_read_only_subtask(
@@ -3150,9 +3341,12 @@ class DbConsoleRuntimeWorker:
         )
 
     def _verifier_can_stop(
-        self, route_policy: dict[str, Any], options: ConsoleRuntimeRunOptions
+        self,
+        job: Any,
+        route_policy: dict[str, Any],
+        options: ConsoleRuntimeRunOptions,
     ) -> bool:
-        return (
+        return self._is_durable_workstream(job, options) or (
             _flag(route_policy.get("verifier_can_stop"))
             or _flag(route_policy.get("kernel_verifier_can_stop"))
             or _flag(options.metadata.get("verifier_can_stop"))
@@ -3317,6 +3511,7 @@ class DbConsoleRuntimeWorker:
         user_id: int,
         job,
         phase: str,
+        durable_workstream: bool = False,
     ) -> str:
         contract = job.contract
         clean_phase = _clean(phase).lower()
@@ -3343,11 +3538,29 @@ class DbConsoleRuntimeWorker:
                 user_id=user_id,
                 job_id=job.job_id,
             )
-            if prior_output:
-                json_only = "json" in contract.objective.lower() and (
-                    "return" in contract.objective.lower()
-                    or "reply" in contract.objective.lower()
+            json_only = "json" in contract.objective.lower() and (
+                "return" in contract.objective.lower()
+                or "reply" in contract.objective.lower()
+            )
+            if durable_workstream:
+                completion_instruction = (
+                    "This is a durable workstream. Make an explicit verifier "
+                    "decision. If the candidate output satisfies the operator "
+                    "objective and done-when criteria for this JSON-only task, "
+                    "begin with a standalone line `STATUS: COMPLETE`, then "
+                    "return the final JSON document. Do not return bare JSON. "
+                    "If not, begin with a standalone line "
+                    "`STATUS: NEEDS_MORE_WORK` and name the missing evidence."
+                    if json_only
+                    else "This is a durable workstream. Make an explicit verifier "
+                    "decision. If a candidate output satisfies the operator "
+                    "objective and done-when criteria, begin with a standalone "
+                    "line `STATUS: COMPLETE` and include the final answer with "
+                    "every required field and literal value. If not, begin with "
+                    "a standalone line `STATUS: NEEDS_MORE_WORK` and name the "
+                    "missing evidence."
                 )
+            else:
                 completion_instruction = (
                     "If a candidate output satisfies the operator objective and "
                     "done-when criteria for a JSON-only task, return only the "
@@ -3361,11 +3574,14 @@ class DbConsoleRuntimeWorker:
                     "If not, begin with STATUS: NEEDS_MORE_WORK and name the "
                     "missing evidence."
                 )
+            if prior_output:
                 parts.append(
                     "Prior local candidate outputs to verify:\n\n"
                     f"{prior_output}\n\n"
                     f"{completion_instruction}"
                 )
+            elif durable_workstream:
+                parts.append(completion_instruction)
         return "\n\n".join(parts)
 
     def _default_adapter(

@@ -18,7 +18,6 @@ from typing import Any
 
 DEFAULT_SECRET = "norman/prompt-proxy-token"
 DEFAULT_TIMEOUT_SECONDS = 5.0
-DEFAULT_CRED_BIN = Path.home() / ".local" / "bin" / "cred"
 DEFAULT_BROKER_COMMAND = (
     Path(__file__).resolve().with_name("norman_codex_gateway_broker.sh")
 )
@@ -68,14 +67,6 @@ def _secret_command(secret_name: str) -> list[str]:
     if "{name}" in configured:
         return [part.replace("{name}", secret_name) for part in command]
     return [*command, "get", secret_name]
-
-
-def _encrypted_cred_command(secret_name: str) -> list[str]:
-    configured = _first_env("NORMAN_CRED_BIN")
-    candidate = Path(configured).expanduser() if configured else DEFAULT_CRED_BIN
-    if not candidate.is_file() or not os.access(candidate, os.X_OK):
-        return []
-    return [str(candidate), "get", secret_name]
 
 
 def _installed_broker_command(secret_name: str) -> list[str]:
@@ -154,19 +145,22 @@ def resolve_token(secret_name: str) -> tuple[str, list[str]]:
             if token:
                 return token, errors
 
-    command = _secret_command(secret_name)
-    command_label = "Norman secret broker command"
-    if not command:
-        command = _installed_broker_command(secret_name)
-        command_label = "installed Norman Codex gateway broker"
-    if not command:
-        command = _encrypted_cred_command(secret_name)
-        command_label = "encrypted cred vault"
-    if command:
+    configured_command = _secret_command(secret_name)
+    if configured_command:
         try:
-            token = _resolve_from_command(command)
+            token = _resolve_from_command(configured_command)
         except (OSError, subprocess.SubprocessError, TimeoutError, ValueError):
-            errors.append(f"{command_label} lookup failed")
+            errors.append("Norman secret broker command lookup failed")
+        else:
+            if token:
+                return token, errors
+
+    installed_command = _installed_broker_command(secret_name)
+    if installed_command and installed_command != configured_command:
+        try:
+            token = _resolve_from_command(installed_command)
+        except (OSError, subprocess.SubprocessError, TimeoutError, ValueError):
+            errors.append("installed Norman Codex gateway broker lookup failed")
         else:
             if token:
                 return token, errors

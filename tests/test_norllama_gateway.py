@@ -24,6 +24,23 @@ class EmptyResponse(FakeResponse):
         super().__init__({}, status_code=status_code)
 
 
+class StreamingResponse(FakeResponse):
+    def __init__(self, lines, *, status_code=200, headers=None):
+        super().__init__({}, status_code=status_code, headers=headers)
+        self._lines = list(lines)
+        self.closed = False
+
+    def iter_lines(self, decode_unicode=False):
+        for line in self._lines:
+            if decode_unicode or not isinstance(line, str):
+                yield line
+            else:
+                yield line.encode("utf-8")
+
+    def close(self):
+        self.closed = True
+
+
 def test_tls_verification_stays_on_for_public_https():
     assert gateway._verify_tls_for_url("https://api.openai.com/v1/models") is True
     assert gateway._verify_tls_for_url("http://192.168.2.150:18151/v1/overview") is True
@@ -247,6 +264,67 @@ def test_prefetch_model_posts_to_frontdoor(monkeypatch):
     assert calls[0][2]["model"] == "gemma4:26b-a4b-it-q4_K_M"
     assert calls[0][3] == 4
     assert calls[0][4] is False
+
+
+def test_invoke_text_chat_stream_preserves_fragments_and_closes(monkeypatch):
+    calls = []
+    response = StreamingResponse(
+        [
+            '{"model":"qwen3-coder:30b","response":"hello "}',
+            '{"model":"qwen3-coder:30b","response":"world\\n"}',
+            (
+                '{"model":"qwen3-coder:30b","done":true,'
+                '"prompt_eval_count":4,"eval_count":2}'
+            ),
+        ],
+        headers={"X-Norllama-Admission": "queued"},
+    )
+
+    def fake_post(url, headers, json, timeout, verify, stream):
+        calls.append(
+            {
+                "url": url,
+                "headers": headers,
+                "json": json,
+                "timeout": timeout,
+                "verify": verify,
+                "stream": stream,
+            }
+        )
+        return response
+
+    monkeypatch.setattr(gateway.requests, "post", fake_post)
+
+    stream = gateway.invoke_text_chat_stream(
+        messages=[{"role": "user", "content": "Say hello"}],
+        model="qwen3-coder:30b",
+        base_url="https://llm.home.arpa/v1",
+        max_tokens=20,
+        api_key="token",
+        correlation_headers={"X-Request-Id": "stream-test"},
+    )
+
+    assert list(stream.iter_text()) == ["hello ", "world\n"]
+    assert calls[0]["url"] == "https://llm.home.arpa/api/generate"
+    assert calls[0]["json"]["stream"] is True
+    assert calls[0]["headers"]["X-Request-Id"] == "stream-test"
+    assert calls[0]["stream"] is True
+    assert stream.result("hello world\n") == {
+        "model": "qwen3-coder:30b",
+        "choices": [{"message": {"content": "hello world\n"}}],
+        "usage": {"prompt_tokens": 4, "completion_tokens": 2},
+        "headers": {"x-norllama-admission": "queued"},
+        "raw": {
+            "model": "qwen3-coder:30b",
+            "done": True,
+            "prompt_eval_count": 4,
+            "eval_count": 2,
+        },
+    }
+
+    stream.close()
+
+    assert response.closed is True
 
 
 def test_prefetch_model_includes_target_worker_hints(monkeypatch):
@@ -576,6 +654,32 @@ def test_invoke_text_chat_preserves_gateway_failure_payload(monkeypatch):
     }
 
 
+def test_invoke_text_chat_retains_only_safe_retry_after_header(monkeypatch):
+    def fake_post(url, headers, json, timeout, verify):
+        return FakeResponse(
+            {"error": "capacity exhausted"},
+            status_code=429,
+            headers={
+                "Retry-After": "9",
+                "Set-Cookie": "upstream-session=secret",
+                "X-Norllama-Worker": "spark-150",
+            },
+        )
+
+    monkeypatch.setattr(gateway.requests, "post", fake_post)
+
+    with pytest.raises(gateway.NorllamaGatewayError) as error:
+        gateway.invoke_text_chat(
+            messages=[{"role": "user", "content": "hi"}],
+            model="qwen3-coder:30b-a3b-q4_K_M",
+            base_url="https://llm.home.arpa/v1",
+            max_tokens=32,
+        )
+
+    assert error.value.status_code == 429
+    assert error.value.headers == {"Retry-After": "9"}
+
+
 def test_normalize_capabilities_payload_accepts_ollama_tags():
     payload = gateway.normalize_capabilities_payload(
         {
@@ -610,6 +714,81 @@ def test_fetch_capabilities_accepts_openai_model_list():
         "qwen3.5:27b-q4_K_M",
     ]
     assert payload["supports"]["streaming"] is True
+
+
+def test_probe_mesh_worker_advertises_authoritative_local_api_tags_models(monkeypatch):
+    model = "qwen3-coder:30b-a3b-q4_K_M"
+    monkeypatch.setattr(
+        gateway,
+        "fetch_overview",
+        lambda **_kwargs: {"status": "ok"},
+    )
+    monkeypatch.setattr(
+        gateway,
+        "fetch_capabilities",
+        lambda **_kwargs: {"models": [], "supports": {}},
+    )
+
+    def fake_get(url, headers, timeout, verify):
+        if url.endswith("/api/tags"):
+            return FakeResponse({"models": [{"model": model}]})
+        if url.endswith("/api/ps"):
+            return FakeResponse({"models": []})
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(gateway.requests, "get", fake_get)
+
+    worker = gateway.probe_mesh_worker(
+        {
+            "id": "spark-150",
+            "role": "production",
+            "base_url": "http://192.168.2.150:18151",
+        },
+        timeout_seconds=1,
+    )
+
+    assert worker["reachable"] is True
+    assert worker["models"] == [model]
+    assert worker["model_inventory_source"] == "api/tags"
+
+
+def test_probe_mesh_worker_rejects_peer_discovered_models_when_api_tags_is_empty(
+    monkeypatch,
+):
+    model = "qwen3-coder:30b-a3b-q4_K_M"
+    monkeypatch.setattr(
+        gateway,
+        "fetch_overview",
+        lambda **_kwargs: {"status": "ok", "models": [model]},
+    )
+    monkeypatch.setattr(
+        gateway,
+        "fetch_capabilities",
+        # This mirrors a peer-discovered /v1/models response.
+        lambda **_kwargs: {"models": [model], "supports": {}},
+    )
+
+    def fake_get(url, headers, timeout, verify):
+        if url.endswith("/api/tags"):
+            return FakeResponse({"models": []})
+        if url.endswith("/api/ps"):
+            return FakeResponse({"models": []})
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr(gateway.requests, "get", fake_get)
+
+    worker = gateway.probe_mesh_worker(
+        {
+            "id": "spark-151",
+            "role": "production",
+            "base_url": "http://192.168.2.151:18151",
+        },
+        timeout_seconds=1,
+    )
+
+    assert worker["reachable"] is True
+    assert worker["models"] == []
+    assert worker["model_inventory_source"] == "api/tags"
 
 
 def test_build_mesh_overview_reports_degraded_worker_roster(monkeypatch):

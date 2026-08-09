@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import time
 import warnings
-from typing import Any
+from typing import Any, Iterator, Mapping
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import requests
@@ -15,9 +16,19 @@ from app.core.config import settings
 class NorllamaGatewayError(RuntimeError):
     """A non-success response returned by the Norllama gateway."""
 
-    def __init__(self, status_code: int, payload: dict[str, Any] | None = None):
+    def __init__(
+        self,
+        status_code: int,
+        payload: dict[str, Any] | None = None,
+        headers: Mapping[str, Any] | None = None,
+    ):
         self.status_code = int(status_code)
         self.payload = dict(payload or {})
+        self.headers = {
+            "Retry-After": _clean(value)
+            for key, value in dict(headers or {}).items()
+            if _clean(key).lower() == "retry-after" and _clean(value)
+        }
         error = _clean(self.payload.get("error"))
         message = f"Norllama gateway returned HTTP {self.status_code}"
         if error:
@@ -39,7 +50,8 @@ def messages_to_prompt(messages: list[dict[str, Any]]) -> str:
     parts: list[str] = []
     for message in messages:
         role = _clean(message.get("role")) or "user"
-        content = _clean(message.get("content"))
+        raw_content = message.get("content")
+        content = raw_content if isinstance(raw_content, str) else _clean(raw_content)
         if content:
             parts.append(f"{role.upper()}:\n{content}")
     return "\n\n".join(parts)
@@ -138,6 +150,10 @@ def _api_ps_url(base_url: str) -> str:
     return _frontdoor_url(base_url, "api/ps")
 
 
+def _api_tags_url(base_url: str) -> str:
+    return _frontdoor_url(base_url, "api/tags")
+
+
 def _prefetch_url(base_url: str) -> str:
     return _frontdoor_url(base_url, "v1/prefetch")
 
@@ -229,6 +245,31 @@ def _requests_post(
         )
 
 
+def _requests_post_stream(
+    url: str, *, headers: dict[str, str], json: dict[str, Any], timeout: float
+):
+    verify = _verify_tls_for_url(url)
+    if verify:
+        return requests.post(
+            url,
+            headers=headers,
+            json=json,
+            timeout=timeout,
+            verify=True,
+            stream=True,
+        )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", InsecureRequestWarning)
+        return requests.post(
+            url,
+            headers=headers,
+            json=json,
+            timeout=timeout,
+            verify=False,
+            stream=True,
+        )
+
+
 def _requests_post_bytes(
     url: str, *, headers: dict[str, str], data: bytes, timeout: float
 ):
@@ -266,6 +307,97 @@ def _routing_headers(response: Any) -> dict[str, str]:
 def _disable_native_thinking(model: str) -> bool:
     clean = _clean(model).lower()
     return clean.startswith(("qwen3-coder:", "qwen3.6:", "qwen3.5:"))
+
+
+class NorllamaTextStream:
+    """Incrementally decode a native Ollama generate stream."""
+
+    def __init__(self, response: Any, *, model: str) -> None:
+        self._response = response
+        self.model = model
+        self.usage = {"prompt_tokens": 0, "completion_tokens": 0}
+        self.headers = _routing_headers(response)
+        self.raw: dict[str, Any] = {}
+        self._closed = False
+
+    def iter_events(self) -> Iterator[dict[str, Any]]:
+        """Yield text and gateway control events from a native generate stream."""
+
+        for line in self._response.iter_lines(decode_unicode=True):
+            if isinstance(line, bytes):
+                line = line.decode("utf-8", errors="replace")
+            if not isinstance(line, str) or not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError("Norllama returned invalid streaming JSON") from exc
+            if not isinstance(payload, dict):
+                raise RuntimeError("Norllama returned invalid streaming payload")
+            self.raw = payload
+            metadata = payload.get("norllama")
+            schema = (
+                _clean(metadata.get("schema")) if isinstance(metadata, dict) else ""
+            )
+            if schema == "norllama.stream-admission.v1":
+                yield {
+                    "type": "admission",
+                    "admission": dict(metadata),
+                }
+                continue
+
+            error = _clean(payload.get("error"))
+            if error and bool(payload.get("done")):
+                status_code = (
+                    429
+                    if error in {"local_capacity_exhausted", "capacity_exhausted"}
+                    else 502
+                )
+                error_headers: dict[str, str] = {}
+                if isinstance(metadata, dict):
+                    try:
+                        retry_after = int(metadata.get("retry_after_seconds") or 0)
+                    except (TypeError, ValueError):
+                        retry_after = 0
+                    if retry_after > 0:
+                        error_headers["Retry-After"] = str(retry_after)
+                raise NorllamaGatewayError(
+                    status_code,
+                    payload,
+                    headers=error_headers,
+                )
+
+            self.model = _clean(payload.get("model")) or self.model
+            self.usage = _usage_from_ollama(payload)
+            fragment = payload.get("response")
+            if isinstance(fragment, str) and fragment:
+                yield {"type": "text", "text": fragment}
+
+    def iter_text(self) -> Iterator[str]:
+        """Yield generated text only for callers that do not handle controls."""
+
+        for event in self.iter_events():
+            if event.get("type") == "text":
+                fragment = event.get("text")
+                if isinstance(fragment, str) and fragment:
+                    yield fragment
+
+    def result(self, text: str) -> dict[str, Any]:
+        return {
+            "model": self.model,
+            "choices": [{"message": {"content": text}}],
+            "usage": dict(self.usage),
+            "headers": dict(self.headers),
+            "raw": dict(self.raw),
+        }
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        close = getattr(self._response, "close", None)
+        if callable(close):
+            close()
 
 
 def invoke_text_chat(
@@ -321,7 +453,11 @@ def invoke_text_chat(
     payload = response_payload if isinstance(response_payload, dict) else {}
     status_code = int(getattr(response, "status_code", 0) or 0)
     if not 200 <= status_code < 300:
-        raise NorllamaGatewayError(status_code, payload)
+        raise NorllamaGatewayError(
+            status_code,
+            payload,
+            headers=getattr(response, "headers", None),
+        )
     text = _clean(payload.get("response"))
     if not text:
         raise RuntimeError("Norllama returned an empty response")
@@ -332,6 +468,69 @@ def invoke_text_chat(
         "headers": _routing_headers(response),
         "raw": payload,
     }
+
+
+def invoke_text_chat_stream(
+    *,
+    messages: list[dict[str, Any]],
+    model: str,
+    base_url: str,
+    max_tokens: int,
+    api_key: str = "",
+    timeout_seconds: float | None = None,
+    correlation_headers: dict[str, Any] | None = None,
+) -> NorllamaTextStream:
+    """Open a native Ollama text stream without buffering generated tokens."""
+
+    if not _clean(base_url):
+        raise RuntimeError("Norllama base URL is not configured")
+    if not _clean(model):
+        raise RuntimeError("Norllama model is not configured")
+
+    headers = {"Content-Type": "application/json"}
+    for key, value in dict(correlation_headers or {}).items():
+        clean_key = _clean(key)
+        clean_value = _clean(value)
+        if (
+            clean_key.startswith(("X-Request-Id", "X-Norman-", "X-Norllama-"))
+            and clean_value
+        ):
+            headers[clean_key] = clean_value
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    request_payload: dict[str, Any] = {
+        "model": model,
+        "prompt": messages_to_prompt(messages),
+        "stream": True,
+        "options": {
+            "temperature": 0,
+            "num_predict": max(1, int(max_tokens or 1)),
+        },
+    }
+    if _disable_native_thinking(model):
+        request_payload["think"] = False
+    response = _requests_post_stream(
+        _generate_url(base_url),
+        headers=headers,
+        json=request_payload,
+        timeout=timeout_seconds
+        or max(1, min(float(settings.llm_provider_timeout_seconds), 120.0)),
+    )
+    status_code = int(getattr(response, "status_code", 0) or 0)
+    if 200 <= status_code < 300:
+        return NorllamaTextStream(response, model=model)
+    try:
+        response_payload = response.json()
+    except (TypeError, ValueError):
+        response_payload = {}
+    finally:
+        response.close()
+    payload = response_payload if isinstance(response_payload, dict) else {}
+    raise NorllamaGatewayError(
+        status_code,
+        payload,
+        headers=getattr(response, "headers", None),
+    )
 
 
 def rerank_documents(
@@ -1249,6 +1448,39 @@ def _overview_model_names(payload: dict[str, Any]) -> list[str]:
     return []
 
 
+def fetch_local_model_inventory(
+    *,
+    base_url: str,
+    api_key: str = "",
+    timeout_seconds: float | None = None,
+) -> list[str] | None:
+    """Return a worker-local Ollama inventory, or None when it is unavailable."""
+
+    if not _clean(base_url):
+        return None
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    timeout = timeout_seconds or max(
+        1, min(float(settings.llm_provider_timeout_seconds), 30.0)
+    )
+    try:
+        response = _requests_get(
+            _api_tags_url(base_url),
+            headers=headers,
+            timeout=timeout,
+        )
+        if response.status_code in {404, 405, 501}:
+            return None
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, ValueError):
+        return None
+    if not isinstance(payload, dict) or "models" not in payload:
+        return None
+    return _model_names(payload.get("models"))
+
+
 def fetch_overview(
     *,
     base_url: str,
@@ -1303,6 +1535,7 @@ def probe_mesh_worker(
         "latency_ms": 0,
         "models": [],
         "model_count": 0,
+        "model_inventory_source": "unknown",
         "active_models": [],
         "active_model_count": 0,
         "capabilities": {},
@@ -1315,6 +1548,11 @@ def probe_mesh_worker(
         return result
     try:
         overview = fetch_overview(
+            base_url=base_url,
+            api_key=api_key,
+            timeout_seconds=timeout,
+        )
+        local_models = fetch_local_model_inventory(
             base_url=base_url,
             api_key=api_key,
             timeout_seconds=timeout,
@@ -1336,7 +1574,18 @@ def probe_mesh_worker(
             )
         except requests.RequestException:
             active_payload = {}
-        models = capabilities.get("models") or _overview_model_names(overview)
+        if local_models is None:
+            models = capabilities.get("models") or _overview_model_names(overview)
+            model_inventory_source = (
+                "capabilities"
+                if capabilities.get("models")
+                else "overview"
+                if models
+                else "unavailable"
+            )
+        else:
+            models = local_models
+            model_inventory_source = "api/tags"
         active_models = _active_model_names(active_payload)
         result.update(
             {
@@ -1345,6 +1594,7 @@ def probe_mesh_worker(
                 "latency_ms": int((time.perf_counter() - started) * 1000),
                 "models": list(models)[:40],
                 "model_count": len(models),
+                "model_inventory_source": model_inventory_source,
                 "active_models": active_models[:20],
                 "active_model_count": len(active_models),
                 "capabilities": {

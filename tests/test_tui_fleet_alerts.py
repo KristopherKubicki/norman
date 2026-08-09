@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -198,6 +200,89 @@ def test_alert_post_creates_thread_and_posts_message(monkeypatch) -> None:
     assert "TUI fleet health alert" in calls[2][3]["body"]
     assert "Action needed:" in calls[2][3]["body"]
     assert calls[2][3]["metadata"]["has_failure"] is True
+
+
+def test_alert_token_uses_norman_secret_command_not_actor_env(monkeypatch) -> None:
+    module = _load_alerts(monkeypatch)
+    monkeypatch.delenv("NORMAN_KEYS_URL", raising=False)
+    monkeypatch.delenv("NORMAN_KEYS_API_BASE", raising=False)
+    monkeypatch.setenv("NORMAN_SECRET_CMD", "keysctl read {name}")
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0, stdout="bbs-token\n", stderr="")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    token, errors = module.resolve_brokered_token("bbs.norman.post-token")
+
+    assert token == "bbs-token"
+    assert errors == []
+    assert calls[0][0] == ["keysctl", "read", "bbs.norman.post-token"]
+    assert "actor_env" not in module.parse_args([]).__dict__
+
+
+def test_alert_token_uses_norman_keys_http(monkeypatch) -> None:
+    module = _load_alerts(monkeypatch)
+    monkeypatch.setenv("NORMAN_KEYS_URL", "http://keys.norman.test")
+    monkeypatch.setenv("NORMAN_KEYS_TOKEN", "keys-api-token")
+    monkeypatch.delenv("NORMAN_SECRET_CMD", raising=False)
+    requests = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps({"value": "bbs-token"}).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        requests.append((request, timeout))
+        return Response()
+
+    monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
+
+    token, errors = module.resolve_brokered_token("bbs.norman.post-token")
+
+    assert token == "bbs-token"
+    assert errors == []
+    assert requests[0][0].full_url == "http://keys.norman.test/v1/secrets/get"
+    payload = json.loads(requests[0][0].data.decode("utf-8"))
+    assert payload["name"] == "bbs.norman.post-token"
+    assert requests[0][0].get_header("Authorization") == "Bearer keys-api-token"
+
+
+def test_alert_main_reports_missing_broker_without_state_mutation(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    module = _load_alerts(monkeypatch)
+    monkeypatch.delenv("NORMAN_KEYS_URL", raising=False)
+    monkeypatch.delenv("NORMAN_KEYS_API_BASE", raising=False)
+    monkeypatch.delenv("NORMAN_SECRET_CMD", raising=False)
+    health_path = tmp_path / "health.json"
+    state_path = tmp_path / "state.json"
+    health_path.write_text(
+        json.dumps(
+            {
+                "checked_at": "2026-08-06T00:00:00Z",
+                "status": "fail",
+                "issues": [_issue("fail", "session pressure is sustained")],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert (
+        module.main(["--health-json", str(health_path), "--state", str(state_path)])
+        == 1
+    )
+
+    assert "bbs.norman.post-token" in capsys.readouterr().err
+    assert not state_path.exists()
 
 
 def test_tui_fleet_alerts_systemd_path_triggers_on_doctor_json() -> None:

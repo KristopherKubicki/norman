@@ -2387,6 +2387,12 @@ DEFAULT_UI_FINISH = (
 STATE_DIR = Path(
     os.environ.get("NORMAN_CODEX_WEB_STATE_DIR", f"{CODEX_HOME}/web-bridge")
 )
+TOOL_CHAIN_CANARY_RECEIPT_PATH = Path(
+    os.environ.get(
+        "NORMAN_TOOL_CHAIN_CANARY_RECEIPT_PATH",
+        "/home/kristopher/.local/state/norman/tui-tool-chain-canary.json",
+    )
+)
 CODEX_SERVICE = os.environ.get("NORMAN_CODEX_SERVICE_NAME", "housebot-codex.service")
 WEB_SERVICE = os.environ.get(
     "NORMAN_CODEX_WEB_SERVICE_NAME", "housebot-codex-web.service"
@@ -10625,6 +10631,279 @@ def session_admission_requires_fresh_thread(decision: Any, *, success: bool) -> 
     )
 
 
+AUTO_SESSION_ROLLOVER_CHECKPOINT_REASONS = frozenset({"token_limit"})
+
+
+def auto_session_rollover_record(decision: Any) -> dict[str, Any]:
+    if not isinstance(decision, dict):
+        return {}
+    value = decision.get("auto_rollover")
+    if not isinstance(value, dict):
+        return {}
+    rollover_id = str(value.get("id") or "").strip()
+    if not rollover_id:
+        return {}
+    reasons = [
+        str(reason).strip()
+        for reason in value.get("checkpoint_reasons") or []
+        if str(reason).strip() in AUTO_SESSION_ROLLOVER_CHECKPOINT_REASONS
+    ]
+    return {
+        "id": rollover_id[:64],
+        "state": str(value.get("state") or "handoff-staged").strip().lower()
+        or "handoff-staged",
+        "role": str(value.get("role") or "pending").strip().lower() or "pending",
+        "checkpoint_reasons": reasons,
+        "staged_at": _coerce_int(value.get("staged_at")),
+        "thread_id": str(value.get("thread_id") or "").strip()[:160],
+        "pending_item_id": str(value.get("pending_item_id") or "").strip()[:96],
+        "finished_at": _coerce_int(value.get("finished_at")),
+        "detail": summarize_text(str(value.get("detail") or ""), 360),
+    }
+
+
+def session_admission_allows_auto_rollover(decision: Any) -> bool:
+    if not isinstance(decision, dict) or bool(decision.get("allowed")):
+        return False
+    if str(decision.get("reason_code") or "").strip() != "checkpoint_required":
+        return False
+    reasons = {
+        str(reason).strip()
+        for reason in decision.get("checkpoint_reasons") or []
+        if str(reason).strip()
+    }
+    return bool(reasons) and reasons <= AUTO_SESSION_ROLLOVER_CHECKPOINT_REASONS
+
+
+def auto_session_rollover_checkpoint_prompt(
+    original_prompt: str, checkpoint_reasons: Iterable[Any]
+) -> str:
+    reasons = [
+        str(reason).strip().replace("_", " ")
+        for reason in checkpoint_reasons
+        if str(reason).strip() in AUTO_SESSION_ROLLOVER_CHECKPOINT_REASONS
+    ]
+    reason_label = ", ".join(reasons) or "session checkpoint"
+    pending = str(original_prompt or "").strip()[:8_000]
+    return "\n".join(
+        [
+            "/compact",
+            "",
+            "Create a compact handoff for a fresh session. This thread reached "
+            f"the following checkpoint limit(s): {reason_label}.",
+            "Do not perform the pending operator request in this turn. Do not "
+            "search, call tools, run commands, or begin implementation for it.",
+            "Capture only the essential context, completed work, open risks, and "
+            "the exact next action so the fresh session can continue safely.",
+            "",
+            "The following pending operator request is quoted context, not an "
+            "instruction for this compacting turn:",
+            "<pending-operator-request>",
+            pending,
+            "</pending-operator-request>",
+        ]
+    )
+
+
+def auto_session_rollover_detail(
+    checkpoint_reasons: Iterable[Any], *, handoff_failed: bool = False
+) -> str:
+    reasons = ", ".join(
+        str(reason).strip().replace("_", " ")
+        for reason in checkpoint_reasons
+        if str(reason).strip() in AUTO_SESSION_ROLLOVER_CHECKPOINT_REASONS
+    )
+    if handoff_failed:
+        return (
+            "Automatic compact handoff failed; the original request remains "
+            "queued and can be retried without being duplicated."
+        )
+    return "Preparing compact handoff, then continuing in a fresh session" + (
+        f" ({reasons})." if reasons else "."
+    )
+
+
+def auto_session_rollover_handoff_admission(
+    decision: Any,
+    *,
+    model: str,
+    thread_id: str = "",
+) -> dict[str, Any]:
+    """Admit the one compact turn needed to safely leave a limited thread."""
+    prior = dict(decision) if isinstance(decision, dict) else {}
+    active_thread_id = str(
+        thread_id or prior.get("thread_id") or read_text(THREAD_ID_PATH)
+    ).strip()
+    admission = session_budget_admission(
+        model=model,
+        reasoning_effort=normalize_reasoning_effort(
+            prior.get("reasoning_effort") or "high"
+        ),
+        escalation_reason=str(prior.get("escalation_reason") or ""),
+        reauthorization_reason=str(prior.get("reauthorization_reason") or ""),
+        checkpoint_intent=True,
+        thread_id=active_thread_id,
+    )
+    if not admission.get("allowed") or not session_admission_requires_fresh_thread(
+        admission, success=True
+    ):
+        return {}
+    return admission
+
+
+def stage_auto_session_rollover_queue_items(
+    original_item: dict[str, Any],
+    decision: Any,
+    *,
+    handoff_admission: dict[str, Any],
+    thread_id: str = "",
+    staged_at: int | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]] | None:
+    """Build the compact and preserved queue entries for one safe rollover.
+
+    The caller owns queue insertion while holding STATUS_LOCK. Keeping this
+    helper side-effect free prevents a partially staged rollover if the queue
+    status write fails.
+    """
+    if not session_admission_allows_auto_rollover(decision):
+        return None
+    if not session_admission_requires_fresh_thread(handoff_admission, success=True):
+        return None
+
+    prior_admission = (
+        dict(original_item.get("session_admission"))
+        if isinstance(original_item.get("session_admission"), dict)
+        else {}
+    )
+    existing_rollover = auto_session_rollover_record(prior_admission)
+    if existing_rollover:
+        return None
+
+    observed_at = int(staged_at or now_ts())
+    original_prompt = str(original_item.get("prompt") or "").strip()
+    source = normalize_queue_source(
+        original_item.get("source"),
+        normalize_relay_callback(original_item.get("relay_callback")),
+        original_prompt,
+    )
+    pending_item = dict(original_item)
+    pending_item_id = queue_item_id(
+        original_prompt,
+        _coerce_int(original_item.get("queued_at")) or observed_at,
+        source,
+        original_item.get("id"),
+    )
+    rollover = {
+        "id": f"rollover-{secrets.token_hex(12)}",
+        "state": "handoff-staged",
+        "checkpoint_reasons": [
+            str(reason).strip()
+            for reason in decision.get("checkpoint_reasons") or []
+            if str(reason).strip() in AUTO_SESSION_ROLLOVER_CHECKPOINT_REASONS
+        ],
+        "staged_at": observed_at,
+        "thread_id": str(
+            thread_id or decision.get("thread_id") or read_text(THREAD_ID_PATH)
+        ).strip()[:160],
+        "pending_item_id": pending_item_id,
+        "detail": auto_session_rollover_detail(
+            decision.get("checkpoint_reasons") or []
+        ),
+    }
+    pending_rollover = {**rollover, "role": "pending"}
+    pending_admission = dict(decision)
+    pending_admission["auto_rollover"] = pending_rollover
+    pending_item["id"] = pending_item_id
+    pending_item["queued_at"] = (
+        _coerce_int(pending_item.get("queued_at")) or observed_at
+    )
+    pending_item["session_admission"] = pending_admission
+
+    handoff_item = dict(pending_item)
+    handoff_item["id"] = f"{rollover['id']}-handoff"
+    handoff_item["submission_id"] = ""
+    handoff_item["prompt"] = auto_session_rollover_checkpoint_prompt(
+        original_prompt, rollover["checkpoint_reasons"]
+    )
+    handoff_item["queued_at"] = observed_at
+    handoff_item["attachments"] = []
+    handoff_item["source"] = "system"
+    handoff_item["interlace_mode"] = "queue"
+    handoff_item["checkpoint_policy"] = "observe"
+    handoff_item.pop("relay_callback", None)
+    handoff_item["session_admission"] = {
+        **dict(handoff_admission),
+        "auto_rollover": {**rollover, "role": "handoff"},
+    }
+    return handoff_item, pending_item, rollover
+
+
+def update_auto_session_rollover_state(
+    decision: Any,
+    *,
+    state: str,
+    detail: str,
+    thread_id: str,
+    finished_at: int,
+) -> bool:
+    rollover = auto_session_rollover_record(decision)
+    pending_item_id = str(rollover.get("pending_item_id") or "").strip()
+    if not pending_item_id:
+        return False
+    updated = False
+    with STATUS_LOCK:
+        meta = load_status_meta()
+        queue = normalize_queue(meta.get("queued_prompts"))
+        for item in queue:
+            if str(item.get("id") or "").strip() != pending_item_id:
+                continue
+            admission = (
+                dict(item.get("session_admission"))
+                if isinstance(item.get("session_admission"), dict)
+                else {}
+            )
+            pending_rollover = auto_session_rollover_record(admission)
+            if pending_rollover.get("id") != rollover["id"]:
+                continue
+            pending_rollover.update(
+                {
+                    "state": state,
+                    "detail": summarize_text(detail, 360),
+                    "finished_at": int(finished_at or now_ts()),
+                }
+            )
+            admission["auto_rollover"] = pending_rollover
+            item["session_admission"] = admission
+            updated = True
+            break
+        if updated:
+            meta["queued_prompts"] = queue
+            save_status_meta(meta)
+    event_type = (
+        "session.auto-rollover-handoff-completed"
+        if state == "handoff-completed"
+        else "session.auto-rollover-handoff-failed"
+    )
+    append_audit_event(
+        event_type=event_type,
+        summary=(
+            "Automatic compact handoff completed."
+            if state == "handoff-completed"
+            else "Automatic compact handoff failed."
+        ),
+        detail=detail,
+        severity="info" if state == "handoff-completed" else "warn",
+        actor_type="system",
+        thread_id=thread_id,
+        payload={
+            "rollover": rollover,
+            "updated_pending_request": updated,
+        },
+        event_at=finished_at,
+    )
+    return updated
+
+
 def complete_session_handoff_if_needed(
     decision: Any,
     *,
@@ -10632,7 +10911,26 @@ def complete_session_handoff_if_needed(
     thread_id: str,
     finished_at: int,
 ) -> bool:
-    if not session_admission_requires_fresh_thread(decision, success=success):
+    if not isinstance(decision, dict):
+        return False
+    rollover = auto_session_rollover_record(decision)
+    if not success:
+        if (
+            rollover
+            and rollover.get("role") == "handoff"
+            and rollover.get("state") in {"handoff-staged", "handoff-running"}
+        ):
+            update_auto_session_rollover_state(
+                decision,
+                state="handoff-failed",
+                detail=auto_session_rollover_detail(
+                    rollover.get("checkpoint_reasons"), handoff_failed=True
+                ),
+                thread_id=thread_id,
+                finished_at=finished_at,
+            )
+        return False
+    if not session_admission_requires_fresh_thread(decision, success=True):
         return False
     write_text(THREAD_ID_PATH, "")
     write_text(THREAD_SCOPE_PATH, "")
@@ -10646,6 +10944,14 @@ def complete_session_handoff_if_needed(
         payload={"session_admission": decision},
         event_at=finished_at,
     )
+    if rollover and rollover.get("role") == "handoff":
+        update_auto_session_rollover_state(
+            decision,
+            state="handoff-completed",
+            detail="Compact handoff completed; the preserved request will run in a fresh session.",
+            thread_id=thread_id,
+            finished_at=finished_at,
+        )
     return True
 
 
@@ -16368,6 +16674,81 @@ def read_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
     return merged
 
 
+def _tool_chain_canary_identifier(value: Any, *, maximum: int = 192) -> str:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return ""
+    allowed = frozenset(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:/@+-"
+    )
+    if any(character not in allowed for character in candidate):
+        return "unknown"
+    return candidate[:maximum]
+
+
+def _tool_chain_canary_int(value: Any) -> int:
+    try:
+        return min(1_000_000, max(0, int(value or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def tool_chain_canary_snapshot() -> dict[str, Any]:
+    """Read the latest local canary receipt without exposing request content."""
+
+    receipt = read_json(TOOL_CHAIN_CANARY_RECEIPT_PATH, {})
+    if str(receipt.get("schema") or "").strip() != "norman.tui.tool-chain-canary.v2":
+        return {}
+    state = str(receipt.get("state") or "").strip().lower()
+    if state not in {"passed", "failed", "skipped"}:
+        return {}
+    bridge = receipt.get("bridge")
+    if not isinstance(bridge, dict):
+        turns = receipt.get("turns")
+        if not isinstance(turns, list):
+            turns = []
+        for turn in reversed(turns):
+            if isinstance(turn, dict) and isinstance(turn.get("bridge"), dict):
+                bridge = turn["bridge"]
+                break
+    bridge = dict(bridge) if isinstance(bridge, dict) else {}
+    backend = bridge.get("effective_backend")
+    backend = dict(backend) if isinstance(backend, dict) else {}
+    budget = bridge.get("output_token_budget")
+    budget = dict(budget) if isinstance(budget, dict) else {}
+    mode = str(bridge.get("mode") or "").strip().lower()
+    transport = str(bridge.get("tool_transport") or "").strip().lower()
+    retention = str(bridge.get("state_retention") or "").strip().lower()
+    return {
+        "state": state,
+        "checked_at": str(receipt.get("checked_at") or "").strip()[:64],
+        "elapsed_ms": _tool_chain_canary_int(receipt.get("elapsed_ms")),
+        "bridge": {
+            "mode": mode if mode in {"transparent", "governed"} else "unknown",
+            "tool_transport": (
+                transport if transport == "local_text_adapter" else "unknown"
+            ),
+            "state_retention": (
+                retention if retention in {"ephemeral", "session"} else "unknown"
+            ),
+            "effective_backend": {
+                "provider": _tool_chain_canary_identifier(backend.get("provider"))
+                or "unknown",
+                "model": _tool_chain_canary_identifier(backend.get("model"))
+                or "unknown",
+            },
+            "output_token_budget": {
+                "requested": _tool_chain_canary_int(budget.get("requested")),
+                "effective": _tool_chain_canary_int(budget.get("effective")),
+                "maximum": _tool_chain_canary_int(budget.get("maximum")),
+            },
+            "fallback_reason": _tool_chain_canary_identifier(
+                bridge.get("fallback_reason"), maximum=96
+            ),
+        },
+    }
+
+
 def read_json_list(path: Path) -> list[Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -17558,7 +17939,7 @@ def clear_console_runtime_token() -> None:
             CONSOLE_RUNTIME_TOKEN = ""
 
 
-def _console_runtime_headers() -> dict[str, str]:
+def _console_runtime_headers(*, require_token: bool = False) -> dict[str, str]:
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",
@@ -17568,6 +17949,8 @@ def _console_runtime_headers() -> dict[str, str]:
     token = console_runtime_token()
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    elif require_token:
+        raise urllib_error.URLError("console runtime authorization token unavailable")
     return headers
 
 
@@ -17584,7 +17967,7 @@ def _console_runtime_json_request(
     request = urllib_request.Request(
         _console_runtime_api_url(path),
         data=data,
-        headers=_console_runtime_headers(),
+        headers=_console_runtime_headers(require_token=True),
         method=method.upper(),
     )
     timeout = (
@@ -18767,7 +19150,15 @@ def console_runtime_kernel_primary_run_shape(
         cloud_authorized=False,
         enforcement="kernel_hard",
     )
-    if prompt_is_literal_response_request(prompt):
+    workload = classify_prompt_workload(str(prompt or ""))
+    durable_workstream = workload in {
+        "implementation",
+        "verification",
+        "analysis",
+        "long_work",
+        "explicit",
+    } or prompt_requests_investigation(prompt)
+    if workload == "literal_response":
         return {
             "task_kind": "literal_response",
             "planner_kind": "literal_response",
@@ -18775,6 +19166,22 @@ def console_runtime_kernel_primary_run_shape(
             "max_steps": 1,
             "max_output_tokens": token_capacity_plan["execution_output_cap"],
             "output_shape_expected": "literal_response",
+            "workload": workload,
+            "durable_workstream": False,
+            "continuous_goal_candidate": False,
+            "token_capacity_plan": token_capacity_plan,
+        }
+    if not durable_workstream:
+        return {
+            "task_kind": "chat",
+            "planner_kind": "chat",
+            "goal_phase_sequence": ["chat"],
+            "max_steps": 1,
+            "max_output_tokens": token_capacity_plan["execution_output_cap"],
+            "output_shape_expected": "chat",
+            "workload": workload,
+            "durable_workstream": False,
+            "continuous_goal_candidate": False,
             "token_capacity_plan": token_capacity_plan,
         }
     return {
@@ -18782,7 +19189,7 @@ def console_runtime_kernel_primary_run_shape(
         "planner_kind": "plan",
         "goal_phase_sequence": ["plan", "work", "verify"],
         "max_steps": max(
-            1,
+            3,
             min(
                 _coerce_int(os.environ.get("NORMAN_TUI_KERNEL_PRIMARY_MAX_STEPS")) or 5,
                 10,
@@ -18790,6 +19197,9 @@ def console_runtime_kernel_primary_run_shape(
         ),
         "max_output_tokens": token_capacity_plan["execution_output_cap"],
         "output_shape_expected": "complete",
+        "workload": workload,
+        "durable_workstream": True,
+        "continuous_goal_candidate": True,
         "token_capacity_plan": token_capacity_plan,
     }
 
@@ -18828,6 +19238,9 @@ def console_runtime_turn_route_policy(
         if isinstance(turn_plan, dict)
         else run_shape.get("token_capacity_plan")
     )
+    durable_workstream = bool(
+        run_shape["durable_workstream"] and TUI_KERNEL_EXECUTION_ENABLED
+    )
     return {
         "runtime": "kernel_shadow",
         "visible_runtime": normalized_runtime,
@@ -18855,16 +19268,17 @@ def console_runtime_turn_route_policy(
         "route_lock": route_lock,
         "strict_route": route_lock,
         "operator_model_override": route_lock,
-        "route_proof_required": bool(TUI_KERNEL_EXECUTION_ENABLED),
-        "require_verifier_for_completion": bool(TUI_KERNEL_EXECUTION_ENABLED),
+        "route_proof_required": durable_workstream,
+        "require_verifier_for_completion": durable_workstream,
         "cost_posture": "local_token_first",
-        "continuous_goal_candidate": True,
+        "durable_workstream": durable_workstream,
+        "durable_workstream_candidate": bool(run_shape["durable_workstream"]),
+        "continuous_goal_candidate": bool(run_shape["continuous_goal_candidate"]),
         "task_kind": run_shape["task_kind"],
         "planner_kind": run_shape["planner_kind"],
         "goal_phase_sequence": list(run_shape["goal_phase_sequence"]),
         "output_shape_expected": run_shape["output_shape_expected"],
-        "route_proof_required": bool(TUI_KERNEL_EXECUTION_ENABLED),
-        "require_verifier_for_completion": bool(TUI_KERNEL_EXECUTION_ENABLED),
+        "workload": run_shape["workload"],
         "local_token_budget": token_capacity_plan["local_token_budget"],
         "cloud_token_budget": 0,
         "token_capacity_plan": token_capacity_plan,
@@ -18903,6 +19317,9 @@ def console_runtime_turn_metadata(
         if isinstance(turn_plan, dict)
         else run_shape.get("token_capacity_plan")
     )
+    durable_workstream = bool(
+        run_shape["durable_workstream"] and TUI_KERNEL_EXECUTION_ENABLED
+    )
     return {
         "source": "agent_console_web",
         "kind": "tui_turn_shadow",
@@ -18926,11 +19343,14 @@ def console_runtime_turn_metadata(
         "kernel_execution_enabled": TUI_KERNEL_EXECUTION_ENABLED,
         "kernel_execution_candidate": TUI_KERNEL_EXECUTION_ENABLED,
         "kernel_owned_turn": TUI_KERNEL_OWNED_TURN_ENABLED,
-        "continuous_goal_candidate": True,
+        "durable_workstream": durable_workstream,
+        "durable_workstream_candidate": bool(run_shape["durable_workstream"]),
+        "continuous_goal_candidate": bool(run_shape["continuous_goal_candidate"]),
         "task_kind": run_shape["task_kind"],
         "planner_kind": run_shape["planner_kind"],
         "goal_phase_sequence": list(run_shape["goal_phase_sequence"]),
         "output_shape_expected": run_shape["output_shape_expected"],
+        "workload": run_shape["workload"],
         "local_token_budget": token_capacity_plan["local_token_budget"],
         "cloud_token_budget": 0,
         "token_capacity_plan": token_capacity_plan,
@@ -19001,9 +19421,23 @@ def ensure_console_runtime_turn_shadow_job(
     )
     objective = console_runtime_execution_objective(prompt, normalized_attachments)
     objective_summary = planner_understood_task(prompt, normalized_attachments)
+    run_shape = console_runtime_kernel_primary_run_shape(
+        prompt,
+        detail=(
+            _coerce_int(turn_plan.get("detail")) if isinstance(turn_plan, dict) else 0
+        ),
+        job_budget=(
+            str(turn_plan.get("job_budget") or "")
+            if isinstance(turn_plan, dict)
+            else job_budget
+        ),
+    )
     payload = {
         "job_id": job_id,
         "objective": objective,
+        "durable_workstream": bool(
+            run_shape["durable_workstream"] and TUI_KERNEL_EXECUTION_ENABLED
+        ),
         "done_when": [
             "The visible TUI turn has recorded route, planner, model, tool, and completion evidence.",
         ],
@@ -19031,6 +19465,7 @@ def ensure_console_runtime_turn_shadow_job(
             "kernel_execution_enabled": TUI_KERNEL_EXECUTION_ENABLED,
             "kernel_execution_candidate": TUI_KERNEL_EXECUTION_ENABLED,
             "kernel_owned_turn": TUI_KERNEL_OWNED_TURN_ENABLED,
+            "durable_workstream_candidate": bool(run_shape["durable_workstream"]),
         },
         "route_policy": route_policy,
         "metadata": {**metadata, "session_job_id": session_job_id},
@@ -28264,7 +28699,7 @@ def emit_kaizen_tui_snapshot(snapshot: dict[str, Any]) -> bool:
         request = urllib_request.Request(
             _kaizen_tui_snapshot_url(),
             data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
-            headers=_console_runtime_headers(),
+            headers=_console_runtime_headers(require_token=True),
             method="POST",
         )
         with urllib_request.urlopen(
@@ -30624,6 +31059,52 @@ def launch_prompt_worker(
     thread.start()
 
 
+def launch_queued_prompt_worker(
+    worker_args: tuple[
+        str,
+        int,
+        str,
+        int,
+        str,
+        str,
+        int,
+        list[dict[str, Any]],
+        str,
+        str,
+        dict[str, Any],
+        str,
+    ],
+) -> None:
+    (
+        prompt,
+        started_at,
+        speed,
+        detail,
+        service_tier,
+        job_budget,
+        timeout_seconds,
+        attachments,
+        runtime,
+        model,
+        relay_callback,
+        optimization_mode,
+    ) = worker_args
+    launch_prompt_worker(
+        prompt,
+        started_at,
+        speed,
+        detail,
+        job_budget,
+        timeout_seconds,
+        attachments,
+        runtime,
+        model,
+        relay_callback,
+        service_tier=service_tier,
+        optimization_mode=optimization_mode,
+    )
+
+
 def queue_prompt(
     prompt: str,
     speed: str,
@@ -31029,6 +31510,7 @@ def start_next_queued_prompt() -> (
     ]
     | None
 ):
+    rollover_staged: dict[str, Any] = {}
     with STATUS_LOCK:
         meta = load_status_meta()
         meta, _ = prune_stale_recovered_queue_items(meta)
@@ -31140,6 +31622,30 @@ def start_next_queued_prompt() -> (
             if isinstance(item.get("session_admission"), dict)
             else {}
         )
+        prior_rollover = auto_session_rollover_record(prior_admission)
+        if (
+            prior_rollover.get("role") == "pending"
+            and prior_rollover.get("state") == "handoff-failed"
+        ):
+            queue.insert(run_index, item)
+            detail_text = auto_session_rollover_detail(
+                prior_rollover.get("checkpoint_reasons"), handoff_failed=True
+            )
+            meta.update(
+                {
+                    "queued_prompts": queue,
+                    "state": "session-rollover-failed",
+                    "status_message": detail_text,
+                    "queue_checkpoint_state": "session-rollover-failed",
+                    "queue_checkpoint_detail": detail_text,
+                    "last_session_admission": prior_admission,
+                    "last_action": "queue-session-rollover-handoff-failed",
+                    "last_action_at": now_ts(),
+                    "last_action_detail": detail_text,
+                }
+            )
+            save_status_meta(meta)
+            return None
         queue_admission = session_budget_admission(
             model=model,
             reasoning_effort=normalize_reasoning_effort(
@@ -31152,33 +31658,80 @@ def start_next_queued_prompt() -> (
             ),
             checkpoint_intent=bool(prior_admission.get("checkpoint_intent")),
         )
+        if prior_rollover:
+            queue_admission["auto_rollover"] = prior_rollover
         item["session_admission"] = queue_admission
         if not queue_admission.get("allowed"):
-            queue.insert(run_index, item)
-            detail_text = str(
-                queue_admission.get("reason") or "Queue admission denied."
+            handoff_admission = (
+                auto_session_rollover_handoff_admission(
+                    queue_admission,
+                    model=model,
+                    thread_id=read_text(THREAD_ID_PATH),
+                )
+                if session_admission_allows_auto_rollover(queue_admission)
+                else {}
             )
-            meta.update(
-                {
-                    "queued_prompts": queue,
-                    "state": "session-budget-blocked",
-                    "status_message": detail_text,
-                    "queue_checkpoint_state": "session-budget-blocked",
-                    "queue_checkpoint_detail": detail_text,
-                    "last_session_admission": queue_admission,
-                    "last_action": "queue-session-admission-denied",
-                    "last_action_at": now_ts(),
-                    "last_action_detail": detail_text,
-                }
-            )
-            save_status_meta(meta)
-            append_session_admission_audit(
+            staged_items = stage_auto_session_rollover_queue_items(
+                item,
                 queue_admission,
-                prompt=prompt,
-                source="queue",
+                handoff_admission=handoff_admission,
                 thread_id=read_text(THREAD_ID_PATH),
+                staged_at=started_at,
             )
-            return None
+            if staged_items is None:
+                queue.insert(run_index, item)
+                detail_text = str(
+                    queue_admission.get("reason") or "Queue admission denied."
+                )
+                meta.update(
+                    {
+                        "queued_prompts": queue,
+                        "state": "session-budget-blocked",
+                        "status_message": detail_text,
+                        "queue_checkpoint_state": "session-budget-blocked",
+                        "queue_checkpoint_detail": detail_text,
+                        "last_session_admission": queue_admission,
+                        "last_action": "queue-session-admission-denied",
+                        "last_action_at": now_ts(),
+                        "last_action_detail": detail_text,
+                    }
+                )
+                save_status_meta(meta)
+                append_session_admission_audit(
+                    queue_admission,
+                    prompt=prompt,
+                    source="queue",
+                    thread_id=read_text(THREAD_ID_PATH),
+                )
+                return None
+            handoff_item, pending_item, rollover = staged_items
+            queue[run_index:run_index] = [handoff_item, pending_item]
+            # Run the admitted compact handoff immediately. The original request
+            # stays queued behind it and will be admitted against the fresh thread.
+            item = queue.pop(run_index)
+            started_at = now_ts()
+            prompt = item["prompt"]
+            submission_id = normalize_submission_id(item.get("submission_id"))
+            speed = normalize_response_speed(item.get("speed"))
+            detail = normalize_response_detail(item.get("detail"))
+            service_tier = normalize_service_tier(item.get("service_tier"))
+            job_budget = normalize_job_budget(item.get("job_budget"))
+            optimization_mode = normalize_optimization_mode(
+                item.get("optimization_mode")
+            )
+            runtime = normalize_runtime(item.get("runtime"))
+            model = normalize_runtime_model(runtime, item.get("model"))
+            timeout_seconds = normalize_job_timeout_seconds(
+                item.get("timeout_seconds"), job_budget
+            )
+            attachments = normalize_attachments(item.get("attachments"))
+            relay_callback = normalize_relay_callback(item.get("relay_callback"))
+            queue_admission = dict(item["session_admission"])
+            rollover_staged = {
+                "rollover": rollover,
+                "pending_prompt": pending_item.get("prompt"),
+                "handoff_prompt": prompt,
+            }
         item_interlace_mode = normalize_queue_interlace_mode(item.get("interlace_mode"))
         handoff_ready = (
             item_interlace_mode == "interrupt"
@@ -31196,11 +31749,16 @@ def start_next_queued_prompt() -> (
         handoff_checkpoint_tool = str(
             meta.get("queue_handoff_checkpoint_tool") or ""
         ).strip()
+        active_rollover = auto_session_rollover_record(queue_admission)
         handoff_status = (
-            "Interrupt handoff is running. The previous reply was paused at a "
-            "safe checkpoint; the queued prompt is now active."
-            if handoff_ready
-            else f"{AGENT_NAME} is working."
+            auto_session_rollover_detail(active_rollover.get("checkpoint_reasons"))
+            if active_rollover.get("role") == "handoff"
+            else (
+                "Interrupt handoff is running. The previous reply was paused at a "
+                "safe checkpoint; the queued prompt is now active."
+                if handoff_ready
+                else f"{AGENT_NAME} is working."
+            )
         )
         write_text(LAST_PROMPT_PATH, prompt)
         write_last_response(working_response_text(prompt))
@@ -31249,6 +31807,27 @@ def start_next_queued_prompt() -> (
             }
         )
         save_status_meta(meta)
+    if rollover_staged:
+        append_audit_event(
+            event_type="session.auto-rollover-staged",
+            summary="Queued a compact handoff before resuming a limited session.",
+            detail=auto_session_rollover_detail(
+                rollover_staged["rollover"].get("checkpoint_reasons") or []
+            ),
+            severity="info",
+            actor_type="system",
+            thread_id=str(rollover_staged["rollover"].get("thread_id") or ""),
+            payload={
+                "rollover": rollover_staged["rollover"],
+                "pending_prompt_preview": summarize_text(
+                    str(rollover_staged.get("pending_prompt") or ""), 240
+                ),
+                "handoff_prompt_preview": summarize_text(
+                    str(rollover_staged.get("handoff_prompt") or ""), 240
+                ),
+            },
+            event_at=started_at,
+        )
     if handoff_ready:
         append_audit_event(
             event_type="queue.handoff-started",
@@ -38094,11 +38673,15 @@ def _execute_console_runtime_kernel_prompt(
     token_capacity_plan = normalize_provider_token_budget_plan(
         run_shape.get("token_capacity_plan")
     )
+    durable_workstream = bool(
+        run_shape["durable_workstream"] and TUI_KERNEL_EXECUTION_ENABLED
+    )
     payload = {
         "worker_id": f"tui-kernel-primary-{HOST_NAME}-{SESSION}"[:96],
         "dry_run": False,
         "complete": True,
-        "continuous": True,
+        "continuous": durable_workstream,
+        "durable_workstream": durable_workstream,
         "max_steps": run_shape["max_steps"],
         "max_runtime_seconds": max_runtime_seconds,
         "local_token_budget": token_capacity_plan["local_token_budget"],
@@ -38129,13 +38712,17 @@ def _execute_console_runtime_kernel_prompt(
             "tui_backend": TUI_BACKEND,
             "kernel_primary": True,
             "kernel_owned_turn": TUI_KERNEL_OWNED_TURN_ENABLED,
-            "verifier_can_stop": True,
-            "route_proof_required": True,
-            "require_verifier_for_completion": True,
+            "verifier_can_stop": durable_workstream,
+            "route_proof_required": durable_workstream,
+            "require_verifier_for_completion": durable_workstream,
+            "durable_workstream": durable_workstream,
+            "durable_workstream_candidate": bool(run_shape["durable_workstream"]),
+            "continuous_goal_candidate": bool(run_shape["continuous_goal_candidate"]),
             "task_kind": run_shape["task_kind"],
             "planner_kind": run_shape["planner_kind"],
             "goal_phase_sequence": list(run_shape["goal_phase_sequence"]),
             "output_shape_expected": run_shape["output_shape_expected"],
+            "workload": run_shape["workload"],
             "local_token_budget": token_capacity_plan["local_token_budget"],
             "cloud_token_budget": 0,
             "token_capacity_plan": token_capacity_plan,
@@ -38159,13 +38746,17 @@ def _execute_console_runtime_kernel_prompt(
             "optimization_mode": normalize_optimization_mode(optimization_mode),
             "kernel_primary": True,
             "kernel_owned_turn": TUI_KERNEL_OWNED_TURN_ENABLED,
-            "verifier_can_stop": True,
-            "route_proof_required": True,
-            "require_verifier_for_completion": True,
+            "verifier_can_stop": durable_workstream,
+            "route_proof_required": durable_workstream,
+            "require_verifier_for_completion": durable_workstream,
+            "durable_workstream": durable_workstream,
+            "durable_workstream_candidate": bool(run_shape["durable_workstream"]),
+            "continuous_goal_candidate": bool(run_shape["continuous_goal_candidate"]),
             "task_kind": run_shape["task_kind"],
             "planner_kind": run_shape["planner_kind"],
             "goal_phase_sequence": list(run_shape["goal_phase_sequence"]),
             "output_shape_expected": run_shape["output_shape_expected"],
+            "workload": run_shape["workload"],
             "local_token_budget": token_capacity_plan["local_token_budget"],
             "cloud_token_budget": 0,
             "token_capacity_plan": token_capacity_plan,
@@ -38345,6 +38936,7 @@ def _prompt_worker(
     requested_service_tier = normalize_service_tier(service_tier)
     route_lock = False
     running_cost_route: dict[str, Any] = {}
+    running_session_admission: dict[str, Any] = {}
     next_prompt: (
         tuple[
             str,
@@ -38376,6 +38968,11 @@ def _prompt_worker(
             )
             attachments = normalize_attachments(attachments)
             current_meta = load_status_meta()
+            running_session_admission = (
+                dict(current_meta.get("running_session_admission"))
+                if isinstance(current_meta.get("running_session_admission"), dict)
+                else {}
+            )
             running_cost_route = validate_cost_route_proof(
                 current_meta.get("running_cost_route"),
                 normalized_runtime,
@@ -38411,6 +39008,12 @@ def _prompt_worker(
                         "service_tier": normalized_service_tier,
                     },
                     event_at=started_at,
+                )
+                complete_session_handoff_if_needed(
+                    running_session_admission,
+                    success=False,
+                    thread_id=read_text(THREAD_ID_PATH),
+                    finished_at=now_ts(),
                 )
                 return
             stored_envelope = sanitize_turn_envelope_cost_route(
@@ -38460,11 +39063,6 @@ def _prompt_worker(
                 timeout_seconds=normalized_timeout,
                 drift_assessment=drift_assessment,
                 created_at=started_at,
-            )
-            running_session_admission = (
-                dict(current_meta.get("running_session_admission"))
-                if isinstance(current_meta.get("running_session_admission"), dict)
-                else {}
             )
             running_request_source = (
                 str(current_meta.get("running_request_source") or "operator").strip()
@@ -40224,36 +40822,15 @@ def _prompt_worker(
                 started_at=started_at,
                 finished_at=finished_at,
             )
+        complete_session_handoff_if_needed(
+            running_session_admission,
+            success=False,
+            thread_id=read_text(THREAD_ID_PATH),
+            finished_at=finished_at,
+        )
         next_prompt = start_next_queued_prompt()
     if next_prompt:
-        (
-            queued_prompt,
-            queued_started_at,
-            queued_speed,
-            queued_detail,
-            queued_service_tier,
-            queued_job_budget,
-            queued_timeout_seconds,
-            queued_attachments,
-            queued_runtime,
-            queued_model,
-            queued_relay_callback,
-            queued_optimization_mode,
-        ) = next_prompt
-        launch_prompt_worker(
-            queued_prompt,
-            queued_started_at,
-            queued_speed,
-            queued_detail,
-            queued_job_budget,
-            queued_timeout_seconds,
-            queued_attachments,
-            queued_runtime,
-            queued_model,
-            queued_relay_callback,
-            service_tier=queued_service_tier,
-            optimization_mode=queued_optimization_mode,
-        )
+        launch_queued_prompt_worker(next_prompt)
 
 
 LOCAL_FIRST_SAFE_MARKERS = (
@@ -41141,6 +41718,56 @@ def start_web_prompt(
         thread_id=read_text(THREAD_ID_PATH),
     )
     if not session_admission.get("allowed"):
+        if session_admission_allows_auto_rollover(session_admission):
+            recover_stale_prompt_state()
+            queued_snapshot = queue_prompt(
+                clean,
+                normalized_speed,
+                normalized_detail,
+                normalized_budget,
+                normalized_attachments,
+                normalized_runtime,
+                normalized_model,
+                normalized_relay_callback,
+                service_tier=normalized_service_tier,
+                interlace_mode=normalize_queue_interlace_mode(interlace_mode),
+                optimization_mode=normalized_optimization_mode,
+                cost_route=cost_route_decision,
+                session_admission=session_admission,
+                source=normalized_source,
+                submission_id=normalized_submission_id,
+                fast_snapshot=True,
+            )
+            if queued_snapshot.get("route_proof_blocked"):
+                queued_snapshot["session_admission"] = session_admission
+                return False, queued_snapshot
+            worker_args = None
+            if (
+                not queued_snapshot.get("deduplicated_prompt")
+                and not prompt_runtime_alive()
+            ):
+                worker_args = start_next_queued_prompt()
+            if worker_args is not None:
+                launch_queued_prompt_worker(worker_args)
+                queued_snapshot = _live_status_overlay()
+                queued_snapshot.update(
+                    {
+                        "pending": True,
+                        "state": "running",
+                        "status_message": auto_session_rollover_detail(
+                            session_admission.get("checkpoint_reasons") or []
+                        ),
+                    }
+                )
+            queued_snapshot.update(
+                {
+                    "session_admission": session_admission,
+                    "session_budget_blocked": False,
+                    "session_rollover_queued": True,
+                    "session_admission_error": "",
+                }
+            )
+            return True, queued_snapshot
         snapshot = current_snapshot()
         snapshot["session_admission"] = session_admission
         snapshot["session_budget_blocked"] = True
@@ -41939,6 +42566,7 @@ def current_snapshot() -> dict[str, Any]:
         meta.get("running_turn_envelope")
     )
     route_receipts = route_receipt_status_snapshot()
+    tool_chain_canary = tool_chain_canary_snapshot()
     snapshot = {
         "pending": pending,
         "state": snapshot_state,
@@ -42074,6 +42702,7 @@ def current_snapshot() -> dict[str, Any]:
         "history": history,
         "usage": usage,
         "route_receipts": route_receipts,
+        "tool_chain_canary": tool_chain_canary,
         "latest_work_classification": route_receipts.get(
             "latest_work_classification", {}
         ),
@@ -75362,6 +75991,64 @@ class Handler(BaseHTTPRequestHandler):
       }};
     }}
 
+    function bridgeCapsuleState(snapshot) {{
+      const canary = snapshot?.tool_chain_canary;
+      if (!canary || typeof canary !== "object") {{
+        return null;
+      }}
+      const state = String(canary.state || "").trim().toLowerCase();
+      if (!["passed", "failed", "skipped"].includes(state)) {{
+        return null;
+      }}
+      const bridge = canary.bridge && typeof canary.bridge === "object"
+        ? canary.bridge
+        : {{}};
+      const mode = String(bridge.mode || "").trim().toLowerCase();
+      const backend = bridge.effective_backend && typeof bridge.effective_backend === "object"
+        ? bridge.effective_backend
+        : {{}};
+      const budget = bridge.output_token_budget && typeof bridge.output_token_budget === "object"
+        ? bridge.output_token_budget
+        : {{}};
+      const provider = String(backend.provider || "unknown").trim().slice(0, 40);
+      const model = String(backend.model || "unknown").trim().slice(0, 72);
+      const effectiveBudget = Math.max(0, Number(budget.effective || 0));
+      const fallback = String(bridge.fallback_reason || "").trim().slice(0, 96);
+      const validMode = mode === "transparent" || mode === "governed";
+      const value = validMode
+        ? `${{mode.slice(0, 1).toUpperCase()}}${{mode.slice(1)}}`
+        : state === "passed"
+          ? "Unknown"
+          : state.slice(0, 1).toUpperCase() + state.slice(1);
+      const meta = [
+        provider,
+        model,
+        effectiveBudget ? `${{formatCompactMetric(effectiveBudget)}} output` : "",
+      ].filter(Boolean).join(" · ");
+      const title = [
+        `Tool-chain canary ${{state}}`,
+        validMode ? `Bridge ${{mode}}` : "Bridge receipt unavailable",
+        `Backend ${{provider}}/${{model}}`,
+        bridge.tool_transport ? `Transport ${{bridge.tool_transport}}` : "",
+        bridge.state_retention ? `State ${{bridge.state_retention}}` : "",
+        effectiveBudget ? `Effective output budget ${{formatCompactMetric(effectiveBudget)}}` : "",
+        fallback ? `Fallback reason ${{fallback}}` : "",
+      ].filter(Boolean).join(" · ");
+      return {{
+        id: "bridge",
+        label: "Bridge",
+        value,
+        meta,
+        tone: state === "passed" && validMode && !fallback
+          ? "ok"
+          : state === "skipped" || fallback
+            ? "warn"
+            : "alert",
+        title,
+        action: "system",
+      }};
+    }}
+
     function buildStatusCapsules(snapshot) {{
       const services = Array.isArray(snapshot?.services) ? snapshot.services : [];
       const failedServices = services.filter((item) => {{
@@ -75453,6 +76140,10 @@ class Handler(BaseHTTPRequestHandler):
           action: "system",
         }},
       ];
+      const bridgeCapsule = bridgeCapsuleState(snapshot);
+      if (bridgeCapsule) {{
+        capsules.push(bridgeCapsule);
+      }}
       capsules.push(offlineCapsule);
       const liveCapsule = liveTurnCapsuleState(snapshot);
       if (liveCapsule) {{

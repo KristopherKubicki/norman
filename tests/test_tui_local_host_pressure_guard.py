@@ -53,7 +53,12 @@ def _process(
 
 
 def _observation(
-    processes: list[dict], *, checked_at_epoch: int, io_full: float = 15.0
+    processes: list[dict],
+    *,
+    checked_at_epoch: int,
+    io_full: float = 15.0,
+    swap_used_ratio: float = 0.9,
+    swap_total_bytes: int = 0,
 ) -> dict:
     return {
         "checked_at": f"2026-08-03T12:00:{checked_at_epoch:02d}+00:00",
@@ -66,7 +71,8 @@ def _observation(
         },
         "memory": {
             "available_bytes": 28 * 1024**3,
-            "swap_used_ratio": 0.9,
+            "swap_used_ratio": swap_used_ratio,
+            "swap_total_bytes": swap_total_bytes,
         },
         "root_filesystem": {
             "path": "/",
@@ -145,6 +151,39 @@ def test_second_high_sample_creates_one_action_for_codex_session(monkeypatch) ->
     assert plans[0]["codex_pid"] == 100
     assert plans[0]["scan_processes"][0]["pid"] == 200
     assert plans[0]["resume_command"] == "kill -CONT -- 100"
+
+
+def test_sustained_swap_exhaustion_defers_background_work(monkeypatch) -> None:
+    module = _load_guard(monkeypatch)
+    first, state, _plans = module.evaluate(
+        _observation(
+            [],
+            checked_at_epoch=0,
+            io_full=0,
+            swap_used_ratio=0.96,
+            swap_total_bytes=8 * 1024**3,
+        ),
+        {},
+        sustained_samples=2,
+    )
+    report, _state, plans = module.evaluate(
+        _observation(
+            [],
+            checked_at_epoch=15,
+            io_full=0,
+            swap_used_ratio=0.96,
+            swap_total_bytes=8 * 1024**3,
+        ),
+        state,
+        sustained_samples=2,
+    )
+
+    assert first["status"] == "healthy"
+    assert report["status"] == "degraded"
+    assert report["admission"]["action"] == "defer_background_work"
+    assert report["kpis"]["swap_exhaustion_samples"] == 2
+    assert {issue["check"] for issue in report["issues"]} == {"swap_exhaustion"}
+    assert plans == []
 
 
 def test_unattributed_broad_scan_is_alerted_but_never_paused(monkeypatch) -> None:
@@ -401,6 +440,7 @@ def test_report_has_kpis_and_systemd_units_enforce_local_scope(monkeypatch) -> N
     assert "OnUnitActiveSec=15s" in timer
     assert "Persistent=true" in timer
     assert "tui_fleet_alerts.py" in alert_service
+    assert "ConditionPathExists=/etc/norman/tui-fleet-alerts.env" in alert_service
     assert '"--title=Norman local host pressure"' in alert_service
     assert "--warn-threshold 1" in alert_service
     assert "PathChanged=/home/kristopher/.local/state/norman/" in alert_path

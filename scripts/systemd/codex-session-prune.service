@@ -1,0 +1,14 @@
+[Unit]
+Description=Safely prune inactive Codex session histories
+After=local-fs.target
+
+[Service]
+Type=oneshot
+UMask=0077
+WorkingDirectory=/home/kristopher/code/norman
+Nice=19
+IOSchedulingClass=idle
+IOSchedulingPriority=7
+TimeoutStartSec=2min
+ExecStartPre=/usr/bin/mkdir -p /home/kristopher/.local/state/norman
+ExecStart=/usr/bin/python3 /home/kristopher/code/norman/scripts/codex_session_prune.py --output-json /home/kristopher/.local/state/norman/codex-session-prune.json

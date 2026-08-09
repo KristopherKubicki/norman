@@ -2,6 +2,9 @@
 set -euo pipefail
 
 LAUNCH_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+SECRET_GUARD_SCRIPT="${LAUNCH_SCRIPT_DIR}/norman_codex_secret_guard.py"
+MANAGED_CODEX_REQUIREMENTS="${NORMAN_CODEX_REQUIREMENTS_PATH:-/etc/codex/requirements.toml}"
+MANAGED_SECRET_GUARD="${NORMAN_CODEX_MANAGED_SECRET_GUARD:-/usr/local/lib/norman-codex-route/norman_codex_secret_guard.py}"
 
 bridge_console_env_prefixes() {
     local name suffix alias
@@ -22,6 +25,15 @@ bridge_console_env_prefixes() {
 }
 
 bridge_console_env_prefixes
+
+# pytest-xdist reads this only for `pytest -n auto`; preserve capacity for the
+# foreground TUI while allowing an explicit per-launcher capacity override.
+PYTEST_XDIST_AUTO_NUM_WORKERS="${NORMAN_CODEX_PYTEST_XDIST_AUTO_WORKERS:-4}"
+if [[ ! "$PYTEST_XDIST_AUTO_NUM_WORKERS" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'NORMAN_CODEX_PYTEST_XDIST_AUTO_WORKERS must be a positive integer.\n' >&2
+    exit 2
+fi
+export PYTEST_XDIST_AUTO_NUM_WORKERS
 
 BASE_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 NODE_BIN_DIRS=()
@@ -95,6 +107,7 @@ RUNTIME_SETTINGS_FILE="${NORMAN_CODEX_RUNTIME_SETTINGS_FILE:-${CODEX_HOME}/web-b
 CODEX_PROVIDER="${NORMAN_CODEX_PROVIDER:-bedrock}"
 
 export CODEX_HOME
+export NORMAN_TUI_NO_DIRECT_VAULT=1
 
 cd "$WORKDIR"
 
@@ -320,6 +333,11 @@ Fleet coordination policy:
   - Do not send Scout implementation, deploys, credentials, privileged operations, or repo-local secrets.
   - Direct peer handoffs are only for clearly allowed low-risk relationships; otherwise route the request through Norman Prime / Subprime.
 - If you need credentials, passwords, secrets, or privileged access, ask Norman Prime to broker the request or use the configured secret/access path for your lane. Do not invent new ad hoc secret-sharing paths.
+- TUI secret execution policy:
+  - Read-only analysis, review, status checks, and recommendations never access secrets.
+  - Necessary credentialed work uses approved Norman Keys aliases and broker paths with the smallest available approval or lease.
+  - If the broker is unavailable, report the action blocked with the required logical alias or capability.
+  - Never invoke `cred`, create or migrate a vault, or ask for a vault passphrase.
 - Norman Keys / keyservice rules:
   - Treat Norman Keys as the control-plane service for secret aliases, policies, requests, leases, and audit. It is not a bot, BBS actor, or chat lane.
   - Prefer named aliases and brokered use over raw secret values. Ask for the alias or the capability you need, not for a token to be pasted into the transcript.
@@ -432,6 +450,24 @@ if [[ -f "$PROMPT_STATE_FILE" ]]; then
 fi
 
 mkdir -p "$CODEX_HOME"
+
+verify_managed_secret_guard() {
+    if [[ ! -r "$SECRET_GUARD_SCRIPT" ]]; then
+        printf 'Norman TUI secret guard verifier is unavailable at %s.\n' \
+            "$SECRET_GUARD_SCRIPT" >&2
+        return 1
+    fi
+
+    if ! python3 "$SECRET_GUARD_SCRIPT" \
+        --verify-managed-policy \
+        --requirements-path "$MANAGED_CODEX_REQUIREMENTS" \
+        --managed-guard-path "$MANAGED_SECRET_GUARD"; then
+        printf 'Managed Norman credential policy is unavailable. Run sudo -n ~/code/norman/scripts/deploy_codex_tui_secret_guard.sh.\n' >&2
+        return 1
+    fi
+}
+
+verify_managed_secret_guard
 
 write_norman_gateway_profile() {
     if [[ ! -x "$CODEX_GATEWAY_TOKEN_HELPER" ]]; then

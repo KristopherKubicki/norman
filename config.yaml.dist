@@ -222,6 +222,15 @@ llm_offline_base_url: "https://llm.home.arpa/v1"
 llm_offline_model: "qwen3-coder:30b-a3b-q4_K_M"
 llm_provider_timeout_seconds: 45
 console_runtime_norllama_timeout_seconds: 180
+# This narrow retry is disabled until a deployment supplies both an approved
+# Bedrock region and a logical Norman Keys credential alias. Never put AWS
+# credentials or a profile name in this configuration.
+prompt_facade_cloud_fallback_enabled: false
+prompt_facade_cloud_fallback_aws_region: ""
+prompt_facade_cloud_fallback_credentials_secret: ""
+# Logical Norman Keys alias for approved explicit GPT model selections through
+# Bedrock Mantle. Never put an API key value in this configuration.
+prompt_facade_explicit_cloud_mantle_api_key_secret: ""
 llm_mesh_cache_ttl_seconds: 15
 llm_mesh_cache_stale_seconds: 300
 llm_mesh_workers:

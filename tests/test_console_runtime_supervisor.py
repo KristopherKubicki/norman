@@ -374,10 +374,12 @@ async def test_console_runtime_supervisor_promotes_tui_turn_candidate(db, monkey
         job_id=job_id,
         contract=ConsoleJobContract(
             objective="Use a local-first TUI kernel goal loop",
+            durable_workstream=True,
             route_policy={
                 "provider": "norllama",
                 "planner": "norllama",
                 "model_proxy": "norllama",
+                "durable_workstream": True,
                 "continuous_goal_candidate": True,
                 "kernel_execution_enabled": True,
                 "kernel_execution_candidate": True,
@@ -390,6 +392,7 @@ async def test_console_runtime_supervisor_promotes_tui_turn_candidate(db, monkey
                 "kind": "tui_turn_shadow",
                 "kernel_execution_enabled": True,
                 "kernel_execution_candidate": True,
+                "durable_workstream": True,
                 "continuous_goal_candidate": True,
             },
         ),
@@ -398,6 +401,7 @@ async def test_console_runtime_supervisor_promotes_tui_turn_candidate(db, monkey
             "kind": "tui_turn_shadow",
             "kernel_execution_enabled": True,
             "kernel_execution_candidate": True,
+            "durable_workstream": True,
             "continuous_goal_candidate": True,
         },
     )
@@ -408,7 +412,7 @@ async def test_console_runtime_supervisor_promotes_tui_turn_candidate(db, monkey
     assert processed == 1
     db.expire_all()
     loaded = store.get_job(db, user_id=user.id, job_id=job.job_id)
-    assert loaded.status == "done"
+    assert loaded.status == "checkpointed"
     events = store.events_after(db, user_id=user.id, job_id=job.job_id)
     goal_steps = [
         event for event in events if event.event_type == "goal.step_completed"
@@ -423,6 +427,7 @@ async def test_console_runtime_supervisor_promotes_tui_turn_candidate(db, monkey
         "chat",
         "verify",
     ]
+    assert loaded.checkpoint_capsules[-1]["facts"][-1] == "Verifier state: pending"
 
 
 @pytest.mark.asyncio

@@ -5,10 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "norman"
 version = "0.2.0"
+requires-python = ">=3.11"
 dependencies = [
   "fastapi",
   "uvicorn",
   "boto3",
+  "aws-bedrock-token-generator==1.1.0",
   "pydantic==1.10.13",
   "sqlalchemy",
   "alembic",
@@ -39,7 +41,7 @@ dev = [
 
 [tool.ruff]
 line-length = 88
-target-version = "py38"
+target-version = "py311"
 exclude = [
   ".venv",
   "env",

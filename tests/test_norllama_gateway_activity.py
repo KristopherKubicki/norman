@@ -5,8 +5,11 @@ import json
 import os
 import sys
 import tempfile
+import time
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -34,6 +37,295 @@ def load_gateway_module():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def test_chat_admission_timeout_removes_expired_waiter():
+    module = load_gateway_module()
+    controller = module.ChatAdmissionController(
+        max_active=1,
+        queue_limit=1,
+        queue_wait_s=0.02,
+        retry_after_s=7,
+    )
+
+    assert controller.acquire()[0] is True
+    admitted, snapshot = controller.acquire()
+
+    assert admitted is False
+    assert snapshot == {
+        "active": 1,
+        "active_limit": 1,
+        "queue_depth": 0,
+        "queue_limit": 1,
+        "retry_after_seconds": 7,
+    }
+
+    controller.release()
+
+
+def test_chat_admission_reservation_tracks_queue_and_releases_cancelled_waiter():
+    module = load_gateway_module()
+    controller = module.ChatAdmissionController(
+        max_active=1,
+        queue_limit=1,
+        queue_wait_s=1,
+        retry_after_s=7,
+    )
+
+    active, snapshot = controller.reserve()
+    assert active is not None
+    assert active.queued is False
+    assert snapshot["active"] == 1
+
+    queued, snapshot = controller.reserve()
+    assert queued is not None
+    assert queued.queued is True
+    assert queued.was_queued is True
+    assert snapshot["active"] == 1
+    assert snapshot["queue_depth"] == 1
+
+    state, snapshot = queued.wait(timeout_s=0)
+    assert state == "queued"
+    assert snapshot["active"] == 1
+    assert snapshot["queue_depth"] == 1
+
+    queued.release()
+    assert controller.snapshot()["queue_depth"] == 0
+
+    replacement, snapshot = controller.reserve()
+    assert replacement is not None
+    assert replacement.queued is True
+    assert snapshot["active"] == 1
+    assert snapshot["queue_depth"] == 1
+
+    replacement.release()
+    active.release()
+    assert controller.snapshot()["active"] == 0
+
+
+def test_chat_admission_reservation_becomes_active_without_second_generation():
+    module = load_gateway_module()
+    controller = module.ChatAdmissionController(
+        max_active=1,
+        queue_limit=1,
+        queue_wait_s=1,
+        retry_after_s=7,
+    )
+
+    active, _ = controller.reserve()
+    queued, _ = controller.reserve()
+    assert active is not None
+    assert queued is not None
+    assert queued.queued is True
+
+    active.release()
+    state, snapshot = queued.wait(timeout_s=0.1)
+
+    assert state == "admitted"
+    assert queued.queued is False
+    assert snapshot["active"] == 1
+    assert snapshot["active_limit"] == 1
+    assert snapshot["queue_depth"] == 0
+
+    queued.release()
+    assert controller.snapshot()["active"] == 0
+
+
+def test_queued_stream_disconnect_during_headers_releases_reservation():
+    module = load_gateway_module()
+    controller = module.ChatAdmissionController(
+        max_active=1,
+        queue_limit=1,
+        queue_wait_s=1,
+        retry_after_s=7,
+    )
+    active, _ = controller.reserve()
+    queued, snapshot = controller.reserve()
+    assert active is not None
+    assert queued is not None
+    assert queued.queued is True
+
+    handler = object.__new__(module.Handler)
+    handler.server = SimpleNamespace(
+        app=SimpleNamespace(
+            chat_queue_update_s=1,
+            expose_upstream_details=False,
+        )
+    )
+    handler._request_id = "req-test"
+    handler._priority = "normal"
+    handler.send_response = lambda _status: None
+    handler.send_header = lambda _key, _value: None
+    handler.end_headers = lambda: (_ for _ in ()).throw(BrokenPipeError())
+    handler.emit_request_log = lambda **_kwargs: None
+
+    handler.send_queued_local_generation_stream(
+        reservation=queued,
+        snapshot=snapshot,
+        base_url="http://spark-a",
+        upstream_path="/api/generate",
+        headers=None,
+        body=b'{"model":"qwen3-coder:30b"}',
+        method="POST",
+        model_hint="qwen3-coder:30b",
+        attempts=["http://spark-a"],
+    )
+
+    assert controller.snapshot()["active"] == 1
+    assert controller.snapshot()["queue_depth"] == 0
+
+    active.release()
+    assert controller.snapshot()["active"] == 0
+
+
+def test_chat_admission_full_queue_returns_fast_capacity_response():
+    module = load_gateway_module()
+    controller = module.ChatAdmissionController(
+        max_active=1,
+        queue_limit=1,
+        queue_wait_s=1,
+        retry_after_s=7,
+    )
+    assert controller.acquire()[0] is True
+    queued_result = []
+
+    def wait_for_admission():
+        queued_result.append(controller.acquire())
+
+    waiter = threading.Thread(target=wait_for_admission)
+    waiter.start()
+    deadline = time.monotonic() + 1
+    while controller.snapshot()["queue_depth"] != 1 and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert controller.snapshot()["queue_depth"] == 1
+
+    started_at = time.monotonic()
+    admitted, snapshot = controller.acquire()
+    elapsed = time.monotonic() - started_at
+
+    assert admitted is False
+    assert elapsed < 0.1
+    assert snapshot["active"] == 1
+    assert snapshot["queue_depth"] == 1
+
+    handler = object.__new__(module.Handler)
+    handler.server = type("Server", (), {"app": type("App", (), {})()})()
+    handler.server.app.chat_admission = controller
+    handler.headers = {"Content-Type": "application/json"}
+    handler._model_hint = "qwen3-coder:30b"
+    status, headers, body = handler.local_capacity_response(
+        body=json.dumps({"model": "qwen3-coder:30b"}).encode("utf-8"),
+        snapshot=snapshot,
+    )
+
+    assert status == module.HTTPStatus.TOO_MANY_REQUESTS
+    assert headers["Retry-After"] == "7"
+    assert json.loads(body) == {
+        "ok": False,
+        "error": "local_capacity_exhausted",
+        "message": "Local coding capacity is busy; retry after 7 seconds",
+        "model": "qwen3-coder:30b",
+        "norllama": {
+            "schema": "norllama.capacity.v1",
+            "active": 1,
+            "active_limit": 1,
+            "queue_depth": 1,
+            "queue_limit": 1,
+            "retry_after_seconds": 7,
+        },
+    }
+
+    controller.release()
+    waiter.join(timeout=1)
+    assert not waiter.is_alive()
+    assert queued_result[0][0] is True
+    controller.release()
+
+
+def test_stream_capacity_rejection_retries_peer_candidate():
+    module = load_gateway_module()
+
+    class Body:
+        def __init__(self, payload):
+            self.payload = payload
+            self.closed = False
+
+        def read(self, size=-1):
+            if size is None or size < 0:
+                result, self.payload = self.payload, b""
+                return result
+            result, self.payload = self.payload[:size], self.payload[size:]
+            return result
+
+        def close(self):
+            self.closed = True
+
+    handler = object.__new__(module.Handler)
+    handler.server = type("Server", (), {"app": type("App", (), {})()})()
+    calls = []
+    first_body = Body(b'{"error":"local_capacity_exhausted"}')
+    second_body = Body(b'{"response":"ok"}')
+
+    def open_stream(base, path, *, headers=None, **kwargs):
+        calls.append((base, path, dict(headers or {})))
+        if base == "http://spark-a":
+            return module.UpstreamStream(
+                status=429,
+                headers={"Content-Type": "application/json"},
+                response=first_body,
+            )
+        return module.UpstreamStream(
+            status=200,
+            headers={"Content-Type": "application/x-ndjson"},
+            response=second_body,
+        )
+
+    sent = []
+    handler.open_upstream_stream = open_stream
+    handler.peer_forward_headers = lambda headers: {
+        **headers,
+        "X-Norllama-Peer-Forwarded": "1",
+    }
+    handler.send_upstream_stream = lambda upstream, *, extra_headers=None: (
+        sent.append((upstream.status, extra_headers)),
+        upstream.close(),
+    )
+    handler.send_upstream = lambda *args, **kwargs: pytest.fail(
+        "should use the healthy stream candidate"
+    )
+
+    handler.forward_candidates_stream(
+        ["http://spark-a", "http://spark-b"],
+        "/api/generate",
+        headers={"Content-Type": "application/json"},
+        body=b'{"stream":true,"model":"qwen3-coder:30b"}',
+        method="POST",
+        peer_bases={"http://spark-b"},
+        model_hint="qwen3-coder:30b",
+    )
+
+    assert first_body.closed is True
+    assert second_body.closed is True
+    assert calls == [
+        ("http://spark-a", "/api/generate", {"Content-Type": "application/json"}),
+        (
+            "http://spark-b",
+            "/api/generate",
+            {
+                "Content-Type": "application/json",
+                "X-Norllama-Peer-Forwarded": "1",
+            },
+        ),
+    ]
+    assert sent == [
+        (
+            200,
+            {
+                "X-Norllama-Upstream": "http://spark-b",
+                "X-Norllama-Attempts": "http://spark-a,http://spark-b",
+            },
+        )
+    ]
 
 
 def test_gateway_activity_keeps_execution_history_separate_from_monitoring(monkeypatch):

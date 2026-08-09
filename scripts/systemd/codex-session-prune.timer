@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodically prune inactive Codex session histories
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=1d
+RandomizedDelaySec=20min
+Persistent=true
+Unit=codex-session-prune.service
+
+[Install]
+WantedBy=timers.target

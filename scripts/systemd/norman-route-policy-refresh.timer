@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh active Norman production route policy every six hours
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=6h
+Persistent=true
+Unit=norman-route-policy-refresh.service
+
+[Install]
+WantedBy=timers.target

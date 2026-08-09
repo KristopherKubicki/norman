@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch Norman Codex session pressure reports
+
+[Path]
+PathChanged=/home/kristopher/.local/state/norman/codex-session-pressure.json
+Unit=norman-codex-session-pressure-alerts.service
+
+[Install]
+WantedBy=multi-user.target

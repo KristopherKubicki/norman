@@ -93,6 +93,15 @@ def test_host_runs_local_honors_execution_host(monkeypatch) -> None:
     ]
 
 
+def test_managed_secret_policy_only_mode_is_explicit(monkeypatch) -> None:
+    module = _load_sync_script(monkeypatch)
+
+    args = module.parse_args(["--targets", "norman", "--managed-secret-policy-only"])
+
+    assert args.targets == ["norman"]
+    assert args.managed_secret_policy_only is True
+
+
 def test_discovery_infers_codex_home_from_launcher_fallback(
     monkeypatch, tmp_path
 ) -> None:
@@ -571,6 +580,34 @@ def test_restart_selected_web_services_can_force_guarded_web_restart(
         "==> restarting web services on work-special\n"
         "  - serial web restart queue: panelbot\n"
     )
+
+
+def test_staged_web_restart_instances_selects_only_staged_services(
+    monkeypatch,
+) -> None:
+    module = _load_sync_script(monkeypatch)
+    panelbot = _instance(module, "panelbot")
+    control_plane = _instance(module, "control-plane")
+    monkeypatch.setattr(
+        module,
+        "ui_versions",
+        lambda host, instances: {
+            "panelbot": module.UiVersionStatus(
+                version="2026.05.31.1",
+                web_restart_required=True,
+            ),
+            "control-plane": module.UiVersionStatus(
+                version="2026.05.31.1",
+                web_restart_required=False,
+            ),
+        },
+    )
+
+    selected = module.staged_web_restart_instances(
+        module.HOSTS["work-special"], [panelbot, control_plane]
+    )
+
+    assert selected == [panelbot]
 
 
 def test_restart_block_reason_ignores_dead_stale_child_pid(monkeypatch) -> None:
@@ -1899,6 +1936,7 @@ def test_console_files_include_soul_support_scripts(monkeypatch) -> None:
         files["terminal-runtime-bridge"]
         == "/opt/panelbot/norman_codex_runtime_bridge.py"
     )
+    assert files["secret-guard"] == "/opt/panelbot/norman_codex_secret_guard.py"
     assert files["gateway-token"] == "/opt/panelbot/norman_codex_gateway_token.py"
     assert (
         files["session-budget"]
@@ -1925,6 +1963,7 @@ def test_console_files_include_soul_support_scripts(monkeypatch) -> None:
         module.SOURCE_FILES["terminal-runtime-bridge"].name
         == "norman_codex_runtime_bridge.py"
     )
+    assert module.SOURCE_FILES["secret-guard"].name == "norman_codex_secret_guard.py"
     assert module.SOURCE_FILES["gateway-token"].name == "norman_codex_gateway_token.py"
     assert module.SOURCE_FILES["memory-tool"].name == "tui_memory_tool.py"
     assert module.SOURCE_FILES["vector-preflight"].name == "tui_vector_preflight.py"
@@ -1982,6 +2021,12 @@ def test_norman_switchboard_uses_its_dedicated_web_source(monkeypatch) -> None:
 
     assert files["norman-switchboard"] == norman.web_path
     assert "web" not in files
+    assert files["work-classification"] == str(
+        Path(norman.web_path).parent.parent
+        / "app"
+        / "services"
+        / "work_classification.py"
+    )
     assert files["child-worker-web"] == str(
         Path(norman.web_path).parent / "agent_console_web.py"
     )
@@ -1992,6 +2037,7 @@ def test_norman_switchboard_uses_its_dedicated_web_source(monkeypatch) -> None:
         Path(norman.web_path).parent / "agent_console_child_agents.py"
     )
     assert module.SOURCE_FILES["norman-switchboard"].name == "norman_codex_web.py"
+    assert module.SOURCE_FILES["work-classification"].name == "work_classification.py"
     assert (
         module.restart_scope_for_instance(
             norman,
@@ -2000,6 +2046,57 @@ def test_norman_switchboard_uses_its_dedicated_web_source(monkeypatch) -> None:
         )
         == "web"
     )
+
+
+def test_sync_host_managed_secret_policy_installs_and_verifies_guard(
+    monkeypatch,
+) -> None:
+    module = _load_sync_script(monkeypatch)
+    installed: dict[str, object] = {}
+    captured: dict[str, str] = {}
+
+    def fake_install_source_path(host, *, remote_path, source, source_sha256):
+        installed.update(
+            {
+                "host": host,
+                "remote_path": remote_path,
+                "source": source,
+                "source_sha256": source_sha256,
+            }
+        )
+        return False
+
+    monkeypatch.setattr(module, "install_source_path", fake_install_source_path)
+    monkeypatch.setattr(
+        module,
+        "ssh_command",
+        lambda _host, script: ["ssh", script],
+    )
+
+    def fake_capture(command):
+        captured["script"] = command[1]
+        return "changed\n"
+
+    monkeypatch.setattr(module, "capture", fake_capture)
+    host = _host(module)
+
+    assert (
+        module.sync_host_managed_secret_policy(
+            host,
+            {"secret-guard": "secret-guard-sha"},
+        )
+        is True
+    )
+    assert installed == {
+        "host": host,
+        "remote_path": module.MANAGED_SECRET_GUARD_PATH,
+        "source": module.SOURCE_FILES["secret-guard"],
+        "source_sha256": "secret-guard-sha",
+    }
+    assert "--install-managed-policy" in captured["script"]
+    assert "--verify-managed-policy" in captured["script"]
+    assert module.MANAGED_CODEX_REQUIREMENTS_PATH in captured["script"]
+    assert module.MANAGED_SECRET_GUARD_PATH in captured["script"]
 
 
 def test_web_sources_must_share_ui_version(monkeypatch, tmp_path: Path) -> None:

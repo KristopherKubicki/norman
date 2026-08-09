@@ -1623,14 +1623,14 @@ def _is_executable_tui_turn_record(
         _json_bool(container.get("kernel_execution_candidate"))
         for container in (metadata, contract_metadata, authority_flags, route_policy)
     )
-    continuous_goal_candidate = any(
-        _json_bool(container.get("continuous_goal_candidate"))
+    durable_workstream = _json_bool(
+        _json_dict(record.contract_json).get("durable_workstream")
+    ) or any(
+        _json_bool(container.get("durable_workstream"))
         for container in (metadata, contract_metadata, authority_flags, route_policy)
     )
     if not (
-        kernel_execution_enabled
-        and kernel_execution_candidate
-        and continuous_goal_candidate
+        kernel_execution_enabled and kernel_execution_candidate and durable_workstream
     ):
         return False
     provider = _provider_key(
@@ -3941,11 +3941,20 @@ class DbConsoleRuntimeStore:
     def _verification_required(self, record: ConsoleRuntimeJobRecord) -> bool:
         contract = _json_dict(record.contract_json)
         route_policy = _json_dict(contract.get("route_policy"))
+        contract_metadata = _json_dict(contract.get("metadata"))
+        authority_flags = _json_dict(contract.get("authority_flags"))
         metadata = _json_dict(record.metadata_json)
         return any(
             _json_bool(values.get(key))
-            for values in (route_policy, contract, metadata)
+            for values in (
+                route_policy,
+                contract_metadata,
+                authority_flags,
+                contract,
+                metadata,
+            )
             for key in (
+                "durable_workstream",
                 "require_verification_receipt",
                 "require_verifier_for_completion",
                 "verification_required",

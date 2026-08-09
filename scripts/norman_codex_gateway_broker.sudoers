@@ -1,0 +1,2 @@
+# Allow only the constrained Codex gateway broker to load its encrypted credential.
+kristopher ALL=(root) NOPASSWD: /usr/local/sbin/norman-codex-gateway-broker

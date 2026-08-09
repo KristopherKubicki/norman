@@ -3,8 +3,8 @@ Description=Sync local Norman agent console template writes
 
 [Service]
 Type=oneshot
-User=kristopher
-Group=kristopher
+User=root
+Group=root
 WorkingDirectory=/home/kristopher/code/norman
 RuntimeDirectory=norman-agent-console-sync
 RuntimeDirectoryMode=0750

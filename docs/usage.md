@@ -43,6 +43,40 @@ The worker may execute in dry-run, local-first, degraded, or control-only mode.
 Those modes are visible in runtime status and do not relax approval or egress
 controls.
 
+## TUI Workstreams
+
+The TUI classifies each prompt before it creates or promotes runtime work.
+Compact status requests, ordinary short chat, literal-response canaries, and
+the fixed read-only deterministic command lane remain one-step interactions.
+They should return promptly and do not create a background loop simply because
+the TUI is open.
+
+Substantive implementation, investigation, analysis, reporting, or explicitly
+long-running work becomes a durable workstream. Its bounded local loop follows
+`plan`, `work`, and `verify` phases, records a checkpoint after each bounded
+attempt, and can resume from its recorded state. Durable work is not complete
+because a worker produced a plausible response or exhausted its configured
+steps.
+
+Only the verifier can close a durable workstream. It must emit this exact,
+standalone line and provide passing route evidence:
+
+```text
+STATUS: COMPLETE
+```
+
+The verifier may instead emit `STATUS: NEEDS_MORE_WORK`. Any other wording,
+including `STATUS: COMPLETE` embedded in a sentence, is a checkpoint rather
+than completion. Repeated identical work output or repeated verifier deferral
+pauses the job with a `goal.no_progress` event; it does not spin indefinitely.
+The next run resumes from the checkpoint after new evidence, a narrower
+objective, or an operator decision.
+
+Runtime SSE is an observation stream for the current client. It reports
+planner, worker, verifier, checkpoint, and approval events, but it is not a
+notification delivery channel. Sending a BBS/SMS, connector, email, or other
+external notification remains a separately policy-controlled effect.
+
 ## Route Models And Tools
 
 Norman evaluates safety, approval, and egress policy before choosing a route.

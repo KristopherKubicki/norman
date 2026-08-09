@@ -40,9 +40,13 @@ SOURCE_FILES = {
     "session-budget": TEMPLATE_ROOT / "agent_console_session_budget.py",
     "sms-turns": TEMPLATE_ROOT / "agent_console_sms.py",
     "norman-switchboard": SCRIPT_DIR / "norman_codex_web.py",
+    "work-classification": (
+        SCRIPT_DIR.parent / "app" / "services" / "work_classification.py"
+    ),
     "apply-patch": SCRIPT_DIR / "apply_patch_cli.py",
     "launch": TEMPLATE_ROOT / "agent_console_launch.sh",
     "supervisor": TEMPLATE_ROOT / "agent_console_supervisor.sh",
+    "secret-guard": SCRIPT_DIR / "norman_codex_secret_guard.py",
     "gateway-token": SCRIPT_DIR / "norman_codex_gateway_token.py",
     "terminal-runtime-bridge": SCRIPT_DIR / "norman_codex_runtime_bridge.py",
     "release-readiness": SCRIPT_DIR / "tui_release_readiness.py",
@@ -124,6 +128,10 @@ RESTART_READINESS_TIMEOUT_SECONDS = int(
 STATUS_PROBE_TIMEOUT_SECONDS = int(
     os.environ.get("NORMAN_SYNC_STATUS_TIMEOUT_SECONDS", "12")
 )
+MANAGED_CODEX_REQUIREMENTS_PATH = "/etc/codex/requirements.toml"
+MANAGED_SECRET_GUARD_PATH = (
+    "/usr/local/lib/norman-codex-route/norman_codex_secret_guard.py"
+)
 
 
 def _fetch_restart_readiness_payload(port: str, token: str) -> dict[str, object]:
@@ -185,6 +193,19 @@ class ConsoleInstance:
             if self.host_name == "norman" and self.name == "norman"
             else "web"
         )
+        switchboard_dependencies: tuple[tuple[str, str], ...] = ()
+        if self.host_name == "norman" and self.name == "norman":
+            switchboard_dependencies = (
+                (
+                    "work-classification",
+                    str(
+                        Path(self.web_path).parent.parent
+                        / "app"
+                        / "services"
+                        / "work_classification.py"
+                    ),
+                ),
+            )
         return (
             (web_source, self.web_path),
             (
@@ -211,6 +232,10 @@ class ConsoleInstance:
             ("launch", self.launch_path),
             ("supervisor", self.supervisor_path),
             (
+                "secret-guard",
+                str(Path(self.launch_path).parent / "norman_codex_secret_guard.py"),
+            ),
+            (
                 "gateway-token",
                 str(Path(self.launch_path).parent / "norman_codex_gateway_token.py"),
             ),
@@ -223,7 +248,7 @@ class ConsoleInstance:
             ("vector-preflight", f"/opt/{self.name}/tui_vector_preflight.py"),
             ("soul-loader", f"/opt/{self.name}/compose_soul_context.py"),
             ("soul-validator", f"/opt/{self.name}/validate_soul_md.py"),
-        )
+        ) + switchboard_dependencies
 
     @property
     def prompt_template(self) -> Path | None:
@@ -589,6 +614,50 @@ RUNTIME_BRIDGE_LEGACY_TOKEN_KEYS: tuple[str, ...] = (
     "NORMAN_CONSOLE_RUNTIME_TOKEN",
     "NORMAN_API_TOKEN",
 )
+RUNTIME_BRIDGE_SETTINGS_STDIN_SCRIPT = """
+from pathlib import Path
+import json
+import re
+import sys
+
+path = Path(sys.argv[1])
+payload = json.load(sys.stdin)
+updates = payload["updates"]
+remove_keys = payload["remove_keys"]
+text = path.read_text(encoding="utf-8")
+changed = False
+for key in remove_keys:
+    pattern = re.compile(rf"^{re.escape(key)}=.*\\n?", re.M)
+    updated = pattern.sub("", text)
+    if updated != text:
+        text = updated
+        changed = True
+for key, value in updates.items():
+    line = f"{key}={value}"
+    pattern = re.compile(rf"^{re.escape(key)}=.*$", re.M)
+    if pattern.search(text):
+        seen = False
+        updated_lines = []
+        for raw_line in text.splitlines(keepends=True):
+            if not raw_line.startswith(f"{key}="):
+                updated_lines.append(raw_line)
+                continue
+            if seen:
+                continue
+            line_ending = raw_line[len(raw_line.rstrip("\\r\\n")):]
+            updated_lines.append(line + line_ending)
+            seen = True
+        updated = "".join(updated_lines)
+    else:
+        updated = text if text.endswith("\\n") else text + "\\n"
+        updated += line + "\\n"
+    if updated != text:
+        text = updated
+        changed = True
+if changed:
+    path.write_text(text, encoding="utf-8")
+print("changed" if changed else "unchanged")
+"""
 
 INSTANCE_LABEL_OVERRIDES = {
     "autocamera": "Autocamera",
@@ -696,6 +765,18 @@ def capture(cmd: list[str]) -> str:
         cmd,
         check=True,
         text=True,
+        capture_output=True,
+        timeout=REMOTE_COMMAND_TIMEOUT_S,
+    )
+    return completed.stdout
+
+
+def capture_with_stdin(cmd: list[str], stdin: str) -> str:
+    completed = subprocess.run(
+        cmd,
+        check=True,
+        text=True,
+        input=stdin,
         capture_output=True,
         timeout=REMOTE_COMMAND_TIMEOUT_S,
     )
@@ -2404,43 +2485,20 @@ def sync_instance_runtime_bridge_settings(
 ) -> bool:
     updates = runtime_bridge_operational_settings()
     updates.update(bridge_settings)
-    payload = json.dumps(updates, separators=(",", ":"))
     remove_keys = RUNTIME_BRIDGE_LEGACY_TOKEN_KEYS if bridge_settings else ()
-    remove_payload = json.dumps(remove_keys, separators=(",", ":"))
-    script = f"""
-python3 - <<'PY'
-from pathlib import Path
-import json
-import re
-
-path = Path({instance.env_file!r})
-updates = json.loads({payload!r})
-remove_keys = json.loads({remove_payload!r})
-text = path.read_text(encoding="utf-8")
-changed = False
-for key in remove_keys:
-    pattern = re.compile(rf"^{{re.escape(key)}}=.*\\n?", re.M)
-    updated = pattern.sub("", text)
-    if updated != text:
-        text = updated
-        changed = True
-for key, value in updates.items():
-    line = f"{{key}}={{value}}"
-    pattern = re.compile(rf"^{{re.escape(key)}}=.*$", re.M)
-    if pattern.search(text):
-        updated = pattern.sub(line, text, count=1)
-    else:
-        updated = text if text.endswith("\\n") else text + "\\n"
-        updated += line + "\\n"
-    if updated != text:
-        text = updated
-        changed = True
-if changed:
-    path.write_text(text, encoding="utf-8")
-print("changed" if changed else "unchanged")
-PY
-"""
-    return capture(ssh_command(host, script)).strip() == "changed"
+    payload = json.dumps(
+        {
+            "updates": updates,
+            "remove_keys": remove_keys,
+        },
+        separators=(",", ":"),
+    )
+    script = (
+        "python3 -c "
+        f"{shlex.quote(RUNTIME_BRIDGE_SETTINGS_STDIN_SCRIPT)} "
+        f"{shlex.quote(instance.env_file)}"
+    )
+    return capture_with_stdin(ssh_command(host, script), payload).strip() == "changed"
 
 
 def sync_instance_kaizen_pilot_settings(
@@ -2807,6 +2865,34 @@ def install_source_path(
     return True
 
 
+def sync_host_managed_secret_policy(
+    host: DiscoveryHost, source_sha256: dict[str, str]
+) -> bool:
+    """Install and verify the non-bypassable credential policy for a host."""
+    changed = install_source_path(
+        host,
+        remote_path=MANAGED_SECRET_GUARD_PATH,
+        source=SOURCE_FILES["secret-guard"],
+        source_sha256=source_sha256["secret-guard"],
+    )
+    script = f"""
+before="$(sha256sum {shlex.quote(MANAGED_CODEX_REQUIREMENTS_PATH)} 2>/dev/null || true)"
+python3 {shlex.quote(MANAGED_SECRET_GUARD_PATH)} --install-managed-policy \
+  --requirements-path {shlex.quote(MANAGED_CODEX_REQUIREMENTS_PATH)} \
+  --managed-guard-path {shlex.quote(MANAGED_SECRET_GUARD_PATH)}
+python3 {shlex.quote(MANAGED_SECRET_GUARD_PATH)} --verify-managed-policy \
+  --requirements-path {shlex.quote(MANAGED_CODEX_REQUIREMENTS_PATH)} \
+  --managed-guard-path {shlex.quote(MANAGED_SECRET_GUARD_PATH)}
+after="$(sha256sum {shlex.quote(MANAGED_CODEX_REQUIREMENTS_PATH)})"
+if [[ "$before" != "$after" ]]; then
+  printf '%s\\n' changed
+else
+  printf '%s\\n' unchanged
+fi
+"""
+    return capture(ssh_command(host, script)).strip() == "changed" or changed
+
+
 def source_ui_version(source: Path) -> str:
     match = re.search(
         r'^DEFAULT_UI_VERSION\s*=\s*["\']([^"\']+)["\']',
@@ -3013,6 +3099,17 @@ def restart_selected_web_services(
         restart_and_health_check_instances(
             host, restartable, check_health=check_health, web_only=True
         )
+
+
+def staged_web_restart_instances(
+    host: DiscoveryHost, instances: list[ConsoleInstance]
+) -> list[ConsoleInstance]:
+    statuses = ui_versions(host, instances)
+    return [
+        instance
+        for instance in instances
+        if bool((status := statuses.get(instance.name)) and status.web_restart_required)
+    ]
 
 
 def health_check_instances(
@@ -3251,6 +3348,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Print the live UI version for the selected consoles and exit.",
     )
     parser.add_argument(
+        "--managed-secret-policy-only",
+        action="store_true",
+        help=(
+            "Install and verify only the root-managed Codex secret policy on "
+            "selected hosts. Does not update console templates or restart services."
+        ),
+    )
+    parser.add_argument(
         "--set-codex-model",
         default="",
         help="Explicit operator-triggered model update for selected consoles. Template sync does not change models by default.",
@@ -3472,6 +3577,13 @@ def main() -> int:
             )
             continue
 
+        if sync_host_managed_secret_policy(host, source_sha256):
+            changed_static_paths.add(MANAGED_CODEX_REQUIREMENTS_PATH)
+            print("  - enforced TUI credential policy", flush=True)
+
+        if args.managed_secret_policy_only:
+            continue
+
         soul_changes = sync_soul_identity_tree(host)
         for remote_path in soul_changes:
             changed_static_paths.add(remote_path)
@@ -3592,6 +3704,22 @@ def main() -> int:
 
         if not changed_paths and not changed_instances and not changed_static_paths:
             print("  - no template changes detected", flush=True)
+            if not args.restart_web_only:
+                continue
+            restart_scope_list = staged_web_restart_instances(host, selected_instances)
+            if not restart_scope_list:
+                print("  - no staged web restarts selected", flush=True)
+                continue
+            restart_names = " ".join(instance.name for instance in restart_scope_list)
+            print(f"  - restarting staged web services {restart_names}", flush=True)
+            restart_selected_web_services(
+                {host_name: restart_scope_list},
+                force_restart=args.force_restart,
+                check_health=not args.no_health,
+            )
+            if not args.no_health:
+                print("  - version parity", flush=True)
+                verify_ui_version_parity(host, restart_scope_list)
             continue
 
         restart_scope = {

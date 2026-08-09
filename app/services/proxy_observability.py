@@ -13,9 +13,44 @@ from typing import Any, Mapping
 
 MAX_EVENTS = 500
 EVENT_LOG_ENV = "NORMAN_PROXY_EVENT_LOG"
+EVENT_LOG_MAX_BYTES_ENV = "NORMAN_PROXY_EVENT_LOG_MAX_BYTES"
+DEFAULT_EVENT_LOG_PATH = Path("/var/lib/norman/state/proxy-events.jsonl")
+DEFAULT_EVENT_LOG_MAX_BYTES = 5 * 1024 * 1024
+DISABLED_EVENT_LOG_VALUES = frozenset({"0", "false", "none", "off", "disabled"})
+TOOL_CHAIN_SCHEMA = "norman.responses-tool-chain.v1"
+TOOL_CHAIN_TURN_TYPES = frozenset({"after_tool_result", "initial_or_text"})
+TOOL_CHAIN_OUTCOMES = frozenset(
+    {
+        "final_after_tool",
+        "final_without_tool",
+        "invalid_or_unresolved",
+        "tool_call",
+    }
+)
+TOOL_CHAIN_WATCHDOG_STATES = frozenset(
+    {
+        "normal",
+        "not_applied",
+        "not_required",
+        "passthrough",
+        "repaired",
+        "exhausted",
+    }
+)
+BRIDGE_MODES = frozenset({"transparent", "governed"})
+BRIDGE_TOOL_TRANSPORTS = frozenset({"local_text_adapter"})
+BRIDGE_STATE_RETENTIONS = frozenset({"ephemeral", "session"})
+SAFE_TOOL_CHAIN_CALL_NAMES = frozenset({"tool_search"})
+LOCAL_TOOL_CHAIN_CALL_NAMES = {
+    "apply_patch": "local_file_patch",
+    "exec_command": "local_shell",
+    "write_stdin": "local_process_input",
+}
 
 _LOCK = threading.RLock()
+_EVENT_LOG_LOCK = threading.RLock()
 _EVENTS: deque[dict[str, Any]] = deque(maxlen=MAX_EVENTS)
+_EVENTS_RESTORED = False
 
 
 def _clean(value: Any) -> str:
@@ -46,6 +81,10 @@ def _int(value: Any) -> int:
         return 0
 
 
+def _bounded_int(value: Any, *, maximum: int = 1_000_000) -> int:
+    return min(_int(value), maximum)
+
+
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
 
@@ -65,6 +104,184 @@ def _route_receipt(response: Mapping[str, Any]) -> dict[str, Any]:
     if direct:
         return direct
     return _nested(norman, "facade_receipt", "route_receipt")
+
+
+def _safe_tool_chain_call_name(value: Any) -> str:
+    """Classify a returned tool name without retaining arbitrary model output."""
+
+    name = _lower(value)
+    if name in SAFE_TOOL_CHAIN_CALL_NAMES:
+        return name
+    if name in LOCAL_TOOL_CHAIN_CALL_NAMES:
+        return LOCAL_TOOL_CHAIN_CALL_NAMES[name]
+    if name.startswith("ops_openbrand."):
+        suffix = name.removeprefix("ops_openbrand.")
+        if suffix and suffix.replace("_", "").replace(".", "").isalnum():
+            return f"ops_openbrand.{suffix}"
+    if name.startswith("mcp__"):
+        return "internal_mcp"
+    return "connected_tool"
+
+
+def _safe_response_tool_call_names(response: Mapping[str, Any]) -> list[str]:
+    """Return at most eight sanitized function-call names from a response."""
+
+    names: list[str] = []
+    for item in response.get("output", []):
+        if not isinstance(item, Mapping):
+            continue
+        if _clean(item.get("type")) != "function_call":
+            continue
+        name = _safe_tool_chain_call_name(item.get("name"))
+        if name in names:
+            continue
+        names.append(name)
+        if len(names) == 8:
+            break
+    return names
+
+
+def _safe_identifier(value: Any, *, maximum: int = 192) -> str:
+    """Keep model, provider, and error-code labels bounded and display-safe."""
+
+    candidate = _clean(value)
+    if not candidate:
+        return ""
+    allowed = frozenset(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:/@+-"
+    )
+    if any(character not in allowed for character in candidate):
+        return "unknown"
+    return candidate[:maximum]
+
+
+def _safe_bridge_metadata(
+    response: Mapping[str, Any],
+    error: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Extract a bounded bridge receipt without retaining request content."""
+
+    for source in (response, error):
+        norman = _mapping(source.get("norman"))
+        compatibility = _mapping(norman.get("responses_compatibility"))
+        budget = _mapping(norman.get("output_token_budget"))
+        if not compatibility and not budget:
+            continue
+        route = _mapping(norman.get("route"))
+        fallback = _mapping(norman.get("cloud_fallback"))
+        bridge_mode = _clean(compatibility.get("tool_bridge_mode"))
+        tool_transport = _clean(compatibility.get("tool_transport"))
+        state_retention = _clean(compatibility.get("state_retention"))
+        provider = _safe_identifier(
+            route.get("selected_provider") or fallback.get("fallback_provider")
+        )
+        model = _safe_identifier(
+            route.get("selected_model")
+            or source.get("model")
+            or fallback.get("fallback_model")
+        )
+        return {
+            "mode": bridge_mode if bridge_mode in BRIDGE_MODES else "unknown",
+            "tool_transport": (
+                tool_transport
+                if tool_transport in BRIDGE_TOOL_TRANSPORTS
+                else "unknown"
+            ),
+            "state_retention": (
+                state_retention
+                if state_retention in BRIDGE_STATE_RETENTIONS
+                else "unknown"
+            ),
+            "effective_backend": {
+                "provider": provider or "unknown",
+                "model": model or "unknown",
+            },
+            "output_token_budget": {
+                "requested": _bounded_int(budget.get("requested")),
+                "effective": _bounded_int(budget.get("effective")),
+                "maximum": _bounded_int(budget.get("maximum")),
+            },
+            "fallback_reason": _safe_identifier(
+                fallback.get("local_failure_code"), maximum=96
+            ),
+        }
+    return {}
+
+
+def _tool_chain_completion_classification(outcome: str) -> str:
+    """Make terminal-vs-continuation state explicit in event records."""
+
+    if outcome == "tool_call":
+        return "continuation_required"
+    if outcome == "final_after_tool":
+        return "completed_after_tool"
+    if outcome == "final_without_tool":
+        return "completed_without_tool"
+    if outcome == "invalid_or_unresolved":
+        return "unresolved"
+    return "unknown"
+
+
+def _safe_tool_chain_metadata(
+    response: Mapping[str, Any],
+    error: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Extract only bounded, non-content tool-chain observability fields."""
+
+    raw_tool_chain: dict[str, Any] = {}
+    for source in (response, error):
+        norman = _mapping(source.get("norman"))
+        compatibility = _mapping(norman.get("responses_compatibility"))
+        candidate = _mapping(compatibility.get("tool_chain"))
+        if candidate:
+            raw_tool_chain = candidate
+            break
+    if _clean(raw_tool_chain.get("schema")) != TOOL_CHAIN_SCHEMA:
+        return {}
+
+    watchdog = _mapping(raw_tool_chain.get("watchdog"))
+    turn_type = _clean(raw_tool_chain.get("turn_type"))
+    outcome = _clean(raw_tool_chain.get("outcome"))
+    watchdog_state = _clean(watchdog.get("state"))
+    safe_outcome = outcome if outcome in TOOL_CHAIN_OUTCOMES else "unknown"
+    return {
+        "schema": TOOL_CHAIN_SCHEMA,
+        "turn_type": turn_type if turn_type in TOOL_CHAIN_TURN_TYPES else "unknown",
+        "chain_depth": _int(raw_tool_chain.get("chain_depth")),
+        "tool_results_supplied": _int(raw_tool_chain.get("tool_results_supplied")),
+        "tool_results_matched": _int(raw_tool_chain.get("tool_results_matched")),
+        "tool_calls_returned": _int(raw_tool_chain.get("tool_calls_returned")),
+        "tool_call_names": _safe_response_tool_call_names(response),
+        "outcome": safe_outcome,
+        "completion_classification": _tool_chain_completion_classification(
+            safe_outcome
+        ),
+        "watchdog_state": (
+            watchdog_state
+            if watchdog_state in TOOL_CHAIN_WATCHDOG_STATES
+            else "unknown"
+        ),
+        "watchdog_attempts": _int(watchdog.get("attempts")),
+    }
+
+
+def _sanitized_error_payload(error: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep normal error metadata while excluding raw tool-chain content."""
+
+    payload = dict(error)
+    norman = _mapping(payload.get("norman"))
+    if not norman:
+        return payload
+    compatibility = _mapping(norman.get("responses_compatibility"))
+    if "tool_chain" not in compatibility:
+        return payload
+    compatibility.pop("tool_chain", None)
+    if compatibility:
+        norman["responses_compatibility"] = compatibility
+    else:
+        norman.pop("responses_compatibility", None)
+    payload["norman"] = norman
+    return payload
 
 
 def _receipt_audit_passed(receipt: Mapping[str, Any]) -> bool:
@@ -151,9 +368,35 @@ def _usage_from_response(response: Mapping[str, Any]) -> dict[str, int]:
 
 def _event_log_path() -> Path | None:
     configured = _clean(os.environ.get(EVENT_LOG_ENV))
-    if not configured:
+    if configured.lower() in DISABLED_EVENT_LOG_VALUES:
         return None
-    return Path(configured).expanduser()
+    return Path(configured).expanduser() if configured else DEFAULT_EVENT_LOG_PATH
+
+
+def _event_log_max_bytes() -> int:
+    try:
+        configured = int(os.environ.get(EVENT_LOG_MAX_BYTES_ENV, 0) or 0)
+    except (TypeError, ValueError):
+        configured = 0
+    return max(
+        4096,
+        min(configured or DEFAULT_EVENT_LOG_MAX_BYTES, 100 * 1024 * 1024),
+    )
+
+
+def _rotate_event_log(path: Path, *, incoming_bytes: int) -> None:
+    """Keep a current event log and one prior generation."""
+
+    try:
+        if not path.exists():
+            return
+        if path.stat().st_size + incoming_bytes <= _event_log_max_bytes():
+            return
+        previous = path.with_name(f"{path.name}.1")
+        previous.unlink(missing_ok=True)
+        path.replace(previous)
+    except OSError:
+        return
 
 
 def _append_jsonl(event: Mapping[str, Any]) -> None:
@@ -161,14 +404,70 @@ def _append_jsonl(event: Mapping[str, Any]) -> None:
     if path is None:
         return
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(event, sort_keys=True, separators=(",", ":")))
-            handle.write("\n")
+        serialized = json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n"
+        with _EVENT_LOG_LOCK:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _rotate_event_log(path, incoming_bytes=len(serialized.encode("utf-8")))
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(serialized)
     except OSError:
         # Observability must never break the proxy path. The in-memory ring still
         # exposes current process evidence when durable logging is unavailable.
         return
+
+
+def _read_event_log(path: Path) -> list[dict[str, Any]]:
+    records: deque[dict[str, Any]] = deque(maxlen=MAX_EVENTS)
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    value = json.loads(line)
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(value, Mapping):
+                    records.append(dict(value))
+    except OSError:
+        return []
+    return list(records)
+
+
+def restore_proxy_events_from_log(*, force: bool = False) -> int:
+    """Restore the bounded durable event window after a facade restart."""
+
+    global _EVENTS_RESTORED
+    with _LOCK:
+        if _EVENTS_RESTORED and not force:
+            return 0
+        existing = list(_EVENTS)
+
+    path = _event_log_path()
+    restored: list[dict[str, Any]] = []
+    if path is not None:
+        previous = path.with_name(f"{path.name}.1")
+        with _EVENT_LOG_LOCK:
+            restored.extend(_read_event_log(previous))
+            restored.extend(_read_event_log(path))
+
+    with _LOCK:
+        if _EVENTS_RESTORED and not force:
+            return 0
+        merged: dict[str, dict[str, Any]] = {}
+        for event in [*restored, *existing, *list(_EVENTS)]:
+            event_id = _clean(event.get("event_id"))
+            key = event_id or json.dumps(event, sort_keys=True, default=str)
+            merged[key] = event
+        ordered = sorted(
+            merged.values(),
+            key=lambda event: (
+                float(event.get("created_at") or 0),
+                _clean(event.get("event_id")),
+            ),
+        )[-MAX_EVENTS:]
+        _EVENTS.clear()
+        _EVENTS.extend(ordered)
+        _EVENTS_RESTORED = True
+    return len(restored)
 
 
 def _client_from_headers(headers: Mapping[str, Any] | None) -> dict[str, str]:
@@ -213,6 +512,11 @@ def record_proxy_event(
     receipt_audit = _mapping(receipt.get("receipt_audit"))
     completion_gate = _mapping(receipt.get("completion_gate"))
     usage = _usage_from_response(response)
+    raw_error_payload = dict(error or {})
+    tool_chain = _safe_tool_chain_metadata(response, raw_error_payload)
+    bridge = _safe_bridge_metadata(response, raw_error_payload)
+    error_payload = _sanitized_error_payload(raw_error_payload)
+    error_norman = _mapping(error_payload.get("norman"))
     now = time.time()
     event = {
         "schema": "norman.proxy.event.v1",
@@ -221,7 +525,9 @@ def record_proxy_event(
         "created_at_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
         "endpoint": endpoint,
         "method": method.upper(),
-        "request_id": request_id or _clean(norman.get("request_id")),
+        "request_id": request_id
+        or _clean(norman.get("request_id"))
+        or _clean(error_norman.get("request_id")),
         "gateway_route": _clean(norman.get("gateway_route"))
         or _clean(gateway.get("gateway_route")),
         "source_tui": _clean(gateway.get("source_tui")),
@@ -232,11 +538,13 @@ def record_proxy_event(
         "status": status,
         "http_status": int(http_status),
         **_client_from_headers(headers),
-        "requested_model": _clean(payload.get("model")),
+        "requested_model": _clean(payload.get("model"))
+        or _clean(error_norman.get("requested_model")),
         "selected_runtime": _clean(route_envelope.get("selected_runtime")),
         "selected_provider": _clean(route_envelope.get("selected_provider")),
         "selected_model": _clean(route_envelope.get("selected_model"))
-        or _clean(response.get("model")),
+        or _clean(response.get("model"))
+        or _clean(error_norman.get("selected_model")),
         "intent": _clean(classification.get("intent")),
         "task_kind": _clean(classification.get("task_kind")),
         "routing_strategy": _clean(strategy.get("strategy")),
@@ -273,8 +581,12 @@ def record_proxy_event(
         ),
         "route_authority": _clean(receipt.get("route_authority")),
         "usage": usage,
+        "tool_chain": tool_chain,
+        "bridge": bridge,
         "latency_ms": round(float(latency_ms or 0), 3),
-        "error": dict(error or {}),
+        "error": error_payload,
+        "error_code": _clean(error_payload.get("code")),
+        "retryable": _flag(error_norman.get("retryable")),
         **request_fingerprint(payload),
     }
     with _LOCK:
@@ -284,11 +596,14 @@ def record_proxy_event(
 
 
 def reset_proxy_events() -> None:
+    global _EVENTS_RESTORED
     with _LOCK:
         _EVENTS.clear()
+        _EVENTS_RESTORED = True
 
 
 def proxy_events_snapshot(limit: int = 100) -> list[dict[str, Any]]:
+    restore_proxy_events_from_log()
     limit = max(1, min(int(limit or 100), MAX_EVENTS))
     with _LOCK:
         return list(_EVENTS)[-limit:]
@@ -304,6 +619,11 @@ def proxy_observability_summary(limit: int = 100) -> dict[str, Any]:
     events = proxy_events_snapshot(limit=limit)
     total = len(events)
     statuses = Counter(_clean(event.get("status")) or "unknown" for event in events)
+    error_codes = Counter(
+        _clean(event.get("error_code"))
+        for event in events
+        if _clean(event.get("error_code"))
+    )
     by_endpoint = Counter(_clean(event.get("endpoint")) for event in events)
     by_client = Counter(_clean(event.get("client")) for event in events)
     by_worker = Counter(
@@ -362,6 +682,49 @@ def proxy_observability_summary(limit: int = 100) -> dict[str, Any]:
         for event in events
         if event.get("status") == "success" and not _clean(event.get("request_id"))
     )
+    capacity_unavailable_count = sum(
+        1
+        for event in events
+        if event.get("status") == "capacity_unavailable"
+        or _clean(event.get("error_code")).startswith("local_capacity_")
+    )
+    local_timeout_count = sum(
+        1
+        for event in events
+        if _clean(event.get("error_code")) == "local_model_timeout"
+    )
+    local_gateway_error_count = sum(
+        1
+        for event in events
+        if event.get("status") == "local_gateway_error"
+        or _clean(event.get("error_code")).startswith("local_gateway_")
+    )
+    tool_chain_events = [
+        _mapping(event.get("tool_chain"))
+        for event in events
+        if _clean(_mapping(event.get("tool_chain")).get("schema")) == TOOL_CHAIN_SCHEMA
+    ]
+    tool_chain_repaired_count = sum(
+        1
+        for tool_chain in tool_chain_events
+        if _clean(tool_chain.get("watchdog_state")) == "repaired"
+    )
+    tool_chain_exhausted_count = sum(
+        1
+        for tool_chain in tool_chain_events
+        if _clean(tool_chain.get("watchdog_state")) == "exhausted"
+    )
+    bridge_events = [
+        _mapping(event.get("bridge"))
+        for event in events
+        if _mapping(event.get("bridge"))
+    ]
+    bridge_modes = Counter(
+        _clean(bridge.get("mode")) or "unknown" for bridge in bridge_events
+    )
+    bridge_fallback_count = sum(
+        1 for bridge in bridge_events if _clean(bridge.get("fallback_reason"))
+    )
     usage_totals = {
         "local_tokens": sum(
             _int(_mapping(event.get("usage")).get("local_tokens")) for event in events
@@ -388,6 +751,7 @@ def proxy_observability_summary(limit: int = 100) -> dict[str, Any]:
         "event_count": total,
         "window_limit": max(1, min(int(limit or 100), MAX_EVENTS)),
         "statuses": dict(statuses),
+        "error_codes": dict(error_codes),
         "by_endpoint": dict(by_endpoint),
         "by_client": dict(by_client),
         "by_worker": dict(by_worker),
@@ -401,6 +765,15 @@ def proxy_observability_summary(limit: int = 100) -> dict[str, Any]:
         "completion_gate_failed_success_count": completion_gate_failed_success_count,
         "unknown_execution_mode_success_count": unknown_execution_mode_success_count,
         "request_id_missing_success_count": request_id_missing_success_count,
+        "capacity_unavailable_count": capacity_unavailable_count,
+        "local_timeout_count": local_timeout_count,
+        "local_gateway_error_count": local_gateway_error_count,
+        "tool_chain_event_count": len(tool_chain_events),
+        "tool_chain_repaired_count": tool_chain_repaired_count,
+        "tool_chain_exhausted_count": tool_chain_exhausted_count,
+        "bridge_event_count": len(bridge_events),
+        "bridge_modes": dict(bridge_modes),
+        "bridge_fallback_count": bridge_fallback_count,
         "cloud_forward_count": cloud_forward_count,
         "cloud_proxy_count": cloud_proxy_count,
         "workerless_local_success_count": workerless_count,
@@ -542,6 +915,60 @@ def proxy_alerts(
                 "severity": "warn",
                 "kind": "proxy_execution_errors",
                 "message": f"{errors} proxy execution error(s) were recorded.",
+            }
+        )
+    capacity_unavailable = int(summary.get("capacity_unavailable_count") or 0)
+    if capacity_unavailable:
+        alerts.append(
+            {
+                "severity": "warn",
+                "kind": "proxy_local_capacity_unavailable",
+                "message": (
+                    f"{capacity_unavailable} local capacity-unavailable event(s) "
+                    "were recorded."
+                ),
+            }
+        )
+    local_timeouts = int(summary.get("local_timeout_count") or 0)
+    if local_timeouts:
+        alerts.append(
+            {
+                "severity": "warn",
+                "kind": "proxy_local_model_timeouts",
+                "message": f"{local_timeouts} local model timeout(s) were recorded.",
+            }
+        )
+    gateway_errors = int(summary.get("local_gateway_error_count") or 0)
+    if gateway_errors:
+        alerts.append(
+            {
+                "severity": "warn",
+                "kind": "proxy_local_gateway_errors",
+                "message": f"{gateway_errors} local gateway error(s) were recorded.",
+            }
+        )
+    tool_chain_repaired = int(summary.get("tool_chain_repaired_count") or 0)
+    if tool_chain_repaired:
+        alerts.append(
+            {
+                "severity": "warn",
+                "kind": "proxy_tool_chain_watchdog_repaired",
+                "message": (
+                    f"{tool_chain_repaired} tool-chain continuation(s) required "
+                    "the bounded repair."
+                ),
+            }
+        )
+    tool_chain_exhausted = int(summary.get("tool_chain_exhausted_count") or 0)
+    if tool_chain_exhausted:
+        alerts.append(
+            {
+                "severity": "critical",
+                "kind": "proxy_tool_chain_watchdog_exhausted",
+                "message": (
+                    f"{tool_chain_exhausted} tool-chain continuation(s) remained "
+                    "invalid after the bounded repair."
+                ),
             }
         )
     return {

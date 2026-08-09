@@ -843,6 +843,274 @@ def test_db_console_runtime_worker_runs_bounded_goal_loop(db):
     assert result["snapshot"]["route_summary"]["cloud_evidence_count"] == 0
 
 
+def test_db_console_runtime_worker_durable_verify_requires_exact_status_line(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-durable-status-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Verify the durable workstream before completion",
+            durable_workstream=True,
+            route_policy={"provider": "norllama"},
+        ),
+    )
+    adapter = FakeModelAdapter(
+        responses=["STATUS: COMPLETE - verification is finished."],
+        name="runtime-dry-run",
+        model="runtime-dry-run",
+    )
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-durable-status-test",
+            dry_run=True,
+            complete=True,
+            durable_workstream=True,
+            include_capabilities=False,
+            metadata={"goal_phase": "verify"},
+        ),
+        adapter=adapter,
+    )
+
+    capsule = result["job"]["checkpoint_capsules"][-1]
+
+    assert result["job"]["status"] == "checkpointed"
+    assert result["verification_signal"] == ""
+    assert "Phase: verify" in capsule["facts"]
+    assert "Verifier state: pending" in capsule["facts"]
+    assert len(capsule["progress_fingerprint"]) == 64
+
+
+def test_db_console_runtime_worker_durable_verify_completes_with_proof(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-durable-complete-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Verify the durable workstream before completion",
+            durable_workstream=True,
+            route_policy={"provider": "norllama"},
+        ),
+    )
+    adapter = FakeModelAdapter(
+        responses=[_proof_model_result(job_id, "STATUS: COMPLETE\nVerified.")],
+        name="norllama",
+        model="qwen3:8b",
+    )
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-durable-complete-test",
+            dry_run=True,
+            complete=True,
+            durable_workstream=True,
+            include_capabilities=False,
+            metadata={"goal_phase": "verify"},
+        ),
+        adapter=adapter,
+    )
+
+    assert result["job"]["status"] == "done"
+    assert result["verification_signal"] == "complete"
+    assert result["route_proof"]["gate_passed"] is True
+    assert result["job"]["verification_receipts"][-1]["status"] == "pass"
+
+
+def test_db_console_runtime_worker_durable_verify_checkpoints_needs_more_work(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-durable-needs-work-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Verify the durable workstream before completion",
+            durable_workstream=True,
+            route_policy={"provider": "norllama"},
+        ),
+    )
+    adapter = FakeModelAdapter(
+        responses=["STATUS: NEEDS_MORE_WORK\nAdd the missing evidence."],
+        name="runtime-dry-run",
+        model="runtime-dry-run",
+    )
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-durable-needs-work-test",
+            dry_run=True,
+            complete=True,
+            durable_workstream=True,
+            include_capabilities=False,
+            metadata={"goal_phase": "verify"},
+        ),
+        adapter=adapter,
+    )
+
+    events = store.events_after(db, user_id=user.id, job_id=job_id)
+
+    assert result["job"]["status"] == "checkpointed"
+    assert result["verification_signal"] == "needs_more_work"
+    assert any(event.event_type == "verification.needs_more_work" for event in events)
+
+
+def test_db_console_runtime_worker_durable_pauses_on_repeated_output(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-durable-no-progress-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Continue the substantive work until it is verified",
+            durable_workstream=True,
+            route_policy={"provider": "norllama"},
+        ),
+    )
+    adapter = FakeModelAdapter(
+        responses=[
+            "No change from the prior work step.",
+            "No change from the prior work step.",
+        ],
+        name="runtime-dry-run",
+        model="runtime-dry-run",
+    )
+
+    result = worker.run_continuous(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-durable-no-progress-test",
+            dry_run=True,
+            continuous=True,
+            durable_workstream=True,
+            max_steps=2,
+            goal_phase_sequence=["work"],
+            include_capabilities=False,
+        ),
+        adapter=adapter,
+    )
+
+    events = store.events_after(db, user_id=user.id, job_id=job_id)
+    no_progress = next(
+        event for event in events if event.event_type == "goal.no_progress"
+    )
+
+    assert result["job"]["status"] == "checkpointed"
+    assert result["steps_completed"] == 2
+    assert result["stop_reason"] == "no_progress"
+    assert no_progress.payload["reason"] == "repeated_model_output"
+
+
+def test_db_console_runtime_worker_durable_pauses_on_repeated_verifier_deferral(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-durable-repeated-deferral-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Keep working through verifier feedback",
+            durable_workstream=True,
+            route_policy={"provider": "norllama"},
+        ),
+    )
+    adapter = FakeModelAdapter(
+        responses=[
+            "Plan the remaining work.",
+            "Collect the first evidence.",
+            "STATUS: NEEDS_MORE_WORK\nA validation is still missing.",
+            "Collect the additional evidence.",
+            "STATUS: NEEDS_MORE_WORK\nA validation is still missing.",
+        ],
+        name="runtime-dry-run",
+        model="runtime-dry-run",
+    )
+
+    result = worker.run_continuous(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-durable-repeated-deferral-test",
+            dry_run=True,
+            continuous=True,
+            durable_workstream=True,
+            max_steps=5,
+            goal_phase_sequence=["plan", "work", "verify"],
+            include_capabilities=False,
+        ),
+        adapter=adapter,
+    )
+
+    events = store.events_after(db, user_id=user.id, job_id=job_id)
+    no_progress = next(
+        event for event in events if event.event_type == "goal.no_progress"
+    )
+
+    assert result["job"]["status"] == "checkpointed"
+    assert result["steps_completed"] == 5
+    assert result["stop_reason"] == "no_progress"
+    assert no_progress.payload["reason"] == "repeated_needs_more_work"
+
+
+def test_db_console_runtime_worker_honors_durable_authority_flag(db):
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-durable-authority-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Do not complete without durable verifier evidence",
+            authority_flags={"durable_workstream": True},
+            route_policy={"provider": "norllama"},
+        ),
+    )
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-durable-authority-test",
+            dry_run=True,
+            complete=True,
+            include_capabilities=False,
+            metadata={"goal_phase": "work"},
+        ),
+    )
+
+    assert result["durable_workstream"] is True
+    assert result["job"]["status"] == "checkpointed"
+
+
 def test_db_console_runtime_worker_runs_literal_response_phase_as_chat(db):
     user = _ensure_user(db)
     store = DbConsoleRuntimeStore()
@@ -2331,6 +2599,55 @@ def test_db_console_runtime_worker_checkpoints_shell_for_required_verification(
 
     assert result["job"]["status"] == "checkpointed"
     assert "pending verification receipt" in result["job"]["checkpoints"][-1]
+    assert result["job"]["verification_receipts"] == []
+
+
+def test_db_console_runtime_worker_checkpoints_durable_shell_workstream(
+    db, monkeypatch
+):
+    class SuccessfulShellAdapter:
+        def evaluate(self, request):
+            return CommandDecision("allow", "read", "test shell command")
+
+        def run(self, request):
+            return ShellResult(
+                command=request.command,
+                returncode=0,
+                stdout="workspace",
+                policy={"decision": "allow"},
+            )
+
+    user = _ensure_user(db)
+    store = DbConsoleRuntimeStore()
+    worker = DbConsoleRuntimeWorker(store)
+    job_id = f"job-worker-durable-shell-{uuid.uuid4().hex}"
+    store.create_job(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        contract=ConsoleJobContract(
+            objective="Inspect the working directory as durable work",
+            durable_workstream=True,
+            route_policy={"runtime": "shell", "command": "pwd"},
+        ),
+    )
+    monkeypatch.setattr(worker_module, "ShellRuntimeAdapter", SuccessfulShellAdapter)
+
+    result = worker.run_once(
+        db,
+        user_id=user.id,
+        job_id=job_id,
+        options=ConsoleRuntimeRunOptions(
+            worker_id="worker-durable-shell",
+            dry_run=False,
+            live_execution_approved=True,
+            durable_workstream=True,
+        ),
+    )
+
+    assert result["durable_workstream"] is True
+    assert result["job"]["status"] == "checkpointed"
+    assert "pending explicit verifier completion" in result["job"]["checkpoints"][-1]
     assert result["job"]["verification_receipts"] == []
 
 

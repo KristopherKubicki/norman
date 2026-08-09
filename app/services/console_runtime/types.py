@@ -166,6 +166,7 @@ class ConsoleCheckpointCapsule:
     attempt_id: str = ""
     lease_epoch: int = 0
     trace_id: str = ""
+    progress_fingerprint: str = ""
     schema: str = "norman.console-runtime.checkpoint-capsule.v1"
     created_at: str = field(default_factory=utc_now_iso)
 
@@ -183,6 +184,7 @@ class ConsoleCheckpointCapsule:
         self.attempt_id = str(self.attempt_id or "").strip()
         self.lease_epoch = max(0, int(self.lease_epoch or 0))
         self.trace_id = str(self.trace_id or "").strip()
+        self.progress_fingerprint = str(self.progress_fingerprint or "").strip()
         self.schema = str(self.schema or "").strip() or (
             "norman.console-runtime.checkpoint-capsule.v1"
         )
@@ -309,6 +311,7 @@ class ConsoleJobContract:
     max_runtime_seconds: int = 7200
     checkpoint_interval_seconds: int = 900
     question_budget: int = 1
+    durable_workstream: bool = False
     approval_required_for: List[str] = field(default_factory=list)
     authority_flags: Dict[str, Any] = field(default_factory=dict)
     route_policy: Dict[str, Any] = field(default_factory=dict)
@@ -327,6 +330,7 @@ class ConsoleJobContract:
             1, int(self.checkpoint_interval_seconds or 1)
         )
         self.question_budget = max(0, int(self.question_budget or 0))
+        self.durable_workstream = bool(self.durable_workstream)
         self.authority_flags = _clean_dict(self.authority_flags)
         self.route_policy = _clean_dict(self.route_policy)
         self.metadata = _clean_dict(self.metadata)
@@ -346,6 +350,7 @@ class ConsoleSubtaskContract:
     max_runtime_seconds: int = 1800
     checkpoint_interval_seconds: int = 300
     question_budget: int = 0
+    durable_workstream: bool = False
     approval_required_for: List[str] = field(default_factory=list)
     authority_flags: Dict[str, Any] = field(default_factory=dict)
     route_policy: Dict[str, Any] = field(default_factory=dict)
@@ -369,6 +374,7 @@ class ConsoleSubtaskContract:
             1, int(self.checkpoint_interval_seconds or 1)
         )
         self.question_budget = max(0, int(self.question_budget or 0))
+        self.durable_workstream = bool(self.durable_workstream)
         self.authority_flags = _clean_dict(self.authority_flags)
         self.route_policy = _clean_dict(self.route_policy)
         self.metadata = _clean_dict(self.metadata)
@@ -427,6 +433,7 @@ class ConsoleSubtaskContract:
             max_runtime_seconds=self.max_runtime_seconds,
             checkpoint_interval_seconds=self.checkpoint_interval_seconds,
             question_budget=self.question_budget,
+            durable_workstream=self.durable_workstream,
             approval_required_for=self.approval_required_for,
             authority_flags=authority_flags,
             route_policy=route_policy,

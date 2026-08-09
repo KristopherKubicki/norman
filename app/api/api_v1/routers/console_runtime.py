@@ -219,6 +219,7 @@ def _kernel_capability_payload() -> dict[str, Any]:
             "explicit_cloud_escalation": True,
             "norllama_frontdoor": True,
             "continuous_goal_loop": True,
+            "durable_workstreams": True,
             "phased_goal_loop": True,
             "bounded_goal_runs": True,
             "local_token_budget": True,
@@ -263,6 +264,7 @@ class ConsoleRuntimeJobCreate(BaseModel):
     max_runtime_seconds: int = 7200
     checkpoint_interval_seconds: int = 900
     question_budget: int = 1
+    durable_workstream: bool = False
     approval_required_for: list[str] = Field(default_factory=list)
     authority_flags: dict[str, Any] = Field(default_factory=dict)
     route_policy: dict[str, Any] = Field(default_factory=dict)
@@ -287,6 +289,7 @@ class ConsoleRuntimeSubtaskCreate(BaseModel):
     max_runtime_seconds: int = 1800
     checkpoint_interval_seconds: int = 300
     question_budget: int = 0
+    durable_workstream: bool = False
     approval_required_for: list[str] = Field(default_factory=list)
     authority_flags: dict[str, Any] = Field(default_factory=dict)
     route_policy: dict[str, Any] = Field(default_factory=dict)
@@ -380,6 +383,7 @@ class ConsoleRuntimeRunCreate(BaseModel):
     dry_run: bool = True
     complete: bool = True
     continuous: bool = False
+    durable_workstream: bool = False
     max_steps: int = 1
     max_runtime_seconds: int = 0
     local_token_budget: int = 0
@@ -814,6 +818,7 @@ async def create_console_runtime_workstream_subtasks(
                     max_runtime_seconds=item.max_runtime_seconds,
                     checkpoint_interval_seconds=item.checkpoint_interval_seconds,
                     question_budget=item.question_budget,
+                    durable_workstream=item.durable_workstream,
                     approval_required_for=item.approval_required_for,
                     authority_flags=item.authority_flags,
                     route_policy=route_policy,
@@ -890,6 +895,7 @@ async def create_console_runtime_job(
             max_runtime_seconds=payload.max_runtime_seconds,
             checkpoint_interval_seconds=payload.checkpoint_interval_seconds,
             question_budget=payload.question_budget,
+            durable_workstream=payload.durable_workstream,
             approval_required_for=payload.approval_required_for,
             authority_flags=payload.authority_flags,
             route_policy=(
@@ -1194,6 +1200,7 @@ async def run_console_runtime_job_once(
             dry_run=payload.dry_run,
             complete=payload.complete,
             continuous=payload.continuous,
+            durable_workstream=payload.durable_workstream,
             max_steps=payload.max_steps,
             max_runtime_seconds=payload.max_runtime_seconds,
             local_token_budget=payload.local_token_budget,

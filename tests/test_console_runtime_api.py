@@ -251,6 +251,7 @@ def test_console_runtime_api_exposes_kernel_capabilities(test_app, monkeypatch):
     assert payload["kernel"]["supports"]["explicit_cloud_escalation"] is True
     assert payload["kernel"]["supports"]["norllama_frontdoor"] is True
     assert payload["kernel"]["supports"]["continuous_goal_loop"] is True
+    assert payload["kernel"]["supports"]["durable_workstreams"] is True
     assert payload["kernel"]["supports"]["phased_goal_loop"] is True
     assert payload["kernel"]["supports"]["bounded_goal_runs"] is True
     assert payload["kernel"]["supports"]["local_token_budget"] is True
@@ -823,6 +824,40 @@ def test_console_runtime_api_runs_continuous_goal_loop(test_app):
     assert payload["snapshot"]["category_counts"]["goal"] == 4
     assert payload["snapshot"]["category_counts"]["route"] == 2
     assert payload["snapshot"]["route_summary"]["cloud_evidence_count"] == 0
+
+
+def test_console_runtime_api_durable_run_checkpoints_without_explicit_verifier_status(
+    test_app,
+):
+    created = test_app.post(
+        "/api/v1/console-runtime/jobs",
+        json={
+            "job_id": "job-visible-api-durable-run",
+            "objective": "Complete only after an explicit durable verifier result",
+            "durable_workstream": True,
+        },
+    )
+    assert created.status_code == 200
+
+    response = test_app.post(
+        "/api/v1/console-runtime/jobs/job-visible-api-durable-run/runs",
+        json={
+            "worker_id": "api-durable-test",
+            "dry_run": True,
+            "continuous": True,
+            "durable_workstream": True,
+            "max_steps": 1,
+            "goal_phase_sequence": ["verify"],
+            "include_capabilities": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["durable_workstream"] is True
+    assert payload["job"]["status"] == "checkpointed"
+    assert payload["stop_reason"] == "max_steps"
+    assert payload["steps"][0]["verification_signal"] == ""
 
 
 def test_console_runtime_api_exposes_worker_status(test_app, monkeypatch):

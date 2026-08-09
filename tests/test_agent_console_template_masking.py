@@ -96,6 +96,12 @@ def _agent_console_launch_source() -> str:
     ).read_text(encoding="utf-8")
 
 
+def _norman_codex_launch_source() -> str:
+    return (
+        Path(__file__).resolve().parents[1] / "scripts" / "norman_codex_launch.sh"
+    ).read_text(encoding="utf-8")
+
+
 def _agent_console_supervisor_source() -> str:
     return (
         Path(__file__).resolve().parents[1]
@@ -3116,6 +3122,67 @@ def test_launch_template_includes_norman_broker_policy() -> None:
     assert "treat the current conversation as the live party line" in source
 
 
+def test_all_tui_launchers_enforce_norman_secret_guard_policy() -> None:
+    networking_prompt = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "agent_console_template"
+        / "prompts"
+        / "networking.txt"
+    ).read_text(encoding="utf-8")
+    uplink_prompt = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "agent_console_template"
+        / "prompts"
+        / "uplink.txt"
+    ).read_text(encoding="utf-8")
+
+    for source in (_agent_console_launch_source(), _norman_codex_launch_source()):
+        assert (
+            'SECRET_GUARD_SCRIPT="${LAUNCH_SCRIPT_DIR}/norman_codex_secret_guard.py"'
+            in source
+        )
+        assert "verify_managed_secret_guard" in source
+        assert "--verify-managed-policy" in source
+        assert "NORMAN_TUI_NO_DIRECT_VAULT=1" in source
+        assert '"$CODEX_HOME/hooks.json"' not in source
+        assert "--dangerously-bypass-hook-trust" not in source
+        assert (
+            "Read-only analysis, review, status checks, and recommendations never access secrets."
+            in source
+        )
+        assert (
+            "Never invoke `cred`, create or migrate a vault, or ask for a vault passphrase."
+            in source
+        )
+
+    for prompt in (networking_prompt, uplink_prompt):
+        assert "machine-local `cred` vault" not in prompt
+        assert (
+            "Read-only analysis, review, status checks, and recommendations never access secrets."
+            in prompt
+        )
+        assert "Never invoke `cred`, initialize or migrate a vault" in prompt
+
+
+def test_all_tui_launchers_cap_pytest_xdist_auto_workers() -> None:
+    for source in (_agent_console_launch_source(), _norman_codex_launch_source()):
+        assert (
+            'PYTEST_XDIST_AUTO_NUM_WORKERS="${NORMAN_CODEX_PYTEST_XDIST_AUTO_WORKERS:-4}"'
+            in source
+        )
+        assert (
+            'if [[ ! "$PYTEST_XDIST_AUTO_NUM_WORKERS" =~ ^[1-9][0-9]*$ ]]; then'
+            in source
+        )
+        assert (
+            "NORMAN_CODEX_PYTEST_XDIST_AUTO_WORKERS must be a positive integer."
+            in source
+        )
+        assert "export PYTEST_XDIST_AUTO_NUM_WORKERS" in source
+
+
 def test_launch_template_quarantines_external_auth_symlinks() -> None:
     source = _agent_console_launch_source()
 
@@ -4852,10 +4919,23 @@ def test_norman_frontdoor_caddy_serves_shortcuts_locally() -> None:
         "    }"
     ) in rendered
     assert "tls /etc/caddy/certs/norman-lollie.crt" not in rendered
+    responses_position = rendered.index("handle /v1/responses {")
     gateway_position = rendered.index("handle /v1/* {")
     root_redirect_position = rendered.index("@norman_root path /")
     fallback_position = rendered.index("handle {\n        reverse_proxy 127.0.0.1:8000")
-    assert gateway_position < root_redirect_position < fallback_position
+    assert (
+        responses_position
+        < gateway_position
+        < root_redirect_position
+        < fallback_position
+    )
+    assert (
+        "handle /v1/responses {\n"
+        "        reverse_proxy 127.0.0.1:8000 {\n"
+        "            flush_interval -1\n"
+        "            header_up X-Norman-Gateway-Route norman\n"
+        "            header_up X-Forwarded-For 127.0.0.2"
+    ) in rendered
     assert "header_up X-Norman-Gateway-Route norman" in rendered
     assert "header_up X-Forwarded-For 127.0.0.2" in rendered
 
@@ -4952,8 +5032,8 @@ def test_bot_proxy_caddy_routes_canonical_codex_hosts_to_gateway_before_console(
     assert module.GATEWAY_ROUTES == route_keys - {"norman"}
     for route_key in sorted(module.GATEWAY_ROUTES):
         assert f"header_up X-Norman-Gateway-Route {route_key}" in rendered
-    assert rendered.count("header_up X-Forwarded-For 127.0.0.2") == len(
-        module.GATEWAY_ROUTES
+    assert rendered.count("header_up X-Forwarded-For 127.0.0.2") == (
+        len(module.GATEWAY_ROUTES) * 2
     )
 
     def host_block(host: str) -> str:
@@ -4962,18 +5042,26 @@ def test_bot_proxy_caddy_routes_canonical_codex_hosts_to_gateway_before_console(
         return rendered[start:] if end == -1 else rendered[start:end]
 
     gold_book = host_block("goldbook.kris.openbrand.com")
+    assert "handle /v1/responses {" in gold_book
     assert "handle /v1/* {" in gold_book
+    assert "flush_interval -1" in gold_book
     assert "header_up X-Norman-Gateway-Route gold-book" in gold_book
-    assert gold_book.index("handle /v1/* {") < gold_book.index(
-        "handle {\n        reverse_proxy"
+    assert (
+        gold_book.index("handle /v1/responses {")
+        < gold_book.index("handle /v1/* {")
+        < gold_book.index("handle {\n        reverse_proxy")
     )
 
     infra = host_block("infra.kris.openbrand.com")
     assert "@knox_allowed remote_ip" in infra
+    assert "handle /v1/responses {" in infra
     assert "handle /v1/* {" in infra
+    assert "flush_interval -1" in infra
     assert "header_up X-Norman-Gateway-Route infra" in infra
-    assert infra.index("handle /v1/* {") < infra.index(
-        "handle {\n            reverse_proxy"
+    assert (
+        infra.index("handle /v1/responses {")
+        < infra.index("handle /v1/* {")
+        < infra.index("handle {\n            reverse_proxy")
     )
 
 
@@ -5551,13 +5639,14 @@ def test_runtime_bridge_sync_writes_broker_env_without_direct_token(
         prompt_file="/etc/scout/codex-system-prompt.txt",
         codex_home="/home/kristopher/.codex-scout",
     )
-    captured: list[list[str]] = []
+    captured: dict[str, object] = {}
 
-    def fake_capture(cmd):
-        captured.append(cmd)
+    def fake_capture_with_stdin(cmd, stdin):
+        captured["cmd"] = cmd
+        captured["stdin"] = stdin
         return "changed"
 
-    monkeypatch.setattr(module, "capture", fake_capture)
+    monkeypatch.setattr(module, "capture_with_stdin", fake_capture_with_stdin)
 
     changed = module.sync_instance_runtime_bridge_settings(
         module.HOSTS["work-special"],
@@ -5574,15 +5663,71 @@ def test_runtime_bridge_sync_writes_broker_env_without_direct_token(
     )
 
     assert changed is True
-    rendered_command = " ".join(captured[0])
-    assert "NORMAN_KEYS_TOKEN" in rendered_command
-    assert "NORMAN_CONSOLE_RUNTIME_TOKEN_SECRET" in rendered_command
-    assert "remove_keys = json.loads" in rendered_command
+    rendered_command = " ".join(captured["cmd"])
+    payload = json.loads(captured["stdin"])
+    assert "keys-token" not in rendered_command
+    assert "NORMAN_KEYS_TOKEN" not in rendered_command
+    assert "NORMAN_CONSOLE_RUNTIME_TOKEN_SECRET" not in rendered_command
+    assert "json.load(sys.stdin)" in rendered_command
     assert "for key in remove_keys" in rendered_command
+    assert payload["updates"]["NORMAN_KEYS_TOKEN"] == "keys-token"
+    assert (
+        payload["updates"]["NORMAN_CONSOLE_RUNTIME_TOKEN_SECRET"]
+        == "norman/console-runtime-token"
+    )
     for key in module.RUNTIME_BRIDGE_LEGACY_TOKEN_KEYS:
-        assert key in rendered_command
-    assert '"NORMAN_CONSOLE_RUNTIME_TOKEN":' not in rendered_command
-    assert '"NORMAN_API_TOKEN":' not in rendered_command
+        assert key in payload["remove_keys"]
+        assert key not in rendered_command
+
+
+def test_runtime_bridge_stdin_sync_deduplicates_env_entries(tmp_path: Path) -> None:
+    module = _load_sync_agent_console_template()
+    env_file = tmp_path / "codex-web.env"
+    env_file.write_text(
+        (
+            "KEEP=one\n"
+            "NORMAN_CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS=120\n"
+            "UNCHANGED=value\n"
+            "NORMAN_CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS=999\n"
+            "NORMAN_CONSOLE_RUNTIME_TOKEN=legacy-token\n"
+            "NORMAN_API_TOKEN=legacy-api-token\n"
+            "TRAILING=without-newline"
+        ),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            module.RUNTIME_BRIDGE_SETTINGS_STDIN_SCRIPT,
+            str(env_file),
+        ],
+        input=json.dumps(
+            {
+                "updates": {
+                    "NORMAN_CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS": "60",
+                },
+                "remove_keys": list(module.RUNTIME_BRIDGE_LEGACY_TOKEN_KEYS),
+            }
+        ),
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+
+    updated = env_file.read_text(encoding="utf-8")
+    assert completed.stdout == "changed\n"
+    assert updated.count("NORMAN_CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS=") == 1
+    assert "NORMAN_CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS=60\n" in updated
+    assert "NORMAN_CONSOLE_RUNTIME_TOKEN=" not in updated
+    assert "NORMAN_API_TOKEN=" not in updated
+    assert updated == (
+        "KEEP=one\n"
+        "NORMAN_CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS=60\n"
+        "UNCHANGED=value\n"
+        "TRAILING=without-newline"
+    )
 
 
 def test_runtime_bridge_sync_applies_polling_guards_without_broker_reference(
@@ -5605,13 +5750,14 @@ def test_runtime_bridge_sync_applies_polling_guards_without_broker_reference(
         prompt_file="/etc/autocamera/codex-system-prompt.txt",
         codex_home="/home/kristopher/.codex-autocamera",
     )
-    captured: list[list[str]] = []
+    captured: dict[str, object] = {}
 
-    def fake_capture(cmd):
-        captured.append(cmd)
+    def fake_capture_with_stdin(cmd, stdin):
+        captured["cmd"] = cmd
+        captured["stdin"] = stdin
         return "changed"
 
-    monkeypatch.setattr(module, "capture", fake_capture)
+    monkeypatch.setattr(module, "capture_with_stdin", fake_capture_with_stdin)
 
     changed = module.sync_instance_runtime_bridge_settings(
         module.HOSTS["hal"],
@@ -5620,19 +5766,21 @@ def test_runtime_bridge_sync_applies_polling_guards_without_broker_reference(
     )
 
     assert changed is True
-    rendered_command = " ".join(captured[0])
-    assert '"NORMAN_CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS":"60"' in rendered_command
+    rendered_command = " ".join(captured["cmd"])
+    payload = json.loads(captured["stdin"])
+    assert payload["updates"]["NORMAN_CONSOLE_RUNTIME_SNAPSHOT_TTL_SECONDS"] == "60"
     assert (
-        '"NORMAN_CONSOLE_RUNTIME_TOKEN_AUTH_RETRY_SECONDS":"3600"' in rendered_command
+        payload["updates"]["NORMAN_CONSOLE_RUNTIME_TOKEN_AUTH_RETRY_SECONDS"] == "3600"
     )
     assert (
-        '"NORMAN_CONSOLE_RUNTIME_WORKSTREAM_RETRY_SECONDS":"21600"' in rendered_command
+        payload["updates"]["NORMAN_CONSOLE_RUNTIME_WORKSTREAM_RETRY_SECONDS"] == "21600"
     )
     assert "NORMAN_KEYS_TOKEN" not in rendered_command
     assert "NORMAN_CONSOLE_RUNTIME_TOKEN_SECRET" not in rendered_command
-    assert "remove_keys = json.loads('[]')" in rendered_command
-    assert '"NORMAN_CONSOLE_RUNTIME_TOKEN"' not in rendered_command
-    assert '"NORMAN_API_TOKEN"' not in rendered_command
+    assert "json.load(sys.stdin)" in rendered_command
+    assert payload["remove_keys"] == []
+    assert "NORMAN_CONSOLE_RUNTIME_TOKEN" not in rendered_command
+    assert "NORMAN_API_TOKEN" not in rendered_command
 
 
 def test_kernel_rollout_sync_writes_backend_env(monkeypatch) -> None:
@@ -5683,13 +5831,15 @@ def test_local_sync_systemd_units_target_the_local_host() -> None:
     timer = _systemd_unit_source("norman-agent-console-sync-local.timer")
 
     assert "sync_agent_console_template.py --targets %H --restart-web-only" in service
-    assert "User=kristopher" in service
-    assert "Group=kristopher" in service
+    assert "User=root" in service
+    assert "Group=root" in service
     assert "RuntimeDirectory=norman-agent-console-sync" in service
     assert "/run/norman-agent-console-sync/sync-local.lock" in service
     assert "PYTHONPATH=/home/kristopher/code/norman" in service
     assert "NORMAN_SYNC_EXECUTION_HOST=%H" in service
     assert "/home/kristopher/code/norman/.venv/bin/python" in service
+    assert "PYTHONPATH=%h/code/norman" in user_service
+    assert "%h/code/norman/.venv/bin/python" in user_service
     profile_source = (
         "NORMAN_SYNC_NON_WORK_BEDROCK_PROFILE_SOURCE="
         "/home/kristopher/.codex-nonwork/personal-bedrock.config.toml"
