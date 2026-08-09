@@ -962,6 +962,18 @@ def _tool_name(tool: Mapping[str, Any]) -> str:
     return _clean(function.get("name") or tool.get("name"))
 
 
+def _namespace_member_name(namespace: str, member: Mapping[str, Any]) -> str:
+    member_type = _clean(member.get("type"))
+    if member_type and member_type != "function":
+        return ""
+    member_name = _tool_name(member)
+    if not member_name:
+        return ""
+    if member_name.startswith(f"{namespace}."):
+        return member_name
+    return f"{namespace}.{member_name}"
+
+
 def _tool_names(tools: list[dict[str, Any]]) -> set[str]:
     names: set[str] = set()
     for tool in tools:
@@ -978,16 +990,9 @@ def _tool_names(tools: list[dict[str, Any]]) -> set[str]:
         for member in members:
             if not isinstance(member, Mapping):
                 continue
-            member_type = _clean(member.get("type"))
-            if member_type and member_type != "function":
-                continue
-            member_name = _tool_name(member)
-            if not member_name:
-                continue
-            if member_name.startswith(f"{namespace}."):
+            member_name = _namespace_member_name(namespace, member)
+            if member_name:
                 names.add(member_name)
-            else:
-                names.add(f"{namespace}.{member_name}")
     return names
 
 
@@ -1275,6 +1280,32 @@ def _tool_contract_definition(payload: Mapping[str, Any]) -> list[dict[str, Any]
     tools = _tools(payload)
     compact = []
     for tool in tools:
+        if _clean(tool.get("type")) == "namespace":
+            namespace = _clean(tool.get("name"))
+            members = tool.get("tools")
+            if not namespace or not isinstance(members, list):
+                continue
+            for member in members:
+                if not isinstance(member, Mapping):
+                    continue
+                name = _namespace_member_name(namespace, member)
+                if not name:
+                    continue
+                function = _mapping(member.get("function"))
+                compact.append(
+                    {
+                        "name": name,
+                        "type": "function",
+                        "description": _clean(
+                            function.get("description") or member.get("description")
+                        ),
+                        "parameters": function.get("parameters")
+                        or member.get("parameters")
+                        or {},
+                    }
+                )
+            continue
+
         name = _tool_name(tool)
         if not name:
             continue

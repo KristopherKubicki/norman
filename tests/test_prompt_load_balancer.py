@@ -4088,6 +4088,65 @@ def test_openai_compat_responses_can_return_declared_mcp_namespace_function_call
     ]
 
 
+def test_openai_compat_responses_flattens_namespace_tool_contract():
+    import app.services.prompt_provider_facade as facade
+
+    contract = facade._tool_contract_message(
+        {
+            "tools": [
+                {
+                    "type": "namespace",
+                    "name": "mcp__ops_openbrand",
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": "system_health",
+                            "description": "Read the current system health.",
+                            "parameters": {"type": "object"},
+                        },
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "mcp__ops_openbrand.data_status_get",
+                                "description": "Check source freshness.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {"source": {"type": "string"}},
+                                },
+                            },
+                        },
+                        {
+                            "type": "web_search_preview",
+                            "name": "unsupported_member",
+                        },
+                    ],
+                }
+            ]
+        }
+    )
+
+    assert len(contract) == 1
+    tools = contract[0][facade.TOOL_CONTRACT_CONTEXT_MARKER]["tools"]
+    assert tools == [
+        {
+            "name": "mcp__ops_openbrand.system_health",
+            "type": "function",
+            "description": "Read the current system health.",
+            "parameters": {"type": "object"},
+        },
+        {
+            "name": "mcp__ops_openbrand.data_status_get",
+            "type": "function",
+            "description": "Check source freshness.",
+            "parameters": {
+                "type": "object",
+                "properties": {"source": {"type": "string"}},
+            },
+        },
+    ]
+    assert "mcp__ops_openbrand" not in {tool["name"] for tool in tools}
+
+
 def test_openai_compat_responses_keeps_undeclared_mcp_namespace_call_as_text(
     monkeypatch,
 ):
