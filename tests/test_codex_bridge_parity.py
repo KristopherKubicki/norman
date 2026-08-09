@@ -38,6 +38,7 @@ def _execution(
         tool_events=tools,
         retry_events=0,
         usage={"output_tokens": 10},
+        prompt_context={},
         short_stop=module.response_has_unfinished_promise(answer),
     )
 
@@ -95,6 +96,36 @@ def test_event_parser_counts_unique_tool_calls_and_usage(tmp_path, monkeypatch) 
                     {
                         "type": "retrying",
                         "usage": {"output_tokens": 11, "input_tokens": 20},
+                        "response": {
+                            "id": "resp-bridge",
+                            "norman": {
+                                "responses_compatibility": {
+                                    "prompt_context": {
+                                        "schema": "norman.responses-prompt-context.v1",
+                                        "groups": {
+                                            "history": {
+                                                "message_count": 2,
+                                                "chars": 80,
+                                                "tool_output_chars": 60,
+                                                "function_call_chars": 10,
+                                                "text_chars": 10,
+                                            },
+                                            "tool_contract": {
+                                                "message_count": 1,
+                                                "chars": 120,
+                                                "tool_output_chars": 0,
+                                                "function_call_chars": 0,
+                                                "text_chars": 120,
+                                            },
+                                        },
+                                        "total_message_count": 3,
+                                        "total_content_chars": 200,
+                                        "rendered_prompt_chars": 220,
+                                        "private": "SECRET PROMPT",
+                                    }
+                                }
+                            },
+                        },
                     }
                 ),
             )
@@ -102,11 +133,52 @@ def test_event_parser_counts_unique_tool_calls_and_usage(tmp_path, monkeypatch) 
         encoding="utf-8",
     )
 
-    tool_events, retry_events, usage = module.parse_event_metrics(events)
+    tool_events, retry_events, usage, prompt_context = module.parse_event_metrics(
+        events
+    )
 
     assert tool_events == 1
     assert retry_events == 1
     assert usage == {"input_tokens": 20, "output_tokens": 11}
+    assert prompt_context == {
+        "schema": "norman.responses-prompt-context.v1",
+        "hop_count": 1,
+        "groups": {
+            "history": {
+                "message_count": 2,
+                "chars": 80,
+                "tool_output_chars": 60,
+                "function_call_chars": 10,
+                "text_chars": 10,
+            },
+            "tool_contract": {
+                "message_count": 1,
+                "chars": 120,
+                "tool_output_chars": 0,
+                "function_call_chars": 0,
+                "text_chars": 120,
+            },
+            "structured_output": {
+                "message_count": 0,
+                "chars": 0,
+                "tool_output_chars": 0,
+                "function_call_chars": 0,
+                "text_chars": 0,
+            },
+            "current_input": {
+                "message_count": 0,
+                "chars": 0,
+                "tool_output_chars": 0,
+                "function_call_chars": 0,
+                "text_chars": 0,
+            },
+        },
+        "total_message_count": 3,
+        "total_content_chars": 200,
+        "rendered_prompt_chars_total": 220,
+        "rendered_prompt_chars_max": 220,
+    }
+    assert "SECRET PROMPT" not in json.dumps(prompt_context)
 
 
 def test_report_redacts_prompt_and_answer_text(monkeypatch, tmp_path: Path) -> None:

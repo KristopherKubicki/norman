@@ -3960,6 +3960,17 @@ def test_openai_compat_responses_can_return_explicit_tool_call(monkeypatch):
     compat = response["norman"]["responses_compatibility"]
     assert compat["tools_declared"] == 1
     assert compat["tool_calls_returned"] == 1
+    prompt_context = compat["prompt_context"]
+    assert prompt_context["schema"] == "norman.responses-prompt-context.v1"
+    assert prompt_context["groups"]["history"]["message_count"] == 0
+    assert prompt_context["groups"]["tool_contract"]["message_count"] == 1
+    assert prompt_context["groups"]["current_input"]["message_count"] == 1
+    assert prompt_context["groups"]["current_input"]["chars"] == len("check the repo")
+    assert (
+        prompt_context["rendered_prompt_chars"] >= prompt_context["total_content_chars"]
+    )
+    assert "check the repo" not in json.dumps(prompt_context)
+    assert "Run a shell command." not in json.dumps(prompt_context)
     assert response["norman"]["route_receipt"]["schema"] == (
         "norman.norllama.route-receipt.v1"
     )
@@ -5548,6 +5559,14 @@ def test_openai_compat_responses_replays_typed_message_after_tool_output(monkeyp
         for message in tool_contracts
     ] == ["synthetic.status_lookup"]
     assert third_messages[-2]["type"] == "function_call_output"
+    prompt_context = final["norman"]["responses_compatibility"]["prompt_context"]
+    assert prompt_context["groups"]["history"]["message_count"] == 4
+    assert prompt_context["groups"]["tool_contract"]["message_count"] == 1
+    assert prompt_context["groups"]["current_input"]["message_count"] == 2
+    assert prompt_context["groups"]["history"]["tool_output_chars"] > 0
+    assert prompt_context["groups"]["current_input"]["tool_output_chars"] > 0
+    assert "synthetic health" not in json.dumps(prompt_context)
+    assert "status" not in json.dumps(prompt_context)
 
 
 def test_openai_compat_proxy_observability_records_success_without_prompt_leak(

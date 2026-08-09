@@ -260,6 +260,30 @@ def test_bridge_receipt_is_sanitized_and_persisted(monkeypatch):
                 "tool_bridge_mode": "transparent",
                 "tool_transport": "local_text_adapter",
                 "state_retention": "ephemeral",
+                "prompt_context": {
+                    "schema": "norman.responses-prompt-context.v1",
+                    "groups": {
+                        "history": {
+                            "message_count": 2,
+                            "chars": 108,
+                            "tool_output_chars": 84,
+                            "function_call_chars": 10,
+                            "text_chars": 14,
+                            "private": "history content",
+                        },
+                        "tool_contract": {
+                            "message_count": 1,
+                            "chars": 248,
+                            "tool_output_chars": 0,
+                            "function_call_chars": 0,
+                            "text_chars": 248,
+                        },
+                    },
+                    "total_message_count": 3,
+                    "total_content_chars": 356,
+                    "rendered_prompt_chars": 382,
+                    "private": "prompt content",
+                },
             },
             "output_token_budget": {
                 "requested": 16384,
@@ -294,6 +318,42 @@ def test_bridge_receipt_is_sanitized_and_persisted(monkeypatch):
             "effective": 16384,
             "maximum": 32768,
         },
+        "prompt_context": {
+            "schema": "norman.responses-prompt-context.v1",
+            "groups": {
+                "history": {
+                    "message_count": 2,
+                    "chars": 108,
+                    "tool_output_chars": 84,
+                    "function_call_chars": 10,
+                    "text_chars": 14,
+                },
+                "tool_contract": {
+                    "message_count": 1,
+                    "chars": 248,
+                    "tool_output_chars": 0,
+                    "function_call_chars": 0,
+                    "text_chars": 248,
+                },
+                "structured_output": {
+                    "message_count": 0,
+                    "chars": 0,
+                    "tool_output_chars": 0,
+                    "function_call_chars": 0,
+                    "text_chars": 0,
+                },
+                "current_input": {
+                    "message_count": 0,
+                    "chars": 0,
+                    "tool_output_chars": 0,
+                    "function_call_chars": 0,
+                    "text_chars": 0,
+                },
+            },
+            "total_message_count": 3,
+            "total_content_chars": 356,
+            "rendered_prompt_chars": 382,
+        },
         "fallback_reason": "unknown",
     }
     summary = proxy_observability.proxy_observability_summary()
@@ -301,3 +361,5 @@ def test_bridge_receipt_is_sanitized_and_persisted(monkeypatch):
     assert summary["bridge_modes"] == {"transparent": 1}
     assert summary["bridge_fallback_count"] == 1
     assert "private reason with spaces" not in json.dumps(event, sort_keys=True)
+    assert "history content" not in json.dumps(event, sort_keys=True)
+    assert "prompt content" not in json.dumps(event, sort_keys=True)

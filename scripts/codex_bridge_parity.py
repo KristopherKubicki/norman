@@ -39,6 +39,7 @@ DEFAULT_TIMEOUT_SECONDS = 600
 DEFAULT_MIN_COMPLETED_PAIRS = 5
 DEFAULT_MAX_SCORE_REGRESSION = 5.0
 SCHEMA = "norman.codex-bridge-parity.v1"
+PROMPT_CONTEXT_SCHEMA = "norman.responses-prompt-context.v1"
 TOOL_ITEM_TYPES = frozenset(
     {
         "command_execution",
@@ -57,6 +58,19 @@ USAGE_KEYS = frozenset(
         "reasoning_output_tokens",
         "total_tokens",
     }
+)
+PROMPT_CONTEXT_GROUPS = (
+    "history",
+    "tool_contract",
+    "structured_output",
+    "current_input",
+)
+PROMPT_CONTEXT_GROUP_FIELDS = (
+    "message_count",
+    "chars",
+    "tool_output_chars",
+    "function_call_chars",
+    "text_chars",
 )
 
 
@@ -79,6 +93,7 @@ class RouteExecution:
     tool_events: int
     retry_events: int
     usage: dict[str, int]
+    prompt_context: dict[str, Any]
     short_stop: bool
 
 
@@ -154,10 +169,100 @@ def _usage_from_event(event: dict[str, Any]) -> dict[str, int]:
     return result
 
 
-def parse_event_metrics(events_path: Path) -> tuple[int, int, dict[str, int]]:
+def _prompt_context_from_source(source: object) -> dict[str, Any]:
+    if not isinstance(source, dict):
+        return {}
+    norman = source.get("norman")
+    if not isinstance(norman, dict):
+        return {}
+    compatibility = norman.get("responses_compatibility")
+    if not isinstance(compatibility, dict):
+        return {}
+    raw = compatibility.get("prompt_context")
+    if (
+        not isinstance(raw, dict)
+        or str(raw.get("schema") or "") != PROMPT_CONTEXT_SCHEMA
+    ):
+        return {}
+    raw_groups = raw.get("groups")
+    if not isinstance(raw_groups, dict):
+        return {}
+    groups: dict[str, dict[str, int]] = {}
+    for name in PROMPT_CONTEXT_GROUPS:
+        raw_group = raw_groups.get(name)
+        raw_group = raw_group if isinstance(raw_group, dict) else {}
+        groups[name] = {
+            field: _int(raw_group.get(field)) for field in PROMPT_CONTEXT_GROUP_FIELDS
+        }
+    return {
+        "schema": PROMPT_CONTEXT_SCHEMA,
+        "groups": groups,
+        "total_message_count": _int(raw.get("total_message_count")),
+        "total_content_chars": _int(raw.get("total_content_chars")),
+        "rendered_prompt_chars": _int(raw.get("rendered_prompt_chars")),
+    }
+
+
+def _prompt_context_from_event(event: dict[str, Any]) -> dict[str, Any]:
+    """Extract the facade's numeric prompt attribution from a Codex event."""
+
+    item = _event_item(event)
+    candidates: list[object] = [
+        event,
+        item,
+        event.get("response"),
+        item.get("response"),
+        event.get("data"),
+        item.get("data"),
+    ]
+    for candidate in candidates:
+        prompt_context = _prompt_context_from_source(candidate)
+        if prompt_context:
+            return prompt_context
+    return {}
+
+
+def _prompt_context_summary(
+    prompt_contexts: Iterable[dict[str, Any]],
+) -> dict[str, Any]:
+    contexts = list(prompt_contexts)
+    if not contexts:
+        return {}
+    groups = {
+        name: {
+            field: sum(
+                _int((context.get("groups", {}).get(name, {}).get(field)))
+                for context in contexts
+            )
+            for field in PROMPT_CONTEXT_GROUP_FIELDS
+        }
+        for name in PROMPT_CONTEXT_GROUPS
+    }
+    rendered_chars = [
+        _int(context.get("rendered_prompt_chars")) for context in contexts
+    ]
+    return {
+        "schema": PROMPT_CONTEXT_SCHEMA,
+        "hop_count": len(contexts),
+        "groups": groups,
+        "total_message_count": sum(
+            _int(context.get("total_message_count")) for context in contexts
+        ),
+        "total_content_chars": sum(
+            _int(context.get("total_content_chars")) for context in contexts
+        ),
+        "rendered_prompt_chars_total": sum(rendered_chars),
+        "rendered_prompt_chars_max": max(rendered_chars),
+    }
+
+
+def parse_event_metrics(
+    events_path: Path,
+) -> tuple[int, int, dict[str, int], dict[str, Any]]:
     tool_ids: set[str] = set()
     retry_events = 0
     usage: dict[str, int] = {}
+    prompt_contexts: list[dict[str, Any]] = []
     for index, event in enumerate(_iter_jsonl(events_path)):
         item_type = _item_type(event)
         if item_type in TOOL_ITEM_TYPES:
@@ -167,7 +272,15 @@ def parse_event_metrics(events_path: Path) -> tuple[int, int, dict[str, int]]:
             retry_events += 1
         for key, value in _usage_from_event(event).items():
             usage[key] = max(usage.get(key, 0), value)
-    return len(tool_ids), retry_events, usage
+        prompt_context = _prompt_context_from_event(event)
+        if prompt_context:
+            prompt_contexts.append(prompt_context)
+    return (
+        len(tool_ids),
+        retry_events,
+        usage,
+        _prompt_context_summary(prompt_contexts),
+    )
 
 
 def resolve_native_codex_bin(value: str | None = None) -> Path:
@@ -308,7 +421,7 @@ def run_route_case(
         pass
     if status == "completed" and not answer:
         status = "empty_output"
-    tool_events, retry_events, usage = parse_event_metrics(events_path)
+    tool_events, retry_events, usage, prompt_context = parse_event_metrics(events_path)
     return RouteExecution(
         route=route.key,
         status=status,
@@ -320,6 +433,7 @@ def run_route_case(
         tool_events=tool_events,
         retry_events=retry_events,
         usage=usage,
+        prompt_context=prompt_context,
         short_stop=response_has_unfinished_promise(answer),
     )
 
@@ -371,6 +485,7 @@ def _execution_payload(
         "tool_events": execution.tool_events,
         "retry_events": execution.retry_events,
         "usage": execution.usage,
+        "prompt_context": execution.prompt_context,
         "short_stop": execution.short_stop,
         "score": _score_payload(score),
     }
@@ -408,6 +523,19 @@ def _duration_summary(case_rows: list[dict[str, Any]], route: str) -> dict[str, 
         "total_ms": sum(durations),
         "average_ms": round(sum(durations) / len(durations)) if durations else 0,
     }
+
+
+def _prompt_context_total(
+    case_rows: list[dict[str, Any]], route: str
+) -> dict[str, Any]:
+    contexts = [
+        execution.get("prompt_context", {})
+        for row in case_rows
+        if isinstance((execution := row[route]), dict)
+        and isinstance(execution.get("prompt_context"), dict)
+        and execution.get("prompt_context")
+    ]
+    return _prompt_context_summary(contexts)
 
 
 def build_summary(case_rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -487,6 +615,8 @@ def build_summary(case_rows: list[dict[str, Any]]) -> dict[str, Any]:
             key: _usage_total(case_rows, "transparent", key)
             for key in sorted(USAGE_KEYS)
         },
+        "native_prompt_context": _prompt_context_total(case_rows, "native"),
+        "transparent_prompt_context": _prompt_context_total(case_rows, "transparent"),
     }
 
 
@@ -540,6 +670,7 @@ def build_dry_run_rows(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "tool_events": 0,
             "retry_events": 0,
             "usage": {},
+            "prompt_context": {},
             "short_stop": False,
             "score": {},
         }
@@ -662,12 +793,31 @@ def render_markdown(report: dict[str, Any]) -> str:
             f"{summary['native_usage']['output_tokens']}, transparent "
             f"{summary['transparent_usage']['output_tokens']}"
         ),
-        "",
-        "## Cases",
-        "",
-        "| Case | Order | Native | Transparent | Score delta | Tools N/T |",
-        "| --- | --- | --- | --- | ---: | ---: |",
     ]
+    transparent_prompt_context = summary.get("transparent_prompt_context", {})
+    if transparent_prompt_context:
+        prompt_groups = transparent_prompt_context["groups"]
+        lines.append(
+            (
+                "- Transparent local prompt hops: "
+                f"{transparent_prompt_context['hop_count']}, "
+                f"{transparent_prompt_context['rendered_prompt_chars_total']} "
+                "rendered characters total "
+                f"({transparent_prompt_context['rendered_prompt_chars_max']} max); "
+                f"history {prompt_groups['history']['chars']}, "
+                f"tool contract {prompt_groups['tool_contract']['chars']}, "
+                f"current input {prompt_groups['current_input']['chars']}"
+            )
+        )
+    lines.extend(
+        (
+            "",
+            "## Cases",
+            "",
+            "| Case | Order | Native | Transparent | Score delta | Tools N/T |",
+            "| --- | --- | --- | --- | ---: | ---: |",
+        )
+    )
     for row in report["cases"]:
         native_score = _score_value(row["native"])
         transparent_score = _score_value(row["transparent"])
