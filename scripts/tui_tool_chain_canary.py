@@ -829,12 +829,12 @@ def _require_stream_integrity(response: Mapping[str, Any]) -> None:
         raise CanaryError("raw_tool_envelope_text")
 
 
-def _require_exact_function_call(
+def _require_exact_function_call_item(
     response: Mapping[str, Any],
     *,
     name: str,
     streaming: bool = False,
-) -> str:
+) -> dict[str, Any]:
     if streaming:
         _require_stream_integrity(response)
         stream = _mapping(response.get("_canary_stream"))
@@ -857,7 +857,43 @@ def _require_exact_function_call(
     call_id = _clean(calls[0].get("call_id"))
     if not call_id:
         raise CanaryError("missing_function_call_id")
-    return call_id
+    return calls[0]
+
+
+def _require_exact_function_call(
+    response: Mapping[str, Any],
+    *,
+    name: str,
+    streaming: bool = False,
+) -> str:
+    return _clean(
+        _require_exact_function_call_item(
+            response,
+            name=name,
+            streaming=streaming,
+        ).get("call_id")
+    )
+
+
+def _streamed_function_call_replay_items(
+    function_call: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Build the lifecycle replay Codex can send after a streamed tool call."""
+
+    complete = {
+        "type": "function_call",
+        "status": "completed",
+        "call_id": _clean(function_call.get("call_id")),
+        "name": _clean(function_call.get("name")),
+        "arguments": _clean(function_call.get("arguments")),
+    }
+    item_id = _clean(function_call.get("id"))
+    if item_id:
+        complete["id"] = item_id
+    in_progress = dict(complete)
+    in_progress["status"] = "in_progress"
+    in_progress["arguments"] = ""
+    return [in_progress, complete]
 
 
 def _require_final_answer(
@@ -1021,17 +1057,19 @@ def run_canary(
                     "tools": [_ops_portal_health_namespace()],
                 },
             )
-            ops_call_id = _require_exact_function_call(
+            ops_call = _require_exact_function_call_item(
                 tool_call,
                 name="mcp__ops_openbrand.ops_portal_health",
                 streaming=streaming,
             )
+            ops_call_id = _clean(ops_call.get("call_id"))
             final = execute_turn(
                 "ops_final_answer",
                 {
                     "model": "norman-code",
                     "previous_response_id": _clean(tool_call.get("id")),
                     "input": [
+                        *_streamed_function_call_replay_items(ops_call),
                         {
                             "type": "function_call_output",
                             "call_id": ops_call_id,
@@ -1064,17 +1102,19 @@ def run_canary(
                     "tools": [_tool_search_definition()],
                 },
             )
-            tool_search_call_id = _require_exact_function_call(
+            tool_search_call = _require_exact_function_call_item(
                 discovery,
                 name="tool_search",
                 streaming=streaming,
             )
+            tool_search_call_id = _clean(tool_search_call.get("call_id"))
             tool_call = execute_turn(
                 "synthetic_status_lookup",
                 {
                     "model": "norman-code",
                     "previous_response_id": _clean(discovery.get("id")),
                     "input": [
+                        *_streamed_function_call_replay_items(tool_search_call),
                         {
                             "type": "function_call_output",
                             "call_id": tool_search_call_id,
@@ -1082,22 +1122,24 @@ def run_canary(
                                 '{"tools":[{"name":"mcp__norman_canary.status_lookup",'
                                 '"description":"Synthetic canary status lookup"}]}'
                             ),
-                        }
+                        },
                     ],
                     "tools": [_synthetic_status_namespace()],
                 },
             )
-            synthetic_call_id = _require_exact_function_call(
+            synthetic_call = _require_exact_function_call_item(
                 tool_call,
                 name="mcp__norman_canary.status_lookup",
                 streaming=streaming,
             )
+            synthetic_call_id = _clean(synthetic_call.get("call_id"))
             final = execute_turn(
                 "final_answer",
                 {
                     "model": "norman-code",
                     "previous_response_id": _clean(tool_call.get("id")),
                     "input": [
+                        *_streamed_function_call_replay_items(synthetic_call),
                         {
                             "type": "function_call_output",
                             "call_id": synthetic_call_id,

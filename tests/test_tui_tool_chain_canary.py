@@ -1,9 +1,28 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import subprocess
+import sys
+import uuid
+from pathlib import Path
 
 from scripts import tui_tool_chain_canary as canary
+
+
+OPS_TOKEN_HELPER_PATH = (
+    Path(__file__).resolve().parents[1] / "scripts" / "norman_ops_mcp_canary_token.py"
+)
+
+
+def _load_ops_token_helper_module():
+    module_name = f"norman_ops_mcp_canary_token_test_{uuid.uuid4().hex}"
+    spec = importlib.util.spec_from_file_location(module_name, OPS_TOKEN_HELPER_PATH)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _tool_response(response_id: str, name: str, call_id: str) -> dict:
@@ -143,13 +162,30 @@ def test_run_canary_exercises_the_three_turn_synthetic_tool_chain():
         ],
     }
     assert (
-        requests[2][1]["input"][0]["output"] == '{"status":"ok","source":"synthetic"}'
+        requests[2][1]["input"][2]["output"] == '{"status":"ok","source":"synthetic"}'
     )
     assert (
-        requests[2][1]["input"][1]["content"]
+        requests[2][1]["input"][3]["content"]
         == "The synthetic result has been supplied. Return a concise final health "
         "result now. Do not call another tool."
     )
+    replay = requests[1][1]["input"][:2]
+    assert replay == [
+        {
+            "type": "function_call",
+            "status": "in_progress",
+            "call_id": "call-search",
+            "name": "tool_search",
+            "arguments": "",
+        },
+        {
+            "type": "function_call",
+            "status": "completed",
+            "call_id": "call-search",
+            "name": "tool_search",
+            "arguments": '{"private":"arguments"}',
+        },
+    ]
 
     serialized = json.dumps(receipt, sort_keys=True)
     assert "private-token" not in serialized
@@ -328,7 +364,24 @@ def test_run_canary_ops_mcp_exercises_read_only_native_sse_continuation():
             ],
         }
     ]
-    assert json.loads(requests[1][1]["input"][0]["output"]) == {
+    replay = requests[1][1]["input"][:2]
+    assert replay == [
+        {
+            "type": "function_call",
+            "status": "in_progress",
+            "call_id": "call-ops",
+            "name": "mcp__ops_openbrand.ops_portal_health",
+            "arguments": "",
+        },
+        {
+            "type": "function_call",
+            "status": "completed",
+            "call_id": "call-ops",
+            "name": "mcp__ops_openbrand.ops_portal_health",
+            "arguments": '{"private":"arguments"}',
+        },
+    ]
+    assert json.loads(requests[1][1]["input"][2]["output"]) == {
         "status": "ok",
         "portal_status": "ok",
         "portal_lane": "production",
@@ -867,6 +920,34 @@ def test_ops_mcp_canary_broker_is_fixed_alias_and_never_uses_aws():
     assert "systemd-run" in launcher
     assert "norman-ops-mcp-canary-broker" in launcher
     assert "/usr/local/libexec/norman-ops-mcp-canary-broker" in installer
+    assert "visudo -cf" in installer
     assert "--stdin" in broker
     assert "aws secretsmanager get-secret-value" in provisioner
     assert "ssh -o BatchMode=yes" in provisioner
+
+
+def test_ops_mcp_canary_token_helper_uses_narrow_noninteractive_sudo(monkeypatch):
+    module = _load_ops_token_helper_module()
+    monkeypatch.setattr(module.Path, "is_file", lambda _path: True)
+    monkeypatch.setattr(module.os, "access", lambda *_args: True)
+
+    assert module._broker_command() == [
+        "/usr/bin/sudo",
+        "--non-interactive",
+        "/usr/local/sbin/norman-ops-mcp-canary-broker",
+        "get",
+    ]
+
+
+def test_ops_mcp_canary_broker_sudoers_allows_only_the_get_command():
+    sudoers = (
+        Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "norman_ops_mcp_canary_broker.sudoers"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        "kristopher ALL=(root) NOPASSWD: "
+        "/usr/local/sbin/norman-ops-mcp-canary-broker get" in sudoers
+    )
+    assert "provision" not in sudoers

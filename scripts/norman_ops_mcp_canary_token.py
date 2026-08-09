@@ -13,6 +13,7 @@ from pathlib import Path
 DEFAULT_SECRET = "control-plane/ops-mcp-canary-key"
 DEFAULT_TIMEOUT_SECONDS = 5.0
 DEFAULT_BROKER_COMMAND = Path("/usr/local/sbin/norman-ops-mcp-canary-broker")
+DEFAULT_SUDO_COMMAND = Path("/usr/bin/sudo")
 
 
 def _clean(value: object) -> str:
@@ -35,9 +36,19 @@ def _timeout_seconds() -> float:
 def _broker_command() -> list[str]:
     configured = _clean(os.getenv("NORMAN_OPS_MCP_CANARY_BROKER"))
     candidate = Path(configured).expanduser() if configured else DEFAULT_BROKER_COMMAND
-    if not candidate.is_file() or not os.access(candidate, os.X_OK):
+    if (
+        not candidate.is_file()
+        or not os.access(candidate, os.X_OK)
+        or not DEFAULT_SUDO_COMMAND.is_file()
+        or not os.access(DEFAULT_SUDO_COMMAND, os.X_OK)
+    ):
         return []
-    return [str(candidate), "get"]
+    return [
+        str(DEFAULT_SUDO_COMMAND),
+        "--non-interactive",
+        str(candidate),
+        "get",
+    ]
 
 
 def resolve_token() -> str:
