@@ -26,12 +26,14 @@ DEFAULT_OUTPUT_JSON = Path(
 DEFAULT_PRESSURE_GUARD = Path(__file__).with_name("tui_host_pressure_guard.py")
 DEFAULT_PRESSURE_TARGET = "work-special"
 DEFAULT_TIMEOUT_SECONDS = 45.0
-DEFAULT_OPS_MCP_SMOKE_COMMAND = (
-    "/home/kristopher/code/control_plane/scripts/with_ops_openbrand_mcp.sh",
-    "/home/kristopher/code/control_plane/.venv/bin/python",
-    "/home/kristopher/code/control_plane/scripts/ops_portal_connection_smoke.py",
-    "--timings",
-)
+DEFAULT_OPS_MCP_ENDPOINT = "https://ops.openbrand.com/mcp"
+DEFAULT_OPS_MCP_AWS_PROFILE = "ob-openbrand-admin"
+DEFAULT_OPS_MCP_AWS_REGION = "us-east-2"
+DEFAULT_OPS_MCP_BINDINGS_SECRET_ID = "ops-portal/production/mcp-api-key-bindings"
+DEFAULT_OPS_MCP_KEY_ID = "kris-production-codex-control-plane"
+DEFAULT_OPS_MCP_USER_EMAIL = "kris@openbrand.com"
+OPS_MCP_PROTOCOL_VERSION = "2025-03-26"
+OPS_MCP_MAX_RESPONSE_BYTES = 512 * 1024
 KNOWN_TOOL_NAMES = frozenset(
     {
         "tool_search",
@@ -453,30 +455,305 @@ def _require_healthy_ops_mcp_evidence(evidence: Mapping[str, Any]) -> None:
         raise CanaryError("ops_direct_smoke_failed")
 
 
-def _run_ops_direct_smoke(timeout_seconds: float) -> Mapping[str, Any]:
-    """Run the brokered direct smoke without retaining its credentials or raw output."""
+def _ops_mcp_api_key(timeout_seconds: float) -> str:
+    """Load the bound Ops MCP key without retaining the source secret."""
 
+    configured = _clean(os.environ.get("OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY"))
+    if configured:
+        return configured
+
+    profile = (
+        _clean(os.environ.get("OPS_OPENBRAND_MCP_AWS_PROFILE"))
+        or DEFAULT_OPS_MCP_AWS_PROFILE
+    )
+    region = (
+        _clean(os.environ.get("OPS_OPENBRAND_MCP_AWS_REGION"))
+        or DEFAULT_OPS_MCP_AWS_REGION
+    )
+    secret_id = (
+        _clean(os.environ.get("OPS_OPENBRAND_MCP_BINDINGS_SECRET_ID"))
+        or DEFAULT_OPS_MCP_BINDINGS_SECRET_ID
+    )
+    key_id = (
+        _clean(os.environ.get("OPS_OPENBRAND_MCP_KEY_ID")) or DEFAULT_OPS_MCP_KEY_ID
+    )
     try:
         result = subprocess.run(
-            list(DEFAULT_OPS_MCP_SMOKE_COMMAND),
+            [
+                "aws",
+                "secretsmanager",
+                "get-secret-value",
+                "--profile",
+                profile,
+                "--region",
+                region,
+                "--secret-id",
+                secret_id,
+                "--query",
+                "SecretString",
+                "--output",
+                "text",
+            ],
             check=False,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
-            timeout=_bounded_timeout(timeout_seconds),
+            timeout=min(30.0, _bounded_timeout(timeout_seconds)),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise CanaryError("ops_direct_smoke_failed") from exc
     if result.returncode != 0:
         raise CanaryError("ops_direct_smoke_failed")
     try:
-        payload = json.loads(result.stdout)
+        bindings = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         raise CanaryError("ops_direct_smoke_invalid_response") from exc
-    if not isinstance(payload, Mapping):
+    keys = bindings.get("keys") if isinstance(bindings, Mapping) else None
+    if not isinstance(keys, list):
         raise CanaryError("ops_direct_smoke_invalid_response")
-    return payload
+    for binding in keys:
+        if not isinstance(binding, Mapping):
+            continue
+        if _clean(binding.get("key_id")) != key_id:
+            continue
+        api_key = _clean(binding.get("api_key"))
+        if api_key:
+            return api_key
+    raise CanaryError("ops_direct_smoke_failed")
+
+
+def _parse_ops_mcp_response(raw: bytes, content_type: str) -> dict[str, Any]:
+    text = raw.decode("utf-8", errors="replace")
+    payloads: list[Any] = []
+    if "text/event-stream" in content_type.lower():
+        data_lines: list[str] = []
+        for line in text.splitlines():
+            if not line:
+                if data_lines:
+                    payloads.append(json.loads("\n".join(data_lines)))
+                    data_lines = []
+                continue
+            if line.startswith("data:"):
+                data_lines.append(line[5:].lstrip())
+        if data_lines:
+            payloads.append(json.loads("\n".join(data_lines)))
+    else:
+        payloads.append(json.loads(text))
+
+    for payload in payloads:
+        if not isinstance(payload, Mapping):
+            continue
+        if isinstance(payload.get("result"), Mapping):
+            return dict(payload["result"])
+        if "error" in payload:
+            raise CanaryError("ops_direct_smoke_failed")
+    raise CanaryError("ops_direct_smoke_invalid_response")
+
+
+def _ops_mcp_request(
+    *,
+    endpoint: str,
+    api_key: str,
+    session_id: str,
+    request_id: int | None,
+    method: str,
+    params: Mapping[str, Any] | None,
+    timeout_seconds: float,
+) -> tuple[dict[str, Any], str]:
+    payload: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
+    if request_id is not None:
+        payload["id"] = request_id
+    if params:
+        payload["params"] = dict(params)
+    headers = {
+        "Accept": "application/json, text/event-stream",
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    if session_id:
+        headers["Mcp-Session-Id"] = session_id
+    request = urllib.request.Request(
+        endpoint,
+        data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(
+            request, timeout=_bounded_timeout(timeout_seconds)
+        ) as response:
+            response_session_id = _clean(response.headers.get("Mcp-Session-Id"))
+            if request_id is None:
+                response.read(OPS_MCP_MAX_RESPONSE_BYTES)
+                return {}, response_session_id or session_id
+            parsed = _parse_ops_mcp_response(
+                response.read(OPS_MCP_MAX_RESPONSE_BYTES),
+                _clean(response.headers.get("Content-Type")),
+            )
+            return parsed, response_session_id or session_id
+    except CanaryError:
+        raise
+    except (
+        urllib.error.HTTPError,
+        urllib.error.URLError,
+        OSError,
+        TimeoutError,
+    ) as exc:
+        raise CanaryError("ops_direct_smoke_failed") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CanaryError("ops_direct_smoke_invalid_response") from exc
+
+
+def _ops_mcp_tool_result(result: Mapping[str, Any]) -> dict[str, Any]:
+    structured = result.get("structuredContent")
+    if isinstance(structured, Mapping):
+        return dict(structured)
+    content = result.get("content")
+    if not isinstance(content, list):
+        raise CanaryError("ops_direct_smoke_invalid_response")
+    for item in content:
+        if not isinstance(item, Mapping):
+            continue
+        text = _clean(item.get("text"))
+        if not text:
+            continue
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, Mapping):
+            return dict(payload)
+    raise CanaryError("ops_direct_smoke_invalid_response")
+
+
+def _run_ops_direct_smoke(timeout_seconds: float) -> Mapping[str, Any]:
+    """Probe the deployed Ops MCP without depending on a developer checkout."""
+
+    endpoint = _clean(os.environ.get("OPS_OPENBRAND_MCP_ENDPOINT")) or (
+        DEFAULT_OPS_MCP_ENDPOINT
+    )
+    api_key = _ops_mcp_api_key(timeout_seconds)
+    started_at = time.monotonic()
+    request_id = 1
+
+    def request(
+        method: str,
+        params: Mapping[str, Any] | None = None,
+        *,
+        notification: bool = False,
+    ) -> dict[str, Any]:
+        nonlocal request_id, session_id
+        result, session_id = _ops_mcp_request(
+            endpoint=endpoint,
+            api_key=api_key,
+            session_id=session_id,
+            request_id=None if notification else request_id,
+            method=method,
+            params=params,
+            timeout_seconds=timeout_seconds,
+        )
+        if not notification:
+            request_id += 1
+        return result
+
+    session_id = ""
+    timings_ms: dict[str, int] = {}
+    initialize_started_at = time.monotonic()
+    request(
+        "initialize",
+        {
+            "protocolVersion": OPS_MCP_PROTOCOL_VERSION,
+            "capabilities": {},
+            "clientInfo": {"name": "norman-tui-tool-chain-canary", "version": "1"},
+        },
+    )
+    timings_ms["initialize"] = round((time.monotonic() - initialize_started_at) * 1000)
+    # Streamable HTTP MCP servers may deliberately be stateless.
+    request("notifications/initialized", notification=True)
+
+    tools_started_at = time.monotonic()
+    tools = request("tools/list")
+    timings_ms["tools_list"] = round((time.monotonic() - tools_started_at) * 1000)
+    advertised_tools = tools.get("tools")
+    tool_names = (
+        {
+            _clean(tool.get("name"))
+            for tool in advertised_tools
+            if isinstance(tool, Mapping)
+        }
+        if isinstance(advertised_tools, list)
+        else set()
+    )
+    if not {"ops_portal_health", "read_only_policy"}.issubset(tool_names):
+        raise CanaryError("ops_direct_smoke_failed")
+
+    def call_tool(
+        name: str, arguments: Mapping[str, Any] | None = None
+    ) -> dict[str, Any]:
+        result = request(
+            "tools/call",
+            {"name": name, "arguments": dict(arguments or {})},
+        )
+        payload = _ops_mcp_tool_result(result)
+        if _clean(payload.get("status")).lower() == "error":
+            raise CanaryError("ops_direct_smoke_failed")
+        return payload
+
+    health_started_at = time.monotonic()
+    health = call_tool("ops_portal_health")
+    timings_ms["ops_portal_health"] = round(
+        (time.monotonic() - health_started_at) * 1000
+    )
+    policy_started_at = time.monotonic()
+    policy = call_tool("read_only_policy")
+    timings_ms["read_only_policy"] = round(
+        (time.monotonic() - policy_started_at) * 1000
+    )
+    access_policy = policy.get("access_policy")
+    if not isinstance(access_policy, Mapping):
+        raise CanaryError("ops_direct_smoke_invalid_response")
+    if (
+        access_policy.get("read_only") is not True
+        or access_policy.get("mutations_supported") is not False
+        or access_policy.get("mutation_tools") != []
+    ):
+        raise CanaryError("ops_direct_smoke_failed")
+
+    session_started_at = time.monotonic()
+    started = call_tool(
+        "session_start",
+        {
+            "user_email": _clean(os.environ.get("OPS_OPENBRAND_MCP_USER_EMAIL"))
+            or DEFAULT_OPS_MCP_USER_EMAIL,
+            "client_name": "codex",
+        },
+    )
+    timings_ms["session_start"] = round((time.monotonic() - session_started_at) * 1000)
+    session = started.get("session")
+    if not isinstance(session, Mapping):
+        raise CanaryError("ops_direct_smoke_invalid_response")
+    capabilities_started_at = time.monotonic()
+    capabilities = call_tool(
+        "list_capabilities",
+        {"session_id": _clean(session.get("session_id"))},
+    )
+    timings_ms["list_capabilities"] = round(
+        (time.monotonic() - capabilities_started_at) * 1000
+    )
+    timings_ms["total"] = round((time.monotonic() - started_at) * 1000)
+    return {
+        "status": "ok",
+        "portal_status": health.get("status"),
+        "portal_lane": health.get("lane"),
+        "read_only": access_policy.get("read_only"),
+        "mutations_supported": access_policy.get("mutations_supported"),
+        "mutation_tool_count": len(access_policy.get("mutation_tools") or []),
+        "identity_verified": session.get("caller_identity_verified"),
+        "tool_count": len(tool_names),
+        "capability_count": len(capabilities.get("capabilities") or []),
+        "timings_ms": timings_ms,
+    }
 
 
 def _safe_tool_chain(response: Mapping[str, Any]) -> dict[str, Any]:

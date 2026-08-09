@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 
 from scripts import tui_tool_chain_canary as canary
 
@@ -370,6 +371,136 @@ def test_run_canary_ops_mcp_stops_before_public_call_when_direct_smoke_fails():
     assert receipt["failure_kind"] == "ops_direct_smoke_failed"
     assert receipt["turns"] == []
     assert "private direct MCP failure" not in json.dumps(receipt, sort_keys=True)
+
+
+def test_ops_direct_smoke_uses_bundled_streamable_http_probe(monkeypatch):
+    class Response:
+        def __init__(self, payload, *, session_id=""):
+            self.headers = {
+                "Content-Type": "application/json",
+            }
+            if session_id:
+                self.headers["Mcp-Session-Id"] = session_id
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _limit):
+            return self.payload
+
+    def rpc_result(payload):
+        return json.dumps({"jsonrpc": "2.0", "id": 1, "result": payload}).encode(
+            "utf-8"
+        )
+
+    def tool_result(payload):
+        return rpc_result(
+            {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps(payload),
+                    }
+                ]
+            }
+        )
+
+    responses = iter(
+        [
+            Response(rpc_result({"protocolVersion": canary.OPS_MCP_PROTOCOL_VERSION})),
+            Response(b""),
+            Response(
+                rpc_result(
+                    {
+                        "tools": [
+                            {"name": "ops_portal_health"},
+                            {"name": "read_only_policy"},
+                            {"name": "session_start"},
+                            {"name": "list_capabilities"},
+                        ]
+                    }
+                )
+            ),
+            Response(tool_result({"status": "ok", "lane": "production"})),
+            Response(
+                tool_result(
+                    {
+                        "status": "ok",
+                        "access_policy": {
+                            "read_only": True,
+                            "mutations_supported": False,
+                            "mutation_tools": [],
+                        },
+                    }
+                )
+            ),
+            Response(
+                tool_result(
+                    {
+                        "status": "ok",
+                        "session": {
+                            "session_id": "private-session-id",
+                            "caller_identity_verified": True,
+                        },
+                    }
+                )
+            ),
+            Response(tool_result({"status": "ok", "capabilities": [{}, {}, {}]})),
+        ]
+    )
+    requests = []
+
+    def fake_run(command, **_kwargs):
+        assert command[:3] == ["aws", "secretsmanager", "get-secret-value"]
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            json.dumps(
+                {
+                    "keys": [
+                        {
+                            "key_id": canary.DEFAULT_OPS_MCP_KEY_ID,
+                            "api_key": "private-bound-key",
+                        }
+                    ]
+                }
+            ),
+            "",
+        )
+
+    def fake_urlopen(request, timeout):
+        requests.append((request, timeout))
+        return next(responses)
+
+    monkeypatch.delenv("OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY", raising=False)
+    monkeypatch.setattr(canary.subprocess, "run", fake_run)
+    monkeypatch.setattr(canary.urllib.request, "urlopen", fake_urlopen)
+
+    result = canary._run_ops_direct_smoke(30)
+
+    assert result["status"] == "ok"
+    assert result["read_only"] is True
+    assert result["mutations_supported"] is False
+    assert result["identity_verified"] is True
+    assert result["tool_count"] == 4
+    assert result["capability_count"] == 3
+    assert [json.loads(request.data)["method"] for request, _timeout in requests] == [
+        "initialize",
+        "notifications/initialized",
+        "tools/list",
+        "tools/call",
+        "tools/call",
+        "tools/call",
+        "tools/call",
+    ]
+    assert all(
+        request.get_header("Mcp-session-id") is None for request, _timeout in requests
+    )
+    assert "private-bound-key" not in json.dumps(result, sort_keys=True)
 
 
 def test_ops_mcp_cli_flag_enables_the_streaming_canary():
