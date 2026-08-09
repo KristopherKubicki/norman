@@ -302,6 +302,34 @@ latest result at
 `$HOME/.local/state/norman/tui-tool-chain-canary.json`; it deliberately omits
 prompts, response text, arguments, tool output, tokens, and credentials.
 
+### Codex Bridge Parity Evaluation
+
+The Responses canary proves tool transport. It does not measure whether a
+transparent Codex route performs comparably to a native Codex session on
+repository work. Use the parity evaluator for that decision:
+
+```bash
+scripts/codex_bridge_parity.py \
+  --workspace "$HOME/code/control_plane" \
+  --live \
+  --require-complete
+```
+
+It alternates direct native Codex and `codex-work` runs over five real,
+read-only Control Plane policy and runbook tasks. Each run uses Codex
+`read-only` sandboxing and an ephemeral session. The evaluation gates on
+completion, contract score, unfinished future-work responses, and tool-event
+continuity. It writes only sanitized metrics, answer hashes, and gate results
+to `$HOME/.local/state/norman/codex-bridge-parity.{json,md}`; prompts, event
+streams, and model answers remain in a temporary directory and are deleted
+when the run ends.
+
+Run it without `--live` to validate the task set and report plumbing without
+calling either model route. Set `CODEX_REAL_BIN` or pass
+`--native-codex-bin` if the direct Codex executable cannot be resolved
+automatically. A `pass` is a promotion signal, not a substitute for the
+hourly Responses tool-chain canary.
+
 ### Temporary Workspace Cleanup
 
 Agent tasks can create large disposable worktrees, browser profiles, archives,
