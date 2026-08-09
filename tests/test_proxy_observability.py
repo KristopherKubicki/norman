@@ -243,3 +243,61 @@ def test_tool_chain_observability_is_sanitized_and_alerted(monkeypatch):
     assert summary["tool_chain_exhausted_count"] == 1
     assert "proxy_tool_chain_watchdog_repaired" in alert_kinds
     assert "proxy_tool_chain_watchdog_exhausted" in alert_kinds
+
+
+def test_bridge_receipt_is_sanitized_and_persisted(monkeypatch):
+    monkeypatch.setenv(proxy_observability.EVENT_LOG_ENV, "0")
+    proxy_observability.reset_proxy_events()
+
+    response = {
+        "model": "qwen3-coder:30b-a3b-q4_K_M",
+        "norman": {
+            "route": {
+                "selected_provider": "norllama",
+                "selected_model": "qwen3-coder:30b-a3b-q4_K_M",
+            },
+            "responses_compatibility": {
+                "tool_bridge_mode": "transparent",
+                "tool_transport": "local_text_adapter",
+                "state_retention": "ephemeral",
+            },
+            "output_token_budget": {
+                "requested": 16384,
+                "effective": 16384,
+                "maximum": 32768,
+            },
+            "cloud_fallback": {
+                "local_failure_code": "private reason with spaces",
+            },
+        },
+    }
+
+    event = proxy_observability.record_proxy_event(
+        endpoint="/v1/responses",
+        method="POST",
+        request_id="bridge",
+        status="success",
+        http_status=200,
+        response=response,
+    )
+
+    assert event["bridge"] == {
+        "mode": "transparent",
+        "tool_transport": "local_text_adapter",
+        "state_retention": "ephemeral",
+        "effective_backend": {
+            "provider": "norllama",
+            "model": "qwen3-coder:30b-a3b-q4_K_M",
+        },
+        "output_token_budget": {
+            "requested": 16384,
+            "effective": 16384,
+            "maximum": 32768,
+        },
+        "fallback_reason": "unknown",
+    }
+    summary = proxy_observability.proxy_observability_summary()
+    assert summary["bridge_event_count"] == 1
+    assert summary["bridge_modes"] == {"transparent": 1}
+    assert summary["bridge_fallback_count"] == 1
+    assert "private reason with spaces" not in json.dumps(event, sort_keys=True)

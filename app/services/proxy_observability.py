@@ -28,8 +28,18 @@ TOOL_CHAIN_OUTCOMES = frozenset(
     }
 )
 TOOL_CHAIN_WATCHDOG_STATES = frozenset(
-    {"normal", "not_applied", "not_required", "repaired", "exhausted"}
+    {
+        "normal",
+        "not_applied",
+        "not_required",
+        "passthrough",
+        "repaired",
+        "exhausted",
+    }
 )
+BRIDGE_MODES = frozenset({"transparent", "governed"})
+BRIDGE_TOOL_TRANSPORTS = frozenset({"local_text_adapter"})
+BRIDGE_STATE_RETENTIONS = frozenset({"ephemeral", "session"})
 SAFE_TOOL_CHAIN_CALL_NAMES = frozenset({"tool_search"})
 LOCAL_TOOL_CHAIN_CALL_NAMES = {
     "apply_patch": "local_file_patch",
@@ -69,6 +79,10 @@ def _int(value: Any) -> int:
         return max(0, int(value or 0))
     except (TypeError, ValueError):
         return 0
+
+
+def _bounded_int(value: Any, *, maximum: int = 1_000_000) -> int:
+    return min(_int(value), maximum)
 
 
 def _mapping(value: Any) -> dict[str, Any]:
@@ -125,6 +139,73 @@ def _safe_response_tool_call_names(response: Mapping[str, Any]) -> list[str]:
         if len(names) == 8:
             break
     return names
+
+
+def _safe_identifier(value: Any, *, maximum: int = 192) -> str:
+    """Keep model, provider, and error-code labels bounded and display-safe."""
+
+    candidate = _clean(value)
+    if not candidate:
+        return ""
+    allowed = frozenset(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:/@+-"
+    )
+    if any(character not in allowed for character in candidate):
+        return "unknown"
+    return candidate[:maximum]
+
+
+def _safe_bridge_metadata(
+    response: Mapping[str, Any],
+    error: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Extract a bounded bridge receipt without retaining request content."""
+
+    for source in (response, error):
+        norman = _mapping(source.get("norman"))
+        compatibility = _mapping(norman.get("responses_compatibility"))
+        budget = _mapping(norman.get("output_token_budget"))
+        if not compatibility and not budget:
+            continue
+        route = _mapping(norman.get("route"))
+        fallback = _mapping(norman.get("cloud_fallback"))
+        bridge_mode = _clean(compatibility.get("tool_bridge_mode"))
+        tool_transport = _clean(compatibility.get("tool_transport"))
+        state_retention = _clean(compatibility.get("state_retention"))
+        provider = _safe_identifier(
+            route.get("selected_provider") or fallback.get("fallback_provider")
+        )
+        model = _safe_identifier(
+            route.get("selected_model")
+            or source.get("model")
+            or fallback.get("fallback_model")
+        )
+        return {
+            "mode": bridge_mode if bridge_mode in BRIDGE_MODES else "unknown",
+            "tool_transport": (
+                tool_transport
+                if tool_transport in BRIDGE_TOOL_TRANSPORTS
+                else "unknown"
+            ),
+            "state_retention": (
+                state_retention
+                if state_retention in BRIDGE_STATE_RETENTIONS
+                else "unknown"
+            ),
+            "effective_backend": {
+                "provider": provider or "unknown",
+                "model": model or "unknown",
+            },
+            "output_token_budget": {
+                "requested": _bounded_int(budget.get("requested")),
+                "effective": _bounded_int(budget.get("effective")),
+                "maximum": _bounded_int(budget.get("maximum")),
+            },
+            "fallback_reason": _safe_identifier(
+                fallback.get("local_failure_code"), maximum=96
+            ),
+        }
+    return {}
 
 
 def _tool_chain_completion_classification(outcome: str) -> str:
@@ -433,6 +514,7 @@ def record_proxy_event(
     usage = _usage_from_response(response)
     raw_error_payload = dict(error or {})
     tool_chain = _safe_tool_chain_metadata(response, raw_error_payload)
+    bridge = _safe_bridge_metadata(response, raw_error_payload)
     error_payload = _sanitized_error_payload(raw_error_payload)
     error_norman = _mapping(error_payload.get("norman"))
     now = time.time()
@@ -500,6 +582,7 @@ def record_proxy_event(
         "route_authority": _clean(receipt.get("route_authority")),
         "usage": usage,
         "tool_chain": tool_chain,
+        "bridge": bridge,
         "latency_ms": round(float(latency_ms or 0), 3),
         "error": error_payload,
         "error_code": _clean(error_payload.get("code")),
@@ -631,6 +714,17 @@ def proxy_observability_summary(limit: int = 100) -> dict[str, Any]:
         for tool_chain in tool_chain_events
         if _clean(tool_chain.get("watchdog_state")) == "exhausted"
     )
+    bridge_events = [
+        _mapping(event.get("bridge"))
+        for event in events
+        if _mapping(event.get("bridge"))
+    ]
+    bridge_modes = Counter(
+        _clean(bridge.get("mode")) or "unknown" for bridge in bridge_events
+    )
+    bridge_fallback_count = sum(
+        1 for bridge in bridge_events if _clean(bridge.get("fallback_reason"))
+    )
     usage_totals = {
         "local_tokens": sum(
             _int(_mapping(event.get("usage")).get("local_tokens")) for event in events
@@ -677,6 +771,9 @@ def proxy_observability_summary(limit: int = 100) -> dict[str, Any]:
         "tool_chain_event_count": len(tool_chain_events),
         "tool_chain_repaired_count": tool_chain_repaired_count,
         "tool_chain_exhausted_count": tool_chain_exhausted_count,
+        "bridge_event_count": len(bridge_events),
+        "bridge_modes": dict(bridge_modes),
+        "bridge_fallback_count": bridge_fallback_count,
         "cloud_forward_count": cloud_forward_count,
         "cloud_proxy_count": cloud_proxy_count,
         "workerless_local_success_count": workerless_count,

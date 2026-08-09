@@ -84,7 +84,7 @@ CLOUD_FALLBACK_BEDROCK_MODEL = "qwen.qwen3-coder-480b-a35b-v1:0"
 ROUTE_POLICY_FALLBACKS = {
     "worker_mismatch_requires_receipt_fallback": True,
     "allow_cloud_fallback": True,
-    "cloud_fallback_aliases": ["norman-code"],
+    "cloud_fallback_aliases": ["norman-code", "norman-code-governed"],
     "cloud_fallback_provider": "aws-bedrock",
     "cloud_fallback_model": CLOUD_FALLBACK_BEDROCK_MODEL,
     "cloud_fallback_lane": "coder",

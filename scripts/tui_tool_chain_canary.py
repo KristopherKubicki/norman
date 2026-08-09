@@ -49,7 +49,10 @@ SAFE_TOOL_CHAIN_OUTCOMES = frozenset(
         "tool_call",
     }
 )
-SAFE_WATCHDOG_STATES = frozenset({"normal", "repaired", "exhausted"})
+SAFE_WATCHDOG_STATES = frozenset({"normal", "passthrough", "repaired", "exhausted"})
+SAFE_BRIDGE_MODES = frozenset({"transparent", "governed"})
+SAFE_TOOL_TRANSPORTS = frozenset({"local_text_adapter"})
+SAFE_STATE_RETENTIONS = frozenset({"ephemeral", "session"})
 
 RequestFn = Callable[[str, dict[str, Any], str, float], tuple[int, dict[str, Any]]]
 StreamRequestFn = Callable[
@@ -91,8 +94,24 @@ def _int(value: Any) -> int:
         return 0
 
 
+def _bounded_int(value: Any, *, maximum: int = 1_000_000) -> int:
+    return min(_int(value), maximum)
+
+
 def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _safe_identifier(value: Any, *, maximum: int = 192) -> str:
+    candidate = _clean(value)
+    if not candidate:
+        return ""
+    allowed = frozenset(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:/@+-"
+    )
+    if any(character not in allowed for character in candidate):
+        return "unknown"
+    return candidate[:maximum]
 
 
 def _is_raw_tool_payload_text(value: Any) -> bool:
@@ -755,6 +774,50 @@ def _safe_tool_chain(response: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _safe_bridge_receipt(response: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep a route receipt useful for operators without writing response content."""
+
+    norman = _mapping(response.get("norman"))
+    compatibility = _mapping(norman.get("responses_compatibility"))
+    budget = _mapping(norman.get("output_token_budget"))
+    if not compatibility and not budget:
+        return {}
+    route = _mapping(norman.get("route"))
+    fallback = _mapping(norman.get("cloud_fallback"))
+    bridge_mode = _clean(compatibility.get("tool_bridge_mode"))
+    tool_transport = _clean(compatibility.get("tool_transport"))
+    state_retention = _clean(compatibility.get("state_retention"))
+    return {
+        "mode": bridge_mode if bridge_mode in SAFE_BRIDGE_MODES else "unknown",
+        "tool_transport": (
+            tool_transport if tool_transport in SAFE_TOOL_TRANSPORTS else "unknown"
+        ),
+        "state_retention": (
+            state_retention if state_retention in SAFE_STATE_RETENTIONS else "unknown"
+        ),
+        "effective_backend": {
+            "provider": _safe_identifier(
+                route.get("selected_provider") or fallback.get("fallback_provider")
+            )
+            or "unknown",
+            "model": _safe_identifier(
+                route.get("selected_model")
+                or response.get("model")
+                or fallback.get("fallback_model")
+            )
+            or "unknown",
+        },
+        "output_token_budget": {
+            "requested": _bounded_int(budget.get("requested")),
+            "effective": _bounded_int(budget.get("effective")),
+            "maximum": _bounded_int(budget.get("maximum")),
+        },
+        "fallback_reason": _safe_identifier(
+            fallback.get("local_failure_code"), maximum=96
+        ),
+    }
+
+
 def _function_calls(response: Mapping[str, Any]) -> list[dict[str, Any]]:
     output = response.get("output")
     if not isinstance(output, list):
@@ -811,6 +874,7 @@ def _turn_receipt(
         "function_call_count": len(calls),
         "tool_names": [_safe_tool_name(call.get("name")) for call in calls],
         "tool_chain": _safe_tool_chain(response),
+        "bridge": _safe_bridge_receipt(response),
         "stream": stream_receipt if stream else {},
     }
 
@@ -1031,14 +1095,15 @@ def run_canary(
             token,
             _bounded_timeout(timeout_seconds),
         )
-        receipt["turns"].append(
-            _turn_receipt(
-                turn=turn,
-                status=status,
-                elapsed_ms=(time.monotonic() - turn_started_at) * 1000.0,
-                response=response,
-            )
+        turn_receipt = _turn_receipt(
+            turn=turn,
+            status=status,
+            elapsed_ms=(time.monotonic() - turn_started_at) * 1000.0,
+            response=response,
         )
+        receipt["turns"].append(turn_receipt)
+        if turn_receipt["bridge"]:
+            receipt["bridge"] = turn_receipt["bridge"]
         return response
 
     try:

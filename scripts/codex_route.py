@@ -20,6 +20,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Sequence
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised on Python < 3.11
+    import tomli as tomllib
+
 
 HOME = Path.home()
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -32,12 +37,28 @@ MANAGED_SECRET_GUARD = Path(
 OPS_OPENBRAND_MCP_LAUNCHER = (
     HOME / "code" / "control_plane" / "scripts" / "with_ops_openbrand_mcp.sh"
 )
+OPS_OPENBRAND_MCP_CONFIG_BEGIN = "# BEGIN NORMAN OPS OPENBRAND MCP"
+OPS_OPENBRAND_MCP_CONFIG_END = "# END NORMAN OPS OPENBRAND MCP"
+OPS_OPENBRAND_MCP_URL = "https://ops.openbrand.com/mcp"
+OPS_OPENBRAND_MCP_TOKEN_ENV = "OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY"
+OPS_OPENBRAND_MCP_STARTUP_TIMEOUT_SECONDS = 20
+OPS_OPENBRAND_MCP_TOOL_TIMEOUT_SECONDS = 60
+WORK_SKILLS_SOURCE_ROOT = HOME / ".codex-work" / "skills"
+PERSONAL_SKILLS_SOURCE_ROOT = HOME / ".codex-personal" / "skills"
+ROUTE_SKILL_SCOPE_BY_GROUP = {
+    "norman": "personal",
+    "personal": "personal",
+    "private": "personal",
+    "work": "work",
+}
 LOCAL_BIN = HOME / ".local" / "bin"
 LOCAL_CODEX_WRAPPER = LOCAL_BIN / "codex"
 LOCAL_CODEX_WORK_WRAPPER = LOCAL_BIN / "codex-work"
 ROUTER_PROFILE_PREFIX = "router-"
 DEFAULT_ROUTER_MODEL = "norman-code"
-MODEL_CATALOG_CONTRACT_VERSION = "2026-08-tool-capable-v1"
+GOVERNED_ROUTER_MODEL = "norman-code-governed"
+ROUTER_MODELS = frozenset({DEFAULT_ROUTER_MODEL, GOVERNED_ROUTER_MODEL})
+MODEL_CATALOG_CONTRACT_VERSION = "2026-08-transparent-bridge-v1"
 REQUIRED_CODEX_MODEL_CAPABILITIES = {
     "shell_type": "shell_command",
     "apply_patch_tool_type": "freeform",
@@ -82,17 +103,6 @@ ROUTED_TUI_SECRET_POLICY = """# Norman TUI Secret Policy
 - Do not directly invoke `cred`, even for reads. Never run `cred init`, bootstrap, migration, rotation, or put/set/remove/rm operations.
 - Never create or migrate a vault, and never ask for, accept, or enter a vault passphrase.
 """
-ROUTED_TUI_DEVELOPER_INSTRUCTIONS = (
-    "Norman TUI secret policy: Read-only analysis never needs secret access; do "
-    "not inspect or probe NORMAN_KEYS_URL, NORMAN_SECRET_CMD, or other secret "
-    "configuration, even when a document mentions credentials. Raw secret "
-    "retrieval is never allowed in the agent terminal: do not manually execute "
-    "a broker or use its output. Before a credentialed action, state the "
-    "required capability and logical alias; use only a task-specific approved "
-    "executor or injected tool, otherwise report that action blocked. Do not "
-    "directly invoke cred, initialize or migrate a vault, or request a vault "
-    "passphrase."
-)
 ROUTED_TUI_POLICY_BEGIN = "<!-- BEGIN NORMAN TUI SECRET POLICY -->"
 ROUTED_TUI_POLICY_END = "<!-- END NORMAN TUI SECRET POLICY -->"
 MODEL_HIDDEN_SECRET_ENVIRONMENT_KEYS = frozenset(
@@ -396,15 +406,24 @@ def explicit_profiles(arguments: Sequence[str]) -> list[str]:
     return profiles
 
 
-def has_explicit_model(arguments: Sequence[str]) -> bool:
+def explicit_models(arguments: Sequence[str]) -> list[str]:
+    models: list[str] = []
     for index, argument in enumerate(arguments):
         if argument in {"--model", "-m"}:
-            return bool(_value_after(arguments, index))
-        if argument.startswith("--model="):
-            return bool(argument.split("=", 1)[1])
-        if argument.startswith("-m") and len(argument) > 2:
-            return True
-    return False
+            value = _value_after(arguments, index)
+            if value:
+                models.append(value)
+        elif argument.startswith("--model="):
+            value = argument.split("=", 1)[1]
+            if value:
+                models.append(value)
+        elif argument.startswith("-m") and len(argument) > 2:
+            models.append(argument[2:])
+    return models
+
+
+def has_explicit_model(arguments: Sequence[str]) -> bool:
+    return bool(explicit_models(arguments))
 
 
 def config_overrides(arguments: Sequence[str]) -> list[str]:
@@ -433,9 +452,18 @@ def route_arguments_error(route: Route, arguments: Sequence[str]) -> str:
             "a different Codex profile could bypass its TUI route."
         )
 
+    if any(model not in ROUTER_MODELS for model in explicit_models(arguments)):
+        return (
+            f"{route.key} only supports the {DEFAULT_ROUTER_MODEL!r} or "
+            f"{GOVERNED_ROUTER_MODEL!r} TUI models; the gateway selects its "
+            "approved fallback so coding tools remain available."
+        )
+
     routed_keys = {
         "auth",
         "base_url",
+        "model",
+        "model_catalog_json",
         "model_provider",
         "provider",
         "wire_api",
@@ -507,6 +535,13 @@ def starts_session(arguments: Sequence[str]) -> bool:
     return not command or command not in MANAGEMENT_COMMANDS
 
 
+def uses_route_scoped_management_command(
+    route: Route, arguments: Sequence[str]
+) -> bool:
+    """Keep the work Ops MCP visible to `codex mcp` without routing login/help."""
+    return route.launcher == "work" and command_name(arguments) == "mcp"
+
+
 def route_home(route: Route) -> Path:
     return Path(route.codex_home).expanduser()
 
@@ -515,8 +550,238 @@ def profile_path(route: Route) -> Path:
     return route_home(route) / f"{route.profile}.config.toml"
 
 
+def route_config_path(route: Route) -> Path:
+    return route_home(route) / "config.toml"
+
+
+def route_skill_scope(route: Route) -> str | None:
+    """Return the managed skill scope available to a routed Codex home."""
+    return ROUTE_SKILL_SCOPE_BY_GROUP.get(route.group)
+
+
+def scoped_skill_source_root(scope: str | None) -> Path | None:
+    if scope == "work":
+        return WORK_SKILLS_SOURCE_ROOT
+    if scope == "personal":
+        return PERSONAL_SKILLS_SOURCE_ROOT
+    return None
+
+
+def managed_skill_source_roots() -> tuple[Path, ...]:
+    return (WORK_SKILLS_SOURCE_ROOT, PERSONAL_SKILLS_SOURCE_ROOT)
+
+
+def _resolved_path(path: Path) -> Path | None:
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError):
+        return None
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    resolved_path = _resolved_path(path)
+    resolved_root = _resolved_path(root)
+    if resolved_path is None or resolved_root is None:
+        return False
+    try:
+        resolved_path.relative_to(resolved_root)
+    except ValueError:
+        return False
+    return True
+
+
+def _managed_skill_link(path: Path) -> bool:
+    return path.is_symlink() and any(
+        _is_within(path, source_root) for source_root in managed_skill_source_roots()
+    )
+
+
+def _skill_source_entries(source_root: Path) -> dict[str, Path]:
+    try:
+        entries = list(source_root.iterdir())
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        print(
+            f"codex-route: unable to inspect managed skills at {source_root}: {exc}; "
+            "continuing without a skill sync.",
+            file=sys.stderr,
+        )
+        return {}
+
+    return {
+        entry.name: entry
+        for entry in sorted(entries, key=lambda candidate: candidate.name)
+        if entry.is_dir() and (entry / "SKILL.md").is_file()
+    }
+
+
+def _same_skill_target(link: Path, source: Path) -> bool:
+    resolved_link = _resolved_path(link)
+    resolved_source = _resolved_path(source)
+    return resolved_link is not None and resolved_link == resolved_source
+
+
+def sync_scoped_skills(route: Route) -> None:
+    """Expose only the route's managed skills through its isolated CODEX_HOME.
+
+    Individual skill-directory symlinks keep work and personal sources canonical
+    while preserving Codex's built-in `.system` directory and any unmanaged
+    user-owned skill entries in an individual route home.
+    """
+
+    source_root = scoped_skill_source_root(route_skill_scope(route))
+    skill_home = route_home(route) / "skills"
+    try:
+        skill_home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except OSError as exc:
+        print(
+            f"codex-route: unable to prepare skills for {route.key}: {exc}; "
+            "continuing without a skill sync.",
+            file=sys.stderr,
+        )
+        return
+
+    source_entries = _skill_source_entries(source_root) if source_root else {}
+
+    try:
+        destination_entries = list(skill_home.iterdir())
+    except OSError as exc:
+        print(
+            f"codex-route: unable to inspect skills for {route.key}: {exc}; "
+            "continuing without a skill sync.",
+            file=sys.stderr,
+        )
+        return
+
+    for destination in destination_entries:
+        if not _managed_skill_link(destination):
+            continue
+        source = source_entries.get(destination.name)
+        if source is not None and _same_skill_target(destination, source):
+            continue
+        try:
+            destination.unlink()
+        except OSError as exc:
+            print(
+                f"codex-route: unable to remove stale managed skill "
+                f"{destination} for {route.key}: {exc}; continuing.",
+                file=sys.stderr,
+            )
+
+    for name, source in source_entries.items():
+        destination = skill_home / name
+        if destination.is_symlink() and _same_skill_target(destination, source):
+            continue
+        if destination.exists() or destination.is_symlink():
+            print(
+                f"codex-route: skill conflict for {route.key}: leaving "
+                f"{destination} untouched instead of linking managed skill {name}.",
+                file=sys.stderr,
+            )
+            continue
+        try:
+            destination.symlink_to(source, target_is_directory=True)
+        except OSError as exc:
+            print(
+                f"codex-route: unable to link managed skill {name} for "
+                f"{route.key}: {exc}; continuing.",
+                file=sys.stderr,
+            )
+
+
 def models_cache_path(route: Route) -> Path:
     return route_home(route) / "models_cache.json"
+
+
+def routed_model_catalog_path(route: Route) -> Path:
+    return route_home(route) / "router-model-catalog.json"
+
+
+def _routed_model_catalog_entry(
+    *,
+    slug: str,
+    display_name: str,
+    description: str,
+    priority: int,
+) -> dict[str, object]:
+    return {
+        "slug": slug,
+        "display_name": display_name,
+        "description": description,
+        "default_reasoning_level": "high",
+        "supported_reasoning_levels": [
+            {"effort": "low", "description": "Low reasoning effort."},
+            {"effort": "medium", "description": "Standard reasoning effort."},
+            {"effort": "high", "description": "High reasoning effort."},
+        ],
+        "shell_type": "shell_command",
+        "visibility": "list",
+        "supported_in_api": True,
+        "priority": priority,
+        "additional_speed_tiers": [],
+        "service_tiers": [],
+        "availability_nux": None,
+        "upgrade": None,
+        "model_messages": {
+            "instructions_template": "",
+            "instructions_variables": None,
+            "approvals": None,
+            "collaboration_modes": None,
+            "auto_review": None,
+            "permissions": None,
+        },
+        "include_skills_usage_instructions": True,
+        "include_plugin_usage_instructions": True,
+        "include_apps_usage_instructions": True,
+        "default_reasoning_summary": "auto",
+        "support_verbosity": False,
+        "default_verbosity": None,
+        "apply_patch_tool_type": "freeform",
+        "web_search_tool_type": "text",
+        "truncation_policy": {"mode": "bytes", "limit": 128000},
+        "supports_parallel_tool_calls": True,
+        "supports_image_detail_original": False,
+        "context_window": 128000,
+        "effective_context_window_percent": 95,
+        "experimental_supported_tools": [],
+        "input_modalities": ["text", "image"],
+        "supports_search_tool": False,
+        "use_responses_lite": False,
+    }
+
+
+def routed_model_catalog() -> dict[str, object]:
+    """Return the transparent default and an explicit governed bridge mode."""
+    return {
+        "models": [
+            _routed_model_catalog_entry(
+                slug=DEFAULT_ROUTER_MODEL,
+                display_name="Norman Code",
+                description=(
+                    "Transparent local text-adapter coding route with approved "
+                    "local-first cloud fallback."
+                ),
+                priority=1,
+            ),
+            _routed_model_catalog_entry(
+                slug=GOVERNED_ROUTER_MODEL,
+                display_name="Norman Code (Governed)",
+                description=(
+                    "Norman coding route with explicit governed tool-bridge "
+                    "behavior."
+                ),
+                priority=2,
+            ),
+        ]
+    }
+
+
+def write_routed_model_catalog(route: Route) -> Path:
+    path = routed_model_catalog_path(route)
+    contents = json.dumps(routed_model_catalog(), indent=2, sort_keys=True) + "\n"
+    _write_private_text(path, contents)
+    return path
 
 
 def model_catalog_contract_stamp_path(route: Route) -> Path:
@@ -622,6 +887,93 @@ def write_routed_tui_secret_policy(home: Path) -> Path:
     return path
 
 
+def is_ops_openbrand_work_route(route: Route) -> bool:
+    return route.group == "work" and route.launcher == "work"
+
+
+def ops_openbrand_mcp_config_block() -> str:
+    return "\n".join(
+        (
+            OPS_OPENBRAND_MCP_CONFIG_BEGIN,
+            "[mcp_servers.ops_openbrand]",
+            f"url = {json.dumps(OPS_OPENBRAND_MCP_URL)}",
+            f"bearer_token_env_var = {json.dumps(OPS_OPENBRAND_MCP_TOKEN_ENV)}",
+            f"startup_timeout_sec = {OPS_OPENBRAND_MCP_STARTUP_TIMEOUT_SECONDS}",
+            f"tool_timeout_sec = {OPS_OPENBRAND_MCP_TOOL_TIMEOUT_SECONDS}",
+            OPS_OPENBRAND_MCP_CONFIG_END,
+            "",
+        )
+    )
+
+
+def _table_end(contents: str, start: int) -> int:
+    next_table = re.search(
+        r"(?m)^[ \t]*\[(?!\[)[^\]\n]+\][^\n]*(?:\n|$)", contents[start:]
+    )
+    return start + next_table.start() if next_table else len(contents)
+
+
+def _existing_ops_openbrand_mcp_span(contents: str) -> tuple[int, int] | None:
+    managed_start = contents.find(OPS_OPENBRAND_MCP_CONFIG_BEGIN)
+    if managed_start >= 0:
+        managed_end = contents.find(
+            OPS_OPENBRAND_MCP_CONFIG_END,
+            managed_start + len(OPS_OPENBRAND_MCP_CONFIG_BEGIN),
+        )
+        if managed_end < 0:
+            raise RuntimeError(
+                "The managed Ops MCP configuration block is incomplete in "
+                "the route Codex config."
+            )
+        managed_end += len(OPS_OPENBRAND_MCP_CONFIG_END)
+        while managed_end < len(contents) and contents[managed_end] in "\r\n":
+            managed_end += 1
+        return managed_start, managed_end
+
+    header = re.search(
+        r"(?m)^[ \t]*\[\s*mcp_servers\.(?:ops_openbrand|"
+        r'"ops_openbrand"|\'ops_openbrand\')\s*\][^\n]*(?:\n|$)',
+        contents,
+    )
+    if header is None:
+        return None
+    return header.start(), _table_end(contents, header.end())
+
+
+def write_ops_openbrand_mcp_config(route: Route) -> Path | None:
+    """Ensure work routes register the bound read-only Ops MCP server."""
+    if not is_ops_openbrand_work_route(route):
+        return None
+
+    path = route_config_path(route)
+    try:
+        existing = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        existing = ""
+    except OSError as exc:
+        raise RuntimeError(f"Unable to read route Codex config at {path}.") from exc
+
+    block = ops_openbrand_mcp_config_block()
+    existing_span = _existing_ops_openbrand_mcp_span(existing)
+    if existing_span is not None:
+        start, end = existing_span
+        contents = f"{existing[:start]}{block}{existing[end:]}"
+    elif existing.strip():
+        contents = f"{existing.rstrip()}\n\n{block}"
+    else:
+        contents = block
+
+    try:
+        tomllib.loads(contents)
+    except tomllib.TOMLDecodeError as exc:
+        raise RuntimeError(
+            f"Unable to safely install the Ops MCP configuration in {path}: "
+            f"invalid TOML ({exc})."
+        ) from exc
+    _write_private_text(path, contents)
+    return path
+
+
 def write_gateway_profile(route: Route) -> Path:
     """Create/refresh a profile without ever storing a bearer token."""
     if not GATEWAY_TOKEN_HELPER.is_file() or not os.access(
@@ -633,12 +985,15 @@ def write_gateway_profile(route: Route) -> Path:
     home = route_home(route)
     home.mkdir(mode=0o700, parents=True, exist_ok=True)
     write_routed_tui_secret_policy(home)
+    sync_scoped_skills(route)
+    write_ops_openbrand_mcp_config(route)
+    catalog_path = write_routed_model_catalog(route)
     path = profile_path(route)
     contents = "\n".join(
         (
             f'model_provider = "{route.provider}"',
             f'model = "{DEFAULT_ROUTER_MODEL}"',
-            f"developer_instructions = {json.dumps(ROUTED_TUI_DEVELOPER_INSTRUCTIONS)}",
+            f"model_catalog_json = {json.dumps(str(catalog_path))}",
             "",
             f"[model_providers.{route.provider}]",
             f"name = {json.dumps(route.key + ' TUI model gateway')}",
@@ -856,19 +1211,13 @@ def model_catalog_contract_error(payload: dict[str, Any]) -> str:
     return ""
 
 
-def verify_route_model_contract(route: Route) -> tuple[bool, str]:
-    """Check that a mapped gateway can provision the local coding toolset."""
+def verify_route_model_contract(_route: Route) -> tuple[bool, str]:
+    """Check the locally enforced catalog that provisions Codex tools."""
 
-    token, detail = brokered_gateway_token(route)
-    if not token:
-        return False, detail
-    status, payload, detail = gateway_get_json(route.endpoint, "models", token=token)
-    if status != 200:
-        return False, detail
-    contract_error = model_catalog_contract_error(payload)
+    contract_error = model_catalog_contract_error(routed_model_catalog())
     if contract_error:
         return False, contract_error
-    return True, "tool-capable gateway model catalog verified"
+    return True, "managed tool-capable Codex model catalog verified"
 
 
 def preflight_route_capacity(route: Route) -> tuple[bool, str]:
@@ -1352,7 +1701,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"codex-route: {arguments_error}", file=sys.stderr)
             return 2
 
-    if route is not None and starts_session(parsed.codex_args):
+    if route is not None and (
+        starts_session(parsed.codex_args)
+        or uses_route_scoped_management_command(route, parsed.codex_args)
+    ):
         if route.launcher != parsed.launcher:
             required_command = "codex-work" if route.launcher == "work" else "codex"
             print(
@@ -1361,30 +1713,33 @@ def main(argv: Sequence[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-        arguments_error = route_arguments_error(route, parsed.codex_args)
-        if arguments_error:
-            print(f"codex-route: {arguments_error}", file=sys.stderr)
-            return 2
-        if parsed.launcher == "work" and not os.getenv("CODEX_WORK_OPS_BINDING_LOADED"):
-            # The work launcher re-enters through the Ops binding loader. Defer
-            # preflight output until the bound process so it is emitted once.
-            exec_work_route(route, parsed.codex_args)
-            return 0
-        contract_available, contract_detail = verify_route_model_contract(route)
-        if not contract_available:
-            print(
-                f"codex-route: {route.key} startup blocked: {contract_detail}.",
-                file=sys.stderr,
-            )
-            return 1
-        capacity_available, capacity_detail = preflight_route_capacity(route)
-        if not capacity_available:
-            print(
-                f"codex-route: {route.key} local capacity warning: "
-                f"{capacity_detail}. Starting Codex normally.",
-                file=sys.stderr,
-            )
-        print_startup_usage_notices(route)
+        if starts_session(parsed.codex_args):
+            arguments_error = route_arguments_error(route, parsed.codex_args)
+            if arguments_error:
+                print(f"codex-route: {arguments_error}", file=sys.stderr)
+                return 2
+            if parsed.launcher == "work" and not os.getenv(
+                "CODEX_WORK_OPS_BINDING_LOADED"
+            ):
+                # The work launcher re-enters through the Ops binding loader.
+                # Defer preflight output until the bound process so it is emitted once.
+                exec_work_route(route, parsed.codex_args)
+                return 0
+            contract_available, contract_detail = verify_route_model_contract(route)
+            if not contract_available:
+                print(
+                    f"codex-route: {route.key} startup blocked: {contract_detail}.",
+                    file=sys.stderr,
+                )
+                return 1
+            capacity_available, capacity_detail = preflight_route_capacity(route)
+            if not capacity_available:
+                print(
+                    f"codex-route: {route.key} local capacity warning: "
+                    f"{capacity_detail}. Starting Codex normally.",
+                    file=sys.stderr,
+                )
+            print_startup_usage_notices(route)
         if parsed.launcher == "work":
             exec_work_route(route, parsed.codex_args)
         else:
