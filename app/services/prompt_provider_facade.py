@@ -811,6 +811,66 @@ def _message_context_chars(message: Mapping[str, Any]) -> int:
     return len(_json_dumps(content))
 
 
+def _message_context_breakdown(
+    messages: list[dict[str, Any]],
+) -> dict[str, int]:
+    """Return content-free prompt sizing metadata for a message group."""
+
+    breakdown = {
+        "message_count": len(messages),
+        "chars": 0,
+        "tool_output_chars": 0,
+        "function_call_chars": 0,
+        "text_chars": 0,
+    }
+    for message in messages:
+        chars = _message_context_chars(message)
+        breakdown["chars"] += chars
+        item_type = _clean(message.get("type"))
+        if item_type == "function_call_output":
+            breakdown["tool_output_chars"] += chars
+        elif item_type == "function_call":
+            breakdown["function_call_chars"] += chars
+        else:
+            breakdown["text_chars"] += chars
+    return breakdown
+
+
+def _prompt_context_metadata(
+    *,
+    history_messages: list[dict[str, Any]],
+    tool_contract_messages: list[dict[str, Any]],
+    structured_output_messages: list[dict[str, Any]],
+    current_input_messages: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Describe prompt composition without retaining any prompt content."""
+
+    groups = {
+        "history": _message_context_breakdown(history_messages),
+        "tool_contract": _message_context_breakdown(tool_contract_messages),
+        "structured_output": _message_context_breakdown(structured_output_messages),
+        "current_input": _message_context_breakdown(current_input_messages),
+    }
+    all_messages = [
+        *history_messages,
+        *tool_contract_messages,
+        *structured_output_messages,
+        *current_input_messages,
+    ]
+    return {
+        "schema": "norman.responses-prompt-context.v1",
+        "groups": groups,
+        "total_message_count": len(all_messages),
+        "total_content_chars": sum(
+            _message_context_chars(message) for message in all_messages
+        ),
+        # The local adapter sends role labels and separators in addition to
+        # message content. This remains content-free but aligns with the
+        # prompt bytes sent to the local gateway.
+        "rendered_prompt_chars": len(norllama_gateway.messages_to_prompt(all_messages)),
+    }
+
+
 def _compact_replayed_text(text: str, *, limit: int) -> str:
     if len(text) <= limit:
         return text
@@ -3736,6 +3796,7 @@ class PreparedResponsesExecution:
     route_payload: dict[str, Any]
     route_envelope: dict[str, Any]
     messages: list[dict[str, Any]]
+    prompt_context: dict[str, Any]
     previous_messages: list[dict[str, Any]]
     function_calls: dict[str, str]
     function_call_items: dict[str, dict[str, Any]]
@@ -3785,16 +3846,24 @@ def _prepare_responses_execution(
         provider_payload,
         bridge_mode=bridge_mode,
     )
+    structured_output_messages = _structured_output_message(provider_payload)
+    current_input_messages = response_input_to_messages(
+        provider_payload,
+        known_tool_outputs=history.tool_outputs,
+        known_function_call_items=history.function_call_items,
+    )
     messages = [
         *history_messages,
         *tool_contract_messages,
-        *_structured_output_message(provider_payload),
-        *response_input_to_messages(
-            provider_payload,
-            known_tool_outputs=history.tool_outputs,
-            known_function_call_items=history.function_call_items,
-        ),
+        *structured_output_messages,
+        *current_input_messages,
     ]
+    prompt_context = _prompt_context_metadata(
+        history_messages=history_messages,
+        tool_contract_messages=tool_contract_messages,
+        structured_output_messages=structured_output_messages,
+        current_input_messages=current_input_messages,
+    )
     route_payload = {**provider_payload, "input": messages}
     route_envelope = provider_adapter_decision(
         provider="openai",
@@ -3807,6 +3876,7 @@ def _prepare_responses_execution(
         route_payload=route_payload,
         route_envelope=route_envelope,
         messages=messages,
+        prompt_context=prompt_context,
         previous_messages=history.messages,
         function_calls=function_calls,
         function_call_items=function_call_items,
@@ -3883,6 +3953,7 @@ def _responses_response_from_chat(
                     if prepared.history_replayed
                     else "unavailable"
                 ),
+                "prompt_context": prepared.prompt_context,
                 "tools_declared": len(_tools(provider_payload)),
                 "tool_calls_returned": len(tool_calls),
                 "tool_chain": tool_chain,
