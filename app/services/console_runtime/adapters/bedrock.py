@@ -137,7 +137,8 @@ def _facade_cloud_fallback_allowed(
         and _clean(metadata.get("execution_mode"))
         == "prompt_intermediary_openai_facade_cloud_fallback"
         and attempt == 1
-        and _clean(marker.get("requested_alias")).lower() == "norman-code"
+        and _clean(marker.get("requested_alias")).lower()
+        in {"norman-code", "norman-code-governed"}
         and _clean(marker.get("local_failure_code"))
         and _clean(provider).lower().replace("_", "-") == "aws-bedrock"
         and _clean(model) == CLOUD_FALLBACK_BEDROCK_MODEL

@@ -355,7 +355,7 @@ def _sse(lines: Iterable[dict[str, Any]]) -> Iterable[str]:
 def _codex_model_catalog() -> list[dict[str, Any]]:
     """Return the minimal Codex model catalog for the local facade."""
     common = {
-        "default_reasoning_level": "medium",
+        "default_reasoning_level": "high",
         "supported_reasoning_levels": [
             {"effort": "low", "description": "Low reasoning effort."},
             {"effort": "medium", "description": "Standard reasoning effort."},
@@ -381,9 +381,18 @@ def _codex_model_catalog() -> list[dict[str, Any]]:
             **common,
             "slug": "norman-code",
             "display_name": "Norman Code",
-            "description": "Norman local-first coding route.",
+            "description": "Norman transparent local-first coding route.",
             "priority": 1,
             # Codex uses these capabilities to provision its local coding tools.
+            "apply_patch_tool_type": "freeform",
+            "supports_parallel_tool_calls": True,
+        },
+        {
+            **common,
+            "slug": "norman-code-governed",
+            "display_name": "Norman Code (Governed)",
+            "description": "Norman coding route with explicit governed tool behavior.",
+            "priority": 2,
             "apply_patch_tool_type": "freeform",
             "supports_parallel_tool_calls": True,
         },
@@ -392,7 +401,7 @@ def _codex_model_catalog() -> list[dict[str, Any]]:
             "slug": "norman-local",
             "display_name": "Norman Local",
             "description": "Norman local text route.",
-            "priority": 2,
+            "priority": 3,
         },
     ]
 
@@ -414,6 +423,12 @@ async def openai_compat_models(request: Request):
         "data": [
             {
                 "id": "norman-code",
+                "object": "model",
+                "created": 0,
+                "owned_by": "norman",
+            },
+            {
+                "id": "norman-code-governed",
                 "object": "model",
                 "created": 0,
                 "owned_by": "norman",

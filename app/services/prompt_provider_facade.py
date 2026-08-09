@@ -96,7 +96,8 @@ SUPPORTED_REASONING_EFFORTS = frozenset(
 SUPPORTED_REASONING_SUMMARIES = frozenset({"auto", "concise", "detailed", "none"})
 SUPPORTED_REASONING_CONTEXTS = frozenset({"auto", "current_turn", "all_turns"})
 SUPPORTED_RESPONSES_INCLUDE_VALUES = frozenset({"reasoning.encrypted_content"})
-MAX_FACADE_TOKENS = 4096
+DEFAULT_FACADE_TOKENS = 16384
+MAX_FACADE_TOKENS = 32768
 MAX_RESPONSE_STATE = 200
 CLOUD_FALLBACK_SCHEMA = "norman.cloud-fallback.v1"
 CLOUD_FALLBACK_MARKER_SCHEMA = "norman.facade-cloud-fallback.v1"
@@ -127,10 +128,14 @@ LOCAL_STREAM_OPEN_MAX_ACTIVE_INVOCATIONS = 4
 logger = logging.getLogger(__name__)
 MODEL_ALIASES = {
     "norman-code": ROUTE_POLICY_MODELS["coding_operator"],
+    "norman-code-governed": ROUTE_POLICY_MODELS["coding_operator"],
     "norman-fast": ROUTE_POLICY_MODELS["router"],
     "norman-local": "",
     "norman-reasoning": ROUTE_POLICY_MODELS["router"],
 }
+TRANSPARENT_BRIDGE_MODE = "transparent"
+GOVERNED_BRIDGE_MODE = "governed"
+GOVERNED_BRIDGE_MODEL_ALIASES = frozenset({"norman-code-governed"})
 RAW_LOCAL_MODEL_MARKERS = (
     "bge",
     "gemma",
@@ -581,6 +586,7 @@ def _store_response_state(
     function_call_items: Mapping[str, Mapping[str, Any]],
     response_function_call_items: list[Mapping[str, Any]],
     tool_outputs: set[tuple[str, str]],
+    ephemeral: bool,
 ) -> None:
     if not response_id:
         return
@@ -602,6 +608,7 @@ def _store_response_state(
                 dict(function_call) for function_call in function_call_items.values()
             ],
             "tool_outputs": stored_tool_outputs,
+            "retention": "ephemeral" if ephemeral else "session",
             "created_at": time.time(),
         }
         _RESPONSE_STATE_ORDER.append(response_id)
@@ -1248,26 +1255,41 @@ def _tool_contract_definition(payload: Mapping[str, Any]) -> list[dict[str, Any]
     return compact
 
 
-def _tool_contract_message(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _tool_contract_message(
+    payload: Mapping[str, Any],
+    *,
+    bridge_mode: str = TRANSPARENT_BRIDGE_MODE,
+) -> list[dict[str, Any]]:
     compact = _tool_contract_definition(payload)
     if not compact:
         return []
+    if bridge_mode == GOVERNED_BRIDGE_MODE:
+        content = (
+            "When calling tools, return only one JSON object using either "
+            '{"tool_call":{"name":"tool_name","arguments":{}}} or '
+            '{"tool_calls":[{"name":"tool_name","arguments":{}}]}. '
+            "Use only a tool name declared below. After a tool result, "
+            "continue with another tool only when the result establishes "
+            "that additional work is needed; otherwise return the final "
+            "assistant answer. Do not repeat a completed call merely "
+            "because it remains available. Available tools: "
+        )
+    else:
+        content = (
+            "This local text adapter encodes function calls as JSON. When a "
+            "function is needed, emit exactly one JSON object using either "
+            '{"tool_call":{"name":"tool_name","arguments":{}}} or '
+            '{"tool_calls":[{"name":"tool_name","arguments":{}}]}. '
+            "Use only a declared tool name. Available tools: "
+        )
     return [
         {
             "role": "system",
-            "content": (
-                "When calling tools, return only one JSON object using either "
-                '{"tool_call":{"name":"tool_name","arguments":{}}} or '
-                '{"tool_calls":[{"name":"tool_name","arguments":{}}]}. '
-                "Use only a tool name declared below. After a tool result, "
-                "continue with another tool only when the result establishes "
-                "that additional work is needed; otherwise return the final "
-                "assistant answer. Do not repeat a completed call merely "
-                "because it remains available. Available tools: " + _json_dumps(compact)
-            ),
+            "content": content + _json_dumps(compact),
             TOOL_CONTRACT_CONTEXT_MARKER: {
                 "kind": TOOL_CONTRACT_CONTEXT_KIND,
                 "tools": compact,
+                "bridge_mode": bridge_mode,
             },
         }
     ]
@@ -1282,16 +1304,22 @@ def _message_has_tool_contract(
     message: Mapping[str, Any],
     *,
     definition: list[dict[str, Any]],
+    bridge_mode: str = TRANSPARENT_BRIDGE_MODE,
 ) -> bool:
     marker = _mapping(message.get(TOOL_CONTRACT_CONTEXT_MARKER))
     if _clean(marker.get("kind")) != TOOL_CONTRACT_CONTEXT_KIND:
         return False
-    return _messages(marker.get("tools")) == definition
+    return (
+        _messages(marker.get("tools")) == definition
+        and _clean(marker.get("bridge_mode")) == bridge_mode
+    )
 
 
 def _messages_with_current_tool_contract(
     messages: list[dict[str, Any]],
     payload: Mapping[str, Any],
+    *,
+    bridge_mode: str = TRANSPARENT_BRIDGE_MODE,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Preserve historical tool contracts and append a changed current registry.
 
@@ -1317,9 +1345,10 @@ def _messages_with_current_tool_contract(
     if latest_contract and _message_has_tool_contract(
         latest_contract,
         definition=definition,
+        bridge_mode=bridge_mode,
     ):
         return history, []
-    return history, _tool_contract_message(payload)
+    return history, _tool_contract_message(payload, bridge_mode=bridge_mode)
 
 
 def _structured_output_message(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -1405,6 +1434,35 @@ def _fallback_local_model(route_envelope: Mapping[str, Any]) -> str:
 
 def _requested_model(payload: Mapping[str, Any]) -> str:
     return _clean(payload.get("model"))
+
+
+def _responses_bridge_mode(payload: Mapping[str, Any]) -> str:
+    """Select the explicit tool-bridge behavior for a Responses request."""
+
+    if _requested_model(payload).lower() in GOVERNED_BRIDGE_MODEL_ALIASES:
+        return GOVERNED_BRIDGE_MODE
+    return TRANSPARENT_BRIDGE_MODE
+
+
+def _facade_max_tokens(payload: Mapping[str, Any]) -> int:
+    return _positive_int(
+        payload.get("max_completion_tokens")
+        or payload.get("max_output_tokens")
+        or payload.get("max_tokens"),
+        DEFAULT_FACADE_TOKENS,
+    )
+
+
+def _requested_output_token_budget(payload: Mapping[str, Any]) -> int | None:
+    for key in ("max_completion_tokens", "max_output_tokens", "max_tokens"):
+        if key not in payload:
+            continue
+        try:
+            requested = int(payload.get(key) or 0)
+        except (TypeError, ValueError):
+            return None
+        return requested if requested > 0 else None
+    return None
 
 
 def _validate_requested_model_alias(payload: Mapping[str, Any]) -> str:
@@ -2327,6 +2385,7 @@ def authorize_facade_execution(
 class AuthorizedChatInvocation:
     authorization: FacadeAuthorization
     max_tokens: int
+    requested_max_tokens: int | None
     invocation_id: str
     trusted_context: dict[str, Any]
     reasoning_advisory: dict[str, str]
@@ -2857,6 +2916,11 @@ def _execute_cloud_fallback(
             "local_failure_code": local_error.code,
             "fallback_provider": plan.provider,
             "fallback_model": plan.model,
+            "output_token_budget": {
+                "requested": invocation.requested_max_tokens,
+                "effective": invocation.max_tokens,
+                "maximum": MAX_FACADE_TOKENS,
+            },
             "streaming_mode": "buffered_sse"
             if provider_payload.get("stream")
             else "none",
@@ -3055,6 +3119,11 @@ def _execute_explicit_cloud_selection(
                 invocation=invocation,
                 state="completed",
             ),
+            "output_token_budget": {
+                "requested": invocation.requested_max_tokens,
+                "effective": invocation.max_tokens,
+                "maximum": MAX_FACADE_TOKENS,
+            },
             "streaming_mode": "buffered_sse"
             if provider_payload.get("stream")
             else "none",
@@ -3120,12 +3189,8 @@ def _prepare_explicit_cloud_selection_invocation(
         )
     return AuthorizedChatInvocation(
         authorization=authorization,
-        max_tokens=_positive_int(
-            provider_payload.get("max_completion_tokens")
-            or provider_payload.get("max_output_tokens")
-            or provider_payload.get("max_tokens"),
-            1024,
-        ),
+        max_tokens=_facade_max_tokens(provider_payload),
+        requested_max_tokens=_requested_output_token_budget(provider_payload),
         invocation_id=invocation_id,
         trusted_context=trusted_context,
         reasoning_advisory=reasoning_advisory,
@@ -3143,12 +3208,7 @@ def _prepare_authorized_chat_invocation(
         route_envelope,
         provider_payload=provider_payload,
     )
-    max_tokens = _positive_int(
-        provider_payload.get("max_completion_tokens")
-        or provider_payload.get("max_output_tokens")
-        or provider_payload.get("max_tokens"),
-        1024,
-    )
+    max_tokens = _facade_max_tokens(provider_payload)
     invocation_id = request_id or f"norman-openai-facade-{uuid.uuid4().hex}"
     trusted_context = _mapping(route_envelope.get("trusted_gateway_context"))
     reasoning_advisory = _responses_reasoning_advisory(provider_payload)
@@ -3178,6 +3238,7 @@ def _prepare_authorized_chat_invocation(
     return AuthorizedChatInvocation(
         authorization=authorization,
         max_tokens=max_tokens,
+        requested_max_tokens=_requested_output_token_budget(provider_payload),
         invocation_id=invocation_id,
         trusted_context=trusted_context,
         reasoning_advisory=reasoning_advisory,
@@ -3253,6 +3314,11 @@ def _complete_authorized_chat(
             "streaming_mode": "buffered_sse"
             if provider_payload.get("stream")
             else "none",
+            "output_token_budget": {
+                "requested": invocation.requested_max_tokens,
+                "effective": invocation.max_tokens,
+                "maximum": MAX_FACADE_TOKENS,
+            },
             "norllama": gateway_attribution,
             "gateway_headers": gateway_attribution["headers"],
             "facade_receipt": facade_receipt,
@@ -3366,11 +3432,14 @@ def _resolve_tool_continuation_response(
     """Apply one bounded repair when a completed tool call is repeated."""
 
     resolved = dict(chat_response)
-    if not _repeats_successful_tool_call(
+    repeats_successful_call = _repeats_successful_tool_call(
         _choice_text(resolved),
         prepared=prepared,
-    ):
+    )
+    if not repeats_successful_call:
         return resolved, "normal", 0
+    if prepared.bridge_mode != GOVERNED_BRIDGE_MODE:
+        return resolved, "passthrough", 0
 
     repaired = _execute_authorized_chat(
         provider_payload=prepared.route_payload,
@@ -3461,6 +3530,7 @@ class PreparedResponsesExecution:
     history_replayed: bool
     client_metadata_ignored: bool
     store_requested: bool
+    bridge_mode: str
 
 
 def _prepare_responses_execution(
@@ -3474,6 +3544,7 @@ def _prepare_responses_execution(
     include_advisory = _responses_include_advisory(provider_payload)
     client_metadata_ignored = _responses_client_metadata_ignored(provider_payload)
     store_requested = _responses_store_requested(provider_payload)
+    bridge_mode = _responses_bridge_mode(provider_payload)
     provider_payload.pop("client_metadata", None)
     provider_payload.pop("store", None)
     history = _previous_response_history(
@@ -3498,6 +3569,7 @@ def _prepare_responses_execution(
     history_messages, tool_contract_messages = _messages_with_current_tool_contract(
         history.messages,
         provider_payload,
+        bridge_mode=bridge_mode,
     )
     messages = [
         *history_messages,
@@ -3529,6 +3601,7 @@ def _prepare_responses_execution(
         history_replayed=history.replayed,
         client_metadata_ignored=client_metadata_ignored,
         store_requested=store_requested,
+        bridge_mode=bridge_mode,
     )
 
 
@@ -3600,12 +3673,12 @@ def _responses_response_from_chat(
                 "tool_calls_returned": len(tool_calls),
                 "tool_chain": tool_chain,
                 "tool_call_mode": (
-                    "explicit_json_envelope"
-                    if _tool_names(tools)
-                    else "implicit_json_envelope"
-                    if tool_calls
+                    "adapter_json_envelope"
+                    if _tool_names(tools) or tool_calls
                     else "none"
                 ),
+                "tool_bridge_mode": prepared.bridge_mode,
+                "tool_transport": "local_text_adapter",
                 "structured_output_requested": bool(
                     _mapping(provider_payload.get("text")).get("format")
                 ),
@@ -3613,10 +3686,13 @@ def _responses_response_from_chat(
                 "include_advisory": _responses_include_advisory(provider_payload),
                 "client_metadata_ignored": prepared.client_metadata_ignored,
                 "store_requested": prepared.store_requested,
+                "state_retention": (
+                    "session" if prepared.store_requested else "ephemeral"
+                ),
             },
         },
     }
-    if prepared.store_requested and store_response:
+    if store_response:
         function_call_items = dict(prepared.function_call_items)
         function_call_items.update(_function_call_items_from_items(output_items))
         _store_response_state(
@@ -3630,6 +3706,7 @@ def _responses_response_from_chat(
                 if _clean(item.get("type")) == "function_call"
             ],
             tool_outputs=prepared.tool_outputs,
+            ephemeral=not prepared.store_requested,
         )
     return response
 
@@ -3660,8 +3737,9 @@ class FacadeResponsesStream:
         self._cloud_fallback_attempted = False
         self._watchdog_state = "normal"
         self._watchdog_attempts = 0
-        self._buffer_tool_continuation = bool(
-            prepared.tool_chain_context.successful_call_signatures
+        self._buffer_tool_continuation = (
+            prepared.bridge_mode == GOVERNED_BRIDGE_MODE
+            and bool(prepared.tool_chain_context.successful_call_signatures)
         )
 
     @property

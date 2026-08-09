@@ -1680,7 +1680,7 @@ def test_openai_compat_responses_stream_repairs_repeated_tool_call(
         "/v1/responses",
         headers=headers,
         json={
-            "model": "norman-code",
+            "model": "norman-code-governed",
             "input": "Check Jira health.",
             "stream": True,
             "tools": tools,
@@ -1708,7 +1708,7 @@ def test_openai_compat_responses_stream_repairs_repeated_tool_call(
         "/v1/responses",
         headers=headers,
         json={
-            "model": "norman-code",
+            "model": "norman-code-governed",
             "previous_response_id": first_completed["id"],
             "input": [
                 {
@@ -1847,7 +1847,7 @@ def test_openai_compat_responses_stream_converts_implicit_tool_envelopes(
     assert completed["output_text"] == ""
     assert (
         completed["norman"]["responses_compatibility"]["tool_call_mode"]
-        == "implicit_json_envelope"
+        == "adapter_json_envelope"
     )
     assert response.closed is True
 
@@ -3577,6 +3577,7 @@ def test_openai_compat_models_requires_proxy_token_when_configured(
     assert payload["object"] == "list"
     assert {item["id"] for item in payload["data"]} >= {
         "norman-code",
+        "norman-code-governed",
         "norman-local",
     }
     assert payload["norman"]["base_url"] == "/v1"
@@ -3590,10 +3591,19 @@ def test_openai_compat_models_advertises_codex_catalog(test_app, monkeypatch):
 
     assert response.status_code == 200
     models = response.json()["models"]
-    assert [model["slug"] for model in models] == ["norman-code", "norman-local"]
+    assert [model["slug"] for model in models] == [
+        "norman-code",
+        "norman-code-governed",
+        "norman-local",
+    ]
     models_by_slug = {model["slug"]: model for model in models}
     assert models_by_slug["norman-code"]["apply_patch_tool_type"] == "freeform"
     assert models_by_slug["norman-code"]["supports_parallel_tool_calls"] is True
+    assert models_by_slug["norman-code"]["default_reasoning_level"] == "high"
+    assert models_by_slug["norman-code-governed"]["apply_patch_tool_type"] == "freeform"
+    assert (
+        models_by_slug["norman-code-governed"]["supports_parallel_tool_calls"] is True
+    )
     assert models_by_slug["norman-local"]["apply_patch_tool_type"] is None
     assert models_by_slug["norman-local"]["supports_parallel_tool_calls"] is False
     for model in models:
@@ -4411,7 +4421,7 @@ def test_openai_compat_responses_repairs_repeated_declared_tool_call(
 
     first = execute_openai_responses_facade(
         {
-            "model": "norman-code",
+            "model": "norman-code-governed",
             "input": "Run checks on Jira and our data.",
             "tools": tools,
         }
@@ -4419,7 +4429,7 @@ def test_openai_compat_responses_repairs_repeated_declared_tool_call(
     function_call = first["output"][0]
     second = execute_openai_responses_facade(
         {
-            "model": "norman-code",
+            "model": "norman-code-governed",
             "previous_response_id": first["id"],
             "input": [
                 {
@@ -4489,7 +4499,7 @@ def test_openai_compat_responses_rejects_repeated_tool_call_after_repair(
 
     first = execute_openai_responses_facade(
         {
-            "model": "norman-code",
+            "model": "norman-code-governed",
             "input": "Run checks on Jira and our data.",
             "tools": tools,
         }
@@ -4499,7 +4509,7 @@ def test_openai_compat_responses_rejects_repeated_tool_call_after_repair(
     with pytest.raises(FacadeError) as captured:
         execute_openai_responses_facade(
             {
-                "model": "norman-code",
+                "model": "norman-code-governed",
                 "previous_response_id": first["id"],
                 "input": [
                     {
@@ -4519,6 +4529,82 @@ def test_openai_compat_responses_rejects_repeated_tool_call_after_repair(
     assert error.norman["responses_compatibility"]["tool_chain"]["watchdog"] == {
         "state": "exhausted",
         "attempts": 1,
+    }
+
+
+def test_openai_compat_responses_transparent_mode_preserves_repeated_tool_call(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    facade.reset_facade_response_state()
+    invocations = []
+    tool_name = "tool_search"
+    tool_arguments = {"query": "Jira data checks"}
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+
+    def fake_chat(**kwargs):
+        invocations.append(kwargs)
+        return _mock_local_chat(kwargs["messages"], kwargs["model"]) | {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "tool_call": {
+                                    "name": tool_name,
+                                    "arguments": tool_arguments,
+                                }
+                            }
+                        )
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(facade.norllama_gateway, "invoke_text_chat", fake_chat)
+    tools = [
+        {
+            "type": "function",
+            "name": tool_name,
+            "description": "Discover a connected tool.",
+            "parameters": {"type": "object"},
+        }
+    ]
+
+    first = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "Run checks on Jira and our data.",
+            "tools": tools,
+        }
+    )
+    function_call = first["output"][0]
+    second = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "previous_response_id": first["id"],
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": function_call["call_id"],
+                    "output": '{"tools":[{"name":"ticket_search"}]}',
+                }
+            ],
+            "tools": tools,
+        }
+    )
+
+    assert len(invocations) == 2
+    assert [item["type"] for item in second["output"]] == ["function_call"]
+    assert second["output"][0]["name"] == tool_name
+    compatibility = second["norman"]["responses_compatibility"]
+    assert compatibility["tool_bridge_mode"] == "transparent"
+    assert compatibility["tool_chain"]["watchdog"] == {
+        "state": "passthrough",
+        "attempts": 0,
     }
 
 
@@ -4704,7 +4790,7 @@ def test_openai_compat_responses_replays_text_and_tool_output_with_call_argument
     } in replayed
 
 
-def test_openai_compat_responses_store_false_degrades_to_supplied_context(monkeypatch):
+def test_openai_compat_responses_store_false_preserves_ephemeral_context(monkeypatch):
     import app.services.prompt_provider_facade as facade
 
     facade.reset_facade_response_state()
@@ -4745,10 +4831,13 @@ def test_openai_compat_responses_store_false_degrades_to_supplied_context(monkey
     )
 
     compatibility = continued["norman"]["responses_compatibility"]
-    assert compatibility["history_replayed"] is False
-    assert compatibility["history_state"] == "unavailable"
+    assert compatibility["history_replayed"] is True
+    assert compatibility["history_state"] == "replayed"
+    assert (
+        response["norman"]["responses_compatibility"]["state_retention"] == "ephemeral"
+    )
     replayed = invocations[-1]["messages"]
-    assert {"role": "assistant", "content": "local ok"} not in replayed
+    assert {"role": "assistant", "content": "local ok"} in replayed
     assert {
         "role": "tool",
         "type": "function_call_output",

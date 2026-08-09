@@ -243,6 +243,60 @@ def test_safe_tool_chain_reports_unknown_legacy_watchdog_state():
     assert canary._safe_tool_chain(response)["watchdog_state"] == "unknown"
 
 
+def test_safe_tool_chain_preserves_transparent_passthrough_state():
+    response = _tool_response("resp-passthrough", "tool_search", "call-search")
+    response["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] = {
+        "state": "passthrough",
+        "attempts": 0,
+    }
+
+    assert canary._safe_tool_chain(response)["watchdog_state"] == "passthrough"
+
+
+def test_canary_receipt_exposes_only_sanitized_bridge_metadata():
+    response = _tool_response("resp-bridge", "tool_search", "call-search")
+    response.update({"model": "qwen3-coder:30b-a3b-q4_K_M"})
+    response["norman"].update(
+        {
+            "route": {
+                "selected_provider": "norllama",
+                "selected_model": "qwen3-coder:30b-a3b-q4_K_M",
+            },
+            "output_token_budget": {
+                "requested": 16384,
+                "effective": 16384,
+                "maximum": 32768,
+            },
+        }
+    )
+    response["norman"]["responses_compatibility"].update(
+        {
+            "tool_bridge_mode": "transparent",
+            "tool_transport": "local_text_adapter",
+            "state_retention": "ephemeral",
+        }
+    )
+
+    bridge = canary._safe_bridge_receipt(response)
+
+    assert bridge == {
+        "mode": "transparent",
+        "tool_transport": "local_text_adapter",
+        "state_retention": "ephemeral",
+        "effective_backend": {
+            "provider": "norllama",
+            "model": "qwen3-coder:30b-a3b-q4_K_M",
+        },
+        "output_token_budget": {
+            "requested": 16384,
+            "effective": 16384,
+            "maximum": 32768,
+        },
+        "fallback_reason": "",
+    }
+    assert "private" not in json.dumps(bridge, sort_keys=True)
+
+
 def test_run_canary_streaming_fails_when_raw_tool_json_reaches_output_text():
     receipt = canary.run_canary(
         endpoint="https://cp.kris.openbrand.com/v1/responses",

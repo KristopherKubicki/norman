@@ -134,6 +134,18 @@ def _stub_current_snapshot_dependencies(
         )
 
 
+def _fast_snapshot(module) -> dict:
+    meta = module.load_status_meta()
+    queued = module.normalize_queue(meta.get("queued_prompts"))
+    return {
+        "pending": bool(meta.get("pending")),
+        "state": str(meta.get("state") or ""),
+        "status_message": str(meta.get("status_message") or ""),
+        "queue_depth": len(queued),
+        "queued_prompts": queued,
+    }
+
+
 def test_local_llm_url_does_not_duplicate_version_or_api_base(monkeypatch, tmp_path):
     module = _load_agent_console_web(monkeypatch, tmp_path)
 
@@ -213,6 +225,65 @@ def test_current_snapshot_exposes_work_classification_contract(monkeypatch, tmp_
     assert snapshot["latest_route_rationale"] == envelope["route_rationale"]
 
 
+def test_current_snapshot_exposes_sanitized_tool_chain_canary_receipt(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    receipt_path = tmp_path / "tui-tool-chain-canary.json"
+    receipt_path.write_text(
+        json.dumps(
+            {
+                "schema": "norman.tui.tool-chain-canary.v2",
+                "state": "passed",
+                "checked_at": "2026-08-09T12:00:00+00:00",
+                "elapsed_ms": 1523,
+                "bridge": {
+                    "mode": "transparent",
+                    "tool_transport": "local_text_adapter",
+                    "state_retention": "ephemeral",
+                    "effective_backend": {
+                        "provider": "norllama",
+                        "model": "qwen3-coder:30b-a3b-q4_K_M",
+                    },
+                    "output_token_budget": {
+                        "requested": 16384,
+                        "effective": 16384,
+                        "maximum": 32768,
+                    },
+                    "fallback_reason": "private fallback reason",
+                },
+                "turns": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(module, "TOOL_CHAIN_CANARY_RECEIPT_PATH", receipt_path)
+    _stub_current_snapshot_dependencies(module, monkeypatch)
+
+    snapshot = module.current_snapshot()
+
+    assert snapshot["tool_chain_canary"] == {
+        "state": "passed",
+        "checked_at": "2026-08-09T12:00:00+00:00",
+        "elapsed_ms": 1523,
+        "bridge": {
+            "mode": "transparent",
+            "tool_transport": "local_text_adapter",
+            "state_retention": "ephemeral",
+            "effective_backend": {
+                "provider": "norllama",
+                "model": "qwen3-coder:30b-a3b-q4_K_M",
+            },
+            "output_token_budget": {
+                "requested": 16384,
+                "effective": 16384,
+                "maximum": 32768,
+            },
+            "fallback_reason": "unknown",
+        },
+    }
+
+
 def test_current_snapshot_discards_invalid_running_work_classification(
     monkeypatch, tmp_path
 ):
@@ -256,6 +327,241 @@ def test_response_owner_meta_ignores_stale_response_hash(monkeypatch, tmp_path):
         "turn-first"
     )
     assert module.last_response_meta_for("second answer") == {}
+
+
+def _checkpoint_required_admission(*reasons: str) -> dict:
+    return {
+        "allowed": False,
+        "action": "deny",
+        "reason_code": "checkpoint_required",
+        "reason": "Save a compact handoff before resuming this thread.",
+        "checkpoint_reasons": list(reasons),
+        "reasoning_effort": "high",
+    }
+
+
+def _checkpoint_handoff_admission() -> dict:
+    return {
+        "allowed": True,
+        "action": "checkpoint",
+        "reason_code": "checkpoint_allowed",
+        "reason": "Compact handoff admitted.",
+        "checkpoint_intent": True,
+        "reasoning_effort": "high",
+    }
+
+
+def _queue_rollover_candidate(module, prompt: str = "finish the KPI incident review"):
+    return module.queue_prompt(
+        prompt,
+        "careful",
+        3,
+        "normal",
+        [],
+        "codex",
+        "gpt-5.5",
+        service_tier="default",
+        cost_route=_route_proof(
+            module,
+            runtime="codex",
+            model="gpt-5.5",
+            service_tier="default",
+        ),
+        session_admission={
+            "reasoning_effort": "high",
+            "escalation_reason": "",
+            "reauthorization_reason": "",
+            "checkpoint_intent": False,
+        },
+        fast_snapshot=True,
+    )
+
+
+def _stage_safe_queue_rollover(module, monkeypatch):
+    module.ensure_state_dir()
+    module.write_text(module.THREAD_ID_PATH, "limited-thread")
+    module.write_text(module.THREAD_SCOPE_PATH, "profile-v2:work")
+    _queue_rollover_candidate(module)
+    module.update_status_meta(pending=False, state="ok")
+
+    admissions = [
+        _checkpoint_required_admission("token_limit"),
+        _checkpoint_handoff_admission(),
+    ]
+    monkeypatch.setattr(
+        module,
+        "session_budget_admission",
+        lambda **_kwargs: admissions.pop(0),
+    )
+
+    worker_args = module.start_next_queued_prompt()
+
+    assert worker_args is not None
+    assert worker_args[0].startswith("/compact\n")
+    running_admission = module.load_status_meta()["running_session_admission"]
+    return worker_args, running_admission
+
+
+def test_queue_checkpoint_rollover_stages_compact_before_original_request(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    _worker_args, running_admission = _stage_safe_queue_rollover(module, monkeypatch)
+
+    assert running_admission["auto_rollover"]["role"] == "handoff"
+    assert running_admission["auto_rollover"]["state"] == "handoff-staged"
+    meta = module.load_status_meta()
+    queued = module.normalize_queue(meta["queued_prompts"])
+    assert len(queued) == 1
+    assert queued[0]["prompt"] == "finish the KPI incident review"
+    pending_rollover = queued[0]["session_admission"]["auto_rollover"]
+    assert pending_rollover["role"] == "pending"
+    assert pending_rollover["state"] == "handoff-staged"
+    assert set(pending_rollover["checkpoint_reasons"]) == {"token_limit"}
+
+
+def test_queue_reauthorization_denial_does_not_auto_rollover(monkeypatch, tmp_path):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    module.ensure_state_dir()
+    _queue_rollover_candidate(module)
+    module.update_status_meta(pending=False, state="ok")
+    denied = {
+        "allowed": False,
+        "action": "deny",
+        "reason_code": "reauthorization_required",
+        "reason": "Fresh operator authorization is required.",
+        "checkpoint_reasons": ["token_limit"],
+        "reasoning_effort": "high",
+    }
+    monkeypatch.setattr(module, "session_budget_admission", lambda **_kwargs: denied)
+
+    assert module.start_next_queued_prompt() is None
+
+    meta = module.load_status_meta()
+    queued = module.normalize_queue(meta["queued_prompts"])
+    assert meta["state"] == "session-budget-blocked"
+    assert len(queued) == 1
+    assert "auto_rollover" not in queued[0]["session_admission"]
+    assert meta["last_session_admission"]["reason_code"] == "reauthorization_required"
+
+
+def test_successful_compact_rollover_clears_thread_and_runs_original_once(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    _worker_args, running_admission = _stage_safe_queue_rollover(module, monkeypatch)
+    assert module.complete_session_handoff_if_needed(
+        running_admission,
+        success=True,
+        thread_id="limited-thread",
+        finished_at=123,
+    )
+    assert module.read_text(module.THREAD_ID_PATH) == ""
+    assert module.read_text(module.THREAD_SCOPE_PATH) == ""
+
+    monkeypatch.setattr(
+        module,
+        "session_budget_admission",
+        lambda **_kwargs: {
+            "allowed": True,
+            "action": "allow",
+            "reason_code": "within_budget",
+            "reasoning_effort": "high",
+        },
+    )
+    resumed_args = module.start_next_queued_prompt()
+
+    assert resumed_args is not None
+    assert resumed_args[0] == "finish the KPI incident review"
+    meta = module.load_status_meta()
+    assert module.normalize_queue(meta["queued_prompts"]) == []
+    assert meta["running_session_admission"]["auto_rollover"]["state"] == (
+        "handoff-completed"
+    )
+    assert module.start_next_queued_prompt() is None
+
+
+def test_failed_compact_rollover_preserves_request_without_retry(monkeypatch, tmp_path):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    _worker_args, running_admission = _stage_safe_queue_rollover(module, monkeypatch)
+    assert not module.complete_session_handoff_if_needed(
+        running_admission,
+        success=False,
+        thread_id="limited-thread",
+        finished_at=123,
+    )
+
+    assert module.start_next_queued_prompt() is None
+    meta = module.load_status_meta()
+    queued = module.normalize_queue(meta["queued_prompts"])
+    assert meta["state"] == "session-rollover-failed"
+    assert len(queued) == 1
+    rollover = queued[0]["session_admission"]["auto_rollover"]
+    assert rollover["state"] == "handoff-failed"
+    assert "remains queued" in rollover["detail"]
+
+
+def test_start_web_prompt_safe_checkpoint_queues_and_launches_compact(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    module.ensure_state_dir()
+    module.write_text(module.THREAD_ID_PATH, "limited-thread")
+    proof = _route_proof(
+        module,
+        runtime="codex",
+        model="gpt-5.5",
+        service_tier="default",
+    )
+    launches = []
+    admissions = [
+        _checkpoint_required_admission("token_limit"),
+        _checkpoint_required_admission("token_limit"),
+        _checkpoint_handoff_admission(),
+    ]
+    monkeypatch.setattr(module, "configured_runtime", lambda: "codex")
+    monkeypatch.setattr(module, "configured_runtime_model", lambda _runtime: "gpt-5.5")
+    monkeypatch.setattr(module, "cost_route_decision_for_prompt", lambda **_kwargs: {})
+    monkeypatch.setattr(
+        module, "codex_subscription_capacity_route_decision", lambda **_kwargs: {}
+    )
+    monkeypatch.setattr(module, "build_tui_waterfall", lambda **_kwargs: proof)
+    monkeypatch.setattr(module, "sanitize_tui_waterfall_decision", lambda value: value)
+    monkeypatch.setattr(module, "prompt_runtime_alive", lambda: False)
+    monkeypatch.setattr(module, "recover_stale_prompt_state", lambda: None)
+    monkeypatch.setattr(module, "_live_status_overlay", lambda: _fast_snapshot(module))
+    monkeypatch.setattr(
+        module,
+        "launch_queued_prompt_worker",
+        lambda worker_args: launches.append(worker_args),
+    )
+    monkeypatch.setattr(
+        module,
+        "session_budget_admission",
+        lambda **_kwargs: admissions.pop(0),
+    )
+
+    accepted, snapshot = module.start_web_prompt(
+        "finish the KPI incident review",
+        "careful",
+        3,
+        "normal",
+        [],
+        "codex",
+        "gpt-5.5",
+        route_lock=True,
+    )
+
+    assert accepted is True
+    assert snapshot["session_rollover_queued"] is True
+    assert snapshot["session_budget_blocked"] is False
+    assert len(launches) == 1
+    assert launches[0][0].startswith("/compact\n")
+    queued = module.normalize_queue(module.load_status_meta()["queued_prompts"])
+    assert [item["prompt"] for item in queued] == ["finish the KPI incident review"]
 
 
 def test_working_recap_redacts_sensitive_text_and_uses_bounded_history(
