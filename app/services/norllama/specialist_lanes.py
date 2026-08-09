@@ -224,8 +224,7 @@ def _lane(
         "purpose": purpose,
         "model_floor": model_floor,
         "default_model_policy": (
-            "Coder-class remains the floor for general reasoning, "
-            "coding, and VLM work."
+            "Coder-class remains the floor for general reasoning, coding, and VLM work."
         ),
         "older_baseline_defaults_allowed": False,
         "older_baseline_exception": (

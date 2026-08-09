@@ -1,6 +1,6 @@
 from typing import Optional
 from datetime import datetime
-from pydantic import BaseModel
+from pydantic import ConfigDict, BaseModel
 
 
 class CommandApprovalOut(BaseModel):
@@ -17,8 +17,7 @@ class CommandApprovalOut(BaseModel):
     created_at: Optional[datetime] = None
     decided_at: Optional[datetime] = None
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class CommandApprovalDecision(BaseModel):

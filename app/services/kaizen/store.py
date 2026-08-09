@@ -356,7 +356,7 @@ class DbKaizenStore:
             return None, "fingerprint_suppressed"
 
         expiry_at = as_utc(payload.proposal.expiry_at)
-        proposal = payload.proposal.dict()
+        proposal = payload.proposal.model_dump()
         proposal["expiry_at"] = utc_iso(expiry_at)
         candidate_id = f"kc_{uuid4().hex}"
         record = KaizenCandidateRecord(

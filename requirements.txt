@@ -1,29 +1,6 @@
-# requirements.txt
-
-fastapi==0.109.1
-uvicorn==0.15.0
-gunicorn==23.0.0
-sqlalchemy==1.4.25
-alembic==1.7.3
-boto3
-aws-bedrock-token-generator==1.1.0
-psycopg2-binary==2.9.11
-python-dotenv==0.19.1
-pydantic==1.10.13
-httpx==0.27.0
-anyio==4.12.1
-aiofiles
-slack_sdk
-google-auth
-PyYAML
-requests
-jinja2==3.1.6
-python-multipart
-passlib
-email-validator
-pyjwt
-openai
-tiktoken
-paho-mqtt
-pika
-tweepy
+# Compatibility entry point for pip users.
+#
+# pyproject.toml and uv.lock are the authoritative dependency contract. This
+# file intentionally installs that project instead of maintaining a second,
+# conflicting requirements list.
+.

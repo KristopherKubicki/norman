@@ -54,7 +54,7 @@ def create(db: Session, obj_in: ChannelCreate) -> ChannelModel:
 
 def update(db: Session, db_obj: ChannelModel, obj_in: ChannelUpdate) -> ChannelModel:
     """Update an existing channel."""
-    for field, value in obj_in.dict(exclude_unset=True).items():
+    for field, value in obj_in.model_dump(exclude_unset=True).items():
         setattr(db_obj, field, value)
     db.commit()
     db.refresh(db_obj)

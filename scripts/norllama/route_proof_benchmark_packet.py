@@ -149,7 +149,7 @@ CHAT_PROBES: tuple[ProbeSpec, ...] = (
         model="qwen3.6:27b",
         profile="qwen36_27_local_route_proof",
         prompt=(
-            "Norman route-proof benchmark. Reply exactly: " "NORMAN_QWEN36_27B_CODE_OK"
+            "Norman route-proof benchmark. Reply exactly: NORMAN_QWEN36_27B_CODE_OK"
         ),
         expected="NORMAN_QWEN36_27B_CODE_OK",
         use_for=(
@@ -165,8 +165,7 @@ CHAT_PROBES: tuple[ProbeSpec, ...] = (
         model="qwen3.6:35b-a3b-q4_K_M",
         profile="qwen36_35_router_local_route_proof",
         prompt=(
-            "Norman route-proof benchmark. Reply exactly: "
-            "NORMAN_QWEN36_35B_ROUTER_OK"
+            "Norman route-proof benchmark. Reply exactly: NORMAN_QWEN36_35B_ROUTER_OK"
         ),
         expected="NORMAN_QWEN36_35B_ROUTER_OK",
         use_for=(
@@ -182,8 +181,7 @@ CHAT_PROBES: tuple[ProbeSpec, ...] = (
         model="qwen3.5:122b-a10b-q4_K_M",
         profile="qwen35_122_heavy_judge_route_proof",
         prompt=(
-            "Norman route-proof benchmark. Reply exactly: "
-            "NORMAN_QWEN35_122B_JUDGE_OK"
+            "Norman route-proof benchmark. Reply exactly: NORMAN_QWEN35_122B_JUDGE_OK"
         ),
         expected="NORMAN_QWEN35_122B_JUDGE_OK",
         use_for=(

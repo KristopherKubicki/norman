@@ -255,7 +255,7 @@ def main() -> int:
             print(json.dumps(items, indent=2))
         else:
             for item in items:
-                print(f'{item["window_id"]} [{item["reason"]}] {item["title"]}')
+                print(f"{item['window_id']} [{item['reason']}] {item['title']}")
         return 0
     if args.command == "once":
         print(

@@ -12934,7 +12934,7 @@ def _context_preflight_timestamp_label(value: Any) -> str:
     if ts <= 0:
         return ""
     try:
-        return datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d %H:%M UTC")
+        return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     except (OverflowError, OSError, ValueError):
         return ""
 
@@ -20380,7 +20380,7 @@ def _bbs_thread_activity(
     if state == "waiting_pickup":
         base = f"Owner {owner_label} needs pickup ACK; no fork or done yet"
         if owner_heartbeat_age_seconds:
-            return f"{base}; owner heartbeat " f"{owner_heartbeat_age_seconds}s"
+            return f"{base}; owner heartbeat {owner_heartbeat_age_seconds}s"
         return base
     if state == "picked_up":
         pickup = _bbs_actor_label(picked_up_by or owner)
@@ -20967,8 +20967,7 @@ def summarize_bbs_payload(payload: dict[str, Any]) -> dict[str, Any]:
         )
     elif picked_up_count:
         summary = (
-            f"{picked_up_count} BBS handoff active"
-            f"{'s' if picked_up_count != 1 else ''}"
+            f"{picked_up_count} BBS handoff active{'s' if picked_up_count != 1 else ''}"
         )
     elif inbox_count:
         summary = f"{inbox_count} open BBS thread{'s' if inbox_count != 1 else ''}"
@@ -21526,13 +21525,16 @@ def record_web_process_seen(
 def _meter_generated_at(snapshot_at: int) -> str:
     try:
         return (
-            datetime.utcfromtimestamp(int(snapshot_at or 0)).isoformat(
-                timespec="seconds"
-            )
-            + "Z"
+            datetime.fromtimestamp(int(snapshot_at or 0), timezone.utc)
+            .isoformat(timespec="seconds")
+            .replace("+00:00", "Z")
         )
     except (TypeError, ValueError, OSError):
-        return datetime.utcfromtimestamp(now_ts()).isoformat(timespec="seconds") + "Z"
+        return (
+            datetime.fromtimestamp(now_ts(), timezone.utc)
+            .isoformat(timespec="seconds")
+            .replace("+00:00", "Z")
+        )
 
 
 def _normalize_meter_tone(value: Any, default: str = "ok") -> str:
@@ -27395,8 +27397,9 @@ def bedrock_health_snapshot(
         ]
     )
     failures.sort(
-        key=lambda item: _coerce_int(item.get("finished_at"))
-        or _coerce_int(item.get("started_at"))
+        key=lambda item: (
+            _coerce_int(item.get("finished_at")) or _coerce_int(item.get("started_at"))
+        )
     )
     latest = failures[-1] if failures else {}
     latest_at = _coerce_int(latest.get("finished_at")) or _coerce_int(
@@ -30531,8 +30534,7 @@ def execute_deterministic_command(argv: list[str]) -> tuple[str, bool]:
             False,
         )
     return (
-        f"Command `{command}` completed with exit code 0.\n"
-        f"{output or '(no output)'}",
+        f"Command `{command}` completed with exit code 0.\n{output or '(no output)'}",
         True,
     )
 
@@ -41334,8 +41336,7 @@ def cost_route_decision_for_prompt(
                 "local intent classifier promoted safe prompt to Norllama "
                 f"{local_lane} lane"
                 if classifier_promoted
-                else "safe self-contained prompt routed to Norllama "
-                f"{local_lane} lane"
+                else f"safe self-contained prompt routed to Norllama {local_lane} lane"
             ),
             "charge_basis": "local_token_estimate",
             "local_endpoint": str(health.get("endpoint") or ""),
@@ -43775,9 +43776,11 @@ def start_device_auth() -> dict[str, Any]:
     if _contains_codex_auth_failure(combined):
         restart_session()
         pane = _wait_for_pane(
-            lambda text: _contains_browser_signin_prompt(text)
-            or _contains_signin_choice_prompt(text)
-            or _contains_device_code_prompt(text),
+            lambda text: (
+                _contains_browser_signin_prompt(text)
+                or _contains_signin_choice_prompt(text)
+                or _contains_device_code_prompt(text)
+            ),
             timeout=10.0,
         )
 
@@ -43830,9 +43833,11 @@ def start_browser_auth() -> dict[str, Any]:
     if _contains_codex_auth_failure(combined):
         restart_session()
         pane = _wait_for_pane(
-            lambda text: _contains_browser_signin_prompt(text)
-            or _contains_signin_choice_prompt(text)
-            or _contains_device_code_prompt(text),
+            lambda text: (
+                _contains_browser_signin_prompt(text)
+                or _contains_signin_choice_prompt(text)
+                or _contains_device_code_prompt(text)
+            ),
             timeout=10.0,
         )
 
@@ -43843,8 +43848,10 @@ def start_browser_auth() -> dict[str, Any]:
     if _contains_device_code_prompt(pane):
         run(tmux_cmd("send-keys", "-t", f"{SESSION}:0.0", "Escape"), check=True)
         pane = _wait_for_pane(
-            lambda text: _contains_browser_signin_prompt(text)
-            or _contains_signin_choice_prompt(text),
+            lambda text: (
+                _contains_browser_signin_prompt(text)
+                or _contains_signin_choice_prompt(text)
+            ),
             timeout=4.0,
         )
         if _contains_browser_signin_prompt(pane):
@@ -43862,8 +43869,10 @@ def start_browser_auth() -> dict[str, Any]:
         check=True,
     )
     pane = _wait_for_pane(
-        lambda text: _contains_browser_signin_prompt(text)
-        or _contains_browser_auth_port_in_use(text),
+        lambda text: (
+            _contains_browser_signin_prompt(text)
+            or _contains_browser_auth_port_in_use(text)
+        ),
         timeout=6.0,
     )
     if _contains_browser_auth_port_in_use(pane):
@@ -45144,9 +45153,9 @@ def _initial_inline_entity_pattern(
     )
 
 
-def _initial_inline_entity_entries() -> (
-    list[tuple[str, dict[str, Any], re.Pattern[str]]]
-):
+def _initial_inline_entity_entries() -> list[
+    tuple[str, dict[str, Any], re.Pattern[str]]
+]:
     entries: list[tuple[str, dict[str, Any], re.Pattern[str]]] = []
     for entity in build_inline_entity_defs():
         aliases = tuple(
@@ -45230,8 +45239,7 @@ def _render_outcome_sigil(label: str) -> str:
 def _highlight_initial_outcome_sigils_in_text(text: str) -> str:
     return INITIAL_OUTCOME_SIGIL_RE.sub(
         lambda match: (
-            f"{match.group(1)}{match.group(2)}"
-            f"{_render_outcome_sigil(match.group(3))}"
+            f"{match.group(1)}{match.group(2)}{_render_outcome_sigil(match.group(3))}"
         ),
         str(text or ""),
     )
@@ -45792,7 +45800,7 @@ class Handler(BaseHTTPRequestHandler):
 </head>
 <body>
   <main class="{tone}">
-    <div class="badge">{'Sign-in complete' if ok else 'Sign-in blocked'}</div>
+    <div class="badge">{"Sign-in complete" if ok else "Sign-in blocked"}</div>
     <h1>{html.escape(title)}</h1>
     <p>{html.escape(detail)}</p>
     {helper_block}
@@ -47460,7 +47468,7 @@ class Handler(BaseHTTPRequestHandler):
         entry_items = "".join(
             (
                 f'<li><a href="{html.escape(build_file_href(token=local_token, path=str(entry.resolve()), profile=profile, route=route_mode, prefix=path_prefix))}">'
-                f'{html.escape(entry.name)}{"/" if entry.is_dir() else ""}</a></li>'
+                f"{html.escape(entry.name)}{'/' if entry.is_dir() else ''}</a></li>"
             )
             for entry in entries
         )
@@ -48059,7 +48067,7 @@ class Handler(BaseHTTPRequestHandler):
                     prefix=path_prefix,
                 ),
                 active=slug == active_profile,
-                tooltip=f'Use {str(data["label"])} palette',
+                tooltip=f"Use {str(data['label'])} palette",
             )
             for slug, data in profiles_for_mode(active_mode)
         )
@@ -48122,7 +48130,7 @@ class Handler(BaseHTTPRequestHandler):
             meta = " · ".join(part for part in (provider, model) if part)
             detail = " · ".join(part for part in (role, tools, confidence) if part)
             return (
-                f'<button {" ".join(attrs)}>'
+                f"<button {' '.join(attrs)}>"
                 f'<span class="runtime-route-main">{html.escape(label)}</span>'
                 f'<span class="runtime-route-model">{html.escape(meta)}</span>'
                 f'<span class="runtime-route-detail">{html.escape(detail)}</span>'
@@ -48176,7 +48184,7 @@ class Handler(BaseHTTPRequestHandler):
             if model_count > 1 and model:
                 model = f"{model_count} models · {model}"
             return (
-                f'<button {" ".join(attrs)}>'
+                f"<button {' '.join(attrs)}>"
                 f'<span class="runtime-route-main">{html.escape(label)}</span>'
                 f'<span class="runtime-route-model">{html.escape(model)}</span>'
                 f'<span class="runtime-route-status">{html.escape(status)}</span>'
@@ -48296,7 +48304,7 @@ class Handler(BaseHTTPRequestHandler):
                 f'<div class="console-nav-panel{" active" if group["slug"] == active_console_group else ""}{" solo" if len(group["links"]) <= 1 else ""}" data-group="{html.escape(str(group["slug"]))}" role="tabpanel"{" hidden" if group["slug"] != active_console_group else ""}>'
                 + "".join(
                     f'<a class="quick-link" data-group="{html.escape(str(group["slug"]))}" data-tone="{html.escape(str(item["tone_group"]))}" data-icon="{html.escape(str(item["icon"]))}" data-label="{html.escape(str(item["label"]))}" href="{html.escape(str(item["url"]))}"{console_link_anchor_attrs(str(item["url"]))}>'
-                    f'{_render_name_cartouche(str(item["label"]), kind="bot", tone="bot", group=str(item["tone_group"]))}</a>'
+                    f"{_render_name_cartouche(str(item['label']), kind='bot', tone='bot', group=str(item['tone_group']))}</a>"
                     for item in group["links"]
                 )
                 + "</div>"
@@ -48317,7 +48325,7 @@ class Handler(BaseHTTPRequestHandler):
         )
         topbar_context_links_html = "".join(
             f'<a class="ghost utility-button button-link" data-icon="{html.escape(str(item["icon"]))}" data-label="{html.escape(str(item["label"]))}" href="{html.escape(str(item["url"]))}"{console_link_anchor_attrs(str(item["url"]))} aria-label="{html.escape(str(item.get("note") or item["label"]))}" title="{html.escape(str(item.get("note") or item["label"]))}" data-tooltip="{html.escape(str(item.get("note") or item["label"]))}">'
-            f'{_render_name_cartouche(str(item["label"]), kind="bot", tone="bot", group=str(item["tone_group"]))}</a>'
+            f"{_render_name_cartouche(str(item['label']), kind='bot', tone='bot', group=str(item['tone_group']))}</a>"
             for group in console_groups
             if str(group.get("slug") or "") in {"norman", "pipeline"}
             for item in group["links"]
@@ -48374,7 +48382,7 @@ class Handler(BaseHTTPRequestHandler):
             )
         settings_browse_links_html = "".join(
             f'<a class="quick-link" data-icon="{html.escape(str(item["icon"]))}" data-label="{html.escape(str(item["label"]))}" href="{html.escape(str(item["url"]))}"{console_link_anchor_attrs(str(item["url"]))}>'
-            f'{_render_name_cartouche(str(item["label"]), kind="name", tone=str(item["tone_group"]), group=str(item["tone_group"]))}</a>'
+            f"{_render_name_cartouche(str(item['label']), kind='name', tone=str(item['tone_group']), group=str(item['tone_group']))}</a>"
             for item in browse_targets
         )
         console_focus_sources = [
@@ -48403,8 +48411,8 @@ class Handler(BaseHTTPRequestHandler):
                 (
                     f'<section class="focus-lane surface" data-lane="{html.escape(str(lane["slug"]))}">'
                     f'<header class="focus-lane-head"><span class="focus-lane-eyebrow">{html.escape(str(lane["eyebrow"]))}</span>'
-                    f'<h2>{html.escape(str(lane["label"]))}</h2>'
-                    f'<p>{html.escape(str(lane["description"]))}</p></header>'
+                    f"<h2>{html.escape(str(lane['label']))}</h2>"
+                    f"<p>{html.escape(str(lane['description']))}</p></header>"
                     '<div class="focus-lane-grid">'
                     + "".join(
                         f'<a class="focus-card" data-group="{html.escape(str(item["group_slug"]))}" data-tone="{html.escape(str(item["tone_group"]))}" data-lane="{html.escape(str(item["lane"]))}" href="{html.escape(str(item["url"]))}"{console_link_anchor_attrs(str(item["url"]))}>'
@@ -62243,19 +62251,31 @@ class Handler(BaseHTTPRequestHandler):
     }}
   </style>
 </head>
-<body data-agent-slug="{html.escape(AGENT_SLUG)}" data-agent-group="{html.escape(agent_brand_group)}" data-agent-variant="{html.escape(AGENT_STYLE_VARIANT)}" data-microtexture-state="idle">
+<body data-agent-slug="{html.escape(AGENT_SLUG)}" data-agent-group="{
+            html.escape(agent_brand_group)
+        }" data-agent-variant="{
+            html.escape(AGENT_STYLE_VARIANT)
+        }" data-microtexture-state="idle">
   <canvas id="microtexture-thread-field" class="microtexture-thread-field" aria-hidden="true"></canvas>
   <div class="app-shell">
     <header id="topbar" class="topbar surface">
         <div class="brand">
         <div class="brand-line">
-          <h1 id="agent-title" class="brand-title" aria-label="{html.escape(AGENT_NAME)}">{agent_brand_cartouche_html}</h1>
-          <span id="run-state" class="pill {html.escape(initial_tone)}">{html.escape(initial_run_label)}</span>
+          <h1 id="agent-title" class="brand-title" aria-label="{
+            html.escape(AGENT_NAME)
+        }">{agent_brand_cartouche_html}</h1>
+          <span id="run-state" class="pill {html.escape(initial_tone)}">{
+            html.escape(initial_run_label)
+        }</span>
           <span id="bedrock-health-badge" class="bedrock-health-badge idle" title="Bedrock health has not been checked yet." hidden>Bedrock</span>
-          <span class="topbar-version" title="Console UI version">v{html.escape(UI_VERSION)}</span>
+          <span class="topbar-version" title="Console UI version">v{
+            html.escape(UI_VERSION)
+        }</span>
           <button id="status-action-button" type="button" class="ghost status-action-button" data-icon="?" data-tone="idle" aria-expanded="false" aria-label="Status and actions" title="Status and actions" data-tooltip="Status and actions" data-tooltip-side="bottom">Status</button>
         </div>
-        <p id="status-message" class="status-copy">{html.escape(initial_status_message)}</p>
+        <p id="status-message" class="status-copy">{
+            html.escape(initial_status_message)
+        }</p>
         <div id="status-action-panel" class="status-action-panel surface" aria-hidden="true" hidden>
           <div class="status-action-head">
             <strong id="status-action-title" class="status-action-title">Status</strong>
@@ -62271,33 +62291,61 @@ class Handler(BaseHTTPRequestHandler):
         </div>
       </div>
       <div class="topbar-actions">
-        <a id="prime-home-button" class="ghost utility-button button-link prime-home-button" data-icon="{html.escape(icon_for_label('Prime', '⌂'))}" href="{html.escape(norman_prime_href)}" aria-label="Back to Norman Prime" title="Back to Norman Prime" data-tooltip="Back to Norman Prime" data-tooltip-side="left">
+        <a id="prime-home-button" class="ghost utility-button button-link prime-home-button" data-icon="{
+            html.escape(icon_for_label("Prime", "⌂"))
+        }" href="{
+            html.escape(norman_prime_href)
+        }" aria-label="Back to Norman Prime" title="Back to Norman Prime" data-tooltip="Back to Norman Prime" data-tooltip-side="left">
           <span class="prime-home-label">Prime</span>
         </a>
-        <a id="directory-home-button" class="ghost utility-button button-link directory-home-button" data-icon="{html.escape(icon_for_label('Directory', '≡'))}" href="{html.escape(norman_directory_href)}" aria-label="Open Norman Directory" title="Open Norman Directory" data-tooltip="Open Norman Directory" data-tooltip-side="left">
+        <a id="directory-home-button" class="ghost utility-button button-link directory-home-button" data-icon="{
+            html.escape(icon_for_label("Directory", "≡"))
+        }" href="{
+            html.escape(norman_directory_href)
+        }" aria-label="Open Norman Directory" title="Open Norman Directory" data-tooltip="Open Norman Directory" data-tooltip-side="left">
           <span class="directory-home-label">Dir</span>
         </a>
-        <button id="switcher-toggle-button" type="button" class="ghost utility-button switcher-toggle-button" data-icon="{html.escape(icon_for_label("Switch", "⇆"))}" aria-label="Switch agents (Ctrl/Cmd+K)" title="Switch agents (Ctrl/Cmd+K)" data-tooltip="Switch agents (Ctrl/Cmd+K)" data-tooltip-side="left">
+        <button id="switcher-toggle-button" type="button" class="ghost utility-button switcher-toggle-button" data-icon="{
+            html.escape(icon_for_label("Switch", "⇆"))
+        }" aria-label="Switch agents (Ctrl/Cmd+K)" title="Switch agents (Ctrl/Cmd+K)" data-tooltip="Switch agents (Ctrl/Cmd+K)" data-tooltip-side="left">
           <span class="switcher-toggle-label">Switch</span>
         </button>
-        <button id="topbar-menu-button" type="button" class="ghost utility-button topbar-menu-button" data-icon="{html.escape(icon_for_label("Settings", "⚙"))}" aria-expanded="false" aria-label="Console controls" title="Console controls" data-tooltip="Console controls" data-tooltip-side="left">
+        <button id="topbar-menu-button" type="button" class="ghost utility-button topbar-menu-button" data-icon="{
+            html.escape(icon_for_label("Settings", "⚙"))
+        }" aria-expanded="false" aria-label="Console controls" title="Console controls" data-tooltip="Console controls" data-tooltip-side="left">
           <span class="topbar-menu-button-label">Menu</span>
           <span id="topbar-menu-count" class="topbar-menu-count" hidden>0</span>
         </button>
       </div>
     </header>
     <nav id="low-ui-rail" class="low-ui-rail" aria-label="Low UI navigation">
-      <button id="low-ui-mode-button" type="button" class="ghost low-ui-action low-ui-mode-toggle" data-icon="{html.escape(icon_for_label("Remote", "▣"))}" data-low-ui-action="mode" data-voice-label="Remote" aria-pressed="false" title="Toggle remote-friendly controls" data-tooltip="Toggle remote-friendly controls">Remote</button>
-      <button type="button" class="ghost low-ui-action" data-icon="{html.escape(icon_for_label("Prompt", "/"))}" data-low-ui-action="prompt" data-voice-label="Prompt" title="Focus prompt">Prompt</button>
-      <button type="button" class="ghost low-ui-action" data-icon="{html.escape(icon_for_label("Send", "→"))}" data-low-ui-action="send" data-voice-label="Send" title="Queue prompt">Send</button>
-      <button type="button" class="ghost low-ui-action" data-icon="{html.escape(icon_for_label("Latest"))}" data-low-ui-action="latest" data-voice-label="Latest" title="Jump to latest">Latest</button>
-      <button type="button" class="ghost low-ui-action" data-icon="{html.escape(icon_for_label("Status", "?"))}" data-low-ui-action="status" data-voice-label="Status" title="Open status">Status</button>
-      <button type="button" class="ghost low-ui-action" data-icon="{html.escape(icon_for_label("Switch", "⇆"))}" data-low-ui-action="switch" data-voice-label="Switch" title="Switch agents">Switch</button>
-      <button type="button" class="ghost low-ui-action" data-icon="{html.escape(icon_for_label("Menu", "⚙"))}" data-low-ui-action="menu" data-voice-label="Menu" title="Open menu">Menu</button>
+      <button id="low-ui-mode-button" type="button" class="ghost low-ui-action low-ui-mode-toggle" data-icon="{
+            html.escape(icon_for_label("Remote", "▣"))
+        }" data-low-ui-action="mode" data-voice-label="Remote" aria-pressed="false" title="Toggle remote-friendly controls" data-tooltip="Toggle remote-friendly controls">Remote</button>
+      <button type="button" class="ghost low-ui-action" data-icon="{
+            html.escape(icon_for_label("Prompt", "/"))
+        }" data-low-ui-action="prompt" data-voice-label="Prompt" title="Focus prompt">Prompt</button>
+      <button type="button" class="ghost low-ui-action" data-icon="{
+            html.escape(icon_for_label("Send", "→"))
+        }" data-low-ui-action="send" data-voice-label="Send" title="Queue prompt">Send</button>
+      <button type="button" class="ghost low-ui-action" data-icon="{
+            html.escape(icon_for_label("Latest"))
+        }" data-low-ui-action="latest" data-voice-label="Latest" title="Jump to latest">Latest</button>
+      <button type="button" class="ghost low-ui-action" data-icon="{
+            html.escape(icon_for_label("Status", "?"))
+        }" data-low-ui-action="status" data-voice-label="Status" title="Open status">Status</button>
+      <button type="button" class="ghost low-ui-action" data-icon="{
+            html.escape(icon_for_label("Switch", "⇆"))
+        }" data-low-ui-action="switch" data-voice-label="Switch" title="Switch agents">Switch</button>
+      <button type="button" class="ghost low-ui-action" data-icon="{
+            html.escape(icon_for_label("Menu", "⚙"))
+        }" data-low-ui-action="menu" data-voice-label="Menu" title="Open menu">Menu</button>
     </nav>
     <section id="norman-command-rail" class="norman-command-rail" aria-label="Norman estate command status">
       <div class="norman-command-title">
-        <span class="norman-command-mark" aria-hidden="true">{html.escape(entity_mark_for_label("Norman", "N"))}</span>
+        <span class="norman-command-mark" aria-hidden="true">{
+            html.escape(entity_mark_for_label("Norman", "N"))
+        }</span>
         <span class="norman-command-kicker">Estate command</span>
         <strong class="norman-command-name">Norman</strong>
       </div>
@@ -62331,26 +62379,73 @@ class Handler(BaseHTTPRequestHandler):
     </section>
     <div id="topbar-menu" class="topbar-menu surface" aria-hidden="true">
           <div class="topbar-menu-meta">
-            <span class="version-chip" title="Console UI version">UI v{html.escape(UI_VERSION)}</span>
+            <span class="version-chip" title="Console UI version">UI v{
+            html.escape(UI_VERSION)
+        }</span>
             <span id="transport-state-menu" class="topbar-menu-status">Connecting live updates…</span>
           </div>
           <div class="topbar-menu-links">
-            <a class="ghost utility-button button-link" data-icon="{html.escape(icon_for_label('Prime', '⌂'))}" href="{html.escape(norman_prime_href)}" aria-label="Back to Norman Prime" title="Back to Norman Prime" data-tooltip="Back to Norman Prime">Prime</a>
-            <a class="ghost utility-button button-link" data-icon="{html.escape(icon_for_label('Directory', '≡'))}" href="{html.escape(norman_directory_href)}" aria-label="Open Norman Directory" title="Open Norman Directory" data-tooltip="Open Norman Directory">Directory</a>
-            <button id="context-save-menu-button" type="button" class="ghost utility-button context-save-button" data-icon="{html.escape(icon_for_label('Save', '↓'))}" aria-label="Save or compact this thread" title="Save or compact this thread" data-tooltip="Save or compact this thread" hidden>Save</button>
-            <a id="theme-toggle-button" class="ghost utility-button button-link" data-icon="{html.escape(icon_for_label(theme_toggle_label, "◐"))}" href="{html.escape(build_console_href(token=local_token_value, profile=theme_toggle_target, route=route_preference, prefix=path_prefix))}" aria-label="Switch to {html.escape(theme_toggle_label)} mode" title="Switch to {html.escape(theme_toggle_label)} mode" data-tooltip="Switch to {html.escape(theme_toggle_label)} mode">{html.escape(theme_toggle_label)}</a>
-            <button id="auth-browser-button" type="button" class="ghost utility-button" data-icon="{html.escape(icon_for_label('Sign In', '↗'))}" aria-label="Sign in through browser" title="Sign in through browser" data-tooltip="Sign in through browser" hidden>Sign in</button>
-            <button id="auth-device-button" type="button" class="ghost utility-button" data-icon="{html.escape(icon_for_label('Device Code', '#'))}" aria-label="Use device code sign-in" title="Use device code sign-in" data-tooltip="Use device code sign-in" hidden>Device code</button>
-            <a id="auth-helper-link" class="ghost utility-button button-link" data-icon="{html.escape(icon_for_label('Auth Helper', '⌁'))}" href="{html.escape(prefixed_path('/auth/browser/callback', path_prefix))}" aria-label="Open auth helper callback" title="Open auth helper callback" data-tooltip="Open auth helper callback" hidden>Auth Helper</a>
+            <a class="ghost utility-button button-link" data-icon="{
+            html.escape(icon_for_label("Prime", "⌂"))
+        }" href="{
+            html.escape(norman_prime_href)
+        }" aria-label="Back to Norman Prime" title="Back to Norman Prime" data-tooltip="Back to Norman Prime">Prime</a>
+            <a class="ghost utility-button button-link" data-icon="{
+            html.escape(icon_for_label("Directory", "≡"))
+        }" href="{
+            html.escape(norman_directory_href)
+        }" aria-label="Open Norman Directory" title="Open Norman Directory" data-tooltip="Open Norman Directory">Directory</a>
+            <button id="context-save-menu-button" type="button" class="ghost utility-button context-save-button" data-icon="{
+            html.escape(icon_for_label("Save", "↓"))
+        }" aria-label="Save or compact this thread" title="Save or compact this thread" data-tooltip="Save or compact this thread" hidden>Save</button>
+            <a id="theme-toggle-button" class="ghost utility-button button-link" data-icon="{
+            html.escape(icon_for_label(theme_toggle_label, "◐"))
+        }" href="{
+            html.escape(
+                build_console_href(
+                    token=local_token_value,
+                    profile=theme_toggle_target,
+                    route=route_preference,
+                    prefix=path_prefix,
+                )
+            )
+        }" aria-label="Switch to {
+            html.escape(theme_toggle_label)
+        } mode" title="Switch to {
+            html.escape(theme_toggle_label)
+        } mode" data-tooltip="Switch to {html.escape(theme_toggle_label)} mode">{
+            html.escape(theme_toggle_label)
+        }</a>
+            <button id="auth-browser-button" type="button" class="ghost utility-button" data-icon="{
+            html.escape(icon_for_label("Sign In", "↗"))
+        }" aria-label="Sign in through browser" title="Sign in through browser" data-tooltip="Sign in through browser" hidden>Sign in</button>
+            <button id="auth-device-button" type="button" class="ghost utility-button" data-icon="{
+            html.escape(icon_for_label("Device Code", "#"))
+        }" aria-label="Use device code sign-in" title="Use device code sign-in" data-tooltip="Use device code sign-in" hidden>Device code</button>
+            <a id="auth-helper-link" class="ghost utility-button button-link" data-icon="{
+            html.escape(icon_for_label("Auth Helper", "⌁"))
+        }" href="{
+            html.escape(prefixed_path("/auth/browser/callback", path_prefix))
+        }" aria-label="Open auth helper callback" title="Open auth helper callback" data-tooltip="Open auth helper callback" hidden>Auth Helper</a>
             <button id="notice-toggle-button" type="button" class="ghost utility-button notice-toggle" aria-label="Recent notifications" title="Recent notifications" data-tooltip="Recent notifications">
               <span class="notice-toggle-label"><span>✺</span><span>Alerts</span></span>
               <span id="notice-count" class="notice-count" hidden>0</span>
             </button>
-            <button id="refresh-button" type="button" class="ghost utility-button" data-icon="{html.escape(icon_for_label("Refresh"))}" aria-label="Refresh live status" title="Refresh live status" data-tooltip="Refresh live status">Refresh</button>
-            <button id="settings-toggle-button" type="button" class="ghost utility-button" data-icon="{html.escape(icon_for_label("View"))}" aria-label="Open view controls" title="Open view controls" data-tooltip="Open view controls">View</button>
-            <button id="system-toggle-button" type="button" class="ghost utility-button system-toggle" data-icon="{html.escape(icon_for_label("System"))}" aria-label="Open system panel" title="Open system panel" data-tooltip="Open system panel">System</button>
+            <button id="refresh-button" type="button" class="ghost utility-button" data-icon="{
+            html.escape(icon_for_label("Refresh"))
+        }" aria-label="Refresh live status" title="Refresh live status" data-tooltip="Refresh live status">Refresh</button>
+            <button id="settings-toggle-button" type="button" class="ghost utility-button" data-icon="{
+            html.escape(icon_for_label("View"))
+        }" aria-label="Open view controls" title="Open view controls" data-tooltip="Open view controls">View</button>
+            <button id="system-toggle-button" type="button" class="ghost utility-button system-toggle" data-icon="{
+            html.escape(icon_for_label("System"))
+        }" aria-label="Open system panel" title="Open system panel" data-tooltip="Open system panel">System</button>
           </div>
-          {f'<div class="topbar-menu-links topbar-menu-links--context">{topbar_context_links_html}</div>' if topbar_context_links_html else ''}
+          {
+            f'<div class="topbar-menu-links topbar-menu-links--context">{topbar_context_links_html}</div>'
+            if topbar_context_links_html
+            else ""
+        }
           <div class="topbar-menu-shortcuts" aria-label="Quick shortcuts">
             <span class="shortcut-chip"><kbd>/</kbd><span>Prompt</span></span>
             <span class="shortcut-chip"><kbd>Mod+K</kbd><span>Switch</span></span>
@@ -62363,40 +62458,78 @@ class Handler(BaseHTTPRequestHandler):
           </div>
     </div>
     <div id="topbar-menu-backdrop" class="topbar-menu-backdrop"></div>
-    <div id="console-switcher-seed" hidden aria-hidden="true" inert>{console_nav_html}</div>
+    <div id="console-switcher-seed" hidden aria-hidden="true" inert>{
+            console_nav_html
+        }</div>
 
     <div id="workspace" class="workspace">
       <main id="chat-shell" class="chat-shell surface">
         <div id="chat-main" class="chat-main" tabindex="0">
-          <div class="chat-summary-bar"{' hidden' if initial_chat_summary_hidden else ''}>
-            <span id="chat-session-chip" class="meta-chip strong" data-icon="◈">{html.escape(initial_chat_session_text)}</span>
-            <span id="chat-activity-chip" class="meta-chip" data-icon="◔"{' hidden' if initial_chat_activity_hidden else ''}>{html.escape(initial_chat_activity_text)}</span>
-            <span id="context-meter-chip" class="meta-chip subtle context-meter-chip" data-icon="◌" data-load-tone="{html.escape(str(initial_context_meter['tone']))}" style="--context-load: {int(initial_context_meter['fill_pct'])}%;" title="{html.escape(str(initial_context_meter['title']))}"{' hidden' if initial_context_meter['hidden'] else ''}>
-              <span id="context-meter-status">{html.escape(str(initial_context_meter["label"]))}</span>
-              <span id="context-meter-value">{html.escape(str(initial_context_meter["value"]))}</span>
+          <div class="chat-summary-bar"{
+            " hidden" if initial_chat_summary_hidden else ""
+        }>
+            <span id="chat-session-chip" class="meta-chip strong" data-icon="◈">{
+            html.escape(initial_chat_session_text)
+        }</span>
+            <span id="chat-activity-chip" class="meta-chip" data-icon="◔"{
+            " hidden" if initial_chat_activity_hidden else ""
+        }>{html.escape(initial_chat_activity_text)}</span>
+            <span id="context-meter-chip" class="meta-chip subtle context-meter-chip" data-icon="◌" data-load-tone="{
+            html.escape(str(initial_context_meter["tone"]))
+        }" style="--context-load: {int(initial_context_meter["fill_pct"])}%;" title="{
+            html.escape(str(initial_context_meter["title"]))
+        }"{" hidden" if initial_context_meter["hidden"] else ""}>
+              <span id="context-meter-status">{
+            html.escape(str(initial_context_meter["label"]))
+        }</span>
+              <span id="context-meter-value">{
+            html.escape(str(initial_context_meter["value"]))
+        }</span>
               <span class="context-meter-track" aria-hidden="true"><span class="context-meter-fill"></span></span>
             </span>
-            <span id="usage-meter-chip" class="meta-chip subtle usage-meter-chip" data-icon="¤" data-load-tone="{html.escape(str(initial_usage_meter['tone']))}" style="--usage-load: {int(initial_usage_meter['fill_pct'])}%;" title="{html.escape(str(initial_usage_meter['title']))}"{' hidden' if initial_usage_meter['hidden'] else ''}>
-              <span id="usage-meter-plan">{html.escape(str(initial_usage_meter["plan_label"]))}</span>
-              <span id="usage-meter-metered">{html.escape(str(initial_usage_meter["metered_label"]))}</span>
-              <span id="usage-meter-track" class="usage-meter-track" aria-hidden="true"{' hidden' if not initial_usage_meter['has_fill'] else ''}><span class="usage-meter-fill"></span></span>
+            <span id="usage-meter-chip" class="meta-chip subtle usage-meter-chip" data-icon="¤" data-load-tone="{
+            html.escape(str(initial_usage_meter["tone"]))
+        }" style="--usage-load: {int(initial_usage_meter["fill_pct"])}%;" title="{
+            html.escape(str(initial_usage_meter["title"]))
+        }"{" hidden" if initial_usage_meter["hidden"] else ""}>
+              <span id="usage-meter-plan">{
+            html.escape(str(initial_usage_meter["plan_label"]))
+        }</span>
+              <span id="usage-meter-metered">{
+            html.escape(str(initial_usage_meter["metered_label"]))
+        }</span>
+              <span id="usage-meter-track" class="usage-meter-track" aria-hidden="true"{
+            " hidden" if not initial_usage_meter["has_fill"] else ""
+        }><span class="usage-meter-fill"></span></span>
             </span>
             <button id="context-save-button" type="button" class="ghost context-save-button" hidden>Save</button>
-            <span id="route-chip" class="meta-chip subtle" data-icon="{html.escape(icon_for_label(active_route_mode, "⇄"))}">{html.escape("LAN route" if active_route_mode == "lan" else "Host route")}</span>
-            <span id="history-summary" class="meta-chip subtle">{html.escape(initial_history_summary)}</span>
-            <span id="last-updated-head" class="meta-chip subtle">{html.escape(initial_last_updated)}</span>
+            <span id="route-chip" class="meta-chip subtle" data-icon="{
+            html.escape(icon_for_label(active_route_mode, "⇄"))
+        }">{
+            html.escape("LAN route" if active_route_mode == "lan" else "Host route")
+        }</span>
+            <span id="history-summary" class="meta-chip subtle">{
+            html.escape(initial_history_summary)
+        }</span>
+            <span id="last-updated-head" class="meta-chip subtle">{
+            html.escape(initial_last_updated)
+        }</span>
           </div>
           <div id="kpi-strip" class="kpi-strip" hidden></div>
           <div id="notice-rail" class="notice-rail" hidden></div>
           <div id="history-toolbar" class="history-toolbar">
             <span id="history-window-note" class="history-note"></span>
-            <button id="history-toggle-button" type="button" class="ghost history-toggle" data-icon="{html.escape(icon_for_label("History"))}" aria-label="Show older turns" title="Show older turns" data-tooltip="Show older turns">Timeline</button>
+            <button id="history-toggle-button" type="button" class="ghost history-toggle" data-icon="{
+            html.escape(icon_for_label("History"))
+        }" aria-label="Show older turns" title="Show older turns" data-tooltip="Show older turns">Timeline</button>
           </div>
           <div id="conversation" class="conversation">
             {initial_conversation_html}
           </div>
         </div>
-        <button id="jump-latest-button" type="button" class="ghost jump-latest" data-icon="{html.escape(icon_for_label("Latest"))}" aria-label="Jump to latest (End)" title="Jump to latest (End)" data-tooltip="Jump to latest (End)" data-tooltip-side="left">Latest</button>
+        <button id="jump-latest-button" type="button" class="ghost jump-latest" data-icon="{
+            html.escape(icon_for_label("Latest"))
+        }" aria-label="Jump to latest (End)" title="Jump to latest (End)" data-tooltip="Jump to latest (End)" data-tooltip-side="left">Latest</button>
         <div class="composer-wrap">
           <div id="activity-strip" class="activity-strip">
             <div id="activity-icon" class="activity-icon"></div>
@@ -62467,93 +62600,135 @@ class Handler(BaseHTTPRequestHandler):
               </div>
             </div>
           </div>
-          <form id="ask-form" class="composer" method="post" action="{html.escape(prefixed_path('/ask', path_prefix))}">
+          <form id="ask-form" class="composer" method="post" action="{
+            html.escape(prefixed_path("/ask", path_prefix))
+        }">
             <input type="hidden" name="token" value="{html.escape(TOKEN)}">
             <input type="hidden" name="profile" value="{html.escape(active_profile)}">
-            <input id="prompt-speed-input" type="hidden" name="speed" value="{html.escape(DEFAULT_RESPONSE_SPEED)}">
-            <input id="prompt-detail-input" type="hidden" name="detail" value="{DEFAULT_RESPONSE_DETAIL}">
-            <input id="prompt-service-tier-input" type="hidden" name="service_tier" value="{html.escape(active_service_tier)}">
-            <input id="prompt-job-budget-input" type="hidden" name="job_budget" value="{html.escape(DEFAULT_JOB_BUDGET)}">
-            <input id="prompt-optimization-mode-input" type="hidden" name="optimization_mode" value="{html.escape(DEFAULT_OPTIMIZATION_MODE)}">
-            <input id="prompt-interlace-mode-input" type="hidden" name="interlace_mode" value="{html.escape(QUEUE_INTERLACE_MODE)}">
-            <input id="prompt-runtime-input" type="hidden" name="runtime" value="{html.escape(configured_runtime())}">
-            <input id="prompt-model-input" type="hidden" name="model" value="{html.escape(configured_runtime_model())}">
+            <input id="prompt-speed-input" type="hidden" name="speed" value="{
+            html.escape(DEFAULT_RESPONSE_SPEED)
+        }">
+            <input id="prompt-detail-input" type="hidden" name="detail" value="{
+            DEFAULT_RESPONSE_DETAIL
+        }">
+            <input id="prompt-service-tier-input" type="hidden" name="service_tier" value="{
+            html.escape(active_service_tier)
+        }">
+            <input id="prompt-job-budget-input" type="hidden" name="job_budget" value="{
+            html.escape(DEFAULT_JOB_BUDGET)
+        }">
+            <input id="prompt-optimization-mode-input" type="hidden" name="optimization_mode" value="{
+            html.escape(DEFAULT_OPTIMIZATION_MODE)
+        }">
+            <input id="prompt-interlace-mode-input" type="hidden" name="interlace_mode" value="{
+            html.escape(QUEUE_INTERLACE_MODE)
+        }">
+            <input id="prompt-runtime-input" type="hidden" name="runtime" value="{
+            html.escape(configured_runtime())
+        }">
+            <input id="prompt-model-input" type="hidden" name="model" value="{
+            html.escape(configured_runtime_model())
+        }">
             <input id="prompt-file-input" class="composer-file-input" type="file" multiple>
             <div class="composer-toolbar">
               <div id="composer-toolbar-panels" class="composer-toolbar-panels" hidden>
                 <div class="response-bar" aria-label="Response tuning">
                   <div class="response-bar-head">
-                    <span class="response-bar-title" data-icon="{html.escape(icon_for_label("Window"))}">Target the run</span>
+                    <span class="response-bar-title" data-icon="{
+            html.escape(icon_for_label("Window"))
+        }">Target the run</span>
                     <span class="response-bar-copy">Set time, effort, detail, and spend guardrails</span>
                   </div>
                   <div class="response-grid">
                     <label class="response-rail response-rail-primary response-rail-time" for="job-budget-range">
                       <span class="response-rail-meta">
                         <span>
-                          <span class="response-rail-name" data-icon="{html.escape(icon_for_label("Window"))}">Work window</span>
+                          <span class="response-rail-name" data-icon="{
+            html.escape(icon_for_label("Window"))
+        }">Work window</span>
                           <span class="response-helper">Target runtime</span>
                         </span>
                         <strong id="job-budget-label" class="response-rail-value">Normal</strong>
                       </span>
                       <span class="response-track">
                         <span class="response-edge">1m</span>
-                        <input id="job-budget-range" class="response-range" type="range" min="1" max="{len(JOB_BUDGET_PRESETS)}" step="1" value="{list(JOB_BUDGET_PRESETS).index(DEFAULT_JOB_BUDGET) + 1}">
+                        <input id="job-budget-range" class="response-range" type="range" min="1" max="{
+            len(JOB_BUDGET_PRESETS)
+        }" step="1" value="{list(JOB_BUDGET_PRESETS).index(DEFAULT_JOB_BUDGET) + 1}">
                         <span class="response-edge">8h</span>
                       </span>
                     </label>
                     <label class="response-rail" for="response-speed-range">
                       <span class="response-rail-meta">
                         <span>
-                          <span class="response-rail-name" data-icon="{html.escape(icon_for_label("Reasoning"))}">Reasoning</span>
+                          <span class="response-rail-name" data-icon="{
+            html.escape(icon_for_label("Reasoning"))
+        }">Reasoning</span>
                           <span class="response-helper">Model effort</span>
                         </span>
                         <strong id="response-speed-label" class="response-rail-value">Std</strong>
                       </span>
                       <span class="response-track">
                         <span class="response-edge">Std</span>
-                        <input id="response-speed-range" class="response-range" type="range" min="2" max="3" step="1" value="{2 if DEFAULT_RESPONSE_SPEED in {'fast', 'balanced'} else 3}">
+                        <input id="response-speed-range" class="response-range" type="range" min="2" max="3" step="1" value="{
+            2 if DEFAULT_RESPONSE_SPEED in {"fast", "balanced"} else 3
+        }">
                         <span class="response-edge">Deep</span>
                       </span>
                     </label>
                     <label class="response-rail" for="response-detail-range">
                       <span class="response-rail-meta">
                         <span>
-                          <span class="response-rail-name" data-icon="{html.escape(icon_for_label("Reply"))}">Reply</span>
+                          <span class="response-rail-name" data-icon="{
+            html.escape(icon_for_label("Reply"))
+        }">Reply</span>
                           <span class="response-helper">Answer shape</span>
                         </span>
                         <strong id="response-detail-label" class="response-rail-value">Balanced</strong>
                       </span>
                       <span class="response-track">
                         <span class="response-edge">Brief</span>
-                        <input id="response-detail-range" class="response-range" type="range" min="1" max="5" step="1" value="{DEFAULT_RESPONSE_DETAIL}">
+                        <input id="response-detail-range" class="response-range" type="range" min="1" max="5" step="1" value="{
+            DEFAULT_RESPONSE_DETAIL
+        }">
                         <span class="response-edge">Full</span>
                       </span>
                     </label>
                     <label class="response-rail" for="optimization-mode-range">
                       <span class="response-rail-meta">
                         <span>
-                          <span class="response-rail-name" data-icon="{html.escape(icon_for_label("Optimize", "◌"))}">Optimize</span>
+                          <span class="response-rail-name" data-icon="{
+            html.escape(icon_for_label("Optimize", "◌"))
+        }">Optimize</span>
                           <span class="response-helper">Cost guard</span>
                         </span>
                         <strong id="optimization-mode-label" class="response-rail-value">Auto</strong>
                       </span>
                       <span class="response-track">
                         <span class="response-edge">Auto</span>
-                        <input id="optimization-mode-range" class="response-range" type="range" min="1" max="{len(OPTIMIZATION_MODE_OPTIONS)}" step="1" value="{list(OPTIMIZATION_MODE_OPTIONS).index(DEFAULT_OPTIMIZATION_MODE) + 1}">
+                        <input id="optimization-mode-range" class="response-range" type="range" min="1" max="{
+            len(OPTIMIZATION_MODE_OPTIONS)
+        }" step="1" value="{
+            list(OPTIMIZATION_MODE_OPTIONS).index(DEFAULT_OPTIMIZATION_MODE) + 1
+        }">
                         <span class="response-edge">Raw</span>
                       </span>
                     </label>
                     <label class="response-rail response-rail-emergency response-rail-spend" for="service-tier-range">
                       <span class="response-rail-meta">
                         <span>
-                          <span class="response-rail-name" data-icon="{html.escape(icon_for_label("Spend", "$"))}">Spend path</span>
+                          <span class="response-rail-name" data-icon="{
+            html.escape(icon_for_label("Spend", "$"))
+        }">Spend path</span>
                           <span class="response-helper">Emergency lane</span>
                         </span>
                         <strong id="service-tier-label" class="response-rail-value">Profile</strong>
                       </span>
                       <span class="response-track">
                         <span class="response-edge">Profile</span>
-                        <input id="service-tier-range" class="response-range" type="range" min="1" max="{len(SERVICE_TIER_OPTIONS)}" step="1" value="{list(SERVICE_TIER_OPTIONS).index(active_service_tier) + 1}">
+                        <input id="service-tier-range" class="response-range" type="range" min="1" max="{
+            len(SERVICE_TIER_OPTIONS)
+        }" step="1" value="{list(SERVICE_TIER_OPTIONS).index(active_service_tier) + 1}">
                         <span class="response-edge">Prio</span>
                       </span>
                       <span class="response-rail-warning">Only change when blocked</span>
@@ -62604,7 +62779,9 @@ class Handler(BaseHTTPRequestHandler):
                   <span class="visually-hidden">Tune prompt</span>
                 </button>
               </div>
-              <textarea id="prompt-input" name="message" rows="1" autocomplete="off" autocapitalize="sentences" spellcheck="true" enterkeyhint="send" aria-label="Prompt" placeholder="{html.escape(PROMPT_PLACEHOLDER)}"></textarea>
+              <textarea id="prompt-input" name="message" rows="1" autocomplete="off" autocapitalize="sentences" spellcheck="true" enterkeyhint="send" aria-label="Prompt" placeholder="{
+            html.escape(PROMPT_PLACEHOLDER)
+        }"></textarea>
               <span id="response-summary" class="response-summary visually-hidden">Think Std · Reply Balanced</span>
               <div class="composer-send-cluster" aria-label="Prompt submit controls">
                 <button id="ask-button" type="submit" class="primary composer-send composer-send-queue" data-icon="→" title="Queue prompt. Press Enter to queue and Shift+Enter for a new line." data-tooltip="Queue prompt. Enter queues; Shift+Enter inserts a new line." aria-label="Queue prompt"><span id="ask-button-label" class="composer-send-label">Queue</span></button>
@@ -62626,7 +62803,11 @@ class Handler(BaseHTTPRequestHandler):
             <p class="hint">Jump between Norman sessions, pinned bots, and recent stops.</p>
           </div>
           <div class="switcher-head-actions">
-            <a class="ghost utility-button button-link prime-home-button" data-icon="{html.escape(icon_for_label('Prime', '⌂'))}" href="{html.escape(norman_prime_href)}" title="Back to Norman Prime">Prime</a>
+            <a class="ghost utility-button button-link prime-home-button" data-icon="{
+            html.escape(icon_for_label("Prime", "⌂"))
+        }" href="{
+            html.escape(norman_prime_href)
+        }" title="Back to Norman Prime">Prime</a>
             <button id="switcher-close-button" type="button" class="ghost utility-button">Close</button>
           </div>
         </div>
@@ -62649,29 +62830,51 @@ class Handler(BaseHTTPRequestHandler):
           <button id="settings-close-button" type="button" class="ghost utility-button">Close</button>
         </div>
         <div id="settings-body" class="settings-body">
-        <section class="settings-card model-route-card" data-chat-runtime="{html.escape(active_runtime)}" data-chat-model="{html.escape(active_model)}" data-runtime-registry="registered">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Model"))}">Model Route</span>
+        <section class="settings-card model-route-card" data-chat-runtime="{
+            html.escape(active_runtime)
+        }" data-chat-model="{
+            html.escape(active_model)
+        }" data-runtime-registry="registered">
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Model"))
+        }">Model Route</span>
           {settings_model_route_matrix_header_html}
-          <div class="settings-row model-route-preset-row">{settings_model_route_presets_html}</div>
-          <div class="settings-row runtime-route-row">{settings_runtime_routes_html}</div>
+          <div class="settings-row model-route-preset-row">{
+            settings_model_route_presets_html
+        }</div>
+          <div class="settings-row runtime-route-row">{
+            settings_runtime_routes_html
+        }</div>
           <div class="settings-row model-floor-row">{settings_model_buttons_html}</div>
-          <div class="settings-note">Presets pick runtime, model, and provider lane together. GPT-5.5 is the Codex floor for normal routes; older compatibility lanes require an explicit emergency override. Claude is executable only where Bedrock Converse is enabled and currently uses brokered tools. Kimi, Qwen, and DeepSeek are benchmark routes until a live adapter/tool policy is wired. {"Model update available" if chat_model_update_available() else "Model current"}</div>
+          <div class="settings-note">Presets pick runtime, model, and provider lane together. GPT-5.5 is the Codex floor for normal routes; older compatibility lanes require an explicit emergency override. Claude is executable only where Bedrock Converse is enabled and currently uses brokered tools. Kimi, Qwen, and DeepSeek are benchmark routes until a live adapter/tool policy is wired. {
+            "Model update available"
+            if chat_model_update_available()
+            else "Model current"
+        }</div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Mode"))}">Mode</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Mode"))
+        }">Mode</span>
           <div class="settings-row">{settings_mode_links_html}</div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Palette"))}">Palette</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Palette"))
+        }">Palette</span>
           <div class="settings-row">{settings_profile_links_html}</div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Route"))}">Route</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Route"))
+        }">Route</span>
           <div class="settings-row">{settings_route_links_html}</div>
           <div class="settings-note">Auto follows how you opened the console. Use LAN or Host to force one path across the fleet.</div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Material"))}">Material</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Material"))
+        }">Material</span>
           <div id="style-variant-row" class="settings-row">
             <button type="button" class="ghost setting-pill" data-setting="styleVariant" data-value="auto">Auto</button>
             <button type="button" class="ghost setting-pill" data-setting="styleVariant" data-value="anchor">Anchor</button>
@@ -62684,7 +62887,9 @@ class Handler(BaseHTTPRequestHandler):
           <div class="settings-note">Auto follows the bot default. Override it if you want a different material treatment without changing the bot itself.</div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Finish"))}">Finish</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Finish"))
+        }">Finish</span>
           <div id="finish-row" class="settings-row">
             <button type="button" class="ghost setting-pill" data-setting="finish" data-value="flat">Flat</button>
             <button type="button" class="ghost setting-pill" data-setting="finish" data-value="engraved">Engraved</button>
@@ -62693,7 +62898,9 @@ class Handler(BaseHTTPRequestHandler):
           </div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Bell"))}">Bell</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Bell"))
+        }">Bell</span>
           <div id="completion-bell-row" class="settings-row">
             <button type="button" class="ghost setting-pill" data-setting="completionBell" data-value="auto">Auto</button>
             <button type="button" class="ghost setting-pill" data-setting="completionBell" data-value="work">Work</button>
@@ -62709,7 +62916,9 @@ class Handler(BaseHTTPRequestHandler):
           <div class="settings-note">Auto follows this console’s lane. Bells are deep gong tones with per-agent variation. Silent mutes all console audio; hidden or unfocused pages stay silent.</div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Feedback"))}">Feedback</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Feedback"))
+        }">Feedback</span>
           <div id="feedback-sound-row" class="settings-row">
             <button type="button" class="ghost setting-pill" data-setting="feedbackSounds" data-value="signals">Signals</button>
             <button type="button" class="ghost setting-pill" data-setting="feedbackSounds" data-value="full">Full</button>
@@ -62721,7 +62930,9 @@ class Handler(BaseHTTPRequestHandler):
           <div class="settings-note">Signals keeps prompt, queue, confirmation, blocked, and error cues. Full also adds light tactile control sounds. Off keeps visual feedback and completion bells only.</div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Phone History"))}">Phone History</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Phone History"))
+        }">Phone History</span>
           <div id="mobile-turns-row" class="settings-row">
             <button type="button" class="ghost setting-pill" data-setting="mobileTurns" data-value="1">1 turn</button>
             <button type="button" class="ghost setting-pill" data-setting="mobileTurns" data-value="2">2 turns</button>
@@ -62729,7 +62940,9 @@ class Handler(BaseHTTPRequestHandler):
           </div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Desktop History"))}">Desktop History</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Desktop History"))
+        }">Desktop History</span>
           <div id="desktop-turns-row" class="settings-row">
             <button type="button" class="ghost setting-pill" data-setting="desktopTurns" data-value="1">1 turn</button>
             <button type="button" class="ghost setting-pill" data-setting="desktopTurns" data-value="2">2 turns</button>
@@ -62738,21 +62951,27 @@ class Handler(BaseHTTPRequestHandler):
           </div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Screen"))}">Screen</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Screen"))
+        }">Screen</span>
           <div id="view-mode-row" class="settings-row">
             <button type="button" class="ghost setting-pill" data-setting="viewMode" data-value="console">Console</button>
             <button type="button" class="ghost setting-pill" data-setting="viewMode" data-value="stage">Presenter</button>
           </div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Density"))}">Density</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Density"))
+        }">Density</span>
           <div id="density-row" class="settings-row">
             <button type="button" class="ghost setting-pill" data-setting="density" data-value="compact">Compact</button>
             <button type="button" class="ghost setting-pill" data-setting="density" data-value="comfortable">Comfortable</button>
           </div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("View"))}">Text Size</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("View"))
+        }">Text Size</span>
           <div id="text-zoom-row" class="settings-row">
             <button type="button" class="ghost setting-pill" data-setting="textZoom" data-value="auto">Auto fit</button>
             <button type="button" class="ghost setting-pill" data-setting="textZoom" data-value="normal">Normal</button>
@@ -62762,11 +62981,15 @@ class Handler(BaseHTTPRequestHandler):
           </div>
           <div class="settings-note">Auto fit grows reading and composer text only when the screen has enough room.</div>
         </section>
-        {f'''<section class="settings-card">
+        {
+            f'''<section class="settings-card">
           <span class="settings-label" data-icon="{html.escape(icon_for_label("Browse"))}">Browse</span>
           <div class="settings-row">{settings_browse_links_html}</div>
           <div class="settings-note">Open the agent workspace and bridge state in a separate viewer tab.</div>
-        </section>''' if settings_browse_links_html else ''}
+        </section>'''
+            if settings_browse_links_html
+            else ""
+        }
         </div>
       </aside>
       <aside id="notices-panel" class="notices-panel surface" aria-hidden="true">
@@ -62799,7 +63022,9 @@ class Handler(BaseHTTPRequestHandler):
               <span id="thread-id-head" class="mono subtle">loading</span>
             </div>
             <div id="services" class="services"></div>
-            <div id="system-summary" class="system-note">{html.escape(summarize_services(initial_snapshot_data.get("services") or []))}</div>
+            <div id="system-summary" class="system-note">{
+            html.escape(summarize_services(initial_snapshot_data.get("services") or []))
+        }</div>
             <div id="system-runtime-metrics" class="system-runtime-metrics"></div>
             <section id="connector-access" class="connector-access" aria-label="Connector access">
               <div class="connector-access-head">
@@ -62826,7 +63051,13 @@ class Handler(BaseHTTPRequestHandler):
               <div id="bbs-summary-activity" class="bbs-summary-activity">Waiting for BBS activity</div>
               <div id="bbs-thread-list" class="bbs-thread-list"></div>
             </div>
-            <div class="system-note">ui <strong>v{html.escape(UI_VERSION)}</strong> · tmux <strong>{html.escape(SESSION)}</strong> · web chat <strong>{html.escape(MODEL)}</strong> · tuning <strong>Think Std/medium ↔ Deep/xhigh</strong> · full access · <a href="{html.escape(prefixed_path('/healthz', path_prefix))}{token_suffix}">healthz</a></div>
+            <div class="system-note">ui <strong>v{
+            html.escape(UI_VERSION)
+        }</strong> · tmux <strong>{html.escape(SESSION)}</strong> · web chat <strong>{
+            html.escape(MODEL)
+        }</strong> · tuning <strong>Think Std/medium ↔ Deep/xhigh</strong> · full access · <a href="{
+            html.escape(prefixed_path("/healthz", path_prefix))
+        }{token_suffix}">healthz</a></div>
           </section>
 
           <section class="system-card child-agents-card" aria-label="Child agents">
@@ -62926,7 +63157,11 @@ class Handler(BaseHTTPRequestHandler):
                     <h3>Last Prompt</h3>
                     <button id="copy-prompt-button" type="button" class="ghost copy-button" data-icon="⎘">Copy</button>
                   </div>
-                  <div id="last-prompt" class="raw-view mono">{_mask_sensitive_multiline_html(initial_snapshot_data.get("last_prompt") or "[no prompt yet]")}</div>
+                  <div id="last-prompt" class="raw-view mono">{
+            _mask_sensitive_multiline_html(
+                initial_snapshot_data.get("last_prompt") or "[no prompt yet]"
+            )
+        }</div>
                   <div id="last-prompt-links" class="message-links raw-links" hidden></div>
                 </div>
                 <div>
@@ -62946,23 +63181,35 @@ class Handler(BaseHTTPRequestHandler):
                     <div id="response-live-steps" class="response-live-steps" aria-label="Live response progress"></div>
                     <div id="response-live-meta" class="response-live-meta"></div>
                   </div>
-                  <div id="last-response" class="raw-view">{_mask_sensitive_multiline_html(initial_snapshot_data.get("last_response") or "[no response yet]")}</div>
+                  <div id="last-response" class="raw-view">{
+            _mask_sensitive_multiline_html(
+                initial_snapshot_data.get("last_response") or "[no response yet]"
+            )
+        }</div>
                   <div id="last-response-links" class="message-links raw-links" hidden></div>
                 </div>
               </div>
             </details>
             <details id="error-details">
               <summary>Error / Warning</summary>
-              <pre id="last-error">{_mask_sensitive_pre_html(initial_snapshot_data.get("last_error") or "[none]")}</pre>
+              <pre id="last-error">{
+            _mask_sensitive_pre_html(
+                initial_snapshot_data.get("last_error") or "[none]"
+            )
+        }</pre>
             </details>
           </section>
 
           <section class="system-card">
             <details>
               <summary>Operator tools</summary>
-              <form id="tmux-form" method="post" action="{html.escape(prefixed_path('/send', path_prefix))}">
+              <form id="tmux-form" method="post" action="{
+            html.escape(prefixed_path("/send", path_prefix))
+        }">
                 <input type="hidden" name="token" value="{html.escape(TOKEN)}">
-                <input type="hidden" name="profile" value="{html.escape(active_profile)}">
+                <input type="hidden" name="profile" value="{
+            html.escape(active_profile)
+        }">
                 <textarea id="tmux-input" name="message" placeholder="Paste raw text directly into the live interactive tmux session."></textarea>
                 <div class="composer-actions">
                   <span class="hint">Use this only for direct tmux control.</span>
@@ -62980,11 +63227,19 @@ class Handler(BaseHTTPRequestHandler):
               </div>
               <details>
                 <summary>Live tmux pane</summary>
-                <pre id="pane-output">{_mask_sensitive_pre_html(initial_snapshot_data.get("pane") or "[pane unavailable]")}</pre>
+                <pre id="pane-output">{
+            _mask_sensitive_pre_html(
+                initial_snapshot_data.get("pane") or "[pane unavailable]"
+            )
+        }</pre>
               </details>
               <details>
                 <summary>{html.escape(AGENT_NAME)} journal</summary>
-                <pre id="journal-output">{_mask_sensitive_pre_html(initial_snapshot_data.get("logs") or "[no journal output]")}</pre>
+                <pre id="journal-output">{
+            _mask_sensitive_pre_html(
+                initial_snapshot_data.get("logs") or "[no journal output]"
+            )
+        }</pre>
               </details>
             </details>
           </section>
@@ -63004,7 +63259,9 @@ class Handler(BaseHTTPRequestHandler):
     const AGENT_SLUG = {json.dumps(AGENT_SLUG)};
     const AGENT_MARK = {json.dumps(entity_mark_for_label(AGENT_NAME, "•"))};
     const AGENT_STYLE_VARIANT = {json.dumps(AGENT_STYLE_VARIANT)};
-    const AGENT_GROUP = {json.dumps(semantic_agent_group(AGENT_SLUG, AGENT_GROUP) or "agents")};
+    const AGENT_GROUP = {
+            json.dumps(semantic_agent_group(AGENT_SLUG, AGENT_GROUP) or "agents")
+        };
     const AGENT_BRAND_CARTOUCHE_HTML = {script_json(agent_brand_cartouche_html)};
     const INLINE_ENTITY_DEFS = {script_json(build_inline_entity_defs())};
     const WORKDIR = {json.dumps(WORKDIR)};
@@ -63017,21 +63274,53 @@ class Handler(BaseHTTPRequestHandler):
     const REQUEST_BASE_PATH = {json.dumps(path_prefix)};
     const NORMAN_PRIME_HREF = {json.dumps(norman_prime_href)};
     const NORMAN_DIRECTORY_HREF = {json.dumps(norman_directory_href)};
-    const NORMAN_PRIME_HEARTBEAT_URL = {json.dumps(f"{norman_prime_href}api/console-ui/ping")};
+    const NORMAN_PRIME_HEARTBEAT_URL = {
+            json.dumps(f"{norman_prime_href}api/console-ui/ping")
+        };
     const TAB_TITLE_LABEL = {json.dumps(CONSOLE_TAB_TITLE)};
-    const FAVICON_AGENT_PALETTE = {script_json({
-        "bg": rgb_css(favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get("bg", (48, 56, 70))),
-        "surface": rgb_css(favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get("surface", (63, 71, 85))),
-        "border": rgb_css(favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get("border", (85, 97, 116))),
-        "accent": rgb_css(favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get("accent", (156, 182, 239))),
-        "accent2": rgb_css(favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get("accent_2", (136, 208, 222))),
-        "text": rgb_css(favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get("text", (248, 250, 252))),
-    })};
+    const FAVICON_AGENT_PALETTE = {
+            script_json(
+                {
+                    "bg": rgb_css(
+                        favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get(
+                            "bg", (48, 56, 70)
+                        )
+                    ),
+                    "surface": rgb_css(
+                        favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get(
+                            "surface", (63, 71, 85)
+                        )
+                    ),
+                    "border": rgb_css(
+                        favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get(
+                            "border", (85, 97, 116)
+                        )
+                    ),
+                    "accent": rgb_css(
+                        favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get(
+                            "accent", (156, 182, 239)
+                        )
+                    ),
+                    "accent2": rgb_css(
+                        favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get(
+                            "accent_2", (136, 208, 222)
+                        )
+                    ),
+                    "text": rgb_css(
+                        favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get(
+                            "text", (248, 250, 252)
+                        )
+                    ),
+                }
+            )
+        };
     const RELAY_TARGETS = {relay_targets_json};
     const CHAT_MODEL = {json.dumps(MODEL)};
     const CODEX_MODEL_FLOOR = {json.dumps(CODEX_MODEL_FLOOR)};
     const MODEL_ENDPOINT = "/api/model";
-    const CHAT_REASONING = {json.dumps(response_reasoning_effort(DEFAULT_RESPONSE_SPEED))};
+    const CHAT_REASONING = {
+            json.dumps(response_reasoning_effort(DEFAULT_RESPONSE_SPEED))
+        };
     const EMERGENCY_XFAST_ENABLED = {emergency_xfast_enabled_json};
     const DEFAULT_RUNTIME = {default_runtime_json};
     const DEFAULT_MODEL = {default_model_json};
@@ -63323,7 +63612,11 @@ class Handler(BaseHTTPRequestHandler):
       viewMode: "console",
       textZoom: "auto",
       styleVariant: "auto",
-      finish: {json.dumps(DEFAULT_UI_FINISH if DEFAULT_UI_FINISH in FINISH_OPTIONS else "flat")},
+      finish: {
+            json.dumps(
+                DEFAULT_UI_FINISH if DEFAULT_UI_FINISH in FINISH_OPTIONS else "flat"
+            )
+        },
       completionBell: "auto",
       feedbackSounds: "signals",
       responseSpeed: DEFAULT_RESPONSE_SPEED,
@@ -64010,7 +64303,7 @@ class Handler(BaseHTTPRequestHandler):
 
     function labelizeStatus(value) {{
       const clean = String(value || "unknown").replace(/[_-]+/g, " ").trim();
-      return clean.replace(/\b\w/g, (letter) => letter.toUpperCase());
+      return clean.replace(/\\b\\w/g, (letter) => letter.toUpperCase());
     }}
 
     const GOVERNANCE_POWER_ORDER = ["sword", "key", "purse", "seal", "mouth"];
@@ -64586,7 +64879,7 @@ class Handler(BaseHTTPRequestHandler):
     }}
 
     function normalizeResponseSpeed(value) {{
-      const clean = String(value || "").toLowerCase().replace(/[_\s]+/g, "-");
+      const clean = String(value || "").toLowerCase().replace(/[_\\s]+/g, "-");
       if (["fast", "xfast", "x-fast", "extra-fast", "low", "minimal"].includes(clean)) {{
         return EMERGENCY_XFAST_ENABLED ? "fast" : "balanced";
       }}
@@ -64643,7 +64936,7 @@ class Handler(BaseHTTPRequestHandler):
     }}
 
     function normalizeServiceTier(value) {{
-      const clean = String(value || "").toLowerCase().replace(/[_\s]+/g, "-");
+      const clean = String(value || "").toLowerCase().replace(/[_\\s]+/g, "-");
       const aliases = {{
         profile: "auto",
         configured: "auto",
@@ -64798,7 +65091,7 @@ class Handler(BaseHTTPRequestHandler):
     }}
 
     function normalizeOptimizationMode(value) {{
-      const clean = String(value || "").toLowerCase().replace(/[_\s]+/g, "-");
+      const clean = String(value || "").toLowerCase().replace(/[_\\s]+/g, "-");
       const aliases = {{
         default: "auto",
         normal: "auto",
@@ -66260,8 +66553,8 @@ class Handler(BaseHTTPRequestHandler):
         /\bdon'?t have a transport\b/,
         /\bno transport\b/,
         /\bchannel tool\b/,
-        /session\/thread log path/,
-        /repo\/folder\/path/,
+        /session\\/thread log path/,
+        /repo\\/folder\\/path/,
       ];
       if (!triggers.some((pattern) => pattern.test(text))) {{
         return null;
@@ -66306,11 +66599,11 @@ class Handler(BaseHTTPRequestHandler):
         return null;
       }}
       const runtimeMatchers = [
-        /^(?:[-*•]\s*)?runtime paths?:?$/i,
-        /^(?:[-*•]\s*)?pid:\s*/i,
-        /^(?:[-*•]\s*)?run dir:\s*/i,
-        /^(?:[-*•]\s*)?log:\s*/i,
-        /^(?:[-*•]\s*)?pid file:\s*/i,
+        /^(?:[-*•]\\s*)?runtime paths?:?$/i,
+        /^(?:[-*•]\\s*)?pid:\\s*/i,
+        /^(?:[-*•]\\s*)?run dir:\\s*/i,
+        /^(?:[-*•]\\s*)?log:\\s*/i,
+        /^(?:[-*•]\\s*)?pid file:\\s*/i,
       ];
       const lifecycleMatchers = [
         /\brunning now\b/i,
@@ -66338,8 +66631,8 @@ class Handler(BaseHTTPRequestHandler):
         || "Background task is still running.";
       const pidLine = runtimeLines.find((line) => /pid:/i.test(line)) || "";
       const etaLine = lines.find((line) => /\b(reconnect|check back|come back) in\b/i.test(line)) || "";
-      const pidMatch = pidLine.match(/pid:\s*([0-9]+)/i);
-      const etaMatch = etaLine.match(/(\d+)\s*(?:minute|min|hour|hr)/i);
+      const pidMatch = pidLine.match(/pid:\\s*([0-9]+)/i);
+      const etaMatch = etaLine.match(/(\\d+)\\s*(?:minute|min|hour|hr)/i);
       const metaParts = [];
       if (pidMatch) {{
         metaParts.push(`PID ${{pidMatch[1]}}`);
@@ -67396,7 +67689,11 @@ class Handler(BaseHTTPRequestHandler):
         viewMode: "console",
         textZoom: "auto",
         styleVariant: "auto",
-        finish: {json.dumps(DEFAULT_UI_FINISH if DEFAULT_UI_FINISH in FINISH_OPTIONS else "flat")},
+        finish: {
+            json.dumps(
+                DEFAULT_UI_FINISH if DEFAULT_UI_FINISH in FINISH_OPTIONS else "flat"
+            )
+        },
         completionBell: "auto",
         feedbackSounds: "signals",
         responseSpeed: DEFAULT_RESPONSE_SPEED,
@@ -67416,7 +67713,9 @@ class Handler(BaseHTTPRequestHandler):
       const viewMode = payload.viewMode === "stage" ? "stage" : "console";
       const textZoom = normalizeTextZoom(payload.textZoom || base.textZoom);
       const styleVariant = normalizeStyleVariant(payload.styleVariant);
-      const finish = {json.dumps(list(FINISH_OPTIONS))}.includes(String(payload.finish || "").toLowerCase())
+      const finish = {
+            json.dumps(list(FINISH_OPTIONS))
+        }.includes(String(payload.finish || "").toLowerCase())
         ? String(payload.finish).toLowerCase()
         : base.finish;
       const feedbackSounds = normalizeFeedbackSounds(payload.feedbackSounds);
@@ -68603,7 +68902,7 @@ class Handler(BaseHTTPRequestHandler):
 
     function maskSensitiveUrlText(url) {{
       return String(url || "").replace(
-        /([?&]([^=&]+)=)([^&#\s]+)/g,
+        /([?&]([^=&]+)=)([^&#\\s]+)/g,
         (match, prefix, key, value) => (
           SENSITIVE_QUERY_PARAM_NAMES.has(String(key || "").toLowerCase()) ? `${{prefix}}••••••` : `${{prefix}}${{value}}`
         )
@@ -68858,7 +69157,7 @@ class Handler(BaseHTTPRequestHandler):
 
     function highlightDynamicHostEntities(text, stashMarkup) {{
       return String(text || "").replace(
-        /(^|[\s([{{"'“‘])((?:[a-z0-9](?:[a-z0-9-]{{0,61}}[a-z0-9])?\.)+(?:home\.arpa|home\.lollie\.org|kris\.openbrand\.com|tail[0-9]+\.ts\.net)|(?:\d{{1,3}}\.){{3}}\d{{1,3}})(?=$|[\s).,:;!?\]}}\"'”’])/gi,
+        /(^|[\\s([{{"'“‘])((?:[a-z0-9](?:[a-z0-9-]{{0,61}}[a-z0-9])?\\.)+(?:home\\.arpa|home\\.lollie\\.org|kris\\.openbrand\\.com|tail[0-9]+\\.ts\\.net)|(?:\\d{{1,3}}\\.){{3}}\\d{{1,3}})(?=$|[\\s).,:;!?\\]}}\"'”’])/gi,
         (match, prefix, host) => `${{prefix}}${{stashMarkup(renderEntityCartouche(buildDynamicHostEntity(host), host))}}`
       );
     }}
@@ -68901,7 +69200,7 @@ class Handler(BaseHTTPRequestHandler):
 
     function splitFileTarget(value) {{
       const clean = normalizeFileTarget(value);
-      const match = clean.match(/^(.*?)(#L\d+(?:C\d+)?)$/);
+      const match = clean.match(/^(.*?)(#L\\d+(?:C\\d+)?)$/);
       if (match) {{
         return {{ path: match[1], fragment: match[2] }};
       }}
@@ -70386,10 +70685,10 @@ class Handler(BaseHTTPRequestHandler):
 
     function mediaKindForFilePath(value) {{
       const clean = splitFileTarget(value).path.toLowerCase();
-      if (/\.(mp4|m4v|mov|webm|ogv)$/i.test(clean)) {{
+      if (/\\.(mp4|m4v|mov|webm|ogv)$/i.test(clean)) {{
         return "video";
       }}
-      if (/\.(mp3|m4a|aac|wav|ogg|oga|flac|opus)$/i.test(clean)) {{
+      if (/\\.(mp3|m4a|aac|wav|ogg|oga|flac|opus)$/i.test(clean)) {{
         return "audio";
       }}
       return "";
@@ -70440,7 +70739,7 @@ class Handler(BaseHTTPRequestHandler):
 
     function textPreviewFormatForPath(value) {{
       const clean = splitFileTarget(value).path.toLowerCase();
-      if (/\.(md|markdown|rst)$/i.test(clean)) {{
+      if (/\\.(md|markdown|rst)$/i.test(clean)) {{
         return "markdown";
       }}
       if (clean.endsWith(".json")) {{
@@ -70478,17 +70777,17 @@ class Handler(BaseHTTPRequestHandler):
       if (!isFileTarget(clean)) {{
         return "";
       }}
-      if (/\.(svg|png|apng|jpe?g|gif|webp|avif|bmp)$/i.test(clean)) {{
+      if (/\\.(svg|png|apng|jpe?g|gif|webp|avif|bmp)$/i.test(clean)) {{
         return "image";
       }}
       const mediaKind = mediaKindForFilePath(clean);
       if (mediaKind) {{
         return mediaKind;
       }}
-      if (/\.pdf$/i.test(clean)) {{
+      if (/\\.pdf$/i.test(clean)) {{
         return "pdf";
       }}
-      if (/\.(txt|md|markdown|rst|json|ya?ml|toml|ini|cfg|conf|env|py|js|jsx|ts|tsx|sh|bash|zsh|log|csv|tsv|sql|xml|html|css)$/i.test(clean)) {{
+      if (/\\.(txt|md|markdown|rst|json|ya?ml|toml|ini|cfg|conf|env|py|js|jsx|ts|tsx|sh|bash|zsh|log|csv|tsv|sql|xml|html|css)$/i.test(clean)) {{
         return "text";
       }}
       return "";
@@ -70566,7 +70865,7 @@ class Handler(BaseHTTPRequestHandler):
         }});
         return results.length >= maxTargets;
       }};
-      for (const match of text.matchAll(/\[([^\]]+)\]\s*\(\s*(<[^>\\n]+>|[^\s)]+)\s*\)/g)) {{
+      for (const match of text.matchAll(/\\[([^\\]]+)\\]\\s*\\(\\s*(<[^>\\n]+>|[^\\s)]+)\\s*\\)/g)) {{
         if (push(match[2], match[1])) {{
           return results;
         }}
@@ -70576,7 +70875,7 @@ class Handler(BaseHTTPRequestHandler):
           return results;
         }}
       }}
-      for (const match of text.matchAll(/(^|[\s(])((?:(?:\/|~\/)|(?:(?:\.\/|\.\.\/)?(?:app|artifacts|data|db|docs|frontend|projects|scripts|src|static|tests|tmp)\/))[^\s<)"']+)/g)) {{
+      for (const match of text.matchAll(/(^|[\\s(])((?:(?:\\/|~\\/)|(?:(?:\\.\\/|\\.\\.\\/)?(?:app|artifacts|data|db|docs|frontend|projects|scripts|src|static|tests|tmp)\\/))[^\\s<)"']+)/g)) {{
         if (push(match[2], match[2])) {{
           return results;
         }}
@@ -70658,7 +70957,7 @@ class Handler(BaseHTTPRequestHandler):
         }}
         const raw = await response.text();
         const contentRange = response.headers.get("Content-Range") || "";
-        const totalMatch = contentRange.match(/\/(\d+)$/);
+        const totalMatch = contentRange.match(/\\/(\\d+)$/);
         const totalBytes = totalMatch ? Number(totalMatch[1]) : 0;
         const normalized = raw.replace(/\\r\\n/g, "\\n").replace(/\\r/g, "\\n");
         const previewText = normalized.slice(0, INLINE_TEXT_PREVIEW_MAX_CHARS);
@@ -70773,7 +71072,7 @@ class Handler(BaseHTTPRequestHandler):
     }}
 
     function compactDelimitedCell(value) {{
-      const text = String(value || "").replace(/\s+/g, " ").trim();
+      const text = String(value || "").replace(/\\s+/g, " ").trim();
       return text.length > 180 ? `${{text.slice(0, 179)}}…` : text;
     }}
 
@@ -71547,7 +71846,7 @@ class Handler(BaseHTTPRequestHandler):
       const commentPattern = lang === "python" || lang === "bash"
         ? /#[^\\n]*/g
         : ["javascript", "typescript"].includes(lang)
-          ? /\/\/[^\\n]*/g
+          ? /\\/\\/[^\\n]*/g
           : null;
       if (commentPattern) {{
         const comments = stashSegments(text, commentPattern, "tok-comment");
@@ -72884,7 +73183,9 @@ class Handler(BaseHTTPRequestHandler):
         : plannedLocalRoute
         ? "Planned local · no cloud bill"
         : plannedSubscriptionRoute
-          ? `Planned ${PLAN_CREDIT_LABEL} · ~${{formatCompactMetric(creditEstimate.credits)}} cr`
+          ? `Planned ${
+            PLAN_CREDIT_LABEL
+        } · ~${{formatCompactMetric(creditEstimate.credits)}} cr`
           : hasUsd
             ? `Planned cloud · ~${{nextCostLabel}}`
             : "Planned token target";
@@ -72923,7 +73224,9 @@ class Handler(BaseHTTPRequestHandler):
         plannedLocalRoute
           ? "Planned local/Norllama route has no metered cloud-provider charge. Local hardware and electricity are not included."
           : plannedSubscriptionRoute
-            ? `Planned personal ${PLAN_CREDIT_LABEL} estimate. It is not a credit-card charge or a known balance deduction.`
+            ? `Planned personal ${
+            PLAN_CREDIT_LABEL
+        } estimate. It is not a credit-card charge or a known balance deduction.`
             : hasUsd
               ? `Planned cloud rate-card estimate ~${{nextCostLabel}}.`
               : "No provider price card is available for this planned route.",
@@ -74280,7 +74583,7 @@ class Handler(BaseHTTPRequestHandler):
       return kind
         .replace(/^sentinel_/, "sentinel ")
         .replaceAll("_", " ")
-        .replace(/\s+/g, " ")
+        .replace(/\\s+/g, " ")
         .trim();
     }}
 
@@ -74304,8 +74607,8 @@ class Handler(BaseHTTPRequestHandler):
     function humanInterventionMessage(item) {{
       const question = String(item?.question || "Operator intervention was requested.").trim();
       return question
-        .replace(/^Sentinel is asking this [^:]+ console for review:\s*/i, "Sentinel says: ")
-        .replace(/\s+/g, " ");
+        .replace(/^Sentinel is asking this [^:]+ console for review:\\s*/i, "Sentinel says: ")
+        .replace(/\\s+/g, " ");
     }}
 
     function humanInterventionWhyLine(item) {{
@@ -74377,12 +74680,12 @@ class Handler(BaseHTTPRequestHandler):
     }}
 
     function humanInterventionContextLine(item) {{
-      const detail = String(item?.detail || "").trim().replace(/\s+/g, " ");
+      const detail = String(item?.detail || "").trim().replace(/\\s+/g, " ");
       if (detail) {{
         return detail;
       }}
       const evidence = item?.evidence && typeof item.evidence === "object" ? item.evidence : {{}};
-      return String(evidence.summary || evidence.text_preview || "").trim().replace(/\s+/g, " ");
+      return String(evidence.summary || evidence.text_preview || "").trim().replace(/\\s+/g, " ");
     }}
 
     function humanInterventionSourceLabel(item) {{
@@ -80247,8 +80550,8 @@ class Handler(BaseHTTPRequestHandler):
 
     function trimConsoleLine(value) {{
       return String(value || "")
-        .replace(/\u001b\[[0-9;]*m/g, "")
-        .replace(/\s+/g, " ")
+        .replace(/\\u001b\\[[0-9;]*m/g, "")
+        .replace(/\\s+/g, " ")
         .trim();
     }}
 
@@ -81513,7 +81816,7 @@ class Handler(BaseHTTPRequestHandler):
     }}
 
     function compactActivityStepLabel(label) {{
-      const text = String(label || "").trim().replace(/\s+/g, " ");
+      const text = String(label || "").trim().replace(/\\s+/g, " ");
       if (!text) {{
         return "";
       }}
@@ -82604,7 +82907,7 @@ class Handler(BaseHTTPRequestHandler):
     }};
 
     function childAgentObjectiveLength(value) {{
-      return String(value || "").trim().replace(/\s+/g, "").length;
+      return String(value || "").trim().replace(/\\s+/g, "").length;
     }}
 
     function childAgentObjectiveReadiness(value) {{
@@ -86874,7 +87177,7 @@ class Handler(BaseHTTPRequestHandler):
   <div class="box">
     <h1>{html.escape(CONSOLE_TITLE)}</h1>
     <p>This console is token-protected. Open it with the `?token=` query value, or paste the token below.</p>
-    <form method="get" action="{html.escape(prefixed_path('/', path_prefix))}">
+    <form method="get" action="{html.escape(prefixed_path("/", path_prefix))}">
       {profile_field}
       {route_field}
       <label for="token">Token</label>

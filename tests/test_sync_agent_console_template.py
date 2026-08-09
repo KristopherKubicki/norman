@@ -115,7 +115,7 @@ def test_discovery_infers_codex_home_from_launcher_fallback(
         encoding="utf-8",
     )
     (env_dir / "codex-web.env").write_text(
-        f"NORMAN_CODEX_LAUNCHER={launch_path}\n" "NORMAN_CODEX_AGENT_NAME=Housebot\n",
+        f"NORMAN_CODEX_LAUNCHER={launch_path}\nNORMAN_CODEX_AGENT_NAME=Housebot\n",
         encoding="utf-8",
     )
     host = module.DiscoveryHost(
@@ -459,7 +459,7 @@ def test_route_receipt_sync_exports_shadow_capture_env(monkeypatch) -> None:
     assert '"NORMAN_CODEX_ROUTE_RECEIPTS_ENABLED":"1"' in script
     assert '"NORMAN_CODEX_ROUTE_RECEIPT_OWNER_TUI":"market-sizing"' in script
     assert (
-        '"NORMAN_CODEX_ROUTE_RECEIPT_DIR":' '"/var/lib/norman/route_receipts"'
+        '"NORMAN_CODEX_ROUTE_RECEIPT_DIR":"/var/lib/norman/route_receipts"'
     ) in script
     assert "route_receipt_path.mkdir(parents=True, exist_ok=True)" in script
     assert "receipt_owner_source = Path('/var/lib/market-sizing/codex')" in script
@@ -1088,7 +1088,7 @@ def test_local_llm_foreground_sync_configures_intent_classifier(
     assert "NORMAN_LOCAL_PLANNER_PREFLIGHT_MAX_OUTPUT_TOKENS=96" in synced
     assert "NORMAN_LOCAL_PLANNER_PREFLIGHT_MAX_CANDIDATES=1" in synced
     assert (
-        "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MODEL=" "qwen3-coder:30b-a3b-q4_K_M"
+        "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MODEL=qwen3-coder:30b-a3b-q4_K_M"
     ) in synced
     assert "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MAX_OUTPUT_TOKENS=192" in synced
     assert "NORMAN_TUI_TOKEN_CAPACITY_USAGE_WINDOW_SECONDS=3600" in synced

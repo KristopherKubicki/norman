@@ -1,21 +1,31 @@
 # app/core/security.py
 
-import jwt
-from jwt import PyJWTError
-
-from passlib.context import CryptContext
 from datetime import datetime, timedelta, timezone
+
+import bcrypt
+import jwt
 from app.core.config import settings
+from jwt import PyJWTError
+from pwdlib import PasswordHash
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-
-def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
+password_hash = PasswordHash.recommended()
 
 
-def get_password_hash(password):
-    return pwd_context.hash(password)
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify current Argon2 hashes and existing bcrypt hashes."""
+    try:
+        if hashed_password.startswith(("$2a$", "$2b$", "$2y$")):
+            return bcrypt.checkpw(
+                plain_password.encode("utf-8"),
+                hashed_password.encode("utf-8"),
+            )
+        return password_hash.verify(plain_password, hashed_password)
+    except (TypeError, ValueError):
+        return False
+
+
+def get_password_hash(password: str) -> str:
+    return password_hash.hash(password)
 
 
 def create_access_token(data: dict, expires_delta: timedelta = None):

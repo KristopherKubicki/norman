@@ -16,7 +16,8 @@ configuration, and basic maintenance tasks.
 
 Before deploying Norman, ensure that your server meets the following requirements:
 
-- Python 3.11 or newer
+- Python 3.14
+- `uv` for managed Python and locked dependency installation
 - SQLite (or another supported database system)
 - A compatible operating system, such as Ubuntu, Debian, or CentOS
 
@@ -34,22 +35,22 @@ Before deploying Norman, ensure that your server meets the following requirement
    cd norman
    ```
 
-3. Create a virtual environment:
+3. Install the release's declared Python line:
 
    ```
-   python3.11 -m venv .venv
+   uv python install
    ```
 
-4. Activate the virtual environment:
+4. Create the locked virtual environment:
+
+   ```
+   uv sync --locked --no-dev
+   ```
+
+5. Activate it when running commands manually:
 
    ```
    source .venv/bin/activate
-   ```
-
-5. Install the required packages:
-
-   ```
-   pip install -r requirements.txt
    ```
 
 ## Configuration
@@ -102,8 +103,9 @@ curl -fsS http://127.0.0.1:18000/openapi.json
 sudo systemctl stop norman-release@<release-sha>
 ```
 
-Each new release must contain a standard `.venv` created with Python 3.11 or
-newer and the managed configuration environment before starting this unit.
+Each new release must contain a standard `.venv` created from the repository's
+`.python-version` with `uv sync --locked --no-dev` and the managed
+configuration environment before starting this unit.
 `norman-release-python` accepts exactly one legacy versioned virtualenv only
 so an already-deployed release can remain a rollback target; new releases must
 not create versioned virtualenv directories.
@@ -572,7 +574,7 @@ To update your Norman installation, perform the following steps:
 2. Activate the virtual environment:
 
    ```
-   source env/bin/activate
+   source .venv/bin/activate
    ```
 
 3. Pull the latest changes from the repository:
@@ -581,10 +583,11 @@ To update your Norman installation, perform the following steps:
    git pull
    ```
 
-4. Update the installed packages:
+4. Refresh the declared Python and locked packages:
 
    ```
-   pip install -r requirements.txt
+   uv python install
+   uv sync --locked --no-dev
    ```
 
 5. Restart the Norman application.

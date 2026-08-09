@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -116,7 +116,7 @@ def decide_request(
     approval_reason: str = "",
 ) -> SecretRequest:
     request.status = status
-    request.decided_at = datetime.utcnow()
+    request.decided_at = datetime.now(UTC)
     request.decided_by = decided_by
     if approval_reason:
         request.approval_reason = approval_reason
@@ -187,8 +187,8 @@ def update_lease(
         lease.status = status
     if revoked_by is not None:
         lease.revoked_by = revoked_by
-        lease.revoked_at = datetime.utcnow()
-    lease.last_used_at = datetime.utcnow()
+        lease.revoked_at = datetime.now(UTC)
+    lease.last_used_at = datetime.now(UTC)
     db.commit()
     db.refresh(lease)
     return lease
@@ -290,7 +290,7 @@ def list_stash_items(
         q = q.filter(
             SecretStashItem.status == "active",
             SecretStashItem.revoked_at.is_(None),
-            SecretStashItem.expires_at > datetime.utcnow(),
+            SecretStashItem.expires_at > datetime.now(UTC),
         )
     return q.order_by(SecretStashItem.id.desc()).limit(limit).all()
 
@@ -299,9 +299,9 @@ def revoke_stash_item(
     db: Session, *, item: SecretStashItem, revoked_by: int
 ) -> SecretStashItem:
     item.status = "revoked"
-    item.revoked_at = datetime.utcnow()
+    item.revoked_at = datetime.now(UTC)
     item.revoked_by = revoked_by
-    item.last_used_at = datetime.utcnow()
+    item.last_used_at = datetime.now(UTC)
     db.commit()
     db.refresh(item)
     return item

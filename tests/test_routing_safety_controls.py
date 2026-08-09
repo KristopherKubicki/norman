@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pytest
 
@@ -54,7 +54,7 @@ def _make_event_and_job(
         status="pending",
         attempts=0,
         max_attempts=3,
-        next_attempt_at=datetime.utcnow(),
+        next_attempt_at=datetime.now(UTC),
         payload=payload,
         normalized=normalized,
     )

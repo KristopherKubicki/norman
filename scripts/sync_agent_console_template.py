@@ -524,9 +524,9 @@ def _load_json_file(path: Path) -> object:
         return {}
 
 
-def _local_llm_inventory() -> (
-    tuple[tuple[str, ...], tuple[str, ...], dict[str, list[str]], str]
-):
+def _local_llm_inventory() -> tuple[
+    tuple[str, ...], tuple[str, ...], dict[str, list[str]], str
+]:
     paths: list[Path] = []
     primary = os.environ.get("NORMAN_SYNC_LOCAL_LLM_SENSE_JSON", "").strip()
     if primary:
@@ -3591,7 +3591,7 @@ def main() -> int:
         if sync_norman_fleet_doctor_template(host, source_sha256):
             changed_static_paths.add(NORMAN_FLEET_DOCTOR_TEMPLATE_PATH)
             print(
-                "  - fleet-doctor template -> " f"{NORMAN_FLEET_DOCTOR_TEMPLATE_PATH}",
+                f"  - fleet-doctor template -> {NORMAN_FLEET_DOCTOR_TEMPLATE_PATH}",
                 flush=True,
             )
 

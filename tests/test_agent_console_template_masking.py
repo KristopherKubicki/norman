@@ -957,7 +957,10 @@ def test_chat_file_links_surface_inline_previews_without_clickthrough() -> None:
     assert "if (results.length >= maxTargets) {{" in source
     assert "function buildFileDownloadHref(value) {" in source
     assert "function compactInlineFilePath(value) {" in source
-    assert r"text.matchAll(/\[([^\]]+)\]\s*\(\s*(<[^>\\n]+>|[^\s)]+)\s*\)/g)" in source
+    assert (
+        r"text.matchAll(/\\[([^\\]]+)\\]\\s*\\(\\s*(<[^>\\n]+>|[^\\s)]+)\\s*\\)/g)"
+        in source
+    )
     assert "function rememberInlineFilePreview(cacheKey, payload)" in source
     assert "function loadInlineFilePreview(entry)" in source
     assert (
@@ -969,7 +972,7 @@ def test_chat_file_links_surface_inline_previews_without_clickthrough() -> None:
         "const truncated = normalized.length > INLINE_TEXT_PREVIEW_MAX_CHARS" in source
     )
     assert "const visibleLines = lines.slice(0, 8);" in source
-    assert "const totalMatch = contentRange.match(/\\/(\\d+)$/);" in source
+    assert r"const totalMatch = contentRange.match(/\\/(\\d+)$/);" in source
     assert (
         "const previewText = normalized.slice(0, INLINE_TEXT_PREVIEW_MAX_CHARS);"
         in source
@@ -1427,18 +1430,18 @@ def test_current_snapshot_clears_stale_auth_error_when_session_is_ready() -> Non
         module.recover_stale_prompt_state = lambda: None
         module.load_status_meta = lambda: module.default_status_meta()
         module.load_history = lambda: []
-        module.read_text = (
-            lambda path, default="": last_error_path.read_text(encoding="utf-8")
+        module.read_text = lambda path, default="": (
+            last_error_path.read_text(encoding="utf-8")
             if Path(path) == last_error_path
             else default
         )
-        module.write_text = (
-            lambda path, value: last_error_path.write_text(value, encoding="utf-8")
+        module.write_text = lambda path, value: (
+            last_error_path.write_text(value, encoding="utf-8")
             if Path(path) == last_error_path
             else None
         )
-        module.capture_pane = (
-            lambda: "OpenAI Codex (v0.118.0)\nmodel: gpt-5.4 xhigh\ndirectory: ~/code/autocamera"
+        module.capture_pane = lambda: (
+            "OpenAI Codex (v0.118.0)\nmodel: gpt-5.4 xhigh\ndirectory: ~/code/autocamera"
         )
         module.service_status = lambda names: [(name, "active") for name in names]
         module.usage_snapshot = lambda thread_id="": {
@@ -1471,18 +1474,18 @@ def test_current_snapshot_treats_modern_inline_codex_prompt_as_ready() -> None:
             "status_message": "Web prompt failed.",
         }
         module.load_history = lambda: []
-        module.read_text = (
-            lambda path, default="": last_error_path.read_text(encoding="utf-8")
+        module.read_text = lambda path, default="": (
+            last_error_path.read_text(encoding="utf-8")
             if Path(path) == last_error_path
             else default
         )
-        module.write_text = (
-            lambda path, value: last_error_path.write_text(value, encoding="utf-8")
+        module.write_text = lambda path, value: (
+            last_error_path.write_text(value, encoding="utf-8")
             if Path(path) == last_error_path
             else None
         )
-        module.capture_pane = (
-            lambda: "› Summarize recent commits\n\n  gpt-5.4 xhigh fast · 84% left · ~/code/d.ace"
+        module.capture_pane = lambda: (
+            "› Summarize recent commits\n\n  gpt-5.4 xhigh fast · 84% left · ~/code/d.ace"
         )
         module.service_status = lambda names: [(name, "active") for name in names]
         module.usage_snapshot = lambda thread_id="": {
@@ -1520,13 +1523,13 @@ def test_current_snapshot_ready_prompt_overrides_stale_error_meta_with_mcp_auth_
             "pending": False,
         }
         module.load_history = lambda: []
-        module.read_text = (
-            lambda path, default="": last_error_path.read_text(encoding="utf-8")
+        module.read_text = lambda path, default="": (
+            last_error_path.read_text(encoding="utf-8")
             if Path(path) == last_error_path
             else default
         )
-        module.write_text = (
-            lambda path, value: last_error_path.write_text(value, encoding="utf-8")
+        module.write_text = lambda path, value: (
+            last_error_path.write_text(value, encoding="utf-8")
             if Path(path) == last_error_path
             else None
         )
@@ -1571,13 +1574,13 @@ def test_current_snapshot_clears_stale_auth_error_when_snapshot_state_is_ok() ->
             "status_message": "Web prompt completed.",
         }
         module.load_history = lambda: []
-        module.read_text = (
-            lambda path, default="": last_error_path.read_text(encoding="utf-8")
+        module.read_text = lambda path, default="": (
+            last_error_path.read_text(encoding="utf-8")
             if Path(path) == last_error_path
             else default
         )
-        module.write_text = (
-            lambda path, value: last_error_path.write_text(value, encoding="utf-8")
+        module.write_text = lambda path, value: (
+            last_error_path.write_text(value, encoding="utf-8")
             if Path(path) == last_error_path
             else None
         )
@@ -1613,13 +1616,13 @@ def test_current_snapshot_clears_stale_auth_error_at_signin_prompt() -> None:
         module.recover_stale_prompt_state = lambda: None
         module.load_status_meta = lambda: module.default_status_meta()
         module.load_history = lambda: []
-        module.read_text = (
-            lambda path, default="": last_error_path.read_text(encoding="utf-8")
+        module.read_text = lambda path, default="": (
+            last_error_path.read_text(encoding="utf-8")
             if Path(path) == last_error_path
             else default
         )
-        module.write_text = (
-            lambda path, value: last_error_path.write_text(value, encoding="utf-8")
+        module.write_text = lambda path, value: (
+            last_error_path.write_text(value, encoding="utf-8")
             if Path(path) == last_error_path
             else None
         )
@@ -1828,13 +1831,13 @@ def test_current_snapshot_sanitizes_stale_history_auth_errors_at_update_intersti
                 "usage": {},
             }
         ]
-        module.read_text = (
-            lambda path, default="": last_error_path.read_text(encoding="utf-8")
+        module.read_text = lambda path, default="": (
+            last_error_path.read_text(encoding="utf-8")
             if Path(path) == last_error_path
             else default
         )
-        module.write_text = (
-            lambda path, value: last_error_path.write_text(value, encoding="utf-8")
+        module.write_text = lambda path, value: (
+            last_error_path.write_text(value, encoding="utf-8")
             if Path(path) == last_error_path
             else None
         )
@@ -1889,13 +1892,13 @@ def test_current_snapshot_sanitizes_stale_history_auth_errors_when_lane_is_ok() 
                 "usage": {},
             }
         ]
-        module.read_text = (
-            lambda path, default="": last_error_path.read_text(encoding="utf-8")
+        module.read_text = lambda path, default="": (
+            last_error_path.read_text(encoding="utf-8")
             if Path(path) == last_error_path
             else default
         )
-        module.write_text = (
-            lambda path, value: last_error_path.write_text(value, encoding="utf-8")
+        module.write_text = lambda path, value: (
+            last_error_path.write_text(value, encoding="utf-8")
             if Path(path) == last_error_path
             else None
         )
@@ -2571,13 +2574,13 @@ def test_current_snapshot_requires_reauth_when_latest_web_turn_failed_with_zero_
                 },
             }
         ]
-        module.read_text = (
-            lambda path, default="": last_error_path.read_text(encoding="utf-8")
+        module.read_text = lambda path, default="": (
+            last_error_path.read_text(encoding="utf-8")
             if Path(path) == last_error_path
             else default
         )
-        module.write_text = (
-            lambda path, value: last_error_path.write_text(value, encoding="utf-8")
+        module.write_text = lambda path, value: (
+            last_error_path.write_text(value, encoding="utf-8")
             if Path(path) == last_error_path
             else None
         )
@@ -2643,13 +2646,13 @@ def test_current_snapshot_ready_prompt_beats_stale_reauth_history() -> None:
                 },
             }
         ]
-        module.read_text = (
-            lambda path, default="": last_error_path.read_text(encoding="utf-8")
+        module.read_text = lambda path, default="": (
+            last_error_path.read_text(encoding="utf-8")
             if Path(path) == last_error_path
             else default
         )
-        module.write_text = (
-            lambda path, value: last_error_path.write_text(value, encoding="utf-8")
+        module.write_text = lambda path, value: (
+            last_error_path.write_text(value, encoding="utf-8")
             if Path(path) == last_error_path
             else None
         )
@@ -2712,13 +2715,13 @@ def test_current_snapshot_preserves_device_code_prompt_over_latest_reauth_histor
                 },
             }
         ]
-        module.read_text = (
-            lambda path, default="": last_error_path.read_text(encoding="utf-8")
+        module.read_text = lambda path, default="": (
+            last_error_path.read_text(encoding="utf-8")
             if Path(path) == last_error_path
             else default
         )
-        module.write_text = (
-            lambda path, value: last_error_path.write_text(value, encoding="utf-8")
+        module.write_text = lambda path, value: (
+            last_error_path.write_text(value, encoding="utf-8")
             if Path(path) == last_error_path
             else None
         )
@@ -4881,9 +4884,7 @@ def test_norman_frontdoor_caddy_serves_shortcuts_locally() -> None:
 
     rendered = module.render_caddy()
 
-    assert (
-        "{\n" "    acme_ca https://ca.home.arpa/acme/acme/directory\n" "}"
-    ) in rendered
+    assert ("{\n    acme_ca https://ca.home.arpa/acme/acme/directory\n}") in rendered
     assert (
         "(norman_internal_tls) {\n"
         "    tls {\n"
@@ -4903,7 +4904,7 @@ def test_norman_frontdoor_caddy_serves_shortcuts_locally() -> None:
         "}"
     ) in rendered
     assert (
-        "http://norman.tail94915.ts.net {\n" "    redir https://{host}{uri} 308\n" "}"
+        "http://norman.tail94915.ts.net {\n    redir https://{host}{uri} 308\n}"
     ) in rendered
     assert (
         "norman.tail94915.ts.net {\n"
@@ -5077,11 +5078,10 @@ def test_bot_proxy_caddy_redirects_work_shortcuts_to_canonical_hosts() -> None:
     ) in rendered
     assert "redir https://keystone.kris.openbrand.com{uri} 308" in rendered
     assert (
-        "control.kris.openbrand.com {\n"
-        "    redir https://cp.kris.openbrand.com{uri} 308"
+        "control.kris.openbrand.com {\n    redir https://cp.kris.openbrand.com{uri} 308"
     ) in rendered
     assert (
-        "leadership.kris.openbrand.com {\n" "    import norman_internal_tls"
+        "leadership.kris.openbrand.com {\n    import norman_internal_tls"
     ) in rendered
     assert "redir https://kpis.kris.openbrand.com{uri} 308" in rendered
 

@@ -1,16 +1,7 @@
 # tests/conftest.py
 import atexit
 import os
-import sys
 import tempfile
-from pydantic import typing as _pydantic_typing
-
-if sys.version_info >= (3, 12):
-
-    def _evaluate_forwardref(type_, globalns, localns):
-        return type_._evaluate(globalns, localns, None, recursive_guard=set())
-
-    _pydantic_typing.evaluate_forwardref = _evaluate_forwardref
 
 import asyncio
 import threading

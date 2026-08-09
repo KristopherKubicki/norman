@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Tuple
 
 from app.core.logging import setup_logger
@@ -30,7 +30,7 @@ async def _process_due_jobs(stop_event: asyncio.Event, batch_size: int = 10) -> 
                     # Circuit is open: reschedule without burning attempts.
                     job.status = "pending"
                     job.last_error = exc.reason
-                    job.next_attempt_at = datetime.utcfromtimestamp(exc.opened_until)
+                    job.next_attempt_at = datetime.fromtimestamp(exc.opened_until, UTC)
                     routing_crud.update_job(db, job)
                 except Exception as exc:
                     job.attempts += 1
@@ -50,7 +50,7 @@ async def _process_due_jobs(stop_event: asyncio.Event, batch_size: int = 10) -> 
                     else:
                         job.status = "pending"
                         delay = compute_retry_delay(job.attempts)
-                        job.next_attempt_at = datetime.utcnow() + delay
+                        job.next_attempt_at = datetime.now(UTC) + delay
                     routing_crud.update_job(db, job)
                     logger.exception("Routing job %s failed", job.id)
         finally:

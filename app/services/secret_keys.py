@@ -6,7 +6,7 @@ import secrets
 import shlex
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -253,7 +253,7 @@ def _issue_lease(
         renewable=result.renewable,
         status="active",
         issued_to=request.requester_id,
-        expires_at=datetime.utcnow() + timedelta(seconds=ttl_seconds),
+        expires_at=datetime.now(UTC) + timedelta(seconds=ttl_seconds),
     )
     crud.secret_keys.create_audit_event(
         db,
@@ -416,7 +416,7 @@ def renew_secret_lease(
     lease = crud.secret_keys.update_lease(
         db,
         lease=lease,
-        expires_at=datetime.utcnow() + timedelta(seconds=ttl_seconds),
+        expires_at=datetime.now(UTC) + timedelta(seconds=ttl_seconds),
     )
     crud.secret_keys.create_audit_event(
         db,
@@ -460,7 +460,7 @@ def _normalize_stash_label(value: str) -> str:
     text = " ".join(str(value or "").split())
     if text:
         return text[:120]
-    return f"Secret {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')}"
+    return f"Secret {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')}"
 
 
 def _normalize_stash_source(value: str) -> str:
@@ -534,7 +534,7 @@ def create_secret_stash_item(
         masked_preview=_masked_secret_preview(value),
         source=source,
         status="active",
-        expires_at=datetime.utcnow() + timedelta(seconds=body.ttl_seconds),
+        expires_at=datetime.now(UTC) + timedelta(seconds=body.ttl_seconds),
     )
 
 

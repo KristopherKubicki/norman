@@ -11,7 +11,7 @@ from typing import Any, Iterable
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import ConfigDict, BaseModel, Field
 
 from app.services.prompt_load_balancer import prompt_load_balancer_capabilities
 from app.services.prompt_provider_facade import (
@@ -69,8 +69,7 @@ class OpenAICompatRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     norman: dict[str, Any] = Field(default_factory=dict)
 
-    class Config:
-        extra = "allow"
+    model_config = ConfigDict(extra="allow")
 
 
 def _clean(value: Any) -> str:
@@ -270,8 +269,8 @@ def _request_id(request: Request) -> str:
 
 
 def _request_payload(request_body: OpenAICompatRequest) -> dict[str, Any]:
-    payload = request_body.dict(exclude_none=True, exclude_defaults=True)
-    for field in request_body.__fields_set__:
+    payload = request_body.model_dump(exclude_none=True, exclude_defaults=True)
+    for field in request_body.model_fields_set:
         if getattr(request_body, field, None) is None:
             payload[field] = None
     return payload
@@ -625,8 +624,7 @@ async def openai_compat_chat_completions(
 
 def _response_sse_event(event_type: str, payload: dict[str, Any]) -> str:
     return (
-        f"event: {event_type}\n"
-        f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
+        f"event: {event_type}\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
     )
 
 
