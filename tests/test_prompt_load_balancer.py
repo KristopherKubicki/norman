@@ -5330,7 +5330,7 @@ def test_openai_compat_responses_ignores_generated_reasoning_in_continuation(
     )
 
 
-def test_openai_compat_responses_preserves_historical_tool_contracts():
+def test_openai_compat_responses_replaces_historical_tool_contracts():
     import app.services.prompt_provider_facade as facade
 
     first_tools = [
@@ -5364,16 +5364,77 @@ def test_openai_compat_responses_preserves_historical_tool_contracts():
     contracts = [
         message for message in updated if facade._is_tool_contract_message(message)
     ]
-    assert len(contracts) == 2
-    assert updated == messages
-    assert len(extras) == 1
-    assert extras[0][facade.TOOL_CONTRACT_CONTEXT_MARKER]["tools"][0]["name"] == (
-        "second_tool"
-    )
+    assert contracts == []
     assert [message["content"] for message in updated if message["role"] == "user"] == [
         "before contract",
         "after duplicate",
     ]
+    assert len(extras) == 1
+    assert extras[0][facade.TOOL_CONTRACT_CONTEXT_MARKER]["tools"][0]["name"] == (
+        "second_tool"
+    )
+
+
+def test_openai_compat_responses_bounds_replayed_prompt_without_mutating_tool_state():
+    import app.services.prompt_provider_facade as facade
+
+    facade.reset_facade_response_state()
+    outputs = [
+        (f"call_{index}", f"output-{index}-" + ("x" * 64_000) + f"-tail-{index}")
+        for index in range(4)
+    ]
+    facade._RESPONSE_STATE["resp-large-history"] = {
+        "messages": [
+            {"role": "system", "content": "Keep the original task constraints."},
+            facade._tool_contract_message(
+                {
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": "stale_tool",
+                            "parameters": {"type": "object"},
+                        }
+                    ]
+                }
+            )[0],
+            *[
+                facade._function_call_output_context_message(
+                    call_id=call_id,
+                    output=output,
+                )
+                for call_id, output in outputs
+            ],
+            {"role": "assistant", "content": "Continue from the latest tool result."},
+        ],
+        "function_calls": [],
+        "tool_outputs": [
+            {"call_id": call_id, "output": output} for call_id, output in outputs
+        ],
+        "messages_include_response_output": True,
+    }
+
+    history = facade._previous_response_history("resp-large-history")
+
+    assert (
+        sum(facade._message_context_chars(message) for message in history.messages)
+        <= facade.MAX_REPLAYED_HISTORY_CHARS
+    )
+    assert not any(
+        facade._is_tool_contract_message(message) for message in history.messages
+    )
+    assert set(outputs) <= history.tool_outputs
+
+    replayed_outputs = {
+        message["call_id"]: message["output"]
+        for message in history.messages
+        if message.get("type") == "function_call_output"
+    }
+    assert replayed_outputs["call_0"] == facade.REPLAYED_TOOL_OUTPUT_OMITTED
+    assert replayed_outputs["call_1"] == facade.REPLAYED_TOOL_OUTPUT_OMITTED
+    assert replayed_outputs["call_2"].endswith("-tail-2")
+    assert replayed_outputs["call_3"].endswith("-tail-3")
+    assert len(replayed_outputs["call_2"]) <= facade.MAX_REPLAYED_TOOL_OUTPUT_CHARS
+    assert len(replayed_outputs["call_3"]) <= facade.MAX_REPLAYED_TOOL_OUTPUT_CHARS
 
 
 def test_openai_compat_responses_replays_typed_message_after_tool_output(monkeypatch):
@@ -5485,7 +5546,7 @@ def test_openai_compat_responses_replays_typed_message_after_tool_output(monkeyp
     assert [
         message[facade.TOOL_CONTRACT_CONTEXT_MARKER]["tools"][0]["name"]
         for message in tool_contracts
-    ] == ["tool_search", "synthetic.status_lookup"]
+    ] == ["synthetic.status_lookup"]
     assert third_messages[-2]["type"] == "function_call_output"
 
 
