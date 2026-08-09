@@ -10,6 +10,7 @@ for source in \
   "$SCRIPT_DIR/tui_host_pressure_guard.py" \
   "$SCRIPT_DIR/tui_host_recovery.py" \
   "$SCRIPT_DIR/norman_codex_gateway_token.py" \
+  "$SCRIPT_DIR/norman_ops_mcp_canary_token.py" \
   "$SCRIPT_DIR/norman_codex_gateway_broker.sh" \
   "$SCRIPT_DIR/systemd/norman-tui-tool-chain-canary.service" \
   "$SCRIPT_DIR/systemd/norman-tui-tool-chain-canary.timer"; do
@@ -34,6 +35,9 @@ sudo --non-interactive install -D -o root -g root -m 0644 \
 sudo --non-interactive install -D -o root -g root -m 0755 \
   "$SCRIPT_DIR/norman_codex_gateway_token.py" \
   /usr/local/libexec/norman_codex_gateway_token.py
+sudo --non-interactive install -D -o root -g root -m 0755 \
+  "$SCRIPT_DIR/norman_ops_mcp_canary_token.py" \
+  /usr/local/libexec/norman_ops_mcp_canary_token.py
 sudo --non-interactive install -D -o root -g root -m 0755 \
   "$SCRIPT_DIR/norman_codex_gateway_broker.sh" \
   /usr/local/libexec/norman_codex_gateway_broker.sh

@@ -27,10 +27,8 @@ DEFAULT_PRESSURE_GUARD = Path(__file__).with_name("tui_host_pressure_guard.py")
 DEFAULT_PRESSURE_TARGET = "work-special"
 DEFAULT_TIMEOUT_SECONDS = 45.0
 DEFAULT_OPS_MCP_ENDPOINT = "https://ops.openbrand.com/mcp"
-DEFAULT_OPS_MCP_AWS_PROFILE = "ob-openbrand-admin"
-DEFAULT_OPS_MCP_AWS_REGION = "us-east-2"
-DEFAULT_OPS_MCP_BINDINGS_SECRET_ID = "ops-portal/production/mcp-api-key-bindings"
-DEFAULT_OPS_MCP_KEY_ID = "kris-production-codex-control-plane"
+DEFAULT_OPS_MCP_KEY_SECRET = "control-plane/ops-mcp-canary-key"
+DEFAULT_OPS_MCP_KEY_HELPER = Path(__file__).with_name("norman_ops_mcp_canary_token.py")
 DEFAULT_OPS_MCP_USER_EMAIL = "kris@openbrand.com"
 OPS_MCP_PROTOCOL_VERSION = "2025-03-26"
 OPS_MCP_MAX_RESPONSE_BYTES = 512 * 1024
@@ -456,43 +454,29 @@ def _require_healthy_ops_mcp_evidence(evidence: Mapping[str, Any]) -> None:
 
 
 def _ops_mcp_api_key(timeout_seconds: float) -> str:
-    """Load the bound Ops MCP key without retaining the source secret."""
+    """Load the bound Ops MCP key through its dedicated broker."""
 
     configured = _clean(os.environ.get("OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY"))
     if configured:
         return configured
 
-    profile = (
-        _clean(os.environ.get("OPS_OPENBRAND_MCP_AWS_PROFILE"))
-        or DEFAULT_OPS_MCP_AWS_PROFILE
+    secret_name = (
+        _clean(os.environ.get("NORMAN_OPS_MCP_KEY_SECRET"))
+        or DEFAULT_OPS_MCP_KEY_SECRET
     )
-    region = (
-        _clean(os.environ.get("OPS_OPENBRAND_MCP_AWS_REGION"))
-        or DEFAULT_OPS_MCP_AWS_REGION
+    helper = Path(
+        _clean(os.environ.get("NORMAN_OPS_MCP_KEY_HELPER"))
+        or str(DEFAULT_OPS_MCP_KEY_HELPER)
     )
-    secret_id = (
-        _clean(os.environ.get("OPS_OPENBRAND_MCP_BINDINGS_SECRET_ID"))
-        or DEFAULT_OPS_MCP_BINDINGS_SECRET_ID
-    )
-    key_id = (
-        _clean(os.environ.get("OPS_OPENBRAND_MCP_KEY_ID")) or DEFAULT_OPS_MCP_KEY_ID
-    )
+    if not helper.is_file():
+        raise CanaryError("ops_direct_smoke_failed")
     try:
         result = subprocess.run(
             [
-                "aws",
-                "secretsmanager",
-                "get-secret-value",
-                "--profile",
-                profile,
-                "--region",
-                region,
-                "--secret-id",
-                secret_id,
-                "--query",
-                "SecretString",
-                "--output",
-                "text",
+                sys.executable,
+                str(helper),
+                "--secret",
+                secret_name,
             ],
             check=False,
             stdin=subprocess.DEVNULL,
@@ -505,22 +489,10 @@ def _ops_mcp_api_key(timeout_seconds: float) -> str:
         raise CanaryError("ops_direct_smoke_failed") from exc
     if result.returncode != 0:
         raise CanaryError("ops_direct_smoke_failed")
-    try:
-        bindings = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        raise CanaryError("ops_direct_smoke_invalid_response") from exc
-    keys = bindings.get("keys") if isinstance(bindings, Mapping) else None
-    if not isinstance(keys, list):
-        raise CanaryError("ops_direct_smoke_invalid_response")
-    for binding in keys:
-        if not isinstance(binding, Mapping):
-            continue
-        if _clean(binding.get("key_id")) != key_id:
-            continue
-        api_key = _clean(binding.get("api_key"))
-        if api_key:
-            return api_key
-    raise CanaryError("ops_direct_smoke_failed")
+    api_key = _clean(result.stdout)
+    if not api_key:
+        raise CanaryError("ops_direct_smoke_failed")
+    return api_key
 
 
 def _parse_ops_mcp_response(raw: bytes, content_type: str) -> dict[str, Any]:

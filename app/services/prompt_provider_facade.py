@@ -1178,6 +1178,66 @@ def _function_call_contract_matches(
     ) and _function_call_signature(left) == _function_call_signature(right)
 
 
+def _function_call_is_in_progress(item: Mapping[str, Any]) -> bool:
+    return _lower(item.get("status")) == "in_progress"
+
+
+def _function_call_arguments_extend(
+    partial: Mapping[str, Any],
+    complete: Mapping[str, Any],
+) -> bool:
+    """Return whether an in-progress argument snapshot can become ``complete``."""
+
+    partial_arguments = _canonical_function_call_arguments(partial.get("arguments"))
+    complete_arguments = _canonical_function_call_arguments(complete.get("arguments"))
+    return not partial_arguments or complete_arguments.startswith(partial_arguments)
+
+
+def _prefer_function_call_snapshot(
+    left: Mapping[str, Any],
+    right: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Keep the more complete replay snapshot while retaining its metadata."""
+
+    left_arguments = _canonical_function_call_arguments(left.get("arguments"))
+    right_arguments = _canonical_function_call_arguments(right.get("arguments"))
+    if _function_call_is_in_progress(left) != _function_call_is_in_progress(right):
+        return dict(right if _function_call_is_in_progress(left) else left)
+    if len(right_arguments) >= len(left_arguments):
+        return dict(right)
+    return dict(left)
+
+
+def _reconcile_function_call_replay(
+    left: Mapping[str, Any],
+    right: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Coalesce compatible Codex lifecycle snapshots of one function call.
+
+    A streamed ``response.output_item.added`` event carries an in-progress call
+    with empty or partial arguments, then the completed output item carries the
+    final arguments. Codex can replay both representations in a follow-up
+    Responses request. They must collapse to the completed call, while a
+    changed name or non-monotonic argument value remains a caller error.
+    """
+
+    if _clean(left.get("call_id")) != _clean(right.get("call_id")):
+        return None
+    if _clean(left.get("name")) != _clean(right.get("name")):
+        return None
+    if _function_call_contract_matches(left, right):
+        return _prefer_function_call_snapshot(left, right)
+    if _function_call_is_in_progress(left) and _function_call_arguments_extend(
+        left, right
+    ):
+        return _prefer_function_call_snapshot(left, right)
+    if _function_call_is_in_progress(right) and _function_call_arguments_extend(
+        right, left
+    ):
+        return _prefer_function_call_snapshot(left, right)
+    return None
+
+
 def _tool_chain_telemetry(
     *,
     context: ToolChainContext,
@@ -1561,14 +1621,19 @@ def _response_input_function_call_items(
             continue
         function_call = _function_call_item(item, strict=True)
         previous = function_calls.get(function_call["call_id"])
-        if previous and not _function_call_contract_matches(previous, function_call):
+        reconciled = (
+            _reconcile_function_call_replay(previous, function_call)
+            if previous
+            else function_call
+        )
+        if not reconciled:
             raise FacadeError(
                 "Responses input contains conflicting function_call items",
                 status_code=400,
                 code="function_call_mismatch",
                 param="input",
             )
-        function_calls[function_call["call_id"]] = function_call
+        function_calls[function_call["call_id"]] = reconciled
     return function_calls
 
 
@@ -1600,14 +1665,19 @@ def _validate_response_tool_continuation(
     }
     for call_id, function_call in _response_input_function_call_items(payload).items():
         known = function_call_items.get(call_id)
-        if known and not _function_call_contract_matches(known, function_call):
+        reconciled = (
+            _reconcile_function_call_replay(known, function_call)
+            if known
+            else function_call
+        )
+        if not reconciled:
             raise FacadeError(
                 "Responses function_call does not match its prior call_id",
                 status_code=400,
                 code="function_call_mismatch",
                 param="input",
             )
-        function_call_items[call_id] = function_call
+        function_call_items[call_id] = reconciled
 
     raw_input = payload.get("input", payload.get("prompt"))
     if not isinstance(raw_input, list):
@@ -1679,13 +1749,17 @@ def response_input_to_messages(
                 function_call = _function_call_item(item, strict=True)
                 existing = function_call_items.get(function_call["call_id"])
                 if existing:
-                    if not _function_call_contract_matches(existing, function_call):
+                    reconciled = _reconcile_function_call_replay(
+                        existing, function_call
+                    )
+                    if not reconciled:
                         raise FacadeError(
                             "Responses function_call does not match its prior call_id",
                             status_code=400,
                             code="function_call_mismatch",
                             param="input",
                         )
+                    function_call_items[function_call["call_id"]] = reconciled
                     # Codex may resend a prior call item with its output. The
                     # stored conversation already contains it in order.
                     continue

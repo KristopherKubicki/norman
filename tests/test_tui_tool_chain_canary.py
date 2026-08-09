@@ -455,20 +455,16 @@ def test_ops_direct_smoke_uses_bundled_streamable_http_probe(monkeypatch):
     requests = []
 
     def fake_run(command, **_kwargs):
-        assert command[:3] == ["aws", "secretsmanager", "get-secret-value"]
+        assert command == [
+            canary.sys.executable,
+            str(canary.DEFAULT_OPS_MCP_KEY_HELPER),
+            "--secret",
+            canary.DEFAULT_OPS_MCP_KEY_SECRET,
+        ]
         return subprocess.CompletedProcess(
             command,
             0,
-            json.dumps(
-                {
-                    "keys": [
-                        {
-                            "key_id": canary.DEFAULT_OPS_MCP_KEY_ID,
-                            "api_key": "private-bound-key",
-                        }
-                    ]
-                }
-            ),
+            "private-bound-key\n",
             "",
         )
 
@@ -501,6 +497,17 @@ def test_ops_direct_smoke_uses_bundled_streamable_http_probe(monkeypatch):
         request.get_header("Mcp-session-id") is None for request, _timeout in requests
     )
     assert "private-bound-key" not in json.dumps(result, sort_keys=True)
+
+
+def test_ops_mcp_api_key_uses_an_explicit_one_shot_override(monkeypatch):
+    monkeypatch.setenv("OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY", "private-override")
+    monkeypatch.setattr(
+        canary.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("not called")),
+    )
+
+    assert canary._ops_mcp_api_key(30) == "private-override"
 
 
 def test_ops_mcp_cli_flag_enables_the_streaming_canary():
@@ -828,7 +835,38 @@ def test_canary_systemd_wrapper_uses_the_brokered_token_path():
     assert "OnUnitActiveSec=1h" in timer
     assert "sudo --non-interactive" in installer
     assert "norman_codex_gateway_token.py" in installer
+    assert "norman_ops_mcp_canary_token.py" in installer
     assert "norman_codex_gateway_broker.sh" in installer
     assert "codex-route-proof.env" not in installer
     assert "systemctl start norman-tui-tool-chain-canary.service" in installer
     assert 'receipt.get("state") != "passed"' in installer
+
+
+def test_ops_mcp_canary_broker_is_fixed_alias_and_never_uses_aws():
+    root = canary.Path(__file__).resolve().parents[1]
+    token_helper = (root / "scripts/norman_ops_mcp_canary_token.py").read_text(
+        encoding="utf-8"
+    )
+    broker = (root / "scripts/norman_ops_mcp_canary_broker.py").read_text(
+        encoding="utf-8"
+    )
+    launcher = (root / "scripts/norman_ops_mcp_canary_broker_launch.sh").read_text(
+        encoding="utf-8"
+    )
+    installer = (root / "scripts/deploy_norman_ops_mcp_canary_key_broker.sh").read_text(
+        encoding="utf-8"
+    )
+    provisioner = (root / "scripts/provision_norman_ops_mcp_canary_key.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "control-plane/ops-mcp-canary-key" in token_helper
+    assert "control-plane/ops-mcp-canary-key" in broker
+    assert "secretsmanager" not in token_helper
+    assert "aws" not in broker
+    assert "systemd-run" in launcher
+    assert "norman-ops-mcp-canary-broker" in launcher
+    assert "/usr/local/libexec/norman-ops-mcp-canary-broker" in installer
+    assert "--stdin" in broker
+    assert "aws secretsmanager get-secret-value" in provisioner
+    assert "ssh -o BatchMode=yes" in provisioner
