@@ -85,6 +85,7 @@ SCRIPT_FILES = (
     "scripts/bbs_janitor.py",
     "scripts/build_norman_harness_pro_agent_pack.py",
     "scripts/capture_tui_visual_states.py",
+    "scripts/codex_bridge_parity.py",
     "scripts/norman_bot_prime_start.sh",
     "scripts/norman_codex_launch.sh",
     "scripts/norman_codex_runtime_bridge.py",
@@ -125,6 +126,7 @@ TEST_FILES = (
     "tests/test_sync_agent_console_template.py",
     "tests/test_tui_provider_readiness_benchmark.py",
     "tests/test_tui_bedrock_shortstop_benchmark.py",
+    "tests/test_codex_bridge_parity.py",
     "tests/test_tui_auto_mode_benchmark.py",
     "tests/test_paired_hybrid_replay_benchmark.py",
     "tests/test_local_model_skill_floor.py",
@@ -155,6 +157,10 @@ FIXTURE_FILES = (
     (
         "db/tui_quality_shadow_answers.example.json",
         "data/fixtures/tui_quality_shadow_answers.example.json",
+    ),
+    (
+        "db/codex_bridge_parity_cases.json",
+        "data/fixtures/codex_bridge_parity_cases.json",
     ),
     (
         "db/policies/codex_role_policy.json",
