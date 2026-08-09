@@ -16,7 +16,7 @@ configuration, and basic maintenance tasks.
 
 Before deploying Norman, ensure that your server meets the following requirements:
 
-- Python 3.8, 3.9, 3.10, or 3.11
+- Python 3.11 or newer
 - SQLite (or another supported database system)
 - A compatible operating system, such as Ubuntu, Debian, or CentOS
 
@@ -37,13 +37,13 @@ Before deploying Norman, ensure that your server meets the following requirement
 3. Create a virtual environment:
 
    ```
-   python3 -m venv env
+   python3.11 -m venv .venv
    ```
 
 4. Activate the virtual environment:
 
    ```
-   source env/bin/activate
+   source .venv/bin/activate
    ```
 
 5. Install the required packages:
@@ -98,12 +98,15 @@ do not reuse the live service's `/etc/norman/runtime.env`. Keep
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl start norman-release@<release-sha>
-curl -fsS http://127.0.0.1:18000/health
+curl -fsS http://127.0.0.1:18000/openapi.json
 sudo systemctl stop norman-release@<release-sha>
 ```
 
-The release checkout must contain `.venv-3.10` and the managed configuration
-environment before starting this unit.
+Each new release must contain a standard `.venv` created with Python 3.11 or
+newer and the managed configuration environment before starting this unit.
+`norman-release-python` accepts exactly one legacy versioned virtualenv only
+so an already-deployed release can remain a rollback target; new releases must
+not create versioned virtualenv directories.
 
 ### Production Credential Wrapper
 
@@ -113,6 +116,14 @@ Install the launcher at `/usr/local/libexec/norman-production-launch` with mode
 `0755`, and install the unit at
 `/etc/systemd/system/norman-production@.service`. The unit is deliberately
 separate from the loopback canary and from the legacy `norman.service`.
+Install the release interpreter resolver as well. It selects the release-local
+`.venv` without encoding a Python version in the unit:
+
+```bash
+sudo install -D -m 0755 scripts/systemd/norman-release-python \
+  /usr/local/libexec/norman-release-python
+```
+
 Install `scripts/tmpfiles.d/norman-production.conf` at
 `/etc/tmpfiles.d/norman-production.conf` and apply it before starting the
 production unit. It keeps the persistent SQLite state directory owned by the
@@ -172,19 +183,21 @@ logical alias `networking/bedrock-mantle`, reads
 a fresh bearer token in memory for each request. It never stores the bearer
 token in a file, environment variable, configuration secret, or log.
 
-After the release virtualenv has been installed, configure the release
-environment with the exact release path and approved region:
+After the release virtualenv has been installed, configure the managed
+environment with the approved region and release-aware resolver:
 
 ```text
 NORMAN_BEDROCK_MANTLE_REGION=us-east-2
-NORMAN_BEDROCK_MANTLE_SECRET_CMD=/home/kristopher/releases/norman-<release-sha>/.venv-3.10/bin/python /home/kristopher/releases/norman-<release-sha>/scripts/norman_bedrock_mantle_broker.py get {name}
+NORMAN_BEDROCK_MANTLE_SECRET_CMD="/usr/local/libexec/norman-release-python --current --release-script scripts/norman_bedrock_mantle_broker.py get {name}"
 ```
 
 Set `prompt_facade_explicit_cloud_mantle_api_key_secret:
 networking/bedrock-mantle` in `norman/runtime-config`. Keep the fallback
 disabled unless an explicitly approved cloud model is selected. The token
 generator's stable API creates a fresh token with a 12-hour validity; it is
-not cached or persisted by Norman.
+not cached or persisted by Norman. The production and candidate units set
+`NORMAN_RELEASE_SHA` themselves, so this command always runs the broker from
+the release serving the request.
 
 The legacy `norman.service` rollback path must use the same identity file.
 Install `scripts/systemd/norman.service.d/10-runtime-env.conf` before removing
@@ -195,8 +208,8 @@ release and that the front door and local model lane remain healthy:
 
 ```bash
 systemctl is-active norman-production@<release-sha>
-curl -fsS http://127.0.0.1:8000/health
-curl -fsS https://norman.home.arpa/health
+curl -fsS http://127.0.0.1:8000/openapi.json
+curl -fsS https://norman.home.arpa/openapi.json
 curl -fsS https://llm.home.arpa/v1/models
 systemctl status norman-route-policy-refresh.timer
 ```

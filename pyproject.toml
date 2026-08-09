@@ -5,6 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "norman"
 version = "0.2.0"
+requires-python = ">=3.11"
 dependencies = [
   "fastapi",
   "uvicorn",
@@ -40,7 +41,7 @@ dev = [
 
 [tool.ruff]
 line-length = 88
-target-version = "py38"
+target-version = "py311"
 exclude = [
   ".venv",
   "env",

@@ -30,14 +30,15 @@ fi
 
 release_sha="${BASH_REMATCH[1]}"
 release_root="/home/kristopher/releases/norman-${release_sha}"
-python_bin="${release_root}/.venv-3.10/bin/python"
 refresh_script="${release_root}/scripts/norllama/refresh_route_policy.py"
+release_python="/usr/local/libexec/norman-release-python"
 
-if [[ ! -x "$python_bin" || ! -f "$refresh_script" ]]; then
+if [[ ! -x "$release_python" || ! -f "$refresh_script" ]]; then
   printf 'Release %s has no usable route-policy refresh command.\n' "$release_sha" >&2
   exit 1
 fi
 
 cd "$release_root"
-exec "$python_bin" "$refresh_script" \
+exec "$release_python" "$release_sha" --release-script \
+  scripts/norllama/refresh_route_policy.py \
   --path /var/lib/norman/norllama/route_policy.json
