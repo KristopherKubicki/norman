@@ -745,6 +745,7 @@ def test_bedrock_adapter_sanitizes_mantle_provider_failure(monkeypatch):
         "error": {
             "type": "invalid_request_error",
             "code": "invalid_function_call_output",
+            "param": "input[3].content[0].call_id",
             "message": "upstream message with token=must-not-leak",
         }
     }
@@ -782,7 +783,17 @@ def test_bedrock_adapter_sanitizes_mantle_provider_failure(monkeypatch):
         "http_status": 429,
         "provider_error_type": "invalid_request_error",
         "provider_error_code": "invalid_function_call_output",
+        "provider_error_param": "input[3].content[0].call_id",
     }
+
+
+def test_bedrock_adapter_rejects_unsafe_mantle_error_param():
+    assert (
+        bedrock_module._safe_provider_error_param(
+            'input[3].content[0].call_id="secret"'
+        )
+        == ""
+    )
 
 
 def test_bedrock_adapter_blocks_forged_explicit_cloud_marker_before_credentials(

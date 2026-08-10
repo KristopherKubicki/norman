@@ -25,6 +25,7 @@ BedrockSessionFactory = Callable[..., Any]
 BedrockConfigFactory = Callable[..., Any]
 BEDROCK_MANTLE_MIN_MAX_OUTPUT_TOKENS = 16
 _SAFE_PROVIDER_ERROR_IDENTIFIER = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+_SAFE_PROVIDER_ERROR_PARAM = re.compile(r"^[A-Za-z0-9_.:\[\]/-]{1,160}$")
 
 
 @dataclass(frozen=True, repr=False)
@@ -89,11 +90,13 @@ class BedrockMantleResponsesError(RuntimeError):
         http_status: int = 0,
         provider_error_type: str = "",
         provider_error_code: str = "",
+        provider_error_param: str = "",
     ) -> None:
         super().__init__(message)
         self.http_status = _nonnegative_int(http_status)
         self.provider_error_type = provider_error_type
         self.provider_error_code = provider_error_code
+        self.provider_error_param = provider_error_param
 
     def safe_metadata(self) -> dict[str, int | str]:
         return {
@@ -102,6 +105,7 @@ class BedrockMantleResponsesError(RuntimeError):
                 "http_status": self.http_status,
                 "provider_error_type": self.provider_error_type,
                 "provider_error_code": self.provider_error_code,
+                "provider_error_param": self.provider_error_param,
             }.items()
             if value
         }
@@ -118,23 +122,33 @@ def _safe_provider_error_identifier(value: Any) -> str:
     return ""
 
 
+def _safe_provider_error_param(value: Any) -> str:
+    """Keep only a schema-field pointer, never provider-supplied values or prose."""
+
+    candidate = _clean(value)
+    if _SAFE_PROVIDER_ERROR_PARAM.fullmatch(candidate):
+        return candidate
+    return ""
+
+
 def _mantle_http_error_metadata(
     error: urllib_error.HTTPError,
-) -> tuple[str, str]:
-    """Read only allowlisted error identifiers from a Mantle HTTP error."""
+) -> tuple[str, str, str]:
+    """Read only allowlisted error identifiers and a schema pointer."""
 
     try:
         body = error.read().decode("utf-8", errors="replace")
         parsed = json.loads(body) if body else {}
     except (OSError, UnicodeError, json.JSONDecodeError):
-        return "", ""
+        return "", "", ""
     if not isinstance(parsed, Mapping):
-        return "", ""
+        return "", "", ""
     details = parsed.get("error")
     details = details if isinstance(details, Mapping) else parsed
     return (
         _safe_provider_error_identifier(details.get("type")),
         _safe_provider_error_identifier(details.get("code")),
+        _safe_provider_error_param(details.get("param")),
     )
 
 
@@ -1072,12 +1086,17 @@ def invoke_bedrock_mantle_responses(
         ) as response:
             raw_response = response.read().decode("utf-8", errors="replace")
     except urllib_error.HTTPError as exc:
-        provider_error_type, provider_error_code = _mantle_http_error_metadata(exc)
+        (
+            provider_error_type,
+            provider_error_code,
+            provider_error_param,
+        ) = _mantle_http_error_metadata(exc)
         raise BedrockMantleResponsesError(
             f"Bedrock Mantle Responses request failed with HTTP {exc.code}",
             http_status=exc.code,
             provider_error_type=provider_error_type,
             provider_error_code=provider_error_code,
+            provider_error_param=provider_error_param,
         ) from exc
     except (OSError, TimeoutError, urllib_error.URLError) as exc:
         raise RuntimeError("Bedrock Mantle Responses request failed") from exc
