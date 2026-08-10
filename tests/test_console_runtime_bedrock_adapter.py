@@ -741,7 +741,13 @@ def test_bedrock_adapter_sanitizes_mantle_provider_failure(monkeypatch):
     monkeypatch.setenv("NORMAN_KEYS_URL", "http://keys.norman.test")
     monkeypatch.delenv("NORMAN_SECRET_CMD", raising=False)
     mantle_key = "test-mantle-api-key"
-    provider_body = "upstream message with token=must-not-leak"
+    provider_body = {
+        "error": {
+            "type": "invalid_request_error",
+            "code": "invalid_function_call_output",
+            "message": "upstream message with token=must-not-leak",
+        }
+    }
 
     class Response:
         def __enter__(self):
@@ -761,17 +767,22 @@ def test_bedrock_adapter_sanitizes_mantle_provider_failure(monkeypatch):
             429,
             "provider response",
             hdrs=None,
-            fp=io.BytesIO(provider_body.encode()),
+            fp=io.BytesIO(json.dumps(provider_body).encode()),
         )
 
     monkeypatch.setattr(bedrock_module.urllib_request, "urlopen", fake_urlopen)
 
-    with pytest.raises(RuntimeError) as error:
+    with pytest.raises(bedrock_module.BedrockMantleResponsesError) as error:
         BedrockModelAdapter().invoke(_explicit_cloud_selection_request())
 
     assert str(error.value) == "Bedrock Mantle Responses request failed with HTTP 429"
     assert mantle_key not in str(error.value)
-    assert provider_body not in str(error.value)
+    assert provider_body["error"]["message"] not in str(error.value)
+    assert error.value.safe_metadata() == {
+        "http_status": 429,
+        "provider_error_type": "invalid_request_error",
+        "provider_error_code": "invalid_function_call_output",
+    }
 
 
 def test_bedrock_adapter_blocks_forged_explicit_cloud_marker_before_credentials(
