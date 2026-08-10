@@ -828,6 +828,136 @@ def _message_context_chars(message: Mapping[str, Any]) -> int:
     return len(_json_dumps(content))
 
 
+def _message_context_breakdown(
+    messages: list[dict[str, Any]],
+) -> dict[str, int]:
+    """Return content-free prompt sizing metadata for a message group."""
+
+    breakdown = {
+        "message_count": len(messages),
+        "chars": 0,
+        "tool_output_chars": 0,
+        "function_call_chars": 0,
+        "text_chars": 0,
+    }
+    for message in messages:
+        chars = _message_context_chars(message)
+        breakdown["chars"] += chars
+        item_type = _clean(message.get("type"))
+        if item_type == "function_call_output":
+            breakdown["tool_output_chars"] += chars
+        elif item_type == "function_call":
+            breakdown["function_call_chars"] += chars
+        else:
+            breakdown["text_chars"] += chars
+    return breakdown
+
+
+def _native_message_context_breakdown(
+    messages: list[dict[str, Any]],
+) -> dict[str, int]:
+    """Measure serialized native Responses items without retaining content."""
+
+    breakdown = {
+        "message_count": len(messages),
+        "chars": 0,
+        "tool_output_chars": 0,
+        "function_call_chars": 0,
+        "text_chars": 0,
+    }
+    for message in messages:
+        chars = len(_json_dumps(message))
+        breakdown["chars"] += chars
+        item_type = _clean(message.get("type"))
+        if item_type == "function_call_output":
+            breakdown["tool_output_chars"] += chars
+        elif item_type == "function_call":
+            breakdown["function_call_chars"] += chars
+        else:
+            # This includes native message and reasoning items. The receipt
+            # records only their serialized size, never their contents.
+            breakdown["text_chars"] += chars
+    return breakdown
+
+
+def _structured_context_breakdown(value: Any) -> dict[str, int]:
+    """Measure a native request field without retaining its content."""
+
+    if value in (None, {}, []):
+        return {
+            "message_count": 0,
+            "chars": 0,
+            "tool_output_chars": 0,
+            "function_call_chars": 0,
+            "text_chars": 0,
+        }
+    chars = len(_json_dumps(value))
+    return {
+        "message_count": 1,
+        "chars": chars,
+        "tool_output_chars": 0,
+        "function_call_chars": 0,
+        "text_chars": chars,
+    }
+
+
+def _prompt_context_metadata(
+    *,
+    history_messages: list[dict[str, Any]],
+    tool_contract_messages: list[dict[str, Any]],
+    structured_output_messages: list[dict[str, Any]],
+    current_input_messages: list[dict[str, Any]],
+    native_tool_contract: Any = None,
+    native_structured_output: Any = None,
+    rendered_messages: list[dict[str, Any]] | None = None,
+    transport: str = "local_text_adapter",
+) -> dict[str, Any]:
+    """Describe prompt composition without retaining any prompt content."""
+
+    message_breakdown = (
+        _native_message_context_breakdown
+        if transport == "bedrock_mantle_responses"
+        else _message_context_breakdown
+    )
+    groups = {
+        "history": message_breakdown(history_messages),
+        "tool_contract": (
+            _structured_context_breakdown(native_tool_contract)
+            if native_tool_contract is not None
+            else message_breakdown(tool_contract_messages)
+        ),
+        "structured_output": (
+            _structured_context_breakdown(native_structured_output)
+            if native_structured_output is not None
+            else message_breakdown(structured_output_messages)
+        ),
+        "current_input": message_breakdown(current_input_messages),
+    }
+    all_messages = rendered_messages
+    if all_messages is None:
+        all_messages = [
+            *history_messages,
+            *tool_contract_messages,
+            *structured_output_messages,
+            *current_input_messages,
+        ]
+    return {
+        "schema": "norman.responses-prompt-context.v1",
+        "transport": transport,
+        "groups": groups,
+        "total_message_count": sum(group["message_count"] for group in groups.values()),
+        "total_content_chars": sum(group["chars"] for group in groups.values()),
+        # The local adapter sends role labels and separators in addition to
+        # message content. Native Responses serializes its message items
+        # directly and carries tools/output controls in separate fields.
+        "rendered_prompt_chars": (
+            len(_json_dumps(all_messages))
+            if transport == "bedrock_mantle_responses"
+            else len(norllama_gateway.messages_to_prompt(all_messages))
+        ),
+    }
+
+
 def _compact_replayed_text(text: str, *, limit: int) -> str:
     if len(text) <= limit:
         return text
@@ -3958,6 +4088,7 @@ class PreparedResponsesExecution:
     route_payload: dict[str, Any]
     route_envelope: dict[str, Any]
     messages: list[dict[str, Any]]
+    prompt_context: dict[str, Any]
     previous_messages: list[dict[str, Any]]
     function_calls: dict[str, str]
     function_call_items: dict[str, dict[str, Any]]
@@ -4019,12 +4150,26 @@ def _prepare_responses_execution(
         known_tool_outputs=history.tool_outputs,
         known_function_call_items=history.function_call_items,
     )
+    structured_output_messages = _structured_output_message(provider_payload)
     if native_responses_transport:
         # Mantle's Responses endpoint accepts the structured tool registry,
         # output format, reasoning configuration, and tool-call history
         # directly. Do not flatten them into the local text-adapter prompt.
-        _structured_output_message(provider_payload)
-        messages = [*history.messages, *input_messages]
+        history_messages = history.messages
+        tool_contract_messages: list[dict[str, Any]] = []
+        messages = [*history_messages, *input_messages]
+        prompt_context = _prompt_context_metadata(
+            history_messages=history_messages,
+            tool_contract_messages=tool_contract_messages,
+            structured_output_messages=[],
+            current_input_messages=input_messages,
+            native_tool_contract=_tools(provider_payload),
+            native_structured_output=_mapping(
+                _mapping(provider_payload.get("text")).get("format")
+            ),
+            rendered_messages=messages,
+            transport="bedrock_mantle_responses",
+        )
     else:
         history_messages, tool_contract_messages = _messages_with_current_tool_contract(
             history.messages,
@@ -4034,9 +4179,16 @@ def _prepare_responses_execution(
         messages = [
             *history_messages,
             *tool_contract_messages,
-            *_structured_output_message(provider_payload),
+            *structured_output_messages,
             *input_messages,
         ]
+        prompt_context = _prompt_context_metadata(
+            history_messages=history_messages,
+            tool_contract_messages=tool_contract_messages,
+            structured_output_messages=structured_output_messages,
+            current_input_messages=input_messages,
+            rendered_messages=messages,
+        )
     route_payload = {**provider_payload, "input": messages}
     route_envelope = provider_adapter_decision(
         provider="openai",
@@ -4049,6 +4201,7 @@ def _prepare_responses_execution(
         route_payload=route_payload,
         route_envelope=route_envelope,
         messages=messages,
+        prompt_context=prompt_context,
         previous_messages=history.messages,
         function_calls=function_calls,
         function_call_items=function_call_items,
@@ -4144,6 +4297,7 @@ def _responses_response_from_chat(
                     if prepared.history_replayed
                     else "unavailable"
                 ),
+                "prompt_context": prepared.prompt_context,
                 "tools_declared": len(_tools(provider_payload)),
                 "tool_calls_returned": len(tool_calls),
                 "tool_chain": tool_chain,
