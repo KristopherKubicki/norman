@@ -3398,7 +3398,7 @@ def _execute_explicit_cloud_selection(
         logger.warning(
             "Norman explicit cloud selection failed request_id=%s provider=%s "
             "model=%s exception_class=%s http_status=%s "
-            "provider_error_type=%s provider_error_code=%s",
+            "provider_error_type=%s provider_error_code=%s provider_error_param=%s",
             invocation.invocation_id,
             plan.provider,
             plan.model,
@@ -3406,6 +3406,7 @@ def _execute_explicit_cloud_selection(
             safe_error_metadata.get("http_status", ""),
             safe_error_metadata.get("provider_error_type", ""),
             safe_error_metadata.get("provider_error_code", ""),
+            safe_error_metadata.get("provider_error_param", ""),
         )
         raise _explicit_cloud_selection_error(
             plan=plan,
