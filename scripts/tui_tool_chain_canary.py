@@ -917,7 +917,7 @@ def _require_exact_function_call_item(
         or _clean(calls[0].get("name")) != name
         or any(
             not isinstance(item, Mapping)
-            or _clean(item.get("type")) not in {"function_call", "message"}
+            or _clean(item.get("type")) not in {"function_call", "message", "reasoning"}
             for item in output
         )
     ):
