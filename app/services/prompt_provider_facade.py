@@ -3388,13 +3388,24 @@ def _execute_explicit_cloud_selection(
             )
         )
     except Exception as exc:
+        safe_error_metadata = getattr(exc, "safe_metadata", None)
+        safe_error_metadata = (
+            safe_error_metadata() if callable(safe_error_metadata) else {}
+        )
+        safe_error_metadata = (
+            safe_error_metadata if isinstance(safe_error_metadata, Mapping) else {}
+        )
         logger.warning(
             "Norman explicit cloud selection failed request_id=%s provider=%s "
-            "model=%s exception_class=%s",
+            "model=%s exception_class=%s http_status=%s "
+            "provider_error_type=%s provider_error_code=%s",
             invocation.invocation_id,
             plan.provider,
             plan.model,
             type(exc).__name__,
+            safe_error_metadata.get("http_status", ""),
+            safe_error_metadata.get("provider_error_type", ""),
+            safe_error_metadata.get("provider_error_code", ""),
         )
         raise _explicit_cloud_selection_error(
             plan=plan,
