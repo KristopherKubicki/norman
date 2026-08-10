@@ -26,6 +26,7 @@ DEFAULT_OUTPUT_JSON = Path(
 DEFAULT_PRESSURE_GUARD = Path(__file__).with_name("tui_host_pressure_guard.py")
 DEFAULT_PRESSURE_TARGET = "work-special"
 DEFAULT_TIMEOUT_SECONDS = 45.0
+EXPECTED_BACKEND_MODEL = "openai.gpt-5.6-terra"
 DEFAULT_OPS_MCP_ENDPOINT = "https://ops.openbrand.com/mcp"
 DEFAULT_OPS_MCP_KEY_SECRET = "control-plane/ops-mcp-canary-key"
 DEFAULT_OPS_MCP_KEY_HELPER = Path(__file__).with_name("norman_ops_mcp_canary_token.py")
@@ -818,6 +819,22 @@ def _safe_bridge_receipt(response: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _require_expected_backend_model(
+    response: Mapping[str, Any],
+    *,
+    expected_model: str,
+) -> None:
+    bridge = _safe_bridge_receipt(response)
+    if not bridge:
+        raise CanaryError("missing_backend_receipt")
+    effective_backend = _mapping(bridge.get("effective_backend"))
+    actual_model = _clean(effective_backend.get("model"))
+    if not actual_model or actual_model == "unknown":
+        raise CanaryError("missing_backend_receipt")
+    if actual_model != expected_model:
+        raise CanaryError("unexpected_backend_model")
+
+
 def _function_calls(response: Mapping[str, Any]) -> list[dict[str, Any]]:
     output = response.get("output")
     if not isinstance(output, list):
@@ -1055,6 +1072,7 @@ def run_canary(
     stream_request_fn: StreamRequestFn = _post_sse,
     ops_mcp: bool = False,
     ops_direct_smoke: OpsDirectSmokeFn | None = None,
+    expected_backend_model: str = "",
 ) -> dict[str, Any]:
     started_at = time.monotonic()
     receipt: dict[str, Any] = {
@@ -1069,6 +1087,9 @@ def run_canary(
         "elapsed_ms": 0.0,
         "turns": [],
     }
+    expected_backend_model = _safe_identifier(expected_backend_model)
+    if expected_backend_model:
+        receipt["expected_backend_model"] = expected_backend_model
     pressure_state = _mapping((pressure_guard or (lambda: {}))())
     admission = _mapping(pressure_state.get("admission"))
     action = _clean(admission.get("action"))
@@ -1108,6 +1129,11 @@ def run_canary(
         receipt["turns"].append(turn_receipt)
         if turn_receipt["bridge"]:
             receipt["bridge"] = turn_receipt["bridge"]
+        if expected_backend_model:
+            _require_expected_backend_model(
+                response,
+                expected_model=expected_backend_model,
+            )
         return response
 
     try:
@@ -1328,6 +1354,7 @@ def main(argv: list[str] | None = None) -> int:
         pressure_guard=pressure_guard,
         streaming=bool(args.stream or args.ops_mcp),
         ops_mcp=bool(args.ops_mcp),
+        expected_backend_model=EXPECTED_BACKEND_MODEL,
     )
     write_receipt(args.output_json, receipt)
     print(
