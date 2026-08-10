@@ -599,11 +599,13 @@ def _store_response_state(
     tool_outputs: set[tuple[str, str]],
     ephemeral: bool,
     native_response_output_items: list[Mapping[str, Any]] | None = None,
+    native_tools: list[Mapping[str, Any]] | None = None,
 ) -> None:
     if not response_id:
         return
     stored_messages = [dict(message) for message in messages]
     native_output_items = _messages(native_response_output_items)
+    stored_native_tools = _messages(native_tools)
     if not native_output_items:
         if output_text:
             stored_messages.append({"role": "assistant", "content": output_text})
@@ -622,6 +624,7 @@ def _store_response_state(
                 dict(function_call) for function_call in function_call_items.values()
             ],
             "native_response_output_items": native_output_items,
+            "native_tools": stored_native_tools,
             "tool_outputs": stored_tool_outputs,
             "retention": "ephemeral" if ephemeral else "session",
             "created_at": time.time(),
@@ -638,6 +641,7 @@ class ResponseHistory:
     function_calls: dict[str, str]
     function_call_items: dict[str, dict[str, Any]]
     tool_outputs: set[tuple[str, str]]
+    native_tools: list[dict[str, Any]]
     replayed: bool
 
 
@@ -954,11 +958,11 @@ def _previous_response_history(
 ) -> ResponseHistory:
     previous_response_id = _clean(previous_response_id)
     if not previous_response_id:
-        return ResponseHistory([], {}, {}, set(), False)
+        return ResponseHistory([], {}, {}, set(), [], False)
     with _RESPONSE_STATE_LOCK:
         state = dict(_RESPONSE_STATE.get(previous_response_id) or {})
     if not state:
-        return ResponseHistory([], {}, {}, set(), False)
+        return ResponseHistory([], {}, {}, set(), [], False)
     function_calls = _function_calls_from_state(state)
     function_call_items = _function_call_items_from_state(state)
     tool_outputs = _tool_outputs_from_state(state)
@@ -985,6 +989,7 @@ def _previous_response_history(
     if output_text and not _flag(state.get("messages_include_response_output")):
         messages.append({"role": "assistant", "content": output_text})
     native_response_output_items = _messages(state.get("native_response_output_items"))
+    native_tools = _messages(state.get("native_tools"))
     if native_response_output_items:
         messages.extend(native_response_output_items)
     else:
@@ -1001,6 +1006,7 @@ def _previous_response_history(
         function_calls,
         function_call_items,
         tool_outputs,
+        native_tools,
         True,
     )
 
@@ -1169,6 +1175,78 @@ def _tool_names(tools: list[dict[str, Any]]) -> set[str]:
             if member_name:
                 names.add(member_name)
     return names
+
+
+def _native_mantle_function_tool(
+    tool: Mapping[str, Any],
+    *,
+    name: str = "",
+) -> dict[str, Any]:
+    """Return one native Responses function definition for Mantle."""
+
+    function = _mapping(tool.get("function"))
+    source = function or tool
+    function_name = _clean(name or source.get("name") or tool.get("name"))
+    if not function_name:
+        return {}
+    normalized: dict[str, Any] = {
+        "type": "function",
+        "name": function_name,
+    }
+    for field in ("description", "parameters", "strict"):
+        value = source.get(field)
+        if value is None:
+            value = tool.get(field)
+        if value is not None:
+            normalized[field] = value
+    return normalized
+
+
+def _native_mantle_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Normalize Norman namespace tools to Mantle's native function schema."""
+
+    normalized: list[dict[str, Any]] = []
+    for tool in tools:
+        if _clean(tool.get("type")) == "namespace":
+            namespace = _clean(tool.get("name"))
+            members = tool.get("tools")
+            if not namespace or not isinstance(members, list):
+                continue
+            for member in members:
+                if not isinstance(member, Mapping):
+                    continue
+                member_name = _namespace_member_name(namespace, member)
+                function = _native_mantle_function_tool(member, name=member_name)
+                if function:
+                    normalized.append(function)
+            continue
+
+        if _clean(tool.get("type")) not in {"", "function"}:
+            normalized.append(dict(tool))
+            continue
+
+        function = _native_mantle_function_tool(tool)
+        if function:
+            normalized.append(function)
+    return normalized
+
+
+def _merge_native_mantle_tools(
+    *registries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge current and prior native tools, preserving a stable declaration order."""
+
+    merged: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for registry in registries:
+        for tool in _native_mantle_tools(registry):
+            key = _clean(tool.get("name"))
+            if not key:
+                continue
+            if key not in merged:
+                order.append(key)
+            merged[key] = tool
+    return [merged[key] for key in order]
 
 
 @dataclass(frozen=True)
@@ -1846,7 +1924,7 @@ def _native_mantle_responses_options(
     """Keep native Responses options structured for the Terra Mantle route."""
 
     options: dict[str, Any] = {}
-    tools = _tools(payload)
+    tools = _native_mantle_tools(_tools(payload))
     if tools:
         options["tools"] = tools
     tool_choice = payload.get("tool_choice")
@@ -3911,6 +3989,15 @@ def _prepare_responses_execution(
         _clean(provider_payload.get("previous_response_id")),
         compact=not native_responses_transport,
     )
+    if native_responses_transport:
+        native_tools = _merge_native_mantle_tools(
+            history.native_tools,
+            _tools(provider_payload),
+        )
+        if native_tools:
+            provider_payload["tools"] = native_tools
+        else:
+            provider_payload.pop("tools", None)
     function_call_items = _validate_response_tool_continuation(
         provider_payload,
         known_function_call_items=history.function_call_items,
@@ -4102,6 +4189,11 @@ def _responses_response_from_chat(
             ],
             native_response_output_items=(
                 native_response_output_items
+                if prepared.native_responses_transport
+                else None
+            ),
+            native_tools=(
+                _tools(provider_payload)
                 if prepared.native_responses_transport
                 else None
             ),

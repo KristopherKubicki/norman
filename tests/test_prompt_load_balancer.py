@@ -1017,6 +1017,33 @@ def test_openai_compat_responses_preserves_native_terra_tools_and_continuation(
             "required": ["path"],
         },
     }
+    namespace_tool = {
+        "type": "namespace",
+        "name": "mcp__norman_canary",
+        "description": "Control Plane canary tools.",
+        "tools": [
+            {
+                "type": "function",
+                "name": "status_lookup",
+                "description": "Read the canary status.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"check": {"type": "string"}},
+                    "required": ["check"],
+                },
+            }
+        ],
+    }
+    native_namespace_tool = {
+        "type": "function",
+        "name": "mcp__norman_canary.status_lookup",
+        "description": "Read the canary status.",
+        "parameters": {
+            "type": "object",
+            "properties": {"check": {"type": "string"}},
+            "required": ["check"],
+        },
+    }
     bedrock_calls = _install_bedrock_stub(
         monkeypatch,
         results=[
@@ -1103,7 +1130,7 @@ def test_openai_compat_responses_preserves_native_terra_tools_and_continuation(
                     "output": '{"branch":"main","dirty":false}',
                 }
             ],
-            "tools": [tool],
+            "tools": [namespace_tool],
             "reasoning": {"effort": "high"},
         },
     )
@@ -1112,6 +1139,10 @@ def test_openai_compat_responses_preserves_native_terra_tools_and_continuation(
     second_payload = second.json()
     assert second_payload["output_text"] == "Repository is clean."
     second_request = bedrock_calls[1]
+    assert second_request.responses_options["tools"] == [
+        tool,
+        native_namespace_tool,
+    ]
     reasoning = next(
         message
         for message in second_request.messages
