@@ -598,14 +598,17 @@ def _store_response_state(
     response_function_call_items: list[Mapping[str, Any]],
     tool_outputs: set[tuple[str, str]],
     ephemeral: bool,
+    native_response_output_items: list[Mapping[str, Any]] | None = None,
 ) -> None:
     if not response_id:
         return
     stored_messages = [dict(message) for message in messages]
-    if output_text:
-        stored_messages.append({"role": "assistant", "content": output_text})
-    for function_call in response_function_call_items:
-        stored_messages.append(_function_call_context_message(function_call))
+    native_output_items = _messages(native_response_output_items)
+    if not native_output_items:
+        if output_text:
+            stored_messages.append({"role": "assistant", "content": output_text})
+        for function_call in response_function_call_items:
+            stored_messages.append(_function_call_context_message(function_call))
     stored_tool_outputs = [
         {"call_id": call_id, "output": output}
         for call_id, output in sorted(tool_outputs)
@@ -618,6 +621,7 @@ def _store_response_state(
             "function_calls": [
                 dict(function_call) for function_call in function_call_items.values()
             ],
+            "native_response_output_items": native_output_items,
             "tool_outputs": stored_tool_outputs,
             "retention": "ephemeral" if ephemeral else "session",
             "created_at": time.time(),
@@ -741,6 +745,9 @@ def _function_calls_from_state(state: Mapping[str, Any]) -> dict[str, str]:
     calls = _function_calls_from_items(_messages(state.get("function_calls")))
     # States created before call metadata was compacted retained full output items.
     calls.update(_function_calls_from_items(_messages(state.get("output_items"))))
+    calls.update(
+        _function_calls_from_items(_messages(state.get("native_response_output_items")))
+    )
     calls.update(_function_calls_from_items(_messages(state.get("messages"))))
     return calls
 
@@ -750,6 +757,11 @@ def _function_call_items_from_state(
 ) -> dict[str, dict[str, Any]]:
     calls = _function_call_items_from_items(_messages(state.get("function_calls")))
     calls.update(_function_call_items_from_items(_messages(state.get("output_items"))))
+    calls.update(
+        _function_call_items_from_items(
+            _messages(state.get("native_response_output_items"))
+        )
+    )
     calls.update(_function_call_items_from_items(_messages(state.get("messages"))))
     return calls
 
@@ -972,14 +984,18 @@ def _previous_response_history(
     output_text = _clean(state.get("output_text"))
     if output_text and not _flag(state.get("messages_include_response_output")):
         messages.append({"role": "assistant", "content": output_text})
-    existing_call_ids = {
-        _clean(message.get("call_id"))
-        for message in messages
-        if _clean(message.get("type")) == "function_call"
-    }
-    for call_id, function_call in function_call_items.items():
-        if call_id not in existing_call_ids:
-            messages.append(_function_call_context_message(function_call))
+    native_response_output_items = _messages(state.get("native_response_output_items"))
+    if native_response_output_items:
+        messages.extend(native_response_output_items)
+    else:
+        existing_call_ids = {
+            _clean(message.get("call_id"))
+            for message in messages
+            if _clean(message.get("type")) == "function_call"
+        }
+        for call_id, function_call in function_call_items.items():
+            if call_id not in existing_call_ids:
+                messages.append(_function_call_context_message(function_call))
     return ResponseHistory(
         _compact_replayed_history(messages) if compact else messages,
         function_calls,
@@ -1868,6 +1884,22 @@ def _native_mantle_function_call_items(raw: Mapping[str, Any]) -> list[dict[str,
         if function_call:
             calls.append(function_call)
     return calls
+
+
+def _native_mantle_response_output_items(
+    raw: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Keep native Terra output items for a reasoning/tool continuation."""
+
+    output = raw.get("output")
+    if not isinstance(output, list):
+        return []
+    return [
+        dict(item)
+        for item in output
+        if isinstance(item, Mapping)
+        and _clean(item.get("type")) in {"reasoning", "function_call", "message"}
+    ]
 
 
 def _responses_client_metadata_ignored(payload: Mapping[str, Any]) -> bool:
@@ -3380,6 +3412,11 @@ def _execute_explicit_cloud_selection(
         if native_responses_transport
         else []
     )
+    native_response_output_items = (
+        _native_mantle_response_output_items(result.raw)
+        if native_responses_transport
+        else []
+    )
     if not result.text and not native_function_calls:
         raise _explicit_cloud_selection_error(
             plan=plan,
@@ -3404,6 +3441,9 @@ def _execute_explicit_cloud_selection(
                     "role": "assistant",
                     "content": result.text,
                     "_norman_native_function_call_items": native_function_calls,
+                    "_norman_native_response_output_items": (
+                        native_response_output_items
+                    ),
                 },
                 "finish_reason": "tool_calls" if native_function_calls else "stop",
             }
@@ -3942,6 +3982,9 @@ def _responses_response_from_chat(
     native_function_calls = _messages(
         _choice_message(chat_response).get("_norman_native_function_call_items")
     )
+    native_response_output_items = _messages(
+        _choice_message(chat_response).get("_norman_native_response_output_items")
+    )
     if prepared.native_responses_transport:
         tool_calls = [
             function_call
@@ -3956,10 +3999,14 @@ def _responses_response_from_chat(
             normalized_output=normalized_output,
         )
         visible_text = preamble if tool_calls else text
-    output_items = _response_output_items(
-        text=visible_text,
-        tool_calls=tool_calls,
-        output_item_id=output_item_id,
+    output_items = (
+        native_response_output_items
+        if prepared.native_responses_transport and native_response_output_items
+        else _response_output_items(
+            text=visible_text,
+            tool_calls=tool_calls,
+            output_item_id=output_item_id,
+        )
     )
     output_text = visible_text
     tool_chain = _tool_chain_telemetry(
@@ -4041,6 +4088,11 @@ def _responses_response_from_chat(
                 for item in output_items
                 if _clean(item.get("type")) == "function_call"
             ],
+            native_response_output_items=(
+                native_response_output_items
+                if prepared.native_responses_transport
+                else None
+            ),
             tool_outputs=prepared.tool_outputs,
             ephemeral=not prepared.store_requested,
         )

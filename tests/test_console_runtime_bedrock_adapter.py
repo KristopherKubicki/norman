@@ -673,10 +673,18 @@ def test_bedrock_mantle_request_preserves_native_responses_options_and_tools():
         model="openai.gpt-5.6-terra",
         messages=[
             {
+                "type": "reasoning",
+                "id": "rsn-repository-status",
+                "summary": [],
+                "encrypted_content": "opaque-reasoning-state",
+            },
+            {
                 "type": "function_call",
+                "id": "fc-repository-status",
                 "call_id": "call-repository-status",
                 "name": "repository_status",
                 "arguments": {"path": "."},
+                "status": "completed",
             },
             {
                 "type": "function_call_output",
@@ -702,10 +710,18 @@ def test_bedrock_mantle_request_preserves_native_responses_options_and_tools():
 
     assert payload["input"] == [
         {
+            "type": "reasoning",
+            "id": "rsn-repository-status",
+            "summary": [],
+            "encrypted_content": "opaque-reasoning-state",
+        },
+        {
             "type": "function_call",
+            "id": "fc-repository-status",
             "call_id": "call-repository-status",
             "name": "repository_status",
             "arguments": '{"path":"."}',
+            "status": "completed",
         },
         {
             "type": "function_call_output",

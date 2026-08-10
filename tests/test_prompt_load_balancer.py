@@ -1025,12 +1025,19 @@ def test_openai_compat_responses_preserves_native_terra_tools_and_continuation(
                 raw={
                     "output": [
                         {
+                            "type": "reasoning",
+                            "id": "rsn-repository-status",
+                            "summary": [],
+                            "encrypted_content": "opaque-reasoning-state",
+                        },
+                        {
                             "type": "function_call",
                             "id": "fc-repository-status",
                             "call_id": "call-repository-status",
                             "name": "repository_status",
                             "arguments": '{"path":"."}',
-                        }
+                            "status": "completed",
+                        },
                     ]
                 },
             ),
@@ -1054,11 +1061,18 @@ def test_openai_compat_responses_preserves_native_terra_tools_and_continuation(
     assert first.status_code == 200
     first_payload = first.json()
     assert first_payload["output"][0] == {
+        "type": "reasoning",
+        "id": "rsn-repository-status",
+        "summary": [],
+        "encrypted_content": "opaque-reasoning-state",
+    }
+    assert first_payload["output"][1] == {
         "type": "function_call",
         "id": "fc-repository-status",
         "call_id": "call-repository-status",
         "name": "repository_status",
         "arguments": '{"path":"."}',
+        "status": "completed",
     }
     assert (
         first_payload["norman"]["responses_compatibility"]["tool_transport"]
@@ -1098,6 +1112,17 @@ def test_openai_compat_responses_preserves_native_terra_tools_and_continuation(
     second_payload = second.json()
     assert second_payload["output_text"] == "Repository is clean."
     second_request = bedrock_calls[1]
+    reasoning = next(
+        message
+        for message in second_request.messages
+        if message.get("type") == "reasoning"
+    )
+    assert reasoning == {
+        "type": "reasoning",
+        "id": "rsn-repository-status",
+        "summary": [],
+        "encrypted_content": "opaque-reasoning-state",
+    }
     function_call = next(
         message
         for message in second_request.messages
@@ -1106,6 +1131,8 @@ def test_openai_compat_responses_preserves_native_terra_tools_and_continuation(
     assert function_call["call_id"] == "call-repository-status"
     assert function_call["name"] == "repository_status"
     assert function_call["arguments"] == '{"path":"."}'
+    assert function_call["id"] == "fc-repository-status"
+    assert function_call["status"] == "completed"
     function_call_output = next(
         message
         for message in second_request.messages

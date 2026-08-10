@@ -856,14 +856,17 @@ def bedrock_mantle_responses_input(
             arguments = message.get("arguments", "")
             if isinstance(arguments, (Mapping, list)):
                 arguments = json.dumps(arguments, sort_keys=True, separators=(",", ":"))
-            converted.append(
-                {
-                    "type": "function_call",
-                    "call_id": call_id,
-                    "name": name,
-                    "arguments": str(arguments or ""),
-                }
-            )
+            function_call = {
+                "type": "function_call",
+                "call_id": call_id,
+                "name": name,
+                "arguments": str(arguments or ""),
+            }
+            for field in ("id", "status"):
+                value = message.get(field)
+                if isinstance(value, str) and value:
+                    function_call[field] = value
+            converted.append(function_call)
             continue
         if item_type == "function_call_output":
             call_id = _clean(message.get("call_id"))
@@ -881,6 +884,19 @@ def bedrock_mantle_responses_input(
                     "output": str(output or ""),
                 }
             )
+            continue
+        if item_type == "reasoning":
+            # Reasoning-model function continuations must replay the provider's
+            # native reasoning item unchanged alongside the function result.
+            converted.append(dict(message))
+            continue
+        if item_type == "message" and _clean(message.get("role")).lower() in {
+            "",
+            "assistant",
+        }:
+            # Preserve native assistant output instead of flattening it into a
+            # generic chat message. This keeps provider item identity intact.
+            converted.append(dict(message))
             continue
         role = _clean(message.get("role")).lower()
         text = _content_text(message.get("content"))
