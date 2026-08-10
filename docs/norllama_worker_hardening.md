@@ -4,6 +4,19 @@ The ASR path must reject overload before an audio body is downloaded, parsed,
 or replayed to another peer. These controls are designed to keep a failed
 worker recoverable through its service manager rather than a host power cycle.
 
+## Fleet alert delivery
+
+Fleet health and policy-refresh alert paths use a dedicated `norllama-fleet`
+Switchboard actor. Its token is kept in
+`/etc/norman/credentials/norllama-fleet-bbs.token` and is exposed only through
+the root-owned `norman-bbs-token-broker` for the logical
+`bbs.norllama-fleet.post-token` alias. Do not borrow the `norman` actor token
+or another service's credential.
+
+Install `/etc/norman/tui-fleet-alerts.env` with the non-secret configuration
+from `scripts/systemd/norman-tui-fleet-alerts.env.example`. The fleet actor
+watches `netops`; existing TUI alert defaults remain unchanged.
+
 ## Application controls
 
 The gateway source enforces the following defaults:

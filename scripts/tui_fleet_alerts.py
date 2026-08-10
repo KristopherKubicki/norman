@@ -35,6 +35,7 @@ DEFAULT_THREAD_ID = os.environ.get(
 )
 DEFAULT_WARN_THRESHOLD = 2
 DEFAULT_SECRET_TIMEOUT_SECONDS = 5.0
+DEFAULT_WATCHERS = ("panelbot", "netops")
 
 
 def _load_json(path: Path, default: Any) -> Any:
@@ -55,6 +56,25 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def _clean(value: object) -> str:
     return str(value or "").strip()
+
+
+def resolve_watchers(configured: list[str] | None = None) -> list[str]:
+    raw_watchers = configured
+    if raw_watchers is None:
+        configured_watchers = _clean(
+            os.environ.get("NORMAN_TUI_FLEET_ALERT_WATCHERS")
+        )
+        raw_watchers = (
+            configured_watchers.split(",")
+            if configured_watchers
+            else list(DEFAULT_WATCHERS)
+        )
+    watchers: list[str] = []
+    for value in raw_watchers:
+        watcher = _clean(value)
+        if watcher and watcher not in watchers:
+            watchers.append(watcher)
+    return watchers
 
 
 def _first_env(*names: str) -> str:
@@ -435,6 +455,7 @@ def ensure_thread(
     thread_id: str,
     priority: str,
     title: str,
+    watchers: list[str],
 ) -> None:
     encoded_thread = urllib.parse.quote(thread_id)
     status, payload = _request(
@@ -458,7 +479,7 @@ def ensure_thread(
         "created_by": actor,
         "owner": "norman",
         "tags": ["domain:tui", "domain:bbs", "work:reliability"],
-        "watchers": ["panelbot", "netops"],
+        "watchers": watchers,
     }
     create_status, create_response = _request(
         "POST",
@@ -482,6 +503,7 @@ def post_alert(
     decision: dict[str, Any],
     title: str,
     report_paths: list[Path],
+    watchers: list[str] | None = None,
 ) -> None:
     has_failure = any(
         _issue_severity(issue) == "fail" for issue in decision["new_alerts"]
@@ -494,6 +516,7 @@ def post_alert(
         thread_id=thread_id,
         priority=priority,
         title=title,
+        watchers=resolve_watchers(watchers),
     )
     encoded_thread = urllib.parse.quote(thread_id)
     payload = {
@@ -541,6 +564,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--thread-id", default=DEFAULT_THREAD_ID)
     parser.add_argument("--title", default="TUI fleet health")
     parser.add_argument(
+        "--watcher",
+        action="append",
+        default=None,
+        help="BBS actor to watch on a created alert thread. May be repeated.",
+    )
+    parser.add_argument(
         "--report-path",
         type=Path,
         action="append",
@@ -586,6 +615,7 @@ def main(argv: list[str] | None = None) -> int:
             decision=decision,
             title=str(args.title).strip() or "TUI fleet health",
             report_paths=args.report_path or [],
+            watchers=resolve_watchers(args.watcher),
         )
     _write_json(args.state, decision["next_state"])
     if args.json:
