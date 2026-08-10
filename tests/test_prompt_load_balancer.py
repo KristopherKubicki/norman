@@ -664,6 +664,7 @@ def _mock_bedrock_result(
     *,
     model: str = "openai.gpt-5.6-terra",
     metadata: dict | None = None,
+    raw: dict | None = None,
 ) -> ModelResult:
     return ModelResult(
         provider="bedrock",
@@ -671,6 +672,7 @@ def _mock_bedrock_result(
         text=text,
         usage=ModelUsage(input_tokens=7, output_tokens=3, total_tokens=10),
         metadata=metadata or {},
+        raw=raw or {},
     )
 
 
@@ -678,6 +680,7 @@ def _install_bedrock_stub(
     monkeypatch,
     *,
     result: ModelResult | None = None,
+    results: list[ModelResult] | None = None,
     error: Exception | None = None,
     delay_seconds: float = 0.0,
 ):
@@ -708,6 +711,7 @@ def _install_bedrock_stub(
         raising=False,
     )
     calls = []
+    pending_results = list(results or [])
 
     class StubBedrockModelAdapter:
         def invoke(self, request):
@@ -716,6 +720,8 @@ def _install_bedrock_stub(
                 time.sleep(delay_seconds)
             if error is not None:
                 raise error
+            if pending_results:
+                return pending_results.pop(0)
             return result or _mock_bedrock_result()
 
     monkeypatch.setattr(
@@ -989,6 +995,127 @@ def test_openai_compat_responses_routes_explicit_cloud_model_for_tui(
     assert len(bedrock_calls) == 1
 
 
+def test_openai_compat_responses_preserves_native_terra_tools_and_continuation(
+    test_app, monkeypatch
+):
+    from app.services.prompt_provider_facade import norllama_gateway
+
+    headers = _proxy_headers(monkeypatch)
+    local_calls = []
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: local_calls.append(kwargs) or _mock_local_chat([], ""),
+    )
+    tool = {
+        "type": "function",
+        "name": "repository_status",
+        "description": "Read the repository status.",
+        "parameters": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        },
+    }
+    bedrock_calls = _install_bedrock_stub(
+        monkeypatch,
+        results=[
+            _mock_bedrock_result(
+                "",
+                raw={
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "id": "fc-repository-status",
+                            "call_id": "call-repository-status",
+                            "name": "repository_status",
+                            "arguments": '{"path":"."}',
+                        }
+                    ]
+                },
+            ),
+            _mock_bedrock_result("Repository is clean."),
+        ],
+    )
+
+    first = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={
+            "model": "openai.gpt-5.6-terra",
+            "input": "Check the repository.",
+            "tools": [tool],
+            "tool_choice": "required",
+            "parallel_tool_calls": False,
+            "reasoning": {"effort": "high"},
+        },
+    )
+
+    assert first.status_code == 200
+    first_payload = first.json()
+    assert first_payload["output"][0] == {
+        "type": "function_call",
+        "id": "fc-repository-status",
+        "call_id": "call-repository-status",
+        "name": "repository_status",
+        "arguments": '{"path":"."}',
+    }
+    assert (
+        first_payload["norman"]["responses_compatibility"]["tool_transport"]
+        == "bedrock_mantle_responses"
+    )
+    first_request = bedrock_calls[0]
+    assert first_request.responses_options == {
+        "tools": [tool],
+        "tool_choice": "required",
+        "parallel_tool_calls": False,
+        "reasoning": {"effort": "high"},
+    }
+    assert not any(
+        "Tool contract" in str(message.get("content", ""))
+        for message in first_request.messages
+    )
+
+    second = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={
+            "model": "openai.gpt-5.6-terra",
+            "previous_response_id": first_payload["id"],
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call-repository-status",
+                    "output": '{"branch":"main","dirty":false}',
+                }
+            ],
+            "tools": [tool],
+            "reasoning": {"effort": "high"},
+        },
+    )
+
+    assert second.status_code == 200
+    second_payload = second.json()
+    assert second_payload["output_text"] == "Repository is clean."
+    second_request = bedrock_calls[1]
+    function_call = next(
+        message
+        for message in second_request.messages
+        if message.get("type") == "function_call"
+    )
+    assert function_call["call_id"] == "call-repository-status"
+    assert function_call["name"] == "repository_status"
+    assert function_call["arguments"] == '{"path":"."}'
+    function_call_output = next(
+        message
+        for message in second_request.messages
+        if message.get("type") == "function_call_output"
+    )
+    assert function_call_output["call_id"] == "call-repository-status"
+    assert function_call_output["output"] == '{"branch":"main","dirty":false}'
+    assert local_calls == []
+
+
 def test_openai_compat_responses_streams_explicit_cloud_model_for_tui(
     test_app, monkeypatch
 ):
@@ -1013,6 +1140,91 @@ def test_openai_compat_responses_streams_explicit_cloud_model_for_tui(
     assert "cloud ok" in response.text
     assert local_calls == []
     assert len(bedrock_calls) == 1
+
+
+def test_openai_compat_responses_streams_native_terra_function_call(
+    test_app, monkeypatch
+):
+    from app.services.prompt_provider_facade import norllama_gateway
+
+    headers = _proxy_headers(monkeypatch)
+    local_calls = []
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat_stream",
+        lambda **kwargs: local_calls.append(kwargs),
+    )
+    tool = {
+        "type": "function",
+        "name": "repository_status",
+        "description": "Read the repository status.",
+        "parameters": {"type": "object"},
+    }
+    bedrock_calls = _install_bedrock_stub(
+        monkeypatch,
+        result=_mock_bedrock_result(
+            "",
+            raw={
+                "output": [
+                    {
+                        "type": "function_call",
+                        "id": "fc-repository-status",
+                        "call_id": "call-repository-status",
+                        "name": "repository_status",
+                        "arguments": '{"path":"."}',
+                    }
+                ]
+            },
+        ),
+    )
+
+    response = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={
+            "model": "openai.gpt-5.6-terra",
+            "input": "Check the repository.",
+            "stream": True,
+            "tools": [tool],
+            "tool_choice": "required",
+            "reasoning": {"effort": "high"},
+        },
+    )
+
+    assert response.status_code == 200
+    payloads = [
+        json.loads(data)
+        for event, data in _response_sse_events(response.text)
+        if event and data != "[DONE]"
+    ]
+    completed = next(
+        payload["response"]
+        for payload in payloads
+        if payload["type"] == "response.completed"
+    )
+
+    assert not any(
+        payload["type"] == "response.output_text.delta" for payload in payloads
+    )
+    assert completed["output"] == [
+        {
+            "type": "function_call",
+            "id": "fc-repository-status",
+            "call_id": "call-repository-status",
+            "name": "repository_status",
+            "arguments": '{"path":"."}',
+        }
+    ]
+    assert (
+        completed["norman"]["responses_compatibility"]["tool_transport"]
+        == "bedrock_mantle_responses"
+    )
+    assert bedrock_calls[0].responses_options == {
+        "tools": [tool],
+        "tool_choice": "required",
+        "reasoning": {"effort": "high"},
+    }
+    assert local_calls == []
 
 
 def test_openai_compat_chat_completions_routes_explicit_cloud_model_for_tui(

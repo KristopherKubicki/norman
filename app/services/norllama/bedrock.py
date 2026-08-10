@@ -845,6 +845,43 @@ def bedrock_mantle_responses_input(
             }
         )
     for message in messages or []:
+        item_type = _clean(message.get("type")).lower()
+        if item_type == "function_call":
+            call_id = _clean(message.get("call_id"))
+            name = _clean(message.get("name"))
+            if not call_id or not name:
+                raise ValueError(
+                    "Bedrock Mantle function_call input requires call_id and name"
+                )
+            arguments = message.get("arguments", "")
+            if isinstance(arguments, (Mapping, list)):
+                arguments = json.dumps(arguments, sort_keys=True, separators=(",", ":"))
+            converted.append(
+                {
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "name": name,
+                    "arguments": str(arguments or ""),
+                }
+            )
+            continue
+        if item_type == "function_call_output":
+            call_id = _clean(message.get("call_id"))
+            if not call_id:
+                raise ValueError(
+                    "Bedrock Mantle function_call_output input requires call_id"
+                )
+            output = message.get("output", "")
+            if isinstance(output, (Mapping, list)):
+                output = json.dumps(output, sort_keys=True, separators=(",", ":"))
+            converted.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": str(output or ""),
+                }
+            )
+            continue
         role = _clean(message.get("role")).lower()
         text = _content_text(message.get("content"))
         if not text:
@@ -873,6 +910,33 @@ def bedrock_mantle_responses_input(
     return converted
 
 
+def _mantle_responses_options(
+    responses_options: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Allow the native Responses fields supported by Bedrock Mantle."""
+
+    options = responses_options or {}
+    payload: dict[str, Any] = {}
+    tools = options.get("tools")
+    if isinstance(tools, list):
+        payload["tools"] = [dict(tool) for tool in tools if isinstance(tool, Mapping)]
+    tool_choice = options.get("tool_choice")
+    if isinstance(tool_choice, (str, Mapping)):
+        payload["tool_choice"] = (
+            dict(tool_choice) if isinstance(tool_choice, Mapping) else tool_choice
+        )
+    if isinstance(options.get("parallel_tool_calls"), bool):
+        payload["parallel_tool_calls"] = options["parallel_tool_calls"]
+    for field in ("reasoning", "text"):
+        value = options.get(field)
+        if isinstance(value, Mapping):
+            payload[field] = dict(value)
+    include = options.get("include")
+    if isinstance(include, list):
+        payload["include"] = [str(value) for value in include if str(value).strip()]
+    return payload
+
+
 def build_bedrock_mantle_responses_request(
     *,
     model: str,
@@ -880,11 +944,12 @@ def build_bedrock_mantle_responses_request(
     system: str = "",
     max_tokens: int = 1024,
     temperature: float | None = None,
+    responses_options: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     clean_model = _clean(model)
     if not clean_model:
         raise ValueError("Bedrock Mantle route is missing a model")
-    return {
+    payload = {
         "model": clean_model,
         "input": bedrock_mantle_responses_input(messages, system=system),
         # Mantle currently rejects lower values and does not accept temperature.
@@ -893,6 +958,8 @@ def build_bedrock_mantle_responses_request(
             _positive_int(max_tokens, 1024),
         ),
     }
+    payload.update(_mantle_responses_options(responses_options))
+    return payload
 
 
 def invoke_bedrock_mantle_responses(
@@ -903,6 +970,7 @@ def invoke_bedrock_mantle_responses(
     system: str = "",
     max_tokens: int = 1024,
     temperature: float | None = None,
+    responses_options: Mapping[str, Any] | None = None,
     region: str = "",
     timeout_seconds: float = 0,
 ) -> dict[str, Any]:
@@ -912,6 +980,7 @@ def invoke_bedrock_mantle_responses(
         system=system,
         max_tokens=max_tokens,
         temperature=temperature,
+        responses_options=responses_options,
     )
     request = urllib_request.Request(
         bedrock_mantle_responses_url(region),

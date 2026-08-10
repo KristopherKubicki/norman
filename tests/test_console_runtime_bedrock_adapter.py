@@ -668,6 +668,59 @@ def test_bedrock_mantle_request_uses_supported_parameters():
     assert "temperature" not in payload
 
 
+def test_bedrock_mantle_request_preserves_native_responses_options_and_tools():
+    payload = bedrock_module.build_bedrock_mantle_responses_request(
+        model="openai.gpt-5.6-terra",
+        messages=[
+            {
+                "type": "function_call",
+                "call_id": "call-repository-status",
+                "name": "repository_status",
+                "arguments": {"path": "."},
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call-repository-status",
+                "output": {"branch": "main"},
+            },
+        ],
+        responses_options={
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "repository_status",
+                    "parameters": {"type": "object"},
+                }
+            ],
+            "tool_choice": "required",
+            "parallel_tool_calls": False,
+            "reasoning": {"effort": "high"},
+            "text": {"format": {"type": "json_object"}},
+            "include": ["reasoning.encrypted_content"],
+        },
+    )
+
+    assert payload["input"] == [
+        {
+            "type": "function_call",
+            "call_id": "call-repository-status",
+            "name": "repository_status",
+            "arguments": '{"path":"."}',
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call-repository-status",
+            "output": '{"branch":"main"}',
+        },
+    ]
+    assert payload["tools"][0]["name"] == "repository_status"
+    assert payload["tool_choice"] == "required"
+    assert payload["parallel_tool_calls"] is False
+    assert payload["reasoning"] == {"effort": "high"}
+    assert payload["text"] == {"format": {"type": "json_object"}}
+    assert payload["include"] == ["reasoning.encrypted_content"]
+
+
 def test_bedrock_adapter_sanitizes_mantle_provider_failure(monkeypatch):
     monkeypatch.setenv("NORMAN_KEYS_URL", "http://keys.norman.test")
     monkeypatch.delenv("NORMAN_SECRET_CMD", raising=False)

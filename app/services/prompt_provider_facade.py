@@ -935,7 +935,11 @@ def _compact_replayed_history(
     return [compacted[index] for index in sorted(compacted)]
 
 
-def _previous_response_history(previous_response_id: str) -> ResponseHistory:
+def _previous_response_history(
+    previous_response_id: str,
+    *,
+    compact: bool = True,
+) -> ResponseHistory:
     previous_response_id = _clean(previous_response_id)
     if not previous_response_id:
         return ResponseHistory([], {}, {}, set(), False)
@@ -977,7 +981,7 @@ def _previous_response_history(previous_response_id: str) -> ResponseHistory:
         if call_id not in existing_call_ids:
             messages.append(_function_call_context_message(function_call))
     return ResponseHistory(
-        _compact_replayed_history(messages),
+        _compact_replayed_history(messages) if compact else messages,
         function_calls,
         function_call_items,
         tool_outputs,
@@ -1088,13 +1092,18 @@ def _gateway_attribution(
 
 
 def _choice_text(payload: Mapping[str, Any]) -> str:
-    choices = payload.get("choices") if isinstance(payload.get("choices"), list) else []
-    if not choices:
-        return ""
-    first = choices[0] if isinstance(choices[0], dict) else {}
-    message = first.get("message") if isinstance(first.get("message"), dict) else {}
+    message = _choice_message(payload)
     content = message.get("content")
     return content if isinstance(content, str) else _clean(content)
+
+
+def _choice_message(payload: Mapping[str, Any]) -> dict[str, Any]:
+    choices = payload.get("choices") if isinstance(payload.get("choices"), list) else []
+    if not choices:
+        return {}
+    first = choices[0] if isinstance(choices[0], dict) else {}
+    message = first.get("message")
+    return dict(message) if isinstance(message, Mapping) else {}
 
 
 def _norman_options(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -1669,6 +1678,15 @@ def _requested_model(payload: Mapping[str, Any]) -> str:
     return _clean(payload.get("model"))
 
 
+def _uses_native_mantle_responses(payload: Mapping[str, Any]) -> bool:
+    """Keep the Terra route on its native Bedrock Responses protocol."""
+
+    return _requested_model(payload).lower() in {
+        "gpt-5.6-terra",
+        "openai.gpt-5.6-terra",
+    }
+
+
 def _responses_bridge_mode(payload: Mapping[str, Any]) -> str:
     """Select the explicit tool-bridge behavior for a Responses request."""
 
@@ -1804,6 +1822,52 @@ def _responses_include_advisory(payload: Mapping[str, Any]) -> list[str]:
             param="include",
         )
     return list(include)
+
+
+def _native_mantle_responses_options(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Keep native Responses options structured for the Terra Mantle route."""
+
+    options: dict[str, Any] = {}
+    tools = _tools(payload)
+    if tools:
+        options["tools"] = tools
+    tool_choice = payload.get("tool_choice")
+    if isinstance(tool_choice, (str, Mapping)):
+        options["tool_choice"] = (
+            dict(tool_choice) if isinstance(tool_choice, Mapping) else tool_choice
+        )
+    if isinstance(payload.get("parallel_tool_calls"), bool):
+        options["parallel_tool_calls"] = payload["parallel_tool_calls"]
+    reasoning = _responses_reasoning_advisory(payload)
+    if reasoning:
+        options["reasoning"] = reasoning
+    text = _mapping(payload.get("text"))
+    if text:
+        options["text"] = text
+    include = _responses_include_advisory(payload)
+    if include:
+        options["include"] = include
+    return options
+
+
+def _native_mantle_function_call_items(raw: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Extract native Responses function calls without parsing assistant text."""
+
+    output = raw.get("output")
+    if not isinstance(output, list):
+        return []
+    calls: list[dict[str, Any]] = []
+    for item in output:
+        if not isinstance(item, Mapping):
+            continue
+        if _clean(item.get("type")) != "function_call":
+            continue
+        function_call = _function_call_item(item)
+        if function_call:
+            calls.append(function_call)
+    return calls
 
 
 def _responses_client_metadata_ignored(payload: Mapping[str, Any]) -> bool:
@@ -3202,6 +3266,7 @@ def _explicit_cloud_selection_request(
     invocation: AuthorizedChatInvocation,
     messages: list[dict[str, Any]],
     provider_payload: Mapping[str, Any],
+    native_responses_transport: bool = False,
 ) -> ModelRequest:
     try:
         timeout_seconds = int(
@@ -3232,8 +3297,14 @@ def _explicit_cloud_selection_request(
                 _explicit_cloud_selection_marker(plan=plan)
             ),
             "codex_reasoning_advisory": invocation.reasoning_advisory,
+            "norman_native_mantle_responses_transport": native_responses_transport,
             **invocation.trusted_context,
         },
+        responses_options=(
+            _native_mantle_responses_options(provider_payload)
+            if native_responses_transport
+            else {}
+        ),
     )
 
 
@@ -3270,6 +3341,7 @@ def _execute_explicit_cloud_selection(
     route_envelope: Mapping[str, Any],
     messages: list[dict[str, Any]],
     invocation: AuthorizedChatInvocation,
+    native_responses_transport: bool = False,
 ) -> dict[str, Any]:
     """Run a user-selected cloud model without probing local capacity."""
 
@@ -3280,6 +3352,7 @@ def _execute_explicit_cloud_selection(
                 invocation=invocation,
                 messages=messages,
                 provider_payload=provider_payload,
+                native_responses_transport=native_responses_transport,
             )
         )
     except Exception as exc:
@@ -3302,7 +3375,12 @@ def _execute_explicit_cloud_selection(
             invocation=invocation,
             code="explicit_cloud_selection_not_authorized",
         )
-    if not result.text:
+    native_function_calls = (
+        _native_mantle_function_call_items(result.raw)
+        if native_responses_transport
+        else []
+    )
+    if not result.text and not native_function_calls:
         raise _explicit_cloud_selection_error(
             plan=plan,
             invocation=invocation,
@@ -3322,8 +3400,12 @@ def _execute_explicit_cloud_selection(
         "choices": [
             {
                 "index": 0,
-                "message": {"role": "assistant", "content": result.text},
-                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": result.text,
+                    "_norman_native_function_call_items": native_function_calls,
+                },
+                "finish_reason": "tool_calls" if native_function_calls else "stop",
             }
         ],
         "usage": usage,
@@ -3554,6 +3636,7 @@ def _execute_authorized_chat(
     route_envelope: Mapping[str, Any],
     messages: list[dict[str, Any]],
     request_id: str,
+    native_responses_transport: bool = False,
 ) -> dict[str, Any]:
     explicit_cloud_plan = _explicit_cloud_selection_plan(
         provider_payload=provider_payload,
@@ -3572,6 +3655,7 @@ def _execute_authorized_chat(
             route_envelope=route_envelope,
             messages=messages,
             invocation=invocation,
+            native_responses_transport=native_responses_transport,
         )
 
     invocation = _prepare_authorized_chat_invocation(
@@ -3667,6 +3751,7 @@ def _resolve_tool_continuation_response(
         route_envelope=prepared.route_envelope,
         messages=_tool_continuation_repair_messages(prepared.messages),
         request_id=f"{request_id}-tool-continuation-repair",
+        native_responses_transport=prepared.native_responses_transport,
     )
     if _repeats_successful_tool_call(
         _choice_text(repaired),
@@ -3752,6 +3837,7 @@ class PreparedResponsesExecution:
     client_metadata_ignored: bool
     store_requested: bool
     bridge_mode: str
+    native_responses_transport: bool
 
 
 def _prepare_responses_execution(
@@ -3766,10 +3852,12 @@ def _prepare_responses_execution(
     client_metadata_ignored = _responses_client_metadata_ignored(provider_payload)
     store_requested = _responses_store_requested(provider_payload)
     bridge_mode = _responses_bridge_mode(provider_payload)
+    native_responses_transport = _uses_native_mantle_responses(provider_payload)
     provider_payload.pop("client_metadata", None)
     provider_payload.pop("store", None)
     history = _previous_response_history(
-        _clean(provider_payload.get("previous_response_id"))
+        _clean(provider_payload.get("previous_response_id")),
+        compact=not native_responses_transport,
     )
     function_call_items = _validate_response_tool_continuation(
         provider_payload,
@@ -3787,21 +3875,29 @@ def _prepare_responses_execution(
         function_call_items=function_call_items,
         known_tool_outputs=tool_outputs,
     )
-    history_messages, tool_contract_messages = _messages_with_current_tool_contract(
-        history.messages,
+    input_messages = response_input_to_messages(
         provider_payload,
-        bridge_mode=bridge_mode,
+        known_tool_outputs=history.tool_outputs,
+        known_function_call_items=history.function_call_items,
     )
-    messages = [
-        *history_messages,
-        *tool_contract_messages,
-        *_structured_output_message(provider_payload),
-        *response_input_to_messages(
+    if native_responses_transport:
+        # Mantle's Responses endpoint accepts the structured tool registry,
+        # output format, reasoning configuration, and tool-call history
+        # directly. Do not flatten them into the local text-adapter prompt.
+        _structured_output_message(provider_payload)
+        messages = [*history.messages, *input_messages]
+    else:
+        history_messages, tool_contract_messages = _messages_with_current_tool_contract(
+            history.messages,
             provider_payload,
-            known_tool_outputs=history.tool_outputs,
-            known_function_call_items=history.function_call_items,
-        ),
-    ]
+            bridge_mode=bridge_mode,
+        )
+        messages = [
+            *history_messages,
+            *tool_contract_messages,
+            *_structured_output_message(provider_payload),
+            *input_messages,
+        ]
     route_payload = {**provider_payload, "input": messages}
     route_envelope = provider_adapter_decision(
         provider="openai",
@@ -3823,6 +3919,7 @@ def _prepare_responses_execution(
         client_metadata_ignored=client_metadata_ignored,
         store_requested=store_requested,
         bridge_mode=bridge_mode,
+        native_responses_transport=native_responses_transport,
     )
 
 
@@ -3842,12 +3939,23 @@ def _responses_response_from_chat(
     chat_response = dict(chat_response)
     text = _choice_text(chat_response)
     tools = _tools(provider_payload)
-    preamble, tool_calls = _response_tool_calls(
-        text,
-        provider_payload=provider_payload,
-        normalized_output=normalized_output,
+    native_function_calls = _messages(
+        _choice_message(chat_response).get("_norman_native_function_call_items")
     )
-    visible_text = preamble if tool_calls else text
+    if prepared.native_responses_transport:
+        tool_calls = [
+            function_call
+            for item in native_function_calls
+            if (function_call := _function_call_item(item))
+        ]
+        visible_text = text
+    else:
+        preamble, tool_calls = _response_tool_calls(
+            text,
+            provider_payload=provider_payload,
+            normalized_output=normalized_output,
+        )
+        visible_text = preamble if tool_calls else text
     output_items = _response_output_items(
         text=visible_text,
         tool_calls=tool_calls,
@@ -3894,12 +4002,19 @@ def _responses_response_from_chat(
                 "tool_calls_returned": len(tool_calls),
                 "tool_chain": tool_chain,
                 "tool_call_mode": (
-                    "adapter_json_envelope"
+                    "native_responses"
+                    if prepared.native_responses_transport
+                    and (_tool_names(tools) or tool_calls)
+                    else "adapter_json_envelope"
                     if _tool_names(tools) or tool_calls
                     else "none"
                 ),
                 "tool_bridge_mode": prepared.bridge_mode,
-                "tool_transport": "local_text_adapter",
+                "tool_transport": (
+                    "bedrock_mantle_responses"
+                    if prepared.native_responses_transport
+                    else "local_text_adapter"
+                ),
                 "structured_output_requested": bool(
                     _mapping(provider_payload.get("text")).get("format")
                 ),
@@ -4173,6 +4288,9 @@ class FacadeResponsesStream:
                     route_envelope=self.prepared.route_envelope,
                     messages=self.prepared.messages,
                     invocation=self.invocation,
+                    native_responses_transport=(
+                        self.prepared.native_responses_transport
+                    ),
                 ),
                 progress_event=lambda state, elapsed_ms: {
                     "type": "explicit_cloud_selection",
@@ -4325,6 +4443,7 @@ def execute_openai_responses_facade(
         route_envelope=prepared.route_envelope,
         messages=prepared.messages,
         request_id=facade_request_id,
+        native_responses_transport=prepared.native_responses_transport,
     )
     (
         chat_response,
