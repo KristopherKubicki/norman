@@ -195,6 +195,40 @@ def test_run_canary_exercises_the_three_turn_synthetic_tool_chain():
     assert "undeclared_tool" not in serialized
 
 
+def test_run_canary_allows_a_status_message_after_an_expected_function_call():
+    requests = []
+    first = _tool_response("resp-search", "tool_search", "call-search")
+    first["output"].append({"type": "message", "content": "Searching."})
+    responses = iter(
+        [
+            first,
+            _tool_response(
+                "resp-synthetic",
+                "mcp__norman_canary.status_lookup",
+                "call-synthetic",
+            ),
+            {
+                "id": "resp-final",
+                "status": "completed",
+                "output": [{"type": "message"}],
+                "output_text": "Synthetic status is healthy.",
+            },
+        ]
+    )
+
+    receipt = canary.run_canary(
+        endpoint="http://127.0.0.1:8000/v1/responses",
+        token="private-token",
+        pressure_guard=lambda: {"admission": {"action": "accept_new_work"}},
+        request_fn=lambda *args: requests.append(args) or (200, next(responses)),
+    )
+
+    assert receipt["state"] == "passed"
+    assert len(requests) == 3
+    assert receipt["turns"][0]["output_count"] == 2
+    assert receipt["turns"][0]["tool_names"] == ["tool_search"]
+
+
 def test_run_canary_streaming_exercises_native_sse_tool_calls():
     requests = []
     responses = iter(

@@ -913,9 +913,13 @@ def _require_exact_function_call_item(
     calls = _function_calls(response)
     if (
         not isinstance(output, list)
-        or len(output) != 1
         or len(calls) != 1
         or _clean(calls[0].get("name")) != name
+        or any(
+            not isinstance(item, Mapping)
+            or _clean(item.get("type")) not in {"function_call", "message"}
+            for item in output
+        )
     ):
         raise CanaryError("unexpected_function_call")
     call_id = _clean(calls[0].get("call_id"))
