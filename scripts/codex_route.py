@@ -140,6 +140,7 @@ class Route:
     root_paths: tuple[str, ...] = ()
     token_secret: str = ""
     managed_skill_names: tuple[str, ...] = ()
+    default_disabled_features: tuple[str, ...] = ()
 
     @property
     def profile(self) -> str:
@@ -191,6 +192,7 @@ ROUTES: tuple[Route, ...] = (
             "control-plane-gdrive-pricing-review",
             "ops-openbrand-mcp-ops",
         ),
+        default_disabled_features=("apps",),
     ),
     Route(
         key="earlybird",
@@ -318,6 +320,8 @@ OPTIONS_WITH_VALUE = frozenset(
         "--config",
         "--cd",
         "--color",
+        "--disable",
+        "--enable",
         "--model",
         "--profile",
         "--profile-v2",
@@ -428,6 +432,20 @@ def explicit_models(arguments: Sequence[str]) -> list[str]:
 
 def has_explicit_model(arguments: Sequence[str]) -> bool:
     return bool(explicit_models(arguments))
+
+
+def explicit_feature_toggles(arguments: Sequence[str]) -> set[str]:
+    features: set[str] = set()
+    for index, argument in enumerate(arguments):
+        if argument in {"--enable", "--disable"}:
+            value = _value_after(arguments, index)
+            if value:
+                features.add(value.strip().lower())
+        elif argument.startswith(("--enable=", "--disable=")):
+            value = argument.split("=", 1)[1].strip().lower()
+            if value:
+                features.add(value)
+    return features
 
 
 def config_overrides(arguments: Sequence[str]) -> list[str]:
@@ -1593,9 +1611,15 @@ def exec_work_route(route: Route, arguments: list[str]) -> None:
     environment["CODEX_REAL_BIN"] = str(resolve_real_codex())
     environment["NORMAN_TUI_NO_DIRECT_VAULT"] = "1"
     command = [environment["CODEX_REAL_BIN"]]
-    if not has_explicit_profile(arguments) and starts_session(arguments):
+    session_start = starts_session(arguments)
+    explicit_features = explicit_feature_toggles(arguments)
+    if session_start:
+        for feature in route.default_disabled_features:
+            if feature.lower() not in explicit_features:
+                command.extend(("--disable", feature))
+    if not has_explicit_profile(arguments) and session_start:
         command.extend(("--profile", route.profile))
-    if not has_explicit_model(arguments) and starts_session(arguments):
+    if not has_explicit_model(arguments) and session_start:
         command.extend(("-m", DEFAULT_ROUTER_MODEL))
     command.extend(arguments)
     os.execve(command[0], command, environment)
