@@ -177,6 +177,62 @@ def test_explicit_gateway_profile_and_model_are_not_overridden(
     assert captured["environment"]["NORMAN_TUI_NO_DIRECT_VAULT"] == "1"
 
 
+def test_control_plane_work_sessions_disable_apps_unless_explicitly_enabled(
+    route_module, monkeypatch, tmp_path
+):
+    route = route_by_key(route_module, "control-plane")
+    real_codex = tmp_path / "codex"
+    real_codex.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    real_codex.chmod(0o700)
+    captured = []
+
+    monkeypatch.setenv("CODEX_WORK_OPS_BINDING_LOADED", "1")
+    monkeypatch.setattr(route_module, "write_gateway_profile", lambda _route: tmp_path)
+    monkeypatch.setattr(route_module, "resolve_real_codex", lambda: real_codex)
+    monkeypatch.setattr(route_module, "verify_managed_tui_secret_policy", lambda: None)
+    monkeypatch.setattr(
+        route_module.os,
+        "execve",
+        lambda executable, arguments, environment: captured.append(
+            (executable, arguments, environment)
+        ),
+    )
+
+    route_module.exec_work_route(route, ["exec", "inspect the repository"])
+    route_module.exec_work_route(
+        route,
+        ["--enable", "apps", "exec", "inspect the repository"],
+    )
+
+    assert captured[0][1] == [
+        str(real_codex),
+        "--disable",
+        "apps",
+        "--profile",
+        route.profile,
+        "-m",
+        route_module.DEFAULT_ROUTER_MODEL,
+        "exec",
+        "inspect the repository",
+    ]
+    assert captured[1][1] == [
+        str(real_codex),
+        "--profile",
+        route.profile,
+        "-m",
+        route_module.DEFAULT_ROUTER_MODEL,
+        "--enable",
+        "apps",
+        "exec",
+        "inspect the repository",
+    ]
+
+
+def test_feature_toggles_do_not_confuse_route_command_detection(route_module):
+    assert route_module.command_name(["--disable", "apps", "exec", "status"]) == "exec"
+    assert route_module.starts_session(["--enable=apps", "exec", "status"])
+
+
 def test_route_environment_hides_raw_secret_configuration_from_every_tui(
     route_module, monkeypatch
 ):
