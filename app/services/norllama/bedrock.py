@@ -26,6 +26,12 @@ BedrockConfigFactory = Callable[..., Any]
 BEDROCK_MANTLE_MIN_MAX_OUTPUT_TOKENS = 16
 _SAFE_PROVIDER_ERROR_IDENTIFIER = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
 _SAFE_PROVIDER_ERROR_PARAM = re.compile(r"^[A-Za-z0-9_.:\[\]/-]{1,160}$")
+_PROVIDER_ERROR_MESSAGE_PARAM = re.compile(
+    r"(?<![A-Za-z0-9_.:\[\]/-])"
+    r"((?:input|tools|reasoning|tool_choice|parallel_tool_calls|text|include)"
+    r"(?:\[[0-9]+\]|\.[A-Za-z_][A-Za-z0-9_]*)*)"
+    r"(?![A-Za-z0-9_.\[\]/-])"
+)
 
 
 @dataclass(frozen=True, repr=False)
@@ -131,6 +137,13 @@ def _safe_provider_error_param(value: Any) -> str:
     return ""
 
 
+def _provider_error_param_from_message(value: Any) -> str:
+    """Extract only a recognized schema path from an otherwise discarded message."""
+
+    match = _PROVIDER_ERROR_MESSAGE_PARAM.search(_clean(value))
+    return _safe_provider_error_param(match.group(1)) if match else ""
+
+
 def _mantle_http_error_metadata(
     error: urllib_error.HTTPError,
 ) -> tuple[str, str, str]:
@@ -145,10 +158,15 @@ def _mantle_http_error_metadata(
         return "", "", ""
     details = parsed.get("error")
     details = details if isinstance(details, Mapping) else parsed
+    provider_error_param = _safe_provider_error_param(details.get("param"))
+    if not provider_error_param:
+        provider_error_param = _provider_error_param_from_message(
+            details.get("message")
+        )
     return (
         _safe_provider_error_identifier(details.get("type")),
         _safe_provider_error_identifier(details.get("code")),
-        _safe_provider_error_param(details.get("param")),
+        provider_error_param,
     )
 
 

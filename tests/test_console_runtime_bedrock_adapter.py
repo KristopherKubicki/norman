@@ -796,6 +796,18 @@ def test_bedrock_adapter_rejects_unsafe_mantle_error_param():
     )
 
 
+def test_bedrock_adapter_extracts_only_schema_path_from_mantle_error_message():
+    assert (
+        bedrock_module._provider_error_param_from_message(
+            'Invalid value at input[3].content[0].call_id: "secret"'
+        )
+        == "input[3].content[0].call_id"
+    )
+    assert (
+        bedrock_module._provider_error_param_from_message("token=must-not-leak") == ""
+    )
+
+
 def test_bedrock_adapter_blocks_forged_explicit_cloud_marker_before_credentials(
     monkeypatch,
 ):
