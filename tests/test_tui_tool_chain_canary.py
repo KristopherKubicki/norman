@@ -711,6 +711,62 @@ def test_canary_receipt_exposes_only_sanitized_bridge_metadata():
     assert "private" not in json.dumps(bridge, sort_keys=True)
 
 
+def test_run_canary_requires_the_expected_effective_backend_model():
+    response = _tool_response("resp-qwen", "tool_search", "call-search")
+    response["model"] = "qwen3-coder:30b-a3b-q4_K_M"
+    response["norman"].update(
+        {
+            "route": {
+                "selected_provider": "norllama",
+                "selected_model": "qwen3-coder:30b-a3b-q4_K_M",
+            },
+            "output_token_budget": {
+                "requested": 16384,
+                "effective": 16384,
+                "maximum": 32768,
+            },
+        }
+    )
+    response["norman"]["responses_compatibility"].update(
+        {
+            "tool_bridge_mode": "transparent",
+            "tool_transport": "local_text_adapter",
+            "state_retention": "session",
+        }
+    )
+
+    receipt = canary.run_canary(
+        endpoint="https://cp.kris.openbrand.com/v1/responses",
+        token="private-token",
+        pressure_guard=lambda: {},
+        request_fn=lambda *args: (200, response),
+        expected_backend_model=canary.EXPECTED_BACKEND_MODEL,
+    )
+
+    assert receipt["state"] == "failed"
+    assert receipt["failure_kind"] == "unexpected_backend_model"
+    assert receipt["expected_backend_model"] == canary.EXPECTED_BACKEND_MODEL
+    assert receipt["turns"][0]["bridge"]["effective_backend"]["model"] == (
+        "qwen3-coder:30b-a3b-q4_K_M"
+    )
+
+
+def test_run_canary_requires_a_backend_receipt_when_the_model_is_pinned():
+    receipt = canary.run_canary(
+        endpoint="https://cp.kris.openbrand.com/v1/responses",
+        token="private-token",
+        pressure_guard=lambda: {},
+        request_fn=lambda *args: (
+            200,
+            _tool_response("resp-unattributed", "tool_search", "call-search"),
+        ),
+        expected_backend_model=canary.EXPECTED_BACKEND_MODEL,
+    )
+
+    assert receipt["state"] == "failed"
+    assert receipt["failure_kind"] == "missing_backend_receipt"
+
+
 def test_run_canary_streaming_fails_when_raw_tool_json_reaches_output_text():
     receipt = canary.run_canary(
         endpoint="https://cp.kris.openbrand.com/v1/responses",
