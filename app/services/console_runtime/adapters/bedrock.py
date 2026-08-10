@@ -615,6 +615,7 @@ class BedrockModelAdapter:
             system=request.system,
             max_tokens=request.budget.max_output_tokens,
             temperature=_temperature(request, route_policy),
+            responses_options=request.responses_options,
             region=bedrock_region(route_policy),
             timeout_seconds=timeout_seconds,
         )
