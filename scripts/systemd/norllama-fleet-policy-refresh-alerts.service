@@ -1,0 +1,15 @@
+[Unit]
+Description=Post Norllama route-policy refresh alerts to Switchboard BBS
+After=network-online.target switchboard-bbs.service
+Wants=network-online.target switchboard-bbs.service
+ConditionPathExists=/etc/norman/tui-fleet-alerts.env
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+StateDirectory=norman
+WorkingDirectory=/home/kristopher/code/norman
+EnvironmentFile=/etc/norman/tui-fleet-alerts.env
+ExecStart=/usr/bin/python3 /home/kristopher/code/norman/scripts/tui_fleet_alerts.py --health-json /home/kristopher/.local/state/norman/norllama-fleet-policy-refresh.json --state /var/lib/norman/norllama-fleet-policy-refresh-alerts-state.json --thread-id th_norllama_policy_refresh "--title=Norllama route policy refresh" --warn-threshold 1 --report-path /home/kristopher/.local/state/norman/norllama-fleet-policy-refresh.json

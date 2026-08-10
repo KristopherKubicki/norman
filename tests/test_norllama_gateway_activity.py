@@ -242,6 +242,207 @@ def test_chat_admission_full_queue_returns_fast_capacity_response():
     controller.release()
 
 
+def test_asr_upload_rejection_happens_before_reading_the_body():
+    module = load_gateway_module()
+    controller = module.ChatAdmissionController(
+        max_active=1,
+        queue_limit=0,
+        queue_wait_s=0,
+        retry_after_s=60,
+    )
+    handler = object.__new__(module.Handler)
+    handler.server = SimpleNamespace(
+        app=SimpleNamespace(
+            asr_admission=controller,
+            asr_max_upload_bytes=1024,
+        )
+    )
+    handler.headers = {"Content-Length": "1025"}
+    captured = {}
+    handler.read_body = lambda: pytest.fail("oversized ASR body was read")
+    handler.send_json = lambda status, payload, *, extra_headers=None: captured.update(
+        status=status,
+        payload=payload,
+        headers=extra_headers or {},
+    )
+
+    handler.handle_asr_post("/v1/audio/transcriptions")
+
+    assert captured["status"] == module.HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+    assert captured["payload"] == {
+        "ok": False,
+        "error": "asr_upload_too_large",
+        "max_upload_bytes": 1024,
+        "received_content_length": 1025,
+    }
+    assert captured["headers"]["Connection"] == "close"
+    assert handler.close_connection is True
+
+
+def test_asr_capacity_rejection_happens_before_reading_the_body():
+    module = load_gateway_module()
+    controller = module.ChatAdmissionController(
+        max_active=1,
+        queue_limit=0,
+        queue_wait_s=0,
+        retry_after_s=60,
+    )
+    active, _ = controller.reserve()
+    assert active is not None
+    handler = object.__new__(module.Handler)
+    handler.server = SimpleNamespace(
+        app=SimpleNamespace(
+            asr_admission=controller,
+            asr_max_upload_bytes=1024,
+        )
+    )
+    handler.headers = {"Content-Length": "16"}
+    captured = {}
+    handler.read_body = lambda: pytest.fail("busy ASR body was read")
+    handler.send_json = lambda status, payload, *, extra_headers=None: captured.update(
+        status=status,
+        payload=payload,
+        headers=extra_headers or {},
+    )
+
+    handler.handle_asr_post("/v1/audio/transcriptions")
+
+    assert captured["status"] == module.HTTPStatus.TOO_MANY_REQUESTS
+    assert captured["payload"]["error"] == "asr_capacity_exhausted"
+    assert captured["payload"]["norllama"]["active"] == 1
+    assert captured["headers"]["Retry-After"] == "60"
+    assert captured["headers"]["Connection"] == "close"
+    assert handler.close_connection is True
+    active.release()
+
+
+def test_asr_backend_cooldown_rejects_before_reading_the_body():
+    module = load_gateway_module()
+    controller = module.ChatAdmissionController(
+        max_active=1,
+        queue_limit=0,
+        queue_wait_s=0,
+        retry_after_s=60,
+    )
+    handler = object.__new__(module.Handler)
+    handler.server = SimpleNamespace(
+        app=SimpleNamespace(
+            asr_admission=controller,
+            asr_max_upload_bytes=1024,
+            asr_cooldown=lambda: {
+                "active": True,
+                "retry_after_seconds": 120,
+                "last_failure_status": 502,
+            },
+        )
+    )
+    handler.headers = {"Content-Length": "16"}
+    captured = {}
+    handler.read_body = lambda: pytest.fail("cooled-down ASR body was read")
+    handler.send_json = lambda status, payload, *, extra_headers=None: captured.update(
+        status=status,
+        payload=payload,
+        headers=extra_headers or {},
+    )
+
+    handler.handle_asr_post("/v1/audio/transcriptions")
+
+    assert captured["status"] == module.HTTPStatus.SERVICE_UNAVAILABLE
+    assert captured["payload"]["error"] == "asr_backend_cooldown"
+    assert captured["payload"]["norllama"]["last_failure_status"] == 502
+    assert captured["headers"]["Retry-After"] == "120"
+    assert captured["headers"]["Connection"] == "close"
+    assert handler.close_connection is True
+
+
+def test_asr_readiness_fails_closed_during_backend_cooldown():
+    module = load_gateway_module()
+    app = object.__new__(module.App)
+    app.asr_admission = module.ChatAdmissionController(
+        max_active=1,
+        queue_limit=0,
+        queue_wait_s=0,
+        retry_after_s=60,
+    )
+    app.asr_max_upload_bytes = 1024
+    app.asr_failure_cooldown_s = 60
+    app._asr_cooldown_lock = threading.Lock()
+    app._asr_cooldown_until = 0.0
+    app._asr_cooldown_status = 0
+    app.choose_transcribe_base = lambda: ("http://worker-a", [{"status": "ok"}])
+
+    app.trip_asr_cooldown(module.HTTPStatus.BAD_GATEWAY)
+    payload = app.asr_readyz()
+
+    assert payload["ready"] is False
+    assert payload["status"] == "asr_backend_cooldown"
+    assert payload["cooldown"]["last_failure_status"] == module.HTTPStatus.BAD_GATEWAY
+    assert payload["cooldown"]["retry_after_seconds"] >= 1
+
+
+def test_asr_admission_releases_after_transcribe_handling():
+    module = load_gateway_module()
+    controller = module.ChatAdmissionController(
+        max_active=1,
+        queue_limit=0,
+        queue_wait_s=0,
+        retry_after_s=60,
+    )
+    handler = object.__new__(module.Handler)
+    handler.server = SimpleNamespace(
+        app=SimpleNamespace(
+            asr_admission=controller,
+            asr_max_upload_bytes=1024,
+        )
+    )
+    handler.headers = {"Content-Length": "3"}
+    handler.read_body = lambda: b"wav"
+    handler.enforce_policy_for_request = lambda _path, _body: True
+    handled = []
+    handler.handle_unified_transcribe = lambda body: handled.append(body)
+
+    handler.handle_asr_post("/v1/audio/transcriptions")
+
+    assert handled == [b"wav"]
+    assert controller.snapshot()["active"] == 0
+
+
+def test_transcribe_limits_attempts_and_disables_peer_replays_by_default():
+    module = load_gateway_module()
+    handler = object.__new__(module.Handler)
+    cooldowns = []
+    handler.server = SimpleNamespace(
+        app=SimpleNamespace(
+            transcribe_max_attempts=1,
+            transcribe_allow_peer_failover=False,
+            transcribe_candidate_bases=lambda: (
+                ["http://worker-a", "http://worker-b"],
+                [{"status": "ok"}, {"status": "ok"}],
+            ),
+            transcribe_key=lambda _base: "test-key",
+            public_candidate_rows=lambda _kind, rows: rows,
+            trip_asr_cooldown=lambda status: cooldowns.append(status),
+        )
+    )
+    handler.headers = {"Content-Type": "audio/wav"}
+    attempted = []
+    handler.request_upstream = lambda base, *_args, **_kwargs: (
+        attempted.append(base) or (module.HTTPStatus.BAD_GATEWAY, {}, b"failed")
+    )
+    handler.peer_candidate_bases = lambda: (["http://peer-a"], [{"status": "ok"}])
+    forwarded = []
+    handler.forward_candidates = lambda *args, **kwargs: forwarded.append((args, kwargs))
+    captured = []
+    handler.send_upstream = lambda *args, **kwargs: captured.append((args, kwargs))
+
+    handler.handle_unified_transcribe(b"audio")
+
+    assert attempted == ["http://worker-a"]
+    assert forwarded == []
+    assert cooldowns == [module.HTTPStatus.BAD_GATEWAY]
+    assert captured[0][0][0] == module.HTTPStatus.BAD_GATEWAY
+
+
 def test_stream_capacity_rejection_retries_peer_candidate():
     module = load_gateway_module()
 

@@ -521,6 +521,34 @@ def test_policy_expired_blocks_gateway_readiness(monkeypatch, tmp_path):
     assert readiness["policy"]["lifecycle_state"] == "expired_blocked"
 
 
+def test_asr_readiness_requires_a_healthy_transcription_backend(monkeypatch, tmp_path):
+    _install_policy(monkeypatch, tmp_path)
+    gateway_module = _load_gateway_module()
+    app = gateway_module.App()
+
+    monkeypatch.setattr(
+        app,
+        "choose_transcribe_base",
+        lambda: ("http://127.0.0.1:8095", [{"status": "ok"}]),
+    )
+    ready = app.asr_readyz()
+
+    assert ready["ready"] is True
+    assert ready["status"] == "ok"
+    assert ready["healthy_backend_count"] == 1
+
+    monkeypatch.setattr(
+        app,
+        "choose_transcribe_base",
+        lambda: (None, [{"status": "error"}]),
+    )
+    unavailable = app.asr_readyz()
+
+    assert unavailable["ready"] is False
+    assert unavailable["status"] == "asr_unavailable"
+    assert unavailable["healthy_backend_count"] == 0
+
+
 def test_policy_expired_blocks_gateway_chat(monkeypatch, tmp_path):
     _install_policy(
         monkeypatch,

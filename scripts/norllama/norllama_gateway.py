@@ -201,6 +201,12 @@ DEFAULT_CHAT_QUEUE_LIMIT = 1
 DEFAULT_CHAT_QUEUE_WAIT_S = 10
 DEFAULT_CHAT_RETRY_AFTER_S = 10
 DEFAULT_CHAT_QUEUE_UPDATE_S = 1
+DEFAULT_ASR_MAX_ACTIVE = 1
+DEFAULT_ASR_QUEUE_LIMIT = 0
+DEFAULT_ASR_RETRY_AFTER_S = 60
+DEFAULT_ASR_MAX_UPLOAD_BYTES = 512 * 1024 * 1024
+DEFAULT_ASR_FAILURE_COOLDOWN_S = 300
+DEFAULT_TRANSCRIBE_MAX_ATTEMPTS = 1
 ADMISSION_RESPONSE_HEADERS = {
     "x-norllama-admission",
     "x-norllama-queue-wait-ms",
@@ -1769,6 +1775,54 @@ class App:
             DEFAULT_CHAT_QUEUE_UPDATE_S,
             minimum=0.25,
             maximum=10.0,
+        )
+        # Audio is both large and memory-intensive to parse. Do not accept a
+        # second upload while the first is still buffered or transcribed.
+        self.asr_admission = ChatAdmissionController(
+            max_active=env_int(
+                "NORLLAMA_ASR_MAX_ACTIVE",
+                DEFAULT_ASR_MAX_ACTIVE,
+                minimum=1,
+                maximum=4,
+            ),
+            queue_limit=env_int(
+                "NORLLAMA_ASR_QUEUE_LIMIT",
+                DEFAULT_ASR_QUEUE_LIMIT,
+                minimum=0,
+                maximum=16,
+            ),
+            queue_wait_s=0,
+            retry_after_s=env_float(
+                "NORLLAMA_ASR_RETRY_AFTER_S",
+                DEFAULT_ASR_RETRY_AFTER_S,
+                minimum=1.0,
+                maximum=3600.0,
+            ),
+        )
+        self.asr_max_upload_bytes = env_int(
+            "NORLLAMA_ASR_MAX_UPLOAD_BYTES",
+            DEFAULT_ASR_MAX_UPLOAD_BYTES,
+            minimum=1024 * 1024,
+            maximum=4 * 1024 * 1024 * 1024,
+        )
+        self.asr_failure_cooldown_s = env_float(
+            "NORLLAMA_ASR_FAILURE_COOLDOWN_S",
+            DEFAULT_ASR_FAILURE_COOLDOWN_S,
+            minimum=1.0,
+            maximum=3600.0,
+        )
+        self._asr_cooldown_lock = threading.Lock()
+        self._asr_cooldown_until = 0.0
+        self._asr_cooldown_status = 0
+        self.transcribe_max_attempts = env_int(
+            "NORLLAMA_TRANSCRIBE_MAX_ATTEMPTS",
+            DEFAULT_TRANSCRIBE_MAX_ATTEMPTS,
+            minimum=1,
+            maximum=4,
+        )
+        self.transcribe_allow_peer_failover = env_flag(
+            "NORLLAMA_TRANSCRIBE_ALLOW_PEER_FAILOVER",
+            False,
         )
         self.expose_upstream_details = env_flag(
             "NORLLAMA_EXPOSE_UPSTREAM_DETAILS", False
@@ -5180,6 +5234,64 @@ class App:
             "features": self.feature_flags(),
         }
 
+    def asr_cooldown(self) -> dict[str, object]:
+        """Return the local ASR circuit-breaker state without extending it."""
+
+        now = time.monotonic()
+        with self._asr_cooldown_lock:
+            remaining = max(0.0, self._asr_cooldown_until - now)
+            if remaining <= 0:
+                self._asr_cooldown_until = 0.0
+            return {
+                "active": remaining > 0,
+                "retry_after_seconds": max(0, int(remaining + 0.999)),
+                "last_failure_status": self._asr_cooldown_status,
+            }
+
+    def trip_asr_cooldown(self, status: int) -> None:
+        """Fail closed after a backend 5xx so the next upload is never read."""
+
+        if int(status) < 500:
+            return
+        with self._asr_cooldown_lock:
+            self._asr_cooldown_until = max(
+                self._asr_cooldown_until,
+                time.monotonic() + self.asr_failure_cooldown_s,
+            )
+            self._asr_cooldown_status = int(status)
+
+    def asr_readyz(self) -> dict:
+        selected, rows = self.choose_transcribe_base()
+        capacity = self.asr_admission.snapshot()
+        cooldown = self.asr_cooldown()
+        ready = (
+            selected is not None
+            and capacity["active"] < capacity["active_limit"]
+            and not bool(cooldown["active"])
+        )
+        healthy_count = len(
+            [row for row in rows if row.get("status") == "ok"]
+        )
+        if bool(cooldown["active"]):
+            status = "asr_backend_cooldown"
+        elif ready:
+            status = "ok"
+        elif selected is None:
+            status = "asr_unavailable"
+        else:
+            status = "asr_busy"
+        return {
+            "service": "norllama",
+            "gateway": gateway_identity(),
+            "status": status,
+            "ready": ready,
+            "healthy_backend_count": healthy_count,
+            "capacity": capacity,
+            "cooldown": cooldown,
+            "max_upload_bytes": self.asr_max_upload_bytes,
+            "time": now_iso(),
+        }
+
 
 class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
     daemon_threads = True
@@ -5630,6 +5742,115 @@ class Handler(BaseHTTPRequestHandler):
         if content_length <= 0:
             return b""
         return self.rfile.read(content_length)
+
+    def request_content_length(self) -> int | None:
+        raw_length = self.headers.get("Content-Length", "").strip()
+        if not raw_length:
+            return None
+        try:
+            content_length = int(raw_length)
+        except (TypeError, ValueError):
+            return None
+        return content_length if content_length >= 0 else None
+
+    def reject_unread_asr_upload(
+        self,
+        status: int,
+        payload: dict[str, object],
+        *,
+        extra_headers: dict[str, str] | None = None,
+    ) -> None:
+        # The request body is deliberately unread in these cases. Closing the
+        # connection prevents it from being interpreted as the next request.
+        self.close_connection = True
+        headers = {"Connection": "close"}
+        if extra_headers:
+            headers.update(extra_headers)
+        self.send_json(status, payload, extra_headers=headers)
+
+    def send_asr_capacity_response(self, snapshot: dict[str, int]) -> None:
+        retry_after = str(max(1, int(self.app.asr_admission.retry_after_s)))
+        self.reject_unread_asr_upload(
+            HTTPStatus.TOO_MANY_REQUESTS,
+            {
+                "ok": False,
+                "error": "asr_capacity_exhausted",
+                "message": (
+                    "Local transcription capacity is busy; retry after "
+                    f"{retry_after} seconds"
+                ),
+                "norllama": {
+                    "schema": "norllama.asr_capacity.v1",
+                    **snapshot,
+                },
+            },
+            extra_headers={"Retry-After": retry_after},
+        )
+
+    def send_asr_backend_cooldown_response(self, cooldown: dict[str, object]) -> None:
+        retry_after = str(max(1, int(cooldown.get("retry_after_seconds") or 1)))
+        self.reject_unread_asr_upload(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            {
+                "ok": False,
+                "error": "asr_backend_cooldown",
+                "message": (
+                    "Local transcription backend recently failed; retry after "
+                    f"{retry_after} seconds"
+                ),
+                "norllama": {
+                    "schema": "norllama.asr_cooldown.v1",
+                    **cooldown,
+                },
+            },
+            extra_headers={"Retry-After": retry_after},
+        )
+
+    def handle_asr_post(self, path: str) -> None:
+        content_length = self.request_content_length()
+        if content_length is None:
+            self.reject_unread_asr_upload(
+                HTTPStatus.LENGTH_REQUIRED,
+                {
+                    "ok": False,
+                    "error": "missing_content_length",
+                    "message": "ASR uploads require a valid Content-Length header",
+                },
+            )
+            return
+        if content_length > self.app.asr_max_upload_bytes:
+            self.reject_unread_asr_upload(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                {
+                    "ok": False,
+                    "error": "asr_upload_too_large",
+                    "max_upload_bytes": self.app.asr_max_upload_bytes,
+                    "received_content_length": content_length,
+                },
+            )
+            return
+
+        cooldown_fn = getattr(self.app, "asr_cooldown", None)
+        cooldown = (
+            cooldown_fn()
+            if callable(cooldown_fn)
+            else {"active": False, "retry_after_seconds": 0}
+        )
+        if bool(cooldown.get("active")):
+            self.send_asr_backend_cooldown_response(cooldown)
+            return
+
+        reservation, snapshot = self.app.asr_admission.reserve()
+        if reservation is None:
+            self.send_asr_capacity_response(snapshot)
+            return
+        try:
+            body = self.read_body()
+            if not self.enforce_policy_for_request(path, body):
+                return
+            self.handle_unified_transcribe(body)
+        finally:
+            reservation.release()
 
     def forward(
         self,
@@ -7628,7 +7849,7 @@ class Handler(BaseHTTPRequestHandler):
         last: tuple[int, dict[str, str], bytes] | None = None
         attempted: list[str] = []
         last_base: str | None = None
-        for base in candidates:
+        for base in candidates[: self.app.transcribe_max_attempts]:
             key = self.app.transcribe_key(base)
             if not key:
                 continue
@@ -7647,6 +7868,9 @@ class Handler(BaseHTTPRequestHandler):
             last = result
             last_base = base
             if result[0] == 503 or result[0] >= 500:
+                trip_cooldown = getattr(self.app, "trip_asr_cooldown", None)
+                if callable(trip_cooldown):
+                    trip_cooldown(result[0])
                 continue
             self.send_upstream(
                 result[0],
@@ -7659,7 +7883,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         peer_bases, peer_rows = self.peer_candidate_bases()
-        if peer_bases:
+        if peer_bases and self.app.transcribe_allow_peer_failover:
             self.forward_candidates(
                 peer_bases,
                 "/transcribe",
@@ -7931,6 +8155,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/readyz":
             payload = self.app.readyz()
+            self.send_json(
+                HTTPStatus.OK
+                if bool(payload.get("ready"))
+                else HTTPStatus.SERVICE_UNAVAILABLE,
+                payload,
+            )
+            return
+        if parsed.path == "/asr-readyz":
+            payload = self.app.asr_readyz()
             self.send_json(
                 HTTPStatus.OK
                 if bool(payload.get("ready"))
@@ -8338,6 +8571,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         self.begin_request()
         parsed = urllib.parse.urlsplit(self.path)
+        if parsed.path in {"/transcribe", "/v1/audio/transcriptions"}:
+            self.handle_asr_post(parsed.path)
+            return
         body = self.read_body()
         if parsed.path == "/v1/prefetch":
             if not self.enforce_policy_for_request(parsed.path, body):
@@ -8381,11 +8617,6 @@ class Handler(BaseHTTPRequestHandler):
             ):
                 return
             self.handle_ollama_compat_post(parsed.path, body)
-            return
-        if parsed.path in {"/transcribe", "/v1/audio/transcriptions"}:
-            if not self.enforce_policy_for_request(parsed.path, body):
-                return
-            self.handle_unified_transcribe(body)
             return
         if parsed.path.startswith("/media/"):
             self.handle_media(

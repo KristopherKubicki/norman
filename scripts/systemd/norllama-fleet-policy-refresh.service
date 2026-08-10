@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh the validated Norllama route policy across all workers
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=kristopher
+Group=kristopher
+WorkingDirectory=/home/kristopher/code/norman
+ExecStartPre=/usr/bin/mkdir -p /home/kristopher/.local/state/norman
+ExecStart=/home/kristopher/code/norman/.venv/bin/python /home/kristopher/code/norman/scripts/norllama/refresh_fleet_route_policy.py --apply --output /home/kristopher/.local/state/norman/norllama-fleet-policy-refresh.json

@@ -16,11 +16,18 @@ runtime_package_files=(
   "${repo_root}/app/services/norllama/route_policy.py"
   "${repo_root}/app/services/norllama/route_policy_artifact.py"
 )
+guardrail_install_script="${repo_root}/scripts/norllama/install_resource_guardrails.sh"
+mac_guardrail_install_script="${repo_root}/scripts/norllama/install_macos_launchd_guardrails.py"
+guardrail_files=(
+  "${repo_root}/scripts/systemd/norllama-gateway.service.d/zz-resource-guardrails.conf"
+  "${repo_root}/scripts/systemd/spark-audio-transcribe-core.service.d/zz-resource-guardrails.conf"
+)
 temp_policy_path=""
 
 mac_target="${NORLLAMA_MAC_TARGET:-k@192.168.2.133}"
 mac_path="${NORLLAMA_MAC_PATH:-/Users/k/norllama/norllama_gateway.py}"
 mac_service="${NORLLAMA_MAC_SERVICE:-org.lollie.norllama}"
+mac_curl_bin="${NORLLAMA_MAC_CURL_BIN:-/usr/bin/curl}"
 
 spark_targets="${NORLLAMA_SPARK_TARGETS:-kristopher@192.168.2.150 kristopher@192.168.2.151}"
 spark_path="${NORLLAMA_SPARK_PATH:-/home/kristopher/norllama/norllama_gateway.py}"
@@ -28,22 +35,33 @@ spark_service="${NORLLAMA_SPARK_SERVICE:-norllama-gateway.service}"
 
 deploy_mac=1
 deploy_sparks=0
+restart_sparks=1
 spark_restart_failed=0
 
 usage() {
   cat <<'EOF'
-Usage: scripts/norllama/deploy_gateway.sh [--mac-only|--sparks|--all]
+Usage: scripts/norllama/deploy_gateway.sh [--mac-only|--sparks|--sparks-no-restart|--all]
 
 Deploy the repo-owned Norllama gateway and its matching route-policy runtime
 to the Mac front door and, optionally, the Spark peer gateways. The script
 stages and validates the bundle before publishing it, uses existing SSH
 credentials, and never embeds secrets.
 
+`--sparks-no-restart` publishes the Spark gateway and the co-located resource
+guardrail installer but leaves services running and preserves the live policy.
+It writes the new policy as `route_policy.next.json`, which the root-owned
+activation command promotes only while restarting the gateway.
+
+Mac deployments also stage a launchd guardrail installer. It preserves the
+Mac's existing gateway wrapper and environment, but it must be applied from
+the Mac user session after deployment.
+
 Environment overrides:
   NORMAN_PYTHON              local Python interpreter for policy generation
   NORLLAMA_MAC_TARGET       default k@192.168.2.133
   NORLLAMA_MAC_PATH         default /Users/k/norllama/norllama_gateway.py
   NORLLAMA_MAC_SERVICE      default org.lollie.norllama
+  NORLLAMA_MAC_CURL_BIN     default /usr/bin/curl
   NORLLAMA_SPARK_TARGETS    default "kristopher@192.168.2.150 kristopher@192.168.2.151"
   NORLLAMA_SPARK_PATH       default /home/kristopher/norllama/norllama_gateway.py
   NORLLAMA_SPARK_SERVICE    default norllama-gateway.service
@@ -73,7 +91,9 @@ stage_worker_bundle() {
   stage_path="$(ssh "$target" "mktemp -d '${worker_root}/.norllama-deploy.XXXXXX'")"
 
   if ! ssh "$target" \
-    "mkdir -p '$stage_path/app/services/norllama'"; then
+    "mkdir -p '$stage_path/app/services/norllama'
+     mkdir -p '$stage_path/systemd/norllama-gateway.service.d'
+     mkdir -p '$stage_path/systemd/spark-audio-transcribe-core.service.d'"; then
     cleanup_remote_stage "$target" "$stage_path"
     return 1
   fi
@@ -95,6 +115,26 @@ stage_worker_bundle() {
     cleanup_remote_stage "$target" "$stage_path"
     return 1
   fi
+  if ! scp -q "$guardrail_install_script" \
+    "${target}:${stage_path}/install_resource_guardrails.sh"; then
+    cleanup_remote_stage "$target" "$stage_path"
+    return 1
+  fi
+  if ! scp -q "$mac_guardrail_install_script" \
+    "${target}:${stage_path}/install_macos_launchd_guardrails.py"; then
+    cleanup_remote_stage "$target" "$stage_path"
+    return 1
+  fi
+  if ! scp -q "${guardrail_files[0]}" \
+    "${target}:${stage_path}/systemd/norllama-gateway.service.d/zz-resource-guardrails.conf"; then
+    cleanup_remote_stage "$target" "$stage_path"
+    return 1
+  fi
+  if ! scp -q "${guardrail_files[1]}" \
+    "${target}:${stage_path}/systemd/spark-audio-transcribe-core.service.d/zz-resource-guardrails.conf"; then
+    cleanup_remote_stage "$target" "$stage_path"
+    return 1
+  fi
 
   if ! ssh "$target" "sh -s -- '$stage_path'" >&2 <<'REMOTE'
 set -eu
@@ -104,6 +144,8 @@ python3 -m py_compile \
   "$stage_path/norllama_gateway.py" \
   "$stage_path/app/services/norllama/route_policy.py" \
   "$stage_path/app/services/norllama/route_policy_artifact.py"
+bash -n "$stage_path/install_resource_guardrails.sh"
+python3 -m py_compile "$stage_path/install_macos_launchd_guardrails.py"
 
 NORMAN_NORLLAMA_ROUTE_POLICY_PATH="$stage_path/route_policy.json" \
   python3 - "$stage_path" <<'PY'
@@ -187,11 +229,15 @@ publish_worker_bundle() {
   local target="$1"
   local gateway_path="$2"
   local stage_path="$3"
+  local defer_policy="$4"
   local worker_root
   local policy_path
 
   worker_root="$(dirname "$gateway_path")"
   policy_path="${worker_root}/route_policy.json"
+  if [[ "$defer_policy" == "1" ]]; then
+    policy_path="${worker_root}/route_policy.next.json"
+  fi
 
   ssh "$target" \
     "set -eu
@@ -200,33 +246,45 @@ publish_worker_bundle() {
      mv '$stage_path/app/services/norllama/route_policy_artifact.py' '$worker_root/app/services/norllama/route_policy_artifact.py'
      mv '$stage_path/norllama_gateway.py' '$gateway_path'
      mv '$stage_path/route_policy.json' '$policy_path'
+     mv '$stage_path/install_resource_guardrails.sh' '$worker_root/install_resource_guardrails.sh'
+     chmod 0755 '$worker_root/install_resource_guardrails.sh'
+     mv '$stage_path/install_macos_launchd_guardrails.py' '$worker_root/install_macos_launchd_guardrails.py'
+     chmod 0755 '$worker_root/install_macos_launchd_guardrails.py'
+     mkdir -p '$worker_root/systemd/norllama-gateway.service.d'
+     mkdir -p '$worker_root/systemd/spark-audio-transcribe-core.service.d'
+     mv '$stage_path/systemd/norllama-gateway.service.d/zz-resource-guardrails.conf' '$worker_root/systemd/norllama-gateway.service.d/zz-resource-guardrails.conf'
+     mv '$stage_path/systemd/spark-audio-transcribe-core.service.d/zz-resource-guardrails.conf' '$worker_root/systemd/spark-audio-transcribe-core.service.d/zz-resource-guardrails.conf'
      rm -rf '$stage_path'"
 }
 
 deploy_worker_bundle() {
   local target="$1"
   local gateway_path="$2"
+  local defer_policy="$3"
   local stage_path
 
   if ! stage_path="$(stage_worker_bundle "$target" "$gateway_path")"; then
     return 1
   fi
-  if ! publish_worker_bundle "$target" "$gateway_path" "$stage_path"; then
+  if ! publish_worker_bundle "$target" "$gateway_path" "$stage_path" "$defer_policy"; then
     cleanup_remote_stage "$target" "$stage_path"
     return 1
   fi
 }
 
 restart_mac_gateway() {
-  ssh "$mac_target" "sh -s -- '$mac_service'" <<'REMOTE'
+  ssh "$mac_target" \
+    "sh -s -- '$mac_service' '$mac_curl_bin'" <<'REMOTE'
 set -eu
 service="$1"
+curl_bin="$2"
 launchctl kickstart -k "gui/$(id -u)/${service}"
 attempt=1
 while [ "$attempt" -le 15 ]; do
-  if curl -fsS --max-time 5 http://127.0.0.1:18151/healthz >/dev/null \
-    && curl -fsS --max-time 5 http://127.0.0.1:18151/readyz >/dev/null \
-    && curl -fsS --max-time 5 http://127.0.0.1:18151/v1/models >/dev/null; then
+  if "$curl_bin" -fsS --max-time 5 http://127.0.0.1:18151/healthz >/dev/null \
+    && "$curl_bin" -fsS --max-time 5 http://127.0.0.1:18151/readyz >/dev/null \
+    && "$curl_bin" -fsS --max-time 5 http://127.0.0.1:18151/asr-readyz >/dev/null \
+    && "$curl_bin" -fsS --max-time 5 http://127.0.0.1:18151/v1/models >/dev/null; then
     exit 0
   fi
   attempt=$((attempt + 1))
@@ -247,6 +305,7 @@ attempt=1
 while [ "$attempt" -le 15 ]; do
   if curl -fsS --max-time 5 http://127.0.0.1:18151/healthz >/dev/null \
     && curl -fsS --max-time 5 http://127.0.0.1:18151/readyz >/dev/null \
+    && curl -fsS --max-time 5 http://127.0.0.1:18151/asr-readyz >/dev/null \
     && curl -fsS --max-time 5 http://127.0.0.1:18151/v1/models >/dev/null; then
     exit 0
   fi
@@ -266,6 +325,12 @@ for arg in "$@"; do
     --sparks)
       deploy_mac=0
       deploy_sparks=1
+      restart_sparks=1
+      ;;
+    --sparks-no-restart)
+      deploy_mac=0
+      deploy_sparks=1
+      restart_sparks=0
       ;;
     --all)
       deploy_mac=1
@@ -288,6 +353,20 @@ for runtime_file in "${runtime_package_files[@]}"; do
     exit 1
   fi
 done
+if [[ ! -f "$guardrail_install_script" ]]; then
+  echo "Missing Norllama guardrail installer: $guardrail_install_script" >&2
+  exit 1
+fi
+if [[ ! -f "$mac_guardrail_install_script" ]]; then
+  echo "Missing Mac Norllama guardrail installer: $mac_guardrail_install_script" >&2
+  exit 1
+fi
+for guardrail_file in "${guardrail_files[@]}"; do
+  if [[ ! -f "$guardrail_file" ]]; then
+    echo "Missing Norllama guardrail source: $guardrail_file" >&2
+    exit 1
+  fi
+done
 
 temp_policy_path="$(mktemp "${repo_root}/scripts/norllama/route_policy.XXXXXX.json")"
 trap cleanup EXIT
@@ -297,18 +376,24 @@ PYTHONPATH="$repo_root${PYTHONPATH:+:$PYTHONPATH}" \
 
 if [[ "$deploy_mac" == "1" ]]; then
   echo "Deploying validated Mac front-door bundle: ${mac_target}:${mac_path}"
-  deploy_worker_bundle "$mac_target" "$mac_path"
+  deploy_worker_bundle "$mac_target" "$mac_path" 0
   restart_mac_gateway
 fi
 
 if [[ "$deploy_sparks" == "1" ]]; then
   for target in $spark_targets; do
     echo "Deploying validated Spark peer bundle: ${target}:${spark_path}"
-    if ! deploy_worker_bundle "$target" "$spark_path"; then
+    if ! deploy_worker_bundle \
+      "$target" \
+      "$spark_path" \
+      "$((1 - restart_sparks))"; then
       echo \
         "Gateway bundle was not published to ${target}; its staging or validation step failed." \
         >&2
       spark_restart_failed=1
+      continue
+    fi
+    if [[ "$restart_sparks" != "1" ]]; then
       continue
     fi
     if ! restart_spark_gateway "$target"; then

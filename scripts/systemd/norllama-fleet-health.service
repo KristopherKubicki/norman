@@ -1,0 +1,12 @@
+[Unit]
+Description=Collect Norllama fleet health and route-policy state
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=kristopher
+Group=kristopher
+WorkingDirectory=/home/kristopher/code/norman
+ExecStartPre=/usr/bin/mkdir -p /home/kristopher/.local/state/norman
+ExecStart=/home/kristopher/code/norman/.venv/bin/python /home/kristopher/code/norman/scripts/norllama/fleet_health.py --output /home/kristopher/.local/state/norman/norllama-fleet-health.json --markdown-output /home/kristopher/.local/state/norman/norllama-fleet-health.md
