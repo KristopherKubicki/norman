@@ -121,7 +121,7 @@ def test_unmapped_checkout_has_the_expected_generic_fallback(route_module, monke
         "regular-default"
     )
     assert route_module.route_payload(None, "work", unknown_root)["fallback"] == (
-        "work-bedrock"
+        "regular-default"
     )
 
 
@@ -752,14 +752,29 @@ def test_every_route_generates_an_isolated_brokered_gateway_profile(
     assert profile_path.stat().st_mode & 0o777 == 0o600
 
 
-def test_regular_and_work_fallbacks_execute_the_expected_targets(
+def test_unmapped_work_session_uses_regular_codex_without_reentering_wrapper(
+    route_module, monkeypatch, capsys
+):
+    fallback_calls = []
+
+    monkeypatch.setattr(route_module, "resolve_route", lambda _cwd: None)
+    monkeypatch.setattr(
+        route_module,
+        "exec_regular_fallback",
+        lambda arguments: fallback_calls.append(arguments),
+    )
+
+    assert route_module.main(["--launcher", "work", "--reenter", "/missing", "--"]) == 0
+    assert fallback_calls == [[]]
+    assert "no mapped Norman work route" in capsys.readouterr().err
+
+
+def test_regular_fallback_executes_the_real_codex_binary(
     route_module, monkeypatch, tmp_path
 ):
     real_codex = tmp_path / "real-codex"
-    reentry = tmp_path / "codex-work"
-    for path in (real_codex, reentry):
-        path.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
-        path.chmod(0o700)
+    real_codex.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    real_codex.chmod(0o700)
     captured = []
 
     monkeypatch.setattr(route_module, "resolve_real_codex", lambda: real_codex)
@@ -772,14 +787,9 @@ def test_regular_and_work_fallbacks_execute_the_expected_targets(
     )
 
     route_module.exec_regular_fallback(["--version"])
-    route_module.exec_work_fallback(str(reentry), ["--version"])
 
     assert captured[0][0] == str(real_codex)
     assert captured[0][1] == [str(real_codex), "--version"]
-    assert captured[1][0] == str(reentry)
-    assert captured[1][1] == [str(reentry), "--version"]
-    assert captured[1][2]["CODEX_ROUTER_RESOLVED"] == "1"
-    assert captured[1][2]["CODEX_REAL_BIN"] == str(real_codex)
 
 
 def test_mapped_route_verify_checks_models_then_local_capacity_once(
