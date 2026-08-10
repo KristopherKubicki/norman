@@ -1294,6 +1294,127 @@ def test_openai_compat_responses_stream_keeps_tool_envelopes_out_of_text(
     assert response.closed is True
 
 
+def test_openai_compat_responses_stream_splits_tool_envelope_from_status_text(
+    test_app, monkeypatch
+):
+    response = _MockNativeStreamResponse(
+        [
+            json.dumps({"model": "qwen3-coder:30b", "response": "{"}),
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "response": (
+                        '"tool_call":{"name":"ticket_search",'
+                        '"arguments":{"query":"P0"}}}'
+                    ),
+                }
+            ),
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "response": "\nWaiting for the search result before proceeding.",
+                }
+            ),
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "done": True,
+                    "prompt_eval_count": 4,
+                    "eval_count": 2,
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat_stream",
+        lambda **kwargs: norllama_gateway.NorllamaTextStream(
+            response,
+            model=kwargs["model"],
+        ),
+    )
+
+    result = test_app.post(
+        "/v1/responses",
+        headers=_proxy_headers(monkeypatch),
+        json={
+            "model": "norman-code",
+            "input": "Find the highest priority ticket.",
+            "stream": True,
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "ticket_search",
+                    "description": "Search Jira tickets.",
+                    "parameters": {"type": "object"},
+                }
+            ],
+        },
+    )
+
+    assert result.status_code == 200
+    events = _response_sse_events(result.text)
+    payloads = [
+        json.loads(data) for event, data in events if event and data != "[DONE]"
+    ]
+    output_text_deltas = [
+        payload["delta"]
+        for payload in payloads
+        if payload["type"] == "response.output_text.delta"
+    ]
+    output_items = [
+        payload["item"]
+        for payload in payloads
+        if payload["type"] == "response.output_item.added"
+    ]
+    completed = next(
+        payload["response"]
+        for payload in payloads
+        if payload["type"] == "response.completed"
+    )
+
+    assert output_text_deltas == ["\nWaiting for the search result before proceeding."]
+    assert all('"tool_call"' not in delta for delta in output_text_deltas)
+    assert [item["type"] for item in output_items] == ["message", "function_call"]
+    assert output_items[1]["name"] == "ticket_search"
+    assert completed["output_text"] == output_text_deltas[0]
+    assert [item["type"] for item in completed["output"]] == [
+        "message",
+        "function_call",
+    ]
+    assert response.closed is True
+
+
+def test_leading_undeclared_tool_envelope_remains_text_after_normalization():
+    import app.services.prompt_provider_facade as facade
+
+    text = (
+        '{"tool_call":{"name":"undeclared_search","arguments":{"query":"P0"}}}'
+        "\nWaiting for the result."
+    )
+    normalizer = facade.ResponsesStreamNormalizer()
+    assert normalizer.feed(text) == []
+    normalized = normalizer.finalize()
+
+    response_text, tool_calls = facade._response_tool_calls(
+        normalized.raw_text,
+        provider_payload={
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "ticket_search",
+                    "parameters": {"type": "object"},
+                }
+            ]
+        },
+        normalized_output=normalized,
+    )
+
+    assert normalized.raw_tool_calls[0]["name"] == "undeclared_search"
+    assert response_text == text
+    assert tool_calls == []
+
+
 def test_openai_compat_responses_stream_keeps_native_function_call_out_of_text(
     test_app, monkeypatch
 ):

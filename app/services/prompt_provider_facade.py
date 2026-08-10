@@ -1207,11 +1207,13 @@ def _tool_chain_context(
 def _trailing_json_tool_call_envelope(
     text: str,
 ) -> tuple[str, list[dict[str, Any]]]:
-    """Split an optional prose preamble from a final JSON tool envelope.
+    """Split a JSON tool envelope from adjacent assistant prose.
 
     Some local models announce an action before emitting the tool JSON. The
-    envelope is only meaningful when it is a complete, standalone final object
-    so ordinary JSON answers remain assistant text.
+    envelope is meaningful when it is a complete, standalone final object or
+    the first meaningful object in the response. The latter shape occurs when
+    a provider emits the tool call and a short status sentence in one turn.
+    Ordinary JSON answers remain assistant text.
     """
 
     if not text:
@@ -1245,6 +1247,9 @@ def _trailing_json_tool_call_envelope(
             preamble = text[:start]
             return (preamble if preamble.strip() else ""), calls
         start = text.rfind("{", 0, start)
+    leading_envelope = _leading_json_tool_call_envelope(text)
+    if leading_envelope is not None:
+        return leading_envelope
     return text, []
 
 
@@ -1258,6 +1263,26 @@ def _trailing_fenced_json_tool_call_envelope(text: str) -> tuple[str, str] | Non
     if match is None:
         return None
     return match.group(1), match.group(2)
+
+
+def _leading_json_tool_call_envelope(
+    text: str,
+) -> tuple[str, list[dict[str, Any]]] | None:
+    """Return prose following a complete initial JSON tool-call envelope."""
+
+    leading_characters = len(text) - len(text.lstrip())
+    candidate = text[leading_characters:]
+    if not candidate.startswith("{"):
+        return None
+    try:
+        payload, end = json.JSONDecoder().raw_decode(candidate)
+    except (TypeError, ValueError):
+        return None
+    calls = _tool_calls_from_envelope_payload(payload)
+    if not calls:
+        return None
+    trailing_text = candidate[end:]
+    return (trailing_text if trailing_text.strip() else ""), calls
 
 
 def _tool_calls_from_envelope_payload(payload: Any) -> list[dict[str, Any]]:
@@ -2093,18 +2118,21 @@ def _response_tool_calls(
         raw_calls = [dict(call) for call in normalized_output.raw_tool_calls]
     else:
         preamble, raw_calls = _trailing_json_tool_call_envelope(text)
-    return (
-        preamble,
-        _extract_tool_calls(
-            text,
-            tools=tools,
-            # Some Codex TUI request forms keep their executable tool registry
-            # client-side and omit a top-level Responses tools list. The TUI still
-            # validates the returned call before it can execute anything.
-            allow_implicit_tools="tools" not in provider_payload,
-            raw_calls=raw_calls,
-        ),
+    tool_calls = _extract_tool_calls(
+        text,
+        tools=tools,
+        # Some Codex TUI request forms keep their executable tool registry
+        # client-side and omit a top-level Responses tools list. The TUI still
+        # validates the returned call before it can execute anything.
+        allow_implicit_tools="tools" not in provider_payload,
+        raw_calls=raw_calls,
     )
+    # The stream normalizer intentionally does not know the caller's tool
+    # registry. If a tool-shaped JSON object names an undeclared tool, preserve
+    # it as regular assistant text instead of silently dropping the envelope.
+    if raw_calls and not tool_calls:
+        return text, []
+    return preamble, tool_calls
 
 
 def _repeats_successful_tool_call(
