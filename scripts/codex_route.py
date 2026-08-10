@@ -1084,7 +1084,7 @@ def route_payload(route: Route | None, launcher: str, cwd: Path) -> dict[str, ob
             "launcher": launcher,
             "checkout_root": str(root),
             "origin": origin,
-            "fallback": "regular-default" if launcher == "regular" else "work-bedrock",
+            "fallback": "regular-default",
         }
     payload = asdict(route)
     payload.update(
@@ -1660,18 +1660,6 @@ def exec_regular_fallback(arguments: list[str]) -> None:
     os.execve(real_codex, command, environment)
 
 
-def exec_work_fallback(reenter: str, arguments: list[str]) -> None:
-    if not reenter:
-        raise RuntimeError("Work fallback requires the original codex-work launcher.")
-    reentry_path = Path(reenter).expanduser().resolve()
-    if not reentry_path.is_file() or not os.access(reentry_path, os.X_OK):
-        raise RuntimeError(f"Work fallback launcher is not executable: {reentry_path}")
-    environment = os.environ.copy()
-    environment["CODEX_ROUTER_RESOLVED"] = "1"
-    environment["CODEX_REAL_BIN"] = str(resolve_real_codex())
-    os.execve(str(reentry_path), [str(reentry_path), *arguments], environment)
-
-
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Route Codex through the checkout's TUI Responses gateway."
@@ -1781,8 +1769,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             exec_regular_route(route, parsed.codex_args)
         return 0
 
-    if parsed.launcher == "work":
-        exec_work_fallback(parsed.reenter, parsed.codex_args)
+    if parsed.launcher == "work" and starts_session(parsed.codex_args):
+        print(
+            "codex-work: no mapped Norman work route for "
+            f"{cwd}; starting regular Codex.",
+            file=sys.stderr,
+        )
     exec_regular_fallback(parsed.codex_args)
     return 0
 
