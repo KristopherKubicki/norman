@@ -112,6 +112,7 @@ ROUTE_POLICY_FALLBACKS = {
     "fallback_reason_required": True,
 }
 
+
 def _explicit_cloud_models() -> dict[str, dict[str, str]]:
     selections: dict[str, dict[str, str]] = {}
     for role in ("economy", "authority", "frontier"):

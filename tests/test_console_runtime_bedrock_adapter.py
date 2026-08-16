@@ -748,12 +748,11 @@ def test_bedrock_adapter_routes_authorized_cloud_fallback_through_mantle(
     assert client_factory_calls == []
     assert result.text == "Fallback completed."
     assert result.metadata["bedrock_transport"] == "bedrock_mantle_responses"
-    assert result.metadata["policy_authorization"][
-        "cloud_fallback_authorized"
-    ] is True
-    assert result.metadata["policy_authorization"][
-        "explicit_cloud_selection_authorized"
-    ] is False
+    assert result.metadata["policy_authorization"]["cloud_fallback_authorized"] is True
+    assert (
+        result.metadata["policy_authorization"]["explicit_cloud_selection_authorized"]
+        is False
+    )
 
 
 def test_bedrock_mantle_request_uses_supported_parameters():

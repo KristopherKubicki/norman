@@ -116,7 +116,7 @@ def reload_job(label: str, plist_path: Path) -> None:
             if attempt < 29:
                 time.sleep(1)
     raise RuntimeError(
-        "launchd did not finish removing the previous " f"{label} job before bootstrap"
+        f"launchd did not finish removing the previous {label} job before bootstrap"
     ) from last_error
 
 

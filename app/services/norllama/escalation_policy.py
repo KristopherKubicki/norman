@@ -43,9 +43,7 @@ def load_model_role_config(path: str | Path | None = None) -> dict[str, Any]:
 
 
 MODEL_ROLE_CONFIG = load_model_role_config()
-MODEL_ROLES = {
-    role: dict(MODEL_ROLE_CONFIG["roles"][role]) for role in ROLE_ORDER
-}
+MODEL_ROLES = {role: dict(MODEL_ROLE_CONFIG["roles"][role]) for role in ROLE_ORDER}
 MODEL_BY_ROLE = {role: str(row["model"]) for role, row in MODEL_ROLES.items()}
 TIER_LABEL_BY_ROLE = {
     role: str(row["tier_label"]).strip().lower() for role, row in MODEL_ROLES.items()
@@ -65,13 +63,10 @@ ESCALATION_CONTROLLER_CONTRACT = {
     "registry_version": MODEL_ROLE_CONFIG["version"],
     "roles": MODEL_ROLES,
     "resident_model": RESIDENT_MODEL,
-    "tiers": {
-        TIER_LABEL_BY_ROLE[role]: MODEL_BY_ROLE[role] for role in ROLE_ORDER
-    },
+    "tiers": {TIER_LABEL_BY_ROLE[role]: MODEL_BY_ROLE[role] for role in ROLE_ORDER},
     "lane_role_defaults": dict(LANE_ROLE_DEFAULTS),
     "lane_cloud_defaults": {
-        lane: TIER_LABEL_BY_ROLE[role]
-        for lane, role in LANE_ROLE_DEFAULTS.items()
+        lane: TIER_LABEL_BY_ROLE[role] for lane, role in LANE_ROLE_DEFAULTS.items()
     },
     "rules": {
         "resident": "default for local, reversible, low-risk work",
@@ -126,9 +121,12 @@ def _controller_maps(
     lane_defaults = controller.get("lane_role_defaults")
     if not isinstance(lane_defaults, dict):
         lane_defaults = LANE_ROLE_DEFAULTS
-    return model_by_role, label_by_role, role_by_label, {
-        str(lane): str(role) for lane, role in lane_defaults.items()
-    }
+    return (
+        model_by_role,
+        label_by_role,
+        role_by_label,
+        {str(lane): str(role) for lane, role in lane_defaults.items()},
+    )
 
 
 def build_shadow_escalation_decision(

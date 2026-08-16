@@ -2993,9 +2993,7 @@ def test_openai_compat_responses_returns_gateway_failure(test_app, monkeypatch):
         "cloud_fallback": False,
         "eligible_workers": [
             {"id": worker_id, "role": "production"}
-            for worker_id in sorted(
-                ROUTE_POLICY_PLACEMENT["resident_runtime_workers"]
-            )
+            for worker_id in sorted(ROUTE_POLICY_PLACEMENT["resident_runtime_workers"])
         ],
         "ineligible_workers": [
             {

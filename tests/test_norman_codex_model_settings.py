@@ -699,8 +699,7 @@ def test_switchboard_background_generation_sends_best_effort_headers(
     )
 
     headers = {
-        str(key).lower(): str(value)
-        for key, value in requests[0][0].header_items()
+        str(key).lower(): str(value) for key, value in requests[0][0].header_items()
     }
     assert headers["x-norllama-priority"] == "background"
     assert headers["x-norllama-work-class"] == "background"

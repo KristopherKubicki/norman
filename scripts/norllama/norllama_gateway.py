@@ -1246,9 +1246,7 @@ def model_role_rows() -> dict[str, dict[str, object]]:
     if not isinstance(roles, dict):
         return {}
     return {
-        str(role): dict(row)
-        for role, row in roles.items()
-        if isinstance(row, dict)
+        str(role): dict(row) for role, row in roles.items() if isinstance(row, dict)
     }
 
 
@@ -1662,16 +1660,12 @@ class ChatAdmissionController:
 
         with self._condition:
             now = time.monotonic()
-            normalized_priority = (
-                priority if priority in PRIORITY_LEVELS else "normal"
-            )
+            normalized_priority = priority if priority in PRIORITY_LEVELS else "normal"
             effective_wait_s = min(
                 self.queue_wait_s,
                 max(
                     0.0,
-                    self.queue_wait_s
-                    if queue_wait_s is None
-                    else float(queue_wait_s),
+                    self.queue_wait_s if queue_wait_s is None else float(queue_wait_s),
                 ),
             )
             self._sequence += 1
@@ -6110,8 +6104,7 @@ class Handler(BaseHTTPRequestHandler):
             "message": (
                 "Best-effort background work was deferred for foreground capacity"
                 if background
-                else "Local coding capacity is busy; retry after "
-                f"{retry_after} seconds"
+                else f"Local coding capacity is busy; retry after {retry_after} seconds"
             ),
             "model": model,
             "norllama": capacity_meta,
@@ -6134,9 +6127,7 @@ class Handler(BaseHTTPRequestHandler):
         queue_wait_ms = max(0, min(int(queue_wait_s * 1000), 3600000))
         return {
             "X-Norllama-Admission": "queued" if queue_wait_ms else "immediate",
-            "X-Norllama-Work-Class": getattr(
-                self, "_work_class", "foreground"
-            ),
+            "X-Norllama-Work-Class": getattr(self, "_work_class", "foreground"),
             "X-Norllama-Queue-Wait-Ms": str(queue_wait_ms),
             "X-Norllama-Queue-Depth": str(max(0, snapshot.get("queue_depth", 0))),
             "X-Norllama-Queue-Limit": str(max(0, snapshot.get("queue_limit", 0))),

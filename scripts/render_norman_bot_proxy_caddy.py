@@ -23,6 +23,7 @@ def _worker_upstream(worker_id: str, port_key: str) -> str:
     row = dict(FLEET_WORKERS[worker_id])
     return f"{row['address']}:{int(row[port_key])}"
 
+
 BOT_PATH_ALIASES: dict[str, tuple[str, ...]] = {
     "autocamera": ("auto",),
     "cloudagent": ("cloud",),

@@ -129,9 +129,7 @@ def _upsert_host(
     return enrollment
 
 
-def _request(
-    db: Session, *, user_id: int, spec: HostSpec, probe: str
-):
+def _request(db: Session, *, user_id: int, spec: HostSpec, probe: str):
     body = KeysCapabilityRequestCreate(
         capability=CAPABILITY_NAME,
         host_id=spec.host_id,
@@ -230,8 +228,7 @@ def run_rollout(db_path: Path, specs: list[HostSpec]) -> dict:
             "secret_alias_count": 0,
             "hosts": host_results,
             "ready": all(
-                row["invoke_status"] == "completed"
-                and row["revoked_lease_rejected"]
+                row["invoke_status"] == "completed" and row["revoked_lease_rejected"]
                 for row in host_results
             ),
         }

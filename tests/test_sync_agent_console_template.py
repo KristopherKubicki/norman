@@ -156,7 +156,7 @@ def test_norman_codex_home_scope_uses_the_personal_route(monkeypatch, tmp_path) 
     module = _load_sync_script(monkeypatch)
     env_path = tmp_path / "codex-web.env"
     env_path.write_text(
-        "CODEX_HOME=/home/kristopher/.codex-work\n" "NORMAN_CODEX_MODEL=norman-code\n",
+        "CODEX_HOME=/home/kristopher/.codex-work\nNORMAN_CODEX_MODEL=norman-code\n",
         encoding="utf-8",
     )
     norman_host = _named_host(module, "norman")
@@ -176,7 +176,7 @@ def test_norman_codex_home_scope_uses_the_personal_route(monkeypatch, tmp_path) 
     assert scoped.codex_home == "/home/kristopher/.codex-norman"
     assert module.sync_instance_codex_home_scope(norman_host, scoped) is True
     assert env_path.read_text(encoding="utf-8") == (
-        "CODEX_HOME=/home/kristopher/.codex-norman\n" "NORMAN_CODEX_MODEL=norman-code\n"
+        "CODEX_HOME=/home/kristopher/.codex-norman\nNORMAN_CODEX_MODEL=norman-code\n"
     )
     assert module.sync_instance_codex_home_scope(norman_host, scoped) is False
 
@@ -236,9 +236,7 @@ def test_state_storage_sync_isolates_the_console_database(monkeypatch) -> None:
     module = _load_sync_script(monkeypatch)
     captured = {}
     instance = _instance(module, "publisher")
-    monkeypatch.setattr(
-        module, "ssh_command", lambda _host, script: ["ssh", script]
-    )
+    monkeypatch.setattr(module, "ssh_command", lambda _host, script: ["ssh", script])
     monkeypatch.setattr(
         module,
         "capture",
@@ -247,14 +245,16 @@ def test_state_storage_sync_isolates_the_console_database(monkeypatch) -> None:
 
     assert module.sync_instance_state_storage(_host(module), instance) is True
     script = captured["script"]
-    assert '"NORMAN_CODEX_WEB_STATE_DIR":"/var/lib/publisher/codex/web-bridge"' in script
+    assert (
+        '"NORMAN_CODEX_WEB_STATE_DIR":"/var/lib/publisher/codex/web-bridge"' in script
+    )
     assert (
         '"NORMAN_CODEX_STATE_DB_PATH":'
         '"/var/lib/publisher/codex/web-bridge/tui_state.sqlite3"'
     ) in script
     assert '"NORMAN_CODEX_STATE_DB_ENABLED":"1"' in script
     assert "state_dir.mkdir(parents=True, exist_ok=True)" in script
-    assert 'service_name = (' in script
+    assert "service_name = (" in script
     assert '"systemctl", "show", service_name, "--property=User", "--value"' in script
     assert "for root, dirs, files in os.walk(state_dir):" in script
     assert "state_db_path.touch()" in script
@@ -583,7 +583,7 @@ def test_route_receipt_sync_exports_shadow_capture_env(monkeypatch) -> None:
         '"NORMAN_CODEX_ROUTE_RECEIPT_DIR":"/var/lib/norman/route_receipts"'
     ) in script
     assert "route_receipt_path.mkdir(parents=True, exist_ok=True)" in script
-    assert 'service_name = (' in script
+    assert "service_name = (" in script
     assert '"systemctl", "show", service_name, "--property=User", "--value"' in script
     assert "os.chown(route_receipt_path, target_uid, target_gid)" in script
     assert "os.chmod(route_receipt_path, 0o750)" in script
@@ -993,9 +993,8 @@ def test_origin_sync_exports_discovered_local_llm_inventory(
     assert '"NORMAN_LOCAL_LLM_MODELS":"' in script
     assert (
         '"NORMAN_LOCAL_LLM_ENDPOINTS":"https://llm.home.arpa/resident,'
-        'http://192.168.2.151:11434,http://192.168.2.152:11434,'
-        'http://spark-1.home.arpa:8000"'
-        in script
+        "http://192.168.2.151:11434,http://192.168.2.152:11434,"
+        'http://spark-1.home.arpa:8000"' in script
     )
     assert '"NORMAN_LOCAL_LLM_MODEL_ENDPOINTS":"' in script
     assert "qwen3.8:27b" in script
@@ -1213,8 +1212,7 @@ def test_local_llm_foreground_sync_configures_intent_classifier(
     assert "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MAX_OUTPUT_TOKENS=192" in synced
     assert "NORMAN_CODEX_WORKING_RECAP_MODEL=qwen3.8:27b" in synced
     assert (
-        "NORMAN_CODEX_WORKING_RECAP_ENDPOINTS=https://llm.home.arpa/resident"
-        in synced
+        "NORMAN_CODEX_WORKING_RECAP_ENDPOINTS=https://llm.home.arpa/resident" in synced
     )
     assert "NORMAN_TUI_TOKEN_CAPACITY_USAGE_WINDOW_SECONDS=3600" in synced
     assert "NORMAN_CODEX_SUBSCRIPTION_ROUTE_PREFERENCE_ENABLED=1" in synced

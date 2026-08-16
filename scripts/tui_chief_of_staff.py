@@ -15,9 +15,7 @@ from typing import Any
 import tui_fleet_alerts
 
 
-DEFAULT_HEALTH_PATH = Path(
-    "/home/kristopher/.local/state/norman/tui-fleet-doctor.json"
-)
+DEFAULT_HEALTH_PATH = Path("/home/kristopher/.local/state/norman/tui-fleet-doctor.json")
 DEFAULT_ROUTE_PROOF_PATH = Path(
     "/home/kristopher/.local/state/norman/tui-status-route-proof.json"
 )
@@ -33,7 +31,9 @@ DEFAULT_HISTORY_PATH = Path(
 DEFAULT_STATE_PATH = Path(
     "/home/kristopher/.local/state/norman/tui-chief-of-staff-state.json"
 )
-DEFAULT_ROLE_PATH = Path(__file__).resolve().parents[1] / "config/norllama/model_roles.json"
+DEFAULT_ROLE_PATH = (
+    Path(__file__).resolve().parents[1] / "config/norllama/model_roles.json"
+)
 DEFAULT_TOPOLOGY_PATH = (
     Path(__file__).resolve().parents[1] / "config/fleet/topology.json"
 )
@@ -91,9 +91,7 @@ def load_resident_role(path: Path = DEFAULT_ROLE_PATH) -> dict[str, Any]:
         raise ValueError("model-role registry is missing resident")
     model = str(resident.get("model") or "").strip()
     endpoints = resident.get("client_endpoints") or resident.get("endpoints") or []
-    endpoint = next(
-        (str(item).strip() for item in endpoints if str(item).strip()), ""
-    )
+    endpoint = next((str(item).strip() for item in endpoints if str(item).strip()), "")
     if not model or not endpoint:
         raise ValueError("resident role requires a model and client endpoint")
     return {"model": model, "endpoint": endpoint}
@@ -243,9 +241,9 @@ def compact_packet(
                 "passed": bool(item.get("passed")),
                 "outcome": str(item.get("outcome") or ""),
                 "planner_ready": bool(
-                    (item.get("final") or {}).get("local_planner_readiness", {}).get(
-                        "ready"
-                    )
+                    (item.get("final") or {})
+                    .get("local_planner_readiness", {})
+                    .get("ready")
                 ),
             }
         )
@@ -344,7 +342,9 @@ def deterministic_brief(packet: dict[str, Any]) -> dict[str, Any]:
         f"{item['host']}/{item['instance']}: {item['detail']}" for item in issues[:5]
     ]
     if not fleet["coverage_complete"]:
-        attention.append("Fleet coverage is incomplete; active and expected counts differ.")
+        attention.append(
+            "Fleet coverage is incomplete; active and expected counts differ."
+        )
     if not resident_pool["runtime_redundant"]:
         attention.append(
             "Resident model runtime redundancy is below policy; scheduler failover "
@@ -467,7 +467,9 @@ def render_markdown(payload: dict[str, Any]) -> str:
         *[f"- {item}" for item in brief["highlights"]],
     ]
     if brief["attention"]:
-        lines.extend(["", "## Attention", "", *[f"- {item}" for item in brief["attention"]]])
+        lines.extend(
+            ["", "## Attention", "", *[f"- {item}" for item in brief["attention"]]]
+        )
     lines.extend(["", f"Next: {brief['next_check']}", ""])
     return "\n".join(lines)
 
@@ -523,9 +525,7 @@ def post_brief(
     )
     status, response = tui_fleet_alerts._request(
         "POST",
-        tui_fleet_alerts._join_url(
-            base_url, f"/api/v1/threads/{thread_id}/messages"
-        ),
+        tui_fleet_alerts._join_url(base_url, f"/api/v1/threads/{thread_id}/messages"),
         token=token,
         payload={
             "posted_by": actor,
@@ -544,7 +544,9 @@ def post_brief(
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate the TUI chief-of-staff brief.")
+    parser = argparse.ArgumentParser(
+        description="Generate the TUI chief-of-staff brief."
+    )
     parser.add_argument("--health", type=Path, default=DEFAULT_HEALTH_PATH)
     parser.add_argument("--route-proof", type=Path, default=DEFAULT_ROUTE_PROOF_PATH)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_PATH)
@@ -556,7 +558,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--url", default=DEFAULT_BBS_URL)
     parser.add_argument("--actor", default=DEFAULT_ACTOR)
     parser.add_argument("--thread-id", default=DEFAULT_THREAD_ID)
-    parser.add_argument("--heartbeat-seconds", type=int, default=DEFAULT_HEARTBEAT_SECONDS)
+    parser.add_argument(
+        "--heartbeat-seconds", type=int, default=DEFAULT_HEARTBEAT_SECONDS
+    )
     parser.add_argument("--force-publish", action="store_true")
     parser.add_argument("--no-post", action="store_true")
     parser.add_argument("--json", action="store_true")

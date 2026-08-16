@@ -73,7 +73,12 @@ from app.services.work_classification import (
 NORLLAMA_MODEL_ROLE_CONFIG_PATH = Path(
     os.environ.get(
         "NORMAN_NORLLAMA_MODEL_ROLE_CONFIG",
-        str(Path(__file__).resolve().parents[1] / "config" / "norllama" / "model_roles.json"),
+        str(
+            Path(__file__).resolve().parents[1]
+            / "config"
+            / "norllama"
+            / "model_roles.json"
+        ),
     )
 )
 
@@ -108,9 +113,7 @@ def load_norllama_resident_role() -> dict[str, Any]:
 
 NORLLAMA_RESIDENT_ROLE = load_norllama_resident_role()
 NORLLAMA_RESIDENT_MODEL = str(NORLLAMA_RESIDENT_ROLE.get("model") or "").strip()
-NORLLAMA_RESIDENT_ENDPOINTS = tuple(
-    NORLLAMA_RESIDENT_ROLE.get("endpoints") or ()
-)
+NORLLAMA_RESIDENT_ENDPOINTS = tuple(NORLLAMA_RESIDENT_ROLE.get("endpoints") or ())
 
 
 def sanitize_cost_route(value: Any) -> dict[str, Any]:
@@ -2236,7 +2239,9 @@ KPI_PATH = STATE_DIR / "kpis.json"
 AUDIT_PATH = STATE_DIR / "audit.jsonl"
 AUDIT_LOCK = threading.RLock()
 DETERMINISTIC_ARCHIVE_QUEUE: queue.Queue[Callable[[], None]] = queue.Queue(
-    maxsize=max(1, int(os.environ.get("NORMAN_CODEX_DETERMINISTIC_ARCHIVE_QUEUE_SIZE", "32")))
+    maxsize=max(
+        1, int(os.environ.get("NORMAN_CODEX_DETERMINISTIC_ARCHIVE_QUEUE_SIZE", "32"))
+    )
 )
 DETERMINISTIC_ARCHIVE_LOCK = threading.Lock()
 DETERMINISTIC_ARCHIVE_WORKER: threading.Thread | None = None
@@ -13073,7 +13078,10 @@ def append_local_llm_route_outcome(**kwargs: Any) -> dict[str, Any]:
 
 def local_llm_route_failure_status(exc: BaseException) -> str:
     text = str(exc or "").lower()
-    if isinstance(exc, urllib_error.HTTPError) and exc.code == HTTPStatus.TOO_MANY_REQUESTS:
+    if (
+        isinstance(exc, urllib_error.HTTPError)
+        and exc.code == HTTPStatus.TOO_MANY_REQUESTS
+    ):
         return "deferred"
     if isinstance(exc, TimeoutError) or "timed out" in text or "timeout" in text:
         return "timeout"
@@ -33884,9 +33892,7 @@ def working_recap_local_generate(
             "X-Norllama-Priority": "background",
             "X-Norllama-Work-Class": "background",
             "X-Norllama-Interruptible": "true",
-            "X-Norllama-Max-Queue-Wait-Ms": str(
-                BACKGROUND_LLM_MAX_QUEUE_WAIT_MS
-            ),
+            "X-Norllama-Max-Queue-Wait-Ms": str(BACKGROUND_LLM_MAX_QUEUE_WAIT_MS),
             "X-Norllama-Work-Source": source,
         },
         method="POST",
@@ -33914,9 +33920,7 @@ def working_recap_local_generate(
                 "X-Norllama-Priority": "background",
                 "X-Norllama-Work-Class": "background",
                 "X-Norllama-Interruptible": "true",
-                "X-Norllama-Max-Queue-Wait-Ms": str(
-                    BACKGROUND_LLM_MAX_QUEUE_WAIT_MS
-                ),
+                "X-Norllama-Max-Queue-Wait-Ms": str(BACKGROUND_LLM_MAX_QUEUE_WAIT_MS),
                 "X-Norllama-Work-Source": source,
             },
             method="POST",
@@ -50435,13 +50439,44 @@ class Handler(BaseHTTPRequestHandler):
             <span id="transport-state-menu" class="topbar-menu-status">Connecting live updates…</span>
           </div>
           <div class="topbar-menu-links">
-            <a class="ghost utility-button button-link" data-icon="{html.escape(icon_for_label('Prime', '⌂'))}" href="{html.escape(norman_prime_href)}" title="Back to Norman Prime">Prime</a>
-            <a class="ghost utility-button button-link" data-icon="{html.escape(icon_for_label('Directory', '≡'))}" href="{html.escape(norman_directory_href)}" title="Open Norman Directory">Directory</a>
-            <button id="context-save-menu-button" type="button" class="ghost utility-button context-save-button" data-icon="{html.escape(icon_for_label('Handoff', '↓'))}" title="Create a concise handoff, then continue in a fresh thread" hidden>Create handoff</button>
-            <a id="theme-toggle-button" class="ghost utility-button button-link" data-icon="{html.escape(icon_for_label(theme_toggle_label, "◐"))}" href="{html.escape(build_console_href(token=local_token_value, profile=theme_toggle_target, route=route_preference, prefix=path_prefix))}" title="Switch to {html.escape(theme_toggle_label)} mode">{html.escape(theme_toggle_label)}</a>
-            <button id="auth-browser-button" type="button" class="ghost utility-button" data-icon="{html.escape(icon_for_label('Sign In', '↗'))}" hidden>Sign in</button>
-            <button id="auth-device-button" type="button" class="ghost utility-button" data-icon="{html.escape(icon_for_label('Device Code', '#'))}" hidden>Device code</button>
-            <a id="auth-helper-link" class="ghost utility-button button-link" data-icon="{html.escape(icon_for_label('Auth Helper', '⌁'))}" href="{html.escape(prefixed_path('/auth/browser/callback', path_prefix))}" hidden>Auth Helper</a>
+            <a class="ghost utility-button button-link" data-icon="{
+            html.escape(icon_for_label("Prime", "⌂"))
+        }" href="{
+            html.escape(norman_prime_href)
+        }" title="Back to Norman Prime">Prime</a>
+            <a class="ghost utility-button button-link" data-icon="{
+            html.escape(icon_for_label("Directory", "≡"))
+        }" href="{
+            html.escape(norman_directory_href)
+        }" title="Open Norman Directory">Directory</a>
+            <button id="context-save-menu-button" type="button" class="ghost utility-button context-save-button" data-icon="{
+            html.escape(icon_for_label("Handoff", "↓"))
+        }" title="Create a concise handoff, then continue in a fresh thread" hidden>Create handoff</button>
+            <a id="theme-toggle-button" class="ghost utility-button button-link" data-icon="{
+            html.escape(icon_for_label(theme_toggle_label, "◐"))
+        }" href="{
+            html.escape(
+                build_console_href(
+                    token=local_token_value,
+                    profile=theme_toggle_target,
+                    route=route_preference,
+                    prefix=path_prefix,
+                )
+            )
+        }" title="Switch to {html.escape(theme_toggle_label)} mode">{
+            html.escape(theme_toggle_label)
+        }</a>
+            <button id="auth-browser-button" type="button" class="ghost utility-button" data-icon="{
+            html.escape(icon_for_label("Sign In", "↗"))
+        }" hidden>Sign in</button>
+            <button id="auth-device-button" type="button" class="ghost utility-button" data-icon="{
+            html.escape(icon_for_label("Device Code", "#"))
+        }" hidden>Device code</button>
+            <a id="auth-helper-link" class="ghost utility-button button-link" data-icon="{
+            html.escape(icon_for_label("Auth Helper", "⌁"))
+        }" href="{
+            html.escape(prefixed_path("/auth/browser/callback", path_prefix))
+        }" hidden>Auth Helper</a>
             <button id="notice-toggle-button" type="button" class="ghost utility-button notice-toggle" title="Recent notifications">
               <span class="notice-toggle-label"><span>✺</span><span>Alerts</span></span>
               <span id="notice-count" class="notice-count" hidden>0</span>
@@ -50518,9 +50553,17 @@ class Handler(BaseHTTPRequestHandler):
         }><span class="usage-meter-fill"></span></span>
             </span>
             <button id="context-save-button" type="button" class="ghost context-save-button" title="Create a concise handoff, then continue in a fresh thread" hidden>Create handoff</button>
-            <span id="route-chip" class="meta-chip subtle" data-icon="{html.escape(icon_for_label(active_route_mode, "⇄"))}">{html.escape("LAN route" if active_route_mode == "lan" else "Host route")}</span>
-            <span id="history-summary" class="meta-chip subtle">{html.escape(initial_history_summary)}</span>
-            <span id="last-updated-head" class="meta-chip subtle">{html.escape(initial_last_updated)}</span>
+            <span id="route-chip" class="meta-chip subtle" data-icon="{
+            html.escape(icon_for_label(active_route_mode, "⇄"))
+        }">{
+            html.escape("LAN route" if active_route_mode == "lan" else "Host route")
+        }</span>
+            <span id="history-summary" class="meta-chip subtle">{
+            html.escape(initial_history_summary)
+        }</span>
+            <span id="last-updated-head" class="meta-chip subtle">{
+            html.escape(initial_last_updated)
+        }</span>
           </div>
           <div id="kpi-strip" class="kpi-strip" hidden></div>
           <div id="notice-rail" class="notice-rail" hidden></div>

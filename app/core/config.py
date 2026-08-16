@@ -22,6 +22,7 @@ from app.core.estate_registry import (
     resident_model,
 )
 
+
 # should this move to schemas?
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")

@@ -119,9 +119,7 @@ def normalize_reasoning_effort(value: Any, default: str = "high") -> str:
 
 
 def model_requires_named_escalation(value: Any) -> bool:
-    return bool(
-        model_capability(str(value or ""), "named_escalation_required", False)
-    )
+    return bool(model_capability(str(value or ""), "named_escalation_required", False))
 
 
 def is_context_checkpoint_prompt(value: Any) -> bool:
