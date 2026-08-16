@@ -9,6 +9,9 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "norllama" / "deploy_gateway.sh"
 INSTALLER = ROOT / "scripts" / "norllama" / "install_resource_guardrails.sh"
 MAC_INSTALLER = ROOT / "scripts" / "norllama" / "install_macos_launchd_guardrails.py"
+PRIORITY_WATCHDOG = (
+    ROOT / "scripts" / "norllama" / "ensure_resident_priority_gateway.sh"
+)
 
 
 def _write_fake_worker_transport(bin_dir: Path) -> None:
@@ -88,6 +91,13 @@ def test_deploy_gateway_stages_runtime_and_uses_safe_restart_transport() -> None
         in source
     )
     assert '"$curl_bin" -fsS --max-time 5 http://127.0.0.1:18151/asr-readyz' in source
+
+
+def test_priority_gateway_watchdog_requires_policy_readiness() -> None:
+    source = PRIORITY_WATCHDOG.read_text(encoding="utf-8")
+
+    assert source.count('"$BASE_URL/readyz"') == 2
+    assert '"$BASE_URL/healthz"' not in source
 
 
 def test_deploy_gateway_publishes_complete_runtime_bundle_to_worker(

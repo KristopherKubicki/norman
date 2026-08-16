@@ -23,7 +23,7 @@ BASE_URL="${NORLLAMA_PRIORITY_HEALTH_URL:-http://$health_host:$NORLLAMA_PORT}"
 
 mkdir -p "$(dirname "$NORLLAMA_LOG")"
 
-if curl -fsS --max-time 2 "$BASE_URL/healthz" >/dev/null 2>&1; then
+if curl -fsS --max-time 2 "$BASE_URL/readyz" >/dev/null 2>&1; then
   exit 0
 fi
 
@@ -56,7 +56,7 @@ pid="$!"
 printf '%s\n' "$pid" >"$NORLLAMA_PID_FILE"
 
 for _ in $(seq 1 40); do
-  if curl -fsS --max-time 2 "$BASE_URL/healthz" >/dev/null 2>&1; then
+  if curl -fsS --max-time 2 "$BASE_URL/readyz" >/dev/null 2>&1; then
     exit 0
   fi
   if ! kill -0 "$pid" 2>/dev/null; then
