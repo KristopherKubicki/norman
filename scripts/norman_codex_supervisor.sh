@@ -25,17 +25,41 @@ SESSION="${NORMAN_CODEX_SESSION:-housebot-codex}"
 TMUX_SOCKET="${NORMAN_CODEX_TMUX_SOCKET:-$SESSION}"
 WORKDIR="${NORMAN_CODEX_WORKDIR:-/opt/housebot}"
 LAUNCHER="${NORMAN_CODEX_LAUNCHER:-/opt/housebot/scripts/housebot_codex_launch.sh}"
-CODEX_HOME="${CODEX_HOME:-${NORMAN_CODEX_HOME:-}}"
+CODEX_HOME="${NORMAN_CODEX_HOME:-${CODEX_HOME:-}}"
 UPDATE_INTERSTITIAL_CHOICE="${NORMAN_CODEX_UPDATE_INTERSTITIAL_CHOICE:-2}"
 AUTO_CLEAR_UPDATE_INTERSTITIAL="${NORMAN_CODEX_AUTO_CLEAR_UPDATE_INTERSTITIAL:-1}"
 AUTO_CLEAR_AUTH_INTERSTITIAL="${NORMAN_CODEX_AUTO_CLEAR_AUTH_INTERSTITIAL:-1}"
+
+export CODEX_HOME
 
 tmux_cmd() {
     tmux -L "$TMUX_SOCKET" "$@"
 }
 
 start_session() {
+    if [[ ! -d "$WORKDIR" ]]; then
+        printf 'Norman Codex workdir does not exist: %s\n' "$WORKDIR" >&2
+        return 1
+    fi
+    if [[ ! -x "$LAUNCHER" ]]; then
+        printf 'Norman Codex launcher is not executable: %s\n' "$LAUNCHER" >&2
+        return 1
+    fi
+    if [[ -z "$CODEX_HOME" ]]; then
+        printf 'Norman Codex home is not configured.\n' >&2
+        return 1
+    fi
+    mkdir -p "$CODEX_HOME"
+    if [[ ! -w "$CODEX_HOME" ]]; then
+        printf 'Norman Codex home is not writable: %s\n' "$CODEX_HOME" >&2
+        return 1
+    fi
     tmux_cmd new-session -d -s "$SESSION" -c "$WORKDIR" "$LAUNCHER"
+    sleep 2
+    if ! tmux_cmd has-session -t "$SESSION" 2>/dev/null; then
+        printf 'Norman Codex launcher exited before the tmux session became healthy.\n' >&2
+        return 1
+    fi
 }
 
 capture_pane() {
@@ -94,7 +118,6 @@ clear_auth_interstitial() {
 while true; do
     if ! tmux_cmd has-session -t "$SESSION" 2>/dev/null; then
         start_session
-        sleep 2
     else
         pane_text="$(capture_pane)"
         clear_update_interstitial "$pane_text" || clear_auth_interstitial "$pane_text" || true

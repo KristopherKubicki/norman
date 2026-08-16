@@ -61,9 +61,7 @@ def _clean(value: object) -> str:
 def resolve_watchers(configured: list[str] | None = None) -> list[str]:
     raw_watchers = configured
     if raw_watchers is None:
-        configured_watchers = _clean(
-            os.environ.get("NORMAN_TUI_FLEET_ALERT_WATCHERS")
-        )
+        configured_watchers = _clean(os.environ.get("NORMAN_TUI_FLEET_ALERT_WATCHERS"))
         raw_watchers = (
             configured_watchers.split(",")
             if configured_watchers

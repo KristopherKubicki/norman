@@ -344,9 +344,9 @@ def test_tui_fleet_alerts_systemd_path_triggers_on_doctor_json() -> None:
 
 def test_norllama_bbs_token_broker_is_alias_restricted() -> None:
     root = Path(__file__).resolve().parents[1]
-    broker = (
-        root / "scripts" / "norllama" / "norman_bbs_token_broker.sh"
-    ).read_text(encoding="utf-8")
+    broker = (root / "scripts" / "norllama" / "norman_bbs_token_broker.sh").read_text(
+        encoding="utf-8"
+    )
 
     assert 'TOKEN_ALIAS="bbs.norllama-fleet.post-token"' in broker
     assert "norllama-fleet-bbs.token" in broker

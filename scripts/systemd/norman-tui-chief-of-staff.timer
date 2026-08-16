@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh Norman TUI chief-of-staff update every 30 minutes
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=30min
+AccuracySec=2min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -20,6 +20,10 @@ TOKEN_HELPER = REPO_ROOT / "scripts" / "norman_codex_gateway_token.py"
 TEMPLATE_LAUNCH_SCRIPT = (
     REPO_ROOT / "scripts" / "agent_console_template" / "agent_console_launch.sh"
 )
+SUPERVISOR_SCRIPT = REPO_ROOT / "scripts" / "norman_codex_supervisor.sh"
+TEMPLATE_SUPERVISOR_SCRIPT = (
+    REPO_ROOT / "scripts" / "agent_console_template" / "agent_console_supervisor.sh"
+)
 
 
 def _load_token_helper():
@@ -349,6 +353,44 @@ def _run_launcher(
 
 
 @pytest.mark.parametrize("launch_source", (LAUNCH_SCRIPT, TEMPLATE_LAUNCH_SCRIPT))
+def test_launchers_prefer_managed_norman_codex_home(
+    tmp_path: Path, launch_source: Path
+) -> None:
+    codex_binary = tmp_path / "codex"
+    _write_codex_stub(codex_binary)
+    environment = _launcher_environment(tmp_path, codex_binary)
+    managed_home = tmp_path / "managed-codex-home"
+    environment["NORMAN_CODEX_HOME"] = str(managed_home)
+    launch_dir = tmp_path / "launch"
+    launch_dir.mkdir()
+    launch_script = launch_dir / launch_source.name
+    shutil.copy2(launch_source, launch_script)
+    shutil.copy2(
+        REPO_ROOT / "scripts" / "norman_codex_secret_guard.py",
+        launch_dir / "norman_codex_secret_guard.py",
+    )
+    launch_script.chmod(0o700)
+
+    _run_launcher(tmp_path, environment, launch_script)
+
+    assert (managed_home / ".prompt_sha256").exists()
+
+
+@pytest.mark.parametrize(
+    "supervisor_source",
+    (SUPERVISOR_SCRIPT, TEMPLATE_SUPERVISOR_SCRIPT),
+)
+def test_supervisors_prefer_managed_norman_codex_home(
+    supervisor_source: Path,
+) -> None:
+    source = supervisor_source.read_text(encoding="utf-8")
+
+    assert 'CODEX_HOME="${NORMAN_CODEX_HOME:-${CODEX_HOME:-}}"' in source
+    assert "Norman Codex home is not writable" in source
+    assert "launcher exited before the tmux session became healthy" in source
+
+
+@pytest.mark.parametrize("launch_source", (LAUNCH_SCRIPT, TEMPLATE_LAUNCH_SCRIPT))
 def test_launchers_require_the_managed_secret_guard(
     tmp_path: Path, launch_source: Path
 ) -> None:
@@ -466,7 +508,7 @@ def test_launcher_configures_opt_in_norman_gateway(tmp_path) -> None:
     assert 'name = "Norman model gateway"' in profile
     assert 'base_url = "https://gateway.norman.test/v1"' in profile
     assert 'wire_api = "responses"' in profile
-    assert "stream_idle_timeout_ms = 300000" in profile
+    assert "stream_idle_timeout_ms = 1200000" in profile
     assert f'command = "{TOKEN_HELPER}"' in profile
     assert 'args = ["--secret", "norman/gateway-token"]' in profile
     assert "timeout_ms = 5000" in profile

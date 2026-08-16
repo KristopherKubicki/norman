@@ -35,7 +35,7 @@ def test_recovery_plan_is_observe_only_by_default(monkeypatch) -> None:
     ]
 
 
-def test_recovery_commands_use_the_explicit_norman_identity(monkeypatch) -> None:
+def test_recovery_commands_use_the_delegated_proxmox_identity(monkeypatch) -> None:
     module = _load_recovery(monkeypatch)
     target = module.RECOVERY_TARGETS["work-special"]
 
@@ -44,11 +44,12 @@ def test_recovery_commands_use_the_explicit_norman_identity(monkeypatch) -> None
     assert command[:3] == [
         "ssh",
         "-i",
-        str(Path("~/.ssh/norman_tui_deploy_ed25519").expanduser()),
+        "/home/kristopher/.ssh/id_ed25519_netops_codex",
     ]
     assert "IdentitiesOnly=yes" in command
-    assert "root@proxmox.home.arpa" in command
-    assert command[-3:] == ["pct", "status", "147"]
+    assert "UserKnownHostsFile=/home/kristopher/.ssh/known_hosts" in command
+    assert "netops@proxmox.home.arpa" in command
+    assert command[-5:] == ["sudo", "-n", "pct", "status", "147"]
 
 
 def test_pvesh_status_uses_configured_proxmox_node_name(monkeypatch) -> None:

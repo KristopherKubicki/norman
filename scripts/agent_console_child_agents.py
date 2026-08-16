@@ -30,6 +30,10 @@ WRITE_MODES = frozenset({"read_only", "patch_only"})
 RUNTIME_REQUEST = Callable[
     [str, str, dict[str, Any] | None, float | None], dict[str, Any]
 ]
+SCOPED_SKILL_SOURCE_ROOTS = (
+    Path.home() / ".codex-work" / "skills",
+    Path.home() / ".codex-personal" / "skills",
+)
 
 
 class ChildAgentError(RuntimeError):
@@ -76,6 +80,20 @@ def _is_pid_alive(pid: Any) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _is_scoped_skill_source(path: Path) -> bool:
+    try:
+        resolved_path = path.resolve()
+    except (OSError, RuntimeError):
+        return False
+    for source_root in SCOPED_SKILL_SOURCE_ROOTS:
+        try:
+            resolved_path.relative_to(source_root.resolve())
+        except (OSError, RuntimeError, ValueError):
+            continue
+        return True
+    return False
 
 
 class ChildAgentBroker:
@@ -633,6 +651,33 @@ class ChildAgentBroker:
         child_codex_home = Path(str(record["codex_home"]))
         child_codex_home.mkdir(mode=0o700, parents=True, exist_ok=True)
         child_codex_home.chmod(0o700)
+        self._inherit_parent_scoped_skills(child_codex_home)
+
+    def _inherit_parent_scoped_skills(self, child_codex_home: Path) -> None:
+        """Give a child only the managed skills visible to its parent route."""
+        parent_skills = self.codex_home / "skills"
+        try:
+            entries = sorted(parent_skills.iterdir(), key=lambda item: item.name)
+        except FileNotFoundError:
+            return
+        except OSError:
+            return
+
+        child_skills = child_codex_home / "skills"
+        for entry in entries:
+            if not entry.is_symlink() or not _is_scoped_skill_source(entry):
+                continue
+            try:
+                source = entry.resolve()
+            except (OSError, RuntimeError):
+                continue
+            if not source.is_dir() or not (source / "SKILL.md").is_file():
+                continue
+            try:
+                child_skills.mkdir(mode=0o700, exist_ok=True)
+                (child_skills / entry.name).symlink_to(source, target_is_directory=True)
+            except OSError:
+                continue
 
     def _allocate_port(self) -> int:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:

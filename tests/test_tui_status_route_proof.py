@@ -88,6 +88,32 @@ def test_remote_command_uses_execution_host_locality(monkeypatch) -> None:
     assert proof.remote_command(host) == ["sudo", "python3", "-"]
 
 
+def test_remote_command_prefers_a_colocated_venv_when_available(monkeypatch) -> None:
+    host = proof.sync.DiscoveryHost(
+        name="norman",
+        ssh_target="192.0.2.10",
+        use_sudo=False,
+        env_globs=(),
+        public_host="norman.example.invalid",
+        lan_host="192.0.2.10",
+    )
+    monkeypatch.setattr(proof.sync, "host_runs_local", lambda _: False)
+
+    command = proof.remote_command(
+        host,
+        python_candidate="/srv/console/.venv/bin/python",
+    )
+
+    assert command[: len(proof.sync.SSH_OPTIONS) + 2] == [
+        "ssh",
+        *proof.sync.SSH_OPTIONS,
+        "192.0.2.10",
+    ]
+    assert "if [ -x /srv/console/.venv/bin/python ]" in command[-1]
+    assert "exec /srv/console/.venv/bin/python -" in command[-1]
+    assert "exec python3 -" in command[-1]
+
+
 def test_live_probe_reads_last_turn_from_status_snapshot() -> None:
     assert 'fetch_json("/api/usage?recent=1"' not in proof.REMOTE_STATUS_ROUTE_PROOF
     assert 'compact_last_turn(\n        {"usage": as_dict(snapshot).get("usage")}' in (
@@ -103,6 +129,7 @@ def test_cold_recovery_drill_uses_isolated_state_without_inference() -> None:
         'NORMAN_CODEX_WEB_STATE_DIR"] = state_dir' in proof.REMOTE_COLD_RECOVERY_DRILL
     )
     assert "planner-preflight" in proof.REMOTE_COLD_RECOVERY_DRILL
+    assert "web_path.parent.parent" in proof.REMOTE_COLD_RECOVERY_DRILL
     assert "local_llm_generate_once" not in proof.REMOTE_COLD_RECOVERY_DRILL
 
     row = proof.validate_cold_recovery_drill(

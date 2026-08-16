@@ -8,8 +8,88 @@ import os
 import sqlite3
 import time
 from dataclasses import asdict, dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
+
+
+MODEL_REGISTRY_ENV = "NORMAN_MODEL_ROLE_CONFIG"
+LEGACY_MODEL_REGISTRY_ENV = "NORMAN_NORLLAMA_MODEL_ROLE_CONFIG"
+LOCAL_MODEL_REGISTRY_PATH = Path(__file__).with_name("model_roles.json")
+REPO_MODEL_REGISTRY_PATH = (
+    Path(__file__).resolve().parents[2] / "config" / "norllama" / "model_roles.json"
+)
+ROLE_ORDER = ("resident", "economy", "authority", "frontier")
+
+
+@lru_cache(maxsize=4)
+def _load_model_registry_file(path: str) -> dict[str, Any]:
+    registry_path = Path(path)
+    try:
+        payload = json.loads(registry_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema") != "norman.norllama.model-roles.v1"
+        or not isinstance(payload.get("roles"), dict)
+    ):
+        return {}
+    return payload
+
+
+def _load_model_registry(path: str = "") -> dict[str, Any]:
+    registry_path = Path(
+        path
+        or os.getenv(MODEL_REGISTRY_ENV)
+        or os.getenv(LEGACY_MODEL_REGISTRY_ENV)
+        or (
+            LOCAL_MODEL_REGISTRY_PATH
+            if LOCAL_MODEL_REGISTRY_PATH.exists()
+            else REPO_MODEL_REGISTRY_PATH
+        )
+    )
+    return _load_model_registry_file(str(registry_path.resolve()))
+
+
+def _model_row(model: str) -> dict[str, Any]:
+    requested = str(model or "").strip().lower()
+    registry = _load_model_registry()
+    roles = registry.get("roles")
+    if isinstance(roles, dict):
+        for role in ROLE_ORDER:
+            raw = roles.get(role)
+            row = raw if isinstance(raw, dict) else {}
+            identifiers = {
+                str(row.get("model") or "").strip().lower(),
+                *{
+                    str(alias or "").strip().lower()
+                    for alias in row.get("aliases") or []
+                },
+            }
+            if requested in identifiers:
+                return row
+    models = registry.get("models")
+    if isinstance(models, dict):
+        for model_id, raw in models.items():
+            row = raw if isinstance(raw, dict) else {}
+            identifiers = {
+                str(model_id or "").strip().lower(),
+                *{
+                    str(alias or "").strip().lower()
+                    for alias in row.get("aliases") or []
+                },
+            }
+            if requested in identifiers:
+                return {"model": str(model_id), **row}
+    return {}
+
+
+def model_capability(model: str, name: str, default: Any = None) -> Any:
+    capabilities = _model_row(model).get("capabilities")
+    if not isinstance(capabilities, dict):
+        return default
+    return capabilities.get(name, default)
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -39,8 +119,9 @@ def normalize_reasoning_effort(value: Any, default: str = "high") -> str:
 
 
 def model_requires_named_escalation(value: Any) -> bool:
-    model = str(value or "").strip().lower()
-    return "gpt-5.5" in model or "openai.gpt-5.5" in model
+    return bool(
+        model_capability(str(value or ""), "named_escalation_required", False)
+    )
 
 
 def is_context_checkpoint_prompt(value: Any) -> bool:
@@ -78,13 +159,13 @@ class SessionBudgetPolicy:
 
 def policy_from_env() -> SessionBudgetPolicy:
     checkpoint_tokens = _env_int(
-        "NORMAN_CODEX_SESSION_CHECKPOINT_TOKENS", 100_000_000, minimum=1
+        "NORMAN_CODEX_SESSION_CHECKPOINT_TOKENS", 160_000, minimum=1
     )
     reauthorization_tokens = max(
         checkpoint_tokens,
         _env_int(
             "NORMAN_CODEX_SESSION_REAUTHORIZATION_TOKENS",
-            250_000_000,
+            200_000,
             minimum=checkpoint_tokens,
         ),
     )

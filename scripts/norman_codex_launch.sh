@@ -98,7 +98,7 @@ if [[ -z "$CODEX_BIN" ]]; then
 fi
 
 WORKDIR="${NORMAN_CODEX_WORKDIR:-/opt/housebot}"
-CODEX_HOME="${CODEX_HOME:-/root/.codex-housebot}"
+CODEX_HOME="${NORMAN_CODEX_HOME:-${CODEX_HOME:-/root/.codex-housebot}}"
 PROMPT_FILE="${NORMAN_CODEX_PROMPT_FILE:-/etc/housebot/codex-system-prompt.txt}"
 MODEL="${NORMAN_CODEX_MODEL:-openai.gpt-5.6-terra}"
 REASONING_EFFORT="${NORMAN_CODEX_REASONING_EFFORT:-high}"
@@ -499,7 +499,7 @@ path.write_text(
             'name = "Norman model gateway"',
             f"base_url = {json.dumps(base_url)}",
             'wire_api = "responses"',
-            "stream_idle_timeout_ms = 300000",
+            "stream_idle_timeout_ms = 1200000",
             "",
             "[model_providers.norman.auth]",
             f"command = {json.dumps(token_helper)}",

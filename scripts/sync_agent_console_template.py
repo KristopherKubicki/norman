@@ -14,7 +14,7 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from app.services.codex_role_policy import (
@@ -23,14 +23,59 @@ from app.services.codex_role_policy import (
     codex_switchable_models,
     load_codex_role_policy,
 )
+from app.core.estate_registry import load_fleet_topology
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 TEMPLATE_ROOT = SCRIPT_DIR / "agent_console_template"
 PROMPT_TEMPLATE_ROOT = TEMPLATE_ROOT / "prompts"
 MANAGED_SKILL_ROOT = TEMPLATE_ROOT / "skills"
+MODEL_ROLE_CONFIG_PATH = SCRIPT_DIR.parent / "config" / "norllama" / "model_roles.json"
+FLEET_TOPOLOGY = load_fleet_topology()
+FLEET_HOSTS = dict(FLEET_TOPOLOGY["hosts"])
+FLEET_FRONTDOORS = dict(FLEET_TOPOLOGY["frontdoors"])
+
+
+def _fleet_host_address(name: str) -> str:
+    return str(dict(FLEET_HOSTS[name]).get("address") or "")
+
+
+def _fleet_host_realm(name: str) -> str:
+    return str(dict(FLEET_HOSTS[name]).get("realm") or "Shared")
+
+
+def _load_resident_model_role() -> tuple[str, tuple[str, ...]]:
+    payload = json.loads(MODEL_ROLE_CONFIG_PATH.read_text(encoding="utf-8"))
+    if payload.get("schema") != "norman.norllama.model-roles.v1":
+        raise ValueError("unsupported Norllama model-role registry schema")
+    roles = payload.get("roles")
+    resident = roles.get("resident") if isinstance(roles, dict) else None
+    if not isinstance(resident, dict):
+        raise ValueError("Norllama model-role registry is missing resident")
+    model = str(resident.get("model") or "").strip()
+    endpoints = tuple(
+        str(endpoint or "").strip()
+        for endpoint in (
+            resident.get("client_endpoints") or resident.get("endpoints") or []
+        )
+        if str(endpoint or "").strip()
+    )
+    if not model or not endpoints:
+        raise ValueError("Norllama resident role requires a model and endpoint")
+    return model, endpoints
+
+
+RESIDENT_LOCAL_MODEL, RESIDENT_LOCAL_ENDPOINTS = _load_resident_model_role()
 MANAGED_SKILLS_BY_INSTANCE: dict[str, tuple[str, ...]] = {
     "uplink": ("uplink-benchmark",),
+}
+MANAGED_CODEX_HOME_BY_HOST_INSTANCE: dict[tuple[str, str], str] = {
+    ("norman", "norman"): "/home/kristopher/.codex-norman",
+}
+SESSION_BUDGET_OPERATIONAL_SETTINGS: dict[str, str] = {
+    "NORMAN_CODEX_SESSION_BUDGET_ENABLED": "1",
+    "NORMAN_CODEX_SESSION_CHECKPOINT_TOKENS": "160000",
+    "NORMAN_CODEX_SESSION_REAUTHORIZATION_TOKENS": "200000",
 }
 SOURCE_FILES = {
     "web": TEMPLATE_ROOT / "agent_console_web.py",
@@ -38,6 +83,7 @@ SOURCE_FILES = {
     "tui-waterfall": SCRIPT_DIR.parent / "app" / "services" / "tui_waterfall.py",
     "child-agents": SCRIPT_DIR / "agent_console_child_agents.py",
     "session-budget": TEMPLATE_ROOT / "agent_console_session_budget.py",
+    "model-roles": MODEL_ROLE_CONFIG_PATH,
     "sms-turns": TEMPLATE_ROOT / "agent_console_sms.py",
     "norman-switchboard": SCRIPT_DIR / "norman_codex_web.py",
     "work-classification": (
@@ -225,6 +271,10 @@ class ConsoleInstance:
                 str(Path(self.web_path).parent / "agent_console_session_budget.py"),
             ),
             (
+                "model-roles",
+                str(Path(self.web_path).parent / "model_roles.json"),
+            ),
+            (
                 "sms-turns",
                 str(Path(self.web_path).parent / "agent_console_sms.py"),
             ),
@@ -282,10 +332,10 @@ HOSTS: dict[str, DiscoveryHost] = {
     "hal": DiscoveryHost(
         name="hal",
         ssh_target="",
-        use_sudo=False,
+        use_sudo=True,
         env_globs=("/etc/*/codex-web.env",),
         public_host="hal.home.arpa",
-        lan_host="192.168.2.137",
+        lan_host=_fleet_host_address("hal"),
         alias_hosts=("hal.tail94915.ts.net",),
         host_home_path=None,
         local=True,
@@ -298,7 +348,7 @@ HOSTS: dict[str, DiscoveryHost] = {
         use_sudo=True,
         env_globs=("/etc/*/codex-web.env",),
         public_host="toy-box.home.arpa",
-        lan_host="192.168.2.146",
+        lan_host=_fleet_host_address("toy-box"),
         alias_hosts=("toy-box.tail94915.ts.net",),
         host_home_path="/var/www/host-home/index.html",
     ),
@@ -308,38 +358,38 @@ HOSTS: dict[str, DiscoveryHost] = {
         use_sudo=True,
         env_globs=("/etc/*/codex-web.env",),
         public_host="work-special.home.arpa",
-        lan_host="192.168.2.147",
+        lan_host=_fleet_host_address("work-special"),
         alias_hosts=("work-special.tail94915.ts.net",),
         host_home_path="/var/www/host-home/index.html",
     ),
     "norman": DiscoveryHost(
         name="norman",
-        ssh_target="192.168.2.241",
+        ssh_target=_fleet_host_address("norman"),
         use_sudo=True,
         env_globs=("/etc/norman/codex-web.env",),
         public_host="norman.home.arpa",
         canonical_host="norman.tail94915.ts.net",
-        lan_host="192.168.2.241",
+        lan_host=_fleet_host_address("norman"),
         frontdoor_alias_hosts=("norman.home.lollie.org",),
         host_home_path="/var/www/host-home/index.html",
     ),
     "networking-host": DiscoveryHost(
         name="networking-host",
-        ssh_target="debian@192.168.2.242",
+        ssh_target=f"debian@{_fleet_host_address('networking-host')}",
         use_sudo=True,
         env_globs=("/etc/net-agents/*.env",),
         public_host="networking-host.home.arpa",
-        lan_host="192.168.2.242",
+        lan_host=_fleet_host_address("networking-host"),
         alias_hosts=("networking.tail94915.ts.net",),
         host_home_path="/var/www/host-home/index.html",
     ),
     "private-host": DiscoveryHost(
         name="private-host",
-        ssh_target="root@192.168.2.148",
-        use_sudo=False,
+        ssh_target=f"netops@{_fleet_host_address('private-host')}",
+        use_sudo=True,
         env_globs=("/etc/*/codex-web.env",),
         public_host="private.home.lollie.org",
-        lan_host="192.168.2.148",
+        lan_host=_fleet_host_address("private-host"),
         host_home_path="/var/www/private/index.html",
     ),
 }
@@ -353,12 +403,15 @@ HOST_HUBS: dict[str, tuple[str, str]] = {
 }
 
 HOST_GROUP_LABELS: dict[str, str] = {
-    "norman": "Norman",
-    "hal": "Personal",
-    "toy-box": "Personal",
-    "work-special": "Work",
-    "networking-host": "Shared",
-    "private-host": "Private",
+    name: _fleet_host_realm(name)
+    for name in (
+        "norman",
+        "hal",
+        "toy-box",
+        "work-special",
+        "networking-host",
+        "private-host",
+    )
 }
 RUNTIME_BRIDGE_REFERENCE_INSTANCES: tuple[str, ...] = (
     "uplink",
@@ -368,8 +421,10 @@ RUNTIME_BRIDGE_REFERENCE_INSTANCES: tuple[str, ...] = (
 )
 RUNTIME_BRIDGE_TOKEN_SECRET = "norman/console-runtime-token"
 RUNTIME_BRIDGE_SECRET_LANE = "shared_infra"
-RUNTIME_BRIDGE_DEFAULT_API_BASE = "http://192.168.2.241:8000/api/v1/console-runtime"
-RUNTIME_BRIDGE_DEFAULT_KEYS_URL = "http://192.168.2.241:8000"
+RUNTIME_BRIDGE_DEFAULT_API_BASE = (
+    f"{FLEET_FRONTDOORS['norman']}/api/v1/console-runtime"
+)
+RUNTIME_BRIDGE_DEFAULT_KEYS_URL = FLEET_FRONTDOORS["norman"]
 RUNTIME_BRIDGE_TIMEOUT_SECONDS = "3"
 RUNTIME_BRIDGE_JOB_CREATE_TIMEOUT_SECONDS = "15"
 RUNTIME_BRIDGE_TOKEN_RETRY_SECONDS = "300"
@@ -392,14 +447,14 @@ LOCAL_RERANK_FRONTDOOR_URL = (
     ).strip()
     or "https://llm.home.arpa/v1/rerank"
 )
-LOCAL_PLANNER_POLICY_MODELS: tuple[str, ...] = ("qwen3-coder:30b-a3b-q4_K_M",)
+LOCAL_PLANNER_POLICY_MODELS: tuple[str, ...] = (RESIDENT_LOCAL_MODEL,)
 LOCAL_PLANNER_POLICY_MAX_CANDIDATES = 1
 LOCAL_ROUTE_INTENT_CLASSIFIER_MODEL = (
     os.environ.get(
         "NORMAN_SYNC_LOCAL_ROUTE_INTENT_CLASSIFIER_MODEL",
-        "qwen3-coder:30b-a3b-q4_K_M",
+        RESIDENT_LOCAL_MODEL,
     ).strip()
-    or "qwen3-coder:30b-a3b-q4_K_M"
+    or RESIDENT_LOCAL_MODEL
 )
 WORK_BEDROCK_DEFAULT_INSTANCES: tuple[str, ...] = (
     "compere",
@@ -838,6 +893,69 @@ def managed_skill_files(instance: ConsoleInstance) -> tuple[tuple[Path, str], ..
     return tuple(files)
 
 
+def managed_codex_home(host: DiscoveryHost, instance: ConsoleInstance) -> str:
+    return MANAGED_CODEX_HOME_BY_HOST_INSTANCE.get(
+        (host.name, instance.name),
+        instance.codex_home,
+    )
+
+
+def scoped_codex_home_instance(
+    host: DiscoveryHost, instance: ConsoleInstance
+) -> ConsoleInstance:
+    desired_home = managed_codex_home(host, instance)
+    if desired_home == instance.codex_home:
+        return instance
+    return replace(instance, codex_home=desired_home)
+
+
+def sync_instance_codex_home_scope(
+    host: DiscoveryHost, instance: ConsoleInstance
+) -> bool:
+    if (host.name, instance.name) not in MANAGED_CODEX_HOME_BY_HOST_INSTANCE:
+        return False
+
+    desired_home = managed_codex_home(host, instance)
+    payload = json.dumps({"CODEX_HOME": desired_home}, separators=(",", ":"))
+    script = f"""
+python3 - <<'PY'
+from pathlib import Path
+import json
+import re
+
+path = Path({instance.env_file!r})
+updates = json.loads({payload!r})
+text = path.read_text(encoding="utf-8")
+changed = False
+for key, value in updates.items():
+    line = f"{{key}}={{value}}"
+    pattern = re.compile(rf"^{{re.escape(key)}}=.*$", re.M)
+    if pattern.search(text):
+        updated = pattern.sub(line, text)
+        seen = False
+        deduplicated = []
+        for raw_line in updated.splitlines(keepends=True):
+            if raw_line.rstrip("\\r\\n") != line:
+                deduplicated.append(raw_line)
+                continue
+            if not seen:
+                deduplicated.append(raw_line)
+                seen = True
+        updated = "".join(deduplicated)
+    else:
+        updated = text if text.endswith("\\n") else text + "\\n"
+        updated += line + "\\n"
+    if updated != text:
+        text = updated
+        changed = True
+if changed:
+    path.write_text(text, encoding="utf-8")
+print("changed" if changed else "unchanged")
+PY
+"""
+    return capture(ssh_command(host, script)).strip() == "changed"
+
+
 def discover_host_instances(host: DiscoveryHost) -> list[ConsoleInstance]:
     payload = json.dumps(list(host.env_globs))
     default_launchers_payload = json.dumps(DEFAULT_LAUNCHERS)
@@ -902,6 +1020,16 @@ def infer_codex_home(launch_path):
     return ""
 
 
+def resolve_codex_home(value):
+    value = (value or "").strip()
+    if not value:
+        return ""
+    if value.startswith("/"):
+        return value
+    fallbacks = re.findall(r":-(/[^}}]+)", value)
+    return fallbacks[-1].strip() if fallbacks else ""
+
+
 items = []
 for pattern in patterns:
     for env_path in sorted(glob.glob(pattern)):
@@ -934,7 +1062,14 @@ for pattern in patterns:
                 "web_port": env_value(env, "HOUSEBOT_CODEX_WEB_PORT", "NORMAN_CODEX_WEB_PORT"),
                 "web_token": env_value(env, "HOUSEBOT_CODEX_WEB_TOKEN", "NORMAN_CODEX_WEB_TOKEN"),
                 "prompt_file": env_value(env, "HOUSEBOT_CODEX_PROMPT_FILE", "NORMAN_CODEX_PROMPT_FILE"),
-                "codex_home": env_value(env, "HOUSEBOT_CODEX_HOME", "NORMAN_CODEX_HOME", "CODEX_HOME") or infer_codex_home(launch_path),
+                "codex_home": resolve_codex_home(
+                    env_value(
+                        env,
+                        "HOUSEBOT_CODEX_HOME",
+                        "NORMAN_CODEX_HOME",
+                        "CODEX_HOME",
+                    )
+                ) or infer_codex_home(launch_path),
                 "restart_units": [
                     env_value(env, "HOUSEBOT_CODEX_SERVICE_NAME", "NORMAN_CODEX_SERVICE_NAME") or f"{{name}}-codex.service",
                     env_value(env, "HOUSEBOT_CODEX_WEB_SERVICE_NAME", "NORMAN_CODEX_WEB_SERVICE_NAME") or f"{{name}}-codex-web.service",
@@ -963,7 +1098,7 @@ PY
                 web_port=str(item.get("web_port") or ""),
                 web_token=str(item.get("web_token") or ""),
                 prompt_file=str(item.get("prompt_file") or ""),
-                codex_home=str(item.get("codex_home") or ""),
+                codex_home=normalized_codex_home(item.get("codex_home")),
             )
         )
     return instances
@@ -1003,6 +1138,14 @@ def requested_host_filter(requested: list[str] | None) -> list[str] | None:
     if not all(token in HOSTS for token in requested):
         return None
     return list(dict.fromkeys(requested))
+
+
+def normalized_codex_home(value: object) -> str:
+    clean = str(value or "").strip()
+    if not clean or clean.startswith("/"):
+        return clean
+    fallbacks = re.findall(r":-(/[^}]+)", clean)
+    return fallbacks[-1].strip() if fallbacks else ""
 
 
 def instance_label(instance: ConsoleInstance) -> str:
@@ -1526,15 +1669,22 @@ def _local_llm_env_updates() -> dict[str, str]:
     disabled_update = {
         "NORMAN_LOCAL_LLM_DISABLED_MODELS": LOCAL_LLM_DISABLED_MODEL_PATTERNS
     }
-    if not LOCAL_LLM_MODELS and not LOCAL_LLM_ENDPOINTS:
-        return disabled_update
+    models = _unique_models([RESIDENT_LOCAL_MODEL, *LOCAL_LLM_MODELS])
+    endpoints = _unique_models([*RESIDENT_LOCAL_ENDPOINTS, *LOCAL_LLM_ENDPOINTS])
+    model_endpoints = {
+        model: list(values) for model, values in LOCAL_LLM_MODEL_ENDPOINTS.items()
+    }
+    model_endpoints[RESIDENT_LOCAL_MODEL] = list(RESIDENT_LOCAL_ENDPOINTS)
     return {
         **disabled_update,
-        "NORMAN_LOCAL_LLM_MODEL": LOCAL_LLM_DEFAULT_MODEL,
-        "NORMAN_LOCAL_LLM_MODELS": ",".join(LOCAL_LLM_MODELS),
-        "NORMAN_LOCAL_LLM_ENDPOINTS": ",".join(LOCAL_LLM_ENDPOINTS),
+        "NORMAN_CODEX_LOCAL_FIRST_ENABLED": "1",
+        "NORMAN_LOCAL_LLM_EXECUTION_ENABLED": "1",
+        "NORMAN_LOCAL_PLANNER_PREFLIGHT_ENABLED": "1",
+        "NORMAN_LOCAL_LLM_MODEL": RESIDENT_LOCAL_MODEL,
+        "NORMAN_LOCAL_LLM_MODELS": ",".join(models),
+        "NORMAN_LOCAL_LLM_ENDPOINTS": ",".join(endpoints),
         "NORMAN_LOCAL_LLM_MODEL_ENDPOINTS": json.dumps(
-            LOCAL_LLM_MODEL_ENDPOINTS, separators=(",", ":"), sort_keys=True
+            model_endpoints, separators=(",", ":"), sort_keys=True
         ),
     }
 
@@ -1821,18 +1971,43 @@ import os
 import pwd
 import grp
 import re
+import subprocess
 
 env_path = Path({instance.env_file!r})
 updates = json.loads({payload!r})
 route_receipt_path = Path({receipt_dir!r})
-receipt_owner_source = Path('/var/lib/{instance.name}/codex')
+env = {{}}
+for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+    line = raw_line.strip()
+    if line and not line.startswith("#") and "=" in line:
+        key, value = line.split("=", 1)
+        env[key.strip()] = value.strip()
+service_name = (
+    env.get("HOUSEBOT_CODEX_WEB_SERVICE_NAME")
+    or env.get("NORMAN_CODEX_WEB_SERVICE_NAME")
+    or "{instance.name}-codex-web.service"
+)
+service_user = subprocess.run(
+    ["systemctl", "show", service_name, "--property=User", "--value"],
+    text=True,
+    capture_output=True,
+    check=False,
+).stdout.strip()
+service_group = subprocess.run(
+    ["systemctl", "show", service_name, "--property=Group", "--value"],
+    text=True,
+    capture_output=True,
+    check=False,
+).stdout.strip()
 try:
-    owner_stat = receipt_owner_source.stat()
-    target_uid = owner_stat.st_uid
-    target_gid = owner_stat.st_gid
-except OSError:
+    owner = pwd.getpwnam(service_user) if service_user else pwd.getpwnam("root")
+    target_uid = owner.pw_uid
+    target_gid = owner.pw_gid
+    if service_group:
+        target_gid = grp.getgrnam(service_group).gr_gid
+except KeyError:
     target_uid = pwd.getpwnam('root').pw_uid
-    target_gid = grp.getgrnam('root').gr_gid
+    target_gid = pwd.getpwnam('root').pw_gid
 route_receipt_path.mkdir(parents=True, exist_ok=True)
 os.chown(route_receipt_path, target_uid, target_gid)
 os.chmod(route_receipt_path, 0o750)
@@ -1842,6 +2017,103 @@ os.chown(route_receipt_file, target_uid, target_gid)
 os.chmod(route_receipt_file, 0o640)
 text = env_path.read_text(encoding="utf-8")
 changed = False
+for key, value in updates.items():
+    line = f"{{key}}={{value}}"
+    pattern = re.compile(rf"^{{re.escape(key)}}=.*$", re.M)
+    if pattern.search(text):
+        updated = pattern.sub(line, text, count=1)
+    else:
+        updated = text if text.endswith("\\n") else text + "\\n"
+        updated += line + "\\n"
+    if updated != text:
+        text = updated
+        changed = True
+if changed:
+    env_path.write_text(text, encoding="utf-8")
+print("changed" if changed else "unchanged")
+PY
+"""
+    return capture(ssh_command(host, script)).strip() == "changed"
+
+
+def sync_instance_state_storage(
+    host: DiscoveryHost,
+    instance: ConsoleInstance,
+) -> bool:
+    """Give every managed console an isolated, owned SQLite state database."""
+    state_dir = f"/var/lib/{instance.name}/codex/web-bridge"
+    state_db_path = f"{state_dir}/tui_state.sqlite3"
+    updates = {
+        "NORMAN_CODEX_WEB_STATE_DIR": state_dir,
+        "NORMAN_CODEX_STATE_DB_PATH": state_db_path,
+        "NORMAN_CODEX_STATE_DB_ENABLED": "1",
+    }
+    payload = json.dumps(updates, separators=(",", ":"))
+    script = f"""
+python3 - <<'PY'
+from pathlib import Path
+import json
+import os
+import pwd
+import grp
+import re
+import subprocess
+
+env_path = Path({instance.env_file!r})
+updates = json.loads({payload!r})
+state_dir = Path({state_dir!r})
+state_db_path = Path({state_db_path!r})
+env = {{}}
+for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+    line = raw_line.strip()
+    if line and not line.startswith("#") and "=" in line:
+        key, value = line.split("=", 1)
+        env[key.strip()] = value.strip()
+service_name = (
+    env.get("HOUSEBOT_CODEX_WEB_SERVICE_NAME")
+    or env.get("NORMAN_CODEX_WEB_SERVICE_NAME")
+    or "{instance.name}-codex-web.service"
+)
+service_user = subprocess.run(
+    ["systemctl", "show", service_name, "--property=User", "--value"],
+    text=True,
+    capture_output=True,
+    check=False,
+).stdout.strip()
+service_group = subprocess.run(
+    ["systemctl", "show", service_name, "--property=Group", "--value"],
+    text=True,
+    capture_output=True,
+    check=False,
+).stdout.strip()
+try:
+    owner = pwd.getpwnam(service_user) if service_user else pwd.getpwnam("root")
+    target_uid = owner.pw_uid
+    target_gid = owner.pw_gid
+    if service_group:
+        target_gid = grp.getgrnam(service_group).gr_gid
+except KeyError:
+    target_uid = pwd.getpwnam('root').pw_uid
+    target_gid = pwd.getpwnam('root').pw_gid
+changed = False
+state_dir.mkdir(parents=True, exist_ok=True)
+if state_dir.stat().st_uid != target_uid or state_dir.stat().st_gid != target_gid:
+    changed = True
+os.chown(state_dir, target_uid, target_gid)
+os.chmod(state_dir, 0o750)
+for root, dirs, files in os.walk(state_dir):
+    for name in [*dirs, *files]:
+        child = Path(root) / name
+        child_stat = child.stat()
+        if child_stat.st_uid != target_uid or child_stat.st_gid != target_gid:
+            changed = True
+            os.chown(child, target_uid, target_gid)
+state_db_path.touch()
+if state_db_path.stat().st_uid != target_uid or state_db_path.stat().st_gid != target_gid:
+    changed = True
+os.chown(state_db_path, target_uid, target_gid)
+os.chmod(state_db_path, 0o640)
+text = env_path.read_text(encoding="utf-8")
 for key, value in updates.items():
     line = f"{{key}}={{value}}"
     pattern = re.compile(rf"^{{re.escape(key)}}=.*$", re.M)
@@ -2175,6 +2447,8 @@ def sync_instance_local_llm_foreground_settings(
         "NORMAN_LOCAL_LLM_FALLBACK_MODELS": "",
         "NORMAN_LOCAL_LLM_ALLOW_TINY_FOREGROUND_FALLBACK": "0",
         "NORMAN_LOCAL_LLM_PLANNER_MODELS": ",".join(planner_models),
+        "NORMAN_LOCAL_PLANNER_AUTOMATIC_MODEL": RESIDENT_LOCAL_MODEL,
+        "NORMAN_LOCAL_PLANNER_VERIFIER_DEFAULT_MODEL": RESIDENT_LOCAL_MODEL,
         "NORMAN_LOCAL_PLANNER_PREFLIGHT_ENABLED": "1",
         "NORMAN_LOCAL_PLANNER_PREFLIGHT_TIMEOUT_SECONDS": "18",
         "NORMAN_LOCAL_PLANNER_PREFLIGHT_COLD_LOAD_COOLDOWN_SECONDS": "60",
@@ -2216,6 +2490,8 @@ def sync_instance_local_llm_foreground_settings(
             LOCAL_ROUTE_INTENT_CLASSIFIER_MODEL
         ),
         "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MAX_OUTPUT_TOKENS": "192",
+        "NORMAN_CODEX_WORKING_RECAP_MODEL": RESIDENT_LOCAL_MODEL,
+        "NORMAN_CODEX_WORKING_RECAP_ENDPOINTS": ",".join(RESIDENT_LOCAL_ENDPOINTS),
     }
     remove_keys = [
         "NORMAN_LOCAL_PLANNER_PREFLIGHT_MODELS",
@@ -2539,6 +2815,41 @@ for key in remove_keys:
     if updated != text:
         text = updated
         changed = True
+for key, value in updates.items():
+    line = f"{{key}}={{value}}"
+    pattern = re.compile(rf"^{{re.escape(key)}}=.*$", re.M)
+    if pattern.search(text):
+        updated = pattern.sub(line, text, count=1)
+    else:
+        updated = text if text.endswith("\\n") else text + "\\n"
+        updated += line + "\\n"
+    if updated != text:
+        text = updated
+        changed = True
+if changed:
+    path.write_text(text, encoding="utf-8")
+print("changed" if changed else "unchanged")
+PY
+"""
+    return capture(ssh_command(host, script)).strip() == "changed"
+
+
+def sync_instance_session_budget_settings(
+    host: DiscoveryHost,
+    instance: ConsoleInstance,
+) -> bool:
+    """Keep deployed consoles on the shared handoff and hard-stop budget."""
+    payload = json.dumps(SESSION_BUDGET_OPERATIONAL_SETTINGS, separators=(",", ":"))
+    script = f"""
+python3 - <<'PY'
+from pathlib import Path
+import json
+import re
+
+path = Path({instance.env_file!r})
+updates = json.loads({payload!r})
+text = path.read_text(encoding="utf-8")
+changed = False
 for key, value in updates.items():
     line = f"{{key}}={{value}}"
     pattern = re.compile(rf"^{{re.escape(key)}}=.*$", re.M)
@@ -3525,6 +3836,14 @@ def main() -> int:
     discovered_by_host, discovered_by_name = discover_all_instances(
         host_filter=requested_host_filter(args.targets)
     )
+    for host_name, instances in discovered_by_host.items():
+        host = HOSTS[host_name]
+        scoped_instances = [
+            scoped_codex_home_instance(host, instance) for instance in instances
+        ]
+        discovered_by_host[host_name] = scoped_instances
+        for instance in scoped_instances:
+            discovered_by_name[instance.name] = instance
 
     if args.list:
         list_targets(discovered_by_host)
@@ -3596,6 +3915,9 @@ def main() -> int:
             )
 
         for instance in selected_instances:
+            if sync_instance_codex_home_scope(host, instance):
+                changed_instances[instance.name] = instance
+                print(f"  - codex home scope -> {instance.codex_home}", flush=True)
             if sync_instance_codex_home_seed(
                 host,
                 instance,
@@ -3658,6 +3980,12 @@ def main() -> int:
             ):
                 changed_instances[instance.name] = instance
                 print(f"  - Kaizen pilot -> {instance.env_file}", flush=True)
+            if sync_instance_session_budget_settings(host, instance):
+                changed_instances[instance.name] = instance
+                print(f"  - session budget -> {instance.env_file}", flush=True)
+            if sync_instance_state_storage(host, instance):
+                changed_instances[instance.name] = instance
+                print(f"  - isolated state -> {instance.env_file}", flush=True)
             if sync_instance_kernel_rollout_settings(host, instance):
                 changed_instances[instance.name] = instance
                 print(f"  - kernel rollout -> {instance.env_file}", flush=True)

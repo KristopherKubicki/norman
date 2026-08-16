@@ -3416,9 +3416,11 @@ def test_template_exposes_context_save_affordance() -> None:
     assert "function buildContextSavePrompt(context) {" in source
     assert "function handleContextSaveAction(button) {" in source
     assert (
-        'const saveLabel = context.tone === "danger" ? "Save now" : "Save";' in source
+        'const handoffLabel = context.tone === "danger" ? "Create handoff now" : "Create handoff";'
+        in source
     )
-    assert "button.dataset.suggestion = savePrompt;" in source
+    assert "fresh-thread handoff" in source
+    assert "button.dataset.suggestion = handoffPrompt;" in source
     assert 'el.contextSaveButton.addEventListener("click"' in source
     assert 'el.contextSaveMenuButton.addEventListener("click"' in source
 
@@ -3960,32 +3962,48 @@ def test_usage_api_payload_defaults_to_compact_route_utilization() -> None:
     assert "billing" in verbose["usage"]
 
 
-def test_initial_context_meter_flags_save_soon_for_heavy_sessions() -> None:
+def test_initial_context_meter_flags_handoff_now_at_eighty_percent() -> None:
     module = _load_agent_console_web()
 
     meter = module._initial_context_meter(
         {
-            "history": [{} for _ in range(24)],
             "usage": {
-                "totals": {
+                "current_thread": {
                     "turns": 24,
-                    "total_tokens": 94_200,
-                },
-                "last_24h": {
-                    "total_tokens": 64_000,
+                    "total_tokens": 128_000,
                 },
             },
-            "queue_depth": 1,
-            "pending": False,
-            "running_prompt": "",
+            "session_budget": {
+                "checkpoint_tokens": 160_000,
+                "reauthorization_tokens": 200_000,
+            },
         }
     )
 
     assert meter["hidden"] is False
     assert meter["tone"] == "danger"
-    assert meter["label"] == "Save soon"
-    assert meter["fill_pct"] >= 92
-    assert "94,200 tracked tokens" in meter["title"]
+    assert meter["label"] == "Handoff now"
+    assert meter["value"] == "128k / 160k · 80%"
+    assert meter["fill_pct"] == 80
+    assert "128,000 tracked thread tokens of 160,000" in meter["title"]
+    assert "Tracked thread-token budget" in meter["title"]
+
+
+def test_initial_context_meter_requires_handoff_at_hard_limit() -> None:
+    module = _load_agent_console_web()
+
+    meter = module._initial_context_meter(
+        {
+            "usage": {"current_thread": {"total_tokens": 200_000}},
+            "session_budget": {
+                "checkpoint_tokens": 160_000,
+                "reauthorization_tokens": 200_000,
+            },
+        }
+    )
+
+    assert meter["label"] == "Handoff required"
+    assert meter["fill_pct"] == 100
 
 
 def test_prime_credits_ui_surfaces_usage_burn() -> None:
@@ -4276,15 +4294,17 @@ def test_legacy_norman_subpages_share_tui_shell_actions() -> None:
     assert ".site-banner--norman-shell .norman-shell-menu__sheet {" in styles
 
 
-def test_template_exposes_context_meter_save_hint() -> None:
+def test_template_exposes_tracked_thread_budget_handoff_control() -> None:
     source = _agent_console_web_source()
 
     assert 'id="context-meter-chip"' in source
     assert 'id="context-meter-status"' in source
     assert "function contextMeterState(snapshot)" in source
     assert "function renderContextMeter(snapshot)" in source
-    assert "Save soon" in source
-    assert "Heuristic only; use it as a save/compact hint" in source
+    assert "checkpoint_tokens" in source
+    assert "Handoff now" in source
+    assert "Create handoff" in source
+    assert "Tracked thread-token budget" in source
 
 
 def test_template_uses_a_full_command_surface_on_standard_desktops() -> None:
@@ -5135,21 +5155,56 @@ def test_bot_proxy_caddy_exposes_local_llm_frontdoor() -> None:
     assert (
         "llm.home.arpa, llm.knox.lollie.org {\n"
         "    import norman_internal_tls\n"
-        "    reverse_proxy 192.168.2.133:18151 192.168.2.150:18151 "
-        "192.168.2.151:18151 {\n"
-        "        lb_policy first\n"
-        "        lb_try_duration 15s\n"
-        "        lb_try_interval 250ms\n"
-        "        fail_duration 20s\n"
-        "        max_fails 1\n"
-        "        health_uri /healthz\n"
-        "        health_interval 3s\n"
-        "        health_timeout 2s\n"
+        "    redir /resident /resident/ 308\n"
+        "    handle_path /resident/* {\n"
+        "        reverse_proxy 192.168.2.151:18161 192.168.2.150:18161 {\n"
+        "            lb_policy first\n"
+        "            lb_try_duration 15s\n"
+        "            lb_try_interval 250ms\n"
+        "            fail_duration 20s\n"
+        "            max_fails 1\n"
+        "            health_uri /healthz\n"
+        "            health_interval 3s\n"
+        "            health_timeout 2s\n"
+        "        }\n"
+        "    }\n"
+        "    @asr path /transcribe /v1/audio/transcriptions\n"
+        "    handle @asr {\n"
+        "        request_body {\n"
+        "            max_size 512MB\n"
+        "        }\n"
+        "        reverse_proxy 192.168.2.151:18151\n"
+        "    }\n"
+        "    handle {\n"
+        "        reverse_proxy 192.168.2.133:18151 192.168.2.151:18151 "
+        "192.168.2.150:18151 {\n"
+        "            lb_policy first\n"
+        "            lb_try_duration 15s\n"
+        "            lb_try_interval 250ms\n"
+        "            fail_duration 20s\n"
+        "            max_fails 1\n"
+        "            health_uri /healthz\n"
+        "            health_interval 3s\n"
+        "            health_timeout 2s\n"
+        "        }\n"
         "    }\n"
         "}"
     ) in rendered_hosts
     assert '"llm.knox.lollie.org": "192.168.2.241"' in rendered_dns
     assert '"llm.home.arpa": "192.168.2.241"' in rendered_dns
+
+
+def test_bot_proxy_caddy_uses_asr_readiness_for_a_multi_worker_pool() -> None:
+    module = _load_bot_proxy_renderer()
+
+    rendered = "\n".join(
+        module._asr_proxy_lines(("192.168.2.150:18151", "192.168.2.151:18151"))
+    )
+
+    assert "request_body {" in rendered
+    assert "max_size 512MB" in rendered
+    assert "health_uri /asr-readyz" in rendered
+    assert "health_interval 3s" in rendered
 
 
 def test_bot_proxy_caddy_exposes_subprime_lane_aliases() -> None:
@@ -5832,6 +5887,7 @@ def test_local_sync_systemd_units_target_the_local_host() -> None:
         "/home/kristopher/code/norman/scripts/agent_console_template/agent_console_web.py"
         in path
     )
+    assert "/home/kristopher/code/norman/scripts/agent_console_child_agents.py" in path
     assert "Unit=norman-agent-console-sync-local.service" in path
     assert "Unit=norman-agent-console-sync-local.service" in timer
 

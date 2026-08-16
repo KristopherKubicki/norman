@@ -16,7 +16,7 @@ import sync_agent_console_template as sync
 
 
 DEFAULT_MIN_TIMEOUT_SECONDS = 3600
-DEFAULT_NO_CONSOLE_SCAN_HOSTS = {"private-host"}
+DEFAULT_NO_CONSOLE_SCAN_HOSTS: set[str] = set()
 DEFAULT_ROUTE_PROOF_MAX_AGE_SECONDS = 45 * 60
 DEFAULT_COLD_RECOVERY_PROOF_MAX_AGE_SECONDS = 9 * 60 * 60
 DEFERRED_WEB_RESTART_GRACE_SECONDS = 60
@@ -1189,10 +1189,7 @@ def build_reports(
 ) -> list[HostReport]:
     requested_targets = targets or list(sync.HOSTS)
     discovery_targets = requested_targets
-    if targets is None:
-        # The private enclave is registered in the estate but does not yet
-        # host a managed console. Avoid an unsolicited SSH probe there; an
-        # explicit --targets private-host request still performs the scan.
+    if targets is None and DEFAULT_NO_CONSOLE_SCAN_HOSTS:
         discovery_targets = [
             target
             for target in requested_targets
