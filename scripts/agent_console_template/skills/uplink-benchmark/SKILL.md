@@ -1,6 +1,6 @@
 ---
 name: uplink-benchmark
-description: Run and regenerate Uplink's evidence-backed Norllama benchmark matrix through personal AWS Bedrock. Use when asked to generate or refresh the Uplink/Norllama benchmark SVG, compare local models with Bedrock GPT-5.4 and GPT-5.6 Terra, repair missing benchmark evidence, inspect benchmark cost or coverage, improve matrix readability, or validate an existing matrix before discussing model-routing changes.
+description: Run and regenerate Uplink's evidence-backed Norllama benchmark matrix through personal AWS Bedrock. Use when asked to generate or refresh the Uplink/Norllama benchmark SVG, compare Qwen3.8 with Bedrock GPT-5.6 Luna, Terra, and Sol, repair missing benchmark evidence, inspect benchmark cost or coverage, improve matrix readability, or validate an existing matrix before discussing model-routing changes.
 ---
 
 # Uplink Benchmark
@@ -13,9 +13,11 @@ measured routing evidence, not a status report or a decorative artifact.
 - Use local Norllama only for planning, filtering, and evidence preparation.
   Send artifact generation and benchmark execution to a tool-capable Bedrock
   route.
-- Use `bedrock_gpt54_standard` and `bedrock_gpt56_standard_board` for
-  Bedrock baseline comparisons. Do not use OpenAI direct/API routes for this
-  benchmark.
+- Use `bedrock_gpt56_luna_board`, `bedrock_gpt56_terra_board`, and
+  `bedrock_gpt56_sol_board` for Bedrock baseline comparisons. Do not use
+  OpenAI direct/API routes for this benchmark.
+- Treat Qwen profiles older than 3.7 as historical evidence only. Do not put
+  them back into active routing, recommendations, or the published matrix.
 - Run the runner as root because the approved `kk-personal` AWS profile is
   root-owned. Do not copy credentials or add plaintext secret files.
 - Never add a model to the SVG without a completed `.score.json` artifact.
@@ -28,18 +30,20 @@ measured routing evidence, not a status report or a decorative artifact.
    ```bash
    sudo python3 -m py_compile scripts/run_norman_planner_packet.py
    sudo python3 scripts/run_norman_planner_packet.py --help |
-     grep -Eq 'bedrock_gpt54_standard.*bedrock_gpt56_standard_board'
+     grep -Eq 'bedrock_gpt56_luna_board.*bedrock_gpt56_sol_board.*bedrock_gpt56_terra_board'
    ```
 
 2. Confirm `scripts/benchmark_ollama_workflows.py` prices
-   `openai.gpt-5.4` and `openai.gpt-5.6-terra`; an unknown rate must remain
-   explicitly unpriced, never be presented as free.
+   `openai.gpt-5.6-luna`, `openai.gpt-5.6-terra`, and
+   `openai.gpt-5.6-sol`; an unknown rate must remain explicitly unpriced,
+   never be presented as free.
 3. Run one bounded smoke for each profile before spending on a board:
 
    ```bash
    sudo python3 scripts/run_norman_planner_packet.py \
      --packet-json tmp/norman_from_bbs/planner_llm_benchmark_packet.json \
-     --profiles bedrock_gpt54_standard bedrock_gpt56_standard_board \
+     --profiles bedrock_gpt56_luna_board bedrock_gpt56_terra_board \
+       bedrock_gpt56_sol_board \
      --limit 1 --max-new-cases 1 --timeout 180 \
      --out-dir evidence/norman_planner_packet_runs_bedrock_smoke
    ```
@@ -73,9 +77,9 @@ rebuild the aggregate.
 
 ## Visual Quality
 
-- Keep the primary routing board to the three selected local routing profiles
-  plus Bedrock GPT-5.4, GPT-5.5, and GPT-5.6. Keep direct/API and specialist
-  evidence in focused panels, not in the decision board.
+- Keep the primary routing board on Qwen3.8 plus Bedrock GPT-5.6 Luna, Terra,
+  and Sol. Keep retired Qwen, direct/API, and specialist evidence in packet
+  history or focused panels, not in the decision board.
 - Render candidate light and dark PNGs before replacing the published SVGs.
   The header legend, health note, and stat cards must not overlap.
 - Main-board cells show grade, score, coverage/runtime, and spend. Focused
@@ -87,8 +91,8 @@ rebuild the aggregate.
 ## Verify And Report
 
 - Confirm both SVGs are nonempty and that `shareable_view.display_cloud_profiles`
-  includes `bedrock_gpt54_standard` and `bedrock_gpt56_standard_board`.
-- Confirm every displayed Bedrock 5.4 cell has full coverage or report the
+  includes all three explicit GPT-5.6 board profiles.
+- Confirm every displayed Bedrock GPT-5.6 cell has full coverage or report the
   exact remaining runtime failure and its retry artifact.
 - Report model, route, scored/attempted prompts, coverage, runtime failures,
   critical failures, and estimated Bedrock spend.
