@@ -53,7 +53,9 @@ def test_guarded_plist_preserves_gateway_settings_and_adds_launchd_limits() -> N
     }
 
 
-def test_write_guarded_plist_keeps_valid_plist_and_creates_backup(tmp_path: Path) -> None:
+def test_write_guarded_plist_keeps_valid_plist_and_creates_backup(
+    tmp_path: Path,
+) -> None:
     module = _load_module()
     plist_path = tmp_path / "org.lollie.norllama.plist"
     with plist_path.open("wb") as stream:
@@ -131,7 +133,9 @@ def test_failed_restart_restores_and_reloads_prior_plist(
     assert "Restored the prior plist" in capsys.readouterr().err
 
 
-def test_reload_job_retries_bootstrap_after_teardown(monkeypatch, tmp_path: Path) -> None:
+def test_reload_job_retries_bootstrap_after_teardown(
+    monkeypatch, tmp_path: Path
+) -> None:
     module = _load_module()
     launchctl = tmp_path / "launchctl"
     launchctl.touch()

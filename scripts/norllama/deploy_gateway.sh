@@ -13,9 +13,13 @@ if [[ -z "$python_bin" ]]; then
 fi
 
 runtime_package_files=(
+  "${repo_root}/app/core/estate_registry.py"
+  "${repo_root}/app/services/norllama/escalation_policy.py"
   "${repo_root}/app/services/norllama/route_policy.py"
   "${repo_root}/app/services/norllama/route_policy_artifact.py"
 )
+model_role_config="${repo_root}/config/norllama/model_roles.json"
+fleet_topology_config="${repo_root}/config/fleet/topology.json"
 guardrail_install_script="${repo_root}/scripts/norllama/install_resource_guardrails.sh"
 mac_guardrail_install_script="${repo_root}/scripts/norllama/install_macos_launchd_guardrails.py"
 guardrail_files=(
@@ -24,12 +28,22 @@ guardrail_files=(
 )
 temp_policy_path=""
 
-mac_target="${NORLLAMA_MAC_TARGET:-k@192.168.2.133}"
+topology_address() {
+  "$python_bin" - "$fleet_topology_config" "$1" <<'PY'
+import json
+import sys
+
+payload = json.load(open(sys.argv[1], encoding="utf-8"))
+print(payload["workers"][sys.argv[2]]["address"])
+PY
+}
+
+mac_target="${NORLLAMA_MAC_TARGET:-k@$(topology_address mac-mini-133)}"
 mac_path="${NORLLAMA_MAC_PATH:-/Users/k/norllama/norllama_gateway.py}"
 mac_service="${NORLLAMA_MAC_SERVICE:-org.lollie.norllama}"
 mac_curl_bin="${NORLLAMA_MAC_CURL_BIN:-/usr/bin/curl}"
 
-spark_targets="${NORLLAMA_SPARK_TARGETS:-kristopher@192.168.2.150 kristopher@192.168.2.151}"
+spark_targets="${NORLLAMA_SPARK_TARGETS:-kristopher@$(topology_address spark-150) kristopher@$(topology_address spark-151)}"
 spark_path="${NORLLAMA_SPARK_PATH:-/home/kristopher/norllama/norllama_gateway.py}"
 spark_service="${NORLLAMA_SPARK_SERVICE:-norllama-gateway.service}"
 
@@ -91,7 +105,10 @@ stage_worker_bundle() {
   stage_path="$(ssh "$target" "mktemp -d '${worker_root}/.norllama-deploy.XXXXXX'")"
 
   if ! ssh "$target" \
-    "mkdir -p '$stage_path/app/services/norllama'
+    "mkdir -p '$stage_path/app/core'
+     mkdir -p '$stage_path/app/services/norllama'
+     mkdir -p '$stage_path/config/norllama'
+     mkdir -p '$stage_path/config/fleet'
      mkdir -p '$stage_path/systemd/norllama-gateway.service.d'
      mkdir -p '$stage_path/systemd/spark-audio-transcribe-core.service.d'"; then
     cleanup_remote_stage "$target" "$stage_path"
@@ -109,9 +126,26 @@ stage_worker_bundle() {
     return 1
   fi
   if ! scp -q \
+    "${repo_root}/app/core/estate_registry.py" \
+    "${target}:${stage_path}/app/core/"; then
+    cleanup_remote_stage "$target" "$stage_path"
+    return 1
+  fi
+  if ! scp -q \
     "${repo_root}/app/services/norllama/route_policy.py" \
     "${repo_root}/app/services/norllama/route_policy_artifact.py" \
+    "${repo_root}/app/services/norllama/escalation_policy.py" \
     "${target}:${stage_path}/app/services/norllama/"; then
+    cleanup_remote_stage "$target" "$stage_path"
+    return 1
+  fi
+  if ! scp -q "$model_role_config" \
+    "${target}:${stage_path}/config/norllama/model_roles.json"; then
+    cleanup_remote_stage "$target" "$stage_path"
+    return 1
+  fi
+  if ! scp -q "$fleet_topology_config" \
+    "${target}:${stage_path}/config/fleet/topology.json"; then
     cleanup_remote_stage "$target" "$stage_path"
     return 1
   fi
@@ -142,10 +176,22 @@ stage_path="$1"
 
 python3 -m py_compile \
   "$stage_path/norllama_gateway.py" \
+  "$stage_path/app/core/estate_registry.py" \
+  "$stage_path/app/services/norllama/escalation_policy.py" \
   "$stage_path/app/services/norllama/route_policy.py" \
   "$stage_path/app/services/norllama/route_policy_artifact.py"
 bash -n "$stage_path/install_resource_guardrails.sh"
 python3 -m py_compile "$stage_path/install_macos_launchd_guardrails.py"
+python3 - "$stage_path/config/norllama/model_roles.json" <<'PY'
+import json
+import sys
+
+payload = json.load(open(sys.argv[1], encoding="utf-8"))
+assert payload["schema"] == "norman.norllama.model-roles.v1"
+assert set(payload["roles"]) == {"resident", "economy", "authority", "frontier"}
+assert all(payload["roles"][role]["model"] for role in payload["roles"])
+assert payload["roles"]["resident"]["endpoints"]
+PY
 
 NORMAN_NORLLAMA_ROUTE_POLICY_PATH="$stage_path/route_policy.json" \
   python3 - "$stage_path" <<'PY'
@@ -179,10 +225,15 @@ def load_module(name: str, path: Path) -> types.ModuleType:
 
 
 register_package("app", stage_path / "app")
+register_package("app.core", stage_path / "app" / "core")
 register_package("app.services", stage_path / "app" / "services")
 register_package(
     "app.services.norllama",
     stage_path / "app" / "services" / "norllama",
+)
+load_module(
+    "app.core.estate_registry",
+    stage_path / "app" / "core" / "estate_registry.py",
 )
 route_policy = load_module(
     "app.services.norllama.route_policy",
@@ -242,8 +293,15 @@ publish_worker_bundle() {
   ssh "$target" \
     "set -eu
      mkdir -p '$worker_root/app/services/norllama'
+     mkdir -p '$worker_root/app/core'
+     mkdir -p '$worker_root/config/norllama'
+     mkdir -p '$worker_root/config/fleet'
+     mv '$stage_path/app/core/estate_registry.py' '$worker_root/app/core/estate_registry.py'
+     mv '$stage_path/app/services/norllama/escalation_policy.py' '$worker_root/app/services/norllama/escalation_policy.py'
      mv '$stage_path/app/services/norllama/route_policy.py' '$worker_root/app/services/norllama/route_policy.py'
      mv '$stage_path/app/services/norllama/route_policy_artifact.py' '$worker_root/app/services/norllama/route_policy_artifact.py'
+     mv '$stage_path/config/norllama/model_roles.json' '$worker_root/config/norllama/model_roles.json'
+     mv '$stage_path/config/fleet/topology.json' '$worker_root/config/fleet/topology.json'
      mv '$stage_path/norllama_gateway.py' '$gateway_path'
      mv '$stage_path/route_policy.json' '$policy_path'
      mv '$stage_path/install_resource_guardrails.sh' '$worker_root/install_resource_guardrails.sh'
@@ -284,7 +342,7 @@ while [ "$attempt" -le 15 ]; do
   if "$curl_bin" -fsS --max-time 5 http://127.0.0.1:18151/healthz >/dev/null \
     && "$curl_bin" -fsS --max-time 5 http://127.0.0.1:18151/readyz >/dev/null \
     && "$curl_bin" -fsS --max-time 5 http://127.0.0.1:18151/asr-readyz >/dev/null \
-    && "$curl_bin" -fsS --max-time 5 http://127.0.0.1:18151/v1/models >/dev/null; then
+    && "$curl_bin" -fsS --max-time 10 http://127.0.0.1:18151/v1/models >/dev/null; then
     exit 0
   fi
   attempt=$((attempt + 1))
@@ -306,7 +364,7 @@ while [ "$attempt" -le 15 ]; do
   if curl -fsS --max-time 5 http://127.0.0.1:18151/healthz >/dev/null \
     && curl -fsS --max-time 5 http://127.0.0.1:18151/readyz >/dev/null \
     && curl -fsS --max-time 5 http://127.0.0.1:18151/asr-readyz >/dev/null \
-    && curl -fsS --max-time 5 http://127.0.0.1:18151/v1/models >/dev/null; then
+    && curl -fsS --max-time 10 http://127.0.0.1:18151/v1/models >/dev/null; then
     exit 0
   fi
   attempt=$((attempt + 1))
@@ -353,6 +411,10 @@ for runtime_file in "${runtime_package_files[@]}"; do
     exit 1
   fi
 done
+if [[ ! -f "$model_role_config" ]]; then
+  echo "Missing Norllama model-role registry: $model_role_config" >&2
+  exit 1
+fi
 if [[ ! -f "$guardrail_install_script" ]]; then
   echo "Missing Norllama guardrail installer: $guardrail_install_script" >&2
   exit 1

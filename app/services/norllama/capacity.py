@@ -19,10 +19,9 @@ CAPACITY_ROUTE_OUTCOME_COOLDOWN_SECONDS = 900
 LOCAL_MODEL_TIMEOUT_COOLDOWN_SECONDS = DEFAULT_LOCAL_MODEL_TIMEOUT_COOLDOWN_SECONDS
 HEAVY_CODING_MODEL = ROUTE_POLICY_MODELS["coding_operator"]
 HEAVY_CODING_WORKER_IDS = frozenset(
-    {
-        str(ROUTE_POLICY_PLACEMENT["primary_brain_worker"]),
-        str(ROUTE_POLICY_PLACEMENT["specialist_worker"]),
-    }
+    str(worker_id)
+    for worker_id in ROUTE_POLICY_PLACEMENT["resident_runtime_workers"]
+    if str(worker_id).strip()
 )
 FALLBACK_WORKER_ID = str(ROUTE_POLICY_PLACEMENT["fallback_node"])
 

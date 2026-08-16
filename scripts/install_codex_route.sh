@@ -48,7 +48,8 @@ for source in \
   "$SCRIPT_DIR/norman_codex_gateway_broker.sh" \
   "$SCRIPT_DIR/norman_networking_secret_broker.sh" \
   "$SCRIPT_DIR/codex_cli_wrapper.sh" \
-  "$SCRIPT_DIR/codex_work_wrapper.sh"; do
+  "$SCRIPT_DIR/codex_work_wrapper.sh" \
+  "$SCRIPT_DIR/codex_work_fast_wrapper.sh"; do
   if [[ ! -f "$source" ]]; then
     echo "codex route installer: required source is missing: $source" >&2
     exit 1
@@ -77,6 +78,7 @@ install -m 0700 \
   "$LIB_DIR/norman_networking_secret_broker.sh"
 install -m 0700 "$SCRIPT_DIR/codex_cli_wrapper.sh" "$BIN_DIR/codex"
 install -m 0700 "$SCRIPT_DIR/codex_work_wrapper.sh" "$BIN_DIR/codex-work"
+install -m 0700 "$SCRIPT_DIR/codex_work_fast_wrapper.sh" "$BIN_DIR/codex-work-fast"
 
 if [[ "$install_shell_path" -eq 1 ]]; then
   install_path_block() {

@@ -199,11 +199,8 @@ connectors: []
 broadcast_connectors: ""
 
 openai_api_key:
-openai_default_model: "gpt-5.5"
-openai_available_models:
-  - gpt-5.5
-  - gpt-5-mini
-  - o3
+# Model defaults and allowed cloud tiers come from
+# config/norllama/model_roles.json. Override these only for an isolated test.
 openai_max_tokens: 150
 
 # LLM durability / provider chain. Keep clients on the logical local front door;
@@ -218,10 +215,12 @@ llm_backup_base_url: ""
 llm_backup_model: ""
 llm_offline_provider: "openai_compatible"
 llm_offline_api_key: "ollama"
-llm_offline_base_url: "https://llm.home.arpa/v1"
-llm_offline_model: "qwen3-coder:30b-a3b-q4_K_M"
+# The resident model and stable client endpoint come from the model registry.
 llm_provider_timeout_seconds: 45
 console_runtime_norllama_timeout_seconds: 180
+# Explicit cloud selections buffer one provider response while emitting SSE
+# heartbeats. Keep their model budget separate from short health/probe calls.
+prompt_facade_explicit_cloud_timeout_seconds: 1200
 # This narrow retry is disabled until a deployment supplies both an approved
 # Bedrock region and a logical Norman Keys credential alias. Never put AWS
 # credentials or a profile name in this configuration.
@@ -233,25 +232,7 @@ prompt_facade_cloud_fallback_credentials_secret: ""
 prompt_facade_explicit_cloud_mantle_api_key_secret: ""
 llm_mesh_cache_ttl_seconds: 15
 llm_mesh_cache_stale_seconds: 300
-llm_mesh_workers:
-  - id: "mac-mini-133"
-    name: "Mac mini fallback"
-    role: "fallback"
-    base_url: "http://192.168.2.133:18151"
-    memory_gb: 16
-    priority: 1
-  - id: "spark-150"
-    name: "Production spark 150"
-    role: "production"
-    base_url: "http://192.168.2.150:18151"
-    memory_gb: 128
-    priority: 2
-  - id: "spark-151"
-    name: "Production spark 151"
-    role: "production"
-    base_url: "http://192.168.2.151:18151"
-    memory_gb: 128
-    priority: 3
+# Worker membership comes from config/fleet/topology.json.
 llm_benchmark_packet_path: "/var/lib/norman/norllama/benchmark_packet.json"
 llm_benchmark_packet_url: ""
 llm_warm_policy_enabled: true
@@ -260,10 +241,10 @@ llm_warm_policy_prefetch_timeout_seconds: 5
 llm_ping_targets:
   # Optional extra model health checks beyond the primary/backup/offline chain.
   # Prefer api_key_env for third-party keys; do not commit plaintext secrets.
-  # - id: "openai-55"
-  #   name: "OpenAI 5.5"
+  # - id: "openai-authority"
+  #   name: "OpenAI authority role"
   #   provider: "openai"
-  #   model: "gpt-5.5"  # Replace with the exact OpenAI model id to check.
+  #   model: ""  # Resolve the authority role from the model registry.
   #   api_key_env: "OPENAI_API_KEY"
   # - id: "claude-main"
   #   name: "Claude"

@@ -9,6 +9,7 @@ import httpx
 import pytest
 import requests
 
+from app.core.estate_registry import resident_model
 from app.services.console_runtime.types import ModelResult, ModelUsage
 from app.services.prompt_load_balancer import (
     balance_prompt,
@@ -16,6 +17,7 @@ from app.services.prompt_load_balancer import (
     provider_adapter_decision,
 )
 from app.services.norllama import gateway as norllama_gateway
+from app.services.norllama.route_policy import ROUTE_POLICY_PLACEMENT
 from app.services.prompt_provider_facade import (
     FacadeError,
     execute_openai_chat_facade,
@@ -726,6 +728,61 @@ def _install_bedrock_stub(
     return calls
 
 
+def test_explicit_cloud_timeout_is_independent_from_short_provider_timeout(
+    monkeypatch,
+):
+    from app.services import prompt_provider_facade
+
+    monkeypatch.setattr(
+        prompt_provider_facade.settings,
+        "llm_provider_timeout_seconds",
+        30,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        prompt_provider_facade.settings,
+        "console_runtime_bedrock_timeout_seconds",
+        300,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        prompt_provider_facade.settings,
+        "prompt_facade_explicit_cloud_timeout_seconds",
+        1200,
+        raising=False,
+    )
+
+    assert prompt_provider_facade._explicit_cloud_timeout_seconds() == 1200
+
+
+def test_explicit_cloud_timeout_is_capped_at_thirty_minutes(monkeypatch):
+    from app.services import prompt_provider_facade
+
+    monkeypatch.setattr(
+        prompt_provider_facade.settings,
+        "prompt_facade_explicit_cloud_timeout_seconds",
+        7200,
+        raising=False,
+    )
+
+    assert prompt_provider_facade._explicit_cloud_timeout_seconds() == 1800
+
+
+def test_explicit_cloud_timeout_failure_is_classified_without_error_text():
+    from app.services import prompt_provider_facade
+
+    try:
+        try:
+            raise TimeoutError("provider detail must remain private")
+        except TimeoutError as exc:
+            raise RuntimeError("sanitized wrapper") from exc
+    except RuntimeError as exc:
+        assert (
+            prompt_provider_facade._explicit_cloud_failure_code(exc)
+            == "explicit_cloud_selection_timeout"
+        )
+
+
 class _MockNativeStreamResponse:
     def __init__(self, lines, *, headers=None):
         self._lines = list(lines)
@@ -816,7 +873,7 @@ def _capacity_mesh(
     spark_151_models=None,
     cache_status="refresh",
 ):
-    model = "qwen3-coder:30b-a3b-q4_K_M"
+    model = resident_model()
     return {
         "frontdoor": {
             "reachable": frontdoor_reachable,
@@ -886,7 +943,7 @@ def test_openai_compat_chat_completions_routes_local_first(test_app, monkeypatch
     payload = response.json()
     assert payload["object"] == "chat.completion"
     assert payload["choices"][0]["message"]["content"] == "local ok"
-    assert payload["model"] == "qwen3-coder:30b-a3b-q4_K_M"
+    assert payload["model"] == resident_model()
     assert payload["usage"]["total_tokens"] == 6
     assert payload["norman"]["local_execution"] is True
     assert payload["norman"]["cloud_forwarding"] is False
@@ -2526,12 +2583,14 @@ def test_openai_compat_responses_returns_gateway_failure(test_app, monkeypatch):
         "schema": "norman.local-gateway-error.v1",
         "request_id": "gateway-unavailable-test",
         "requested_model": "norman-code",
-        "selected_model": "qwen3-coder:30b-a3b-q4_K_M",
+        "selected_model": resident_model(),
         "retryable": True,
         "cloud_fallback": False,
         "eligible_workers": [
-            {"id": "spark-150", "role": "production"},
-            {"id": "spark-151", "role": "production"},
+            {"id": worker_id, "role": "production"}
+            for worker_id in sorted(
+                ROUTE_POLICY_PLACEMENT["resident_runtime_workers"]
+            )
         ],
         "ineligible_workers": [
             {
@@ -3232,7 +3291,7 @@ def test_openai_compat_capacity_blocks_recent_local_model_timeout(
         error={
             "code": "local_model_timeout",
             "norman": {
-                "selected_model": "qwen3-coder:30b-a3b-q4_K_M",
+                "selected_model": resident_model(),
                 "retryable": True,
             },
         },

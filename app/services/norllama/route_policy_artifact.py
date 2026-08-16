@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -15,8 +16,11 @@ ROUTE_POLICY_SCHEMA = "norman.norllama.route-policy.v1"
 ROUTE_POLICY_VALIDATION_SCHEMA = "norman.norllama.route-policy-validation.v1"
 ROUTE_POLICY_AUTHORIZATION_SCHEMA = "norman.norllama.route-policy-authorization.v1"
 ROUTE_POLICY_BLOCK_SCHEMA = "norman.norllama.policy-block.v1"
-ROUTE_POLICY_VERSION = "2026.08.06.explicit-cloud-v1"
-SUPPORTED_ROUTE_POLICY_VERSIONS = {ROUTE_POLICY_VERSION}
+ROUTE_POLICY_VERSION = "2026.08.16.registry-driven-v3"
+SUPPORTED_ROUTE_POLICY_VERSIONS = {
+    ROUTE_POLICY_VERSION,
+    "2026.08.16.model-roles-shadow-v2",
+}
 DEFAULT_MAX_TTL_SECONDS = 7 * 24 * 60 * 60
 EXPIRING_SOON_SECONDS = 72 * 60 * 60
 MANUAL_DEGRADED_MAX_TTL_SECONDS = 6 * 60 * 60
@@ -160,6 +164,9 @@ def generate_route_policy_artifact(
         "residency": dict(material.get("residency") or {}),
         "fallbacks": dict(material.get("fallbacks") or {}),
         "cloud_policy": dict(material.get("cloud_policy") or {}),
+        "escalation_controller": copy.deepcopy(
+            material.get("escalation_controller") or {}
+        ),
         "lifecycle_policy": dict(material.get("lifecycle_policy") or {}),
         "emergency_overlays": dict(material.get("emergency_overlays") or {}),
     }
@@ -314,10 +321,39 @@ def validate_route_policy_artifact(
         "residency",
         "fallbacks",
         "cloud_policy",
+        "escalation_controller",
         "lifecycle_policy",
     ):
         if not isinstance(policy.get(key), dict) or not policy.get(key):
             return _invalid_state("invalid_schema", f"missing_{key}", policy).as_dict()
+
+    controller = policy["escalation_controller"]
+    if controller.get("schema") != "norman.norllama.escalation-controller.v1":
+        return _invalid_state(
+            "invalid_schema", "invalid_escalation_controller_schema", policy
+        ).as_dict()
+    roles = controller.get("roles")
+    if not isinstance(roles, dict):
+        return _invalid_state(
+            "invalid_schema", "missing_escalation_controller_roles", policy
+        ).as_dict()
+    for role in ("resident", "economy", "authority", "frontier"):
+        row = roles.get(role)
+        if not isinstance(row, dict) or not _clean(row.get("model")):
+            return _invalid_state(
+                "invalid_schema",
+                f"missing_escalation_controller_role_{role}",
+                policy,
+            ).as_dict()
+    resident_endpoints = roles["resident"].get("endpoints")
+    if not isinstance(resident_endpoints, list) or not all(
+        _clean(endpoint) for endpoint in resident_endpoints
+    ):
+        return _invalid_state(
+            "invalid_schema",
+            "invalid_escalation_controller_resident_endpoints",
+            policy,
+        ).as_dict()
 
     current = (now or _now()).astimezone(timezone.utc)
     if current < not_before:

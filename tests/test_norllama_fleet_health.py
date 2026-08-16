@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
 
 def _load_module():
-    path = Path(__file__).resolve().parents[1] / "scripts" / "norllama" / "fleet_health.py"
+    path = (
+        Path(__file__).resolve().parents[1] / "scripts" / "norllama" / "fleet_health.py"
+    )
     spec = importlib.util.spec_from_file_location("fleet_health", path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
@@ -53,7 +56,9 @@ def test_collect_surfaces_policy_expiry_and_memory_pressure(monkeypatch) -> None
     module = _load_module()
     target = module.DEFAULT_TARGETS[0]
     payload = _healthy_payload()
-    payload["endpoints"]["/readyz"]["json"]["policy"]["validation"]["seconds_to_expiry"] = 60
+    payload["endpoints"]["/readyz"]["json"]["policy"]["validation"][
+        "seconds_to_expiry"
+    ] = 60
     payload["resources"]["mem_available_kib"] = 3 * 1024 * 1024
     monkeypatch.setattr(module, "probe_target", lambda _target: payload)
 
@@ -79,3 +84,44 @@ def test_collect_fails_when_gateway_endpoint_or_service_is_down(monkeypatch) -> 
         "endpoint:/asr-readyz",
         "service:asr",
     }
+
+
+def test_probe_timeout_is_reported_without_crashing_collection(monkeypatch) -> None:
+    module = _load_module()
+    target = module.DEFAULT_TARGETS[1]
+
+    def timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(["ssh"], 20)
+
+    monkeypatch.setattr(module.subprocess, "run", timeout)
+
+    report = module.collect((target,))
+
+    assert report["status"] == "failed"
+    assert report["summary"] == {"active": 0, "expected": 1, "fail": 1, "warn": 0}
+    assert report["issues"][0]["check"] == "ssh"
+    assert report["issues"][0]["detail"] == "SSH probe timed out after 20 seconds"
+
+
+def test_restart_totals_only_alert_when_they_increase(monkeypatch) -> None:
+    module = _load_module()
+    target = module.DEFAULT_TARGETS[0]
+    payload = _healthy_payload()
+    payload["services"]["gateway"]["restarts"] = 76
+    monkeypatch.setattr(module, "probe_target", lambda _target: payload)
+    previous = {
+        "targets": [
+            {
+                "name": target.name,
+                "services": {"gateway": {"active": True, "restarts": 76}},
+            }
+        ]
+    }
+
+    stable = module.collect((target,), previous=previous)
+    assert stable["status"] == "ok"
+
+    payload["services"]["gateway"]["restarts"] = 77
+    restarted = module.collect((target,), previous=previous)
+    assert restarted["status"] == "degraded"
+    assert restarted["issues"][0]["detail"] == "1 new restart(s) (77 total)"

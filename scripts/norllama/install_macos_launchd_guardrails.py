@@ -19,9 +19,7 @@ from typing import Any, Optional
 
 
 DEFAULT_LABEL = "org.lollie.norllama"
-DEFAULT_PLIST_PATH = (
-    Path.home() / "Library" / "LaunchAgents" / f"{DEFAULT_LABEL}.plist"
-)
+DEFAULT_PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{DEFAULT_LABEL}.plist"
 DEFAULT_PORT = 18151
 SOFT_RSS_BYTES = 3 * 1024 * 1024 * 1024
 HARD_RSS_BYTES = 4 * 1024 * 1024 * 1024
@@ -77,9 +75,7 @@ def write_guarded_plist(path: Path, label: str) -> Path:
     payload = guarded_plist(load_plist(path, label))
     source_stat = path.stat()
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = path.with_name(
-        f"{path.name}.bak-{stamp}-before-resource-guardrails"
-    )
+    backup_path = path.with_name(f"{path.name}.bak-{stamp}-before-resource-guardrails")
     shutil.copy2(path, backup_path)
 
     with tempfile.NamedTemporaryFile(
@@ -120,8 +116,7 @@ def reload_job(label: str, plist_path: Path) -> None:
             if attempt < 29:
                 time.sleep(1)
     raise RuntimeError(
-        "launchd did not finish removing the previous "
-        f"{label} job before bootstrap"
+        "launchd did not finish removing the previous " f"{label} job before bootstrap"
     ) from last_error
 
 
@@ -211,9 +206,7 @@ def main(argv: list[str] | None = None) -> int:
                 reload_job(args.label, args.plist)
                 if not wait_for_ready(args.port):
                     raise RuntimeError("the restored gateway did not become ready")
-                recovery_message = (
-                    f" Restored the prior plist from {backup_path}."
-                )
+                recovery_message = f" Restored the prior plist from {backup_path}."
             except (
                 OSError,
                 RuntimeError,

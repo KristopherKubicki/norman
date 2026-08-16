@@ -13,6 +13,13 @@ from urllib import request as urllib_request
 
 import yaml
 
+from app.core.estate_registry import (
+    available_cloud_models,
+    default_cloud_model,
+    mesh_worker_defaults,
+    resident_client_endpoint,
+    resident_model,
+)
 
 # should this move to schemas?
 class Settings(BaseSettings):
@@ -228,8 +235,8 @@ class Settings(BaseSettings):
     connectors: List[Dict[str, Any]] = []
     broadcast_connectors: str = ""
     openai_api_key: Optional[str]
-    openai_default_model: str = "gpt-5.5"
-    openai_available_models: List[str] = ["gpt-5.5", "gpt-5-mini", "o3"]
+    openai_default_model: str = default_cloud_model()
+    openai_available_models: List[str] = available_cloud_models()
     openai_max_tokens: int = 150
     llm_primary_provider: str = "openai"
     llm_primary_api_key: str = ""
@@ -241,43 +248,19 @@ class Settings(BaseSettings):
     llm_backup_model: str = ""
     llm_offline_provider: str = "openai_compatible"
     llm_offline_api_key: str = "ollama"
-    llm_offline_base_url: str = "https://llm.home.arpa/v1"
-    llm_offline_model: str = "qwen3-coder:30b-a3b-q4_K_M"
+    llm_offline_base_url: str = resident_client_endpoint()
+    llm_offline_model: str = resident_model()
     llm_provider_timeout_seconds: int = 45
     console_runtime_norllama_timeout_seconds: int = 180
     console_runtime_bedrock_timeout_seconds: int = 300
+    prompt_facade_explicit_cloud_timeout_seconds: int = 1200
     prompt_facade_cloud_fallback_enabled: bool = False
     prompt_facade_cloud_fallback_aws_region: str = ""
     prompt_facade_cloud_fallback_credentials_secret: str = ""
     prompt_facade_explicit_cloud_mantle_api_key_secret: str = ""
     llm_mesh_cache_ttl_seconds: int = 15
     llm_mesh_cache_stale_seconds: int = 300
-    llm_mesh_workers: List[Dict[str, Any]] = [
-        {
-            "id": "mac-mini-133",
-            "name": "Mac mini fallback",
-            "role": "fallback",
-            "base_url": "http://192.168.2.133:18151",
-            "memory_gb": 16,
-            "priority": 1,
-        },
-        {
-            "id": "spark-150",
-            "name": "Production spark 150",
-            "role": "production",
-            "base_url": "http://192.168.2.150:18151",
-            "memory_gb": 128,
-            "priority": 2,
-        },
-        {
-            "id": "spark-151",
-            "name": "Production spark 151",
-            "role": "production",
-            "base_url": "http://192.168.2.151:18151",
-            "memory_gb": 128,
-            "priority": 3,
-        },
-    ]
+    llm_mesh_workers: List[Dict[str, Any]] = mesh_worker_defaults()
     llm_benchmark_packet_path: str = "/var/lib/norman/norllama/benchmark_packet.json"
     llm_benchmark_packet_url: str = ""
     llm_warm_policy_enabled: bool = True

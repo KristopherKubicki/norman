@@ -8,9 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "norllama" / "deploy_gateway.sh"
 INSTALLER = ROOT / "scripts" / "norllama" / "install_resource_guardrails.sh"
-MAC_INSTALLER = (
-    ROOT / "scripts" / "norllama" / "install_macos_launchd_guardrails.py"
-)
+MAC_INSTALLER = ROOT / "scripts" / "norllama" / "install_macos_launchd_guardrails.py"
 
 
 def _write_fake_worker_transport(bin_dir: Path) -> None:
@@ -73,26 +71,23 @@ def test_deploy_gateway_stages_runtime_and_uses_safe_restart_transport() -> None
 
     assert "stage_worker_bundle()" in source
     assert "route_policy_artifact.py" in source
+    assert "config/norllama/model_roles.json" in source
     assert "install_resource_guardrails.sh" in source
     assert "install_macos_launchd_guardrails.py" in source
     assert "--sparks-no-restart" in source
     assert "route_policy.next.json" in source
-    assert "stat -c '%u:%g'" in (
-        INSTALLER.read_text(encoding="utf-8")
-    )
+    assert "stat -c '%u:%g'" in (INSTALLER.read_text(encoding="utf-8"))
     assert "app/services/__init__.py" not in source
     assert "importlib.util.spec_from_file_location" in source
     assert 'ssh "$target" "sh -s -- \'$stage_path\'" >&2' in source
     assert 'ssh "$mac_target" \\' in source
-    assert 'sh -s -- \'$mac_service\' \'$mac_curl_bin\'' in source
+    assert "sh -s -- '$mac_service' '$mac_curl_bin'" in source
+    assert '"$curl_bin" -fsS --max-time 5 http://127.0.0.1:18151/readyz' in source
     assert (
-        '"$curl_bin" -fsS --max-time 5 http://127.0.0.1:18151/readyz'
+        '"$curl_bin" -fsS --max-time 10 http://127.0.0.1:18151/v1/models'
         in source
     )
-    assert (
-        '"$curl_bin" -fsS --max-time 5 http://127.0.0.1:18151/asr-readyz'
-        in source
-    )
+    assert '"$curl_bin" -fsS --max-time 5 http://127.0.0.1:18151/asr-readyz' in source
 
 
 def test_deploy_gateway_publishes_complete_runtime_bundle_to_worker(
@@ -126,6 +121,7 @@ def test_deploy_gateway_publishes_complete_runtime_bundle_to_worker(
     assert (
         worker_root / "app" / "services" / "norllama" / "route_policy_artifact.py"
     ).is_file()
+    assert (worker_root / "config" / "norllama" / "model_roles.json").is_file()
     assert (worker_root / "install_resource_guardrails.sh").is_file()
     assert (worker_root / "install_macos_launchd_guardrails.py").is_file()
     assert (
@@ -211,6 +207,5 @@ esac
 
     assert result.returncode == 0, result.stderr
     assert (
-        "spark-audio-transcribe.service.d/zz-resource-guardrails.conf"
-        in result.stdout
+        "spark-audio-transcribe.service.d/zz-resource-guardrails.conf" in result.stdout
     )

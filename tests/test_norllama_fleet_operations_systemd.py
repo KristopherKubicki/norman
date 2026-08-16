@@ -8,11 +8,15 @@ SYSTEMD = ROOT / "scripts" / "systemd"
 
 
 def test_fleet_policy_refresh_is_periodic_and_noninteractive() -> None:
-    service = (SYSTEMD / "norllama-fleet-policy-refresh.service").read_text(encoding="utf-8")
-    timer = (SYSTEMD / "norllama-fleet-policy-refresh.timer").read_text(encoding="utf-8")
+    service = (SYSTEMD / "norllama-fleet-policy-refresh.service").read_text(
+        encoding="utf-8"
+    )
+    timer = (SYSTEMD / "norllama-fleet-policy-refresh.timer").read_text(
+        encoding="utf-8"
+    )
 
     assert "User=kristopher" in service
-    assert "refresh_fleet_route_policy.py --apply" in service
+    assert "refresh_fleet_route_policy.py --apply --stage-only" in service
     assert "OnUnitActiveSec=6h" in timer
     assert "Persistent=true" in timer
 
@@ -28,9 +32,9 @@ def test_fleet_health_alerts_reuse_the_standard_alert_contract() -> None:
 
 
 def test_policy_refresh_failures_trigger_the_standard_alert_contract() -> None:
-    alerts = (
-        SYSTEMD / "norllama-fleet-policy-refresh-alerts.service"
-    ).read_text(encoding="utf-8")
+    alerts = (SYSTEMD / "norllama-fleet-policy-refresh-alerts.service").read_text(
+        encoding="utf-8"
+    )
     path = (SYSTEMD / "norllama-fleet-policy-refresh-alerts.path").read_text(
         encoding="utf-8"
     )

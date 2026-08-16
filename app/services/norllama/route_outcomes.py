@@ -3,6 +3,8 @@ from __future__ import annotations
 import time
 from typing import Any, Iterable
 
+from app.core.estate_registry import worker_id_from_endpoint
+
 DEFAULT_COOLDOWN_STATUSES = {
     "bad-output",
     "empty-response",
@@ -34,14 +36,7 @@ def _json_dict(value: Any) -> dict[str, Any]:
 
 
 def _worker_id_from_endpoint(value: Any) -> str:
-    text = _clean(value).lower()
-    if "192.168.2.151" in text or "2.151" in text:
-        return "spark-151"
-    if "192.168.2.150" in text or "2.150" in text:
-        return "spark-150"
-    if "192.168.2.133" in text or "2.133" in text:
-        return "mac-mini-133"
-    return ""
+    return worker_id_from_endpoint(_clean(value))
 
 
 def normalize_route_outcome(value: Any) -> dict[str, Any]:

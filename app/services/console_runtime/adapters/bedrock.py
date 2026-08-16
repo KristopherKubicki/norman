@@ -380,10 +380,13 @@ def _uses_bedrock_mantle_responses(
     model: str,
     authorization: dict[str, Any],
 ) -> bool:
-    """Use Mantle only for the explicit GPT selection authorized by the facade."""
+    """Use Mantle for a facade-authorized GPT-5 cloud route."""
 
     return bool(
-        authorization.get("explicit_cloud_selection_authorized")
+        (
+            authorization.get("explicit_cloud_selection_authorized")
+            or authorization.get("cloud_fallback_authorized")
+        )
         and _clean(model).lower().startswith("openai.gpt-5.")
     )
 

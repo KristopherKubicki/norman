@@ -12,6 +12,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from app.core.estate_registry import load_fleet_topology
+
 
 @dataclass(frozen=True)
 class FleetTarget:
@@ -22,36 +28,50 @@ class FleetTarget:
     platform: str
     gateway_unit: str
     asr_unit: str = ""
+    gateway_port: int = 18151
+    service_domain: str = ""
 
 
-DEFAULT_TARGETS = (
-    FleetTarget(
-        "spark-150",
-        "kristopher@192.168.2.150",
-        "/home/kristopher/.ssh/id_ed25519_netops_codex",
-        "/home/kristopher/norllama",
-        "linux",
-        "norllama-gateway.service",
-        "spark-audio-transcribe.service",
-    ),
-    FleetTarget(
-        "spark-151",
-        "kristopher@192.168.2.151",
-        "/home/kristopher/.ssh/id_ed25519_netops_codex",
-        "/home/kristopher/norllama",
-        "linux",
-        "norllama-gateway.service",
-        "spark-audio-transcribe-core.service",
-    ),
-    FleetTarget(
-        "mac-mini",
-        "k@192.168.2.133",
-        "/home/kristopher/.ssh/id_ed25519_macmini_codex",
-        "/Users/k/norllama",
-        "macos",
-        "org.lollie.norllama",
-    ),
-)
+def fleet_targets() -> tuple[FleetTarget, ...]:
+    targets: list[FleetTarget] = []
+    workers = load_fleet_topology()["workers"]
+    ordered = sorted(
+        workers.items(),
+        key=lambda item: (
+            str((item[1] if isinstance(item[1], dict) else {}).get("role"))
+            == "fallback",
+        ),
+    )
+    for worker_id, raw in ordered:
+        row = raw if isinstance(raw, dict) else {}
+        management = (
+            row.get("management") if isinstance(row.get("management"), dict) else {}
+        )
+        address = str(row.get("address") or "").strip()
+        user = str(management.get("ssh_user") or "").strip()
+        identity = str(management.get("identity_file") or "").strip()
+        root = str(management.get("root") or "").strip()
+        platform = str(management.get("platform") or "").strip()
+        gateway_unit = str(management.get("gateway_unit") or "").strip()
+        if not all((address, user, identity, root, platform, gateway_unit)):
+            continue
+        targets.append(
+            FleetTarget(
+                str(row.get("health_name") or worker_id),
+                f"{user}@{address}",
+                identity,
+                root,
+                platform,
+                gateway_unit,
+                str(management.get("asr_unit") or ""),
+                int(row.get("gateway_port") or 18151),
+                str(management.get("service_domain") or ""),
+            )
+        )
+    return tuple(targets)
+
+
+DEFAULT_TARGETS = fleet_targets()
 ENDPOINTS = ("/healthz", "/readyz", "/asr-readyz", "/v1/models")
 WARNING_EXPIRY_SECONDS = 72 * 60 * 60
 WARNING_LINUX_MEM_AVAILABLE_KIB = 6 * 1024 * 1024
@@ -59,15 +79,20 @@ FAIL_LINUX_MEM_AVAILABLE_KIB = 2 * 1024 * 1024
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace(
-        "+00:00", "Z"
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
     )
 
 
 def write_json(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(f"{path.suffix}.tmp")
-    temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.write_text(
+        json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     temporary.replace(path)
 
 
@@ -86,7 +111,9 @@ def write_markdown(path: Path, report: dict[str, Any]) -> None:
         if not isinstance(target, dict):
             continue
         ready = target.get("endpoints", {}).get("/readyz", {})
-        policy = ready.get("json", {}).get("policy", {}) if isinstance(ready, dict) else {}
+        policy = (
+            ready.get("json", {}).get("policy", {}) if isinstance(ready, dict) else {}
+        )
         status = "healthy" if target.get("healthy") else "failed"
         lines.append(
             f"| {target.get('name', '')} | {target.get('platform', '')} | "
@@ -118,6 +145,8 @@ def _remote_script(target: FleetTarget) -> str:
             "platform": target.platform,
             "gateway_unit": target.gateway_unit,
             "asr_unit": target.asr_unit,
+            "gateway_port": target.gateway_port,
+            "service_domain": target.service_domain,
         }
     )
     return f"""\
@@ -135,7 +164,7 @@ def command(*args):
 
 def endpoint(path):
     try:
-        with urllib.request.urlopen("http://127.0.0.1:18151" + path, timeout=5) as response:
+        with urllib.request.urlopen(f"http://127.0.0.1:{{target['gateway_port']}}" + path, timeout=5) as response:
             body = response.read().decode("utf-8", "replace")
             if path in {"/healthz", "/v1/models"}:
                 return {{"status": response.status}}
@@ -149,7 +178,10 @@ def endpoint(path):
     except Exception as exc:
         return {{"status": 0, "error": f"{{type(exc).__name__}}: {{exc}}"}}
 
-result = {{"endpoints": {{path: endpoint(path) for path in {ENDPOINTS!r}}}}}
+endpoint_names = list({ENDPOINTS!r})
+if not target["asr_unit"]:
+    endpoint_names.remove("/asr-readyz")
+result = {{"endpoints": {{path: endpoint(path) for path in endpoint_names}}}}
 if target["platform"] == "linux":
     def unit(unit_name):
         shown = command("systemctl", "show", unit_name, "--property=ActiveState,NRestarts,MemoryCurrent")
@@ -171,14 +203,17 @@ if target["platform"] == "linux":
     result["services"] = {{"gateway": unit(target["gateway_unit"]), "asr": unit(target["asr_unit"])}}
     result["resources"] = {{"mem_available_kib": mem_available_kib}}
 else:
-    uid = subprocess.run(["id", "-u"], check=True, capture_output=True, text=True).stdout.strip()
-    printed = command("launchctl", "print", f"gui/{{uid}}/{{target['gateway_unit']}}")
+    domain = target["service_domain"]
+    if not domain:
+        uid = subprocess.run(["id", "-u"], check=True, capture_output=True, text=True).stdout.strip()
+        domain = f"gui/{{uid}}"
+    printed = command("launchctl", "print", f"{{domain}}/{{target['gateway_unit']}}")
     text = printed["stdout"]
+    active_count = re.search(r"active count = (\\d+)", text)
     runs = re.search(r"runs = (\\d+)", text)
-    state = re.search(r"state = ([^\\n]+)", text)
     free = command("memory_pressure", "-Q")
     percentage = re.search(r"System-wide memory free percentage: (\\d+)%", free["stdout"])
-    result["services"] = {{"gateway": {{"active": bool(state and state.group(1).strip() == "running"),
+    result["services"] = {{"gateway": {{"active": bool(active_count and int(active_count.group(1)) > 0),
                                           "restarts": max(0, int(runs.group(1)) - 1) if runs else 0,
                                           "error": printed["stderr"] if printed["returncode"] else ""}}}}
     result["resources"] = {{"memory_free_percent": int(percentage.group(1)) if percentage else -1}}
@@ -187,26 +222,34 @@ print(json.dumps(result, sort_keys=True))
 
 
 def probe_target(target: FleetTarget) -> dict[str, Any]:
-    result = subprocess.run(
-        [
-            "ssh",
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "ConnectTimeout=8",
-            "-o",
-            "IdentitiesOnly=yes",
-            "-i",
-            target.identity_file,
-            target.ssh_target,
-            "python3 -",
-        ],
-        input=_remote_script(target),
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=20,
-    )
+    command = [
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=8",
+        "-o",
+        "IdentitiesOnly=yes",
+        "-i",
+        target.identity_file,
+        target.ssh_target,
+        "python3 -",
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            input=_remote_script(target),
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=20,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "name": target.name,
+            "platform": target.platform,
+            "error": "SSH probe timed out after 20 seconds",
+        }
     if result.returncode:
         return {
             "name": target.name,
@@ -228,7 +271,11 @@ def probe_target(target: FleetTarget) -> dict[str, Any]:
 
 
 def _issue(
-    issues: list[dict[str, str]], severity: str, target: FleetTarget, check: str, detail: str
+    issues: list[dict[str, str]],
+    severity: str,
+    target: FleetTarget,
+    check: str,
+    detail: str,
 ) -> None:
     issues.append(
         {
@@ -241,25 +288,53 @@ def _issue(
     )
 
 
-def evaluate_target(target: FleetTarget, payload: dict[str, Any]) -> list[dict[str, str]]:
+def evaluate_target(
+    target: FleetTarget,
+    payload: dict[str, Any],
+    *,
+    previous_restarts: dict[str, int] | None = None,
+) -> list[dict[str, str]]:
     issues: list[dict[str, str]] = []
     if payload.get("error"):
         _issue(issues, "fail", target, "ssh", str(payload["error"]))
         return issues
-    endpoints = payload.get("endpoints") if isinstance(payload.get("endpoints"), dict) else {}
-    for endpoint_name in ENDPOINTS:
+    endpoints = (
+        payload.get("endpoints") if isinstance(payload.get("endpoints"), dict) else {}
+    )
+    expected_endpoints = (
+        ENDPOINTS
+        if target.asr_unit
+        else tuple(item for item in ENDPOINTS if item != "/asr-readyz")
+    )
+    for endpoint_name in expected_endpoints:
         state = endpoints.get(endpoint_name)
         status = state.get("status") if isinstance(state, dict) else 0
         if status != 200:
-            detail = state.get("error", f"HTTP {status}") if isinstance(state, dict) else "missing probe"
+            detail = (
+                state.get("error", f"HTTP {status}")
+                if isinstance(state, dict)
+                else "missing probe"
+            )
             _issue(issues, "fail", target, f"endpoint:{endpoint_name}", str(detail))
-    ready = endpoints.get("/readyz") if isinstance(endpoints.get("/readyz"), dict) else {}
+    ready = (
+        endpoints.get("/readyz") if isinstance(endpoints.get("/readyz"), dict) else {}
+    )
     ready_json = ready.get("json") if isinstance(ready.get("json"), dict) else {}
-    policy = ready_json.get("policy") if isinstance(ready_json.get("policy"), dict) else {}
-    for key in ("integrity_valid", "default_route_allowed", "production_route_eligible"):
+    policy = (
+        ready_json.get("policy") if isinstance(ready_json.get("policy"), dict) else {}
+    )
+    for key in (
+        "integrity_valid",
+        "default_route_allowed",
+        "production_route_eligible",
+    ):
         if policy.get(key) is not True:
             _issue(issues, "fail", target, f"policy:{key}", "policy is not eligible")
-    remaining = policy.get("validation", {}).get("seconds_to_expiry") if isinstance(policy.get("validation"), dict) else None
+    remaining = (
+        policy.get("validation", {}).get("seconds_to_expiry")
+        if isinstance(policy.get("validation"), dict)
+        else None
+    )
     if not isinstance(remaining, int):
         remaining = policy.get("seconds_to_expiry")
     if not isinstance(remaining, int):
@@ -267,18 +342,45 @@ def evaluate_target(target: FleetTarget, payload: dict[str, Any]) -> list[dict[s
     elif remaining <= 0:
         _issue(issues, "fail", target, "policy:expiry", "policy has expired")
     elif remaining <= WARNING_EXPIRY_SECONDS:
-        _issue(issues, "warn", target, "policy:expiry", f"expires in {remaining} seconds")
-    services = payload.get("services") if isinstance(payload.get("services"), dict) else {}
+        _issue(
+            issues, "warn", target, "policy:expiry", f"expires in {remaining} seconds"
+        )
+    services = (
+        payload.get("services") if isinstance(payload.get("services"), dict) else {}
+    )
     for name, service in services.items():
         if not isinstance(service, dict) or not service.get("active"):
-            _issue(issues, "fail", target, f"service:{name}", str(service.get("error") if isinstance(service, dict) else "inactive"))
+            _issue(
+                issues,
+                "fail",
+                target,
+                f"service:{name}",
+                str(service.get("error") if isinstance(service, dict) else "inactive"),
+            )
             continue
         restarts = service.get("restarts")
-        if isinstance(restarts, int) and restarts >= 10:
-            _issue(issues, "fail", target, f"restarts:{name}", f"{restarts} restarts")
-        elif isinstance(restarts, int) and restarts >= 3:
-            _issue(issues, "warn", target, f"restarts:{name}", f"{restarts} restarts")
-    resources = payload.get("resources") if isinstance(payload.get("resources"), dict) else {}
+        previous = (previous_restarts or {}).get(str(name))
+        if isinstance(restarts, int) and isinstance(previous, int):
+            restart_delta = max(0, restarts - previous)
+            if restart_delta >= 10:
+                _issue(
+                    issues,
+                    "fail",
+                    target,
+                    f"restarts:{name}",
+                    f"{restart_delta} new restarts ({restarts} total)",
+                )
+            elif restart_delta >= 1:
+                _issue(
+                    issues,
+                    "warn",
+                    target,
+                    f"restarts:{name}",
+                    f"{restart_delta} new restart(s) ({restarts} total)",
+                )
+    resources = (
+        payload.get("resources") if isinstance(payload.get("resources"), dict) else {}
+    )
     if target.platform == "linux":
         available = resources.get("mem_available_kib")
         if not isinstance(available, int):
@@ -298,13 +400,42 @@ def evaluate_target(target: FleetTarget, payload: dict[str, Any]) -> list[dict[s
     return issues
 
 
-def collect(targets: Sequence[FleetTarget]) -> dict[str, Any]:
+def _previous_restart_totals(
+    report: dict[str, Any],
+    target_name: str,
+) -> dict[str, int]:
+    for target in report.get("targets") or []:
+        if not isinstance(target, dict) or target.get("name") != target_name:
+            continue
+        services = target.get("services")
+        if not isinstance(services, dict):
+            return {}
+        return {
+            str(name): int(service["restarts"])
+            for name, service in services.items()
+            if isinstance(service, dict) and isinstance(service.get("restarts"), int)
+        }
+    return {}
+
+
+def collect(
+    targets: Sequence[FleetTarget],
+    *,
+    previous: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     probes = [probe_target(target) for target in targets]
     issues: list[dict[str, str]] = []
     for target, probe in zip(targets, probes):
-        issues.extend(evaluate_target(target, probe))
+        issues.extend(
+            evaluate_target(
+                target,
+                probe,
+                previous_restarts=_previous_restart_totals(previous or {}, target.name),
+            )
+        )
         probe["healthy"] = not any(
-            issue["severity"] == "fail" and issue["host"] == target.name for issue in issues
+            issue["severity"] == "fail" and issue["host"] == target.name
+            for issue in issues
         )
     failures = sum(issue["severity"] == "fail" for issue in issues)
     warnings = sum(issue["severity"] == "warn" for issue in issues)
@@ -328,7 +459,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--markdown-output", type=Path)
-    parser.add_argument("--target", action="append", choices=[item.name for item in DEFAULT_TARGETS])
+    parser.add_argument(
+        "--target", action="append", choices=[item.name for item in DEFAULT_TARGETS]
+    )
     parser.add_argument("--json", action="store_true", help="Print the report as JSON.")
     return parser.parse_args(argv)
 
@@ -336,8 +469,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     requested = set(args.target or ())
-    targets = tuple(item for item in DEFAULT_TARGETS if not requested or item.name in requested)
-    report = collect(targets)
+    targets = tuple(
+        item for item in DEFAULT_TARGETS if not requested or item.name in requested
+    )
+    previous = {}
+    if args.output and args.output.exists():
+        try:
+            loaded = json.loads(args.output.read_text(encoding="utf-8"))
+            previous = loaded if isinstance(loaded, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            previous = {}
+    report = collect(targets, previous=previous)
     if args.output:
         write_json(args.output, report)
     if args.markdown_output:

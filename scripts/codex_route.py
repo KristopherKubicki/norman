@@ -58,7 +58,7 @@ ROUTER_PROFILE_PREFIX = "router-"
 DEFAULT_ROUTER_MODEL = "norman-code"
 GOVERNED_ROUTER_MODEL = "norman-code-governed"
 ROUTER_MODELS = frozenset({DEFAULT_ROUTER_MODEL, GOVERNED_ROUTER_MODEL})
-MODEL_CATALOG_CONTRACT_VERSION = "2026-08-transparent-bridge-v1"
+MODEL_CATALOG_CONTRACT_VERSION = "2026-08-transparent-bridge-v3"
 REQUIRED_CODEX_MODEL_CAPABILITIES = {
     "shell_type": "shell_command",
     "apply_patch_tool_type": "freeform",
@@ -718,6 +718,8 @@ def _routed_model_catalog_entry(
         "shell_type": "shell_command",
         "visibility": "list",
         "supported_in_api": True,
+        # Codex 0.146 requires this field even when no base instructions apply.
+        "base_instructions": "",
         "priority": priority,
         "additional_speed_tiers": [],
         "service_tiers": [],
@@ -745,7 +747,9 @@ def _routed_model_catalog_entry(
         "context_window": 128000,
         "effective_context_window_percent": 95,
         "experimental_supported_tools": [],
-        "input_modalities": ["text", "image"],
+        # The Responses facade currently normalizes text content only. Do not
+        # advertise image input until it can safely forward image data.
+        "input_modalities": ["text"],
         "supports_search_tool": False,
         "use_responses_lite": False,
     }
@@ -999,7 +1003,7 @@ def write_gateway_profile(route: Route) -> Path:
             f"name = {json.dumps(route.key + ' TUI model gateway')}",
             f"base_url = {json.dumps(route.endpoint)}",
             'wire_api = "responses"',
-            "stream_idle_timeout_ms = 300000",
+            "stream_idle_timeout_ms = 1200000",
             "",
             f"[model_providers.{route.provider}.auth]",
             f"command = {json.dumps(str(GATEWAY_TOKEN_HELPER))}",

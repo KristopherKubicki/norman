@@ -29,6 +29,9 @@ if not os.getenv("NORMAN_NORLLAMA_ROUTE_POLICY_PATH"):
         os.environ["NORMAN_NORLLAMA_ROUTE_POLICY_PATH"] = str(local_policy_artifact)
 
 try:
+    from app.services.norllama.escalation_policy import (
+        build_shadow_escalation_decision,
+    )
     from app.services.norllama.route_policy import (
         ROUTE_POLICY_VERSION,
         capability_gate_allows_production_default,
@@ -140,13 +143,30 @@ except (
             "request_production_route_eligible": False,
         }
 
+    def build_shadow_escalation_decision(
+        payload: dict[str, object] | None,
+        *,
+        policy_id: str = "",
+        policy_hash: str = "",
+        controller: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        return {
+            "schema": "norman.norllama.escalation-decision.v1",
+            "mode": "shadow_only",
+            "status": "policy_unavailable",
+            "policy_id": policy_id,
+            "policy_hash": policy_hash,
+            "execution_model_unchanged": True,
+            "execution_authority_changed": False,
+        }
+
 
 DEFAULT_BIND = "127.0.0.1"
 DEFAULT_PORT = 18151
 DEFAULT_TIMEOUT_S = 120
 DEFAULT_OLLAMA_BASES = ("http://127.0.0.1:11434",)
-DEFAULT_DS4_BASES = ("http://127.0.0.1:8002",)
-DEFAULT_DS4_BASE = DEFAULT_DS4_BASES[0]
+DEFAULT_DS4_BASES: tuple[str, ...] = ()
+DEFAULT_DS4_BASE = ""
 DEFAULT_MEDIA_BASES = ("http://127.0.0.1:8100",)
 DEFAULT_TRANSCRIBE_BASES = ("http://127.0.0.1:8097",)
 DEFAULT_OCR_BASES = ("http://127.0.0.1:8098",)
@@ -191,6 +211,7 @@ DEFAULT_PREFLIGHT_PACKET_PATHS = tuple(
 )
 DEFAULT_MODEL_CACHE_TTL_S = 15
 DEFAULT_INVENTORY_TIMEOUT_S = 3
+DEFAULT_HEALTH_PROBE_TIMEOUT_S = 3
 DEFAULT_ACTIVITY_LIMIT = 200
 DEFAULT_PEER_TIMEOUT_S = 1.0
 DEFAULT_MAX_PEER_HOPS = 1
@@ -209,6 +230,7 @@ DEFAULT_ASR_FAILURE_COOLDOWN_S = 300
 DEFAULT_TRANSCRIBE_MAX_ATTEMPTS = 1
 ADMISSION_RESPONSE_HEADERS = {
     "x-norllama-admission",
+    "x-norllama-work-class",
     "x-norllama-queue-wait-ms",
     "x-norllama-queue-depth",
     "x-norllama-queue-limit",
@@ -1210,9 +1232,60 @@ def apply_live_policy_contract_override(row: dict[str, object]) -> dict[str, obj
     return updated
 
 
+def active_escalation_controller() -> dict[str, object]:
+    loaded = load_route_policy_artifact(allow_missing_default=False)
+    artifact = loaded.get("artifact") if isinstance(loaded, dict) else {}
+    controller = (
+        artifact.get("escalation_controller") if isinstance(artifact, dict) else {}
+    )
+    return dict(controller) if isinstance(controller, dict) else {}
+
+
+def model_role_rows() -> dict[str, dict[str, object]]:
+    roles = active_escalation_controller().get("roles")
+    if not isinstance(roles, dict):
+        return {}
+    return {
+        str(role): dict(row)
+        for role, row in roles.items()
+        if isinstance(row, dict)
+    }
+
+
+def resident_ollama_bases_from_policy() -> list[str]:
+    resident = model_role_rows().get("resident") or {}
+    endpoints = resident.get("endpoints")
+    if not isinstance(endpoints, list):
+        return []
+    return unique_items(
+        [str(endpoint).strip() for endpoint in endpoints if str(endpoint).strip()]
+    )
+
+
+def model_requires_native_non_thinking_bridge(model_id: str) -> bool:
+    requested = str(model_id or "").strip().lower()
+    if not requested:
+        return False
+    for row in model_role_rows().values():
+        model = str(row.get("model") or "").strip().lower()
+        aliases = row.get("aliases")
+        model_ids = {model}
+        if isinstance(aliases, list):
+            model_ids.update(str(alias).strip().lower() for alias in aliases)
+        if requested in model_ids:
+            capabilities = row.get("capabilities")
+            return bool(
+                capabilities.get("native_non_thinking_bridge")
+                if isinstance(capabilities, dict)
+                else row.get("native_non_thinking_bridge")
+            )
+    return False
+
+
 def should_disable_qwen_thinking(model_id: str) -> bool:
-    lower = str(model_id or "").strip().lower()
-    return "qwen3-coder:" in lower or "qwen3.6:" in lower or "qwen3.5:" in lower
+    """Compatibility wrapper for the policy-driven native bridge decision."""
+
+    return model_requires_native_non_thinking_bridge(model_id)
 
 
 def normalize_chat_payload_for_local_qwen(
@@ -1509,12 +1582,16 @@ class ChatAdmissionReservation:
         state: str,
         queued_at: float,
         deadline: float,
+        priority: str,
+        sequence: int,
     ) -> None:
         self._controller = controller
         self._state = state
         self._was_queued = state == "queued"
         self._queued_at = queued_at
         self._deadline = deadline
+        self.priority = priority
+        self.sequence = sequence
         self._closed = False
 
     @property
@@ -1537,7 +1614,7 @@ class ChatAdmissionReservation:
 
 
 class ChatAdmissionController:
-    """Bound concurrent local generations without serializing peer workers."""
+    """Bound local generations with foreground-first, best-effort background work."""
 
     def __init__(
         self,
@@ -1553,18 +1630,52 @@ class ChatAdmissionController:
         self.retry_after_s = max(1.0, float(retry_after_s))
         self._condition = threading.Condition()
         self._active = 0
-        self._queued = 0
+        self._waiters: list[ChatAdmissionReservation] = []
+        self._sequence = 0
 
     def snapshot(self) -> dict[str, int]:
         with self._condition:
             return self._snapshot_locked()
 
-    def reserve(self) -> tuple[ChatAdmissionReservation | None, dict[str, int]]:
+    @staticmethod
+    def _priority_rank(priority: str) -> int:
+        return {"high": 0, "normal": 1, "background": 2}.get(priority, 1)
+
+    def _remove_waiter_locked(self, reservation: ChatAdmissionReservation) -> None:
+        try:
+            self._waiters.remove(reservation)
+        except ValueError:
+            pass
+
+    def _sort_waiters_locked(self) -> None:
+        self._waiters.sort(
+            key=lambda item: (self._priority_rank(item.priority), item.sequence)
+        )
+
+    def reserve(
+        self,
+        *,
+        priority: str = "normal",
+        queue_wait_s: float | None = None,
+    ) -> tuple[ChatAdmissionReservation | None, dict[str, int]]:
         """Reserve an active or queued slot without blocking the HTTP response."""
 
         with self._condition:
             now = time.monotonic()
-            if self._active < self.max_active:
+            normalized_priority = (
+                priority if priority in PRIORITY_LEVELS else "normal"
+            )
+            effective_wait_s = min(
+                self.queue_wait_s,
+                max(
+                    0.0,
+                    self.queue_wait_s
+                    if queue_wait_s is None
+                    else float(queue_wait_s),
+                ),
+            )
+            self._sequence += 1
+            if self._active < self.max_active and not self._waiters:
                 self._active += 1
                 return (
                     ChatAdmissionReservation(
@@ -1572,20 +1683,42 @@ class ChatAdmissionController:
                         state="active",
                         queued_at=now,
                         deadline=now,
+                        priority=normalized_priority,
+                        sequence=self._sequence,
                     ),
                     self._snapshot_locked(),
                 )
-            if self.queue_limit <= self._queued or self.queue_wait_s <= 0:
+            if (
+                self.queue_limit <= len(self._waiters)
+                and normalized_priority != "background"
+            ):
+                background_waiter = next(
+                    (
+                        item
+                        for item in reversed(self._waiters)
+                        if item.priority == "background"
+                    ),
+                    None,
+                )
+                if background_waiter is not None:
+                    self._remove_waiter_locked(background_waiter)
+                    background_waiter._state = "preempted"
+                    self._condition.notify_all()
+            if self.queue_limit <= len(self._waiters) or effective_wait_s <= 0:
                 return None, self._snapshot_locked()
 
-            self._queued += 1
+            reservation = ChatAdmissionReservation(
+                self,
+                state="queued",
+                queued_at=now,
+                deadline=now + effective_wait_s,
+                priority=normalized_priority,
+                sequence=self._sequence,
+            )
+            self._waiters.append(reservation)
+            self._sort_waiters_locked()
             return (
-                ChatAdmissionReservation(
-                    self,
-                    state="queued",
-                    queued_at=now,
-                    deadline=now + self.queue_wait_s,
-                ),
+                reservation,
                 self._snapshot_locked(),
             )
 
@@ -1602,12 +1735,14 @@ class ChatAdmissionController:
                 return "cancelled", self._snapshot_locked()
             if reservation._state == "active":
                 return "admitted", self._snapshot_locked()
+            if reservation._state == "preempted":
+                return "preempted", self._snapshot_locked()
             if reservation._state != "queued":
                 return "cancelled", self._snapshot_locked()
 
             now = time.monotonic()
             if now >= reservation._deadline:
-                self._queued = max(0, self._queued - 1)
+                self._remove_waiter_locked(reservation)
                 reservation._state = "expired"
                 self._condition.notify_all()
                 return "expired", self._snapshot_locked()
@@ -1621,15 +1756,21 @@ class ChatAdmissionController:
 
             if reservation._closed:
                 return "cancelled", self._snapshot_locked()
+            if reservation._state == "preempted":
+                return "preempted", self._snapshot_locked()
             if reservation._state != "queued":
                 return "cancelled", self._snapshot_locked()
-            if self._active < self.max_active:
-                self._queued = max(0, self._queued - 1)
+            if (
+                self._active < self.max_active
+                and self._waiters
+                and self._waiters[0] is reservation
+            ):
+                self._remove_waiter_locked(reservation)
                 self._active += 1
                 reservation._state = "active"
                 return "admitted", self._snapshot_locked()
             if time.monotonic() >= reservation._deadline:
-                self._queued = max(0, self._queued - 1)
+                self._remove_waiter_locked(reservation)
                 reservation._state = "expired"
                 self._condition.notify_all()
                 return "expired", self._snapshot_locked()
@@ -1643,38 +1784,29 @@ class ChatAdmissionController:
             if reservation._state == "active":
                 self._active = max(0, self._active - 1)
             elif reservation._state == "queued":
-                self._queued = max(0, self._queued - 1)
+                self._remove_waiter_locked(reservation)
             reservation._state = "released"
             self._condition.notify_all()
 
-    def acquire(self) -> tuple[bool, dict[str, int]]:
-        with self._condition:
-            if self._active < self.max_active:
-                self._active += 1
-                return True, self._snapshot_locked()
-            if self.queue_limit <= self._queued or self.queue_wait_s <= 0:
-                return False, self._snapshot_locked()
-
-            self._queued += 1
-            queued = True
-            deadline = time.monotonic() + self.queue_wait_s
-            try:
-                while True:
-                    if self._active < self.max_active:
-                        self._queued -= 1
-                        queued = False
-                        self._active += 1
-                        return True, self._snapshot_locked()
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        self._queued -= 1
-                        queued = False
-                        return False, self._snapshot_locked()
-                    self._condition.wait(remaining)
-            finally:
-                if queued:
-                    self._queued -= 1
-                    self._condition.notify_all()
+    def acquire(
+        self,
+        *,
+        priority: str = "normal",
+        queue_wait_s: float | None = None,
+    ) -> tuple[bool, dict[str, int]]:
+        reservation, snapshot = self.reserve(
+            priority=priority,
+            queue_wait_s=queue_wait_s,
+        )
+        if reservation is None:
+            return False, snapshot
+        if not reservation.queued:
+            return True, snapshot
+        while True:
+            state, snapshot = reservation.wait(timeout_s=self.queue_wait_s)
+            if state == "queued":
+                continue
+            return state == "admitted", snapshot
 
     def release(self) -> None:
         with self._condition:
@@ -1686,7 +1818,7 @@ class ChatAdmissionController:
         return {
             "active": self._active,
             "active_limit": self.max_active,
-            "queue_depth": self._queued,
+            "queue_depth": len(self._waiters),
             "queue_limit": self.queue_limit,
             "retry_after_seconds": max(1, int(self.retry_after_s)),
         }
@@ -1734,6 +1866,12 @@ class App:
         )
         self.inventory_timeout_s = float(
             os.getenv("NORLLAMA_INVENTORY_TIMEOUT_S", str(DEFAULT_INVENTORY_TIMEOUT_S))
+        )
+        self.health_probe_timeout_s = float(
+            os.getenv(
+                "NORLLAMA_HEALTH_PROBE_TIMEOUT_S",
+                str(DEFAULT_HEALTH_PROBE_TIMEOUT_S),
+            )
         )
         self.activity_limit = int(
             os.getenv("NORLLAMA_ACTIVITY_LIMIT", str(DEFAULT_ACTIVITY_LIMIT))
@@ -1831,9 +1969,22 @@ class App:
         self.public_provider_name = (
             os.getenv("NORLLAMA_PUBLIC_PROVIDER_NAME", "norllama").strip() or "norllama"
         )
-        self.ollama_bases = split_env_urls(
-            "NORLLAMA_OLLAMA_BASES", DEFAULT_OLLAMA_BASES
+        configured_resident_bases = os.getenv("NORLLAMA_RESIDENT_OLLAMA_BASES")
+        resident_bases = (
+            split_env_urls("NORLLAMA_RESIDENT_OLLAMA_BASES", ())
+            if configured_resident_bases is not None
+            else resident_ollama_bases_from_policy()
         )
+        self.ollama_bases = unique_items(
+            [
+                *split_env_urls("NORLLAMA_OLLAMA_BASES", DEFAULT_OLLAMA_BASES),
+                *resident_bases,
+            ]
+        )
+        self.admission_bases = {
+            normalize_base_url(base)
+            for base in split_env_urls("NORLLAMA_ADMISSION_BASES", ())
+        }
         self.peer_timeout_s = float(
             os.getenv("NORLLAMA_PEER_TIMEOUT_S", str(DEFAULT_PEER_TIMEOUT_S))
         )
@@ -2628,9 +2779,10 @@ class App:
 
     def choose_media_base(self) -> tuple[str | None, list[dict]]:
         rows: list[dict] = []
+        timeout_s = min(self.timeout_s, self.health_probe_timeout_s)
         for base in self.media_bases:
             try:
-                doc = self.fetch_json(base.rstrip("/") + "/health")
+                doc = self.fetch_json(base.rstrip("/") + "/health", timeout_s=timeout_s)
                 row = {
                     "base_url": base,
                     "status": doc.get("status"),
@@ -2661,9 +2813,10 @@ class App:
 
     def choose_transcribe_base(self) -> tuple[str | None, list[dict]]:
         rows: list[dict] = []
+        timeout_s = min(self.timeout_s, self.health_probe_timeout_s)
         for base in self.transcribe_bases:
             try:
-                doc = self.fetch_json(base.rstrip("/") + "/health")
+                doc = self.fetch_json(base.rstrip("/") + "/health", timeout_s=timeout_s)
                 row = {
                     "base_url": base,
                     "status": doc.get("status"),
@@ -2685,9 +2838,10 @@ class App:
 
     def choose_ocr_base(self) -> tuple[str | None, list[dict]]:
         rows: list[dict] = []
+        timeout_s = min(self.timeout_s, self.health_probe_timeout_s)
         for base in self.ocr_bases:
             try:
-                doc = self.fetch_json(base.rstrip("/") + "/health")
+                doc = self.fetch_json(base.rstrip("/") + "/health", timeout_s=timeout_s)
                 row = {
                     "base_url": base,
                     "status": doc.get("status"),
@@ -2725,9 +2879,10 @@ class App:
 
     def choose_rerank_base(self) -> tuple[str | None, list[dict]]:
         rows: list[dict] = []
+        timeout_s = min(self.timeout_s, self.health_probe_timeout_s)
         for base in self.rerank_bases:
             try:
-                doc = self.fetch_json(base.rstrip("/") + "/health")
+                doc = self.fetch_json(base.rstrip("/") + "/health", timeout_s=timeout_s)
                 row = {
                     "base_url": base,
                     "status": doc.get("status"),
@@ -2767,9 +2922,10 @@ class App:
 
     def choose_safety_base(self) -> tuple[str | None, list[dict]]:
         rows: list[dict] = []
+        timeout_s = min(self.timeout_s, self.health_probe_timeout_s)
         for base in self.safety_bases:
             try:
-                doc = self.fetch_json(base.rstrip("/") + "/health")
+                doc = self.fetch_json(base.rstrip("/") + "/health", timeout_s=timeout_s)
                 row = {
                     "base_url": base,
                     "status": doc.get("status"),
@@ -3140,7 +3296,8 @@ class App:
             "evict_api": True,
             "request_ids": True,
             "priority_hints": True,
-            "priority_queue": False,
+            "priority_queue": True,
+            "background_best_effort": True,
             "async_jobs": True,
             "prefetch_jobs": True,
             "structured_logging": True,
@@ -4023,9 +4180,17 @@ class App:
                     "X-Request-Id": "Optional client-supplied request id. Norllama generates one when absent.",
                     "X-Norllama-Priority": {
                         "accepted": sorted(PRIORITY_LEVELS),
-                        "mode": "hint_only",
+                        "mode": "foreground_first",
                         "default": "normal",
                     },
+                    "X-Norllama-Work-Class": {
+                        "accepted": ["foreground", "background"],
+                        "default": "foreground",
+                    },
+                    "X-Norllama-Max-Queue-Wait-Ms": (
+                        "Optional caller queue budget. Background callers should "
+                        "use a short value and treat deferral as success."
+                    ),
                 },
                 "response": response_headers,
             },
@@ -4040,9 +4205,12 @@ class App:
             },
             "priority": {
                 "supported": True,
-                "mode": "hint_only",
+                "mode": "foreground_first",
                 "levels": sorted(PRIORITY_LEVELS),
-                "notes": "Priority is exposed in headers and logs now. It does not yet reorder execution.",
+                "notes": (
+                    "Foreground waiters are admitted before background work. "
+                    "Queued background work may be preempted or deferred."
+                ),
             },
             "endpoints": self.public_endpoints(),
         }
@@ -4261,7 +4429,8 @@ class App:
             "recent_activity": recent,
             "contract": {
                 "async_mode": "prefetch_jobs",
-                "priority_mode": "hint_only",
+                "priority_mode": "foreground_first",
+                "background_mode": "best_effort",
                 "structured_logging": True,
                 "request_ids": True,
                 "head_support_count": len(
@@ -5209,19 +5378,16 @@ class App:
 
     def readyz(self) -> dict:
         identity = active_route_policy_identity(allow_missing_default=False)
-        routable_models = [
-            row
-            for row in self.catalog().get("models") or []
-            if isinstance(row, dict)
-            and str(row.get("access") or "").startswith("unified_chat")
-            and not bool(row.get("manual_only"))
-            and not bool(row.get("tool_only"))
-        ]
+        configured_chat_backends = {
+            str(base).rstrip("/")
+            for base in (*self.ollama_bases, *self.ds4_bases, *self.peer_bases)
+            if str(base).strip()
+        }
         ready = bool(
             identity.get("integrity_valid")
             and identity.get("default_route_allowed")
             and identity.get("lifecycle_state") in {"valid", "expiring_soon"}
-            and routable_models
+            and configured_chat_backends
         )
         return {
             "service": "norllama",
@@ -5230,7 +5396,9 @@ class App:
             "ready": ready,
             "time": now_iso(),
             "policy": identity,
-            "routable_model_count": len(routable_models),
+            "readiness_basis": "signed_policy_and_configured_chat_backends",
+            "configured_chat_backend_count": len(configured_chat_backends),
+            "inventory_endpoint": "/v1/models",
             "features": self.feature_flags(),
         }
 
@@ -5269,9 +5437,7 @@ class App:
             and capacity["active"] < capacity["active_limit"]
             and not bool(cooldown["active"])
         )
-        healthy_count = len(
-            [row for row in rows if row.get("status") == "ok"]
-        )
+        healthy_count = len([row for row in rows if row.get("status") == "ok"])
         if bool(cooldown["active"]):
             status = "asr_backend_cooldown"
         elif ready:
@@ -5296,6 +5462,7 @@ class App:
 class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+    request_queue_size = 128
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -5317,6 +5484,24 @@ class Handler(BaseHTTPRequestHandler):
         priority = self.headers.get("X-Norllama-Priority", "").strip().lower()
         if priority not in PRIORITY_LEVELS:
             priority = "normal"
+        work_class = self.headers.get("X-Norllama-Work-Class", "").strip().lower()
+        if work_class not in {"foreground", "background"}:
+            work_class = "background" if priority == "background" else "foreground"
+        if work_class == "background":
+            priority = "background"
+        try:
+            requested_queue_wait_ms = int(
+                self.headers.get("X-Norllama-Max-Queue-Wait-Ms", "").strip() or "-1"
+            )
+        except Exception:
+            requested_queue_wait_ms = -1
+        if requested_queue_wait_ms < 0:
+            queue_wait_s = None
+        else:
+            queue_wait_s = min(
+                self.app.chat_admission.queue_wait_s,
+                max(0.0, requested_queue_wait_ms / 1000),
+            )
         try:
             peer_hop = int(self.headers.get("X-Norllama-Peer-Hop", "0").strip() or "0")
         except Exception:
@@ -5327,6 +5512,8 @@ class Handler(BaseHTTPRequestHandler):
             self.headers.get("X-Request-Id", "").strip() or uuid.uuid4().hex
         )
         self._priority = priority
+        self._work_class = work_class
+        self._queue_wait_s = queue_wait_s
         self._peer_hop = peer_hop
         self._started_at = time.perf_counter()
         self._log_sent = False
@@ -5882,9 +6069,14 @@ class Handler(BaseHTTPRequestHandler):
         return isinstance(payload, dict) and bool(payload.get("stream"))
 
     def local_generation_request(self, base_url: str, upstream_path: str) -> bool:
-        return is_loopback_base_url(base_url) and urllib.parse.urlsplit(
-            upstream_path
-        ).path in {"/api/chat", "/api/generate", "/v1/chat/completions"}
+        owns_capacity = is_loopback_base_url(base_url) or normalize_base_url(
+            base_url
+        ) in getattr(self.app, "admission_bases", set())
+        return owns_capacity and urllib.parse.urlsplit(upstream_path).path in {
+            "/api/chat",
+            "/api/generate",
+            "/v1/chat/completions",
+        }
 
     def local_capacity_response(
         self,
@@ -5899,17 +6091,30 @@ class Handler(BaseHTTPRequestHandler):
             or getattr(self, "_model_hint", "")
         )
         retry_after = str(max(1, int(self.app.chat_admission.retry_after_s)))
+        background = getattr(self, "_work_class", "foreground") == "background"
+        error = "background_deferred" if background else "local_capacity_exhausted"
+        capacity_meta = {
+            "schema": "norllama.capacity.v2" if background else "norllama.capacity.v1",
+            **snapshot,
+        }
+        if background:
+            capacity_meta.update(
+                {
+                    "work_class": "background",
+                    "outcome": "deferred",
+                }
+            )
         payload = {
             "ok": False,
-            "error": "local_capacity_exhausted",
+            "error": error,
             "message": (
-                "Local coding capacity is busy; retry after " f"{retry_after} seconds"
+                "Best-effort background work was deferred for foreground capacity"
+                if background
+                else "Local coding capacity is busy; retry after "
+                f"{retry_after} seconds"
             ),
             "model": model,
-            "norllama": {
-                "schema": "norllama.capacity.v1",
-                **snapshot,
-            },
+            "norllama": capacity_meta,
         }
         return (
             int(HTTPStatus.TOO_MANY_REQUESTS),
@@ -5929,6 +6134,9 @@ class Handler(BaseHTTPRequestHandler):
         queue_wait_ms = max(0, min(int(queue_wait_s * 1000), 3600000))
         return {
             "X-Norllama-Admission": "queued" if queue_wait_ms else "immediate",
+            "X-Norllama-Work-Class": getattr(
+                self, "_work_class", "foreground"
+            ),
             "X-Norllama-Queue-Wait-Ms": str(queue_wait_ms),
             "X-Norllama-Queue-Depth": str(max(0, snapshot.get("queue_depth", 0))),
             "X-Norllama-Queue-Limit": str(max(0, snapshot.get("queue_limit", 0))),
@@ -5951,6 +6159,7 @@ class Handler(BaseHTTPRequestHandler):
             "norllama": {
                 "schema": "norllama.stream-admission.v1",
                 "event": event,
+                "work_class": getattr(self, "_work_class", "foreground"),
                 "admission": "queued" if reservation.was_queued else "immediate",
                 "queue_wait_ms": queue_wait_ms,
                 **snapshot,
@@ -5970,11 +6179,21 @@ class Handler(BaseHTTPRequestHandler):
             or getattr(self, "_model_hint", "")
         )
         return {
-            "error": "local_capacity_exhausted",
+            "error": (
+                "background_deferred"
+                if getattr(self, "_work_class", "foreground") == "background"
+                else "local_capacity_exhausted"
+            ),
             "done": True,
             "model": model,
             "norllama": {
-                "schema": "norllama.capacity.v1",
+                "schema": "norllama.capacity.v2",
+                "work_class": getattr(self, "_work_class", "foreground"),
+                "outcome": (
+                    "deferred"
+                    if getattr(self, "_work_class", "foreground") == "background"
+                    else "busy"
+                ),
                 **snapshot,
             },
         }
@@ -6095,6 +6314,19 @@ class Handler(BaseHTTPRequestHandler):
                             snapshot=updated_snapshot,
                             model_hint=model_hint,
                         )
+                    )
+                elif state == "preempted":
+                    content_length += self.write_stream_frame(
+                        {
+                            "error": "background_preempted",
+                            "done": True,
+                            "norllama": {
+                                "schema": "norllama.capacity.v2",
+                                "work_class": "background",
+                                "outcome": "preempted",
+                                **updated_snapshot,
+                            },
+                        }
                     )
                 return
         except (
@@ -6256,7 +6488,10 @@ class Handler(BaseHTTPRequestHandler):
                 ).path == "/api/generate" and self.local_generation_request(
                     base, upstream_path
                 ):
-                    admission_reservation, snapshot = self.app.chat_admission.reserve()
+                    admission_reservation, snapshot = self.app.chat_admission.reserve(
+                        priority=getattr(self, "_priority", "normal"),
+                        queue_wait_s=getattr(self, "_queue_wait_s", None),
+                    )
                     if admission_reservation is None:
                         last = self.local_capacity_response(
                             body=body,
@@ -6366,7 +6601,10 @@ class Handler(BaseHTTPRequestHandler):
             outgoing_headers.update(headers)
         if self.local_generation_request(base_url, upstream_path):
             wait_started_at = time.monotonic()
-            admitted, snapshot = self.app.chat_admission.acquire()
+            admitted, snapshot = self.app.chat_admission.acquire(
+                priority=getattr(self, "_priority", "normal"),
+                queue_wait_s=getattr(self, "_queue_wait_s", None),
+            )
             admitted_at = time.monotonic()
             if not admitted:
                 return self.local_capacity_response(
@@ -6434,7 +6672,10 @@ class Handler(BaseHTTPRequestHandler):
                 )
             else:
                 wait_started_at = time.monotonic()
-                admitted, snapshot = self.app.chat_admission.acquire()
+                admitted, snapshot = self.app.chat_admission.acquire(
+                    priority=getattr(self, "_priority", "normal"),
+                    queue_wait_s=getattr(self, "_queue_wait_s", None),
+                )
                 admitted_at = time.monotonic()
                 if not admitted:
                     status, response_headers, response_body = (
@@ -8110,6 +8351,7 @@ class Handler(BaseHTTPRequestHandler):
             "/v1/catalog",
             "/v1/capabilities",
             "/v1/warm-policy",
+            "/v1/escalation/shadow",
             "/v1/activity",
             "/v1/prefetch/status",
             "/api/version",
@@ -8133,6 +8375,7 @@ class Handler(BaseHTTPRequestHandler):
             "/rerank",
             "/v1/safety/classify",
             "/safety/classify",
+            "/v1/escalation/shadow",
         }:
             return ["POST", "OPTIONS"]
         if path.startswith("/media/"):
@@ -8474,8 +8717,9 @@ class Handler(BaseHTTPRequestHandler):
                 "X-Norllama-Async-Supported": "true"
                 if parsed.path in {"/v1/prefetch", "/v1/prefetch/status"}
                 else "false",
-                "X-Norllama-Priority-Mode": "hint_only",
+                "X-Norllama-Priority-Mode": "foreground_first",
                 "X-Norllama-Priority-Levels": ",".join(sorted(PRIORITY_LEVELS)),
+                "X-Norllama-Background-Mode": "best_effort",
             },
         )
 
@@ -8575,6 +8819,46 @@ class Handler(BaseHTTPRequestHandler):
             self.handle_asr_post(parsed.path)
             return
         body = self.read_body()
+        if parsed.path == "/v1/escalation/shadow":
+            try:
+                payload = json.loads(body.decode("utf-8")) if body else {}
+            except Exception as exc:
+                self.send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "error": "invalid_json", "detail": str(exc)},
+                )
+                return
+            if not isinstance(payload, dict):
+                self.send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "error": "payload_must_be_object"},
+                )
+                return
+            loaded = load_route_policy_artifact(allow_missing_default=False)
+            artifact = loaded.get("artifact") if isinstance(loaded, dict) else {}
+            controller = (
+                artifact.get("escalation_controller")
+                if isinstance(artifact, dict)
+                else {}
+            )
+            identity = active_route_policy_identity(allow_missing_default=False)
+            decision = build_shadow_escalation_decision(
+                payload,
+                policy_id=str(identity.get("policy_id") or ""),
+                policy_hash=str(identity.get("policy_hash") or ""),
+                controller=controller if isinstance(controller, dict) else None,
+            )
+            self.merge_activity_extra(
+                {
+                    "mode": "resident_escalation_shadow",
+                    "proposed_role": str(decision.get("proposed_role") or ""),
+                    "proposed_model": str(decision.get("proposed_model") or ""),
+                    "proposed_tier": str(decision.get("proposed_tier") or ""),
+                    "approval_required": bool(decision.get("approval_required")),
+                }
+            )
+            self.send_json(HTTPStatus.OK, decision)
+            return
         if parsed.path == "/v1/prefetch":
             if not self.enforce_policy_for_request(parsed.path, body):
                 return

@@ -52,7 +52,10 @@ def run_drill() -> dict[str, Any]:
     )
     return {
         "schema": "norman.norllama.asr-failover-readiness-drill.v1",
-        "checked_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "checked_at": datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z"),
         "mode": "readiness_only_no_audio_replay",
         "status": "ok" if ready else "failed",
         "gateway": {
@@ -78,7 +81,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     report = run_drill()
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        args.output.write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
     print(json.dumps(report, sort_keys=True))
     return 0 if report["status"] == "ok" else 1
 

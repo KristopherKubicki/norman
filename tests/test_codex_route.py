@@ -356,6 +356,7 @@ def test_generated_profile_uses_brokered_auth_without_storing_a_token(
     catalog_path = tmp_path / "codex" / "router-model-catalog.json"
 
     assert f'base_url = "{route.endpoint}"' in contents
+    assert "stream_idle_timeout_ms = 1200000" in contents
     assert 'args = ["--secret", "norman/prompt-proxy-token"]' in contents
     assert "developer_instructions" not in contents
     assert f'model_catalog_json = "{catalog_path}"' in contents
@@ -377,6 +378,8 @@ def test_generated_profile_uses_brokered_auth_without_storing_a_token(
     assert catalog["models"][0]["apply_patch_tool_type"] == "freeform"
     assert catalog["models"][0]["supports_parallel_tool_calls"] is True
     assert catalog["models"][0]["default_reasoning_level"] == "high"
+    assert catalog["models"][0]["base_instructions"] == ""
+    assert catalog["models"][0]["input_modalities"] == ["text"]
     assert catalog["models"][0]["include_skills_usage_instructions"] is True
     assert catalog["models"][0]["include_plugin_usage_instructions"] is True
     assert not (profile_path.parent / "config.toml").exists()

@@ -16,6 +16,23 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALLER_PATH = REPO_ROOT / "scripts" / "install_codex_route.sh"
 REGULAR_WRAPPER_PATH = REPO_ROOT / "scripts" / "codex_cli_wrapper.sh"
 WORK_WRAPPER_PATH = REPO_ROOT / "scripts" / "codex_work_wrapper.sh"
+WORK_FAST_WRAPPER_PATH = REPO_ROOT / "scripts" / "codex_work_fast_wrapper.sh"
+
+
+def _install_fake_pinned_work_codex(home: Path, source: Path) -> Path:
+    destination = (
+        home
+        / ".local"
+        / "lib"
+        / "codex-work-0.147.0"
+        / "node_modules"
+        / ".bin"
+        / "codex"
+    )
+    destination.parent.mkdir(parents=True)
+    shutil.copy2(source, destination)
+    destination.chmod(0o755)
+    return destination
 
 
 def _install_test_managed_secret_policy(
@@ -177,8 +194,10 @@ def test_installer_creates_private_runtime_and_idempotent_shell_path(tmp_path):
     assert (lib_dir / "codex_session_prune.py").is_file()
     assert (bin_dir / "codex").is_file()
     assert (bin_dir / "codex-work").is_file()
+    assert (bin_dir / "codex-work-fast").is_file()
     assert stat.S_IMODE((bin_dir / "codex").stat().st_mode) == 0o700
     assert stat.S_IMODE((bin_dir / "codex-work").stat().st_mode) == 0o700
+    assert stat.S_IMODE((bin_dir / "codex-work-fast").stat().st_mode) == 0o700
     assert (
         stat.S_IMODE((lib_dir / "norman_codex_secret_guard.py").stat().st_mode) == 0o700
     )
@@ -297,6 +316,10 @@ raise SystemExit(3 if "oversized-session" in sys.argv else 0)
     binding.write_text('#!/usr/bin/env bash\nexec "$@"\n', encoding="utf-8")
     for path in (codex, aws, binding):
         path.chmod(0o755)
+    _install_fake_pinned_work_codex(home, codex)
+    unexpected_codex = fake_bin / "unexpected-codex"
+    unexpected_codex.write_text("#!/usr/bin/env bash\nexit 99\n", encoding="utf-8")
+    unexpected_codex.chmod(0o755)
 
     environment = os.environ.copy()
     environment.update(
@@ -311,6 +334,8 @@ raise SystemExit(3 if "oversized-session" in sys.argv else 0)
             "CODEX_TEST_OUTPUT": str(output),
             "CODEX_TEST_WORKERS_OUTPUT": str(worker_output),
             "CODEX_TEST_VAULT_POLICY_OUTPUT": str(vault_output),
+            "CODEX_WORK_DISABLE_APPS": "1",
+            "CODEX_WORK_REAL_BIN": str(unexpected_codex),
         }
     )
     _install_test_managed_secret_policy(tmp_path, environment)
@@ -358,6 +383,43 @@ raise SystemExit(3 if "oversized-session" in sys.argv else 0)
     assert overridden.returncode == 0, overridden.stderr
     assert worker_output.read_text(encoding="utf-8") == "6\n"
 
+    installed_work_wrapper = home / ".local" / "bin" / "codex-work"
+    installed_work_wrapper.parent.mkdir(parents=True)
+    shutil.copy2(WORK_WRAPPER_PATH, installed_work_wrapper)
+    installed_work_wrapper.chmod(0o755)
+    fast = subprocess.run(
+        [str(WORK_FAST_WRAPPER_PATH), "resume", "small-session"],
+        cwd=REPO_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert fast.returncode == 0, fast.stderr
+    assert output.read_text(encoding="utf-8").splitlines() == [
+        "--disable",
+        "apps",
+        "--profile",
+        "work",
+        "resume",
+        "small-session",
+    ]
+
+    mcp = subprocess.run(
+        [str(WORK_WRAPPER_PATH), "mcp", "list", "--json"],
+        cwd=REPO_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert mcp.returncode == 0, mcp.stderr
+    assert output.read_text(encoding="utf-8").splitlines() == [
+        "mcp",
+        "list",
+        "--json",
+    ]
+
 
 def test_work_wrapper_skips_resume_guard_for_help(tmp_path):
     home = tmp_path / "home"
@@ -397,6 +459,7 @@ os.execve(
     binding.write_text('#!/usr/bin/env bash\nexec "$@"\n', encoding="utf-8")
     for path in (codex, binding):
         path.chmod(0o755)
+    _install_fake_pinned_work_codex(home, codex)
 
     environment = os.environ.copy()
     environment.update(

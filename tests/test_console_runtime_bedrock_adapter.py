@@ -120,6 +120,58 @@ def _explicit_cloud_selection_request(
     )
 
 
+def _cloud_fallback_request() -> ModelRequest:
+    artifact = generate_route_policy_artifact()
+    fallbacks = dict(artifact["fallbacks"])
+    fallback_model = str(fallbacks["cloud_fallback_model"])
+    route = NorllamaRoute(
+        lane="coder",
+        provider="aws-bedrock",
+        provider_kind="aws-bedrock",
+        capability="chat",
+        model=fallback_model,
+        mode="cloud_proxy",
+        local=False,
+        cloud_proxy=True,
+        tool_lane=False,
+        requires_receipt=True,
+        reason="facade fallback after local capacity failure",
+    )
+    return ModelRequest(
+        messages=[{"role": "user", "content": "Find the available tool."}],
+        model=fallback_model,
+        route_key="norman-code",
+        budget=ModelBudget(max_output_tokens=321),
+        metadata={
+            "request_id": "cloud-fallback-1",
+            "invocation_id": "cloud-fallback-1",
+            "norllama_task_kind": "chat",
+            "execution_mode": "prompt_intermediary_openai_facade_cloud_fallback",
+            "requested_model": fallback_model,
+            "route_selected_model": fallback_model,
+            "route_policy": {
+                "provider": "aws-bedrock",
+                "preferred_provider": "aws-bedrock",
+                "model": fallback_model,
+                "preferred_model": fallback_model,
+                "lane": "coder",
+                "allow_cloud_proxy": False,
+                "fallbacks": fallbacks,
+                "route_policy_artifact": artifact,
+                "aws_region": "us-east-2",
+                "bedrock_mantle_api_key_secret": "test/bedrock-mantle",
+            },
+            "norllama_route": route.as_dict(),
+            "norman_facade_cloud_fallback": {
+                "schema": "norman.facade-cloud-fallback.v1",
+                "attempt": 1,
+                "requested_alias": "norman-code",
+                "local_failure_code": "local_capacity_unavailable",
+            },
+        },
+    )
+
+
 def test_bedrock_adapter_builds_native_converse_request_and_receipt():
     client = _FakeBedrockClient(
         {
@@ -654,6 +706,38 @@ def test_bedrock_adapter_routes_authorized_explicit_gpt_selection_through_mantle
         sort_keys=True,
     )
     assert mantle_key not in serialized
+
+
+def test_bedrock_adapter_routes_authorized_cloud_fallback_through_native_bedrock():
+    client = _FakeBedrockClient(
+        {
+            "stopReason": "end_turn",
+            "output": {
+                "message": {
+                    "content": [{"text": "Fallback completed."}],
+                }
+            },
+            "usage": {
+                "inputTokens": 4,
+                "outputTokens": 2,
+                "totalTokens": 6,
+            },
+        }
+    )
+
+    result = BedrockModelAdapter(client_factory=lambda **_kwargs: client).invoke(
+        _cloud_fallback_request()
+    )
+
+    assert len(client.calls) == 1
+    assert result.text == "Fallback completed."
+    assert result.metadata["bedrock_transport"] == "aws_bedrock_converse"
+    assert result.metadata["policy_authorization"][
+        "cloud_fallback_authorized"
+    ] is True
+    assert result.metadata["policy_authorization"][
+        "explicit_cloud_selection_authorized"
+    ] is False
 
 
 def test_bedrock_mantle_request_uses_supported_parameters():

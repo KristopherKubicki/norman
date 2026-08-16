@@ -261,8 +261,11 @@ exec "$SHELL" -l
 
 The installer copies the router and token helper to
 `~/.local/lib/norman-codex-route`, installs the wrappers at
-`~/.local/bin/codex` and `~/.local/bin/codex-work`, and ensures that local bin
-directory precedes the NVM Codex binary in `.bashrc` and any existing
+`~/.local/bin/codex`, `~/.local/bin/codex-work`, and
+`~/.local/bin/codex-work-fast`. `codex-work` always uses its managed Codex
+version with app connectors enabled; `codex-work-fast` is the explicit
+no-apps variant. The installer ensures that local bin directory precedes the
+NVM Codex binary in `.bashrc` and any existing
 `.bash_profile`. Mapped checkouts fail closed if the wrong launcher or a
 provider-changing override is supplied.
 

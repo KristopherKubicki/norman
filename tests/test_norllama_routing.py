@@ -1,3 +1,4 @@
+from app.core.estate_registry import resident_model
 from app.services.norllama.routing import (
     build_task_receipt,
     route_task,
@@ -213,10 +214,10 @@ def test_norllama_catalog_model_selection_for_code_and_judge():
     judge_route = route_task(judge_request)
 
     assert code_route.capability == "code"
-    assert code_route.model == "qwen3-coder:30b-a3b-q4_K_M"
+    assert code_route.model == resident_model()
     assert code_route.tool_lane is False
     assert judge_route.capability == "judge"
-    assert judge_route.model == "qwen3-coder:30b-a3b-q4_K_M"
+    assert judge_route.model == resident_model()
     assert judge_route.model != "qwen3.5:122b-a10b-q4_K_M"
     assert judge_route.tool_lane is False
 
@@ -237,7 +238,7 @@ def test_norllama_catalog_model_selection_for_world_and_faster_whisper_asr():
     asr_route = route_task(asr_request)
 
     assert world_route.capability == "world"
-    assert world_route.model == "qwen3-coder:30b-a3b-q4_K_M"
+    assert world_route.model == resident_model()
     assert world_route.tool_lane is True
     assert asr_route.capability == "asr"
     assert asr_route.model == "faster-whisper:distil-large-v3"
@@ -781,5 +782,5 @@ def test_norllama_response_attribution_preserves_target_worker_on_failover(
     )
     assert (
         "qwen_default_without_production_benchmark_gate"
-        in receipt["receipt_audit"]["failures"]
+        not in receipt["receipt_audit"]["failures"]
     )

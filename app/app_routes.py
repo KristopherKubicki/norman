@@ -1715,7 +1715,7 @@ def _bootstrap_user_workspace(db: Session, user: User) -> None:
             default_model = (
                 settings.openai_available_models[0]
                 if settings.openai_available_models
-                else settings.openai_default_model or "gpt-5.5"
+                else settings.openai_default_model
             )
             bot_for_default = create_bot(
                 db=db,

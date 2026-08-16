@@ -39,6 +39,87 @@ def load_gateway_module():
     return module
 
 
+def test_gateway_accept_backlog_handles_monitoring_bursts():
+    module = load_gateway_module()
+
+    assert module.ThreadingHTTPServer.request_queue_size == 128
+
+
+def test_gateway_includes_the_policy_resident_backend(monkeypatch):
+    module = load_gateway_module()
+    monkeypatch.setenv("NORLLAMA_OLLAMA_BASES", "http://127.0.0.1:11434")
+    monkeypatch.delenv("NORLLAMA_RESIDENT_OLLAMA_BASES", raising=False)
+    monkeypatch.setattr(
+        module,
+        "resident_ollama_bases_from_policy",
+        lambda: ["http://future-resident:11434"],
+    )
+
+    app = module.App()
+
+    assert app.ollama_bases == [
+        "http://127.0.0.1:11434",
+        "http://future-resident:11434",
+    ]
+
+
+def test_registry_model_uses_the_native_non_thinking_bridge(monkeypatch):
+    module = load_gateway_module()
+    monkeypatch.setattr(
+        module,
+        "model_role_rows",
+        lambda: {
+            "resident": {
+                "model": "future-local:40b",
+                "native_non_thinking_bridge": True,
+            }
+        },
+    )
+
+    assert module.should_disable_qwen_thinking("future-local:40b") is True
+    payload = module.openai_chat_payload_to_ollama(
+        {
+            "model": "future-local:40b",
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": False,
+        }
+    )
+
+    assert payload["think"] is False
+    assert payload["stream"] is False
+
+
+@pytest.mark.parametrize(
+    ("method_name", "bases_attribute"),
+    [
+        ("choose_media_base", "media_bases"),
+        ("choose_transcribe_base", "transcribe_bases"),
+        ("choose_ocr_base", "ocr_bases"),
+        ("choose_rerank_base", "rerank_bases"),
+        ("choose_safety_base", "safety_bases"),
+    ],
+)
+def test_auxiliary_health_probes_use_bounded_timeout(method_name, bases_attribute):
+    module = load_gateway_module()
+    app = module.App.__new__(module.App)
+    app.timeout_s = 300
+    app.health_probe_timeout_s = 3
+    setattr(app, bases_attribute, ["http://auxiliary"])
+    calls = []
+
+    def fake_fetch(url, *, timeout_s):
+        calls.append((url, timeout_s))
+        return {"status": "ok", "_http_status": 200}
+
+    app.fetch_json = fake_fetch
+
+    selected, rows = getattr(app, method_name)()
+
+    assert selected == "http://auxiliary"
+    assert rows[0]["status"] == "ok"
+    assert calls == [("http://auxiliary/health", 3)]
+
+
 def test_chat_admission_timeout_removes_expired_waiter():
     module = load_gateway_module()
     controller = module.ChatAdmissionController(
@@ -129,6 +210,118 @@ def test_chat_admission_reservation_becomes_active_without_second_generation():
 
     queued.release()
     assert controller.snapshot()["active"] == 0
+
+
+def test_foreground_reservation_preempts_queued_background_work():
+    module = load_gateway_module()
+    controller = module.ChatAdmissionController(
+        max_active=1,
+        queue_limit=1,
+        queue_wait_s=1,
+        retry_after_s=7,
+    )
+
+    active, _ = controller.reserve(priority="normal")
+    background, _ = controller.reserve(priority="background")
+    foreground, snapshot = controller.reserve(priority="high")
+
+    assert active is not None
+    assert background is not None
+    assert foreground is not None
+    assert snapshot["queue_depth"] == 1
+    assert background.wait(timeout_s=0)[0] == "preempted"
+
+    active.release()
+    state, snapshot = foreground.wait(timeout_s=0.1)
+    assert state == "admitted"
+    assert snapshot["active"] == 1
+    assert snapshot["queue_depth"] == 0
+
+    background.release()
+    foreground.release()
+    assert controller.snapshot()["active"] == 0
+
+
+def test_background_reservation_honors_shorter_caller_queue_budget():
+    module = load_gateway_module()
+    controller = module.ChatAdmissionController(
+        max_active=1,
+        queue_limit=1,
+        queue_wait_s=10,
+        retry_after_s=7,
+    )
+
+    active, _ = controller.reserve(priority="normal")
+    background, _ = controller.reserve(
+        priority="background",
+        queue_wait_s=0.01,
+    )
+    assert active is not None
+    assert background is not None
+
+    time.sleep(0.02)
+    state, snapshot = background.wait(timeout_s=0)
+    assert state == "expired"
+    assert snapshot["queue_depth"] == 0
+
+    active.release()
+
+
+def test_background_capacity_response_is_explicitly_best_effort():
+    module = load_gateway_module()
+    controller = module.ChatAdmissionController(
+        max_active=1,
+        queue_limit=0,
+        queue_wait_s=0,
+        retry_after_s=7,
+    )
+    active, _ = controller.reserve(priority="normal")
+    assert active is not None
+
+    handler = object.__new__(module.Handler)
+    handler.server = SimpleNamespace(app=SimpleNamespace(chat_admission=controller))
+    handler.headers = {"Content-Type": "application/json"}
+    handler._work_class = "background"
+    handler._model_hint = "resident-model"
+    status, headers, body = handler.local_capacity_response(
+        body=b'{"model":"resident-model"}',
+        snapshot=controller.snapshot(),
+    )
+
+    payload = json.loads(body)
+    assert status == module.HTTPStatus.TOO_MANY_REQUESTS
+    assert headers["Retry-After"] == "7"
+    assert payload["error"] == "background_deferred"
+    assert payload["norllama"]["schema"] == "norllama.capacity.v2"
+    assert payload["norllama"]["work_class"] == "background"
+    assert payload["norllama"]["outcome"] == "deferred"
+
+    active.release()
+
+
+def test_configured_lan_backend_is_owned_by_chat_admission():
+    module = load_gateway_module()
+    handler = object.__new__(module.Handler)
+    handler.server = SimpleNamespace(
+        app=SimpleNamespace(
+            admission_bases={"http://192.168.2.151:11435"},
+        )
+    )
+
+    assert (
+        handler.local_generation_request(
+            "http://192.168.2.151:11435",
+            "/api/chat",
+        )
+        is True
+    )
+    assert (
+        handler.local_generation_request(
+            "http://192.168.2.150:11434",
+            "/api/chat",
+        )
+        is False
+    )
 
 
 def test_queued_stream_disconnect_during_headers_releases_reservation():
@@ -431,7 +624,9 @@ def test_transcribe_limits_attempts_and_disables_peer_replays_by_default():
     )
     handler.peer_candidate_bases = lambda: (["http://peer-a"], [{"status": "ok"}])
     forwarded = []
-    handler.forward_candidates = lambda *args, **kwargs: forwarded.append((args, kwargs))
+    handler.forward_candidates = lambda *args, **kwargs: forwarded.append(
+        (args, kwargs)
+    )
     captured = []
     handler.send_upstream = lambda *args, **kwargs: captured.append((args, kwargs))
 
@@ -610,15 +805,25 @@ def test_gateway_marks_all_heavy_judge_aliases_as_manual_only():
     assert module.is_manual_only_model(module.QWEN3_CODER_MODEL) is False
 
 
-def test_gateway_disables_qwen_thinking_for_generate_payloads():
+def test_gateway_disables_policy_selected_thinking_for_generate_payloads(monkeypatch):
     module = load_gateway_module()
+    monkeypatch.setattr(
+        module,
+        "model_role_rows",
+        lambda: {
+            "resident": {
+                "model": "future-local:40b",
+                "native_non_thinking_bridge": True,
+            }
+        },
+    )
 
     payload, changed = module.normalize_chat_payload_for_local_qwen(
-        {"model": module.QWEN36_ROUTER_MODEL, "prompt": "Reply exactly OK"}
+        {"model": "future-local:40b", "prompt": "Reply exactly OK"}
     )
     explicit_payload, explicit_changed = module.normalize_chat_payload_for_local_qwen(
         {
-            "model": module.QWEN36_ROUTER_MODEL,
+            "model": "future-local:40b",
             "prompt": "Reply exactly OK",
             "think": True,
         }

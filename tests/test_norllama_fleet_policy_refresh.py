@@ -57,3 +57,107 @@ def test_refresh_blocks_when_a_worker_is_not_ready(monkeypatch) -> None:
 
     assert report["status"] == "blocked"
     assert "preflight" in report["error"]
+
+
+def test_stage_only_writes_next_policy_without_promoting_live(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_module()
+    target = {
+        "name": "worker-a",
+        "policy_path": "/srv/norllama/route_policy.json",
+        "url": "http://worker-a:18151",
+    }
+    staged_calls: list[tuple[str, str, str]] = []
+
+    monkeypatch.setattr(
+        module,
+        "http_json",
+        lambda _url: (
+            200,
+            {
+                "ready": True,
+                "policy": {"refresh_generation": 9},
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "copy_to_remote",
+        lambda _path, _target, _destination: type(
+            "Result", (), {"returncode": 0, "stderr": ""}
+        )(),
+    )
+    monkeypatch.setattr(
+        module,
+        "remote_checksum",
+        lambda _target, _path, _sha256: (True, ""),
+    )
+
+    def fake_stage(_target, staged, pending, backup):
+        staged_calls.append((staged, pending, backup))
+        return True, ""
+
+    monkeypatch.setattr(module, "stage_for_activation", fake_stage)
+    monkeypatch.setattr(
+        module,
+        "promote",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("stage-only refresh must not promote live policy")
+        ),
+    )
+    monkeypatch.setattr(module, "cleanup", lambda *_args: None)
+
+    report = module.refresh(targets=[target], apply=True, stage_only=True)
+
+    assert report["status"] == "ok"
+    assert report["mode"] == "stage"
+    assert report["targets"] == [{"name": "worker-a", "status": "staged"}]
+    assert staged_calls[0][0] == "/srv/norllama/route_policy.next.json"
+
+
+def test_next_policy_path_matches_gateway_deployment_convention() -> None:
+    module = _load_module()
+
+    assert (
+        module.next_policy_path("/srv/norllama/route_policy.json")
+        == "/srv/norllama/route_policy.next.json"
+    )
+
+
+def test_failed_partial_stage_reports_full_expected_fleet() -> None:
+    module = _load_module()
+
+    report = module.add_alert_contract(
+        {
+            "mode": "stage",
+            "status": "blocked",
+            "preflight": [{}, {}, {}],
+            "targets": [
+                {"name": "worker-a", "status": "staged"},
+                {"name": "worker-b", "status": "staged"},
+            ],
+        }
+    )
+
+    assert report["summary"]["active"] == 2
+    assert report["summary"]["expected"] == 3
+
+
+def test_alert_contract_counts_staged_targets_as_healthy() -> None:
+    module = _load_module()
+
+    report = module.add_alert_contract(
+        {
+            "mode": "stage",
+            "status": "ok",
+            "targets": [{"name": "worker-a", "status": "staged"}],
+        }
+    )
+
+    assert report["summary"] == {
+        "active": 1,
+        "expected": 1,
+        "fail": 0,
+        "warn": 0,
+    }
