@@ -17,7 +17,7 @@ def test_tui_snapshot_persists_only_the_fixed_aggregate_shape() -> None:
         source_tui="pilot-safe",
     )
 
-    snapshot = TuiKpiSnapshot.parse_obj(payload)
+    snapshot = TuiKpiSnapshot.model_validate(payload)
     sanitized = snapshot.sanitized_payload()
 
     assert set(sanitized) == {
@@ -58,11 +58,11 @@ def test_tui_snapshot_rejects_unapproved_payload_fields(
     target[path[-1]] = value
 
     with pytest.raises(ValidationError):
-        TuiKpiSnapshot.parse_obj(payload)
+        TuiKpiSnapshot.model_validate(payload)
 
 
 def test_tui_snapshot_rejects_unknown_schema_versions() -> None:
     payload = tui_snapshot_payload(schema="norman.kaizen-tui-snapshot.v999")
 
     with pytest.raises(ValidationError):
-        TuiKpiSnapshot.parse_obj(payload)
+        TuiKpiSnapshot.model_validate(payload)

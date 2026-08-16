@@ -7,6 +7,8 @@ import atexit
 import faulthandler
 import subprocess
 import sys
+from contextlib import asynccontextmanager
+from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
@@ -70,9 +72,20 @@ def run_alembic_migrations():
     logger.info("Alembic: upgrade heads done")
 
 
-app = FastAPI()
 logger = setup_logger(__name__)
 faulthandler.enable()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    await startup_event()
+    try:
+        yield
+    finally:
+        await shutdown_event()
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 def _handle_signal(signum, _frame):
@@ -131,7 +144,6 @@ async def cache_control_middleware(request: Request, call_next):
 
 
 # Create the initial user
-@app.on_event("startup")
 async def startup_event():
     logger.info("Startup: begin")
     try:
@@ -213,7 +225,6 @@ async def startup_event():
         raise
 
 
-@app.on_event("shutdown")
 async def shutdown_event():
     logger.info("Shutdown: begin")
     stop_event = getattr(app.state, "routing_stop_event", None)
@@ -247,10 +258,10 @@ init_connectors(app, settings)
 init_routers(app)
 add_exception_handlers(app)
 
-current_dir = os.path.dirname(os.path.realpath(__file__))
+static_directory = Path(__file__).resolve().parent / "app" / "static"
 app.mount(
     "/static",
-    StaticFiles(directory=os.path.join(current_dir, "app/static")),
+    StaticFiles(directory=static_directory),
     name="static",
 )
 

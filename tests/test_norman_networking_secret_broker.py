@@ -140,9 +140,11 @@ def test_broker_prefers_norman_keys_and_creates_a_scoped_request(monkeypatch):
     monkeypatch.setattr(
         module,
         "_read_cred_secret",
-        lambda secret_name: "keys-service-token"
-        if secret_name == module.KEYS_SERVICE_TOKEN_SECRET
-        else (_ for _ in ()).throw(AssertionError("fallback vault should not run")),
+        lambda secret_name: (
+            "keys-service-token"
+            if secret_name == module.KEYS_SERVICE_TOKEN_SECRET
+            else (_ for _ in ()).throw(AssertionError("fallback vault should not run"))
+        ),
     )
     monkeypatch.setattr(module.urllib.request, "urlopen", fake_urlopen)
     monkeypatch.setenv("NORMAN_NETWORKING_KEYS_URL", "http://keys.example.test")

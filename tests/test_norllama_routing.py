@@ -556,7 +556,7 @@ def test_norllama_response_attribution_maps_live_gateway_upstream(monkeypatch):
             "headers": {
                 "x-norllama-upstream": "http://192.168.2.150:18151",
                 "x-norllama-attempts": (
-                    "http://192.168.2.133:18151," "http://192.168.2.150:18151"
+                    "http://192.168.2.133:18151,http://192.168.2.150:18151"
                 ),
             }
         },

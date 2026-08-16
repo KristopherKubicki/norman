@@ -16,7 +16,8 @@ configuration, and basic maintenance tasks.
 
 Before deploying Norman, ensure that your server meets the following requirements:
 
-- Python 3.8, 3.9, 3.10, or 3.11
+- Python 3.14
+- `uv` for managed Python and locked dependency installation
 - SQLite (or another supported database system)
 - A compatible operating system, such as Ubuntu, Debian, or CentOS
 
@@ -34,22 +35,22 @@ Before deploying Norman, ensure that your server meets the following requirement
    cd norman
    ```
 
-3. Create a virtual environment:
+3. Install the release's declared Python line:
 
    ```
-   python3 -m venv env
+   uv python install
    ```
 
-4. Activate the virtual environment:
+4. Create the locked virtual environment:
 
    ```
-   source env/bin/activate
+   uv sync --locked --no-dev
    ```
 
-5. Install the required packages:
+5. Activate it when running commands manually:
 
    ```
-   pip install -r requirements.txt
+   source .venv/bin/activate
    ```
 
 ## Configuration
@@ -98,12 +99,16 @@ do not reuse the live service's `/etc/norman/runtime.env`. Keep
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl start norman-release@<release-sha>
-curl -fsS http://127.0.0.1:18000/health
+curl -fsS http://127.0.0.1:18000/openapi.json
 sudo systemctl stop norman-release@<release-sha>
 ```
 
-The release checkout must contain `.venv-3.10` and the managed configuration
-environment before starting this unit.
+Each new release must contain a standard `.venv` created from the repository's
+`.python-version` with `uv sync --locked --no-dev` and the managed
+configuration environment before starting this unit.
+`norman-release-python` accepts exactly one legacy versioned virtualenv only
+so an already-deployed release can remain a rollback target; new releases must
+not create versioned virtualenv directories.
 
 ### Production Credential Wrapper
 
@@ -113,6 +118,14 @@ Install the launcher at `/usr/local/libexec/norman-production-launch` with mode
 `0755`, and install the unit at
 `/etc/systemd/system/norman-production@.service`. The unit is deliberately
 separate from the loopback canary and from the legacy `norman.service`.
+Install the release interpreter resolver as well. It selects the release-local
+`.venv` without encoding a Python version in the unit:
+
+```bash
+sudo install -D -m 0755 scripts/systemd/norman-release-python \
+  /usr/local/libexec/norman-release-python
+```
+
 Install `scripts/tmpfiles.d/norman-production.conf` at
 `/etc/tmpfiles.d/norman-production.conf` and apply it before starting the
 production unit. It keeps the persistent SQLite state directory owned by the
@@ -210,19 +223,21 @@ logical alias `networking/bedrock-mantle`, reads
 a fresh bearer token in memory for each request. It never stores the bearer
 token in a file, environment variable, configuration secret, or log.
 
-After the release virtualenv has been installed, configure the release
-environment with the exact release path and approved region:
+After the release virtualenv has been installed, configure the managed
+environment with the approved region and release-aware resolver:
 
 ```text
 NORMAN_BEDROCK_MANTLE_REGION=us-east-2
-NORMAN_BEDROCK_MANTLE_SECRET_CMD=/home/kristopher/releases/norman-<release-sha>/.venv-3.10/bin/python /home/kristopher/releases/norman-<release-sha>/scripts/norman_bedrock_mantle_broker.py get {name}
+NORMAN_BEDROCK_MANTLE_SECRET_CMD="/usr/local/libexec/norman-release-python --current --release-script scripts/norman_bedrock_mantle_broker.py get {name}"
 ```
 
 Set `prompt_facade_explicit_cloud_mantle_api_key_secret:
 networking/bedrock-mantle` in `norman/runtime-config`. Keep the fallback
 disabled unless an explicitly approved cloud model is selected. The token
 generator's stable API creates a fresh token with a 12-hour validity; it is
-not cached or persisted by Norman.
+not cached or persisted by Norman. The production and candidate units set
+`NORMAN_RELEASE_SHA` themselves, so this command always runs the broker from
+the release serving the request.
 
 The legacy `norman.service` rollback path must use the same identity file.
 Install `scripts/systemd/norman.service.d/10-runtime-env.conf` before removing
@@ -233,8 +248,8 @@ release and that the front door and local model lane remain healthy:
 
 ```bash
 systemctl is-active norman-production@<release-sha>
-curl -fsS http://127.0.0.1:8000/health
-curl -fsS https://norman.home.arpa/health
+curl -fsS http://127.0.0.1:8000/openapi.json
+curl -fsS https://norman.home.arpa/openapi.json
 curl -fsS https://llm.home.arpa/v1/models
 systemctl status norman-route-policy-refresh.timer
 ```
@@ -327,6 +342,38 @@ check when the local host-pressure guard defers or blocks new work. Inspect the
 latest result at
 `$HOME/.local/state/norman/tui-tool-chain-canary.json`; it deliberately omits
 prompts, response text, arguments, tool output, tokens, and credentials.
+
+### Codex Bridge Parity Evaluation
+
+The Responses canary proves tool transport. It does not measure whether a
+transparent Codex route performs comparably to a native Codex session on
+repository work. Use the parity evaluator for that decision:
+
+```bash
+scripts/codex_bridge_parity.py \
+  --workspace "$HOME/code/control_plane" \
+  --live \
+  --require-complete
+```
+
+It alternates direct native Codex and `codex-work` runs over five real,
+read-only Control Plane policy and runbook tasks. Each run uses Codex
+`read-only` sandboxing and an ephemeral session. The evaluation gates on
+completion, contract score, unfinished future-work responses, and tool-event
+continuity. It writes only sanitized metrics, answer hashes, and gate results
+to `$HOME/.local/state/norman/codex-bridge-parity.{json,md}`; prompts, event
+streams, and model answers remain in a temporary directory and are deleted
+when the run ends.
+
+Route homes expose only their relevant managed skills. For example, the
+Control Plane route receives its Control Plane and Ops skills, not unrelated
+work-route skill inventories.
+
+Run it without `--live` to validate the task set and report plumbing without
+calling either model route. Set `CODEX_REAL_BIN` or pass
+`--native-codex-bin` if the direct Codex executable cannot be resolved
+automatically. A `pass` is a promotion signal, not a substitute for the
+hourly Responses tool-chain canary.
 
 ### Temporary Workspace Cleanup
 
@@ -472,83 +519,29 @@ broker, whose policy deliberately permits only `*/prompt-proxy-token` aliases.
 Without this configuration the alert services are skipped cleanly rather than
 failing repeatedly.
 
-### Norman Codex Capacity Contract
+### Norman Codex Terra Contract
 
-`norman-code` is local-first. Before an interactive session starts, the
-launcher obtains one brokered gateway token and checks:
+`codex-work` launches `openai.gpt-5.6-terra` through the Norman Responses
+facade. The facade preserves the TUI bridge, route receipts, and tool protocol;
+it does not select a local coding model or make a server-owned local fallback.
 
-1. `/v1/models` accepts that token.
-2. `/v1/norman/capacity?model=norman-code` reports a reachable Spark that
-   advertises the coding model.
+Before an interactive session starts, the launcher obtains one brokered gateway
+token and verifies that `/v1/models` accepts it and advertises the Terra model.
+`codex --verify` performs that same non-invoking check. `login`, `logout`,
+`--help`, and `--version` remain available without a gateway check.
 
-The capacity endpoint performs a fresh mesh probe and checks the bounded
-recent local facade-outcome window; it does not send a prompt, load a model,
-or create model residency. A local model timeout holds that model unavailable
-for 60 seconds. Unavailable-model, capacity, or empty-response errors retain
-the 15-minute hold. A later successful local response clears the hold. Before
-each interactive launch, the router checks this endpoint and reports an
-unavailable local coding lane as an advisory. It still starts Codex with the
-isolated routed profile; it never changes the provider or bypasses the route
-policy. When the capacity response approves the Bedrock fallback, the advisory
-states that it will run before local output if the request cannot use the local
-lane. For example:
+The API still exposes local-model aliases and `/v1/norman/capacity` for
+non-TUI compatibility and local-operations diagnostics. They are not valid
+`codex-work` selections and must not be used as a fallback for a Terra session.
+If Terra cannot be reached, the TUI fails explicitly and the route receipt
+records the effective provider, model, bridge mode, and failure reason.
 
-```text
-codex-route: norman local capacity warning: no eligible coding worker is
-reachable (no_eligible_worker_reachable); 0/2 model-ready worker(s),
-unavailable; approved Bedrock fallback is ready and will run before any local
-output; retry later. Starting Codex normally.
-```
-
-The pre-TUI output also shows the freshest locally captured subscription
-capacity windows plus the current calendar-month metered estimate when those
-state files are available. The router reads the `web-bridge` state below that
-routed profile's `CODEX_HOME` (for example, `~/.codex-cp/web-bridge`), so
-unrelated profile activity is not mixed into the reminder. `NORMAN_CODEX_STATE_DIR`,
-`NORMAN_CODEX_USAGE_PATH`, `NORMAN_CODEX_USAGE_LEDGER_PATH`, and
-`NORMAN_CODEX_ACCOUNT_CAPACITY_PATH` provide explicit read-only diagnostic
-overrides. Those labels are local usage data, not a provider-reported billing
-balance or invoice. This avoids presenting a local Spark outage as a generic
-hosted-model high-demand condition. `codex --verify` checks the same two
-endpoints without starting a TUI, including from Networking and the other
-routed checkouts. `login`, `logout`, `--help`, and `--version` do not require
-capacity, so recovery and diagnostics remain available while the model lane is
-down.
-
-The API requires the normal route identity injected by Caddy and a valid
-brokered bearer token. A successful capacity response is always HTTP 200; use
-its `available`, `reason`, `condition`, `local_lane`, `retryable`,
-`eligible_workers`, `ineligible_workers`, `frontdoor`, and `cache` fields to
-decide recovery. `local_lane` reports eligible, reachable, and model-ready
-worker counts plus whether the coding lane is redundant, limited to one worker,
-or unavailable. It intentionally treats the Mac mini fallback node as
-ineligible for `norman-code`.
-
-For `norman-code` only, the `/v1/responses` facade makes one server-owned
-Bedrock retry when a retryable local failure occurs before the local model has
-emitted text. The fallback is buffered, so the response stream first reports
-that the retry has started and then emits the cloud result. It never switches
-providers after local text has begun, and no other public alias is eligible.
-Failures that cannot use the retry retain the normal OpenAI-compatible error
-envelope.
-
-| Code | HTTP status | Meaning | Retry |
-| --- | --- | --- | --- |
-| `local_capacity_exhausted` | 503 | A worker reported no capacity. | Yes; respects `Retry-After`. |
-| `local_capacity_unavailable` | 503 | The coding worker lane is unavailable. | Yes. |
-| `local_model_unavailable` | 503 | No eligible worker has the coding model. | Yes after worker/model recovery. |
-| `local_model_timeout` | 504 | A local model request exceeded its deadline. | Yes. |
-| `local_gateway_unreachable` | 503 | Norman could not reach the local model gateway. | Yes. |
-| `local_gateway_unavailable` | 503 | The local gateway returned an upstream 5xx failure. | Yes. |
-| `local_gateway_auth_failed` | 503 | Gateway credentials are invalid or expired. | No; repair credentials. |
-| `local_gateway_bad_response` | 502 | The gateway response is invalid. | Usually no for HTTP 4xx; inspect logs. |
-| `empty_local_response` | 502 | The local model completed with no usable text. | Yes. |
-| `local_model_not_installed` | 422 | The selected model is not installed. | No; deploy a supported model. |
-
-The capacity endpoint can also return `unsupported_capacity_model` (400) for a
-model alias outside the local catalog. Authentication and route-identity errors
-remain explicit: `proxy_token_not_configured` (503), `invalid_api_key` (401),
-and `gateway_route_*` (403).
+The pre-TUI output may show locally captured subscription capacity windows and
+the current calendar-month metered estimate when those state files are
+available. Those are local usage data, not a provider-reported billing balance
+or invoice. `NORMAN_CODEX_STATE_DIR`, `NORMAN_CODEX_USAGE_PATH`,
+`NORMAN_CODEX_USAGE_LEDGER_PATH`, and `NORMAN_CODEX_ACCOUNT_CAPACITY_PATH`
+provide explicit read-only diagnostic overrides.
 
 Proxy events are persisted as JSONL at
 `/var/lib/norman/state/proxy-events.jsonl` by default. The active log rotates
@@ -600,7 +593,7 @@ To update your Norman installation, perform the following steps:
 2. Activate the virtual environment:
 
    ```
-   source env/bin/activate
+   source .venv/bin/activate
    ```
 
 3. Pull the latest changes from the repository:
@@ -609,10 +602,11 @@ To update your Norman installation, perform the following steps:
    git pull
    ```
 
-4. Update the installed packages:
+4. Refresh the declared Python and locked packages:
 
    ```
-   pip install -r requirements.txt
+   uv python install
+   uv sync --locked --no-dev
    ```
 
 5. Restart the Norman application.

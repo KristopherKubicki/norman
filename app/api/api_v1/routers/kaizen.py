@@ -3,7 +3,7 @@
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, constr
+from pydantic import ConfigDict, BaseModel, constr
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_console_runtime_user, get_db
@@ -21,7 +21,7 @@ from app.services.kaizen.types import (
 
 router = APIRouter(prefix="/kaizen", tags=["kaizen"])
 
-RealmValue = constr(regex=r"^[a-z0-9][a-z0-9/_-]{1,95}$")
+RealmValue = constr(pattern=r"^[a-z0-9][a-z0-9/_-]{1,95}$")
 
 
 class KaizenTickRequest(BaseModel):
@@ -30,9 +30,7 @@ class KaizenTickRequest(BaseModel):
     realm: RealmValue
     source_tui: TuiIdentifier
 
-    class Config:
-        anystr_strip_whitespace = True
-        extra = "forbid"
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
 
 @router.get("/status")

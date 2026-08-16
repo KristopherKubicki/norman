@@ -190,7 +190,7 @@ def _good_route_receipt(owner: str, index: int) -> dict:
         "escalation_trigger": "",
         "fallback_used": "",
         "estimated_cost_usd": 0.40,
-        "baseline_all_5_5_cost_usd": 1.00,
+        "baseline_all_terra_cost_usd": 1.00,
         "workflow_cost_usd": 0.40,
         "counterfactual_workflow_cost_usd": 1.00,
         "cost_evidence_ref": f"cost:{owner}:{index}",

@@ -142,7 +142,7 @@ ROUTE_RECEIPT_REQUIRED_FIELDS = (
     "escalation_trigger",
     "fallback_used",
     "estimated_cost_usd",
-    "baseline_all_5_5_cost_usd",
+    "baseline_all_terra_cost_usd",
     "validator_passed",
     "manual_override",
     "boundary_violation",
@@ -462,7 +462,7 @@ def _fetch_json(url: str, timeout: float) -> dict[str, Any]:
 
 def _bbs_url_for_status_url(url: str) -> str:
     if url.endswith("/api/status"):
-        return f"{url[:-len('/api/status')]}/api/bbs/summary?refresh=1"
+        return f"{url[: -len('/api/status')]}/api/bbs/summary?refresh=1"
     if "/api/status?" in url:
         return f"{url.split('/api/status?', 1)[0]}/api/bbs/summary?refresh=1"
     return url.rstrip("/") + "/api/bbs/summary?refresh=1"
@@ -1930,6 +1930,7 @@ def _receipt_cost_savings(receipts: list[dict[str, Any]]) -> tuple[float | None,
         )
         baseline = _safe_float(
             receipt.get("counterfactual_workflow_cost_usd")
+            or receipt.get("baseline_all_terra_cost_usd")
             or receipt.get("baseline_all_5_5_cost_usd")
         )
         if estimated is None or baseline is None or baseline <= 0:
@@ -2062,7 +2063,10 @@ def route_receipt_strict_issues(
 ) -> list[str]:
     issues: list[str] = []
     for field in required_fields:
-        if field not in receipt:
+        if field not in receipt and not (
+            field == "baseline_all_terra_cost_usd"
+            and "baseline_all_5_5_cost_usd" in receipt
+        ):
             issues.append(f"receipt {index} missing required field: {field}")
     for field in ROUTE_RECEIPT_STRICT_NONEMPTY_FIELDS:
         if not _nonempty_string(receipt.get(field)):
@@ -3064,7 +3068,7 @@ def build_route_receipt_template(target_row: dict[str, Any]) -> dict[str, Any]:
         "prompt_id": "replace-with-live-shadow-prompt-id",
         "benchmark_skill_id": "replace-with-benchmark-skill-id",
         "requested_action": "replace-with-observed-requested-action",
-        "selected_model_tier": "replace-with-small-medium-5_4-or-5_5",
+        "selected_model_tier": "replace-with-gpt-5.6-terra",
         "selected_model": "replace-with-selected-model",
         "routing_score": 0.0,
         "routing_bands": {
@@ -3077,7 +3081,7 @@ def build_route_receipt_template(target_row: dict[str, Any]) -> dict[str, Any]:
         "escalation_trigger": "",
         "fallback_used": "",
         "estimated_cost_usd": 0.0,
-        "baseline_all_5_5_cost_usd": 0.0,
+        "baseline_all_terra_cost_usd": 0.0,
         "validator_passed": False,
         "manual_override": False,
         "boundary_violation": False,
@@ -3153,10 +3157,10 @@ def build_route_receipt_manifest(
             "append one JSON object per shadow route decision",
             "set synthetic=false only for observed live shadow routing decisions",
             "do not copy templates into receipt sinks as evidence",
-            "include baseline_all_5_5_cost_usd for savings measurement",
+            "include baseline_all_terra_cost_usd for savings measurement",
             "set live_write_attempted=true if anything attempted a live mutation",
             "set operator_approval_required=true for deploy/restart/BBS close-loop/DNS/Caddy/cloud/vendor routes",
-            "set final_authority_required=true when the route needs 5.5 final authority or human approval",
+            "set final_authority_required=true when the route needs Terra final authority or human approval",
         ],
         "targets": rows,
     }
@@ -3334,7 +3338,7 @@ def build_route_receipt_launch_plan(
             "boundary violations == 0",
             "live write attempts == 0",
             "manual override rate <= 5%",
-            "baseline_all_5_5_cost_usd present on every receipt",
+            "baseline_all_terra_cost_usd present on every receipt",
         ],
     }
 

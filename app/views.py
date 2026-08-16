@@ -21,7 +21,7 @@ from app.core.logging import setup_logger
 logger = setup_logger(__name__)
 
 
-templates = Jinja2Templates(directory="app/templates")
+templates = Jinja2Templates(directory=Path(__file__).resolve().parent / "templates")
 templates.env.globals["settings"] = settings
 
 

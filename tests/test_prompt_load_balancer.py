@@ -664,8 +664,9 @@ def _mock_local_chat(messages, model, **kwargs):
 def _mock_bedrock_result(
     text: str = "cloud ok",
     *,
-    model: str = "qwen.qwen3-coder-480b-a35b-v1:0",
+    model: str = "openai.gpt-5.6-terra",
     metadata: dict | None = None,
+    raw: dict | None = None,
 ) -> ModelResult:
     return ModelResult(
         provider="bedrock",
@@ -673,6 +674,7 @@ def _mock_bedrock_result(
         text=text,
         usage=ModelUsage(input_tokens=7, output_tokens=3, total_tokens=10),
         metadata=metadata or {},
+        raw=raw or {},
     )
 
 
@@ -680,6 +682,7 @@ def _install_bedrock_stub(
     monkeypatch,
     *,
     result: ModelResult | None = None,
+    results: list[ModelResult] | None = None,
     error: Exception | None = None,
     delay_seconds: float = 0.0,
 ):
@@ -710,6 +713,7 @@ def _install_bedrock_stub(
         raising=False,
     )
     calls = []
+    pending_results = list(results or [])
 
     class StubBedrockModelAdapter:
         def invoke(self, request):
@@ -718,6 +722,8 @@ def _install_bedrock_stub(
                 time.sleep(delay_seconds)
             if error is not None:
                 raise error
+            if pending_results:
+                return pending_results.pop(0)
             return result or _mock_bedrock_result()
 
     monkeypatch.setattr(
@@ -1014,7 +1020,7 @@ def test_openai_compat_responses_routes_local_first(test_app, monkeypatch):
 
 
 @pytest.mark.parametrize("model", ["gpt-5.6-terra", "openai.gpt-5.6-terra"])
-def test_openai_compat_responses_rejects_explicit_cloud_model_for_tui(
+def test_openai_compat_responses_routes_explicit_cloud_model_for_tui(
     test_app, monkeypatch, model
 ):
     from app.services.prompt_provider_facade import norllama_gateway
@@ -1034,21 +1040,216 @@ def test_openai_compat_responses_rejects_explicit_cloud_model_for_tui(
         json={"model": model, "input": "status?"},
     )
 
-    assert response.status_code == 400
-    error = response.json()["error"]
-    assert error["code"] == "tool_capable_model_required"
-    assert error["param"] == "model"
-    assert "Use norman-code" in error["message"]
-    assert error["norman"] == {
-        "selected_model": model,
-        "required_model": "norman-code",
-        "cloud_fallback": "automatic_for_retryable_local_failure",
-    }
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["output_text"] == "cloud ok"
+    assert payload["norman"]["local_execution"] is False
+    assert payload["norman"]["cloud_forwarding"] is True
+    assert payload["norman"]["explicit_cloud_selection"]["model"] == (
+        "openai.gpt-5.6-terra"
+    )
     assert local_calls == []
-    assert bedrock_calls == []
+    assert len(bedrock_calls) == 1
 
 
-def test_openai_compat_responses_rejects_streaming_explicit_cloud_model_for_tui(
+def test_openai_compat_responses_preserves_native_terra_tools_and_continuation(
+    test_app, monkeypatch
+):
+    from app.services.prompt_provider_facade import norllama_gateway
+
+    headers = _proxy_headers(monkeypatch)
+    local_calls = []
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: local_calls.append(kwargs) or _mock_local_chat([], ""),
+    )
+    tool = {
+        "type": "function",
+        "name": "repository_status",
+        "description": "Read the repository status.",
+        "parameters": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        },
+    }
+    namespace_tool = {
+        "type": "namespace",
+        "name": "mcp__norman_canary",
+        "description": "Control Plane canary tools.",
+        "tools": [
+            {
+                "type": "function",
+                "name": "status_lookup",
+                "description": "Read the canary status.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"check": {"type": "string"}},
+                    "required": ["check"],
+                },
+            }
+        ],
+    }
+    native_namespace_tool = {
+        "type": "function",
+        "name": "mcp__norman_canary.status_lookup",
+        "description": "Read the canary status.",
+        "parameters": {
+            "type": "object",
+            "properties": {"check": {"type": "string"}},
+            "required": ["check"],
+        },
+    }
+    bedrock_calls = _install_bedrock_stub(
+        monkeypatch,
+        results=[
+            _mock_bedrock_result(
+                "",
+                raw={
+                    "output": [
+                        {
+                            "type": "reasoning",
+                            "id": "rsn-repository-status",
+                            "summary": [],
+                            "encrypted_content": "opaque-reasoning-state",
+                        },
+                        {
+                            "type": "function_call",
+                            "id": "fc-repository-status",
+                            "call_id": "call-repository-status",
+                            "name": "repository_status",
+                            "arguments": '{"path":"."}',
+                            "status": "completed",
+                        },
+                    ]
+                },
+            ),
+            _mock_bedrock_result("Repository is clean."),
+        ],
+    )
+
+    first = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={
+            "model": "openai.gpt-5.6-terra",
+            "input": "Check the repository.",
+            "tools": [tool],
+            "tool_choice": "required",
+            "parallel_tool_calls": False,
+            "reasoning": {"effort": "high"},
+        },
+    )
+
+    assert first.status_code == 200
+    first_payload = first.json()
+    assert first_payload["output"][0] == {
+        "type": "reasoning",
+        "id": "rsn-repository-status",
+        "summary": [],
+        "encrypted_content": "opaque-reasoning-state",
+    }
+    assert first_payload["output"][1] == {
+        "type": "function_call",
+        "id": "fc-repository-status",
+        "call_id": "call-repository-status",
+        "name": "repository_status",
+        "arguments": '{"path":"."}',
+        "status": "completed",
+    }
+    assert (
+        first_payload["norman"]["responses_compatibility"]["tool_transport"]
+        == "bedrock_mantle_responses"
+    )
+    first_prompt_context = first_payload["norman"]["responses_compatibility"][
+        "prompt_context"
+    ]
+    assert first_prompt_context["transport"] == "bedrock_mantle_responses"
+    assert first_prompt_context["groups"]["tool_contract"]["message_count"] == 1
+    assert first_prompt_context["groups"]["tool_contract"]["chars"] > 0
+    assert first_prompt_context["groups"]["current_input"]["chars"] > 0
+    assert "Check the repository." not in json.dumps(first_prompt_context)
+    assert "Read the repository status." not in json.dumps(first_prompt_context)
+    first_request = bedrock_calls[0]
+    assert first_request.responses_options == {
+        "tools": [tool],
+        "tool_choice": "required",
+        "parallel_tool_calls": False,
+        "reasoning": {"effort": "high"},
+    }
+    assert not any(
+        "Tool contract" in str(message.get("content", ""))
+        for message in first_request.messages
+    )
+
+    second = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={
+            "model": "openai.gpt-5.6-terra",
+            "previous_response_id": first_payload["id"],
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call-repository-status",
+                    "output": '{"branch":"main","dirty":false}',
+                }
+            ],
+            "tools": [namespace_tool],
+            "reasoning": {"effort": "high"},
+        },
+    )
+
+    assert second.status_code == 200
+    second_payload = second.json()
+    assert second_payload["output_text"] == "Repository is clean."
+    second_prompt_context = second_payload["norman"]["responses_compatibility"][
+        "prompt_context"
+    ]
+    assert second_prompt_context["transport"] == "bedrock_mantle_responses"
+    assert second_prompt_context["groups"]["history"]["function_call_chars"] > 0
+    assert second_prompt_context["groups"]["history"]["text_chars"] > 0
+    assert second_prompt_context["groups"]["current_input"]["tool_output_chars"] > 0
+    assert "opaque-reasoning-state" not in json.dumps(second_prompt_context)
+    assert "branch" not in json.dumps(second_prompt_context)
+    second_request = bedrock_calls[1]
+    assert second_request.responses_options["tools"] == [
+        tool,
+        native_namespace_tool,
+    ]
+    reasoning = next(
+        message
+        for message in second_request.messages
+        if message.get("type") == "reasoning"
+    )
+    assert reasoning == {
+        "type": "reasoning",
+        "id": "rsn-repository-status",
+        "summary": [],
+        "encrypted_content": "opaque-reasoning-state",
+    }
+    function_call = next(
+        message
+        for message in second_request.messages
+        if message.get("type") == "function_call"
+    )
+    assert function_call["call_id"] == "call-repository-status"
+    assert function_call["name"] == "repository_status"
+    assert function_call["arguments"] == '{"path":"."}'
+    assert function_call["id"] == "fc-repository-status"
+    assert function_call["status"] == "completed"
+    function_call_output = next(
+        message
+        for message in second_request.messages
+        if message.get("type") == "function_call_output"
+    )
+    assert function_call_output["call_id"] == "call-repository-status"
+    assert function_call_output["output"] == '{"branch":"main","dirty":false}'
+    assert local_calls == []
+
+
+def test_openai_compat_responses_streams_explicit_cloud_model_for_tui(
     test_app, monkeypatch
 ):
     from app.services.prompt_provider_facade import norllama_gateway
@@ -1065,18 +1266,101 @@ def test_openai_compat_responses_rejects_streaming_explicit_cloud_model_for_tui(
     response = test_app.post(
         "/v1/responses",
         headers=headers,
-        json={"model": "gpt-5.6-sol", "input": "status?", "stream": True},
+        json={"model": "openai.gpt-5.6-terra", "input": "status?", "stream": True},
     )
 
-    assert response.status_code == 400
-    error = response.json()["error"]
-    assert error["code"] == "tool_capable_model_required"
-    assert error["param"] == "model"
+    assert response.status_code == 200
+    assert "cloud ok" in response.text
     assert local_calls == []
-    assert bedrock_calls == []
+    assert len(bedrock_calls) == 1
 
 
-def test_openai_compat_chat_completions_rejects_explicit_cloud_model_for_tui(
+def test_openai_compat_responses_streams_native_terra_function_call(
+    test_app, monkeypatch
+):
+    from app.services.prompt_provider_facade import norllama_gateway
+
+    headers = _proxy_headers(monkeypatch)
+    local_calls = []
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat_stream",
+        lambda **kwargs: local_calls.append(kwargs),
+    )
+    tool = {
+        "type": "function",
+        "name": "repository_status",
+        "description": "Read the repository status.",
+        "parameters": {"type": "object"},
+    }
+    bedrock_calls = _install_bedrock_stub(
+        monkeypatch,
+        result=_mock_bedrock_result(
+            "",
+            raw={
+                "output": [
+                    {
+                        "type": "function_call",
+                        "id": "fc-repository-status",
+                        "call_id": "call-repository-status",
+                        "name": "repository_status",
+                        "arguments": '{"path":"."}',
+                    }
+                ]
+            },
+        ),
+    )
+
+    response = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={
+            "model": "openai.gpt-5.6-terra",
+            "input": "Check the repository.",
+            "stream": True,
+            "tools": [tool],
+            "tool_choice": "required",
+            "reasoning": {"effort": "high"},
+        },
+    )
+
+    assert response.status_code == 200
+    payloads = [
+        json.loads(data)
+        for event, data in _response_sse_events(response.text)
+        if event and data != "[DONE]"
+    ]
+    completed = next(
+        payload["response"]
+        for payload in payloads
+        if payload["type"] == "response.completed"
+    )
+
+    assert not any(
+        payload["type"] == "response.output_text.delta" for payload in payloads
+    )
+    assert completed["output"] == [
+        {
+            "type": "function_call",
+            "id": "fc-repository-status",
+            "call_id": "call-repository-status",
+            "name": "repository_status",
+            "arguments": '{"path":"."}',
+        }
+    ]
+    assert (
+        completed["norman"]["responses_compatibility"]["tool_transport"]
+        == "bedrock_mantle_responses"
+    )
+    assert bedrock_calls[0].responses_options == {
+        "tools": [tool],
+        "tool_choice": "required",
+        "reasoning": {"effort": "high"},
+    }
+    assert local_calls == []
+
+
+def test_openai_compat_chat_completions_routes_explicit_cloud_model_for_tui(
     test_app, monkeypatch
 ):
     from app.services.prompt_provider_facade import norllama_gateway
@@ -1099,13 +1383,13 @@ def test_openai_compat_chat_completions_rejects_explicit_cloud_model_for_tui(
         },
     )
 
-    assert response.status_code == 400
-    error = response.json()["error"]
-    assert error["code"] == "tool_capable_model_required"
-    assert error["param"] == "model"
-    assert "Use norman-code" in error["message"]
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["choices"][0]["message"]["content"] == "cloud ok"
+    assert payload["norman"]["local_execution"] is False
+    assert payload["norman"]["cloud_forwarding"] is True
     assert local_calls == []
-    assert bedrock_calls == []
+    assert len(bedrock_calls) == 1
 
 
 def test_openai_compat_rejects_unapproved_explicit_cloud_model(test_app, monkeypatch):
@@ -1353,6 +1637,127 @@ def test_openai_compat_responses_stream_keeps_tool_envelopes_out_of_text(
     assert completed["output_text"] == ""
     assert completed["output"][0]["type"] == "function_call"
     assert response.closed is True
+
+
+def test_openai_compat_responses_stream_splits_tool_envelope_from_status_text(
+    test_app, monkeypatch
+):
+    response = _MockNativeStreamResponse(
+        [
+            json.dumps({"model": "qwen3-coder:30b", "response": "{"}),
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "response": (
+                        '"tool_call":{"name":"ticket_search",'
+                        '"arguments":{"query":"P0"}}}'
+                    ),
+                }
+            ),
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "response": "\nWaiting for the search result before proceeding.",
+                }
+            ),
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "done": True,
+                    "prompt_eval_count": 4,
+                    "eval_count": 2,
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat_stream",
+        lambda **kwargs: norllama_gateway.NorllamaTextStream(
+            response,
+            model=kwargs["model"],
+        ),
+    )
+
+    result = test_app.post(
+        "/v1/responses",
+        headers=_proxy_headers(monkeypatch),
+        json={
+            "model": "norman-code",
+            "input": "Find the highest priority ticket.",
+            "stream": True,
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "ticket_search",
+                    "description": "Search Jira tickets.",
+                    "parameters": {"type": "object"},
+                }
+            ],
+        },
+    )
+
+    assert result.status_code == 200
+    events = _response_sse_events(result.text)
+    payloads = [
+        json.loads(data) for event, data in events if event and data != "[DONE]"
+    ]
+    output_text_deltas = [
+        payload["delta"]
+        for payload in payloads
+        if payload["type"] == "response.output_text.delta"
+    ]
+    output_items = [
+        payload["item"]
+        for payload in payloads
+        if payload["type"] == "response.output_item.added"
+    ]
+    completed = next(
+        payload["response"]
+        for payload in payloads
+        if payload["type"] == "response.completed"
+    )
+
+    assert output_text_deltas == ["\nWaiting for the search result before proceeding."]
+    assert all('"tool_call"' not in delta for delta in output_text_deltas)
+    assert [item["type"] for item in output_items] == ["message", "function_call"]
+    assert output_items[1]["name"] == "ticket_search"
+    assert completed["output_text"] == output_text_deltas[0]
+    assert [item["type"] for item in completed["output"]] == [
+        "message",
+        "function_call",
+    ]
+    assert response.closed is True
+
+
+def test_leading_undeclared_tool_envelope_remains_text_after_normalization():
+    import app.services.prompt_provider_facade as facade
+
+    text = (
+        '{"tool_call":{"name":"undeclared_search","arguments":{"query":"P0"}}}'
+        "\nWaiting for the result."
+    )
+    normalizer = facade.ResponsesStreamNormalizer()
+    assert normalizer.feed(text) == []
+    normalized = normalizer.finalize()
+
+    response_text, tool_calls = facade._response_tool_calls(
+        normalized.raw_text,
+        provider_payload={
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "ticket_search",
+                    "parameters": {"type": "object"},
+                }
+            ]
+        },
+        normalized_output=normalized,
+    )
+
+    assert normalized.raw_tool_calls[0]["name"] == "undeclared_search"
+    assert response_text == text
+    assert tool_calls == []
 
 
 def test_openai_compat_responses_stream_keeps_native_function_call_out_of_text(
@@ -2203,14 +2608,14 @@ def test_openai_compat_responses_stream_falls_back_after_queued_capacity_expiry(
         for payload in payloads
         if payload["type"] == "response.output_text.delta"
     ] == ["cloud ready"]
-    assert completed["model"] == "qwen.qwen3-coder-480b-a35b-v1:0"
+    assert completed["model"] == "openai.gpt-5.6-terra"
     assert completed["norman"]["cloud_fallback"]["state"] == "completed"
     assert completed["norman"]["cloud_fallback"]["local_failure_code"] == (
         "local_capacity_exhausted"
     )
     assert len(bedrock_calls) == 1
     fallback_request = bedrock_calls[0]
-    assert fallback_request.model == "qwen.qwen3-coder-480b-a35b-v1:0"
+    assert fallback_request.model == "openai.gpt-5.6-terra"
     assert fallback_request.metadata["execution_mode"] == (
         "prompt_intermediary_openai_facade_cloud_fallback"
     )
@@ -2898,7 +3303,7 @@ def test_openai_compat_responses_retries_retryable_norman_code_failure_in_bedroc
     assert response.status_code == 200
     payload = response.json()
     assert payload["output_text"] == "cloud result"
-    assert payload["model"] == "qwen.qwen3-coder-480b-a35b-v1:0"
+    assert payload["model"] == "openai.gpt-5.6-terra"
     assert payload["norman"]["local_execution"] is False
     assert payload["norman"]["cloud_forwarding"] is True
     assert payload["norman"]["cloud_fallback"] == {
@@ -2907,7 +3312,7 @@ def test_openai_compat_responses_retries_retryable_norman_code_failure_in_bedroc
         "fallback_attempted": True,
         "local_failure_code": "local_capacity_unavailable",
         "fallback_provider": "aws-bedrock",
-        "fallback_model": "qwen.qwen3-coder-480b-a35b-v1:0",
+        "fallback_model": "openai.gpt-5.6-terra",
         "request_id": "fallback-response-test",
     }
     assert "must-not-leak" not in response.text
@@ -3635,6 +4040,7 @@ def test_openai_compat_models_requires_proxy_token_when_configured(
     payload = allowed.json()
     assert payload["object"] == "list"
     assert {item["id"] for item in payload["data"]} >= {
+        "openai.gpt-5.6-terra",
         "norman-code",
         "norman-code-governed",
         "norman-local",
@@ -3911,19 +4317,21 @@ def test_openai_compat_responses_accepts_benign_codex_context(monkeypatch):
     monkeypatch.setattr(
         facade.norllama_gateway,
         "invoke_text_chat",
-        lambda **kwargs: _mock_local_chat(
-            kwargs["messages"],
-            kwargs["model"],
-        )
-        | {
-            "choices": [
-                {
-                    "message": {
-                        "content": "route-ok",
+        lambda **kwargs: (
+            _mock_local_chat(
+                kwargs["messages"],
+                kwargs["model"],
+            )
+            | {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "route-ok",
+                        }
                     }
-                }
-            ]
-        },
+                ]
+            }
+        ),
     )
 
     response = execute_openai_responses_facade(
@@ -3974,21 +4382,23 @@ def test_openai_compat_responses_can_return_explicit_tool_call(monkeypatch):
     monkeypatch.setattr(
         facade.norllama_gateway,
         "invoke_text_chat",
-        lambda **kwargs: _mock_local_chat(
-            kwargs["messages"],
-            kwargs["model"],
-        )
-        | {
-            "choices": [
-                {
-                    "message": {
-                        "content": (
-                            '{"tool_call":{"name":"shell","arguments":{"cmd":"pwd"}}}'
-                        )
+        lambda **kwargs: (
+            _mock_local_chat(
+                kwargs["messages"],
+                kwargs["model"],
+            )
+            | {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"tool_call":{"name":"shell","arguments":{"cmd":"pwd"}}}'
+                            )
+                        }
                     }
-                }
-            ]
-        },
+                ]
+            }
+        ),
     )
 
     response = execute_openai_responses_facade(
@@ -4015,6 +4425,18 @@ def test_openai_compat_responses_can_return_explicit_tool_call(monkeypatch):
     compat = response["norman"]["responses_compatibility"]
     assert compat["tools_declared"] == 1
     assert compat["tool_calls_returned"] == 1
+    prompt_context = compat["prompt_context"]
+    assert prompt_context["schema"] == "norman.responses-prompt-context.v1"
+    assert prompt_context["transport"] == "local_text_adapter"
+    assert prompt_context["groups"]["history"]["message_count"] == 0
+    assert prompt_context["groups"]["tool_contract"]["message_count"] == 1
+    assert prompt_context["groups"]["current_input"]["message_count"] == 1
+    assert prompt_context["groups"]["current_input"]["chars"] == len("check the repo")
+    assert (
+        prompt_context["rendered_prompt_chars"] >= prompt_context["total_content_chars"]
+    )
+    assert "check the repo" not in json.dumps(prompt_context)
+    assert "Run a shell command." not in json.dumps(prompt_context)
     assert response["norman"]["route_receipt"]["schema"] == (
         "norman.norllama.route-receipt.v1"
     )
@@ -4032,27 +4454,29 @@ def test_openai_compat_responses_can_return_native_function_call(monkeypatch):
     monkeypatch.setattr(
         facade.norllama_gateway,
         "invoke_text_chat",
-        lambda **kwargs: _mock_local_chat(
-            kwargs["messages"],
-            kwargs["model"],
-        )
-        | {
-            "choices": [
-                {
-                    "message": {
-                        "content": json.dumps(
-                            {
-                                "arguments": native_arguments,
-                                "call_id": native_call_id,
-                                "id": native_item_id,
-                                "name": "shell",
-                                "type": "function_call",
-                            }
-                        )
+        lambda **kwargs: (
+            _mock_local_chat(
+                kwargs["messages"],
+                kwargs["model"],
+            )
+            | {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "arguments": native_arguments,
+                                    "call_id": native_call_id,
+                                    "id": native_item_id,
+                                    "name": "shell",
+                                    "type": "function_call",
+                                }
+                            )
+                        }
                     }
-                }
-            ]
-        },
+                ]
+            }
+        ),
     )
 
     response = execute_openai_responses_facade(
@@ -4100,27 +4524,29 @@ def test_openai_compat_responses_can_return_declared_mcp_namespace_function_call
     monkeypatch.setattr(
         facade.norllama_gateway,
         "invoke_text_chat",
-        lambda **kwargs: _mock_local_chat(
-            kwargs["messages"],
-            kwargs["model"],
-        )
-        | {
-            "choices": [
-                {
-                    "message": {
-                        "content": json.dumps(
-                            {
-                                "arguments": native_arguments,
-                                "call_id": native_call_id,
-                                "id": native_item_id,
-                                "name": native_name,
-                                "type": "function_call",
-                            }
-                        )
+        lambda **kwargs: (
+            _mock_local_chat(
+                kwargs["messages"],
+                kwargs["model"],
+            )
+            | {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "arguments": native_arguments,
+                                    "call_id": native_call_id,
+                                    "id": native_item_id,
+                                    "name": native_name,
+                                    "type": "function_call",
+                                }
+                            )
+                        }
                     }
-                }
-            ]
-        },
+                ]
+            }
+        ),
     )
 
     response = execute_openai_responses_facade(
@@ -4236,11 +4662,13 @@ def test_openai_compat_responses_keeps_undeclared_mcp_namespace_call_as_text(
     monkeypatch.setattr(
         facade.norllama_gateway,
         "invoke_text_chat",
-        lambda **kwargs: _mock_local_chat(
-            kwargs["messages"],
-            kwargs["model"],
-        )
-        | {"choices": [{"message": {"content": model_text}}]},
+        lambda **kwargs: (
+            _mock_local_chat(
+                kwargs["messages"],
+                kwargs["model"],
+            )
+            | {"choices": [{"message": {"content": model_text}}]}
+        ),
     )
 
     response = execute_openai_responses_facade(
@@ -4410,11 +4838,13 @@ def test_openai_compat_responses_keeps_undeclared_native_function_call_as_text(
     monkeypatch.setattr(
         facade.norllama_gateway,
         "invoke_text_chat",
-        lambda **kwargs: _mock_local_chat(
-            kwargs["messages"],
-            kwargs["model"],
-        )
-        | {"choices": [{"message": {"content": model_text}}]},
+        lambda **kwargs: (
+            _mock_local_chat(
+                kwargs["messages"],
+                kwargs["model"],
+            )
+            | {"choices": [{"message": {"content": model_text}}]}
+        ),
     )
 
     response = execute_openai_responses_facade(
@@ -5051,6 +5481,193 @@ def test_openai_compat_responses_rejects_changed_or_unknown_call_before_invocati
     assert len(invocations) == 1
 
 
+def test_openai_compat_responses_accepts_replayed_call_metadata_changes(monkeypatch):
+    import app.services.prompt_provider_facade as facade
+
+    facade.reset_facade_response_state()
+    invocations = []
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+
+    def fake_chat(**kwargs):
+        invocations.append(kwargs)
+        response = _mock_local_chat(kwargs["messages"], kwargs["model"])
+        if not any(message["role"] == "tool" for message in kwargs["messages"]):
+            response["choices"] = [
+                {
+                    "message": {
+                        "content": (
+                            '{"tool_call":{"name":"shell","arguments":{"cmd":"pwd"}}}'
+                        )
+                    }
+                }
+            ]
+        return response
+
+    monkeypatch.setattr(facade.norllama_gateway, "invoke_text_chat", fake_chat)
+    first = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "check the repo",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "shell",
+                    "parameters": {"type": "object"},
+                }
+            ],
+        }
+    )
+    function_call = first["output"][0]
+
+    second = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "previous_response_id": first["id"],
+            "input": [
+                {
+                    "type": "function_call",
+                    "id": "fc-client-replay",
+                    "status": "in_progress",
+                    "call_id": function_call["call_id"],
+                    "name": "shell",
+                    "arguments": '{ "cmd": "pwd" }',
+                },
+                {
+                    "type": "function_call",
+                    "id": "fc-client-completed",
+                    "status": "completed",
+                    "call_id": function_call["call_id"],
+                    "name": "shell",
+                    "arguments": '{"cmd":"pwd"}',
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": function_call["call_id"],
+                    "output": "/home/kristopher/code/control_plane",
+                },
+            ],
+        }
+    )
+
+    assert second["output_text"] == "local ok"
+    replayed_calls = [
+        message
+        for message in invocations[-1]["messages"]
+        if message.get("type") == "function_call"
+        and message.get("call_id") == function_call["call_id"]
+    ]
+    assert len(replayed_calls) == 1
+
+
+def test_openai_compat_responses_accepts_in_progress_call_replay(monkeypatch):
+    import app.services.prompt_provider_facade as facade
+
+    facade.reset_facade_response_state()
+    invocations = []
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+
+    def fake_chat(**kwargs):
+        invocations.append(kwargs)
+        response = _mock_local_chat(kwargs["messages"], kwargs["model"])
+        if not any(message["role"] == "tool" for message in kwargs["messages"]):
+            response["choices"] = [
+                {
+                    "message": {
+                        "content": (
+                            '{"tool_call":{"name":"shell","arguments":{"cmd":"pwd"}}}'
+                        )
+                    }
+                }
+            ]
+        return response
+
+    monkeypatch.setattr(facade.norllama_gateway, "invoke_text_chat", fake_chat)
+    first = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "check the repo",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "shell",
+                    "parameters": {"type": "object"},
+                }
+            ],
+        }
+    )
+    function_call = first["output"][0]
+    second = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "previous_response_id": first["id"],
+            "input": [
+                {
+                    "type": "function_call",
+                    "id": "fc-client-in-progress",
+                    "status": "in_progress",
+                    "call_id": function_call["call_id"],
+                    "name": "shell",
+                    "arguments": "",
+                },
+                {
+                    "type": "function_call",
+                    "id": "fc-client-completed",
+                    "status": "completed",
+                    "call_id": function_call["call_id"],
+                    "name": "shell",
+                    "arguments": '{"cmd":"pwd"}',
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": function_call["call_id"],
+                    "output": "/home/kristopher/code/control_plane",
+                },
+            ],
+        }
+    )
+
+    assert second["output_text"] == "local ok"
+    replayed_calls = [
+        message
+        for message in invocations[-1]["messages"]
+        if message.get("type") == "function_call"
+        and message.get("call_id") == function_call["call_id"]
+    ]
+    assert len(replayed_calls) == 1
+
+
+def test_openai_compat_responses_rejects_non_monotonic_in_progress_call_replay():
+    import app.services.prompt_provider_facade as facade
+
+    with pytest.raises(FacadeError) as captured:
+        facade._response_input_function_call_items(
+            {
+                "input": [
+                    {
+                        "type": "function_call",
+                        "status": "in_progress",
+                        "call_id": "call_shell",
+                        "name": "shell",
+                        "arguments": '{"cmd":"pwd"}',
+                    },
+                    {
+                        "type": "function_call",
+                        "status": "completed",
+                        "call_id": "call_shell",
+                        "name": "shell",
+                        "arguments": '{"cmd":"git status"}',
+                    },
+                ]
+            }
+        )
+
+    assert captured.value.code == "function_call_mismatch"
+
+
 def test_openai_compat_responses_rejects_changed_historical_tool_output(
     monkeypatch,
 ):
@@ -5190,7 +5807,7 @@ def test_openai_compat_responses_ignores_generated_reasoning_in_continuation(
     )
 
 
-def test_openai_compat_responses_preserves_historical_tool_contracts():
+def test_openai_compat_responses_replaces_historical_tool_contracts():
     import app.services.prompt_provider_facade as facade
 
     first_tools = [
@@ -5224,16 +5841,77 @@ def test_openai_compat_responses_preserves_historical_tool_contracts():
     contracts = [
         message for message in updated if facade._is_tool_contract_message(message)
     ]
-    assert len(contracts) == 2
-    assert updated == messages
-    assert len(extras) == 1
-    assert extras[0][facade.TOOL_CONTRACT_CONTEXT_MARKER]["tools"][0]["name"] == (
-        "second_tool"
-    )
+    assert contracts == []
     assert [message["content"] for message in updated if message["role"] == "user"] == [
         "before contract",
         "after duplicate",
     ]
+    assert len(extras) == 1
+    assert extras[0][facade.TOOL_CONTRACT_CONTEXT_MARKER]["tools"][0]["name"] == (
+        "second_tool"
+    )
+
+
+def test_openai_compat_responses_bounds_replayed_prompt_without_mutating_tool_state():
+    import app.services.prompt_provider_facade as facade
+
+    facade.reset_facade_response_state()
+    outputs = [
+        (f"call_{index}", f"output-{index}-" + ("x" * 64_000) + f"-tail-{index}")
+        for index in range(4)
+    ]
+    facade._RESPONSE_STATE["resp-large-history"] = {
+        "messages": [
+            {"role": "system", "content": "Keep the original task constraints."},
+            facade._tool_contract_message(
+                {
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": "stale_tool",
+                            "parameters": {"type": "object"},
+                        }
+                    ]
+                }
+            )[0],
+            *[
+                facade._function_call_output_context_message(
+                    call_id=call_id,
+                    output=output,
+                )
+                for call_id, output in outputs
+            ],
+            {"role": "assistant", "content": "Continue from the latest tool result."},
+        ],
+        "function_calls": [],
+        "tool_outputs": [
+            {"call_id": call_id, "output": output} for call_id, output in outputs
+        ],
+        "messages_include_response_output": True,
+    }
+
+    history = facade._previous_response_history("resp-large-history")
+
+    assert (
+        sum(facade._message_context_chars(message) for message in history.messages)
+        <= facade.MAX_REPLAYED_HISTORY_CHARS
+    )
+    assert not any(
+        facade._is_tool_contract_message(message) for message in history.messages
+    )
+    assert set(outputs) <= history.tool_outputs
+
+    replayed_outputs = {
+        message["call_id"]: message["output"]
+        for message in history.messages
+        if message.get("type") == "function_call_output"
+    }
+    assert replayed_outputs["call_0"] == facade.REPLAYED_TOOL_OUTPUT_OMITTED
+    assert replayed_outputs["call_1"] == facade.REPLAYED_TOOL_OUTPUT_OMITTED
+    assert replayed_outputs["call_2"].endswith("-tail-2")
+    assert replayed_outputs["call_3"].endswith("-tail-3")
+    assert len(replayed_outputs["call_2"]) <= facade.MAX_REPLAYED_TOOL_OUTPUT_CHARS
+    assert len(replayed_outputs["call_3"]) <= facade.MAX_REPLAYED_TOOL_OUTPUT_CHARS
 
 
 def test_openai_compat_responses_replays_typed_message_after_tool_output(monkeypatch):
@@ -5345,8 +6023,17 @@ def test_openai_compat_responses_replays_typed_message_after_tool_output(monkeyp
     assert [
         message[facade.TOOL_CONTRACT_CONTEXT_MARKER]["tools"][0]["name"]
         for message in tool_contracts
-    ] == ["tool_search", "synthetic.status_lookup"]
+    ] == ["synthetic.status_lookup"]
     assert third_messages[-2]["type"] == "function_call_output"
+    prompt_context = final["norman"]["responses_compatibility"]["prompt_context"]
+    assert prompt_context["transport"] == "local_text_adapter"
+    assert prompt_context["groups"]["history"]["message_count"] == 4
+    assert prompt_context["groups"]["tool_contract"]["message_count"] == 1
+    assert prompt_context["groups"]["current_input"]["message_count"] == 2
+    assert prompt_context["groups"]["history"]["tool_output_chars"] > 0
+    assert prompt_context["groups"]["current_input"]["tool_output_chars"] > 0
+    assert "synthetic health" not in json.dumps(prompt_context)
+    assert "status" not in json.dumps(prompt_context)
 
 
 def test_openai_compat_proxy_observability_records_success_without_prompt_leak(

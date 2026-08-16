@@ -360,10 +360,10 @@ async def get_bots_endpoint(
     try:
         bots = get_bots_by_user_id(db, current_user.id)
         bot_outs = [
-            BotOut.from_orm(bot) for bot in bots
+            BotOut.model_validate(bot) for bot in bots
         ]  # Convert the list of Bot objects to a list of BotOut instances
         bot_dicts = [
-            bot_out.dict() for bot_out in bot_outs
+            bot_out.model_dump() for bot_out in bot_outs
         ]  # Convert the list of BotOut instances to a list of dictionaries
         return JSONResponse(
             content=bot_dicts
@@ -385,7 +385,7 @@ async def get_default_bot_endpoint(
         raise HTTPException(status_code=404, detail="No bots found")
     welcome = next((bot for bot in bots if bot.name == "Welcome Bot"), None)
     bot = welcome or bots[0]
-    return BotOut.from_orm(bot).dict()
+    return BotOut.model_validate(bot).model_dump()
 
 
 @app_routes.delete("/api/bots/{bot_id}")
@@ -438,7 +438,7 @@ async def get_bot_endpoint(
     current_user: User = Depends(get_current_user),
 ):
     bot = _get_user_bot_or_404(db, bot_id, current_user)
-    return BotOut.from_orm(bot).dict()
+    return BotOut.model_validate(bot).model_dump()
 
 
 @app_routes.put("/api/bots/{bot_id}")
@@ -454,7 +454,7 @@ async def update_bot_endpoint(
     updated = update_bot(db=db, bot_id=bot_id, bot_data=bot_data)
     if updated is None:
         raise HTTPException(status_code=404, detail="Bot not found")
-    return BotOut.from_orm(updated).dict()
+    return BotOut.model_validate(updated).model_dump()
 
 
 @app_routes.get("/api/bots/{bot_id}/messages", response_model=List[Message])
@@ -473,7 +473,7 @@ async def get_messages_endpoint(
         messages = get_messages_by_bot_id(
             db=db, bot_id=bot_id, limit=limit, offset=offset, cursor=cursor_int
         )
-        return [Message.from_orm(message).dict() for message in messages]
+        return [Message.model_validate(message).model_dump() for message in messages]
     except Exception:
         logger.exception("Failed to fetch messages")
         raise HTTPException(status_code=500, detail="Failed to fetch messages")
@@ -487,7 +487,7 @@ async def get_message_endpoint(
     current_user: User = Depends(get_current_user),
 ):
     message = _get_user_message_or_404(db, bot_id, message_id, current_user)
-    return Message.from_orm(message).dict()
+    return Message.model_validate(message).model_dump()
 
 
 @app_routes.post("/api/bots/{bot_id}/messages")
@@ -590,7 +590,7 @@ async def update_message_endpoint(
     updated = update_message(db=db, message_id=message_id, text=message_data.text)
     if updated is None:
         raise HTTPException(status_code=404, detail="Message not found")
-    return Message.from_orm(updated).dict()
+    return Message.model_validate(updated).model_dump()
 
 
 @app_routes.delete("/api/bots/{bot_id}/messages/{message_id}")
@@ -616,7 +616,7 @@ async def create_connector_endpoint(
     if connector_in.connector_type not in connector_classes:
         raise HTTPException(status_code=400, detail="Invalid connector type")
     connector = connector_crud.create(db, obj_in=connector_in, user_id=current_user.id)
-    return JSONResponse(content=Connector.from_orm(connector).dict())
+    return JSONResponse(content=Connector.model_validate(connector).model_dump())
 
 
 @app_routes.get("/api/connectors", response_model=List[Connector])
@@ -627,7 +627,7 @@ async def get_connectors_endpoint(
 ):
     response.headers["Cache-Control"] = "private, max-age=15, stale-while-revalidate=30"
     connectors = connector_crud.get_multi_by_user(db, current_user.id)
-    return [Connector.from_orm(c).dict() for c in connectors]
+    return [Connector.model_validate(c).model_dump() for c in connectors]
 
 
 @app_routes.get("/api/connectors/{connector_id}", response_model=Connector)
@@ -637,7 +637,7 @@ async def get_connector_endpoint(
     current_user: User = Depends(get_current_user),
 ):
     connector = _get_user_connector_or_404(db, connector_id, current_user)
-    return Connector.from_orm(connector).dict()
+    return Connector.model_validate(connector).model_dump()
 
 
 @app_routes.put("/api/connectors/{connector_id}", response_model=Connector)
@@ -655,7 +655,7 @@ async def update_connector_endpoint(
     updated = connector_crud.update(
         db, db_obj=connector, obj_in=ConnectorUpdate(**data)
     )
-    return Connector.from_orm(updated).dict()
+    return Connector.model_validate(updated).model_dump()
 
 
 @app_routes.delete("/api/connectors/{connector_id}")

@@ -584,7 +584,7 @@ def test_invoke_text_chat_preserves_norllama_routing_headers(monkeypatch):
                 "X-Norllama-Peer-Path": "llm.home.arpa,spark-150",
                 "X-Norllama-Upstream": "http://192.168.2.150:18151",
                 "X-Norllama-Attempts": (
-                    "http://192.168.2.133:18151," "http://192.168.2.150:18151"
+                    "http://192.168.2.133:18151,http://192.168.2.150:18151"
                 ),
                 "Authorization": "secret",
             },
@@ -601,7 +601,7 @@ def test_invoke_text_chat_preserves_norllama_routing_headers(monkeypatch):
 
     assert payload["headers"] == {
         "x-norllama-attempts": (
-            "http://192.168.2.133:18151," "http://192.168.2.150:18151"
+            "http://192.168.2.133:18151,http://192.168.2.150:18151"
         ),
         "x-norllama-worker-id": "spark-150",
         "x-norllama-peer-path": "llm.home.arpa,spark-150",

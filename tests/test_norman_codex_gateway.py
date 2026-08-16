@@ -497,7 +497,7 @@ def test_launcher_configures_opt_in_norman_gateway(tmp_path) -> None:
 
     profile_flag_index = arguments.index("--profile")
     assert arguments[profile_flag_index + 1] == "norman-gateway"
-    assert arguments[arguments.index("-m") + 1] == "norman-code"
+    assert arguments[arguments.index("-m") + 1] == "openai.gpt-5.6-terra"
     assert not any("service_tier" in argument for argument in arguments)
     assert not any("model_reasoning_effort" in argument for argument in arguments)
 

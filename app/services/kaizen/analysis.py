@@ -525,7 +525,7 @@ def _parse_candidate(
     if not isinstance(loaded, dict):
         return None, "model_output_not_object"
     try:
-        payload = KaizenShadowCandidatePayload.parse_obj(loaded)
+        payload = KaizenShadowCandidatePayload.model_validate(loaded)
     except ValidationError:
         return None, "model_output_schema_invalid"
 

@@ -241,6 +241,7 @@ def test_tool_chain_observability_is_sanitized_and_alerted(monkeypatch):
     assert summary["tool_chain_event_count"] == 2
     assert summary["tool_chain_repaired_count"] == 1
     assert summary["tool_chain_exhausted_count"] == 1
+    assert "proxy_tool_chain_watchdog_repaired" in alert_kinds
     assert "proxy_tool_chain_watchdog_exhausted" in alert_kinds
 
 
@@ -259,6 +260,31 @@ def test_bridge_receipt_is_sanitized_and_persisted(monkeypatch):
                 "tool_bridge_mode": "transparent",
                 "tool_transport": "local_text_adapter",
                 "state_retention": "ephemeral",
+                "prompt_context": {
+                    "schema": "norman.responses-prompt-context.v1",
+                    "transport": "local_text_adapter",
+                    "groups": {
+                        "history": {
+                            "message_count": 2,
+                            "chars": 108,
+                            "tool_output_chars": 84,
+                            "function_call_chars": 10,
+                            "text_chars": 14,
+                            "private": "history content",
+                        },
+                        "tool_contract": {
+                            "message_count": 1,
+                            "chars": 248,
+                            "tool_output_chars": 0,
+                            "function_call_chars": 0,
+                            "text_chars": 248,
+                        },
+                    },
+                    "total_message_count": 3,
+                    "total_content_chars": 356,
+                    "rendered_prompt_chars": 382,
+                    "private": "prompt content",
+                },
             },
             "output_token_budget": {
                 "requested": 16384,
@@ -293,6 +319,43 @@ def test_bridge_receipt_is_sanitized_and_persisted(monkeypatch):
             "effective": 16384,
             "maximum": 32768,
         },
+        "prompt_context": {
+            "schema": "norman.responses-prompt-context.v1",
+            "transport": "local_text_adapter",
+            "groups": {
+                "history": {
+                    "message_count": 2,
+                    "chars": 108,
+                    "tool_output_chars": 84,
+                    "function_call_chars": 10,
+                    "text_chars": 14,
+                },
+                "tool_contract": {
+                    "message_count": 1,
+                    "chars": 248,
+                    "tool_output_chars": 0,
+                    "function_call_chars": 0,
+                    "text_chars": 248,
+                },
+                "structured_output": {
+                    "message_count": 0,
+                    "chars": 0,
+                    "tool_output_chars": 0,
+                    "function_call_chars": 0,
+                    "text_chars": 0,
+                },
+                "current_input": {
+                    "message_count": 0,
+                    "chars": 0,
+                    "tool_output_chars": 0,
+                    "function_call_chars": 0,
+                    "text_chars": 0,
+                },
+            },
+            "total_message_count": 3,
+            "total_content_chars": 356,
+            "rendered_prompt_chars": 382,
+        },
         "fallback_reason": "unknown",
     }
     summary = proxy_observability.proxy_observability_summary()
@@ -300,3 +363,64 @@ def test_bridge_receipt_is_sanitized_and_persisted(monkeypatch):
     assert summary["bridge_modes"] == {"transparent": 1}
     assert summary["bridge_fallback_count"] == 1
     assert "private reason with spaces" not in json.dumps(event, sort_keys=True)
+    assert "history content" not in json.dumps(event, sort_keys=True)
+    assert "prompt content" not in json.dumps(event, sort_keys=True)
+
+
+def test_bridge_receipt_preserves_native_terra_prompt_transport(monkeypatch):
+    monkeypatch.setenv(proxy_observability.EVENT_LOG_ENV, "0")
+    proxy_observability.reset_proxy_events()
+
+    event = proxy_observability.record_proxy_event(
+        endpoint="/v1/responses",
+        method="POST",
+        request_id="terra-bridge",
+        status="success",
+        http_status=200,
+        response={
+            "model": "openai.gpt-5.6-terra",
+            "norman": {
+                "route": {
+                    "selected_provider": "bedrock",
+                    "selected_model": "openai.gpt-5.6-terra",
+                },
+                "responses_compatibility": {
+                    "tool_bridge_mode": "transparent",
+                    "tool_transport": "bedrock_mantle_responses",
+                    "state_retention": "session",
+                    "prompt_context": {
+                        "schema": "norman.responses-prompt-context.v1",
+                        "transport": "bedrock_mantle_responses",
+                        "groups": {
+                            "history": {
+                                "message_count": 2,
+                                "chars": 400,
+                                "tool_output_chars": 80,
+                                "function_call_chars": 120,
+                                "text_chars": 200,
+                                "private": "reasoning state",
+                            },
+                            "tool_contract": {
+                                "message_count": 1,
+                                "chars": 600,
+                                "tool_output_chars": 0,
+                                "function_call_chars": 0,
+                                "text_chars": 600,
+                            },
+                        },
+                        "total_message_count": 3,
+                        "total_content_chars": 1000,
+                        "rendered_prompt_chars": 400,
+                        "private": "tool schema",
+                    },
+                },
+            },
+        },
+    )
+
+    prompt_context = event["bridge"]["prompt_context"]
+    assert prompt_context["transport"] == "bedrock_mantle_responses"
+    assert prompt_context["groups"]["history"]["chars"] == 400
+    assert prompt_context["groups"]["tool_contract"]["chars"] == 600
+    assert "reasoning state" not in json.dumps(event, sort_keys=True)
+    assert "tool schema" not in json.dumps(event, sort_keys=True)

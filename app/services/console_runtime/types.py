@@ -569,6 +569,7 @@ class ModelRequest:
     temperature: float | None = None
     budget: ModelBudget = field(default_factory=ModelBudget)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    responses_options: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.messages = [dict(message) for message in self.messages or []]
@@ -576,6 +577,7 @@ class ModelRequest:
         self.route_key = str(self.route_key or "").strip()
         self.system = str(self.system or "")
         self.metadata = _clean_dict(self.metadata)
+        self.responses_options = _clean_dict(self.responses_options)
 
     def as_dict(self) -> Dict[str, Any]:
         return asdict(self)

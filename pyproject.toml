@@ -5,42 +5,67 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "norman"
 version = "0.2.0"
+requires-python = ">=3.14,<3.15"
 dependencies = [
-  "fastapi",
-  "uvicorn",
-  "boto3",
+  "fastapi>=0.125,<1",
+  "uvicorn>=0.40,<1",
+  "boto3>=1.43,<2",
   "aws-bedrock-token-generator==1.1.0",
-  "pydantic==1.10.13",
-  "sqlalchemy",
-  "alembic",
-  "psycopg2-binary",
-  "pika",
+  "pydantic>=2.12,<3",
+  "pydantic-settings>=2.12,<3",
+  "sqlalchemy>=2.0,<3",
+  "alembic>=1.18,<2",
+  "psycopg2-binary>=2.9.11,<3",
+  "pika>=1.3,<2",
   "httpx>=0.27,<0.28",
-  "requests",
-  "google-auth",
-  "passlib",
-  "openai",
-  "jinja2",
-  "python-multipart",
+  "requests>=2.32,<3",
+  "google-auth>=2.48,<3",
+  "bcrypt>=5,<6",
+  "pwdlib[argon2]>=0.3,<1",
+  "openai>=2.17,<3",
+  "jinja2>=3.1,<4",
+  "python-dotenv>=1.2,<2",
+  "python-multipart>=0.0.22,<1",
   "email-validator>=2.3.0",
   "pyjwt>=2.11.0",
+  "PyYAML>=6.0,<7",
+]
+
+[project.scripts]
+norman = "main:main"
+
+[tool.setuptools]
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+exclude = ["app.tests*", "tests*"]
+
+[tool.setuptools.package-data]
+app = [
+  "base.html",
+  "static/**/*",
+  "templates/*.html",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "pytest==6.2.5",
-  "pytest-asyncio==0.16.0",
-  "setuptools>=61,<81",
-  "coverage==7.4.4",
-  "ruff==0.5.2",
-  "pre-commit==3.5.0",
-  "hypothesis==6.99.0",
-  "PyYAML",
+  "pytest>=8.4,<9",
+  "pytest-asyncio>=1.2,<2",
+  "setuptools>=80,<82",
+  "coverage>=7.13,<8",
+  "ruff>=0.14,<1",
+  "pre-commit>=4.5,<5",
+  "hypothesis>=6.151,<7",
+  "httpx2>=2.10,<3",
 ]
 
 [tool.ruff]
 line-length = 88
-target-version = "py38"
+# The deployed application runtime is Python 3.14.  Keep formatting compatible
+# with the host Python used by standalone launch, deployment, and rollback
+# helpers until those helpers are invoked through the release virtualenv.
+target-version = "py311"
 exclude = [
   ".venv",
   "env",

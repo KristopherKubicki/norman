@@ -140,6 +140,8 @@ class Route:
     repo_names: tuple[str, ...]
     root_paths: tuple[str, ...] = ()
     token_secret: str = ""
+    managed_skill_names: tuple[str, ...] = ()
+    default_disabled_features: tuple[str, ...] = ()
 
     @property
     def profile(self) -> str:
@@ -187,6 +189,11 @@ ROUTES: tuple[Route, ...] = (
         endpoint="https://cp.kris.openbrand.com/v1",
         codex_home="~/.codex-cp",
         repo_names=("control-plane", "control_plane"),
+        managed_skill_names=(
+            "control-plane-gdrive-pricing-review",
+            "ops-openbrand-mcp-ops",
+        ),
+        default_disabled_features=("apps",),
     ),
     Route(
         key="earlybird",
@@ -314,6 +321,8 @@ OPTIONS_WITH_VALUE = frozenset(
         "--config",
         "--cd",
         "--color",
+        "--disable",
+        "--enable",
         "--model",
         "--profile",
         "--profile-v2",
@@ -424,6 +433,20 @@ def explicit_models(arguments: Sequence[str]) -> list[str]:
 
 def has_explicit_model(arguments: Sequence[str]) -> bool:
     return bool(explicit_models(arguments))
+
+
+def explicit_feature_toggles(arguments: Sequence[str]) -> set[str]:
+    features: set[str] = set()
+    for index, argument in enumerate(arguments):
+        if argument in {"--enable", "--disable"}:
+            value = _value_after(arguments, index)
+            if value:
+                features.add(value.strip().lower())
+        elif argument.startswith(("--enable=", "--disable=")):
+            value = argument.split("=", 1)[1].strip().lower()
+            if value:
+                features.add(value)
+    return features
 
 
 def config_overrides(arguments: Sequence[str]) -> list[str]:
@@ -596,7 +619,11 @@ def _managed_skill_link(path: Path) -> bool:
     )
 
 
-def _skill_source_entries(source_root: Path) -> dict[str, Path]:
+def _skill_source_entries(
+    source_root: Path,
+    *,
+    selected_names: frozenset[str] | None = None,
+) -> dict[str, Path]:
     try:
         entries = list(source_root.iterdir())
     except FileNotFoundError:
@@ -612,7 +639,11 @@ def _skill_source_entries(source_root: Path) -> dict[str, Path]:
     return {
         entry.name: entry
         for entry in sorted(entries, key=lambda candidate: candidate.name)
-        if entry.is_dir() and (entry / "SKILL.md").is_file()
+        if (
+            entry.is_dir()
+            and (entry / "SKILL.md").is_file()
+            and (selected_names is None or entry.name in selected_names)
+        )
     }
 
 
@@ -642,7 +673,14 @@ def sync_scoped_skills(route: Route) -> None:
         )
         return
 
-    source_entries = _skill_source_entries(source_root) if source_root else {}
+    selected_names = (
+        frozenset(route.managed_skill_names) if route.managed_skill_names else None
+    )
+    source_entries = (
+        _skill_source_entries(source_root, selected_names=selected_names)
+        if source_root
+        else {}
+    )
 
     try:
         destination_entries = list(skill_home.iterdir())
@@ -1062,7 +1100,7 @@ def route_payload(route: Route | None, launcher: str, cwd: Path) -> dict[str, ob
             "launcher": launcher,
             "checkout_root": str(root),
             "origin": origin,
-            "fallback": "regular-default" if launcher == "regular" else "work-bedrock",
+            "fallback": "regular-default",
         }
     payload = asdict(route)
     payload.update(
@@ -1208,7 +1246,7 @@ def model_catalog_contract_error(payload: dict[str, Any]) -> str:
         actual = selected.get(key)
         if (expected is True and actual is not True) or actual != expected:
             return (
-                "gateway model catalog is incompatible with local coding tools: "
+                "gateway model catalog is incompatible with coding tools: "
                 f"{DEFAULT_ROUTER_MODEL!r} advertises {key}={actual!r}, "
                 f"expected {expected!r}; deploy the catalog fix and start a new chat"
             )
@@ -1491,7 +1529,7 @@ def print_startup_usage_notices(route: Route) -> None:
 
 
 def verify_route(route: Route) -> tuple[bool, str]:
-    """Prove the endpoint accepts a brokered token and has local capacity."""
+    """Prove the endpoint accepts a brokered token and advertises Terra."""
 
     token, detail = brokered_gateway_token(route)
     if not token:
@@ -1502,10 +1540,7 @@ def verify_route(route: Route) -> tuple[bool, str]:
     contract_error = model_catalog_contract_error(payload)
     if contract_error:
         return False, contract_error
-    available, detail = verify_norman_capacity(route, token=token)
-    if not available:
-        return False, detail
-    return True, "authenticated Responses gateway and local coding capacity verified"
+    return True, "authenticated Responses gateway and GPT-5.6 Terra route verified"
 
 
 def route_environment(route: Route) -> dict[str, str]:
@@ -1586,9 +1621,15 @@ def exec_work_route(route: Route, arguments: list[str]) -> None:
     environment["CODEX_REAL_BIN"] = str(resolve_real_codex())
     environment["NORMAN_TUI_NO_DIRECT_VAULT"] = "1"
     command = [environment["CODEX_REAL_BIN"]]
-    if not has_explicit_profile(arguments) and starts_session(arguments):
+    session_start = starts_session(arguments)
+    explicit_features = explicit_feature_toggles(arguments)
+    if session_start:
+        for feature in route.default_disabled_features:
+            if feature.lower() not in explicit_features:
+                command.extend(("--disable", feature))
+    if not has_explicit_profile(arguments) and session_start:
         command.extend(("--profile", route.profile))
-    if not has_explicit_model(arguments) and starts_session(arguments):
+    if not has_explicit_model(arguments) and session_start:
         command.extend(("-m", DEFAULT_ROUTER_MODEL))
     command.extend(arguments)
     os.execve(command[0], command, environment)
@@ -1627,18 +1668,6 @@ def exec_regular_fallback(arguments: list[str]) -> None:
         environment["NORMAN_TUI_NO_DIRECT_VAULT"] = "1"
     command.extend(arguments)
     os.execve(real_codex, command, environment)
-
-
-def exec_work_fallback(reenter: str, arguments: list[str]) -> None:
-    if not reenter:
-        raise RuntimeError("Work fallback requires the original codex-work launcher.")
-    reentry_path = Path(reenter).expanduser().resolve()
-    if not reentry_path.is_file() or not os.access(reentry_path, os.X_OK):
-        raise RuntimeError(f"Work fallback launcher is not executable: {reentry_path}")
-    environment = os.environ.copy()
-    environment["CODEX_ROUTER_RESOLVED"] = "1"
-    environment["CODEX_REAL_BIN"] = str(resolve_real_codex())
-    os.execve(str(reentry_path), [str(reentry_path), *arguments], environment)
 
 
 def parse_args(argv: Sequence[str]) -> argparse.Namespace:
@@ -1750,8 +1779,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             exec_regular_route(route, parsed.codex_args)
         return 0
 
-    if parsed.launcher == "work":
-        exec_work_fallback(parsed.reenter, parsed.codex_args)
+    if parsed.launcher == "work" and starts_session(parsed.codex_args):
+        print(
+            "codex-work: no mapped Norman work route for "
+            f"{cwd}; starting regular Codex.",
+            file=sys.stderr,
+        )
     exec_regular_fallback(parsed.codex_args)
     return 0
 

@@ -1,8 +1,12 @@
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 import pytest
 
 from app import crud
 from app.core.auth_cache import clear_auth_caches
+from app.views import templates
+from main import static_directory
 
 
 def _create_admin_user(db) -> None:
@@ -13,6 +17,14 @@ def _create_admin_user(db) -> None:
         username="admin",
     )
     clear_auth_caches()
+
+
+def test_web_assets_resolve_from_the_installed_package() -> None:
+    static_path = Path(static_directory)
+    template_path = Path(templates.env.loader.searchpath[0])
+
+    assert (static_path / "css" / "styles.css").is_file()
+    assert (template_path / "index.html").is_file()
 
 
 def test_home_page_requires_login(
@@ -94,11 +106,8 @@ def test_invalid_auth_cookie_redirects_to_login_and_clears_cookie(
     monkeypatch.setenv("ENABLE_AUTH_MIDDLEWARE_IN_TESTS", "1")
     _create_admin_user(db)
 
-    response = test_app.get(
-        "/dashboard.html",
-        cookies={"access_token": "definitely-invalid"},
-        follow_redirects=False,
-    )
+    test_app.cookies.set("access_token", "definitely-invalid")
+    response = test_app.get("/dashboard.html", follow_redirects=False)
 
     assert response.status_code == 303
     assert response.headers["location"] == "/login.html"

@@ -1013,16 +1013,11 @@ WORKDIR = os.environ.get("NORMAN_CODEX_WORKDIR", "/opt/housebot")
 CODEX_HOME = os.environ.get("NORMAN_CODEX_HOME", "/root/.codex-housebot")
 CODEX_AUTH_PATH = Path(CODEX_HOME) / "auth.json"
 CODEX_MODEL_FLOOR = (
-    os.environ.get("NORMAN_CODEX_MODEL_FLOOR", "gpt-5.5").strip() or "gpt-5.5"
+    os.environ.get("NORMAN_CODEX_MODEL_FLOOR", "gpt-5.6-terra").strip()
+    or "gpt-5.6-terra"
 )
-CODEX_ALLOW_BELOW_FLOOR_SWITCHABLE = os.environ.get(
-    "NORMAN_CODEX_ALLOW_BELOW_FLOOR_SWITCHABLE", ""
-).strip().lower() in {"1", "true", "yes", "on"}
-CODEX_SWITCHABLE_MODEL_DEFAULTS = (
-    "openai.gpt-5.6-terra,gpt-5.6-terra,openai.gpt-5.5,gpt-5.5"
-)
-if CODEX_ALLOW_BELOW_FLOOR_SWITCHABLE:
-    CODEX_SWITCHABLE_MODEL_DEFAULTS += ",openai.gpt-5.4,gpt-5.4"
+CODEX_ACTIVE_MODEL_ALIASES = frozenset({"openai.gpt-5.6-terra", "gpt-5.6-terra"})
+CODEX_SWITCHABLE_MODEL_DEFAULTS = "openai.gpt-5.6-terra,gpt-5.6-terra"
 
 
 def _codex_model_version(value: Any) -> tuple[int, int] | None:
@@ -1056,16 +1051,17 @@ def _codex_model_aliases(value: Any) -> set[str]:
 
 
 def codex_model_switchable_below_floor(value: Any) -> bool:
-    aliases = _codex_model_aliases(value)
-    if not aliases:
-        return False
-    raw = os.environ.get(
-        "NORMAN_CODEX_SWITCHABLE_MODELS", CODEX_SWITCHABLE_MODEL_DEFAULTS
-    )
-    for item in raw.split(","):
-        if aliases & _codex_model_aliases(item):
-            return True
+    """Legacy compatibility hook; active Codex selection is Terra-only."""
     return False
+
+
+def codex_model_is_active(value: Any) -> bool:
+    return bool(_codex_model_aliases(value) & CODEX_ACTIVE_MODEL_ALIASES)
+
+
+def _active_codex_model_fallback(value: Any) -> str:
+    fallback = str(value or "").strip()
+    return fallback if codex_model_is_active(fallback) else CODEX_MODEL_FLOOR
 
 
 def normalize_codex_model_name(
@@ -1077,15 +1073,9 @@ def normalize_codex_model_name(
 ) -> str:
     clean = str(value or "").strip()
     if not clean:
-        return "" if allow_blank else str(fallback or CODEX_MODEL_FLOOR).strip()
-    if codex_model_below_floor(clean):
-        if (
-            CODEX_ALLOW_BELOW_FLOOR_SWITCHABLE
-            and allow_switchable
-            and codex_model_switchable_below_floor(clean)
-        ):
-            return clean
-        return str(fallback or CODEX_MODEL_FLOOR).strip() or CODEX_MODEL_FLOOR
+        return "" if allow_blank else _active_codex_model_fallback(fallback)
+    if not codex_model_is_active(clean):
+        return _active_codex_model_fallback(fallback)
     return clean
 
 
@@ -1451,7 +1441,7 @@ MODEL = normalize_codex_model_name(
     os.environ.get("NORMAN_CODEX_MODEL", "openai.gpt-5.6-terra"),
     fallback=CODEX_MODEL_FLOOR,
 )
-# Legacy source check: MODEL = os.environ.get("HOUSEBOT_CODEX_MODEL", "gpt-5.5")
+# Legacy source check: MODEL = os.environ.get("HOUSEBOT_CODEX_MODEL", "gpt-5.6-terra")
 LATEST_MODEL = normalize_codex_model_name(
     os.environ.get("NORMAN_CODEX_LATEST_MODEL", MODEL),
     fallback=MODEL,
@@ -1465,10 +1455,17 @@ CODEX_SWITCHABLE_MODELS = _dedupe_models(
     if item.strip()
 ) or [MODEL]
 AVAILABLE_MODELS = _dedupe_models(
-    normalize_codex_model_name(item, fallback=MODEL, allow_switchable=True)
-    for item in os.environ.get("NORMAN_CODEX_AVAILABLE_MODELS", MODEL).split(",")
-    if item.strip()
-) + CODEX_SWITCHABLE_MODELS or [MODEL]
+    [
+        *(
+            normalize_codex_model_name(item, fallback=MODEL, allow_switchable=True)
+            for item in os.environ.get("NORMAN_CODEX_AVAILABLE_MODELS", MODEL).split(
+                ","
+            )
+            if item.strip()
+        ),
+        *CODEX_SWITCHABLE_MODELS,
+    ]
+) or [MODEL]
 DEFAULT_LOCAL_LLM_MODEL = "qwen3-coder:30b-a3b-q4_K_M"
 DEFAULT_LOCAL_LLM_MODELS = (DEFAULT_LOCAL_LLM_MODEL,)
 DEFAULT_LOCAL_LLM_BENCHMARK_MODELS = (DEFAULT_LOCAL_LLM_MODEL,)
@@ -6806,8 +6803,6 @@ def turn_control_authority_class(
 ) -> str:
     if route_receipt_requires_operator_approval(prompt):
         return "approval_required"
-    if "5_5" in str(selected_model_tier or ""):
-        return "final_authority"
     risk = str(mutation_risk or "none")
     if risk in {"deploy_restart", "external_write", "billing_secret"}:
         return "approval_required"
@@ -7961,31 +7956,11 @@ def model_route_presets_payload() -> list[dict[str, Any]]:
         confidence="high",
         lane="openai-direct",
     )
-    if CODEX_ALLOW_BELOW_FLOOR_SWITCHABLE:
-        add_preset(
-            "codex-openai-5-4",
-            "OpenAI 5.4",
-            runtime="codex",
-            model=codex_direct_model_name("gpt-5.4"),
-            service_tier="flex",
-            provider=CODEX_DIRECT_PROVIDER_LABEL,
-            can_execute=CODEX_DIRECT_TIERS_ENABLED,
-            status="Emergency" if CODEX_DIRECT_TIERS_ENABLED else "Disabled",
-            hint=(
-                "GPT-5.4 via the OpenAI direct route. Compatibility route only; not a normal default."
-                if CODEX_DIRECT_TIERS_ENABLED
-                else "OpenAI direct tiers are disabled for this TUI."
-            ),
-            role="compat fallback",
-            tools="codex",
-            confidence="emergency only",
-            lane="openai-direct",
-        )
     add_preset(
         "codex-bedrock",
         "Bedrock Default",
         runtime="codex",
-        model=codex_bedrock_model_name(CODEX_STANDARD_MODEL or "openai.gpt-5.4"),
+        model=codex_bedrock_model_name(CODEX_STANDARD_MODEL or "openai.gpt-5.6-terra"),
         service_tier="default",
         provider=CODEX_STANDARD_PROVIDER_LABEL,
         can_execute=bool(CODEX_STANDARD_PROFILE_V2),
@@ -7998,45 +7973,6 @@ def model_route_presets_payload() -> list[dict[str, Any]]:
         role="work default",
         tools="codex",
         confidence="high",
-        lane="aws-bedrock",
-    )
-    if CODEX_ALLOW_BELOW_FLOOR_SWITCHABLE:
-        add_preset(
-            "codex-bedrock-5-4",
-            "Bedrock 5.4",
-            runtime="codex",
-            model=codex_bedrock_model_name("openai.gpt-5.4"),
-            service_tier="default",
-            provider=CODEX_STANDARD_PROVIDER_LABEL,
-            can_execute=bool(CODEX_STANDARD_PROFILE_V2),
-            status="Emergency" if CODEX_STANDARD_PROFILE_V2 else "Offline",
-            hint=(
-                f"GPT-5.4 via profile-v2 {CODEX_STANDARD_PROFILE_V2}. Compatibility route only; not a normal default."
-                if CODEX_STANDARD_PROFILE_V2
-                else "Bedrock fallback needs a standard profile-v2 before it can run."
-            ),
-            role="compat fallback",
-            tools="codex",
-            confidence="emergency only",
-            lane="aws-bedrock",
-        )
-    add_preset(
-        "codex-bedrock-frontier-5-5",
-        "Bedrock 5.5",
-        runtime="codex",
-        model=codex_bedrock_model_name("openai.gpt-5.5"),
-        service_tier="default",
-        provider=CODEX_STANDARD_PROVIDER_LABEL,
-        can_execute=bool(CODEX_STANDARD_PROFILE_V2),
-        status="Frontier" if CODEX_STANDARD_PROFILE_V2 else "Offline",
-        hint=(
-            f"GPT-5.5 via profile-v2 {CODEX_STANDARD_PROFILE_V2}. Use only for frontier/tiebreaker work when availability is acceptable."
-            if CODEX_STANDARD_PROFILE_V2
-            else "Bedrock 5.5 needs a standard profile-v2 before it can run."
-        ),
-        role="tie breaker",
-        tools="codex",
-        confidence="limited availability",
         lane="aws-bedrock",
     )
     add_preset(
@@ -12999,7 +12935,7 @@ def _context_preflight_timestamp_label(value: Any) -> str:
     if ts <= 0:
         return ""
     try:
-        return datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d %H:%M UTC")
+        return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     except (OverflowError, OSError, ValueError):
         return ""
 
@@ -16530,6 +16466,8 @@ def zero_token_provider_retry_model(
     if not normalized_usage.get("zero_token_provider_failure"):
         return normalized_model
     standard_model = codex_bedrock_model_name(CODEX_BEDROCK_EMERGENCY_MODEL or MODEL)
+    if normalized_model == standard_model:
+        return ""
     current_version = _codex_model_version(normalized_model)
     standard_version = _codex_model_version(standard_model)
     if current_version and standard_version and current_version > standard_version:
@@ -20453,7 +20391,7 @@ def _bbs_thread_activity(
     if state == "waiting_pickup":
         base = f"Owner {owner_label} needs pickup ACK; no fork or done yet"
         if owner_heartbeat_age_seconds:
-            return f"{base}; owner heartbeat " f"{owner_heartbeat_age_seconds}s"
+            return f"{base}; owner heartbeat {owner_heartbeat_age_seconds}s"
         return base
     if state == "picked_up":
         pickup = _bbs_actor_label(picked_up_by or owner)
@@ -21040,8 +20978,7 @@ def summarize_bbs_payload(payload: dict[str, Any]) -> dict[str, Any]:
         )
     elif picked_up_count:
         summary = (
-            f"{picked_up_count} BBS handoff active"
-            f"{'s' if picked_up_count != 1 else ''}"
+            f"{picked_up_count} BBS handoff active{'s' if picked_up_count != 1 else ''}"
         )
     elif inbox_count:
         summary = f"{inbox_count} open BBS thread{'s' if inbox_count != 1 else ''}"
@@ -21599,13 +21536,16 @@ def record_web_process_seen(
 def _meter_generated_at(snapshot_at: int) -> str:
     try:
         return (
-            datetime.utcfromtimestamp(int(snapshot_at or 0)).isoformat(
-                timespec="seconds"
-            )
-            + "Z"
+            datetime.fromtimestamp(int(snapshot_at or 0), timezone.utc)
+            .isoformat(timespec="seconds")
+            .replace("+00:00", "Z")
         )
     except (TypeError, ValueError, OSError):
-        return datetime.utcfromtimestamp(now_ts()).isoformat(timespec="seconds") + "Z"
+        return (
+            datetime.fromtimestamp(now_ts(), timezone.utc)
+            .isoformat(timespec="seconds")
+            .replace("+00:00", "Z")
+        )
 
 
 def _normalize_meter_tone(value: Any, default: str = "ok") -> str:
@@ -23639,6 +23579,14 @@ def _codex_credit_rates_for_model(model: Any) -> dict[str, Any]:
     clean = normalize_codex_model_name(
         model or configured_chat_model(), fallback=MODEL
     ).lower()
+    if clean.startswith(("gpt-5.6-terra", "openai.gpt-5.6-terra")):
+        return {
+            "configured": True,
+            "source": "OpenAI Codex GPT-5.6 Terra credit rate card",
+            "input_credits_per_1m": 125.0,
+            "cached_input_credits_per_1m": 12.5,
+            "output_credits_per_1m": 750.0,
+        }
     if clean.startswith(("gpt-5.4", "openai.gpt-5.4")):
         return {
             "configured": True,
@@ -24565,7 +24513,7 @@ def estimate_usage_entries_cost(
         estimate = _estimate_usage_cost_with_rates(entry, rates)
         approximate = approximate or bool(estimate.get("approximate"))
         long_context = long_context or bool(estimate.get("long_context"))
-        if estimate["configured"]:
+        if ledger_kind != "chatgpt_codex_credit_estimate" and estimate["configured"]:
             configured_entries += 1
             total_usd += float(estimate["usd"])
         credit_estimate = _estimate_usage_codex_credits(entry, model=model)
@@ -24585,7 +24533,7 @@ def estimate_usage_entries_cost(
         confidence = "approximate_rate_card" if approximate else "configured_local_rate"
     elif configured_entries:
         confidence = "partial_rate_card"
-    if configured_entries and not credit_configured_entries:
+    if configured_entries:
         display_unit = "usd_equivalent"
     elif credit_configured_entries and not configured_entries:
         display_unit = "credits"
@@ -24951,7 +24899,7 @@ ROUTE_RECEIPT_REQUIRED_FIELDS = (
     "escalation_trigger",
     "fallback_used",
     "estimated_cost_usd",
-    "baseline_all_5_5_cost_usd",
+    "baseline_all_terra_cost_usd",
     "input_tokens",
     "cached_input_tokens",
     "output_tokens",
@@ -25107,8 +25055,10 @@ def route_receipt_model_tier(model: Any, service_tier: Any) -> str:
     if clean_model in {"deterministic-status", "deterministic-command"}:
         return "deterministic_tool"
     bedrock_surface = tier in {"default", "standard"}
-    if "5.5" in clean_model:
-        return "bedrock_5_5_xhigh_final" if bedrock_surface else "frontier_5_5_final"
+    if "5.6-terra" in clean_model:
+        return (
+            "bedrock_5_6_terra_final" if bedrock_surface else "frontier_5_6_terra_final"
+        )
     if "5.4" in clean_model:
         return "bedrock_5_4_verifier" if bedrock_surface else "frontier_5_4_verifier"
     if any(token in clean_model for token in ("mini", "small", "nano")):
@@ -25121,7 +25071,7 @@ def route_receipt_model_tier(model: Any, service_tier: Any) -> str:
 def route_receipt_allowed_role(selected_model_tier: str) -> str:
     if selected_model_tier == "deterministic_tool":
         return "deterministic_read"
-    if "5_5" in selected_model_tier:
+    if "5_6_terra" in selected_model_tier:
         return "final_authority"
     if "5_4" in selected_model_tier:
         return "verifier"
@@ -25275,9 +25225,7 @@ def build_route_receipt(
         requested_action=requested_action,
     )
     final_authority_required = (
-        allowed_role == "final_authority"
-        or operator_approval_required
-        or authority_class == "final_authority"
+        operator_approval_required or authority_class == "final_authority"
     )
     live_write_attempted = route_receipt_text_has_any(
         f"{prompt}\n{visible_response}\n{error_text}", ROUTE_RECEIPT_LIVE_WRITE_MARKERS
@@ -25315,8 +25263,8 @@ def build_route_receipt(
     estimated_cost_usd = route_receipt_cost_usd(
         usage_entry, model=normalized_model, service_tier=normalized_service_tier
     )
-    baseline_all_5_5_cost_usd = route_receipt_cost_usd(
-        usage_entry, model="openai.gpt-5.5", service_tier="default"
+    baseline_all_terra_cost_usd = route_receipt_cost_usd(
+        usage_entry, model="openai.gpt-5.6-terra", service_tier="default"
     )
     if boundary_violation:
         validator_gate = "boundary_violation"
@@ -25456,7 +25404,7 @@ def build_route_receipt(
         "escalation_trigger": escalation_trigger,
         "fallback_used": fallback_used,
         "estimated_cost_usd": estimated_cost_usd,
-        "baseline_all_5_5_cost_usd": baseline_all_5_5_cost_usd,
+        "baseline_all_terra_cost_usd": baseline_all_terra_cost_usd,
         "input_tokens": _coerce_int(usage_entry.get("input_tokens")),
         "cached_input_tokens": _coerce_int(usage_entry.get("cached_input_tokens")),
         "output_tokens": _coerce_int(usage_entry.get("output_tokens")),
@@ -25800,7 +25748,13 @@ def append_route_receipt_entry(entry: dict[str, Any]) -> None:
         try:
             prepare_route_receipt_for_append(entry, ROUTE_RECEIPT_PATH)
             missing = [
-                field for field in ROUTE_RECEIPT_REQUIRED_FIELDS if field not in entry
+                field
+                for field in ROUTE_RECEIPT_REQUIRED_FIELDS
+                if field not in entry
+                and not (
+                    field == "baseline_all_terra_cost_usd"
+                    and "baseline_all_5_5_cost_usd" in entry
+                )
             ]
             if missing:
                 raise ValueError(
@@ -27468,8 +27422,9 @@ def bedrock_health_snapshot(
         ]
     )
     failures.sort(
-        key=lambda item: _coerce_int(item.get("finished_at"))
-        or _coerce_int(item.get("started_at"))
+        key=lambda item: (
+            _coerce_int(item.get("finished_at")) or _coerce_int(item.get("started_at"))
+        )
     )
     latest = failures[-1] if failures else {}
     latest_at = _coerce_int(latest.get("finished_at")) or _coerce_int(
@@ -30604,8 +30559,7 @@ def execute_deterministic_command(argv: list[str]) -> tuple[str, bool]:
             False,
         )
     return (
-        f"Command `{command}` completed with exit code 0.\n"
-        f"{output or '(no output)'}",
+        f"Command `{command}` completed with exit code 0.\n{output or '(no output)'}",
         True,
     )
 
@@ -41460,8 +41414,7 @@ def cost_route_decision_for_prompt(
                 "local intent classifier promoted safe prompt to Norllama "
                 f"{local_lane} lane"
                 if classifier_promoted
-                else "safe self-contained prompt routed to Norllama "
-                f"{local_lane} lane"
+                else f"safe self-contained prompt routed to Norllama {local_lane} lane"
             ),
             "charge_basis": "local_token_estimate",
             "local_endpoint": str(health.get("endpoint") or ""),
@@ -43918,9 +43871,11 @@ def start_device_auth() -> dict[str, Any]:
     if _contains_codex_auth_failure(combined):
         restart_session()
         pane = _wait_for_pane(
-            lambda text: _contains_browser_signin_prompt(text)
-            or _contains_signin_choice_prompt(text)
-            or _contains_device_code_prompt(text),
+            lambda text: (
+                _contains_browser_signin_prompt(text)
+                or _contains_signin_choice_prompt(text)
+                or _contains_device_code_prompt(text)
+            ),
             timeout=10.0,
         )
 
@@ -43973,9 +43928,11 @@ def start_browser_auth() -> dict[str, Any]:
     if _contains_codex_auth_failure(combined):
         restart_session()
         pane = _wait_for_pane(
-            lambda text: _contains_browser_signin_prompt(text)
-            or _contains_signin_choice_prompt(text)
-            or _contains_device_code_prompt(text),
+            lambda text: (
+                _contains_browser_signin_prompt(text)
+                or _contains_signin_choice_prompt(text)
+                or _contains_device_code_prompt(text)
+            ),
             timeout=10.0,
         )
 
@@ -43986,8 +43943,10 @@ def start_browser_auth() -> dict[str, Any]:
     if _contains_device_code_prompt(pane):
         run(tmux_cmd("send-keys", "-t", f"{SESSION}:0.0", "Escape"), check=True)
         pane = _wait_for_pane(
-            lambda text: _contains_browser_signin_prompt(text)
-            or _contains_signin_choice_prompt(text),
+            lambda text: (
+                _contains_browser_signin_prompt(text)
+                or _contains_signin_choice_prompt(text)
+            ),
             timeout=4.0,
         )
         if _contains_browser_signin_prompt(pane):
@@ -44005,8 +43964,10 @@ def start_browser_auth() -> dict[str, Any]:
         check=True,
     )
     pane = _wait_for_pane(
-        lambda text: _contains_browser_signin_prompt(text)
-        or _contains_browser_auth_port_in_use(text),
+        lambda text: (
+            _contains_browser_signin_prompt(text)
+            or _contains_browser_auth_port_in_use(text)
+        ),
         timeout=6.0,
     )
     if _contains_browser_auth_port_in_use(pane):
@@ -45244,9 +45205,9 @@ def _initial_inline_entity_pattern(
     )
 
 
-def _initial_inline_entity_entries() -> (
-    list[tuple[str, dict[str, Any], re.Pattern[str]]]
-):
+def _initial_inline_entity_entries() -> list[
+    tuple[str, dict[str, Any], re.Pattern[str]]
+]:
     entries: list[tuple[str, dict[str, Any], re.Pattern[str]]] = []
     for entity in build_inline_entity_defs():
         aliases = tuple(
@@ -45330,8 +45291,7 @@ def _render_outcome_sigil(label: str) -> str:
 def _highlight_initial_outcome_sigils_in_text(text: str) -> str:
     return INITIAL_OUTCOME_SIGIL_RE.sub(
         lambda match: (
-            f"{match.group(1)}{match.group(2)}"
-            f"{_render_outcome_sigil(match.group(3))}"
+            f"{match.group(1)}{match.group(2)}{_render_outcome_sigil(match.group(3))}"
         ),
         str(text or ""),
     )
@@ -45892,7 +45852,7 @@ class Handler(BaseHTTPRequestHandler):
 </head>
 <body>
   <main class="{tone}">
-    <div class="badge">{'Sign-in complete' if ok else 'Sign-in blocked'}</div>
+    <div class="badge">{"Sign-in complete" if ok else "Sign-in blocked"}</div>
     <h1>{html.escape(title)}</h1>
     <p>{html.escape(detail)}</p>
     {helper_block}
@@ -47562,7 +47522,7 @@ class Handler(BaseHTTPRequestHandler):
         entry_items = "".join(
             (
                 f'<li><a href="{html.escape(build_file_href(token=local_token, path=str(entry.resolve()), profile=profile, route=route_mode, prefix=path_prefix))}">'
-                f'{html.escape(entry.name)}{"/" if entry.is_dir() else ""}</a></li>'
+                f"{html.escape(entry.name)}{'/' if entry.is_dir() else ''}</a></li>"
             )
             for entry in entries
         )
@@ -48161,7 +48121,7 @@ class Handler(BaseHTTPRequestHandler):
                     prefix=path_prefix,
                 ),
                 active=slug == active_profile,
-                tooltip=f'Use {str(data["label"])} palette',
+                tooltip=f"Use {str(data['label'])} palette",
             )
             for slug, data in profiles_for_mode(active_mode)
         )
@@ -48224,7 +48184,7 @@ class Handler(BaseHTTPRequestHandler):
             meta = " · ".join(part for part in (provider, model) if part)
             detail = " · ".join(part for part in (role, tools, confidence) if part)
             return (
-                f'<button {" ".join(attrs)}>'
+                f"<button {' '.join(attrs)}>"
                 f'<span class="runtime-route-main">{html.escape(label)}</span>'
                 f'<span class="runtime-route-model">{html.escape(meta)}</span>'
                 f'<span class="runtime-route-detail">{html.escape(detail)}</span>'
@@ -48278,7 +48238,7 @@ class Handler(BaseHTTPRequestHandler):
             if model_count > 1 and model:
                 model = f"{model_count} models · {model}"
             return (
-                f'<button {" ".join(attrs)}>'
+                f"<button {' '.join(attrs)}>"
                 f'<span class="runtime-route-main">{html.escape(label)}</span>'
                 f'<span class="runtime-route-model">{html.escape(model)}</span>'
                 f'<span class="runtime-route-status">{html.escape(status)}</span>'
@@ -48286,10 +48246,7 @@ class Handler(BaseHTTPRequestHandler):
             )
 
         def render_model_floor_pill(model: str) -> str:
-            title = (
-                "Model lane. GPT-5.5 is the Codex floor for normal routes; older "
-                "compatibility lanes require an explicit emergency override."
-            )
+            title = "Model lane. GPT-5.6 Terra is the active Codex model."
             active = " active" if model == active_model else ""
             return (
                 f'<button type="button" class="ghost setting-pill model-floor-pill{active}" '
@@ -48398,7 +48355,7 @@ class Handler(BaseHTTPRequestHandler):
                 f'<div class="console-nav-panel{" active" if group["slug"] == active_console_group else ""}{" solo" if len(group["links"]) <= 1 else ""}" data-group="{html.escape(str(group["slug"]))}" role="tabpanel"{" hidden" if group["slug"] != active_console_group else ""}>'
                 + "".join(
                     f'<a class="quick-link" data-group="{html.escape(str(group["slug"]))}" data-tone="{html.escape(str(item["tone_group"]))}" data-icon="{html.escape(str(item["icon"]))}" data-label="{html.escape(str(item["label"]))}" href="{html.escape(str(item["url"]))}"{console_link_anchor_attrs(str(item["url"]))}>'
-                    f'{_render_name_cartouche(str(item["label"]), kind="bot", tone="bot", group=str(item["tone_group"]))}</a>'
+                    f"{_render_name_cartouche(str(item['label']), kind='bot', tone='bot', group=str(item['tone_group']))}</a>"
                     for item in group["links"]
                 )
                 + "</div>"
@@ -48419,7 +48376,7 @@ class Handler(BaseHTTPRequestHandler):
         )
         topbar_context_links_html = "".join(
             f'<a class="ghost utility-button button-link" data-icon="{html.escape(str(item["icon"]))}" data-label="{html.escape(str(item["label"]))}" href="{html.escape(str(item["url"]))}"{console_link_anchor_attrs(str(item["url"]))} aria-label="{html.escape(str(item.get("note") or item["label"]))}" title="{html.escape(str(item.get("note") or item["label"]))}" data-tooltip="{html.escape(str(item.get("note") or item["label"]))}">'
-            f'{_render_name_cartouche(str(item["label"]), kind="bot", tone="bot", group=str(item["tone_group"]))}</a>'
+            f"{_render_name_cartouche(str(item['label']), kind='bot', tone='bot', group=str(item['tone_group']))}</a>"
             for group in console_groups
             if str(group.get("slug") or "") in {"norman", "pipeline"}
             for item in group["links"]
@@ -48476,7 +48433,7 @@ class Handler(BaseHTTPRequestHandler):
             )
         settings_browse_links_html = "".join(
             f'<a class="quick-link" data-icon="{html.escape(str(item["icon"]))}" data-label="{html.escape(str(item["label"]))}" href="{html.escape(str(item["url"]))}"{console_link_anchor_attrs(str(item["url"]))}>'
-            f'{_render_name_cartouche(str(item["label"]), kind="name", tone=str(item["tone_group"]), group=str(item["tone_group"]))}</a>'
+            f"{_render_name_cartouche(str(item['label']), kind='name', tone=str(item['tone_group']), group=str(item['tone_group']))}</a>"
             for item in browse_targets
         )
         console_focus_sources = [
@@ -48505,8 +48462,8 @@ class Handler(BaseHTTPRequestHandler):
                 (
                     f'<section class="focus-lane surface" data-lane="{html.escape(str(lane["slug"]))}">'
                     f'<header class="focus-lane-head"><span class="focus-lane-eyebrow">{html.escape(str(lane["eyebrow"]))}</span>'
-                    f'<h2>{html.escape(str(lane["label"]))}</h2>'
-                    f'<p>{html.escape(str(lane["description"]))}</p></header>'
+                    f"<h2>{html.escape(str(lane['label']))}</h2>"
+                    f"<p>{html.escape(str(lane['description']))}</p></header>"
                     '<div class="focus-lane-grid">'
                     + "".join(
                         f'<a class="focus-card" data-group="{html.escape(str(item["group_slug"]))}" data-tone="{html.escape(str(item["tone_group"]))}" data-lane="{html.escape(str(item["lane"]))}" href="{html.escape(str(item["url"]))}"{console_link_anchor_attrs(str(item["url"]))}>'
@@ -62345,19 +62302,31 @@ class Handler(BaseHTTPRequestHandler):
     }}
   </style>
 </head>
-<body data-agent-slug="{html.escape(AGENT_SLUG)}" data-agent-group="{html.escape(agent_brand_group)}" data-agent-variant="{html.escape(AGENT_STYLE_VARIANT)}" data-microtexture-state="idle">
+<body data-agent-slug="{html.escape(AGENT_SLUG)}" data-agent-group="{
+            html.escape(agent_brand_group)
+        }" data-agent-variant="{
+            html.escape(AGENT_STYLE_VARIANT)
+        }" data-microtexture-state="idle">
   <canvas id="microtexture-thread-field" class="microtexture-thread-field" aria-hidden="true"></canvas>
   <div class="app-shell">
     <header id="topbar" class="topbar surface">
         <div class="brand">
         <div class="brand-line">
-          <h1 id="agent-title" class="brand-title" aria-label="{html.escape(AGENT_NAME)}">{agent_brand_cartouche_html}</h1>
-          <span id="run-state" class="pill {html.escape(initial_tone)}">{html.escape(initial_run_label)}</span>
+          <h1 id="agent-title" class="brand-title" aria-label="{
+            html.escape(AGENT_NAME)
+        }">{agent_brand_cartouche_html}</h1>
+          <span id="run-state" class="pill {html.escape(initial_tone)}">{
+            html.escape(initial_run_label)
+        }</span>
           <span id="bedrock-health-badge" class="bedrock-health-badge idle" title="Bedrock health has not been checked yet." hidden>Bedrock</span>
-          <span class="topbar-version" title="Console UI version">v{html.escape(UI_VERSION)}</span>
+          <span class="topbar-version" title="Console UI version">v{
+            html.escape(UI_VERSION)
+        }</span>
           <button id="status-action-button" type="button" class="ghost status-action-button" data-icon="?" data-tone="idle" aria-expanded="false" aria-label="Status and actions" title="Status and actions" data-tooltip="Status and actions" data-tooltip-side="bottom">Status</button>
         </div>
-        <p id="status-message" class="status-copy">{html.escape(initial_status_message)}</p>
+        <p id="status-message" class="status-copy">{
+            html.escape(initial_status_message)
+        }</p>
         <div id="status-action-panel" class="status-action-panel surface" aria-hidden="true" hidden>
           <div class="status-action-head">
             <strong id="status-action-title" class="status-action-title">Status</strong>
@@ -62373,33 +62342,61 @@ class Handler(BaseHTTPRequestHandler):
         </div>
       </div>
       <div class="topbar-actions">
-        <a id="prime-home-button" class="ghost utility-button button-link prime-home-button" data-icon="{html.escape(icon_for_label('Prime', '⌂'))}" href="{html.escape(norman_prime_href)}" aria-label="Back to Norman Prime" title="Back to Norman Prime" data-tooltip="Back to Norman Prime" data-tooltip-side="left">
+        <a id="prime-home-button" class="ghost utility-button button-link prime-home-button" data-icon="{
+            html.escape(icon_for_label("Prime", "⌂"))
+        }" href="{
+            html.escape(norman_prime_href)
+        }" aria-label="Back to Norman Prime" title="Back to Norman Prime" data-tooltip="Back to Norman Prime" data-tooltip-side="left">
           <span class="prime-home-label">Prime</span>
         </a>
-        <a id="directory-home-button" class="ghost utility-button button-link directory-home-button" data-icon="{html.escape(icon_for_label('Directory', '≡'))}" href="{html.escape(norman_directory_href)}" aria-label="Open Norman Directory" title="Open Norman Directory" data-tooltip="Open Norman Directory" data-tooltip-side="left">
+        <a id="directory-home-button" class="ghost utility-button button-link directory-home-button" data-icon="{
+            html.escape(icon_for_label("Directory", "≡"))
+        }" href="{
+            html.escape(norman_directory_href)
+        }" aria-label="Open Norman Directory" title="Open Norman Directory" data-tooltip="Open Norman Directory" data-tooltip-side="left">
           <span class="directory-home-label">Dir</span>
         </a>
-        <button id="switcher-toggle-button" type="button" class="ghost utility-button switcher-toggle-button" data-icon="{html.escape(icon_for_label("Switch", "⇆"))}" aria-label="Switch agents (Ctrl/Cmd+K)" title="Switch agents (Ctrl/Cmd+K)" data-tooltip="Switch agents (Ctrl/Cmd+K)" data-tooltip-side="left">
+        <button id="switcher-toggle-button" type="button" class="ghost utility-button switcher-toggle-button" data-icon="{
+            html.escape(icon_for_label("Switch", "⇆"))
+        }" aria-label="Switch agents (Ctrl/Cmd+K)" title="Switch agents (Ctrl/Cmd+K)" data-tooltip="Switch agents (Ctrl/Cmd+K)" data-tooltip-side="left">
           <span class="switcher-toggle-label">Switch</span>
         </button>
-        <button id="topbar-menu-button" type="button" class="ghost utility-button topbar-menu-button" data-icon="{html.escape(icon_for_label("Settings", "⚙"))}" aria-expanded="false" aria-label="Console controls" title="Console controls" data-tooltip="Console controls" data-tooltip-side="left">
+        <button id="topbar-menu-button" type="button" class="ghost utility-button topbar-menu-button" data-icon="{
+            html.escape(icon_for_label("Settings", "⚙"))
+        }" aria-expanded="false" aria-label="Console controls" title="Console controls" data-tooltip="Console controls" data-tooltip-side="left">
           <span class="topbar-menu-button-label">Menu</span>
           <span id="topbar-menu-count" class="topbar-menu-count" hidden>0</span>
         </button>
       </div>
     </header>
     <nav id="low-ui-rail" class="low-ui-rail" aria-label="Low UI navigation">
-      <button id="low-ui-mode-button" type="button" class="ghost low-ui-action low-ui-mode-toggle" data-icon="{html.escape(icon_for_label("Remote", "▣"))}" data-low-ui-action="mode" data-voice-label="Remote" aria-pressed="false" title="Toggle remote-friendly controls" data-tooltip="Toggle remote-friendly controls">Remote</button>
-      <button type="button" class="ghost low-ui-action" data-icon="{html.escape(icon_for_label("Prompt", "/"))}" data-low-ui-action="prompt" data-voice-label="Prompt" title="Focus prompt">Prompt</button>
-      <button type="button" class="ghost low-ui-action" data-icon="{html.escape(icon_for_label("Send", "→"))}" data-low-ui-action="send" data-voice-label="Send" title="Queue prompt">Send</button>
-      <button type="button" class="ghost low-ui-action" data-icon="{html.escape(icon_for_label("Latest"))}" data-low-ui-action="latest" data-voice-label="Latest" title="Jump to latest">Latest</button>
-      <button type="button" class="ghost low-ui-action" data-icon="{html.escape(icon_for_label("Status", "?"))}" data-low-ui-action="status" data-voice-label="Status" title="Open status">Status</button>
-      <button type="button" class="ghost low-ui-action" data-icon="{html.escape(icon_for_label("Switch", "⇆"))}" data-low-ui-action="switch" data-voice-label="Switch" title="Switch agents">Switch</button>
-      <button type="button" class="ghost low-ui-action" data-icon="{html.escape(icon_for_label("Menu", "⚙"))}" data-low-ui-action="menu" data-voice-label="Menu" title="Open menu">Menu</button>
+      <button id="low-ui-mode-button" type="button" class="ghost low-ui-action low-ui-mode-toggle" data-icon="{
+            html.escape(icon_for_label("Remote", "▣"))
+        }" data-low-ui-action="mode" data-voice-label="Remote" aria-pressed="false" title="Toggle remote-friendly controls" data-tooltip="Toggle remote-friendly controls">Remote</button>
+      <button type="button" class="ghost low-ui-action" data-icon="{
+            html.escape(icon_for_label("Prompt", "/"))
+        }" data-low-ui-action="prompt" data-voice-label="Prompt" title="Focus prompt">Prompt</button>
+      <button type="button" class="ghost low-ui-action" data-icon="{
+            html.escape(icon_for_label("Send", "→"))
+        }" data-low-ui-action="send" data-voice-label="Send" title="Queue prompt">Send</button>
+      <button type="button" class="ghost low-ui-action" data-icon="{
+            html.escape(icon_for_label("Latest"))
+        }" data-low-ui-action="latest" data-voice-label="Latest" title="Jump to latest">Latest</button>
+      <button type="button" class="ghost low-ui-action" data-icon="{
+            html.escape(icon_for_label("Status", "?"))
+        }" data-low-ui-action="status" data-voice-label="Status" title="Open status">Status</button>
+      <button type="button" class="ghost low-ui-action" data-icon="{
+            html.escape(icon_for_label("Switch", "⇆"))
+        }" data-low-ui-action="switch" data-voice-label="Switch" title="Switch agents">Switch</button>
+      <button type="button" class="ghost low-ui-action" data-icon="{
+            html.escape(icon_for_label("Menu", "⚙"))
+        }" data-low-ui-action="menu" data-voice-label="Menu" title="Open menu">Menu</button>
     </nav>
     <section id="norman-command-rail" class="norman-command-rail" aria-label="Norman estate command status">
       <div class="norman-command-title">
-        <span class="norman-command-mark" aria-hidden="true">{html.escape(entity_mark_for_label("Norman", "N"))}</span>
+        <span class="norman-command-mark" aria-hidden="true">{
+            html.escape(entity_mark_for_label("Norman", "N"))
+        }</span>
         <span class="norman-command-kicker">Estate command</span>
         <strong class="norman-command-name">Norman</strong>
       </div>
@@ -62433,7 +62430,9 @@ class Handler(BaseHTTPRequestHandler):
     </section>
     <div id="topbar-menu" class="topbar-menu surface" aria-hidden="true">
           <div class="topbar-menu-meta">
-            <span class="version-chip" title="Console UI version">UI v{html.escape(UI_VERSION)}</span>
+            <span class="version-chip" title="Console UI version">UI v{
+            html.escape(UI_VERSION)
+        }</span>
             <span id="transport-state-menu" class="topbar-menu-status">Connecting live updates…</span>
           </div>
           <div class="topbar-menu-links">
@@ -62448,11 +62447,21 @@ class Handler(BaseHTTPRequestHandler):
               <span class="notice-toggle-label"><span>✺</span><span>Alerts</span></span>
               <span id="notice-count" class="notice-count" hidden>0</span>
             </button>
-            <button id="refresh-button" type="button" class="ghost utility-button" data-icon="{html.escape(icon_for_label("Refresh"))}" aria-label="Refresh live status" title="Refresh live status" data-tooltip="Refresh live status">Refresh</button>
-            <button id="settings-toggle-button" type="button" class="ghost utility-button" data-icon="{html.escape(icon_for_label("View"))}" aria-label="Open view controls" title="Open view controls" data-tooltip="Open view controls">View</button>
-            <button id="system-toggle-button" type="button" class="ghost utility-button system-toggle" data-icon="{html.escape(icon_for_label("System"))}" aria-label="Open system panel" title="Open system panel" data-tooltip="Open system panel">System</button>
+            <button id="refresh-button" type="button" class="ghost utility-button" data-icon="{
+            html.escape(icon_for_label("Refresh"))
+        }" aria-label="Refresh live status" title="Refresh live status" data-tooltip="Refresh live status">Refresh</button>
+            <button id="settings-toggle-button" type="button" class="ghost utility-button" data-icon="{
+            html.escape(icon_for_label("View"))
+        }" aria-label="Open view controls" title="Open view controls" data-tooltip="Open view controls">View</button>
+            <button id="system-toggle-button" type="button" class="ghost utility-button system-toggle" data-icon="{
+            html.escape(icon_for_label("System"))
+        }" aria-label="Open system panel" title="Open system panel" data-tooltip="Open system panel">System</button>
           </div>
-          {f'<div class="topbar-menu-links topbar-menu-links--context">{topbar_context_links_html}</div>' if topbar_context_links_html else ''}
+          {
+            f'<div class="topbar-menu-links topbar-menu-links--context">{topbar_context_links_html}</div>'
+            if topbar_context_links_html
+            else ""
+        }
           <div class="topbar-menu-shortcuts" aria-label="Quick shortcuts">
             <span class="shortcut-chip"><kbd>/</kbd><span>Prompt</span></span>
             <span class="shortcut-chip"><kbd>Mod+K</kbd><span>Switch</span></span>
@@ -62465,23 +62474,49 @@ class Handler(BaseHTTPRequestHandler):
           </div>
     </div>
     <div id="topbar-menu-backdrop" class="topbar-menu-backdrop"></div>
-    <div id="console-switcher-seed" hidden aria-hidden="true" inert>{console_nav_html}</div>
+    <div id="console-switcher-seed" hidden aria-hidden="true" inert>{
+            console_nav_html
+        }</div>
 
     <div id="workspace" class="workspace">
       <main id="chat-shell" class="chat-shell surface">
         <div id="chat-main" class="chat-main" tabindex="0">
-          <div class="chat-summary-bar"{' hidden' if initial_chat_summary_hidden else ''}>
-            <span id="chat-session-chip" class="meta-chip strong" data-icon="◈">{html.escape(initial_chat_session_text)}</span>
-            <span id="chat-activity-chip" class="meta-chip" data-icon="◔"{' hidden' if initial_chat_activity_hidden else ''}>{html.escape(initial_chat_activity_text)}</span>
-            <span id="context-meter-chip" class="meta-chip subtle context-meter-chip" data-icon="◌" data-load-tone="{html.escape(str(initial_context_meter['tone']))}" style="--context-load: {int(initial_context_meter['fill_pct'])}%;" title="{html.escape(str(initial_context_meter['title']))}"{' hidden' if initial_context_meter['hidden'] else ''}>
-              <span id="context-meter-status">{html.escape(str(initial_context_meter["label"]))}</span>
-              <span id="context-meter-value">{html.escape(str(initial_context_meter["value"]))}</span>
+          <div class="chat-summary-bar"{
+            " hidden" if initial_chat_summary_hidden else ""
+        }>
+            <span id="chat-session-chip" class="meta-chip strong" data-icon="◈">{
+            html.escape(initial_chat_session_text)
+        }</span>
+            <span id="chat-activity-chip" class="meta-chip" data-icon="◔"{
+            " hidden" if initial_chat_activity_hidden else ""
+        }>{html.escape(initial_chat_activity_text)}</span>
+            <span id="context-meter-chip" class="meta-chip subtle context-meter-chip" data-icon="◌" data-load-tone="{
+            html.escape(str(initial_context_meter["tone"]))
+        }" style="--context-load: {int(initial_context_meter["fill_pct"])}%;" title="{
+            html.escape(str(initial_context_meter["title"]))
+        }"{" hidden" if initial_context_meter["hidden"] else ""}>
+              <span id="context-meter-status">{
+            html.escape(str(initial_context_meter["label"]))
+        }</span>
+              <span id="context-meter-value">{
+            html.escape(str(initial_context_meter["value"]))
+        }</span>
               <span class="context-meter-track" aria-hidden="true"><span class="context-meter-fill"></span></span>
             </span>
-            <span id="usage-meter-chip" class="meta-chip subtle usage-meter-chip" data-icon="¤" data-load-tone="{html.escape(str(initial_usage_meter['tone']))}" style="--usage-load: {int(initial_usage_meter['fill_pct'])}%;" title="{html.escape(str(initial_usage_meter['title']))}"{' hidden' if initial_usage_meter['hidden'] else ''}>
-              <span id="usage-meter-plan">{html.escape(str(initial_usage_meter["plan_label"]))}</span>
-              <span id="usage-meter-metered">{html.escape(str(initial_usage_meter["metered_label"]))}</span>
-              <span id="usage-meter-track" class="usage-meter-track" aria-hidden="true"{' hidden' if not initial_usage_meter['has_fill'] else ''}><span class="usage-meter-fill"></span></span>
+            <span id="usage-meter-chip" class="meta-chip subtle usage-meter-chip" data-icon="¤" data-load-tone="{
+            html.escape(str(initial_usage_meter["tone"]))
+        }" style="--usage-load: {int(initial_usage_meter["fill_pct"])}%;" title="{
+            html.escape(str(initial_usage_meter["title"]))
+        }"{" hidden" if initial_usage_meter["hidden"] else ""}>
+              <span id="usage-meter-plan">{
+            html.escape(str(initial_usage_meter["plan_label"]))
+        }</span>
+              <span id="usage-meter-metered">{
+            html.escape(str(initial_usage_meter["metered_label"]))
+        }</span>
+              <span id="usage-meter-track" class="usage-meter-track" aria-hidden="true"{
+            " hidden" if not initial_usage_meter["has_fill"] else ""
+        }><span class="usage-meter-fill"></span></span>
             </span>
             <button id="context-save-button" type="button" class="ghost context-save-button" title="Create a concise handoff, then continue in a fresh thread" hidden>Create handoff</button>
             <span id="route-chip" class="meta-chip subtle" data-icon="{html.escape(icon_for_label(active_route_mode, "⇄"))}">{html.escape("LAN route" if active_route_mode == "lan" else "Host route")}</span>
@@ -62492,13 +62527,17 @@ class Handler(BaseHTTPRequestHandler):
           <div id="notice-rail" class="notice-rail" hidden></div>
           <div id="history-toolbar" class="history-toolbar">
             <span id="history-window-note" class="history-note"></span>
-            <button id="history-toggle-button" type="button" class="ghost history-toggle" data-icon="{html.escape(icon_for_label("History"))}" aria-label="Show older turns" title="Show older turns" data-tooltip="Show older turns">Timeline</button>
+            <button id="history-toggle-button" type="button" class="ghost history-toggle" data-icon="{
+            html.escape(icon_for_label("History"))
+        }" aria-label="Show older turns" title="Show older turns" data-tooltip="Show older turns">Timeline</button>
           </div>
           <div id="conversation" class="conversation">
             {initial_conversation_html}
           </div>
         </div>
-        <button id="jump-latest-button" type="button" class="ghost jump-latest" data-icon="{html.escape(icon_for_label("Latest"))}" aria-label="Jump to latest (End)" title="Jump to latest (End)" data-tooltip="Jump to latest (End)" data-tooltip-side="left">Latest</button>
+        <button id="jump-latest-button" type="button" class="ghost jump-latest" data-icon="{
+            html.escape(icon_for_label("Latest"))
+        }" aria-label="Jump to latest (End)" title="Jump to latest (End)" data-tooltip="Jump to latest (End)" data-tooltip-side="left">Latest</button>
         <div class="composer-wrap">
           <div id="activity-strip" class="activity-strip">
             <div id="activity-icon" class="activity-icon"></div>
@@ -62569,93 +62608,135 @@ class Handler(BaseHTTPRequestHandler):
               </div>
             </div>
           </div>
-          <form id="ask-form" class="composer" method="post" action="{html.escape(prefixed_path('/ask', path_prefix))}">
+          <form id="ask-form" class="composer" method="post" action="{
+            html.escape(prefixed_path("/ask", path_prefix))
+        }">
             <input type="hidden" name="token" value="{html.escape(TOKEN)}">
             <input type="hidden" name="profile" value="{html.escape(active_profile)}">
-            <input id="prompt-speed-input" type="hidden" name="speed" value="{html.escape(DEFAULT_RESPONSE_SPEED)}">
-            <input id="prompt-detail-input" type="hidden" name="detail" value="{DEFAULT_RESPONSE_DETAIL}">
-            <input id="prompt-service-tier-input" type="hidden" name="service_tier" value="{html.escape(active_service_tier)}">
-            <input id="prompt-job-budget-input" type="hidden" name="job_budget" value="{html.escape(DEFAULT_JOB_BUDGET)}">
-            <input id="prompt-optimization-mode-input" type="hidden" name="optimization_mode" value="{html.escape(DEFAULT_OPTIMIZATION_MODE)}">
-            <input id="prompt-interlace-mode-input" type="hidden" name="interlace_mode" value="{html.escape(QUEUE_INTERLACE_MODE)}">
-            <input id="prompt-runtime-input" type="hidden" name="runtime" value="{html.escape(configured_runtime())}">
-            <input id="prompt-model-input" type="hidden" name="model" value="{html.escape(configured_runtime_model())}">
+            <input id="prompt-speed-input" type="hidden" name="speed" value="{
+            html.escape(DEFAULT_RESPONSE_SPEED)
+        }">
+            <input id="prompt-detail-input" type="hidden" name="detail" value="{
+            DEFAULT_RESPONSE_DETAIL
+        }">
+            <input id="prompt-service-tier-input" type="hidden" name="service_tier" value="{
+            html.escape(active_service_tier)
+        }">
+            <input id="prompt-job-budget-input" type="hidden" name="job_budget" value="{
+            html.escape(DEFAULT_JOB_BUDGET)
+        }">
+            <input id="prompt-optimization-mode-input" type="hidden" name="optimization_mode" value="{
+            html.escape(DEFAULT_OPTIMIZATION_MODE)
+        }">
+            <input id="prompt-interlace-mode-input" type="hidden" name="interlace_mode" value="{
+            html.escape(QUEUE_INTERLACE_MODE)
+        }">
+            <input id="prompt-runtime-input" type="hidden" name="runtime" value="{
+            html.escape(configured_runtime())
+        }">
+            <input id="prompt-model-input" type="hidden" name="model" value="{
+            html.escape(configured_runtime_model())
+        }">
             <input id="prompt-file-input" class="composer-file-input" type="file" multiple>
             <div class="composer-toolbar">
               <div id="composer-toolbar-panels" class="composer-toolbar-panels" hidden>
                 <div class="response-bar" aria-label="Response tuning">
                   <div class="response-bar-head">
-                    <span class="response-bar-title" data-icon="{html.escape(icon_for_label("Window"))}">Target the run</span>
+                    <span class="response-bar-title" data-icon="{
+            html.escape(icon_for_label("Window"))
+        }">Target the run</span>
                     <span class="response-bar-copy">Set time, effort, detail, and spend guardrails</span>
                   </div>
                   <div class="response-grid">
                     <label class="response-rail response-rail-primary response-rail-time" for="job-budget-range">
                       <span class="response-rail-meta">
                         <span>
-                          <span class="response-rail-name" data-icon="{html.escape(icon_for_label("Window"))}">Work window</span>
+                          <span class="response-rail-name" data-icon="{
+            html.escape(icon_for_label("Window"))
+        }">Work window</span>
                           <span class="response-helper">Target runtime</span>
                         </span>
                         <strong id="job-budget-label" class="response-rail-value">Normal</strong>
                       </span>
                       <span class="response-track">
                         <span class="response-edge">1m</span>
-                        <input id="job-budget-range" class="response-range" type="range" min="1" max="{len(JOB_BUDGET_PRESETS)}" step="1" value="{list(JOB_BUDGET_PRESETS).index(DEFAULT_JOB_BUDGET) + 1}">
+                        <input id="job-budget-range" class="response-range" type="range" min="1" max="{
+            len(JOB_BUDGET_PRESETS)
+        }" step="1" value="{list(JOB_BUDGET_PRESETS).index(DEFAULT_JOB_BUDGET) + 1}">
                         <span class="response-edge">8h</span>
                       </span>
                     </label>
                     <label class="response-rail" for="response-speed-range">
                       <span class="response-rail-meta">
                         <span>
-                          <span class="response-rail-name" data-icon="{html.escape(icon_for_label("Reasoning"))}">Reasoning</span>
+                          <span class="response-rail-name" data-icon="{
+            html.escape(icon_for_label("Reasoning"))
+        }">Reasoning</span>
                           <span class="response-helper">Model effort</span>
                         </span>
                         <strong id="response-speed-label" class="response-rail-value">Std</strong>
                       </span>
                       <span class="response-track">
                         <span class="response-edge">Std</span>
-                        <input id="response-speed-range" class="response-range" type="range" min="2" max="3" step="1" value="{2 if DEFAULT_RESPONSE_SPEED in {'fast', 'balanced'} else 3}">
+                        <input id="response-speed-range" class="response-range" type="range" min="2" max="3" step="1" value="{
+            2 if DEFAULT_RESPONSE_SPEED in {"fast", "balanced"} else 3
+        }">
                         <span class="response-edge">Deep</span>
                       </span>
                     </label>
                     <label class="response-rail" for="response-detail-range">
                       <span class="response-rail-meta">
                         <span>
-                          <span class="response-rail-name" data-icon="{html.escape(icon_for_label("Reply"))}">Reply</span>
+                          <span class="response-rail-name" data-icon="{
+            html.escape(icon_for_label("Reply"))
+        }">Reply</span>
                           <span class="response-helper">Answer shape</span>
                         </span>
                         <strong id="response-detail-label" class="response-rail-value">Balanced</strong>
                       </span>
                       <span class="response-track">
                         <span class="response-edge">Brief</span>
-                        <input id="response-detail-range" class="response-range" type="range" min="1" max="5" step="1" value="{DEFAULT_RESPONSE_DETAIL}">
+                        <input id="response-detail-range" class="response-range" type="range" min="1" max="5" step="1" value="{
+            DEFAULT_RESPONSE_DETAIL
+        }">
                         <span class="response-edge">Full</span>
                       </span>
                     </label>
                     <label class="response-rail" for="optimization-mode-range">
                       <span class="response-rail-meta">
                         <span>
-                          <span class="response-rail-name" data-icon="{html.escape(icon_for_label("Optimize", "◌"))}">Optimize</span>
+                          <span class="response-rail-name" data-icon="{
+            html.escape(icon_for_label("Optimize", "◌"))
+        }">Optimize</span>
                           <span class="response-helper">Cost guard</span>
                         </span>
                         <strong id="optimization-mode-label" class="response-rail-value">Auto</strong>
                       </span>
                       <span class="response-track">
                         <span class="response-edge">Auto</span>
-                        <input id="optimization-mode-range" class="response-range" type="range" min="1" max="{len(OPTIMIZATION_MODE_OPTIONS)}" step="1" value="{list(OPTIMIZATION_MODE_OPTIONS).index(DEFAULT_OPTIMIZATION_MODE) + 1}">
+                        <input id="optimization-mode-range" class="response-range" type="range" min="1" max="{
+            len(OPTIMIZATION_MODE_OPTIONS)
+        }" step="1" value="{
+            list(OPTIMIZATION_MODE_OPTIONS).index(DEFAULT_OPTIMIZATION_MODE) + 1
+        }">
                         <span class="response-edge">Raw</span>
                       </span>
                     </label>
                     <label class="response-rail response-rail-emergency response-rail-spend" for="service-tier-range">
                       <span class="response-rail-meta">
                         <span>
-                          <span class="response-rail-name" data-icon="{html.escape(icon_for_label("Spend", "$"))}">Spend path</span>
+                          <span class="response-rail-name" data-icon="{
+            html.escape(icon_for_label("Spend", "$"))
+        }">Spend path</span>
                           <span class="response-helper">Emergency lane</span>
                         </span>
                         <strong id="service-tier-label" class="response-rail-value">Profile</strong>
                       </span>
                       <span class="response-track">
                         <span class="response-edge">Profile</span>
-                        <input id="service-tier-range" class="response-range" type="range" min="1" max="{len(SERVICE_TIER_OPTIONS)}" step="1" value="{list(SERVICE_TIER_OPTIONS).index(active_service_tier) + 1}">
+                        <input id="service-tier-range" class="response-range" type="range" min="1" max="{
+            len(SERVICE_TIER_OPTIONS)
+        }" step="1" value="{list(SERVICE_TIER_OPTIONS).index(active_service_tier) + 1}">
                         <span class="response-edge">Prio</span>
                       </span>
                       <span class="response-rail-warning">Only change when blocked</span>
@@ -62706,7 +62787,9 @@ class Handler(BaseHTTPRequestHandler):
                   <span class="visually-hidden">Tune prompt</span>
                 </button>
               </div>
-              <textarea id="prompt-input" name="message" rows="1" autocomplete="off" autocapitalize="sentences" spellcheck="true" enterkeyhint="send" aria-label="Prompt" placeholder="{html.escape(PROMPT_PLACEHOLDER)}"></textarea>
+              <textarea id="prompt-input" name="message" rows="1" autocomplete="off" autocapitalize="sentences" spellcheck="true" enterkeyhint="send" aria-label="Prompt" placeholder="{
+            html.escape(PROMPT_PLACEHOLDER)
+        }"></textarea>
               <span id="response-summary" class="response-summary visually-hidden">Think Std · Reply Balanced</span>
               <div class="composer-send-cluster" aria-label="Prompt submit controls">
                 <button id="ask-button" type="submit" class="primary composer-send composer-send-queue" data-icon="→" title="Queue prompt. Press Enter to queue and Shift+Enter for a new line." data-tooltip="Queue prompt. Enter queues; Shift+Enter inserts a new line." aria-label="Queue prompt"><span id="ask-button-label" class="composer-send-label">Queue</span></button>
@@ -62728,7 +62811,11 @@ class Handler(BaseHTTPRequestHandler):
             <p class="hint">Jump between Norman sessions, pinned bots, and recent stops.</p>
           </div>
           <div class="switcher-head-actions">
-            <a class="ghost utility-button button-link prime-home-button" data-icon="{html.escape(icon_for_label('Prime', '⌂'))}" href="{html.escape(norman_prime_href)}" title="Back to Norman Prime">Prime</a>
+            <a class="ghost utility-button button-link prime-home-button" data-icon="{
+            html.escape(icon_for_label("Prime", "⌂"))
+        }" href="{
+            html.escape(norman_prime_href)
+        }" title="Back to Norman Prime">Prime</a>
             <button id="switcher-close-button" type="button" class="ghost utility-button">Close</button>
           </div>
         </div>
@@ -62751,29 +62838,51 @@ class Handler(BaseHTTPRequestHandler):
           <button id="settings-close-button" type="button" class="ghost utility-button">Close</button>
         </div>
         <div id="settings-body" class="settings-body">
-        <section class="settings-card model-route-card" data-chat-runtime="{html.escape(active_runtime)}" data-chat-model="{html.escape(active_model)}" data-runtime-registry="registered">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Model"))}">Model Route</span>
+        <section class="settings-card model-route-card" data-chat-runtime="{
+            html.escape(active_runtime)
+        }" data-chat-model="{
+            html.escape(active_model)
+        }" data-runtime-registry="registered">
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Model"))
+        }">Model Route</span>
           {settings_model_route_matrix_header_html}
-          <div class="settings-row model-route-preset-row">{settings_model_route_presets_html}</div>
-          <div class="settings-row runtime-route-row">{settings_runtime_routes_html}</div>
+          <div class="settings-row model-route-preset-row">{
+            settings_model_route_presets_html
+        }</div>
+          <div class="settings-row runtime-route-row">{
+            settings_runtime_routes_html
+        }</div>
           <div class="settings-row model-floor-row">{settings_model_buttons_html}</div>
-          <div class="settings-note">Presets pick runtime, model, and provider lane together. GPT-5.5 is the Codex floor for normal routes; older compatibility lanes require an explicit emergency override. Claude is executable only where Bedrock Converse is enabled and currently uses brokered tools. Kimi, Qwen, and DeepSeek are benchmark routes until a live adapter/tool policy is wired. {"Model update available" if chat_model_update_available() else "Model current"}</div>
+          <div class="settings-note">Presets pick runtime, model, and provider lane together. GPT-5.6 Terra is the active Codex model. Claude is executable only where Bedrock Converse is enabled and currently uses brokered tools. Kimi, Qwen, and DeepSeek are benchmark routes until a live adapter/tool policy is wired. {
+            "Model update available"
+            if chat_model_update_available()
+            else "Model current"
+        }</div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Mode"))}">Mode</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Mode"))
+        }">Mode</span>
           <div class="settings-row">{settings_mode_links_html}</div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Palette"))}">Palette</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Palette"))
+        }">Palette</span>
           <div class="settings-row">{settings_profile_links_html}</div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Route"))}">Route</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Route"))
+        }">Route</span>
           <div class="settings-row">{settings_route_links_html}</div>
           <div class="settings-note">Auto follows how you opened the console. Use LAN or Host to force one path across the fleet.</div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Material"))}">Material</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Material"))
+        }">Material</span>
           <div id="style-variant-row" class="settings-row">
             <button type="button" class="ghost setting-pill" data-setting="styleVariant" data-value="auto">Auto</button>
             <button type="button" class="ghost setting-pill" data-setting="styleVariant" data-value="anchor">Anchor</button>
@@ -62786,7 +62895,9 @@ class Handler(BaseHTTPRequestHandler):
           <div class="settings-note">Auto follows the bot default. Override it if you want a different material treatment without changing the bot itself.</div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Finish"))}">Finish</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Finish"))
+        }">Finish</span>
           <div id="finish-row" class="settings-row">
             <button type="button" class="ghost setting-pill" data-setting="finish" data-value="flat">Flat</button>
             <button type="button" class="ghost setting-pill" data-setting="finish" data-value="engraved">Engraved</button>
@@ -62795,7 +62906,9 @@ class Handler(BaseHTTPRequestHandler):
           </div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Bell"))}">Bell</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Bell"))
+        }">Bell</span>
           <div id="completion-bell-row" class="settings-row">
             <button type="button" class="ghost setting-pill" data-setting="completionBell" data-value="auto">Auto</button>
             <button type="button" class="ghost setting-pill" data-setting="completionBell" data-value="work">Work</button>
@@ -62811,7 +62924,9 @@ class Handler(BaseHTTPRequestHandler):
           <div class="settings-note">Auto follows this console’s lane. Bells are deep gong tones with per-agent variation. Silent mutes all console audio; hidden or unfocused pages stay silent.</div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Feedback"))}">Feedback</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Feedback"))
+        }">Feedback</span>
           <div id="feedback-sound-row" class="settings-row">
             <button type="button" class="ghost setting-pill" data-setting="feedbackSounds" data-value="signals">Signals</button>
             <button type="button" class="ghost setting-pill" data-setting="feedbackSounds" data-value="full">Full</button>
@@ -62823,7 +62938,9 @@ class Handler(BaseHTTPRequestHandler):
           <div class="settings-note">Signals keeps prompt, queue, confirmation, blocked, and error cues. Full also adds light tactile control sounds. Off keeps visual feedback and completion bells only.</div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Phone History"))}">Phone History</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Phone History"))
+        }">Phone History</span>
           <div id="mobile-turns-row" class="settings-row">
             <button type="button" class="ghost setting-pill" data-setting="mobileTurns" data-value="1">1 turn</button>
             <button type="button" class="ghost setting-pill" data-setting="mobileTurns" data-value="2">2 turns</button>
@@ -62831,7 +62948,9 @@ class Handler(BaseHTTPRequestHandler):
           </div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Desktop History"))}">Desktop History</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Desktop History"))
+        }">Desktop History</span>
           <div id="desktop-turns-row" class="settings-row">
             <button type="button" class="ghost setting-pill" data-setting="desktopTurns" data-value="1">1 turn</button>
             <button type="button" class="ghost setting-pill" data-setting="desktopTurns" data-value="2">2 turns</button>
@@ -62840,21 +62959,27 @@ class Handler(BaseHTTPRequestHandler):
           </div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Screen"))}">Screen</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Screen"))
+        }">Screen</span>
           <div id="view-mode-row" class="settings-row">
             <button type="button" class="ghost setting-pill" data-setting="viewMode" data-value="console">Console</button>
             <button type="button" class="ghost setting-pill" data-setting="viewMode" data-value="stage">Presenter</button>
           </div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Density"))}">Density</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Density"))
+        }">Density</span>
           <div id="density-row" class="settings-row">
             <button type="button" class="ghost setting-pill" data-setting="density" data-value="compact">Compact</button>
             <button type="button" class="ghost setting-pill" data-setting="density" data-value="comfortable">Comfortable</button>
           </div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("View"))}">Text Size</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("View"))
+        }">Text Size</span>
           <div id="text-zoom-row" class="settings-row">
             <button type="button" class="ghost setting-pill" data-setting="textZoom" data-value="auto">Auto fit</button>
             <button type="button" class="ghost setting-pill" data-setting="textZoom" data-value="normal">Normal</button>
@@ -62864,11 +62989,15 @@ class Handler(BaseHTTPRequestHandler):
           </div>
           <div class="settings-note">Auto fit grows reading and composer text only when the screen has enough room.</div>
         </section>
-        {f'''<section class="settings-card">
+        {
+            f'''<section class="settings-card">
           <span class="settings-label" data-icon="{html.escape(icon_for_label("Browse"))}">Browse</span>
           <div class="settings-row">{settings_browse_links_html}</div>
           <div class="settings-note">Open the agent workspace and bridge state in a separate viewer tab.</div>
-        </section>''' if settings_browse_links_html else ''}
+        </section>'''
+            if settings_browse_links_html
+            else ""
+        }
         </div>
       </aside>
       <aside id="notices-panel" class="notices-panel surface" aria-hidden="true">
@@ -62901,7 +63030,9 @@ class Handler(BaseHTTPRequestHandler):
               <span id="thread-id-head" class="mono subtle">loading</span>
             </div>
             <div id="services" class="services"></div>
-            <div id="system-summary" class="system-note">{html.escape(summarize_services(initial_snapshot_data.get("services") or []))}</div>
+            <div id="system-summary" class="system-note">{
+            html.escape(summarize_services(initial_snapshot_data.get("services") or []))
+        }</div>
             <div id="system-runtime-metrics" class="system-runtime-metrics"></div>
             <section id="connector-access" class="connector-access" aria-label="Connector access">
               <div class="connector-access-head">
@@ -62928,7 +63059,13 @@ class Handler(BaseHTTPRequestHandler):
               <div id="bbs-summary-activity" class="bbs-summary-activity">Waiting for BBS activity</div>
               <div id="bbs-thread-list" class="bbs-thread-list"></div>
             </div>
-            <div class="system-note">ui <strong>v{html.escape(UI_VERSION)}</strong> · tmux <strong>{html.escape(SESSION)}</strong> · web chat <strong>{html.escape(MODEL)}</strong> · tuning <strong>Think Std/medium ↔ Deep/xhigh</strong> · full access · <a href="{html.escape(prefixed_path('/healthz', path_prefix))}{token_suffix}">healthz</a></div>
+            <div class="system-note">ui <strong>v{
+            html.escape(UI_VERSION)
+        }</strong> · tmux <strong>{html.escape(SESSION)}</strong> · web chat <strong>{
+            html.escape(MODEL)
+        }</strong> · tuning <strong>Think Std/medium ↔ Deep/xhigh</strong> · full access · <a href="{
+            html.escape(prefixed_path("/healthz", path_prefix))
+        }{token_suffix}">healthz</a></div>
           </section>
 
           <section class="system-card child-agents-card" aria-label="Child agents">
@@ -63028,7 +63165,11 @@ class Handler(BaseHTTPRequestHandler):
                     <h3>Last Prompt</h3>
                     <button id="copy-prompt-button" type="button" class="ghost copy-button" data-icon="⎘">Copy</button>
                   </div>
-                  <div id="last-prompt" class="raw-view mono">{_mask_sensitive_multiline_html(initial_snapshot_data.get("last_prompt") or "[no prompt yet]")}</div>
+                  <div id="last-prompt" class="raw-view mono">{
+            _mask_sensitive_multiline_html(
+                initial_snapshot_data.get("last_prompt") or "[no prompt yet]"
+            )
+        }</div>
                   <div id="last-prompt-links" class="message-links raw-links" hidden></div>
                 </div>
                 <div>
@@ -63048,23 +63189,35 @@ class Handler(BaseHTTPRequestHandler):
                     <div id="response-live-steps" class="response-live-steps" aria-label="Live response progress"></div>
                     <div id="response-live-meta" class="response-live-meta"></div>
                   </div>
-                  <div id="last-response" class="raw-view">{_mask_sensitive_multiline_html(initial_snapshot_data.get("last_response") or "[no response yet]")}</div>
+                  <div id="last-response" class="raw-view">{
+            _mask_sensitive_multiline_html(
+                initial_snapshot_data.get("last_response") or "[no response yet]"
+            )
+        }</div>
                   <div id="last-response-links" class="message-links raw-links" hidden></div>
                 </div>
               </div>
             </details>
             <details id="error-details">
               <summary>Error / Warning</summary>
-              <pre id="last-error">{_mask_sensitive_pre_html(initial_snapshot_data.get("last_error") or "[none]")}</pre>
+              <pre id="last-error">{
+            _mask_sensitive_pre_html(
+                initial_snapshot_data.get("last_error") or "[none]"
+            )
+        }</pre>
             </details>
           </section>
 
           <section class="system-card">
             <details>
               <summary>Operator tools</summary>
-              <form id="tmux-form" method="post" action="{html.escape(prefixed_path('/send', path_prefix))}">
+              <form id="tmux-form" method="post" action="{
+            html.escape(prefixed_path("/send", path_prefix))
+        }">
                 <input type="hidden" name="token" value="{html.escape(TOKEN)}">
-                <input type="hidden" name="profile" value="{html.escape(active_profile)}">
+                <input type="hidden" name="profile" value="{
+            html.escape(active_profile)
+        }">
                 <textarea id="tmux-input" name="message" placeholder="Paste raw text directly into the live interactive tmux session."></textarea>
                 <div class="composer-actions">
                   <span class="hint">Use this only for direct tmux control.</span>
@@ -63082,11 +63235,19 @@ class Handler(BaseHTTPRequestHandler):
               </div>
               <details>
                 <summary>Live tmux pane</summary>
-                <pre id="pane-output">{_mask_sensitive_pre_html(initial_snapshot_data.get("pane") or "[pane unavailable]")}</pre>
+                <pre id="pane-output">{
+            _mask_sensitive_pre_html(
+                initial_snapshot_data.get("pane") or "[pane unavailable]"
+            )
+        }</pre>
               </details>
               <details>
                 <summary>{html.escape(AGENT_NAME)} journal</summary>
-                <pre id="journal-output">{_mask_sensitive_pre_html(initial_snapshot_data.get("logs") or "[no journal output]")}</pre>
+                <pre id="journal-output">{
+            _mask_sensitive_pre_html(
+                initial_snapshot_data.get("logs") or "[no journal output]"
+            )
+        }</pre>
               </details>
             </details>
           </section>
@@ -63106,7 +63267,9 @@ class Handler(BaseHTTPRequestHandler):
     const AGENT_SLUG = {json.dumps(AGENT_SLUG)};
     const AGENT_MARK = {json.dumps(entity_mark_for_label(AGENT_NAME, "•"))};
     const AGENT_STYLE_VARIANT = {json.dumps(AGENT_STYLE_VARIANT)};
-    const AGENT_GROUP = {json.dumps(semantic_agent_group(AGENT_SLUG, AGENT_GROUP) or "agents")};
+    const AGENT_GROUP = {
+            json.dumps(semantic_agent_group(AGENT_SLUG, AGENT_GROUP) or "agents")
+        };
     const AGENT_BRAND_CARTOUCHE_HTML = {script_json(agent_brand_cartouche_html)};
     const INLINE_ENTITY_DEFS = {script_json(build_inline_entity_defs())};
     const WORKDIR = {json.dumps(WORKDIR)};
@@ -63119,21 +63282,53 @@ class Handler(BaseHTTPRequestHandler):
     const REQUEST_BASE_PATH = {json.dumps(path_prefix)};
     const NORMAN_PRIME_HREF = {json.dumps(norman_prime_href)};
     const NORMAN_DIRECTORY_HREF = {json.dumps(norman_directory_href)};
-    const NORMAN_PRIME_HEARTBEAT_URL = {json.dumps(f"{norman_prime_href}api/console-ui/ping")};
+    const NORMAN_PRIME_HEARTBEAT_URL = {
+            json.dumps(f"{norman_prime_href}api/console-ui/ping")
+        };
     const TAB_TITLE_LABEL = {json.dumps(CONSOLE_TAB_TITLE)};
-    const FAVICON_AGENT_PALETTE = {script_json({
-        "bg": rgb_css(favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get("bg", (48, 56, 70))),
-        "surface": rgb_css(favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get("surface", (63, 71, 85))),
-        "border": rgb_css(favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get("border", (85, 97, 116))),
-        "accent": rgb_css(favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get("accent", (156, 182, 239))),
-        "accent2": rgb_css(favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get("accent_2", (136, 208, 222))),
-        "text": rgb_css(favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get("text", (248, 250, 252))),
-    })};
+    const FAVICON_AGENT_PALETTE = {
+            script_json(
+                {
+                    "bg": rgb_css(
+                        favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get(
+                            "bg", (48, 56, 70)
+                        )
+                    ),
+                    "surface": rgb_css(
+                        favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get(
+                            "surface", (63, 71, 85)
+                        )
+                    ),
+                    "border": rgb_css(
+                        favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get(
+                            "border", (85, 97, 116)
+                        )
+                    ),
+                    "accent": rgb_css(
+                        favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get(
+                            "accent", (156, 182, 239)
+                        )
+                    ),
+                    "accent2": rgb_css(
+                        favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get(
+                            "accent_2", (136, 208, 222)
+                        )
+                    ),
+                    "text": rgb_css(
+                        favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get(
+                            "text", (248, 250, 252)
+                        )
+                    ),
+                }
+            )
+        };
     const RELAY_TARGETS = {relay_targets_json};
     const CHAT_MODEL = {json.dumps(MODEL)};
     const CODEX_MODEL_FLOOR = {json.dumps(CODEX_MODEL_FLOOR)};
     const MODEL_ENDPOINT = "/api/model";
-    const CHAT_REASONING = {json.dumps(response_reasoning_effort(DEFAULT_RESPONSE_SPEED))};
+    const CHAT_REASONING = {
+            json.dumps(response_reasoning_effort(DEFAULT_RESPONSE_SPEED))
+        };
     const EMERGENCY_XFAST_ENABLED = {emergency_xfast_enabled_json};
     const DEFAULT_RUNTIME = {default_runtime_json};
     const DEFAULT_MODEL = {default_model_json};
@@ -63425,7 +63620,11 @@ class Handler(BaseHTTPRequestHandler):
       viewMode: "console",
       textZoom: "auto",
       styleVariant: "auto",
-      finish: {json.dumps(DEFAULT_UI_FINISH if DEFAULT_UI_FINISH in FINISH_OPTIONS else "flat")},
+      finish: {
+            json.dumps(
+                DEFAULT_UI_FINISH if DEFAULT_UI_FINISH in FINISH_OPTIONS else "flat"
+            )
+        },
       completionBell: "auto",
       feedbackSounds: "signals",
       responseSpeed: DEFAULT_RESPONSE_SPEED,
@@ -64112,7 +64311,7 @@ class Handler(BaseHTTPRequestHandler):
 
     function labelizeStatus(value) {{
       const clean = String(value || "unknown").replace(/[_-]+/g, " ").trim();
-      return clean.replace(/\b\w/g, (letter) => letter.toUpperCase());
+      return clean.replace(/\\b\\w/g, (letter) => letter.toUpperCase());
     }}
 
     const GOVERNANCE_POWER_ORDER = ["sword", "key", "purse", "seal", "mouth"];
@@ -64688,7 +64887,7 @@ class Handler(BaseHTTPRequestHandler):
     }}
 
     function normalizeResponseSpeed(value) {{
-      const clean = String(value || "").toLowerCase().replace(/[_\s]+/g, "-");
+      const clean = String(value || "").toLowerCase().replace(/[_\\s]+/g, "-");
       if (["fast", "xfast", "x-fast", "extra-fast", "low", "minimal"].includes(clean)) {{
         return EMERGENCY_XFAST_ENABLED ? "fast" : "balanced";
       }}
@@ -64745,7 +64944,7 @@ class Handler(BaseHTTPRequestHandler):
     }}
 
     function normalizeServiceTier(value) {{
-      const clean = String(value || "").toLowerCase().replace(/[_\s]+/g, "-");
+      const clean = String(value || "").toLowerCase().replace(/[_\\s]+/g, "-");
       const aliases = {{
         profile: "auto",
         configured: "auto",
@@ -64900,7 +65099,7 @@ class Handler(BaseHTTPRequestHandler):
     }}
 
     function normalizeOptimizationMode(value) {{
-      const clean = String(value || "").toLowerCase().replace(/[_\s]+/g, "-");
+      const clean = String(value || "").toLowerCase().replace(/[_\\s]+/g, "-");
       const aliases = {{
         default: "auto",
         normal: "auto",
@@ -66362,8 +66561,8 @@ class Handler(BaseHTTPRequestHandler):
         /\bdon'?t have a transport\b/,
         /\bno transport\b/,
         /\bchannel tool\b/,
-        /session\/thread log path/,
-        /repo\/folder\/path/,
+        /session\\/thread log path/,
+        /repo\\/folder\\/path/,
       ];
       if (!triggers.some((pattern) => pattern.test(text))) {{
         return null;
@@ -66408,11 +66607,11 @@ class Handler(BaseHTTPRequestHandler):
         return null;
       }}
       const runtimeMatchers = [
-        /^(?:[-*•]\s*)?runtime paths?:?$/i,
-        /^(?:[-*•]\s*)?pid:\s*/i,
-        /^(?:[-*•]\s*)?run dir:\s*/i,
-        /^(?:[-*•]\s*)?log:\s*/i,
-        /^(?:[-*•]\s*)?pid file:\s*/i,
+        /^(?:[-*•]\\s*)?runtime paths?:?$/i,
+        /^(?:[-*•]\\s*)?pid:\\s*/i,
+        /^(?:[-*•]\\s*)?run dir:\\s*/i,
+        /^(?:[-*•]\\s*)?log:\\s*/i,
+        /^(?:[-*•]\\s*)?pid file:\\s*/i,
       ];
       const lifecycleMatchers = [
         /\brunning now\b/i,
@@ -66440,8 +66639,8 @@ class Handler(BaseHTTPRequestHandler):
         || "Background task is still running.";
       const pidLine = runtimeLines.find((line) => /pid:/i.test(line)) || "";
       const etaLine = lines.find((line) => /\b(reconnect|check back|come back) in\b/i.test(line)) || "";
-      const pidMatch = pidLine.match(/pid:\s*([0-9]+)/i);
-      const etaMatch = etaLine.match(/(\d+)\s*(?:minute|min|hour|hr)/i);
+      const pidMatch = pidLine.match(/pid:\\s*([0-9]+)/i);
+      const etaMatch = etaLine.match(/(\\d+)\\s*(?:minute|min|hour|hr)/i);
       const metaParts = [];
       if (pidMatch) {{
         metaParts.push(`PID ${{pidMatch[1]}}`);
@@ -67498,7 +67697,11 @@ class Handler(BaseHTTPRequestHandler):
         viewMode: "console",
         textZoom: "auto",
         styleVariant: "auto",
-        finish: {json.dumps(DEFAULT_UI_FINISH if DEFAULT_UI_FINISH in FINISH_OPTIONS else "flat")},
+        finish: {
+            json.dumps(
+                DEFAULT_UI_FINISH if DEFAULT_UI_FINISH in FINISH_OPTIONS else "flat"
+            )
+        },
         completionBell: "auto",
         feedbackSounds: "signals",
         responseSpeed: DEFAULT_RESPONSE_SPEED,
@@ -67518,7 +67721,9 @@ class Handler(BaseHTTPRequestHandler):
       const viewMode = payload.viewMode === "stage" ? "stage" : "console";
       const textZoom = normalizeTextZoom(payload.textZoom || base.textZoom);
       const styleVariant = normalizeStyleVariant(payload.styleVariant);
-      const finish = {json.dumps(list(FINISH_OPTIONS))}.includes(String(payload.finish || "").toLowerCase())
+      const finish = {
+            json.dumps(list(FINISH_OPTIONS))
+        }.includes(String(payload.finish || "").toLowerCase())
         ? String(payload.finish).toLowerCase()
         : base.finish;
       const feedbackSounds = normalizeFeedbackSounds(payload.feedbackSounds);
@@ -68705,7 +68910,7 @@ class Handler(BaseHTTPRequestHandler):
 
     function maskSensitiveUrlText(url) {{
       return String(url || "").replace(
-        /([?&]([^=&]+)=)([^&#\s]+)/g,
+        /([?&]([^=&]+)=)([^&#\\s]+)/g,
         (match, prefix, key, value) => (
           SENSITIVE_QUERY_PARAM_NAMES.has(String(key || "").toLowerCase()) ? `${{prefix}}••••••` : `${{prefix}}${{value}}`
         )
@@ -68960,7 +69165,7 @@ class Handler(BaseHTTPRequestHandler):
 
     function highlightDynamicHostEntities(text, stashMarkup) {{
       return String(text || "").replace(
-        /(^|[\s([{{"'“‘])((?:[a-z0-9](?:[a-z0-9-]{{0,61}}[a-z0-9])?\.)+(?:home\.arpa|home\.lollie\.org|kris\.openbrand\.com|tail[0-9]+\.ts\.net)|(?:\d{{1,3}}\.){{3}}\d{{1,3}})(?=$|[\s).,:;!?\]}}\"'”’])/gi,
+        /(^|[\\s([{{"'“‘])((?:[a-z0-9](?:[a-z0-9-]{{0,61}}[a-z0-9])?\\.)+(?:home\\.arpa|home\\.lollie\\.org|kris\\.openbrand\\.com|tail[0-9]+\\.ts\\.net)|(?:\\d{{1,3}}\\.){{3}}\\d{{1,3}})(?=$|[\\s).,:;!?\\]}}\"'”’])/gi,
         (match, prefix, host) => `${{prefix}}${{stashMarkup(renderEntityCartouche(buildDynamicHostEntity(host), host))}}`
       );
     }}
@@ -69003,7 +69208,7 @@ class Handler(BaseHTTPRequestHandler):
 
     function splitFileTarget(value) {{
       const clean = normalizeFileTarget(value);
-      const match = clean.match(/^(.*?)(#L\d+(?:C\d+)?)$/);
+      const match = clean.match(/^(.*?)(#L\\d+(?:C\\d+)?)$/);
       if (match) {{
         return {{ path: match[1], fragment: match[2] }};
       }}
@@ -69542,6 +69747,15 @@ class Handler(BaseHTTPRequestHandler):
 
     function codexCreditRatesForModel(model) {{
       const clean = String(model || CHAT_MODEL || DEFAULT_MODEL || "").trim().toLowerCase();
+      if (clean.startsWith("gpt-5.6-terra") || clean.startsWith("openai.gpt-5.6-terra")) {{
+        return {{
+          configured: true,
+          input: 125,
+          cachedInput: 12.5,
+          output: 750,
+          source: "OpenAI Codex GPT-5.6 Terra credit rate card",
+        }};
+      }}
       if (clean.startsWith("gpt-5.4") || clean.startsWith("openai.gpt-5.4")) {{
         return {{
           configured: true,
@@ -70130,7 +70344,7 @@ class Handler(BaseHTTPRequestHandler):
 
     function modelNameLooksFrontier(value) {{
       const lower = String(value || "").trim().toLowerCase();
-      return lower.includes("gpt-5.5") || lower.includes("openai.gpt-5.5") || lower.includes("5.5");
+      return lower.includes("gpt-5.6-terra") || lower.includes("openai.gpt-5.6-terra");
     }}
 
     function estimateToolCallBudgetForTurn(item, usage) {{
@@ -70488,10 +70702,10 @@ class Handler(BaseHTTPRequestHandler):
 
     function mediaKindForFilePath(value) {{
       const clean = splitFileTarget(value).path.toLowerCase();
-      if (/\.(mp4|m4v|mov|webm|ogv)$/i.test(clean)) {{
+      if (/\\.(mp4|m4v|mov|webm|ogv)$/i.test(clean)) {{
         return "video";
       }}
-      if (/\.(mp3|m4a|aac|wav|ogg|oga|flac|opus)$/i.test(clean)) {{
+      if (/\\.(mp3|m4a|aac|wav|ogg|oga|flac|opus)$/i.test(clean)) {{
         return "audio";
       }}
       return "";
@@ -70542,7 +70756,7 @@ class Handler(BaseHTTPRequestHandler):
 
     function textPreviewFormatForPath(value) {{
       const clean = splitFileTarget(value).path.toLowerCase();
-      if (/\.(md|markdown|rst)$/i.test(clean)) {{
+      if (/\\.(md|markdown|rst)$/i.test(clean)) {{
         return "markdown";
       }}
       if (clean.endsWith(".json")) {{
@@ -70580,17 +70794,17 @@ class Handler(BaseHTTPRequestHandler):
       if (!isFileTarget(clean)) {{
         return "";
       }}
-      if (/\.(svg|png|apng|jpe?g|gif|webp|avif|bmp)$/i.test(clean)) {{
+      if (/\\.(svg|png|apng|jpe?g|gif|webp|avif|bmp)$/i.test(clean)) {{
         return "image";
       }}
       const mediaKind = mediaKindForFilePath(clean);
       if (mediaKind) {{
         return mediaKind;
       }}
-      if (/\.pdf$/i.test(clean)) {{
+      if (/\\.pdf$/i.test(clean)) {{
         return "pdf";
       }}
-      if (/\.(txt|md|markdown|rst|json|ya?ml|toml|ini|cfg|conf|env|py|js|jsx|ts|tsx|sh|bash|zsh|log|csv|tsv|sql|xml|html|css)$/i.test(clean)) {{
+      if (/\\.(txt|md|markdown|rst|json|ya?ml|toml|ini|cfg|conf|env|py|js|jsx|ts|tsx|sh|bash|zsh|log|csv|tsv|sql|xml|html|css)$/i.test(clean)) {{
         return "text";
       }}
       return "";
@@ -70668,7 +70882,7 @@ class Handler(BaseHTTPRequestHandler):
         }});
         return results.length >= maxTargets;
       }};
-      for (const match of text.matchAll(/\[([^\]]+)\]\s*\(\s*(<[^>\\n]+>|[^\s)]+)\s*\)/g)) {{
+      for (const match of text.matchAll(/\\[([^\\]]+)\\]\\s*\\(\\s*(<[^>\\n]+>|[^\\s)]+)\\s*\\)/g)) {{
         if (push(match[2], match[1])) {{
           return results;
         }}
@@ -70678,7 +70892,7 @@ class Handler(BaseHTTPRequestHandler):
           return results;
         }}
       }}
-      for (const match of text.matchAll(/(^|[\s(])((?:(?:\/|~\/)|(?:(?:\.\/|\.\.\/)?(?:app|artifacts|data|db|docs|frontend|projects|scripts|src|static|tests|tmp)\/))[^\s<)"']+)/g)) {{
+      for (const match of text.matchAll(/(^|[\\s(])((?:(?:\\/|~\\/)|(?:(?:\\.\\/|\\.\\.\\/)?(?:app|artifacts|data|db|docs|frontend|projects|scripts|src|static|tests|tmp)\\/))[^\\s<)"']+)/g)) {{
         if (push(match[2], match[2])) {{
           return results;
         }}
@@ -70760,7 +70974,7 @@ class Handler(BaseHTTPRequestHandler):
         }}
         const raw = await response.text();
         const contentRange = response.headers.get("Content-Range") || "";
-        const totalMatch = contentRange.match(/\/(\d+)$/);
+        const totalMatch = contentRange.match(/\\/(\\d+)$/);
         const totalBytes = totalMatch ? Number(totalMatch[1]) : 0;
         const normalized = raw.replace(/\\r\\n/g, "\\n").replace(/\\r/g, "\\n");
         const previewText = normalized.slice(0, INLINE_TEXT_PREVIEW_MAX_CHARS);
@@ -70875,7 +71089,7 @@ class Handler(BaseHTTPRequestHandler):
     }}
 
     function compactDelimitedCell(value) {{
-      const text = String(value || "").replace(/\s+/g, " ").trim();
+      const text = String(value || "").replace(/\\s+/g, " ").trim();
       return text.length > 180 ? `${{text.slice(0, 179)}}…` : text;
     }}
 
@@ -71649,7 +71863,7 @@ class Handler(BaseHTTPRequestHandler):
       const commentPattern = lang === "python" || lang === "bash"
         ? /#[^\\n]*/g
         : ["javascript", "typescript"].includes(lang)
-          ? /\/\/[^\\n]*/g
+          ? /\\/\\/[^\\n]*/g
           : null;
       if (commentPattern) {{
         const comments = stashSegments(text, commentPattern, "tok-comment");
@@ -72987,7 +73201,9 @@ class Handler(BaseHTTPRequestHandler):
         : plannedLocalRoute
         ? "Planned local · no cloud bill"
         : plannedSubscriptionRoute
-          ? `Planned ${PLAN_CREDIT_LABEL} · ~${{formatCompactMetric(creditEstimate.credits)}} cr`
+          ? `Planned ${
+            PLAN_CREDIT_LABEL
+        } · ~${{formatCompactMetric(creditEstimate.credits)}} cr`
           : hasUsd
             ? `Planned cloud · ~${{nextCostLabel}}`
             : "Planned token target";
@@ -73026,7 +73242,9 @@ class Handler(BaseHTTPRequestHandler):
         plannedLocalRoute
           ? "Planned local/Norllama route has no metered cloud-provider charge. Local hardware and electricity are not included."
           : plannedSubscriptionRoute
-            ? `Planned personal ${PLAN_CREDIT_LABEL} estimate. It is not a credit-card charge or a known balance deduction.`
+            ? `Planned personal ${
+            PLAN_CREDIT_LABEL
+        } estimate. It is not a credit-card charge or a known balance deduction.`
             : hasUsd
               ? `Planned cloud rate-card estimate ~${{nextCostLabel}}.`
               : "No provider price card is available for this planned route.",
@@ -74344,7 +74562,7 @@ class Handler(BaseHTTPRequestHandler):
       return kind
         .replace(/^sentinel_/, "sentinel ")
         .replaceAll("_", " ")
-        .replace(/\s+/g, " ")
+        .replace(/\\s+/g, " ")
         .trim();
     }}
 
@@ -74368,8 +74586,8 @@ class Handler(BaseHTTPRequestHandler):
     function humanInterventionMessage(item) {{
       const question = String(item?.question || "Operator intervention was requested.").trim();
       return question
-        .replace(/^Sentinel is asking this [^:]+ console for review:\s*/i, "Sentinel says: ")
-        .replace(/\s+/g, " ");
+        .replace(/^Sentinel is asking this [^:]+ console for review:\\s*/i, "Sentinel says: ")
+        .replace(/\\s+/g, " ");
     }}
 
     function humanInterventionWhyLine(item) {{
@@ -74441,12 +74659,12 @@ class Handler(BaseHTTPRequestHandler):
     }}
 
     function humanInterventionContextLine(item) {{
-      const detail = String(item?.detail || "").trim().replace(/\s+/g, " ");
+      const detail = String(item?.detail || "").trim().replace(/\\s+/g, " ");
       if (detail) {{
         return detail;
       }}
       const evidence = item?.evidence && typeof item.evidence === "object" ? item.evidence : {{}};
-      return String(evidence.summary || evidence.text_preview || "").trim().replace(/\s+/g, " ");
+      return String(evidence.summary || evidence.text_preview || "").trim().replace(/\\s+/g, " ");
     }}
 
     function humanInterventionSourceLabel(item) {{
@@ -79050,7 +79268,7 @@ class Handler(BaseHTTPRequestHandler):
         return `The ${{WORKER_SESSION_LABEL}} needs a fresh sign-in. Reauthenticate this bot home.`;
       }}
       if (containsCodexRouteMismatchError(text)) {{
-        return "Model route mismatch: OpenAI direct got a Bedrock model id. Retry after selecting OpenAI (gpt-5.5), or switch to Bedrock.";
+        return "Model route mismatch: OpenAI direct got a Bedrock model id. Retry after selecting OpenAI (gpt-5.6-terra), or switch to Bedrock.";
       }}
       if (containsCodexCliUpgradeError(text)) {{
         return "The worker CLI was stale for this turn. Upgrade/restart the bot, then retry.";
@@ -80311,8 +80529,8 @@ class Handler(BaseHTTPRequestHandler):
 
     function trimConsoleLine(value) {{
       return String(value || "")
-        .replace(/\u001b\[[0-9;]*m/g, "")
-        .replace(/\s+/g, " ")
+        .replace(/\\u001b\\[[0-9;]*m/g, "")
+        .replace(/\\s+/g, " ")
         .trim();
     }}
 
@@ -81577,7 +81795,7 @@ class Handler(BaseHTTPRequestHandler):
     }}
 
     function compactActivityStepLabel(label) {{
-      const text = String(label || "").trim().replace(/\s+/g, " ");
+      const text = String(label || "").trim().replace(/\\s+/g, " ");
       if (!text) {{
         return "";
       }}
@@ -82668,7 +82886,7 @@ class Handler(BaseHTTPRequestHandler):
     }};
 
     function childAgentObjectiveLength(value) {{
-      return String(value || "").trim().replace(/\s+/g, "").length;
+      return String(value || "").trim().replace(/\\s+/g, "").length;
     }}
 
     function childAgentObjectiveReadiness(value) {{
@@ -86938,7 +87156,7 @@ class Handler(BaseHTTPRequestHandler):
   <div class="box">
     <h1>{html.escape(CONSOLE_TITLE)}</h1>
     <p>This console is token-protected. Open it with the `?token=` query value, or paste the token below.</p>
-    <form method="get" action="{html.escape(prefixed_path('/', path_prefix))}">
+    <form method="get" action="{html.escape(prefixed_path("/", path_prefix))}">
       {profile_field}
       {route_field}
       <label for="token">Token</label>

@@ -13,7 +13,7 @@ from typing import Any, Callable, Mapping
 import requests
 
 from app.core.config import settings
-from app.core.estate_registry import worker_id_from_endpoint
+from app.core.estate_registry import model_role, worker_id_from_endpoint
 from app.services.console_runtime.adapters.bedrock import BedrockModelAdapter
 from app.services.console_runtime.types import ModelBudget, ModelRequest, ModelResult
 from app.services.norllama import capacity as norllama_capacity
@@ -100,6 +100,10 @@ SUPPORTED_RESPONSES_INCLUDE_VALUES = frozenset({"reasoning.encrypted_content"})
 DEFAULT_FACADE_TOKENS = 16384
 MAX_FACADE_TOKENS = 32768
 MAX_RESPONSE_STATE = 200
+MAX_REPLAYED_HISTORY_CHARS = 96_000
+MAX_REPLAYED_HISTORY_ANCHOR_CHARS = 16_000
+MAX_REPLAYED_TOOL_OUTPUT_CHARS = 12_000
+MAX_REPLAYED_TOOL_OUTPUTS = 2
 CLOUD_FALLBACK_SCHEMA = "norman.cloud-fallback.v1"
 CLOUD_FALLBACK_MARKER_SCHEMA = "norman.facade-cloud-fallback.v1"
 CLOUD_FALLBACK_PROVIDER = "aws-bedrock"
@@ -113,6 +117,12 @@ LEGACY_REPLAYED_FUNCTION_CALL_PREFIX = (
 TOOL_CHAIN_SCHEMA = "norman.responses-tool-chain.v1"
 TOOL_CONTRACT_CONTEXT_MARKER = "_norman_responses_context"
 TOOL_CONTRACT_CONTEXT_KIND = "tool_contract"
+REPLAYED_CONTEXT_OMITTED = (
+    "\n[Norman omitted older replayed context to fit the local model window.]\n"
+)
+REPLAYED_TOOL_OUTPUT_OMITTED = (
+    "[Norman omitted older replayed tool output to fit the local model window.]"
+)
 TOOL_OUTPUT_FAILURE_MARKERS = (
     "access denied",
     "permission denied",
@@ -128,6 +138,7 @@ LOCAL_STREAM_OPEN_HEARTBEAT_INTERVAL_SECONDS = 5.0
 LOCAL_STREAM_OPEN_MAX_ACTIVE_INVOCATIONS = 4
 logger = logging.getLogger(__name__)
 MODEL_ALIASES = {
+    # Legacy local aliases remain available outside the Terra-only Codex work route.
     "norman-code": ROUTE_POLICY_MODELS["coding_operator"],
     "norman-code-governed": ROUTE_POLICY_MODELS["coding_operator"],
     "norman-fast": ROUTE_POLICY_MODELS["router"],
@@ -588,14 +599,19 @@ def _store_response_state(
     response_function_call_items: list[Mapping[str, Any]],
     tool_outputs: set[tuple[str, str]],
     ephemeral: bool,
+    native_response_output_items: list[Mapping[str, Any]] | None = None,
+    native_tools: list[Mapping[str, Any]] | None = None,
 ) -> None:
     if not response_id:
         return
     stored_messages = [dict(message) for message in messages]
-    if output_text:
-        stored_messages.append({"role": "assistant", "content": output_text})
-    for function_call in response_function_call_items:
-        stored_messages.append(_function_call_context_message(function_call))
+    native_output_items = _messages(native_response_output_items)
+    stored_native_tools = _messages(native_tools)
+    if not native_output_items:
+        if output_text:
+            stored_messages.append({"role": "assistant", "content": output_text})
+        for function_call in response_function_call_items:
+            stored_messages.append(_function_call_context_message(function_call))
     stored_tool_outputs = [
         {"call_id": call_id, "output": output}
         for call_id, output in sorted(tool_outputs)
@@ -608,6 +624,8 @@ def _store_response_state(
             "function_calls": [
                 dict(function_call) for function_call in function_call_items.values()
             ],
+            "native_response_output_items": native_output_items,
+            "native_tools": stored_native_tools,
             "tool_outputs": stored_tool_outputs,
             "retention": "ephemeral" if ephemeral else "session",
             "created_at": time.time(),
@@ -624,6 +642,7 @@ class ResponseHistory:
     function_calls: dict[str, str]
     function_call_items: dict[str, dict[str, Any]]
     tool_outputs: set[tuple[str, str]]
+    native_tools: list[dict[str, Any]]
     replayed: bool
 
 
@@ -731,6 +750,9 @@ def _function_calls_from_state(state: Mapping[str, Any]) -> dict[str, str]:
     calls = _function_calls_from_items(_messages(state.get("function_calls")))
     # States created before call metadata was compacted retained full output items.
     calls.update(_function_calls_from_items(_messages(state.get("output_items"))))
+    calls.update(
+        _function_calls_from_items(_messages(state.get("native_response_output_items")))
+    )
     calls.update(_function_calls_from_items(_messages(state.get("messages"))))
     return calls
 
@@ -740,6 +762,11 @@ def _function_call_items_from_state(
 ) -> dict[str, dict[str, Any]]:
     calls = _function_call_items_from_items(_messages(state.get("function_calls")))
     calls.update(_function_call_items_from_items(_messages(state.get("output_items"))))
+    calls.update(
+        _function_call_items_from_items(
+            _messages(state.get("native_response_output_items"))
+        )
+    )
     calls.update(_function_call_items_from_items(_messages(state.get("messages"))))
     return calls
 
@@ -793,14 +820,280 @@ def _legacy_tool_output_metadata(message: Mapping[str, Any]) -> tuple[str, str]:
     return _clean(call_id), output
 
 
-def _previous_response_history(previous_response_id: str) -> ResponseHistory:
+def _message_context_chars(message: Mapping[str, Any]) -> int:
+    """Measure only the prompt content the local text adapter receives."""
+
+    content = message.get("content", "")
+    if isinstance(content, str):
+        return len(content)
+    return len(_json_dumps(content))
+
+
+def _message_context_breakdown(
+    messages: list[dict[str, Any]],
+) -> dict[str, int]:
+    """Return content-free prompt sizing metadata for a message group."""
+
+    breakdown = {
+        "message_count": len(messages),
+        "chars": 0,
+        "tool_output_chars": 0,
+        "function_call_chars": 0,
+        "text_chars": 0,
+    }
+    for message in messages:
+        chars = _message_context_chars(message)
+        breakdown["chars"] += chars
+        item_type = _clean(message.get("type"))
+        if item_type == "function_call_output":
+            breakdown["tool_output_chars"] += chars
+        elif item_type == "function_call":
+            breakdown["function_call_chars"] += chars
+        else:
+            breakdown["text_chars"] += chars
+    return breakdown
+
+
+def _native_message_context_breakdown(
+    messages: list[dict[str, Any]],
+) -> dict[str, int]:
+    """Measure serialized native Responses items without retaining content."""
+
+    breakdown = {
+        "message_count": len(messages),
+        "chars": 0,
+        "tool_output_chars": 0,
+        "function_call_chars": 0,
+        "text_chars": 0,
+    }
+    for message in messages:
+        chars = len(_json_dumps(message))
+        breakdown["chars"] += chars
+        item_type = _clean(message.get("type"))
+        if item_type == "function_call_output":
+            breakdown["tool_output_chars"] += chars
+        elif item_type == "function_call":
+            breakdown["function_call_chars"] += chars
+        else:
+            # This includes native message and reasoning items. The receipt
+            # records only their serialized size, never their contents.
+            breakdown["text_chars"] += chars
+    return breakdown
+
+
+def _structured_context_breakdown(value: Any) -> dict[str, int]:
+    """Measure a native request field without retaining its content."""
+
+    if value in (None, {}, []):
+        return {
+            "message_count": 0,
+            "chars": 0,
+            "tool_output_chars": 0,
+            "function_call_chars": 0,
+            "text_chars": 0,
+        }
+    chars = len(_json_dumps(value))
+    return {
+        "message_count": 1,
+        "chars": chars,
+        "tool_output_chars": 0,
+        "function_call_chars": 0,
+        "text_chars": chars,
+    }
+
+
+def _prompt_context_metadata(
+    *,
+    history_messages: list[dict[str, Any]],
+    tool_contract_messages: list[dict[str, Any]],
+    structured_output_messages: list[dict[str, Any]],
+    current_input_messages: list[dict[str, Any]],
+    native_tool_contract: Any = None,
+    native_structured_output: Any = None,
+    rendered_messages: list[dict[str, Any]] | None = None,
+    transport: str = "local_text_adapter",
+) -> dict[str, Any]:
+    """Describe prompt composition without retaining any prompt content."""
+
+    message_breakdown = (
+        _native_message_context_breakdown
+        if transport == "bedrock_mantle_responses"
+        else _message_context_breakdown
+    )
+    groups = {
+        "history": message_breakdown(history_messages),
+        "tool_contract": (
+            _structured_context_breakdown(native_tool_contract)
+            if native_tool_contract is not None
+            else message_breakdown(tool_contract_messages)
+        ),
+        "structured_output": (
+            _structured_context_breakdown(native_structured_output)
+            if native_structured_output is not None
+            else message_breakdown(structured_output_messages)
+        ),
+        "current_input": message_breakdown(current_input_messages),
+    }
+    all_messages = rendered_messages
+    if all_messages is None:
+        all_messages = [
+            *history_messages,
+            *tool_contract_messages,
+            *structured_output_messages,
+            *current_input_messages,
+        ]
+    return {
+        "schema": "norman.responses-prompt-context.v1",
+        "transport": transport,
+        "groups": groups,
+        "total_message_count": sum(group["message_count"] for group in groups.values()),
+        "total_content_chars": sum(group["chars"] for group in groups.values()),
+        # The local adapter sends role labels and separators in addition to
+        # message content. Native Responses serializes its message items
+        # directly and carries tools/output controls in separate fields.
+        "rendered_prompt_chars": (
+            len(_json_dumps(all_messages))
+            if transport == "bedrock_mantle_responses"
+            else len(norllama_gateway.messages_to_prompt(all_messages))
+        ),
+    }
+
+
+def _compact_replayed_text(text: str, *, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    if limit <= len(REPLAYED_CONTEXT_OMITTED):
+        return REPLAYED_CONTEXT_OMITTED[:limit]
+    retained = limit - len(REPLAYED_CONTEXT_OMITTED)
+    prefix_chars = retained // 2
+    suffix_chars = retained - prefix_chars
+    return text[:prefix_chars] + REPLAYED_CONTEXT_OMITTED + text[-suffix_chars:]
+
+
+def _compact_replayed_message(
+    message: Mapping[str, Any],
+    *,
+    limit: int,
+) -> dict[str, Any]:
+    compacted = dict(message)
+    content = compacted.get("content", "")
+    if not isinstance(content, str):
+        content = _json_dumps(content)
+    compacted["content"] = _compact_replayed_text(content, limit=limit)
+    return compacted
+
+
+def _compact_replayed_tool_output(
+    message: Mapping[str, Any],
+    *,
+    limit: int,
+) -> dict[str, Any]:
+    call_id = _clean(message.get("call_id"))
+    output = message.get("output")
+    if not call_id or not isinstance(output, str):
+        return _compact_replayed_message(message, limit=limit)
+    if limit <= 0:
+        return _function_call_output_context_message(
+            call_id=call_id,
+            output=REPLAYED_TOOL_OUTPUT_OMITTED,
+        )
+    return _function_call_output_context_message(
+        call_id=call_id,
+        output=_compact_replayed_text(output, limit=limit),
+    )
+
+
+def _compact_replayed_history(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Bound prompt-only replay without changing authoritative call state.
+
+    Function-call metadata and exact tool outputs are retained separately in
+    response state for continuation validation. This function only constrains
+    the text copy sent back through the local text adapter on a later turn.
+    """
+
+    replayed = [
+        dict(message) for message in messages if not _is_tool_contract_message(message)
+    ]
+    replayed_chars = sum(_message_context_chars(message) for message in replayed)
+    if replayed_chars <= MAX_REPLAYED_HISTORY_CHARS:
+        return replayed
+
+    tool_output_indexes = [
+        index
+        for index, message in enumerate(replayed)
+        if _clean(message.get("type")) == "function_call_output"
+    ]
+    retained_tool_outputs = set(tool_output_indexes[-MAX_REPLAYED_TOOL_OUTPUTS:])
+    for index in tool_output_indexes:
+        output_limit = (
+            MAX_REPLAYED_TOOL_OUTPUT_CHARS if index in retained_tool_outputs else 0
+        )
+        replayed[index] = _compact_replayed_tool_output(
+            replayed[index],
+            limit=output_limit,
+        )
+
+    replayed_chars = sum(_message_context_chars(message) for message in replayed)
+    if replayed_chars <= MAX_REPLAYED_HISTORY_CHARS:
+        return replayed
+
+    # Retain the opening instructions/task plus the newest conversation
+    # context. Historical tool contracts are always regenerated below from the
+    # current request, so they never consume the replay budget.
+    anchor_indexes: list[int] = []
+    for index, message in enumerate(replayed):
+        if _is_tool_contract_message(message):
+            continue
+        if _clean(message.get("role")) not in {"system", "user"}:
+            continue
+        anchor_indexes.append(index)
+        if len(anchor_indexes) == 3:
+            break
+
+    compacted: dict[int, dict[str, Any]] = {}
+    remaining = MAX_REPLAYED_HISTORY_CHARS
+    for index in anchor_indexes:
+        message = _compact_replayed_message(
+            replayed[index],
+            limit=min(MAX_REPLAYED_HISTORY_ANCHOR_CHARS, remaining),
+        )
+        compacted[index] = message
+        remaining -= _message_context_chars(message)
+
+    for index in range(len(replayed) - 1, -1, -1):
+        if index in compacted or _is_tool_contract_message(replayed[index]):
+            continue
+        message = replayed[index]
+        message_chars = _message_context_chars(message)
+        if message_chars <= remaining:
+            compacted[index] = message
+            remaining -= message_chars
+            continue
+        if remaining <= len(REPLAYED_CONTEXT_OMITTED):
+            continue
+        compacted[index] = _compact_replayed_message(
+            message,
+            limit=remaining,
+        )
+        break
+
+    return [compacted[index] for index in sorted(compacted)]
+
+
+def _previous_response_history(
+    previous_response_id: str,
+    *,
+    compact: bool = True,
+) -> ResponseHistory:
     previous_response_id = _clean(previous_response_id)
     if not previous_response_id:
-        return ResponseHistory([], {}, {}, set(), False)
+        return ResponseHistory([], {}, {}, set(), [], False)
     with _RESPONSE_STATE_LOCK:
         state = dict(_RESPONSE_STATE.get(previous_response_id) or {})
     if not state:
-        return ResponseHistory([], {}, {}, set(), False)
+        return ResponseHistory([], {}, {}, set(), [], False)
     function_calls = _function_calls_from_state(state)
     function_call_items = _function_call_items_from_state(state)
     tool_outputs = _tool_outputs_from_state(state)
@@ -826,19 +1119,25 @@ def _previous_response_history(previous_response_id: str) -> ResponseHistory:
     output_text = _clean(state.get("output_text"))
     if output_text and not _flag(state.get("messages_include_response_output")):
         messages.append({"role": "assistant", "content": output_text})
-    existing_call_ids = {
-        _clean(message.get("call_id"))
-        for message in messages
-        if _clean(message.get("type")) == "function_call"
-    }
-    for call_id, function_call in function_call_items.items():
-        if call_id not in existing_call_ids:
-            messages.append(_function_call_context_message(function_call))
+    native_response_output_items = _messages(state.get("native_response_output_items"))
+    native_tools = _messages(state.get("native_tools"))
+    if native_response_output_items:
+        messages.extend(native_response_output_items)
+    else:
+        existing_call_ids = {
+            _clean(message.get("call_id"))
+            for message in messages
+            if _clean(message.get("type")) == "function_call"
+        }
+        for call_id, function_call in function_call_items.items():
+            if call_id not in existing_call_ids:
+                messages.append(_function_call_context_message(function_call))
     return ResponseHistory(
-        messages,
+        _compact_replayed_history(messages) if compact else messages,
         function_calls,
         function_call_items,
         tool_outputs,
+        native_tools,
         True,
     )
 
@@ -937,13 +1236,18 @@ def _gateway_attribution(
 
 
 def _choice_text(payload: Mapping[str, Any]) -> str:
-    choices = payload.get("choices") if isinstance(payload.get("choices"), list) else []
-    if not choices:
-        return ""
-    first = choices[0] if isinstance(choices[0], dict) else {}
-    message = first.get("message") if isinstance(first.get("message"), dict) else {}
+    message = _choice_message(payload)
     content = message.get("content")
     return content if isinstance(content, str) else _clean(content)
+
+
+def _choice_message(payload: Mapping[str, Any]) -> dict[str, Any]:
+    choices = payload.get("choices") if isinstance(payload.get("choices"), list) else []
+    if not choices:
+        return {}
+    first = choices[0] if isinstance(choices[0], dict) else {}
+    message = first.get("message")
+    return dict(message) if isinstance(message, Mapping) else {}
 
 
 def _norman_options(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -993,6 +1297,78 @@ def _tool_names(tools: list[dict[str, Any]]) -> set[str]:
             if member_name:
                 names.add(member_name)
     return names
+
+
+def _native_mantle_function_tool(
+    tool: Mapping[str, Any],
+    *,
+    name: str = "",
+) -> dict[str, Any]:
+    """Return one native Responses function definition for Mantle."""
+
+    function = _mapping(tool.get("function"))
+    source = function or tool
+    function_name = _clean(name or source.get("name") or tool.get("name"))
+    if not function_name:
+        return {}
+    normalized: dict[str, Any] = {
+        "type": "function",
+        "name": function_name,
+    }
+    for field in ("description", "parameters", "strict"):
+        value = source.get(field)
+        if value is None:
+            value = tool.get(field)
+        if value is not None:
+            normalized[field] = value
+    return normalized
+
+
+def _native_mantle_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Normalize Norman namespace tools to Mantle's native function schema."""
+
+    normalized: list[dict[str, Any]] = []
+    for tool in tools:
+        if _clean(tool.get("type")) == "namespace":
+            namespace = _clean(tool.get("name"))
+            members = tool.get("tools")
+            if not namespace or not isinstance(members, list):
+                continue
+            for member in members:
+                if not isinstance(member, Mapping):
+                    continue
+                member_name = _namespace_member_name(namespace, member)
+                function = _native_mantle_function_tool(member, name=member_name)
+                if function:
+                    normalized.append(function)
+            continue
+
+        if _clean(tool.get("type")) not in {"", "function"}:
+            normalized.append(dict(tool))
+            continue
+
+        function = _native_mantle_function_tool(tool)
+        if function:
+            normalized.append(function)
+    return normalized
+
+
+def _merge_native_mantle_tools(
+    *registries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge current and prior native tools, preserving a stable declaration order."""
+
+    merged: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for registry in registries:
+        for tool in _native_mantle_tools(registry):
+            key = _clean(tool.get("name"))
+            if not key:
+                continue
+            if key not in merged:
+                order.append(key)
+            merged[key] = tool
+    return [merged[key] for key in order]
 
 
 @dataclass(frozen=True)
@@ -1056,11 +1432,13 @@ def _tool_chain_context(
 def _trailing_json_tool_call_envelope(
     text: str,
 ) -> tuple[str, list[dict[str, Any]]]:
-    """Split an optional prose preamble from a final JSON tool envelope.
+    """Split a JSON tool envelope from adjacent assistant prose.
 
     Some local models announce an action before emitting the tool JSON. The
-    envelope is only meaningful when it is a complete, standalone final object
-    so ordinary JSON answers remain assistant text.
+    envelope is meaningful when it is a complete, standalone final object or
+    the first meaningful object in the response. The latter shape occurs when
+    a provider emits the tool call and a short status sentence in one turn.
+    Ordinary JSON answers remain assistant text.
     """
 
     if not text:
@@ -1094,6 +1472,9 @@ def _trailing_json_tool_call_envelope(
             preamble = text[:start]
             return (preamble if preamble.strip() else ""), calls
         start = text.rfind("{", 0, start)
+    leading_envelope = _leading_json_tool_call_envelope(text)
+    if leading_envelope is not None:
+        return leading_envelope
     return text, []
 
 
@@ -1107,6 +1488,26 @@ def _trailing_fenced_json_tool_call_envelope(text: str) -> tuple[str, str] | Non
     if match is None:
         return None
     return match.group(1), match.group(2)
+
+
+def _leading_json_tool_call_envelope(
+    text: str,
+) -> tuple[str, list[dict[str, Any]]] | None:
+    """Return prose following a complete initial JSON tool-call envelope."""
+
+    leading_characters = len(text) - len(text.lstrip())
+    candidate = text[leading_characters:]
+    if not candidate.startswith("{"):
+        return None
+    try:
+        payload, end = json.JSONDecoder().raw_decode(candidate)
+    except (TypeError, ValueError):
+        return None
+    calls = _tool_calls_from_envelope_payload(payload)
+    if not calls:
+        return None
+    trailing_text = candidate[end:]
+    return (trailing_text if trailing_text.strip() else ""), calls
 
 
 def _tool_calls_from_envelope_payload(payload: Any) -> list[dict[str, Any]]:
@@ -1163,6 +1564,83 @@ def _function_call_signature(item: Mapping[str, Any]) -> tuple[str, str]:
         _clean(item.get("name")),
         _canonical_function_call_arguments(item.get("arguments")),
     )
+
+
+def _function_call_contract_matches(
+    left: Mapping[str, Any],
+    right: Mapping[str, Any],
+) -> bool:
+    """Compare the executable portion of a Responses function-call item.
+
+    Codex may replay a completed function call alongside its output while
+    changing transport metadata such as the output item ``id`` or ``status``.
+    Those fields do not affect which tool is invoked, so they must not make a
+    valid continuation look conflicting.
+    """
+
+    return _clean(left.get("call_id")) == _clean(
+        right.get("call_id")
+    ) and _function_call_signature(left) == _function_call_signature(right)
+
+
+def _function_call_is_in_progress(item: Mapping[str, Any]) -> bool:
+    return _lower(item.get("status")) == "in_progress"
+
+
+def _function_call_arguments_extend(
+    partial: Mapping[str, Any],
+    complete: Mapping[str, Any],
+) -> bool:
+    """Return whether an in-progress argument snapshot can become ``complete``."""
+
+    partial_arguments = _canonical_function_call_arguments(partial.get("arguments"))
+    complete_arguments = _canonical_function_call_arguments(complete.get("arguments"))
+    return not partial_arguments or complete_arguments.startswith(partial_arguments)
+
+
+def _prefer_function_call_snapshot(
+    left: Mapping[str, Any],
+    right: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Keep the more complete replay snapshot while retaining its metadata."""
+
+    left_arguments = _canonical_function_call_arguments(left.get("arguments"))
+    right_arguments = _canonical_function_call_arguments(right.get("arguments"))
+    if _function_call_is_in_progress(left) != _function_call_is_in_progress(right):
+        return dict(right if _function_call_is_in_progress(left) else left)
+    if len(right_arguments) >= len(left_arguments):
+        return dict(right)
+    return dict(left)
+
+
+def _reconcile_function_call_replay(
+    left: Mapping[str, Any],
+    right: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Coalesce compatible Codex lifecycle snapshots of one function call.
+
+    A streamed ``response.output_item.added`` event carries an in-progress call
+    with empty or partial arguments, then the completed output item carries the
+    final arguments. Codex can replay both representations in a follow-up
+    Responses request. They must collapse to the completed call, while a
+    changed name or non-monotonic argument value remains a caller error.
+    """
+
+    if _clean(left.get("call_id")) != _clean(right.get("call_id")):
+        return None
+    if _clean(left.get("name")) != _clean(right.get("name")):
+        return None
+    if _function_call_contract_matches(left, right):
+        return _prefer_function_call_snapshot(left, right)
+    if _function_call_is_in_progress(left) and _function_call_arguments_extend(
+        left, right
+    ):
+        return _prefer_function_call_snapshot(left, right)
+    if _function_call_is_in_progress(right) and _function_call_arguments_extend(
+        right, left
+    ):
+        return _prefer_function_call_snapshot(left, right)
+    return None
 
 
 def _tool_chain_telemetry(
@@ -1313,32 +1791,20 @@ def _messages_with_current_tool_contract(
     *,
     bridge_mode: str = TRANSPARENT_BRIDGE_MODE,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Preserve historical tool contracts and append a changed current registry.
+    """Replay ordinary history and send exactly one current tool registry.
 
-    A Responses continuation may change its tool registry between turns. The
-    prior registry remains part of the model history, while the new registry
-    applies to the current turn. Rewriting an old contract makes historical
-    function calls appear invalid and can cause the local model to repeat a
-    completed tool call.
+    The local text adapter cannot consume native structured tool definitions,
+    so each registry is rendered as a system message. Old rendered registries
+    are prompt-only compatibility data, not authoritative call state; keeping
+    them makes every continuation resend an expanding catalog. Exact call
+    metadata remains in server-side response state for validation.
     """
 
     definition = _tool_contract_definition(payload)
-    history = [dict(message) for message in messages]
+    history = [
+        dict(message) for message in messages if not _is_tool_contract_message(message)
+    ]
     if not definition:
-        return history, []
-    latest_contract = next(
-        (
-            message
-            for message in reversed(history)
-            if _is_tool_contract_message(message)
-        ),
-        None,
-    )
-    if latest_contract and _message_has_tool_contract(
-        latest_contract,
-        definition=definition,
-        bridge_mode=bridge_mode,
-    ):
         return history, []
     return history, _tool_contract_message(payload, bridge_mode=bridge_mode)
 
@@ -1426,6 +1892,21 @@ def _fallback_local_model(route_envelope: Mapping[str, Any]) -> str:
 
 def _requested_model(payload: Mapping[str, Any]) -> str:
     return _clean(payload.get("model"))
+
+
+def _uses_native_mantle_responses(payload: Mapping[str, Any]) -> bool:
+    """Keep the configured authority route on its native Responses protocol."""
+
+    authority = model_role("authority")
+    authority_models = {
+        _clean(authority.get("model")).lower(),
+        *{
+            _clean(alias).lower()
+            for alias in authority.get("aliases") or []
+            if _clean(alias)
+        },
+    }
+    return _requested_model(payload).lower() in authority_models
 
 
 def _responses_bridge_mode(payload: Mapping[str, Any]) -> str:
@@ -1565,6 +2046,68 @@ def _responses_include_advisory(payload: Mapping[str, Any]) -> list[str]:
     return list(include)
 
 
+def _native_mantle_responses_options(
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Keep native Responses options structured for the Terra Mantle route."""
+
+    options: dict[str, Any] = {}
+    tools = _native_mantle_tools(_tools(payload))
+    if tools:
+        options["tools"] = tools
+    tool_choice = payload.get("tool_choice")
+    if isinstance(tool_choice, (str, Mapping)):
+        options["tool_choice"] = (
+            dict(tool_choice) if isinstance(tool_choice, Mapping) else tool_choice
+        )
+    if isinstance(payload.get("parallel_tool_calls"), bool):
+        options["parallel_tool_calls"] = payload["parallel_tool_calls"]
+    reasoning = _responses_reasoning_advisory(payload)
+    if reasoning:
+        options["reasoning"] = reasoning
+    text = _mapping(payload.get("text"))
+    if text:
+        options["text"] = text
+    include = _responses_include_advisory(payload)
+    if include:
+        options["include"] = include
+    return options
+
+
+def _native_mantle_function_call_items(raw: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Extract native Responses function calls without parsing assistant text."""
+
+    output = raw.get("output")
+    if not isinstance(output, list):
+        return []
+    calls: list[dict[str, Any]] = []
+    for item in output:
+        if not isinstance(item, Mapping):
+            continue
+        if _clean(item.get("type")) != "function_call":
+            continue
+        function_call = _function_call_item(item)
+        if function_call:
+            calls.append(function_call)
+    return calls
+
+
+def _native_mantle_response_output_items(
+    raw: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Keep native Terra output items for a reasoning/tool continuation."""
+
+    output = raw.get("output")
+    if not isinstance(output, list):
+        return []
+    return [
+        dict(item)
+        for item in output
+        if isinstance(item, Mapping)
+        and _clean(item.get("type")) in {"reasoning", "function_call", "message"}
+    ]
+
+
 def _responses_client_metadata_ignored(payload: Mapping[str, Any]) -> bool:
     """Validate opaque Codex metadata before deliberately discarding it."""
 
@@ -1625,14 +2168,19 @@ def _response_input_function_call_items(
             continue
         function_call = _function_call_item(item, strict=True)
         previous = function_calls.get(function_call["call_id"])
-        if previous and previous != function_call:
+        reconciled = (
+            _reconcile_function_call_replay(previous, function_call)
+            if previous
+            else function_call
+        )
+        if not reconciled:
             raise FacadeError(
                 "Responses input contains conflicting function_call items",
                 status_code=400,
                 code="function_call_mismatch",
                 param="input",
             )
-        function_calls[function_call["call_id"]] = function_call
+        function_calls[function_call["call_id"]] = reconciled
     return function_calls
 
 
@@ -1664,17 +2212,19 @@ def _validate_response_tool_continuation(
     }
     for call_id, function_call in _response_input_function_call_items(payload).items():
         known = function_call_items.get(call_id)
-        if known and (
-            _clean(known.get("name")) != function_call["name"]
-            or _function_call_arguments(known) != function_call["arguments"]
-        ):
+        reconciled = (
+            _reconcile_function_call_replay(known, function_call)
+            if known
+            else function_call
+        )
+        if not reconciled:
             raise FacadeError(
                 "Responses function_call does not match its prior call_id",
                 status_code=400,
                 code="function_call_mismatch",
                 param="input",
             )
-        function_call_items[call_id] = function_call
+        function_call_items[call_id] = reconciled
 
     raw_input = payload.get("input", payload.get("prompt"))
     if not isinstance(raw_input, list):
@@ -1746,17 +2296,17 @@ def response_input_to_messages(
                 function_call = _function_call_item(item, strict=True)
                 existing = function_call_items.get(function_call["call_id"])
                 if existing:
-                    if (
-                        _clean(existing.get("name")) != function_call["name"]
-                        or _function_call_arguments(existing)
-                        != function_call["arguments"]
-                    ):
+                    reconciled = _reconcile_function_call_replay(
+                        existing, function_call
+                    )
+                    if not reconciled:
                         raise FacadeError(
                             "Responses function_call does not match its prior call_id",
                             status_code=400,
                             code="function_call_mismatch",
                             param="input",
                         )
+                    function_call_items[function_call["call_id"]] = reconciled
                     # Codex may resend a prior call item with its output. The
                     # stored conversation already contains it in order.
                     continue
@@ -1870,18 +2420,21 @@ def _response_tool_calls(
         raw_calls = [dict(call) for call in normalized_output.raw_tool_calls]
     else:
         preamble, raw_calls = _trailing_json_tool_call_envelope(text)
-    return (
-        preamble,
-        _extract_tool_calls(
-            text,
-            tools=tools,
-            # Some Codex TUI request forms keep their executable tool registry
-            # client-side and omit a top-level Responses tools list. The TUI still
-            # validates the returned call before it can execute anything.
-            allow_implicit_tools="tools" not in provider_payload,
-            raw_calls=raw_calls,
-        ),
+    tool_calls = _extract_tool_calls(
+        text,
+        tools=tools,
+        # Some Codex TUI request forms keep their executable tool registry
+        # client-side and omit a top-level Responses tools list. The TUI still
+        # validates the returned call before it can execute anything.
+        allow_implicit_tools="tools" not in provider_payload,
+        raw_calls=raw_calls,
     )
+    # The stream normalizer intentionally does not know the caller's tool
+    # registry. If a tool-shaped JSON object names an undeclared tool, preserve
+    # it as regular assistant text instead of silently dropping the envelope.
+    if raw_calls and not tool_calls:
+        return text, []
+    return preamble, tool_calls
 
 
 def _repeats_successful_tool_call(
@@ -2409,16 +2962,6 @@ def _looks_like_cloud_model_selection(requested_model: Any) -> bool:
     return requested.startswith("gpt-") or requested.startswith("openai.gpt-")
 
 
-def _tui_tool_contract_required(route_envelope: Mapping[str, Any]) -> bool:
-    """Return whether the trusted request context belongs to a Codex TUI."""
-
-    trusted_context = _mapping(route_envelope.get("trusted_gateway_context"))
-    return bool(
-        _clean(trusted_context.get("source_tui"))
-        or _lower(trusted_context.get("policy_scope")).startswith("tui:")
-    )
-
-
 def _explicit_cloud_selection_plan(
     *,
     provider_payload: Mapping[str, Any],
@@ -2427,7 +2970,8 @@ def _explicit_cloud_selection_plan(
     """Build the one exact cloud route declared by the signed route policy."""
 
     requested_alias = _requested_model(provider_payload).lower()
-    compiled_selection = explicit_cloud_selection_for_model(requested_alias)
+    selected_alias = MODEL_ALIASES.get(requested_alias, requested_alias)
+    compiled_selection = explicit_cloud_selection_for_model(selected_alias)
     if compiled_selection is None:
         if _looks_like_cloud_model_selection(requested_alias):
             raise FacadeError(
@@ -2438,22 +2982,6 @@ def _explicit_cloud_selection_plan(
                 param="model",
             )
         return None
-
-    if _tui_tool_contract_required(route_envelope):
-        raise FacadeError(
-            "This Codex route requires shell and filesystem tools. Use "
-            "norman-code; it will use the approved cloud fallback when local "
-            "coding capacity is unavailable.",
-            status_code=400,
-            error_type="invalid_request_error",
-            code="tool_capable_model_required",
-            param="model",
-            norman={
-                "selected_model": requested_alias,
-                "required_model": "norman-code",
-                "cloud_fallback": "automatic_for_retryable_local_failure",
-            },
-        )
 
     route_policy = _nested_dict(
         route_envelope,
@@ -2466,7 +2994,7 @@ def _explicit_cloud_selection_plan(
     artifact_cloud_policy = _mapping(artifact.get("cloud_policy"))
     route_cloud_policy = _mapping(route_policy.get("cloud_policy"))
     artifact_selection = explicit_cloud_selection_for_model(
-        requested_alias,
+        selected_alias,
         cloud_policy=artifact_cloud_policy,
     )
     if (
@@ -2529,7 +3057,10 @@ def _explicit_cloud_selection_plan(
         tool_lane=False,
         requires_receipt=True,
         reason="facade explicit approved cloud model selection",
-        attribution={"requested_alias": requested_alias},
+        attribution={
+            "requested_alias": requested_alias,
+            "selected_alias": selected_alias,
+        },
     )
     return ExplicitCloudSelectionPlan(
         requested_alias=requested_alias,
@@ -2998,6 +3529,7 @@ def _explicit_cloud_selection_request(
     invocation: AuthorizedChatInvocation,
     messages: list[dict[str, Any]],
     provider_payload: Mapping[str, Any],
+    native_responses_transport: bool = False,
 ) -> ModelRequest:
     timeout_seconds = _explicit_cloud_timeout_seconds()
     return ModelRequest(
@@ -3023,8 +3555,14 @@ def _explicit_cloud_selection_request(
                 _explicit_cloud_selection_marker(plan=plan)
             ),
             "codex_reasoning_advisory": invocation.reasoning_advisory,
+            "norman_native_mantle_responses_transport": native_responses_transport,
             **invocation.trusted_context,
         },
+        responses_options=(
+            _native_mantle_responses_options(provider_payload)
+            if native_responses_transport
+            else {}
+        ),
     )
 
 
@@ -3076,6 +3614,7 @@ def _execute_explicit_cloud_selection(
     route_envelope: Mapping[str, Any],
     messages: list[dict[str, Any]],
     invocation: AuthorizedChatInvocation,
+    native_responses_transport: bool = False,
 ) -> dict[str, Any]:
     """Run a user-selected cloud model without probing local capacity."""
 
@@ -3086,16 +3625,29 @@ def _execute_explicit_cloud_selection(
                 invocation=invocation,
                 messages=messages,
                 provider_payload=provider_payload,
+                native_responses_transport=native_responses_transport,
             )
         )
     except Exception as exc:
+        safe_error_metadata = getattr(exc, "safe_metadata", None)
+        safe_error_metadata = (
+            safe_error_metadata() if callable(safe_error_metadata) else {}
+        )
+        safe_error_metadata = (
+            safe_error_metadata if isinstance(safe_error_metadata, Mapping) else {}
+        )
         logger.warning(
             "Norman explicit cloud selection failed request_id=%s provider=%s "
-            "model=%s exception_class=%s",
+            "model=%s exception_class=%s http_status=%s "
+            "provider_error_type=%s provider_error_code=%s provider_error_param=%s",
             invocation.invocation_id,
             plan.provider,
             plan.model,
             type(exc).__name__,
+            safe_error_metadata.get("http_status", ""),
+            safe_error_metadata.get("provider_error_type", ""),
+            safe_error_metadata.get("provider_error_code", ""),
+            safe_error_metadata.get("provider_error_param", ""),
         )
         raise _explicit_cloud_selection_error(
             plan=plan,
@@ -3108,7 +3660,17 @@ def _execute_explicit_cloud_selection(
             invocation=invocation,
             code="explicit_cloud_selection_not_authorized",
         )
-    if not result.text:
+    native_function_calls = (
+        _native_mantle_function_call_items(result.raw)
+        if native_responses_transport
+        else []
+    )
+    native_response_output_items = (
+        _native_mantle_response_output_items(result.raw)
+        if native_responses_transport
+        else []
+    )
+    if not result.text and not native_function_calls:
         raise _explicit_cloud_selection_error(
             plan=plan,
             invocation=invocation,
@@ -3128,8 +3690,15 @@ def _execute_explicit_cloud_selection(
         "choices": [
             {
                 "index": 0,
-                "message": {"role": "assistant", "content": result.text},
-                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": result.text,
+                    "_norman_native_function_call_items": native_function_calls,
+                    "_norman_native_response_output_items": (
+                        native_response_output_items
+                    ),
+                },
+                "finish_reason": "tool_calls" if native_function_calls else "stop",
             }
         ],
         "usage": usage,
@@ -3360,6 +3929,7 @@ def _execute_authorized_chat(
     route_envelope: Mapping[str, Any],
     messages: list[dict[str, Any]],
     request_id: str,
+    native_responses_transport: bool = False,
 ) -> dict[str, Any]:
     explicit_cloud_plan = _explicit_cloud_selection_plan(
         provider_payload=provider_payload,
@@ -3378,6 +3948,7 @@ def _execute_authorized_chat(
             route_envelope=route_envelope,
             messages=messages,
             invocation=invocation,
+            native_responses_transport=native_responses_transport,
         )
 
     invocation = _prepare_authorized_chat_invocation(
@@ -3473,6 +4044,7 @@ def _resolve_tool_continuation_response(
         route_envelope=prepared.route_envelope,
         messages=_tool_continuation_repair_messages(prepared.messages),
         request_id=f"{request_id}-tool-continuation-repair",
+        native_responses_transport=prepared.native_responses_transport,
     )
     if _repeats_successful_tool_call(
         _choice_text(repaired),
@@ -3549,6 +4121,7 @@ class PreparedResponsesExecution:
     route_payload: dict[str, Any]
     route_envelope: dict[str, Any]
     messages: list[dict[str, Any]]
+    prompt_context: dict[str, Any]
     previous_messages: list[dict[str, Any]]
     function_calls: dict[str, str]
     function_call_items: dict[str, dict[str, Any]]
@@ -3558,6 +4131,7 @@ class PreparedResponsesExecution:
     client_metadata_ignored: bool
     store_requested: bool
     bridge_mode: str
+    native_responses_transport: bool
 
 
 def _prepare_responses_execution(
@@ -3572,11 +4146,22 @@ def _prepare_responses_execution(
     client_metadata_ignored = _responses_client_metadata_ignored(provider_payload)
     store_requested = _responses_store_requested(provider_payload)
     bridge_mode = _responses_bridge_mode(provider_payload)
+    native_responses_transport = _uses_native_mantle_responses(provider_payload)
     provider_payload.pop("client_metadata", None)
     provider_payload.pop("store", None)
     history = _previous_response_history(
-        _clean(provider_payload.get("previous_response_id"))
+        _clean(provider_payload.get("previous_response_id")),
+        compact=not native_responses_transport,
     )
+    if native_responses_transport:
+        native_tools = _merge_native_mantle_tools(
+            history.native_tools,
+            _tools(provider_payload),
+        )
+        if native_tools:
+            provider_payload["tools"] = native_tools
+        else:
+            provider_payload.pop("tools", None)
     function_call_items = _validate_response_tool_continuation(
         provider_payload,
         known_function_call_items=history.function_call_items,
@@ -3593,21 +4178,50 @@ def _prepare_responses_execution(
         function_call_items=function_call_items,
         known_tool_outputs=tool_outputs,
     )
-    history_messages, tool_contract_messages = _messages_with_current_tool_contract(
-        history.messages,
+    input_messages = response_input_to_messages(
         provider_payload,
-        bridge_mode=bridge_mode,
+        known_tool_outputs=history.tool_outputs,
+        known_function_call_items=history.function_call_items,
     )
-    messages = [
-        *history_messages,
-        *tool_contract_messages,
-        *_structured_output_message(provider_payload),
-        *response_input_to_messages(
+    structured_output_messages = _structured_output_message(provider_payload)
+    if native_responses_transport:
+        # Mantle's Responses endpoint accepts the structured tool registry,
+        # output format, reasoning configuration, and tool-call history
+        # directly. Do not flatten them into the local text-adapter prompt.
+        history_messages = history.messages
+        tool_contract_messages: list[dict[str, Any]] = []
+        messages = [*history_messages, *input_messages]
+        prompt_context = _prompt_context_metadata(
+            history_messages=history_messages,
+            tool_contract_messages=tool_contract_messages,
+            structured_output_messages=[],
+            current_input_messages=input_messages,
+            native_tool_contract=_tools(provider_payload),
+            native_structured_output=_mapping(
+                _mapping(provider_payload.get("text")).get("format")
+            ),
+            rendered_messages=messages,
+            transport="bedrock_mantle_responses",
+        )
+    else:
+        history_messages, tool_contract_messages = _messages_with_current_tool_contract(
+            history.messages,
             provider_payload,
-            known_tool_outputs=history.tool_outputs,
-            known_function_call_items=history.function_call_items,
-        ),
-    ]
+            bridge_mode=bridge_mode,
+        )
+        messages = [
+            *history_messages,
+            *tool_contract_messages,
+            *structured_output_messages,
+            *input_messages,
+        ]
+        prompt_context = _prompt_context_metadata(
+            history_messages=history_messages,
+            tool_contract_messages=tool_contract_messages,
+            structured_output_messages=structured_output_messages,
+            current_input_messages=input_messages,
+            rendered_messages=messages,
+        )
     route_payload = {**provider_payload, "input": messages}
     route_envelope = provider_adapter_decision(
         provider="openai",
@@ -3620,6 +4234,7 @@ def _prepare_responses_execution(
         route_payload=route_payload,
         route_envelope=route_envelope,
         messages=messages,
+        prompt_context=prompt_context,
         previous_messages=history.messages,
         function_calls=function_calls,
         function_call_items=function_call_items,
@@ -3629,6 +4244,7 @@ def _prepare_responses_execution(
         client_metadata_ignored=client_metadata_ignored,
         store_requested=store_requested,
         bridge_mode=bridge_mode,
+        native_responses_transport=native_responses_transport,
     )
 
 
@@ -3648,16 +4264,34 @@ def _responses_response_from_chat(
     chat_response = dict(chat_response)
     text = _choice_text(chat_response)
     tools = _tools(provider_payload)
-    preamble, tool_calls = _response_tool_calls(
-        text,
-        provider_payload=provider_payload,
-        normalized_output=normalized_output,
+    native_function_calls = _messages(
+        _choice_message(chat_response).get("_norman_native_function_call_items")
     )
-    visible_text = preamble if tool_calls else text
-    output_items = _response_output_items(
-        text=visible_text,
-        tool_calls=tool_calls,
-        output_item_id=output_item_id,
+    native_response_output_items = _messages(
+        _choice_message(chat_response).get("_norman_native_response_output_items")
+    )
+    if prepared.native_responses_transport:
+        tool_calls = [
+            function_call
+            for item in native_function_calls
+            if (function_call := _function_call_item(item))
+        ]
+        visible_text = text
+    else:
+        preamble, tool_calls = _response_tool_calls(
+            text,
+            provider_payload=provider_payload,
+            normalized_output=normalized_output,
+        )
+        visible_text = preamble if tool_calls else text
+    output_items = (
+        native_response_output_items
+        if prepared.native_responses_transport and native_response_output_items
+        else _response_output_items(
+            text=visible_text,
+            tool_calls=tool_calls,
+            output_item_id=output_item_id,
+        )
     )
     output_text = visible_text
     tool_chain = _tool_chain_telemetry(
@@ -3696,16 +4330,24 @@ def _responses_response_from_chat(
                     if prepared.history_replayed
                     else "unavailable"
                 ),
+                "prompt_context": prepared.prompt_context,
                 "tools_declared": len(_tools(provider_payload)),
                 "tool_calls_returned": len(tool_calls),
                 "tool_chain": tool_chain,
                 "tool_call_mode": (
-                    "adapter_json_envelope"
+                    "native_responses"
+                    if prepared.native_responses_transport
+                    and (_tool_names(tools) or tool_calls)
+                    else "adapter_json_envelope"
                     if _tool_names(tools) or tool_calls
                     else "none"
                 ),
                 "tool_bridge_mode": prepared.bridge_mode,
-                "tool_transport": "local_text_adapter",
+                "tool_transport": (
+                    "bedrock_mantle_responses"
+                    if prepared.native_responses_transport
+                    else "local_text_adapter"
+                ),
                 "structured_output_requested": bool(
                     _mapping(provider_payload.get("text")).get("format")
                 ),
@@ -3732,6 +4374,16 @@ def _responses_response_from_chat(
                 for item in output_items
                 if _clean(item.get("type")) == "function_call"
             ],
+            native_response_output_items=(
+                native_response_output_items
+                if prepared.native_responses_transport
+                else None
+            ),
+            native_tools=(
+                _tools(provider_payload)
+                if prepared.native_responses_transport
+                else None
+            ),
             tool_outputs=prepared.tool_outputs,
             ephemeral=not prepared.store_requested,
         )
@@ -3979,6 +4631,9 @@ class FacadeResponsesStream:
                     route_envelope=self.prepared.route_envelope,
                     messages=self.prepared.messages,
                     invocation=self.invocation,
+                    native_responses_transport=(
+                        self.prepared.native_responses_transport
+                    ),
                 ),
                 progress_event=lambda state, elapsed_ms: {
                     "type": "explicit_cloud_selection",
@@ -4131,6 +4786,7 @@ def execute_openai_responses_facade(
         route_envelope=prepared.route_envelope,
         messages=prepared.messages,
         request_id=facade_request_id,
+        native_responses_transport=prepared.native_responses_transport,
     )
     (
         chat_response,

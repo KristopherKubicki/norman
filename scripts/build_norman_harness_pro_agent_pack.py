@@ -85,6 +85,7 @@ SCRIPT_FILES = (
     "scripts/bbs_janitor.py",
     "scripts/build_norman_harness_pro_agent_pack.py",
     "scripts/capture_tui_visual_states.py",
+    "scripts/codex_bridge_parity.py",
     "scripts/norman_bot_prime_start.sh",
     "scripts/norman_codex_launch.sh",
     "scripts/norman_codex_runtime_bridge.py",
@@ -125,6 +126,7 @@ TEST_FILES = (
     "tests/test_sync_agent_console_template.py",
     "tests/test_tui_provider_readiness_benchmark.py",
     "tests/test_tui_bedrock_shortstop_benchmark.py",
+    "tests/test_codex_bridge_parity.py",
     "tests/test_tui_auto_mode_benchmark.py",
     "tests/test_paired_hybrid_replay_benchmark.py",
     "tests/test_local_model_skill_floor.py",
@@ -155,6 +157,10 @@ FIXTURE_FILES = (
     (
         "db/tui_quality_shadow_answers.example.json",
         "data/fixtures/tui_quality_shadow_answers.example.json",
+    ),
+    (
+        "db/codex_bridge_parity_cases.json",
+        "data/fixtures/codex_bridge_parity_cases.json",
     ),
     (
         "db/policies/codex_role_policy.json",
@@ -333,8 +339,8 @@ def route_policy(generated_at: str) -> dict[str, object]:
             "policy_hash": codex_policy["policy_hash"],
         },
         "operator_goal": (
-            "Make GPT-5.4 carry long workflows with stability close to GPT-5.5, "
-            "reserving GPT-5.5 for rare final-authority/tiebreaker work."
+            "Keep all active Codex work on GPT-5.6 Terra through the governed "
+            "Bedrock route."
         ),
         "work_special_default": {
             "model": work_standard["model"],
@@ -342,9 +348,9 @@ def route_policy(generated_at: str) -> dict[str, object]:
             "provider": work_standard["provider"],
             "profile_v2": work_standard["profile_v2"],
             "failover_order": [
-                "Bedrock openai.gpt-5.4 primary region",
-                "Bedrock openai.gpt-5.4 secondary region",
-                "Bedrock openai.gpt-5.4 tertiary region",
+                "Bedrock openai.gpt-5.6-terra primary region",
+                "Bedrock openai.gpt-5.6-terra secondary region",
+                "Bedrock openai.gpt-5.6-terra tertiary region",
                 f"OpenAI direct {work_direct['model']}",
             ],
         },

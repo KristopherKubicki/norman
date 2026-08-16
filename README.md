@@ -129,9 +129,9 @@ repository.
 ```bash
 git clone https://github.com/KristopherKubicki/norman.git
 cd norman
-python -m venv .venv
+uv python install
+uv sync --locked --all-extras
 . .venv/bin/activate
-pip install -r requirements.txt -r requirements-dev.txt
 cp config.yaml.dist config.yaml
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```

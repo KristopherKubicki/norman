@@ -6,6 +6,7 @@ from urllib import error as urllib_error
 
 import pytest
 
+from app.services.console_runtime.adapters import bedrock as bedrock_adapter_module
 from app.services.console_runtime.adapters.bedrock import BedrockModelAdapter
 from app.services.console_runtime.adapters.norllama import NorllamaModelAdapter
 from app.services.console_runtime.types import ModelBudget, ModelRequest
@@ -74,7 +75,7 @@ def _explicit_cloud_selection_request(
         provider="aws-bedrock",
         provider_kind="aws-bedrock",
         capability="chat",
-        model="openai.gpt-5.6-sol",
+        model="openai.gpt-5.6-terra",
         mode="cloud_proxy",
         local=False,
         cloud_proxy=True,
@@ -84,21 +85,21 @@ def _explicit_cloud_selection_request(
     )
     return ModelRequest(
         messages=[{"role": "user", "content": "Return the status."}],
-        model="openai.gpt-5.6-sol",
-        route_key="gpt-5.6-sol",
+        model="openai.gpt-5.6-terra",
+        route_key="gpt-5.6-terra",
         budget=ModelBudget(max_output_tokens=321),
         metadata={
             "request_id": "explicit-cloud-selection-1",
             "invocation_id": "explicit-cloud-selection-1",
             "norllama_task_kind": "chat",
             "execution_mode": "prompt_intermediary_openai_facade_explicit_cloud",
-            "requested_model": "openai.gpt-5.6-sol",
-            "route_selected_model": "openai.gpt-5.6-sol",
+            "requested_model": "openai.gpt-5.6-terra",
+            "route_selected_model": "openai.gpt-5.6-terra",
             "route_policy": {
                 "provider": "aws-bedrock",
                 "preferred_provider": "aws-bedrock",
-                "model": "openai.gpt-5.6-sol",
-                "preferred_model": "openai.gpt-5.6-sol",
+                "model": "openai.gpt-5.6-terra",
+                "preferred_model": "openai.gpt-5.6-terra",
                 "lane": "coder",
                 "allow_cloud_proxy": False,
                 "cloud_policy": cloud_policy,
@@ -111,9 +112,9 @@ def _explicit_cloud_selection_request(
             "norman_facade_explicit_cloud_selection": marker
             or {
                 "schema": "norman.facade-explicit-cloud-selection.v1",
-                "requested_alias": "gpt-5.6-sol",
+                "requested_alias": "gpt-5.6-terra",
                 "provider": "aws-bedrock",
-                "model": "openai.gpt-5.6-sol",
+                "model": "openai.gpt-5.6-terra",
                 "lane": "coder",
             },
         },
@@ -676,7 +677,7 @@ def test_bedrock_adapter_routes_authorized_explicit_gpt_selection_through_mantle
             }
         ],
         "max_output_tokens": 321,
-        "model": "openai.gpt-5.6-sol",
+        "model": "openai.gpt-5.6-terra",
     }
     assert result.text == "Selected cloud model completed."
     assert result.usage.as_dict() == {
@@ -708,30 +709,45 @@ def test_bedrock_adapter_routes_authorized_explicit_gpt_selection_through_mantle
     assert mantle_key not in serialized
 
 
-def test_bedrock_adapter_routes_authorized_cloud_fallback_through_native_bedrock():
-    client = _FakeBedrockClient(
-        {
-            "stopReason": "end_turn",
-            "output": {
-                "message": {
-                    "content": [{"text": "Fallback completed."}],
+def test_bedrock_adapter_routes_authorized_cloud_fallback_through_mantle(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        bedrock_adapter_module,
+        "resolve_bedrock_mantle_api_key",
+        lambda *_args, **_kwargs: bedrock_module.BedrockMantleApiKey(
+            api_key="test-mantle-key",
+            source="norman_keys",
+            secret_name="test/bedrock-mantle",
+        ),
+    )
+    monkeypatch.setattr(
+        bedrock_adapter_module,
+        "invoke_bedrock_mantle_responses",
+        lambda **_kwargs: {
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "Fallback completed."}],
                 }
-            },
+            ],
             "usage": {
-                "inputTokens": 4,
-                "outputTokens": 2,
-                "totalTokens": 6,
+                "input_tokens": 4,
+                "output_tokens": 2,
+                "total_tokens": 6,
             },
-        }
+        },
     )
+    client_factory_calls: list[dict] = []
 
-    result = BedrockModelAdapter(client_factory=lambda **_kwargs: client).invoke(
-        _cloud_fallback_request()
-    )
+    result = BedrockModelAdapter(
+        client_factory=lambda **kwargs: client_factory_calls.append(kwargs)
+    ).invoke(_cloud_fallback_request())
 
-    assert len(client.calls) == 1
+    assert client_factory_calls == []
     assert result.text == "Fallback completed."
-    assert result.metadata["bedrock_transport"] == "aws_bedrock_converse"
+    assert result.metadata["bedrock_transport"] == "bedrock_mantle_responses"
     assert result.metadata["policy_authorization"][
         "cloud_fallback_authorized"
     ] is True
@@ -752,11 +768,87 @@ def test_bedrock_mantle_request_uses_supported_parameters():
     assert "temperature" not in payload
 
 
+def test_bedrock_mantle_request_preserves_native_responses_options_and_tools():
+    payload = bedrock_module.build_bedrock_mantle_responses_request(
+        model="openai.gpt-5.6-terra",
+        messages=[
+            {
+                "type": "reasoning",
+                "id": "rsn-repository-status",
+                "summary": [],
+                "encrypted_content": "opaque-reasoning-state",
+            },
+            {
+                "type": "function_call",
+                "id": "fc-repository-status",
+                "call_id": "call-repository-status",
+                "name": "repository_status",
+                "arguments": {"path": "."},
+                "status": "completed",
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call-repository-status",
+                "output": {"branch": "main"},
+            },
+        ],
+        responses_options={
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "repository_status",
+                    "parameters": {"type": "object"},
+                }
+            ],
+            "tool_choice": "required",
+            "parallel_tool_calls": False,
+            "reasoning": {"effort": "high"},
+            "text": {"format": {"type": "json_object"}},
+            "include": ["reasoning.encrypted_content"],
+        },
+    )
+
+    assert payload["input"] == [
+        {
+            "type": "reasoning",
+            "id": "rsn-repository-status",
+            "summary": [],
+            "encrypted_content": "opaque-reasoning-state",
+        },
+        {
+            "type": "function_call",
+            "id": "fc-repository-status",
+            "call_id": "call-repository-status",
+            "name": "repository_status",
+            "arguments": '{"path":"."}',
+            "status": "completed",
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call-repository-status",
+            "output": '{"branch":"main"}',
+        },
+    ]
+    assert payload["tools"][0]["name"] == "repository_status"
+    assert payload["tool_choice"] == "required"
+    assert payload["parallel_tool_calls"] is False
+    assert payload["reasoning"] == {"effort": "high"}
+    assert payload["text"] == {"format": {"type": "json_object"}}
+    assert payload["include"] == ["reasoning.encrypted_content"]
+
+
 def test_bedrock_adapter_sanitizes_mantle_provider_failure(monkeypatch):
     monkeypatch.setenv("NORMAN_KEYS_URL", "http://keys.norman.test")
     monkeypatch.delenv("NORMAN_SECRET_CMD", raising=False)
     mantle_key = "test-mantle-api-key"
-    provider_body = "upstream message with token=must-not-leak"
+    provider_body = {
+        "error": {
+            "type": "invalid_request_error",
+            "code": "invalid_function_call_output",
+            "param": "input[3].content[0].call_id",
+            "message": "upstream message with token=must-not-leak",
+        }
+    }
 
     class Response:
         def __enter__(self):
@@ -776,17 +868,44 @@ def test_bedrock_adapter_sanitizes_mantle_provider_failure(monkeypatch):
             429,
             "provider response",
             hdrs=None,
-            fp=io.BytesIO(provider_body.encode()),
+            fp=io.BytesIO(json.dumps(provider_body).encode()),
         )
 
     monkeypatch.setattr(bedrock_module.urllib_request, "urlopen", fake_urlopen)
 
-    with pytest.raises(RuntimeError) as error:
+    with pytest.raises(bedrock_module.BedrockMantleResponsesError) as error:
         BedrockModelAdapter().invoke(_explicit_cloud_selection_request())
 
     assert str(error.value) == "Bedrock Mantle Responses request failed with HTTP 429"
     assert mantle_key not in str(error.value)
-    assert provider_body not in str(error.value)
+    assert provider_body["error"]["message"] not in str(error.value)
+    assert error.value.safe_metadata() == {
+        "http_status": 429,
+        "provider_error_type": "invalid_request_error",
+        "provider_error_code": "invalid_function_call_output",
+        "provider_error_param": "input[3].content[0].call_id",
+    }
+
+
+def test_bedrock_adapter_rejects_unsafe_mantle_error_param():
+    assert (
+        bedrock_module._safe_provider_error_param(
+            'input[3].content[0].call_id="secret"'
+        )
+        == ""
+    )
+
+
+def test_bedrock_adapter_extracts_only_schema_path_from_mantle_error_message():
+    assert (
+        bedrock_module._provider_error_param_from_message(
+            'Invalid value at input[3].content[0].call_id: "secret"'
+        )
+        == "input[3].content[0].call_id"
+    )
+    assert (
+        bedrock_module._provider_error_param_from_message("token=must-not-leak") == ""
+    )
 
 
 def test_bedrock_adapter_blocks_forged_explicit_cloud_marker_before_credentials(

@@ -87,6 +87,14 @@ def render_frontdoor_snippet() -> str:
     redir /bot /bot/ 308
     import /etc/caddy/includes/norman-bots.caddy
 
+    handle /v1/responses {
+        reverse_proxy 127.0.0.1:8000 {
+            flush_interval -1
+            header_up X-Norman-Gateway-Route norman
+            header_up X-Forwarded-For 127.0.0.2
+        }
+    }
+
     handle /v1/* {
         reverse_proxy 127.0.0.1:8000 {
             header_up X-Norman-Gateway-Route norman

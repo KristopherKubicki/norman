@@ -3244,8 +3244,7 @@ class DbConsoleRuntimeStore:
             and not override
         ):
             raise InvalidTransitionError(
-                "Retry requires explicit override for retry class "
-                f"{retry_class.value}"
+                f"Retry requires explicit override for retry class {retry_class.value}"
             )
         now = _utc_now()
         record.status = ConsoleJobStatus.QUEUED.value

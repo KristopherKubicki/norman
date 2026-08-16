@@ -19,7 +19,7 @@ from typing import Any
 
 try:
     import tomllib
-except ModuleNotFoundError:  # Python 3.10 is still used by a few managed TUIs.
+except ModuleNotFoundError:  # A few independently managed TUIs run Python < 3.11.
     tomllib = None
 
 

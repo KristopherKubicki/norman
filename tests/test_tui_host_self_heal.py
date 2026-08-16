@@ -177,9 +177,9 @@ def test_self_heal_executes_only_graceful_reboot_when_approved(monkeypatch) -> N
         execute=True,
         approved=True,
         settle_seconds=0,
-        observe_fn=lambda _target: _wedged_observation()
-        if not calls
-        else _healthy_observation(),
+        observe_fn=lambda _target: (
+            _wedged_observation() if not calls else _healthy_observation()
+        ),
         reboot_fn=fake_reboot,
     )
 

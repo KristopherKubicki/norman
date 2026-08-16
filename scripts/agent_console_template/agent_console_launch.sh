@@ -83,7 +83,7 @@ export PATH
 
 # Legacy source checks:
 # CODEX_BIN="${HOUSEBOT_CODEX_BIN:-}"
-# MODEL="${HOUSEBOT_CODEX_MODEL:-gpt-5.5}"
+# MODEL="${HOUSEBOT_CODEX_MODEL:-openai.gpt-5.6-terra}"
 # /opt/node-v20.19.6/bin/codex
 # /home/kristopher/.nvm/versions/node/v20.19.6/bin/codex
 CODEX_BIN="${NORMAN_CODEX_BIN:-}"
@@ -193,7 +193,7 @@ if [[ "$CODEX_PROVIDER" == "norman" ]]; then
         exit 2
     fi
     CODEX_GATEWAY_BASE_URL="${NORMAN_CODEX_GATEWAY_BASE_URL:-https://norman.home.arpa/v1}"
-    CODEX_GATEWAY_MODEL="${NORMAN_CODEX_GATEWAY_MODEL:-norman-code}"
+    CODEX_GATEWAY_MODEL="${NORMAN_CODEX_GATEWAY_MODEL:-openai.gpt-5.6-terra}"
     CODEX_GATEWAY_TOKEN_SECRET="${NORMAN_CODEX_GATEWAY_TOKEN_SECRET:-norman/prompt-proxy-token}"
     CODEX_GATEWAY_TOKEN_HELPER="${NORMAN_CODEX_GATEWAY_TOKEN_HELPER:-${LAUNCH_SCRIPT_DIR}/norman_codex_gateway_token.py}"
     if [[ "$CODEX_GATEWAY_TOKEN_HELPER" != /* ]]; then

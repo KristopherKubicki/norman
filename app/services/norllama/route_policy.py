@@ -99,7 +99,7 @@ ROUTE_POLICY_RESIDENCY = {
     "lab": ["world", "graph", "packet", "forecasting", "gui-grounding"],
 }
 
-CLOUD_FALLBACK_BEDROCK_MODEL = "qwen.qwen3-coder-480b-a35b-v1:0"
+CLOUD_FALLBACK_BEDROCK_MODEL = "openai.gpt-5.6-terra"
 
 ROUTE_POLICY_FALLBACKS = {
     "worker_mismatch_requires_receipt_fallback": True,

@@ -1,5 +1,7 @@
 from typing import Optional
-from pydantic import BaseModel, constr, validator
+
+from pydantic import BaseModel, ConfigDict, constr, field_validator
+
 from app.core.config import settings
 from app.core.estate_registry import default_cloud_model
 
@@ -13,7 +15,7 @@ class BotBase(BaseModel):
     )
     session_id: Optional[str] = None
 
-    @validator("gpt_model")
+    @field_validator("gpt_model")
     def validate_gpt_model(cls, v: str) -> str:
         if v not in settings.openai_available_models:
             raise ValueError(f"Invalid GPT model: {v}")
@@ -30,8 +32,7 @@ class BotOut(BaseModel):
     description: Optional[str]
     gpt_model: str
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class BotUpdate(BaseModel):
@@ -46,5 +47,4 @@ class BotUpdate(BaseModel):
 class Bot(BotBase):
     id: int
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)

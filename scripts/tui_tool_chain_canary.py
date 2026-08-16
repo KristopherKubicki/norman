@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the authenticated Responses tool continuation without real tools."""
+"""Exercise authenticated Responses tool continuations through the Norman facade."""
 
 from __future__ import annotations
 
@@ -26,7 +26,20 @@ DEFAULT_OUTPUT_JSON = Path(
 DEFAULT_PRESSURE_GUARD = Path(__file__).with_name("tui_host_pressure_guard.py")
 DEFAULT_PRESSURE_TARGET = "work-special"
 DEFAULT_TIMEOUT_SECONDS = 45.0
-KNOWN_TOOL_NAMES = frozenset({"tool_search", "mcp__norman_canary.status_lookup"})
+EXPECTED_BACKEND_MODEL = "openai.gpt-5.6-terra"
+DEFAULT_OPS_MCP_ENDPOINT = "https://ops.openbrand.com/mcp"
+DEFAULT_OPS_MCP_KEY_SECRET = "control-plane/ops-mcp-canary-key"
+DEFAULT_OPS_MCP_KEY_HELPER = Path(__file__).with_name("norman_ops_mcp_canary_token.py")
+DEFAULT_OPS_MCP_USER_EMAIL = "kris@openbrand.com"
+OPS_MCP_PROTOCOL_VERSION = "2025-03-26"
+OPS_MCP_MAX_RESPONSE_BYTES = 512 * 1024
+KNOWN_TOOL_NAMES = frozenset(
+    {
+        "tool_search",
+        "mcp__norman_canary.status_lookup",
+        "mcp__ops_openbrand.ops_portal_health",
+    }
+)
 SAFE_TOOL_CHAIN_SCHEMA = "norman.responses-tool-chain.v1"
 SAFE_TOOL_CHAIN_TURN_TYPES = frozenset({"after_tool_result", "initial_or_text"})
 SAFE_TOOL_CHAIN_OUTCOMES = frozenset(
@@ -47,7 +60,21 @@ StreamRequestFn = Callable[
     [str, dict[str, Any], str, float], tuple[int, dict[str, Any]]
 ]
 PressureGuardFn = Callable[[], dict[str, Any]]
+OpsDirectSmokeFn = Callable[[float], Mapping[str, Any]]
 RAW_TOOL_ENVELOPE_PATTERN = re.compile(r'\{\s*"tool_calls?"\s*:')
+SAFE_OPS_LABEL_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
+SAFE_OPS_TIMING_KEYS = frozenset(
+    {
+        "transport_ready",
+        "initialize",
+        "tools_list",
+        "ops_portal_health",
+        "read_only_policy",
+        "session_start",
+        "list_capabilities",
+        "total",
+    }
+)
 
 
 class CanaryError(RuntimeError):
@@ -403,6 +430,332 @@ def _pressure_guard(
     return dict(parsed) if isinstance(parsed, Mapping) else {}
 
 
+def _bounded_count(value: Any) -> int:
+    return min(10_000, _int(value))
+
+
+def _safe_ops_label(value: Any) -> str:
+    label = _clean(value).lower()
+    return label if SAFE_OPS_LABEL_PATTERN.fullmatch(label) else "unknown"
+
+
+def _safe_ops_timings(value: Any) -> dict[str, int]:
+    timings = _mapping(value)
+    return {
+        key: min(300_000, _int(timings.get(key)))
+        for key in SAFE_OPS_TIMING_KEYS
+        if key in timings
+    }
+
+
+def _safe_ops_mcp_evidence(result: Mapping[str, Any]) -> dict[str, Any]:
+    """Retain only bounded direct-MCP health evidence for the facade continuation."""
+
+    status = _clean(result.get("status")).lower()
+    evidence: dict[str, Any] = {
+        "status": status if status in {"ok", "error"} else "unknown",
+        "portal_status": _safe_ops_label(result.get("portal_status")),
+        "portal_lane": _safe_ops_label(result.get("portal_lane")),
+        "read_only": result.get("read_only") is True,
+        "mutations_supported": result.get("mutations_supported") is True,
+        "mutation_tool_count": _bounded_count(result.get("mutation_tool_count")),
+        "identity_verified": result.get("identity_verified") is True,
+        "tool_count": _bounded_count(result.get("tool_count")),
+        "capability_count": _bounded_count(result.get("capability_count")),
+    }
+    timings = _safe_ops_timings(result.get("timings_ms"))
+    if timings:
+        evidence["timings_ms"] = timings
+    return evidence
+
+
+def _require_healthy_ops_mcp_evidence(evidence: Mapping[str, Any]) -> None:
+    if (
+        _clean(evidence.get("status")) != "ok"
+        or evidence.get("read_only") is not True
+        or evidence.get("mutations_supported") is not False
+        or _int(evidence.get("mutation_tool_count")) != 0
+        or evidence.get("identity_verified") is not True
+        or _int(evidence.get("tool_count")) < 2
+    ):
+        raise CanaryError("ops_direct_smoke_failed")
+
+
+def _ops_mcp_api_key(timeout_seconds: float) -> str:
+    """Load the bound Ops MCP key through its dedicated broker."""
+
+    configured = _clean(os.environ.get("OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY"))
+    if configured:
+        return configured
+
+    secret_name = (
+        _clean(os.environ.get("NORMAN_OPS_MCP_KEY_SECRET"))
+        or DEFAULT_OPS_MCP_KEY_SECRET
+    )
+    helper = Path(
+        _clean(os.environ.get("NORMAN_OPS_MCP_KEY_HELPER"))
+        or str(DEFAULT_OPS_MCP_KEY_HELPER)
+    )
+    if not helper.is_file():
+        raise CanaryError("ops_direct_smoke_failed")
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(helper),
+                "--secret",
+                secret_name,
+            ],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=min(30.0, _bounded_timeout(timeout_seconds)),
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise CanaryError("ops_direct_smoke_failed") from exc
+    if result.returncode != 0:
+        raise CanaryError("ops_direct_smoke_failed")
+    api_key = _clean(result.stdout)
+    if not api_key:
+        raise CanaryError("ops_direct_smoke_failed")
+    return api_key
+
+
+def _parse_ops_mcp_response(raw: bytes, content_type: str) -> dict[str, Any]:
+    text = raw.decode("utf-8", errors="replace")
+    payloads: list[Any] = []
+    if "text/event-stream" in content_type.lower():
+        data_lines: list[str] = []
+        for line in text.splitlines():
+            if not line:
+                if data_lines:
+                    payloads.append(json.loads("\n".join(data_lines)))
+                    data_lines = []
+                continue
+            if line.startswith("data:"):
+                data_lines.append(line[5:].lstrip())
+        if data_lines:
+            payloads.append(json.loads("\n".join(data_lines)))
+    else:
+        payloads.append(json.loads(text))
+
+    for payload in payloads:
+        if not isinstance(payload, Mapping):
+            continue
+        if isinstance(payload.get("result"), Mapping):
+            return dict(payload["result"])
+        if "error" in payload:
+            raise CanaryError("ops_direct_smoke_failed")
+    raise CanaryError("ops_direct_smoke_invalid_response")
+
+
+def _ops_mcp_request(
+    *,
+    endpoint: str,
+    api_key: str,
+    session_id: str,
+    request_id: int | None,
+    method: str,
+    params: Mapping[str, Any] | None,
+    timeout_seconds: float,
+) -> tuple[dict[str, Any], str]:
+    payload: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
+    if request_id is not None:
+        payload["id"] = request_id
+    if params:
+        payload["params"] = dict(params)
+    headers = {
+        "Accept": "application/json, text/event-stream",
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    if session_id:
+        headers["Mcp-Session-Id"] = session_id
+    request = urllib.request.Request(
+        endpoint,
+        data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(
+            request, timeout=_bounded_timeout(timeout_seconds)
+        ) as response:
+            response_session_id = _clean(response.headers.get("Mcp-Session-Id"))
+            if request_id is None:
+                response.read(OPS_MCP_MAX_RESPONSE_BYTES)
+                return {}, response_session_id or session_id
+            parsed = _parse_ops_mcp_response(
+                response.read(OPS_MCP_MAX_RESPONSE_BYTES),
+                _clean(response.headers.get("Content-Type")),
+            )
+            return parsed, response_session_id or session_id
+    except CanaryError:
+        raise
+    except (
+        urllib.error.HTTPError,
+        urllib.error.URLError,
+        OSError,
+        TimeoutError,
+    ) as exc:
+        raise CanaryError("ops_direct_smoke_failed") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CanaryError("ops_direct_smoke_invalid_response") from exc
+
+
+def _ops_mcp_tool_result(result: Mapping[str, Any]) -> dict[str, Any]:
+    structured = result.get("structuredContent")
+    if isinstance(structured, Mapping):
+        return dict(structured)
+    content = result.get("content")
+    if not isinstance(content, list):
+        raise CanaryError("ops_direct_smoke_invalid_response")
+    for item in content:
+        if not isinstance(item, Mapping):
+            continue
+        text = _clean(item.get("text"))
+        if not text:
+            continue
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, Mapping):
+            return dict(payload)
+    raise CanaryError("ops_direct_smoke_invalid_response")
+
+
+def _run_ops_direct_smoke(timeout_seconds: float) -> Mapping[str, Any]:
+    """Probe the deployed Ops MCP without depending on a developer checkout."""
+
+    endpoint = _clean(os.environ.get("OPS_OPENBRAND_MCP_ENDPOINT")) or (
+        DEFAULT_OPS_MCP_ENDPOINT
+    )
+    api_key = _ops_mcp_api_key(timeout_seconds)
+    started_at = time.monotonic()
+    request_id = 1
+
+    def request(
+        method: str,
+        params: Mapping[str, Any] | None = None,
+        *,
+        notification: bool = False,
+    ) -> dict[str, Any]:
+        nonlocal request_id, session_id
+        result, session_id = _ops_mcp_request(
+            endpoint=endpoint,
+            api_key=api_key,
+            session_id=session_id,
+            request_id=None if notification else request_id,
+            method=method,
+            params=params,
+            timeout_seconds=timeout_seconds,
+        )
+        if not notification:
+            request_id += 1
+        return result
+
+    session_id = ""
+    timings_ms: dict[str, int] = {}
+    initialize_started_at = time.monotonic()
+    request(
+        "initialize",
+        {
+            "protocolVersion": OPS_MCP_PROTOCOL_VERSION,
+            "capabilities": {},
+            "clientInfo": {"name": "norman-tui-tool-chain-canary", "version": "1"},
+        },
+    )
+    timings_ms["initialize"] = round((time.monotonic() - initialize_started_at) * 1000)
+    # Streamable HTTP MCP servers may deliberately be stateless.
+    request("notifications/initialized", notification=True)
+
+    tools_started_at = time.monotonic()
+    tools = request("tools/list")
+    timings_ms["tools_list"] = round((time.monotonic() - tools_started_at) * 1000)
+    advertised_tools = tools.get("tools")
+    tool_names = (
+        {
+            _clean(tool.get("name"))
+            for tool in advertised_tools
+            if isinstance(tool, Mapping)
+        }
+        if isinstance(advertised_tools, list)
+        else set()
+    )
+    if not {"ops_portal_health", "read_only_policy"}.issubset(tool_names):
+        raise CanaryError("ops_direct_smoke_failed")
+
+    def call_tool(
+        name: str, arguments: Mapping[str, Any] | None = None
+    ) -> dict[str, Any]:
+        result = request(
+            "tools/call",
+            {"name": name, "arguments": dict(arguments or {})},
+        )
+        payload = _ops_mcp_tool_result(result)
+        if _clean(payload.get("status")).lower() == "error":
+            raise CanaryError("ops_direct_smoke_failed")
+        return payload
+
+    health_started_at = time.monotonic()
+    health = call_tool("ops_portal_health")
+    timings_ms["ops_portal_health"] = round(
+        (time.monotonic() - health_started_at) * 1000
+    )
+    policy_started_at = time.monotonic()
+    policy = call_tool("read_only_policy")
+    timings_ms["read_only_policy"] = round(
+        (time.monotonic() - policy_started_at) * 1000
+    )
+    access_policy = policy.get("access_policy")
+    if not isinstance(access_policy, Mapping):
+        raise CanaryError("ops_direct_smoke_invalid_response")
+    if (
+        access_policy.get("read_only") is not True
+        or access_policy.get("mutations_supported") is not False
+        or access_policy.get("mutation_tools") != []
+    ):
+        raise CanaryError("ops_direct_smoke_failed")
+
+    session_started_at = time.monotonic()
+    started = call_tool(
+        "session_start",
+        {
+            "user_email": _clean(os.environ.get("OPS_OPENBRAND_MCP_USER_EMAIL"))
+            or DEFAULT_OPS_MCP_USER_EMAIL,
+            "client_name": "codex",
+        },
+    )
+    timings_ms["session_start"] = round((time.monotonic() - session_started_at) * 1000)
+    session = started.get("session")
+    if not isinstance(session, Mapping):
+        raise CanaryError("ops_direct_smoke_invalid_response")
+    capabilities_started_at = time.monotonic()
+    capabilities = call_tool(
+        "list_capabilities",
+        {"session_id": _clean(session.get("session_id"))},
+    )
+    timings_ms["list_capabilities"] = round(
+        (time.monotonic() - capabilities_started_at) * 1000
+    )
+    timings_ms["total"] = round((time.monotonic() - started_at) * 1000)
+    return {
+        "status": "ok",
+        "portal_status": health.get("status"),
+        "portal_lane": health.get("lane"),
+        "read_only": access_policy.get("read_only"),
+        "mutations_supported": access_policy.get("mutations_supported"),
+        "mutation_tool_count": len(access_policy.get("mutation_tools") or []),
+        "identity_verified": session.get("caller_identity_verified"),
+        "tool_count": len(tool_names),
+        "capability_count": len(capabilities.get("capabilities") or []),
+        "timings_ms": timings_ms,
+    }
+
+
 def _safe_tool_chain(response: Mapping[str, Any]) -> dict[str, Any]:
     norman = _mapping(response.get("norman"))
     compatibility = _mapping(norman.get("responses_compatibility"))
@@ -472,6 +825,22 @@ def _safe_bridge_receipt(response: Mapping[str, Any]) -> dict[str, Any]:
             fallback.get("local_failure_code"), maximum=96
         ),
     }
+
+
+def _require_expected_backend_model(
+    response: Mapping[str, Any],
+    *,
+    expected_model: str,
+) -> None:
+    bridge = _safe_bridge_receipt(response)
+    if not bridge:
+        raise CanaryError("missing_backend_receipt")
+    effective_backend = _mapping(bridge.get("effective_backend"))
+    actual_model = _clean(effective_backend.get("model"))
+    if not actual_model or actual_model == "unknown":
+        raise CanaryError("missing_backend_receipt")
+    if actual_model != expected_model:
+        raise CanaryError("unexpected_backend_model")
 
 
 def _function_calls(response: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -552,12 +921,12 @@ def _require_stream_integrity(response: Mapping[str, Any]) -> None:
         raise CanaryError("raw_tool_envelope_text")
 
 
-def _require_exact_function_call(
+def _require_exact_function_call_item(
     response: Mapping[str, Any],
     *,
     name: str,
     streaming: bool = False,
-) -> str:
+) -> dict[str, Any]:
     if streaming:
         _require_stream_integrity(response)
         stream = _mapping(response.get("_canary_stream"))
@@ -574,12 +943,53 @@ def _require_exact_function_call(
         not isinstance(output, list)
         or len(calls) != 1
         or _clean(calls[0].get("name")) != name
+        or any(
+            not isinstance(item, Mapping)
+            or _clean(item.get("type")) not in {"function_call", "message", "reasoning"}
+            for item in output
+        )
     ):
         raise CanaryError("unexpected_function_call")
     call_id = _clean(calls[0].get("call_id"))
     if not call_id:
         raise CanaryError("missing_function_call_id")
-    return call_id
+    return calls[0]
+
+
+def _require_exact_function_call(
+    response: Mapping[str, Any],
+    *,
+    name: str,
+    streaming: bool = False,
+) -> str:
+    return _clean(
+        _require_exact_function_call_item(
+            response,
+            name=name,
+            streaming=streaming,
+        ).get("call_id")
+    )
+
+
+def _streamed_function_call_replay_items(
+    function_call: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Build the lifecycle replay Codex can send after a streamed tool call."""
+
+    complete = {
+        "type": "function_call",
+        "status": "completed",
+        "call_id": _clean(function_call.get("call_id")),
+        "name": _clean(function_call.get("name")),
+        "arguments": _clean(function_call.get("arguments")),
+    }
+    item_id = _clean(function_call.get("id"))
+    if item_id:
+        complete["id"] = item_id
+    in_progress = dict(complete)
+    in_progress["status"] = "in_progress"
+    in_progress["arguments"] = ""
+    return [in_progress, complete]
 
 
 def _require_final_answer(
@@ -589,6 +999,16 @@ def _require_final_answer(
         _require_stream_integrity(response)
     if _function_calls(response) or not _clean(response.get("output_text")):
         raise CanaryError("unexpected_final_response")
+
+
+def _require_concise_normal_final_answer(
+    response: Mapping[str, Any], *, streaming: bool = False
+) -> None:
+    _require_final_answer(response, streaming=streaming)
+    if len(_clean(response.get("output_text"))) > 1_200:
+        raise CanaryError("ops_final_response_not_concise")
+    if _safe_tool_chain(response).get("watchdog_state") != "normal":
+        raise CanaryError("ops_watchdog_not_normal")
 
 
 def _tool_search_definition() -> dict[str, Any]:
@@ -621,12 +1041,34 @@ def _synthetic_status_namespace() -> dict[str, Any]:
     }
 
 
+def _ops_portal_health_namespace() -> dict[str, Any]:
+    return {
+        "type": "namespace",
+        "name": "mcp__ops_openbrand",
+        "tools": [
+            {
+                "type": "function",
+                "name": "ops_portal_health",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ],
+    }
+
+
 def _canary_prompt() -> str:
     return (
         "Run the Norman tool-chain health check. First call tool_search to discover "
         "mcp__norman_canary.status_lookup. After its synthetic result is supplied, "
         "call mcp__norman_canary.status_lookup. Do not call any real MCP or "
         "external tool."
+    )
+
+
+def _ops_mcp_canary_prompt() -> str:
+    return (
+        "Run the approved read-only Ops Portal health check. Call "
+        "mcp__ops_openbrand.ops_portal_health exactly once. Do not call any "
+        "other tool."
     )
 
 
@@ -639,6 +1081,9 @@ def run_canary(
     request_fn: RequestFn = _post_json,
     streaming: bool = False,
     stream_request_fn: StreamRequestFn = _post_sse,
+    ops_mcp: bool = False,
+    ops_direct_smoke: OpsDirectSmokeFn | None = None,
+    expected_backend_model: str = "",
 ) -> dict[str, Any]:
     started_at = time.monotonic()
     receipt: dict[str, Any] = {
@@ -646,12 +1091,16 @@ def run_canary(
         "checked_at": _now(),
         "endpoint": endpoint,
         "gateway_route": "norman",
-        "model": "norman-code",
+        "model": "openai.gpt-5.6-terra",
         "mode": "streaming" if streaming else "non_streaming",
+        "workflow": "ops_mcp" if ops_mcp else "synthetic",
         "state": "failed",
         "elapsed_ms": 0.0,
         "turns": [],
     }
+    expected_backend_model = _safe_identifier(expected_backend_model)
+    if expected_backend_model:
+        receipt["expected_backend_model"] = expected_backend_model
     pressure_state = _mapping((pressure_guard or (lambda: {}))())
     admission = _mapping(pressure_state.get("admission"))
     action = _clean(admission.get("action"))
@@ -691,69 +1140,131 @@ def run_canary(
         receipt["turns"].append(turn_receipt)
         if turn_receipt["bridge"]:
             receipt["bridge"] = turn_receipt["bridge"]
+        if expected_backend_model:
+            _require_expected_backend_model(
+                response,
+                expected_model=expected_backend_model,
+            )
         return response
 
     try:
-        discovery = execute_turn(
-            "tool_search",
-            {
-                "model": "norman-code",
-                "input": _canary_prompt(),
-                "tools": [_tool_search_definition()],
-            },
-        )
-        tool_search_call_id = _require_exact_function_call(
-            discovery,
-            name="tool_search",
-            streaming=streaming,
-        )
-        tool_call = execute_turn(
-            "synthetic_status_lookup",
-            {
-                "model": "norman-code",
-                "previous_response_id": _clean(discovery.get("id")),
-                "input": [
-                    {
-                        "type": "function_call_output",
-                        "call_id": tool_search_call_id,
-                        "output": (
-                            '{"tools":[{"name":"mcp__norman_canary.status_lookup",'
-                            '"description":"Synthetic canary status lookup"}]}'
-                        ),
-                    }
-                ],
-                "tools": [_synthetic_status_namespace()],
-            },
-        )
-        synthetic_call_id = _require_exact_function_call(
-            tool_call,
-            name="mcp__norman_canary.status_lookup",
-            streaming=streaming,
-        )
-        final = execute_turn(
-            "final_answer",
-            {
-                "model": "norman-code",
-                "previous_response_id": _clean(tool_call.get("id")),
-                "input": [
-                    {
-                        "type": "function_call_output",
-                        "call_id": synthetic_call_id,
-                        "output": '{"status":"ok","source":"synthetic"}',
-                    },
-                    {
-                        "type": "message",
-                        "role": "user",
-                        "content": (
-                            "The synthetic result has been supplied. Return a "
-                            "concise final health result now. Do not call another tool."
-                        ),
-                    },
-                ],
-                "tools": [_synthetic_status_namespace()],
-            },
-        )
-        _require_final_answer(final, streaming=streaming)
+        if ops_mcp:
+            direct_smoke = ops_direct_smoke or _run_ops_direct_smoke
+            ops_evidence = _safe_ops_mcp_evidence(
+                direct_smoke(_bounded_timeout(timeout_seconds))
+            )
+            _require_healthy_ops_mcp_evidence(ops_evidence)
+            receipt["ops_mcp_evidence"] = ops_evidence
+            tool_call = execute_turn(
+                "ops_portal_health",
+                {
+                    "model": "openai.gpt-5.6-terra",
+                    "input": _ops_mcp_canary_prompt(),
+                    "tools": [_ops_portal_health_namespace()],
+                },
+            )
+            ops_call = _require_exact_function_call_item(
+                tool_call,
+                name="mcp__ops_openbrand.ops_portal_health",
+                streaming=streaming,
+            )
+            ops_call_id = _clean(ops_call.get("call_id"))
+            final = execute_turn(
+                "ops_final_answer",
+                {
+                    "model": "openai.gpt-5.6-terra",
+                    "previous_response_id": _clean(tool_call.get("id")),
+                    "input": [
+                        *_streamed_function_call_replay_items(ops_call),
+                        {
+                            "type": "function_call_output",
+                            "call_id": ops_call_id,
+                            "output": json.dumps(
+                                ops_evidence,
+                                separators=(",", ":"),
+                                sort_keys=True,
+                            ),
+                        },
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": (
+                                "The approved read-only Ops health evidence has been "
+                                "supplied. Return a concise status now. Do not call "
+                                "another tool."
+                            ),
+                        },
+                    ],
+                    "tools": [_ops_portal_health_namespace()],
+                },
+            )
+            _require_concise_normal_final_answer(final, streaming=streaming)
+        else:
+            discovery = execute_turn(
+                "tool_search",
+                {
+                    "model": "openai.gpt-5.6-terra",
+                    "input": _canary_prompt(),
+                    "tools": [_tool_search_definition()],
+                },
+            )
+            tool_search_call = _require_exact_function_call_item(
+                discovery,
+                name="tool_search",
+                streaming=streaming,
+            )
+            tool_search_call_id = _clean(tool_search_call.get("call_id"))
+            tool_call = execute_turn(
+                "synthetic_status_lookup",
+                {
+                    "model": "openai.gpt-5.6-terra",
+                    "previous_response_id": _clean(discovery.get("id")),
+                    "input": [
+                        *_streamed_function_call_replay_items(tool_search_call),
+                        {
+                            "type": "function_call_output",
+                            "call_id": tool_search_call_id,
+                            "output": (
+                                '{"tools":[{"name":"mcp__norman_canary.status_lookup",'
+                                '"description":"Synthetic canary status lookup"}]}'
+                            ),
+                        },
+                    ],
+                    "tools": [_synthetic_status_namespace()],
+                },
+            )
+            synthetic_call = _require_exact_function_call_item(
+                tool_call,
+                name="mcp__norman_canary.status_lookup",
+                streaming=streaming,
+            )
+            synthetic_call_id = _clean(synthetic_call.get("call_id"))
+            final = execute_turn(
+                "final_answer",
+                {
+                    "model": "openai.gpt-5.6-terra",
+                    "previous_response_id": _clean(tool_call.get("id")),
+                    "input": [
+                        *_streamed_function_call_replay_items(synthetic_call),
+                        {
+                            "type": "function_call_output",
+                            "call_id": synthetic_call_id,
+                            "output": '{"status":"ok","source":"synthetic"}',
+                        },
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": (
+                                "The synthetic result has been supplied. Return a "
+                                "concise final health result now. Do not call another "
+                                "tool."
+                            ),
+                        },
+                    ],
+                    "tools": [_synthetic_status_namespace()],
+                },
+            )
+            _require_final_answer(final, streaming=streaming)
     except CanaryError as exc:
         receipt["failure_kind"] = exc.kind
         if exc.http_status:
@@ -818,6 +1329,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Exercise the SSE streaming path used by Codex TUIs.",
     )
+    parser.add_argument(
+        "--ops-mcp",
+        action="store_true",
+        help=(
+            "Run the deploy-time read-only Ops MCP continuation canary. "
+            "This always exercises streaming."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -844,7 +1363,9 @@ def main(argv: list[str] | None = None) -> int:
         token=_clean(os.environ.get("NORMAN_PROMPT_PROXY_TOKEN")),
         timeout_seconds=args.timeout_seconds,
         pressure_guard=pressure_guard,
-        streaming=bool(args.stream),
+        streaming=bool(args.stream or args.ops_mcp),
+        ops_mcp=bool(args.ops_mcp),
+        expected_backend_model=EXPECTED_BACKEND_MODEL,
     )
     write_receipt(args.output_json, receipt)
     print(

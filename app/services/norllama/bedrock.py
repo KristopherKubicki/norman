@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import socket
 import subprocess
@@ -23,6 +24,14 @@ BedrockClientFactory = Callable[..., Any]
 BedrockSessionFactory = Callable[..., Any]
 BedrockConfigFactory = Callable[..., Any]
 BEDROCK_MANTLE_MIN_MAX_OUTPUT_TOKENS = 16
+_SAFE_PROVIDER_ERROR_IDENTIFIER = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+_SAFE_PROVIDER_ERROR_PARAM = re.compile(r"^[A-Za-z0-9_.:\[\]/-]{1,160}$")
+_PROVIDER_ERROR_MESSAGE_PARAM = re.compile(
+    r"(?<![A-Za-z0-9_.:\[\]/-])"
+    r"((?:input|tools|reasoning|tool_choice|parallel_tool_calls|text|include)"
+    r"(?:\[[0-9]+\]|\.[A-Za-z_][A-Za-z0-9_]*)*)"
+    r"(?![A-Za-z0-9_.\[\]/-])"
+)
 
 
 @dataclass(frozen=True, repr=False)
@@ -77,8 +86,88 @@ class BedrockMantleApiKey:
         }
 
 
+class BedrockMantleResponsesError(RuntimeError):
+    """A Mantle failure with strictly sanitized provider metadata."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        http_status: int = 0,
+        provider_error_type: str = "",
+        provider_error_code: str = "",
+        provider_error_param: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.http_status = _nonnegative_int(http_status)
+        self.provider_error_type = provider_error_type
+        self.provider_error_code = provider_error_code
+        self.provider_error_param = provider_error_param
+
+    def safe_metadata(self) -> dict[str, int | str]:
+        return {
+            key: value
+            for key, value in {
+                "http_status": self.http_status,
+                "provider_error_type": self.provider_error_type,
+                "provider_error_code": self.provider_error_code,
+                "provider_error_param": self.provider_error_param,
+            }.items()
+            if value
+        }
+
+
 def _clean(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _safe_provider_error_identifier(value: Any) -> str:
+    candidate = _clean(value)
+    if _SAFE_PROVIDER_ERROR_IDENTIFIER.fullmatch(candidate):
+        return candidate
+    return ""
+
+
+def _safe_provider_error_param(value: Any) -> str:
+    """Keep only a schema-field pointer, never provider-supplied values or prose."""
+
+    candidate = _clean(value)
+    if _SAFE_PROVIDER_ERROR_PARAM.fullmatch(candidate):
+        return candidate
+    return ""
+
+
+def _provider_error_param_from_message(value: Any) -> str:
+    """Extract only a recognized schema path from an otherwise discarded message."""
+
+    match = _PROVIDER_ERROR_MESSAGE_PARAM.search(_clean(value))
+    return _safe_provider_error_param(match.group(1)) if match else ""
+
+
+def _mantle_http_error_metadata(
+    error: urllib_error.HTTPError,
+) -> tuple[str, str, str]:
+    """Read only allowlisted error identifiers and a schema pointer."""
+
+    try:
+        body = error.read().decode("utf-8", errors="replace")
+        parsed = json.loads(body) if body else {}
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return "", "", ""
+    if not isinstance(parsed, Mapping):
+        return "", "", ""
+    details = parsed.get("error")
+    details = details if isinstance(details, Mapping) else parsed
+    provider_error_param = _safe_provider_error_param(details.get("param"))
+    if not provider_error_param:
+        provider_error_param = _provider_error_param_from_message(
+            details.get("message")
+        )
+    return (
+        _safe_provider_error_identifier(details.get("type")),
+        _safe_provider_error_identifier(details.get("code")),
+        provider_error_param,
+    )
 
 
 def _first_env(*names: str) -> str:
@@ -845,6 +934,59 @@ def bedrock_mantle_responses_input(
             }
         )
     for message in messages or []:
+        item_type = _clean(message.get("type")).lower()
+        if item_type == "function_call":
+            call_id = _clean(message.get("call_id"))
+            name = _clean(message.get("name"))
+            if not call_id or not name:
+                raise ValueError(
+                    "Bedrock Mantle function_call input requires call_id and name"
+                )
+            arguments = message.get("arguments", "")
+            if isinstance(arguments, (Mapping, list)):
+                arguments = json.dumps(arguments, sort_keys=True, separators=(",", ":"))
+            function_call = {
+                "type": "function_call",
+                "call_id": call_id,
+                "name": name,
+                "arguments": str(arguments or ""),
+            }
+            for field in ("id", "status"):
+                value = message.get(field)
+                if isinstance(value, str) and value:
+                    function_call[field] = value
+            converted.append(function_call)
+            continue
+        if item_type == "function_call_output":
+            call_id = _clean(message.get("call_id"))
+            if not call_id:
+                raise ValueError(
+                    "Bedrock Mantle function_call_output input requires call_id"
+                )
+            output = message.get("output", "")
+            if isinstance(output, (Mapping, list)):
+                output = json.dumps(output, sort_keys=True, separators=(",", ":"))
+            converted.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": str(output or ""),
+                }
+            )
+            continue
+        if item_type == "reasoning":
+            # Reasoning-model function continuations must replay the provider's
+            # native reasoning item unchanged alongside the function result.
+            converted.append(dict(message))
+            continue
+        if item_type == "message" and _clean(message.get("role")).lower() in {
+            "",
+            "assistant",
+        }:
+            # Preserve native assistant output instead of flattening it into a
+            # generic chat message. This keeps provider item identity intact.
+            converted.append(dict(message))
+            continue
         role = _clean(message.get("role")).lower()
         text = _content_text(message.get("content"))
         if not text:
@@ -873,6 +1015,33 @@ def bedrock_mantle_responses_input(
     return converted
 
 
+def _mantle_responses_options(
+    responses_options: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Allow the native Responses fields supported by Bedrock Mantle."""
+
+    options = responses_options or {}
+    payload: dict[str, Any] = {}
+    tools = options.get("tools")
+    if isinstance(tools, list):
+        payload["tools"] = [dict(tool) for tool in tools if isinstance(tool, Mapping)]
+    tool_choice = options.get("tool_choice")
+    if isinstance(tool_choice, (str, Mapping)):
+        payload["tool_choice"] = (
+            dict(tool_choice) if isinstance(tool_choice, Mapping) else tool_choice
+        )
+    if isinstance(options.get("parallel_tool_calls"), bool):
+        payload["parallel_tool_calls"] = options["parallel_tool_calls"]
+    for field in ("reasoning", "text"):
+        value = options.get(field)
+        if isinstance(value, Mapping):
+            payload[field] = dict(value)
+    include = options.get("include")
+    if isinstance(include, list):
+        payload["include"] = [str(value) for value in include if str(value).strip()]
+    return payload
+
+
 def build_bedrock_mantle_responses_request(
     *,
     model: str,
@@ -880,11 +1049,12 @@ def build_bedrock_mantle_responses_request(
     system: str = "",
     max_tokens: int = 1024,
     temperature: float | None = None,
+    responses_options: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     clean_model = _clean(model)
     if not clean_model:
         raise ValueError("Bedrock Mantle route is missing a model")
-    return {
+    payload = {
         "model": clean_model,
         "input": bedrock_mantle_responses_input(messages, system=system),
         # Mantle currently rejects lower values and does not accept temperature.
@@ -893,6 +1063,8 @@ def build_bedrock_mantle_responses_request(
             _positive_int(max_tokens, 1024),
         ),
     }
+    payload.update(_mantle_responses_options(responses_options))
+    return payload
 
 
 def invoke_bedrock_mantle_responses(
@@ -903,6 +1075,7 @@ def invoke_bedrock_mantle_responses(
     system: str = "",
     max_tokens: int = 1024,
     temperature: float | None = None,
+    responses_options: Mapping[str, Any] | None = None,
     region: str = "",
     timeout_seconds: float = 0,
 ) -> dict[str, Any]:
@@ -912,6 +1085,7 @@ def invoke_bedrock_mantle_responses(
         system=system,
         max_tokens=max_tokens,
         temperature=temperature,
+        responses_options=responses_options,
     )
     request = urllib_request.Request(
         bedrock_mantle_responses_url(region),
@@ -930,8 +1104,17 @@ def invoke_bedrock_mantle_responses(
         ) as response:
             raw_response = response.read().decode("utf-8", errors="replace")
     except urllib_error.HTTPError as exc:
-        raise RuntimeError(
-            f"Bedrock Mantle Responses request failed with HTTP {exc.code}"
+        (
+            provider_error_type,
+            provider_error_code,
+            provider_error_param,
+        ) = _mantle_http_error_metadata(exc)
+        raise BedrockMantleResponsesError(
+            f"Bedrock Mantle Responses request failed with HTTP {exc.code}",
+            http_status=exc.code,
+            provider_error_type=provider_error_type,
+            provider_error_code=provider_error_code,
+            provider_error_param=provider_error_param,
         ) from exc
     except (OSError, TimeoutError, urllib_error.URLError) as exc:
         raise RuntimeError("Bedrock Mantle Responses request failed") from exc

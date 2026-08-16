@@ -121,7 +121,7 @@ def test_unmapped_checkout_has_the_expected_generic_fallback(route_module, monke
         "regular-default"
     )
     assert route_module.route_payload(None, "work", unknown_root)["fallback"] == (
-        "work-bedrock"
+        "regular-default"
     )
 
 
@@ -175,6 +175,62 @@ def test_explicit_gateway_profile_and_model_are_not_overridden(
     ]
     assert captured["environment"]["CODEX_HOME"].endswith(".codex-norman")
     assert captured["environment"]["NORMAN_TUI_NO_DIRECT_VAULT"] == "1"
+
+
+def test_control_plane_work_sessions_disable_apps_unless_explicitly_enabled(
+    route_module, monkeypatch, tmp_path
+):
+    route = route_by_key(route_module, "control-plane")
+    real_codex = tmp_path / "codex"
+    real_codex.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    real_codex.chmod(0o700)
+    captured = []
+
+    monkeypatch.setenv("CODEX_WORK_OPS_BINDING_LOADED", "1")
+    monkeypatch.setattr(route_module, "write_gateway_profile", lambda _route: tmp_path)
+    monkeypatch.setattr(route_module, "resolve_real_codex", lambda: real_codex)
+    monkeypatch.setattr(route_module, "verify_managed_tui_secret_policy", lambda: None)
+    monkeypatch.setattr(
+        route_module.os,
+        "execve",
+        lambda executable, arguments, environment: captured.append(
+            (executable, arguments, environment)
+        ),
+    )
+
+    route_module.exec_work_route(route, ["exec", "inspect the repository"])
+    route_module.exec_work_route(
+        route,
+        ["--enable", "apps", "exec", "inspect the repository"],
+    )
+
+    assert captured[0][1] == [
+        str(real_codex),
+        "--disable",
+        "apps",
+        "--profile",
+        route.profile,
+        "-m",
+        route_module.DEFAULT_ROUTER_MODEL,
+        "exec",
+        "inspect the repository",
+    ]
+    assert captured[1][1] == [
+        str(real_codex),
+        "--profile",
+        route.profile,
+        "-m",
+        route_module.DEFAULT_ROUTER_MODEL,
+        "--enable",
+        "apps",
+        "exec",
+        "inspect the repository",
+    ]
+
+
+def test_feature_toggles_do_not_confuse_route_command_detection(route_module):
+    assert route_module.command_name(["--disable", "apps", "exec", "status"]) == "exec"
+    assert route_module.starts_session(["--enable=apps", "exec", "status"])
 
 
 def test_route_environment_hides_raw_secret_configuration_from_every_tui(
@@ -414,7 +470,6 @@ def test_work_profile_registers_ops_mcp_without_forcing_workflow(
     "route_key",
     (
         "compere",
-        "control-plane",
         "earlybird",
         "gold-book",
         "infra",
@@ -448,6 +503,39 @@ def test_work_routes_link_every_canonical_work_skill(
         assert linked_skill.is_symlink()
         assert linked_skill.resolve() == skill
     assert not (home / "skills" / "personal-only").exists()
+
+
+def test_control_plane_route_links_only_its_selected_work_skills(
+    route_module, monkeypatch, tmp_path
+):
+    work_root = tmp_path / "work-skills"
+    control_plane_skill = write_skill(
+        work_root,
+        "control-plane-gdrive-pricing-review",
+    )
+    ops_skill = write_skill(work_root, "ops-openbrand-mcp-ops")
+    unrelated_skill = write_skill(work_root, "webgoat-smoke-monitor-ops")
+    route = route_by_key(route_module, "control-plane")
+    home = tmp_path / route.key
+    skills_home = home / "skills"
+    built_in = skills_home / ".system"
+    built_in.mkdir(parents=True)
+    stale_link = skills_home / unrelated_skill.name
+    stale_link.symlink_to(unrelated_skill, target_is_directory=True)
+    monkeypatch.setattr(route_module, "WORK_SKILLS_SOURCE_ROOT", work_root)
+    monkeypatch.setattr(
+        route_module, "PERSONAL_SKILLS_SOURCE_ROOT", tmp_path / "personal-skills"
+    )
+    monkeypatch.setattr(route_module, "route_home", lambda _route: home)
+
+    route_module.sync_scoped_skills(route)
+
+    assert built_in.is_dir()
+    for skill in (control_plane_skill, ops_skill):
+        linked_skill = skills_home / skill.name
+        assert linked_skill.is_symlink()
+        assert linked_skill.resolve() == skill
+    assert not stale_link.exists()
 
 
 @pytest.mark.parametrize(
@@ -507,7 +595,7 @@ def test_skill_sync_preserves_conflicting_unmanaged_entries(
 ):
     work_root = tmp_path / "work-skills"
     managed_skill = write_skill(work_root, "same-name", "managed\n")
-    route = route_by_key(route_module, "control-plane")
+    route = route_by_key(route_module, "earlybird")
     home = tmp_path / route.key
     conflicting_skill = write_skill(home / "skills", managed_skill.name, "user-owned\n")
     monkeypatch.setattr(route_module, "WORK_SKILLS_SOURCE_ROOT", work_root)
@@ -523,7 +611,7 @@ def test_skill_sync_preserves_conflicting_unmanaged_entries(
     assert conflicting_skill.joinpath("SKILL.md").read_text(encoding="utf-8") == (
         "user-owned\n"
     )
-    assert "skill conflict for control-plane" in capsys.readouterr().err
+    assert "skill conflict for earlybird" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -606,7 +694,6 @@ def test_generated_profile_restores_managed_model_and_refreshes_stale_catalog_ca
 
     contents = profile.read_text(encoding="utf-8")
     assert 'model = "norman-code"' in contents
-    assert "gpt-5.6-terra" not in contents
     assert not cache.exists()
     backups = list(home.glob("models_cache.json.stale-*"))
     assert len(backups) == 1
@@ -669,14 +756,29 @@ def test_every_route_generates_an_isolated_brokered_gateway_profile(
     assert profile_path.stat().st_mode & 0o777 == 0o600
 
 
-def test_regular_and_work_fallbacks_execute_the_expected_targets(
+def test_unmapped_work_session_uses_regular_codex_without_reentering_wrapper(
+    route_module, monkeypatch, capsys
+):
+    fallback_calls = []
+
+    monkeypatch.setattr(route_module, "resolve_route", lambda _cwd: None)
+    monkeypatch.setattr(
+        route_module,
+        "exec_regular_fallback",
+        lambda arguments: fallback_calls.append(arguments),
+    )
+
+    assert route_module.main(["--launcher", "work", "--reenter", "/missing", "--"]) == 0
+    assert fallback_calls == [[]]
+    assert "no mapped Norman work route" in capsys.readouterr().err
+
+
+def test_regular_fallback_executes_the_real_codex_binary(
     route_module, monkeypatch, tmp_path
 ):
     real_codex = tmp_path / "real-codex"
-    reentry = tmp_path / "codex-work"
-    for path in (real_codex, reentry):
-        path.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
-        path.chmod(0o700)
+    real_codex.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    real_codex.chmod(0o700)
     captured = []
 
     monkeypatch.setattr(route_module, "resolve_real_codex", lambda: real_codex)
@@ -689,14 +791,9 @@ def test_regular_and_work_fallbacks_execute_the_expected_targets(
     )
 
     route_module.exec_regular_fallback(["--version"])
-    route_module.exec_work_fallback(str(reentry), ["--version"])
 
     assert captured[0][0] == str(real_codex)
     assert captured[0][1] == [str(real_codex), "--version"]
-    assert captured[1][0] == str(reentry)
-    assert captured[1][1] == [str(reentry), "--version"]
-    assert captured[1][2]["CODEX_ROUTER_RESOLVED"] == "1"
-    assert captured[1][2]["CODEX_REAL_BIN"] == str(real_codex)
 
 
 def test_mapped_route_verify_checks_models_then_local_capacity_once(
@@ -719,15 +816,10 @@ def test_mapped_route_verify_checks_models_then_local_capacity_once(
 
     assert route_module.verify_route(route) == (
         True,
-        "authenticated Responses gateway and local coding capacity verified",
+        "authenticated Responses gateway and GPT-5.6 Terra route verified",
     )
     assert calls == [
         (route.endpoint, "models", "short-lived-token"),
-        (
-            route.endpoint,
-            "norman/capacity?model=norman-code",
-            "short-lived-token",
-        ),
     ]
 
 
@@ -753,16 +845,11 @@ def test_norman_route_verify_checks_models_then_local_capacity_once(
 
     assert route_module.verify_route(route) == (
         True,
-        "authenticated Responses gateway and local coding capacity verified",
+        "authenticated Responses gateway and GPT-5.6 Terra route verified",
     )
     assert broker_calls == ["norman"]
     assert calls == [
         (route.endpoint, "models", "short-lived-token"),
-        (
-            route.endpoint,
-            "norman/capacity?model=norman-code",
-            "short-lived-token",
-        ),
     ]
 
 
@@ -795,7 +882,7 @@ def test_route_verify_rejects_model_catalog_without_coding_tools(
 
     assert route_module.verify_route(route) == (
         False,
-        "gateway model catalog is incompatible with local coding tools: "
+        "gateway model catalog is incompatible with coding tools: "
         "'norman-code' advertises apply_patch_tool_type=None, expected "
         "'freeform'; deploy the catalog fix and start a new chat",
     )
@@ -885,7 +972,7 @@ def test_unavailable_local_capacity_reports_approved_bedrock_fallback(
     )
 
 
-def test_capacity_unavailable_warns_then_starts_routed_session(
+def test_model_route_unavailable_warns_then_starts_routed_session(
     route_module, monkeypatch, capsys
 ):
     route = route_by_key(route_module, "control-plane")
@@ -903,7 +990,7 @@ def test_capacity_unavailable_warns_then_starts_routed_session(
         "preflight_route_capacity",
         lambda _route: (
             False,
-            "local coding capacity is unavailable (mesh_probe_stale); retry later",
+            "gateway model catalog is unavailable; retry later",
         ),
     )
     monkeypatch.setattr(
@@ -922,7 +1009,7 @@ def test_capacity_unavailable_warns_then_starts_routed_session(
     assert executed == ["route"]
     captured = capsys.readouterr()
     assert "control-plane local capacity warning" in captured.err
-    assert "mesh_probe_stale" in captured.err
+    assert "gateway model catalog is unavailable" in captured.err
     assert "Starting Codex normally" in captured.err
     assert "subscription: Short window 68% left" in captured.err
     assert "metered (Aug 01 to Sep 01): ~$1.25" in captured.err

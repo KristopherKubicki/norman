@@ -3,9 +3,9 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field, confloat, constr, validator
+from pydantic import BaseModel, ConfigDict, Field, confloat, constr, field_validator
 
 
 TUI_KPI_SCHEMA = "norman.kaizen-tui-snapshot.v1"
@@ -16,10 +16,10 @@ KAIZEN_CANDIDATE_SCHEMA = "norman.kaizen-candidate.v1"
 KAIZEN_EVIDENCE_SCHEMA = "norman.kaizen-candidate-evidence.v1"
 TUI_SNAPSHOT_KPI_ID = "tui_snapshot_state"
 
-RealmValue = constr(regex=r"^[a-z0-9][a-z0-9/_-]{1,95}$")
-TuiIdentifier = constr(regex=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
-CandidateTargetRef = constr(regex=r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$")
-ObservationReference = constr(regex=r"^observation:[1-9][0-9]*$")
+RealmValue = constr(pattern=r"^[a-z0-9][a-z0-9/_-]{1,95}$")
+TuiIdentifier = constr(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+CandidateTargetRef = constr(pattern=r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$")
+ObservationReference = constr(pattern=r"^observation:[1-9][0-9]*$")
 CandidateText = constr(strip_whitespace=True, min_length=1, max_length=1200)
 CandidateShortText = constr(strip_whitespace=True, min_length=1, max_length=600)
 
@@ -120,14 +120,15 @@ class TuiKpiMetrics(BaseModel):
     degraded_count: confloat(ge=0, le=10_000_000)
     state_changes: confloat(ge=0, le=10_000_000)
 
-    class Config:
-        extra = "forbid"
+    model_config = ConfigDict(extra="forbid")
 
 
 class TuiKpiSnapshot(BaseModel):
     """The only TUI payload accepted by the Kaizen ingestion route."""
 
-    schema_: str = Field(TUI_KPI_SCHEMA, alias="schema", const=True)
+    schema_: Literal["norman.kaizen-tui-snapshot.v1"] = Field(
+        TUI_KPI_SCHEMA, alias="schema"
+    )
     realm: RealmValue
     source_tui: TuiIdentifier
     observed_at: datetime
@@ -139,7 +140,7 @@ class TuiKpiSnapshot(BaseModel):
     state_entered_at: datetime
     metrics: TuiKpiMetrics
 
-    @validator("observed_at", "state_entered_at", pre=True)
+    @field_validator("observed_at", "state_entered_at", mode="before")
     def normalize_timestamp(cls, value: Any) -> datetime:
         """Require an explicit timestamp and normalize it to UTC."""
         if isinstance(value, (int, float)):
@@ -153,10 +154,11 @@ class TuiKpiSnapshot(BaseModel):
             raise ValueError("timestamp must include a timezone")
         return value.astimezone(timezone.utc)
 
-    class Config:
-        allow_population_by_field_name = True
-        anystr_strip_whitespace = True
-        extra = "forbid"
+    model_config = ConfigDict(
+        validate_by_name=True,
+        str_strip_whitespace=True,
+        extra="forbid",
+    )
 
     def sanitized_payload(self) -> dict[str, Any]:
         """Return the fixed aggregate shape that may be persisted."""
@@ -171,7 +173,7 @@ class TuiKpiSnapshot(BaseModel):
             "prompt_visible": self.prompt_visible,
             "waiting_visible": self.waiting_visible,
             "state_entered_at": utc_iso(self.state_entered_at),
-            "metrics": self.metrics.dict(),
+            "metrics": self.metrics.model_dump(),
         }
 
 
@@ -180,29 +182,29 @@ class KaizenCandidateProposalPayload(BaseModel):
 
     summary: CandidateShortText
     allowed_action: KaizenCandidateAction
-    verification_plan: list[CandidateShortText] = Field(min_items=1, max_items=5)
+    verification_plan: list[CandidateShortText] = Field(min_length=1, max_length=5)
     expiry_at: datetime
 
-    @validator("expiry_at", pre=True)
+    @field_validator("expiry_at", mode="before")
     def normalize_expiry(cls, value: Any) -> datetime:
         return normalize_utc_timestamp(value)
 
-    @validator("verification_plan")
+    @field_validator("verification_plan")
     def require_distinct_verification_steps(cls, value: list[str]) -> list[str]:
         normalized = [item.strip() for item in value]
         if len({item.lower() for item in normalized}) != len(normalized):
             raise ValueError("verification_plan must not repeat a step")
         return normalized
 
-    class Config:
-        anystr_strip_whitespace = True
-        extra = "forbid"
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
 
 class KaizenShadowCandidatePayload(BaseModel):
     """The exact JSON object accepted from the local Norllama shadow lane."""
 
-    schema_: str = Field(KAIZEN_CANDIDATE_SCHEMA, alias="schema", const=True)
+    schema_: Literal["norman.kaizen-candidate.v1"] = Field(
+        KAIZEN_CANDIDATE_SCHEMA, alias="schema"
+    )
     lane: KaizenCandidateLane
     target_type: KaizenCandidateTargetType
     target_ref: CandidateTargetRef
@@ -210,20 +212,21 @@ class KaizenShadowCandidatePayload(BaseModel):
     risk_tier: KaizenCandidateRiskTier
     impact_score: confloat(ge=0, le=1)
     confidence_score: confloat(ge=0, le=1)
-    evidence_refs: list[ObservationReference] = Field(min_items=1, max_items=8)
+    evidence_refs: list[ObservationReference] = Field(min_length=1, max_length=8)
     evidence_summary: CandidateText
     proposal: KaizenCandidateProposalPayload
 
-    @validator("evidence_refs")
+    @field_validator("evidence_refs")
     def require_distinct_evidence_refs(cls, value: list[str]) -> list[str]:
         if len(set(value)) != len(value):
             raise ValueError("evidence_refs must not repeat a reference")
         return value
 
-    class Config:
-        allow_population_by_field_name = True
-        anystr_strip_whitespace = True
-        extra = "forbid"
+    model_config = ConfigDict(
+        validate_by_name=True,
+        str_strip_whitespace=True,
+        extra="forbid",
+    )
 
 
 @dataclass(frozen=True)

@@ -56,7 +56,7 @@ DRIFT_RULES = (
         ),
         suggestion=(
             "Resolve EXPECTED_MODEL from the compiled Codex role policy "
-            f"({CODEX_CLOUD_DEFAULT_MODEL}) instead of hardcoding final authority."
+            f"({CODEX_CLOUD_DEFAULT_MODEL}) instead of hardcoding a model."
         ),
     ),
     DriftRule(
@@ -64,8 +64,8 @@ DRIFT_RULES = (
         severity="error",
         pattern=re.compile(r"\bauto_bedrock_5_5\b", re.I),
         suggestion=(
-            "Rename or resolve auto mode through the role policy; 5.5 may be "
-            "final-authority only, not the generic auto default."
+            "Rename or resolve auto mode through the role policy; "
+            "GPT-5.6 Terra is the only active model."
         ),
     ),
     DriftRule(
@@ -98,8 +98,7 @@ DRIFT_RULES = (
         ),
         suggestion=(
             f"Use the role-policy cloud default ({CODEX_CLOUD_DEFAULT_MODEL}); "
-            f"reserve {CODEX_FINAL_AUTHORITY_MODEL} for final authority, "
-            "tiebreaker, safety boundary, or failed evidence gates."
+            "remove GPT-5.5 from active defaults and routes."
         ),
     ),
     DriftRule(
@@ -111,8 +110,8 @@ DRIFT_RULES = (
             re.I,
         ),
         suggestion=(
-            f"Do not describe {CODEX_FINAL_AUTHORITY_MODEL} as the default route. "
-            "The role policy marks that lane as final-authority only."
+            "Do not describe GPT-5.5 as an active default route. "
+            f"The role policy requires {CODEX_FINAL_AUTHORITY_MODEL}."
         ),
     ),
     DriftRule(
@@ -123,9 +122,7 @@ DRIFT_RULES = (
             re.I,
         ),
         suggestion=(
-            "Replace 5.5-planner/verifier flows with local/cheap worker -> "
-            f"{CODEX_CLOUD_DEFAULT_MODEL} verifier -> "
-            f"{CODEX_FINAL_AUTHORITY_MODEL} final authority only when needed."
+            f"Replace 5.5 planner/verifier flows with {CODEX_CLOUD_DEFAULT_MODEL}."
         ),
     ),
     DriftRule(
@@ -137,7 +134,7 @@ DRIFT_RULES = (
         ),
         suggestion=(
             f"Make {CODEX_CLOUD_DEFAULT_MODEL} the normal verifier and "
-            f"{CODEX_FINAL_AUTHORITY_MODEL} the rare final authority/escalation lane."
+            "the only active authority."
         ),
     ),
 )

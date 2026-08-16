@@ -37,10 +37,18 @@ def _load_norman_codex_web(monkeypatch, tmp_path, **overrides):
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
     monkeypatch.setenv("NORMAN_CODEX_WEB_STATE_DIR", str(state_dir))
     monkeypatch.setenv("NORMAN_CODEX_PROFILE_CONFIG_FLAG", "--profile-v2")
-    monkeypatch.setenv("NORMAN_CODEX_MODEL", "gpt-5.4")
-    monkeypatch.setenv("NORMAN_CODEX_LATEST_MODEL", "gpt-5.5")
-    monkeypatch.setenv("NORMAN_CODEX_AVAILABLE_MODELS", "gpt-5.5")
+    monkeypatch.setenv("NORMAN_CODEX_MODEL", "gpt-5.6-terra")
+    monkeypatch.setenv("NORMAN_CODEX_LATEST_MODEL", "gpt-5.6-terra")
+    monkeypatch.setenv(
+        "NORMAN_CODEX_AVAILABLE_MODELS",
+        "openai.gpt-5.6-terra,gpt-5.6-terra",
+    )
     monkeypatch.setenv("NORMAN_CODEX_BBS_SUMMARY_ENABLED", "0")
+    if "NORMAN_CODEX_HOST_PRESSURE_GUARD_PATH" not in overrides:
+        monkeypatch.setenv(
+            "NORMAN_CODEX_HOST_PRESSURE_GUARD_PATH",
+            str(tmp_path / "pressure-guard.json"),
+        )
     if "NORMAN_CODEX_REQUIRE_NAMED_ESCALATION" not in overrides:
         monkeypatch.setenv("NORMAN_CODEX_REQUIRE_NAMED_ESCALATION", "0")
     if "NORMAN_CODEX_ALLOW_OPENAI_API_SPEND" not in overrides:
@@ -148,15 +156,14 @@ def _cheap_snapshot(module):
     }
 
 
-def test_runtime_model_enforces_gpt55_floor(monkeypatch, tmp_path) -> None:
+def test_runtime_model_enforces_gpt56_terra_floor(monkeypatch, tmp_path) -> None:
     module = _load_norman_codex_web(monkeypatch, tmp_path)
 
-    assert module.CODEX_MODEL_FLOOR == "gpt-5.5"
-    assert module.codex_model_below_floor("gpt-5.4") is True
-    assert "gpt-5.5" in module.AVAILABLE_MODELS
-    assert "gpt-5.4" in module.AVAILABLE_MODELS
-    assert "openai.gpt-5.4" in module.AVAILABLE_MODELS
-    assert module.configured_chat_model() == "gpt-5.5"
+    assert module.CODEX_MODEL_FLOOR == "gpt-5.6-terra"
+    assert module.codex_model_below_floor("gpt-5.5") is True
+    assert "gpt-5.6-terra" in module.AVAILABLE_MODELS
+    assert "openai.gpt-5.6-terra" in module.AVAILABLE_MODELS
+    assert module.configured_chat_model() == "gpt-5.6-terra"
     assert module.chat_model_update_available() is False
 
 
@@ -1359,7 +1366,7 @@ def test_xfast_response_speed_requires_explicit_emergency_gate(
     assert module.response_reasoning_effort("xfast") == "low"
 
 
-def test_session_admission_requires_named_gpt55_or_xhigh_escalation(
+def test_session_admission_requires_named_xhigh_escalation(
     monkeypatch, tmp_path
 ) -> None:
     module = _load_norman_codex_web(
@@ -1368,12 +1375,12 @@ def test_session_admission_requires_named_gpt55_or_xhigh_escalation(
         NORMAN_CODEX_REQUIRE_NAMED_ESCALATION="1",
     )
 
-    missing_model_reason = module.session_budget_admission(
-        model="openai.gpt-5.5",
+    normal_reason = module.session_budget_admission(
+        model="openai.gpt-5.6-terra",
         reasoning_effort="high",
     )
-    assert missing_model_reason["allowed"] is False
-    assert missing_model_reason["reason_code"] == "named_escalation_required"
+    assert normal_reason["allowed"] is True
+    assert normal_reason["reason_code"] == "within_budget"
 
     missing_effort_reason = module.session_budget_admission(
         model="openai.gpt-5.6-terra",
@@ -1383,9 +1390,9 @@ def test_session_admission_requires_named_gpt55_or_xhigh_escalation(
     assert missing_effort_reason["reason_code"] == "named_escalation_required"
 
     admitted = module.session_budget_admission(
-        model="openai.gpt-5.5",
-        reasoning_effort="high",
-        escalation_reason="Need the legacy model to reproduce the production failure.",
+        model="openai.gpt-5.6-terra",
+        reasoning_effort="xhigh",
+        escalation_reason="Need elevated reasoning to reproduce the production failure.",
     )
     assert admitted["allowed"] is True
     assert admitted["action"] == "escalated"
@@ -2051,7 +2058,7 @@ def test_start_web_prompt_applies_auto_turn_controls_to_status(
     assert snapshot["running_turn_control"]["workload"] == "status"
     assert snapshot["running_turn_envelope"]["operator_intent_class"] == "status"
     assert snapshot["running_turn_envelope"]["authority_class"] == "read_only"
-    assert snapshot["running_turn_envelope"]["effective_model"] == "gpt-5.4"
+    assert snapshot["running_turn_envelope"]["effective_model"] == "gpt-5.6-terra"
 
 
 def test_service_tier_controls_are_explicit_and_alias_legacy_fast(
@@ -2105,10 +2112,10 @@ def test_bedrock_standard_profile_routes_standard_and_keeps_flex_direct(
         NORMAN_CODEX_CHATGPT_CREDIT_EXTENSION_ALLOWED="1",
         NORMAN_CODEX_SERVICE_TIER="default",
         NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
-        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.5",
-        NORMAN_CODEX_DIRECT_MODEL="gpt-5.5",
-        NORMAN_CODEX_FLEX_MODEL="gpt-5.5",
-        NORMAN_CODEX_PRIORITY_MODEL="gpt-5.5",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.6-terra",
+        NORMAN_CODEX_DIRECT_MODEL="gpt-5.6-terra",
+        NORMAN_CODEX_FLEX_MODEL="gpt-5.6-terra",
+        NORMAN_CODEX_PRIORITY_MODEL="gpt-5.6-terra",
         NORMAN_CODEX_STANDARD_AWS_PROFILE="ob-traqline-admin",
         NORMAN_CODEX_STANDARD_AWS_REGION="us-east-2",
     )
@@ -2122,14 +2129,16 @@ def test_bedrock_standard_profile_routes_standard_and_keeps_flex_direct(
     assert module.service_tier_options_payload()[1]["label"] == "Bedrock Standard"
     assert module.codex_profile_v2_for_service_tier("standard") == "traqline-bedrock"
     assert module.codex_model_for_service_tier("standard", "gpt-5.4") == (
-        "openai.gpt-5.4"
+        "openai.gpt-5.6-terra"
     )
     assert module.codex_profile_v2_for_service_tier("flex") == ""
-    assert module.codex_model_for_service_tier("flex", "gpt-5.4") == "gpt-5.4"
-    assert module.codex_model_for_service_tier("flex", "openai.gpt-5.4") == "gpt-5.4"
+    assert module.codex_model_for_service_tier("flex", "gpt-5.4") == "gpt-5.6-terra"
+    assert (
+        module.codex_model_for_service_tier("flex", "openai.gpt-5.4") == "gpt-5.6-terra"
+    )
     assert (
         module.codex_thread_scope_key("flex", "openai.gpt-5.4")
-        == "direct:model:gpt-5.4"
+        == "direct:model:gpt-5.6-terra"
     )
     assert module.usage_provider_tags("standard") == {
         "provider_label": "Bedrock Standard",
@@ -2182,7 +2191,7 @@ def test_bedrock_standard_profile_routes_standard_and_keeps_flex_direct(
     module._execute_codex_prompt("status?", "balanced", 3, [], service_tier="default")
     standard_cmd, standard_env = captured[-1]
     assert standard_cmd[standard_cmd.index("--profile-v2") + 1] == "traqline-bedrock"
-    assert standard_cmd[standard_cmd.index("-m") + 1] == "openai.gpt-5.5"
+    assert standard_cmd[standard_cmd.index("-m") + 1] == "openai.gpt-5.6-terra"
     assert "-c" in standard_cmd
     assert standard_env["AWS_PROFILE"] == "ob-traqline-admin"
     assert standard_env["AWS_REGION"] == "us-east-2"
@@ -2190,7 +2199,7 @@ def test_bedrock_standard_profile_routes_standard_and_keeps_flex_direct(
     module._execute_codex_prompt("status?", "balanced", 3, [], service_tier="flex")
     flex_cmd, flex_env = captured[-1]
     assert "--profile-v2" not in flex_cmd
-    assert flex_cmd[flex_cmd.index("-m") + 1] == "gpt-5.5"
+    assert flex_cmd[flex_cmd.index("-m") + 1] == "gpt-5.6-terra"
     assert 'model_provider="openai"' in flex_cmd
     assert 'service_tier="flex"' in flex_cmd
     assert flex_env.get("AWS_PROFILE") is None
@@ -2208,7 +2217,7 @@ def test_bedrock_standard_profile_routes_standard_and_keeps_flex_direct(
     )
     stale_flex_cmd, stale_flex_env = captured[-1]
     assert "--profile-v2" not in stale_flex_cmd
-    assert stale_flex_cmd[stale_flex_cmd.index("-m") + 1] == "gpt-5.5"
+    assert stale_flex_cmd[stale_flex_cmd.index("-m") + 1] == "gpt-5.6-terra"
     assert stale_flex_env.get("AWS_PROFILE") is None
     assert stale_flex_env.get("AWS_REGION") is None
 
@@ -2223,14 +2232,14 @@ def test_bedrock_failover_profile_routes_secondary_region_before_direct(
         tmp_path,
         NORMAN_CODEX_SERVICE_TIER="default",
         NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
-        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.6-terra",
         NORMAN_CODEX_BEDROCK_FAILOVER_PROFILE_V2="traqline-bedrock-us-west-2",
-        NORMAN_CODEX_BEDROCK_FAILOVER_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_BEDROCK_FAILOVER_MODEL="openai.gpt-5.6-terra",
         NORMAN_CODEX_BEDROCK_FAILOVER_AWS_PROFILE="ob-traqline-admin",
         NORMAN_CODEX_BEDROCK_FAILOVER_AWS_REGION="us-west-2",
-        NORMAN_CODEX_DIRECT_MODEL="gpt-5.5",
-        NORMAN_CODEX_FLEX_MODEL="gpt-5.5",
-        NORMAN_CODEX_PRIORITY_MODEL="gpt-5.5",
+        NORMAN_CODEX_DIRECT_MODEL="gpt-5.6-terra",
+        NORMAN_CODEX_FLEX_MODEL="gpt-5.6-terra",
+        NORMAN_CODEX_PRIORITY_MODEL="gpt-5.6-terra",
         NORMAN_CODEX_STANDARD_AWS_PROFILE="ob-traqline-admin",
         NORMAN_CODEX_STANDARD_AWS_REGION="us-east-2",
     )
@@ -2252,10 +2261,11 @@ def test_bedrock_failover_profile_routes_secondary_region_before_direct(
         "traqline-bedrock-us-west-2",
     ]
     assert (
-        module.codex_model_for_service_tier("bedrock-failover", "") == "openai.gpt-5.5"
+        module.codex_model_for_service_tier("bedrock-failover", "")
+        == "openai.gpt-5.6-terra"
     )
     assert module.codex_thread_scope_key("bedrock-failover") == (
-        "profile-v2:traqline-bedrock-us-west-2:model:openai.gpt-5.5"
+        "profile-v2:traqline-bedrock-us-west-2:model:openai.gpt-5.6-terra"
     )
     assert module.usage_provider_tags("bedrock-failover") == {
         "provider_label": "Bedrock Failover",
@@ -2316,7 +2326,7 @@ def test_bedrock_failover_profile_routes_secondary_region_before_direct(
     assert failover_cmd[failover_cmd.index("--profile-v2") + 1] == (
         "traqline-bedrock-us-west-2"
     )
-    assert failover_cmd[failover_cmd.index("-m") + 1] == "openai.gpt-5.5"
+    assert failover_cmd[failover_cmd.index("-m") + 1] == "openai.gpt-5.6-terra"
     assert 'service_tier="default"' not in failover_cmd
     assert failover_env["AWS_PROFILE"] == "ob-traqline-admin"
     assert failover_env["AWS_REGION"] == "us-west-2"
@@ -2332,18 +2342,18 @@ def test_bedrock_tertiary_failover_profile_routes_before_direct(
         tmp_path,
         NORMAN_CODEX_SERVICE_TIER="default",
         NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
-        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.6-terra",
         NORMAN_CODEX_BEDROCK_FAILOVER_PROFILE_V2="traqline-bedrock-us-east-1",
-        NORMAN_CODEX_BEDROCK_FAILOVER_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_BEDROCK_FAILOVER_MODEL="openai.gpt-5.6-terra",
         NORMAN_CODEX_BEDROCK_FAILOVER_AWS_PROFILE="ob-traqline-admin",
         NORMAN_CODEX_BEDROCK_FAILOVER_AWS_REGION="us-east-1",
         NORMAN_CODEX_BEDROCK_FAILOVER2_PROFILE_V2="traqline-bedrock-us-west-2",
-        NORMAN_CODEX_BEDROCK_FAILOVER2_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_BEDROCK_FAILOVER2_MODEL="openai.gpt-5.6-terra",
         NORMAN_CODEX_BEDROCK_FAILOVER2_AWS_PROFILE="ob-traqline-admin",
         NORMAN_CODEX_BEDROCK_FAILOVER2_AWS_REGION="us-west-2",
-        NORMAN_CODEX_DIRECT_MODEL="gpt-5.5",
-        NORMAN_CODEX_FLEX_MODEL="gpt-5.5",
-        NORMAN_CODEX_PRIORITY_MODEL="gpt-5.5",
+        NORMAN_CODEX_DIRECT_MODEL="gpt-5.6-terra",
+        NORMAN_CODEX_FLEX_MODEL="gpt-5.6-terra",
+        NORMAN_CODEX_PRIORITY_MODEL="gpt-5.6-terra",
         NORMAN_CODEX_STANDARD_AWS_PROFILE="ob-traqline-admin",
         NORMAN_CODEX_STANDARD_AWS_REGION="us-east-2",
     )
@@ -2363,7 +2373,7 @@ def test_bedrock_tertiary_failover_profile_routes_before_direct(
     )
     assert (
         module.codex_model_for_service_tier("bedrock-failover-2", "")
-        == "openai.gpt-5.5"
+        == "openai.gpt-5.6-terra"
     )
     assert module.usage_provider_tags("bedrock-failover-2") == {
         "provider_label": "Bedrock Failover 2",
@@ -2831,8 +2841,8 @@ def test_bedrock_standard_can_disable_direct_openai_tiers(
         tmp_path,
         NORMAN_CODEX_SERVICE_TIER="default",
         NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
-        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.5",
-        NORMAN_CODEX_DIRECT_MODEL="gpt-5.5",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.6-terra",
+        NORMAN_CODEX_DIRECT_MODEL="gpt-5.6-terra",
         NORMAN_CODEX_DIRECT_TIERS_ENABLED="0",
         HOUSEBOT_CODEX_DIRECT_TIERS_ENABLED="0",
         NORMAN_CODEX_STANDARD_AWS_PROFILE="ob-traqline-admin",
@@ -2850,7 +2860,9 @@ def test_bedrock_standard_can_disable_direct_openai_tiers(
     assert module.codex_profile_v2_for_service_tier("auto") == "traqline-bedrock"
     assert module.service_tier_config_args("flex") == []
     assert module.codex_profile_v2_for_service_tier("flex") == "traqline-bedrock"
-    assert module.codex_model_for_service_tier("flex", "gpt-5.5") == "openai.gpt-5.5"
+    assert (
+        module.codex_model_for_service_tier("flex", "gpt-5.5") == "openai.gpt-5.6-terra"
+    )
     assert module.usage_provider_tags("flex") == {
         "provider_label": "Bedrock Standard",
         "provider_surface": "aws-bedrock",
@@ -2884,7 +2896,7 @@ def test_bedrock_standard_does_not_resume_legacy_direct_thread(
         tmp_path,
         NORMAN_CODEX_SERVICE_TIER="default",
         NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
-        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.6-terra",
     )
     module.ensure_state_dir()
     module.THREAD_ID_PATH.write_text("legacy-direct-thread", encoding="utf-8")
@@ -2915,7 +2927,7 @@ def test_bedrock_standard_does_not_resume_legacy_direct_thread(
     assert "resume" not in first_cmd
     assert module.THREAD_ID_PATH.read_text(encoding="utf-8") == "bedrock-thread"
     assert module.THREAD_SCOPE_PATH.read_text(encoding="utf-8") == (
-        "profile-v2:traqline-bedrock:model:openai.gpt-5.5"
+        "profile-v2:traqline-bedrock:model:openai.gpt-5.6-terra"
     )
 
     module._execute_codex_prompt("status?", "balanced", 3, [], service_tier="default")
@@ -2933,11 +2945,11 @@ def test_bedrock_standard_starts_fresh_thread_for_heavy_context(
         tmp_path,
         NORMAN_CODEX_SERVICE_TIER="default",
         NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
-        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.6-terra",
     )
     module.ensure_state_dir()
     old_thread_id = "heavy-bedrock-thread"
-    old_scope = "profile-v2:traqline-bedrock:model:openai.gpt-5.5"
+    old_scope = "profile-v2:traqline-bedrock:model:openai.gpt-5.6-terra"
     module.THREAD_ID_PATH.write_text(old_thread_id, encoding="utf-8")
     module.THREAD_SCOPE_PATH.write_text(old_scope, encoding="utf-8")
     module.append_usage_entry(
@@ -2949,7 +2961,7 @@ def test_bedrock_standard_starts_fresh_thread_for_heavy_context(
         service_tier="default",
         success=True,
         runtime="codex",
-        model="openai.gpt-5.5",
+        model="openai.gpt-5.6-terra",
         usage={
             "input_tokens": 120_000,
             "cached_input_tokens": 60_000,
@@ -2958,7 +2970,7 @@ def test_bedrock_standard_starts_fresh_thread_for_heavy_context(
         cost_route=_route_proof(
             module,
             runtime="codex",
-            model="openai.gpt-5.5",
+            model="openai.gpt-5.6-terra",
             service_tier="default",
         ),
     )
@@ -2974,7 +2986,7 @@ def test_bedrock_standard_starts_fresh_thread_for_heavy_context(
             detail=5,
             service_tier="default",
             runtime="codex",
-            model="openai.gpt-5.5",
+            model="openai.gpt-5.6-terra",
             usage={"input_tokens": 12_000, "output_tokens": 900},
         )
 
@@ -3023,13 +3035,13 @@ def test_bedrock_pack_treats_heavy_thread_as_resume_risk(monkeypatch, tmp_path) 
         tmp_path,
         NORMAN_CODEX_SERVICE_TIER="default",
         NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
-        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.6-terra",
         NORMAN_CODEX_BEDROCK_CONTEXT_PACK_MIN_THREAD_TOKENS="80000",
         NORMAN_CODEX_BEDROCK_CONTEXT_PACK_MIN_SAVED_TOKENS="4000",
     )
     module.ensure_state_dir()
     old_thread_id = "heavy-thread-small-visible-context"
-    old_scope = "profile-v2:traqline-bedrock:model:openai.gpt-5.5"
+    old_scope = "profile-v2:traqline-bedrock:model:openai.gpt-5.6-terra"
     module.THREAD_ID_PATH.write_text(old_thread_id, encoding="utf-8")
     module.THREAD_SCOPE_PATH.write_text(old_scope, encoding="utf-8")
     module.append_usage_entry(
@@ -3041,19 +3053,19 @@ def test_bedrock_pack_treats_heavy_thread_as_resume_risk(monkeypatch, tmp_path) 
         service_tier="default",
         success=True,
         runtime="codex",
-        model="openai.gpt-5.5",
+        model="openai.gpt-5.6-terra",
         usage={"input_tokens": 120_000, "output_tokens": 700},
         cost_route=_route_proof(
             module,
             runtime="codex",
-            model="openai.gpt-5.5",
+            model="openai.gpt-5.6-terra",
             service_tier="default",
         ),
     )
 
     plan = module.bedrock_context_pack_plan(
         service_tier="default",
-        model="gpt-5.5",
+        model="gpt-5.6-terra",
         session_id=old_thread_id,
         thread_scope=old_scope,
     )
@@ -3181,15 +3193,15 @@ def test_bedrock_pack_forces_costly_cloud_thread_below_token_threshold(
         tmp_path,
         NORMAN_CODEX_SERVICE_TIER="default",
         NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
-        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.6-terra",
         NORMAN_CODEX_BEDROCK_CONTEXT_PACK_MIN_THREAD_TOKENS="80000",
         NORMAN_CODEX_BEDROCK_CONTEXT_PACK_HARD_THREAD_TOKENS="200000",
         NORMAN_CODEX_BEDROCK_CONTEXT_PACK_MIN_UNCACHED_INPUT_TOKENS="80000",
-        NORMAN_CODEX_BEDROCK_CONTEXT_PACK_MIN_ESTIMATED_COST_USD="0.25",
+        NORMAN_CODEX_BEDROCK_CONTEXT_PACK_MIN_ESTIMATED_COST_USD="0.15",
     )
     module.ensure_state_dir()
     old_thread_id = "costly-thread-under-hard-cap"
-    old_scope = "profile-v2:traqline-bedrock:model:openai.gpt-5.5"
+    old_scope = "profile-v2:traqline-bedrock:model:openai.gpt-5.6-terra"
     module.append_usage_entry(
         started_at=100,
         finished_at=170,
@@ -3199,26 +3211,26 @@ def test_bedrock_pack_forces_costly_cloud_thread_below_token_threshold(
         service_tier="default",
         success=True,
         runtime="codex",
-        model="openai.gpt-5.5",
+        model="openai.gpt-5.6-terra",
         usage={"input_tokens": 70_000, "output_tokens": 2_000},
         cost_route=_route_proof(
             module,
             runtime="codex",
-            model="openai.gpt-5.5",
+            model="openai.gpt-5.6-terra",
             service_tier="default",
         ),
     )
 
     plan = module.bedrock_context_pack_plan(
         service_tier="default",
-        model="openai.gpt-5.5",
+        model="openai.gpt-5.6-terra",
         session_id=old_thread_id,
         thread_scope=old_scope,
     )
 
     assert plan["thread_tokens"] < 80_000
     assert plan["uncached_input_pressure"] is False
-    assert plan["estimated_thread_cost_usd"] >= 0.25
+    assert plan["estimated_thread_cost_usd"] >= 0.15
     assert plan["costly_thread"] is True
     assert plan["should_pack"] is True
     assert plan["reason"] == "costly-cloud-context"
@@ -3343,7 +3355,7 @@ def test_monthly_usage_meter_summarizes_current_cycle_only(
             {
                 "finished_at": current_entry_at,
                 "runtime": "codex",
-                "model": "gpt-5.5",
+                "model": "gpt-5.6-terra",
                 "billing_owner": "kristopher",
                 "agent_group": "home",
                 "codex_auth_mode": "chatgpt",
@@ -3356,7 +3368,7 @@ def test_monthly_usage_meter_summarizes_current_cycle_only(
             {
                 "finished_at": current_entry_at,
                 "runtime": "codex",
-                "model": "gpt-5.5",
+                "model": "gpt-5.6-terra",
                 "billing_owner": "kristopher",
                 "agent_group": "home",
                 "codex_auth_mode": "api-key",
@@ -3610,7 +3622,7 @@ def test_route_receipt_builds_live_shadow_cost_baseline(monkeypatch, tmp_path) -
         optimization_mode="auto",
         success=True,
         runtime="codex",
-        model="openai.gpt-5.4",
+        model="openai.gpt-5.6-terra",
         usage={
             "input_tokens": 200_000,
             "cached_input_tokens": 20_000,
@@ -3622,7 +3634,7 @@ def test_route_receipt_builds_live_shadow_cost_baseline(monkeypatch, tmp_path) -
         cost_route=_route_proof(
             module,
             runtime="codex",
-            model="openai.gpt-5.4",
+            model="openai.gpt-5.6-terra",
             service_tier="flex",
         ),
     )
@@ -3638,9 +3650,9 @@ def test_route_receipt_builds_live_shadow_cost_baseline(monkeypatch, tmp_path) -
     assert receipt["authority_class"] == "read_only"
     assert receipt["mutation_risk"] == "none"
     assert receipt["benchmark_skill_id"] == "common-status"
-    assert receipt["selected_model_tier"] == "frontier_5_4_verifier"
-    assert receipt["requested_model"] == "openai.gpt-5.4"
-    assert receipt["effective_model"] == "openai.gpt-5.4"
+    assert receipt["selected_model_tier"] == "frontier_5_6_terra_final"
+    assert receipt["requested_model"] == "openai.gpt-5.6-terra"
+    assert receipt["effective_model"] == "openai.gpt-5.6-terra"
     assert receipt["requested_provider"] == "openai-direct"
     assert receipt["effective_provider"] == "openai-direct"
     assert receipt["requested_service_tier"] == "flex"
@@ -3648,7 +3660,7 @@ def test_route_receipt_builds_live_shadow_cost_baseline(monkeypatch, tmp_path) -
     assert receipt["observed_service_tier"] == "flex"
     assert receipt["reasoning_effort"] == "medium"
     assert receipt["route_policy_version"] == module.ROUTE_RECEIPT_POLICY_VERSION
-    assert receipt["allowed_role"] == "verifier"
+    assert receipt["allowed_role"] == "final_authority"
     assert receipt["validator_gate"] == "pass"
     assert receipt["validator_passed"] is True
     assert receipt["operator_approval_required"] is False
@@ -3656,7 +3668,7 @@ def test_route_receipt_builds_live_shadow_cost_baseline(monkeypatch, tmp_path) -
     assert receipt["live_write_attempted"] is False
     assert receipt["boundary_violation"] is False
     assert receipt["estimated_cost_usd"] > 0
-    assert receipt["baseline_all_5_5_cost_usd"] > receipt["estimated_cost_usd"]
+    assert receipt["baseline_all_terra_cost_usd"] > receipt["estimated_cost_usd"]
     assert receipt["input_tokens"] == 200_000
     assert receipt["cached_input_tokens"] == 20_000
     assert receipt["output_tokens"] == 20_000
@@ -3669,7 +3681,7 @@ def test_route_receipt_builds_live_shadow_cost_baseline(monkeypatch, tmp_path) -
     assert "turn_plan:final" in receipt["evidence_refs"]
 
 
-def test_route_receipt_persists_verified_luna_fast_lane_outcome(
+def test_route_receipt_records_terra_outside_legacy_fast_lanes(
     monkeypatch, tmp_path
 ) -> None:
     receipt_path = tmp_path / "receipts" / "market-sizing.jsonl"
@@ -3694,7 +3706,7 @@ def test_route_receipt_persists_verified_luna_fast_lane_outcome(
         optimization_mode="auto",
         success=True,
         runtime="codex",
-        model="openai.gpt-5.6-luna",
+        model="openai.gpt-5.6-terra",
         usage={
             "input_tokens": 200_000,
             "cached_input_tokens": 20_000,
@@ -3706,7 +3718,7 @@ def test_route_receipt_persists_verified_luna_fast_lane_outcome(
         cost_route=_route_proof(
             module,
             runtime="codex",
-            model="openai.gpt-5.6-luna",
+            model="openai.gpt-5.6-terra",
             service_tier="flex",
         ),
     )
@@ -3714,12 +3726,18 @@ def test_route_receipt_persists_verified_luna_fast_lane_outcome(
     assert receipt is not None
     outcome = receipt["fast_lane_outcome"]
     assert outcome["schema"] == "norman.fast-lane-outcome.v1"
-    assert outcome["state"] == "verified"
-    assert outcome["lane"]["kind"] == "luna"
+    assert outcome["state"] == "candidate"
+    assert outcome["lane"]["kind"] == "none"
     snapshot = module.route_receipt_status_snapshot()
     assert snapshot["latest_fast_lane_outcome"] == outcome
-    assert snapshot["fast_lane"]["states"]["verified"] == 1
-    assert snapshot["fast_lane"]["verified"]["estimated_savings_usd"] > 0
+    assert snapshot["fast_lane"]["states"]["candidate"] == 0
+    assert snapshot["fast_lane"]["ignored_count"] == 1
+    assert snapshot["fast_lane"]["verified"] == {
+        "count": 0,
+        "estimated_savings_usd": 0.0,
+        "local_not_invoiced_estimated_savings_usd": 0.0,
+        "luna_estimated_savings_usd": 0.0,
+    }
     assert snapshot["fast_lane"]["calibration"]["auto_selection_enabled"] is False
 
 
@@ -3938,8 +3956,10 @@ def test_ensure_session_does_not_wait_when_service_start_fails(
     monkeypatch.setattr(
         module,
         "run",
-        lambda cmd, input_text=None, check=False: commands.append(cmd)
-        or SimpleNamespace(returncode=1, stdout="", stderr="Access denied"),
+        lambda cmd, input_text=None, check=False: (
+            commands.append(cmd)
+            or SimpleNamespace(returncode=1, stdout="", stderr="Access denied")
+        ),
     )
     monkeypatch.setattr(module.time, "sleep", lambda seconds: sleeps.append(seconds))
 
@@ -4354,9 +4374,11 @@ def test_api_ask_completes_allowlisted_command_without_model_call(
     monkeypatch.setattr(
         module,
         "start_web_prompt",
-        lambda *_args, **_kwargs: start_calls.append(True)
-        or (_ for _ in ()).throw(
-            AssertionError("allowlisted command should not start a model prompt")
+        lambda *_args, **_kwargs: (
+            start_calls.append(True)
+            or (_ for _ in ()).throw(
+                AssertionError("allowlisted command should not start a model prompt")
+            )
         ),
     )
     monkeypatch.setattr(
@@ -5777,20 +5799,18 @@ def test_prompt_worker_does_not_retry_locked_zero_token_provider_failure(
     assert events[0]["payload"]["service_tier"] == "default"
 
 
-def test_prompt_worker_does_not_downgrade_locked_bedrock_55(
-    monkeypatch, tmp_path
-) -> None:
+def test_prompt_worker_keeps_locked_terra_model(monkeypatch, tmp_path) -> None:
     module = _load_norman_codex_web(
         monkeypatch,
         tmp_path,
-        NORMAN_CODEX_MODEL_FLOOR="gpt-5.4",
-        NORMAN_CODEX_MODEL="openai.gpt-5.4",
+        NORMAN_CODEX_MODEL_FLOOR="gpt-5.6-terra",
+        NORMAN_CODEX_MODEL="openai.gpt-5.6-terra",
         NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
-        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.4",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.6-terra",
         NORMAN_CODEX_STANDARD_AWS_PROFILE="ob-traqline-admin",
         NORMAN_CODEX_STANDARD_AWS_REGION="us-east-2",
-        NORMAN_CODEX_SWITCHABLE_MODELS="openai.gpt-5.4,openai.gpt-5.5",
-        NORMAN_CODEX_AVAILABLE_MODELS="openai.gpt-5.4,openai.gpt-5.5",
+        NORMAN_CODEX_SWITCHABLE_MODELS="openai.gpt-5.6-terra,gpt-5.6-terra",
+        NORMAN_CODEX_AVAILABLE_MODELS="openai.gpt-5.6-terra,gpt-5.6-terra",
         NORMAN_CODEX_ZERO_TOKEN_PROVIDER_MAX_RETRIES="1",
     )
     module.ensure_state_dir()
@@ -5809,9 +5829,7 @@ def test_prompt_worker_does_not_downgrade_locked_bedrock_55(
             "zero_token_provider_failure": True,
         }
     )
-    assert module.zero_token_provider_retry_model("openai.gpt-5.5", usage) == (
-        "openai.gpt-5.4"
-    )
+    assert module.zero_token_provider_retry_model("openai.gpt-5.6-terra", usage) == ""
 
     def fake_execute_runtime(
         prompt,
@@ -5828,7 +5846,7 @@ def test_prompt_worker_does_not_downgrade_locked_bedrock_55(
         if len(calls) == 1:
             return "", provider_error, "thread-bedrock", usage
         return (
-            "Recovered on Bedrock 5.4.",
+            "Terra did not retry after the provider failure.",
             "",
             "thread-bedrock",
             module.normalize_usage_entry({"total_tokens": 20}),
@@ -5841,7 +5859,7 @@ def test_prompt_worker_does_not_downgrade_locked_bedrock_55(
         "careful",
         5,
         "normal",
-        model="openai.gpt-5.5",
+        model="openai.gpt-5.6-terra",
         service_tier="default",
         route_lock=True,
     )
@@ -5858,7 +5876,7 @@ def test_prompt_worker_does_not_downgrade_locked_bedrock_55(
             break
 
     assert len(calls) == 1
-    assert calls[0]["model"] == "openai.gpt-5.5"
+    assert calls[0]["model"] == "openai.gpt-5.6-terra"
     assert calls[0]["service_tier"] == "default"
 
     final_snapshot = module.current_snapshot()
@@ -5876,7 +5894,7 @@ def test_prompt_worker_does_not_downgrade_locked_bedrock_55(
     )
     assert len(events) == 1
     assert events[0]["payload"]["runtime"] == "codex"
-    assert events[0]["payload"]["model"] == "openai.gpt-5.5"
+    assert events[0]["payload"]["model"] == "openai.gpt-5.6-terra"
     assert events[0]["payload"]["service_tier"] == "default"
 
 
@@ -6017,20 +6035,20 @@ def test_prompt_worker_does_not_handoff_locked_bedrock_capacity_after_side_effec
     assert events[0]["payload"]["provider_capacity_no_retry"] is True
 
 
-def test_prompt_worker_does_not_handoff_locked_bedrock_55_after_side_effects(
+def test_prompt_worker_does_not_handoff_locked_terra_after_side_effects(
     monkeypatch, tmp_path
 ) -> None:
     module = _load_norman_codex_web(
         monkeypatch,
         tmp_path,
-        NORMAN_CODEX_MODEL_FLOOR="gpt-5.4",
-        NORMAN_CODEX_MODEL="openai.gpt-5.4",
+        NORMAN_CODEX_MODEL_FLOOR="gpt-5.6-terra",
+        NORMAN_CODEX_MODEL="openai.gpt-5.6-terra",
         NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
-        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.4",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.6-terra",
         NORMAN_CODEX_STANDARD_AWS_PROFILE="ob-traqline-admin",
         NORMAN_CODEX_STANDARD_AWS_REGION="us-east-2",
-        NORMAN_CODEX_SWITCHABLE_MODELS="openai.gpt-5.4,openai.gpt-5.5",
-        NORMAN_CODEX_AVAILABLE_MODELS="openai.gpt-5.4,openai.gpt-5.5",
+        NORMAN_CODEX_SWITCHABLE_MODELS="openai.gpt-5.6-terra,gpt-5.6-terra",
+        NORMAN_CODEX_AVAILABLE_MODELS="openai.gpt-5.6-terra,gpt-5.6-terra",
         NORMAN_CODEX_ZERO_TOKEN_PROVIDER_MAX_RETRIES="1",
     )
     module.ensure_state_dir()
@@ -6077,7 +6095,7 @@ def test_prompt_worker_does_not_handoff_locked_bedrock_55_after_side_effects(
                 ),
             )
         return (
-            "Recovered from provider recovery checkpoint on 5.4.",
+            "Terra recovery checkpoint.",
             "",
             "thread-bedrock",
             module.normalize_usage_entry(
@@ -6096,7 +6114,7 @@ def test_prompt_worker_does_not_handoff_locked_bedrock_55_after_side_effects(
         "careful",
         5,
         "normal",
-        model="openai.gpt-5.5",
+        model="openai.gpt-5.6-terra",
         service_tier="default",
         route_lock=True,
     )
@@ -6113,7 +6131,7 @@ def test_prompt_worker_does_not_handoff_locked_bedrock_55_after_side_effects(
             break
 
     assert len(calls) == 1
-    assert calls[0]["model"] == "openai.gpt-5.5"
+    assert calls[0]["model"] == "openai.gpt-5.6-terra"
     assert calls[0]["service_tier"] == "default"
 
     final_snapshot = module.current_snapshot()
@@ -6131,7 +6149,7 @@ def test_prompt_worker_does_not_handoff_locked_bedrock_55_after_side_effects(
     )
     assert len(events) == 1
     assert events[0]["payload"]["runtime"] == "codex"
-    assert events[0]["payload"]["model"] == "openai.gpt-5.5"
+    assert events[0]["payload"]["model"] == "openai.gpt-5.6-terra"
     assert events[0]["payload"]["service_tier"] == "default"
     assert events[0]["payload"]["provider_error_kind"] == "bedrock_engine_not_found"
 
@@ -6311,22 +6329,24 @@ def test_console_links_load_from_state_file(monkeypatch, tmp_path) -> None:
     ]
 
 
-def test_runtime_model_selection_persists(monkeypatch, tmp_path) -> None:
+def test_runtime_model_selection_normalizes_retired_model_to_terra(
+    monkeypatch, tmp_path
+) -> None:
     module = _load_norman_codex_web(monkeypatch, tmp_path)
 
     saved = module.save_runtime_settings(
         {"model": "gpt-5.5", "service_tier": "default"}
     )
 
-    assert saved["model"] == "gpt-5.5"
+    assert saved["model"] == "gpt-5.6-terra"
     assert saved["service_tier"] == "default"
-    assert module.load_runtime_settings()["model"] == "gpt-5.5"
+    assert module.load_runtime_settings()["model"] == "gpt-5.6-terra"
     assert module.configured_service_tier() == "default"
-    assert module.configured_chat_model() == "gpt-5.5"
+    assert module.configured_chat_model() == "gpt-5.6-terra"
     assert module.chat_model_update_available() is False
 
 
-def test_runtime_model_selection_allows_switchable_codex_versions(
+def test_runtime_model_selection_rejects_retired_switchable_override(
     monkeypatch, tmp_path
 ) -> None:
     module = _load_norman_codex_web(
@@ -6340,9 +6360,9 @@ def test_runtime_model_selection_allows_switchable_codex_versions(
     )
 
     assert saved["runtime"] == "codex"
-    assert saved["model"] == "openai.gpt-5.4"
-    assert module.configured_runtime_model("codex") == "openai.gpt-5.4"
-    assert "openai.gpt-5.4" in module.AVAILABLE_MODELS
+    assert saved["model"] == "gpt-5.6-terra"
+    assert module.configured_runtime_model("codex") == "gpt-5.6-terra"
+    assert module.AVAILABLE_MODELS == ["openai.gpt-5.6-terra", "gpt-5.6-terra"]
 
 
 def test_runtime_model_selection_rejects_below_floor(monkeypatch, tmp_path) -> None:
@@ -6351,8 +6371,8 @@ def test_runtime_model_selection_rejects_below_floor(monkeypatch, tmp_path) -> N
     saved = module.save_runtime_settings({"runtime": "codex", "model": "gpt-5.4-mini"})
 
     assert saved["runtime"] == "codex"
-    assert saved["model"] == "gpt-5.5"
-    assert module.configured_chat_model() == "gpt-5.5"
+    assert saved["model"] == "gpt-5.6-terra"
+    assert module.configured_chat_model() == "gpt-5.6-terra"
 
 
 def test_runtime_registry_includes_codex_and_local_llm(monkeypatch, tmp_path) -> None:
@@ -6361,7 +6381,7 @@ def test_runtime_registry_includes_codex_and_local_llm(monkeypatch, tmp_path) ->
     registry = {item["key"]: item for item in module.runtime_registry_payload()}
 
     assert registry["codex"]["can_execute"] is True
-    assert registry["codex"]["default_model"] == "gpt-5.5"
+    assert registry["codex"]["default_model"] == "gpt-5.6-terra"
     assert registry["localllm"]["label"] == "NorLlama Pool"
     assert registry["localllm"]["can_execute"] is False
     assert registry["localllm"]["tools"] == "brokered-read-only"
@@ -6545,39 +6565,29 @@ def test_model_route_presets_include_codex_and_claude_bedrock(
         NORMAN_BEDROCK_CONVERSE_ENABLED="1",
         NORMAN_CLAUDE_MODEL="global.anthropic.claude-opus-4-8",
         NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
-        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.4",
-        NORMAN_CODEX_DIRECT_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.6-terra",
+        NORMAN_CODEX_DIRECT_MODEL="gpt-5.6-terra",
         NORMAN_CODEX_DIRECT_TIERS_ENABLED="1",
     )
 
     presets = {item["key"]: item for item in module.model_route_presets_payload()}
 
     assert presets["codex-openai"]["runtime"] == "codex"
-    assert presets["codex-openai"]["model"] == "gpt-5.5"
+    assert presets["codex-openai"]["model"] == "gpt-5.6-terra"
     assert presets["codex-openai"]["label"] == "Codex OpenAI Flex"
     assert presets["codex-openai"]["service_tier"] == "flex"
     assert presets["codex-openai"]["can_execute"] is True
     assert presets["codex-openai"]["role"] == "direct fallback"
-    assert presets["codex-openai-5-4"]["runtime"] == "codex"
-    assert presets["codex-openai-5-4"]["model"] == "gpt-5.4"
-    assert presets["codex-openai-5-4"]["service_tier"] == "flex"
-    assert presets["codex-openai-5-4"]["status"] == "Fallback"
     assert presets["codex-bedrock"]["runtime"] == "codex"
-    assert presets["codex-bedrock"]["model"] == "openai.gpt-5.4"
+    assert presets["codex-bedrock"]["model"] == "openai.gpt-5.6-terra"
     assert presets["codex-bedrock"]["label"] == "Codex Bedrock Default"
     assert presets["codex-bedrock"]["service_tier"] == "default"
     assert presets["codex-bedrock"]["can_execute"] is True
     assert presets["codex-bedrock"]["status"] == "Default"
     assert presets["codex-bedrock"]["confidence"] == "high"
-    assert presets["codex-bedrock-5-4"]["runtime"] == "codex"
-    assert presets["codex-bedrock-5-4"]["model"] == "openai.gpt-5.4"
-    assert presets["codex-bedrock-5-4"]["service_tier"] == "default"
-    assert presets["codex-bedrock-5-4"]["status"] == "Stable"
-    assert presets["codex-bedrock-5-4"]["lane"] == "aws-bedrock"
-    assert presets["codex-bedrock-frontier-5-5"]["runtime"] == "codex"
-    assert presets["codex-bedrock-frontier-5-5"]["model"] == "openai.gpt-5.5"
-    assert presets["codex-bedrock-frontier-5-5"]["status"] == "Frontier"
-    assert presets["codex-bedrock-frontier-5-5"]["role"] == "tie breaker"
+    assert "codex-openai-5-4" not in presets
+    assert "codex-bedrock-5-4" not in presets
+    assert "codex-bedrock-frontier-5-5" not in presets
     assert presets["codex-local"]["runtime"] == "localllm"
     assert presets["codex-local"]["model"] == "norllama"
     assert presets["codex-local"]["label"] == "NorLlama Pool"
@@ -6922,7 +6932,7 @@ def test_queued_prompt_preserves_bound_runtime_and_model(monkeypatch, tmp_path) 
     assert accepted is True
     queued = module.normalize_queue(module.load_status_meta()["queued_prompts"])
     assert queued[0]["runtime"] == "codex"
-    assert queued[0]["model"] == "gpt-5.5"
+    assert queued[0]["model"] == "gpt-5.6-terra"
     assert queued[0]["speed"] == "balanced"
 
     module.ACTIVE_PROMPT_THREAD = None
@@ -6995,9 +7005,9 @@ def test_route_lock_honors_explicit_runtime_with_force_default_runtime(
     assert accepted is True
     assert len(launches) == 1
     assert launches[0][7] == "codex"
-    assert launches[0][8] == "openai.gpt-5.4"
+    assert launches[0][8] == "gpt-5.6-terra"
     assert snapshot["running_runtime"] == "codex"
-    assert snapshot["running_model"] == "openai.gpt-5.4"
+    assert snapshot["running_model"] == "gpt-5.6-terra"
 
 
 def test_console_source_mentions_manual_model_controls() -> None:
@@ -7286,13 +7296,13 @@ def test_execute_prompt_resets_bedrock_engine_not_found_resume_thread(
         tmp_path,
         NORMAN_CODEX_SERVICE_TIER="default",
         NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
-        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.6-terra",
         NORMAN_CODEX_STANDARD_AWS_PROFILE="ob-traqline-admin",
         NORMAN_CODEX_STANDARD_AWS_REGION="us-east-2",
         NORMAN_CODEX_DIRECT_TIERS_ENABLED="0",
     )
     stale_thread_id = "019ec4a4-de0e-7033-b0b9-caf9efff252f"
-    thread_scope = "profile-v2:traqline-bedrock:model:openai.gpt-5.5"
+    thread_scope = "profile-v2:traqline-bedrock:model:openai.gpt-5.6-terra"
     error_message = "Task submission failed with status 404 Not Found: Engine not found"
     module.write_text(module.THREAD_ID_PATH, stale_thread_id)
     module.write_text(module.THREAD_SCOPE_PATH, thread_scope)
@@ -7353,7 +7363,7 @@ def test_execute_prompt_resets_new_bedrock_engine_not_found_thread(
         tmp_path,
         NORMAN_CODEX_SERVICE_TIER="default",
         NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
-        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.6-terra",
         NORMAN_CODEX_STANDARD_AWS_PROFILE="ob-traqline-admin",
         NORMAN_CODEX_STANDARD_AWS_REGION="us-east-2",
         NORMAN_CODEX_DIRECT_TIERS_ENABLED="0",
@@ -7423,7 +7433,7 @@ def test_execute_prompt_records_bedrock_stream_disconnect_diagnostics(
         tmp_path,
         NORMAN_CODEX_SERVICE_TIER="default",
         NORMAN_CODEX_STANDARD_PROFILE_V2="traqline-bedrock",
-        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.5",
+        NORMAN_CODEX_STANDARD_MODEL="openai.gpt-5.6-terra",
         NORMAN_CODEX_STANDARD_AWS_PROFILE="ob-traqline-admin",
         NORMAN_CODEX_STANDARD_AWS_REGION="us-east-2",
         NORMAN_CODEX_DIRECT_TIERS_ENABLED="0",
@@ -7602,7 +7612,7 @@ def test_execute_prompt_resets_bedrock_stream_disconnect_thread(
         NORMAN_CODEX_DIRECT_TIERS_ENABLED="0",
     )
     stale_thread_id = "019ec69d-ba62-7f21-a8c5-ae2b1f1250b0"
-    thread_scope = "profile-v2:traqline-bedrock:model:openai.gpt-5.5"
+    thread_scope = "profile-v2:traqline-bedrock:model:openai.gpt-5.6-terra"
     error_message = (
         "stream disconnected before completion: The server had an error while "
         "processing your request. Sorry about that!"
@@ -7761,6 +7771,16 @@ def test_context_preflight_uses_vector_selected_archive_turns(monkeypatch, tmp_p
     monkeypatch.setattr(module, "context_preflight_memory_refs", fake_memory_refs)
     monkeypatch.setattr(
         module,
+        "local_planner_preflight",
+        lambda _payload: {"configured": False, "used": False},
+    )
+    monkeypatch.setattr(
+        module,
+        "local_planner_verifier",
+        lambda *_args, **_kwargs: {"configured": False, "used": False},
+    )
+    monkeypatch.setattr(
+        module,
         "run_context_preflight_offline_command",
         lambda _payload: {
             "configured": True,
@@ -7819,6 +7839,16 @@ def test_context_preflight_adds_database_validated_vector_candidates(
         module,
         "context_preflight_memory_refs",
         lambda _prompt, *, limit: lexical_candidates,
+    )
+    monkeypatch.setattr(
+        module,
+        "local_planner_preflight",
+        lambda _payload: {"configured": False, "used": False},
+    )
+    monkeypatch.setattr(
+        module,
+        "local_planner_verifier",
+        lambda *_args, **_kwargs: {"configured": False, "used": False},
     )
 
     def fake_memory_refs_by_ids(value, *, limit):

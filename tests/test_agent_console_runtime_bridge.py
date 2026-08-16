@@ -14,6 +14,10 @@ from urllib import request as urllib_request
 def _load_agent_console_web(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("HOUSEBOT_CODEX_WEB_STATE_DIR", str(tmp_path))
     monkeypatch.setenv("NORMAN_CODEX_WEB_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv(
+        "NORMAN_CODEX_HOST_PRESSURE_GUARD_PATH",
+        str(tmp_path / "host-pressure-guard.json"),
+    )
     if "NORMAN_LOCAL_LLM_EXECUTION_ENABLED" not in os.environ:
         monkeypatch.setenv("NORMAN_LOCAL_LLM_EXECUTION_ENABLED", "1")
     script_path = (
@@ -2529,7 +2533,7 @@ def test_agent_console_web_accepts_norman_codex_env_prefix(monkeypatch, tmp_path
     assert module.PORT == 9797
     assert module.TOKEN == "norman-token"
     assert module.AGENT_NAME == "Norman"
-    assert module.MODEL == "gpt-norman"
+    assert module.MODEL == "gpt-5.6-terra"
 
 
 def test_console_template_prefers_structured_runtime_activity():
@@ -3358,13 +3362,15 @@ def test_healthy_local_lane_allows_exact_deterministic_status(monkeypatch, tmp_p
     monkeypatch.setattr(
         module,
         "local_llm_health_snapshot",
-        lambda model: health_calls.append(model)
-        or {
-            "ok": True,
-            "model": model,
-            "endpoint": "http://local-llm:11434",
-            "reason": "model advertised",
-        },
+        lambda model: (
+            health_calls.append(model)
+            or {
+                "ok": True,
+                "model": model,
+                "endpoint": "http://local-llm:11434",
+                "reason": "model advertised",
+            }
+        ),
     )
 
     assert module.local_status_preflight_available() is True

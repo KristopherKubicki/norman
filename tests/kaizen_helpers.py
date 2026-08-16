@@ -39,7 +39,7 @@ def tui_snapshot(
     """Build a complete, aggregate-only snapshot for a test."""
     observed_at = observed_at or datetime.now(timezone.utc)
     state_entered_at = state_entered_at or observed_at - timedelta(minutes=20)
-    return TuiKpiSnapshot.parse_obj(
+    return TuiKpiSnapshot.model_validate(
         tui_snapshot_payload(
             realm=realm,
             source_tui=source_tui,

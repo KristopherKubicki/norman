@@ -4960,7 +4960,7 @@ class App:
 
         fleet_rows = "".join(
             "<tr>"
-            f"<td><strong>{html.escape(str(row.get('label') or ''))}</strong><div class=\"subcell\">{html.escape(str(row.get('base_url') or ''))}</div></td>"
+            f'<td><strong>{html.escape(str(row.get("label") or ""))}</strong><div class="subcell">{html.escape(str(row.get("base_url") or ""))}</div></td>'
             f"<td>{html.escape(lane_state(row, 'ollama'))}</td>"
             f"<td>{html.escape(lane_state(row, 'media'))}</td>"
             f"<td>{html.escape(lane_state(row, 'transcribe'))}</td>"
@@ -5035,10 +5035,10 @@ class App:
         route_cards = (
             f"""
     <div class="grid">
-      <div class="card"><div class="k">Ollama Route</div><div class="v mono">{html.escape(str(routes.get('ollama') or ''))}</div></div>
-      <div class="card"><div class="k">DS4 Route</div><div class="v mono">{html.escape(str(routes.get('ds4') or ''))}</div></div>
-      <div class="card"><div class="k">Media Route</div><div class="v mono">{html.escape(str(routes.get('media') or ''))}</div></div>
-      <div class="card"><div class="k">Transcribe Route</div><div class="v mono">{html.escape(str(routes.get('transcribe') or ''))}</div></div>
+      <div class="card"><div class="k">Ollama Route</div><div class="v mono">{html.escape(str(routes.get("ollama") or ""))}</div></div>
+      <div class="card"><div class="k">DS4 Route</div><div class="v mono">{html.escape(str(routes.get("ds4") or ""))}</div></div>
+      <div class="card"><div class="k">Media Route</div><div class="v mono">{html.escape(str(routes.get("media") or ""))}</div></div>
+      <div class="card"><div class="k">Transcribe Route</div><div class="v mono">{html.escape(str(routes.get("transcribe") or ""))}</div></div>
     </div>
 """
             if self.expose_upstream_details
@@ -5141,12 +5141,12 @@ class App:
         <h1>Norllama</h1>
         <div class="sub">{html.escape(hero_sub)}</div>
         <div class="chips">
-          <span class="chip">status: {html.escape(str(overview.get('status') or 'unknown'))}</span>
-          <span class="chip">async: {html.escape(str(contract.get('async_mode') or 'unknown'))}</span>
-          <span class="chip">priority: {html.escape(str(contract.get('priority_mode') or 'unknown'))}</span>
-          <span class="chip">structured logs: {html.escape(str(contract.get('structured_logging') or False).lower())}</span>
-          <span class="chip">request ids: {html.escape(str(contract.get('request_ids') or False).lower())}</span>
-          <span class="chip">head paths: {html.escape(str(contract.get('head_support_count') or 0))}</span>
+          <span class="chip">status: {html.escape(str(overview.get("status") or "unknown"))}</span>
+          <span class="chip">async: {html.escape(str(contract.get("async_mode") or "unknown"))}</span>
+          <span class="chip">priority: {html.escape(str(contract.get("priority_mode") or "unknown"))}</span>
+          <span class="chip">structured logs: {html.escape(str(contract.get("structured_logging") or False).lower())}</span>
+          <span class="chip">request ids: {html.escape(str(contract.get("request_ids") or False).lower())}</span>
+          <span class="chip">head paths: {html.escape(str(contract.get("head_support_count") or 0))}</span>
         </div>
       </div>
       <div class="card">
@@ -5163,12 +5163,12 @@ class App:
       </div>
     </div>
     <div class="grid">
-      <div class="card"><div class="k">Visible Models</div><div class="v">{html.escape(str(summary.get('visible_model_count') or 0))}</div></div>
-      <div class="card"><div class="k">Unified Chat Models</div><div class="v">{html.escape(str(summary.get('chat_models') or 0))}</div></div>
-      <div class="card"><div class="k">Specialized Models</div><div class="v">{html.escape(str(summary.get('specialized_models') or 0))}</div></div>
-      <div class="card"><div class="k">Hidden Catalog Rows</div><div class="v">{html.escape(str(summary.get('hidden_model_count') or 0))}</div></div>
-      <div class="card"><div class="k">Recent Requests</div><div class="v">{html.escape(str(recent.get('count') or 0))}</div></div>
-      <div class="card"><div class="k">Rendered At</div><div class="v mono">{html.escape(str(overview.get('time') or ''))}</div></div>
+      <div class="card"><div class="k">Visible Models</div><div class="v">{html.escape(str(summary.get("visible_model_count") or 0))}</div></div>
+      <div class="card"><div class="k">Unified Chat Models</div><div class="v">{html.escape(str(summary.get("chat_models") or 0))}</div></div>
+      <div class="card"><div class="k">Specialized Models</div><div class="v">{html.escape(str(summary.get("specialized_models") or 0))}</div></div>
+      <div class="card"><div class="k">Hidden Catalog Rows</div><div class="v">{html.escape(str(summary.get("hidden_model_count") or 0))}</div></div>
+      <div class="card"><div class="k">Recent Requests</div><div class="v">{html.escape(str(recent.get("count") or 0))}</div></div>
+      <div class="card"><div class="k">Rendered At</div><div class="v mono">{html.escape(str(overview.get("time") or ""))}</div></div>
     </div>
     {route_cards}
     {fleet_section}
@@ -5239,7 +5239,7 @@ class App:
           <tr><th>Model</th><th>Provider</th><th>Capabilities</th><th>Access</th><th>{html.escape(host_header)}</th><th>Recommended Path</th><th>Brief</th></tr>
         </thead>
         <tbody>
-          {''.join(model_rows)}
+          {"".join(model_rows)}
         </tbody>
       </table>
     </div>

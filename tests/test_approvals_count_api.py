@@ -61,7 +61,7 @@ def test_approvals_count_respects_status_filter(test_app, db, monkeypatch):
 
     resp = test_app.post(
         f"/api/v1/approvals/{approval.id}/approve",
-        json=CommandApprovalDecision(reason="approved").dict(),
+        json=CommandApprovalDecision(reason="approved").model_dump(),
     )
     assert resp.status_code == 200
 

@@ -12,9 +12,13 @@ def test_production_refreshes_the_shared_route_policy_before_starting() -> None:
     source = (SYSTEMD_DIR / "norman-production@.service").read_text(encoding="utf-8")
 
     assert (
-        "ExecStartPre=/home/kristopher/releases/norman-%i/.venv-3.10/bin/python scripts/norllama/refresh_route_policy.py --path /var/lib/norman/norllama/route_policy.json"
-        in source
+        "ExecStartPre=/usr/local/libexec/norman-release-python %i --release-script "
+        "scripts/norllama/refresh_route_policy.py --path "
+        "/var/lib/norman/norllama/route_policy.json" in source
     )
+    assert "Environment=NORMAN_RELEASE_SHA=%i" in source
+    assert "norman-release-python %i -m uvicorn" in source
+    assert ".venv-3.10" not in source
 
 
 def test_tmpfiles_normalizes_legacy_policy_artifact_ownership() -> None:
@@ -39,10 +43,13 @@ def test_canary_uses_an_isolated_runtime_policy_artifact() -> None:
         "/run/norman-release-%i/route_policy.json"
     ) in source
     assert (
-        "ExecStartPre=/home/kristopher/releases/norman-%i/.venv-3.10/bin/python "
+        "ExecStartPre=/usr/local/libexec/norman-release-python %i --release-script "
         "scripts/norllama/refresh_route_policy.py --path "
         "/run/norman-release-%i/route_policy.json"
     ) in source
+    assert "Environment=NORMAN_RELEASE_SHA=%i" in source
+    assert "norman-release-python %i -m uvicorn" in source
+    assert ".venv-3.10" not in source
 
 
 def test_periodic_refresh_uses_the_active_sha_pinned_release() -> None:
@@ -74,4 +81,6 @@ def test_periodic_refresh_uses_the_active_sha_pinned_release() -> None:
     source = launcher.read_text(encoding="utf-8")
     assert "norman-production@*.service" in source
     assert "norman-${release_sha}" in source
+    assert "norman-release-python" in source
     assert "refresh_route_policy.py" in source
+    assert ".venv-3.10" not in source

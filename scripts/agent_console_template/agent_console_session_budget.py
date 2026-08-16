@@ -327,8 +327,8 @@ def evaluate_admission(
                 "action": "deny",
                 "reason_code": "named_escalation_required",
                 "reason": (
-                    "GPT-5.5 and xhigh requests require a named escalation reason "
-                    "before work is admitted."
+                    "xhigh requests require a named escalation reason before work "
+                    "is admitted."
                 ),
             }
         )

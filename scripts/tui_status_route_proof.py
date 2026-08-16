@@ -903,7 +903,7 @@ def render_markdown(report: dict[str, Any]) -> str:
     for item in report.get("results") or []:
         preflight = _dict(item.get("preflight"))
         local = (
-            f"{_text(preflight.get('model'))} " f"({_int(preflight.get('tokens'))} tok)"
+            f"{_text(preflight.get('model'))} ({_int(preflight.get('tokens'))} tok)"
             if preflight.get("used")
             else "deterministic state read"
             if item.get("deterministic_state_read")
