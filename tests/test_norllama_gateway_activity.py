@@ -39,6 +39,87 @@ def load_gateway_module():
     return module
 
 
+def test_gateway_accept_backlog_handles_monitoring_bursts():
+    module = load_gateway_module()
+
+    assert module.ThreadingHTTPServer.request_queue_size == 128
+
+
+def test_gateway_includes_the_policy_resident_backend(monkeypatch):
+    module = load_gateway_module()
+    monkeypatch.setenv("NORLLAMA_OLLAMA_BASES", "http://127.0.0.1:11434")
+    monkeypatch.delenv("NORLLAMA_RESIDENT_OLLAMA_BASES", raising=False)
+    monkeypatch.setattr(
+        module,
+        "resident_ollama_bases_from_policy",
+        lambda: ["http://future-resident:11434"],
+    )
+
+    app = module.App()
+
+    assert app.ollama_bases == [
+        "http://127.0.0.1:11434",
+        "http://future-resident:11434",
+    ]
+
+
+def test_registry_model_uses_the_native_non_thinking_bridge(monkeypatch):
+    module = load_gateway_module()
+    monkeypatch.setattr(
+        module,
+        "model_role_rows",
+        lambda: {
+            "resident": {
+                "model": "future-local:40b",
+                "native_non_thinking_bridge": True,
+            }
+        },
+    )
+
+    assert module.should_disable_qwen_thinking("future-local:40b") is True
+    payload = module.openai_chat_payload_to_ollama(
+        {
+            "model": "future-local:40b",
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": False,
+        }
+    )
+
+    assert payload["think"] is False
+    assert payload["stream"] is False
+
+
+@pytest.mark.parametrize(
+    ("method_name", "bases_attribute"),
+    [
+        ("choose_media_base", "media_bases"),
+        ("choose_transcribe_base", "transcribe_bases"),
+        ("choose_ocr_base", "ocr_bases"),
+        ("choose_rerank_base", "rerank_bases"),
+        ("choose_safety_base", "safety_bases"),
+    ],
+)
+def test_auxiliary_health_probes_use_bounded_timeout(method_name, bases_attribute):
+    module = load_gateway_module()
+    app = module.App.__new__(module.App)
+    app.timeout_s = 300
+    app.health_probe_timeout_s = 3
+    setattr(app, bases_attribute, ["http://auxiliary"])
+    calls = []
+
+    def fake_fetch(url, *, timeout_s):
+        calls.append((url, timeout_s))
+        return {"status": "ok", "_http_status": 200}
+
+    app.fetch_json = fake_fetch
+
+    selected, rows = getattr(app, method_name)()
+
+    assert selected == "http://auxiliary"
+    assert rows[0]["status"] == "ok"
+    assert calls == [("http://auxiliary/health", 3)]
+
+
 def test_chat_admission_timeout_removes_expired_waiter():
     module = load_gateway_module()
     controller = module.ChatAdmissionController(
@@ -129,6 +210,118 @@ def test_chat_admission_reservation_becomes_active_without_second_generation():
 
     queued.release()
     assert controller.snapshot()["active"] == 0
+
+
+def test_foreground_reservation_preempts_queued_background_work():
+    module = load_gateway_module()
+    controller = module.ChatAdmissionController(
+        max_active=1,
+        queue_limit=1,
+        queue_wait_s=1,
+        retry_after_s=7,
+    )
+
+    active, _ = controller.reserve(priority="normal")
+    background, _ = controller.reserve(priority="background")
+    foreground, snapshot = controller.reserve(priority="high")
+
+    assert active is not None
+    assert background is not None
+    assert foreground is not None
+    assert snapshot["queue_depth"] == 1
+    assert background.wait(timeout_s=0)[0] == "preempted"
+
+    active.release()
+    state, snapshot = foreground.wait(timeout_s=0.1)
+    assert state == "admitted"
+    assert snapshot["active"] == 1
+    assert snapshot["queue_depth"] == 0
+
+    background.release()
+    foreground.release()
+    assert controller.snapshot()["active"] == 0
+
+
+def test_background_reservation_honors_shorter_caller_queue_budget():
+    module = load_gateway_module()
+    controller = module.ChatAdmissionController(
+        max_active=1,
+        queue_limit=1,
+        queue_wait_s=10,
+        retry_after_s=7,
+    )
+
+    active, _ = controller.reserve(priority="normal")
+    background, _ = controller.reserve(
+        priority="background",
+        queue_wait_s=0.01,
+    )
+    assert active is not None
+    assert background is not None
+
+    time.sleep(0.02)
+    state, snapshot = background.wait(timeout_s=0)
+    assert state == "expired"
+    assert snapshot["queue_depth"] == 0
+
+    active.release()
+
+
+def test_background_capacity_response_is_explicitly_best_effort():
+    module = load_gateway_module()
+    controller = module.ChatAdmissionController(
+        max_active=1,
+        queue_limit=0,
+        queue_wait_s=0,
+        retry_after_s=7,
+    )
+    active, _ = controller.reserve(priority="normal")
+    assert active is not None
+
+    handler = object.__new__(module.Handler)
+    handler.server = SimpleNamespace(app=SimpleNamespace(chat_admission=controller))
+    handler.headers = {"Content-Type": "application/json"}
+    handler._work_class = "background"
+    handler._model_hint = "resident-model"
+    status, headers, body = handler.local_capacity_response(
+        body=b'{"model":"resident-model"}',
+        snapshot=controller.snapshot(),
+    )
+
+    payload = json.loads(body)
+    assert status == module.HTTPStatus.TOO_MANY_REQUESTS
+    assert headers["Retry-After"] == "7"
+    assert payload["error"] == "background_deferred"
+    assert payload["norllama"]["schema"] == "norllama.capacity.v2"
+    assert payload["norllama"]["work_class"] == "background"
+    assert payload["norllama"]["outcome"] == "deferred"
+
+    active.release()
+
+
+def test_configured_lan_backend_is_owned_by_chat_admission():
+    module = load_gateway_module()
+    handler = object.__new__(module.Handler)
+    handler.server = SimpleNamespace(
+        app=SimpleNamespace(
+            admission_bases={"http://192.168.2.151:11435"},
+        )
+    )
+
+    assert (
+        handler.local_generation_request(
+            "http://192.168.2.151:11435",
+            "/api/chat",
+        )
+        is True
+    )
+    assert (
+        handler.local_generation_request(
+            "http://192.168.2.150:11434",
+            "/api/chat",
+        )
+        is False
+    )
 
 
 def test_queued_stream_disconnect_during_headers_releases_reservation():
@@ -240,6 +433,209 @@ def test_chat_admission_full_queue_returns_fast_capacity_response():
     assert not waiter.is_alive()
     assert queued_result[0][0] is True
     controller.release()
+
+
+def test_asr_upload_rejection_happens_before_reading_the_body():
+    module = load_gateway_module()
+    controller = module.ChatAdmissionController(
+        max_active=1,
+        queue_limit=0,
+        queue_wait_s=0,
+        retry_after_s=60,
+    )
+    handler = object.__new__(module.Handler)
+    handler.server = SimpleNamespace(
+        app=SimpleNamespace(
+            asr_admission=controller,
+            asr_max_upload_bytes=1024,
+        )
+    )
+    handler.headers = {"Content-Length": "1025"}
+    captured = {}
+    handler.read_body = lambda: pytest.fail("oversized ASR body was read")
+    handler.send_json = lambda status, payload, *, extra_headers=None: captured.update(
+        status=status,
+        payload=payload,
+        headers=extra_headers or {},
+    )
+
+    handler.handle_asr_post("/v1/audio/transcriptions")
+
+    assert captured["status"] == module.HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+    assert captured["payload"] == {
+        "ok": False,
+        "error": "asr_upload_too_large",
+        "max_upload_bytes": 1024,
+        "received_content_length": 1025,
+    }
+    assert captured["headers"]["Connection"] == "close"
+    assert handler.close_connection is True
+
+
+def test_asr_capacity_rejection_happens_before_reading_the_body():
+    module = load_gateway_module()
+    controller = module.ChatAdmissionController(
+        max_active=1,
+        queue_limit=0,
+        queue_wait_s=0,
+        retry_after_s=60,
+    )
+    active, _ = controller.reserve()
+    assert active is not None
+    handler = object.__new__(module.Handler)
+    handler.server = SimpleNamespace(
+        app=SimpleNamespace(
+            asr_admission=controller,
+            asr_max_upload_bytes=1024,
+        )
+    )
+    handler.headers = {"Content-Length": "16"}
+    captured = {}
+    handler.read_body = lambda: pytest.fail("busy ASR body was read")
+    handler.send_json = lambda status, payload, *, extra_headers=None: captured.update(
+        status=status,
+        payload=payload,
+        headers=extra_headers or {},
+    )
+
+    handler.handle_asr_post("/v1/audio/transcriptions")
+
+    assert captured["status"] == module.HTTPStatus.TOO_MANY_REQUESTS
+    assert captured["payload"]["error"] == "asr_capacity_exhausted"
+    assert captured["payload"]["norllama"]["active"] == 1
+    assert captured["headers"]["Retry-After"] == "60"
+    assert captured["headers"]["Connection"] == "close"
+    assert handler.close_connection is True
+    active.release()
+
+
+def test_asr_backend_cooldown_rejects_before_reading_the_body():
+    module = load_gateway_module()
+    controller = module.ChatAdmissionController(
+        max_active=1,
+        queue_limit=0,
+        queue_wait_s=0,
+        retry_after_s=60,
+    )
+    handler = object.__new__(module.Handler)
+    handler.server = SimpleNamespace(
+        app=SimpleNamespace(
+            asr_admission=controller,
+            asr_max_upload_bytes=1024,
+            asr_cooldown=lambda: {
+                "active": True,
+                "retry_after_seconds": 120,
+                "last_failure_status": 502,
+            },
+        )
+    )
+    handler.headers = {"Content-Length": "16"}
+    captured = {}
+    handler.read_body = lambda: pytest.fail("cooled-down ASR body was read")
+    handler.send_json = lambda status, payload, *, extra_headers=None: captured.update(
+        status=status,
+        payload=payload,
+        headers=extra_headers or {},
+    )
+
+    handler.handle_asr_post("/v1/audio/transcriptions")
+
+    assert captured["status"] == module.HTTPStatus.SERVICE_UNAVAILABLE
+    assert captured["payload"]["error"] == "asr_backend_cooldown"
+    assert captured["payload"]["norllama"]["last_failure_status"] == 502
+    assert captured["headers"]["Retry-After"] == "120"
+    assert captured["headers"]["Connection"] == "close"
+    assert handler.close_connection is True
+
+
+def test_asr_readiness_fails_closed_during_backend_cooldown():
+    module = load_gateway_module()
+    app = object.__new__(module.App)
+    app.asr_admission = module.ChatAdmissionController(
+        max_active=1,
+        queue_limit=0,
+        queue_wait_s=0,
+        retry_after_s=60,
+    )
+    app.asr_max_upload_bytes = 1024
+    app.asr_failure_cooldown_s = 60
+    app._asr_cooldown_lock = threading.Lock()
+    app._asr_cooldown_until = 0.0
+    app._asr_cooldown_status = 0
+    app.choose_transcribe_base = lambda: ("http://worker-a", [{"status": "ok"}])
+
+    app.trip_asr_cooldown(module.HTTPStatus.BAD_GATEWAY)
+    payload = app.asr_readyz()
+
+    assert payload["ready"] is False
+    assert payload["status"] == "asr_backend_cooldown"
+    assert payload["cooldown"]["last_failure_status"] == module.HTTPStatus.BAD_GATEWAY
+    assert payload["cooldown"]["retry_after_seconds"] >= 1
+
+
+def test_asr_admission_releases_after_transcribe_handling():
+    module = load_gateway_module()
+    controller = module.ChatAdmissionController(
+        max_active=1,
+        queue_limit=0,
+        queue_wait_s=0,
+        retry_after_s=60,
+    )
+    handler = object.__new__(module.Handler)
+    handler.server = SimpleNamespace(
+        app=SimpleNamespace(
+            asr_admission=controller,
+            asr_max_upload_bytes=1024,
+        )
+    )
+    handler.headers = {"Content-Length": "3"}
+    handler.read_body = lambda: b"wav"
+    handler.enforce_policy_for_request = lambda _path, _body: True
+    handled = []
+    handler.handle_unified_transcribe = lambda body: handled.append(body)
+
+    handler.handle_asr_post("/v1/audio/transcriptions")
+
+    assert handled == [b"wav"]
+    assert controller.snapshot()["active"] == 0
+
+
+def test_transcribe_limits_attempts_and_disables_peer_replays_by_default():
+    module = load_gateway_module()
+    handler = object.__new__(module.Handler)
+    cooldowns = []
+    handler.server = SimpleNamespace(
+        app=SimpleNamespace(
+            transcribe_max_attempts=1,
+            transcribe_allow_peer_failover=False,
+            transcribe_candidate_bases=lambda: (
+                ["http://worker-a", "http://worker-b"],
+                [{"status": "ok"}, {"status": "ok"}],
+            ),
+            transcribe_key=lambda _base: "test-key",
+            public_candidate_rows=lambda _kind, rows: rows,
+            trip_asr_cooldown=lambda status: cooldowns.append(status),
+        )
+    )
+    handler.headers = {"Content-Type": "audio/wav"}
+    attempted = []
+    handler.request_upstream = lambda base, *_args, **_kwargs: (
+        attempted.append(base) or (module.HTTPStatus.BAD_GATEWAY, {}, b"failed")
+    )
+    handler.peer_candidate_bases = lambda: (["http://peer-a"], [{"status": "ok"}])
+    forwarded = []
+    handler.forward_candidates = lambda *args, **kwargs: forwarded.append(
+        (args, kwargs)
+    )
+    captured = []
+    handler.send_upstream = lambda *args, **kwargs: captured.append((args, kwargs))
+
+    handler.handle_unified_transcribe(b"audio")
+
+    assert attempted == ["http://worker-a"]
+    assert forwarded == []
+    assert cooldowns == [module.HTTPStatus.BAD_GATEWAY]
+    assert captured[0][0][0] == module.HTTPStatus.BAD_GATEWAY
 
 
 def test_stream_capacity_rejection_retries_peer_candidate():
@@ -409,15 +805,25 @@ def test_gateway_marks_all_heavy_judge_aliases_as_manual_only():
     assert module.is_manual_only_model(module.QWEN3_CODER_MODEL) is False
 
 
-def test_gateway_disables_qwen_thinking_for_generate_payloads():
+def test_gateway_disables_policy_selected_thinking_for_generate_payloads(monkeypatch):
     module = load_gateway_module()
+    monkeypatch.setattr(
+        module,
+        "model_role_rows",
+        lambda: {
+            "resident": {
+                "model": "future-local:40b",
+                "native_non_thinking_bridge": True,
+            }
+        },
+    )
 
     payload, changed = module.normalize_chat_payload_for_local_qwen(
-        {"model": module.QWEN36_ROUTER_MODEL, "prompt": "Reply exactly OK"}
+        {"model": "future-local:40b", "prompt": "Reply exactly OK"}
     )
     explicit_payload, explicit_changed = module.normalize_chat_payload_for_local_qwen(
         {
-            "model": module.QWEN36_ROUTER_MODEL,
+            "model": "future-local:40b",
             "prompt": "Reply exactly OK",
             "think": True,
         }

@@ -44,3 +44,9 @@ from .secret_request import SecretRequest
 from .secret_lease import SecretLease
 from .secret_audit_event import SecretAuditEvent
 from .secret_stash_item import SecretStashItem
+from .keys_host_enrollment import KeysHostEnrollment
+from .keys_capability import KeysCapability
+from .keys_capability_policy import KeysCapabilityPolicy
+from .keys_capability_request import KeysCapabilityRequest
+from .keys_capability_lease import KeysCapabilityLease
+from .keys_capability_audit_event import KeysCapabilityAuditEvent

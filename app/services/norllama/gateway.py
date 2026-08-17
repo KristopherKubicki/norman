@@ -11,6 +11,7 @@ import requests
 from urllib3.exceptions import InsecureRequestWarning
 
 from app.core.config import settings
+from app.core.estate_registry import model_capability
 
 
 class NorllamaGatewayError(RuntimeError):
@@ -305,8 +306,7 @@ def _routing_headers(response: Any) -> dict[str, str]:
 
 
 def _disable_native_thinking(model: str) -> bool:
-    clean = _clean(model).lower()
-    return clean.startswith(("qwen3-coder:", "qwen3.6:", "qwen3.5:"))
+    return bool(model_capability(model, "native_non_thinking_bridge", False))
 
 
 class NorllamaTextStream:

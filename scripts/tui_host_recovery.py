@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -12,7 +13,18 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-DEFAULT_IDENTITY_FILE = Path("~/.ssh/norman_tui_deploy_ed25519").expanduser()
+DEFAULT_IDENTITY_FILE = Path(
+    os.environ.get(
+        "NORMAN_TUI_PROXMOX_IDENTITY_FILE",
+        "/home/kristopher/.ssh/id_ed25519_netops_codex",
+    )
+).expanduser()
+DEFAULT_KNOWN_HOSTS_FILE = Path(
+    os.environ.get(
+        "NORMAN_TUI_PROXMOX_KNOWN_HOSTS_FILE",
+        "/home/kristopher/.ssh/known_hosts",
+    )
+).expanduser()
 
 
 @dataclass(frozen=True)
@@ -24,7 +36,9 @@ class RecoveryTarget:
     proxmox_node: str
     container_id: str
     identity_file: Path = DEFAULT_IDENTITY_FILE
-    ssh_user: str = "root"
+    known_hosts_file: Path = DEFAULT_KNOWN_HOSTS_FILE
+    ssh_user: str = "netops"
+    remote_sudo: bool = True
     graceful_timeout_seconds: int = 60
     verify_ports: tuple[int, ...] = (22, 80, 8781)
 
@@ -58,6 +72,12 @@ def ssh_prefix(target: RecoveryTarget) -> list[str]:
         "-i",
         str(target.identity_file),
         "-o",
+        f"UserKnownHostsFile={target.known_hosts_file}",
+        "-o",
+        "GlobalKnownHostsFile=/dev/null",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
         "IdentitiesOnly=yes",
         "-o",
         "BatchMode=yes",
@@ -67,15 +87,18 @@ def ssh_prefix(target: RecoveryTarget) -> list[str]:
     ]
 
 
+def remote_command(target: RecoveryTarget, *args: str) -> list[str]:
+    prefix = ("sudo", "-n") if target.remote_sudo else ()
+    return [*ssh_prefix(target), *prefix, *args]
+
+
 def pct_command(target: RecoveryTarget, *args: str) -> list[str]:
-    return [*ssh_prefix(target), "pct", *args]
+    return remote_command(target, "pct", *args)
 
 
 def pvesh_current_status_command(target: RecoveryTarget) -> list[str]:
     return [
-        *ssh_prefix(target),
-        "pvesh",
-        "get",
+        *remote_command(target, "pvesh", "get"),
         f"/nodes/{target.proxmox_node}/lxc/{target.container_id}/status/current",
         "--output-format",
         "json",

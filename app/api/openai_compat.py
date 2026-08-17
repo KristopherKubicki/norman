@@ -378,20 +378,10 @@ def _codex_model_catalog() -> list[dict[str, Any]]:
     return [
         {
             **common,
-            "slug": "openai.gpt-5.6-terra",
-            "display_name": "GPT-5.6 Terra",
-            "description": "GPT-5.6 Terra through Norman's transparent tool bridge.",
-            "priority": 1,
-            # Codex uses these capabilities to provision its local coding tools.
-            "apply_patch_tool_type": "freeform",
-            "supports_parallel_tool_calls": True,
-        },
-        {
-            **common,
             "slug": "norman-code",
             "display_name": "Norman Code",
-            "description": "Legacy local coding route for non-TUI compatibility.",
-            "priority": 2,
+            "description": "Norman transparent local-first coding route.",
+            "priority": 1,
             # Codex uses these capabilities to provision its local coding tools.
             "apply_patch_tool_type": "freeform",
             "supports_parallel_tool_calls": True,
@@ -400,8 +390,8 @@ def _codex_model_catalog() -> list[dict[str, Any]]:
             **common,
             "slug": "norman-code-governed",
             "display_name": "Norman Code (Governed)",
-            "description": "Legacy governed local route for non-TUI compatibility.",
-            "priority": 3,
+            "description": "Norman coding route with explicit governed tool behavior.",
+            "priority": 2,
             "apply_patch_tool_type": "freeform",
             "supports_parallel_tool_calls": True,
         },
@@ -410,7 +400,7 @@ def _codex_model_catalog() -> list[dict[str, Any]]:
             "slug": "norman-local",
             "display_name": "Norman Local",
             "description": "Norman local text route.",
-            "priority": 4,
+            "priority": 3,
         },
     ]
 

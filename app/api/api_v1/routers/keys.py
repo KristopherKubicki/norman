@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_db, get_keys_service_user
@@ -16,6 +16,19 @@ from app.schemas.secret_keys import (
     SecretRequestOut,
     SecretRequestResult,
     SecretAuditEventOut,
+    KeysCapabilityAuditEventOut,
+    KeysCapabilityCreate,
+    KeysCapabilityDecision,
+    KeysCapabilityInvoke,
+    KeysCapabilityPolicyCreate,
+    KeysCapabilityPolicyOut,
+    KeysCapabilityRequestCreate,
+    KeysCapabilityRequestResult,
+    KeysCapabilityReceipt,
+    KeysCapabilityRequestOut,
+    KeysCapabilityOut,
+    KeysHostEnrollmentCreate,
+    KeysHostEnrollmentOut,
     SecretStashCreate,
     SecretStashOut,
 )
@@ -28,6 +41,11 @@ from app.services.secret_keys import (
     revoke_secret_stash_item,
     revoke_secret_lease,
     serialize_secret_stash_item,
+    approve_capability_request,
+    create_capability_request,
+    invoke_capability_lease,
+    reject_capability_request,
+    revoke_capability_lease,
 )
 
 router = APIRouter(prefix="/keys", tags=["keys"])
@@ -238,4 +256,194 @@ def get_secret_compat(
         expires_at=lease.expires_at,
         provider=provider_kind,
         warnings=warnings,
+    )
+
+
+@router.get("/enrollments", response_model=list[KeysHostEnrollmentOut])
+def list_keys_host_enrollments(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    return crud.secret_keys.list_host_enrollments(db)
+
+
+@router.post("/enrollments", response_model=KeysHostEnrollmentOut, status_code=201)
+def enroll_keys_host(
+    body: KeysHostEnrollmentCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    if crud.secret_keys.get_host_enrollment(db, host_id=body.host_id):
+        raise HTTPException(status_code=409, detail="Host is already enrolled")
+    return crud.secret_keys.create_host_enrollment(
+        db,
+        host_id=body.host_id,
+        hostname=body.hostname,
+        identity_fingerprint=body.identity_fingerprint,
+        requester_ids=body.requester_ids,
+        capability_names=body.capability_names,
+        lanes=body.lanes,
+        status="active",
+        notes=body.notes,
+    )
+
+
+@router.get("/capabilities", response_model=list[KeysCapabilityOut])
+def list_keys_capabilities(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    return crud.secret_keys.list_capabilities(db)
+
+
+@router.post("/capabilities", response_model=KeysCapabilityOut, status_code=201)
+def create_keys_capability(
+    body: KeysCapabilityCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    if crud.secret_keys.get_capability(db, name=body.name, active_only=False):
+        raise HTTPException(status_code=409, detail="Capability already exists")
+    return crud.secret_keys.create_capability(db, **body.dict())
+
+
+@router.get("/capability-policies", response_model=list[KeysCapabilityPolicyOut])
+def list_keys_capability_policies(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    return crud.secret_keys.list_capability_policies(db)
+
+
+@router.post(
+    "/capability-policies", response_model=KeysCapabilityPolicyOut, status_code=201
+)
+def create_keys_capability_policy(
+    body: KeysCapabilityPolicyCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    capability = crud.secret_keys.get_capability(
+        db, name=body.capability_name, active_only=False
+    )
+    if not capability:
+        raise HTTPException(status_code=404, detail="Capability not found")
+    if crud.secret_keys.get_capability_policy(db, name=body.name):
+        raise HTTPException(status_code=409, detail="Capability policy already exists")
+    values = body.dict(exclude={"capability_name"})
+    return crud.secret_keys.create_capability_policy(
+        db, capability_id=capability.id, **values
+    )
+
+
+@router.get("/capability-audit", response_model=list[KeysCapabilityAuditEventOut])
+def list_keys_capability_audit(
+    limit: int = Query(100, ge=1, le=500),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    return crud.secret_keys.list_capability_audit_events(db, limit=limit)
+
+
+@router.post(
+    "/capability-requests/{request_id}/approve",
+    response_model=KeysCapabilityRequestResult,
+)
+def approve_keys_capability_request(
+    request_id: int,
+    body: KeysCapabilityDecision,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    request, lease, capability, enrollment = approve_capability_request(
+        db,
+        request_id=request_id,
+        decided_by=current_user.id,
+        reason=body.reason,
+        ttl_seconds=body.ttl_seconds,
+    )
+    return KeysCapabilityRequestResult(
+        request=request,
+        lease={
+            "lease_id": lease.lease_uuid,
+            "request_id": request.request_uuid,
+            "capability": capability.name,
+            "host_id": enrollment.host_id,
+            "action": request.action,
+            "expires_at": lease.expires_at,
+            "single_use": lease.single_use,
+            "status": lease.status,
+        },
+    )
+
+
+@router.post(
+    "/capability-requests/{request_id}/reject", response_model=KeysCapabilityRequestOut
+)
+def reject_keys_capability_request(
+    request_id: int,
+    body: KeysCapabilityDecision,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    return reject_capability_request(
+        db, request_id=request_id, decided_by=current_user.id, reason=body.reason
+    )
+
+
+@router.post("/capability-leases/{lease_id}/revoke")
+def revoke_keys_capability_lease(
+    lease_id: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    lease = revoke_capability_lease(db, lease_uuid=lease_id, actor_id=current_user.id)
+    return {"lease_id": lease.lease_uuid, "status": lease.status}
+
+
+@compat_router.post(
+    "/v1/capabilities/request", response_model=KeysCapabilityRequestResult
+)
+def request_capability_compat(
+    body: KeysCapabilityRequestCreate,
+    x_norman_keys_host_fingerprint: str = Header(default=""),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_keys_service_user),
+):
+    request, lease, capability, enrollment = create_capability_request(
+        db,
+        user_id=current_user.id,
+        body=body,
+        asserted_fingerprint=x_norman_keys_host_fingerprint,
+    )
+    payload = {"request": request, "warnings": []}
+    if lease:
+        payload["lease"] = {
+            "lease_id": lease.lease_uuid,
+            "request_id": request.request_uuid,
+            "capability": capability.name,
+            "host_id": enrollment.host_id,
+            "action": request.action,
+            "expires_at": lease.expires_at,
+            "single_use": lease.single_use,
+            "status": lease.status,
+        }
+    return KeysCapabilityRequestResult(**payload)
+
+
+@compat_router.post(
+    "/v1/capabilities/{lease_id}/invoke", response_model=KeysCapabilityReceipt
+)
+def invoke_capability_compat(
+    lease_id: str,
+    body: KeysCapabilityInvoke,
+    x_norman_keys_host_fingerprint: str = Header(default=""),
+    db: Session = Depends(get_db),
+    current_user=Depends(get_keys_service_user),
+):
+    return invoke_capability_lease(
+        db,
+        lease_uuid=lease_id,
+        body=body,
+        asserted_fingerprint=x_norman_keys_host_fingerprint,
     )

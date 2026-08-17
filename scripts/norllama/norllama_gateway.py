@@ -29,6 +29,9 @@ if not os.getenv("NORMAN_NORLLAMA_ROUTE_POLICY_PATH"):
         os.environ["NORMAN_NORLLAMA_ROUTE_POLICY_PATH"] = str(local_policy_artifact)
 
 try:
+    from app.services.norllama.escalation_policy import (
+        build_shadow_escalation_decision,
+    )
     from app.services.norllama.route_policy import (
         ROUTE_POLICY_VERSION,
         capability_gate_allows_production_default,
@@ -140,13 +143,30 @@ except (
             "request_production_route_eligible": False,
         }
 
+    def build_shadow_escalation_decision(
+        payload: dict[str, object] | None,
+        *,
+        policy_id: str = "",
+        policy_hash: str = "",
+        controller: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        return {
+            "schema": "norman.norllama.escalation-decision.v1",
+            "mode": "shadow_only",
+            "status": "policy_unavailable",
+            "policy_id": policy_id,
+            "policy_hash": policy_hash,
+            "execution_model_unchanged": True,
+            "execution_authority_changed": False,
+        }
+
 
 DEFAULT_BIND = "127.0.0.1"
 DEFAULT_PORT = 18151
 DEFAULT_TIMEOUT_S = 120
 DEFAULT_OLLAMA_BASES = ("http://127.0.0.1:11434",)
-DEFAULT_DS4_BASES = ("http://127.0.0.1:8002",)
-DEFAULT_DS4_BASE = DEFAULT_DS4_BASES[0]
+DEFAULT_DS4_BASES: tuple[str, ...] = ()
+DEFAULT_DS4_BASE = ""
 DEFAULT_MEDIA_BASES = ("http://127.0.0.1:8100",)
 DEFAULT_TRANSCRIBE_BASES = ("http://127.0.0.1:8097",)
 DEFAULT_OCR_BASES = ("http://127.0.0.1:8098",)
@@ -191,6 +211,7 @@ DEFAULT_PREFLIGHT_PACKET_PATHS = tuple(
 )
 DEFAULT_MODEL_CACHE_TTL_S = 15
 DEFAULT_INVENTORY_TIMEOUT_S = 3
+DEFAULT_HEALTH_PROBE_TIMEOUT_S = 3
 DEFAULT_ACTIVITY_LIMIT = 200
 DEFAULT_PEER_TIMEOUT_S = 1.0
 DEFAULT_MAX_PEER_HOPS = 1
@@ -201,8 +222,15 @@ DEFAULT_CHAT_QUEUE_LIMIT = 1
 DEFAULT_CHAT_QUEUE_WAIT_S = 10
 DEFAULT_CHAT_RETRY_AFTER_S = 10
 DEFAULT_CHAT_QUEUE_UPDATE_S = 1
+DEFAULT_ASR_MAX_ACTIVE = 1
+DEFAULT_ASR_QUEUE_LIMIT = 0
+DEFAULT_ASR_RETRY_AFTER_S = 60
+DEFAULT_ASR_MAX_UPLOAD_BYTES = 512 * 1024 * 1024
+DEFAULT_ASR_FAILURE_COOLDOWN_S = 300
+DEFAULT_TRANSCRIBE_MAX_ATTEMPTS = 1
 ADMISSION_RESPONSE_HEADERS = {
     "x-norllama-admission",
+    "x-norllama-work-class",
     "x-norllama-queue-wait-ms",
     "x-norllama-queue-depth",
     "x-norllama-queue-limit",
@@ -1204,9 +1232,58 @@ def apply_live_policy_contract_override(row: dict[str, object]) -> dict[str, obj
     return updated
 
 
+def active_escalation_controller() -> dict[str, object]:
+    loaded = load_route_policy_artifact(allow_missing_default=False)
+    artifact = loaded.get("artifact") if isinstance(loaded, dict) else {}
+    controller = (
+        artifact.get("escalation_controller") if isinstance(artifact, dict) else {}
+    )
+    return dict(controller) if isinstance(controller, dict) else {}
+
+
+def model_role_rows() -> dict[str, dict[str, object]]:
+    roles = active_escalation_controller().get("roles")
+    if not isinstance(roles, dict):
+        return {}
+    return {
+        str(role): dict(row) for role, row in roles.items() if isinstance(row, dict)
+    }
+
+
+def resident_ollama_bases_from_policy() -> list[str]:
+    resident = model_role_rows().get("resident") or {}
+    endpoints = resident.get("endpoints")
+    if not isinstance(endpoints, list):
+        return []
+    return unique_items(
+        [str(endpoint).strip() for endpoint in endpoints if str(endpoint).strip()]
+    )
+
+
+def model_requires_native_non_thinking_bridge(model_id: str) -> bool:
+    requested = str(model_id or "").strip().lower()
+    if not requested:
+        return False
+    for row in model_role_rows().values():
+        model = str(row.get("model") or "").strip().lower()
+        aliases = row.get("aliases")
+        model_ids = {model}
+        if isinstance(aliases, list):
+            model_ids.update(str(alias).strip().lower() for alias in aliases)
+        if requested in model_ids:
+            capabilities = row.get("capabilities")
+            return bool(
+                capabilities.get("native_non_thinking_bridge")
+                if isinstance(capabilities, dict)
+                else row.get("native_non_thinking_bridge")
+            )
+    return False
+
+
 def should_disable_qwen_thinking(model_id: str) -> bool:
-    lower = str(model_id or "").strip().lower()
-    return "qwen3-coder:" in lower or "qwen3.6:" in lower or "qwen3.5:" in lower
+    """Compatibility wrapper for the policy-driven native bridge decision."""
+
+    return model_requires_native_non_thinking_bridge(model_id)
 
 
 def normalize_chat_payload_for_local_qwen(
@@ -1503,12 +1580,16 @@ class ChatAdmissionReservation:
         state: str,
         queued_at: float,
         deadline: float,
+        priority: str,
+        sequence: int,
     ) -> None:
         self._controller = controller
         self._state = state
         self._was_queued = state == "queued"
         self._queued_at = queued_at
         self._deadline = deadline
+        self.priority = priority
+        self.sequence = sequence
         self._closed = False
 
     @property
@@ -1531,7 +1612,7 @@ class ChatAdmissionReservation:
 
 
 class ChatAdmissionController:
-    """Bound concurrent local generations without serializing peer workers."""
+    """Bound local generations with foreground-first, best-effort background work."""
 
     def __init__(
         self,
@@ -1547,18 +1628,48 @@ class ChatAdmissionController:
         self.retry_after_s = max(1.0, float(retry_after_s))
         self._condition = threading.Condition()
         self._active = 0
-        self._queued = 0
+        self._waiters: list[ChatAdmissionReservation] = []
+        self._sequence = 0
 
     def snapshot(self) -> dict[str, int]:
         with self._condition:
             return self._snapshot_locked()
 
-    def reserve(self) -> tuple[ChatAdmissionReservation | None, dict[str, int]]:
+    @staticmethod
+    def _priority_rank(priority: str) -> int:
+        return {"high": 0, "normal": 1, "background": 2}.get(priority, 1)
+
+    def _remove_waiter_locked(self, reservation: ChatAdmissionReservation) -> None:
+        try:
+            self._waiters.remove(reservation)
+        except ValueError:
+            pass
+
+    def _sort_waiters_locked(self) -> None:
+        self._waiters.sort(
+            key=lambda item: (self._priority_rank(item.priority), item.sequence)
+        )
+
+    def reserve(
+        self,
+        *,
+        priority: str = "normal",
+        queue_wait_s: float | None = None,
+    ) -> tuple[ChatAdmissionReservation | None, dict[str, int]]:
         """Reserve an active or queued slot without blocking the HTTP response."""
 
         with self._condition:
             now = time.monotonic()
-            if self._active < self.max_active:
+            normalized_priority = priority if priority in PRIORITY_LEVELS else "normal"
+            effective_wait_s = min(
+                self.queue_wait_s,
+                max(
+                    0.0,
+                    self.queue_wait_s if queue_wait_s is None else float(queue_wait_s),
+                ),
+            )
+            self._sequence += 1
+            if self._active < self.max_active and not self._waiters:
                 self._active += 1
                 return (
                     ChatAdmissionReservation(
@@ -1566,20 +1677,42 @@ class ChatAdmissionController:
                         state="active",
                         queued_at=now,
                         deadline=now,
+                        priority=normalized_priority,
+                        sequence=self._sequence,
                     ),
                     self._snapshot_locked(),
                 )
-            if self.queue_limit <= self._queued or self.queue_wait_s <= 0:
+            if (
+                self.queue_limit <= len(self._waiters)
+                and normalized_priority != "background"
+            ):
+                background_waiter = next(
+                    (
+                        item
+                        for item in reversed(self._waiters)
+                        if item.priority == "background"
+                    ),
+                    None,
+                )
+                if background_waiter is not None:
+                    self._remove_waiter_locked(background_waiter)
+                    background_waiter._state = "preempted"
+                    self._condition.notify_all()
+            if self.queue_limit <= len(self._waiters) or effective_wait_s <= 0:
                 return None, self._snapshot_locked()
 
-            self._queued += 1
+            reservation = ChatAdmissionReservation(
+                self,
+                state="queued",
+                queued_at=now,
+                deadline=now + effective_wait_s,
+                priority=normalized_priority,
+                sequence=self._sequence,
+            )
+            self._waiters.append(reservation)
+            self._sort_waiters_locked()
             return (
-                ChatAdmissionReservation(
-                    self,
-                    state="queued",
-                    queued_at=now,
-                    deadline=now + self.queue_wait_s,
-                ),
+                reservation,
                 self._snapshot_locked(),
             )
 
@@ -1596,12 +1729,14 @@ class ChatAdmissionController:
                 return "cancelled", self._snapshot_locked()
             if reservation._state == "active":
                 return "admitted", self._snapshot_locked()
+            if reservation._state == "preempted":
+                return "preempted", self._snapshot_locked()
             if reservation._state != "queued":
                 return "cancelled", self._snapshot_locked()
 
             now = time.monotonic()
             if now >= reservation._deadline:
-                self._queued = max(0, self._queued - 1)
+                self._remove_waiter_locked(reservation)
                 reservation._state = "expired"
                 self._condition.notify_all()
                 return "expired", self._snapshot_locked()
@@ -1615,15 +1750,21 @@ class ChatAdmissionController:
 
             if reservation._closed:
                 return "cancelled", self._snapshot_locked()
+            if reservation._state == "preempted":
+                return "preempted", self._snapshot_locked()
             if reservation._state != "queued":
                 return "cancelled", self._snapshot_locked()
-            if self._active < self.max_active:
-                self._queued = max(0, self._queued - 1)
+            if (
+                self._active < self.max_active
+                and self._waiters
+                and self._waiters[0] is reservation
+            ):
+                self._remove_waiter_locked(reservation)
                 self._active += 1
                 reservation._state = "active"
                 return "admitted", self._snapshot_locked()
             if time.monotonic() >= reservation._deadline:
-                self._queued = max(0, self._queued - 1)
+                self._remove_waiter_locked(reservation)
                 reservation._state = "expired"
                 self._condition.notify_all()
                 return "expired", self._snapshot_locked()
@@ -1637,38 +1778,29 @@ class ChatAdmissionController:
             if reservation._state == "active":
                 self._active = max(0, self._active - 1)
             elif reservation._state == "queued":
-                self._queued = max(0, self._queued - 1)
+                self._remove_waiter_locked(reservation)
             reservation._state = "released"
             self._condition.notify_all()
 
-    def acquire(self) -> tuple[bool, dict[str, int]]:
-        with self._condition:
-            if self._active < self.max_active:
-                self._active += 1
-                return True, self._snapshot_locked()
-            if self.queue_limit <= self._queued or self.queue_wait_s <= 0:
-                return False, self._snapshot_locked()
-
-            self._queued += 1
-            queued = True
-            deadline = time.monotonic() + self.queue_wait_s
-            try:
-                while True:
-                    if self._active < self.max_active:
-                        self._queued -= 1
-                        queued = False
-                        self._active += 1
-                        return True, self._snapshot_locked()
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        self._queued -= 1
-                        queued = False
-                        return False, self._snapshot_locked()
-                    self._condition.wait(remaining)
-            finally:
-                if queued:
-                    self._queued -= 1
-                    self._condition.notify_all()
+    def acquire(
+        self,
+        *,
+        priority: str = "normal",
+        queue_wait_s: float | None = None,
+    ) -> tuple[bool, dict[str, int]]:
+        reservation, snapshot = self.reserve(
+            priority=priority,
+            queue_wait_s=queue_wait_s,
+        )
+        if reservation is None:
+            return False, snapshot
+        if not reservation.queued:
+            return True, snapshot
+        while True:
+            state, snapshot = reservation.wait(timeout_s=self.queue_wait_s)
+            if state == "queued":
+                continue
+            return state == "admitted", snapshot
 
     def release(self) -> None:
         with self._condition:
@@ -1680,7 +1812,7 @@ class ChatAdmissionController:
         return {
             "active": self._active,
             "active_limit": self.max_active,
-            "queue_depth": self._queued,
+            "queue_depth": len(self._waiters),
             "queue_limit": self.queue_limit,
             "retry_after_seconds": max(1, int(self.retry_after_s)),
         }
@@ -1729,6 +1861,12 @@ class App:
         self.inventory_timeout_s = float(
             os.getenv("NORLLAMA_INVENTORY_TIMEOUT_S", str(DEFAULT_INVENTORY_TIMEOUT_S))
         )
+        self.health_probe_timeout_s = float(
+            os.getenv(
+                "NORLLAMA_HEALTH_PROBE_TIMEOUT_S",
+                str(DEFAULT_HEALTH_PROBE_TIMEOUT_S),
+            )
+        )
         self.activity_limit = int(
             os.getenv("NORLLAMA_ACTIVITY_LIMIT", str(DEFAULT_ACTIVITY_LIMIT))
         )
@@ -1770,6 +1908,54 @@ class App:
             minimum=0.25,
             maximum=10.0,
         )
+        # Audio is both large and memory-intensive to parse. Do not accept a
+        # second upload while the first is still buffered or transcribed.
+        self.asr_admission = ChatAdmissionController(
+            max_active=env_int(
+                "NORLLAMA_ASR_MAX_ACTIVE",
+                DEFAULT_ASR_MAX_ACTIVE,
+                minimum=1,
+                maximum=4,
+            ),
+            queue_limit=env_int(
+                "NORLLAMA_ASR_QUEUE_LIMIT",
+                DEFAULT_ASR_QUEUE_LIMIT,
+                minimum=0,
+                maximum=16,
+            ),
+            queue_wait_s=0,
+            retry_after_s=env_float(
+                "NORLLAMA_ASR_RETRY_AFTER_S",
+                DEFAULT_ASR_RETRY_AFTER_S,
+                minimum=1.0,
+                maximum=3600.0,
+            ),
+        )
+        self.asr_max_upload_bytes = env_int(
+            "NORLLAMA_ASR_MAX_UPLOAD_BYTES",
+            DEFAULT_ASR_MAX_UPLOAD_BYTES,
+            minimum=1024 * 1024,
+            maximum=4 * 1024 * 1024 * 1024,
+        )
+        self.asr_failure_cooldown_s = env_float(
+            "NORLLAMA_ASR_FAILURE_COOLDOWN_S",
+            DEFAULT_ASR_FAILURE_COOLDOWN_S,
+            minimum=1.0,
+            maximum=3600.0,
+        )
+        self._asr_cooldown_lock = threading.Lock()
+        self._asr_cooldown_until = 0.0
+        self._asr_cooldown_status = 0
+        self.transcribe_max_attempts = env_int(
+            "NORLLAMA_TRANSCRIBE_MAX_ATTEMPTS",
+            DEFAULT_TRANSCRIBE_MAX_ATTEMPTS,
+            minimum=1,
+            maximum=4,
+        )
+        self.transcribe_allow_peer_failover = env_flag(
+            "NORLLAMA_TRANSCRIBE_ALLOW_PEER_FAILOVER",
+            False,
+        )
         self.expose_upstream_details = env_flag(
             "NORLLAMA_EXPOSE_UPSTREAM_DETAILS", False
         )
@@ -1777,9 +1963,22 @@ class App:
         self.public_provider_name = (
             os.getenv("NORLLAMA_PUBLIC_PROVIDER_NAME", "norllama").strip() or "norllama"
         )
-        self.ollama_bases = split_env_urls(
-            "NORLLAMA_OLLAMA_BASES", DEFAULT_OLLAMA_BASES
+        configured_resident_bases = os.getenv("NORLLAMA_RESIDENT_OLLAMA_BASES")
+        resident_bases = (
+            split_env_urls("NORLLAMA_RESIDENT_OLLAMA_BASES", ())
+            if configured_resident_bases is not None
+            else resident_ollama_bases_from_policy()
         )
+        self.ollama_bases = unique_items(
+            [
+                *split_env_urls("NORLLAMA_OLLAMA_BASES", DEFAULT_OLLAMA_BASES),
+                *resident_bases,
+            ]
+        )
+        self.admission_bases = {
+            normalize_base_url(base)
+            for base in split_env_urls("NORLLAMA_ADMISSION_BASES", ())
+        }
         self.peer_timeout_s = float(
             os.getenv("NORLLAMA_PEER_TIMEOUT_S", str(DEFAULT_PEER_TIMEOUT_S))
         )
@@ -2574,9 +2773,10 @@ class App:
 
     def choose_media_base(self) -> tuple[str | None, list[dict]]:
         rows: list[dict] = []
+        timeout_s = min(self.timeout_s, self.health_probe_timeout_s)
         for base in self.media_bases:
             try:
-                doc = self.fetch_json(base.rstrip("/") + "/health")
+                doc = self.fetch_json(base.rstrip("/") + "/health", timeout_s=timeout_s)
                 row = {
                     "base_url": base,
                     "status": doc.get("status"),
@@ -2607,9 +2807,10 @@ class App:
 
     def choose_transcribe_base(self) -> tuple[str | None, list[dict]]:
         rows: list[dict] = []
+        timeout_s = min(self.timeout_s, self.health_probe_timeout_s)
         for base in self.transcribe_bases:
             try:
-                doc = self.fetch_json(base.rstrip("/") + "/health")
+                doc = self.fetch_json(base.rstrip("/") + "/health", timeout_s=timeout_s)
                 row = {
                     "base_url": base,
                     "status": doc.get("status"),
@@ -2631,9 +2832,10 @@ class App:
 
     def choose_ocr_base(self) -> tuple[str | None, list[dict]]:
         rows: list[dict] = []
+        timeout_s = min(self.timeout_s, self.health_probe_timeout_s)
         for base in self.ocr_bases:
             try:
-                doc = self.fetch_json(base.rstrip("/") + "/health")
+                doc = self.fetch_json(base.rstrip("/") + "/health", timeout_s=timeout_s)
                 row = {
                     "base_url": base,
                     "status": doc.get("status"),
@@ -2671,9 +2873,10 @@ class App:
 
     def choose_rerank_base(self) -> tuple[str | None, list[dict]]:
         rows: list[dict] = []
+        timeout_s = min(self.timeout_s, self.health_probe_timeout_s)
         for base in self.rerank_bases:
             try:
-                doc = self.fetch_json(base.rstrip("/") + "/health")
+                doc = self.fetch_json(base.rstrip("/") + "/health", timeout_s=timeout_s)
                 row = {
                     "base_url": base,
                     "status": doc.get("status"),
@@ -2713,9 +2916,10 @@ class App:
 
     def choose_safety_base(self) -> tuple[str | None, list[dict]]:
         rows: list[dict] = []
+        timeout_s = min(self.timeout_s, self.health_probe_timeout_s)
         for base in self.safety_bases:
             try:
-                doc = self.fetch_json(base.rstrip("/") + "/health")
+                doc = self.fetch_json(base.rstrip("/") + "/health", timeout_s=timeout_s)
                 row = {
                     "base_url": base,
                     "status": doc.get("status"),
@@ -3086,7 +3290,8 @@ class App:
             "evict_api": True,
             "request_ids": True,
             "priority_hints": True,
-            "priority_queue": False,
+            "priority_queue": True,
+            "background_best_effort": True,
             "async_jobs": True,
             "prefetch_jobs": True,
             "structured_logging": True,
@@ -3969,9 +4174,17 @@ class App:
                     "X-Request-Id": "Optional client-supplied request id. Norllama generates one when absent.",
                     "X-Norllama-Priority": {
                         "accepted": sorted(PRIORITY_LEVELS),
-                        "mode": "hint_only",
+                        "mode": "foreground_first",
                         "default": "normal",
                     },
+                    "X-Norllama-Work-Class": {
+                        "accepted": ["foreground", "background"],
+                        "default": "foreground",
+                    },
+                    "X-Norllama-Max-Queue-Wait-Ms": (
+                        "Optional caller queue budget. Background callers should "
+                        "use a short value and treat deferral as success."
+                    ),
                 },
                 "response": response_headers,
             },
@@ -3986,9 +4199,12 @@ class App:
             },
             "priority": {
                 "supported": True,
-                "mode": "hint_only",
+                "mode": "foreground_first",
                 "levels": sorted(PRIORITY_LEVELS),
-                "notes": "Priority is exposed in headers and logs now. It does not yet reorder execution.",
+                "notes": (
+                    "Foreground waiters are admitted before background work. "
+                    "Queued background work may be preempted or deferred."
+                ),
             },
             "endpoints": self.public_endpoints(),
         }
@@ -4207,7 +4423,8 @@ class App:
             "recent_activity": recent,
             "contract": {
                 "async_mode": "prefetch_jobs",
-                "priority_mode": "hint_only",
+                "priority_mode": "foreground_first",
+                "background_mode": "best_effort",
                 "structured_logging": True,
                 "request_ids": True,
                 "head_support_count": len(
@@ -5155,19 +5372,16 @@ class App:
 
     def readyz(self) -> dict:
         identity = active_route_policy_identity(allow_missing_default=False)
-        routable_models = [
-            row
-            for row in self.catalog().get("models") or []
-            if isinstance(row, dict)
-            and str(row.get("access") or "").startswith("unified_chat")
-            and not bool(row.get("manual_only"))
-            and not bool(row.get("tool_only"))
-        ]
+        configured_chat_backends = {
+            str(base).rstrip("/")
+            for base in (*self.ollama_bases, *self.ds4_bases, *self.peer_bases)
+            if str(base).strip()
+        }
         ready = bool(
             identity.get("integrity_valid")
             and identity.get("default_route_allowed")
             and identity.get("lifecycle_state") in {"valid", "expiring_soon"}
-            and routable_models
+            and configured_chat_backends
         )
         return {
             "service": "norllama",
@@ -5176,14 +5390,73 @@ class App:
             "ready": ready,
             "time": now_iso(),
             "policy": identity,
-            "routable_model_count": len(routable_models),
+            "readiness_basis": "signed_policy_and_configured_chat_backends",
+            "configured_chat_backend_count": len(configured_chat_backends),
+            "inventory_endpoint": "/v1/models",
             "features": self.feature_flags(),
+        }
+
+    def asr_cooldown(self) -> dict[str, object]:
+        """Return the local ASR circuit-breaker state without extending it."""
+
+        now = time.monotonic()
+        with self._asr_cooldown_lock:
+            remaining = max(0.0, self._asr_cooldown_until - now)
+            if remaining <= 0:
+                self._asr_cooldown_until = 0.0
+            return {
+                "active": remaining > 0,
+                "retry_after_seconds": max(0, int(remaining + 0.999)),
+                "last_failure_status": self._asr_cooldown_status,
+            }
+
+    def trip_asr_cooldown(self, status: int) -> None:
+        """Fail closed after a backend 5xx so the next upload is never read."""
+
+        if int(status) < 500:
+            return
+        with self._asr_cooldown_lock:
+            self._asr_cooldown_until = max(
+                self._asr_cooldown_until,
+                time.monotonic() + self.asr_failure_cooldown_s,
+            )
+            self._asr_cooldown_status = int(status)
+
+    def asr_readyz(self) -> dict:
+        selected, rows = self.choose_transcribe_base()
+        capacity = self.asr_admission.snapshot()
+        cooldown = self.asr_cooldown()
+        ready = (
+            selected is not None
+            and capacity["active"] < capacity["active_limit"]
+            and not bool(cooldown["active"])
+        )
+        healthy_count = len([row for row in rows if row.get("status") == "ok"])
+        if bool(cooldown["active"]):
+            status = "asr_backend_cooldown"
+        elif ready:
+            status = "ok"
+        elif selected is None:
+            status = "asr_unavailable"
+        else:
+            status = "asr_busy"
+        return {
+            "service": "norllama",
+            "gateway": gateway_identity(),
+            "status": status,
+            "ready": ready,
+            "healthy_backend_count": healthy_count,
+            "capacity": capacity,
+            "cooldown": cooldown,
+            "max_upload_bytes": self.asr_max_upload_bytes,
+            "time": now_iso(),
         }
 
 
 class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+    request_queue_size = 128
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -5205,6 +5478,24 @@ class Handler(BaseHTTPRequestHandler):
         priority = self.headers.get("X-Norllama-Priority", "").strip().lower()
         if priority not in PRIORITY_LEVELS:
             priority = "normal"
+        work_class = self.headers.get("X-Norllama-Work-Class", "").strip().lower()
+        if work_class not in {"foreground", "background"}:
+            work_class = "background" if priority == "background" else "foreground"
+        if work_class == "background":
+            priority = "background"
+        try:
+            requested_queue_wait_ms = int(
+                self.headers.get("X-Norllama-Max-Queue-Wait-Ms", "").strip() or "-1"
+            )
+        except Exception:
+            requested_queue_wait_ms = -1
+        if requested_queue_wait_ms < 0:
+            queue_wait_s = None
+        else:
+            queue_wait_s = min(
+                self.app.chat_admission.queue_wait_s,
+                max(0.0, requested_queue_wait_ms / 1000),
+            )
         try:
             peer_hop = int(self.headers.get("X-Norllama-Peer-Hop", "0").strip() or "0")
         except Exception:
@@ -5215,6 +5506,8 @@ class Handler(BaseHTTPRequestHandler):
             self.headers.get("X-Request-Id", "").strip() or uuid.uuid4().hex
         )
         self._priority = priority
+        self._work_class = work_class
+        self._queue_wait_s = queue_wait_s
         self._peer_hop = peer_hop
         self._started_at = time.perf_counter()
         self._log_sent = False
@@ -5631,6 +5924,115 @@ class Handler(BaseHTTPRequestHandler):
             return b""
         return self.rfile.read(content_length)
 
+    def request_content_length(self) -> int | None:
+        raw_length = self.headers.get("Content-Length", "").strip()
+        if not raw_length:
+            return None
+        try:
+            content_length = int(raw_length)
+        except (TypeError, ValueError):
+            return None
+        return content_length if content_length >= 0 else None
+
+    def reject_unread_asr_upload(
+        self,
+        status: int,
+        payload: dict[str, object],
+        *,
+        extra_headers: dict[str, str] | None = None,
+    ) -> None:
+        # The request body is deliberately unread in these cases. Closing the
+        # connection prevents it from being interpreted as the next request.
+        self.close_connection = True
+        headers = {"Connection": "close"}
+        if extra_headers:
+            headers.update(extra_headers)
+        self.send_json(status, payload, extra_headers=headers)
+
+    def send_asr_capacity_response(self, snapshot: dict[str, int]) -> None:
+        retry_after = str(max(1, int(self.app.asr_admission.retry_after_s)))
+        self.reject_unread_asr_upload(
+            HTTPStatus.TOO_MANY_REQUESTS,
+            {
+                "ok": False,
+                "error": "asr_capacity_exhausted",
+                "message": (
+                    "Local transcription capacity is busy; retry after "
+                    f"{retry_after} seconds"
+                ),
+                "norllama": {
+                    "schema": "norllama.asr_capacity.v1",
+                    **snapshot,
+                },
+            },
+            extra_headers={"Retry-After": retry_after},
+        )
+
+    def send_asr_backend_cooldown_response(self, cooldown: dict[str, object]) -> None:
+        retry_after = str(max(1, int(cooldown.get("retry_after_seconds") or 1)))
+        self.reject_unread_asr_upload(
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            {
+                "ok": False,
+                "error": "asr_backend_cooldown",
+                "message": (
+                    "Local transcription backend recently failed; retry after "
+                    f"{retry_after} seconds"
+                ),
+                "norllama": {
+                    "schema": "norllama.asr_cooldown.v1",
+                    **cooldown,
+                },
+            },
+            extra_headers={"Retry-After": retry_after},
+        )
+
+    def handle_asr_post(self, path: str) -> None:
+        content_length = self.request_content_length()
+        if content_length is None:
+            self.reject_unread_asr_upload(
+                HTTPStatus.LENGTH_REQUIRED,
+                {
+                    "ok": False,
+                    "error": "missing_content_length",
+                    "message": "ASR uploads require a valid Content-Length header",
+                },
+            )
+            return
+        if content_length > self.app.asr_max_upload_bytes:
+            self.reject_unread_asr_upload(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                {
+                    "ok": False,
+                    "error": "asr_upload_too_large",
+                    "max_upload_bytes": self.app.asr_max_upload_bytes,
+                    "received_content_length": content_length,
+                },
+            )
+            return
+
+        cooldown_fn = getattr(self.app, "asr_cooldown", None)
+        cooldown = (
+            cooldown_fn()
+            if callable(cooldown_fn)
+            else {"active": False, "retry_after_seconds": 0}
+        )
+        if bool(cooldown.get("active")):
+            self.send_asr_backend_cooldown_response(cooldown)
+            return
+
+        reservation, snapshot = self.app.asr_admission.reserve()
+        if reservation is None:
+            self.send_asr_capacity_response(snapshot)
+            return
+        try:
+            body = self.read_body()
+            if not self.enforce_policy_for_request(path, body):
+                return
+            self.handle_unified_transcribe(body)
+        finally:
+            reservation.release()
+
     def forward(
         self,
         base_url: str,
@@ -5661,9 +6063,14 @@ class Handler(BaseHTTPRequestHandler):
         return isinstance(payload, dict) and bool(payload.get("stream"))
 
     def local_generation_request(self, base_url: str, upstream_path: str) -> bool:
-        return is_loopback_base_url(base_url) and urllib.parse.urlsplit(
-            upstream_path
-        ).path in {"/api/chat", "/api/generate", "/v1/chat/completions"}
+        owns_capacity = is_loopback_base_url(base_url) or normalize_base_url(
+            base_url
+        ) in getattr(self.app, "admission_bases", set())
+        return owns_capacity and urllib.parse.urlsplit(upstream_path).path in {
+            "/api/chat",
+            "/api/generate",
+            "/v1/chat/completions",
+        }
 
     def local_capacity_response(
         self,
@@ -5678,17 +6085,29 @@ class Handler(BaseHTTPRequestHandler):
             or getattr(self, "_model_hint", "")
         )
         retry_after = str(max(1, int(self.app.chat_admission.retry_after_s)))
+        background = getattr(self, "_work_class", "foreground") == "background"
+        error = "background_deferred" if background else "local_capacity_exhausted"
+        capacity_meta = {
+            "schema": "norllama.capacity.v2" if background else "norllama.capacity.v1",
+            **snapshot,
+        }
+        if background:
+            capacity_meta.update(
+                {
+                    "work_class": "background",
+                    "outcome": "deferred",
+                }
+            )
         payload = {
             "ok": False,
-            "error": "local_capacity_exhausted",
+            "error": error,
             "message": (
-                f"Local coding capacity is busy; retry after {retry_after} seconds"
+                "Best-effort background work was deferred for foreground capacity"
+                if background
+                else f"Local coding capacity is busy; retry after {retry_after} seconds"
             ),
             "model": model,
-            "norllama": {
-                "schema": "norllama.capacity.v1",
-                **snapshot,
-            },
+            "norllama": capacity_meta,
         }
         return (
             int(HTTPStatus.TOO_MANY_REQUESTS),
@@ -5708,6 +6127,7 @@ class Handler(BaseHTTPRequestHandler):
         queue_wait_ms = max(0, min(int(queue_wait_s * 1000), 3600000))
         return {
             "X-Norllama-Admission": "queued" if queue_wait_ms else "immediate",
+            "X-Norllama-Work-Class": getattr(self, "_work_class", "foreground"),
             "X-Norllama-Queue-Wait-Ms": str(queue_wait_ms),
             "X-Norllama-Queue-Depth": str(max(0, snapshot.get("queue_depth", 0))),
             "X-Norllama-Queue-Limit": str(max(0, snapshot.get("queue_limit", 0))),
@@ -5730,6 +6150,7 @@ class Handler(BaseHTTPRequestHandler):
             "norllama": {
                 "schema": "norllama.stream-admission.v1",
                 "event": event,
+                "work_class": getattr(self, "_work_class", "foreground"),
                 "admission": "queued" if reservation.was_queued else "immediate",
                 "queue_wait_ms": queue_wait_ms,
                 **snapshot,
@@ -5749,11 +6170,21 @@ class Handler(BaseHTTPRequestHandler):
             or getattr(self, "_model_hint", "")
         )
         return {
-            "error": "local_capacity_exhausted",
+            "error": (
+                "background_deferred"
+                if getattr(self, "_work_class", "foreground") == "background"
+                else "local_capacity_exhausted"
+            ),
             "done": True,
             "model": model,
             "norllama": {
-                "schema": "norllama.capacity.v1",
+                "schema": "norllama.capacity.v2",
+                "work_class": getattr(self, "_work_class", "foreground"),
+                "outcome": (
+                    "deferred"
+                    if getattr(self, "_work_class", "foreground") == "background"
+                    else "busy"
+                ),
                 **snapshot,
             },
         }
@@ -5874,6 +6305,19 @@ class Handler(BaseHTTPRequestHandler):
                             snapshot=updated_snapshot,
                             model_hint=model_hint,
                         )
+                    )
+                elif state == "preempted":
+                    content_length += self.write_stream_frame(
+                        {
+                            "error": "background_preempted",
+                            "done": True,
+                            "norllama": {
+                                "schema": "norllama.capacity.v2",
+                                "work_class": "background",
+                                "outcome": "preempted",
+                                **updated_snapshot,
+                            },
+                        }
                     )
                 return
         except (
@@ -6035,7 +6479,10 @@ class Handler(BaseHTTPRequestHandler):
                 ).path == "/api/generate" and self.local_generation_request(
                     base, upstream_path
                 ):
-                    admission_reservation, snapshot = self.app.chat_admission.reserve()
+                    admission_reservation, snapshot = self.app.chat_admission.reserve(
+                        priority=getattr(self, "_priority", "normal"),
+                        queue_wait_s=getattr(self, "_queue_wait_s", None),
+                    )
                     if admission_reservation is None:
                         last = self.local_capacity_response(
                             body=body,
@@ -6145,7 +6592,10 @@ class Handler(BaseHTTPRequestHandler):
             outgoing_headers.update(headers)
         if self.local_generation_request(base_url, upstream_path):
             wait_started_at = time.monotonic()
-            admitted, snapshot = self.app.chat_admission.acquire()
+            admitted, snapshot = self.app.chat_admission.acquire(
+                priority=getattr(self, "_priority", "normal"),
+                queue_wait_s=getattr(self, "_queue_wait_s", None),
+            )
             admitted_at = time.monotonic()
             if not admitted:
                 return self.local_capacity_response(
@@ -6213,7 +6663,10 @@ class Handler(BaseHTTPRequestHandler):
                 )
             else:
                 wait_started_at = time.monotonic()
-                admitted, snapshot = self.app.chat_admission.acquire()
+                admitted, snapshot = self.app.chat_admission.acquire(
+                    priority=getattr(self, "_priority", "normal"),
+                    queue_wait_s=getattr(self, "_queue_wait_s", None),
+                )
                 admitted_at = time.monotonic()
                 if not admitted:
                     status, response_headers, response_body = (
@@ -7628,7 +8081,7 @@ class Handler(BaseHTTPRequestHandler):
         last: tuple[int, dict[str, str], bytes] | None = None
         attempted: list[str] = []
         last_base: str | None = None
-        for base in candidates:
+        for base in candidates[: self.app.transcribe_max_attempts]:
             key = self.app.transcribe_key(base)
             if not key:
                 continue
@@ -7647,6 +8100,9 @@ class Handler(BaseHTTPRequestHandler):
             last = result
             last_base = base
             if result[0] == 503 or result[0] >= 500:
+                trip_cooldown = getattr(self.app, "trip_asr_cooldown", None)
+                if callable(trip_cooldown):
+                    trip_cooldown(result[0])
                 continue
             self.send_upstream(
                 result[0],
@@ -7659,7 +8115,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         peer_bases, peer_rows = self.peer_candidate_bases()
-        if peer_bases:
+        if peer_bases and self.app.transcribe_allow_peer_failover:
             self.forward_candidates(
                 peer_bases,
                 "/transcribe",
@@ -7886,6 +8342,7 @@ class Handler(BaseHTTPRequestHandler):
             "/v1/catalog",
             "/v1/capabilities",
             "/v1/warm-policy",
+            "/v1/escalation/shadow",
             "/v1/activity",
             "/v1/prefetch/status",
             "/api/version",
@@ -7909,6 +8366,7 @@ class Handler(BaseHTTPRequestHandler):
             "/rerank",
             "/v1/safety/classify",
             "/safety/classify",
+            "/v1/escalation/shadow",
         }:
             return ["POST", "OPTIONS"]
         if path.startswith("/media/"):
@@ -7931,6 +8389,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/readyz":
             payload = self.app.readyz()
+            self.send_json(
+                HTTPStatus.OK
+                if bool(payload.get("ready"))
+                else HTTPStatus.SERVICE_UNAVAILABLE,
+                payload,
+            )
+            return
+        if parsed.path == "/asr-readyz":
+            payload = self.app.asr_readyz()
             self.send_json(
                 HTTPStatus.OK
                 if bool(payload.get("ready"))
@@ -8241,8 +8708,9 @@ class Handler(BaseHTTPRequestHandler):
                 "X-Norllama-Async-Supported": "true"
                 if parsed.path in {"/v1/prefetch", "/v1/prefetch/status"}
                 else "false",
-                "X-Norllama-Priority-Mode": "hint_only",
+                "X-Norllama-Priority-Mode": "foreground_first",
                 "X-Norllama-Priority-Levels": ",".join(sorted(PRIORITY_LEVELS)),
+                "X-Norllama-Background-Mode": "best_effort",
             },
         )
 
@@ -8338,7 +8806,50 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         self.begin_request()
         parsed = urllib.parse.urlsplit(self.path)
+        if parsed.path in {"/transcribe", "/v1/audio/transcriptions"}:
+            self.handle_asr_post(parsed.path)
+            return
         body = self.read_body()
+        if parsed.path == "/v1/escalation/shadow":
+            try:
+                payload = json.loads(body.decode("utf-8")) if body else {}
+            except Exception as exc:
+                self.send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "error": "invalid_json", "detail": str(exc)},
+                )
+                return
+            if not isinstance(payload, dict):
+                self.send_json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"ok": False, "error": "payload_must_be_object"},
+                )
+                return
+            loaded = load_route_policy_artifact(allow_missing_default=False)
+            artifact = loaded.get("artifact") if isinstance(loaded, dict) else {}
+            controller = (
+                artifact.get("escalation_controller")
+                if isinstance(artifact, dict)
+                else {}
+            )
+            identity = active_route_policy_identity(allow_missing_default=False)
+            decision = build_shadow_escalation_decision(
+                payload,
+                policy_id=str(identity.get("policy_id") or ""),
+                policy_hash=str(identity.get("policy_hash") or ""),
+                controller=controller if isinstance(controller, dict) else None,
+            )
+            self.merge_activity_extra(
+                {
+                    "mode": "resident_escalation_shadow",
+                    "proposed_role": str(decision.get("proposed_role") or ""),
+                    "proposed_model": str(decision.get("proposed_model") or ""),
+                    "proposed_tier": str(decision.get("proposed_tier") or ""),
+                    "approval_required": bool(decision.get("approval_required")),
+                }
+            )
+            self.send_json(HTTPStatus.OK, decision)
+            return
         if parsed.path == "/v1/prefetch":
             if not self.enforce_policy_for_request(parsed.path, body):
                 return
@@ -8381,11 +8892,6 @@ class Handler(BaseHTTPRequestHandler):
             ):
                 return
             self.handle_ollama_compat_post(parsed.path, body)
-            return
-        if parsed.path in {"/transcribe", "/v1/audio/transcriptions"}:
-            if not self.enforce_policy_for_request(parsed.path, body):
-                return
-            self.handle_unified_transcribe(body)
             return
         if parsed.path.startswith("/media/"):
             self.handle_media(

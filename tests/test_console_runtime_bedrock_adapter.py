@@ -6,6 +6,7 @@ from urllib import error as urllib_error
 
 import pytest
 
+from app.services.console_runtime.adapters import bedrock as bedrock_adapter_module
 from app.services.console_runtime.adapters.bedrock import BedrockModelAdapter
 from app.services.console_runtime.adapters.norllama import NorllamaModelAdapter
 from app.services.console_runtime.types import ModelBudget, ModelRequest
@@ -115,6 +116,58 @@ def _explicit_cloud_selection_request(
                 "provider": "aws-bedrock",
                 "model": "openai.gpt-5.6-terra",
                 "lane": "coder",
+            },
+        },
+    )
+
+
+def _cloud_fallback_request() -> ModelRequest:
+    artifact = generate_route_policy_artifact()
+    fallbacks = dict(artifact["fallbacks"])
+    fallback_model = str(fallbacks["cloud_fallback_model"])
+    route = NorllamaRoute(
+        lane="coder",
+        provider="aws-bedrock",
+        provider_kind="aws-bedrock",
+        capability="chat",
+        model=fallback_model,
+        mode="cloud_proxy",
+        local=False,
+        cloud_proxy=True,
+        tool_lane=False,
+        requires_receipt=True,
+        reason="facade fallback after local capacity failure",
+    )
+    return ModelRequest(
+        messages=[{"role": "user", "content": "Find the available tool."}],
+        model=fallback_model,
+        route_key="norman-code",
+        budget=ModelBudget(max_output_tokens=321),
+        metadata={
+            "request_id": "cloud-fallback-1",
+            "invocation_id": "cloud-fallback-1",
+            "norllama_task_kind": "chat",
+            "execution_mode": "prompt_intermediary_openai_facade_cloud_fallback",
+            "requested_model": fallback_model,
+            "route_selected_model": fallback_model,
+            "route_policy": {
+                "provider": "aws-bedrock",
+                "preferred_provider": "aws-bedrock",
+                "model": fallback_model,
+                "preferred_model": fallback_model,
+                "lane": "coder",
+                "allow_cloud_proxy": False,
+                "fallbacks": fallbacks,
+                "route_policy_artifact": artifact,
+                "aws_region": "us-east-2",
+                "bedrock_mantle_api_key_secret": "test/bedrock-mantle",
+            },
+            "norllama_route": route.as_dict(),
+            "norman_facade_cloud_fallback": {
+                "schema": "norman.facade-cloud-fallback.v1",
+                "attempt": 1,
+                "requested_alias": "norman-code",
+                "local_failure_code": "local_capacity_unavailable",
             },
         },
     )
@@ -654,6 +707,52 @@ def test_bedrock_adapter_routes_authorized_explicit_gpt_selection_through_mantle
         sort_keys=True,
     )
     assert mantle_key not in serialized
+
+
+def test_bedrock_adapter_routes_authorized_cloud_fallback_through_mantle(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        bedrock_adapter_module,
+        "resolve_bedrock_mantle_api_key",
+        lambda *_args, **_kwargs: bedrock_module.BedrockMantleApiKey(
+            api_key="test-mantle-key",
+            source="norman_keys",
+            secret_name="test/bedrock-mantle",
+        ),
+    )
+    monkeypatch.setattr(
+        bedrock_adapter_module,
+        "invoke_bedrock_mantle_responses",
+        lambda **_kwargs: {
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "Fallback completed."}],
+                }
+            ],
+            "usage": {
+                "input_tokens": 4,
+                "output_tokens": 2,
+                "total_tokens": 6,
+            },
+        },
+    )
+    client_factory_calls: list[dict] = []
+
+    result = BedrockModelAdapter(
+        client_factory=lambda **kwargs: client_factory_calls.append(kwargs)
+    ).invoke(_cloud_fallback_request())
+
+    assert client_factory_calls == []
+    assert result.text == "Fallback completed."
+    assert result.metadata["bedrock_transport"] == "bedrock_mantle_responses"
+    assert result.metadata["policy_authorization"]["cloud_fallback_authorized"] is True
+    assert (
+        result.metadata["policy_authorization"]["explicit_cloud_selection_authorized"]
+        is False
+    )
 
 
 def test_bedrock_mantle_request_uses_supported_parameters():

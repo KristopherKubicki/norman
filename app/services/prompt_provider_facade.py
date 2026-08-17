@@ -13,6 +13,7 @@ from typing import Any, Callable, Mapping
 import requests
 
 from app.core.config import settings
+from app.core.estate_registry import model_role, worker_id_from_endpoint
 from app.services.console_runtime.adapters.bedrock import BedrockModelAdapter
 from app.services.console_runtime.types import ModelBudget, ModelRequest, ModelResult
 from app.services.norllama import capacity as norllama_capacity
@@ -1186,16 +1187,7 @@ def _planned_attribution(route_envelope: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _worker_from_endpoint(value: str) -> str:
-    clean = _clean(value).lower()
-    if not clean:
-        return ""
-    if "192.168.2.151" in clean or "spark-151" in clean:
-        return "spark-151"
-    if "192.168.2.150" in clean or "spark-150" in clean:
-        return "spark-150"
-    if "192.168.2.133" in clean or "mac-mini-133" in clean or "2.133" in clean:
-        return "mac-mini-133"
-    return ""
+    return worker_id_from_endpoint(value)
 
 
 def _gateway_attribution(
@@ -1903,12 +1895,18 @@ def _requested_model(payload: Mapping[str, Any]) -> str:
 
 
 def _uses_native_mantle_responses(payload: Mapping[str, Any]) -> bool:
-    """Keep the Terra route on its native Bedrock Responses protocol."""
+    """Keep the configured authority route on its native Responses protocol."""
 
-    return _requested_model(payload).lower() in {
-        "gpt-5.6-terra",
-        "openai.gpt-5.6-terra",
+    authority = model_role("authority")
+    authority_models = {
+        _clean(authority.get("model")).lower(),
+        *{
+            _clean(alias).lower()
+            for alias in authority.get("aliases") or []
+            if _clean(alias)
+        },
     }
+    return _requested_model(payload).lower() in authority_models
 
 
 def _responses_bridge_mode(payload: Mapping[str, Any]) -> str:
@@ -3135,6 +3133,16 @@ def _cloud_fallback_plan(
                 "",
             )
         ),
+        # GPT-5 models use the Bedrock Mantle Responses endpoint rather than
+        # the Bedrock Converse API. Reuse the managed facade alias so the
+        # adapter never needs a caller-provided credential setting.
+        "bedrock_mantle_api_key_secret": _clean(
+            getattr(
+                settings,
+                "prompt_facade_explicit_cloud_mantle_api_key_secret",
+                "",
+            )
+        ),
     }
     route = NorllamaRoute(
         lane=lane,
@@ -3500,6 +3508,21 @@ def _explicit_cloud_selection_marker(
     }
 
 
+def _explicit_cloud_timeout_seconds() -> int:
+    for setting_name in (
+        "prompt_facade_explicit_cloud_timeout_seconds",
+        "console_runtime_bedrock_timeout_seconds",
+        "llm_provider_timeout_seconds",
+    ):
+        try:
+            timeout_seconds = int(float(getattr(settings, setting_name, 0) or 0))
+        except (TypeError, ValueError):
+            continue
+        if timeout_seconds > 0:
+            return max(1, min(timeout_seconds, 1800))
+    return 1200
+
+
 def _explicit_cloud_selection_request(
     *,
     plan: ExplicitCloudSelectionPlan,
@@ -3508,12 +3531,7 @@ def _explicit_cloud_selection_request(
     provider_payload: Mapping[str, Any],
     native_responses_transport: bool = False,
 ) -> ModelRequest:
-    try:
-        timeout_seconds = int(
-            float(getattr(settings, "llm_provider_timeout_seconds", 45) or 45)
-        )
-    except (TypeError, ValueError):
-        timeout_seconds = 45
+    timeout_seconds = _explicit_cloud_timeout_seconds()
     return ModelRequest(
         messages=messages,
         model=plan.model,
@@ -3548,6 +3566,17 @@ def _explicit_cloud_selection_request(
     )
 
 
+def _explicit_cloud_failure_code(exc: Exception) -> str:
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, TimeoutError):
+            return "explicit_cloud_selection_timeout"
+        current = current.__cause__ or current.__context__
+    return "explicit_cloud_selection_failed"
+
+
 def _explicit_cloud_selection_error(
     *,
     plan: ExplicitCloudSelectionPlan,
@@ -3557,7 +3586,11 @@ def _explicit_cloud_selection_error(
     message = (
         "The selected cloud model is not authorized"
         if code == "explicit_cloud_selection_not_authorized"
-        else "The selected cloud model could not complete"
+        else (
+            "The selected cloud model timed out before completion"
+            if code == "explicit_cloud_selection_timeout"
+            else "The selected cloud model could not complete"
+        )
     )
     return FacadeError(
         message,
@@ -3619,7 +3652,7 @@ def _execute_explicit_cloud_selection(
         raise _explicit_cloud_selection_error(
             plan=plan,
             invocation=invocation,
-            code="explicit_cloud_selection_failed",
+            code=_explicit_cloud_failure_code(exc),
         ) from exc
     if result.stop_reason == "policy_blocked":
         raise _explicit_cloud_selection_error(

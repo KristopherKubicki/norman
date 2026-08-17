@@ -55,9 +55,10 @@ LOCAL_BIN = HOME / ".local" / "bin"
 LOCAL_CODEX_WRAPPER = LOCAL_BIN / "codex"
 LOCAL_CODEX_WORK_WRAPPER = LOCAL_BIN / "codex-work"
 ROUTER_PROFILE_PREFIX = "router-"
-DEFAULT_ROUTER_MODEL = "openai.gpt-5.6-terra"
-ROUTER_MODELS = frozenset({DEFAULT_ROUTER_MODEL, "gpt-5.6-terra"})
-MODEL_CATALOG_CONTRACT_VERSION = "2026-08-terra-codex-v1"
+DEFAULT_ROUTER_MODEL = "norman-code"
+GOVERNED_ROUTER_MODEL = "norman-code-governed"
+ROUTER_MODELS = frozenset({DEFAULT_ROUTER_MODEL, GOVERNED_ROUTER_MODEL})
+MODEL_CATALOG_CONTRACT_VERSION = "2026-08-transparent-bridge-v3"
 REQUIRED_CODEX_MODEL_CAPABILITIES = {
     "shell_type": "shell_command",
     "apply_patch_tool_type": "freeform",
@@ -476,8 +477,9 @@ def route_arguments_error(route: Route, arguments: Sequence[str]) -> str:
 
     if any(model not in ROUTER_MODELS for model in explicit_models(arguments)):
         return (
-            f"{route.key} only supports the {DEFAULT_ROUTER_MODEL!r} TUI model; "
-            "the gateway preserves its transparent tool bridge for that model."
+            f"{route.key} only supports the {DEFAULT_ROUTER_MODEL!r} or "
+            f"{GOVERNED_ROUTER_MODEL!r} TUI models; the gateway selects its "
+            "approved fallback so coding tools remain available."
         )
 
     routed_keys = {
@@ -754,6 +756,8 @@ def _routed_model_catalog_entry(
         "shell_type": "shell_command",
         "visibility": "list",
         "supported_in_api": True,
+        # Codex 0.146 requires this field even when no base instructions apply.
+        "base_instructions": "",
         "priority": priority,
         "additional_speed_tiers": [],
         "service_tiers": [],
@@ -781,23 +785,34 @@ def _routed_model_catalog_entry(
         "context_window": 128000,
         "effective_context_window_percent": 95,
         "experimental_supported_tools": [],
-        "input_modalities": ["text", "image"],
+        # The Responses facade currently normalizes text content only. Do not
+        # advertise image input until it can safely forward image data.
+        "input_modalities": ["text"],
         "supports_search_tool": False,
         "use_responses_lite": False,
     }
 
 
 def routed_model_catalog() -> dict[str, object]:
-    """Return the Terra model contract for routed Codex sessions."""
+    """Return the transparent default and an explicit governed bridge mode."""
     return {
         "models": [
             _routed_model_catalog_entry(
                 slug=DEFAULT_ROUTER_MODEL,
-                display_name="GPT-5.6 Terra",
+                display_name="Norman Code",
                 description=(
-                    "GPT-5.6 Terra through Norman's transparent coding tool bridge."
+                    "Transparent local text-adapter coding route with approved "
+                    "local-first cloud fallback."
                 ),
                 priority=1,
+            ),
+            _routed_model_catalog_entry(
+                slug=GOVERNED_ROUTER_MODEL,
+                display_name="Norman Code (Governed)",
+                description=(
+                    "Norman coding route with explicit governed tool-bridge behavior."
+                ),
+                priority=2,
             ),
         ]
     }
@@ -1025,7 +1040,7 @@ def write_gateway_profile(route: Route) -> Path:
             f"name = {json.dumps(route.key + ' TUI model gateway')}",
             f"base_url = {json.dumps(route.endpoint)}",
             'wire_api = "responses"',
-            "stream_idle_timeout_ms = 300000",
+            "stream_idle_timeout_ms = 1200000",
             "",
             f"[model_providers.{route.provider}.auth]",
             f"command = {json.dumps(str(GATEWAY_TOKEN_HELPER))}",
@@ -1247,18 +1262,12 @@ def verify_route_model_contract(_route: Route) -> tuple[bool, str]:
 
 
 def preflight_route_capacity(route: Route) -> tuple[bool, str]:
-    """Verify that the gateway advertises the routed Terra model."""
+    """Report local coding capacity before starting a mapped interactive session."""
 
     token, detail = brokered_gateway_token(route)
     if not token:
         return False, detail
-    status, payload, detail = gateway_get_json(route.endpoint, "models", token=token)
-    if status != 200:
-        return False, detail
-    contract_error = model_catalog_contract_error(payload)
-    if contract_error:
-        return False, contract_error
-    return True, "GPT-5.6 Terra route verified"
+    return verify_norman_capacity(route, token=token)
 
 
 def _coerce_int(value: Any) -> int:
@@ -1755,11 +1764,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     file=sys.stderr,
                 )
                 return 1
-            route_available, route_detail = preflight_route_capacity(route)
-            if not route_available:
+            capacity_available, capacity_detail = preflight_route_capacity(route)
+            if not capacity_available:
                 print(
-                    f"codex-route: {route.key} model-route warning: "
-                    f"{route_detail}. Starting Codex normally.",
+                    f"codex-route: {route.key} local capacity warning: "
+                    f"{capacity_detail}. Starting Codex normally.",
                     file=sys.stderr,
                 )
             print_startup_usage_notices(route)

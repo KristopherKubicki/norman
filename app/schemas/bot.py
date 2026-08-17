@@ -3,6 +3,7 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict, constr, field_validator
 
 from app.core.config import settings
+from app.core.estate_registry import default_cloud_model
 
 
 class BotBase(BaseModel):
@@ -10,7 +11,7 @@ class BotBase(BaseModel):
     gpt_model: constr(strip_whitespace=True, min_length=1) = (
         settings.openai_available_models[0]
         if settings.openai_available_models
-        else settings.openai_default_model or "gpt-5.6-terra"
+        else settings.openai_default_model or default_cloud_model()
     )
     session_id: Optional[str] = None
 

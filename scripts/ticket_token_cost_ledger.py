@@ -9,27 +9,46 @@ import time
 from pathlib import Path
 from typing import Any
 
+from app.core.estate_registry import (
+    model_row,
+    priced_models,
+    pricing_for_model,
+)
 
 DEFAULT_LEDGER_JSONL = Path("/tmp/norman_tui_benchmarks/ticket_token_cost_ledger.jsonl")
 DEFAULT_CHARGE_STATUS = "not_invoice_reconciled"
 DEFAULT_ESTIMATE_LABEL = "estimated USD; not invoice-reconciled"
 
-OPENAI_DIRECT_PRICING_USD_PER_1M = {
-    "gpt-5.5": {"input": 5.00, "cached_input": 0.50, "output": 30.00},
-    "gpt-5.4": {"input": 2.50, "cached_input": 0.25, "output": 15.00},
-    "gpt-5.6-terra": {"input": 2.50, "cached_input": 0.25, "output": 15.00},
-    "gpt-5.4-mini": {"input": 0.75, "cached_input": 0.075, "output": 4.50},
-    "gpt-5.4-nano": {"input": 0.20, "cached_input": 0.02, "output": 1.25},
-}
 
+def _priced_registry_rows() -> list[dict[str, Any]]:
+    return [row for model in priced_models() if (row := model_row(model))]
+
+
+def _bedrock_model_id(row: dict[str, Any]) -> str:
+    identifiers = [str(row.get("model") or ""), *map(str, row.get("aliases") or [])]
+    return next(
+        (identifier for identifier in identifiers if identifier.startswith("openai.")),
+        "",
+    )
+
+
+OPENAI_DIRECT_PRICING_USD_PER_1M = {
+    str(row["model"]).removeprefix("openai."): pricing
+    for row in _priced_registry_rows()
+    if (pricing := pricing_for_model(str(row["model"]), channel="openai_direct"))
+    is not None
+}
 BEDROCK_US_EAST_2_PRICING_USD_PER_1M = {
-    "openai.gpt-5.5": {"input": 5.50, "cached_input": 0.55, "output": 33.00},
-    "openai.gpt-5.4": {"input": 2.75, "cached_input": 0.275, "output": 16.50},
-    "openai.gpt-5.6-terra": {
-        "input": 2.75,
-        "cached_input": 0.275,
-        "output": 16.50,
-    },
+    bedrock_model: pricing
+    for row in _priced_registry_rows()
+    if (bedrock_model := _bedrock_model_id(row))
+    and (
+        pricing := pricing_for_model(
+            str(row["model"]),
+            channel="bedrock_estimate",
+        )
+    )
+    is not None
 }
 
 PRICE_BASIS_SOURCES = {

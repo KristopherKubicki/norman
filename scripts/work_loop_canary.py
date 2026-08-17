@@ -19,12 +19,17 @@ from app.services.codex_role_policy import (
     codex_role_value,
     load_codex_role_policy,
 )
+from app.core.estate_registry import (
+    model_row,
+)
 from app.services.norllama.route_policy import (
     route_policy_contract,
     route_policy_lifecycle,
 )
 from ticket_token_cost_ledger import (
+    BEDROCK_US_EAST_2_PRICING_USD_PER_1M,
     DEFAULT_LEDGER_JSONL as DEFAULT_TICKET_COST_LEDGER_JSONL,
+    OPENAI_DIRECT_PRICING_USD_PER_1M,
 )
 from ticket_token_cost_ledger import append_record as append_ticket_cost_record
 from ticket_token_cost_ledger import build_record as build_ticket_cost_record
@@ -192,25 +197,6 @@ ROUTE_RECEIPT_REMOTE_HOSTS = {
 ROUTE_RECEIPT_REMOTE_CONNECT_TIMEOUT_SECONDS = (
     os.environ.get("NORMAN_ROUTE_RECEIPT_SSH_CONNECT_TIMEOUT", "10").strip() or "10"
 )
-
-
-OPENAI_DIRECT_PRICING_USD_PER_1M = {
-    "gpt-5.5": {"input": 5.00, "cached_input": 0.50, "output": 30.00},
-    "gpt-5.4": {"input": 2.50, "cached_input": 0.25, "output": 15.00},
-    "gpt-5.6-terra": {"input": 2.50, "cached_input": 0.25, "output": 15.00},
-    "gpt-5.4-mini": {"input": 0.75, "cached_input": 0.075, "output": 4.50},
-}
-
-
-BEDROCK_US_EAST_2_PRICING_USD_PER_1M = {
-    "openai.gpt-5.5": {"input": 5.50, "cached_input": 0.55, "output": 33.00},
-    "openai.gpt-5.4": {"input": 2.75, "cached_input": 0.275, "output": 16.50},
-    "openai.gpt-5.6-terra": {
-        "input": 2.75,
-        "cached_input": 0.275,
-        "output": 16.50,
-    },
-}
 
 
 ARCHITECTURE_MODES = {

@@ -141,6 +141,26 @@ def test_policy_valid_allows_default_model_selection(monkeypatch, tmp_path):
     assert authorization["lifecycle_state"] == "valid"
 
 
+def test_policy_rejects_incomplete_model_role_registry() -> None:
+    artifact = generate_route_policy_artifact(now=_now())
+    del artifact["escalation_controller"]["roles"]["frontier"]
+    from app.services.norllama.route_policy_artifact import (
+        compute_route_policy_hash,
+        policy_id_for,
+    )
+
+    artifact["policy_hash"] = compute_route_policy_hash(artifact)
+    artifact["policy_id"] = policy_id_for(
+        str(artifact["version"]),
+        str(artifact["policy_hash"]),
+    )
+
+    validation = validate_route_policy_artifact(artifact, now=_now())
+
+    assert validation["integrity_valid"] is False
+    assert validation["reason"] == "missing_escalation_controller_role_frontier"
+
+
 def test_policy_expiring_soon_allows_and_warns(monkeypatch, tmp_path):
     path, artifact = _install_policy(
         monkeypatch,
@@ -519,6 +539,51 @@ def test_policy_expired_blocks_gateway_readiness(monkeypatch, tmp_path):
 
     assert readiness["ready"] is False
     assert readiness["policy"]["lifecycle_state"] == "expired_blocked"
+
+
+def test_gateway_readiness_does_not_wait_for_distributed_catalog(monkeypatch, tmp_path):
+    _install_policy(monkeypatch, tmp_path)
+    gateway_module = _load_gateway_module()
+    app = gateway_module.App()
+
+    monkeypatch.setattr(
+        app,
+        "catalog",
+        lambda: (_ for _ in ()).throw(AssertionError("catalog must stay deferred")),
+    )
+    readiness = app.readyz()
+
+    assert readiness["ready"] is True
+    assert readiness["configured_chat_backend_count"] > 0
+    assert readiness["inventory_endpoint"] == "/v1/models"
+
+
+def test_asr_readiness_requires_a_healthy_transcription_backend(monkeypatch, tmp_path):
+    _install_policy(monkeypatch, tmp_path)
+    gateway_module = _load_gateway_module()
+    app = gateway_module.App()
+
+    monkeypatch.setattr(
+        app,
+        "choose_transcribe_base",
+        lambda: ("http://127.0.0.1:8095", [{"status": "ok"}]),
+    )
+    ready = app.asr_readyz()
+
+    assert ready["ready"] is True
+    assert ready["status"] == "ok"
+    assert ready["healthy_backend_count"] == 1
+
+    monkeypatch.setattr(
+        app,
+        "choose_transcribe_base",
+        lambda: (None, [{"status": "error"}]),
+    )
+    unavailable = app.asr_readyz()
+
+    assert unavailable["ready"] is False
+    assert unavailable["status"] == "asr_unavailable"
+    assert unavailable["healthy_backend_count"] == 0
 
 
 def test_policy_expired_blocks_gateway_chat(monkeypatch, tmp_path):

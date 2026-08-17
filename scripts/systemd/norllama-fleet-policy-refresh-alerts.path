@@ -1,0 +1,9 @@
+[Unit]
+Description=Run Norllama route-policy refresh alert policy when state changes
+
+[Path]
+PathChanged=/home/kristopher/.local/state/norman/norllama-fleet-policy-refresh.json
+Unit=norllama-fleet-policy-refresh-alerts.service
+
+[Install]
+WantedBy=multi-user.target

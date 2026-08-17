@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import socket
 import subprocess
 import sys
@@ -30,6 +31,8 @@ REMOTE_COLD_RECOVERY_DRILL = r"""
 import importlib.util
 import json
 import os
+from pathlib import Path
+import sys
 import tempfile
 import time
 
@@ -51,8 +54,13 @@ try:
         )
         os.environ["NORMAN_LOCAL_LLM_ROUTE_COOLDOWN_SECONDS"] = "900"
         os.environ["NORMAN_LOCAL_PLANNER_PREFLIGHT_COLD_LOAD_COOLDOWN_SECONDS"] = "60"
+        web_path = Path(str(config["web_path"])).resolve()
+        for import_root in (web_path.parent, web_path.parent.parent):
+            import_root_text = str(import_root)
+            if import_root_text not in sys.path:
+                sys.path.insert(0, import_root_text)
         spec = importlib.util.spec_from_file_location(
-            "norman_cold_recovery_drill", str(config["web_path"])
+            "norman_cold_recovery_drill", str(web_path)
         )
         if spec is None or spec.loader is None:
             raise RuntimeError("could not load deployed console source")
@@ -406,13 +414,28 @@ def proof_form(nonce: str) -> dict[str, str]:
     }
 
 
-def remote_command(host: sync.DiscoveryHost) -> list[str]:
-    command = ["python3", "-"]
+def remote_command(
+    host: sync.DiscoveryHost,
+    *,
+    python_candidate: str = "",
+) -> list[str]:
+    candidate = _text(python_candidate)
+    if candidate:
+        command = [
+            "/bin/sh",
+            "-c",
+            (
+                f"if [ -x {shlex.quote(candidate)} ]; then "
+                f"exec {shlex.quote(candidate)} -; fi; exec python3 -"
+            ),
+        ]
+    else:
+        command = ["python3", "-"]
     if host.use_sudo:
         command.insert(0, "sudo")
     if sync.host_runs_local(host):
         return command
-    return ["ssh", *sync.SSH_OPTIONS, host.ssh_target, " ".join(command)]
+    return ["ssh", *sync.SSH_OPTIONS, host.ssh_target, shlex.join(command)]
 
 
 def run_instance_proof(
@@ -513,9 +536,12 @@ def run_instance_cold_recovery_drill(
         f"{json.dumps({'web_path': instance.web_path}, sort_keys=True)!r}\n"
         f"{REMOTE_COLD_RECOVERY_DRILL}"
     )
+    python_candidate = str(
+        Path(instance.web_path).resolve().parent.parent / ".venv" / "bin" / "python"
+    )
     try:
         completed = subprocess.run(
-            remote_command(host),
+            remote_command(host, python_candidate=python_candidate),
             input=program,
             text=True,
             capture_output=True,

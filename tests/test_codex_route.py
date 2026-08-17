@@ -280,16 +280,16 @@ def test_mapped_checkout_rejects_profile_or_provider_overrides(
     ("arguments", "expected"),
     (
         (
-            ["--model", "norman-code"],
-            "only supports the 'openai.gpt-5.6-terra' TUI model",
+            ["--model", "gpt-5.6-terra"],
+            "only supports the 'norman-code' or 'norman-code-governed' TUI models",
         ),
         (
-            ["--model=norman-code-governed"],
-            "only supports the 'openai.gpt-5.6-terra' TUI model",
+            ["--model=gpt-5.6-terra"],
+            "only supports the 'norman-code' or 'norman-code-governed' TUI models",
         ),
         (
-            ["-mnorman-local"],
-            "only supports the 'openai.gpt-5.6-terra' TUI model",
+            ["-mgpt-5.6-terra"],
+            "only supports the 'norman-code' or 'norman-code-governed' TUI models",
         ),
         (["--config", 'model="gpt-5.6-terra"'], "does not allow --config"),
         (
@@ -308,7 +308,7 @@ def test_mapped_checkout_rejects_model_or_catalog_overrides(
     assert expected in message
 
 
-@pytest.mark.parametrize("model_name", ("gpt-5.6-terra", "openai.gpt-5.6-terra"))
+@pytest.mark.parametrize("model_name", ("norman-code", "norman-code-governed"))
 def test_mapped_checkout_allows_the_managed_models(route_module, model_name):
     route = route_by_key(route_module, "norman")
 
@@ -412,6 +412,7 @@ def test_generated_profile_uses_brokered_auth_without_storing_a_token(
     catalog_path = tmp_path / "codex" / "router-model-catalog.json"
 
     assert f'base_url = "{route.endpoint}"' in contents
+    assert "stream_idle_timeout_ms = 1200000" in contents
     assert 'args = ["--secret", "norman/prompt-proxy-token"]' in contents
     assert "developer_instructions" not in contents
     assert f'model_catalog_json = "{catalog_path}"' in contents
@@ -427,11 +428,14 @@ def test_generated_profile_uses_brokered_auth_without_storing_a_token(
     catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
     assert catalog_path.stat().st_mode & 0o777 == 0o600
     assert [model["slug"] for model in catalog["models"]] == [
-        "openai.gpt-5.6-terra",
+        "norman-code",
+        "norman-code-governed",
     ]
     assert catalog["models"][0]["apply_patch_tool_type"] == "freeform"
     assert catalog["models"][0]["supports_parallel_tool_calls"] is True
     assert catalog["models"][0]["default_reasoning_level"] == "high"
+    assert catalog["models"][0]["base_instructions"] == ""
+    assert catalog["models"][0]["input_modalities"] == ["text"]
     assert catalog["models"][0]["include_skills_usage_instructions"] is True
     assert catalog["models"][0]["include_plugin_usage_instructions"] is True
     assert not (profile_path.parent / "config.toml").exists()
@@ -689,7 +693,7 @@ def test_generated_profile_restores_managed_model_and_refreshes_stale_catalog_ca
     route_module.write_gateway_profile(route)
 
     contents = profile.read_text(encoding="utf-8")
-    assert 'model = "openai.gpt-5.6-terra"' in contents
+    assert 'model = "norman-code"' in contents
     assert not cache.exists()
     backups = list(home.glob("models_cache.json.stale-*"))
     assert len(backups) == 1
@@ -865,7 +869,7 @@ def test_route_verify_rejects_model_catalog_without_coding_tools(
                 "object": "list",
                 "models": [
                     {
-                        "slug": "openai.gpt-5.6-terra",
+                        "slug": "norman-code",
                         "shell_type": "shell_command",
                         "apply_patch_tool_type": None,
                         "supports_parallel_tool_calls": False,
@@ -879,7 +883,7 @@ def test_route_verify_rejects_model_catalog_without_coding_tools(
     assert route_module.verify_route(route) == (
         False,
         "gateway model catalog is incompatible with coding tools: "
-        "'openai.gpt-5.6-terra' advertises apply_patch_tool_type=None, expected "
+        "'norman-code' advertises apply_patch_tool_type=None, expected "
         "'freeform'; deploy the catalog fix and start a new chat",
     )
 
@@ -1004,7 +1008,7 @@ def test_model_route_unavailable_warns_then_starts_routed_session(
     assert route_module.main(["--launcher", "work", "--", "resume"]) == 0
     assert executed == ["route"]
     captured = capsys.readouterr()
-    assert "control-plane model-route warning" in captured.err
+    assert "control-plane local capacity warning" in captured.err
     assert "gateway model catalog is unavailable" in captured.err
     assert "Starting Codex normally" in captured.err
     assert "subscription: Short window 68% left" in captured.err

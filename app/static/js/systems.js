@@ -369,9 +369,9 @@
       || routeText.includes('pef')
       || routeText.includes('private')
     ) return 'Private';
-    if (PERSONAL_SERVICE_SLUGS.has(slug) || routeText.includes('toy-box') || routeText.includes('192.168.2.146')) return 'Personal';
-    if (WORK_SERVICE_SLUGS.has(slug) || routeText.includes('work-special') || routeText.includes('192.168.2.147')) return 'Work';
-    if (SHARED_SERVICE_SLUGS.has(slug) || routeText.includes('networking.tail94915.ts.net') || routeText.includes('192.168.2.242')) return 'Shared';
+    if (PERSONAL_SERVICE_SLUGS.has(slug) || routeText.includes('toy-box')) return 'Personal';
+    if (WORK_SERVICE_SLUGS.has(slug) || routeText.includes('work-special')) return 'Work';
+    if (SHARED_SERVICE_SLUGS.has(slug) || routeText.includes('networking.tail94915.ts.net')) return 'Shared';
     if (String(principal?.slug || '').trim().toLowerCase() === 'openbrand') return 'Work';
     return 'Shared';
   }

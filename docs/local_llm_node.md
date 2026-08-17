@@ -262,16 +262,22 @@ is not treated as deployed until an operator-approved restart completes.
 
 ### Route Policy Refresh
 
-Each Norllama worker reads its own `route_policy.json`. Refresh the exact local
-path through the repo-owned command:
+Each Norllama worker reads its own `route_policy.json`, but refresh policy from
+the controller rather than independent worker crontabs. The fleet command
+generates one policy, validates it with each worker runtime, promotes it without
+restarting either gateway or ASR, and restores already-promoted workers if a
+later promotion fails:
 
 ```bash
-python3 refresh_route_policy.py --path /worker/norllama/route_policy.json
+python3 scripts/norllama/refresh_fleet_route_policy.py --apply
 ```
 
-Install it in the worker account's cron at `@reboot` and every six hours. The
-command exits nonzero unless the freshly written policy allows the default
-route, preserving the gateway's fail-closed behavior if refresh fails.
+Install `norllama-fleet-policy-refresh.timer` on the controller. It refreshes
+every six hours, well before the seven-day policy expiry. Pair it with
+`norllama-fleet-health.timer` and `norllama-fleet-alerts.path`; the health
+report checks all gateway readiness endpoints, route-policy eligibility,
+service restart counts, and memory pressure for the Mac mini plus both Spark
+workers.
 
 That keeps the fast path native on macOS while still giving you a small,
 controllable service boundary. If stricter control is needed later, use this

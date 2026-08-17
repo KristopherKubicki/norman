@@ -305,3 +305,155 @@ def revoke_stash_item(
     db.commit()
     db.refresh(item)
     return item
+
+
+# Capability delivery records intentionally live beside the older secret CRUD,
+# but never resolve a provider or store secret values.
+def get_host_enrollment(db: Session, *, host_id: str):
+    from app.models import KeysHostEnrollment
+
+    return (
+        db.query(KeysHostEnrollment)
+        .filter(KeysHostEnrollment.host_id == host_id)
+        .first()
+    )
+
+
+def list_host_enrollments(db: Session):
+    from app.models import KeysHostEnrollment
+
+    return db.query(KeysHostEnrollment).order_by(KeysHostEnrollment.host_id.asc()).all()
+
+
+def create_host_enrollment(db: Session, **values):
+    from app.models import KeysHostEnrollment
+
+    obj = KeysHostEnrollment(**values)
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+
+def get_capability(db: Session, *, name: str, active_only: bool = True):
+    from app.models import KeysCapability
+
+    query = db.query(KeysCapability).filter(KeysCapability.name == name)
+    if active_only:
+        query = query.filter(KeysCapability.enabled.is_(True))
+    return query.first()
+
+
+def list_capabilities(db: Session, *, active_only: bool = False):
+    from app.models import KeysCapability
+
+    query = db.query(KeysCapability)
+    if active_only:
+        query = query.filter(KeysCapability.enabled.is_(True))
+    return query.order_by(KeysCapability.name.asc()).all()
+
+
+def create_capability(db: Session, **values):
+    from app.models import KeysCapability
+
+    obj = KeysCapability(**values)
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+
+def get_capability_policy(db: Session, *, name: str):
+    from app.models import KeysCapabilityPolicy
+
+    return (
+        db.query(KeysCapabilityPolicy).filter(KeysCapabilityPolicy.name == name).first()
+    )
+
+
+def list_capability_policies(db: Session, *, active_only: bool = False):
+    from app.models import KeysCapabilityPolicy
+
+    query = db.query(KeysCapabilityPolicy)
+    if active_only:
+        query = query.filter(KeysCapabilityPolicy.enabled.is_(True))
+    return query.order_by(KeysCapabilityPolicy.id.asc()).all()
+
+
+def create_capability_policy(db: Session, **values):
+    from app.models import KeysCapabilityPolicy
+
+    obj = KeysCapabilityPolicy(**values)
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+
+def create_capability_request(db: Session, **values):
+    from app.models import KeysCapabilityRequest
+
+    obj = KeysCapabilityRequest(**values)
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+
+def get_capability_request(db: Session, *, request_id: int):
+    from app.models import KeysCapabilityRequest
+
+    return (
+        db.query(KeysCapabilityRequest)
+        .filter(KeysCapabilityRequest.id == request_id)
+        .first()
+    )
+
+
+def create_capability_lease(db: Session, **values):
+    from app.models import KeysCapabilityLease
+
+    obj = KeysCapabilityLease(**values)
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+
+def get_capability_lease(db: Session, *, lease_uuid: str):
+    from app.models import KeysCapabilityLease
+
+    return (
+        db.query(KeysCapabilityLease)
+        .filter(KeysCapabilityLease.lease_uuid == lease_uuid)
+        .first()
+    )
+
+
+def update_capability_lease(db: Session, *, lease, **values):
+    for key, value in values.items():
+        setattr(lease, key, value)
+    db.commit()
+    db.refresh(lease)
+    return lease
+
+
+def create_capability_audit_event(db: Session, **values):
+    from app.models import KeysCapabilityAuditEvent
+
+    obj = KeysCapabilityAuditEvent(**values)
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+
+def list_capability_audit_events(db: Session, *, limit: int = 100):
+    from app.models import KeysCapabilityAuditEvent
+
+    return (
+        db.query(KeysCapabilityAuditEvent)
+        .order_by(KeysCapabilityAuditEvent.id.desc())
+        .limit(limit)
+        .all()
+    )

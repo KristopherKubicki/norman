@@ -407,6 +407,8 @@ def test_build_warm_policy_marks_active_prefetch_and_unavailable():
 
 
 def test_build_warm_policy_includes_capability_catalog_and_spark_affinity():
+    from app.core.estate_registry import resident_model
+
     policy = warm_policy.build_warm_policy(mesh=catalog_mesh(), packet={})
     by_model = {item["model"]: item for item in policy["recommendations"]}
     guardrails = policy["route_guardrails"]["lanes"]
@@ -414,15 +416,11 @@ def test_build_warm_policy_includes_capability_catalog_and_spark_affinity():
     assert policy["capability_catalog"]["schema"] == (
         "norman.norllama.capability-catalog.v1"
     )
-    assert policy["capability_catalog"]["defaults"]["code"] == (
-        "qwen3-coder:30b-a3b-q4_K_M"
-    )
+    assert policy["capability_catalog"]["defaults"]["code"] == resident_model()
     assert policy["capability_catalog"]["defaults"]["asr"] == (
         "faster-whisper:distil-large-v3"
     )
-    assert policy["capability_catalog"]["defaults"]["world"] == (
-        "qwen3-coder:30b-a3b-q4_K_M"
-    )
+    assert policy["capability_catalog"]["defaults"]["world"] == resident_model()
     assert policy["model_reality"]["schema"] == "norman.norllama.model-reality.v1"
     assert by_model["qwen3-coder:30b-a3b-q4_K_M"]["action"] == ("skip_quality_gate")
     assert (
@@ -452,8 +450,7 @@ def test_build_warm_policy_includes_capability_catalog_and_spark_affinity():
     assert by_model["faster-whisper:distil-large-v3"]["target_worker"] == "spark-151"
     assert by_model["faster-whisper:large-v3"]["target_worker"] == "spark-150"
     assert (
-        "Qwen/Qwen-AgentWorld-35B-A3B"
-        in by_model["qwen3-coder:30b-a3b-q4_K_M"]["desired_models"]
+        "Qwen/Qwen-AgentWorld-35B-A3B" in by_model[resident_model()]["desired_models"]
     )
     assert guardrails["coder"]["eligible_count"] == 0
     assert guardrails["judge"]["eligible_count"] == 0

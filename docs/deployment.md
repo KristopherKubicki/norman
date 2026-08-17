@@ -159,6 +159,44 @@ The loopback `norman-release@.service` canary writes a separate policy under
 through the same encrypted credential wrapper as production. It cannot replace
 the policy used by the active production facade.
 
+### Norllama Fleet Operations
+
+Install the Norllama worker policy and health timers on the controller. The
+policy refresh generates one route-policy artifact, validates it on the Mac
+mini and both Spark workers, and promotes it without restarting a worker.
+Health state is written in the format consumed by the existing Switchboard
+alert policy.
+
+```bash
+for unit in \
+  norllama-fleet-policy-refresh.service \
+  norllama-fleet-policy-refresh.timer \
+  norllama-fleet-health.service \
+  norllama-fleet-health.timer \
+  norllama-fleet-alerts.service \
+  norllama-fleet-alerts.path \
+  norllama-fleet-policy-refresh-alerts.service \
+  norllama-fleet-policy-refresh-alerts.path; do
+  sudo install -D -m 0644 "scripts/systemd/$unit" "/etc/systemd/system/$unit"
+done
+sudo systemctl daemon-reload
+sudo systemctl enable --now \
+  norllama-fleet-policy-refresh.timer \
+  norllama-fleet-health.timer \
+  norllama-fleet-alerts.path \
+  norllama-fleet-policy-refresh-alerts.path
+```
+
+The alert path activates only when `/etc/norman/tui-fleet-alerts.env` is
+configured. Run a non-disruptive ASR redundancy drill with:
+
+```bash
+python3 scripts/norllama/asr_failover_drill.py
+```
+
+It verifies both Spark ASR backends and the Mac gateway's multi-backend
+readiness without replaying an audio upload.
+
 The unit reads only non-secret identities from
 `/etc/norman/runtime-identities.env`. Store the following logical aliases in
 the approved Norman Keys resolver or the encrypted `cred` migration vault:
@@ -238,8 +276,11 @@ exec "$SHELL" -l
 
 The installer copies the router and token helper to
 `~/.local/lib/norman-codex-route`, installs the wrappers at
-`~/.local/bin/codex` and `~/.local/bin/codex-work`, and ensures that local bin
-directory precedes the NVM Codex binary in `.bashrc` and any existing
+`~/.local/bin/codex`, `~/.local/bin/codex-work`, and
+`~/.local/bin/codex-work-fast`. `codex-work` always uses its managed Codex
+version with app connectors enabled; `codex-work-fast` is the explicit
+no-apps variant. The installer ensures that local bin directory precedes the
+NVM Codex binary in `.bashrc` and any existing
 `.bash_profile`. Mapped checkouts fail closed if the wrong launcher or a
 provider-changing override is supplied.
 

@@ -9,9 +9,16 @@ readonly CODEX_MANAGED_SECRET_GUARD="${NORMAN_CODEX_MANAGED_SECRET_GUARD:-/usr/l
 readonly CODEX_WORK_HOME="${CODEX_WORK_HOME:-$HOME/.codex-work}"
 readonly CODEX_WORK_AWS_PROFILE="${CODEX_WORK_AWS_PROFILE:-ob-openbrand-admin}"
 readonly CODEX_WORK_AWS_REGION="${CODEX_WORK_AWS_REGION:-us-east-2}"
-readonly CODEX_WORK_DISABLE_APPS="${CODEX_WORK_DISABLE_APPS:-0}"
 readonly CODEX_WORK_PYTEST_XDIST_AUTO_WORKERS="${CODEX_WORK_PYTEST_XDIST_AUTO_WORKERS:-4}"
 readonly OPS_OPENBRAND_MCP_LAUNCHER="$HOME/code/control_plane/scripts/with_ops_openbrand_mcp.sh"
+
+disable_apps="${CODEX_WORK_DISABLE_APPS:-0}"
+if [[ "${1-}" == "--work-no-apps" ]]; then
+  disable_apps=1
+  shift
+fi
+readonly CODEX_WORK_DISABLE_APPS="$disable_apps"
+export CODEX_WORK_DISABLE_APPS
 
 case "${1-}" in
   --print-route|--routes|--verify)
@@ -51,9 +58,6 @@ esac
 
 run_codex() {
   local codex_bin="${CODEX_REAL_BIN:-codex}"
-  if [[ "$CODEX_WORK_DISABLE_APPS" == "1" ]]; then
-    exec "$codex_bin" --disable apps "$@"
-  fi
   exec "$codex_bin" "$@"
 }
 
@@ -70,6 +74,10 @@ run_guarded_codex() {
     exit 1
   fi
   export NORMAN_TUI_NO_DIRECT_VAULT=1
+  if [[ "$CODEX_WORK_DISABLE_APPS" == "1" ]]; then
+    local codex_bin="${CODEX_REAL_BIN:-codex}"
+    exec "$codex_bin" --disable apps "$@"
+  fi
   run_codex "$@"
 }
 
@@ -118,7 +126,9 @@ resume_target() {
 }
 
 guard_resume() {
-  [[ "${1-}" == "resume" ]] || return
+  if [[ "${1-}" != "resume" ]]; then
+    return 0
+  fi
 
   for argument in "$@"; do
     case "$argument" in

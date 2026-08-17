@@ -394,3 +394,58 @@ Use this as the direct build brief:
 > guardian path so ordinary agents and subagents never talk directly to the
 > backend secret store. Ship Phase 1 first with repo-local file migration, then
 > add `OpenBao` or `Infisical` as the real backend.
+
+## Estate Capability Delivery (Hal, Norman, and NetOps)
+
+The fleet transition must use **capability delivery**, not the legacy raw-secret
+compatibility route. A TUI/CLI requests a named server-side capability, receives
+an opaque short-lived lease, then submits that lease to the approved executor.
+The client response contains a sanitized receipt only—never a `secret`, `value`,
+provider response, or alias material.
+
+### Required enrollment and policy ceremony
+
+Before enabling a TUI/CLI host, an operator must deliberately create and review:
+
+1. an active host enrollment for the stable logical host ID (`hal`, `norman`, or
+   `netops`) with its public transport-identity fingerprint;
+2. the narrowly scoped requester ID, lane, and capability names for that host;
+3. an enabled capability binding with a server-side executor; and
+4. an enabled capability policy with exact allowed actions, target constraints,
+   short TTL, and an approval requirement where appropriate.
+
+The request and invoke endpoints require the enrolled host ID plus an identity
+fingerprint assertion authenticated by the deployment's mTLS gateway. The
+server verifies the assertion against the enrollment and binds the opaque lease
+to both that host and a canonical hash of the requested action parameters.
+Single-use leases cannot be replayed or invoked with changed parameters.
+
+### API separation
+
+- Operator configuration: `/api/v1/keys/enrollments`, `/api/v1/keys/capabilities`,
+  and `/api/v1/keys/capability-policies`.
+- Fleet capability request: `POST /v1/capabilities/request`.
+- Fleet capability invocation: `POST /v1/capabilities/{lease_id}/invoke`.
+- Auditing: `/api/v1/keys/capability-audit` records the lifecycle using action
+  names, hashes, host IDs, and parameter *keys/counts* only.
+
+`POST /v1/secrets/get` remains a legacy migration compatibility endpoint. It is
+not an approved TUI/CLI fleet delivery path and must not be used as a fallback
+for a capability denial or executor failure.
+
+### Rollout gate
+
+After applying the capability-delivery migration, run the metadata-only gate:
+
+```bash
+./.venv/bin/python scripts/norman_keys_capability_rollout.py \
+  --db db/norman.db --output /tmp/norman-keys-capability-rollout.json
+```
+
+It exits nonzero until **Hal**, **Norman**, and **NetOps** each have an active
+enrollment and at least one enrolled capability with an enabled policy. The
+checker reads database metadata only; it does not inspect broker environment
+configuration, contact a provider, retrieve a credential, or reveal an alias
+value. An enabled `receipt` executor proves the enrollment/policy path but is
+not authorization to perform a privileged side effect: install a separately
+reviewed server-side executor before enabling such a capability.

@@ -9,6 +9,8 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from app.core.estate_registry import model_capability
+
 try:
     from app.services.norllama.route_policy_artifact import (
         authorize_route_under_policy,
@@ -160,7 +162,7 @@ def _warm_chat_model(
         "keep_alive": keep_alive,
         "options": options,
     }
-    if model.lower().startswith(("qwen3.5:", "qwen3.6:", "qwen3-coder:")):
+    if model_capability(model, "native_non_thinking_bridge", False):
         payload["think"] = False
     started = time.perf_counter()
     status, response = _json_request(

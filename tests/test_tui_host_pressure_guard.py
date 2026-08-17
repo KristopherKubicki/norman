@@ -195,6 +195,7 @@ def test_pressure_guard_systemd_timer_is_non_destructive() -> None:
 
     assert "scripts/tui_host_pressure_guard.py" in service
     assert "--target work-special" in service
+    assert "User=kristopher" in service
     assert "pct reboot" not in service
     assert "pct stop" not in service
     assert "OnUnitActiveSec=1m" in timer

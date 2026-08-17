@@ -5,6 +5,11 @@ from typing import Any, Optional
 
 from pydantic import ConfigDict, BaseModel, Field
 
+PYDANTIC_V2 = hasattr(BaseModel, "model_validate")
+NONEMPTY_LIST_FIELD = (
+    Field(..., min_length=1) if PYDANTIC_V2 else Field(..., min_items=1)
+)
+
 
 class SecretAliasOut(BaseModel):
     id: int
@@ -150,3 +155,170 @@ class SecretStashOut(BaseModel):
     created_at: Optional[datetime] = None
     expires_at: datetime
     revoked_at: Optional[datetime] = None
+
+
+class KeysOrmResponseModel(BaseModel):
+    if PYDANTIC_V2:
+        model_config = ConfigDict(from_attributes=True)
+    else:
+
+        class Config:
+            orm_mode = True
+
+
+class KeysHostEnrollmentCreate(BaseModel):
+    host_id: str = Field(..., min_length=1, max_length=120)
+    hostname: str = Field(..., min_length=1, max_length=255)
+    identity_fingerprint: str = Field(..., min_length=16, max_length=512)
+    requester_ids: list[str] = Field(default_factory=list)
+    capability_names: list[str] = Field(default_factory=list)
+    lanes: list[str] = Field(default_factory=list)
+    notes: str = Field(default="", max_length=500)
+
+
+class KeysHostEnrollmentOut(KeysOrmResponseModel):
+    id: int
+    host_id: str
+    hostname: str
+    identity_fingerprint: str
+    requester_ids: list[str] = Field(default_factory=list)
+    capability_names: list[str] = Field(default_factory=list)
+    lanes: list[str] = Field(default_factory=list)
+    status: str
+    notes: str = ""
+    last_seen_at: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None
+    created_at: Optional[datetime] = None
+
+
+class KeysCapabilityCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=160)
+    executor_kind: str = Field(default="receipt", min_length=1, max_length=64)
+    executor_ref: str = Field(default="", max_length=512)
+    secret_aliases: list[str] = Field(default_factory=list)
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
+    enabled: bool = False
+
+
+class KeysCapabilityOut(KeysOrmResponseModel):
+    id: int
+    name: str
+    executor_kind: str
+    executor_ref: str
+    secret_aliases: list[str] = Field(default_factory=list)
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
+    enabled: bool
+
+
+class KeysCapabilityPolicyCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=160)
+    capability_name: str = Field(..., min_length=1, max_length=160)
+    requester_type: str = Field(default="agent", min_length=1, max_length=64)
+    requester_id: str = Field(default="", max_length=160)
+    lane: str = Field(default="", max_length=120)
+    allowed_actions: list[str] = NONEMPTY_LIST_FIELD
+    allowed_target_hosts: list[str] = Field(default_factory=list)
+    max_ttl_seconds: int = Field(default=900, ge=60, le=86400)
+    approval_required: bool = True
+    enabled: bool = False
+
+
+class KeysCapabilityPolicyOut(KeysOrmResponseModel):
+    id: int
+    name: str
+    capability_id: int
+    requester_type: str
+    requester_id: Optional[str] = None
+    lane: Optional[str] = None
+    allowed_actions: list[str] = Field(default_factory=list)
+    allowed_target_hosts: list[str] = Field(default_factory=list)
+    max_ttl_seconds: int
+    approval_required: bool
+    enabled: bool
+
+
+class KeysCapabilityRequestCreate(BaseModel):
+    capability: str = Field(..., min_length=1, max_length=160)
+    host_id: str = Field(..., min_length=1, max_length=120)
+    identity_fingerprint: str = Field(..., min_length=16, max_length=512)
+    requester_type: str = Field(default="agent", min_length=1, max_length=64)
+    requester_id: str = Field(..., min_length=1, max_length=160)
+    session_id: str = Field(default="", max_length=255)
+    lane: str = Field(default="", max_length=120)
+    action: str = Field(..., min_length=1, max_length=120)
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    target_host: str = Field(default="", max_length=255)
+    reason: str = Field(default="", max_length=1000)
+    requested_ttl_seconds: int = Field(default=900, ge=60, le=86400)
+
+
+class KeysCapabilityRequestOut(KeysOrmResponseModel):
+    id: int
+    request_uuid: str
+    host_enrollment_id: int
+    capability_id: int
+    policy_id: int
+    requester_type: str
+    requester_id: str
+    session_id: str
+    lane: str
+    action: str
+    action_hash: str
+    target_host: str
+    reason: str
+    requested_ttl_seconds: int
+    status: str
+    approval_required: bool
+    approval_reason: str
+    created_at: Optional[datetime] = None
+
+
+class KeysCapabilityLeaseOut(BaseModel):
+    lease_id: str
+    request_id: str
+    capability: str
+    host_id: str
+    action: str
+    expires_at: datetime
+    single_use: bool
+    status: str
+
+
+class KeysCapabilityRequestResult(BaseModel):
+    request: KeysCapabilityRequestOut
+    lease: Optional[KeysCapabilityLeaseOut] = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class KeysCapabilityInvoke(BaseModel):
+    host_id: str = Field(..., min_length=1, max_length=120)
+    identity_fingerprint: str = Field(..., min_length=16, max_length=512)
+    parameters: dict[str, Any] = Field(default_factory=dict)
+
+
+class KeysCapabilityReceipt(BaseModel):
+    receipt_id: str
+    lease_id: str
+    request_id: str
+    capability: str
+    action: str
+    host_id: str
+    status: str
+    completed_at: datetime
+
+
+class KeysCapabilityAuditEventOut(KeysOrmResponseModel):
+    id: int
+    request_id: Optional[int] = None
+    lease_id: Optional[int] = None
+    event_type: str
+    actor_type: str
+    actor_id: str
+    summary: str
+    metadata_json: dict[str, Any] = Field(default_factory=dict)
+    created_at: Optional[datetime] = None
+
+
+class KeysCapabilityDecision(BaseModel):
+    reason: str = Field(default="", max_length=1000)
+    ttl_seconds: Optional[int] = Field(default=None, ge=60, le=86400)

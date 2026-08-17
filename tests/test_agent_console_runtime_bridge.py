@@ -4581,6 +4581,7 @@ def test_context_preflight_uses_norllama_planner_for_cloud_turn(monkeypatch, tmp
         timeout_seconds,
         max_output_tokens=None,
         num_ctx=None,
+        **_request_metadata,
     ):
         calls.append(
             {
@@ -4624,6 +4625,7 @@ def test_context_preflight_uses_norllama_planner_for_cloud_turn(monkeypatch, tmp
     assert "safe_local_answer_possible=yes" in context
     assert "qwen3-coder:30b-a3b-q4_K_M" in context
     assert calls[0]["model"] == "qwen3-coder:30b-a3b-q4_K_M"
+
     assert (
         calls[0]["max_output_tokens"]
         == module.LOCAL_PLANNER_PREFLIGHT_MAX_OUTPUT_TOKENS
@@ -4646,6 +4648,50 @@ def test_context_preflight_uses_norllama_planner_for_cloud_turn(monkeypatch, tmp
     )
     assert planner_event["payload"]["planner"]["used"] is True
     assert planner_event["payload"]["planner"]["receipt"]["failure_class"] == "ok"
+
+
+def test_local_llm_requests_label_foreground_and_background_work(monkeypatch, tmp_path):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    calls = []
+
+    def fake_post(url, payload, *, timeout, headers=None):
+        calls.append(
+            {
+                "url": url,
+                "payload": payload,
+                "timeout": timeout,
+                "headers": dict(headers or {}),
+            }
+        )
+        return {"message": {"content": "ok"}}
+
+    monkeypatch.setattr(module, "local_llm_post_json", fake_post)
+
+    module.local_llm_generate_once(
+        "http://local-llm:18151",
+        "resident-model",
+        "background prompt",
+        timeout_seconds=5,
+        work_class="background",
+        work_source="planner-preflight",
+    )
+    module.local_llm_generate_once(
+        "http://local-llm:18151",
+        "resident-model",
+        "foreground prompt",
+        timeout_seconds=5,
+    )
+
+    assert calls[0]["headers"] == {
+        "X-Norllama-Priority": "background",
+        "X-Norllama-Work-Class": "background",
+        "X-Norllama-Interruptible": "true",
+        "X-Norllama-Max-Queue-Wait-Ms": "750",
+        "X-Norllama-Work-Source": "planner-preflight",
+    }
+    assert calls[1]["headers"]["X-Norllama-Priority"] == "high"
+    assert calls[1]["headers"]["X-Norllama-Work-Class"] == "foreground"
+    assert calls[1]["headers"]["X-Norllama-Interruptible"] == "false"
 
 
 def test_context_preflight_local_planner_selects_archive_memory_candidates(
@@ -4717,6 +4763,7 @@ def test_context_preflight_local_planner_selects_archive_memory_candidates(
         timeout_seconds,
         max_output_tokens=None,
         num_ctx=None,
+        **_request_metadata,
     ):
         assert endpoint == "http://local-llm:18151"
         assert model == "qwen3-coder:30b-a3b-q4_K_M"
@@ -4815,6 +4862,7 @@ def test_context_preflight_escalates_partial_recall_to_bounded_local_verifier(
         timeout_seconds,
         max_output_tokens=None,
         num_ctx=None,
+        **_request_metadata,
     ):
         calls.append((model, prompt))
         if "planner reported partial archive recall" not in prompt:
@@ -4922,6 +4970,7 @@ def test_context_preflight_runs_ready_norllama_specialists(monkeypatch, tmp_path
         timeout_seconds,
         max_output_tokens=None,
         num_ctx=None,
+        **_request_metadata,
     ):
         calls.append(
             {
@@ -5051,6 +5100,7 @@ def test_context_preflight_specialists_ignore_legacy_stage_candidates(
         timeout_seconds,
         max_output_tokens=None,
         num_ctx=None,
+        **_request_metadata,
     ):
         calls.append(model)
         assert model == "qwen3-coder:30b-a3b-q4_K_M"
@@ -5132,6 +5182,7 @@ def test_context_preflight_keeps_cold_specialist_lanes_queued(monkeypatch, tmp_p
         timeout_seconds,
         max_output_tokens=None,
         num_ctx=None,
+        **_request_metadata,
     ):
         calls.append(model)
         return (
@@ -5242,6 +5293,7 @@ def test_context_preflight_ignores_dedicated_norllama_planner_override(
         timeout_seconds,
         max_output_tokens=None,
         num_ctx=None,
+        **_request_metadata,
     ):
         calls.append(model)
         return (
@@ -5673,6 +5725,7 @@ def test_context_preflight_limits_norllama_planner_candidate_timeouts(
         timeout_seconds,
         max_output_tokens=None,
         num_ctx=None,
+        **_request_metadata,
     ):
         calls.append(model)
         raise TimeoutError("cold model")
@@ -5753,6 +5806,7 @@ def test_context_preflight_stops_after_pool_cooldown(monkeypatch, tmp_path):
         timeout_seconds,
         max_output_tokens=None,
         num_ctx=None,
+        **_request_metadata,
     ):
         calls.append(model)
         if len(calls) == 1:
@@ -5835,6 +5889,7 @@ def test_context_preflight_skips_cooled_down_planner_candidate(monkeypatch, tmp_
         timeout_seconds,
         max_output_tokens=None,
         num_ctx=None,
+        **_request_metadata,
     ):
         calls.append(model)
         return (
@@ -6238,6 +6293,7 @@ def test_localllm_execution_tries_next_route_candidate_after_timeout(
         timeout_seconds,
         max_output_tokens=None,
         num_ctx=None,
+        **_request_metadata,
     ):
         calls.append(model)
         if model == "gemma4:26b-a4b-it-q4_K_M":

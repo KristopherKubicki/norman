@@ -7,6 +7,7 @@ import pytest
 from app.api.deps import get_console_runtime_user, get_current_user
 from app.core.auth_cache import clear_auth_caches
 from app.core.config import settings
+from app.core.estate_registry import resident_model
 from app.crud.user import create_user, get_user_by_email
 from app.main import app
 from app.schemas.user import UserCreate
@@ -278,8 +279,9 @@ def test_console_runtime_api_exposes_kernel_capabilities(test_app, monkeypatch):
     assert payload["norllama"]["capability_catalog"]["schema"] == (
         "norman.norllama.capability-catalog.v1"
     )
-    assert payload["norllama"]["capability_catalog"]["defaults"]["code"] == (
-        "qwen3-coder:30b-a3b-q4_K_M"
+    assert (
+        payload["norllama"]["capability_catalog"]["defaults"]["code"]
+        == resident_model()
     )
     assert payload["norllama"]["specialist_lanes"]["schema"] == (
         "norman.norllama.specialist-lanes.v1"

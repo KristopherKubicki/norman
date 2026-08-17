@@ -547,3 +547,428 @@ def revoke_secret_stash_item(
     if str(item.status or "").strip().lower() == "revoked":
         return item
     return crud.secret_keys.revoke_stash_item(db, item=item, revoked_by=revoked_by)
+
+
+# Capability delivery deliberately does not call _build_provider(), get_secret(),
+# or any compatibility secret resolver.  It authorizes a bounded action and
+# returns an opaque lease for an approved server-side executor binding.
+CAPABILITY_RECEIPT_EXECUTOR = "receipt"
+
+
+def _canonical_capability_parameters(parameters: dict) -> str:
+    import json
+
+    return json.dumps(parameters or {}, sort_keys=True, separators=(",", ":"))
+
+
+def _capability_action_hash(action: str, parameters: dict) -> str:
+    import hashlib
+
+    source = (
+        f"{str(action or '').strip()}\n{_canonical_capability_parameters(parameters)}"
+    )
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()
+
+
+def _capability_summary_parameters(parameters: dict) -> dict:
+    """Safe audit metadata: shape only, no user-controlled parameter values."""
+
+    return {"parameter_count": len(parameters or {})}
+
+
+def _contains_normalized(values: list | None, candidate: str) -> bool:
+    normalized = {_normalized_host(value) for value in (values or []) if value}
+    return _normalized_host(candidate) in normalized
+
+
+def _match_capability_policy(db: Session, *, capability, body):
+    matches = []
+    for policy in crud.secret_keys.list_capability_policies(db, active_only=True):
+        if policy.capability_id != capability.id:
+            continue
+        score = 0
+        if policy.requester_type == body.requester_type:
+            score += 20
+        elif policy.requester_type != "*":
+            continue
+        if policy.requester_id:
+            if policy.requester_id != body.requester_id:
+                continue
+            score += 10
+        if policy.lane:
+            if policy.lane != body.lane:
+                continue
+            score += 10
+        if body.action not in (policy.allowed_actions or []):
+            continue
+        if policy.allowed_target_hosts and not _contains_normalized(
+            policy.allowed_target_hosts, body.target_host
+        ):
+            continue
+        matches.append((score, policy))
+    if not matches:
+        return None
+    matches.sort(key=lambda item: (item[0], item[1].id), reverse=True)
+    return matches[0][1]
+
+
+def _validate_capability_enrollment(db: Session, *, body, asserted_fingerprint: str):
+    from hmac import compare_digest
+
+    enrollment = crud.secret_keys.get_host_enrollment(db, host_id=body.host_id)
+    if not enrollment or enrollment.status != "active":
+        raise HTTPException(
+            status_code=403, detail="Host is not enrolled for Norman Keys"
+        )
+    if not asserted_fingerprint or not compare_digest(
+        str(enrollment.identity_fingerprint), str(asserted_fingerprint)
+    ):
+        raise HTTPException(
+            status_code=403, detail="Host identity assertion was rejected"
+        )
+    if not compare_digest(str(body.identity_fingerprint), str(asserted_fingerprint)):
+        raise HTTPException(
+            status_code=403, detail="Host identity assertion did not match request"
+        )
+    if enrollment.requester_ids and body.requester_id not in enrollment.requester_ids:
+        raise HTTPException(
+            status_code=403, detail="Requester is not enrolled on this host"
+        )
+    if (
+        enrollment.capability_names
+        and body.capability not in enrollment.capability_names
+    ):
+        raise HTTPException(
+            status_code=403, detail="Capability is not enrolled on this host"
+        )
+    if enrollment.lanes and body.lane not in enrollment.lanes:
+        raise HTTPException(status_code=403, detail="Lane is not enrolled on this host")
+    enrollment.last_seen_at = datetime.utcnow()
+    db.commit()
+    db.refresh(enrollment)
+    return enrollment
+
+
+def _capability_lease_out(*, request, lease, capability, enrollment) -> dict:
+    return {
+        "lease_id": lease.lease_uuid,
+        "request_id": request.request_uuid,
+        "capability": capability.name,
+        "host_id": enrollment.host_id,
+        "action": request.action,
+        "expires_at": lease.expires_at,
+        "single_use": lease.single_use,
+        "status": lease.status,
+    }
+
+
+def _issue_capability_lease(
+    db: Session, *, request, capability, enrollment, ttl_seconds
+):
+    from app.models import KeysCapabilityLease
+
+    lease = crud.secret_keys.create_capability_lease(
+        db,
+        lease_uuid=str(uuid.uuid4()),
+        request_id=request.id,
+        capability_id=capability.id,
+        host_enrollment_id=enrollment.id,
+        action_hash=request.action_hash,
+        status="active",
+        single_use=True,
+        expires_at=datetime.utcnow() + timedelta(seconds=ttl_seconds),
+    )
+    crud.secret_keys.create_capability_audit_event(
+        db,
+        request_id=request.id,
+        lease_id=lease.id,
+        event_type="capability_issued",
+        actor_type="system",
+        actor_id="norman-keys",
+        summary=f"Issued capability {capability.name} to {enrollment.host_id}",
+        metadata_json={"ttl_seconds": ttl_seconds, "action": request.action},
+    )
+    return lease
+
+
+def create_capability_request(
+    db: Session,
+    *,
+    user_id: int,
+    body,
+    asserted_fingerprint: str,
+):
+    enrollment = _validate_capability_enrollment(
+        db, body=body, asserted_fingerprint=asserted_fingerprint
+    )
+    capability = crud.secret_keys.get_capability(db, name=body.capability)
+    if not capability:
+        raise HTTPException(status_code=404, detail="Capability not found or disabled")
+    policy = _match_capability_policy(db, capability=capability, body=body)
+    if not policy:
+        raise HTTPException(
+            status_code=403, detail="No capability policy matched request"
+        )
+    ttl_seconds = min(body.requested_ttl_seconds, policy.max_ttl_seconds)
+    action_hash = _capability_action_hash(body.action, body.parameters)
+    request = crud.secret_keys.create_capability_request(
+        db,
+        request_uuid=str(uuid.uuid4()),
+        user_id=user_id,
+        host_enrollment_id=enrollment.id,
+        capability_id=capability.id,
+        policy_id=policy.id,
+        requester_type=body.requester_type,
+        requester_id=body.requester_id,
+        session_id=body.session_id,
+        lane=body.lane,
+        action=body.action,
+        action_hash=action_hash,
+        target_host=body.target_host,
+        reason=body.reason,
+        requested_ttl_seconds=ttl_seconds,
+        status="pending" if policy.approval_required else "issued",
+        approval_required=policy.approval_required,
+        approval_reason="approval required" if policy.approval_required else "",
+    )
+    crud.secret_keys.create_capability_audit_event(
+        db,
+        request_id=request.id,
+        lease_id=None,
+        event_type="capability_requested",
+        actor_type=body.requester_type,
+        actor_id=body.requester_id,
+        summary=f"Requested capability {capability.name} action {body.action}",
+        metadata_json={
+            "host_id": enrollment.host_id,
+            "target_host": body.target_host,
+            "lane": body.lane,
+            "action_hash": action_hash,
+            **_capability_summary_parameters(body.parameters),
+        },
+    )
+    if policy.approval_required:
+        return request, None, capability, enrollment
+    lease = _issue_capability_lease(
+        db,
+        request=request,
+        capability=capability,
+        enrollment=enrollment,
+        ttl_seconds=ttl_seconds,
+    )
+    return request, lease, capability, enrollment
+
+
+def approve_capability_request(
+    db: Session,
+    *,
+    request_id: int,
+    decided_by: int,
+    reason: str,
+    ttl_seconds: int | None,
+):
+    request = crud.secret_keys.get_capability_request(db, request_id=request_id)
+    if not request:
+        raise HTTPException(status_code=404, detail="Capability request not found")
+    if request.status != "pending":
+        raise HTTPException(status_code=400, detail="Capability request is not pending")
+    from app.models import KeysCapability, KeysHostEnrollment, KeysCapabilityPolicy
+
+    capability = (
+        db.query(KeysCapability)
+        .filter(KeysCapability.id == request.capability_id)
+        .first()
+    )
+    enrollment = (
+        db.query(KeysHostEnrollment)
+        .filter(KeysHostEnrollment.id == request.host_enrollment_id)
+        .first()
+    )
+    policy = (
+        db.query(KeysCapabilityPolicy)
+        .filter(KeysCapabilityPolicy.id == request.policy_id)
+        .first()
+    )
+    if (
+        not capability
+        or not enrollment
+        or not policy
+        or not capability.enabled
+        or policy.enabled is not True
+    ):
+        raise HTTPException(
+            status_code=409, detail="Capability authorization is no longer active"
+        )
+    request.status = "issued"
+    request.decided_at = datetime.utcnow()
+    request.decided_by = decided_by
+    request.approval_reason = reason or "approved"
+    db.commit()
+    db.refresh(request)
+    crud.secret_keys.create_capability_audit_event(
+        db,
+        request_id=request.id,
+        lease_id=None,
+        event_type="capability_approved",
+        actor_type="operator",
+        actor_id=str(decided_by),
+        summary="Approved capability request",
+        metadata_json={},
+    )
+    lease = _issue_capability_lease(
+        db,
+        request=request,
+        capability=capability,
+        enrollment=enrollment,
+        ttl_seconds=min(
+            ttl_seconds or request.requested_ttl_seconds, policy.max_ttl_seconds
+        ),
+    )
+    return request, lease, capability, enrollment
+
+
+def reject_capability_request(
+    db: Session, *, request_id: int, decided_by: int, reason: str
+):
+    request = crud.secret_keys.get_capability_request(db, request_id=request_id)
+    if not request:
+        raise HTTPException(status_code=404, detail="Capability request not found")
+    if request.status != "pending":
+        raise HTTPException(status_code=400, detail="Capability request is not pending")
+    request.status = "rejected"
+    request.decided_at = datetime.utcnow()
+    request.decided_by = decided_by
+    request.approval_reason = reason or "rejected"
+    db.commit()
+    db.refresh(request)
+    crud.secret_keys.create_capability_audit_event(
+        db,
+        request_id=request.id,
+        lease_id=None,
+        event_type="capability_denied",
+        actor_type="operator",
+        actor_id=str(decided_by),
+        summary="Rejected capability request",
+        metadata_json={},
+    )
+    return request
+
+
+def invoke_capability_lease(
+    db: Session, *, lease_uuid: str, body, asserted_fingerprint: str
+):
+    from hmac import compare_digest
+    from app.models import KeysCapability, KeysCapabilityRequest, KeysHostEnrollment
+
+    lease = crud.secret_keys.get_capability_lease(db, lease_uuid=lease_uuid)
+    if not lease:
+        raise HTTPException(status_code=404, detail="Capability lease not found")
+    request = (
+        db.query(KeysCapabilityRequest)
+        .filter(KeysCapabilityRequest.id == lease.request_id)
+        .first()
+    )
+    enrollment = (
+        db.query(KeysHostEnrollment)
+        .filter(KeysHostEnrollment.id == lease.host_enrollment_id)
+        .first()
+    )
+    capability = (
+        db.query(KeysCapability)
+        .filter(KeysCapability.id == lease.capability_id)
+        .first()
+    )
+    if not request or not enrollment or not capability:
+        raise HTTPException(status_code=409, detail="Capability lease is incomplete")
+    if enrollment.host_id != body.host_id or enrollment.status != "active":
+        raise HTTPException(
+            status_code=403, detail="Host is not authorized for this lease"
+        )
+    if not asserted_fingerprint or not compare_digest(
+        enrollment.identity_fingerprint, asserted_fingerprint
+    ):
+        raise HTTPException(
+            status_code=403, detail="Host identity assertion was rejected"
+        )
+    if not compare_digest(body.identity_fingerprint, asserted_fingerprint):
+        raise HTTPException(
+            status_code=403, detail="Host identity assertion did not match request"
+        )
+    if lease.status != "active" or lease.expires_at <= datetime.utcnow():
+        if lease.status == "active":
+            crud.secret_keys.update_capability_lease(db, lease=lease, status="expired")
+        raise HTTPException(status_code=409, detail="Capability lease is not active")
+    if lease.single_use and lease.used_at is not None:
+        raise HTTPException(
+            status_code=409, detail="Capability lease has already been used"
+        )
+    if not compare_digest(
+        lease.action_hash, _capability_action_hash(request.action, body.parameters)
+    ):
+        raise HTTPException(
+            status_code=403, detail="Capability parameters did not match lease"
+        )
+    # Executor bindings are server-side.  The receipt executor is intentionally
+    # side-effect-free for enrollment and policy rollout; real executors must be
+    # installed behind the same binding rather than returning credentials.
+    if capability.executor_kind != CAPABILITY_RECEIPT_EXECUTOR:
+        raise HTTPException(
+            status_code=501, detail="Capability executor is not installed"
+        )
+    receipt_uuid = str(uuid.uuid4())
+    lease = crud.secret_keys.update_capability_lease(
+        db,
+        lease=lease,
+        used_at=datetime.utcnow(),
+        status="used" if lease.single_use else "active",
+        invocation_receipt_uuid=receipt_uuid,
+    )
+    crud.secret_keys.create_capability_audit_event(
+        db,
+        request_id=request.id,
+        lease_id=lease.id,
+        event_type="capability_completed",
+        actor_type=request.requester_type,
+        actor_id=request.requester_id,
+        summary=f"Completed capability {capability.name} action {request.action}",
+        metadata_json={
+            "host_id": enrollment.host_id,
+            **_capability_summary_parameters(body.parameters),
+        },
+    )
+    return {
+        "receipt_id": receipt_uuid,
+        "lease_id": lease.lease_uuid,
+        "request_id": request.request_uuid,
+        "capability": capability.name,
+        "action": request.action,
+        "host_id": enrollment.host_id,
+        "status": "completed",
+        "completed_at": datetime.utcnow(),
+    }
+
+
+def revoke_capability_lease(db: Session, *, lease_uuid: str, actor_id: int):
+    lease = crud.secret_keys.get_capability_lease(db, lease_uuid=lease_uuid)
+    if not lease:
+        raise HTTPException(status_code=404, detail="Capability lease not found")
+    if lease.status == "revoked":
+        return lease
+    lease = crud.secret_keys.update_capability_lease(
+        db,
+        lease=lease,
+        status="revoked",
+        revoked_by=actor_id,
+        revoked_at=datetime.utcnow(),
+    )
+    crud.secret_keys.create_capability_audit_event(
+        db,
+        request_id=lease.request_id,
+        lease_id=lease.id,
+        event_type="capability_revoked",
+        actor_type="operator",
+        actor_id=str(actor_id),
+        summary="Revoked capability lease",
+        metadata_json={},
+    )
+    return lease

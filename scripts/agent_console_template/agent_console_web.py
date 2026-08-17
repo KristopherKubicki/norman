@@ -13,6 +13,7 @@ import json
 import math
 import mimetypes
 import os
+import queue
 import re
 import selectors
 import secrets
@@ -1180,6 +1181,9 @@ LOCAL_LLM_HEALTH_CACHE_SECONDS = _early_env_int(
 )
 LOCAL_LLM_CALL_TIMEOUT_SECONDS = _early_env_int(
     "NORMAN_LOCAL_LLM_CALL_TIMEOUT_SECONDS", 360, minimum=5
+)
+LOCAL_LLM_BACKGROUND_MAX_QUEUE_WAIT_MS = _early_env_int(
+    "NORMAN_LOCAL_LLM_BACKGROUND_MAX_QUEUE_WAIT_MS", 750, minimum=0
 )
 LOCAL_LLM_FOREGROUND_TIMEOUT_SECONDS = _early_env_int(
     "NORMAN_LOCAL_LLM_FOREGROUND_TIMEOUT_SECONDS", 240, minimum=5
@@ -2945,6 +2949,16 @@ RESTART_HANDOFF_PATH = Path(
 KPI_PATH = STATE_DIR / "kpis.json"
 AUDIT_PATH = STATE_DIR / "audit.jsonl"
 AUDIT_LOCK = threading.RLock()
+DETERMINISTIC_ARCHIVE_QUEUE: queue.Queue[Callable[[], None]] = queue.Queue(
+    maxsize=max(
+        1, int(os.environ.get("NORMAN_CODEX_DETERMINISTIC_ARCHIVE_QUEUE_SIZE", "32"))
+    )
+)
+DETERMINISTIC_ARCHIVE_LOCK = threading.Lock()
+DETERMINISTIC_ARCHIVE_WORKER: threading.Thread | None = None
+DETERMINISTIC_ARCHIVE_DROPPED = 0
+DETERMINISTIC_ARCHIVE_FAILURES = 0
+DETERMINISTIC_STATUS_LAST_TURN: dict[str, Any] = {}
 CONSOLE_RUNTIME_JOB_ID_PATH = STATE_DIR / "console_runtime_job_id.txt"
 CONSOLE_RUNTIME_WORKSTREAM_ID_PATH = STATE_DIR / "console_runtime_workstream_id.txt"
 CONSOLE_RUNTIME_WORKSTREAM_BREAKER_PATH = (
@@ -10962,6 +10976,59 @@ def ensure_state_dir() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def deterministic_archive_status() -> dict[str, int]:
+    return {
+        "queued": DETERMINISTIC_ARCHIVE_QUEUE.qsize(),
+        "dropped": DETERMINISTIC_ARCHIVE_DROPPED,
+        "failures": DETERMINISTIC_ARCHIVE_FAILURES,
+    }
+
+
+def _drain_deterministic_archive_queue() -> None:
+    global DETERMINISTIC_ARCHIVE_FAILURES
+    while True:
+        task = DETERMINISTIC_ARCHIVE_QUEUE.get()
+        try:
+            task()
+        except Exception:
+            DETERMINISTIC_ARCHIVE_FAILURES += 1
+        finally:
+            DETERMINISTIC_ARCHIVE_QUEUE.task_done()
+
+
+def schedule_deterministic_archive(task: Callable[[], None]) -> bool:
+    """Queue slow archival work without extending a deterministic HTTP response."""
+    global DETERMINISTIC_ARCHIVE_DROPPED, DETERMINISTIC_ARCHIVE_WORKER
+    with DETERMINISTIC_ARCHIVE_LOCK:
+        if (
+            DETERMINISTIC_ARCHIVE_WORKER is None
+            or not DETERMINISTIC_ARCHIVE_WORKER.is_alive()
+        ):
+            DETERMINISTIC_ARCHIVE_WORKER = threading.Thread(
+                target=_drain_deterministic_archive_queue,
+                name=f"{SESSION}-deterministic-archive",
+                daemon=True,
+            )
+            DETERMINISTIC_ARCHIVE_WORKER.start()
+    try:
+        DETERMINISTIC_ARCHIVE_QUEUE.put_nowait(task)
+        return True
+    except queue.Full:
+        DETERMINISTIC_ARCHIVE_DROPPED += 1
+        return False
+
+
+def run_deterministic_archive(
+    fast_snapshot: bool,
+    operation: Callable[..., Any],
+    **kwargs: Any,
+) -> None:
+    if fast_snapshot:
+        schedule_deterministic_archive(lambda: operation(**kwargs))
+        return
+    operation(**kwargs)
+
+
 def _state_db_id(kind: str, payload: dict[str, Any]) -> str:
     material = json.dumps(
         {
@@ -13695,6 +13762,8 @@ def run_local_route_intent_classifier(
                 classifier_prompt,
                 timeout_seconds=LOCAL_ROUTE_INTENT_CLASSIFIER_TIMEOUT_SECONDS,
                 max_output_tokens=LOCAL_ROUTE_INTENT_CLASSIFIER_MAX_OUTPUT_TOKENS,
+                work_class="background",
+                work_source="route-intent-classifier",
             )
         except (urllib_error.URLError, TimeoutError, OSError, ValueError) as exc:
             failures.append(
@@ -14314,6 +14383,8 @@ def run_local_specialist_pipeline(
                     stage_prompt,
                     timeout_seconds=LOCAL_SPECIALIST_PIPELINE_TIMEOUT_SECONDS,
                     max_output_tokens=LOCAL_SPECIALIST_PIPELINE_MAX_OUTPUT_TOKENS,
+                    work_class="background",
+                    work_source=f"specialist-preflight:{stage.get('stage_id')}",
                 )
             except (urllib_error.URLError, TimeoutError, OSError, ValueError) as exc:
                 append_local_llm_route_outcome(
@@ -14609,6 +14680,8 @@ def run_local_planner_preflight(payload: dict[str, Any]) -> dict[str, Any]:
                 prompt,
                 timeout_seconds=LOCAL_PLANNER_PREFLIGHT_TIMEOUT_SECONDS,
                 max_output_tokens=LOCAL_PLANNER_PREFLIGHT_MAX_OUTPUT_TOKENS,
+                work_class="background",
+                work_source="planner-preflight",
             )
         except (urllib_error.URLError, TimeoutError, OSError, ValueError) as exc:
             failure_status = local_llm_route_failure_status(exc)
@@ -15013,6 +15086,8 @@ def run_local_planner_verifier(
             prompt,
             timeout_seconds=LOCAL_PLANNER_VERIFIER_TIMEOUT_SECONDS,
             max_output_tokens=LOCAL_PLANNER_VERIFIER_MAX_OUTPUT_TOKENS,
+            work_class="background",
+            work_source="planner-verifier",
         )
     except (urllib_error.URLError, TimeoutError, OSError, ValueError) as exc:
         status = local_llm_route_failure_status(exc)
@@ -30491,8 +30566,14 @@ def execute_deterministic_command(argv: list[str]) -> tuple[str, bool]:
     )
 
 
-def deterministic_status_response(prompt: str) -> str:
-    snapshot = current_snapshot()
+def deterministic_status_response(prompt: str, *, fast_snapshot: bool = False) -> str:
+    """Build a zero-token status response from current TUI state.
+
+    Web acknowledgements use the bounded live overlay so a status request cannot
+    block behind the full diagnostics snapshot. Direct callers retain the full
+    snapshot by default.
+    """
+    snapshot = _live_status_overlay() if fast_snapshot else current_snapshot()
     state = str(snapshot.get("state") or "unknown").strip() or "unknown"
     pending = "yes" if snapshot.get("pending") else "no"
     status_message = summarize_text(snapshot.get("status_message"), 180) or "n/a"
@@ -30544,6 +30625,7 @@ def complete_deterministic_status_prompt(
     job_budget: str,
     optimization_mode: str,
     actor_ip: str = "",
+    fast_snapshot: bool = False,
 ) -> dict[str, Any]:
     started_at = now_ts()
     finished_at = started_at
@@ -30573,7 +30655,7 @@ def complete_deterministic_status_prompt(
         deterministic_kind="status",
     )
     turn_envelope["cost_route"] = cost_route
-    response = deterministic_status_response(prompt)
+    response = deterministic_status_response(prompt, fast_snapshot=fast_snapshot)
     usage = normalize_usage_entry(
         {
             **local_llm_provider_tags(),
@@ -30598,6 +30680,8 @@ def complete_deterministic_status_prompt(
             "route_rationale": turn_envelope["route_rationale"],
         }
     )
+    global DETERMINISTIC_STATUS_LAST_TURN
+    DETERMINISTIC_STATUS_LAST_TURN = dict(usage)
     write_text(LAST_PROMPT_PATH, prompt)
     write_last_response(
         response,
@@ -30606,7 +30690,9 @@ def complete_deterministic_status_prompt(
         updated_at=finished_at,
     )
     write_text(LAST_ERROR_PATH, "")
-    append_history_entry(
+    run_deterministic_archive(
+        fast_snapshot,
+        append_history_entry,
         prompt=prompt,
         response=response,
         error_text="",
@@ -30625,7 +30711,9 @@ def complete_deterministic_status_prompt(
         usage=usage,
         turn_envelope=turn_envelope,
     )
-    append_usage_entry(
+    run_deterministic_archive(
+        fast_snapshot,
+        append_usage_entry,
         started_at=started_at,
         finished_at=finished_at,
         thread_id=thread_id,
@@ -30677,7 +30765,9 @@ def complete_deterministic_status_prompt(
         running_console_runtime_job_id="",
         running_cost_route={},
     )
-    append_route_receipt(
+    run_deterministic_archive(
+        fast_snapshot,
+        append_route_receipt,
         prompt=prompt,
         visible_response=response,
         started_at=started_at,
@@ -30699,7 +30789,9 @@ def complete_deterministic_status_prompt(
         turn_envelope=turn_envelope,
         requested_runtime=runtime,
     )
-    append_audit_event(
+    run_deterministic_archive(
+        fast_snapshot,
+        append_audit_event,
         event_type="chat.deterministic-status",
         summary="Answered a status prompt from TUI state.",
         detail=summarize_text(response, 300),
@@ -30717,7 +30809,7 @@ def complete_deterministic_status_prompt(
         },
         event_at=finished_at,
     )
-    return current_snapshot()
+    return _live_status_overlay() if fast_snapshot else current_snapshot()
 
 
 def complete_deterministic_command_prompt(
@@ -30729,6 +30821,7 @@ def complete_deterministic_command_prompt(
     job_budget: str,
     optimization_mode: str,
     actor_ip: str = "",
+    fast_snapshot: bool = False,
 ) -> dict[str, Any]:
     argv = deterministic_command_request(prompt)
     if not argv:
@@ -30916,7 +31009,7 @@ def complete_deterministic_command_prompt(
         },
         event_at=finished_at,
     )
-    return current_snapshot()
+    return _live_status_overlay() if fast_snapshot else current_snapshot()
 
 
 def set_active_codex_process(proc: subprocess.Popen[str] | None) -> None:
@@ -33471,6 +33564,11 @@ def bedrock_context_pack_plan(
     snapshot = {
         "history": history,
         "usage": usage,
+        "session_budget": {
+            "enabled": SESSION_BUDGET_POLICY.enabled,
+            "checkpoint_tokens": SESSION_BUDGET_POLICY.checkpoint_tokens,
+            "reauthorization_tokens": SESSION_BUDGET_POLICY.reauthorization_tokens,
+        },
         "thread_id": clean_session_id,
         "thread_scope": thread_scope,
         "state": str(meta.get("state") or ""),
@@ -36185,6 +36283,7 @@ def local_llm_post_json(
     payload: dict[str, Any],
     *,
     timeout: float,
+    headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     encoded = json.dumps(payload).encode("utf-8")
     request = urllib_request.Request(
@@ -36195,6 +36294,7 @@ def local_llm_post_json(
             "Accept": "application/json",
             "Content-Type": "application/json",
             "User-Agent": "norman-tui/1.0",
+            **(headers or {}),
         },
     )
     with urllib_request.urlopen(request, timeout=timeout) as response:
@@ -36829,6 +36929,8 @@ def working_recap_local_llm(
                 timeout_seconds=WORKING_RECAP_LLM_TIMEOUT_SECONDS,
                 max_output_tokens=WORKING_RECAP_LLM_MAX_OUTPUT_TOKENS,
                 num_ctx=LOCAL_LLM_SHORT_NUM_CTX,
+                work_class="background",
+                work_source="working-recap",
             )
         except Exception:
             continue
@@ -37187,6 +37289,11 @@ def append_local_llm_route_outcome(**kwargs: Any) -> dict[str, Any]:
 
 def local_llm_route_failure_status(exc: BaseException) -> str:
     text = str(exc or "").lower()
+    if (
+        isinstance(exc, urllib_error.HTTPError)
+        and exc.code == HTTPStatus.TOO_MANY_REQUESTS
+    ):
+        return "deferred"
     if isinstance(exc, TimeoutError) or "timed out" in text or "timeout" in text:
         return "timeout"
     return "request-failed"
@@ -37277,6 +37384,8 @@ def local_llm_generate_once(
     timeout_seconds: int | None,
     max_output_tokens: int | None = None,
     num_ctx: int | None = None,
+    work_class: str = "foreground",
+    work_source: str = "local-execution",
 ) -> tuple[dict[str, Any], str, str]:
     timeout = min(
         max(5, int(timeout_seconds or LOCAL_LLM_CALL_TIMEOUT_SECONDS)),
@@ -37286,6 +37395,23 @@ def local_llm_generate_once(
     options = {"num_predict": output_tokens}
     if num_ctx is not None:
         options["num_ctx"] = max(512, int(num_ctx))
+    background = str(work_class or "").strip().lower() == "background"
+    request_headers = (
+        {
+            "X-Norllama-Priority": "background",
+            "X-Norllama-Work-Class": "background",
+            "X-Norllama-Interruptible": "true",
+            "X-Norllama-Max-Queue-Wait-Ms": str(LOCAL_LLM_BACKGROUND_MAX_QUEUE_WAIT_MS),
+            "X-Norllama-Work-Source": str(work_source or "tui-background"),
+        }
+        if background
+        else {
+            "X-Norllama-Priority": "high",
+            "X-Norllama-Work-Class": "foreground",
+            "X-Norllama-Interruptible": "false",
+            "X-Norllama-Work-Source": str(work_source or "local-execution"),
+        }
+    )
     ollama_chat_url = local_llm_url(endpoint, "/api/chat")
     try:
         response_payload = local_llm_post_json(
@@ -37299,6 +37425,7 @@ def local_llm_generate_once(
                 "options": options,
             },
             timeout=timeout,
+            headers=request_headers,
         )
         return (
             response_payload,
@@ -37323,6 +37450,7 @@ def local_llm_generate_once(
                 "options": options,
             },
             timeout=timeout,
+            headers=request_headers,
         )
         return (
             response_payload,
@@ -37347,6 +37475,7 @@ def local_llm_generate_once(
                 "max_tokens": output_tokens,
             },
             timeout=timeout,
+            headers=request_headers,
         ),
         chat_url,
         "openai-chat",
@@ -42654,6 +42783,11 @@ def current_snapshot() -> dict[str, Any]:
         "billing_link": billing_action.get("billing_url", ""),
         "history": history,
         "usage": usage,
+        "session_budget": {
+            "enabled": SESSION_BUDGET_POLICY.enabled,
+            "checkpoint_tokens": SESSION_BUDGET_POLICY.checkpoint_tokens,
+            "reauthorization_tokens": SESSION_BUDGET_POLICY.reauthorization_tokens,
+        },
         "route_receipts": route_receipts,
         "tool_chain_canary": tool_chain_canary,
         "latest_work_classification": route_receipts.get(
@@ -43007,6 +43141,12 @@ def _live_status_overlay() -> dict[str, Any]:
             if isinstance(meta.get("working_recap"), dict)
             else {}
         ),
+        "usage": (
+            {"last_turn": dict(DETERMINISTIC_STATUS_LAST_TURN)}
+            if DETERMINISTIC_STATUS_LAST_TURN
+            else {}
+        ),
+        "deterministic_archive": deterministic_archive_status(),
         "connector_access": connector_access_snapshot(),
         "route_bootstrap": _route_bootstrap_snapshot(
             meta, queue, details_ready=False, refreshing=True
@@ -43081,7 +43221,8 @@ def status_snapshot() -> dict[str, Any]:
         return snapshot
 
     snapshot = _transport_snapshot_value(cached)
-    snapshot.update(_live_status_overlay())
+    live_overlay = _live_status_overlay()
+    snapshot.update(live_overlay)
     route_bootstrap = snapshot.get("route_bootstrap")
     if isinstance(route_bootstrap, dict):
         route_bootstrap["details_ready"] = True
@@ -43102,6 +43243,11 @@ def status_snapshot() -> dict[str, Any]:
             string_limit=1024,
             list_limit=6,
         )
+    live_usage = live_overlay.get("usage")
+    if isinstance(live_usage, dict) and live_usage.get("last_turn"):
+        usage = dict(snapshot.get("usage") or {})
+        usage["last_turn"] = _transport_snapshot_value(live_usage["last_turn"])
+        snapshot["usage"] = usage
     snapshot["pane"] = _transport_snapshot_value(
         cached.get("pane") or "", string_limit=6000, list_limit=6
     )
@@ -44146,119 +44292,76 @@ def _context_source_estimates(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _initial_context_meter(snapshot: dict[str, Any]) -> dict[str, Any]:
-    usage = snapshot.get("usage") or {}
-    current_thread = usage.get("current_thread") or {}
-    totals = usage.get("totals") or {}
-    recent = usage.get("last_24h") or {}
-    thread_scoped = (
-        _coerce_int(current_thread.get("turns")) > 0
-        or _coerce_int(current_thread.get("total_tokens")) > 0
-    )
-    primary = current_thread if thread_scoped else totals
-    history_turns = len(snapshot.get("history") or [])
-    pending_turn = (
-        1 if snapshot.get("pending") and snapshot.get("running_prompt") else 0
-    )
-    tracked_turns = _coerce_int(primary.get("turns"))
-    total_turns = max(tracked_turns, history_turns + pending_turn)
-    total_tokens = _coerce_int(primary.get("total_tokens"))
-    recent_tokens = _coerce_int(recent.get("total_tokens"))
-    queue_depth = _coerce_int(snapshot.get("queue_depth"))
-    hidden = total_turns <= 0 and total_tokens <= 0 and queue_depth <= 0
-
-    token_load = total_tokens / 90_000 if total_tokens > 0 else 0.0
-    turn_load = total_turns / 26 if total_turns > 0 else 0.0
-    queue_load = min(1.0, 0.18 + (queue_depth * 0.18)) if queue_depth > 0 else 0.0
-    fill = max(token_load, turn_load, queue_load)
-
-    tone = "ok"
-    label = "Fresh"
-    hint = "Plenty of room before a compact/save is likely useful."
-    if fill >= 0.92:
-        tone = "danger"
-        label = "Save soon"
-        hint = "Good point to compact/save before the thread gets unwieldy."
-    elif fill >= 0.55:
-        tone = "warn"
-        label = "Watch"
-        hint = (
-            "Session is getting heavier; compact soon if the thread starts to sprawl."
-        )
-
-    value_parts: list[str] = []
-    if total_turns > 0:
-        value_parts.append(f"{total_turns}t")
-    if total_tokens > 0:
-        value_parts.append(f"{_compact_metric(total_tokens)} tok")
-    if queue_depth > 0:
-        value_parts.append(f"+{queue_depth}")
-    value = " · ".join(value_parts) if value_parts else "Fresh"
-
-    title_parts = [f"{label} context load"]
-    title_parts.append(
-        f"{total_turns} {'current-thread' if thread_scoped else 'tracked'} turn{'s' if total_turns != 1 else ''}"
-        if total_turns > 0
-        else "No tracked turns yet"
-    )
-    if total_tokens > 0:
-        title_parts.append(
-            f"{total_tokens:,} {'current-thread' if thread_scoped else 'tracked'} tokens"
-        )
-    if recent_tokens > 0 and recent_tokens != total_tokens:
-        title_parts.append(f"{recent_tokens:,} tokens in the last 24h")
-    if queue_depth > 0:
-        title_parts.append(f"{queue_depth} queued")
-    source_estimates = _context_source_estimates(snapshot)
-    if source_estimates:
-        display_sources = source_estimates[:5]
-        bbs_source = next(
-            (item for item in source_estimates if item["label"] == "BBS"), None
-        )
-        if bbs_source and not any(item["label"] == "BBS" for item in display_sources):
-            display_sources = (
-                [*display_sources[:4], bbs_source]
-                if len(display_sources) >= 5
-                else [*display_sources, bbs_source]
-            )
-        title_parts.append(
-            "Context sources: "
-            + ", ".join(
-                f"{item['label']} {_compact_metric(item['tokens'])}"
-                for item in display_sources
-            )
-        )
-    pack_preview = (
-        snapshot.get("context_pack_preview")
-        if isinstance(snapshot.get("context_pack_preview"), dict)
+    usage = snapshot.get("usage") if isinstance(snapshot.get("usage"), dict) else {}
+    current_thread = (
+        usage.get("current_thread")
+        if isinstance(usage.get("current_thread"), dict)
         else {}
     )
-    pack_savings = pack_preview.get("savings") if isinstance(pack_preview, dict) else {}
-    if isinstance(pack_savings, dict) and _coerce_int(pack_savings.get("tokens")) > 0:
-        saved_tokens = _coerce_int(pack_savings.get("tokens"))
-        saved_pct = _coerce_float(pack_savings.get("pct"))
-        cost_range = (
-            pack_savings.get("cost_range")
-            if isinstance(pack_savings.get("cost_range"), dict)
-            else {}
-        )
-        cost_label = str(cost_range.get("label") or "").strip()
-        pack_parts = [
-            f"pack preview saves {_compact_metric(saved_tokens)} tokens",
-            f"{saved_pct:.0f}%" if saved_pct > 0 else "",
-            f"about {cost_label}" if cost_label else "",
-        ]
-        title_parts.append(" · ".join(part for part in pack_parts if part))
-    title_parts.append(
-        "Heuristic only; use it as a save/compact hint, not an exact context ceiling."
+    budget = (
+        snapshot.get("session_budget")
+        if isinstance(snapshot.get("session_budget"), dict)
+        else {}
     )
-    title_parts.append(hint)
+    checkpoint_tokens = max(1, _coerce_int(budget.get("checkpoint_tokens")) or 160_000)
+    reauthorization_tokens = max(
+        checkpoint_tokens,
+        _coerce_int(budget.get("reauthorization_tokens")) or 200_000,
+    )
+    total_turns = _coerce_int(current_thread.get("turns"))
+    total_tokens = _coerce_int(current_thread.get("total_tokens"))
+    hidden = total_turns <= 0 and total_tokens <= 0
+    used_pct = round((total_tokens / checkpoint_tokens) * 100) if total_tokens else 0
+
+    tone = "ok"
+    label = "Healthy"
+    hint = "Normal work is allowed; plan a concise handoff before the threshold."
+    if total_tokens >= reauthorization_tokens:
+        tone = "danger"
+        label = "Handoff required"
+        hint = "The hard thread limit is reached; create the handoff before more work."
+    elif total_tokens >= round(checkpoint_tokens * 0.80):
+        tone = "danger"
+        label = "Handoff now"
+        hint = "Create the handoff now so this thread stays below its enforced limit."
+    elif total_tokens >= round(checkpoint_tokens * 0.70):
+        tone = "warn"
+        label = "Plan handoff"
+        hint = "Prepare a concise handoff before this thread reaches its limit."
+
+    remaining = max(0, checkpoint_tokens - total_tokens)
+    title_parts = [
+        f"{label} thread budget",
+        f"{total_tokens:,} tracked thread tokens of {checkpoint_tokens:,}",
+        f"{used_pct}% of handoff threshold",
+        (
+            f"{remaining:,} to handoff"
+            if total_tokens < checkpoint_tokens
+            else "handoff threshold reached"
+        ),
+        f"hard stop at {reauthorization_tokens:,} tokens",
+        (
+            "Tracked thread-token budget; enforcement uses the same durable usage "
+            "ledger. It is not Codex's exact rendered-context measurement."
+        ),
+        hint,
+    ]
+    if total_turns > 0:
+        title_parts.insert(
+            2, f"{total_turns} current-thread turn{'s' if total_turns != 1 else ''}"
+        )
 
     return {
         "hidden": hidden,
         "tone": tone,
         "label": label,
-        "value": value,
-        "fill_pct": 0 if hidden else max(6, min(100, round(fill * 100))),
+        "value": (
+            f"{_compact_metric(total_tokens)} / {_compact_metric(checkpoint_tokens)} "
+            f"· {used_pct}%"
+            if not hidden
+            else "Healthy"
+        ),
+        "fill_pct": 0 if hidden else max(6, min(100, used_pct)),
         "title": " · ".join(title_parts),
     }
 
@@ -44333,14 +44436,14 @@ def _public_usage_cost_rates_for_model(
     clean = str(model or configured_chat_model() or "").strip().lower()
     tier = normalize_service_tier(service_tier or DEFAULT_SERVICE_TIER)
     if clean.startswith(("gpt-5.6-luna", "openai.gpt-5.6-luna")):
-        base_input = 1.0
-        base_cached_input = 0.1
-        base_output = 6.0
+        base_input = 0.2
+        base_cached_input = 0.02
+        base_output = 1.2
         model_label = "GPT-5.6 Luna"
     elif clean.startswith(("gpt-5.6-terra", "openai.gpt-5.6-terra")):
-        base_input = 2.5
-        base_cached_input = 0.25
-        base_output = 15.0
+        base_input = 2.0
+        base_cached_input = 0.2
+        base_output = 12.0
         model_label = "GPT-5.6 Terra"
     elif clean.startswith(("gpt-5.6-sol", "openai.gpt-5.6-sol")):
         base_input = 5.0
@@ -46908,6 +47011,7 @@ class Handler(BaseHTTPRequestHandler):
                     job_budget=job_budget,
                     optimization_mode=optimization_mode,
                     actor_ip=actor_ip,
+                    fast_snapshot=api_path,
                 )
                 clear_draft_attachments()
                 if api_path:
@@ -46948,6 +47052,7 @@ class Handler(BaseHTTPRequestHandler):
                     job_budget=job_budget,
                     optimization_mode=optimization_mode,
                     actor_ip=actor_ip,
+                    fast_snapshot=api_path,
                 )
                 clear_draft_attachments()
                 if api_path:
@@ -62346,7 +62451,7 @@ class Handler(BaseHTTPRequestHandler):
         }" aria-label="Open Norman Directory" title="Open Norman Directory" data-tooltip="Open Norman Directory">Directory</a>
             <button id="context-save-menu-button" type="button" class="ghost utility-button context-save-button" data-icon="{
             html.escape(icon_for_label("Save", "↓"))
-        }" aria-label="Save or compact this thread" title="Save or compact this thread" data-tooltip="Save or compact this thread" hidden>Save</button>
+        }" aria-label="Create a concise handoff, then continue in a fresh thread" title="Create a concise handoff, then continue in a fresh thread" data-tooltip="Create a concise handoff, then continue in a fresh thread" hidden>Create handoff</button>
             <a id="theme-toggle-button" class="ghost utility-button button-link" data-icon="{
             html.escape(icon_for_label(theme_toggle_label, "◐"))
         }" href="{
@@ -62451,7 +62556,7 @@ class Handler(BaseHTTPRequestHandler):
             " hidden" if not initial_usage_meter["has_fill"] else ""
         }><span class="usage-meter-fill"></span></span>
             </span>
-            <button id="context-save-button" type="button" class="ghost context-save-button" hidden>Save</button>
+            <button id="context-save-button" type="button" class="ghost context-save-button" title="Create a concise handoff, then continue in a fresh thread" hidden>Create handoff</button>
             <span id="route-chip" class="meta-chip subtle" data-icon="{
             html.escape(icon_for_label(active_route_mode, "⇄"))
         }">{
@@ -69557,14 +69662,14 @@ class Handler(BaseHTTPRequestHandler):
       let baseOutput = 0;
       let modelLabel = "";
       if (clean.startsWith("gpt-5.6-luna") || clean.startsWith("openai.gpt-5.6-luna")) {{
-        baseInput = 1;
-        baseCachedInput = 0.1;
-        baseOutput = 6;
+        baseInput = 0.2;
+        baseCachedInput = 0.02;
+        baseOutput = 1.2;
         modelLabel = "GPT-5.6 Luna";
       }} else if (clean.startsWith("gpt-5.6-terra") || clean.startsWith("openai.gpt-5.6-terra")) {{
-        baseInput = 2.5;
-        baseCachedInput = 0.25;
-        baseOutput = 15;
+        baseInput = 2;
+        baseCachedInput = 0.2;
+        baseOutput = 12;
         modelLabel = "GPT-5.6 Terra";
       }} else if (clean.startsWith("gpt-5.6-sol") || clean.startsWith("openai.gpt-5.6-sol")) {{
         baseInput = 5;
@@ -72775,8 +72880,9 @@ class Handler(BaseHTTPRequestHandler):
         ? "Do this now before the thread gets any heavier."
         : "Do this before the thread sprawls further.";
       return [
-        "Save/compact our work so far into a concise indexed handoff I can continue from cleanly.",
+        "Create a concise fresh-thread handoff for this work.",
         "Preserve the active goal, current state, key decisions, important files or links, open questions, exact next actions, and what old context is now stale or safe to ignore.",
+        "After the handoff succeeds, make the next request in a fresh thread.",
         "Do not paste raw logs or long history unless they are essential; point to durable files, BBS threads, tickets, or evidence IDs instead.",
         urgency,
       ].join(" ");
@@ -73302,95 +73408,56 @@ class Handler(BaseHTTPRequestHandler):
     function contextMeterState(snapshot) {{
       const usage = snapshot && typeof snapshot === "object" ? snapshot.usage || {{}} : {{}};
       const currentThread = usage && typeof usage === "object" ? usage.current_thread || {{}} : {{}};
-      const totals = usage && typeof usage === "object" ? usage.totals || {{}} : {{}};
-      const recent = usage && typeof usage === "object" ? usage.last_24h || {{}} : {{}};
-      const threadScoped = Number(currentThread.turns || 0) > 0 || Number(currentThread.total_tokens || 0) > 0;
-      const primary = threadScoped ? currentThread : totals;
-      const historyTurns = Array.isArray(snapshot?.history) ? snapshot.history.length : 0;
-      const pendingTurn = snapshot?.pending && snapshot?.running_prompt ? 1 : 0;
-      const rawTurnCount = Number(primary.turns || 0);
-      const trackedTurns = Number.isFinite(rawTurnCount) && rawTurnCount > 0 ? rawTurnCount : 0;
-      const totalTurns = Math.max(trackedTurns, historyTurns + pendingTurn);
-      const rawTokenCount = Number(primary.total_tokens || 0);
+      const budget = snapshot && typeof snapshot === "object" && snapshot.session_budget && typeof snapshot.session_budget === "object"
+        ? snapshot.session_budget
+        : {{}};
+      const checkpointRaw = Number(budget.checkpoint_tokens || 160000);
+      const checkpointTokens = Number.isFinite(checkpointRaw) && checkpointRaw > 0 ? checkpointRaw : 160000;
+      const hardRaw = Number(budget.reauthorization_tokens || 200000);
+      const hardTokens = Number.isFinite(hardRaw) && hardRaw >= checkpointTokens ? hardRaw : Math.max(checkpointTokens, 200000);
+      const rawTurnCount = Number(currentThread.turns || 0);
+      const totalTurns = Number.isFinite(rawTurnCount) && rawTurnCount > 0 ? rawTurnCount : 0;
+      const rawTokenCount = Number(currentThread.total_tokens || 0);
       const totalTokens = Number.isFinite(rawTokenCount) && rawTokenCount > 0 ? rawTokenCount : 0;
-      const rawRecentTokens = Number(recent.total_tokens || 0);
-      const recentTokens = Number.isFinite(rawRecentTokens) && rawRecentTokens > 0 ? rawRecentTokens : 0;
-      const rawQueueDepth = Number(snapshot?.queue_depth || 0);
-      const queueDepth = Number.isFinite(rawQueueDepth) && rawQueueDepth > 0 ? Math.round(rawQueueDepth) : 0;
-      const hidden = totalTurns <= 0 && totalTokens <= 0 && queueDepth <= 0;
-
-      const tokenLoad = totalTokens > 0 ? totalTokens / 90000 : 0;
-      const turnLoad = totalTurns > 0 ? totalTurns / 26 : 0;
-      const queueLoad = queueDepth > 0 ? Math.min(1, 0.18 + (queueDepth * 0.18)) : 0;
-      const load = Math.max(tokenLoad, turnLoad, queueLoad);
+      const hidden = totalTurns <= 0 && totalTokens <= 0;
+      const usedPct = totalTokens > 0 ? Math.round((totalTokens / checkpointTokens) * 100) : 0;
 
       let tone = "ok";
-      let status = "Fresh";
-      let hint = "Plenty of room before a compact/save is likely useful.";
-      if (load >= 0.92) {{
+      let status = "Healthy";
+      let hint = "Normal work is allowed; plan a concise handoff before the threshold.";
+      if (totalTokens >= hardTokens) {{
         tone = "danger";
-        status = "Save soon";
-        hint = "Good point to compact/save before the thread gets unwieldy.";
-      }} else if (load >= 0.55) {{
+        status = "Handoff required";
+        hint = "The hard thread limit is reached; create the handoff before more work.";
+      }} else if (totalTokens >= Math.round(checkpointTokens * 0.80)) {{
+        tone = "danger";
+        status = "Handoff now";
+        hint = "Create the handoff now so this thread stays below its enforced limit.";
+      }} else if (totalTokens >= Math.round(checkpointTokens * 0.70)) {{
         tone = "warn";
-        status = "Watch";
-        hint = "Session is getting heavier; compact soon if the thread starts to sprawl.";
+        status = "Plan handoff";
+        hint = "Prepare a concise handoff before this thread reaches its limit.";
       }}
 
-      const parts = [];
-      if (totalTurns > 0) parts.push(`${{formatCount(totalTurns)}}t`);
-      if (totalTokens > 0) parts.push(`${{formatCompactMetric(totalTokens)}} tok`);
-      if (queueDepth > 0) parts.push(`+${{queueDepth}}`);
-      const value = parts.join(" · ") || "Fresh";
-
-      const titleParts = [`${{status}} context load`];
-      titleParts.push(
-        totalTurns > 0
-          ? `${{formatCount(totalTurns)}} ${{threadScoped ? "current-thread" : "tracked"}} turn${{totalTurns === 1 ? "" : "s"}}`
-          : "No tracked turns yet"
-      );
-      if (totalTokens > 0) {{
-        titleParts.push(`${{formatCount(totalTokens)}} ${{threadScoped ? "current-thread" : "tracked"}} tokens`);
-      }}
-      if (recentTokens > 0 && recentTokens !== totalTokens) {{
-        titleParts.push(`${{formatCount(recentTokens)}} tokens in the last 24h`);
-      }}
-      if (queueDepth > 0) {{
-        titleParts.push(`${{queueDepth}} queued`);
-      }}
-      const sourceBreakdown = contextSourceBreakdown(snapshot);
-      if (sourceBreakdown.summary) {{
-        titleParts.push(`Context sources: ${{sourceBreakdown.summary}}`);
-      }}
-      const carryCost = contextCarryCostDescriptor(sourceBreakdown, snapshot);
-      if (carryCost) {{
-        titleParts.push(
-          `Estimated carried-context input cost: ${{carryCost.label}} per turn`
-          + `${{carryCost.approximate ? " approx" : ""}}`
-          + `${{carryCost.longContext ? " with possible long-window uplift" : ""}}`
-        );
-        if (carryCost.source) {{
-          titleParts.push(`Cost source: ${{carryCost.source}}`);
-        }}
-      }}
-      const packPreview = contextPackPreviewState(snapshot);
-      if (!packPreview.hidden) {{
-        titleParts.push(`Pack preview: ${{packPreview.meta}} (${{packPreview.value}})`);
-        if (packPreview.costLabel) {{
-          titleParts.push(`Projected pack cost savings: ${{packPreview.costLabel}} per turn`);
-        }}
-      }}
-      titleParts.push("Heuristic only; use it as a save/compact hint, not an exact context ceiling.");
-      titleParts.push(hint);
+      const remaining = Math.max(0, checkpointTokens - totalTokens);
+      const titleParts = [
+        `${{status}} thread budget`,
+        `${{formatCount(totalTokens)}} tracked thread tokens of ${{formatCount(checkpointTokens)}}`,
+        totalTurns > 0 ? `${{formatCount(totalTurns)}} current-thread turn${{totalTurns === 1 ? "" : "s"}}` : "",
+        `${{usedPct}}% of handoff threshold`,
+        totalTokens < checkpointTokens ? `${{formatCount(remaining)}} to handoff` : "handoff threshold reached",
+        `hard stop at ${{formatCount(hardTokens)}} tokens`,
+        "Tracked thread-token budget; enforcement uses the same durable usage ledger. It is not Codex's exact rendered-context measurement.",
+        hint,
+      ].filter(Boolean);
 
       return {{
         hidden,
         tone,
         status,
-        value,
-        fill: hidden ? 0 : Math.max(6, Math.min(100, Math.round(load * 100))),
+        value: hidden ? "Healthy" : `${{formatCompactMetric(totalTokens)}} / ${{formatCompactMetric(checkpointTokens)}} · ${{usedPct}}%`,
+        fill: hidden ? 0 : Math.max(6, Math.min(100, usedPct)),
         title: titleParts.join(" · "),
-        sourceBreakdown,
       }};
     }}
 
@@ -73419,20 +73486,20 @@ class Handler(BaseHTTPRequestHandler):
       el.contextMeterStatus.textContent = context.status;
       el.contextMeterValue.textContent = context.value;
       el.contextMeterChip.setAttribute("aria-label", context.title);
-      const showSaveAction = !context.hidden && !snapshot?.pending && (context.tone === "warn" || context.tone === "danger");
-      const saveLabel = context.tone === "danger" ? "Save now" : "Save";
-      const savePrompt = buildContextSavePrompt(context);
+      const showHandoffAction = !context.hidden && !snapshot?.pending && (context.tone === "warn" || context.tone === "danger");
+      const handoffLabel = context.tone === "danger" ? "Create handoff now" : "Create handoff";
+      const handoffPrompt = buildContextSavePrompt(context);
       for (const button of [el.contextSaveButton, el.contextSaveMenuButton]) {{
         if (!button) {{
           continue;
         }}
-        button.hidden = !showSaveAction;
-        button.textContent = saveLabel;
-        button.dataset.saveTone = showSaveAction ? context.tone : "";
-        button.dataset.suggestion = savePrompt;
-        button.title = showSaveAction
-          ? `${{context.title}} · Ask the agent to compact/save this thread.`
-          : "Save/compact this thread";
+        button.hidden = !showHandoffAction;
+        button.textContent = handoffLabel;
+        button.dataset.saveTone = showHandoffAction ? context.tone : "";
+        button.dataset.suggestion = handoffPrompt;
+        button.title = showHandoffAction
+          ? `${{context.title}} · Create the handoff, then make the next request in a fresh thread.`
+          : "Create a concise handoff, then continue in a fresh thread";
         button.setAttribute("aria-label", button.title);
       }}
     }}

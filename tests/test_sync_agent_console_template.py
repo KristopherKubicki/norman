@@ -115,7 +115,9 @@ def test_discovery_infers_codex_home_from_launcher_fallback(
         encoding="utf-8",
     )
     (env_dir / "codex-web.env").write_text(
-        f"NORMAN_CODEX_LAUNCHER={launch_path}\nNORMAN_CODEX_AGENT_NAME=Housebot\n",
+        f"NORMAN_CODEX_LAUNCHER={launch_path}\n"
+        "NORMAN_CODEX_AGENT_NAME=Housebot\n"
+        "NORMAN_CODEX_HOME=${NORMAN_CODEX_HOME:-${CODEX_HOME:-/root/.codex-housebot}}\n",
         encoding="utf-8",
     )
     host = module.DiscoveryHost(
@@ -137,6 +139,125 @@ def test_discovery_infers_codex_home_from_launcher_fallback(
     assert len(instances) == 1
     assert instances[0].name == "housebot"
     assert instances[0].codex_home == "/root/.codex-housebot"
+
+
+def test_normalized_codex_home_resolves_nested_shell_fallback(monkeypatch) -> None:
+    module = _load_sync_script(monkeypatch)
+
+    assert (
+        module.normalized_codex_home(
+            "${NORMAN_CODEX_HOME:-${CODEX_HOME:-/root/.codex-housebot}}"
+        )
+        == "/root/.codex-housebot"
+    )
+
+
+def test_norman_codex_home_scope_uses_the_personal_route(monkeypatch, tmp_path) -> None:
+    module = _load_sync_script(monkeypatch)
+    env_path = tmp_path / "codex-web.env"
+    env_path.write_text(
+        "CODEX_HOME=/home/kristopher/.codex-work\nNORMAN_CODEX_MODEL=norman-code\n",
+        encoding="utf-8",
+    )
+    norman_host = _named_host(module, "norman")
+    norman = replace(
+        _instance(module, "norman", host_name="norman"),
+        env_file=str(env_path),
+        codex_home="/home/kristopher/.codex-work",
+    )
+    monkeypatch.setattr(
+        module,
+        "ssh_command",
+        lambda _host, script: ["bash", "-lc", script],
+    )
+
+    scoped = module.scoped_codex_home_instance(norman_host, norman)
+
+    assert scoped.codex_home == "/home/kristopher/.codex-norman"
+    assert module.sync_instance_codex_home_scope(norman_host, scoped) is True
+    assert env_path.read_text(encoding="utf-8") == (
+        "CODEX_HOME=/home/kristopher/.codex-norman\nNORMAN_CODEX_MODEL=norman-code\n"
+    )
+    assert module.sync_instance_codex_home_scope(norman_host, scoped) is False
+
+
+def test_codex_home_scope_leaves_unrelated_consoles_unchanged(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_sync_script(monkeypatch)
+    env_path = tmp_path / "codex-web.env"
+    original = "CODEX_HOME=/home/kristopher/.codex-work\n"
+    env_path.write_text(original, encoding="utf-8")
+    panelbot = replace(_instance(module, "panelbot"), env_file=str(env_path))
+
+    assert module.scoped_codex_home_instance(_host(module), panelbot) == panelbot
+    assert module.sync_instance_codex_home_scope(_host(module), panelbot) is False
+    assert env_path.read_text(encoding="utf-8") == original
+
+
+def test_session_budget_sync_writes_shared_thresholds(monkeypatch, tmp_path) -> None:
+    module = _load_sync_script(monkeypatch)
+    env_path = tmp_path / "codex-web.env"
+    env_path.write_text(
+        "NORMAN_CODEX_SESSION_CHECKPOINT_TOKENS=999\n", encoding="utf-8"
+    )
+    instance = replace(_instance(module, "leadership-kpis"), env_file=str(env_path))
+    monkeypatch.setattr(
+        module, "ssh_command", lambda _host, script: ["bash", "-lc", script]
+    )
+
+    assert module.sync_instance_session_budget_settings(_host(module), instance) is True
+    text = env_path.read_text(encoding="utf-8")
+    assert "NORMAN_CODEX_SESSION_BUDGET_ENABLED=1" in text
+    assert "NORMAN_CODEX_SESSION_CHECKPOINT_TOKENS=160000" in text
+    assert "NORMAN_CODEX_SESSION_REAUTHORIZATION_TOKENS=200000" in text
+    assert (
+        module.sync_instance_session_budget_settings(_host(module), instance) is False
+    )
+
+
+def test_local_llm_updates_enable_registry_driven_background_execution(
+    monkeypatch,
+) -> None:
+    module = _load_sync_script(monkeypatch)
+
+    updates = module._local_llm_env_updates()
+
+    assert updates["NORMAN_CODEX_LOCAL_FIRST_ENABLED"] == "1"
+    assert updates["NORMAN_LOCAL_LLM_EXECUTION_ENABLED"] == "1"
+    assert updates["NORMAN_LOCAL_PLANNER_PREFLIGHT_ENABLED"] == "1"
+    assert updates["NORMAN_LOCAL_LLM_MODEL"] == module.RESIDENT_LOCAL_MODEL
+    assert updates["NORMAN_LOCAL_LLM_ENDPOINTS"] == ",".join(
+        module.RESIDENT_LOCAL_ENDPOINTS
+    )
+
+
+def test_state_storage_sync_isolates_the_console_database(monkeypatch) -> None:
+    module = _load_sync_script(monkeypatch)
+    captured = {}
+    instance = _instance(module, "publisher")
+    monkeypatch.setattr(module, "ssh_command", lambda _host, script: ["ssh", script])
+    monkeypatch.setattr(
+        module,
+        "capture",
+        lambda command: captured.setdefault("script", command[1]) and "changed\n",
+    )
+
+    assert module.sync_instance_state_storage(_host(module), instance) is True
+    script = captured["script"]
+    assert (
+        '"NORMAN_CODEX_WEB_STATE_DIR":"/var/lib/publisher/codex/web-bridge"' in script
+    )
+    assert (
+        '"NORMAN_CODEX_STATE_DB_PATH":'
+        '"/var/lib/publisher/codex/web-bridge/tui_state.sqlite3"'
+    ) in script
+    assert '"NORMAN_CODEX_STATE_DB_ENABLED":"1"' in script
+    assert "state_dir.mkdir(parents=True, exist_ok=True)" in script
+    assert "service_name = (" in script
+    assert '"systemctl", "show", service_name, "--property=User", "--value"' in script
+    assert "for root, dirs, files in os.walk(state_dir):" in script
+    assert "state_db_path.touch()" in script
 
 
 def test_list_versions_surfaces_restart_staged_state(monkeypatch, capsys) -> None:
@@ -462,7 +583,8 @@ def test_route_receipt_sync_exports_shadow_capture_env(monkeypatch) -> None:
         '"NORMAN_CODEX_ROUTE_RECEIPT_DIR":"/var/lib/norman/route_receipts"'
     ) in script
     assert "route_receipt_path.mkdir(parents=True, exist_ok=True)" in script
-    assert "receipt_owner_source = Path('/var/lib/market-sizing/codex')" in script
+    assert "service_name = (" in script
+    assert '"systemctl", "show", service_name, "--property=User", "--value"' in script
     assert "os.chown(route_receipt_path, target_uid, target_gid)" in script
     assert "os.chmod(route_receipt_path, 0o750)" in script
     assert (
@@ -867,13 +989,16 @@ def test_origin_sync_exports_discovered_local_llm_inventory(
 
     script = captured["script"]
     assert '"NORMAN_LOCAL_LLM_DISABLED_MODELS":"llama3.2,llama3.2:*"' in script
-    assert '"NORMAN_LOCAL_LLM_MODEL":"qwen3-coder:30b-a3b-q4_K_M"' in script
+    assert '"NORMAN_LOCAL_LLM_MODEL":"qwen3.8:27b"' in script
     assert '"NORMAN_LOCAL_LLM_MODELS":"' in script
     assert (
-        '"NORMAN_LOCAL_LLM_ENDPOINTS":"http://192.168.2.151:11434,http://192.168.2.152:11434,http://spark-1.home.arpa:8000"'
-        in script
+        '"NORMAN_LOCAL_LLM_ENDPOINTS":"https://llm.home.arpa/resident,'
+        "http://192.168.2.151:11434,http://192.168.2.152:11434,"
+        'http://spark-1.home.arpa:8000"' in script
     )
     assert '"NORMAN_LOCAL_LLM_MODEL_ENDPOINTS":"' in script
+    assert "qwen3.8:27b" in script
+    assert "https://llm.home.arpa/resident" in script
     assert "http://spark-1.home.arpa:8000" in script
     assert "qwen3.5:122b-a10b-q4_K_M" not in script
     assert "Qwen/Qwen3-Coder-30B-A3B" not in script
@@ -1077,14 +1202,18 @@ def test_local_llm_foreground_sync_configures_intent_classifier(
 
     synced = env_path.read_text(encoding="utf-8")
     assert "NORMAN_LOCAL_LLM_FILTER_MODELS" not in synced
-    assert ("NORMAN_LOCAL_LLM_PLANNER_MODELS=qwen3-coder:30b-a3b-q4_K_M") in synced
+    assert "NORMAN_LOCAL_LLM_PLANNER_MODELS=qwen3.8:27b" in synced
+    assert "NORMAN_LOCAL_PLANNER_AUTOMATIC_MODEL=qwen3.8:27b" in synced
+    assert "NORMAN_LOCAL_PLANNER_VERIFIER_DEFAULT_MODEL=qwen3.8:27b" in synced
     assert "NORMAN_LOCAL_PLANNER_PREFLIGHT_TIMEOUT_SECONDS=18" in synced
     assert "NORMAN_LOCAL_PLANNER_PREFLIGHT_MAX_OUTPUT_TOKENS=96" in synced
     assert "NORMAN_LOCAL_PLANNER_PREFLIGHT_MAX_CANDIDATES=1" in synced
-    assert (
-        "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MODEL=qwen3-coder:30b-a3b-q4_K_M"
-    ) in synced
+    assert "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MODEL=qwen3.8:27b" in synced
     assert "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MAX_OUTPUT_TOKENS=192" in synced
+    assert "NORMAN_CODEX_WORKING_RECAP_MODEL=qwen3.8:27b" in synced
+    assert (
+        "NORMAN_CODEX_WORKING_RECAP_ENDPOINTS=https://llm.home.arpa/resident" in synced
+    )
     assert "NORMAN_TUI_TOKEN_CAPACITY_USAGE_WINDOW_SECONDS=3600" in synced
     assert "NORMAN_CODEX_SUBSCRIPTION_ROUTE_PREFERENCE_ENABLED=1" in synced
     assert "NORMAN_CODEX_SUBSCRIPTION_ROUTE_WORK_ENABLED=0" in synced
@@ -1918,6 +2047,7 @@ def test_console_files_include_soul_support_scripts(monkeypatch) -> None:
         files["session-budget"]
         == "/opt/panelbot/scripts/agent_console_session_budget.py"
     )
+    assert files["model-roles"] == "/opt/panelbot/scripts/model_roles.json"
     assert files["sms-turns"] == "/opt/panelbot/scripts/agent_console_sms.py"
     assert files["child-worker-web"] == "/opt/panelbot/scripts/agent_console_web.py"
     assert files["tui-waterfall"] == "/opt/panelbot/scripts/tui_waterfall.py"
@@ -1934,6 +2064,7 @@ def test_console_files_include_soul_support_scripts(monkeypatch) -> None:
     assert module.SOURCE_FILES["child-worker-web"].name == "agent_console_web.py"
     assert module.SOURCE_FILES["tui-waterfall"].name == "tui_waterfall.py"
     assert module.SOURCE_FILES["child-agents"].name == "agent_console_child_agents.py"
+    assert module.SOURCE_FILES["model-roles"].name == "model_roles.json"
     assert module.SOURCE_FILES["sms-turns"].name == "agent_console_sms.py"
     assert (
         module.SOURCE_FILES["terminal-runtime-bridge"].name

@@ -1,14 +1,24 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
+from app.core.estate_registry import (
+    load_fleet_topology,
+    model_capability,
+    model_for_role,
+)
+from app.services.norllama.escalation_policy import (
+    ESCALATION_CONTROLLER_CONTRACT,
+    MODEL_ROLES,
+    RESIDENT_MODEL,
+)
+
 ROUTE_POLICY_SCHEMA = "norman.norllama.route-policy.v1"
-ROUTE_POLICY_VERSION = "2026.08.09.terra-codex-v2"
-ROUTE_POLICY_COMPILED_AT = "2026-08-09T00:00:00Z"
-ROUTE_POLICY_EXPIRES_AT = "2026-09-09T00:00:00Z"
+ROUTE_POLICY_VERSION = "2026.08.16.registry-driven-v3"
 ROUTE_POLICY_EXPIRY_WARN_SECONDS = 72 * 60 * 60
 ROUTE_POLICY_EXPIRED_STATE = "expired_blocked"
 
@@ -35,47 +45,57 @@ CAPABILITY_GATE_ORDER = {
 PRODUCTION_GATE_MIN_COLD_SAMPLES = 1
 PRODUCTION_GATE_MIN_WARM_SAMPLES = 1
 
-QWEN35_HEAVY_JUDGE_MODEL_NEEDLES = (
-    "qwen3.5:122b",
-    "qwen3.5-122b",
-    "qwen3.5/122b",
-    "nvidia/qwen3.5-122b",
-)
-QWEN35_HEAVY_JUDGE_ALLOWED_LANES = frozenset({"judge", "verifier"})
-
 ROUTE_POLICY_MODELS = {
-    "general_reasoning_floor": "qwen3-coder-30b-class",
-    "router": "qwen3-coder:30b-a3b-q4_K_M",
-    "coding_operator": "qwen3-coder:30b-a3b-q4_K_M",
-    "local_heavyweight_judge": "qwen3.5:122b-a10b-q4_K_M (manual-only)",
-    "fallback_small": "gemma4-or-qwen-tiny-class",
+    "general_reasoning_floor": "resident-role",
+    "router": RESIDENT_MODEL,
+    "coding_operator": RESIDENT_MODEL,
+    "judge": model_for_role("authority"),
+    "fallback": model_for_role("economy"),
 }
 
 ROUTE_POLICY_LANES = {
-    "planner": {"class": "qwen3-coder", "gate": "production"},
-    "coder": {"class": "qwen3-coder", "gate": "production"},
-    "summarizer": {"class": "qwen3-coder", "gate": "production"},
-    "filter": {"class": "qwen3-coder", "gate": "production"},
-    "verifier": {"class": "qwen3-coder", "gate": "production"},
-    "judge": {"class": "manual-only-qwen3.5-heavy", "gate": "production"},
+    "planner": {"class": "resident", "gate": "production"},
+    "coder": {"class": "resident", "gate": "production"},
+    "summarizer": {"class": "resident", "gate": "production"},
+    "filter": {"class": "resident", "gate": "production"},
+    "verifier": {"class": "resident", "gate": "production"},
+    "judge": {"class": "authority", "gate": "production"},
     "specialist": {"class": "lane-specific", "gate": "smoke-or-better"},
     "lab": {"class": "explicit-request-only", "gate": "lab"},
 }
 
+_TOPOLOGY = load_fleet_topology()
+_RESIDENT_POOL = dict(_TOPOLOGY.get("resident_pool") or {})
+_RESIDENT_WORKERS = list(_RESIDENT_POOL.get("runtime_workers") or [])
+_PRODUCTION_WORKERS = [
+    worker_id
+    for worker_id, row in dict(_TOPOLOGY.get("workers") or {}).items()
+    if isinstance(row, dict) and row.get("role") == "production"
+]
+_FALLBACK_WORKERS = [
+    worker_id
+    for worker_id, row in dict(_TOPOLOGY.get("workers") or {}).items()
+    if isinstance(row, dict) and row.get("role") == "fallback"
+]
+
 ROUTE_POLICY_PLACEMENT = {
-    "frontdoor": "https://llm.home.arpa",
-    "router_node": "mac-mini-133",
-    "primary_brain_worker": "spark-150",
-    "specialist_worker": "spark-151",
-    "fallback_node": "mac-mini-133",
-    "qwen35_122b_allowed_lanes": sorted(QWEN35_HEAVY_JUDGE_ALLOWED_LANES),
+    "frontdoor": str(dict(_TOPOLOGY.get("frontdoors") or {}).get("llm") or ""),
+    "primary_brain_worker": (
+        _RESIDENT_WORKERS[0] if _RESIDENT_WORKERS else _PRODUCTION_WORKERS[0]
+    ),
+    "specialist_worker": (
+        _PRODUCTION_WORKERS[-1] if _PRODUCTION_WORKERS else _RESIDENT_WORKERS[0]
+    ),
+    "fallback_node": _FALLBACK_WORKERS[0] if _FALLBACK_WORKERS else "",
+    "resident_ollama_bases": list(MODEL_ROLES["resident"].get("endpoints") or []),
+    "resident_runtime_workers": list(_RESIDENT_WORKERS),
     "fallback_node_heavy_models_allowed": False,
 }
 
 ROUTE_POLICY_RESIDENCY = {
-    "resident": ["qwen3-coder-30b", "rerank", "safety"],
+    "resident": [RESIDENT_MODEL, "rerank", "safety"],
     "warm_on_demand": ["ocr", "doc-parse"],
-    "manual_only": ["qwen3.5-122b-judge"],
+    "manual_only": [],
     "lab": ["world", "graph", "packet", "forecasting", "gui-grounding"],
 }
 
@@ -92,23 +112,29 @@ ROUTE_POLICY_FALLBACKS = {
     "fallback_reason_required": True,
 }
 
+
+def _explicit_cloud_models() -> dict[str, dict[str, str]]:
+    selections: dict[str, dict[str, str]] = {}
+    for role in ("economy", "authority", "frontier"):
+        row = MODEL_ROLES[role]
+        model = str(row["model"])
+        provider = str(row.get("provider") or "aws-bedrock")
+        for alias in row.get("aliases") or [model]:
+            selections[str(alias)] = {
+                "provider": provider,
+                "model": model,
+                "lane": "coder",
+                "role": role,
+            }
+    return selections
+
+
 ROUTE_POLICY_CLOUD_POLICY = {
     "cloud_llm_default": "disabled",
     "cloud_escalation": "explicit_policy_or_user_authorized_only",
     "cloud_proxy_counts_as_cloud": True,
     "perplexity_web_is_search_not_cloud_llm": True,
-    "explicit_cloud_models": {
-        "gpt-5.6-terra": {
-            "provider": "aws-bedrock",
-            "model": "openai.gpt-5.6-terra",
-            "lane": "coder",
-        },
-        "openai.gpt-5.6-terra": {
-            "provider": "aws-bedrock",
-            "model": "openai.gpt-5.6-terra",
-            "lane": "coder",
-        },
-    },
+    "explicit_cloud_models": _explicit_cloud_models(),
 }
 
 ROUTE_POLICY_LIFECYCLE_POLICY = {
@@ -180,13 +206,13 @@ def _int(value: Any) -> int:
 
 
 def is_qwen35_heavy_judge_model(model: Any) -> bool:
-    clean = _clean(model).lower().replace("_", "-")
-    return any(needle in clean for needle in QWEN35_HEAVY_JUDGE_MODEL_NEEDLES)
+    return bool(model_capability(_clean(model), "manual_only", False))
 
 
 def restrict_lanes_for_model(model: Any, lanes: set[str]) -> set[str]:
-    if is_qwen35_heavy_judge_model(model):
-        return set(lanes) & set(QWEN35_HEAVY_JUDGE_ALLOWED_LANES)
+    allowed = model_capability(_clean(model), "allowed_lanes", None)
+    if isinstance(allowed, list):
+        return set(lanes) & {str(lane) for lane in allowed}
     return lanes
 
 
@@ -380,8 +406,6 @@ def _route_policy_contract_base() -> dict[str, Any]:
     return {
         "schema": ROUTE_POLICY_SCHEMA,
         "version": ROUTE_POLICY_VERSION,
-        "compiled_at": ROUTE_POLICY_COMPILED_AT,
-        "expires_at": ROUTE_POLICY_EXPIRES_AT,
         "local_first": True,
         "allow_cloud_proxy": False,
         "allow_cloud_tool_proxy": False,
@@ -433,6 +457,7 @@ def _route_policy_contract_base() -> dict[str, Any]:
         },
         "fallbacks": dict(ROUTE_POLICY_FALLBACKS),
         "cloud_policy": dict(ROUTE_POLICY_CLOUD_POLICY),
+        "escalation_controller": copy.deepcopy(ESCALATION_CONTROLLER_CONTRACT),
         "lifecycle_policy": dict(ROUTE_POLICY_LIFECYCLE_POLICY),
         "emergency_overlays": {
             "allowed": True,

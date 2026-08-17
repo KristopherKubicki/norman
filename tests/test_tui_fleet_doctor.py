@@ -290,7 +290,7 @@ def test_doctor_compacts_failed_ssh_scan_detail(monkeypatch) -> None:
     assert len(detail) < 320
 
 
-def test_default_doctor_skips_private_host_without_console_inventory(
+def test_default_doctor_includes_private_host_inventory(
     monkeypatch,
 ) -> None:
     module = _load_doctor(monkeypatch)
@@ -306,8 +306,7 @@ def test_default_doctor_skips_private_host_without_console_inventory(
         fake_discover,
     )
 
-    def fake_scan(host):
-        assert host.name != "private-host"
+    def fake_scan(_host):
         return []
 
     monkeypatch.setattr(module, "scan_host", fake_scan)
@@ -318,7 +317,7 @@ def test_default_doctor_skips_private_host_without_console_inventory(
         ui_version="2026.06.01.7",
     )
 
-    assert "private-host" not in discovered_targets
+    assert "private-host" in discovered_targets
     private_report = next(report for report in reports if report.host == "private-host")
     assert private_report.active_count == 0
     assert private_report.expected_count == 0

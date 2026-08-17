@@ -3,7 +3,19 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from app.core.estate_registry import load_fleet_topology, resident_model
+
 CATALOG_SCHEMA = "norman.norllama.capability-catalog.v1"
+
+_TOPOLOGY = load_fleet_topology()
+_RESIDENT_POOL = dict(_TOPOLOGY.get("resident_pool") or {})
+_RESIDENT_WORKERS = [
+    str(worker_id)
+    for worker_id in _RESIDENT_POOL.get("runtime_workers") or []
+    if str(worker_id).strip()
+]
+_RESIDENT_PRIMARY = _RESIDENT_WORKERS[0] if _RESIDENT_WORKERS else ""
+_RESIDENT_MODEL = resident_model()
 
 CAPABILITY_CLASSES = {
     "chat": "general text generation and synthesis",
@@ -31,11 +43,11 @@ CAPABILITY_MODELS: list[dict[str, Any]] = [
     {
         "capability": "coding_operator",
         "class": "code",
-        "model": "Qwen/Qwen3-Coder-30B-A3B",
-        "runtime_model": "qwen3-coder:30b-a3b-q4_K_M",
+        "model": _RESIDENT_MODEL,
+        "runtime_model": _RESIDENT_MODEL,
         "priority": "p0",
         "residency": "resident",
-        "target_worker": "spark-150",
+        "target_worker": _RESIDENT_PRIMARY,
         "target_role": "production",
         "dispatch": "unified_chat",
         "serving_path": "/v1/chat/completions",
@@ -239,10 +251,10 @@ CAPABILITY_MODELS: list[dict[str, Any]] = [
         "capability": "agent_world_simulator",
         "class": "world",
         "model": "Qwen/Qwen-AgentWorld-35B-A3B",
-        "runtime_model": "qwen3-coder:30b-a3b-q4_K_M",
+        "runtime_model": _RESIDENT_MODEL,
         "priority": "p1",
         "residency": "warm_on_demand",
-        "target_worker": "spark-150",
+        "target_worker": _RESIDENT_PRIMARY,
         "target_role": "production",
         "dispatch": "world_proxy",
         "use_for": "simulate action consequences before browser, shell, and workflow execution",
@@ -253,10 +265,10 @@ CAPABILITY_MODELS: list[dict[str, Any]] = [
         "capability": "web_world_simulator",
         "class": "world",
         "model": "Qwen/WebWorld-8B",
-        "runtime_model": "qwen3-coder:30b-a3b-q4_K_M",
+        "runtime_model": _RESIDENT_MODEL,
         "priority": "p1",
         "residency": "warm_on_demand",
-        "target_worker": "spark-150",
+        "target_worker": _RESIDENT_PRIMARY,
         "target_role": "production",
         "dispatch": "world_proxy",
         "use_for": "browser task simulation, page-state prediction, and web-agent rehearsal",

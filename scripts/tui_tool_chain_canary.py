@@ -315,6 +315,7 @@ def _stream_response_from_sse_events(events: list[dict[str, Any]]) -> dict[str, 
     saw_completion = False
     saw_done = False
     saw_failure = False
+    failure_code = ""
     raw_tool_envelope_text = False
 
     for event in events:
@@ -341,6 +342,12 @@ def _stream_response_from_sse_events(events: list[dict[str, Any]]) -> dict[str, 
             saw_completion = True
         elif event_type in {"response.failed", "error"}:
             saw_failure = True
+            failed_response = _mapping(payload.get("response"))
+            failure_code = _safe_identifier(
+                _mapping(failed_response.get("error")).get("code")
+                or _mapping(payload.get("error")).get("code"),
+                maximum=96,
+            )
 
     if _is_raw_tool_payload_text(completed_response.get("output_text")):
         raw_tool_envelope_text = True
@@ -348,6 +355,7 @@ def _stream_response_from_sse_events(events: list[dict[str, Any]]) -> dict[str, 
         "completed": saw_completion,
         "done": saw_done,
         "failed": saw_failure,
+        "failure_code": failure_code,
         "native_function_calls": native_calls,
         "raw_tool_envelope_text": raw_tool_envelope_text,
     }
@@ -878,6 +886,9 @@ def _turn_receipt(
         ],
         "raw_tool_envelope_text": bool(stream.get("raw_tool_envelope_text")),
     }
+    failure_code = _safe_identifier(stream.get("failure_code"), maximum=96)
+    if failure_code:
+        stream_receipt["failure_code"] = failure_code
     timing = _mapping(stream.get("timing"))
     if timing:
         stream_receipt["timing"] = timing

@@ -5826,7 +5826,7 @@ document.addEventListener('DOMContentLoaded', () => {
       setStatus('bots-status', 'Session name is required.', 'danger');
       return;
     }
-    const bot = await createBot({ name, description: descInput.value.trim(), gpt_model: 'gpt-5.6-terra' });
+    const bot = await createBot({ name, description: descInput.value.trim() });
     if (!bot?.id) {
       setStatus('bots-status', 'Failed to create session.', 'danger');
       return;

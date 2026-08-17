@@ -147,6 +147,13 @@ def _prepare_successful_spawn(monkeypatch, broker) -> list[dict[str, object]]:
     return submitted
 
 
+def _write_skill(root: Path, name: str) -> Path:
+    skill = root / name
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: test\n---\n", encoding="utf-8")
+    return skill
+
+
 def test_child_agent_rejects_nested_launches(monkeypatch, tmp_path: Path) -> None:
     module = _load_child_agents()
     broker = _broker(module, tmp_path)
@@ -267,6 +274,45 @@ def test_child_process_uses_an_isolated_codex_home(monkeypatch, tmp_path: Path) 
     assert env["NORMAN_CONSOLE_RUNTIME_ENABLED"] == "0"
     assert env["NORMAN_CHILD_AGENT"] == "1"
     assert env["NORMAN_CHILD_DEPTH"] == "1"
+
+
+@pytest.mark.parametrize("scope", ("work", "personal"))
+def test_child_inherits_only_parent_scoped_skill_links(
+    monkeypatch, tmp_path: Path, scope: str
+) -> None:
+    module = _load_child_agents()
+    broker = _broker(module, tmp_path)
+    work_root = tmp_path / "work-skills"
+    personal_root = tmp_path / "personal-skills"
+    scoped_skill = _write_skill(
+        work_root if scope == "work" else personal_root,
+        f"{scope}-only",
+    )
+    generic_skill = _write_skill(tmp_path / "generic-skills", "generic")
+    monkeypatch.setattr(
+        module,
+        "SCOPED_SKILL_SOURCE_ROOTS",
+        (work_root, personal_root),
+    )
+    parent_skills = broker.codex_home / "skills"
+    parent_skills.mkdir()
+    (parent_skills / scoped_skill.name).symlink_to(
+        scoped_skill,
+        target_is_directory=True,
+    )
+    (parent_skills / generic_skill.name).symlink_to(
+        generic_skill,
+        target_is_directory=True,
+    )
+    record = _record(broker, child_id=f"child-{scope}", status="starting")
+
+    broker._prepare_child_dirs(record)
+
+    child_skills = Path(record["codex_home"]) / "skills"
+    inherited = child_skills / scoped_skill.name
+    assert inherited.is_symlink()
+    assert inherited.resolve() == scoped_skill
+    assert not (child_skills / generic_skill.name).exists()
 
 
 def test_rename_persists_in_the_child_registry(tmp_path: Path) -> None:

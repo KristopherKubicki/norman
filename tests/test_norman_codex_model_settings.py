@@ -596,9 +596,48 @@ def test_switchboard_working_recap_uses_sanitized_norllama_packet(
         "One tool checkpoint completed.",
         "Bearer [redacted]",
     ]
+    outcome = module.load_local_llm_route_outcomes(limit=1)[0]
+    assert outcome["source"] == "working-recap"
+    assert outcome["status"] == "ok"
+    assert outcome["model"] == "norllama-test"
 
 
-def test_switchboard_planner_preflight_uses_resident_coder_policy(
+def test_switchboard_resident_role_can_be_replaced_by_registry(
+    monkeypatch, tmp_path
+) -> None:
+    registry = tmp_path / "model_roles.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "schema": "norman.norllama.model-roles.v1",
+                "version": "future",
+                "roles": {
+                    "resident": {
+                        "model": "future-local-model",
+                        "endpoints": ["http://future-local:11434"],
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_NORLLAMA_MODEL_ROLE_CONFIG=str(registry),
+    )
+
+    assert module.NORLLAMA_RESIDENT_MODEL == "future-local-model"
+    assert module.WORKING_RECAP_LOCAL_MODEL == "future-local-model"
+    assert module.WORKING_RECAP_LOCAL_ENDPOINTS[0] == "http://future-local:11434"
+    assert module.local_planner_preflight_models() == (
+        ["future-local-model"],
+        "resident-role-registry",
+    )
+
+
+def test_switchboard_planner_preflight_uses_resident_role_registry(
     monkeypatch, tmp_path
 ) -> None:
     module = _load_norman_codex_web(
@@ -622,15 +661,54 @@ def test_switchboard_planner_preflight_uses_resident_coder_policy(
     receipt = module.local_planner_preflight("Check the current TUI route.")
 
     assert receipt["used"] is True
-    assert receipt["model"] == "qwen3-coder:30b-a3b-q4_K_M"
-    assert receipt["candidate_policy"] == "resident-coder-policy"
+    assert receipt["model"] == "qwen3.8:27b"
+    assert receipt["candidate_policy"] == "resident-role-registry"
     assert calls[0][3] == {
         "timeout_seconds": 18,
         "max_output_tokens": 96,
     }
 
 
-def test_switchboard_planner_readiness_uses_resident_coder_policy(
+def test_switchboard_background_generation_sends_best_effort_headers(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    requests = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"message":{"content":"ok"}}'
+
+    def fake_urlopen(request, timeout):
+        requests.append((request, timeout))
+        return Response()
+
+    monkeypatch.setattr(module.urllib_request, "urlopen", fake_urlopen)
+
+    module.working_recap_local_generate(
+        "http://local-llm:18151",
+        "resident-model",
+        "sanitized background prompt",
+        source="planner-verifier",
+    )
+
+    headers = {
+        str(key).lower(): str(value) for key, value in requests[0][0].header_items()
+    }
+    assert headers["x-norllama-priority"] == "background"
+    assert headers["x-norllama-work-class"] == "background"
+    assert headers["x-norllama-interruptible"] == "true"
+    assert headers["x-norllama-max-queue-wait-ms"] == "750"
+    assert headers["x-norllama-work-source"] == "planner-verifier"
+
+
+def test_switchboard_planner_readiness_uses_resident_role_registry(
     monkeypatch, tmp_path
 ) -> None:
     module = _load_norman_codex_web(
@@ -647,16 +725,16 @@ def test_switchboard_planner_readiness_uses_resident_coder_policy(
     readiness = module.local_planner_preflight_readiness()
 
     assert readiness["ready"] is True
-    assert readiness["model"] == "qwen3-coder:30b-a3b-q4_K_M"
+    assert readiness["model"] == "qwen3.8:27b"
     assert readiness["endpoint"] == "http://local-llm:18151"
-    assert readiness["candidate_policy"] == "resident-coder-policy"
+    assert readiness["candidate_policy"] == "resident-role-registry"
     assert readiness["candidate_diagnostics"][-1]["status"] == "ready"
 
 
 def test_switchboard_planner_readiness_reports_active_cooldown(
     monkeypatch, tmp_path
 ) -> None:
-    planner_model = "qwen3-coder:30b-a3b-q4_K_M"
+    planner_model = "qwen3.8:27b"
     module = _load_norman_codex_web(
         monkeypatch,
         tmp_path,
@@ -749,7 +827,7 @@ def test_switchboard_planner_verifier_is_bounded_and_advisory(
         "planner reported partial archive recall",
         "planner confidence 0.42 is below 0.72",
     ]
-    assert calls[0][1] == "qwen3-coder:30b-a3b-q4_K_M"
+    assert calls[0][1] == "qwen3.8:27b"
     assert calls[0][3] == {
         "timeout_seconds": 18,
         "max_output_tokens": 96,
@@ -767,7 +845,7 @@ def test_switchboard_planner_timeout_cooldown_clears_after_one_minute(
         NORMAN_LOCAL_LLM_ROUTE_COOLDOWN_SECONDS="900",
         NORMAN_LOCAL_PLANNER_PREFLIGHT_COLD_LOAD_COOLDOWN_SECONDS="60",
     )
-    model = "qwen3-coder:30b-a3b-q4_K_M"
+    model = "qwen3.8:27b"
     now = int(time.time())
 
     assert (
@@ -1228,6 +1306,34 @@ def test_subscription_self_improvement_runs_once_near_reset_with_read_only_codex
     assert command[command.index("--sandbox") + 1] == "read-only"
     assert command[command.index("--ask-for-approval") + 1] == "never"
     assert "--dangerously-bypass-approvals-and-sandbox" not in command
+
+
+def test_session_budget_defaults_to_160k_handoff_and_200k_hard_stop(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+
+    policy = module.session_budget_policy_from_env()
+
+    assert policy.enabled is True
+    assert policy.checkpoint_tokens == 160_000
+    assert policy.reauthorization_tokens == 200_000
+
+
+def test_session_budget_allows_explicit_threshold_overrides(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_SESSION_CHECKPOINT_TOKENS="175000",
+        NORMAN_CODEX_SESSION_REAUTHORIZATION_TOKENS="225000",
+    )
+
+    policy = module.session_budget_policy_from_env()
+
+    assert policy.checkpoint_tokens == 175_000
+    assert policy.reauthorization_tokens == 225_000
 
 
 def test_careful_response_speed_uses_high_reasoning(monkeypatch, tmp_path) -> None:
@@ -3090,7 +3196,7 @@ def test_bedrock_pack_forces_costly_cloud_thread_below_token_threshold(
         NORMAN_CODEX_BEDROCK_CONTEXT_PACK_MIN_THREAD_TOKENS="80000",
         NORMAN_CODEX_BEDROCK_CONTEXT_PACK_HARD_THREAD_TOKENS="200000",
         NORMAN_CODEX_BEDROCK_CONTEXT_PACK_MIN_UNCACHED_INPUT_TOKENS="80000",
-        NORMAN_CODEX_BEDROCK_CONTEXT_PACK_MIN_ESTIMATED_COST_USD="0.20",
+        NORMAN_CODEX_BEDROCK_CONTEXT_PACK_MIN_ESTIMATED_COST_USD="0.15",
     )
     module.ensure_state_dir()
     old_thread_id = "costly-thread-under-hard-cap"
@@ -3123,7 +3229,7 @@ def test_bedrock_pack_forces_costly_cloud_thread_below_token_threshold(
 
     assert plan["thread_tokens"] < 80_000
     assert plan["uncached_input_pressure"] is False
-    assert plan["estimated_thread_cost_usd"] >= 0.20
+    assert plan["estimated_thread_cost_usd"] >= 0.15
     assert plan["costly_thread"] is True
     assert plan["should_pack"] is True
     assert plan["reason"] == "costly-cloud-context"
@@ -3137,9 +3243,9 @@ def test_public_usage_rates_include_gpt56_bedrock_models(monkeypatch, tmp_path) 
     sol = module._public_usage_cost_rates_for_model("openai.gpt-5.6-sol")
 
     assert luna["configured"] is True
-    assert luna["input_usd_per_1m"] == 1.0
+    assert luna["input_usd_per_1m"] == 0.2
     assert terra["configured"] is True
-    assert terra["input_usd_per_1m"] == 2.5
+    assert terra["input_usd_per_1m"] == 2.0
     assert sol["configured"] is True
     assert sol["input_usd_per_1m"] == 5.0
 
@@ -3695,6 +3801,52 @@ def test_route_receipt_append_records_approval_boundary_without_counting_as_safe
     assert saved["receipt_hash"] == module.route_receipt_compute_hash(saved)
 
 
+def test_route_receipt_write_failure_is_nonfatal(monkeypatch, tmp_path) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_ROUTE_RECEIPTS_ENABLED="1",
+    )
+
+    def fail_receipt_write(_entry):
+        raise PermissionError("Permission denied: route receipts")
+
+    monkeypatch.setattr(module, "append_route_receipt_entry", fail_receipt_write)
+
+    receipt = module.append_route_receipt(
+        prompt="status?",
+        visible_response="ready",
+        error_text="",
+        started_at=1_786_000_210,
+        finished_at=1_786_000_212,
+        thread_id="thread-route-receipt-write-failure",
+        speed="quick",
+        detail=2,
+        service_tier="flex",
+        job_budget="quick",
+        optimization_mode="auto",
+        success=True,
+        runtime="codex",
+        model="openai.gpt-5.4",
+        usage={"input_tokens": 10, "output_tokens": 2, "total_tokens": 12},
+        outcome="done",
+        cost_route=_route_proof(
+            module,
+            runtime="codex",
+            model="openai.gpt-5.4",
+            service_tier="flex",
+        ),
+    )
+    snapshot = module.route_receipt_status_snapshot()
+
+    assert receipt is not None
+    assert receipt["mirror_status"] == "write_failed"
+    assert "Permission denied" in receipt["mirror_error"]
+    assert snapshot["status"] == "degraded"
+    assert "Permission denied" in snapshot["last_write_error"]
+    assert snapshot["jsonl_mirror_status"] == "write_failed"
+
+
 def test_route_receipt_append_hash_chain_links_consecutive_receipts(
     monkeypatch, tmp_path
 ) -> None:
@@ -4176,6 +4328,7 @@ def test_api_ask_completes_explicit_deterministic_status_without_model_call(
     assert payload["submission_state"] == "completed"
     assert payload["snapshot"]["state"] == "ok"
     assert "deterministic TUI state" in payload["snapshot"]["last_response"]
+    module.DETERMINISTIC_ARCHIVE_QUEUE.join()
     history = module.load_history(limit=1)
     assert history[-1]["runtime"] == "localllm"
     assert history[-1]["model"] == "deterministic-status"
@@ -7617,6 +7770,16 @@ def test_context_preflight_uses_vector_selected_archive_turns(monkeypatch, tmp_p
     monkeypatch.setattr(module, "context_preflight_memory_refs", fake_memory_refs)
     monkeypatch.setattr(
         module,
+        "local_planner_preflight",
+        lambda _payload: {"configured": False, "used": False},
+    )
+    monkeypatch.setattr(
+        module,
+        "local_planner_verifier",
+        lambda *_args, **_kwargs: {"configured": False, "used": False},
+    )
+    monkeypatch.setattr(
+        module,
         "run_context_preflight_offline_command",
         lambda _payload: {
             "configured": True,
@@ -7675,6 +7838,16 @@ def test_context_preflight_adds_database_validated_vector_candidates(
         module,
         "context_preflight_memory_refs",
         lambda _prompt, *, limit: lexical_candidates,
+    )
+    monkeypatch.setattr(
+        module,
+        "local_planner_preflight",
+        lambda _payload: {"configured": False, "used": False},
+    )
+    monkeypatch.setattr(
+        module,
+        "local_planner_verifier",
+        lambda *_args, **_kwargs: {"configured": False, "used": False},
     )
 
     def fake_memory_refs_by_ids(value, *, limit):

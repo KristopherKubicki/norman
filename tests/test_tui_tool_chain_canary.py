@@ -325,6 +325,16 @@ def test_run_canary_streaming_exercises_native_sse_tool_calls():
     assert "private" not in serialized
 
 
+def test_require_exact_function_call_allows_a_supplemental_message_item():
+    response = _tool_response("resp-search", "tool_search", "call-search")
+    response["output"].insert(0, {"type": "message", "content": []})
+
+    assert (
+        canary._require_exact_function_call(response, name="tool_search")
+        == "call-search"
+    )
+
+
 def test_run_canary_streaming_fails_without_a_native_function_call_event():
     receipt = canary.run_canary(
         endpoint="https://cp.kris.openbrand.com/v1/responses",
@@ -343,6 +353,36 @@ def test_run_canary_streaming_fails_without_a_native_function_call_event():
     assert receipt["state"] == "failed"
     assert receipt["failure_kind"] == "missing_native_function_event"
     assert receipt["turns"][0]["stream"]["native_function_call_count"] == 0
+
+
+def test_stream_failure_receipt_keeps_only_the_gateway_error_code():
+    response = canary._stream_response_from_sse_events(
+        [
+            {
+                "event": "response.failed",
+                "data": {
+                    "type": "response.failed",
+                    "response": {
+                        "error": {
+                            "code": "upstream_timeout",
+                            "message": "private upstream detail",
+                        }
+                    },
+                },
+            },
+            {"event": "", "data": "[DONE]"},
+        ]
+    )
+
+    receipt = canary._turn_receipt(
+        turn="synthetic_status_lookup",
+        status=200,
+        elapsed_ms=10,
+        response=response,
+    )
+
+    assert receipt["stream"]["failure_code"] == "upstream_timeout"
+    assert "private upstream detail" not in json.dumps(receipt, sort_keys=True)
 
 
 def test_run_canary_ops_mcp_exercises_read_only_native_sse_continuation():
