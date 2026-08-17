@@ -103,6 +103,41 @@ def test_probe_timeout_is_reported_without_crashing_collection(monkeypatch) -> N
     assert report["issues"][0]["detail"] == "SSH probe timed out after 20 seconds"
 
 
+def test_macos_probe_uses_http_without_opening_ssh(monkeypatch) -> None:
+    module = _load_module()
+    target = next(item for item in module.DEFAULT_TARGETS if item.platform == "macos")
+
+    def no_subprocess(*_args, **_kwargs):
+        raise AssertionError("macOS health probes must not open SSH sessions")
+
+    monkeypatch.setattr(module.subprocess, "run", no_subprocess)
+    monkeypatch.setattr(
+        module,
+        "_http_endpoint",
+        lambda _target, path: {
+            "status": 200,
+            "json": (
+                {
+                    "policy": {
+                        "integrity_valid": True,
+                        "default_route_allowed": True,
+                        "production_route_eligible": True,
+                        "validation": {"seconds_to_expiry": 7 * 24 * 60 * 60},
+                    }
+                }
+                if path == "/readyz"
+                else {}
+            ),
+        },
+    )
+
+    report = module.collect((target,))
+
+    assert report["status"] == "ok"
+    assert report["targets"][0]["transport"] == "http"
+    assert report["targets"][0]["services"]["gateway"]["active"] is True
+
+
 def test_restart_totals_only_alert_when_they_increase(monkeypatch) -> None:
     module = _load_module()
     target = module.DEFAULT_TARGETS[0]

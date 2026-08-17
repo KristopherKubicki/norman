@@ -7,6 +7,8 @@ import argparse
 import json
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +24,7 @@ from app.core.estate_registry import load_fleet_topology
 @dataclass(frozen=True)
 class FleetTarget:
     name: str
+    address: str
     ssh_target: str
     identity_file: str
     root: str
@@ -58,6 +61,7 @@ def fleet_targets() -> tuple[FleetTarget, ...]:
         targets.append(
             FleetTarget(
                 str(row.get("health_name") or worker_id),
+                address,
                 f"{user}@{address}",
                 identity,
                 root,
@@ -222,6 +226,9 @@ print(json.dumps(result, sort_keys=True))
 
 
 def probe_target(target: FleetTarget) -> dict[str, Any]:
+    if target.platform == "macos":
+        return probe_http_target(target)
+
     command = [
         "ssh",
         "-o",
@@ -270,6 +277,46 @@ def probe_target(target: FleetTarget) -> dict[str, Any]:
     return payload
 
 
+def _http_endpoint(target: FleetTarget, path: str) -> dict[str, Any]:
+    url = f"http://{target.address}:{target.gateway_port}{path}"
+    try:
+        with urllib.request.urlopen(url, timeout=5) as response:
+            body = response.read().decode("utf-8", "replace")
+            if path in {"/healthz", "/v1/models"}:
+                return {"status": response.status}
+            try:
+                payload = json.loads(body)
+            except json.JSONDecodeError:
+                payload = {}
+            return {"status": response.status, "json": payload}
+    except urllib.error.HTTPError as exc:
+        return {"status": exc.code, "error": str(exc)}
+    except Exception as exc:
+        return {"status": 0, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def probe_http_target(target: FleetTarget) -> dict[str, Any]:
+    endpoint_names = tuple(
+        path for path in ENDPOINTS if target.asr_unit or path != "/asr-readyz"
+    )
+    endpoints = {path: _http_endpoint(target, path) for path in endpoint_names}
+    gateway_active = endpoints.get("/healthz", {}).get("status") == 200
+    return {
+        "name": target.name,
+        "platform": target.platform,
+        "transport": "http",
+        "endpoints": endpoints,
+        "services": {
+            "gateway": {
+                "active": gateway_active,
+                "error": ""
+                if gateway_active
+                else "gateway health endpoint unavailable",
+            }
+        },
+    }
+
+
 def _issue(
     issues: list[dict[str, str]],
     severity: str,
@@ -296,7 +343,13 @@ def evaluate_target(
 ) -> list[dict[str, str]]:
     issues: list[dict[str, str]] = []
     if payload.get("error"):
-        _issue(issues, "fail", target, "ssh", str(payload["error"]))
+        _issue(
+            issues,
+            "fail",
+            target,
+            str(payload.get("transport") or "ssh"),
+            str(payload["error"]),
+        )
         return issues
     endpoints = (
         payload.get("endpoints") if isinstance(payload.get("endpoints"), dict) else {}
@@ -389,7 +442,7 @@ def evaluate_target(
             _issue(issues, "fail", target, "memory", f"only {available} KiB available")
         elif available < WARNING_LINUX_MEM_AVAILABLE_KIB:
             _issue(issues, "warn", target, "memory", f"only {available} KiB available")
-    else:
+    elif payload.get("transport") != "http":
         free = resources.get("memory_free_percent")
         if not isinstance(free, int) or free < 0:
             _issue(issues, "fail", target, "memory", "memory pressure was not reported")
