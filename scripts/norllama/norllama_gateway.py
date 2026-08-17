@@ -245,9 +245,21 @@ DEFAULT_RERANK_MODEL = os.getenv("NORLLAMA_DEFAULT_RERANK_MODEL", BGE_RERANKER_M
 QWEN3GUARD_MODEL = os.getenv(
     "NORLLAMA_DEFAULT_SAFETY_MODEL", "Qwen/Qwen3Guard-Stream-0.6B"
 )
-QWEN3_CODER_MODEL = "qwen3-coder:30b-a3b-q4_K_M"
-# Retain the legacy names while downstream callers migrate to the unified
-# Coder runtime.
+def compiled_resident_model() -> str:
+    try:
+        policy = route_policy_contract()
+        controller = policy.get("escalation_controller")
+        roles = controller.get("roles") if isinstance(controller, dict) else {}
+        resident = roles.get("resident") if isinstance(roles, dict) else {}
+        model = resident.get("model") if isinstance(resident, dict) else ""
+        return str(model or "").strip()
+    except Exception:
+        return ""
+
+
+QWEN3_CODER_MODEL = compiled_resident_model() or "resident"
+# Retain the legacy constant names while downstream callers migrate to the
+# signed resident role.
 QWEN36_ROUTER_MODEL = QWEN3_CODER_MODEL
 QWEN36_CODE_MODEL = QWEN3_CODER_MODEL
 QWEN35_JUDGE_MODEL = "qwen3.5:122b-a10b-q4_K_M"
@@ -362,8 +374,7 @@ WARM_POLICY_OBSERVE_ONLY_MODEL_NEEDLES = (
     "openfugu",
 )
 LIVE_POLICY_OVERRIDE_REASON = (
-    "Live Qwen-first Spark policy overrides stale Gemma-era benchmark defaults until "
-    "the next Uplink packet is regenerated."
+    "Emergency overlay is subordinate to the signed model-role policy."
 )
 LIVE_POLICY_OVERRIDE_EXPIRES_AT_ENV = "NORLLAMA_LIVE_POLICY_OVERRIDE_EXPIRES_AT"
 LIVE_CAPABILITY_CONTRACT_OVERRIDES: dict[str, dict[str, object]] = {
@@ -1151,25 +1162,26 @@ def live_policy_override_state() -> dict[str, object]:
 
 def apply_live_policy_contract_override(row: dict[str, object]) -> dict[str, object]:
     override_state = live_policy_override_state()
-    if not override_state["active"]:
-        return dict(row)
     contract_id = str(row.get("contract_id") or "").strip().lower().replace("-", "_")
-    override = LIVE_CAPABILITY_CONTRACT_OVERRIDES.get(contract_id)
-    if not override:
-        return dict(row)
     updated = dict(row)
+    override = (
+        LIVE_CAPABILITY_CONTRACT_OVERRIDES.get(contract_id)
+        if override_state["active"]
+        else None
+    )
     previous_default_model = str(updated.get("default_model") or "")
     previous_default_profile = str(updated.get("default_profile") or "")
-    for key, value in override.items():
-        if key in {"notes_append", "alternates_prepend", "notes_suppress_contains"}:
-            continue
-        updated[key] = value
+    if override:
+        for key, value in override.items():
+            if key in {"notes_append", "alternates_prepend", "notes_suppress_contains"}:
+                continue
+            updated[key] = value
     notes = [
         str(item) for item in (updated.get("notes") or []) if str(item or "").strip()
     ]
     suppress_needles = [
         str(item)
-        for item in (override.get("notes_suppress_contains") or [])
+        for item in ((override or {}).get("notes_suppress_contains") or [])
         if str(item or "").strip()
     ]
     if suppress_needles:
@@ -1178,7 +1190,7 @@ def apply_live_policy_contract_override(row: dict[str, object]) -> dict[str, obj
             for note in notes
             if not any(needle in note for needle in suppress_needles)
         ]
-    for note in override.get("notes_append") or []:
+    for note in (override or {}).get("notes_append") or []:
         text = str(note or "").strip()
         if text and text not in notes:
             notes.append(text)
@@ -1186,9 +1198,35 @@ def apply_live_policy_contract_override(row: dict[str, object]) -> dict[str, obj
         updated["notes"] = notes
     preferred = [
         row
-        for row in (override.get("alternates_prepend") or [])
+        for row in ((override or {}).get("alternates_prepend") or [])
         if isinstance(row, dict)
     ]
+    resident_contracts = {"chat", "code_risk", "entity_event_extract", "ops_anomaly"}
+    if contract_id in resident_contracts:
+        resident = model_role_rows().get("resident") or {}
+        resident_model = str(resident.get("model") or "").strip()
+        if resident_model:
+            updated.update(
+                {
+                    "default_model": resident_model,
+                    "default_profile": "resident_role",
+                    "selection_method": "signed_model_role_policy",
+                }
+            )
+            preferred = [
+                {
+                    "model": resident_model,
+                    "profile": "resident_role",
+                    "role": "resident",
+                }
+            ]
+            signed_note = (
+                "Active model selection is resolved from the signed resident role; "
+                "benchmark model IDs are historical evidence only."
+            )
+            if signed_note not in notes:
+                notes.append(signed_note)
+            updated["notes"] = notes
     if preferred:
         updated["alternates"] = merge_preferred_model_rows(
             preferred, updated.get("alternates")
@@ -1216,19 +1254,24 @@ def apply_live_policy_contract_override(row: dict[str, object]) -> dict[str, obj
                 if model and model not in suppressed_models:
                     suppressed_models.append(model)
             updated[key] = filtered
-    updated["live_policy_override"] = {
-        "active": True,
-        "emergency_overlay": True,
-        "requires_expiration": True,
-        "expires_at": str(override_state.get("expires_at") or ""),
+    updated["model_authority"] = {
+        "source": "signed_route_policy",
         "policy_version": ROUTE_POLICY_VERSION,
-        "reason": LIVE_POLICY_OVERRIDE_REASON,
         "previous_default_model": previous_default_model,
         "previous_default_profile": previous_default_profile,
         "default_model": str(updated.get("default_model") or ""),
         "default_profile": str(updated.get("default_profile") or ""),
         "suppressed_stale_candidate_models": suppressed_models,
     }
+    if override:
+        updated["live_policy_override"] = {
+            "active": True,
+            "emergency_overlay": True,
+            "requires_expiration": True,
+            "expires_at": str(override_state.get("expires_at") or ""),
+            "policy_version": ROUTE_POLICY_VERSION,
+            "reason": LIVE_POLICY_OVERRIDE_REASON,
+        }
     return updated
 
 
@@ -1248,6 +1291,22 @@ def model_role_rows() -> dict[str, dict[str, object]]:
     return {
         str(role): dict(row) for role, row in roles.items() if isinstance(row, dict)
     }
+
+
+def canonical_model_id(model_id: str) -> str:
+    requested = str(model_id or "").strip()
+    if not requested:
+        return requested
+    lowered = requested.lower()
+    for row in model_role_rows().values():
+        canonical = str(row.get("model") or "").strip()
+        aliases = row.get("aliases")
+        accepted = {canonical.lower()}
+        if isinstance(aliases, list):
+            accepted.update(str(alias).strip().lower() for alias in aliases)
+        if lowered in accepted:
+            return canonical or requested
+    return requested
 
 
 def resident_ollama_bases_from_policy() -> list[str]:
@@ -1289,12 +1348,16 @@ def should_disable_qwen_thinking(model_id: str) -> bool:
 def normalize_chat_payload_for_local_qwen(
     payload: dict[str, object],
 ) -> tuple[dict[str, object], bool]:
-    model = str(payload.get("model") or "").strip()
-    if not should_disable_qwen_thinking(model) or "think" in payload:
-        return payload, False
     normalized = dict(payload)
-    normalized["think"] = False
-    return normalized, True
+    requested_model = str(normalized.get("model") or "").strip()
+    model = canonical_model_id(requested_model)
+    changed = model != requested_model
+    if changed:
+        normalized["model"] = model
+    if should_disable_qwen_thinking(model) and "think" not in normalized:
+        normalized["think"] = False
+        changed = True
+    return normalized, changed
 
 
 def openai_chat_payload_to_ollama(payload: dict[str, object]) -> dict[str, object]:
@@ -7510,12 +7573,14 @@ class Handler(BaseHTTPRequestHandler):
                 {"ok": False, "error": "invalid_json", "detail": str(exc)},
             )
             return
-        model = str(payload.get("model") or "").strip()
+        model = canonical_model_id(str(payload.get("model") or "").strip())
         if not model:
             self.send_json(
                 HTTPStatus.BAD_REQUEST, {"ok": False, "error": "missing_model"}
             )
             return
+        payload["model"] = model
+        body = json.dumps(payload).encode("utf-8")
         self._model_hint = model
         if is_manual_only_model(model):
             self.send_json(
@@ -7668,7 +7733,7 @@ class Handler(BaseHTTPRequestHandler):
                 {"ok": False, "error": "invalid_json", "detail": str(exc)},
             )
             return
-        model = str(payload.get("model") or "").strip()
+        model = canonical_model_id(str(payload.get("model") or "").strip())
         if not model:
             self.send_json(
                 HTTPStatus.BAD_REQUEST, {"ok": False, "error": "missing_model"}
@@ -7776,8 +7841,6 @@ class Handler(BaseHTTPRequestHandler):
             self.headers.get("Content-Type", "").strip() or "application/json"
         )
         model = self.extract_ollama_model(body)
-        if model:
-            self._model_hint = model
         if content_type.startswith("application/json") and upstream_path in {
             "/api/chat",
             "/api/generate",
@@ -7794,6 +7857,9 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 if changed:
                     body = json.dumps(normalized_payload).encode("utf-8")
+                model = str(normalized_payload.get("model") or model or "").strip()
+        if model:
+            self._model_hint = model
         bases, rows = self.app.ollama_candidate_bases(model)
         peer_bases, peer_rows = self.peer_candidate_bases(model)
         candidates = bases + peer_bases
@@ -7958,10 +8024,10 @@ class Handler(BaseHTTPRequestHandler):
                 {"ok": False, "error": "invalid_json", "detail": str(exc)},
             )
             return
+        payload, changed = normalize_chat_payload_for_local_qwen(payload)
         model = str(payload.get("model") or "").strip()
         if model:
             self._model_hint = model
-        payload, changed = normalize_chat_payload_for_local_qwen(payload)
         if changed:
             body = json.dumps(payload).encode("utf-8")
         ds4_models = self.app.ds4_model_ids()

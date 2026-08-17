@@ -16,9 +16,10 @@ ROUTE_POLICY_SCHEMA = "norman.norllama.route-policy.v1"
 ROUTE_POLICY_VALIDATION_SCHEMA = "norman.norllama.route-policy-validation.v1"
 ROUTE_POLICY_AUTHORIZATION_SCHEMA = "norman.norllama.route-policy-authorization.v1"
 ROUTE_POLICY_BLOCK_SCHEMA = "norman.norllama.policy-block.v1"
-ROUTE_POLICY_VERSION = "2026.08.16.registry-driven-v3"
+ROUTE_POLICY_VERSION = "2026.08.17.registry-authority-v4"
 SUPPORTED_ROUTE_POLICY_VERSIONS = {
     ROUTE_POLICY_VERSION,
+    "2026.08.16.registry-driven-v3",
     "2026.08.16.model-roles-shadow-v2",
 }
 DEFAULT_MAX_TTL_SECONDS = 7 * 24 * 60 * 60

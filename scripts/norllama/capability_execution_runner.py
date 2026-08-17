@@ -47,6 +47,7 @@ from app.services.norllama.route_proof import (  # noqa: E402
     receipt_completion_gate_passes,
 )
 from app.services.norllama.route_policy import route_policy_contract  # noqa: E402
+from app.core.estate_registry import model_for_role  # noqa: E402
 
 
 RESULT_SCHEMA = "norman.norllama.capability-execution-results.v1"
@@ -81,9 +82,9 @@ CORE_AGENT_SUITES = {"planner_router", "coder", "verifier_judge"}
 SUPPORTED_SUITES = {"ocr", "reranker", "safety"} | CORE_AGENT_SUITES
 ASR_SUITE = "asr"
 CORE_AGENT_MODELS = {
-    "planner_router": "qwen3-coder:30b-a3b-q4_K_M",
-    "coder": "qwen3-coder:30b-a3b-q4_K_M",
-    "verifier_judge": "qwen3-coder:30b-a3b-q4_K_M",
+    "planner_router": model_for_role("resident"),
+    "coder": model_for_role("resident"),
+    "verifier_judge": model_for_role("resident"),
 }
 CORE_AGENT_OPERATION = {
     "planner_router": "route_decision",

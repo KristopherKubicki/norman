@@ -1060,9 +1060,50 @@ def test_gateway_live_policy_override_requires_expiration(monkeypatch):
     updated = module.apply_live_policy_contract_override(row)
     state = module.live_policy_override_state()
 
-    assert updated == row
+    assert updated["default_model"] == module.QWEN36_ROUTER_MODEL
+    assert updated["model_authority"]["source"] == "signed_route_policy"
+    assert "live_policy_override" not in updated
     assert state["active"] is False
     assert state["blocked_reason"] == "missing_expiration"
+
+
+def test_gateway_canonicalizes_resident_alias_before_dispatch():
+    module = load_gateway_module()
+
+    payload, changed = module.normalize_chat_payload_for_local_qwen(
+        {
+            "model": "qwen3-coder:30b-a3b-q4_K_M",
+            "messages": [{"role": "user", "content": "status"}],
+        }
+    )
+
+    assert changed is True
+    assert payload["model"] == module.QWEN36_ROUTER_MODEL
+    assert payload["think"] is False
+
+
+def test_gateway_signed_policy_projects_stale_chat_contract_to_resident():
+    module = load_gateway_module()
+
+    updated = module.apply_live_policy_contract_override(
+        {
+            "contract_id": "chat",
+            "default_model": "qwen3.6:35b-a3b-q4_K_M",
+            "status": "production_backed",
+            "benchmark_gate": {
+                "gate": "production",
+                "promotion_authoritative": True,
+            },
+        }
+    )
+
+    assert updated["default_model"] == module.QWEN36_ROUTER_MODEL
+    assert updated["status"] == "production_backed"
+    assert updated["selection_method"] == "signed_model_role_policy"
+    assert (
+        updated["model_authority"]["previous_default_model"]
+        == "qwen3.6:35b-a3b-q4_K_M"
+    )
 
 
 @pytest.mark.parametrize(

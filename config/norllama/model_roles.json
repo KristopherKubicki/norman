@@ -1,6 +1,6 @@
 {
   "schema": "norman.norllama.model-roles.v1",
-  "version": "2026.08.16",
+  "version": "2026.08.17",
   "roles": {
     "resident": {
       "tier_label": "qwen",

@@ -568,13 +568,13 @@ def test_live_core_agent_result_records_chat_receipt(monkeypatch):
     def fake_http_json_request(*args, **kwargs):
         assert args[0] == "POST"
         assert args[1] == "https://llm.home.arpa/v1/chat/completions"
-        assert kwargs["payload"]["model"] == "qwen3-coder:30b-a3b-q4_K_M"
+        assert kwargs["payload"]["model"] == runner.CORE_AGENT_MODELS["planner_router"]
         assert kwargs["headers"]["X-Capability-Suite-Id"] == "planner_router"
         assert kwargs["headers"]["X-Capability-Case-Id"] == "planner-router-test"
         return runner.HttpResponse(
             status=200,
             payload={
-                "model": "qwen3-coder:30b-a3b-q4_K_M",
+                "model": runner.CORE_AGENT_MODELS["planner_router"],
                 "choices": [{"message": {"role": "assistant", "content": content}}],
                 "usage": {
                     "prompt_tokens": 37,
@@ -608,7 +608,7 @@ def test_live_core_agent_result_records_chat_receipt(monkeypatch):
     assert result["status"] == "passed"
     assert result["capability_quality_passed"] is True
     assert result["observed_worker"] == "spark-150"
-    assert result["requested_model"] == "qwen3-coder:30b-a3b-q4_K_M"
+    assert result["requested_model"] == runner.CORE_AGENT_MODELS["planner_router"]
     assert result["output_preview"] == content
     assert result["local_tokens"] == 56
     assert result["local_work_unit_type"] == "model_completion"

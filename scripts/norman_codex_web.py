@@ -99,7 +99,9 @@ def load_norllama_resident_role() -> dict[str, Any]:
     model = str(resident.get("model") or "").strip()
     endpoints = [
         str(endpoint or "").strip()
-        for endpoint in resident.get("endpoints") or []
+        for endpoint in (
+            resident.get("client_endpoints") or resident.get("endpoints") or []
+        )
         if str(endpoint or "").strip()
     ]
     if not model or not endpoints:

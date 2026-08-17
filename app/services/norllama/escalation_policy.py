@@ -14,7 +14,7 @@ from typing import Any, Mapping
 from app.core.estate_registry import load_model_registry
 
 ESCALATION_DECISION_SCHEMA = "norman.norllama.escalation-decision.v1"
-ESCALATION_CONTROLLER_VERSION = "2026.08.16.model-roles-shadow-v2"
+ESCALATION_CONTROLLER_VERSION = "2026.08.17.model-roles-shadow-v3"
 MODEL_ROLE_CONFIG_ENV = "NORMAN_NORLLAMA_MODEL_ROLE_CONFIG"
 DEFAULT_MODEL_ROLE_CONFIG_PATH = (
     Path(__file__).resolve().parents[3] / "config" / "norllama" / "model_roles.json"

@@ -18,7 +18,7 @@ from app.services.norllama.escalation_policy import (
 )
 
 ROUTE_POLICY_SCHEMA = "norman.norllama.route-policy.v1"
-ROUTE_POLICY_VERSION = "2026.08.16.registry-driven-v3"
+ROUTE_POLICY_VERSION = "2026.08.17.registry-authority-v4"
 ROUTE_POLICY_EXPIRY_WARN_SECONDS = 72 * 60 * 60
 ROUTE_POLICY_EXPIRED_STATE = "expired_blocked"
 
@@ -99,7 +99,7 @@ ROUTE_POLICY_RESIDENCY = {
     "lab": ["world", "graph", "packet", "forecasting", "gui-grounding"],
 }
 
-CLOUD_FALLBACK_BEDROCK_MODEL = "openai.gpt-5.6-terra"
+CLOUD_FALLBACK_BEDROCK_MODEL = model_for_role("authority")
 
 ROUTE_POLICY_FALLBACKS = {
     "worker_mismatch_requires_receipt_fallback": True,
