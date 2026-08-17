@@ -137,6 +137,66 @@
       "capabilities": {
         "named_escalation_required": true,
         "local": false
+      },
+      "pricing_usd_per_1m": {
+        "openai_direct": {
+          "input": 5.00,
+          "cached_input": 0.50,
+          "output": 30.00
+        },
+        "bedrock_estimate": {
+          "input": 5.50,
+          "cached_input": 0.55,
+          "output": 33.00
+        }
+      }
+    },
+    "gpt-5.4": {
+      "provider": "openai",
+      "status": "historical",
+      "aliases": ["openai.gpt-5.4"],
+      "capabilities": {
+        "local": false
+      },
+      "pricing_usd_per_1m": {
+        "openai_direct": {
+          "input": 2.50,
+          "cached_input": 0.25,
+          "output": 15.00
+        },
+        "bedrock_estimate": {
+          "input": 2.75,
+          "cached_input": 0.275,
+          "output": 16.50
+        }
+      }
+    },
+    "gpt-5.4-mini": {
+      "provider": "openai",
+      "status": "historical",
+      "capabilities": {
+        "local": false
+      },
+      "pricing_usd_per_1m": {
+        "openai_direct": {
+          "input": 0.75,
+          "cached_input": 0.075,
+          "output": 4.50
+        }
+      }
+    },
+    "gpt-5.4-nano": {
+      "provider": "openai",
+      "status": "historical",
+      "capabilities": {
+        "local": false
+      },
+      "pricing_usd_per_1m": {
+        "openai_direct": {
+          "input": 0.20,
+          "cached_input": 0.02,
+          "output": 1.25
+        }
       }
     },
     "qwen3.5:122b-a10b-q4_K_M": {

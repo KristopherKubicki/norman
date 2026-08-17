@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from app.core.estate_registry import (
-    available_cloud_models,
     model_row,
+    priced_models,
     pricing_for_model,
 )
 
@@ -19,25 +19,36 @@ DEFAULT_LEDGER_JSONL = Path("/tmp/norman_tui_benchmarks/ticket_token_cost_ledger
 DEFAULT_CHARGE_STATUS = "not_invoice_reconciled"
 DEFAULT_ESTIMATE_LABEL = "estimated USD; not invoice-reconciled"
 
-OPENAI_DIRECT_PRICING_USD_PER_1M = {
-    str(model_row(model)["model"]).removeprefix("openai."): pricing_for_model(
-        model, channel="openai_direct"
+
+def _priced_registry_rows() -> list[dict[str, Any]]:
+    return [row for model in priced_models() if (row := model_row(model))]
+
+
+def _bedrock_model_id(row: dict[str, Any]) -> str:
+    identifiers = [str(row.get("model") or ""), *map(str, row.get("aliases") or [])]
+    return next(
+        (identifier for identifier in identifiers if identifier.startswith("openai.")),
+        "",
     )
-    for model in available_cloud_models()
-}
-BEDROCK_US_EAST_2_PRICING_USD_PER_1M = {
-    model: pricing_for_model(model, channel="bedrock_estimate")
-    for model in available_cloud_models()
-}
+
+
 OPENAI_DIRECT_PRICING_USD_PER_1M = {
-    model: pricing
-    for model, pricing in OPENAI_DIRECT_PRICING_USD_PER_1M.items()
-    if pricing is not None
+    str(row["model"]).removeprefix("openai."): pricing
+    for row in _priced_registry_rows()
+    if (pricing := pricing_for_model(str(row["model"]), channel="openai_direct"))
+    is not None
 }
 BEDROCK_US_EAST_2_PRICING_USD_PER_1M = {
-    model: pricing
-    for model, pricing in BEDROCK_US_EAST_2_PRICING_USD_PER_1M.items()
-    if pricing is not None
+    bedrock_model: pricing
+    for row in _priced_registry_rows()
+    if (bedrock_model := _bedrock_model_id(row))
+    and (
+        pricing := pricing_for_model(
+            str(row["model"]),
+            channel="bedrock_estimate",
+        )
+    )
+    is not None
 }
 
 PRICE_BASIS_SOURCES = {

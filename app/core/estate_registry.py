@@ -90,6 +90,25 @@ def available_cloud_models() -> list[str]:
     return list(dict.fromkeys(models))
 
 
+def priced_models() -> list[str]:
+    """Return current and historical models with an explicit rate card."""
+
+    models = [
+        model_for_role(role)
+        for role in ROLE_ORDER
+        if model_for_role(role)
+        and model_row(model_for_role(role)).get("pricing_usd_per_1m")
+    ]
+    compatibility = load_model_registry().get("models")
+    if isinstance(compatibility, dict):
+        models.extend(
+            str(model_id)
+            for model_id, raw in compatibility.items()
+            if isinstance(raw, dict) and raw.get("pricing_usd_per_1m")
+        )
+    return list(dict.fromkeys(models))
+
+
 def resident_model() -> str:
     return model_for_role("resident")
 

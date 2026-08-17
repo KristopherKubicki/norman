@@ -362,6 +362,8 @@ raise SystemExit(3 if "oversized-session" in sys.argv else 0)
     )
     assert allowed.returncode == 0, allowed.stderr
     assert output.read_text(encoding="utf-8").splitlines() == [
+        "--disable",
+        "apps",
         "--profile",
         "work",
         "resume",
