@@ -9,4 +9,4 @@ User=kristopher
 Group=kristopher
 WorkingDirectory=/home/kristopher/code/norman
 ExecStartPre=/usr/bin/mkdir -p /home/kristopher/.local/state/norman
-ExecStart=/home/kristopher/code/norman/.venv/bin/python /home/kristopher/code/norman/scripts/norllama/refresh_fleet_route_policy.py --apply --stage-only --output /home/kristopher/.local/state/norman/norllama-fleet-policy-refresh.json
+ExecStart=/home/kristopher/code/norman/.venv/bin/python /home/kristopher/code/norman/scripts/norllama/refresh_fleet_route_policy.py --apply --output /home/kristopher/.local/state/norman/norllama-fleet-policy-refresh.json

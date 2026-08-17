@@ -16,7 +16,8 @@ def test_fleet_policy_refresh_is_periodic_and_noninteractive() -> None:
     )
 
     assert "User=kristopher" in service
-    assert "refresh_fleet_route_policy.py --apply --stage-only" in service
+    assert "refresh_fleet_route_policy.py --apply --output" in service
+    assert "--stage-only" not in service
     assert "OnUnitActiveSec=6h" in timer
     assert "Persistent=true" in timer
 
