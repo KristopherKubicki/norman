@@ -47,6 +47,19 @@ cp "${sources[@]}" "$destination"
         path.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
         path.chmod(0o755)
 
+    sudo = bin_dir / "sudo"
+    sudo.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "-n" ]]; then
+  shift
+fi
+exec "$@"
+""",
+        encoding="utf-8",
+    )
+    sudo.chmod(0o755)
+
 
 def test_deploy_gateway_help_is_dependency_free_and_script_is_valid() -> None:
     syntax = subprocess.run(
@@ -79,15 +92,21 @@ def test_deploy_gateway_stages_runtime_and_uses_safe_restart_transport() -> None
     assert "install_macos_launchd_guardrails.py" in source
     assert "--sparks-no-restart" in source
     assert "route_policy.next.json" in source
+    assert "NORLLAMA_MAC_SERVICE_DOMAIN" in source
+    assert "topology_management_value mac-mini-133 service_domain" in source
+    assert 'sudo -n launchctl kickstart -k "system/${service}"' in source
     assert "stat -c '%u:%g'" in (INSTALLER.read_text(encoding="utf-8"))
     assert "app/services/__init__.py" not in source
     assert "importlib.util.spec_from_file_location" in source
     assert 'ssh "$target" "sh -s -- \'$stage_path\'" >&2' in source
     assert 'ssh "$mac_target" \\' in source
-    assert "sh -s -- '$mac_service' '$mac_curl_bin'" in source
+    assert "sh -s -- '$mac_service' '$mac_service_domain' '$mac_curl_bin'" in source
     assert '"$curl_bin" -fsS --max-time 5 http://127.0.0.1:18151/readyz' in source
     assert '"$curl_bin" -fsS --max-time 10 http://127.0.0.1:18151/v1/models' in source
     assert '"$curl_bin" -fsS --max-time 5 http://127.0.0.1:18151/asr-readyz' in source
+    installer = INSTALLER.read_text(encoding="utf-8")
+    assert installer.count("http://127.0.0.1:18151/v1/models") == 1
+    assert "curl -fsS --max-time 15 http://127.0.0.1:18151/v1/models" in installer
 
 
 def test_priority_gateway_watchdog_requires_policy_readiness() -> None:

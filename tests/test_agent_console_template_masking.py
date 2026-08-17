@@ -6754,3 +6754,19 @@ def test_codex_account_capacity_probe_never_sends_usage_command(
         )
         is False
     )
+
+
+def test_recovered_errors_and_routes_are_marked_historical() -> None:
+    root = Path(__file__).resolve().parents[1]
+    sources = (
+        root / "scripts" / "agent_console_template" / "agent_console_web.py",
+        root / "scripts" / "norman_codex_web.py",
+    )
+
+    for path in sources:
+        source = path.read_text(encoding="utf-8")
+        assert "latestSuccessfulAt" in source
+        assert "historical_error: true" in source
+        assert "historicalError: Boolean(item.historical_error)" in source
+        assert "Historical route for this turn." in source
+        assert "historical error" in source

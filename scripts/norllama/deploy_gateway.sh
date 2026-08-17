@@ -38,9 +38,20 @@ print(payload["workers"][sys.argv[2]]["address"])
 PY
 }
 
+topology_management_value() {
+  "$python_bin" - "$fleet_topology_config" "$1" "$2" <<'PY'
+import json
+import sys
+
+payload = json.load(open(sys.argv[1], encoding="utf-8"))
+print(payload["workers"][sys.argv[2]]["management"].get(sys.argv[3], ""))
+PY
+}
+
 mac_target="${NORLLAMA_MAC_TARGET:-k@$(topology_address mac-mini-133)}"
 mac_path="${NORLLAMA_MAC_PATH:-/Users/k/norllama/norllama_gateway.py}"
 mac_service="${NORLLAMA_MAC_SERVICE:-org.lollie.norllama}"
+mac_service_domain="${NORLLAMA_MAC_SERVICE_DOMAIN:-$(topology_management_value mac-mini-133 service_domain)}"
 mac_curl_bin="${NORLLAMA_MAC_CURL_BIN:-/usr/bin/curl}"
 
 spark_targets="${NORLLAMA_SPARK_TARGETS:-kristopher@$(topology_address spark-150) kristopher@$(topology_address spark-151)}"
@@ -75,6 +86,8 @@ Environment overrides:
   NORLLAMA_MAC_TARGET       default k@192.168.2.133
   NORLLAMA_MAC_PATH         default /Users/k/norllama/norllama_gateway.py
   NORLLAMA_MAC_SERVICE      default org.lollie.norllama
+  NORLLAMA_MAC_SERVICE_DOMAIN
+                             default from config/fleet/topology.json
   NORLLAMA_MAC_CURL_BIN     default /usr/bin/curl
   NORLLAMA_SPARK_TARGETS    default "kristopher@192.168.2.150 kristopher@192.168.2.151"
   NORLLAMA_SPARK_PATH       default /home/kristopher/norllama/norllama_gateway.py
@@ -332,11 +345,19 @@ deploy_worker_bundle() {
 
 restart_mac_gateway() {
   ssh "$mac_target" \
-    "sh -s -- '$mac_service' '$mac_curl_bin'" <<'REMOTE'
+    "sh -s -- '$mac_service' '$mac_service_domain' '$mac_curl_bin'" <<'REMOTE'
 set -eu
 service="$1"
-curl_bin="$2"
-launchctl kickstart -k "gui/$(id -u)/${service}"
+service_domain="$2"
+curl_bin="$3"
+if [ -z "$service_domain" ]; then
+  service_domain="gui/$(id -u)"
+fi
+if [ "$service_domain" = "system" ]; then
+  sudo -n launchctl kickstart -k "system/${service}"
+else
+  launchctl kickstart -k "${service_domain}/${service}"
+fi
 attempt=1
 while [ "$attempt" -le 15 ]; do
   if "$curl_bin" -fsS --max-time 5 http://127.0.0.1:18151/healthz >/dev/null \

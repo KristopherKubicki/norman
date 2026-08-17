@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -25,12 +26,30 @@ def _healthy_payload() -> dict[str, object]:
         "production_route_eligible": True,
         "validation": {"seconds_to_expiry": 7 * 24 * 60 * 60},
     }
+    registry = json.loads(
+        (
+            Path(__file__).resolve().parents[1]
+            / "config"
+            / "norllama"
+            / "model_roles.json"
+        ).read_text(encoding="utf-8")
+    )
+    resident = registry["roles"]["resident"]["model"]
     return {
         "endpoints": {
             "/healthz": {"status": 200, "json": {}},
             "/readyz": {"status": 200, "json": {"ready": True, "policy": policy}},
             "/asr-readyz": {"status": 200, "json": {"ready": True}},
-            "/v1/models": {"status": 200, "json": {}},
+            "/v1/models": {"status": 200, "json": {"data": []}},
+            "/v1/capabilities": {
+                "status": 200,
+                "json": {
+                    "model_policy": {
+                        "policy_id": "test-policy:abc123",
+                        "preferred_chat_model": resident,
+                    }
+                },
+            },
         },
         "services": {
             "gateway": {"active": True, "restarts": 0},
@@ -125,3 +144,27 @@ def test_restart_totals_only_alert_when_they_increase(monkeypatch) -> None:
     restarted = module.collect((target,), previous=previous)
     assert restarted["status"] == "degraded"
     assert restarted["issues"][0]["detail"] == "1 new restart(s) (77 total)"
+
+
+def test_collect_fails_when_gateway_policy_or_resident_model_drifts(
+    monkeypatch,
+) -> None:
+    module = _load_module()
+    targets = module.DEFAULT_TARGETS[:2]
+    payloads = [_healthy_payload(), _healthy_payload()]
+    payloads[1]["endpoints"]["/v1/capabilities"]["json"]["model_policy"] = {
+        "policy_id": "other-policy:def456",
+        "preferred_chat_model": "retired-model",
+    }
+    monkeypatch.setattr(
+        module,
+        "probe_target",
+        lambda target: payloads[targets.index(target)],
+    )
+
+    report = module.collect(targets)
+
+    assert report["status"] == "failed"
+    checks = {issue["check"] for issue in report["issues"]}
+    assert "routing:resident_model" in checks
+    assert "routing:policy_generation" in checks

@@ -186,13 +186,17 @@ ready=0
 for attempt in $(seq 1 30); do
   if curl -fsS --max-time 5 http://127.0.0.1:18151/healthz >/dev/null \
     && curl -fsS --max-time 5 http://127.0.0.1:18151/readyz >/dev/null \
-    && curl -fsS --max-time 5 http://127.0.0.1:18151/asr-readyz >/dev/null \
-    && curl -fsS --max-time 5 http://127.0.0.1:18151/v1/models >/dev/null; then
+    && curl -fsS --max-time 5 http://127.0.0.1:18151/asr-readyz >/dev/null; then
     ready=1
     break
   fi
   sleep 1
 done
+
+if [[ "$ready" == "1" ]] \
+  && ! curl -fsS --max-time 15 http://127.0.0.1:18151/v1/models >/dev/null; then
+  ready=0
+fi
 
 if [[ "$ready" != "1" ]]; then
   install -o "$policy_uid" -g "$policy_gid" -m 0644 \

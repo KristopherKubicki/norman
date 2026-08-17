@@ -16,7 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from app.core.estate_registry import load_fleet_topology
+from app.core.estate_registry import load_fleet_topology, resident_model
 
 
 @dataclass(frozen=True)
@@ -72,7 +72,13 @@ def fleet_targets() -> tuple[FleetTarget, ...]:
 
 
 DEFAULT_TARGETS = fleet_targets()
-ENDPOINTS = ("/healthz", "/readyz", "/asr-readyz", "/v1/models")
+ENDPOINTS = (
+    "/healthz",
+    "/readyz",
+    "/asr-readyz",
+    "/v1/models",
+    "/v1/capabilities",
+)
 WARNING_EXPIRY_SECONDS = 72 * 60 * 60
 WARNING_LINUX_MEM_AVAILABLE_KIB = 6 * 1024 * 1024
 FAIL_LINUX_MEM_AVAILABLE_KIB = 2 * 1024 * 1024
@@ -164,9 +170,10 @@ def command(*args):
 
 def endpoint(path):
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{{target['gateway_port']}}" + path, timeout=5) as response:
+        timeout = 15 if path in {"/v1/models", "/v1/capabilities"} else 5
+        with urllib.request.urlopen(f"http://127.0.0.1:{{target['gateway_port']}}" + path, timeout=timeout) as response:
             body = response.read().decode("utf-8", "replace")
-            if path in {"/healthz", "/v1/models"}:
+            if path == "/healthz":
                 return {{"status": response.status}}
             try:
                 payload = json.loads(body)
@@ -418,6 +425,75 @@ def _previous_restart_totals(
     return {}
 
 
+def routing_identity(payload: dict[str, Any]) -> dict[str, str]:
+    endpoints = (
+        payload.get("endpoints") if isinstance(payload.get("endpoints"), dict) else {}
+    )
+    capabilities = (
+        endpoints.get("/v1/capabilities")
+        if isinstance(endpoints.get("/v1/capabilities"), dict)
+        else {}
+    )
+    body = (
+        capabilities.get("json") if isinstance(capabilities.get("json"), dict) else {}
+    )
+    policy = (
+        body.get("model_policy") if isinstance(body.get("model_policy"), dict) else {}
+    )
+    return {
+        "policy_id": str(policy.get("policy_id") or "").strip(),
+        "preferred_chat_model": str(policy.get("preferred_chat_model") or "").strip(),
+    }
+
+
+def evaluate_fleet_consistency(
+    targets: Sequence[FleetTarget],
+    probes: Sequence[dict[str, Any]],
+) -> list[dict[str, str]]:
+    issues: list[dict[str, str]] = []
+    identities = {
+        target.name: routing_identity(probe)
+        for target, probe in zip(targets, probes)
+        if not probe.get("error")
+    }
+    policy_ids = {
+        identity["policy_id"]
+        for identity in identities.values()
+        if identity["policy_id"]
+    }
+    expected_model = resident_model()
+    for target in targets:
+        identity = identities.get(target.name)
+        if identity is None:
+            continue
+        policy_id = str(identity.get("policy_id") or "")
+        preferred = str(identity.get("preferred_chat_model") or "")
+        if not policy_id:
+            _issue(
+                issues,
+                "fail",
+                target,
+                "routing:policy_id",
+                "capabilities did not report a policy ID",
+            )
+        if preferred != expected_model:
+            _issue(
+                issues,
+                "fail",
+                target,
+                "routing:resident_model",
+                f"expected {expected_model}, reported {preferred or 'missing'}",
+            )
+    if len(policy_ids) > 1:
+        detail = ", ".join(
+            f"{name}={identity['policy_id'] or 'missing'}"
+            for name, identity in identities.items()
+        )
+        for target in targets:
+            _issue(issues, "fail", target, "routing:policy_generation", detail)
+    return issues
+
+
 def collect(
     targets: Sequence[FleetTarget],
     *,
@@ -433,6 +509,12 @@ def collect(
                 previous_restarts=_previous_restart_totals(previous or {}, target.name),
             )
         )
+        probe["healthy"] = not any(
+            issue["severity"] == "fail" and issue["host"] == target.name
+            for issue in issues
+        )
+    issues.extend(evaluate_fleet_consistency(targets, probes))
+    for target, probe in zip(targets, probes):
         probe["healthy"] = not any(
             issue["severity"] == "fail" and issue["host"] == target.name
             for issue in issues

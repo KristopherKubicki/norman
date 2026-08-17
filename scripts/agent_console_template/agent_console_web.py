@@ -52572,6 +52572,11 @@ class Handler(BaseHTTPRequestHandler):
         linear-gradient(90deg, color-mix(in srgb, var(--warn) 4%, transparent), transparent 46%),
         color-mix(in srgb, var(--surface-2) 44%, transparent);
     }}
+    .message.error.historical-error {{
+      opacity: 0.72;
+      border-color: color-mix(in srgb, var(--border) 64%, transparent);
+      background: color-mix(in srgb, var(--surface-2) 38%, transparent);
+    }}
     .message.pending {{
       border-style: dashed;
       background: var(--surface-2);
@@ -66520,6 +66525,17 @@ class Handler(BaseHTTPRequestHandler):
           thread_id: snapshot.thread_id || "",
         }});
       }}
+      const latestSuccessfulAt = items.reduce((latest, item) => {{
+        if (!item || typeof item !== "object") {{
+          return latest;
+        }}
+        const response = String(item.response || "").trim();
+        const error = String(item.error || "").trim();
+        if (!response || isPlaceholderAssistantResponse(response) || error) {{
+          return latest;
+        }}
+        return Math.max(latest, Number(item.finished_at || item.started_at || 0));
+      }}, 0);
       return items.map((item) => {{
         if (!item || typeof item !== "object") {{
           return item;
@@ -66531,6 +66547,14 @@ class Handler(BaseHTTPRequestHandler):
           ...item,
           error: "",
         }};
+      }}).map((item) => {{
+        if (!item || typeof item !== "object" || !String(item.error || "").trim()) {{
+          return item;
+        }}
+        const itemAt = Number(item.finished_at || item.started_at || 0);
+        return latestSuccessfulAt > itemAt
+          ? {{ ...item, historical_error: true }}
+          : item;
       }});
     }}
 
@@ -79932,6 +79956,9 @@ class Handler(BaseHTTPRequestHandler):
       if (cleanRole.includes("error") && looksLikeLowValueRawError(body)) {{
         article.classList.add("low-value-error");
       }}
+      if (cleanRole.includes("error") && options.historicalError) {{
+        article.classList.add("historical-error");
+      }}
       if (cleanRole.includes("pending")) {{
         article.classList.add("live-status");
       }}
@@ -79973,10 +80000,21 @@ class Handler(BaseHTTPRequestHandler):
         if (route.execution) {{
           routeNode.dataset.routeExecution = route.execution;
         }}
-        routeNode.textContent = route.label;
-        routeNode.title = route.title;
-        routeNode.setAttribute("aria-label", route.title);
+        routeNode.textContent = options.historicalError
+          ? `Historical · ${{route.label}}`
+          : route.label;
+        routeNode.title = options.historicalError
+          ? `Historical route for this turn. ${{route.title}}`
+          : route.title;
+        routeNode.setAttribute("aria-label", routeNode.title);
         metaWrap.appendChild(routeNode);
+      }}
+      if (cleanRole.includes("error") && options.historicalError) {{
+        const historicalBadge = document.createElement("span");
+        historicalBadge.className = "message-state-badge";
+        historicalBadge.textContent = "historical error";
+        historicalBadge.title = "A newer turn completed successfully after this error.";
+        metaWrap.appendChild(historicalBadge);
       }}
       const cost = usageCostDescriptor(options.usage, options.usageSnapshot || state.snapshot);
       if (cost && (cleanRole.includes("assistant") || cleanRole.includes("error"))) {{
@@ -80413,6 +80451,7 @@ class Handler(BaseHTTPRequestHandler):
             usage: item.usage || null,
             usageSnapshot: snapshot,
             historyItem: item,
+            historicalError: Boolean(item.historical_error),
           }});
         }}
       }}
