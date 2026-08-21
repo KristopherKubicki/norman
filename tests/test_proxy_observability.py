@@ -47,7 +47,64 @@ def test_event_log_writes_jsonl_to_configured_path(tmp_path, monkeypatch):
     assert len(records) == 1
     assert records[0]["schema"] == "norman.proxy.event.v1"
     assert records[0]["prompt_sha256"]
+    assert records[0]["request_shape_sha256"]
     assert "private prompt text" not in event_log.read_text(encoding="utf-8")
+
+
+def test_request_fingerprint_adds_content_safe_workflow_and_shape_ids():
+    first = proxy_observability.request_fingerprint(
+        {
+            "model": "norman-code",
+            "workflow_id": "private-workflow-name",
+            "input": "private prompt",
+            "tools": [{"type": "function", "name": "private-tool"}],
+        }
+    )
+    second = proxy_observability.request_fingerprint(
+        {
+            "model": "norman-code",
+            "workflow_id": "private-workflow-name",
+            "input": "different private prompt",
+            "tools": [{"type": "function", "name": "another-private-tool"}],
+        }
+    )
+
+    assert first["workflow_sha256"] == second["workflow_sha256"]
+    assert first["workflow_scope"] == "explicit"
+    assert first["request_shape_sha256"] == second["request_shape_sha256"]
+    assert first["prompt_sha256"] != second["prompt_sha256"]
+    assert "private" not in json.dumps(first)
+
+
+def test_proxy_run_admission_blocks_only_explicit_stopped_workflow(monkeypatch):
+    monkeypatch.setenv(proxy_observability.EVENT_LOG_ENV, "0")
+    monkeypatch.setenv(proxy_observability.RUNAWAY_GUARD_ENV, "1")
+    proxy_observability.reset_proxy_events()
+    payload = {
+        "model": "norman-code",
+        "workflow_id": "workflow-a",
+        "input": "repeat operation",
+    }
+    for index in range(5):
+        proxy_observability.record_proxy_event(
+            endpoint="/v1/responses",
+            method="POST",
+            request_id=f"failed-{index}",
+            status="error",
+            http_status=502,
+            payload=payload,
+            error={"code": "local_gateway_error"},
+        )
+
+    blocked = proxy_observability.proxy_run_admission(payload)
+    unscoped = proxy_observability.proxy_run_admission(
+        {"model": "norman-code", "input": "repeat operation"}
+    )
+
+    assert blocked["allowed"] is False
+    assert blocked["reason_code"] == "runaway_stop_required"
+    assert unscoped["allowed"] is True
+    assert unscoped["workflow_scope"] == "unscoped"
 
 
 def test_event_log_restores_bounded_events_after_a_facade_restart(
@@ -128,6 +185,33 @@ def test_capacity_timeout_and_gateway_errors_are_counted_and_alerted(monkeypatch
     assert "proxy_local_capacity_unavailable" in alert_kinds
     assert "proxy_local_model_timeouts" in alert_kinds
     assert "proxy_local_gateway_errors" in alert_kinds
+
+
+def test_proxy_summary_detects_repeated_request_runaway(monkeypatch):
+    monkeypatch.setenv(proxy_observability.EVENT_LOG_ENV, "0")
+    proxy_observability.reset_proxy_events()
+
+    for index in range(5):
+        proxy_observability.record_proxy_event(
+            endpoint="/v1/responses",
+            method="POST",
+            request_id=f"repeat-{index}",
+            status="error",
+            http_status=502,
+            payload={"model": "norman-code", "input": "same request"},
+            error={"code": "local_gateway_error"},
+        )
+
+    summary = proxy_observability.proxy_observability_summary()
+    alert_kinds = {alert["kind"] for alert in summary["alerts"]}
+
+    assert summary["run_health"]["state"] == "stop"
+    assert summary["run_health"]["recommended_action"] == "stop_and_checkpoint"
+    assert {item["code"] for item in summary["run_health"]["signals"]} >= {
+        "consecutive_failure_loop",
+        "repeated_prompt_loop",
+    }
+    assert "proxy_run_health_stop" in alert_kinds
 
 
 def test_tool_chain_observability_is_sanitized_and_alerted(monkeypatch):

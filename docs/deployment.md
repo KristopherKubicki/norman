@@ -465,9 +465,13 @@ session-pressure report, and a daily retention job. The report is written to:
 ```
 
 Direct `codex-work resume --last` and `codex-work resume <session-id>` calls
-are blocked when their JSONL exceeds the configured 512 MiB limit. Bare
-`codex-work resume` still opens Codex's native picker, so it warns instead of
-trying to filter the picker. The deliberate escape hatch is:
+are blocked when their JSONL exceeds the configured 512 MiB limit or a bounded
+tail scan finds a high-confidence runaway pattern. The default runaway stops
+are three recent compactions or three identical non-polling tool calls with
+identical arguments. Passive status polls and overall tool-call density are
+reported as warnings, not automatic stops.
+Bare `codex-work resume` still opens Codex's native picker, so it warns instead
+of trying to filter the picker. The deliberate escape hatch is:
 
 ```bash
 CODEX_WORK_ALLOW_OVERSIZE_RESUME=1 codex-work resume <session-id>
@@ -475,8 +479,10 @@ CODEX_WORK_ALLOW_OVERSIZE_RESUME=1 codex-work resume <session-id>
 
 Do not use the override as a normal workflow. Preserve a concise handoff in
 the worktree or BBS, exit the oversized session normally, and start a fresh
-session. The pressure monitor reports active PID PSS and SwapPss, but never
-signals, terminates, or deletes an active session.
+session. The pressure monitor reports active PID PSS, SwapPss, compaction
+churn, exact tool-call repetition, and bounded token snapshots. It never
+records tool arguments in the report and never signals, terminates, or deletes
+an active session.
 
 New `codex-work` sessions and both Norman TUI launchers also export
 `PYTEST_XDIST_AUTO_NUM_WORKERS=4`. pytest-xdist honors that variable only for

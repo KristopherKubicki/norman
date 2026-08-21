@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sqlite3
 import time
+from collections import Counter
 from dataclasses import asdict, dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -153,6 +155,12 @@ class SessionBudgetPolicy:
     max_age_seconds: int
     max_tool_calls: int
     require_named_escalation: bool
+    runaway_window_turns: int = 8
+    max_recent_compactions: int = 3
+    max_repeated_prompts: int = 3
+    max_consecutive_failures: int = 3
+    max_recent_tool_calls: int = 80
+    max_recent_tokens: int = 100_000
 
 
 def policy_from_env() -> SessionBudgetPolicy:
@@ -180,7 +188,134 @@ def policy_from_env() -> SessionBudgetPolicy:
         require_named_escalation=_env_bool(
             "NORMAN_CODEX_REQUIRE_NAMED_ESCALATION", True
         ),
+        runaway_window_turns=_env_int(
+            "NORMAN_CODEX_RUNAWAY_WINDOW_TURNS", 8, minimum=2
+        ),
+        max_recent_compactions=_env_int(
+            "NORMAN_CODEX_MAX_RECENT_COMPACTIONS", 3, minimum=1
+        ),
+        max_repeated_prompts=_env_int(
+            "NORMAN_CODEX_MAX_REPEATED_PROMPTS", 3, minimum=2
+        ),
+        max_consecutive_failures=_env_int(
+            "NORMAN_CODEX_MAX_CONSECUTIVE_FAILURES", 3, minimum=2
+        ),
+        max_recent_tool_calls=_env_int(
+            "NORMAN_CODEX_MAX_RECENT_TOOL_CALLS", 80, minimum=1
+        ),
+        max_recent_tokens=_env_int(
+            "NORMAN_CODEX_MAX_RECENT_TOKENS", 100_000, minimum=1
+        ),
     )
+
+
+def _prompt_fingerprint(value: Any) -> str:
+    prompt = " ".join(str(value or "").lower().split())
+    return hashlib.sha256(prompt.encode("utf-8")).hexdigest() if prompt else ""
+
+
+def _usage_payload(value: Any) -> dict[str, Any]:
+    try:
+        payload = json.loads(str(value or "{}"))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _run_health(
+    rows: list[dict[str, Any]],
+    turn_rows: list[dict[str, Any]],
+    policy: SessionBudgetPolicy,
+) -> dict[str, Any]:
+    window = rows[-policy.runaway_window_turns :]
+    turn_window = turn_rows[-policy.runaway_window_turns :]
+    prompt_evidence = turn_window or window
+    prompt_counts = Counter(
+        _prompt_fingerprint(row["payload"].get("prompt"))
+        for row in prompt_evidence
+        if _prompt_fingerprint(row["payload"].get("prompt"))
+    )
+    repeated_prompts = max(prompt_counts.values(), default=0)
+    compactions = sum(
+        is_context_checkpoint_prompt(row["payload"].get("prompt"))
+        or str(row["payload"].get("session_admission_action") or "").lower()
+        == "checkpoint"
+        or str(row["payload"].get("session_admission_reason_code") or "").lower()
+        == "checkpoint_admitted"
+        for row in prompt_evidence
+    )
+    consecutive_failures = 0
+    for row in reversed(turn_window or window):
+        if row["success"]:
+            break
+        consecutive_failures += 1
+    recent_tokens = sum(row["total_tokens"] for row in window)
+    recent_tool_calls = sum(row["tool_calls"] for row in window)
+    signals: list[dict[str, Any]] = []
+
+    def add(code: str, severity: str, observed: int, threshold: int) -> None:
+        signals.append(
+            {
+                "code": code,
+                "severity": severity,
+                "observed": observed,
+                "threshold": threshold,
+            }
+        )
+
+    if compactions >= policy.max_recent_compactions:
+        add(
+            "compaction_loop",
+            "stop",
+            compactions,
+            policy.max_recent_compactions,
+        )
+    if repeated_prompts >= policy.max_repeated_prompts:
+        add(
+            "repeated_prompt_loop",
+            "stop",
+            repeated_prompts,
+            policy.max_repeated_prompts,
+        )
+    if consecutive_failures >= policy.max_consecutive_failures:
+        add(
+            "consecutive_failure_loop",
+            "stop",
+            consecutive_failures,
+            policy.max_consecutive_failures,
+        )
+    if recent_tool_calls >= policy.max_recent_tool_calls:
+        add(
+            "tool_call_pressure",
+            "checkpoint",
+            recent_tool_calls,
+            policy.max_recent_tool_calls,
+        )
+    if recent_tokens >= policy.max_recent_tokens:
+        add(
+            "token_window_pressure",
+            "checkpoint",
+            recent_tokens,
+            policy.max_recent_tokens,
+        )
+    state = (
+        "stop"
+        if any(item["severity"] == "stop" for item in signals)
+        else ("checkpoint" if signals else "normal")
+    )
+    return {
+        "schema": "norman.tui.session-run-health.v1",
+        "state": state,
+        "window_turns": max(len(window), len(turn_window)),
+        "metrics": {
+            "compactions": compactions,
+            "maximum_prompt_repeat": repeated_prompts,
+            "consecutive_failures": consecutive_failures,
+            "recent_tool_calls": recent_tool_calls,
+            "recent_tokens": recent_tokens,
+        },
+        "signals": signals,
+    }
 
 
 def empty_session_usage(
@@ -197,14 +332,95 @@ def empty_session_usage(
         "output_tokens": 0,
         "tool_calls": 0,
         "turn_count": 0,
+        "run_health": {
+            "schema": "norman.tui.session-run-health.v1",
+            "state": "normal",
+            "window_turns": 0,
+            "metrics": {},
+            "signals": [],
+        },
         "observed_at": int(observed_at or time.time()),
     }
+
+
+def session_run_health(
+    state_db_path: Path | str,
+    thread_id: str,
+    *,
+    policy: SessionBudgetPolicy | None = None,
+) -> dict[str, Any]:
+    active_policy = policy or policy_from_env()
+    clean_thread_id = str(thread_id or "").strip()
+    path = Path(state_db_path)
+    if not clean_thread_id or not path.exists():
+        return _run_health([], [], active_policy)
+
+    usage_rows: list[dict[str, Any]] = []
+    turn_rows: list[dict[str, Any]] = []
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=1)
+        rows = conn.execute(
+            """
+            SELECT total_tokens, payload_json
+            FROM usage_events
+            WHERE thread_id = ?
+            ORDER BY started_at DESC, id DESC
+            LIMIT ?
+            """,
+            (clean_thread_id, active_policy.runaway_window_turns),
+        ).fetchall()
+        for row in reversed(rows):
+            payload = _usage_payload(row[1])
+            usage_rows.append(
+                {
+                    "success": bool(payload.get("success", True)),
+                    "total_tokens": max(0, int(row[0] or 0)),
+                    "tool_calls": max(
+                        0,
+                        int(
+                            payload.get("broker_tool_calls")
+                            or payload.get("tool_call_count")
+                            or payload.get("actual_tool_calls")
+                            or 0
+                        ),
+                    ),
+                    "payload": payload,
+                }
+            )
+        rows = conn.execute(
+            """
+            SELECT success, payload_json
+            FROM turns
+            WHERE thread_id = ?
+            ORDER BY started_at DESC, id DESC
+            LIMIT ?
+            """,
+            (clean_thread_id, active_policy.runaway_window_turns),
+        ).fetchall()
+        for row in reversed(rows):
+            turn_rows.append(
+                {
+                    "success": bool(row[0]),
+                    "total_tokens": 0,
+                    "tool_calls": 0,
+                    "payload": _usage_payload(row[1]),
+                }
+            )
+    except sqlite3.Error:
+        pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return _run_health(usage_rows, turn_rows, active_policy)
 
 
 def session_usage(
     state_db_path: Path | str,
     thread_id: str,
     *,
+    policy: SessionBudgetPolicy | None = None,
     observed_at: int | None = None,
 ) -> dict[str, Any]:
     observed = int(observed_at or time.time())
@@ -236,6 +452,7 @@ def session_usage(
         except Exception:
             pass
 
+    health_rows: list[dict[str, Any]] = []
     for row in rows:
         started_at = int(row[0] or 0)
         finished_at = int(row[1] or 0)
@@ -250,11 +467,8 @@ def session_usage(
         usage["output_tokens"] += int(row[4] or 0)
         usage["total_tokens"] += int(row[5] or 0)
         usage["turn_count"] += 1
-        try:
-            payload = json.loads(str(row[6] or "{}"))
-        except (TypeError, ValueError, json.JSONDecodeError):
-            payload = {}
-        usage["tool_calls"] += max(
+        payload = _usage_payload(row[6])
+        tool_calls = max(
             0,
             int(
                 payload.get("broker_tool_calls")
@@ -263,9 +477,52 @@ def session_usage(
                 or 0
             ),
         )
+        usage["tool_calls"] += tool_calls
+        health_rows.append(
+            {
+                "success": bool(payload.get("success", True)),
+                "total_tokens": max(0, int(row[5] or 0)),
+                "tool_calls": tool_calls,
+                "payload": payload,
+            }
+        )
+
+    turn_health_rows: list[dict[str, Any]] = []
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=1)
+        turn_rows = conn.execute(
+            """
+            SELECT success, payload_json
+            FROM turns
+            WHERE thread_id = ?
+            ORDER BY started_at ASC, id ASC
+            """,
+            (clean_thread_id,),
+        ).fetchall()
+        for row in turn_rows:
+            turn_health_rows.append(
+                {
+                    "success": bool(row[0]),
+                    "total_tokens": 0,
+                    "tool_calls": 0,
+                    "payload": _usage_payload(row[1]),
+                }
+            )
+    except sqlite3.Error:
+        pass
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
     if usage["first_started_at"]:
         usage["age_seconds"] = max(0, observed - usage["first_started_at"])
+    usage["run_health"] = _run_health(
+        health_rows,
+        turn_health_rows,
+        policy or policy_from_env(),
+    )
     return usage
 
 
@@ -287,7 +544,12 @@ def evaluate_admission(
     reason = " ".join(str(escalation_reason or "").split())[:360]
     reauthorization = " ".join(str(reauthorization_reason or "").split())[:360]
     usage = (
-        session_usage(state_db_path, thread_id, observed_at=observed)
+        session_usage(
+            state_db_path,
+            thread_id,
+            policy=policy,
+            observed_at=observed,
+        )
         if state_db_enabled
         else empty_session_usage(thread_id, observed)
     )
@@ -332,6 +594,33 @@ def evaluate_admission(
         )
         return decision
 
+    run_health = (
+        dict(usage.get("run_health"))
+        if isinstance(usage.get("run_health"), dict)
+        else {}
+    )
+    decision["run_health"] = run_health
+    if run_health.get("state") == "stop":
+        signal_codes = [
+            str(item.get("code") or "")
+            for item in run_health.get("signals") or []
+            if isinstance(item, dict) and item.get("severity") == "stop"
+        ]
+        decision.update(
+            {
+                "allowed": False,
+                "action": "deny",
+                "reason_code": "runaway_stop_required",
+                "reason": (
+                    "This thread is cycling without enough reliable progress. "
+                    "Stop it, preserve the last known-good checkpoint, and continue "
+                    "in a fresh thread."
+                ),
+                "runaway_reasons": signal_codes,
+            }
+        )
+        return decision
+
     hard_limit_hit = usage["total_tokens"] >= policy.reauthorization_tokens
     if hard_limit_hit and not checkpoint_intent and len(reauthorization) < 12:
         decision.update(
@@ -354,6 +643,12 @@ def evaluate_admission(
         checkpoint_reasons.append("age_limit")
     if usage["tool_calls"] >= policy.max_tool_calls:
         checkpoint_reasons.append("tool_call_limit")
+    if run_health.get("state") == "checkpoint":
+        checkpoint_reasons.extend(
+            f"run_health:{item.get('code')}"
+            for item in run_health.get("signals") or []
+            if isinstance(item, dict) and item.get("severity") == "checkpoint"
+        )
 
     if checkpoint_reasons and not checkpoint_intent:
         decision.update(

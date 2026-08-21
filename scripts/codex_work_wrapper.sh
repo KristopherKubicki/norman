@@ -168,7 +168,7 @@ guard_resume() {
 
   if [[ "$guard_status" -eq 3 ]]; then
     cat >&2 <<'EOF'
-codex-work: oversized session resume blocked to protect host responsiveness.
+codex-work: unsafe session resume blocked by the pressure/runaway guard.
 Preserve a concise handoff, start a fresh session, and resume only the required
 work. Set CODEX_WORK_ALLOW_OVERSIZE_RESUME=1 only for a deliberate override.
 EOF

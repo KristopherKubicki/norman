@@ -359,6 +359,7 @@ from agent_console_session_budget import (
     is_context_checkpoint_prompt,
     normalize_reasoning_effort,
     policy_from_env as session_budget_policy_from_env,
+    session_run_health as session_budget_run_health,
 )
 from agent_console_child_agents import (
     ChildAgentBroker,
@@ -31127,6 +31128,11 @@ def current_snapshot() -> dict[str, Any]:
         )
     ]
     snapshot_at = now_ts()
+    session_run_health = session_budget_run_health(
+        STATE_DB_PATH,
+        thread_id,
+        policy=SESSION_BUDGET_POLICY,
+    )
     auth = _auth_state_from_console(pane, last_error)
     if not bool(meta.get("pending")) and _contains_codex_cli_upgrade_error(last_error):
         last_error = ""
@@ -31433,6 +31439,7 @@ def current_snapshot() -> dict[str, Any]:
             "enabled": SESSION_BUDGET_POLICY.enabled,
             "checkpoint_tokens": SESSION_BUDGET_POLICY.checkpoint_tokens,
             "reauthorization_tokens": SESSION_BUDGET_POLICY.reauthorization_tokens,
+            "run_health": session_run_health,
         },
         "codex_account_capacity": codex_account_capacity,
         "route_receipts": route_receipts,
@@ -32917,6 +32924,15 @@ def _initial_context_meter(snapshot: dict[str, Any]) -> dict[str, Any]:
         checkpoint_tokens,
         _coerce_int(budget.get("reauthorization_tokens")) or 200_000,
     )
+    run_health = (
+        budget.get("run_health") if isinstance(budget.get("run_health"), dict) else {}
+    )
+    run_health_state = str(run_health.get("state") or "normal").strip().lower()
+    run_health_signals = [
+        str(item.get("code") or "")
+        for item in run_health.get("signals") or []
+        if isinstance(item, dict) and item.get("code")
+    ]
     total_turns = _coerce_int(current_thread.get("turns"))
     total_tokens = _coerce_int(current_thread.get("total_tokens"))
     hidden = total_turns <= 0 and total_tokens <= 0
@@ -32925,7 +32941,15 @@ def _initial_context_meter(snapshot: dict[str, Any]) -> dict[str, Any]:
     tone = "ok"
     label = "Healthy"
     hint = "Normal work is allowed; plan a concise handoff before the threshold."
-    if total_tokens >= reauthorization_tokens:
+    if run_health_state == "stop":
+        tone = "danger"
+        label = "Run stopped"
+        hint = "This thread is cycling; preserve the last good checkpoint and restart."
+    elif run_health_state == "checkpoint":
+        tone = "warn"
+        label = "Checkpoint now"
+        hint = "Recent tool or token density is high; reduce the next step before continuing."
+    elif total_tokens >= reauthorization_tokens:
         tone = "danger"
         label = "Handoff required"
         hint = "The hard thread limit is reached; create the handoff before more work."
@@ -32955,6 +32979,8 @@ def _initial_context_meter(snapshot: dict[str, Any]) -> dict[str, Any]:
         ),
         hint,
     ]
+    if run_health_signals:
+        title_parts.insert(1, f"Signals: {', '.join(run_health_signals)}")
     if total_turns > 0:
         title_parts.insert(
             2, f"{total_turns} current-thread turn{'s' if total_turns != 1 else ''}"
@@ -60421,6 +60447,11 @@ class Handler(BaseHTTPRequestHandler):
       const checkpointTokens = Number.isFinite(checkpointRaw) && checkpointRaw > 0 ? checkpointRaw : 160000;
       const hardRaw = Number(budget.reauthorization_tokens || 200000);
       const hardTokens = Number.isFinite(hardRaw) && hardRaw >= checkpointTokens ? hardRaw : Math.max(checkpointTokens, 200000);
+      const runHealth = budget.run_health && typeof budget.run_health === "object" ? budget.run_health : {{}};
+      const runHealthState = String(runHealth.state || "normal").trim().toLowerCase();
+      const runHealthSignals = Array.isArray(runHealth.signals)
+        ? runHealth.signals.map((item) => String(item && item.code || "")).filter(Boolean)
+        : [];
       const rawTurnCount = Number(currentThread.turns || 0);
       const totalTurns = Number.isFinite(rawTurnCount) && rawTurnCount > 0 ? rawTurnCount : 0;
       const rawTokenCount = Number(currentThread.total_tokens || 0);
@@ -60431,7 +60462,15 @@ class Handler(BaseHTTPRequestHandler):
       let tone = "ok";
       let status = "Healthy";
       let hint = "Normal work is allowed; plan a concise handoff before the threshold.";
-      if (totalTokens >= hardTokens) {{
+      if (runHealthState === "stop") {{
+        tone = "danger";
+        status = "Run stopped";
+        hint = "This thread is cycling; preserve the last good checkpoint and restart.";
+      }} else if (runHealthState === "checkpoint") {{
+        tone = "warn";
+        status = "Checkpoint now";
+        hint = "Recent tool or token density is high; reduce the next step before continuing.";
+      }} else if (totalTokens >= hardTokens) {{
         tone = "danger";
         status = "Handoff required";
         hint = "The hard thread limit is reached; create the handoff before more work.";
@@ -60448,6 +60487,7 @@ class Handler(BaseHTTPRequestHandler):
       const remaining = Math.max(0, checkpointTokens - totalTokens);
       const titleParts = [
         `${{status}} thread budget`,
+        runHealthSignals.length ? `Signals: ${{runHealthSignals.join(", ")}}` : "",
         `${{formatCount(totalTokens)}} tracked thread tokens of ${{formatCount(checkpointTokens)}}`,
         totalTurns > 0 ? `${{formatCount(totalTurns)}} current-thread turn${{totalTurns === 1 ? "" : "s"}}` : "",
         `${{usedPct}}% of handoff threshold`,

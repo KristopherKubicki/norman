@@ -349,7 +349,7 @@ raise SystemExit(3 if "oversized-session" in sys.argv else 0)
         check=False,
     )
     assert blocked.returncode == 3
-    assert "oversized session resume blocked" in blocked.stderr
+    assert "unsafe session resume blocked" in blocked.stderr
     assert not output.exists()
 
     allowed = subprocess.run(

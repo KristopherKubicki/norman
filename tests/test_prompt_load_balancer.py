@@ -998,6 +998,47 @@ def test_openai_compat_chat_completions_streams_sse(test_app, monkeypatch):
     assert "data: [DONE]" in response.text
 
 
+def test_openai_compat_blocks_stopped_explicit_workflow_before_invocation(
+    test_app, monkeypatch
+):
+    from app.api import openai_compat
+    from app.services.prompt_provider_facade import norllama_gateway
+
+    headers = _proxy_headers(monkeypatch)
+    monkeypatch.setattr(
+        openai_compat,
+        "proxy_run_admission",
+        lambda _payload: {
+            "allowed": False,
+            "workflow_sha256": "hashed-workflow",
+            "run_health": {
+                "state": "stop",
+                "signals": [{"code": "repeated_prompt_loop"}],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat",
+        lambda *_args, **_kwargs: pytest.fail("model invocation must be blocked"),
+    )
+
+    response = test_app.post(
+        "/v1/chat/completions",
+        headers=headers,
+        json={
+            "model": "norman-code",
+            "workflow_id": "workflow-a",
+            "messages": [{"role": "user", "content": "retry"}],
+        },
+    )
+
+    assert response.status_code == 429
+    error = response.json()["error"]
+    assert error["code"] == "runaway_guard_blocked"
+    assert error["norman"]["signals"] == ["repeated_prompt_loop"]
+
+
 def test_openai_compat_responses_routes_local_first(test_app, monkeypatch):
     from app.services.prompt_provider_facade import norllama_gateway
 

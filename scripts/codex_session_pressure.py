@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import sys
 import tempfile
 import time
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -33,6 +35,25 @@ DEFAULT_PROCESS_PSS_LIMIT_MIB = float(
 DEFAULT_SESSION_AGE_HOURS = float(
     os.environ.get("NORMAN_CODEX_SESSION_AGE_HOURS", "48")
 )
+DEFAULT_SESSION_TAIL_BYTES = int(
+    os.environ.get("NORMAN_CODEX_SESSION_TAIL_BYTES", str(4 * MIB))
+)
+DEFAULT_SESSION_TAIL_EVENTS = int(
+    os.environ.get("NORMAN_CODEX_SESSION_TAIL_EVENTS", "400")
+)
+DEFAULT_RECENT_SESSIONS_PER_HOME = int(
+    os.environ.get("NORMAN_CODEX_RECENT_SESSIONS_PER_HOME", "4")
+)
+DEFAULT_COMPACTION_STOP_COUNT = int(
+    os.environ.get("NORMAN_CODEX_COMPACTION_STOP_COUNT", "3")
+)
+DEFAULT_REPEATED_TOOL_STOP_COUNT = int(
+    os.environ.get("NORMAN_CODEX_REPEATED_TOOL_STOP_COUNT", "3")
+)
+DEFAULT_TOOL_DENSITY_WARN_COUNT = int(
+    os.environ.get("NORMAN_CODEX_TOOL_DENSITY_WARN_COUNT", "80")
+)
+PASSIVE_REPEAT_TOOL_NAMES = frozenset({"get_goal", "write_stdin"})
 SESSION_ID_RE = re.compile(
     r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$",
     re.IGNORECASE,
@@ -134,6 +155,166 @@ def _session_record(path: Path, *, home: Path, now: float) -> dict[str, Any]:
         "started_at": _utc_timestamp(started_epoch) if started_epoch else None,
         "age_seconds": max(0, int(now - started_epoch)) if started_epoch else None,
         "active_pids": [],
+        "run_health": {
+            "state": "not_scanned",
+            "signals": [],
+            "metrics": {},
+        },
+    }
+
+
+def _read_jsonl_tail(
+    path: Path, *, max_bytes: int, max_events: int
+) -> list[dict[str, Any]]:
+    if max_bytes <= 0 or max_events <= 0:
+        return []
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as handle:
+            offset = max(0, size - max_bytes)
+            handle.seek(offset)
+            raw = handle.read(max_bytes)
+    except OSError:
+        return []
+    if offset:
+        separator = raw.find(b"\n")
+        raw = raw[separator + 1 :] if separator >= 0 else b""
+    events: deque[dict[str, Any]] = deque(maxlen=max_events)
+    for line in raw.splitlines():
+        try:
+            payload = json.loads(line)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict):
+            events.append(payload)
+    return list(events)
+
+
+def _normalized_tool_input(value: Any) -> str:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return " ".join(value.split())
+    try:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _tail_run_health(
+    path: Path,
+    *,
+    max_bytes: int,
+    max_events: int,
+    compaction_stop_count: int,
+    repeated_tool_stop_count: int,
+    tool_density_warn_count: int,
+) -> dict[str, Any]:
+    events = _read_jsonl_tail(path, max_bytes=max_bytes, max_events=max_events)
+    compacted_events = 0
+    context_compacted_events = 0
+    tool_signatures: list[tuple[str, str]] = []
+    last_turn_tokens = 0
+    cumulative_tokens = 0
+
+    for event in events:
+        event_type = str(event.get("type") or "").strip().lower()
+        payload = event.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        payload_type = str(payload.get("type") or "").strip().lower()
+        if event_type == "compacted":
+            compacted_events += 1
+        elif payload_type == "context_compacted":
+            context_compacted_events += 1
+        if payload_type in {"function_call", "custom_tool_call"}:
+            name = str(payload.get("name") or "").strip()
+            arguments = payload.get("arguments", payload.get("input"))
+            fingerprint = hashlib.sha256(
+                f"{name}\0{_normalized_tool_input(arguments)}".encode("utf-8")
+            ).hexdigest()
+            tool_signatures.append((name, fingerprint))
+        if payload_type == "token_count":
+            info = payload.get("info")
+            info = info if isinstance(info, dict) else {}
+            last = info.get("last_token_usage")
+            total = info.get("total_token_usage")
+            last = last if isinstance(last, dict) else {}
+            total = total if isinstance(total, dict) else {}
+            last_turn_tokens = max(last_turn_tokens, int(last.get("total_tokens") or 0))
+            cumulative_tokens = max(
+                cumulative_tokens, int(total.get("total_tokens") or 0)
+            )
+
+    compactions = compacted_events or context_compacted_events
+    maximum_tool_repeat = 0
+    current_tool_repeat = 0
+    previous_tool_signature = ""
+    active_tool_signatures = [
+        signature
+        for name, signature in tool_signatures
+        if name not in PASSIVE_REPEAT_TOOL_NAMES
+    ]
+    for signature in active_tool_signatures:
+        if signature == previous_tool_signature:
+            current_tool_repeat += 1
+        else:
+            previous_tool_signature = signature
+            current_tool_repeat = 1
+        maximum_tool_repeat = max(maximum_tool_repeat, current_tool_repeat)
+    signals: list[dict[str, Any]] = []
+
+    def add(code: str, severity: str, observed: int, threshold: int) -> None:
+        signals.append(
+            {
+                "code": code,
+                "severity": severity,
+                "observed": observed,
+                "threshold": threshold,
+            }
+        )
+
+    if compactions >= compaction_stop_count:
+        add(
+            "compaction_loop",
+            "stop",
+            compactions,
+            compaction_stop_count,
+        )
+    if maximum_tool_repeat >= repeated_tool_stop_count:
+        add(
+            "repeated_tool_call_loop",
+            "stop",
+            maximum_tool_repeat,
+            repeated_tool_stop_count,
+        )
+    if len(tool_signatures) >= tool_density_warn_count:
+        add(
+            "tool_call_density",
+            "warn",
+            len(tool_signatures),
+            tool_density_warn_count,
+        )
+    state = (
+        "stop"
+        if any(item["severity"] == "stop" for item in signals)
+        else ("warn" if signals else "normal")
+    )
+    return {
+        "state": state,
+        "signals": signals,
+        "metrics": {
+            "tail_events": len(events),
+            "compactions": compactions,
+            "tool_calls": len(tool_signatures),
+            "maximum_tool_call_repeat": maximum_tool_repeat,
+            "last_turn_tokens": last_turn_tokens,
+            "cumulative_tokens": cumulative_tokens,
+        },
+        "scan": {
+            "max_bytes": max_bytes,
+            "max_events": max_events,
+        },
     }
 
 
@@ -226,6 +407,12 @@ def collect_snapshot(
     *,
     proc_root: Path = Path("/proc"),
     now: float | None = None,
+    session_tail_bytes: int = DEFAULT_SESSION_TAIL_BYTES,
+    session_tail_events: int = DEFAULT_SESSION_TAIL_EVENTS,
+    recent_sessions_per_home: int = DEFAULT_RECENT_SESSIONS_PER_HOME,
+    compaction_stop_count: int = DEFAULT_COMPACTION_STOP_COUNT,
+    repeated_tool_stop_count: int = DEFAULT_REPEATED_TOOL_STOP_COUNT,
+    tool_density_warn_count: int = DEFAULT_TOOL_DENSITY_WARN_COUNT,
 ) -> dict[str, Any]:
     """Collect session files and the Codex processes holding them open."""
 
@@ -248,10 +435,50 @@ def collect_snapshot(
             sessions_by_path[path_text] = record
         record["active_pids"] = sorted(pids)
 
+    scan_paths = {
+        path for path, record in sessions_by_path.items() if record.get("active_pids")
+    }
+    for home in homes:
+        home_sessions = [
+            record
+            for record in sessions_by_path.values()
+            if record.get("codex_home") == str(home)
+        ]
+        home_sessions.sort(
+            key=lambda item: (
+                str(item.get("modified_at") or ""),
+                str(item.get("path") or ""),
+            ),
+            reverse=True,
+        )
+        scan_paths.update(
+            str(record.get("path") or "")
+            for record in home_sessions[: max(0, recent_sessions_per_home)]
+        )
+    for path_text in scan_paths:
+        record = sessions_by_path.get(path_text)
+        if record is None:
+            continue
+        record["run_health"] = _tail_run_health(
+            Path(path_text),
+            max_bytes=max(0, session_tail_bytes),
+            max_events=max(0, session_tail_events),
+            compaction_stop_count=max(1, compaction_stop_count),
+            repeated_tool_stop_count=max(1, repeated_tool_stop_count),
+            tool_density_warn_count=max(1, tool_density_warn_count),
+        )
+
     return {
         "checked_at": _utc_timestamp(observed_at),
         "checked_at_epoch": int(observed_at),
         "codex_homes": [str(path) for path in homes],
+        "run_health_limits": {
+            "session_tail_bytes": max(0, session_tail_bytes),
+            "session_tail_events": max(0, session_tail_events),
+            "compaction_stop_count": max(1, compaction_stop_count),
+            "repeated_tool_stop_count": max(1, repeated_tool_stop_count),
+            "tool_density_warn_count": max(1, tool_density_warn_count),
+        },
         "sessions": sorted(
             sessions_by_path.values(),
             key=lambda item: (str(item["codex_home"]), str(item["path"])),
@@ -282,10 +509,13 @@ def evaluate_snapshot(
     size_limit_bytes = max(0, int(session_size_limit_mib * MIB))
     pss_limit_bytes = max(0, int(process_pss_limit_mib * MIB))
     age_limit_seconds = max(0, int(session_age_hours * 60 * 60))
+    run_health_limits = snapshot.get("run_health_limits")
+    run_health_limits = run_health_limits if isinstance(run_health_limits, dict) else {}
     issues: list[dict[str, str]] = []
     sessions: list[dict[str, Any]] = []
     oversized_active = 0
     long_lived_active = 0
+    runaway_active = 0
 
     for raw in snapshot.get("sessions") or []:
         if not isinstance(raw, dict):
@@ -298,11 +528,48 @@ def evaluate_snapshot(
         ]
         size_bytes = int(session.get("size_bytes") or 0)
         age_seconds = session.get("age_seconds")
-        session["resume_blocked"] = size_bytes >= size_limit_bytes
+        run_health = session.get("run_health")
+        run_health = run_health if isinstance(run_health, dict) else {}
+        runaway_stop = run_health.get("state") == "stop"
+        session["resume_blocked"] = size_bytes >= size_limit_bytes or runaway_stop
         session["resume_block_reason"] = (
             "session JSONL exceeds the configured resume limit"
-            if session["resume_blocked"]
-            else ""
+            if size_bytes >= size_limit_bytes
+            else (
+                "recent session events indicate a runaway loop" if runaway_stop else ""
+            )
+        )
+        if active_pids and runaway_stop:
+            runaway_active += 1
+            signal_codes = ",".join(
+                str(item.get("code") or "")
+                for item in run_health.get("signals") or []
+                if isinstance(item, dict)
+            )
+            issues.append(
+                _issue(
+                    "fail",
+                    "active_session_runaway",
+                    (
+                        f"active session {session['session_id']} has runaway "
+                        f"signals ({signal_codes or 'unknown'}); stop after the "
+                        "current safe boundary, preserve a handoff, and start fresh"
+                    ),
+                )
+            )
+        elif active_pids and run_health.get("state") == "warn":
+            issues.append(
+                _issue(
+                    "warn",
+                    "active_session_churn",
+                    (
+                        f"active session {session['session_id']} has unusually dense "
+                        "recent tool activity; reduce or batch the next operation"
+                    ),
+                )
+            )
+        session["resume_block_reason"] = (
+            session["resume_block_reason"] if session["resume_blocked"] else ""
         )
         if active_pids and session["resume_blocked"]:
             oversized_active += 1
@@ -387,6 +654,7 @@ def evaluate_snapshot(
             "active_session_count": len(active_sessions),
             "oversized_active_session_count": oversized_active,
             "long_lived_active_session_count": long_lived_active,
+            "runaway_active_session_count": runaway_active,
             "codex_process_count": len(processes),
             "large_codex_process_count": large_processes,
             "codex_process_pss_bytes": total_pss,
@@ -397,6 +665,30 @@ def evaluate_snapshot(
             "session_size_mib": session_size_limit_mib,
             "process_pss_mib": process_pss_limit_mib,
             "session_age_hours": session_age_hours,
+            "session_tail_bytes": int(
+                run_health_limits.get("session_tail_bytes", DEFAULT_SESSION_TAIL_BYTES)
+            ),
+            "session_tail_events": int(
+                run_health_limits.get(
+                    "session_tail_events", DEFAULT_SESSION_TAIL_EVENTS
+                )
+            ),
+            "compaction_stop_count": int(
+                run_health_limits.get(
+                    "compaction_stop_count", DEFAULT_COMPACTION_STOP_COUNT
+                )
+            ),
+            "repeated_tool_stop_count": int(
+                run_health_limits.get(
+                    "repeated_tool_stop_count",
+                    DEFAULT_REPEATED_TOOL_STOP_COUNT,
+                )
+            ),
+            "tool_density_warn_count": int(
+                run_health_limits.get(
+                    "tool_density_warn_count", DEFAULT_TOOL_DENSITY_WARN_COUNT
+                )
+            ),
         },
         "issues": issues,
         "sessions": sessions,
@@ -459,9 +751,8 @@ def resume_decision(report: dict[str, Any], target: str) -> dict[str, Any]:
             "session_id": session.get("session_id"),
             "path": session.get("path"),
             "reason": (
-                f"session is {session.get('size_mib')} MiB, above the configured "
-                f"{report.get('limits', {}).get('session_size_mib')} MiB resume "
-                "limit; preserve a handoff and start fresh"
+                f"{session.get('resume_block_reason')}; preserve a handoff and "
+                "start fresh"
             ),
         }
     return {
@@ -512,6 +803,30 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--session-age-hours", type=float, default=DEFAULT_SESSION_AGE_HOURS
     )
     parser.add_argument(
+        "--session-tail-bytes", type=int, default=DEFAULT_SESSION_TAIL_BYTES
+    )
+    parser.add_argument(
+        "--session-tail-events", type=int, default=DEFAULT_SESSION_TAIL_EVENTS
+    )
+    parser.add_argument(
+        "--recent-sessions-per-home",
+        type=int,
+        default=DEFAULT_RECENT_SESSIONS_PER_HOME,
+    )
+    parser.add_argument(
+        "--compaction-stop-count", type=int, default=DEFAULT_COMPACTION_STOP_COUNT
+    )
+    parser.add_argument(
+        "--repeated-tool-stop-count",
+        type=int,
+        default=DEFAULT_REPEATED_TOOL_STOP_COUNT,
+    )
+    parser.add_argument(
+        "--tool-density-warn-count",
+        type=int,
+        default=DEFAULT_TOOL_DENSITY_WARN_COUNT,
+    )
+    parser.add_argument(
         "--resume-target",
         default=None,
         help="Check `last` or a direct Codex session ID before resuming it.",
@@ -524,7 +839,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     homes = args.codex_home or _default_codex_homes()
-    snapshot = collect_snapshot(homes)
+    snapshot = collect_snapshot(
+        homes,
+        session_tail_bytes=max(0, int(args.session_tail_bytes)),
+        session_tail_events=max(0, int(args.session_tail_events)),
+        recent_sessions_per_home=max(0, int(args.recent_sessions_per_home)),
+        compaction_stop_count=max(1, int(args.compaction_stop_count)),
+        repeated_tool_stop_count=max(1, int(args.repeated_tool_stop_count)),
+        tool_density_warn_count=max(1, int(args.tool_density_warn_count)),
+    )
     report = evaluate_snapshot(
         snapshot,
         session_size_limit_mib=max(0.0, float(args.session_size_limit_mib)),

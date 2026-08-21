@@ -4009,6 +4009,28 @@ def test_initial_context_meter_requires_handoff_at_hard_limit() -> None:
     assert meter["fill_pct"] == 100
 
 
+def test_initial_context_meter_prioritizes_runaway_stop() -> None:
+    module = _load_agent_console_web()
+
+    meter = module._initial_context_meter(
+        {
+            "usage": {"current_thread": {"turns": 3, "total_tokens": 12_000}},
+            "session_budget": {
+                "checkpoint_tokens": 160_000,
+                "reauthorization_tokens": 200_000,
+                "run_health": {
+                    "state": "stop",
+                    "signals": [{"code": "compaction_loop"}],
+                },
+            },
+        }
+    )
+
+    assert meter["tone"] == "danger"
+    assert meter["label"] == "Run stopped"
+    assert "compaction_loop" in meter["title"]
+
+
 def test_prime_credits_ui_surfaces_usage_burn() -> None:
     source = _home_js_source()
 
@@ -4306,6 +4328,8 @@ def test_template_exposes_tracked_thread_budget_handoff_control() -> None:
     assert "function renderContextMeter(snapshot)" in source
     assert "checkpoint_tokens" in source
     assert "Handoff now" in source
+    assert "Run stopped" in source
+    assert "Checkpoint now" in source
     assert "Create handoff" in source
     assert "Tracked thread-token budget" in source
 

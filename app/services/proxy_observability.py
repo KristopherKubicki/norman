@@ -10,10 +10,13 @@ from collections import Counter, deque
 from pathlib import Path
 from typing import Any, Mapping
 
+from app.services.run_health import evaluate_proxy_run_health
+
 
 MAX_EVENTS = 500
 EVENT_LOG_ENV = "NORMAN_PROXY_EVENT_LOG"
 EVENT_LOG_MAX_BYTES_ENV = "NORMAN_PROXY_EVENT_LOG_MAX_BYTES"
+RUNAWAY_GUARD_ENV = "NORMAN_PROXY_RUNAWAY_GUARD_ENABLED"
 DEFAULT_EVENT_LOG_PATH = Path("/var/lib/norman/state/proxy-events.jsonl")
 DEFAULT_EVENT_LOG_MAX_BYTES = 5 * 1024 * 1024
 DISABLED_EVENT_LOG_VALUES = frozenset({"0", "false", "none", "off", "disabled"})
@@ -385,13 +388,105 @@ def _prompt_text(payload: Mapping[str, Any]) -> str:
 def request_fingerprint(payload: Mapping[str, Any]) -> dict[str, Any]:
     text = _prompt_text(payload)
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest() if text else ""
-    return {
-        "prompt_sha256": digest,
-        "prompt_chars": len(text),
+    metadata = _mapping(payload.get("metadata"))
+    explicit_workflow_value = _clean(
+        payload.get("workflow_id")
+        or payload.get("thread_id")
+        or payload.get("conversation_id")
+        or metadata.get("workflow_id")
+        or metadata.get("thread_id")
+    )
+    previous_response_id = _clean(payload.get("previous_response_id"))
+    workflow_value = explicit_workflow_value or previous_response_id
+    workflow_scope = (
+        "explicit"
+        if explicit_workflow_value
+        else ("previous_response" if previous_response_id else "unscoped")
+    )
+    tools = payload.get("tools")
+    tool_types = sorted(
+        _clean(item.get("type")) or "unknown"
+        for item in tools or []
+        if isinstance(item, Mapping)
+    )
+    shape = {
+        "endpoint_family": (
+            "responses" if "previous_response_id" in payload else "chat"
+        ),
+        "has_previous_response": bool(_clean(payload.get("previous_response_id"))),
         "message_count": len(payload.get("messages") or [])
         if isinstance(payload.get("messages"), list)
         else 0,
+        "model": _safe_identifier(payload.get("model")),
+        "tool_count": len(tool_types),
+        "tool_types": tool_types,
     }
+    shape_digest = hashlib.sha256(
+        json.dumps(shape, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return {
+        "prompt_sha256": digest,
+        "request_shape_sha256": shape_digest,
+        "workflow_sha256": (
+            hashlib.sha256(workflow_value.encode("utf-8")).hexdigest()
+            if workflow_value
+            else ""
+        ),
+        "workflow_scope": workflow_scope,
+        "prompt_chars": len(text),
+        "message_count": shape["message_count"],
+        "tool_count": shape["tool_count"],
+    }
+
+
+def proxy_run_admission(
+    payload: Mapping[str, Any],
+    *,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """Stop a known-bad explicit workflow before another model invocation."""
+
+    fingerprint = request_fingerprint(payload)
+    enabled = _flag(os.environ.get(RUNAWAY_GUARD_ENV), default=True)
+    workflow_hash = _clean(fingerprint.get("workflow_sha256"))
+    workflow_scope = _clean(fingerprint.get("workflow_scope"))
+    decision = {
+        "schema": "norman.proxy.run-admission.v1",
+        "enabled": enabled,
+        "allowed": True,
+        "action": "allow",
+        "reason_code": "healthy_or_unscoped",
+        "workflow_sha256": workflow_hash,
+        "workflow_scope": workflow_scope,
+        "run_health": {},
+    }
+    if not enabled:
+        decision.update(
+            {
+                "action": "disabled",
+                "reason_code": "guard_disabled",
+            }
+        )
+        return decision
+    if workflow_scope != "explicit" or not workflow_hash:
+        return decision
+
+    events = [
+        event
+        for event in proxy_events_snapshot(limit=limit)
+        if _clean(event.get("workflow_sha256")) == workflow_hash
+    ]
+    run_health = evaluate_proxy_run_health(events)
+    decision["run_health"] = run_health
+    if run_health.get("state") == "stop":
+        decision.update(
+            {
+                "allowed": False,
+                "action": "stop",
+                "reason_code": "runaway_stop_required",
+            }
+        )
+    return decision
 
 
 def _usage_from_response(response: Mapping[str, Any]) -> dict[str, int]:
@@ -798,6 +893,7 @@ def proxy_observability_summary(limit: int = 100) -> dict[str, Any]:
     }
     successful = statuses.get("success", 0)
     cloud_tokens = usage_totals["cloud_llm_tokens"] + usage_totals["cloud_proxy_tokens"]
+    run_health = evaluate_proxy_run_health(events)
     summary = {
         "schema": "norman.proxy.observability-summary.v1",
         "event_count": total,
@@ -840,6 +936,7 @@ def proxy_observability_summary(limit: int = 100) -> dict[str, Any]:
         "usage_totals": usage_totals,
         "cloud_tokens": cloud_tokens,
         "cloud_token_avoidance_estimate": usage_totals["local_tokens"],
+        "run_health": run_health,
         "chart": {
             "recent_local": [
                 1 if _flag(event.get("local_execution")) else 0
@@ -967,6 +1064,25 @@ def proxy_alerts(
                 "severity": "warn",
                 "kind": "proxy_execution_errors",
                 "message": f"{errors} proxy execution error(s) were recorded.",
+            }
+        )
+    run_health = _mapping(summary.get("run_health"))
+    run_health_state = _clean(run_health.get("state"))
+    if run_health_state in {"warn", "stop"}:
+        signals = [
+            _clean(item.get("code"))
+            for item in run_health.get("signals") or []
+            if isinstance(item, Mapping) and _clean(item.get("code"))
+        ]
+        alerts.append(
+            {
+                "severity": "critical" if run_health_state == "stop" else "warn",
+                "kind": f"proxy_run_health_{run_health_state}",
+                "message": (
+                    "Proxy run health recommends "
+                    f"{_clean(run_health.get('recommended_action')) or 'inspection'}"
+                    + (f": {', '.join(signals)}." if signals else ".")
+                ),
             }
         )
     capacity_unavailable = int(summary.get("capacity_unavailable_count") or 0)

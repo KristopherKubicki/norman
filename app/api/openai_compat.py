@@ -31,6 +31,7 @@ from app.services.proxy_observability import (
     proxy_dashboard,
     proxy_events_snapshot,
     proxy_observability_summary,
+    proxy_run_admission,
     record_proxy_event,
 )
 
@@ -278,6 +279,60 @@ def _request_payload(request_body: OpenAICompatRequest) -> dict[str, Any]:
 
 def _request_headers(request: Request) -> dict[str, str]:
     return {key: value for key, value in request.headers.items()}
+
+
+def _runaway_guard_response(
+    *,
+    request: Request,
+    endpoint: str,
+    payload: dict[str, Any],
+    started_at: float,
+) -> JSONResponse | None:
+    admission = proxy_run_admission(payload)
+    if admission.get("allowed") is not False:
+        return None
+    run_health = (
+        dict(admission.get("run_health"))
+        if isinstance(admission.get("run_health"), dict)
+        else {}
+    )
+    signals = [
+        str(item.get("code") or "")
+        for item in run_health.get("signals") or []
+        if isinstance(item, dict) and item.get("code")
+    ]
+    error = {
+        "message": (
+            "This workflow is cycling without reliable progress. Preserve a "
+            "checkpoint and continue with a new workflow identifier."
+        ),
+        "type": "policy_blocked",
+        "param": None,
+        "code": "runaway_guard_blocked",
+        "norman": {
+            "run_health": run_health,
+            "signals": signals,
+            "workflow_sha256": admission.get("workflow_sha256"),
+        },
+    }
+    record_proxy_event(
+        endpoint=endpoint,
+        method=request.method,
+        request_id=_request_id(request),
+        status="blocked",
+        http_status=429,
+        payload=payload,
+        headers=_request_headers(request),
+        error=error,
+        latency_ms=(time.time() - started_at) * 1000.0,
+    )
+    return _openai_error(
+        status_code=429,
+        message=error["message"],
+        error_type=error["type"],
+        code=error["code"],
+        norman=error["norman"],
+    )
 
 
 def _record_auth_failure(
@@ -581,6 +636,14 @@ async def openai_compat_chat_completions(
     if auth_error is not None:
         return auth_error
     request_payload = _request_payload(request_body)
+    runaway_response = _runaway_guard_response(
+        request=request,
+        endpoint="/v1/chat/completions",
+        payload=request_payload,
+        started_at=started_at,
+    )
+    if runaway_response is not None:
+        return runaway_response
     try:
         response = await asyncio.to_thread(
             execute_openai_chat_facade,
@@ -968,6 +1031,14 @@ async def openai_compat_responses(
     if auth_error is not None:
         return auth_error
     request_payload = _request_payload(request_body)
+    runaway_response = _runaway_guard_response(
+        request=request,
+        endpoint="/v1/responses",
+        payload=request_payload,
+        started_at=started_at,
+    )
+    if runaway_response is not None:
+        return runaway_response
     if request_body.stream:
         try:
             stream = await asyncio.to_thread(
