@@ -245,6 +245,8 @@ DEFAULT_RERANK_MODEL = os.getenv("NORLLAMA_DEFAULT_RERANK_MODEL", BGE_RERANKER_M
 QWEN3GUARD_MODEL = os.getenv(
     "NORLLAMA_DEFAULT_SAFETY_MODEL", "Qwen/Qwen3Guard-Stream-0.6B"
 )
+
+
 def compiled_resident_model() -> str:
     try:
         policy = route_policy_contract()

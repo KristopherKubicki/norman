@@ -1101,8 +1101,7 @@ def test_gateway_signed_policy_projects_stale_chat_contract_to_resident():
     assert updated["status"] == "production_backed"
     assert updated["selection_method"] == "signed_model_role_policy"
     assert (
-        updated["model_authority"]["previous_default_model"]
-        == "qwen3.6:35b-a3b-q4_K_M"
+        updated["model_authority"]["previous_default_model"] == "qwen3.6:35b-a3b-q4_K_M"
     )
 
 
