@@ -239,6 +239,24 @@ not cached or persisted by Norman. The production and candidate units set
 `NORMAN_RELEASE_SHA` themselves, so this command always runs the broker from
 the release serving the request.
 
+The AWS credentials behind `norman/bedrock-fallback` should belong to a
+dedicated runner identity. Grant that identity access only to the approved
+Mantle project. Preview the policy before applying it:
+
+```bash
+python scripts/configure_bedrock_mantle_iam.py \
+  --profile <admin-profile> \
+  --user-name <dedicated-runner-user> \
+  --region us-east-2 \
+  --project default
+```
+
+Apply the same policy with `--apply`. The command writes an inline policy and
+then uses IAM policy simulation to verify both
+`bedrock-mantle:CreateInference` and
+`bedrock-mantle:CallWithBearerToken`. Rotate the encrypted credential if its
+access key belongs to a general-purpose or unrelated automation identity.
+
 The legacy `norman.service` rollback path must use the same identity file.
 Install `scripts/systemd/norman.service.d/10-runtime-env.conf` before removing
 the legacy plaintext token file.
