@@ -8142,3 +8142,125 @@
     padding-bottom: max(14px, env(safe-area-inset-bottom));
   }
 }
+
+/* Quiet Bridge visual system
+ *
+ * This final layer keeps operational state visible without treating every
+ * state as a separate framed panel. It also keeps the boot status outside the
+ * conversation grid on every viewport.
+ */
+.page-bridge .bridge-boot-interstitial {
+  position: fixed;
+  z-index: 1200;
+  top: 84px;
+  right: 20px;
+  left: auto;
+  width: min(340px, calc(100vw - 40px));
+  padding: 10px 12px 9px;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--profile-bg) 92%, black);
+  border: 1px solid color-mix(in srgb, var(--agent-accent) 28%, var(--profile-border));
+  border-radius: 7px;
+  box-shadow: 0 14px 30px rgb(0 0 0 / 28%), inset 0 1px 0 rgb(255 255 255 / 5%);
+}
+
+.page-bridge .cockpit-command-rail {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  min-height: 40px;
+  background: color-mix(in srgb, var(--profile-surface) 22%, transparent);
+  border-color: var(--bridge-hairline);
+}
+
+.page-bridge .cockpit-command-cell {
+  min-height: 40px;
+  grid-template-columns: 20px minmax(0, 1fr);
+  grid-template-rows: 16px 12px;
+  gap: 1px 7px;
+  padding: 5px 10px;
+}
+
+.page-bridge .cockpit-command-cell:nth-child(3),
+.page-bridge .cockpit-command-cell:nth-child(5) {
+  display: none;
+}
+
+.page-bridge .cockpit-command-cell > [data-meter-icon] {
+  width: 20px;
+  height: 20px;
+  background: transparent;
+  border-color: transparent;
+}
+
+.page-bridge .cockpit-command-cell strong {
+  font-size: 0.64rem;
+}
+
+.page-bridge .cockpit-command-cell small {
+  font-size: 0.5rem;
+}
+
+.page-bridge .cockpit-feed {
+  --thread-agent-width: min(100%, 700px);
+  padding-top: 22px;
+}
+
+.page-bridge .cockpit-turn {
+  max-width: 880px;
+}
+
+.page-bridge .cockpit-composer-wrap {
+  border-top: 1px solid var(--bridge-hairline);
+  box-shadow: none;
+}
+
+.page-bridge .cockpit-composer {
+  background: color-mix(in srgb, var(--profile-surface-2) 34%, var(--profile-bg));
+  border-color: color-mix(in srgb, var(--profile-border) 58%, transparent);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 4%);
+}
+
+.page-bridge .cockpit-composer:focus-within {
+  border-color: color-mix(in srgb, var(--agent-accent) 52%, var(--profile-border));
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 5%),
+    0 0 0 1px color-mix(in srgb, var(--agent-accent) 14%, transparent);
+}
+
+.page-bridge .cockpit-composer textarea:focus,
+.page-bridge .cockpit-composer textarea:focus-visible {
+  outline: 0;
+  box-shadow: none;
+}
+
+.page-bridge .cockpit-compose-action {
+  color: color-mix(in srgb, var(--profile-muted) 82%, var(--profile-text));
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.page-bridge .cockpit-compose-action:hover,
+.page-bridge .cockpit-compose-action:focus-visible {
+  color: var(--profile-text);
+  background: color-mix(in srgb, var(--agent-accent) 9%, transparent);
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.page-bridge .cockpit-send {
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 18%);
+}
+
+@media (max-width: 575.98px) {
+  .page-bridge .bridge-boot-interstitial {
+    top: auto;
+    right: 10px;
+    bottom: calc(86px + env(safe-area-inset-bottom));
+    left: 10px;
+    width: auto;
+  }
+
+  .page-bridge .cockpit-command-cell {
+    padding-inline: 8px;
+  }
+}

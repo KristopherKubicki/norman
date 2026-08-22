@@ -35,15 +35,15 @@ def _bridge_history_response(value: Any) -> str:
     response = str(value or "").strip()
     if not re.search(
         r"\b(?:selected route|local proof|local lane availability|route receipts):"
-        r"|\bdeterministic tui state\b",
+        r"|\bdeterministic tui state\b|\bquick status\b",
         response,
         flags=re.IGNORECASE,
     ):
         return response
     return (
-        "Bridge status\n\n"
-        "- This legacy status reply has been condensed.\n"
-        "- Use the live Bridge indicators for the current route, queue, and agent state."
+        "Prior Bridge status\n\n"
+        "This diagnostic reply has been superseded by the live route, queue, "
+        "and agent indicators above."
     )
 
 

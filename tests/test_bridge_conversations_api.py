@@ -156,7 +156,7 @@ def test_bridge_history_condenses_legacy_runtime_diagnostics(test_app, db, monke
     response = test_app.get("/api/v1/bridge/conversations/agents/artmonster/history")
 
     assert response.status_code == 200
-    assert response.json()["items"][0]["response"].startswith("Bridge status")
+    assert response.json()["items"][0]["response"].startswith("Prior Bridge status")
     assert "Selected route" not in response.json()["items"][0]["response"]
 
 

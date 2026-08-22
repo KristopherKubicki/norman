@@ -2665,13 +2665,12 @@
 
   function normalizeBridgeResponse(text) {
     const response = String(text || '').trim();
-    const isLegacyStatus = /\b(?:Selected route|Local proof|Local lane availability|route receipts):|\bdeterministic TUI state\b/i.test(response);
+    const isLegacyStatus = /\b(?:selected route|local proof|local lane availability|route receipts):|\bdeterministic tui state\b|\bquick status\b/i.test(response);
     if (!isLegacyStatus) return response;
     return [
-      'Bridge status',
+      'Prior Bridge status',
       '',
-      '- This legacy status reply has been condensed.',
-      '- Use the live indicators above for the current route, queue, and agent state.',
+      'This diagnostic reply has been superseded by the live route, queue, and agent indicators above.',
     ].join('\n');
   }
 
@@ -3052,7 +3051,7 @@
       const directAgent = conversation.kind === 'direct'
         ? state.agents.find((item) => slugify(item.slug) === slugify(conversation.direct_agent_slug))
         : null;
-      title = directAgent?.display_name || conversation.title;
+      title = conversation.title || directAgent?.display_name || displaySlug(conversation.direct_agent_slug);
       const memberCount = (conversation.member_slugs || []).length;
       subtitle = conversation.kind === 'room'
         ? `${memberCount} bot${memberCount === 1 ? '' : 's'} in this room`
