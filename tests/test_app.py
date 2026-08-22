@@ -45,8 +45,8 @@ def test_root_renders_norman_bridge_when_auth_disabled(
     assert response.text.count('class="cockpit-icon"') >= 12
     assert 'id="norman-favicon"' in response.text
     assert "/static/favicon.svg?v=20260822a" in response.text
-    assert "/static/css/bridge.css?v=20260822n" in response.text
-    assert "/static/js/bridge.js?v=20260822n" in response.text
+    assert "/static/css/bridge.css?v=20260822o" in response.text
+    assert "/static/js/bridge.js?v=20260822o" in response.text
     assert "site-banner" not in response.text
     assert 'id="global-status-bar"' not in response.text
 
@@ -126,6 +126,7 @@ def test_bridge_client_derives_boundaries_from_estate_registry() -> None:
     assert "const showBootInterstitial = !quiet || !state.bootstrapped;" in source
     assert "prior turns restored" not in source
     assert "function isLegacyBridgeDiagnostic(text)" in source
+    assert "selected route:\\s*codex\\/gpt-5\\.4/is.test(value)" in source
     assert ".filter((turn) => !isLegacyBridgeDiagnostic(turn.response || turn.error))" in source
     assert "if (stationSlug)" in source
     assert "Station history unavailable" in source
