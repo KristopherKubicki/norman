@@ -4939,6 +4939,10 @@ def test_norman_frontdoor_caddy_serves_shortcuts_locally() -> None:
     ) in rendered
     assert "tls /etc/caddy/certs/norman-lollie.crt" not in rendered
     assert (
+        "@bridge_document path /bridge /bridge.html\n"
+        '    header @bridge_document Cache-Control "no-store, max-age=0"'
+    ) in rendered
+    assert (
         "@bridge_live_assets path /static/css/bridge.css /static/js/bridge.js\n"
         "    handle @bridge_live_assets {\n"
         "        uri strip_prefix /static\n"

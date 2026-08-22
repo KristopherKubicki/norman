@@ -73,6 +73,9 @@ def render_frontdoor_snippet() -> str:
 (norman_frontdoor) {
     encode gzip zstd
 
+    @bridge_document path /bridge /bridge.html
+    header @bridge_document Cache-Control "no-store, max-age=0"
+
     @bridge_live_assets path /static/css/bridge.css /static/js/bridge.js
     handle @bridge_live_assets {
         uri strip_prefix /static
