@@ -2617,6 +2617,21 @@
     </div>`;
   }
 
+  function normalizeBridgeResponse(text) {
+    const response = String(text || '').trim();
+    const isLegacyStatus = (
+      /^\s*-\s*State:\s*/mi.test(response)
+      && /\bSelected route:|\bLocal proof:|\bLocal lane availability:|\broute receipts:/i.test(response)
+    );
+    if (!isLegacyStatus) return response;
+    return [
+      'Bridge status',
+      '',
+      '- This legacy status reply has been condensed.',
+      '- Use the live indicators above for the current route, queue, and agent state.',
+    ].join('\n');
+  }
+
   function resultText(job, events = []) {
     const result = job?.result || job?.result_json || {};
     const modelEvent = [...events].reverse().find((event) => (
@@ -2630,13 +2645,13 @@
       || payload.response
       || payload.output_preview
       || (/model\.delta/.test(modelEvent?.event_type || '') ? modelEvent?.detail : '');
-    if (String(modelText || '').trim()) return String(modelText).trim();
-    if (String(result.detail || '').trim()) return String(result.detail).trim();
+    if (String(modelText || '').trim()) return normalizeBridgeResponse(modelText);
+    if (String(result.detail || '').trim()) return normalizeBridgeResponse(result.detail);
     const embedded = result.text || result.output || result.response;
-    if (String(embedded || '').trim()) return String(embedded).trim();
+    if (String(embedded || '').trim()) return normalizeBridgeResponse(embedded);
     const summary = String(result.summary || '').trim();
     if (summary && !/^(static advisory )?response completed\\.?$|^job completed\\.?$/i.test(summary)) {
-      return summary;
+      return normalizeBridgeResponse(summary);
     }
     return '';
   }
@@ -2772,7 +2787,7 @@
     const visibleJobs = localPrompt ? [...jobs, localPrompt] : jobs;
     const historyHtml = stationTurns.map((turn, index) => {
       const time = turn.finished_at || turn.started_at;
-      const response = turn.response || turn.error;
+      const response = normalizeBridgeResponse(turn.response || turn.error);
       const attachments = turn.attachments || [];
       const hasAssistantOutput = Boolean(response || attachments.length);
       return `<section class="cockpit-turn cockpit-turn--history" data-station-turn="${escapeHtml(turn.turn_id || `${stationSlug}-${index}`)}">

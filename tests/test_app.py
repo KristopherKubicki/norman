@@ -152,6 +152,7 @@ def test_bridge_client_derives_boundaries_from_estate_registry() -> None:
     assert "cockpit-working__signal" in source
     assert "cockpit-working__progress" in source
     assert "function updateBootInterstitial" in source
+    assert "function normalizeBridgeResponse" in source
     assert "bridge-boot-interstitial" in styles
     assert "--radius-panel" in styles
     assert "--thread-item-gap" in styles
