@@ -1189,6 +1189,7 @@
     const presence = heartbeatFor(agent) ? 'online' : 'known';
     return `<span class="bridge-simple-cartouche${mini ? ' bridge-simple-cartouche--mini' : ''}${hero ? ' bridge-simple-cartouche--hero' : ''}"
       data-group="${escapeHtml(identity.group)}"
+      data-entity-key="${escapeHtml(identity.slug)}"
       data-variant="${escapeHtml(identity.styleVariant)}"
       data-pattern="${escapeHtml(slugify(identity.texture?.pattern || 'identity-weave'))}"
       data-motion="${escapeHtml(motion.family)}"
@@ -2619,10 +2620,7 @@
 
   function normalizeBridgeResponse(text) {
     const response = String(text || '').trim();
-    const isLegacyStatus = (
-      /^\s*-\s*State:\s*/mi.test(response)
-      && /\bSelected route:|\bLocal proof:|\bLocal lane availability:|\broute receipts:/i.test(response)
-    );
+    const isLegacyStatus = /\b(?:Selected route|Local proof|Local lane availability|route receipts):|\bdeterministic TUI state\b/i.test(response);
     if (!isLegacyStatus) return response;
     return [
       'Bridge status',
