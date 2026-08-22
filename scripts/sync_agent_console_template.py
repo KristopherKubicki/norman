@@ -2948,7 +2948,11 @@ def sync_instance_model_setting(
     clean_model = str(model or "").strip()
     if not clean_model:
         return False
-    updates = {"HOUSEBOT_CODEX_MODEL": clean_model}
+    updates = {
+        "NORMAN_CODEX_MODEL": clean_model,
+        # Preserve this retired setting for any external wrapper that still uses it.
+        "HOUSEBOT_CODEX_MODEL": clean_model,
+    }
     payload = json.dumps(updates, separators=(",", ":"))
     script = f"""
 python3 - <<'PY'
@@ -2973,6 +2977,35 @@ for key, value in updates.items():
         changed = True
 if changed:
     path.write_text(text, encoding="utf-8")
+state_dir = Path(
+    next(
+        (
+            line.split("=", 1)[1].strip()
+            for line in text.splitlines()
+            if line.startswith("NORMAN_CODEX_WEB_STATE_DIR=")
+        ),
+        "",
+    )
+    or Path({instance.codex_home!r}) / "web-bridge"
+)
+for runtime_path in (
+    state_dir / "runtime_settings.json",
+    Path({instance.codex_home!r}) / "runtime_settings.json",
+):
+    try:
+        runtime = json.loads(runtime_path.read_text(encoding="utf-8") or "{{}}")
+    except (FileNotFoundError, json.JSONDecodeError):
+        runtime = {{}}
+    if not isinstance(runtime, dict):
+        runtime = {{}}
+    runtime["model"] = {clean_model!r}
+    runtime["model_floor"] = {clean_model!r}
+    rendered = json.dumps(runtime, sort_keys=True, indent=2) + "\\n"
+    prior = runtime_path.read_text(encoding="utf-8") if runtime_path.exists() else ""
+    if prior != rendered:
+        runtime_path.parent.mkdir(parents=True, exist_ok=True)
+        runtime_path.write_text(rendered, encoding="utf-8")
+        changed = True
 print("changed" if changed else "unchanged")
 PY
 """

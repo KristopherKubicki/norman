@@ -3494,6 +3494,15 @@ def test_conversational_status_prompt_does_not_bypass_normal_routing(
     assert module.deterministic_status_prompt_allowed("Status update?", []) is True
 
 
+def test_media_request_never_uses_deterministic_state_read(monkeypatch, tmp_path):
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_EXECUTION_ENABLED", "0")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    prompt = "Can you show me the images in this session here?"
+
+    assert module.prompt_requests_media_work(prompt) is True
+    assert module.deterministic_status_prompt_allowed(prompt, []) is False
+
+
 def test_investigative_status_runs_local_route_preflight_instead_of_zero_token_reply(
     monkeypatch, tmp_path
 ):

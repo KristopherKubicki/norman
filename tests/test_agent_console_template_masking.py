@@ -5448,7 +5448,9 @@ def test_sync_template_keeps_model_upgrades_operator_triggered() -> None:
     source = _sync_agent_console_template_source()
 
     assert "--set-codex-model" in source
+    assert '"NORMAN_CODEX_MODEL": clean_model' in source
     assert '"HOUSEBOT_CODEX_MODEL": clean_model' in source
+    assert 'runtime["model"] = {clean_model!r}' in source
     assert (
         "sync_instance_model_setting(\n                host, instance, args.set_codex_model"
         in source

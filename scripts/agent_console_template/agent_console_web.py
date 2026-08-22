@@ -30673,6 +30673,18 @@ def local_status_preflight_available() -> bool:
     return bool(local_planner_preflight_readiness().get("ready"))
 
 
+def prompt_requests_media_work(prompt: Any) -> bool:
+    """Keep visual artifact requests on the normal model/tool path."""
+    lower = prompt_core_request(str(prompt or "")).lower()
+    return bool(
+        re.search(
+            r"\b(?:image|images|picture|pictures|photo|photos|artwork|"
+            r"asset|assets|attachment|attachments|render|embed|inline|download)\b",
+            lower,
+        )
+    )
+
+
 def deterministic_status_prompt_allowed(
     prompt: str, attachments: list[dict[str, Any]], *, route_lock: bool = False
 ) -> bool:
@@ -30688,6 +30700,8 @@ def deterministic_status_prompt_allowed(
     if prompt_is_broad_planning_request(core):
         return False
     if prompt_requests_investigation(core):
+        return False
+    if prompt_requests_media_work(core):
         return False
     return (
         prompt_is_explicit_status_request(core)
