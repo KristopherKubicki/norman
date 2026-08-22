@@ -96,6 +96,65 @@ def _agent_console_launch_source() -> str:
     ).read_text(encoding="utf-8")
 
 
+def test_artmonster_latest_image_source_attaches_public_feed_image(monkeypatch) -> None:
+    module = _load_agent_console_web()
+    module.AGENT_NAME = "Artmonster"
+    created = {}
+
+    class _Response:
+        def __init__(self, body: bytes, content_type: str = "text/html"):
+            self._body = body
+            self.headers = {"Content-Type": content_type}
+
+        def read(self, _limit: int = -1) -> bytes:
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    image_url = "https://64.media.tumblr.com/example/s1280x1920/latest-art.jpg"
+    responses = iter(
+        [
+            _Response(f'<img src="{image_url}">'.encode("utf-8")),
+            _Response(b"image-bytes", "image/jpeg"),
+        ]
+    )
+    monkeypatch.setattr(module.urllib_request, "urlopen", lambda *_args, **_kwargs: next(responses))
+    monkeypatch.setattr(
+        module,
+        "create_draft_attachment",
+        lambda **kwargs: created.setdefault("attachment", kwargs) or kwargs,
+    )
+
+    attachment = module.fetch_latest_source_attachment(
+        "Can you show the newest image we captured in the Artbot?"
+    )
+
+    assert attachment is created["attachment"]
+    assert created["attachment"]["url"] == image_url
+    assert created["attachment"]["kind"] == "image"
+    assert created["attachment"]["source"] == "drops-art-public"
+    assert (
+        module.build_attachment_origin_label(created["attachment"])
+        == "public Drops.art image"
+    )
+
+
+def test_media_request_never_uses_deterministic_status_handler(monkeypatch) -> None:
+    module = _load_agent_console_web()
+    monkeypatch.setattr(module, "prompt_runtime_alive", lambda: False)
+
+    assert (
+        module.deterministic_status_prompt_allowed(
+            "cna oyu show me hte images in the session here?", []
+        )
+        is False
+    )
+
+
 def _norman_codex_launch_source() -> str:
     return (
         Path(__file__).resolve().parents[1] / "scripts" / "norman_codex_launch.sh"

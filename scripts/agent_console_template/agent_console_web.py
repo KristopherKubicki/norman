@@ -35,7 +35,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 from urllib import error as urllib_error, request as urllib_request
-from urllib.parse import parse_qs, quote, urlencode, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urljoin, urlparse
 
 try:
     from app.services import tui_route_intent as SHARED_TUI_ROUTE_INTENT
@@ -2992,6 +2992,18 @@ CONSOLE_RUNTIME_TOKEN_BREAKER_PATH = STATE_DIR / "console_runtime_token_breaker.
 DRAFT_ATTACHMENTS_PATH = STATE_DIR / "draft_attachments.json"
 RUNTIME_SETTINGS_PATH = STATE_DIR / "runtime_settings.json"
 ATTACHMENTS_DIR = STATE_DIR / "attachments"
+MEDIA_SOURCE_CATALOG: dict[str, tuple[dict[str, Any], ...]] = {
+    "artmonster": (
+        {
+            "id": "drops-art-public",
+            "label": "Drops.art public feed",
+            "index_url": "https://drops.art/",
+            "image_hosts": ("64.media.tumblr.com",),
+            "image_path_markers": ("/s1280x1920/",),
+            "trigger_terms": ("artbot", "drops.art", "drops art"),
+        },
+    ),
+}
 LOCAL_LLM_ROUTE_OUTCOME_PATH = Path(
     os.environ.get(
         "NORMAN_LOCAL_LLM_ROUTE_OUTCOME_PATH",
@@ -17233,6 +17245,8 @@ def build_attachment_origin_label(entry: dict[str, Any]) -> str:
         return "log tail"
     if source == "pane-capture":
         return "live pane capture"
+    if source == "drops-art-public":
+        return "public Drops.art image"
     if source == "upload":
         if name:
             return f"uploaded {name}"
@@ -17444,6 +17458,102 @@ def capture_web_attachment(*, url: str, label: str = "") -> dict[str, Any]:
                 proc.stderr or proc.stdout or ""
             ).strip() or f"exit {proc.returncode}"
     raise ValueError(f"screenshot capture failed: {last_error}")
+
+
+def prompt_requests_latest_image(prompt: Any) -> bool:
+    text = prompt_core_request(str(prompt or "")).lower()
+    if not text:
+        return False
+    has_recency = bool(re.search(r"\b(?:latest|newest|recent)\b", text))
+    has_media = bool(
+        re.search(r"\b(?:image|images|picture|photo|art|artwork|capture)\b", text)
+    )
+    return has_recency and has_media
+
+
+def configured_media_sources_for_agent() -> tuple[dict[str, Any], ...]:
+    agent_slug = slugify_filename(AGENT_NAME).replace("_", "-").lower()
+    return MEDIA_SOURCE_CATALOG.get(agent_slug, ())
+
+
+def extract_source_image_url(page: str, source: dict[str, Any]) -> str:
+    allowed_hosts = {
+        str(host or "").strip().lower()
+        for host in source.get("image_hosts", ())
+        if str(host or "").strip()
+    }
+    path_markers = tuple(
+        str(marker or "").strip()
+        for marker in source.get("image_path_markers", ())
+        if str(marker or "").strip()
+    )
+    index_url = str(source.get("index_url") or "").strip()
+    for match in re.finditer(
+        r"""(?:src|data-src)\s*=\s*["']([^"']+)["']""",
+        html.unescape(str(page or "")),
+        re.IGNORECASE,
+    ):
+        candidate = urljoin(index_url, html.unescape(match.group(1)).strip())
+        parsed = urlparse(candidate)
+        if (
+            parsed.scheme in {"http", "https"}
+            and parsed.netloc.lower() in allowed_hosts
+            and re.search(r"\.(?:avif|gif|jpe?g|png|webp)(?:$|[?#])", parsed.path, re.I)
+            and (not path_markers or any(marker in parsed.path for marker in path_markers))
+        ):
+            return candidate
+    return ""
+
+
+def fetch_latest_source_attachment(prompt: Any) -> dict[str, Any] | None:
+    if not prompt_requests_latest_image(prompt):
+        return None
+    prompt_text = prompt_core_request(str(prompt or "")).lower()
+    for source in configured_media_sources_for_agent():
+        triggers = tuple(
+            str(term or "").strip().lower()
+            for term in source.get("trigger_terms", ())
+            if str(term or "").strip()
+        )
+        if triggers and not any(term in prompt_text for term in triggers):
+            continue
+        index_url = str(source.get("index_url") or "").strip()
+        if not index_url:
+            continue
+        try:
+            page_request = urllib_request.Request(
+                index_url,
+                headers={"User-Agent": "Norman-Artmonster/1.0"},
+            )
+            with urllib_request.urlopen(page_request, timeout=12) as response:
+                page = response.read(1_500_000).decode("utf-8", errors="replace")
+            image_url = extract_source_image_url(page, source)
+            if not image_url:
+                continue
+            image_request = urllib_request.Request(
+                image_url,
+                headers={"User-Agent": "Norman-Artmonster/1.0"},
+            )
+            with urllib_request.urlopen(image_request, timeout=18) as response:
+                content_type = str(response.headers.get("Content-Type") or "").split(
+                    ";", 1
+                )[0].strip()
+                raw_bytes = response.read(MAX_ATTACHMENT_BYTES + 1)
+            if not content_type.startswith("image/") or len(raw_bytes) > MAX_ATTACHMENT_BYTES:
+                continue
+            label = slugify_filename(str(source.get("label") or "latest-image"))
+            suffix = mimetypes.guess_extension(content_type) or ".img"
+            return create_draft_attachment(
+                raw_bytes=raw_bytes,
+                name=f"{label}{suffix}",
+                content_type=content_type,
+                source=str(source.get("id") or "media-source"),
+                kind="image",
+                url=image_url,
+            )
+        except (OSError, TimeoutError, urllib_error.URLError, ValueError):
+            continue
+    return None
 
 
 def remove_draft_attachment(token: str) -> list[dict[str, Any]]:
@@ -47158,6 +47268,10 @@ class Handler(BaseHTTPRequestHandler):
             actor_ip = self.request_client_ip()
             attachments = load_draft_attachments()
             message = (params.get("message", [""])[0]).strip()
+            if message and not attachments:
+                sourced_attachment = fetch_latest_source_attachment(message)
+                if sourced_attachment:
+                    attachments = [sourced_attachment]
             submission_id = normalize_submission_id(
                 (params.get("submission_id") or [""])[0]
             )
