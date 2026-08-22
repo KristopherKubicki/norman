@@ -43,8 +43,8 @@ def test_root_renders_norman_bridge_when_auth_disabled(
     assert 'id="bridge-icon-route"' in response.text
     assert 'id="bridge-icon-user-plus"' in response.text
     assert response.text.count('class="cockpit-icon"') >= 12
-    assert "/static/css/bridge.css?v=20260822d" in response.text
-    assert "/static/js/bridge.js?v=20260822d" in response.text
+    assert "/static/css/bridge.css?v=20260822e" in response.text
+    assert "/static/js/bridge.js?v=20260822e" in response.text
     assert "site-banner" not in response.text
     assert 'id="global-status-bar"' not in response.text
 

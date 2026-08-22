@@ -6078,6 +6078,10 @@
   animation: bridge-artmonster-mark 5s linear infinite;
 }
 
+.entity-cartouche[data-entity-key="artmonster"]::after {
+  content: none;
+}
+
 .bridge-simple-cartouche[data-entity-key="artmonster"] .bridge-simple-cartouche__glyph {
   overflow: hidden;
   color: #fff7d6;
