@@ -172,6 +172,8 @@
       phase: 'Opening the estate',
       detail: 'Preparing a working session',
       dismissTimer: 0,
+      activityTimer: 0,
+      activityStep: 1,
     },
     authRequired: root.dataset.authenticated !== 'true',
     pollTimer: 0,
@@ -279,6 +281,7 @@
     bootInterstitial: el('bridge-boot-interstitial'),
     bootTitle: el('bridge-boot-title'),
     bootDetail: el('bridge-boot-detail'),
+    bootActivity: el('bridge-boot-activity'),
     bootProgress: el('bridge-boot-progress'),
     soundToggle: el('cockpit-sound-toggle'),
     soundTest: el('cockpit-sound-test'),
@@ -2412,15 +2415,32 @@
       : 8;
     nodes.bootTitle.textContent = state.boot.phase;
     nodes.bootDetail.textContent = state.boot.detail;
+    if (nodes.bootActivity) {
+      nodes.bootActivity.textContent = complete ? '' : '.'.repeat(state.boot.activityStep);
+    }
     nodes.bootProgress.style.setProperty('--bridge-boot-progress', `${complete ? 100 : Math.max(8, progress)}%`);
     nodes.bootInterstitial.classList.toggle('is-complete', complete);
+    nodes.bootInterstitial.classList.toggle('is-loading', !complete);
     nodes.bootInterstitial.hidden = false;
     if (complete) {
+      window.clearInterval(state.boot.activityTimer);
+      state.boot.activityTimer = 0;
       window.clearTimeout(state.boot.dismissTimer);
       state.boot.dismissTimer = window.setTimeout(() => {
         nodes.bootInterstitial.hidden = true;
       }, 520);
     }
+  }
+
+  function startBootActivity() {
+    window.clearInterval(state.boot.activityTimer);
+    state.boot.activityStep = 1;
+    state.boot.activityTimer = window.setInterval(() => {
+      state.boot.activityStep = state.boot.activityStep >= 4 ? 1 : state.boot.activityStep + 1;
+      if (nodes.bootActivity && !nodes.bootInterstitial.hidden) {
+        nodes.bootActivity.textContent = '.'.repeat(state.boot.activityStep);
+      }
+    }, 340);
   }
 
   function bootUpdateForRequest(completed, total) {
@@ -3382,6 +3402,7 @@
     state.loading = true;
     state.boot.completed = 0;
     state.boot.total = 0;
+    startBootActivity();
     updateBootInterstitial({
       phase: 'Opening the estate',
       detail: 'Preparing a working session',

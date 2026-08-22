@@ -6584,6 +6584,15 @@
   white-space: nowrap;
 }
 
+.bridge-boot-interstitial__copy small b {
+  display: inline-block;
+  width: 2.2em;
+  color: color-mix(in srgb, var(--agent-accent) 72%, var(--profile-text));
+  font: inherit;
+  letter-spacing: 0;
+  text-align: left;
+}
+
 .bridge-boot-interstitial__progress {
   grid-column: 1 / -1;
   height: 2px;
@@ -6595,9 +6604,25 @@
   display: block;
   width: var(--bridge-boot-progress, 8%);
   height: 100%;
-  background: var(--agent-accent);
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--agent-accent) 72%, transparent),
+    var(--agent-accent),
+    color-mix(in srgb, var(--agent-accent-2) 76%, var(--agent-accent))
+  );
+  background-size: 180% 100%;
   box-shadow: 0 0 10px color-mix(in srgb, var(--agent-accent) 72%, transparent);
   transition: width 240ms ease;
+}
+
+.bridge-boot-interstitial.is-loading .bridge-boot-interstitial__progress i {
+  animation: bridge-boot-progress-sweep 960ms linear infinite;
+}
+
+@keyframes bridge-boot-progress-sweep {
+  to {
+    background-position: 180% 0;
+  }
 }
 
 .bridge-history-sync {

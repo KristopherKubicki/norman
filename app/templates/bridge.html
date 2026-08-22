@@ -3,7 +3,7 @@
 {% block title %}Norman Bridge{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="/static/css/bridge.css?v=20260822j">
+<link rel="stylesheet" href="/static/css/bridge.css?v=20260822k">
 {% endblock %}
 
 {% block content %}
@@ -154,7 +154,7 @@
       <div class="bridge-boot-interstitial__copy">
         <span>Bridge</span>
         <strong id="bridge-boot-title">Opening the estate</strong>
-        <small id="bridge-boot-detail">Preparing a working session</small>
+        <small><span id="bridge-boot-detail">Preparing a working session</span><b id="bridge-boot-activity" aria-hidden="true">.</b></small>
       </div>
       <div class="bridge-boot-interstitial__progress" aria-hidden="true"><i id="bridge-boot-progress"></i></div>
     </section>
@@ -256,5 +256,5 @@
 
 {% block extra_js %}
 <script src="/static/js/marked.min.js?v=5.0.1" defer></script>
-<script src="/static/js/bridge.js?v=20260822j" defer></script>
+<script src="/static/js/bridge.js?v=20260822k" defer></script>
 {% endblock %}

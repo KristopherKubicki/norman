@@ -45,8 +45,8 @@ def test_root_renders_norman_bridge_when_auth_disabled(
     assert response.text.count('class="cockpit-icon"') >= 12
     assert 'id="norman-favicon"' in response.text
     assert "/static/favicon.svg?v=20260822a" in response.text
-    assert "/static/css/bridge.css?v=20260822j" in response.text
-    assert "/static/js/bridge.js?v=20260822j" in response.text
+    assert "/static/css/bridge.css?v=20260822k" in response.text
+    assert "/static/js/bridge.js?v=20260822k" in response.text
     assert "site-banner" not in response.text
     assert 'id="global-status-bar"' not in response.text
 
@@ -96,6 +96,8 @@ def test_bridge_client_derives_boundaries_from_estate_registry() -> None:
     assert "Restoring ${name}'s thread" in source
     assert "function normalizeBridgeResponse(text)" in source
     assert "Prior Bridge status" not in source
+    assert "function startBootActivity()" in source
+    assert "bridge-boot-activity" in source
     assert 'data-chip="usage"' in source
     assert 'data-chip="spend"' in source
     assert "function formatCompactNumber" in source
