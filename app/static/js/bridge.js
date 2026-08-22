@@ -187,6 +187,7 @@
     lastTypingToneAt: 0,
     lastCompletionAt: 0,
     lastTerminalState: '',
+    faviconTone: '',
     composeHintDefault: '',
     prompt: {
       phase: 'idle',
@@ -291,6 +292,16 @@
   };
   let activeCartouche = null;
   let cartoucheReleaseTimer = 0;
+
+  function setBridgeFavicon(tone) {
+    if (state.faviconTone === tone) return;
+    state.faviconTone = tone;
+    const link = document.getElementById('norman-favicon');
+    if (!link) return;
+    const signal = tone === 'warn' ? '#e37d78' : tone === 'active' ? '#f1d47f' : '#72c7a8';
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="15" fill="#101720"/><rect x="5" y="5" width="54" height="54" rx="12" fill="#263547" stroke="#607690" stroke-width="2"/><path d="M13 20h38M13 32h38M13 44h38" stroke="#7baee1" stroke-opacity=".18"/><path d="M20 46V18h6l12 16V18h6v28h-6L26 30v16h-6Z" fill="#f1d47f"/><circle cx="49" cy="15" r="5" fill="${signal}" stroke="#e1fff4" stroke-opacity=".7"/></svg>`;
+    link.href = `data:image/svg+xml,${encodeURIComponent(svg)}`;
+  }
 
   function escapeHtml(value) {
     return String(value ?? '')
@@ -3191,6 +3202,7 @@
     meterParts(nodes.warningMeter, 'Alerts', warnings.length ? String(warnings.length) : 'Clear', warnings.length ? 'Approval or runtime hold' : 'No holds', warnings.length ? 'warn' : 'ok');
     nodes.menuCount.textContent = String(warnings.length);
     nodes.menuCount.classList.toggle('d-none', warnings.length === 0);
+    setBridgeFavicon(!available || warnings.length ? 'warn' : running ? 'active' : 'ready');
 
     nodes.warningStrip.hidden = available && warnings.length === 0;
     if (!nodes.warningStrip.hidden) {
