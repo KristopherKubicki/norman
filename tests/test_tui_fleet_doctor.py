@@ -25,6 +25,10 @@ def _row(name: str, **overrides):
         "timeout": "3600",
         "ui_version": "2026.06.01.7",
         "stale_refs": [],
+        "configured_model": "gpt-5.6-terra",
+        "model_floor": "gpt-5.6-terra",
+        "runtime_model": "gpt-5.6-terra",
+        "local_llm_execution_enabled": "1",
         "status": {
             "state": "ok",
             "pending": False,
@@ -198,6 +202,33 @@ def test_doctor_remote_scan_accepts_canonical_norman_env(monkeypatch) -> None:
     assert "status_url, timeout=4" in source
     assert "readiness_url, timeout=4" in source
     assert "/api/version" in source
+    assert "def runtime_model(env):" in source
+    assert '"local_llm_execution_enabled"' in source
+
+
+def test_doctor_fails_legacy_model_or_disabled_local_first(monkeypatch) -> None:
+    module = _load_doctor(monkeypatch)
+
+    report = module.analyze_host(
+        host_name="toy-box",
+        expected_names={"artmonster"},
+        active_rows=[
+            _row(
+                "artmonster",
+                configured_model="gpt-5.4",
+                model_floor="gpt-5.6-terra",
+                runtime_model="gpt-5.4",
+                local_llm_execution_enabled="0",
+            )
+        ],
+        archived_names=set(),
+        min_timeout_seconds=3600,
+        ui_version="2026.06.01.7",
+    )
+
+    details = _issue_details(report)
+    assert ("fail", "artmonster", "model-policy") in details
+    assert ("fail", "artmonster", "local-first") in details
 
 
 def test_doctor_keeps_last_prompt_failure_cause_in_warning(monkeypatch) -> None:

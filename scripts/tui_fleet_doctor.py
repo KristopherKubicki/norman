@@ -190,6 +190,10 @@ def _is_truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _is_legacy_gpt54(value: Any) -> bool:
+    return "gpt-5.4" in str(value or "").strip().lower()
+
+
 def _state_text(status: dict[str, Any]) -> str:
     return str(status.get("state") or status.get("status") or "").strip().lower()
 
@@ -540,6 +544,33 @@ def analyze_host(
         if restart_issue is not None:
             issues.append(restart_issue)
 
+        model_values = {
+            "configured": row.get("configured_model"),
+            "floor": row.get("model_floor"),
+            "runtime": row.get("runtime_model"),
+        }
+        for source, model in model_values.items():
+            if _is_legacy_gpt54(model):
+                issues.append(
+                    DoctorIssue(
+                        "fail",
+                        host_name,
+                        name,
+                        "model-policy",
+                        f"{source} model is legacy {model}",
+                    )
+                )
+        if not _is_truthy(row.get("local_llm_execution_enabled")):
+            issues.append(
+                DoctorIssue(
+                    "fail",
+                    host_name,
+                    name,
+                    "local-first",
+                    "NORMAN_LOCAL_LLM_EXECUTION_ENABLED is not enabled",
+                )
+            )
+
         queue_depth = _coerce_nonnegative_int(status.get("queue_depth"))
         pending = _is_truthy(status.get("pending"))
         active_child_pid = _active_child_pid(status)
@@ -850,6 +881,26 @@ def fetch_ui_version(port, token, status):
     return match.group(1).strip() if match else ""
 
 
+def runtime_model(env):
+    state_dir = env_get(env, "NORMAN_CODEX_WEB_STATE_DIR").strip()
+    codex_home = env_get(env, "NORMAN_CODEX_HOME").strip()
+    candidates = []
+    if state_dir:
+        candidates.append(Path(state_dir) / "runtime_settings.json")
+    if codex_home:
+        candidates.append(Path(codex_home) / "runtime_settings.json")
+    for path in candidates:
+        try:
+            payload = json.loads(path.read_text(errors="replace") or "{{}}")
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            value = str(payload.get("model") or "").strip()
+            if value:
+                return value
+    return ""
+
+
 def stale_refs(paths):
     refs = []
     for raw_path in paths:
@@ -946,6 +997,12 @@ for pattern in patterns:
                 "preflight_probe": preflight_probe,
                 "host_pressure": host_pressure,
                 "ui_version": fetch_ui_version(port, token, status),
+                "configured_model": env_get(env, "NORMAN_CODEX_MODEL").strip(),
+                "model_floor": env_get(env, "NORMAN_CODEX_MODEL_FLOOR").strip(),
+                "runtime_model": runtime_model(env),
+                "local_llm_execution_enabled": (
+                    env_get(env, "NORMAN_LOCAL_LLM_EXECUTION_ENABLED").strip()
+                ),
                 "stale_refs": stale_refs([
                     env_path,
                     os.path.join("/etc/systemd/system", codex_unit),
