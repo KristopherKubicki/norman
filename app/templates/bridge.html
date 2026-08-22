@@ -3,7 +3,7 @@
 {% block title %}Norman Bridge{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="/static/css/bridge.css?v=20260821j">
+<link rel="stylesheet" href="/static/css/bridge.css?v=20260822a">
 {% endblock %}
 
 {% block content %}
@@ -148,6 +148,16 @@
       </button>
     </nav>
 
+    <section class="bridge-boot-interstitial" id="bridge-boot-interstitial" role="status" aria-live="polite">
+      <div class="bridge-boot-interstitial__signal" aria-hidden="true"><i></i><i></i><i></i></div>
+      <div class="bridge-boot-interstitial__copy">
+        <span>Bridge</span>
+        <strong id="bridge-boot-title">Opening the estate</strong>
+        <small id="bridge-boot-detail">Preparing a working session</small>
+      </div>
+      <div class="bridge-boot-interstitial__progress" aria-hidden="true"><i id="bridge-boot-progress"></i></div>
+    </section>
+
     <div class="cockpit-warning-strip" id="cockpit-warning-strip" hidden role="status">
       <span class="cockpit-warning-strip__mark"><svg class="cockpit-icon"><use href="#bridge-icon-alert"/></svg></span>
       <div><strong id="cockpit-warning-title">Runtime warning</strong><span id="cockpit-warning-detail"></span></div>
@@ -242,5 +252,5 @@
 
 {% block extra_js %}
 <script src="/static/js/marked.min.js?v=5.0.1" defer></script>
-<script src="/static/js/bridge.js?v=20260821j" defer></script>
+<script src="/static/js/bridge.js?v=20260822a" defer></script>
 {% endblock %}

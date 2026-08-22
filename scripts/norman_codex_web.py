@@ -23214,51 +23214,33 @@ def execute_deterministic_command(argv: list[str]) -> tuple[str, bool]:
 
 
 def deterministic_status_response(prompt: str, *, fast_snapshot: bool = False) -> str:
-    """Build a zero-token status response from current TUI state.
-
-    Web acknowledgements use the bounded live overlay so a status request cannot
-    block behind the full diagnostics snapshot. Direct callers retain the full
-    snapshot by default.
-    """
+    """Build a concise, user-facing status response without runtime diagnostics."""
     snapshot = _live_status_overlay() if fast_snapshot else current_snapshot()
     state = str(snapshot.get("state") or "unknown").strip() or "unknown"
-    pending = "yes" if snapshot.get("pending") else "no"
-    status_message = summarize_text(snapshot.get("status_message"), 180) or "n/a"
-    selected_runtime = str(snapshot.get("selected_runtime") or "").strip() or "unknown"
-    selected_model = str(snapshot.get("selected_model") or "").strip() or "unknown"
-    last_runtime = str(snapshot.get("last_runtime") or "").strip() or "unknown"
-    last_model = str(snapshot.get("last_model") or "").strip() or "unknown"
-    last_error = summarize_text(snapshot.get("last_error"), 220)
-    last_response = summarize_text(snapshot.get("last_response"), 220)
-    response_note = last_error or last_response or "no visible response recorded"
-    route_receipts = snapshot.get("route_receipts")
-    if isinstance(route_receipts, dict):
-        receipt_status = str(route_receipts.get("status") or "unknown").strip()
-        receipt_count = _coerce_int(route_receipts.get("receipt_count"))
-        receipt_note = f"{receipt_status}, {receipt_count} receipts"
-    else:
-        receipt_note = "not reported"
-    planner_readiness = snapshot.get("local_planner_readiness")
-    if isinstance(planner_readiness, dict):
-        planner_note = summarize_text(
-            planner_readiness.get("reason")
-            or planner_readiness.get("status")
-            or planner_readiness.get("model")
-            or "",
-            180,
+    pending = bool(snapshot.get("pending"))
+    needs_attention = bool(snapshot.get("last_error")) or state in {
+        "error",
+        "failed",
+        "degraded",
+    }
+    if pending:
+        summary = "A request is still in progress."
+        next_step = "I will post the result here when it is ready."
+    elif needs_attention:
+        summary = "The last request needs attention."
+        next_step = (
+            "Open the runtime details for diagnostics, or send a focused follow-up."
         )
     else:
-        planner_note = ""
-    if not planner_note:
-        planner_note = "local planner readiness is not loaded in this snapshot"
-    requested = summarize_text(prompt, 120)
+        summary = "Bridge is ready and no request is running."
+        next_step = "Send the next focused request when you are ready."
     return "\n".join(
         [
-            f"- State: {state}; pending: {pending}; status: {status_message}.",
-            f"- Selected route: {selected_runtime}/{selected_model}; last turn: {last_runtime}/{last_model}.",
-            f"- Last visible result: {response_note}.",
-            f"- Local planner availability: {planner_note}; route receipts: {receipt_note}.",
-            f"- Next: continue from `{requested}` with a scoped prompt if more work is needed; this status used deterministic TUI state, not a cloud/model call.",
+            "Bridge status",
+            "",
+            f"- {summary}",
+            f"- {next_step}",
+            "- This was an instant local status check; no model was called.",
         ]
     )
 

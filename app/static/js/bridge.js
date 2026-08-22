@@ -166,6 +166,13 @@
     search: '',
     loading: false,
     bootstrapped: false,
+    boot: {
+      completed: 0,
+      total: 0,
+      phase: 'Opening the estate',
+      detail: 'Preparing a working session',
+      dismissTimer: 0,
+    },
     authRequired: root.dataset.authenticated !== 'true',
     pollTimer: 0,
     composerFrame: 0,
@@ -267,6 +274,10 @@
     menuPanel: el('cockpit-menu-panel'),
     menuTransport: el('cockpit-menu-transport'),
     textureCanvas: el('cockpit-thread-field'),
+    bootInterstitial: el('bridge-boot-interstitial'),
+    bootTitle: el('bridge-boot-title'),
+    bootDetail: el('bridge-boot-detail'),
+    bootProgress: el('bridge-boot-progress'),
     soundToggle: el('cockpit-sound-toggle'),
     soundTest: el('cockpit-sound-test'),
     roomDialog: el('bridge-room-dialog'),
@@ -2344,6 +2355,40 @@
     `;
   }
 
+  function updateBootInterstitial({ phase, detail, completed, total, complete = false } = {}) {
+    if (!nodes.bootInterstitial) return;
+    if (phase) state.boot.phase = phase;
+    if (detail) state.boot.detail = detail;
+    if (Number.isFinite(completed)) state.boot.completed = completed;
+    if (Number.isFinite(total)) state.boot.total = total;
+    const progress = state.boot.total
+      ? Math.min(100, Math.round((state.boot.completed / state.boot.total) * 100))
+      : 8;
+    nodes.bootTitle.textContent = state.boot.phase;
+    nodes.bootDetail.textContent = state.boot.detail;
+    nodes.bootProgress.style.setProperty('--bridge-boot-progress', `${complete ? 100 : Math.max(8, progress)}%`);
+    nodes.bootInterstitial.classList.toggle('is-complete', complete);
+    nodes.bootInterstitial.hidden = false;
+    if (complete) {
+      window.clearTimeout(state.boot.dismissTimer);
+      state.boot.dismissTimer = window.setTimeout(() => {
+        nodes.bootInterstitial.hidden = true;
+      }, 520);
+    }
+  }
+
+  function bootUpdateForRequest(completed, total) {
+    const phases = [
+      ['Opening the estate', 'Establishing the working session'],
+      ['Mapping the estate', 'Loading people and workspaces'],
+      ['Reading live work', 'Restoring active jobs and approvals'],
+      ['Joining conversations', 'Bringing recent threads into view'],
+      ['Tuning the Bridge', 'Applying workspace context'],
+    ];
+    const [phase, detail] = phases[Math.min(phases.length - 1, Math.floor((completed / Math.max(total, 1)) * phases.length))];
+    updateBootInterstitial({ phase, detail, completed, total });
+  }
+
   function renderGroups() {
     root.dataset.groupCount = String(state.groups.length);
     nodes.groupList.innerHTML = state.groups.map((group) => `
@@ -2643,6 +2688,20 @@
         : ['blocked', 'waiting_approval'].includes(status) ? 'alert'
           : ['complete', 'completed'].includes(status) ? 'check'
             : ['failed', 'error', 'canceled'].includes(status) ? 'close' : 'clock';
+    const stage = ['running', 'executing', 'planning'].includes(status)
+      ? 2
+      : status === 'submitting' ? 1
+        : ['blocked', 'waiting_approval', 'failed', 'error', 'canceled', 'interrupted'].includes(status) ? 3
+          : 0;
+    const stageDetail = ['running', 'executing', 'planning'].includes(status)
+      ? 'Working through the request'
+      : status === 'submitting'
+        ? 'Sending this to the selected station'
+        : ['blocked', 'waiting_approval'].includes(status)
+          ? 'Waiting for the next decision'
+          : status === 'interrupted'
+            ? 'This request can be sent again'
+            : 'Holding its place in the queue';
     return `<article class="cockpit-working" data-status="${escapeHtml(status)}" data-agent="${escapeHtml(slugify(identity.slug))}"
       style="${escapeHtml(identityStyle(identity.slug))}">
       <div class="cockpit-working__head">
@@ -2652,6 +2711,13 @@
       <div class="cockpit-working__detail">${escapeHtml(stale
         ? 'This response did not start. Send it again when the runtime is available.'
         : truncate(jobObjective(job) || 'Preparing a response', 96))}</div>
+      <div class="cockpit-working__progress" aria-label="${escapeHtml(stageDetail)}">
+        <span class="${stage >= 0 ? 'is-complete' : ''}">Received</span>
+        <span class="${stage >= 1 ? 'is-complete' : ''}">Queued</span>
+        <span class="${stage >= 2 ? 'is-active' : ''}">Working</span>
+        <span class="${stage >= 3 ? 'is-complete' : ''}">Result</span>
+      </div>
+      <div class="cockpit-working__signal" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
     </article>`;
   }
 
@@ -3208,6 +3274,14 @@
   async function loadBootstrap({ quiet = false } = {}) {
     if (state.loading) return;
     state.loading = true;
+    state.boot.completed = 0;
+    state.boot.total = 0;
+    updateBootInterstitial({
+      phase: 'Opening the estate',
+      detail: 'Preparing a working session',
+      completed: 0,
+      total: 8,
+    });
     const localConversations = loadLocalConversations();
     if (!state.conversations.length && localConversations.length) {
       state.conversations = localConversations;
@@ -3234,7 +3308,11 @@
       fetchJson(`${API}/bridge/conversations`, { timeoutMs: 8000 }),
     ];
 
-    const requests = await Promise.allSettled(pendingRequests);
+    state.boot.total = pendingRequests.length;
+    const requests = await Promise.allSettled(pendingRequests.map((request) => request.finally(() => {
+      state.boot.completed += 1;
+      bootUpdateForRequest(state.boot.completed, state.boot.total);
+    })));
     const [estate, jobs, approvals, heartbeats, worker, routeSummary, textureCatalog, conversations] = requests;
     if (heartbeats.status === 'fulfilled') state.heartbeats = heartbeats.value.items || [];
     if (estate.status === 'fulfilled') {
@@ -3306,6 +3384,13 @@
       ]);
     }
     state.loading = false;
+    updateBootInterstitial({
+      phase: 'Bridge ready',
+      detail: 'Your workspace is live',
+      completed: state.boot.total,
+      total: state.boot.total,
+      complete: true,
+    });
     reconcilePromptState();
     renderAll();
     const conversation = selectedConversation();

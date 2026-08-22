@@ -43,8 +43,8 @@ def test_root_renders_norman_bridge_when_auth_disabled(
     assert 'id="bridge-icon-route"' in response.text
     assert 'id="bridge-icon-user-plus"' in response.text
     assert response.text.count('class="cockpit-icon"') >= 12
-    assert "/static/css/bridge.css?v=20260821j" in response.text
-    assert "/static/js/bridge.js?v=20260821j" in response.text
+    assert "/static/css/bridge.css?v=20260822a" in response.text
+    assert "/static/js/bridge.js?v=20260822a" in response.text
     assert "site-banner" not in response.text
     assert 'id="global-status-bar"' not in response.text
 
@@ -149,7 +149,10 @@ def test_bridge_client_derives_boundaries_from_estate_registry() -> None:
     assert "connectJobEventStream(created.job_id)" in source
     assert "selectJob(created.job_id)" not in source
     assert "cockpit-presence__sweep" not in source
-    assert "cockpit-working__signal" not in source
+    assert "cockpit-working__signal" in source
+    assert "cockpit-working__progress" in source
+    assert "function updateBootInterstitial" in source
+    assert "bridge-boot-interstitial" in styles
     assert "--radius-panel" in styles
     assert "--thread-item-gap" in styles
     assert ".cockpit-presence__nodes i:nth-child(4)" in styles

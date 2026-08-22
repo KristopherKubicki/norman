@@ -4241,6 +4241,63 @@
   white-space: nowrap;
 }
 
+.cockpit-working__progress {
+  display: flex;
+  gap: 0;
+  align-items: center;
+  margin-top: 9px;
+  color: var(--profile-muted);
+  font-family: var(--font-label);
+  font-size: 0.55rem;
+  text-transform: uppercase;
+}
+
+.cockpit-working__progress span {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  padding-top: 8px;
+  text-align: center;
+}
+
+.cockpit-working__progress span::before {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: 5px;
+  height: 5px;
+  content: "";
+  background: color-mix(in srgb, var(--profile-border) 82%, transparent);
+  border-radius: 50%;
+  transform: translateX(-50%);
+}
+
+.cockpit-working__progress span + span::after {
+  position: absolute;
+  top: 2px;
+  right: 50%;
+  width: 100%;
+  height: 1px;
+  content: "";
+  background: color-mix(in srgb, var(--profile-border) 52%, transparent);
+}
+
+.cockpit-working__progress span.is-complete,
+.cockpit-working__progress span.is-active {
+  color: var(--agent-accent);
+}
+
+.cockpit-working__progress span.is-complete::before,
+.cockpit-working__progress span.is-active::before {
+  z-index: 1;
+  background: var(--agent-accent);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--agent-accent) 72%, transparent);
+}
+
+.cockpit-working__progress span.is-complete + span::after {
+  background: color-mix(in srgb, var(--agent-accent) 70%, var(--profile-border));
+}
+
 @keyframes cockpit-presence-scan {
   0%,
   100% {
@@ -6375,6 +6432,115 @@
   color: var(--profile-muted);
 }
 
+.bridge-boot-interstitial {
+  position: absolute;
+  z-index: 6;
+  top: 144px;
+  right: 22px;
+  display: grid;
+  width: min(348px, calc(100% - 44px));
+  grid-template-columns: 30px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px 9px;
+  color: var(--profile-text);
+  pointer-events: none;
+  background: color-mix(in srgb, var(--profile-bg) 88%, black);
+  border: 1px solid color-mix(in srgb, var(--agent-accent) 38%, var(--profile-border));
+  border-radius: 7px;
+  box-shadow: 0 14px 30px rgb(0 0 0 / 26%), inset 0 1px 0 rgb(255 255 255 / 5%);
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.bridge-boot-interstitial[hidden] {
+  display: none;
+}
+
+.bridge-boot-interstitial.is-complete {
+  opacity: 0;
+  transform: translateY(-5px);
+}
+
+.bridge-boot-interstitial__signal {
+  display: flex;
+  height: 24px;
+  gap: 3px;
+  align-items: center;
+  justify-content: center;
+}
+
+.bridge-boot-interstitial__signal i {
+  width: 3px;
+  height: 8px;
+  background: var(--agent-accent);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--agent-accent) 62%, transparent);
+  animation: bridge-boot-signal 880ms ease-in-out infinite alternate;
+}
+
+.bridge-boot-interstitial__signal i:nth-child(2) {
+  height: 17px;
+  animation-delay: 110ms;
+}
+
+.bridge-boot-interstitial__signal i:nth-child(3) {
+  height: 11px;
+  animation-delay: 230ms;
+}
+
+.bridge-boot-interstitial__copy {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.bridge-boot-interstitial__copy > span {
+  color: var(--agent-accent);
+  font-family: var(--font-label);
+  font-size: 0.56rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.bridge-boot-interstitial__copy strong {
+  overflow: hidden;
+  font-family: var(--font-brand);
+  font-size: 0.76rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bridge-boot-interstitial__copy small {
+  overflow: hidden;
+  color: var(--profile-muted);
+  font-family: var(--font-label);
+  font-size: 0.6rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bridge-boot-interstitial__progress {
+  grid-column: 1 / -1;
+  height: 2px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--profile-border) 44%, transparent);
+}
+
+.bridge-boot-interstitial__progress i {
+  display: block;
+  width: var(--bridge-boot-progress, 8%);
+  height: 100%;
+  background: var(--agent-accent);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--agent-accent) 72%, transparent);
+  transition: width 240ms ease;
+}
+
+@keyframes bridge-boot-signal {
+  from { opacity: 0.35; transform: scaleY(0.64); }
+  to { opacity: 1; transform: scaleY(1); }
+}
+
 @keyframes bridge-loading-breathe {
   0%, 100% { opacity: 0.38; filter: brightness(0.92); }
   50% { opacity: 0.72; filter: brightness(1.08); }
@@ -6394,7 +6560,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .bridge-loading-row {
+  .bridge-loading-row,
+  .bridge-boot-interstitial__signal i {
     animation: none;
     opacity: 0.58;
   }

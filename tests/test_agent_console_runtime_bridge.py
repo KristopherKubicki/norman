@@ -3118,9 +3118,9 @@ def test_deterministic_status_prompt_completes_without_model_call(
 
     assert snapshot["pending"] is False
     assert snapshot["state"] == "ok"
-    assert "deterministic TUI state" in snapshot["last_response"]
-    assert "Local lane availability:" in snapshot["last_response"]
-    assert "Local proof:" not in snapshot["last_response"]
+    assert "Bridge status" in snapshot["last_response"]
+    assert "instant local status check" in snapshot["last_response"]
+    assert "Selected route:" not in snapshot["last_response"]
     history = module.load_history(limit=1)
     assert history[-1]["runtime"] == "localllm"
     assert history[-1]["model"] == "deterministic-status"

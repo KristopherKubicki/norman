@@ -4307,7 +4307,7 @@ def test_api_ask_completes_explicit_deterministic_status_without_model_call(
     assert payload["submission_id"] == "status-fallback-001"
     assert payload["submission_state"] == "completed"
     assert payload["snapshot"]["state"] == "ok"
-    assert "deterministic TUI state" in payload["snapshot"]["last_response"]
+    assert "instant local status check" in payload["snapshot"]["last_response"]
     module.DETERMINISTIC_ARCHIVE_QUEUE.join()
     history = module.load_history(limit=1)
     assert history[-1]["runtime"] == "localllm"
