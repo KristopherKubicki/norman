@@ -457,6 +457,7 @@ def fetch_console_history(
                     "runtime": str(raw.get("runtime") or "").strip(),
                     "model": str(raw.get("model") or "").strip(),
                     "service_tier": str(raw.get("service_tier") or "").strip(),
+                    "usage_bucket": str(raw.get("usage_bucket") or "").strip(),
                     "attachments": attachments,
                     "usage": {
                         key: usage.get(key)

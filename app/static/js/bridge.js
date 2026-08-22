@@ -2579,17 +2579,46 @@
     if (!job) return '';
     const route = jobContract(job).route_policy || {};
     const metadata = jobMetadata(job);
+    const result = job?.result || job?.result_json || {};
+    const receipt = result.route_receipt || metadata.route_receipt || {};
+    const usage = metadata.usage || result.usage || receipt.usage || receipt || {};
     const provider = route.provider || route.preferred_provider || metadata.provider || '';
     const model = route.model || metadata.model || '';
+    const lane = metadata.usage_bucket || receipt.usage_bucket || '';
     const status = String(job.status || '').toLowerCase();
     const chips = [];
     if (provider || model) {
       chips.push(`<span class="cockpit-message-chip" data-chip="route"><i></i>${escapeHtml([provider, model].filter(Boolean).join(' / '))}</span>`);
     }
+    if (lane) {
+      chips.push(`<span class="cockpit-message-chip" data-chip="lane">${escapeHtml(displaySlug(lane))}</span>`);
+    }
+    const input = Number(usage.input_tokens ?? usage.prompt_tokens ?? 0);
+    const output = Number(usage.output_tokens ?? usage.completion_tokens ?? 0);
+    if (input || output) {
+      chips.push(`<span class="cockpit-message-chip" data-chip="usage" title="Input ${formatCompactNumber(input)} tokens; output ${formatCompactNumber(output)} tokens">${escapeHtml(`${formatCompactNumber(input)} in / ${formatCompactNumber(output)} out`)}</span>`);
+    }
+    const cost = Number(usage.estimated_cost_usd ?? receipt.estimated_cost_usd ?? 0);
+    if (Number.isFinite(cost) && cost > 0) {
+      chips.push(`<span class="cockpit-message-chip" data-chip="spend">${escapeHtml(formatUsd(cost))}</span>`);
+    }
     if (status && !['done', 'complete', 'completed', 'succeeded', 'verified'].includes(status)) {
       chips.push(`<span class="cockpit-message-chip" data-chip="state" data-tone="${escapeHtml(status)}">${escapeHtml(status.replaceAll('_', ' '))}</span>`);
     }
     return chips.join('');
+  }
+
+  function formatCompactNumber(value) {
+    const number = Math.max(0, Number(value) || 0);
+    if (number >= 1000000) return `${(number / 1000000).toFixed(1)}m`;
+    if (number >= 1000) return `${(number / 1000).toFixed(number >= 10000 ? 0 : 1)}k`;
+    return String(Math.round(number));
+  }
+
+  function formatUsd(value) {
+    const amount = Math.max(0, Number(value) || 0);
+    if (amount < 0.01) return '< $0.01';
+    return `$${amount.toFixed(amount < 1 ? 2 : 1)}`;
   }
 
   function attachmentHtml(attachments, slug) {
@@ -2848,7 +2877,12 @@
             time,
             job: {
               status: turn.error ? 'failed' : 'complete',
-              metadata: { model: turn.model, provider: turn.runtime },
+              metadata: {
+                model: turn.model,
+                provider: turn.runtime,
+                usage_bucket: turn.usage_bucket,
+                usage: turn.usage,
+              },
             },
             attachments,
           }) : ''}
@@ -3444,7 +3478,10 @@
       restoreAfterSignIn();
     }
     if (conversations.status === 'fulfilled') {
-      mergeConversations(conversations.value.items || [], localConversations);
+      mergeConversations(conversations.value.items || [], [
+        ...localConversations,
+        ...state.conversations.filter((item) => item._local_only),
+      ]);
     } else {
       mergeConversations([], [
         ...state.conversations.filter((item) => item._local_only),

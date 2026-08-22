@@ -8251,6 +8251,22 @@
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 18%);
 }
 
+.page-bridge .cockpit-message-chip[data-chip="route"] {
+  display: inline-flex;
+}
+
+.page-bridge .cockpit-message-chip[data-chip="lane"] {
+  color: color-mix(in srgb, var(--agent-accent) 68%, var(--profile-text));
+  border-color: color-mix(in srgb, var(--agent-accent) 22%, var(--profile-border));
+}
+
+.page-bridge .cockpit-message-chip[data-chip="usage"],
+.page-bridge .cockpit-message-chip[data-chip="spend"] {
+  color: color-mix(in srgb, var(--profile-muted) 88%, var(--profile-text));
+  background: transparent;
+  border-color: color-mix(in srgb, var(--profile-border) 58%, transparent);
+}
+
 @media (max-width: 575.98px) {
   .page-bridge .bridge-boot-interstitial {
     top: auto;
