@@ -30,6 +30,35 @@ def _slug(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
 
 
+def _bridge_history_response(value: Any) -> str:
+    """Hide obsolete route diagnostics from user-facing Bridge history."""
+    response = str(value or "").strip()
+    if not re.search(
+        r"\b(?:selected route|local proof|local lane availability|route receipts):"
+        r"|\bdeterministic tui state\b",
+        response,
+        flags=re.IGNORECASE,
+    ):
+        return response
+    return (
+        "Bridge status\n\n"
+        "- This legacy status reply has been condensed.\n"
+        "- Use the live Bridge indicators for the current route, queue, and agent state."
+    )
+
+
+def _bridge_history_items(items: Any) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        copy = dict(item)
+        if copy.get("response"):
+            copy["response"] = _bridge_history_response(copy["response"])
+        normalized.append(copy)
+    return normalized
+
+
 def _connector_agent_slugs(connector: Connector) -> set[str]:
     config = dict(connector.config or {})
     values = [
@@ -365,7 +394,7 @@ async def get_bridge_agent_history(
         or (connector.name if connector else "")
         or agent_slug,
         "thread_id": snapshot.get("thread_id") or "",
-        "items": snapshot.get("items") or [],
+        "items": _bridge_history_items(snapshot.get("items")),
     }
 
 

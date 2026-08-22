@@ -2746,6 +2746,9 @@
   }
 
   function renderGeneralFeed() {
+    const wasNearLatest = (
+      nodes.feed.scrollHeight - nodes.feed.scrollTop - nodes.feed.clientHeight
+    ) < 80;
     const conversation = selectedConversation();
     const jobs = conversation && conversation.kind !== 'direct'
       ? filteredJobs().filter(isBridgeJob).slice(0, 16).reverse()
@@ -2794,6 +2797,9 @@
       return;
     }
     const visibleJobs = localPrompt ? [...jobs, localPrompt] : jobs;
+    const historySyncHtml = historyLoading && stationTurns.length
+      ? `<div class="bridge-history-sync" role="status"><span></span><small>Syncing station history</small></div>`
+      : '';
     const historyHtml = stationTurns.map((turn, index) => {
       const time = turn.finished_at || turn.started_at;
       const response = normalizeBridgeResponse(turn.response || turn.error);
@@ -2829,8 +2835,8 @@
         </div>
       </section>`;
     }).join('');
-    nodes.feed.innerHTML = `${historyHtml}${bridgeHtml}`;
-    nodes.feed.scrollTop = nodes.feed.scrollHeight;
+    nodes.feed.innerHTML = `${historySyncHtml}${historyHtml}${bridgeHtml}`;
+    if (wasNearLatest || promptBusy()) nodes.feed.scrollTop = nodes.feed.scrollHeight;
   }
 
   async function loadStationHistory(agentSlug, { force = false } = {}) {
@@ -2890,6 +2896,9 @@
   }
 
   function renderJobFeed() {
+    const wasNearLatest = (
+      nodes.feed.scrollHeight - nodes.feed.scrollTop - nodes.feed.clientHeight
+    ) < 80;
     const snapshot = state.activity || {};
     const job = snapshot.job || state.jobs.find((item) => item.job_id === state.selectedJobId);
     if (!job) return renderGeneralFeed();
@@ -2909,7 +2918,7 @@
           : workingMessageHtml(job, identity)}
       </div>
     </section>`;
-    nodes.feed.scrollTop = nodes.feed.scrollHeight;
+    if (wasNearLatest || promptBusy()) nodes.feed.scrollTop = nodes.feed.scrollHeight;
   }
 
   function renderAttention() {

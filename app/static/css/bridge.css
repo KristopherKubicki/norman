@@ -6600,6 +6600,35 @@
   transition: width 240ms ease;
 }
 
+.bridge-history-sync {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  width: fit-content;
+  margin: 0 0 8px;
+  padding: 5px 8px;
+  color: var(--profile-muted);
+  font-family: var(--font-label);
+  font-size: 0.58rem;
+  background: color-mix(in srgb, var(--profile-surface) 74%, transparent);
+  border: 1px solid color-mix(in srgb, var(--agent-accent) 18%, var(--profile-border));
+  border-radius: 5px;
+}
+
+.bridge-history-sync > span {
+  width: 6px;
+  height: 6px;
+  background: var(--agent-accent);
+  border-radius: 50%;
+  box-shadow: 0 0 8px color-mix(in srgb, var(--agent-accent) 58%, transparent);
+  animation: bridge-history-sync-pulse 900ms ease-in-out infinite alternate;
+}
+
+@keyframes bridge-history-sync-pulse {
+  from { opacity: 0.35; transform: scale(0.72); }
+  to { opacity: 1; transform: scale(1); }
+}
+
 @keyframes bridge-boot-signal {
   from { opacity: 0.35; transform: scaleY(0.64); }
   to { opacity: 1; transform: scaleY(1); }
@@ -6625,7 +6654,8 @@
 
 @media (prefers-reduced-motion: reduce) {
   .bridge-loading-row,
-  .bridge-boot-interstitial__signal i {
+  .bridge-boot-interstitial__signal i,
+  .bridge-history-sync > span {
     animation: none;
     opacity: 0.58;
   }

@@ -124,6 +124,42 @@ def test_bridge_direct_message_loads_managed_station_history(test_app, db, monke
     }
 
 
+def test_bridge_history_condenses_legacy_runtime_diagnostics(test_app, db, monkeypatch):
+    user_id = test_app.get("/api/v1/users/me").json()["id"]
+    db.add(
+        Connector(
+            user_id=user_id,
+            name="tmux:artmonster",
+            connector_type="tmux",
+            config={
+                "session": "artmonster",
+                "web_url": "http://artmonster.internal:8797",
+            },
+        )
+    )
+    db.commit()
+
+    monkeypatch.setattr(
+        "app.api.api_v1.routers.bridge_conversations.fetch_console_history",
+        lambda *_args, **_kwargs: {
+            "reachable": True,
+            "items": [
+                {
+                    "turn_id": "legacy-status",
+                    "prompt": "quick status",
+                    "response": "- State: idle\n- Selected route: codex/gpt-5.4\n- Local proof: timeout",
+                }
+            ],
+        },
+    )
+
+    response = test_app.get("/api/v1/bridge/conversations/agents/artmonster/history")
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["response"].startswith("Bridge status")
+    assert "Selected route" not in response.json()["items"][0]["response"]
+
+
 def test_bridge_direct_message_submits_to_managed_station(test_app, db, monkeypatch):
     user_id = test_app.get("/api/v1/users/me").json()["id"]
     db.add(
