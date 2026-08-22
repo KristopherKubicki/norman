@@ -118,6 +118,15 @@ def test_bridge_client_derives_boundaries_from_estate_registry() -> None:
     assert "function loadLocalConversations" in source
     assert "function persistConversationLocally" in source
     assert "function mergeConversations" in source
+    assert "ACTIVE_CONVERSATION_KEY" in source
+    assert "function restoreActiveConversation()" in source
+    assert "saveActiveConversation(conversation)" in source
+    assert "clearActiveConversation()" in source
+    assert "const bootstrapConversation = restoreActiveConversation();" in source
+    assert "const showBootInterstitial = !quiet || !state.bootstrapped;" in source
+    assert "prior turns restored" not in source
+    assert "function isLegacyBridgeDiagnostic(text)" in source
+    assert ".filter((turn) => !isLegacyBridgeDiagnostic(turn.response || turn.error))" in source
     assert "class BridgeRequestError" in source
     assert "Log in to sync and run this conversation." in source
     assert "Saved on this device" in source

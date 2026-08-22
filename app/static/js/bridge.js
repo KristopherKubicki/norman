@@ -67,6 +67,7 @@
   });
   const BRIDGE_SETTINGS_KEY = 'norman-bridge-settings-v2';
   const LOCAL_CONVERSATIONS_KEY = 'norman-bridge-conversations-v1';
+  const ACTIVE_CONVERSATION_KEY = 'norman-bridge-active-conversation-v1';
   const AUTH_RESUME_KEY = 'norman-bridge-auth-resume-v1';
   const STYLE_VARIANT_OVERRIDES = {
     norman: 'anchor',
@@ -534,6 +535,45 @@
     }
   }
 
+  function loadActiveConversation() {
+    try {
+      const stored = JSON.parse(window.sessionStorage.getItem(ACTIVE_CONVERSATION_KEY) || 'null');
+      if (!stored || typeof stored !== 'object') return null;
+      return {
+        conversationId: String(stored.conversationId || ''),
+        kind: String(stored.kind || ''),
+        principalSlug: slugify(stored.principalSlug),
+        domainSlug: slugify(stored.domainSlug),
+        directAgentSlug: slugify(stored.directAgentSlug),
+      };
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function saveActiveConversation(conversation) {
+    if (!conversation) return;
+    try {
+      window.sessionStorage.setItem(ACTIVE_CONVERSATION_KEY, JSON.stringify({
+        conversationId: conversation.conversation_id,
+        kind: conversation.kind,
+        principalSlug: conversation.principal_slug || '',
+        domainSlug: conversation.domain_slug || '',
+        directAgentSlug: conversation.direct_agent_slug || '',
+      }));
+    } catch (_error) {
+      // Session storage can be unavailable in locked-down webviews.
+    }
+  }
+
+  function clearActiveConversation() {
+    try {
+      window.sessionStorage.removeItem(ACTIVE_CONVERSATION_KEY);
+    } catch (_error) {
+      // Session storage can be unavailable in locked-down webviews.
+    }
+  }
+
   function conversationIdentity(item) {
     if (item.kind === 'direct') {
       return `direct:${slugify(item.principal_slug)}:${slugify(item.direct_agent_slug)}`;
@@ -596,6 +636,7 @@
     else state.conversations.unshift({ ...next, _local_only: false });
     if (state.selectedConversationId === previous.conversation_id) {
       state.selectedConversationId = next.conversation_id;
+      saveActiveConversation(next);
     }
     saveLocalConversations();
     renderAll();
@@ -644,6 +685,48 @@
     return state.conversations.find(
       (item) => item.conversation_id === state.selectedConversationId,
     ) || null;
+  }
+
+  function restoreActiveConversation() {
+    const current = selectedConversation();
+    if (current) {
+      saveActiveConversation(current);
+      return current;
+    }
+    const saved = loadActiveConversation();
+    const directAgentSlug = slugify(
+      saved?.directAgentSlug || (state.view === 'agent' ? state.selectedAgent : ''),
+    );
+    if (!directAgentSlug) return null;
+    const principalSlug = slugify(saved?.principalSlug);
+    let conversation = state.conversations.find((item) => (
+      item.kind === 'direct'
+      && slugify(item.direct_agent_slug) === directAgentSlug
+      && (!principalSlug || slugify(item.principal_slug) === principalSlug)
+    ));
+    if (!conversation) {
+      const agent = state.agents.find((item) => slugify(item.slug) === directAgentSlug);
+      if (!agent) return null;
+      conversation = persistConversationLocally(makeLocalConversation({
+        kind: 'direct',
+        title: agent.display_name,
+        principalSlug: agent.principal_slug || currentGroup().slug,
+        domainSlug: agent.domain_slug || '',
+        directAgentSlug: agent.slug,
+        memberSlugs: [agent.slug],
+      }));
+    }
+    const group = state.groups.find((item) => (
+      slugify(item.slug) === slugify(conversation.principal_slug)
+    ));
+    if (group) state.group = group.id;
+    state.domain = slugify(conversation.domain_slug);
+    state.view = 'agent';
+    state.selectedConversationId = conversation.conversation_id;
+    state.selectedAgent = conversation.direct_agent_slug;
+    state.selectedRecipients = [...(conversation.member_slugs || [])];
+    saveActiveConversation(conversation);
+    return conversation;
   }
 
   function beginSignIn() {
@@ -1405,15 +1488,11 @@
     if (conversation?.kind === 'direct') {
       const slug = slugify(conversation.direct_agent_slug);
       const name = conversation.title || displaySlug(slug);
-      const turns = state.stationHistory[slug]?.items || [];
       if (state.stationHistoryLoading === slug) {
         return { text: `Restoring ${name}'s thread`, tone: 'active' };
       }
       if (hasText) return { text: `Ready for ${name}`, tone: 'ready' };
-      return {
-        text: turns.length ? `${turns.length} prior turns restored` : `${name} station ready`,
-        tone: 'ready',
-      };
+      return { text: `${name} station ready`, tone: 'ready' };
     }
     if (conversation?.kind === 'room') {
       const members = conversation.member_slugs || [];
@@ -2721,8 +2800,14 @@
     </div>`;
   }
 
+  function isLegacyBridgeDiagnostic(text) {
+    const value = String(text || '').trim();
+    return /prior bridge status|characters omitted from live transport|bridge opening the estate|this diagnostic reply has been superseded|this status used deterministic tui state|selected route:\s*codex\/gpt-5\.4/is.test(value);
+  }
+
   function normalizeBridgeResponse(text) {
-    return String(text || '').trim();
+    const value = String(text || '').trim();
+    return isLegacyBridgeDiagnostic(value) ? '' : value;
   }
 
   function resultText(job, events = []) {
@@ -2884,7 +2969,9 @@
     const historySyncHtml = historyLoading && stationTurns.length
       ? `<div class="bridge-history-sync" role="status"><span></span><small>Syncing station history</small></div>`
       : '';
-    const historyHtml = stationTurns.map((turn, index) => {
+    const historyHtml = stationTurns
+      .filter((turn) => !isLegacyBridgeDiagnostic(turn.response || turn.error))
+      .map((turn, index) => {
       const time = turn.finished_at || turn.started_at;
       const response = normalizeBridgeResponse(turn.response || turn.error);
       const attachments = turn.attachments || [];
@@ -2910,7 +2997,7 @@
           }) : ''}
         </div>
       </section>`;
-    }).join('');
+      }).join('');
     const bridgeHtml = visibleJobs.map((job) => {
       const response = resultText(job, jobEvents(job));
       const identity = responseIdentity(job);
@@ -2931,7 +3018,7 @@
   async function loadStationHistory(agentSlug, { force = false } = {}) {
     const slug = slugify(agentSlug);
     if (!slug || state.authRequired) return;
-    if (!force && state.stationHistory[slug]) return;
+    if (!force && (state.stationHistory[slug] || state.stationHistoryLoading === slug)) return;
     state.stationHistoryLoading = slug;
     delete state.stationHistoryErrors[slug];
     updateComposerState();
@@ -3399,16 +3486,19 @@
 
   async function loadBootstrap({ quiet = false } = {}) {
     if (state.loading) return;
+    const showBootInterstitial = !quiet || !state.bootstrapped;
     state.loading = true;
     state.boot.completed = 0;
     state.boot.total = 0;
-    startBootActivity();
-    updateBootInterstitial({
-      phase: 'Opening the estate',
-      detail: 'Preparing a working session',
-      completed: 0,
-      total: 8,
-    });
+    if (showBootInterstitial) {
+      startBootActivity();
+      updateBootInterstitial({
+        phase: 'Opening the estate',
+        detail: 'Preparing a working session',
+        completed: 0,
+        total: 8,
+      });
+    }
     const localConversations = loadLocalConversations();
     if (!state.conversations.length && localConversations.length) {
       state.conversations = localConversations;
@@ -3422,7 +3512,11 @@
       state.agents = provisionalAgents();
     }
     state.bootstrapped = true;
+    const bootstrapConversation = restoreActiveConversation();
     renderAll();
+    if (bootstrapConversation?.kind === 'direct' && bootstrapConversation.direct_agent_slug) {
+      void loadStationHistory(bootstrapConversation.direct_agent_slug);
+    }
 
     const pendingRequests = [
       fetchJson(`${API}/estate/overview`, { timeoutMs: 12000 }),
@@ -3438,7 +3532,9 @@
     state.boot.total = pendingRequests.length;
     const requests = await Promise.allSettled(pendingRequests.map((request) => request.finally(() => {
       state.boot.completed += 1;
-      bootUpdateForRequest(state.boot.completed, state.boot.total);
+      if (showBootInterstitial) {
+        bootUpdateForRequest(state.boot.completed, state.boot.total);
+      }
     })));
     const [estate, jobs, approvals, heartbeats, worker, routeSummary, textureCatalog, conversations] = requests;
     if (heartbeats.status === 'fulfilled') state.heartbeats = heartbeats.value.items || [];
@@ -3513,17 +3609,23 @@
         ...localConversations,
       ]);
     }
+    const restoredConversation = restoreActiveConversation();
     state.loading = false;
-    updateBootInterstitial({
-      phase: 'Bridge ready',
-      detail: 'Your workspace is live',
-      completed: state.boot.total,
-      total: state.boot.total,
-      complete: true,
-    });
+    if (showBootInterstitial) {
+      updateBootInterstitial({
+        phase: 'Bridge ready',
+        detail: 'Your workspace is live',
+        completed: state.boot.total,
+        total: state.boot.total,
+        complete: true,
+      });
+    }
     reconcilePromptState();
     renderAll();
-    const conversation = selectedConversation();
+    const conversation = restoredConversation || selectedConversation();
+    if (conversation?.kind === 'direct' && conversation.direct_agent_slug) {
+      void loadStationHistory(conversation.direct_agent_slug);
+    }
     if (conversation) void hydrateConversationActivities(conversation);
   }
 
@@ -3732,6 +3834,7 @@
     state.selectedJobId = '';
     state.selectedAgent = '';
     state.selectedRecipients = [];
+    clearActiveConversation();
     state.activity = null;
     state.workstream = null;
     closeEventStream();
@@ -3746,6 +3849,7 @@
     state.selectedConversationId = '';
     state.selectedJobId = '';
     state.selectedAgent = '';
+    clearActiveConversation();
     state.activity = null;
     state.workstream = null;
     closeEventStream();
@@ -3830,6 +3934,7 @@
     state.selectedJobId = '';
     state.activity = null;
     state.workstream = null;
+    saveActiveConversation(conversation);
     closeEventStream();
     renderAll();
     if (conversation.kind === 'direct' && conversation.direct_agent_slug) {
@@ -4231,6 +4336,7 @@
         state.selectedConversationId = '';
         state.selectedJobId = '';
         state.selectedAgent = '';
+        clearActiveConversation();
         state.activity = null;
         state.workstream = null;
         closeEventStream();
