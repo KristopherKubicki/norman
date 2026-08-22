@@ -1051,7 +1051,7 @@
       person: '◦',
       location: '⌂',
     }[kind] || '·');
-    const glyph = options.glyph === false
+    const glyph = options.glyph === false || identity.slug === 'artmonster'
       ? ''
       : `<span class="entity-cartouche__glyph">${iconHtml(identityGlyphFor(identity.slug, identity.texture))}</span>`;
     return `<span class="entity-cartouche" data-kind="${escapeHtml(kind)}" data-tone="${escapeHtml(options.tone || kind)}"
