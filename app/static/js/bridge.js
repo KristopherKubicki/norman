@@ -2943,11 +2943,17 @@
         }
       : null;
     if (!jobs.length && !localPrompt && !stationTurns.length) {
-      if (stationSlug && !historyError) {
+      if (stationSlug) {
+        const historyHeading = historyError
+          ? 'Station history unavailable'
+          : 'Loading station history';
+        const historyDetail = historyError
+          ? `This direct message could not be loaded right now. Reconnect, then select ${escapeHtml(displaySlug(stationSlug))} again.`
+          : `Connecting this direct message to ${escapeHtml(displaySlug(stationSlug))}'s canonical thread.`;
         nodes.feed.innerHTML = `<div class="cockpit-feed__empty cockpit-history-state">
           <span class="cockpit-history-state__icon">${iconHtml('archive')}</span>
-          <h2>Loading station history</h2>
-          <p>Connecting this direct message to ${escapeHtml(displaySlug(stationSlug))}'s canonical thread.</p>
+          <h2>${historyHeading}</h2>
+          <p>${historyDetail}</p>
         </div>`;
         return;
       }

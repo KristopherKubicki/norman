@@ -45,8 +45,8 @@ def test_root_renders_norman_bridge_when_auth_disabled(
     assert response.text.count('class="cockpit-icon"') >= 12
     assert 'id="norman-favicon"' in response.text
     assert "/static/favicon.svg?v=20260822a" in response.text
-    assert "/static/css/bridge.css?v=20260822k" in response.text
-    assert "/static/js/bridge.js?v=20260822k" in response.text
+    assert "/static/css/bridge.css?v=20260822n" in response.text
+    assert "/static/js/bridge.js?v=20260822n" in response.text
     assert "site-banner" not in response.text
     assert 'id="global-status-bar"' not in response.text
 
@@ -127,7 +127,9 @@ def test_bridge_client_derives_boundaries_from_estate_registry() -> None:
     assert "prior turns restored" not in source
     assert "function isLegacyBridgeDiagnostic(text)" in source
     assert ".filter((turn) => !isLegacyBridgeDiagnostic(turn.response || turn.error))" in source
-    assert "if (stationSlug && !historyError)" in source
+    assert "if (stationSlug)" in source
+    assert "Station history unavailable" in source
+    assert "This direct message could not be loaded right now." in source
     assert "class BridgeRequestError" in source
     assert "Log in to sync and run this conversation." in source
     assert "Saved on this device" in source
