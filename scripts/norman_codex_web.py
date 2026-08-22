@@ -31611,6 +31611,62 @@ def _transport_snapshot_value(
     return value
 
 
+def _runtime_capabilities_transport_snapshot(value: object) -> dict[str, Any]:
+    capabilities = value if isinstance(value, dict) else {}
+    norllama = capabilities.get("norllama")
+    norllama = norllama if isinstance(norllama, dict) else {}
+    specialist = norllama.get("specialist_lanes")
+    specialist = specialist if isinstance(specialist, dict) else {}
+    proof = specialist.get("proof")
+    proof = proof if isinstance(proof, dict) else {}
+    return {
+        "source": str(capabilities.get("source") or ""),
+        "error": summarize_text(str(capabilities.get("error") or ""), 300),
+        "norllama": {
+            key: norllama.get(key)
+            for key in (
+                "provider",
+                "local",
+                "supports_files",
+                "supports_streaming",
+                "supports_tools",
+                "models",
+            )
+            if key in norllama
+        }
+        | {
+            "specialist_lanes": {
+                "count": specialist.get("count"),
+                "schema": specialist.get("schema"),
+                "states": _transport_snapshot_value(specialist.get("states") or {}),
+                "proof": _transport_snapshot_value(
+                    {
+                        key: proof.get(key)
+                        for key in (
+                            "schema",
+                            "lane_count",
+                            "production_ready_count",
+                            "by_state",
+                            "live_smoke_statuses",
+                        )
+                        if key in proof
+                    }
+                ),
+            }
+        },
+    }
+
+
+def _usage_transport_snapshot(value: object) -> dict[str, Any]:
+    usage = dict(value) if isinstance(value, dict) else {}
+    usage.pop("recent", None)
+    return _transport_snapshot_value(
+        usage,
+        string_limit=1024,
+        list_limit=STATUS_TRANSPORT_LIST_LIMIT,
+    )
+
+
 def _route_bootstrap_snapshot(
     meta: dict[str, Any],
     queue: list[dict[str, Any]],
@@ -31859,18 +31915,16 @@ def status_snapshot() -> dict[str, Any]:
         list(cached.get("history") or [])[-STATUS_TRANSPORT_HISTORY_LIMIT:],
         list_limit=STATUS_TRANSPORT_HISTORY_LIMIT,
     )
-    for field in (
-        "runtime_capabilities",
-        "local_llm_health",
-        "local_planner_readiness",
-        "usage",
-        "runtime",
-    ):
+    for field in ("local_llm_health", "local_planner_readiness", "runtime"):
         snapshot[field] = _transport_snapshot_value(
             cached.get(field) or {},
             string_limit=1024,
             list_limit=6,
         )
+    snapshot["runtime_capabilities"] = _runtime_capabilities_transport_snapshot(
+        cached.get("runtime_capabilities")
+    )
+    snapshot["usage"] = _usage_transport_snapshot(cached.get("usage"))
     live_usage = live_overlay.get("usage")
     if isinstance(live_usage, dict) and live_usage.get("last_turn"):
         usage = dict(snapshot.get("usage") or {})

@@ -464,6 +464,16 @@ def _host_block(
     ]
     if internal_tls or not _uses_public_tls(hostnames):
         lines.append(f"    {INTERNAL_TLS_IMPORT}")
+    lines.extend(
+        [
+            "    encode zstd gzip {",
+            "        match {",
+            "            header Content-Type application/json*",
+            "            header Content-Type text/html*",
+            "        }",
+            "    }",
+        ]
+    )
     if allowed_clients:
         client_ranges = " ".join(allowed_clients)
         lines.extend(

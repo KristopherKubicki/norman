@@ -3570,6 +3570,17 @@ def test_tui_uses_render_caches_and_background_transport_backoff() -> None:
     assert "syncLiveTransport();" in source
 
 
+def test_bot_proxy_compresses_large_console_responses() -> None:
+    module = _load_bot_proxy_renderer()
+
+    rendered = module.render_hosts()
+
+    assert "    encode zstd gzip {" in rendered
+    assert "header Content-Type application/json*" in rendered
+    assert "header Content-Type text/html*" in rendered
+    assert "header Content-Type text/event-stream*" not in rendered
+
+
 def test_tui_submission_receipts_reconcile_and_surface_worker_progress() -> None:
     source = _agent_console_web_source()
 
@@ -5019,7 +5030,16 @@ def test_bot_proxy_caddy_uses_internal_tls_for_pending_public_work_aliases() -> 
     rendered = module.render_hosts()
 
     assert "# compere" in rendered
-    assert "keystone.kris.openbrand.com {\n    import norman_internal_tls" in rendered
+    assert (
+        "keystone.kris.openbrand.com {\n"
+        "    import norman_internal_tls\n"
+        "    encode zstd gzip {\n"
+        "        match {\n"
+        "            header Content-Type application/json*\n"
+        "            header Content-Type text/html*\n"
+        "        }\n"
+        "    }"
+    ) in rendered
     assert "infra.kris.openbrand.com {\n    import norman_internal_tls" in rendered
     assert "kpis.kris.openbrand.com {\n    import norman_internal_tls" in rendered
     assert "leadership.kris.openbrand.com {\n    import norman_internal_tls" in rendered
@@ -5052,11 +5072,23 @@ def test_bot_proxy_caddy_ip_gates_knox_local_work_aliases() -> None:
     assert (
         "keystone.kris.openbrand.com {\n"
         "    import norman_internal_tls\n"
+        "    encode zstd gzip {\n"
+        "        match {\n"
+        "            header Content-Type application/json*\n"
+        "            header Content-Type text/html*\n"
+        "        }\n"
+        "    }\n"
         "    @knox_allowed remote_ip"
     ) in rendered
     assert (
         "infra.kris.openbrand.com {\n"
         "    import norman_internal_tls\n"
+        "    encode zstd gzip {\n"
+        "        match {\n"
+        "            header Content-Type application/json*\n"
+        "            header Content-Type text/html*\n"
+        "        }\n"
+        "    }\n"
         "    @knox_allowed remote_ip"
     ) in rendered
     assert "control.kris.openbrand.com {\n    @knox_allowed remote_ip" not in rendered
@@ -5200,6 +5232,12 @@ def test_bot_proxy_caddy_exposes_local_llm_frontdoor() -> None:
     assert (
         "llm.home.arpa, llm.knox.lollie.org {\n"
         "    import norman_internal_tls\n"
+        "    encode zstd gzip {\n"
+        "        match {\n"
+        "            header Content-Type application/json*\n"
+        "            header Content-Type text/html*\n"
+        "        }\n"
+        "    }\n"
         "    redir /resident /resident/ 308\n"
         "    handle_path /resident/* {\n"
         "        reverse_proxy 192.168.2.151:18161 192.168.2.150:18161 {\n"

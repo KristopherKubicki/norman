@@ -894,8 +894,25 @@ def test_live_status_snapshot_bounds_cached_diagnostics(monkeypatch, tmp_path):
                     {"prompt": f"turn-{index}", "response": oversized}
                     for index in range(module.STATUS_TRANSPORT_HISTORY_LIMIT + 4)
                 ],
-                "runtime_capabilities": {"norllama": {"raw": oversized}},
-                "usage": {"entries": [oversized] * 30},
+                "runtime_capabilities": {
+                    "source": "live",
+                    "norllama": {
+                        "raw": oversized,
+                        "supports_tools": True,
+                        "specialist_lanes": {
+                            "count": 10,
+                            "proof": {
+                                "lane_count": 10,
+                                "production_ready_count": 8,
+                                "lanes": [oversized] * 30,
+                            },
+                        },
+                    },
+                },
+                "usage": {
+                    "entries": [oversized] * 30,
+                    "recent": [oversized] * 30,
+                },
                 "pane": oversized,
                 "logs": oversized,
             },
@@ -908,8 +925,15 @@ def test_live_status_snapshot_bounds_cached_diagnostics(monkeypatch, tmp_path):
 
     assert len(snapshot["history"]) == module.STATUS_TRANSPORT_HISTORY_LIMIT
     assert snapshot["history"][0]["prompt"] == "turn-4"
-    assert len(snapshot["runtime_capabilities"]["norllama"]["raw"]) < len(oversized)
+    capabilities = snapshot["runtime_capabilities"]
+    assert capabilities["source"] == "live"
+    assert capabilities["norllama"]["supports_tools"] is True
+    assert "raw" not in capabilities["norllama"]
+    proof = capabilities["norllama"]["specialist_lanes"]["proof"]
+    assert proof["production_ready_count"] == 8
+    assert "lanes" not in proof
     assert len(snapshot["usage"]["entries"]) <= module.STATUS_TRANSPORT_LIST_LIMIT
+    assert "recent" not in snapshot["usage"]
     assert snapshot["snapshot_cached"] is True
     assert snapshot["route_bootstrap"]["details_ready"] is True
 
