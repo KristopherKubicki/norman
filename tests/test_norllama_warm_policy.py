@@ -450,8 +450,7 @@ def test_build_warm_policy_includes_capability_catalog_and_spark_affinity():
     assert by_model["faster-whisper:distil-large-v3"]["target_worker"] == "spark-151"
     assert by_model["faster-whisper:large-v3"]["target_worker"] == "spark-150"
     assert (
-        "Qwen/Qwen-AgentWorld-35B-A3B"
-        in by_model[resident_model()]["desired_models"]
+        "Qwen/Qwen-AgentWorld-35B-A3B" in by_model[resident_model()]["desired_models"]
     )
     assert guardrails["coder"]["eligible_count"] == 0
     assert guardrails["judge"]["eligible_count"] == 0

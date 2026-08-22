@@ -16,6 +16,7 @@ from .operator_state import router as operator_state_router
 from .console_runtime import router as console_runtime_router
 from .prompt_router import router as prompt_router_router
 from .kaizen import router as kaizen_router
+from .bridge_conversations import router as bridge_conversations_router
 
 __all__ = [
     "actions_router",
@@ -36,4 +37,5 @@ __all__ = [
     "console_runtime_router",
     "prompt_router_router",
     "kaizen_router",
+    "bridge_conversations_router",
 ]

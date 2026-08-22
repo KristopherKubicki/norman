@@ -21,6 +21,7 @@ from app.core.estate_registry import (
     resident_model,
 )
 
+
 # should this move to schemas?
 class Settings(BaseSettings):
     secret_key: str

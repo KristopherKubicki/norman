@@ -3,7 +3,10 @@ from copy import deepcopy
 from app.services.norllama.escalation_policy import (
     ESCALATION_CONTROLLER_CONTRACT,
     MODEL_BY_ROLE,
+    build_production_escalation_decision,
     build_shadow_escalation_decision,
+    selected_cloud_model,
+    selected_cloud_reason,
 )
 
 
@@ -17,6 +20,37 @@ def test_qwen_is_the_default_resident_route() -> None:
     assert decision["cloud_required"] is False
     assert decision["execution_model_unchanged"] is True
     assert decision["execution_authority_changed"] is False
+
+
+def test_production_decision_changes_execution_model() -> None:
+    decision = build_production_escalation_decision(
+        {"lane": "llm_prep", "complexity": "moderate", "qwen_confidence": 0.9}
+    )
+
+    assert decision["mode"] == "production"
+    assert decision["status"] == "selected"
+    assert decision["proposed_model"] == MODEL_BY_ROLE["economy"]
+    assert decision["execution_model_unchanged"] is False
+    assert decision["execution_authority_changed"] is True
+
+
+def test_resident_decision_never_becomes_a_cloud_model() -> None:
+    resident = build_production_escalation_decision(
+        {"lane": "helpdesk", "risk": "low", "complexity": "simple"}
+    )
+    economy = build_production_escalation_decision(
+        {"lane": "llm_prep", "complexity": "moderate"}
+    )
+
+    assert resident["proposed_role"] == "resident"
+    assert selected_cloud_model(resident) == ""
+    assert selected_cloud_model(resident, direct=True) == ""
+    assert selected_cloud_reason(resident) == ""
+    assert selected_cloud_model(economy) == MODEL_BY_ROLE["economy"]
+    assert selected_cloud_model(economy, direct=True) == "gpt-5.6-luna"
+    assert selected_cloud_reason(economy).startswith(
+        "Norllama production controller selected luna:"
+    )
 
 
 def test_luna_handles_moderate_or_uncertain_qwen_work() -> None:

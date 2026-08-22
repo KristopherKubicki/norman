@@ -44,9 +44,7 @@ def check_row(name: str, result: dict[str, Any]) -> dict[str, Any]:
 
 def run_acceptance(module: Any) -> dict[str, Any]:
     resident_model = str(module.NORLLAMA_RESIDENT_MODEL or "")
-    registry_version = str(
-        module.NORLLAMA_RESIDENT_ROLE.get("registry_version") or ""
-    )
+    registry_version = str(module.NORLLAMA_RESIDENT_ROLE.get("registry_version") or "")
     checks: list[dict[str, Any]] = []
 
     readiness = module.local_planner_preflight_readiness()

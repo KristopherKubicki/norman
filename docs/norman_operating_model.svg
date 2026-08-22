@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="680" viewBox="0 0 1500 680" font-family="DejaVu Sans" role="img" aria-labelledby="title desc">
+  <title id="title">Norman: How Model Work Flows</title>
+  <desc id="desc">A simple diagram showing client tools sending work to Norman. Norman uses Norllama for default local-model work and can call OpenAI directly, or another approved cloud provider, when policy permits it.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M 1 1 L 11 6 L 1 11 z" fill="#34445a"/>
+    </marker>
+    <marker id="cloud-arrow" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="9" markerHeight="9" orient="auto">
+      <path d="M 1 1 L 11 6 L 1 11 z" fill="#9a640d"/>
+    </marker>
+    <style>
+      .background { fill: #f5f7fa; }
+      .title { font-size: 36px; font-weight: 700; fill: #172033; }
+      .subtitle { font-size: 18px; fill: #526274; }
+      .box-title { font-size: 25px; font-weight: 700; fill: #172033; }
+      .body { font-size: 17px; fill: #405168; }
+      .small { font-size: 15px; fill: #526274; }
+      .tag { font-size: 12px; font-weight: 700; letter-spacing: 1px; fill: #617187; }
+      .clients { fill: #ffffff; stroke: #8fa5b9; stroke-width: 2; }
+      .norman { fill: #e8f0fb; stroke: #436d9b; stroke-width: 2.5; }
+      .local { fill: #eaf6ed; stroke: #4b8964; stroke-width: 2; }
+      .models { fill: #ffffff; stroke: #7a9abe; stroke-width: 2; }
+      .cloud { fill: #fbf2df; stroke: #ae7c22; stroke-width: 2; }
+      .flow { fill: none; stroke: #34445a; stroke-width: 2.8; marker-end: url(#arrow); }
+      .cloud-flow { fill: none; stroke: #9a640d; stroke-width: 2.8; stroke-dasharray: 9 7; marker-end: url(#cloud-arrow); }
+    </style>
+  </defs>
+
+  <rect class="background" width="1500" height="680"/>
+  <text x="64" y="67" class="title">Norman: How Model Work Flows</text>
+  <text x="64" y="99" class="subtitle">Most model work runs locally through Norllama. Norman calls OpenAI directly only when its policy permits a cloud route.</text>
+
+  <rect x="64" y="246" width="260" height="184" rx="8" class="clients"/>
+  <text x="92" y="291" class="box-title">Work surfaces</text>
+  <text x="92" y="326" class="body">Codex / CLI / IDE</text>
+  <text x="92" y="356" class="body">Web and terminal TUIs</text>
+  <text x="92" y="386" class="body">Switchboard BBS</text>
+  <text x="92" y="415" class="small">Start work and receive updates</text>
+
+  <rect x="420" y="185" width="370" height="300" rx="8" class="norman"/>
+  <text x="454" y="234" class="box-title">Norman</text>
+  <text x="454" y="267" class="body">The control plane</text>
+  <line x1="454" y1="290" x2="756" y2="290" stroke="#9ab0c9" stroke-width="1.5"/>
+  <text x="454" y="331" class="body">Records the job and its state</text>
+  <text x="454" y="366" class="body">Applies policy and approvals</text>
+  <text x="454" y="401" class="body">Selects the model route</text>
+  <text x="454" y="448" class="small">Returns results, status, and audit history</text>
+
+  <rect x="900" y="145" width="285" height="195" rx="8" class="local"/>
+  <text x="928" y="187" class="tag">DEFAULT LOCAL PATH</text>
+  <text x="928" y="223" class="box-title">Norllama</text>
+  <text x="928" y="254" class="body">Local-model gateway</text>
+  <text x="928" y="290" class="small">Chooses healthy local workers</text>
+  <text x="928" y="314" class="small">and specialist models.</text>
+
+  <rect x="1245" y="145" width="195" height="195" rx="8" class="models"/>
+  <text x="1273" y="187" class="tag">LOCAL MODELS</text>
+  <text x="1273" y="223" class="box-title">Workers</text>
+  <text x="1273" y="260" class="small">Mac mini</text>
+  <text x="1273" y="286" class="small">Spark machines</text>
+  <text x="1273" y="312" class="small">Specialists</text>
+
+  <rect x="900" y="445" width="540" height="155" rx="8" class="cloud"/>
+  <text x="928" y="486" class="tag">POLICY-GATED CLOUD PATH</text>
+  <text x="928" y="522" class="box-title">OpenAI direct</text>
+  <text x="928" y="554" class="body">Norman makes this provider call itself.</text>
+  <text x="928" y="582" class="small">AWS Bedrock and other approved providers are sibling cloud routes.</text>
+
+  <path class="flow" d="M 324 338 L 420 338"/>
+  <path class="flow" d="M 790 305 L 900 240"/>
+  <path class="flow" d="M 1185 240 L 1245 240"/>
+  <path class="cloud-flow" d="M 790 415 L 900 515"/>
+
+  <text x="64" y="642" class="small">Norman owns the job, policy decision, and final operator-facing result. Norllama is never an automatic gateway to OpenAI.</text>
+</svg>

@@ -18,6 +18,7 @@ from .api_v1.routers import (
     console_runtime_router,
     prompt_router_router,
     kaizen_router,
+    bridge_conversations_router,
 )
 from .openai_compat import router as openai_compat_router
 from app.core.config import get_settings
@@ -45,6 +46,7 @@ router.include_router(operator_state_router, prefix=api_prefix)
 router.include_router(console_runtime_router, prefix=api_prefix)
 router.include_router(prompt_router_router, prefix=api_prefix)
 router.include_router(kaizen_router, prefix=api_prefix)
+router.include_router(bridge_conversations_router, prefix=api_prefix)
 
 
 def init_routers(app: FastAPI):

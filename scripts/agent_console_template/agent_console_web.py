@@ -592,6 +592,24 @@ if not (Path(SCRIPT_MODULE_DIR) / "agent_console_child_agents.py").is_file():
     if SOURCE_SCRIPT_DIR not in sys.path:
         sys.path.insert(0, SOURCE_SCRIPT_DIR)
 
+try:
+    from app.services.norllama.escalation_policy import (
+        build_production_escalation_decision,
+        selected_cloud_model,
+        selected_cloud_reason,
+    )
+except Exception:
+    try:
+        from norllama_escalation_policy import (
+            build_production_escalation_decision,
+            selected_cloud_model,
+            selected_cloud_reason,
+        )
+    except Exception:
+        build_production_escalation_decision = None
+        selected_cloud_model = None
+        selected_cloud_reason = None
+
 from agent_console_session_budget import (
     SessionBudgetPolicy,
     evaluate_admission as evaluate_session_admission,
@@ -651,7 +669,7 @@ AUTH_COOKIE_NAME = (
 AUTH_COOKIE_MAX_AGE = int(
     os.environ.get("NORMAN_CODEX_WEB_COOKIE_MAX_AGE", str(14 * 24 * 60 * 60))
 )
-DEFAULT_UI_VERSION = "2026.08.04.1"
+DEFAULT_UI_VERSION = "2026.08.17.1"
 UI_VERSION = (
     os.environ.get("NORMAN_CODEX_UI_VERSION", DEFAULT_UI_VERSION).strip()
     or DEFAULT_UI_VERSION
@@ -1317,6 +1335,9 @@ LOCAL_ROUTE_INTENT_CLASSIFIER_MIN_CONFIDENCE = min(
     _early_env_float(
         "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MIN_CONFIDENCE", 0.72, minimum=0.0
     ),
+)
+NORLLAMA_ESCALATION_MODE = (
+    os.environ.get("NORMAN_NORLLAMA_ESCALATION_MODE", "shadow_only").strip().lower()
 )
 LOCAL_SPECIALIST_PIPELINE_ENABLED = _early_env_flag(
     "NORMAN_LOCAL_SPECIALIST_PIPELINE_ENABLED", True
@@ -2953,7 +2974,9 @@ KPI_PATH = STATE_DIR / "kpis.json"
 AUDIT_PATH = STATE_DIR / "audit.jsonl"
 AUDIT_LOCK = threading.RLock()
 DETERMINISTIC_ARCHIVE_QUEUE: queue.Queue[Callable[[], None]] = queue.Queue(
-    maxsize=max(1, int(os.environ.get("NORMAN_CODEX_DETERMINISTIC_ARCHIVE_QUEUE_SIZE", "32")))
+    maxsize=max(
+        1, int(os.environ.get("NORMAN_CODEX_DETERMINISTIC_ARCHIVE_QUEUE_SIZE", "32"))
+    )
 )
 DETERMINISTIC_ARCHIVE_LOCK = threading.Lock()
 DETERMINISTIC_ARCHIVE_WORKER: threading.Thread | None = None
@@ -5917,6 +5940,13 @@ def codex_model_for_service_tier(value: Any, model: Any = "") -> str:
     ):
         return codex_direct_model_name(CODEX_PRIORITY_MODEL)
     return codex_direct_model_name(normalized_model)
+
+
+def codex_subscription_model_name(model: Any = "") -> str:
+    direct_model = codex_direct_model_name(model)
+    if direct_model.lower().startswith("gpt-"):
+        return direct_model
+    return codex_direct_model_name(CODEX_FLEX_MODEL)
 
 
 def codex_thread_scope_key(value: Any, model: Any = "") -> str:
@@ -13529,8 +13559,6 @@ def local_route_intent_classifier_should_run(prompt: Any) -> bool:
     core = prompt_core_request(str(prompt or "")).strip()
     if not core:
         return False
-    if len(core) > LOCAL_ROUTE_INTENT_CLASSIFIER_PROMPT_CHARS:
-        return False
     if prompt_is_literal_response_request(core) or prompt_is_route_status_diagnostic(
         core
     ):
@@ -13573,6 +13601,8 @@ def local_route_intent_classifier_prompt(
             "operator_prompt",
         ],
         "allowed_lanes": ["planner", "scout", "summarizer", "filter", "verifier"],
+        "allowed_complexity": ["simple", "moderate", "complex", "frontier"],
+        "allowed_model_tiers": ["qwen", "luna", "terra", "sol"],
     }
     return "\n".join(
         [
@@ -13600,7 +13630,8 @@ def local_route_intent_classifier_prompt(
             ),
             (
                 "Required keys: requested_action, operator_intent_class, lane, "
-                "local_eligible, cloud_needed, risk, confidence, reason."
+                "local_eligible, cloud_needed, risk, complexity, recommended_tier, "
+                "frontier_candidate, conflicting_evidence, confidence, reason."
             ),
             (
                 "Use only literal values from the allowed_* arrays below; do not "
@@ -13619,6 +13650,8 @@ def normalize_local_route_intent_classifier_payload(payload: Any) -> dict[str, A
     intent_class = str(parsed.get("operator_intent_class") or "").strip().lower()
     lane = str(parsed.get("lane") or "").strip().lower().replace("-", "_")
     risk = str(parsed.get("risk") or "").strip().lower()
+    complexity = str(parsed.get("complexity") or "").strip().lower()
+    recommended_tier = str(parsed.get("recommended_tier") or "").strip().lower()
     confidence = max(0.0, min(1.0, _coerce_float(parsed.get("confidence"))))
     local_eligible = coerce_boolish(parsed.get("local_eligible"))
     cloud_needed = coerce_boolish(parsed.get("cloud_needed"))
@@ -13651,6 +13684,10 @@ def normalize_local_route_intent_classifier_payload(payload: Any) -> dict[str, A
         lane = "scout" if lane not in {"planner", "scout"} else lane
     if risk not in {"none", "low", "medium", "high"}:
         risk = "medium"
+    if complexity not in {"simple", "moderate", "complex", "frontier"}:
+        complexity = "moderate"
+    if recommended_tier not in {"qwen", "luna", "terra", "sol"}:
+        recommended_tier = ""
     return {
         "requested_action": requested_action,
         "operator_intent_class": intent_class,
@@ -13658,6 +13695,10 @@ def normalize_local_route_intent_classifier_payload(payload: Any) -> dict[str, A
         "local_eligible": local_eligible,
         "cloud_needed": cloud_needed,
         "risk": risk,
+        "complexity": complexity,
+        "recommended_tier": recommended_tier,
+        "frontier_candidate": coerce_boolish(parsed.get("frontier_candidate")),
+        "conflicting_evidence": coerce_boolish(parsed.get("conflicting_evidence")),
         "confidence": confidence,
         "reason": summarize_text(str(parsed.get("reason") or ""), 220),
     }
@@ -13885,6 +13926,10 @@ def run_local_route_intent_classifier(
             "local_eligible": result["local_eligible"],
             "cloud_needed": result["cloud_needed"],
             "risk": result["risk"],
+            "complexity": result["complexity"],
+            "recommended_tier": result["recommended_tier"],
+            "frontier_candidate": result["frontier_candidate"],
+            "conflicting_evidence": result["conflicting_evidence"],
             "confidence": result["confidence"],
             "reason": result["reason"],
             "deterministic_block": deterministic_block,
@@ -13907,6 +13952,127 @@ def run_local_route_intent_classifier(
         candidate_count=len(candidates),
         candidate_policy=candidate_policy,
     )
+
+
+def production_model_escalation_for_prompt(
+    prompt: str,
+    *,
+    attachments: list[dict[str, Any]],
+    route_lock: bool,
+    runtime: str,
+    optimization_mode: str,
+) -> dict[str, Any]:
+    if (
+        NORLLAMA_ESCALATION_MODE != "production"
+        or build_production_escalation_decision is None
+        or route_lock
+        or normalize_runtime(runtime) != "codex"
+        or normalize_optimization_mode(optimization_mode) == "raw"
+        or prompt_is_literal_response_request(prompt)
+        or prompt_is_route_status_diagnostic(prompt)
+    ):
+        return {}
+    requested_action = route_receipt_requested_action(prompt)
+    intent_class = turn_control_operator_intent_class(prompt)
+    classifier = run_local_route_intent_classifier(
+        prompt,
+        requested_action=requested_action,
+        intent_class=intent_class,
+    )
+    workload = classify_prompt_workload(prompt, attachments)
+    complexity = {
+        "literal_response": "simple",
+        "status": "simple",
+        "quick_decision": "simple",
+        "standard": "moderate",
+        "analysis": "moderate",
+        "verification": "moderate",
+        "implementation": "complex",
+        "approval_boundary": "complex",
+        "long_run_approval": "complex",
+        "long_work": "frontier",
+        "explicit": "moderate",
+    }.get(workload, "moderate")
+    recommended_tier = str(classifier.get("recommended_tier") or "").strip()
+    recommended_complexity = {
+        "qwen": "simple",
+        "luna": "moderate",
+        "terra": "complex",
+        "sol": "frontier",
+    }.get(recommended_tier)
+    complexity_rank = {"simple": 0, "moderate": 1, "complex": 2, "frontier": 3}
+    classifier_complexity = str(classifier.get("complexity") or "").strip()
+    for candidate in (classifier_complexity, recommended_complexity):
+        if (
+            candidate in complexity_rank
+            and complexity_rank[candidate] > complexity_rank[complexity]
+        ):
+            complexity = candidate
+    if classifier.get("cloud_needed") and complexity == "simple":
+        complexity = "moderate"
+    mutation_risk = turn_control_mutation_risk(prompt)
+    last_model = str(load_status_meta().get("last_model") or "").lower()
+    explicit_tier_match = re.search(
+        r"\b(?:call|route(?:\s+to)?|use)\s+(luna|terra|sol)\b",
+        prompt_core_request(prompt),
+        re.I,
+    )
+    payload = {
+        "lane": str(classifier.get("lane") or "general"),
+        "risk": "high"
+        if mutation_risk in {"billing_secret", "deploy_restart", "external_write"}
+        else str(classifier.get("risk") or "low"),
+        "complexity": complexity,
+        "qwen_confidence": _coerce_float(classifier.get("confidence")) or 0.5,
+        "local_runtime_healthy": classifier.get("status") == "ok",
+        "mutation": mutation_risk == "local_file",
+        "external_side_effect": mutation_risk in {"deploy_restart", "external_write"},
+        "credential_use": mutation_risk == "billing_secret",
+        "final_authority": workload in {"approval_boundary", "long_work"},
+        "frontier_candidate": bool(
+            classifier.get("frontier_candidate")
+            or recommended_tier == "sol"
+            or complexity == "frontier"
+        ),
+        "conflicting_evidence": bool(classifier.get("conflicting_evidence")),
+        "prior_terra_evidence": "gpt-5.6-terra" in last_model,
+        "requested_tier": (
+            explicit_tier_match.group(1).lower() if explicit_tier_match else ""
+        ),
+    }
+    decision = build_production_escalation_decision(payload)
+    decision["qwen_classifier"] = {
+        key: classifier.get(key)
+        for key in (
+            "used",
+            "status",
+            "model",
+            "lane",
+            "risk",
+            "complexity",
+            "recommended_tier",
+            "frontier_candidate",
+            "conflicting_evidence",
+            "confidence",
+            "reason",
+        )
+        if classifier.get(key) not in (None, "")
+    }
+    decision["workload"] = workload
+    decision["mutation_risk"] = mutation_risk
+    return decision
+
+
+def escalation_cloud_model(decision: dict[str, Any]) -> str:
+    if selected_cloud_model is None:
+        return ""
+    return selected_cloud_model(decision)
+
+
+def escalation_direct_model(decision: dict[str, Any]) -> str:
+    if selected_cloud_model is None:
+        return ""
+    return selected_cloud_model(decision, direct=True)
 
 
 def local_llm_guardrail_candidate_policy(
@@ -37333,7 +37499,10 @@ def append_local_llm_route_outcome(**kwargs: Any) -> dict[str, Any]:
 
 def local_llm_route_failure_status(exc: BaseException) -> str:
     text = str(exc or "").lower()
-    if isinstance(exc, urllib_error.HTTPError) and exc.code == HTTPStatus.TOO_MANY_REQUESTS:
+    if (
+        isinstance(exc, urllib_error.HTTPError)
+        and exc.code == HTTPStatus.TOO_MANY_REQUESTS
+    ):
         return "deferred"
     if isinstance(exc, TimeoutError) or "timed out" in text or "timeout" in text:
         return "timeout"
@@ -37442,9 +37611,7 @@ def local_llm_generate_once(
             "X-Norllama-Priority": "background",
             "X-Norllama-Work-Class": "background",
             "X-Norllama-Interruptible": "true",
-            "X-Norllama-Max-Queue-Wait-Ms": str(
-                LOCAL_LLM_BACKGROUND_MAX_QUEUE_WAIT_MS
-            ),
+            "X-Norllama-Max-Queue-Wait-Ms": str(LOCAL_LLM_BACKGROUND_MAX_QUEUE_WAIT_MS),
             "X-Norllama-Work-Source": str(work_source or "tui-background"),
         }
         if background
@@ -41249,6 +41416,7 @@ def cost_route_decision_for_prompt(
     requested_runtime: str,
     requested_model: str,
     requested_service_tier: str,
+    model_route_classifier: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     normalized_runtime = normalize_runtime(runtime)
     normalized_model = normalize_runtime_model(normalized_runtime, model)
@@ -41329,7 +41497,7 @@ def cost_route_decision_for_prompt(
     classifier_promoted = False
     classifier_lane = ""
     if not prompt_is_local_first_candidate(prompt):
-        classifier = run_local_route_intent_classifier(
+        classifier = model_route_classifier or run_local_route_intent_classifier(
             prompt,
             requested_action=requested_action,
             intent_class=intent_class,
@@ -41600,6 +41768,25 @@ def start_web_prompt(
         base_model = normalize_runtime_model(
             base_runtime, configured_runtime_model(base_runtime)
         )
+    model_escalation = production_model_escalation_for_prompt(
+        clean,
+        attachments=normalized_attachments,
+        route_lock=route_lock,
+        runtime=base_runtime,
+        optimization_mode=normalized_optimization_mode,
+    )
+    model_route_classifier = (
+        model_escalation.get("qwen_classifier")
+        if isinstance(model_escalation.get("qwen_classifier"), dict)
+        else {}
+    )
+    escalation_direct = escalation_direct_model(model_escalation)
+    if escalation_direct:
+        base_model = normalize_runtime_model("codex", escalation_direct)
+        if not normalized_escalation_reason and selected_cloud_reason is not None:
+            normalized_escalation_reason = summarize_text(
+                selected_cloud_reason(model_escalation), 360
+            )
     subscription_capacity_decision = codex_subscription_capacity_route_decision(
         runtime=base_runtime,
         model=base_model,
@@ -41608,6 +41795,9 @@ def start_web_prompt(
         job_budget=normalized_budget,
         detail=normalized_detail,
         route_lock=route_lock,
+    )
+    subscription_model = normalize_runtime_model(
+        "codex", codex_subscription_model_name(base_model)
     )
     local_route_probe = cost_route_decision_for_prompt(
         prompt=clean,
@@ -41622,6 +41812,7 @@ def start_web_prompt(
         requested_runtime=requested_runtime,
         requested_model=requested_model,
         requested_service_tier=requested_service_tier,
+        model_route_classifier=model_route_classifier,
     )
     norllama_available = (
         normalize_runtime(local_route_probe.get("selected_runtime")) == "localllm"
@@ -41633,9 +41824,24 @@ def start_web_prompt(
     bedrock_service_tier = "bedrock-emergency"
     bedrock_model = normalize_runtime_model(
         bedrock_runtime,
-        codex_model_for_service_tier(bedrock_service_tier, base_model),
+        escalation_cloud_model(model_escalation)
+        or codex_model_for_service_tier(bedrock_service_tier, base_model),
     )
     bedrock_available = bool(codex_profile_v2_for_service_tier(bedrock_service_tier))
+    subscription_capacity_state = str(
+        subscription_capacity_decision.get("state") or ""
+    ).strip()
+    subscription_capacity_exhausted = bool(
+        subscription_capacity_decision.get("enabled")
+        and subscription_capacity_decision.get("fresh")
+        and subscription_capacity_decision.get("chatgpt_auth_verified")
+        and subscription_capacity_state == "blocked"
+    )
+    if subscription_capacity_exhausted and not norllama_safe_final:
+        bedrock_available = bool(
+            bedrock_available
+            and codex_launch_preflight(bedrock_service_tier).get("allowed")
+        )
     manual_bedrock_available = bool(
         codex_profile_v2_for_service_tier(base_service_tier)
     )
@@ -41676,6 +41882,7 @@ def start_web_prompt(
                 bedrock_service_tier=bedrock_service_tier,
                 route_lock=route_lock,
                 subscription=subscription_capacity_decision,
+                subscription_model=subscription_model,
                 norllama_available=norllama_available,
                 norllama_safe_final=norllama_safe_final,
                 bedrock_available=bedrock_available,
@@ -41800,6 +42007,24 @@ def start_web_prompt(
         snapshot["route_proof_blocked"] = True
         snapshot["route_proof_error"] = blocked_message
         return False, snapshot
+    if model_escalation:
+        cost_route_decision["model_escalation"] = model_escalation
+        append_audit_event(
+            event_type="chat.model-role-selected",
+            summary=(
+                f"Production model controller selected "
+                f"{model_escalation.get('proposed_tier') or 'unknown'}."
+            ),
+            detail="; ".join(model_escalation.get("reason_codes") or []),
+            severity="info",
+            actor_type="system",
+            thread_id=read_text(THREAD_ID_PATH),
+            payload={
+                "model_escalation": model_escalation,
+                "cost_route": cost_route_decision,
+                "prompt_preview": summarize_text(clean, 240),
+            },
+        )
     if normalized_runtime == "codex" and normalized_service_tier == "flex":
         direct_execution = codex_openai_direct_execution_decision(
             normalized_service_tier,

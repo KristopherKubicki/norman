@@ -1,5 +1,7 @@
 import os
 import sys
+from urllib.parse import urlencode
+
 from fastapi import Request, HTTPException
 from fastapi.responses import Response, RedirectResponse
 from app.api.deps import get_current_user
@@ -10,6 +12,7 @@ from app.core.auth_cache import (
     get_cached_user,
 )
 from app.core.logging import setup_logger
+from app.core.navigation import safe_local_return_to
 from app.core.security import decode_access_token
 from app.db.session import SessionLocal
 from app.crud.user import is_admin_user_exists, get_user_by_email
@@ -19,8 +22,15 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/token")
 logger = setup_logger(__name__)
 
 
-def _redirect_to_login(*, clear_cookie: bool = False) -> RedirectResponse:
-    response = RedirectResponse(url="/login.html", status_code=303)
+def _redirect_to_login(
+    request: Request, *, clear_cookie: bool = False
+) -> RedirectResponse:
+    return_to = safe_local_return_to(
+        f"{request.url.path}{'?' + request.url.query if request.url.query else ''}"
+    )
+    response = RedirectResponse(
+        url=f"/login.html?{urlencode({'next': return_to})}", status_code=303
+    )
     if clear_cookie:
         response.delete_cookie("access_token")
     return response
@@ -59,7 +69,7 @@ async def auth_middleware(request: Request, call_next):
             "/setup.html",
         ):
             logger.debug("Auth redirect: missing token; login required")
-            return _redirect_to_login()
+            return _redirect_to_login(request)
     elif request.url.path in ("/login.html", "/setup.html"):
         # If the user already has a valid token, redirect them away from the
         # login page. Otherwise allow the request to continue so the login form
@@ -102,7 +112,7 @@ async def auth_middleware(request: Request, call_next):
         except HTTPException as e:
             if e.status_code == 401:
                 logger.debug("Auth redirect: invalid token; login required")
-                return _redirect_to_login(clear_cookie=True)
+                return _redirect_to_login(request, clear_cookie=True)
             raise e
 
     response = await call_next(request)

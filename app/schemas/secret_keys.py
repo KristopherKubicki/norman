@@ -195,6 +195,7 @@ class KeysHostEnrollmentOut(KeysOrmResponseModel):
     revoked_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
 
+
 class KeysCapabilityCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=160)
     executor_kind: str = Field(default="receipt", min_length=1, max_length=64)
@@ -212,6 +213,7 @@ class KeysCapabilityOut(KeysOrmResponseModel):
     secret_aliases: list[str] = Field(default_factory=list)
     metadata_json: dict[str, Any] = Field(default_factory=dict)
     enabled: bool
+
 
 class KeysCapabilityPolicyCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=160)
@@ -238,6 +240,7 @@ class KeysCapabilityPolicyOut(KeysOrmResponseModel):
     max_ttl_seconds: int
     approval_required: bool
     enabled: bool
+
 
 class KeysCapabilityRequestCreate(BaseModel):
     capability: str = Field(..., min_length=1, max_length=160)
@@ -273,6 +276,7 @@ class KeysCapabilityRequestOut(KeysOrmResponseModel):
     approval_required: bool
     approval_reason: str
     created_at: Optional[datetime] = None
+
 
 class KeysCapabilityLeaseOut(BaseModel):
     lease_id: str
@@ -318,6 +322,7 @@ class KeysCapabilityAuditEventOut(KeysOrmResponseModel):
     summary: str
     metadata_json: dict[str, Any] = Field(default_factory=dict)
     created_at: Optional[datetime] = None
+
 
 class KeysCapabilityDecision(BaseModel):
     reason: str = Field(default="", max_length=1000)

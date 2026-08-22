@@ -73,7 +73,12 @@ from app.services.work_classification import (
 NORLLAMA_MODEL_ROLE_CONFIG_PATH = Path(
     os.environ.get(
         "NORMAN_NORLLAMA_MODEL_ROLE_CONFIG",
-        str(Path(__file__).resolve().parents[1] / "config" / "norllama" / "model_roles.json"),
+        str(
+            Path(__file__).resolve().parents[1]
+            / "config"
+            / "norllama"
+            / "model_roles.json"
+        ),
     )
 )
 
@@ -108,9 +113,7 @@ def load_norllama_resident_role() -> dict[str, Any]:
 
 NORLLAMA_RESIDENT_ROLE = load_norllama_resident_role()
 NORLLAMA_RESIDENT_MODEL = str(NORLLAMA_RESIDENT_ROLE.get("model") or "").strip()
-NORLLAMA_RESIDENT_ENDPOINTS = tuple(
-    NORLLAMA_RESIDENT_ROLE.get("endpoints") or ()
-)
+NORLLAMA_RESIDENT_ENDPOINTS = tuple(NORLLAMA_RESIDENT_ROLE.get("endpoints") or ())
 
 
 def sanitize_cost_route(value: Any) -> dict[str, Any]:
@@ -408,7 +411,7 @@ AUTH_COOKIE_NAME = (
 AUTH_COOKIE_MAX_AGE = int(
     os.environ.get("NORMAN_CODEX_WEB_COOKIE_MAX_AGE", str(14 * 24 * 60 * 60))
 )
-DEFAULT_UI_VERSION = "2026.08.04.1"
+DEFAULT_UI_VERSION = "2026.08.17.1"
 UI_VERSION = (
     os.environ.get("NORMAN_CODEX_UI_VERSION", DEFAULT_UI_VERSION).strip()
     or DEFAULT_UI_VERSION
@@ -2229,7 +2232,9 @@ KPI_PATH = STATE_DIR / "kpis.json"
 AUDIT_PATH = STATE_DIR / "audit.jsonl"
 AUDIT_LOCK = threading.RLock()
 DETERMINISTIC_ARCHIVE_QUEUE: queue.Queue[Callable[[], None]] = queue.Queue(
-    maxsize=max(1, int(os.environ.get("NORMAN_CODEX_DETERMINISTIC_ARCHIVE_QUEUE_SIZE", "32")))
+    maxsize=max(
+        1, int(os.environ.get("NORMAN_CODEX_DETERMINISTIC_ARCHIVE_QUEUE_SIZE", "32"))
+    )
 )
 DETERMINISTIC_ARCHIVE_LOCK = threading.Lock()
 DETERMINISTIC_ARCHIVE_WORKER: threading.Thread | None = None
@@ -4578,6 +4583,13 @@ def codex_model_for_service_tier(value: Any, model: Any = "") -> str:
     ):
         return codex_direct_model_name(CODEX_PRIORITY_MODEL)
     return codex_direct_model_name(normalized_model)
+
+
+def codex_subscription_model_name(model: Any = "") -> str:
+    direct_model = codex_direct_model_name(model)
+    if direct_model.lower().startswith("gpt-"):
+        return direct_model
+    return codex_direct_model_name(CODEX_FLEX_MODEL)
 
 
 def codex_thread_scope_key(value: Any, model: Any = "") -> str:
@@ -13123,7 +13135,10 @@ def append_local_llm_route_outcome(**kwargs: Any) -> dict[str, Any]:
 
 def local_llm_route_failure_status(exc: BaseException) -> str:
     text = str(exc or "").lower()
-    if isinstance(exc, urllib_error.HTTPError) and exc.code == HTTPStatus.TOO_MANY_REQUESTS:
+    if (
+        isinstance(exc, urllib_error.HTTPError)
+        and exc.code == HTTPStatus.TOO_MANY_REQUESTS
+    ):
         return "deferred"
     if isinstance(exc, TimeoutError) or "timed out" in text or "timeout" in text:
         return "timeout"
@@ -30497,6 +30512,9 @@ def start_web_prompt(
         route_lock=route_lock,
         service_tier_recovery=service_tier_recovery,
     )
+    subscription_model = normalize_runtime_model(
+        "codex", codex_subscription_model_name(base_model)
+    )
     bedrock_runtime = "codex"
     bedrock_service_tier = "bedrock-emergency"
     bedrock_model = normalize_runtime_model(
@@ -30544,6 +30562,7 @@ def start_web_prompt(
                 bedrock_service_tier=bedrock_service_tier,
                 route_lock=route_lock,
                 subscription=subscription_capacity_decision,
+                subscription_model=subscription_model,
                 # CP is a cloud-authority TUI: Norllama cannot author its final
                 # response, even when the shared pool is otherwise available.
                 norllama_available=False,
@@ -33908,9 +33927,7 @@ def working_recap_local_generate(
             "X-Norllama-Priority": "background",
             "X-Norllama-Work-Class": "background",
             "X-Norllama-Interruptible": "true",
-            "X-Norllama-Max-Queue-Wait-Ms": str(
-                BACKGROUND_LLM_MAX_QUEUE_WAIT_MS
-            ),
+            "X-Norllama-Max-Queue-Wait-Ms": str(BACKGROUND_LLM_MAX_QUEUE_WAIT_MS),
             "X-Norllama-Work-Source": source,
         },
         method="POST",
@@ -33938,9 +33955,7 @@ def working_recap_local_generate(
                 "X-Norllama-Priority": "background",
                 "X-Norllama-Work-Class": "background",
                 "X-Norllama-Interruptible": "true",
-                "X-Norllama-Max-Queue-Wait-Ms": str(
-                    BACKGROUND_LLM_MAX_QUEUE_WAIT_MS
-                ),
+                "X-Norllama-Max-Queue-Wait-Ms": str(BACKGROUND_LLM_MAX_QUEUE_WAIT_MS),
                 "X-Norllama-Work-Source": source,
             },
             method="POST",

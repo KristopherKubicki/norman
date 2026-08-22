@@ -23,6 +23,7 @@ def _worker_upstream(worker_id: str, port_key: str) -> str:
     row = dict(FLEET_WORKERS[worker_id])
     return f"{row['address']}:{int(row[port_key])}"
 
+
 BOT_PATH_ALIASES: dict[str, tuple[str, ...]] = {
     "autocamera": ("auto",),
     "cloudagent": ("cloud",),
@@ -154,6 +155,7 @@ SPECIAL_FRONTDOOR_UPSTREAMS: dict[str, str] = {
 }
 
 SPECIAL_HOST_GROUPS: dict[str, tuple[tuple[str, ...], ...]] = {
+    "netops": (("netops.openbrand.com",),),
     "ops": (
         (
             "ops.home.arpa",
@@ -178,6 +180,7 @@ SPECIAL_HOST_GROUPS: dict[str, tuple[tuple[str, ...], ...]] = {
 }
 
 SPECIAL_HOST_UPSTREAMS: dict[str, str] = {
+    "netops": f"{HOSTS['networking-host'].lan_host}:8791",
     "ops": SPECIAL_PATH_ROUTES["ops"],
     "subprime": SPECIAL_PATH_ROUTES["subprime"],
     "switchboard": SPECIAL_FRONTDOOR_UPSTREAMS["switchboard"],

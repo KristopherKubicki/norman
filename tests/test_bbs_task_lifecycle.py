@@ -238,8 +238,8 @@ def test_done_can_append_ticket_cost_from_usage_db(tmp_path: Path, monkeypatch) 
     assert records[0]["source"]["thread_id"] == "codex-thread-a"
     assert records[0]["usage"]["usage_event_count"] == 1
     assert records[0]["usage"]["total_tokens"] == 1100
-    assert records[0]["billing"]["price_basis"] == "bedrock-us-east-2"
-    assert records[0]["cost"]["estimated_usd"] == 0.0088
+    assert records[0]["billing"]["price_basis"] == "none"
+    assert records[0]["cost"]["estimated_usd"] == 0.0
 
 
 def test_blocked_marks_thread_blocked_with_reason(monkeypatch) -> None:

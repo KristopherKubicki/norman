@@ -8,13 +8,12 @@ require changes to routing logic.
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from app.core.estate_registry import load_model_registry
-
 ESCALATION_DECISION_SCHEMA = "norman.norllama.escalation-decision.v1"
-ESCALATION_CONTROLLER_VERSION = "2026.08.16.model-roles-shadow-v2"
+ESCALATION_CONTROLLER_VERSION = "2026.08.17.model-roles-production-v1"
 MODEL_ROLE_CONFIG_ENV = "NORMAN_NORLLAMA_MODEL_ROLE_CONFIG"
 DEFAULT_MODEL_ROLE_CONFIG_PATH = (
     Path(__file__).resolve().parents[3] / "config" / "norllama" / "model_roles.json"
@@ -28,7 +27,9 @@ def load_model_role_config(path: str | Path | None = None) -> dict[str, Any]:
     configured_path = str(
         path or os.getenv(MODEL_ROLE_CONFIG_ENV) or DEFAULT_MODEL_ROLE_CONFIG_PATH
     )
-    payload = load_model_registry(configured_path)
+    payload = json.loads(Path(configured_path).read_text(encoding="utf-8"))
+    if payload.get("schema") != "norman.norllama.model-roles.v1":
+        raise ValueError("Norllama model-role registry schema is unsupported")
     roles = payload["roles"]
     for role in ROLE_ORDER:
         row = roles[role]
@@ -43,9 +44,7 @@ def load_model_role_config(path: str | Path | None = None) -> dict[str, Any]:
 
 
 MODEL_ROLE_CONFIG = load_model_role_config()
-MODEL_ROLES = {
-    role: dict(MODEL_ROLE_CONFIG["roles"][role]) for role in ROLE_ORDER
-}
+MODEL_ROLES = {role: dict(MODEL_ROLE_CONFIG["roles"][role]) for role in ROLE_ORDER}
 MODEL_BY_ROLE = {role: str(row["model"]) for role, row in MODEL_ROLES.items()}
 TIER_LABEL_BY_ROLE = {
     role: str(row["tier_label"]).strip().lower() for role, row in MODEL_ROLES.items()
@@ -60,18 +59,15 @@ RESIDENT_MODEL = MODEL_BY_ROLE["resident"]
 ESCALATION_CONTROLLER_CONTRACT = {
     "schema": "norman.norllama.escalation-controller.v1",
     "version": ESCALATION_CONTROLLER_VERSION,
-    "mode": "shadow_only",
+    "mode": "production",
     "registry_schema": MODEL_ROLE_CONFIG["schema"],
     "registry_version": MODEL_ROLE_CONFIG["version"],
     "roles": MODEL_ROLES,
     "resident_model": RESIDENT_MODEL,
-    "tiers": {
-        TIER_LABEL_BY_ROLE[role]: MODEL_BY_ROLE[role] for role in ROLE_ORDER
-    },
+    "tiers": {TIER_LABEL_BY_ROLE[role]: MODEL_BY_ROLE[role] for role in ROLE_ORDER},
     "lane_role_defaults": dict(LANE_ROLE_DEFAULTS),
     "lane_cloud_defaults": {
-        lane: TIER_LABEL_BY_ROLE[role]
-        for lane, role in LANE_ROLE_DEFAULTS.items()
+        lane: TIER_LABEL_BY_ROLE[role] for lane, role in LANE_ROLE_DEFAULTS.items()
     },
     "rules": {
         "resident": "default for local, reversible, low-risk work",
@@ -82,8 +78,8 @@ ESCALATION_CONTROLLER_CONTRACT = {
     "frontier_requires_prior_role": str(
         MODEL_ROLE_CONFIG.get("frontier_requires_prior_role") or "authority"
     ),
-    "model_confidence_is_advisory_only": True,
-    "execution_authority_changed": False,
+    "model_confidence_is_advisory_only": False,
+    "execution_authority_changed": True,
 }
 
 
@@ -126,19 +122,23 @@ def _controller_maps(
     lane_defaults = controller.get("lane_role_defaults")
     if not isinstance(lane_defaults, dict):
         lane_defaults = LANE_ROLE_DEFAULTS
-    return model_by_role, label_by_role, role_by_label, {
-        str(lane): str(role) for lane, role in lane_defaults.items()
-    }
+    return (
+        model_by_role,
+        label_by_role,
+        role_by_label,
+        {str(lane): str(role) for lane, role in lane_defaults.items()},
+    )
 
 
-def build_shadow_escalation_decision(
+def build_escalation_decision(
     payload: Mapping[str, Any] | None,
     *,
     policy_id: str = "",
     policy_hash: str = "",
     controller: Mapping[str, Any] | None = None,
+    mode: str = "production",
 ) -> dict[str, Any]:
-    """Return a fail-closed advisory model-role recommendation."""
+    """Return a fail-closed model-role recommendation."""
 
     active_controller = dict(controller or ESCALATION_CONTROLLER_CONTRACT)
     model_by_role, label_by_role, role_by_label, lane_defaults = _controller_maps(
@@ -277,12 +277,13 @@ def build_shadow_escalation_decision(
         "failed_attempts": failed_attempts,
         "advisory_only": True,
     }
+    production = _clean(mode) == "production"
     return {
         "schema": ESCALATION_DECISION_SCHEMA,
         "controller_version": str(active_controller.get("version") or ""),
         "registry_version": str(active_controller.get("registry_version") or ""),
-        "mode": "shadow_only",
-        "status": "proposed",
+        "mode": "production" if production else "shadow_only",
+        "status": "selected" if production else "proposed",
         "lane": lane,
         "risk": risk,
         "complexity": complexity,
@@ -305,6 +306,68 @@ def build_shadow_escalation_decision(
         "qwen_signal": resident_signal,
         "policy_id": policy_id,
         "policy_hash": policy_hash,
-        "execution_model_unchanged": True,
-        "execution_authority_changed": False,
+        "execution_model_unchanged": not production,
+        "execution_authority_changed": production,
     }
+
+
+def build_shadow_escalation_decision(
+    payload: Mapping[str, Any] | None,
+    *,
+    policy_id: str = "",
+    policy_hash: str = "",
+    controller: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    return build_escalation_decision(
+        payload,
+        policy_id=policy_id,
+        policy_hash=policy_hash,
+        controller=controller,
+        mode="shadow_only",
+    )
+
+
+def build_production_escalation_decision(
+    payload: Mapping[str, Any] | None,
+    *,
+    policy_id: str = "",
+    policy_hash: str = "",
+    controller: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    return build_escalation_decision(
+        payload,
+        policy_id=policy_id,
+        policy_hash=policy_hash,
+        controller=controller,
+        mode="production",
+    )
+
+
+def selected_cloud_model(
+    decision: Mapping[str, Any] | None, *, direct: bool = False
+) -> str:
+    """Return only executable cloud models from a model-role decision."""
+
+    source = dict(decision or {})
+    role = _clean(source.get("proposed_role"))
+    tier = _clean(source.get("proposed_tier"))
+    if role == "resident" or tier == "qwen":
+        return ""
+    model = str(source.get("proposed_model") or "").strip()
+    if not model.lower().startswith(("gpt-", "openai.gpt-")):
+        return ""
+    return model.removeprefix("openai.") if direct else model
+
+
+def selected_cloud_reason(decision: Mapping[str, Any] | None) -> str:
+    """Return a named, auditable reason for an automatic cloud-tier selection."""
+
+    source = dict(decision or {})
+    if not selected_cloud_model(source):
+        return ""
+    tier = _clean(source.get("proposed_tier")) or "cloud"
+    reason_codes = [
+        _clean(reason) for reason in source.get("reason_codes") or [] if _clean(reason)
+    ]
+    detail = ", ".join(reason_codes[:4]) or "controller policy"
+    return f"Norllama production controller selected {tier}: {detail}."

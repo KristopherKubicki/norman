@@ -73,6 +73,12 @@ def render_frontdoor_snippet() -> str:
 (norman_frontdoor) {
     encode gzip zstd
 
+    handle_path /static/* {
+        root * /var/www/norman-static
+        header Cache-Control "public, max-age=300, stale-while-revalidate=86400"
+        file_server
+    }
+
     redir /host /host/ 308
     handle_path /host/* {
         root * /var/www/host-home

@@ -2655,7 +2655,8 @@ class DbConsoleRuntimeWorker:
             db,
             user_id=user_id,
             job_id=job_id,
-            summary="Static advisory response completed.",
+            summary="Response completed.",
+            detail=result.text,
             attempt_id=attempt_id,
             lease_epoch=lease_epoch,
         )

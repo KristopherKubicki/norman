@@ -16,6 +16,7 @@ from app.schemas.bot import Bot, BotCreate, BotOut, BotUpdate
 from app.schemas.message import Message, MessageUpdate
 from app.schemas.interaction import InteractionCreate
 from app.core.config import active_config_file_path, settings
+from app.core.navigation import safe_local_return_to
 from app.core.safety_controls import (
     clamp_kill_switch_level,
     current_kill_switch_level,
@@ -105,6 +106,7 @@ from .views import (
     bots,
     systems,
     messages,
+    bridge,
     consoles,
     captions,
     login,
@@ -233,7 +235,26 @@ async def favicon():
 
 @app_routes.get("/")
 async def home_endpoint(request: Request, db: Session = Depends(get_async_db)):
-    return RedirectResponse(url=_norman_chat_redirect_url(request), status_code=307)
+    request_host = (request.headers.get("host") or "").split(":", 1)[0].strip().lower()
+    if request_host in {"switchboard.home.arpa", "switchboard.norman.home.arpa"}:
+        return RedirectResponse(url="/dashboard.html?view=switchboard", status_code=307)
+    return await bridge(request)
+
+
+@app_routes.get("/bridge")
+async def bridge_endpoint(request: Request):
+    return await bridge(request)
+
+
+@app_routes.get("/bridge.html")
+async def bridge_html_endpoint(request: Request):
+    return await bridge(request)
+
+
+@app_routes.get("/cockpit")
+@app_routes.get("/cockpit.html")
+async def legacy_cockpit_endpoint():
+    return RedirectResponse(url="/bridge", status_code=307)
 
 
 @app_routes.get("/index.html")
@@ -1673,6 +1694,7 @@ async def logout_endpoint(request: Request, response: Response):
 async def login_post(
     request: Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
+    return_to: str = Form("/", alias="next"),
     db: Session = Depends(get_async_db),
 ):
     user_auth = UserAuthenticate(email=form_data.username, password=form_data.password)
@@ -1687,7 +1709,7 @@ async def login_post(
 
     _bootstrap_user_workspace(db, user)
 
-    response = RedirectResponse(url="/", status_code=303)
+    response = RedirectResponse(url=safe_local_return_to(return_to), status_code=303)
     response.set_cookie(
         key="access_token",
         value=access_token,
@@ -1770,12 +1792,12 @@ def _bootstrap_user_workspace(db: Session, user: User) -> None:
         logger.exception("Failed to bootstrap workspace for user %s", user.id)
 
 
-def _set_login_cookie(user_email: str) -> Response:
+def _set_login_cookie(user_email: str, return_to: str = "/") -> Response:
     access_token_expires = timedelta(minutes=settings.access_token_expire_minutes)
     access_token = create_access_token(
         data={"sub": user_email}, expires_delta=access_token_expires
     )
-    response = RedirectResponse(url="/", status_code=303)
+    response = RedirectResponse(url=safe_local_return_to(return_to), status_code=303)
     response.set_cookie(
         key="access_token",
         value=access_token,
@@ -1809,12 +1831,24 @@ def _set_oauth_cookies(response: Response, provider: str, state: str, nonce: str
             httponly=True,
             max_age=600,
             samesite="lax",
+            path="/",
         )
 
 
+def _set_oauth_return_cookie(response: Response, provider: str, return_to: str):
+    response.set_cookie(
+        key=_oauth_cookie_name(provider, "return"),
+        value=safe_local_return_to(return_to),
+        httponly=True,
+        max_age=600,
+        samesite="lax",
+        path="/",
+    )
+
+
 def _clear_oauth_cookies(response: Response, provider: str):
-    for kind in ("state", "nonce"):
-        response.delete_cookie(_oauth_cookie_name(provider, kind))
+    for kind in ("state", "nonce", "return"):
+        response.delete_cookie(_oauth_cookie_name(provider, kind), path="/")
 
 
 def _require_oauth_cookie(request: Request, provider: str, kind: str) -> str:
@@ -1925,10 +1959,11 @@ def _build_connector_diagnosis(connector):
             "token_field": token_field,
             "connected": bool(provider and config.get(token_field)),
             "expires_at": expires_at,
-            "scopes": config.get("oauth_scopes")
-            or oauth.scopes_by_provider.get(provider, [])
-            if provider and oauth.scopes_by_provider
-            else config.get("oauth_scopes") or [],
+            "scopes": (
+                config.get("oauth_scopes") or oauth.scopes_by_provider.get(provider, [])
+                if provider and oauth.scopes_by_provider
+                else config.get("oauth_scopes") or []
+            ),
         }
 
     connectivity = "unknown"
@@ -2000,6 +2035,7 @@ async def google_login(request: Request):
     url = "https://accounts.google.com/o/oauth2/v2/auth?" + urlencode(params)
     response = RedirectResponse(url)
     _set_oauth_cookies(response, "google", state, nonce)
+    _set_oauth_return_cookie(response, "google", request.query_params.get("next", "/"))
     return response
 
 
@@ -2037,7 +2073,8 @@ async def google_callback(request: Request, db: Session = Depends(get_async_db))
             db, UserCreate(email=email, username=username, password=_random_password())
         )
     _bootstrap_user_workspace(db, user)
-    response = _set_login_cookie(user.email)
+    return_to = request.cookies.get(_oauth_cookie_name("google", "return"), "/")
+    response = _set_login_cookie(user.email, return_to)
     _clear_oauth_cookies(response, "google")
     return response
 
@@ -2061,7 +2098,11 @@ async def microsoft_login(request: Request):
     url = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize?" + urlencode(
         params
     )
-    return RedirectResponse(url)
+    response = RedirectResponse(url)
+    _set_oauth_return_cookie(
+        response, "microsoft", request.query_params.get("next", "/")
+    )
+    return response
 
 
 @app_routes.get("/auth/microsoft/callback")
@@ -2096,4 +2137,7 @@ async def microsoft_callback(request: Request, db: Session = Depends(get_async_d
             db, UserCreate(email=email, username=username, password=_random_password())
         )
     _bootstrap_user_workspace(db, user)
-    return _set_login_cookie(user.email)
+    return_to = request.cookies.get(_oauth_cookie_name("microsoft", "return"), "/")
+    response = _set_login_cookie(user.email, return_to)
+    _clear_oauth_cookies(response, "microsoft")
+    return response

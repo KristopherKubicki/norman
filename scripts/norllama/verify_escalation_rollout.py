@@ -127,7 +127,9 @@ def run_acceptance(
         insecure=insecure,
     )
     ready = bool(readiness.get("ready"))
-    policy = readiness.get("policy") if isinstance(readiness.get("policy"), dict) else {}
+    policy = (
+        readiness.get("policy") if isinstance(readiness.get("policy"), dict) else {}
+    )
     record(
         "signed_policy_ready",
         ready and bool(policy.get("policy_id")),
@@ -182,9 +184,7 @@ def run_acceptance(
         )
         decisions[name] = decision
         role_matches = decision.get("proposed_role") == expected_role
-        approval_matches = (
-            bool(decision.get("approval_required")) is expected_approval
-        )
+        approval_matches = bool(decision.get("approval_required")) is expected_approval
         shadow_only = (
             decision.get("mode") == "shadow_only"
             and decision.get("execution_authority_changed") is False
@@ -193,10 +193,7 @@ def run_acceptance(
             name,
             role_matches and approval_matches and shadow_only,
             elapsed,
-            (
-                f"expected={expected_role}, "
-                f"observed={decision.get('proposed_role')}"
-            ),
+            (f"expected={expected_role}, " f"observed={decision.get('proposed_role')}"),
         )
 
     blocked_gate = decisions["frontier_fail_closed"].get("frontier_gate")

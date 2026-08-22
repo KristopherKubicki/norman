@@ -3,6 +3,7 @@ import re
 from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlencode
 
 from fastapi import Request
 from fastapi.responses import RedirectResponse
@@ -12,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.connectors.connector_utils import get_connector, get_connectors_data
 from app.core.config import settings
+from app.core.navigation import safe_local_return_to
 from app.core.security import decode_access_token
 from app.crud.user import get_user_by_email
 from app import models
@@ -187,6 +189,23 @@ async def messages(request: Request):
     )
 
 
+async def bridge(request: Request):
+    token = request.cookies.get("access_token")
+    user_email = decode_access_token(token) if token else None
+    return templates.TemplateResponse(
+        request,
+        "bridge.html",
+        {
+            "request": request,
+            "active_page": "bridge",
+            "show_navbar": False,
+            "show_statusbar": False,
+            "user_email": user_email,
+            "openai_configured": bool(settings.openai_api_key),
+        },
+    )
+
+
 async def consoles(request: Request):
     advanced = str(request.query_params.get("advanced", "")).strip().lower() in {
         "1",
@@ -239,6 +258,7 @@ async def quickstart(request: Request):
 
 
 async def login(request: Request):
+    return_to = safe_local_return_to(request.query_params.get("next"))
     return templates.TemplateResponse(
         request,
         "login.html",
@@ -253,6 +273,9 @@ async def login(request: Request):
             "microsoft_sso_enabled": _sso_enabled(
                 settings.microsoft_client_id, settings.microsoft_client_secret
             ),
+            "return_to": return_to,
+            "google_login_url": f"/auth/google/login?{urlencode({'next': return_to})}",
+            "microsoft_login_url": f"/auth/microsoft/login?{urlencode({'next': return_to})}",
         },
     )
 

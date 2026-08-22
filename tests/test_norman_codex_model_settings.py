@@ -692,8 +692,7 @@ def test_switchboard_background_generation_sends_best_effort_headers(
     )
 
     headers = {
-        str(key).lower(): str(value)
-        for key, value in requests[0][0].header_items()
+        str(key).lower(): str(value) for key, value in requests[0][0].header_items()
     }
     assert headers["x-norllama-priority"] == "background"
     assert headers["x-norllama-work-class"] == "background"
@@ -7759,6 +7758,24 @@ def test_context_preflight_uses_vector_selected_archive_turns(monkeypatch, tmp_p
         return candidates
 
     monkeypatch.setattr(module, "context_preflight_memory_refs", fake_memory_refs)
+    monkeypatch.setattr(
+        module,
+        "local_planner_preflight",
+        lambda _payload: {
+            "configured": False,
+            "used": False,
+            "status": "disabled",
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "local_planner_verifier",
+        lambda *_args, **_kwargs: {
+            "configured": False,
+            "used": False,
+            "status": "disabled",
+        },
+    )
     monkeypatch.setattr(
         module,
         "run_context_preflight_offline_command",

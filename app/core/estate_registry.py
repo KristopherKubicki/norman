@@ -106,10 +106,7 @@ def model_row(model: str) -> dict[str, Any]:
         row = model_role(role)
         identifiers = {
             str(row.get("model") or "").strip().lower(),
-            *{
-                str(alias or "").strip().lower()
-                for alias in row.get("aliases") or []
-            },
+            *{str(alias or "").strip().lower() for alias in row.get("aliases") or []},
         }
         if requested in identifiers:
             return row
@@ -146,10 +143,7 @@ def pricing_for_model(
     if not isinstance(row, dict):
         return None
     try:
-        return {
-            key: float(row[key])
-            for key in ("input", "cached_input", "output")
-        }
+        return {key: float(row[key]) for key in ("input", "cached_input", "output")}
     except (KeyError, TypeError, ValueError):
         return None
 
@@ -170,10 +164,7 @@ def worker_id_from_endpoint(value: str) -> str:
         row = raw if isinstance(raw, dict) else {}
         identities = {
             str(row.get("address") or "").strip().lower(),
-            *{
-                str(alias or "").strip().lower()
-                for alias in row.get("aliases") or []
-            },
+            *{str(alias or "").strip().lower() for alias in row.get("aliases") or []},
         }
         if host in identities:
             return str(worker_id)
@@ -188,10 +179,7 @@ def host_realm_for_route(value: str) -> str:
         row = raw if isinstance(raw, dict) else {}
         identities = {
             str(row.get("address") or "").strip().lower(),
-            *{
-                str(alias or "").strip().lower()
-                for alias in row.get("aliases") or []
-            },
+            *{str(alias or "").strip().lower() for alias in row.get("aliases") or []},
         }
         if host in identities:
             return str(row.get("realm") or "").strip()

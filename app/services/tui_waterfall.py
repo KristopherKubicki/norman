@@ -144,6 +144,7 @@ _ALLOWED_KEYS = (
     "direct_tier_usage_limit_recovery",
     "norllama_pool",
     "local_final_authority",
+    "model_escalation",
 )
 
 
@@ -165,6 +166,43 @@ def _capacity_summary(subscription: dict[str, Any]) -> dict[str, Any]:
         "state": state,
         "fresh": bool(subscription.get("fresh")),
         "chatgpt_auth_verified": bool(subscription.get("chatgpt_auth_verified")),
+    }
+
+
+def _model_escalation_summary(value: Any) -> dict[str, Any]:
+    source = value if isinstance(value, dict) else {}
+    role = _text(source.get("proposed_role")).lower()
+    tier = _text(source.get("proposed_tier")).lower()
+    model = _text(source.get("proposed_model"))
+    if (
+        source.get("schema") != "norman.norllama.escalation-decision.v1"
+        or source.get("mode") != "production"
+        or source.get("status") != "selected"
+        or role not in {"resident", "economy", "authority", "frontier"}
+        or tier not in {"qwen", "luna", "terra", "sol"}
+        or not model
+    ):
+        return {}
+    return {
+        "schema": "norman.norllama.escalation-decision.v1",
+        "mode": "production",
+        "status": "selected",
+        "controller_version": _text(source.get("controller_version")),
+        "registry_version": _text(source.get("registry_version")),
+        "proposed_role": role,
+        "proposed_tier": tier,
+        "proposed_model": model,
+        "reason_codes": [
+            _text(reason)
+            for reason in source.get("reason_codes", [])[:8]
+            if _text(reason)
+        ],
+        "frontier_gate": dict(source.get("frontier_gate") or {}),
+        "qwen_classifier": dict(source.get("qwen_classifier") or {}),
+        "workload": _text(source.get("workload")),
+        "mutation_risk": _text(source.get("mutation_risk")),
+        "execution_model_unchanged": False,
+        "execution_authority_changed": True,
     }
 
 
@@ -361,6 +399,9 @@ def sanitize_tui_waterfall_decision(value: Any) -> dict[str, Any]:
                 "direct_tier_usage_limit_recovery": True,
             }
         )
+    model_escalation = _model_escalation_summary(source.get("model_escalation"))
+    if model_escalation:
+        result["model_escalation"] = model_escalation
     return {key: result[key] for key in _ALLOWED_KEYS if key in result}
 
 
@@ -446,6 +487,7 @@ def build_tui_waterfall(
     direct_tier_usage_limit_recovery: bool = False,
     deterministic_status: bool = False,
     deterministic_command: bool = False,
+    subscription_model: str = "",
 ) -> dict[str, Any]:
     """Choose the only automatic path from ChatGPT capacity to Bedrock.
 
@@ -462,6 +504,7 @@ def build_tui_waterfall(
     bedrock_runtime = _text(bedrock_runtime)
     bedrock_model = _text(bedrock_model)
     bedrock_service_tier = _text(bedrock_service_tier)
+    subscription_model = _text(subscription_model) or base_model
     capacity = _capacity_summary(subscription)
     subscription_enabled = bool(subscription.get("enabled"))
 
@@ -646,7 +689,7 @@ def build_tui_waterfall(
             selected=True,
             blocked=False,
             selected_runtime="codex",
-            selected_model=base_model,
+            selected_model=subscription_model,
             selected_service_tier="flex",
             stage="subscription_flex",
             route_source="subscription_capacity",
@@ -671,7 +714,7 @@ def build_tui_waterfall(
             selected=True,
             blocked=False,
             selected_runtime="codex",
-            selected_model=base_model,
+            selected_model=subscription_model,
             selected_service_tier="flex",
             stage="subscription_flex_probe",
             route_source="subscription_capacity_probe",

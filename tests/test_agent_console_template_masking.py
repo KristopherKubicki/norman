@@ -4107,8 +4107,10 @@ def test_base_nav_splits_chat_and_dashboard_routes() -> None:
     template = _base_template_source()
     styles = _styles_source()
 
+    assert 'href="/bridge"' in template
+    assert ">Bridge</a>" in template
     assert 'href="/bot/norman/"' in template
-    assert ">Chat</a>" in template
+    assert ">Focused console</a>" in template
     assert 'href="/dashboard.html?view=switchboard"' in template
     assert ">Switchboard</a>" in template
     assert 'id="normanShellMenu"' in template
@@ -4124,7 +4126,7 @@ def test_base_nav_splits_chat_and_dashboard_routes() -> None:
     assert "site-banner--norman-shell" in template
     assert "container-fluid lower-deck-main my-3" in template
     assert (
-        "brand-sub\">{% if active_page == 'home' %}Switchboard{% elif active_page == 'messages' %}Super TUI{% elif active_page == 'login' %}Sign In{% else %}Control Plane{% endif %}"
+        "brand-sub\">{% if active_page == 'bridge' %}Bridge{% elif active_page == 'home' %}Switchboard{% elif active_page == 'messages' %}Super TUI{% elif active_page == 'login' %}Login{% else %}Control Plane{% endif %}"
         in template
     )
     assert "body.page-systems," in styles
@@ -4134,10 +4136,7 @@ def test_base_nav_splits_chat_and_dashboard_routes() -> None:
     assert '@app_routes.get("/dashboard.html")' in routes
     assert '@app_routes.get("/switchboard")' in routes
     assert '@app_routes.get("/switchboard.html")' in routes
-    assert (
-        "return RedirectResponse(url=_norman_chat_redirect_url(request), status_code=307)"
-        in routes
-    )
+    assert "return await bridge(request)" in routes
     assert (
         'return f"/bot/norman/?{urlencode(params)}" if params else "/bot/norman/"'
         in routes
@@ -4252,8 +4251,8 @@ def test_norman_login_uses_gold_super_tui_shell() -> None:
     styles = _styles_source()
 
     assert "norman-auth-shell" in template
-    assert "Control Plane Sign In" in template
-    assert "Enter Norman" in template
+    assert "Norman Bridge" in template
+    assert "Log in to Norman" in template
     assert ".norman-auth-shell {" in styles
     assert ".norman-auth-card {" in styles
     assert "body.page-login," in styles
@@ -4939,6 +4938,14 @@ def test_norman_frontdoor_caddy_serves_shortcuts_locally() -> None:
         "    }"
     ) in rendered
     assert "tls /etc/caddy/certs/norman-lollie.crt" not in rendered
+    assert (
+        "handle_path /static/* {\n"
+        "        root * /var/www/norman-static\n"
+        '        header Cache-Control "public, max-age=300, '
+        'stale-while-revalidate=86400"\n'
+        "        file_server\n"
+        "    }"
+    ) in rendered
     gateway_position = rendered.index("handle /v1/* {")
     root_redirect_position = rendered.index("@norman_root path /")
     fallback_position = rendered.index("handle {\n        reverse_proxy 127.0.0.1:8000")

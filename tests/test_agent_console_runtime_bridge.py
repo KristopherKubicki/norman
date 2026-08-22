@@ -4620,7 +4620,6 @@ def test_context_preflight_uses_norllama_planner_for_cloud_turn(monkeypatch, tmp
     assert "qwen3-coder:30b-a3b-q4_K_M" in context
     assert calls[0]["model"] == "qwen3-coder:30b-a3b-q4_K_M"
 
-
     assert (
         calls[0]["max_output_tokens"]
         == module.LOCAL_PLANNER_PREFLIGHT_MAX_OUTPUT_TOKENS
@@ -4645,9 +4644,7 @@ def test_context_preflight_uses_norllama_planner_for_cloud_turn(monkeypatch, tmp
     assert planner_event["payload"]["planner"]["receipt"]["failure_class"] == "ok"
 
 
-def test_local_llm_requests_label_foreground_and_background_work(
-    monkeypatch, tmp_path
-):
+def test_local_llm_requests_label_foreground_and_background_work(monkeypatch, tmp_path):
     module = _load_agent_console_web(monkeypatch, tmp_path)
     calls = []
 

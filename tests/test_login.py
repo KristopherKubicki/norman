@@ -42,5 +42,30 @@ def test_login_allows_access_to_home(test_app: TestClient, db: Session) -> None:
     resp2 = test_app.get(
         "/", headers={"Authorization": f"Bearer {token}"}, follow_redirects=False
     )
-    assert resp2.status_code == 307
-    assert resp2.headers["location"] == "/bot/norman/"
+    assert resp2.status_code == 200
+    assert 'id="norman-bridge"' in resp2.text
+
+
+def test_login_uses_bridge_language(test_app: TestClient) -> None:
+    response = test_app.get("/login.html")
+    assert response.status_code == 200
+    assert "Log in to Norman" in response.text
+    assert "Enter Norman" not in response.text
+
+
+def test_login_returns_to_requested_bridge_path(
+    test_app: TestClient, db: Session
+) -> None:
+    user, password = _create_user(db)
+    resp = test_app.post(
+        "/login",
+        data={
+            "username": user.email,
+            "password": password,
+            "next": "/bridge?agent=housebot",
+        },
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/bridge?agent=housebot"

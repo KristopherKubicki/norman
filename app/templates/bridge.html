@@ -1,0 +1,246 @@
+{% extends "base.html" %}
+
+{% block title %}Norman Bridge{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="/static/css/bridge.css?v=20260821j">
+{% endblock %}
+
+{% block content %}
+<div class="cockpit" id="norman-bridge" data-api-prefix="/api/v1"
+  data-authenticated="{{ 'true' if user_email else 'false' }}" data-microtexture-state="idle">
+  <svg class="cockpit-icon-sprite" aria-hidden="true">
+    <symbol id="bridge-icon-alert" viewBox="0 0 24 24"><path d="M21.7 18 13.7 4a2 2 0 0 0-3.4 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
+    <symbol id="bridge-icon-activity" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></symbol>
+    <symbol id="bridge-icon-arrow-up" viewBox="0 0 24 24"><path d="m18 15-6-6-6 6"/></symbol>
+    <symbol id="bridge-icon-check" viewBox="0 0 24 24"><path d="m20 6-11 11-5-5"/></symbol>
+    <symbol id="bridge-icon-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="bridge-icon-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="bridge-icon-close" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
+    <symbol id="bridge-icon-cpu" viewBox="0 0 24 24"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3"/></symbol>
+    <symbol id="bridge-icon-ellipsis" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+    <symbol id="bridge-icon-hash" viewBox="0 0 24 24"><path d="M10 3 8 21M16 3l-2 18M4 9h17M3 15h17"/></symbol>
+    <symbol id="bridge-icon-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></symbol>
+    <symbol id="bridge-icon-layers" viewBox="0 0 24 24"><path d="m12 2 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 17l9 5 9-5"/></symbol>
+    <symbol id="bridge-icon-loader" viewBox="0 0 24 24"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/></symbol>
+    <symbol id="bridge-icon-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+    <symbol id="bridge-icon-message" viewBox="0 0 24 24"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4Z"/></symbol>
+    <symbol id="bridge-icon-panel" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/></symbol>
+    <symbol id="bridge-icon-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="bridge-icon-radio" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8a6 6 0 0 1 0 8.4M7.8 16.2a6 6 0 0 1 0-8.4M19.1 4.9a10 10 0 0 1 0 14.2M4.9 19.1a10 10 0 0 1 0-14.2"/></symbol>
+    <symbol id="bridge-icon-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></symbol>
+    <symbol id="bridge-icon-route" viewBox="0 0 24 24"><circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M8 19h3a4 4 0 0 0 4-4V9a4 4 0 0 1 4-4"/></symbol>
+    <symbol id="bridge-icon-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></symbol>
+    <symbol id="bridge-icon-user-plus" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M22 11h-6"/></symbol>
+    <symbol id="bridge-icon-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/></symbol>
+    <symbol id="bridge-icon-workflow" viewBox="0 0 24 24"><rect width="6" height="6" x="3" y="3" rx="1"/><rect width="6" height="6" x="15" y="15" rx="1"/><path d="M6 9v4a2 2 0 0 0 2 2h7M15 6h-4"/></symbol>
+    <symbol id="bridge-icon-wrench" viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5-5L12 3.6 8.4 7.2 6.1 4.9a4 4 0 0 0 5 5L4 17l3 3 7.1-7.1a4 4 0 0 0 5-5l-2.3 2.3-3.6-3.6 1.5-1.5Z"/></symbol>
+    <symbol id="bridge-icon-compass" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m16.2 7.8-2.1 6.3-6.3 2.1 2.1-6.3 6.3-2.1Z"/></symbol>
+    <symbol id="bridge-icon-home" viewBox="0 0 24 24"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10M9 20v-6h6v6"/></symbol>
+    <symbol id="bridge-icon-eye" viewBox="0 0 24 24"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.5"/></symbol>
+    <symbol id="bridge-icon-castle" viewBox="0 0 24 24"><path d="M4 21V10h4V6h3v4h2V6h3v4h4v11"/><path d="M2 21h20M9 21v-5h6v5M4 10h16"/></symbol>
+    <symbol id="bridge-icon-gem" viewBox="0 0 24 24"><path d="m6 3-4 6 10 12L22 9l-4-6H6Z"/><path d="M2 9h20M8 3l4 18 4-18"/></symbol>
+    <symbol id="bridge-icon-phone" viewBox="0 0 24 24"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 2 .7 2.9a2 2 0 0 1-.5 2.1L8 10a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.5c.9.3 1.9.6 2.9.7A2 2 0 0 1 22 16.9Z"/></symbol>
+    <symbol id="bridge-icon-archive" viewBox="0 0 24 24"><path d="M3 5h18v4H3zM5 9v11h14V9M9 13h6"/></symbol>
+    <symbol id="bridge-icon-usb" viewBox="0 0 24 24"><path d="M12 2v14M9 5l3-3 3 3M12 10h5l2 2M17 10V7M19 12v3M12 16l-4 4M8 20H5M12 16l4 4M16 20h3"/></symbol>
+    <symbol id="bridge-icon-camera" viewBox="0 0 24 24"><path d="M14.5 5 13 3h-2L9.5 5H4a2 2 0 0 0-2 2v12h20V7a2 2 0 0 0-2-2h-5.5Z"/><circle cx="12" cy="12" r="4"/></symbol>
+    <symbol id="bridge-icon-microscope" viewBox="0 0 24 24"><path d="m6 18 3-3M9 15l-2-2 5-5 2 2-5 5ZM14 10l3 3M13 4l3-1 2 4-3 1-2-4Z"/><path d="M5 21h14M16 13a5 5 0 0 1-5 5H8"/></symbol>
+    <symbol id="bridge-icon-map" viewBox="0 0 24 24"><path d="m3 6 6-3 6 3 6-3v15l-6 3-6-3-6 3V6Z"/><path d="M9 3v15M15 6v15"/></symbol>
+    <symbol id="bridge-icon-sunrise" viewBox="0 0 24 24"><path d="M3 18h18M5 14a7 7 0 0 1 14 0M12 2v4M4.2 6.2 7 9M19.8 6.2 17 9M2 12h4M18 12h4"/></symbol>
+    <symbol id="bridge-icon-server" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="7" rx="1"/><rect x="3" y="14" width="18" height="7" rx="1"/><path d="M7 6h.01M7 17h.01M11 6h6M11 17h6"/></symbol>
+    <symbol id="bridge-icon-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></symbol>
+    <symbol id="bridge-icon-chart" viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></symbol>
+    <symbol id="bridge-icon-book" viewBox="0 0 24 24"><path d="M3 5a3 3 0 0 1 3-3h5v18H6a3 3 0 0 0-3 3V5ZM21 5a3 3 0 0 0-3-3h-5v18h5a3 3 0 0 1 3 3V5Z"/></symbol>
+    <symbol id="bridge-icon-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="5"/><path d="m12 11 9-9M17 6l2 2M14 9l2 2"/></symbol>
+    <symbol id="bridge-icon-map-pin" viewBox="0 0 24 24"><path d="M20 10c0 5-8 12-8 12S4 15 4 10a8 8 0 1 1 16 0Z"/><circle cx="12" cy="10" r="2"/></symbol>
+    <symbol id="bridge-icon-network" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="5" rx="1"/><rect x="2" y="17" width="6" height="5" rx="1"/><rect x="16" y="17" width="6" height="5" rx="1"/><path d="M12 7v4M5 17v-3h14v3"/></symbol>
+    <symbol id="bridge-icon-radio-tower" viewBox="0 0 24 24"><path d="m8 21 4-14 4 14M6 21h12M9.5 15h5"/><path d="M5.6 4.6a9 9 0 0 0 0 12.8M18.4 4.6a9 9 0 0 1 0 12.8M8.5 7.5a5 5 0 0 0 0 7M15.5 7.5a5 5 0 0 1 0 7"/></symbol>
+    <symbol id="bridge-icon-cloud" viewBox="0 0 24 24"><path d="M17.5 19H6a4 4 0 0 1-.6-8A7 7 0 0 1 19 9a5 5 0 0 1-1.5 10Z"/></symbol>
+    <symbol id="bridge-icon-database" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v6c0 1.7 4 3 9 3s9-1.3 9-3V5M3 11v6c0 1.7 4 3 9 3s9-1.3 9-3v-6"/></symbol>
+    <symbol id="bridge-icon-circle-off" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m4.9 4.9 14.2 14.2"/></symbol>
+    <symbol id="bridge-icon-file-text" viewBox="0 0 24 24"><path d="M14 2H5v20h14V7l-5-5Z"/><path d="M14 2v5h5M9 13h6M9 17h6M9 9h1"/></symbol>
+    <symbol id="bridge-icon-palette" viewBox="0 0 24 24"><path d="M12 3a9 9 0 0 0 0 18h1.2a1.8 1.8 0 0 0 1.4-2.9l-.7-.9a1.8 1.8 0 0 1 1.4-2.9H18a3 3 0 0 0 3-3A9 9 0 0 0 12 3Z"/><circle cx="7.5" cy="10" r=".7"/><circle cx="10" cy="6.8" r=".7"/><circle cx="14" cy="6.8" r=".7"/><circle cx="17" cy="9.5" r=".7"/></symbol>
+  </svg>
+  <canvas class="cockpit-thread-field" id="cockpit-thread-field" aria-hidden="true"></canvas>
+  <button class="cockpit-mobile-backdrop" id="cockpit-mobile-backdrop" type="button" aria-label="Close panels"></button>
+
+  <aside class="cockpit-nav" id="cockpit-nav">
+    <div class="cockpit-nav__head">
+      <div class="bridge-workspace-switcher">
+        <button class="bridge-workspace-switcher__button" id="cockpit-workspace-button" type="button"
+          aria-expanded="false" aria-controls="cockpit-group-list">
+          <span class="bridge-workspace-switcher__mark" id="cockpit-workspace-mark">N</span>
+          <span class="bridge-workspace-switcher__copy"><small>Workspace</small><strong id="cockpit-group-title">Loading estate</strong></span>
+          <span class="cockpit-group__badge d-none" id="cockpit-attention-count">0</span>
+          <svg class="cockpit-icon" aria-hidden="true"><use href="#bridge-icon-chevron-down"/></svg>
+        </button>
+        <nav class="bridge-workspace-menu" id="cockpit-group-list" aria-label="Estate workspaces" hidden>
+          <span class="cockpit-group-skeleton" aria-label="Loading estate"></span>
+        </nav>
+      </div>
+      <button class="cockpit-icon-button d-lg-none" id="cockpit-nav-close" type="button" aria-label="Close navigation" title="Close navigation"><svg class="cockpit-icon"><use href="#bridge-icon-close"/></svg></button>
+    </div>
+    <label class="cockpit-search">
+      <svg class="cockpit-icon" aria-hidden="true"><use href="#bridge-icon-search"/></svg>
+      <span class="visually-hidden">Search rooms and direct messages</span>
+      <input id="cockpit-search" type="search" placeholder="Search conversations" autocomplete="off">
+    </label>
+    <nav class="cockpit-section cockpit-section--fixed" aria-label="Principal views">
+      <button class="cockpit-nav-item is-active" type="button" data-cockpit-view="general">
+        <span class="cockpit-nav-item__icon"><svg class="cockpit-icon"><use href="#bridge-icon-message"/></svg></span><span><strong>Home</strong><small>All recent conversations</small></span>
+      </button>
+      <button class="cockpit-nav-item" type="button" data-cockpit-view="attention">
+        <span class="cockpit-nav-item__icon"><svg class="cockpit-icon"><use href="#bridge-icon-alert"/></svg></span><span><strong>Attention</strong><small>Approvals and blockers</small></span>
+        <span class="cockpit-nav-item__count d-none" id="cockpit-nav-attention-count">0</span>
+      </button>
+    </nav>
+    <section class="cockpit-section cockpit-section--rooms">
+      <div class="cockpit-section__head">
+        <span>Rooms</span>
+        <button class="cockpit-icon-button" id="cockpit-new-thread" type="button" aria-label="Create room" title="Create room"><svg class="cockpit-icon"><use href="#bridge-icon-plus"/></svg></button>
+      </div>
+      <div class="cockpit-nav-list cockpit-conversation-list" id="cockpit-rooms"><div class="cockpit-nav-empty">Loading rooms...</div></div>
+    </section>
+    <section class="cockpit-section cockpit-section--agents">
+      <div class="cockpit-section__head"><span>Direct messages</span><span class="cockpit-section__count" id="cockpit-agent-count">0</span></div>
+      <div class="cockpit-nav-list cockpit-conversation-list" id="cockpit-agents"><div class="cockpit-nav-empty">Loading agents...</div></div>
+    </section>
+    <div id="cockpit-domains" hidden></div>
+    <div id="cockpit-workstreams" hidden></div>
+  </aside>
+
+  <section class="cockpit-conversation">
+    <header class="cockpit-conversation__head">
+      <button class="cockpit-icon-button d-lg-none" id="cockpit-nav-open" type="button" aria-label="Open navigation" title="Open navigation"><svg class="cockpit-icon"><use href="#bridge-icon-menu"/></svg></button>
+      <div class="cockpit-conversation__identity">
+        <div>
+          <div class="cockpit-conversation__title" id="cockpit-room-title">
+            <span class="entity-cartouche" data-kind="tui" data-tone="tui" data-group="norman" data-mark="N1" data-decorator="TUI" data-compact="true"><span class="entity-cartouche__label">Norman</span></span>
+          </div>
+          <div class="cockpit-conversation__subtitle" id="cockpit-room-subtitle">Connecting to the estate.</div>
+        </div>
+      </div>
+      <div class="cockpit-conversation__actions">
+        <span class="cockpit-transport" id="cockpit-runtime-status" data-tone="watch"><span class="cockpit-transport__icon" aria-hidden="true"><svg class="cockpit-icon"><use href="#bridge-icon-radio"/></svg></span><span class="cockpit-transport__label">Connecting</span></span>
+        <button class="cockpit-icon-button" id="cockpit-refresh" type="button" aria-label="Refresh Bridge" title="Refresh"><svg class="cockpit-icon"><use href="#bridge-icon-refresh"/></svg></button>
+        <button class="cockpit-menu-button" id="cockpit-menu-button" type="button" aria-expanded="false" aria-controls="cockpit-menu" title="Bridge controls">
+          <span class="cockpit-menu-button__label">Controls</span><span class="cockpit-menu-button__icon" aria-hidden="true"><svg class="cockpit-icon"><use href="#bridge-icon-ellipsis"/></svg></span><span class="cockpit-menu-button__count d-none" id="cockpit-menu-count">0</span>
+        </button>
+        <button class="cockpit-icon-button" id="cockpit-inspector-toggle" type="button" aria-label="Open details" title="Details"><svg class="cockpit-icon"><use href="#bridge-icon-panel"/></svg></button>
+      </div>
+    </header>
+
+    <nav class="cockpit-command-rail" aria-label="Runtime indicators">
+      <button class="cockpit-command-cell" id="cockpit-route-meter" type="button" data-menu-panel="route" data-tone="neutral" title="Route evidence">
+        <span data-meter-icon aria-hidden="true"><svg class="cockpit-icon"><use href="#bridge-icon-route"/></svg></span><strong>Policy</strong><small>Route</small>
+      </button>
+      <button class="cockpit-command-cell" id="cockpit-queue-meter" type="button" data-menu-panel="queues" data-tone="ok" title="Runtime queues">
+        <span data-meter-icon aria-hidden="true"><svg class="cockpit-icon"><use href="#bridge-icon-layers"/></svg></span><strong>Clear</strong><small>Queue</small>
+      </button>
+      <button class="cockpit-command-cell" id="cockpit-token-meter" type="button" data-menu-panel="usage" data-tone="neutral" title="Tracked token usage">
+        <span data-meter-icon aria-hidden="true"><svg class="cockpit-icon"><use href="#bridge-icon-hash"/></svg></span><strong>--</strong><small>Tokens</small><i class="cockpit-meter-track" aria-hidden="true"><i></i></i>
+      </button>
+      <button class="cockpit-command-cell" id="cockpit-agent-meter" type="button" data-menu-panel="agents" data-tone="neutral" title="Agent availability">
+        <span data-meter-icon aria-hidden="true"><svg class="cockpit-icon"><use href="#bridge-icon-users"/></svg></span><strong>0 / 0</strong><small>Agents</small>
+      </button>
+      <button class="cockpit-command-cell" id="cockpit-warning-meter" type="button" data-menu-panel="warnings" data-tone="ok" title="Approvals and warnings">
+        <span data-meter-icon aria-hidden="true"><svg class="cockpit-icon"><use href="#bridge-icon-alert"/></svg></span><strong>Clear</strong><small>Alerts</small>
+      </button>
+    </nav>
+
+    <div class="cockpit-warning-strip" id="cockpit-warning-strip" hidden role="status">
+      <span class="cockpit-warning-strip__mark"><svg class="cockpit-icon"><use href="#bridge-icon-alert"/></svg></span>
+      <div><strong id="cockpit-warning-title">Runtime warning</strong><span id="cockpit-warning-detail"></span></div>
+      <button type="button" id="cockpit-warning-action" data-open-attention>Review</button>
+    </div>
+
+    <div class="cockpit-feed" id="cockpit-feed" aria-live="polite">
+      <div class="cockpit-feed__empty">
+        <span class="entity-cartouche" data-kind="tui" data-tone="tui" data-group="norman" data-mark="N1" data-decorator="TUI"><span class="entity-cartouche__label">Norman</span></span>
+        <h2>Talk to Norman</h2><p>Messages become durable runtime jobs inside the selected principal and lane.</p>
+      </div>
+    </div>
+    <div class="cockpit-composer-wrap">
+      <div class="cockpit-recipient-row" id="cockpit-recipient-row" hidden>
+        <span>To</span><button class="cockpit-recipient is-active" type="button" data-recipient="norman">Norman</button><div id="cockpit-selected-recipients"></div>
+      </div>
+      <div class="cockpit-resume-prompts" id="cockpit-resume-prompts" hidden aria-label="Continue a prior topic"></div>
+      <form class="cockpit-composer" id="cockpit-composer" autocomplete="off">
+        <button class="cockpit-compose-action" id="cockpit-add-recipient" type="button" aria-label="Add agent" title="Add agent"><svg class="cockpit-icon"><use href="#bridge-icon-user-plus"/></svg></button>
+        <textarea id="cockpit-message" rows="1" placeholder="Message Norman" enterkeyhint="send"></textarea>
+        <button class="cockpit-send" id="cockpit-send" type="submit" aria-label="Send message" title="Send"><span aria-hidden="true"><svg class="cockpit-icon"><use href="#bridge-icon-arrow-up"/></svg></span></button>
+      </form>
+      <div class="cockpit-compose-meta" hidden><span id="cockpit-compose-hint"></span><span>Shift+Enter for a new line</span></div>
+    </div>
+  </section>
+
+  <aside class="cockpit-inspector" id="cockpit-inspector">
+    <div class="cockpit-inspector__head">
+      <div><div class="cockpit-kicker">Context</div><div class="cockpit-inspector__title">Principal details</div></div>
+      <button class="cockpit-icon-button" id="cockpit-inspector-close" type="button" aria-label="Close details" title="Close details"><svg class="cockpit-icon"><use href="#bridge-icon-close"/></svg></button>
+    </div>
+    <section class="cockpit-inspector__section">
+      <div class="cockpit-inspector__label">Boundary</div>
+      <div class="cockpit-realm-card"><span class="cockpit-avatar" id="cockpit-inspector-avatar">N</span><div><strong id="cockpit-inspector-group">Estate</strong><small id="cockpit-inspector-policy">Registry loading</small></div></div>
+    </section>
+    <section class="cockpit-inspector__section"><div class="cockpit-inspector__label">Active job</div><div class="cockpit-detail-list" id="cockpit-job-details"><div class="cockpit-detail-empty">Select a workstream to inspect its route, state, and artifacts.</div></div></section>
+    <section class="cockpit-inspector__section"><div class="cockpit-inspector__label">Participants</div><div class="cockpit-participants" id="cockpit-participants"><span class="cockpit-participant"><span class="cockpit-avatar cockpit-avatar--small">N</span>Norman</span></div></section>
+    <section class="cockpit-inspector__section" id="cockpit-crew-section" hidden>
+      <div class="cockpit-inspector__label">Crew activity</div>
+      <div class="cockpit-crew-list" id="cockpit-crew-list"></div>
+    </section>
+    <section class="cockpit-inspector__section">
+      <div class="cockpit-inspector__label">Controls</div>
+      <div class="cockpit-inspector__actions"><button class="btn btn-sm btn-outline-secondary" id="cockpit-open-job" type="button" disabled>Open runtime</button><button class="btn btn-sm btn-outline-danger" id="cockpit-cancel-job" type="button" disabled>Cancel</button></div>
+    </section>
+  </aside>
+
+  <div class="cockpit-menu-backdrop" id="cockpit-menu-backdrop"></div>
+  <aside class="cockpit-menu" id="cockpit-menu" aria-hidden="true" aria-label="Bridge controls">
+    <div class="cockpit-menu__head"><span>Bridge controls</span><span id="cockpit-menu-transport">Connecting</span></div>
+    <div class="cockpit-menu__panel" id="cockpit-menu-panel"></div>
+    <div class="cockpit-menu__links">
+      <button type="button" id="cockpit-sound-toggle" aria-pressed="true">Sounds: Signals</button><button type="button" id="cockpit-sound-test">Test sound</button><a href="/bot/norman/">Focused console</a><a href="/systems.html#agent-directory">Directory</a><a href="/dashboard.html?view=switchboard">Switchboard</a><button type="button" id="cockpit-menu-refresh">Refresh</button>
+    </div>
+    <div class="cockpit-menu__shortcuts"><span><kbd>/</kbd> Prompt</span><span><kbd>Esc</kbd> Close</span><span><kbd>End</kbd> Latest</span></div>
+  </aside>
+
+  <dialog class="bridge-room-dialog" id="bridge-room-dialog" aria-labelledby="bridge-room-title">
+    <form method="dialog" class="bridge-room-dialog__surface" id="bridge-room-form">
+      <header>
+        <div>
+          <div class="cockpit-kicker">New conversation</div>
+          <h2 id="bridge-room-title">Create a room</h2>
+        </div>
+        <button class="cockpit-icon-button" type="button" data-close-room-dialog aria-label="Close"><svg class="cockpit-icon"><use href="#bridge-icon-close"/></svg></button>
+      </header>
+      <label class="bridge-room-field">
+        <span>Room name</span>
+        <input id="bridge-room-name" name="title" maxlength="120" placeholder="e.g. Product launch" autocomplete="off" required>
+      </label>
+      <fieldset>
+        <legend>Invite bots</legend>
+        <div class="bridge-room-toolbar">
+          <label class="bridge-room-search">
+            <svg class="cockpit-icon" aria-hidden="true"><use href="#bridge-icon-search"/></svg>
+            <span class="visually-hidden">Filter bots</span>
+            <input id="bridge-room-search" type="search" placeholder="Filter bots" autocomplete="off">
+          </label>
+          <span class="bridge-room-selection" id="bridge-room-selection" aria-live="polite">0 selected</span>
+        </div>
+        <div class="bridge-room-members" id="bridge-room-members"></div>
+      </fieldset>
+      <div class="bridge-room-error" id="bridge-room-error" hidden></div>
+      <footer>
+        <button type="button" class="bridge-room-cancel" data-close-room-dialog>Cancel</button>
+        <button type="submit" class="bridge-room-create" id="bridge-room-create" disabled><svg class="cockpit-icon"><use href="#bridge-icon-plus"/></svg>Create room</button>
+      </footer>
+    </form>
+  </dialog>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="/static/js/marked.min.js?v=5.0.1" defer></script>
+<script src="/static/js/bridge.js?v=20260821j" defer></script>
+{% endblock %}

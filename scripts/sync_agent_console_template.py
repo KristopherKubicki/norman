@@ -84,6 +84,9 @@ SOURCE_FILES = {
     "child-agents": SCRIPT_DIR / "agent_console_child_agents.py",
     "session-budget": TEMPLATE_ROOT / "agent_console_session_budget.py",
     "model-roles": MODEL_ROLE_CONFIG_PATH,
+    "escalation-policy": (
+        SCRIPT_DIR.parent / "app" / "services" / "norllama" / "escalation_policy.py"
+    ),
     "sms-turns": TEMPLATE_ROOT / "agent_console_sms.py",
     "norman-switchboard": SCRIPT_DIR / "norman_codex_web.py",
     "work-classification": (
@@ -275,6 +278,10 @@ class ConsoleInstance:
                 str(Path(self.web_path).parent / "model_roles.json"),
             ),
             (
+                "escalation-policy",
+                str(Path(self.web_path).parent / "norllama_escalation_policy.py"),
+            ),
+            (
                 "sms-turns",
                 str(Path(self.web_path).parent / "agent_console_sms.py"),
             ),
@@ -421,9 +428,7 @@ RUNTIME_BRIDGE_REFERENCE_INSTANCES: tuple[str, ...] = (
 )
 RUNTIME_BRIDGE_TOKEN_SECRET = "norman/console-runtime-token"
 RUNTIME_BRIDGE_SECRET_LANE = "shared_infra"
-RUNTIME_BRIDGE_DEFAULT_API_BASE = (
-    f"{FLEET_FRONTDOORS['norman']}/api/v1/console-runtime"
-)
+RUNTIME_BRIDGE_DEFAULT_API_BASE = f"{FLEET_FRONTDOORS['norman']}/api/v1/console-runtime"
 RUNTIME_BRIDGE_DEFAULT_KEYS_URL = FLEET_FRONTDOORS["norman"]
 RUNTIME_BRIDGE_TIMEOUT_SECONDS = "3"
 RUNTIME_BRIDGE_JOB_CREATE_TIMEOUT_SECONDS = "15"
@@ -1721,6 +1726,13 @@ def _origin_model_updates(
             **role_policy_env,
             "NORMAN_CODEX_BILLING_SCOPE": "work-special",
             "NORMAN_CODEX_BILLING_OWNER": "openbrand",
+            "NORMAN_CODEX_DEFAULT_RUNTIME": "codex",
+            "NORMAN_CODEX_FORCE_DEFAULT_RUNTIME": "1",
+            "NORMAN_BEDROCK_CONVERSE_ENABLED": "0",
+            "NORMAN_NORLLAMA_ESCALATION_MODE": "production",
+            "NORMAN_NORLLAMA_MODEL_ROLE_CONFIG": str(
+                Path(instance.web_path).parent / "model_roles.json"
+            ),
             "NORMAN_CODEX_SERVICE_TIER": "default",
             "NORMAN_CODEX_STANDARD_PROFILE_V2": WORK_STANDARD_PROFILE_V2,
             "NORMAN_CODEX_STANDARD_AWS_PROFILE": WORK_STANDARD_AWS_PROFILE,
@@ -2136,7 +2148,8 @@ PY
 def sync_instance_runtime_settings(
     host: DiscoveryHost, instance: ConsoleInstance
 ) -> bool:
-    if instance_uses_work_config(host, instance):
+    use_work = instance_uses_work_config(host, instance)
+    if use_work:
         desired_model = WORK_DIRECT_MODEL
         switchable_models = [
             item.strip() for item in WORK_SWITCHABLE_MODELS.split(",") if item.strip()
@@ -2153,10 +2166,24 @@ python3 - <<'PY'
 from pathlib import Path
 import json
 
+env_path = Path({instance.env_file!r})
+env = {{}}
+if env_path.exists():
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        env[key.strip()] = value.strip()
+state_dir = Path(
+    env.get("NORMAN_CODEX_WEB_STATE_DIR")
+    or (Path({instance.codex_home!r}) / "web-bridge")
+)
 legacy_runtime_path = Path({instance.codex_home!r}) / "runtime_settings.json"
-runtime_path = Path({instance.codex_home!r}) / "web-bridge" / "runtime_settings.json"
+runtime_path = state_dir / "runtime_settings.json"
 desired_model = {desired_model!r}
 switchable_models = {switchable_models!r}
+force_codex_runtime = {use_work!r}
 stale_default_models = {{
     "",
     "gpt-5.4",
@@ -2189,6 +2216,8 @@ if runtime_path.exists():
         payload = json.loads(runtime_path.read_text(encoding="utf-8") or "{{}}")
     except json.JSONDecodeError:
         payload = {{}}
+if force_codex_runtime:
+    payload["runtime"] = "codex"
 payload["model"] = desired_model
 payload["service_tier"] = "default"
 payload["model_floor"] = desired_model
@@ -2210,17 +2239,26 @@ old_legacy = (
 if old_legacy != rendered:
     legacy_runtime_path.write_text(rendered, encoding="utf-8")
     changed = True
-status_path = Path({instance.codex_home!r}) / "web-bridge" / "status.json"
-thread_id_path = Path({instance.codex_home!r}) / "web-bridge" / "thread_id.txt"
-thread_scope_path = Path({instance.codex_home!r}) / "web-bridge" / "thread_scope.txt"
+status_path = state_dir / "status.json"
+thread_id_path = state_dir / "thread_id.txt"
+thread_scope_path = state_dir / "thread_scope.txt"
 if status_path.exists():
     try:
         status = json.loads(status_path.read_text(encoding="utf-8") or "{{}}")
     except json.JSONDecodeError:
         status = {{}}
     model_keys = ("selected_model", "running_model", "last_model")
+    runtime_keys = ("selected_runtime", "running_runtime", "last_runtime")
     stale_status_model = isinstance(status, dict) and any(
         is_stale_model(status.get(key)) for key in model_keys
+    )
+    stale_status_runtime = (
+        force_codex_runtime
+        and isinstance(status, dict)
+        and any(
+            str(status.get(key) or "").strip().lower() not in {{"", "codex"}}
+            for key in runtime_keys
+        )
     )
     stale_scope = has_stale_model_scope(
         thread_scope_path.read_text(encoding="utf-8")
@@ -2234,11 +2272,11 @@ if status_path.exists():
     if (
         isinstance(status, dict)
         and not is_pending(status.get("pending"))
-        and (stale_status_model or stale_scope)
+        and (stale_status_model or stale_status_runtime or stale_scope)
     ):
         for key in model_keys:
             status[key] = desired_model
-        for key in ("selected_runtime", "running_runtime", "last_runtime"):
+        for key in runtime_keys:
             status[key] = "codex"
         status["thread_id"] = ""
         status["thread_scope"] = ""

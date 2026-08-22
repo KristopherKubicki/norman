@@ -9,22 +9,23 @@
         </span>
     </div>
     <form action="/login" method="post" class="norman-auth-card">
-        <div class="norman-auth-card__eyebrow">Gold shell</div>
-        <h1 class="norman-auth-card__title">Sign in to Norman</h1>
-        <p class="norman-auth-card__copy">Use the main Norman front door first. Directory, pipeline, and settings stay under the lower deck once you are in.</p>
+        <input type="hidden" name="next" value="{{ return_to }}">
+        <div class="norman-auth-card__eyebrow">Norman Bridge</div>
+        <h1 class="norman-auth-card__title">Log in to Norman</h1>
+        <p class="norman-auth-card__copy">Open your rooms, bots, approvals, and active work from one authenticated workspace.</p>
         <div class="mb-3">
             <input type="email" class="form-control norman-auth-card__input" name="username" placeholder="Email" required>
         </div>
         <div class="mb-3">
             <input type="password" class="form-control norman-auth-card__input" name="password" placeholder="Password" required>
         </div>
-        <button type="submit" class="btn btn-primary w-100 norman-auth-card__submit">Enter Norman</button>
+        <button type="submit" class="btn btn-primary w-100 norman-auth-card__submit">Log in to Norman</button>
         <hr class="my-3">
         {% if google_sso_enabled %}
-        <a href="/auth/google/login" class="btn btn-outline-danger w-100 mb-2 norman-auth-card__provider">Sign in with Google</a>
+        <a href="{{ google_login_url }}" class="btn btn-outline-danger w-100 mb-2 norman-auth-card__provider">Sign in with Google</a>
         {% endif %}
         {% if microsoft_sso_enabled %}
-        <a href="/auth/microsoft/login" class="btn btn-outline-primary w-100 norman-auth-card__provider">Sign in with Microsoft</a>
+        <a href="{{ microsoft_login_url }}" class="btn btn-outline-primary w-100 norman-auth-card__provider">Sign in with Microsoft</a>
         {% endif %}
     </form>
 </section>

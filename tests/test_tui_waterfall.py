@@ -177,6 +177,50 @@ def test_stale_or_unknown_verified_capacity_selects_one_flex_probe():
         assert not waterfall_allows_bedrock_retry(decision)
 
 
+def test_subscription_probe_uses_direct_model_when_base_route_is_claude_bedrock():
+    decision = build_decision(
+        requested_model="global.anthropic.claude-opus-4-8",
+        requested_service_tier="bedrock-emergency",
+        base_model="global.anthropic.claude-opus-4-8",
+        base_service_tier="bedrock-emergency",
+        subscription_model="gpt-5.6-terra",
+        subscription={
+            **CAPACITY,
+            "selected": False,
+            "fresh": False,
+            "state": "unknown",
+        },
+        norllama_available=False,
+        norllama_safe_final=False,
+    )
+
+    assert decision["waterfall_stage"] == "subscription_flex_probe"
+    assert decision["selected_model"] == "gpt-5.6-terra"
+    assert decision["selected_service_tier"] == "flex"
+
+
+def test_route_proof_retains_production_model_escalation():
+    decision = build_decision()
+    decision["model_escalation"] = {
+        "schema": "norman.norllama.escalation-decision.v1",
+        "mode": "production",
+        "status": "selected",
+        "controller_version": "production-v1",
+        "registry_version": "2026.08.16",
+        "proposed_role": "economy",
+        "proposed_tier": "luna",
+        "proposed_model": "openai.gpt-5.6-luna",
+        "reason_codes": ["moderate_complexity"],
+        "execution_model_unchanged": False,
+        "execution_authority_changed": True,
+    }
+
+    sanitized = sanitize_tui_waterfall_decision(decision)
+
+    assert sanitized["model_escalation"]["proposed_tier"] == "luna"
+    assert sanitized["model_escalation"]["proposed_model"] == "openai.gpt-5.6-luna"
+
+
 def test_disabled_or_unverified_capacity_blocks_automatic_bedrock():
     for capacity in (
         {**CAPACITY, "enabled": False, "selected": False},

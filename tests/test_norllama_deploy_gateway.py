@@ -86,10 +86,7 @@ def test_deploy_gateway_stages_runtime_and_uses_safe_restart_transport() -> None
     assert 'ssh "$mac_target" \\' in source
     assert "sh -s -- '$mac_service' '$mac_curl_bin'" in source
     assert '"$curl_bin" -fsS --max-time 5 http://127.0.0.1:18151/readyz' in source
-    assert (
-        '"$curl_bin" -fsS --max-time 10 http://127.0.0.1:18151/v1/models'
-        in source
-    )
+    assert '"$curl_bin" -fsS --max-time 10 http://127.0.0.1:18151/v1/models' in source
     assert '"$curl_bin" -fsS --max-time 5 http://127.0.0.1:18151/asr-readyz' in source
 
 

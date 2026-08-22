@@ -236,9 +236,7 @@ def test_state_storage_sync_isolates_the_console_database(monkeypatch) -> None:
     module = _load_sync_script(monkeypatch)
     captured = {}
     instance = _instance(module, "publisher")
-    monkeypatch.setattr(
-        module, "ssh_command", lambda _host, script: ["ssh", script]
-    )
+    monkeypatch.setattr(module, "ssh_command", lambda _host, script: ["ssh", script])
     monkeypatch.setattr(
         module,
         "capture",
@@ -247,14 +245,16 @@ def test_state_storage_sync_isolates_the_console_database(monkeypatch) -> None:
 
     assert module.sync_instance_state_storage(_host(module), instance) is True
     script = captured["script"]
-    assert '"NORMAN_CODEX_WEB_STATE_DIR":"/var/lib/publisher/codex/web-bridge"' in script
+    assert (
+        '"NORMAN_CODEX_WEB_STATE_DIR":"/var/lib/publisher/codex/web-bridge"' in script
+    )
     assert (
         '"NORMAN_CODEX_STATE_DB_PATH":'
         '"/var/lib/publisher/codex/web-bridge/tui_state.sqlite3"'
     ) in script
     assert '"NORMAN_CODEX_STATE_DB_ENABLED":"1"' in script
     assert "state_dir.mkdir(parents=True, exist_ok=True)" in script
-    assert 'service_name = (' in script
+    assert "service_name = (" in script
     assert '"systemctl", "show", service_name, "--property=User", "--value"' in script
     assert "for root, dirs, files in os.walk(state_dir):" in script
     assert "state_db_path.touch()" in script
@@ -583,7 +583,7 @@ def test_route_receipt_sync_exports_shadow_capture_env(monkeypatch) -> None:
         '"NORMAN_CODEX_ROUTE_RECEIPT_DIR":' '"/var/lib/norman/route_receipts"'
     ) in script
     assert "route_receipt_path.mkdir(parents=True, exist_ok=True)" in script
-    assert 'service_name = (' in script
+    assert "service_name = (" in script
     assert '"systemctl", "show", service_name, "--property=User", "--value"' in script
     assert "os.chown(route_receipt_path, target_uid, target_gid)" in script
     assert "os.chmod(route_receipt_path, 0o750)" in script
@@ -865,6 +865,9 @@ def test_origin_sync_exports_bbs_env_file_without_raw_token(monkeypatch) -> None
     assert "NORMAN_CODEX_BBS_ENV_FILE" in script
     assert "NORMAN_CODEX_SERVICE_TIER" in script
     assert '"NORMAN_CODEX_SERVICE_TIER":"default"' in script
+    assert '"NORMAN_CODEX_DEFAULT_RUNTIME":"codex"' in script
+    assert '"NORMAN_CODEX_FORCE_DEFAULT_RUNTIME":"1"' in script
+    assert '"NORMAN_BEDROCK_CONVERSE_ENABLED":"0"' in script
     assert "NORMAN_CODEX_STANDARD_PROFILE_V2" in script
     assert '"NORMAN_CODEX_STANDARD_AWS_REGION":"us-east-2"' in script
     assert "NORMAN_CODEX_STANDARD_MODEL" in script
@@ -888,8 +891,9 @@ def test_origin_sync_exports_bbs_env_file_without_raw_token(monkeypatch) -> None
     assert "openai.gpt-5.6-terra" in script
     assert "gpt-5.6-terra" in script
     assert module.WORK_SWITCHABLE_MODELS == (
-        "openai.gpt-5.6-terra,openai.gpt-5.5,openai.gpt-5.4,"
-        "gpt-5.6-terra,gpt-5.5,gpt-5.4"
+        "openai.gpt-5.6-luna,openai.gpt-5.6-terra,openai.gpt-5.6-sol,"
+        "openai.gpt-5.5,openai.gpt-5.4,gpt-5.6-luna,gpt-5.6-terra,"
+        "gpt-5.6-sol,gpt-5.5,gpt-5.4"
     )
     assert module.WORK_STANDARD_MODEL == "openai.gpt-5.6-terra"
     assert module.WORK_STANDARD_AWS_REGION == "us-east-2"
@@ -996,9 +1000,8 @@ def test_origin_sync_exports_discovered_local_llm_inventory(
     assert '"NORMAN_LOCAL_LLM_MODELS":"' in script
     assert (
         '"NORMAN_LOCAL_LLM_ENDPOINTS":"https://llm.home.arpa/resident,'
-        'http://192.168.2.151:11434,http://192.168.2.152:11434,'
-        'http://spark-1.home.arpa:8000"'
-        in script
+        "http://192.168.2.151:11434,http://192.168.2.152:11434,"
+        'http://spark-1.home.arpa:8000"' in script
     )
     assert '"NORMAN_LOCAL_LLM_MODEL_ENDPOINTS":"' in script
     assert "qwen3.8:27b" in script
@@ -1034,10 +1037,15 @@ def test_work_runtime_default_model_reset_migrates_old_default(
 
     script = captured["script"]
     assert "runtime_settings.json" in script
+    assert 'env.get("NORMAN_CODEX_WEB_STATE_DIR")' in script
     assert "desired_model = 'gpt-5.6-terra'" in script
+    assert "force_codex_runtime = True" in script
+    assert 'payload["runtime"] = "codex"' in script
     assert (
-        "switchable_models = ['openai.gpt-5.6-terra', 'openai.gpt-5.5', "
-        "'openai.gpt-5.4', 'gpt-5.6-terra', 'gpt-5.5', 'gpt-5.4']" in script
+        "switchable_models = ['openai.gpt-5.6-luna', 'openai.gpt-5.6-terra', "
+        "'openai.gpt-5.6-sol', 'openai.gpt-5.5', 'openai.gpt-5.4', "
+        "'gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-5.5', "
+        "'gpt-5.4']" in script
     )
     assert 'payload["service_tier"] = "default"' in script
 
@@ -1097,6 +1105,58 @@ def test_runtime_settings_migrate_idle_stale_thread_state(
     assert status["running_turn_envelope"] == {}
     assert (state_dir / "thread_id.txt").read_text(encoding="utf-8") == ""
     assert (state_dir / "thread_scope.txt").read_text(encoding="utf-8") == ""
+
+
+def test_work_runtime_settings_migrate_idle_claude_state(monkeypatch, tmp_path) -> None:
+    module = _load_sync_script(monkeypatch)
+    codex_home = tmp_path / "codex"
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True)
+    env_path = tmp_path / "panelbot.env"
+    env_path.write_text(
+        f"NORMAN_CODEX_WEB_STATE_DIR={state_dir}\n",
+        encoding="utf-8",
+    )
+    status_path = state_dir / "status.json"
+    status_path.write_text(
+        json.dumps(
+            {
+                "pending": False,
+                "selected_runtime": "claude",
+                "selected_model": "global.anthropic.claude-opus-4-8",
+                "running_runtime": "claude",
+                "running_model": "global.anthropic.claude-opus-4-8",
+                "last_runtime": "claude",
+                "last_model": "global.anthropic.claude-opus-4-8",
+                "thread_id": "claude-thread",
+                "thread_scope": "claude:model:global.anthropic.claude-opus-4-8",
+            }
+        ),
+        encoding="utf-8",
+    )
+    panelbot = replace(
+        _instance(module, "panelbot"),
+        codex_home=str(codex_home),
+        env_file=str(env_path),
+    )
+    monkeypatch.setattr(
+        module,
+        "ssh_command",
+        lambda host, script: ["bash", "-lc", script],
+    )
+
+    assert module.sync_instance_runtime_settings(
+        _named_host(module, "work-special"), panelbot
+    )
+
+    runtime = json.loads((state_dir / "runtime_settings.json").read_text())
+    status = json.loads(status_path.read_text())
+    assert runtime["runtime"] == "codex"
+    assert runtime["model"] == "gpt-5.6-terra"
+    assert status["selected_runtime"] == "codex"
+    assert status["selected_model"] == "gpt-5.6-terra"
+    assert status["thread_id"] == ""
+    assert status["thread_scope"] == ""
 
 
 def test_runtime_settings_preserve_active_stale_thread_state(
@@ -1219,8 +1279,7 @@ def test_local_llm_foreground_sync_configures_intent_classifier(
     assert "NORMAN_LOCAL_ROUTE_INTENT_CLASSIFIER_MAX_OUTPUT_TOKENS=192" in synced
     assert "NORMAN_CODEX_WORKING_RECAP_MODEL=qwen3.8:27b" in synced
     assert (
-        "NORMAN_CODEX_WORKING_RECAP_ENDPOINTS=https://llm.home.arpa/resident"
-        in synced
+        "NORMAN_CODEX_WORKING_RECAP_ENDPOINTS=https://llm.home.arpa/resident" in synced
     )
     assert "NORMAN_TUI_TOKEN_CAPACITY_USAGE_WINDOW_SECONDS=3600" in synced
     assert "NORMAN_CODEX_SUBSCRIPTION_ROUTE_PREFERENCE_ENABLED=1" in synced
@@ -2235,7 +2294,7 @@ def test_sync_host_managed_secret_policy_installs_and_verifies_guard(
 def test_web_sources_must_share_ui_version(monkeypatch, tmp_path: Path) -> None:
     module = _load_sync_script(monkeypatch)
 
-    assert module.validate_web_source_versions() == "2026.08.04.1"
+    assert module.validate_web_source_versions() == "2026.08.17.1"
 
     stale_switchboard = tmp_path / "norman_codex_web.py"
     stale_switchboard.write_text(
@@ -2249,7 +2308,7 @@ def test_web_sources_must_share_ui_version(monkeypatch, tmp_path: Path) -> None:
     except RuntimeError as exc:
         assert str(exc) == (
             "Web UI source versions must match: "
-            "norman-switchboard=v2026.07.16.06, web=v2026.08.04.1"
+            "norman-switchboard=v2026.07.16.06, web=v2026.08.17.1"
         )
     else:
         raise AssertionError("expected mismatched web sources to be rejected")

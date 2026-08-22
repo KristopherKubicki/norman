@@ -77,9 +77,7 @@ def test_serving_paths_do_not_reintroduce_upgrade_sensitive_literals() -> None:
             "qwen3.6:",
             "qwen3.8:",
         ),
-        "app/services/norllama/capability_catalog.py": (
-            "qwen3-coder:30b-a3b-q4_K_M",
-        ),
+        "app/services/norllama/capability_catalog.py": ("qwen3-coder:30b-a3b-q4_K_M",),
         "app/services/norllama/route_policy.py": (
             "2026-08-11",
             "manual-only-qwen3.5",

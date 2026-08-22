@@ -9,9 +9,15 @@ readonly CODEX_MANAGED_SECRET_GUARD="${NORMAN_CODEX_MANAGED_SECRET_GUARD:-/usr/l
 readonly CODEX_WORK_HOME="${CODEX_WORK_HOME:-$HOME/.codex-work}"
 readonly CODEX_WORK_AWS_PROFILE="${CODEX_WORK_AWS_PROFILE:-ob-openbrand-admin}"
 readonly CODEX_WORK_AWS_REGION="${CODEX_WORK_AWS_REGION:-us-east-2}"
-readonly CODEX_WORK_DISABLE_APPS="${CODEX_WORK_DISABLE_APPS:-0}"
 readonly CODEX_WORK_PYTEST_XDIST_AUTO_WORKERS="${CODEX_WORK_PYTEST_XDIST_AUTO_WORKERS:-4}"
+readonly CODEX_WORK_PINNED_BIN="$HOME/.local/lib/codex-work-0.147.0/node_modules/.bin/codex"
 readonly OPS_OPENBRAND_MCP_LAUNCHER="$HOME/code/control_plane/scripts/with_ops_openbrand_mcp.sh"
+
+disable_apps=0
+if [[ "${1-}" == "--work-no-apps" ]]; then
+  disable_apps=1
+  shift
+fi
 
 case "${1-}" in
   --print-route|--routes|--verify)
@@ -22,10 +28,19 @@ case "${1-}" in
 esac
 
 if [[ "${CODEX_ROUTER_RESOLVED:-}" != "1" ]]; then
-  exec python3 "$ROUTER_SCRIPT" \
+  if [[ ! -x "$CODEX_WORK_PINNED_BIN" ]]; then
+    echo "codex-work: pinned Codex 0.147.0 is unavailable at $CODEX_WORK_PINNED_BIN." >&2
+    echo "Reinstall the managed work CLI before starting a routed session." >&2
+    exit 1
+  fi
+  reentry_args=("$@")
+  if [[ "$disable_apps" -eq 1 ]]; then
+    reentry_args=(--work-no-apps "${reentry_args[@]}")
+  fi
+  exec env CODEX_REAL_BIN="$CODEX_WORK_PINNED_BIN" python3 "$ROUTER_SCRIPT" \
     --launcher work \
     --reenter "$0" \
-    -- "$@"
+    -- "${reentry_args[@]}"
 fi
 unset CODEX_ROUTER_RESOLVED
 
@@ -40,21 +55,16 @@ fi
 # selections alone while preserving capacity for interactive TUIs.
 export PYTEST_XDIST_AUTO_NUM_WORKERS="$CODEX_WORK_PYTEST_XDIST_AUTO_WORKERS"
 
-case "$CODEX_WORK_DISABLE_APPS" in
-  0|1)
-    ;;
-  *)
-    echo "codex-work: CODEX_WORK_DISABLE_APPS must be 0 or 1." >&2
-    exit 2
-    ;;
-esac
-
 run_codex() {
-  local codex_bin="${CODEX_REAL_BIN:-codex}"
-  if [[ "$CODEX_WORK_DISABLE_APPS" == "1" ]]; then
-    exec "$codex_bin" --disable apps "$@"
+  if [[ ! -x "$CODEX_WORK_PINNED_BIN" ]]; then
+    echo "codex-work: pinned Codex 0.147.0 is unavailable at $CODEX_WORK_PINNED_BIN." >&2
+    echo "Reinstall the managed work CLI before starting a routed session." >&2
+    exit 1
   fi
-  exec "$codex_bin" "$@"
+  if [[ "$disable_apps" -eq 1 ]]; then
+    exec "$CODEX_WORK_PINNED_BIN" --disable apps "$@"
+  fi
+  exec "$CODEX_WORK_PINNED_BIN" "$@"
 }
 
 run_guarded_codex() {
@@ -118,7 +128,9 @@ resume_target() {
 }
 
 guard_resume() {
-  [[ "${1-}" == "resume" ]] || return
+  if [[ "${1-}" != "resume" ]]; then
+    return 0
+  fi
 
   for argument in "$@"; do
     case "$argument" in
@@ -181,9 +193,13 @@ is_help_request() {
 
 # The loader exports the subject-bound Ops Portal binding only to this process.
 if [[ "${CODEX_WORK_OPS_BINDING_LOADED:-}" != "1" ]]; then
+  binding_args=("$@")
+  if [[ "$disable_apps" -eq 1 ]]; then
+    binding_args=(--work-no-apps "${binding_args[@]}")
+  fi
   exec env -u OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY \
-    "$OPS_OPENBRAND_MCP_LAUNCHER" \
-    env CODEX_WORK_OPS_BINDING_LOADED=1 "$0" "$@"
+    "$OPS_OPENBRAND_MCP_LAUNCHER" env \
+    CODEX_WORK_OPS_BINDING_LOADED=1 "$0" "${binding_args[@]}"
 fi
 unset CODEX_WORK_OPS_BINDING_LOADED
 

@@ -1,8 +1,8 @@
 {
   "schema": "norman.codex-role-policy.v1",
   "version": "2026.07.15.role-v1",
-  "policy_id": "2026.07.15.role-v1:845a9d1e0ec4",
-  "policy_hash": "845a9d1e0ec49adf4fe4b6d0c707b2a94d81b442b60ea9e31cb8203b48277fc2",
+  "policy_id": "2026.07.15.role-v1:3737f746b20a",
+  "policy_hash": "3737f746b20a2d2dbf6109b6d2a991429e30db436c97e9f7023dc42c49f65894",
   "issued_at": "2026-07-22T00:00:00Z",
   "default_policy": "local-first, GPT-5.6 Terra Bedrock baseline and personal final authority, GPT-5.5 work final-authority only",
   "roles": {
@@ -62,10 +62,14 @@
   },
   "switchable_models": {
     "work": [
+      "openai.gpt-5.6-luna",
       "openai.gpt-5.6-terra",
+      "openai.gpt-5.6-sol",
       "openai.gpt-5.5",
       "openai.gpt-5.4",
+      "gpt-5.6-luna",
       "gpt-5.6-terra",
+      "gpt-5.6-sol",
       "gpt-5.5",
       "gpt-5.4"
     ],
