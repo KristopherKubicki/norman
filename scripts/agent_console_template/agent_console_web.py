@@ -17500,11 +17500,15 @@ def stage_session_media_attachments(
     if not prompt_requests_session_media(prompt):
         return []
     staged: list[dict[str, Any]] = []
+    seen_sources: set[str] = set()
     for turn in reversed(load_history(limit=MAX_HISTORY_ITEMS)):
         for attachment in reversed(normalize_attachments(turn.get("attachments"))):
             if attachment.get("kind") != "image":
                 continue
             path = Path(str(attachment.get("path") or ""))
+            source_key = str(attachment.get("url") or "").strip() or str(path)
+            if source_key in seen_sources:
+                continue
             try:
                 if not path.is_file() or path.stat().st_size > MAX_ATTACHMENT_BYTES:
                     continue
@@ -17526,6 +17530,7 @@ def stage_session_media_attachments(
                 )
             except (OSError, ValueError):
                 continue
+            seen_sources.add(source_key)
             if len(staged) >= max(1, int(maximum or 1)):
                 return staged
     return staged

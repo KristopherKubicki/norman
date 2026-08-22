@@ -168,6 +168,20 @@ def test_session_media_request_restages_recent_images(monkeypatch, tmp_path) -> 
             {
                 "attachments": [
                     {
+                        "token": "image-2",
+                        "name": "prior-art-copy.jpg",
+                        "path": str(prior_image),
+                        "content_type": "image/jpeg",
+                        "kind": "image",
+                        "size": prior_image.stat().st_size,
+                        "source": "web-capture",
+                        "url": "https://example.test/prior-art.jpg",
+                    }
+                ]
+            },
+            {
+                "attachments": [
+                    {
                         "token": "image-1",
                         "name": "prior-art.jpg",
                         "path": str(prior_image),
@@ -175,6 +189,7 @@ def test_session_media_request_restages_recent_images(monkeypatch, tmp_path) -> 
                         "kind": "image",
                         "size": prior_image.stat().st_size,
                         "source": "web-capture",
+                        "url": "https://example.test/prior-art.jpg",
                     }
                 ]
             }
