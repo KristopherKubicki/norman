@@ -113,7 +113,7 @@ def render_frontdoor_snippet() -> str:
 
     @norman_root path /
     handle @norman_root {
-        redir * /bot/norman/ 302
+        redir * /bridge 302
     }
 
     handle {

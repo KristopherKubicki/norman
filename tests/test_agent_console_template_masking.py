@@ -4934,7 +4934,7 @@ def test_norman_frontdoor_caddy_serves_shortcuts_locally() -> None:
     assert (
         "@norman_root path /\n"
         "    handle @norman_root {\n"
-        "        redir * /bot/norman/ 302\n"
+        "        redir * /bridge 302\n"
         "    }"
     ) in rendered
     assert "tls /etc/caddy/certs/norman-lollie.crt" not in rendered
