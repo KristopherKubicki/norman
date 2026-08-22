@@ -4939,6 +4939,15 @@ def test_norman_frontdoor_caddy_serves_shortcuts_locally() -> None:
     ) in rendered
     assert "tls /etc/caddy/certs/norman-lollie.crt" not in rendered
     assert (
+        "@bridge_live_assets path /static/css/bridge.css /static/js/bridge.js\n"
+        "    handle @bridge_live_assets {\n"
+        "        uri strip_prefix /static\n"
+        "        root * /var/www/norman-static\n"
+        '        header Cache-Control "no-cache, must-revalidate"\n'
+        "        file_server\n"
+        "    }"
+    ) in rendered
+    assert (
         "handle_path /static/* {\n"
         "        root * /var/www/norman-static\n"
         '        header Cache-Control "public, max-age=300, '

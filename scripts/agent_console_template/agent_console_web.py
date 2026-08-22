@@ -47190,6 +47190,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             raw_runtime = (params.get("runtime") or [""])[0]
             raw_model = (params.get("model") or [""])[0]
+            bridge_direct = coerce_boolish((params.get("bridge_direct") or [""])[0])
             route_lock = coerce_boolish(
                 (params.get("route_lock") or params.get("strict_route") or [""])[0]
             )
@@ -47244,7 +47245,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if not message:
                 message = build_attachment_lead_message(attachments)
-            if deterministic_command_prompt_allowed(
+            if not bridge_direct and deterministic_command_prompt_allowed(
                 message, attachments, route_lock=route_lock
             ):
                 snapshot = complete_deterministic_command_prompt(
@@ -47285,7 +47286,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self.redirect_root(params)
                 return
-            if deterministic_status_prompt_allowed(
+            if not bridge_direct and deterministic_status_prompt_allowed(
                 message, attachments, route_lock=route_lock
             ):
                 snapshot = complete_deterministic_status_prompt(

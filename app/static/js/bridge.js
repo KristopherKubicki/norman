@@ -2628,23 +2628,33 @@
       const token = String(attachment.token || '');
       const name = String(attachment.name || 'Attachment');
       const source = `/api/v1/bridge/conversations/agents/${encodeURIComponent(slugify(slug))}/media/${encodeURIComponent(token)}`;
+      const downloadSource = `${source}?download=1`;
       if (attachment.kind === 'image' || String(attachment.content_type || '').startsWith('image/')) {
         return `<figure class="cockpit-message-media__figure">
           <a href="${source}" target="_blank" rel="noopener" aria-label="Open ${escapeHtml(name)}">
             <img src="${source}" alt="${escapeHtml(name)}" loading="lazy" decoding="async">
           </a>
-          <figcaption><span>${iconHtml('palette')}</span>${escapeHtml(name)}</figcaption>
+          <figcaption>
+            <span>${iconHtml('palette')}</span>
+            <span>${escapeHtml(name)}</span>
+            <a class="cockpit-message-media__download" href="${downloadSource}" aria-label="Download ${escapeHtml(name)}" title="Download ${escapeHtml(name)}">${iconHtml('download')}</a>
+          </figcaption>
         </figure>`;
       }
-      return `<a class="cockpit-message-media__file" href="${source}" target="_blank" rel="noopener">
-        <span>${iconHtml('file-text')}</span><strong>${escapeHtml(name)}</strong>
-      </a>`;
+      return `<div class="cockpit-message-media__file">
+        <a href="${source}" target="_blank" rel="noopener"><span>${iconHtml('file-text')}</span><strong>${escapeHtml(name)}</strong></a>
+        <a class="cockpit-message-media__download" href="${downloadSource}" aria-label="Download ${escapeHtml(name)}" title="Download ${escapeHtml(name)}">${iconHtml('download')}</a>
+      </div>`;
     }).join('')}</div>`;
   }
 
   function messageHtml({ author, text, time, operator = false, slug = 'norman', job = null, continuation = false, attachments = [] }) {
     const identity = identityContract(slug);
-    const head = operator ? '' : `
+    const head = operator ? `
+      <header class="cockpit-message__head cockpit-message__head--operator">
+        <span class="cockpit-message__role">You</span>
+        <span class="cockpit-message__telemetry"><time>${escapeHtml(formatTime(time))}</time></span>
+      </header>` : `
       <header class="cockpit-message__head">
         <span class="cockpit-message__role">${entityCartoucheHtml(author || identity.label, {
           slug: identity.slug,
@@ -2661,7 +2671,6 @@
         <div class="cockpit-message__body">
           ${text ? `<div class="cockpit-message__bubble">${operator ? escapeHtml(text) : renderMessageContent(text)}</div>` : ''}
           ${operator ? '' : attachmentHtml(attachments, identity.slug)}
-          ${operator ? `<time class="cockpit-message__operator-time">${escapeHtml(formatTime(time))}</time>` : ''}
         </div>
       </article>`;
   }
@@ -2693,14 +2702,7 @@
   }
 
   function normalizeBridgeResponse(text) {
-    const response = String(text || '').trim();
-    const isLegacyStatus = /\b(?:selected route|local proof|local lane availability|route receipts):|\bdeterministic tui state\b|\bquick status\b/i.test(response);
-    if (!isLegacyStatus) return response;
-    return [
-      'Prior Bridge status',
-      '',
-      'This diagnostic reply has been superseded by the live route, queue, and agent indicators above.',
-    ].join('\n');
+    return String(text || '').trim();
   }
 
   function resultText(job, events = []) {
@@ -2927,7 +2929,7 @@
     }
   }
 
-  async function waitForStationResponse(slug, knownTurnIds) {
+  async function waitForStationResponse(slug, knownTurnIds, submissionId, promptText) {
     const deadline = Date.now() + 300000;
     while (Date.now() < deadline && state.prompt.stationSlug === slug && promptBusy()) {
       await new Promise((resolve) => window.setTimeout(resolve, 2000));
@@ -2939,9 +2941,11 @@
         state.stationHistory[slug] = history;
         const completed = (history.items || []).find((turn, index) => {
           const id = String(turn.turn_id || `${turn.started_at || ''}:${index}`);
-          return !knownTurnIds.has(id) && Boolean(
-            turn.response || turn.error || (turn.attachments || []).length
-          );
+          const hasOutput = Boolean(turn.response || turn.error || (turn.attachments || []).length);
+          if (!hasOutput || knownTurnIds.has(id)) return false;
+          const turnSubmissionId = String(turn.submission_id || '').trim();
+          if (turnSubmissionId) return turnSubmissionId === submissionId;
+          return String(turn.prompt || '').trim() === promptText;
         });
         renderFeed();
         if (completed) {
@@ -4011,7 +4015,7 @@
           stationSlug,
         });
         renderFeed();
-        void waitForStationResponse(stationSlug, knownTurnIds);
+        void waitForStationResponse(stationSlug, knownTurnIds, submissionId, text);
         return;
       }
       created = await postJson(`${API}/console-runtime/jobs`, {

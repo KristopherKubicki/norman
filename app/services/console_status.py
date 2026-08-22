@@ -448,6 +448,7 @@ def fetch_console_history(
                     "turn_id": str(
                         raw.get("id") or raw.get("turn_id") or raw.get("job_id") or ""
                     ).strip(),
+                    "submission_id": str(raw.get("submission_id") or "").strip(),
                     "thread_id": str(raw.get("thread_id") or "").strip(),
                     "prompt": prompt,
                     "response": response,

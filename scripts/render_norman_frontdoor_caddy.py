@@ -73,6 +73,14 @@ def render_frontdoor_snippet() -> str:
 (norman_frontdoor) {
     encode gzip zstd
 
+    @bridge_live_assets path /static/css/bridge.css /static/js/bridge.js
+    handle @bridge_live_assets {
+        uri strip_prefix /static
+        root * /var/www/norman-static
+        header Cache-Control "no-cache, must-revalidate"
+        file_server
+    }
+
     handle_path /static/* {
         root * /var/www/norman-static
         header Cache-Control "public, max-age=300, stale-while-revalidate=86400"

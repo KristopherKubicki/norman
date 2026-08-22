@@ -124,7 +124,7 @@ def test_bridge_direct_message_loads_managed_station_history(test_app, db, monke
     }
 
 
-def test_bridge_history_condenses_legacy_runtime_diagnostics(test_app, db, monkeypatch):
+def test_bridge_history_preserves_station_response(test_app, db, monkeypatch):
     user_id = test_app.get("/api/v1/users/me").json()["id"]
     db.add(
         Connector(
@@ -156,8 +156,8 @@ def test_bridge_history_condenses_legacy_runtime_diagnostics(test_app, db, monke
     response = test_app.get("/api/v1/bridge/conversations/agents/artmonster/history")
 
     assert response.status_code == 200
-    assert response.json()["items"][0]["response"].startswith("Prior Bridge status")
-    assert "Selected route" not in response.json()["items"][0]["response"]
+    assert response.json()["items"][0]["response"].startswith("- State: idle")
+    assert "Selected route" in response.json()["items"][0]["response"]
 
 
 def test_bridge_direct_message_submits_to_managed_station(test_app, db, monkeypatch):
@@ -288,6 +288,14 @@ def test_bridge_station_media_is_validated_against_history_and_proxied(
         "access_token": "station-secret",
         "path": "/srv/art/latest-art.png",
     }
+
+    download = test_app.get(
+        "/api/v1/bridge/conversations/agents/artmonster/media/asset-1?download=1"
+    )
+    assert download.status_code == 200
+    assert download.headers["content-disposition"] == (
+        'attachment; filename="latest-art.png"'
+    )
 
     missing = test_app.get(
         "/api/v1/bridge/conversations/agents/artmonster/media/not-real"

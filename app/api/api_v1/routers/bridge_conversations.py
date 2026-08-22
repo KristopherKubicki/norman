@@ -30,32 +30,12 @@ def _slug(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
 
 
-def _bridge_history_response(value: Any) -> str:
-    """Hide obsolete route diagnostics from user-facing Bridge history."""
-    response = str(value or "").strip()
-    if not re.search(
-        r"\b(?:selected route|local proof|local lane availability|route receipts):"
-        r"|\bdeterministic tui state\b|\bquick status\b",
-        response,
-        flags=re.IGNORECASE,
-    ):
-        return response
-    return (
-        "Prior Bridge status\n\n"
-        "This diagnostic reply has been superseded by the live route, queue, "
-        "and agent indicators above."
-    )
-
-
 def _bridge_history_items(items: Any) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for item in items or []:
         if not isinstance(item, dict):
             continue
-        copy = dict(item)
-        if copy.get("response"):
-            copy["response"] = _bridge_history_response(copy["response"])
-        normalized.append(copy)
+        normalized.append(dict(item))
     return normalized
 
 
@@ -196,6 +176,7 @@ def _submit_station_prompt(
         "submission_id": submission_id,
         "speed": "careful",
         "detail": "3",
+        "bridge_direct": "1",
     }
     token = str(access_token or query_token).strip()
     if token:
@@ -403,6 +384,7 @@ async def get_bridge_agent_media(
     agent_slug: str,
     attachment_token: str,
     request: Request,
+    download: bool = False,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_console_runtime_user),
 ):
@@ -439,12 +421,13 @@ async def get_bridge_agent_media(
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     filename = str(attachment.get("name") or attachment_token).replace('"', "")
+    disposition = "attachment" if download else "inline"
     return Response(
         content=body,
         media_type=content_type,
         headers={
             "Cache-Control": "private, max-age=300",
-            "Content-Disposition": f'inline; filename="{filename}"',
+            "Content-Disposition": f'{disposition}; filename="{filename}"',
             "X-Content-Type-Options": "nosniff",
         },
     )

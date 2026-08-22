@@ -8267,6 +8267,76 @@
   border-color: color-mix(in srgb, var(--profile-border) 58%, transparent);
 }
 
+.page-bridge .cockpit-message--assistant::before,
+.page-bridge .cockpit-message--assistant::after,
+.page-bridge .cockpit-message:not(.cockpit-message--operator) .cockpit-message__bubble::before {
+  content: none;
+  display: none;
+}
+
+.page-bridge .cockpit-message--assistant {
+  border-left-color: color-mix(in srgb, var(--message-accent, var(--agent-accent)) 46%, transparent);
+}
+
+.page-bridge .cockpit-message__head--operator {
+  justify-content: flex-end;
+  padding-inline: 0;
+}
+
+.page-bridge .cockpit-message__head--operator .cockpit-message__role {
+  color: color-mix(in srgb, var(--profile-muted) 78%, var(--profile-text));
+  font-family: var(--font-label);
+  font-size: 0.6rem;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.page-bridge .cockpit-message-media__figure figcaption {
+  min-width: 0;
+}
+
+.page-bridge .cockpit-message-media__figure figcaption > span:nth-child(2) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.page-bridge .cockpit-message-media__file {
+  align-items: center;
+}
+
+.page-bridge .cockpit-message-media__file > a:first-child {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.page-bridge .cockpit-message-media__download {
+  display: inline-grid;
+  width: 24px;
+  height: 24px;
+  margin-left: auto;
+  place-items: center;
+  color: color-mix(in srgb, var(--profile-muted) 78%, var(--profile-text));
+  border-radius: 4px;
+}
+
+.page-bridge .cockpit-message-media__download:hover,
+.page-bridge .cockpit-message-media__download:focus-visible {
+  color: var(--profile-text);
+  background: color-mix(in srgb, var(--agent-accent) 12%, transparent);
+  outline: 0;
+}
+
+.page-bridge .cockpit-message-media__download svg {
+  width: 14px;
+  height: 14px;
+}
+
 @media (max-width: 575.98px) {
   .page-bridge .bridge-boot-interstitial {
     top: auto;
