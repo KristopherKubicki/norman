@@ -240,6 +240,7 @@
     composer: el('cockpit-composer'),
     message: el('cockpit-message'),
     send: el('cockpit-send'),
+    composeMeta: el('cockpit-compose-meta'),
     composeHint: el('cockpit-compose-hint'),
     resumePrompts: el('cockpit-resume-prompts'),
     recipientRow: el('cockpit-recipient-row'),
@@ -1383,6 +1384,46 @@
     nodes.message.focus();
   }
 
+  function composerGuidance({ phase, hasText, busy, runtimeUnavailable }) {
+    const conversation = selectedConversation();
+    const labels = {
+      submitting: 'Sending request',
+      queued: 'Request queued',
+      running: 'Response in progress',
+      blocked: 'Request needs attention',
+      failed: state.prompt.error ? `Request failed: ${state.prompt.error}` : 'Request failed',
+    };
+    if (state.authRequired) return { text: 'Sign in to sync this thread', tone: 'warning' };
+    if (runtimeUnavailable) return { text: 'Runtime unavailable. Draft retained locally.', tone: 'warning' };
+    if (labels[phase]) return {
+      text: labels[phase],
+      tone: ['blocked', 'failed'].includes(phase) ? 'warning' : 'active',
+    };
+    if (conversation?.kind === 'direct') {
+      const slug = slugify(conversation.direct_agent_slug);
+      const name = conversation.title || displaySlug(slug);
+      const turns = state.stationHistory[slug]?.items || [];
+      if (state.stationHistoryLoading === slug) {
+        return { text: `Restoring ${name}'s thread`, tone: 'active' };
+      }
+      if (hasText) return { text: `Ready for ${name}`, tone: 'ready' };
+      return {
+        text: turns.length ? `${turns.length} prior turns restored` : `${name} station ready`,
+        tone: 'ready',
+      };
+    }
+    if (conversation?.kind === 'room') {
+      const members = conversation.member_slugs || [];
+      if (hasText) return { text: `Ready for ${conversation.title}`, tone: 'ready' };
+      return {
+        text: `${members.length} station${members.length === 1 ? '' : 's'} in this room`,
+        tone: 'neutral',
+      };
+    }
+    if (hasText) return { text: 'Ready to send', tone: 'ready' };
+    return { text: 'Choose a station or room', tone: 'neutral' };
+  }
+
   function updateComposerState() {
     const phase = state.prompt.phase;
     const hasText = Boolean(nodes.message.value.trim());
@@ -1394,22 +1435,15 @@
     nodes.composer.dataset.promptState = phase;
     nodes.composer.setAttribute('aria-busy', String(busy));
     nodes.send.dataset.promptState = phase;
-    const labels = {
-      submitting: 'Sending message',
-      queued: 'Message queued',
-      running: 'Norman is working',
-      blocked: 'Prompt needs attention',
-      failed: state.prompt.error ? `Prompt failed: ${state.prompt.error}` : 'Prompt failed',
-    };
-    nodes.composeHint.textContent = state.authRequired
-      ? 'Log in to sync and run conversations'
-      : runtimeUnavailable ? 'Runtime unavailable; your draft will remain here'
-        : labels[phase] || state.composeHintDefault;
+    const guidance = composerGuidance({ phase, hasText, busy, runtimeUnavailable });
+    nodes.composeMeta.hidden = !guidance.text;
+    nodes.composeMeta.dataset.tone = guidance.tone;
+    nodes.composeHint.dataset.tone = guidance.tone;
+    nodes.composeHint.textContent = guidance.text;
     nodes.send.setAttribute(
-      'aria-label',
-      state.authRequired ? 'Log in before sending' : busy ? labels[phase] : 'Send message',
+      'aria-label', state.authRequired ? 'Log in before sending' : busy ? guidance.text : 'Send message',
     );
-    nodes.send.title = state.authRequired ? 'Log in before sending' : busy ? labels[phase] : 'Send';
+    nodes.send.title = state.authRequired ? 'Log in before sending' : busy ? guidance.text : 'Send';
     const glyph = nodes.send.querySelector('span');
     if (glyph) glyph.innerHTML = iconHtml(busy ? 'loader' : 'arrow-up');
     renderResumePrompts();
@@ -2845,6 +2879,7 @@
     if (!force && state.stationHistory[slug]) return;
     state.stationHistoryLoading = slug;
     delete state.stationHistoryErrors[slug];
+    updateComposerState();
     renderFeed();
     try {
       state.stationHistory[slug] = await fetchJson(

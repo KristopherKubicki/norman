@@ -7269,24 +7269,86 @@
 }
 
 .cockpit-compose-meta {
+  display: flex;
   width: min(100%, 980px);
   margin: 0 auto;
   padding-inline: 4px;
   color: color-mix(in srgb, var(--profile-muted) 82%, transparent);
   font-size: 0.54rem;
+  align-items: center;
+  min-height: 18px;
+  letter-spacing: 0.02em;
 }
 
 .cockpit-compose-meta[hidden] {
   display: none;
 }
 
-.cockpit-compose-meta > span:last-child {
+.cockpit-compose-meta > span:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cockpit-compose-meta > span:first-child::before {
+  width: 5px;
+  height: 5px;
+  content: "";
+  background: currentColor;
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.cockpit-compose-meta[data-tone="ready"] > span:first-child {
+  color: color-mix(in srgb, var(--agent-accent) 72%, var(--profile-text));
+}
+
+.cockpit-compose-meta[data-tone="active"] > span:first-child {
+  color: color-mix(in srgb, #e5bd70 76%, var(--profile-text));
+}
+
+.cockpit-compose-meta[data-tone="active"] > span:first-child::before {
+  animation: bridge-compose-pulse 1.25s ease-in-out infinite;
+}
+
+.cockpit-compose-meta[data-tone="warning"] > span:first-child {
+  color: color-mix(in srgb, #e9aa65 78%, var(--profile-text));
+}
+
+.cockpit-compose-shortcut {
   opacity: 0;
   transition: opacity 160ms ease;
 }
 
-.cockpit-composer-wrap:focus-within .cockpit-compose-meta > span:last-child {
+.cockpit-composer-wrap:focus-within .cockpit-compose-shortcut {
   opacity: 0.62;
+}
+
+.cockpit-compose-shortcut kbd {
+  padding: 1px 3px;
+  color: inherit;
+  font: inherit;
+  background: color-mix(in srgb, var(--profile-surface-2) 72%, transparent);
+  border: 1px solid color-mix(in srgb, var(--profile-border) 76%, transparent);
+  border-radius: 3px;
+}
+
+.cockpit-compose-shortcut b {
+  padding: 0 2px;
+  font-weight: 400;
+}
+
+@keyframes bridge-compose-pulse {
+  50% {
+    box-shadow: 0 0 0 5px color-mix(in srgb, currentColor 0%, transparent);
+    transform: scale(0.82);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cockpit-compose-meta[data-tone="active"] > span:first-child::before {
+    animation: none;
+  }
 }
 
 .cockpit-icon {

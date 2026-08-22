@@ -3,7 +3,7 @@
 {% block title %}Norman Bridge{% endblock %}
 
 {% block extra_css %}
-<link rel="stylesheet" href="/static/css/bridge.css?v=20260822f">
+<link rel="stylesheet" href="/static/css/bridge.css?v=20260822g">
 {% endblock %}
 
 {% block content %}
@@ -180,7 +180,10 @@
         <textarea id="cockpit-message" rows="1" placeholder="Message Norman" enterkeyhint="send"></textarea>
         <button class="cockpit-send" id="cockpit-send" type="submit" aria-label="Send message" title="Send"><span aria-hidden="true"><svg class="cockpit-icon"><use href="#bridge-icon-arrow-up"/></svg></span></button>
       </form>
-      <div class="cockpit-compose-meta" hidden><span id="cockpit-compose-hint"></span><span>Shift+Enter for a new line</span></div>
+      <div class="cockpit-compose-meta" id="cockpit-compose-meta" hidden role="status" aria-live="polite">
+        <span id="cockpit-compose-hint" data-tone="neutral"></span>
+        <span class="cockpit-compose-shortcut" title="Shift+Enter inserts a new line"><kbd>Shift</kbd><b>+</b><kbd>Enter</kbd></span>
+      </div>
     </div>
   </section>
 
@@ -252,5 +255,5 @@
 
 {% block extra_js %}
 <script src="/static/js/marked.min.js?v=5.0.1" defer></script>
-<script src="/static/js/bridge.js?v=20260822f" defer></script>
+<script src="/static/js/bridge.js?v=20260822g" defer></script>
 {% endblock %}
