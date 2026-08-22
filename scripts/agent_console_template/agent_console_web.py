@@ -17247,6 +17247,8 @@ def build_attachment_origin_label(entry: dict[str, Any]) -> str:
         return "live pane capture"
     if source == "drops-art-public":
         return "public Drops.art image"
+    if source == "session-history":
+        return "image from this session"
     if source == "upload":
         if name:
             return f"uploaded {name}"
@@ -17469,6 +17471,64 @@ def prompt_requests_latest_image(prompt: Any) -> bool:
         re.search(r"\b(?:image|images|picture|photo|art|artwork|capture)\b", text)
     )
     return has_recency and has_media
+
+
+def prompt_requests_session_media(prompt: Any) -> bool:
+    text = prompt_core_request(str(prompt or "")).lower()
+    if not text:
+        return False
+    has_media = bool(
+        re.search(
+            r"\b(?:image|images|picture|pictures|photo|photos|artwork|"
+            r"attachment|attachments|capture|captures)\b",
+            text,
+        )
+    )
+    has_session_reference = bool(
+        re.search(
+            r"\b(?:session|thread|history|chat|conversation|here|above|previous)\b",
+            text,
+        )
+    )
+    return has_media and has_session_reference
+
+
+def stage_session_media_attachments(
+    prompt: Any, *, maximum: int = 4
+) -> list[dict[str, Any]]:
+    """Restage recent image attachments so a follow-up can render them inline."""
+    if not prompt_requests_session_media(prompt):
+        return []
+    staged: list[dict[str, Any]] = []
+    for turn in reversed(load_history(limit=MAX_HISTORY_ITEMS)):
+        for attachment in reversed(normalize_attachments(turn.get("attachments"))):
+            if attachment.get("kind") != "image":
+                continue
+            path = Path(str(attachment.get("path") or ""))
+            try:
+                if not path.is_file() or path.stat().st_size > MAX_ATTACHMENT_BYTES:
+                    continue
+                raw_bytes = path.read_bytes()
+            except OSError:
+                continue
+            try:
+                staged.append(
+                    create_draft_attachment(
+                        raw_bytes=raw_bytes,
+                        name=str(attachment.get("name") or path.name),
+                        content_type=str(
+                            attachment.get("content_type") or "image/*"
+                        ),
+                        source="session-history",
+                        kind="image",
+                        url=str(attachment.get("url") or ""),
+                    )
+                )
+            except (OSError, ValueError):
+                continue
+            if len(staged) >= max(1, int(maximum or 1)):
+                return staged
+    return staged
 
 
 def configured_media_sources_for_agent() -> tuple[dict[str, Any], ...]:
@@ -47272,6 +47332,8 @@ class Handler(BaseHTTPRequestHandler):
                 sourced_attachment = fetch_latest_source_attachment(message)
                 if sourced_attachment:
                     attachments = [sourced_attachment]
+                else:
+                    attachments = stage_session_media_attachments(message)
             submission_id = normalize_submission_id(
                 (params.get("submission_id") or [""])[0]
             )

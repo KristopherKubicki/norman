@@ -155,6 +155,49 @@ def test_media_request_never_uses_deterministic_status_handler(monkeypatch) -> N
     )
 
 
+def test_session_media_request_restages_recent_images(monkeypatch, tmp_path) -> None:
+    module = _load_agent_console_web()
+    prior_image = tmp_path / "prior-art.jpg"
+    prior_image.write_bytes(b"prior-image")
+    created: list[dict] = []
+
+    monkeypatch.setattr(
+        module,
+        "load_history",
+        lambda **_kwargs: [
+            {
+                "attachments": [
+                    {
+                        "token": "image-1",
+                        "name": "prior-art.jpg",
+                        "path": str(prior_image),
+                        "content_type": "image/jpeg",
+                        "kind": "image",
+                        "size": prior_image.stat().st_size,
+                        "source": "web-capture",
+                    }
+                ]
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        module,
+        "create_draft_attachment",
+        lambda **kwargs: created.append(kwargs) or kwargs,
+    )
+
+    staged = module.stage_session_media_attachments(
+        "Can you show me the images in this session here?"
+    )
+
+    assert len(staged) == 1
+    assert created[0]["raw_bytes"] == b"prior-image"
+    assert created[0]["source"] == "session-history"
+    assert module.build_attachment_origin_label(
+        {**staged[0], "kind": "image", "source": "session-history"}
+    ) == "image from this session"
+
+
 def _norman_codex_launch_source() -> str:
     return (
         Path(__file__).resolve().parents[1] / "scripts" / "norman_codex_launch.sh"

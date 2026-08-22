@@ -2943,7 +2943,7 @@
         }
       : null;
     if (!jobs.length && !localPrompt && !stationTurns.length) {
-      if (historyLoading) {
+      if (stationSlug && !historyError) {
         nodes.feed.innerHTML = `<div class="cockpit-feed__empty cockpit-history-state">
           <span class="cockpit-history-state__icon">${iconHtml('archive')}</span>
           <h2>Loading station history</h2>
