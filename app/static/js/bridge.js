@@ -247,7 +247,6 @@
     send: el('cockpit-send'),
     composeMeta: el('cockpit-compose-meta'),
     composeHint: el('cockpit-compose-hint'),
-    resumePrompts: el('cockpit-resume-prompts'),
     recipientRow: el('cockpit-recipient-row'),
     selectedRecipients: el('cockpit-selected-recipients'),
     attentionCount: el('cockpit-attention-count'),
@@ -1474,12 +1473,6 @@
     return ['submitting', 'queued', 'running'].includes(state.prompt.phase);
   }
 
-  function renderResumePrompts() {
-    if (!nodes.resumePrompts) return;
-    nodes.resumePrompts.hidden = true;
-    nodes.resumePrompts.innerHTML = '';
-  }
-
   function composerGuidance({ phase, hasText, busy, runtimeUnavailable }) {
     const conversation = selectedConversation();
     const labels = {
@@ -1538,7 +1531,6 @@
     nodes.send.title = state.authRequired ? 'Log in before sending' : busy ? guidance.text : 'Send';
     const glyph = nodes.send.querySelector('span');
     if (glyph) glyph.innerHTML = iconHtml(busy ? 'loader' : 'arrow-up');
-    renderResumePrompts();
   }
 
   function setPromptPhase(phase, patch = {}) {
@@ -3669,7 +3661,7 @@
   }
 
   async function hydrateConversationActivities(conversation) {
-    if (!conversation || state.authRequired) return;
+    if (!conversation || conversation.kind === 'direct' || state.authRequired) return;
     const jobs = state.jobs
       .filter((job) => isBridgeJob(job) && conversationJob(job, conversation))
       .slice(0, 16);

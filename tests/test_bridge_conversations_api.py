@@ -124,7 +124,7 @@ def test_bridge_direct_message_loads_managed_station_history(test_app, db, monke
     }
 
 
-def test_bridge_history_preserves_station_response(test_app, db, monkeypatch):
+def test_bridge_history_omits_legacy_diagnostics(test_app, db, monkeypatch):
     user_id = test_app.get("/api/v1/users/me").json()["id"]
     db.add(
         Connector(
@@ -148,7 +148,12 @@ def test_bridge_history_preserves_station_response(test_app, db, monkeypatch):
                     "turn_id": "legacy-status",
                     "prompt": "quick status",
                     "response": "- State: idle\n- Selected route: codex/gpt-5.4\n- Local proof: timeout",
-                }
+                },
+                {
+                    "turn_id": "real-turn",
+                    "prompt": "show the newest image",
+                    "response": "I found the latest image attachment.",
+                },
             ],
         },
     )
@@ -156,8 +161,13 @@ def test_bridge_history_preserves_station_response(test_app, db, monkeypatch):
     response = test_app.get("/api/v1/bridge/conversations/agents/artmonster/history")
 
     assert response.status_code == 200
-    assert response.json()["items"][0]["response"].startswith("- State: idle")
-    assert "Selected route" in response.json()["items"][0]["response"]
+    assert response.json()["items"] == [
+        {
+            "turn_id": "real-turn",
+            "prompt": "show the newest image",
+            "response": "I found the latest image attachment.",
+        }
+    ]
 
 
 def test_bridge_direct_message_submits_to_managed_station(test_app, db, monkeypatch):

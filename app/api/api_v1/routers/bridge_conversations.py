@@ -30,10 +30,29 @@ def _slug(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
 
 
+def _is_legacy_bridge_diagnostic(item: dict[str, Any]) -> bool:
+    text = "\n".join(
+        str(item.get(field) or "").strip()
+        for field in ("response", "result", "error")
+    )
+    return bool(
+        re.search(
+            r"prior bridge status|characters omitted from live transport|"
+            r"bridge opening the estate|this diagnostic reply has been superseded|"
+            r"this status used deterministic tui state|"
+            r"selected route:\s*codex/gpt-5\.4",
+            text,
+            re.IGNORECASE | re.DOTALL,
+        )
+    )
+
+
 def _bridge_history_items(items: Any) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for item in items or []:
         if not isinstance(item, dict):
+            continue
+        if _is_legacy_bridge_diagnostic(item):
             continue
         normalized.append(dict(item))
     return normalized

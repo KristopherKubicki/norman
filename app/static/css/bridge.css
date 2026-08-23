@@ -7206,51 +7206,6 @@
   backdrop-filter: none;
 }
 
-.cockpit-resume-prompts {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: min(100%, 980px);
-  margin: 0 auto 6px;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.cockpit-resume-prompts::-webkit-scrollbar {
-  display: none;
-}
-
-.cockpit-resume-prompts > span {
-  flex: 0 0 auto;
-  color: color-mix(in srgb, var(--profile-muted) 82%, transparent);
-  font-family: var(--font-label);
-  font-size: 0.58rem;
-  text-transform: uppercase;
-}
-
-.cockpit-resume-prompt {
-  flex: 0 0 auto;
-  max-width: 270px;
-  padding: 5px 9px;
-  overflow: hidden;
-  color: color-mix(in srgb, var(--profile-text) 90%, var(--profile-muted));
-  font-family: var(--font-label);
-  font-size: 0.68rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  background: color-mix(in srgb, var(--profile-surface-2) 58%, var(--profile-bg));
-  border: 1px solid color-mix(in srgb, var(--agent-accent) 20%, var(--profile-border));
-  border-radius: var(--bridge-radius-control);
-}
-
-.cockpit-resume-prompt:hover,
-.cockpit-resume-prompt:focus-visible {
-  color: var(--profile-text);
-  background: color-mix(in srgb, var(--agent-accent) 16%, var(--profile-surface-2));
-  border-color: color-mix(in srgb, var(--agent-accent) 52%, var(--profile-border));
-  outline: none;
-}
-
 .cockpit-composer::before {
   opacity: calc(0.025 + var(--texture-reactive-level) * 0.28);
 }
