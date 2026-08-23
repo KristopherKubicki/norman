@@ -33,14 +33,15 @@ def _slug(value: Any) -> str:
 def _is_legacy_bridge_diagnostic(item: dict[str, Any]) -> bool:
     text = "\n".join(
         str(item.get(field) or "").strip()
-        for field in ("response", "result", "error")
+        for field in ("prompt", "response", "result", "error")
     )
     return bool(
         re.search(
             r"prior bridge status|characters omitted from live transport|"
             r"bridge opening the estate|this diagnostic reply has been superseded|"
             r"this status used deterministic tui state|"
-            r"selected route:\s*codex/gpt-5\.4",
+            r"selected route:\s*codex/gpt-5\.4|"
+            r"\[auto-continuation:",
             text,
             re.IGNORECASE | re.DOTALL,
         )

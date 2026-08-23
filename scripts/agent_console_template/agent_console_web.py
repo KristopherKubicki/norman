@@ -916,7 +916,7 @@ WEB_PROMPT_RATE_LIMIT_MAX_BACKOFF_SECONDS = max(
     float(os.environ.get("NORMAN_CODEX_RATE_LIMIT_MAX_BACKOFF_SECONDS", "900")),
 )
 WEB_PROMPT_AUTO_CONTINUE_PROMISES = os.environ.get(
-    "NORMAN_CODEX_AUTO_CONTINUE_PROMISES", "1"
+    "NORMAN_CODEX_AUTO_CONTINUE_PROMISES", "0"
 ).strip().lower() not in {"0", "false", "no", "off"}
 WEB_PROMPT_EMPTY_REPLY_MAX_RETRIES = max(
     0, int(os.environ.get("NORMAN_CODEX_EMPTY_REPLY_MAX_RETRIES", "1"))
@@ -937,7 +937,7 @@ DEADLINE_CHECKPOINT_POLICY = (
 if DEADLINE_CHECKPOINT_POLICY not in {"auto", "off", "final", "target"}:
     DEADLINE_CHECKPOINT_POLICY = "auto"
 DEADLINE_CHECKPOINT_AUTO_CONTINUE = os.environ.get(
-    "NORMAN_CODEX_DEADLINE_CHECKPOINT_AUTO_CONTINUE", "1"
+    "NORMAN_CODEX_DEADLINE_CHECKPOINT_AUTO_CONTINUE", "0"
 ).strip().lower() not in {"0", "false", "no", "off"}
 
 
@@ -17662,9 +17662,37 @@ def normalize_history_entry(payload: Any) -> dict[str, Any] | None:
     return entry
 
 
+LEGACY_TRANSCRIPT_DIAGNOSTIC_RE = re.compile(
+    r"prior bridge status|characters omitted from live transport|"
+    r"bridge opening the estate|this diagnostic reply has been superseded|"
+    r"this status used deterministic tui state",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def history_entry_is_transcript_artifact(entry: dict[str, Any]) -> bool:
+    """Keep transport/status internals out of the operator conversation."""
+    prompt = str(entry.get("prompt") or "").strip()
+    model = str(entry.get("model") or "").strip().lower()
+    text = "\n".join(
+        str(entry.get(field) or "").strip()
+        for field in ("prompt", "response", "result", "error")
+    )
+    return bool(
+        model == "deterministic-status"
+        or prompt_is_auto_continuation(prompt)
+        or LEGACY_TRANSCRIPT_DIAGNOSTIC_RE.search(text)
+    )
+
+
 def finalize_history_entries(
     entries: list[dict[str, Any]], *, limit: int = MAX_HISTORY_ITEMS
 ) -> list[dict[str, Any]]:
+    entries = [
+        entry
+        for entry in entries
+        if not history_entry_is_transcript_artifact(entry)
+    ]
     if limit and len(entries) > limit:
         entries = entries[-limit:]
     usage_entries = usage_entries_with_effective_deltas(
@@ -17682,6 +17710,7 @@ def load_history_from_state_db(limit: int = MAX_HISTORY_ITEMS) -> list[dict[str,
     try:
         params: tuple[Any, ...] = ()
         if limit and limit > 0:
+            fetch_limit = max(int(limit) * 4, int(limit) + 24)
             rows = conn.execute(
                 """
                 SELECT payload_json
@@ -17693,7 +17722,7 @@ def load_history_from_state_db(limit: int = MAX_HISTORY_ITEMS) -> list[dict[str,
                 )
                 ORDER BY COALESCE(finished_at, started_at, 0) ASC, id ASC
                 """,
-                (int(limit),),
+                (fetch_limit,),
             ).fetchall()
         else:
             rows = conn.execute(
@@ -17833,6 +17862,11 @@ def append_history_entry(
     usage: dict[str, Any] | None = None,
     turn_envelope: dict[str, Any] | None = None,
 ) -> None:
+    if (
+        str(model or "").strip().lower() == "deterministic-status"
+        or prompt_is_auto_continuation(prompt)
+    ):
+        return
     entries = load_history(limit=0)
     clean_error_text = strip_codex_empty_last_message_warning(error_text)
     normalized_budget = normalize_job_budget(job_budget)

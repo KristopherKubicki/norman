@@ -910,6 +910,48 @@ def test_live_status_snapshot_bounds_cached_diagnostics(monkeypatch, tmp_path):
     assert snapshot["route_bootstrap"]["details_ready"] is True
 
 
+def test_history_hides_legacy_diagnostics_and_internal_continuations(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    entries = module.finalize_history_entries(
+        [
+            {
+                "prompt": "quick status",
+                "response": "State: idle",
+                "model": "deterministic-status",
+                "usage": {},
+            },
+            {
+                "prompt": "[auto-continuation: next-action-plan]\nContinue.",
+                "response": "Planning the next action.",
+                "model": "openai.gpt-5.6-terra",
+                "usage": {},
+            },
+            {
+                "prompt": "show the image",
+                "response": (
+                    "Prior Bridge status\n"
+                    "This diagnostic reply has been superseded by the live route."
+                ),
+                "model": "openai.gpt-5.6-terra",
+                "usage": {},
+            },
+            {
+                "prompt": "show the image",
+                "response": "The image is attached below.",
+                "model": "openai.gpt-5.6-terra",
+                "usage": {},
+            },
+        ],
+        limit=10,
+    )
+
+    assert [entry["response"] for entry in entries] == [
+        "The image is attached below."
+    ]
+
+
 def test_console_runtime_bridge_posts_audit_events(monkeypatch, tmp_path):
     monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_API_BASE", "http://norman.local/api/v1")
     monkeypatch.setenv("NORMAN_CONSOLE_RUNTIME_TOKEN", "runtime-token")

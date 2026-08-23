@@ -2802,9 +2802,11 @@
     </div>`;
   }
 
-  function isLegacyBridgeDiagnostic(text) {
-    const value = String(text || '').trim();
-    return /prior bridge status|characters omitted from live transport|bridge opening the estate|this diagnostic reply has been superseded|this status used deterministic tui state|selected route:\s*codex\/gpt-5\.4/is.test(value);
+  function isLegacyBridgeDiagnostic(value) {
+    const text = typeof value === 'object' && value
+      ? [value.prompt, value.response, value.result, value.error].filter(Boolean).join('\n')
+      : String(value || '');
+    return /prior bridge status|characters omitted from live transport|bridge opening the estate|this diagnostic reply has been superseded|this status used deterministic tui state|selected route:\s*codex\/gpt-5\.4|\[auto-continuation:/is.test(text.trim());
   }
 
   function normalizeBridgeResponse(text) {
@@ -2978,7 +2980,7 @@
       ? `<div class="bridge-history-sync" role="status"><span></span><small>Syncing station history</small></div>`
       : '';
     const historyHtml = stationTurns
-      .filter((turn) => !isLegacyBridgeDiagnostic(turn.response || turn.error))
+      .filter((turn) => !isLegacyBridgeDiagnostic(turn))
       .map((turn, index) => {
       const time = turn.finished_at || turn.started_at;
       const response = normalizeBridgeResponse(turn.response || turn.error);
