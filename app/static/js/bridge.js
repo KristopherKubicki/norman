@@ -3505,6 +3505,7 @@
     if (state.loading) return;
     const showBootInterstitial = !quiet || !state.bootstrapped;
     let bootHandoffTimer = 0;
+    let bootHandedOff = false;
     state.loading = true;
     state.boot.completed = 0;
     state.boot.total = 0;
@@ -3520,6 +3521,7 @@
       // paint. Do not keep them behind unrelated dashboard telemetry.
       bootHandoffTimer = window.setTimeout(() => {
         if (state.loading) {
+          bootHandedOff = true;
           updateBootInterstitial({
             phase: 'Bridge ready',
             detail: 'Continuing background sync',
@@ -3567,7 +3569,7 @@
     state.boot.total = pendingRequests.length;
     const requests = await Promise.allSettled(pendingRequests.map((request) => request.finally(() => {
       state.boot.completed += 1;
-      if (showBootInterstitial) {
+      if (showBootInterstitial && !bootHandedOff) {
         bootUpdateForRequest(state.boot.completed, state.boot.total);
       }
     })));
