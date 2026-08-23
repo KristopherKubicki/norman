@@ -335,6 +335,32 @@ def test_bridge_direct_message_submits_to_managed_station(test_app, db, monkeypa
     }
 
 
+def test_bridge_direct_message_preserves_station_admission_denial(
+    test_app, monkeypatch
+):
+    from app.api.api_v1.routers.bridge_conversations import StationRequestError
+
+    monkeypatch.setattr(
+        "app.api.api_v1.routers.bridge_conversations._submit_station_prompt",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            StationRequestError(
+                "This thread exceeded its reauthorization token limit.",
+                status_code=409,
+            )
+        ),
+    )
+
+    response = test_app.post(
+        "/api/v1/bridge/conversations/agents/eyebat/messages",
+        json={"message": "What is the CPU load right now?"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "This thread exceeded its reauthorization token limit."
+    )
+
+
 def test_bridge_station_media_is_validated_against_history_and_proxied(
     test_app, db, monkeypatch
 ):

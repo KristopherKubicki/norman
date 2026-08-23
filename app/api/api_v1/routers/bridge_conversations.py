@@ -30,6 +30,15 @@ from app.services.bridge_stations import (
 
 router = APIRouter(prefix="/bridge/conversations", tags=["bridge_conversations"])
 
+
+class StationRequestError(RuntimeError):
+    """A station returned a usable HTTP error that Bridge should preserve."""
+
+    def __init__(self, detail: str, *, status_code: int = 502) -> None:
+        super().__init__(detail)
+        self.status_code = status_code
+
+
 def _slug(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
 
@@ -237,8 +246,9 @@ def _submit_station_prompt(
             payload = json.loads(raw) if raw else {}
         except json.JSONDecodeError:
             payload = {}
-        raise RuntimeError(
-            str(payload.get("error") or f"Station rejected the prompt ({exc.code})")
+        raise StationRequestError(
+            str(payload.get("error") or f"Station rejected the prompt ({exc.code})"),
+            status_code=exc.code if 400 <= exc.code < 500 else 502,
         ) from exc
     except (URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"Station prompt failed: {exc}") from exc
@@ -503,6 +513,8 @@ async def send_bridge_agent_message(
             message=payload.message,
             submission_id=submission_id,
         )
+    except StationRequestError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     return {
