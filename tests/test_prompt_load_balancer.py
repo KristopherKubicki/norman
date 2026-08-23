@@ -5234,6 +5234,44 @@ def test_openai_compat_responses_preserves_historical_tool_contracts():
     ]
 
 
+def test_openai_compat_responses_adds_codex_tool_contract_when_omitted(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+
+    prepared = facade._prepare_responses_execution(
+        {"model": "norman-code", "input": "Inspect the working tree."},
+        trusted_context={"gateway_route": "cloudagent", "source_tui": "cloudagent"},
+    )
+
+    contract = next(
+        message
+        for message in prepared.messages
+        if facade._is_tool_contract_message(message)
+    )
+    tools = contract[facade.TOOL_CONTRACT_CONTEXT_MARKER]["tools"]
+
+    assert [tool["name"] for tool in tools] == ["shell_command", "apply_patch"]
+    assert "emit that call now" in contract["content"]
+
+
+def test_openai_compat_responses_does_not_inject_codex_tools_for_ordinary_calls():
+    import app.services.prompt_provider_facade as facade
+
+    assert facade._implicit_codex_tui_tools_required(
+        {"model": "norman-code", "input": "hello"},
+        {},
+    ) is False
+    assert facade._implicit_codex_tui_tools_required(
+        {"model": "norman-code", "input": "hello", "tools": []},
+        {"source_tui": "cloudagent"},
+    ) is False
+
+
 def test_openai_compat_responses_replays_typed_message_after_tool_output(monkeypatch):
     import app.services.prompt_provider_facade as facade
 

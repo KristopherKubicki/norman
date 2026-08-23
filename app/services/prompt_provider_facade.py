@@ -122,6 +122,40 @@ TOOL_OUTPUT_FAILURE_MARKERS = (
     "tool failed",
     "failed to execute",
 )
+CODEX_IMPLICIT_TUI_TOOLS = (
+    {
+        "name": "shell_command",
+        "type": "function",
+        "description": (
+            "Run a shell command in the current workspace and return its output. "
+            "Use this to inspect files, repository state, local configuration, "
+            "or command results."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "timeout_ms": {"type": "integer", "minimum": 1},
+            },
+            "required": ["command"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "apply_patch",
+        "type": "function",
+        "description": (
+            "Apply a unified patch to workspace files. Use only after inspecting "
+            "the relevant files and only for the requested change."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"patch": {"type": "string"}},
+            "required": ["patch"],
+            "additionalProperties": False,
+        },
+    },
+)
 CLOUD_STREAM_HEARTBEAT_INTERVAL_SECONDS = 5.0
 CLOUD_STREAM_MAX_ACTIVE_INVOCATIONS = 4
 LOCAL_STREAM_OPEN_HEARTBEAT_INTERVAL_SECONDS = 5.0
@@ -1198,7 +1232,11 @@ def _tool_chain_telemetry(
     }
 
 
-def _tool_contract_definition(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _tool_contract_definition(
+    payload: Mapping[str, Any],
+    *,
+    implicit_tools: bool = False,
+) -> list[dict[str, Any]]:
     tools = _tools(payload)
     compact = []
     for tool in tools:
@@ -1244,6 +1282,8 @@ def _tool_contract_definition(payload: Mapping[str, Any]) -> list[dict[str, Any]
                 or {},
             }
         )
+    if not compact and implicit_tools:
+        compact.extend(dict(tool) for tool in CODEX_IMPLICIT_TUI_TOOLS)
     return compact
 
 
@@ -1251,8 +1291,9 @@ def _tool_contract_message(
     payload: Mapping[str, Any],
     *,
     bridge_mode: str = TRANSPARENT_BRIDGE_MODE,
+    implicit_tools: bool = False,
 ) -> list[dict[str, Any]]:
-    compact = _tool_contract_definition(payload)
+    compact = _tool_contract_definition(payload, implicit_tools=implicit_tools)
     if not compact:
         return []
     if bridge_mode == GOVERNED_BRIDGE_MODE:
@@ -1272,7 +1313,9 @@ def _tool_contract_message(
             "function is needed, emit exactly one JSON object using either "
             '{"tool_call":{"name":"tool_name","arguments":{}}} or '
             '{"tool_calls":[{"name":"tool_name","arguments":{}}]}. '
-            "Use only a declared tool name. Available tools: "
+            "Use only a declared tool name. Do not reply with an intention to "
+            "inspect, run, check, or edit something when the next useful step "
+            "is a tool call; emit that call now. Available tools: "
         )
     return [
         {
@@ -1312,6 +1355,7 @@ def _messages_with_current_tool_contract(
     payload: Mapping[str, Any],
     *,
     bridge_mode: str = TRANSPARENT_BRIDGE_MODE,
+    implicit_tools: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Preserve historical tool contracts and append a changed current registry.
 
@@ -1322,7 +1366,7 @@ def _messages_with_current_tool_contract(
     completed tool call.
     """
 
-    definition = _tool_contract_definition(payload)
+    definition = _tool_contract_definition(payload, implicit_tools=implicit_tools)
     history = [dict(message) for message in messages]
     if not definition:
         return history, []
@@ -1340,7 +1384,23 @@ def _messages_with_current_tool_contract(
         bridge_mode=bridge_mode,
     ):
         return history, []
-    return history, _tool_contract_message(payload, bridge_mode=bridge_mode)
+    return history, _tool_contract_message(
+        payload,
+        bridge_mode=bridge_mode,
+        implicit_tools=implicit_tools,
+    )
+
+
+def _implicit_codex_tui_tools_required(
+    payload: Mapping[str, Any],
+    trusted_context: Mapping[str, Any] | None,
+) -> bool:
+    """Supply Codex's built-in tools when its Responses request omits them."""
+
+    context = _mapping(trusted_context)
+    return "tools" not in payload and bool(
+        _clean(context.get("source_tui") or context.get("gateway_route"))
+    )
 
 
 def _structured_output_message(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -3588,6 +3648,10 @@ def _prepare_responses_execution(
         if _clean(function_call.get("name"))
     }
     tool_outputs = history.tool_outputs | _response_input_tool_outputs(provider_payload)
+    implicit_tools = _implicit_codex_tui_tools_required(
+        provider_payload,
+        trusted_context,
+    )
     tool_chain_context = _tool_chain_context(
         provider_payload,
         function_call_items=function_call_items,
@@ -3597,6 +3661,7 @@ def _prepare_responses_execution(
         history.messages,
         provider_payload,
         bridge_mode=bridge_mode,
+        implicit_tools=implicit_tools,
     )
     messages = [
         *history_messages,
