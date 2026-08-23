@@ -2690,8 +2690,12 @@
     const lane = metadata.usage_bucket || receipt.usage_bucket || '';
     const status = String(job.status || '').toLowerCase();
     const chips = [];
-    if (provider || model) {
-      chips.push(`<span class="cockpit-message-chip" data-chip="route"><i></i>${escapeHtml([provider, model].filter(Boolean).join(' / '))}</span>`);
+    const routeLabel = [provider, model].filter(Boolean).join(' / ');
+    const routeReason = String(
+      usage.route_reason || usage.route_rationale || metadata.route_rationale || '',
+    ).trim();
+    if (routeLabel) {
+      chips.push(`<span class="cockpit-message-chip" data-chip="route" title="${escapeHtml(routeReason || routeLabel)}"><i></i>${escapeHtml(routeLabel)}</span>`);
     }
     if (lane) {
       chips.push(`<span class="cockpit-message-chip" data-chip="lane">${escapeHtml(displaySlug(lane))}</span>`);
@@ -2699,11 +2703,29 @@
     const input = Number(usage.input_tokens ?? usage.prompt_tokens ?? 0);
     const output = Number(usage.output_tokens ?? usage.completion_tokens ?? 0);
     if (input || output) {
-      chips.push(`<span class="cockpit-message-chip" data-chip="usage" title="Input ${formatCompactNumber(input)} tokens; output ${formatCompactNumber(output)} tokens">${escapeHtml(`${formatCompactNumber(input)} in / ${formatCompactNumber(output)} out`)}</span>`);
+      const cached = Number(usage.cached_input_tokens ?? 0);
+      const reasoning = Number(usage.reasoning_output_tokens ?? 0);
+      const usageTitle = [
+        `Input ${formatCompactNumber(input)} tokens`,
+        cached ? `${formatCompactNumber(cached)} cached` : '',
+        `Output ${formatCompactNumber(output)} tokens`,
+        reasoning ? `${formatCompactNumber(reasoning)} reasoning` : '',
+        usage.total_tokens ? `${formatCompactNumber(usage.total_tokens)} total` : '',
+      ].filter(Boolean).join('; ');
+      chips.push(`<span class="cockpit-message-chip" data-chip="usage" title="${escapeHtml(usageTitle)}">${escapeHtml(`${formatCompactNumber(input)} in / ${formatCompactNumber(output)} out`)}</span>`);
     }
     const cost = Number(usage.estimated_cost_usd ?? receipt.estimated_cost_usd ?? 0);
     if (Number.isFinite(cost) && cost > 0) {
-      chips.push(`<span class="cockpit-message-chip" data-chip="spend">${escapeHtml(formatUsd(cost))}</span>`);
+      chips.push(`<span class="cockpit-message-chip" data-chip="spend" title="Recorded estimated spend">${escapeHtml(formatUsd(cost))}</span>`);
+    } else {
+      const estimate = subscriptionCreditEstimate(usage);
+      if (estimate) {
+        chips.push(`<span class="cockpit-message-chip" data-chip="spend" title="${escapeHtml(estimate.title)}">${escapeHtml(estimate.label)}</span>`);
+      }
+    }
+    const localPreflight = localPreflightSummary(usage);
+    if (localPreflight) {
+      chips.push(`<span class="cockpit-message-chip" data-chip="preflight" title="${escapeHtml(localPreflight.title)}">${escapeHtml(localPreflight.label)}</span>`);
     }
     if (status && !['done', 'complete', 'completed', 'succeeded', 'verified'].includes(status)) {
       chips.push(`<span class="cockpit-message-chip" data-chip="state" data-tone="${escapeHtml(status)}">${escapeHtml(status.replaceAll('_', ' '))}</span>`);
@@ -2722,6 +2744,41 @@
     const amount = Math.max(0, Number(value) || 0);
     if (amount < 0.01) return '< $0.01';
     return `$${amount.toFixed(amount < 1 ? 2 : 1)}`;
+  }
+
+  function subscriptionCreditEstimate(usage) {
+    const routeClass = String(usage.route_class || usage.route_execution || '').toLowerCase();
+    if (!/cloud|openai/.test(routeClass)) return null;
+    const input = Math.max(0, Number(usage.input_tokens) || 0);
+    const cached = Math.min(input, Math.max(0, Number(usage.cached_input_tokens) || 0));
+    const output = Math.max(0, Number(usage.output_tokens) || 0);
+    if (!input && !output) return null;
+    const uncached = Math.max(0, input - cached);
+    const standard = (uncached * 2 + cached * 0.2 + output * 12) / 1000000;
+    const longContext = (uncached * 4 + cached * 0.4 + output * 18) / 1000000;
+    const isLongContext = input >= 128000;
+    const label = isLongContext
+      ? `~${formatUsd(standard)}-${formatUsd(longContext)} eq.`
+      : `~${formatUsd(standard)} eq.`;
+    return {
+      label,
+      title: `API-equivalent estimate only; this turn used ChatGPT/Codex subscription credits, not an invoiced API charge. ${formatCompactNumber(uncached)} uncached input, ${formatCompactNumber(cached)} cached input, ${formatCompactNumber(output)} output.`,
+    };
+  }
+
+  function localPreflightSummary(usage) {
+    if (!usage || !usage.local_preflight_used) return null;
+    const model = String(usage.local_preflight_model || 'local preflight').trim();
+    const posture = String(usage.local_preflight_route_posture || usage.local_preflight_status || 'recorded')
+      .replaceAll('_', ' ');
+    const tokens = Math.max(0, Number(usage.local_preflight_tokens) || 0);
+    const specialist = Number(usage.local_specialist_executed_count) || 0;
+    return {
+      label: `Qwen ${posture}`,
+      title: `${model} used ${formatCompactNumber(tokens)} local tokens. ${specialist
+        ? `${specialist} local specialist stage${specialist === 1 ? '' : 's'} executed.`
+        : 'No local specialist stage executed, so this did not reduce the cloud context.'}`,
+    };
   }
 
   function attachmentHtml(attachments, slug) {

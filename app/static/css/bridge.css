@@ -8247,6 +8247,12 @@
   border-color: color-mix(in srgb, var(--profile-border) 58%, transparent);
 }
 
+.page-bridge .cockpit-message-chip[data-chip="preflight"] {
+  color: color-mix(in srgb, var(--agent-accent) 64%, var(--profile-text));
+  background: color-mix(in srgb, var(--agent-accent) 6%, transparent);
+  border-color: color-mix(in srgb, var(--agent-accent) 26%, var(--profile-border));
+}
+
 .page-bridge .cockpit-message--assistant::before,
 .page-bridge .cockpit-message--assistant::after,
 .page-bridge .cockpit-message:not(.cockpit-message--operator) .cockpit-message__bubble::before {
