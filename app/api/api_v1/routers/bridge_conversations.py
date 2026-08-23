@@ -9,7 +9,7 @@ from urllib.request import Request as UrlRequest
 from urllib.request import urlopen
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, Field, validator
 from sqlalchemy.orm import Session
 
@@ -22,22 +22,28 @@ from app.models import (
     User,
 )
 from app.services.console_status import fetch_console_history
+from app.services.bridge_stations import (
+    bridge_station_slug,
+    bridge_station_url,
+    supports_direct_conversation,
+)
 
 router = APIRouter(prefix="/bridge/conversations", tags=["bridge_conversations"])
-
-_STATION_SLUG_ALIASES = {
-    "eyebat": "glimpser",
-    "glimpse": "glimpser",
-}
-
 
 def _slug(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
 
 
 def _station_slug(value: Any) -> str:
-    slug = _slug(value)
-    return _STATION_SLUG_ALIASES.get(slug, slug)
+    return bridge_station_slug(value)
+
+
+def _require_conversational_station(value: Any) -> None:
+    if not supports_direct_conversation(value):
+        raise HTTPException(
+            status_code=409,
+            detail="This estate surface does not support Bridge direct messages",
+        )
 
 
 def _is_legacy_bridge_diagnostic(item: dict[str, Any]) -> bool:
@@ -380,18 +386,18 @@ async def list_bridge_conversations(
 @router.get("/agents/{agent_slug}/history")
 async def get_bridge_agent_history(
     agent_slug: str,
-    request: Request,
     limit: int = 100,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_console_runtime_user),
 ):
+    _require_conversational_station(agent_slug)
     target = _station_slug(agent_slug)
     connector = _history_connector(db, current_user, target)
     config = dict(connector.config or {}) if connector else {}
     web_url = (
         str(config.get("collector_url") or config.get("web_url") or "").strip()
         or _estate_history_url(db, target)
-        or f"{str(request.base_url).rstrip('/')}/bot/{target}/"
+        or bridge_station_url(target)
     )
     snapshot = await asyncio.to_thread(
         fetch_console_history,
@@ -415,16 +421,14 @@ async def get_bridge_agent_history(
 async def get_bridge_agent_media(
     agent_slug: str,
     attachment_token: str,
-    request: Request,
     download: bool = False,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_console_runtime_user),
 ):
+    _require_conversational_station(agent_slug)
     slug = _slug(agent_slug)
     web_url, access_token = _station_target(db, current_user, slug)
-    web_url = web_url or (
-        f"{str(request.base_url).rstrip('/')}/bot/{_station_slug(slug)}/"
-    )
+    web_url = web_url or bridge_station_url(slug)
     snapshot = await asyncio.to_thread(
         fetch_console_history,
         web_url,
@@ -471,10 +475,10 @@ async def get_bridge_agent_media(
 async def send_bridge_agent_message(
     agent_slug: str,
     payload: BridgeAgentMessageCreate,
-    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_console_runtime_user),
 ):
+    _require_conversational_station(agent_slug)
     slug = _slug(agent_slug)
     if payload.conversation_id:
         conversation = _owned(db, current_user, payload.conversation_id)
@@ -487,9 +491,7 @@ async def send_bridge_agent_message(
                 detail="Conversation does not target this station",
             )
     web_url, access_token = _station_target(db, current_user, slug)
-    web_url = web_url or (
-        f"{str(request.base_url).rstrip('/')}/bot/{_station_slug(slug)}/"
-    )
+    web_url = web_url or bridge_station_url(slug)
     if not web_url:
         raise HTTPException(status_code=503, detail="Station endpoint is unavailable")
     submission_id = payload.submission_id or f"bridge-{uuid4().hex}"

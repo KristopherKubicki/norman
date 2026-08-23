@@ -143,7 +143,6 @@ def test_bridge_eyebat_alias_uses_glimpser_station(test_app, monkeypatch):
         "app.api.api_v1.routers.bridge_conversations.fetch_console_history",
         fake_history,
     )
-
     response = test_app.get(
         "/api/v1/bridge/conversations/agents/eyebat/history?limit=40"
     )
@@ -156,6 +155,81 @@ def test_bridge_eyebat_alias_uses_glimpser_station(test_app, monkeypatch):
         "access_token": "",
         "limit": 40,
     }
+
+
+def test_bridge_history_uses_shared_frontdoor_for_unregistered_station(
+    test_app, monkeypatch
+):
+    captured = {}
+
+    def fake_history(web_url, *, access_token="", limit=100, timeout=4.0):
+        captured.update(web_url=web_url, access_token=access_token, limit=limit)
+        return {"reachable": True, "agent_name": "Artmonster", "items": []}
+
+    monkeypatch.setattr(
+        "app.api.api_v1.routers.bridge_conversations.fetch_console_history",
+        fake_history,
+    )
+    monkeypatch.setattr(
+        "app.api.api_v1.routers.bridge_conversations._history_connector",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        "app.api.api_v1.routers.bridge_conversations._estate_history_url",
+        lambda *_args: "",
+    )
+    response = test_app.get(
+        "/api/v1/bridge/conversations/agents/artmonster/history?limit=40"
+    )
+
+    assert response.status_code == 200
+    assert captured == {
+        "web_url": "https://norman.home.arpa/bot/artmonster/",
+        "access_token": "",
+        "limit": 40,
+    }
+
+
+def test_bridge_aliases_use_shared_canonical_station_names(test_app, monkeypatch):
+    captured = []
+
+    def fake_history(web_url, *, access_token="", limit=100, timeout=4.0):
+        captured.append(web_url)
+        return {"reachable": True, "items": []}
+
+    monkeypatch.setattr(
+        "app.api.api_v1.routers.bridge_conversations.fetch_console_history",
+        fake_history,
+    )
+    monkeypatch.setattr(
+        "app.api.api_v1.routers.bridge_conversations._history_connector",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        "app.api.api_v1.routers.bridge_conversations._estate_history_url",
+        lambda *_args: "",
+    )
+
+    for slug in ("eyebat", "keystone", "netops"):
+        response = test_app.get(
+            f"/api/v1/bridge/conversations/agents/{slug}/history"
+        )
+        assert response.status_code == 200
+
+    assert captured == [
+        "https://norman.home.arpa/bot/glimpser/",
+        "https://norman.home.arpa/bot/compere/",
+        "https://norman.home.arpa/bot/networking/",
+    ]
+
+
+def test_bridge_rejects_non_conversational_estate_surfaces(test_app):
+    response = test_app.get("/api/v1/bridge/conversations/agents/dohio/history")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "This estate surface does not support Bridge direct messages"
+    )
 
 
 def test_bridge_history_omits_legacy_diagnostics(test_app, db, monkeypatch):

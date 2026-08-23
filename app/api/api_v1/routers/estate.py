@@ -18,6 +18,7 @@ from app.models import (
     EstateWorker,
     User,
 )
+from app.services.bridge_stations import NON_CONVERSATIONAL_STATION_SLUGS
 
 
 router = APIRouter(tags=["estate"])
@@ -218,4 +219,9 @@ async def estate_overview(
             "services": len(services),
         },
         "principals": principal_rows,
+        "bridge": {
+            "non_conversational_station_slugs": sorted(
+                NON_CONVERSATIONAL_STATION_SLUGS
+            ),
+        },
     }

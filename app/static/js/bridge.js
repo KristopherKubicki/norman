@@ -159,6 +159,7 @@
     worker: {},
     routeSummary: {},
     textureCatalog: [],
+    nonConversationalStationSlugs: new Set(['dohio', 'maps']),
     activity: null,
     workstream: null,
     eventSource: null,
@@ -1037,6 +1038,7 @@
 
   function filteredAgents() {
     return state.agents.filter((agent) => {
+      if (state.nonConversationalStationSlugs.has(slugify(agent.slug))) return false;
       if (agent.principal_id !== state.group) return false;
       if (state.domain && agent.domain_slug && agent.domain_slug !== state.domain) return false;
       if (!state.search) return true;
@@ -3570,6 +3572,9 @@
     const [estate, jobs, approvals, heartbeats, worker, routeSummary, conversations] = requests;
     if (heartbeats.status === 'fulfilled') state.heartbeats = heartbeats.value.items || [];
     if (estate.status === 'fulfilled') {
+      state.nonConversationalStationSlugs = new Set(
+        estate.value.bridge?.non_conversational_station_slugs || [],
+      );
       state.groups = normalizeGroups(estate.value);
       if (!state.groups.some((group) => group.id === state.group)) state.group = state.groups[0].id;
       state.agents = normalizeAgents(estate.value);
