@@ -69,6 +69,7 @@
   const LOCAL_CONVERSATIONS_KEY = 'norman-bridge-conversations-v1';
   const ACTIVE_CONVERSATION_KEY = 'norman-bridge-active-conversation-v1';
   const AUTH_RESUME_KEY = 'norman-bridge-auth-resume-v1';
+  const COMPOSER_DRAFTS_KEY = 'norman-bridge-composer-drafts-v1';
   const STYLE_VARIANT_OVERRIDES = {
     norman: 'anchor',
     housebot: 'anchor',
@@ -179,6 +180,7 @@
     authRequired: root.dataset.authenticated !== 'true',
     pollTimer: 0,
     composerFrame: 0,
+    composerDrafts: loadComposerDrafts(),
     menuPanel: 'overview',
     requestedAgentApplied: false,
     preferences: {
@@ -574,6 +576,27 @@
     }
   }
 
+  function loadComposerDrafts() {
+    try {
+      const stored = JSON.parse(window.sessionStorage.getItem(COMPOSER_DRAFTS_KEY) || '{}');
+      if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return {};
+      return Object.fromEntries(Object.entries(stored)
+        .filter(([key, value]) => key && typeof value === 'string' && value.trim())
+        .slice(-32)
+        .map(([key, value]) => [key, value.slice(0, 12000)]));
+    } catch (_error) {
+      return {};
+    }
+  }
+
+  function saveComposerDrafts() {
+    try {
+      window.sessionStorage.setItem(COMPOSER_DRAFTS_KEY, JSON.stringify(state.composerDrafts));
+    } catch (_error) {
+      // Session storage can be unavailable in locked-down webviews.
+    }
+  }
+
   function conversationIdentity(item) {
     if (item.kind === 'direct') {
       return `direct:${slugify(item.principal_slug)}:${slugify(item.direct_agent_slug)}`;
@@ -687,6 +710,27 @@
     ) || null;
   }
 
+  function composerDraftKey(conversation = selectedConversation()) {
+    if (!conversation) return '';
+    return conversationIdentity(conversation);
+  }
+
+  function saveComposerDraft(conversation = selectedConversation(), value = nodes.message.value) {
+    const key = composerDraftKey(conversation);
+    if (!key) return;
+    const draft = String(value || '').slice(0, 12000);
+    if (draft.trim()) state.composerDrafts[key] = draft;
+    else delete state.composerDrafts[key];
+    saveComposerDrafts();
+  }
+
+  function restoreComposerDraft(conversation = selectedConversation()) {
+    const key = composerDraftKey(conversation);
+    nodes.message.value = key ? String(state.composerDrafts[key] || '') : '';
+    resizeComposer({ immediate: true });
+    updateComposerState();
+  }
+
   function restoreActiveConversation() {
     const current = selectedConversation();
     if (current) {
@@ -771,8 +815,11 @@
       state.selectedRecipients = (resume.recipients || []).map(slugify).filter(Boolean);
       state.view = 'agent';
     }
-    nodes.message.value = String(resume.draft || '');
-    resizeComposer({ immediate: true });
+    const resumedConversation = selectedConversation();
+    if (resumedConversation) {
+      saveComposerDraft(resumedConversation, String(resume.draft || ''));
+      restoreComposerDraft(resumedConversation);
+    }
   }
 
   function conversationJob(job, conversation) {
@@ -1427,47 +1474,10 @@
     return ['submitting', 'queued', 'running'].includes(state.prompt.phase);
   }
 
-  function resumeTopicPrompts() {
-    const conversation = selectedConversation();
-    const stationSlug = conversation?.kind === 'direct'
-      ? slugify(conversation.direct_agent_slug)
-      : '';
-    if (!stationSlug) return [];
-    const turns = state.stationHistory[stationSlug]?.items || [];
-    const seen = new Set();
-    return [...turns].reverse().flatMap((turn) => {
-      const prompt = String(turn.prompt || '').replace(/\s+/g, ' ').trim();
-      const key = prompt.toLowerCase();
-      if (!prompt || seen.has(key)) return [];
-      seen.add(key);
-      return [prompt];
-    }).slice(0, 3);
-  }
-
   function renderResumePrompts() {
-    const prompts = resumeTopicPrompts();
-    const shouldShow = !state.authRequired
-      && !promptBusy()
-      && !nodes.message.value.trim()
-      && prompts.length > 0;
-    nodes.resumePrompts.hidden = !shouldShow;
-    if (!shouldShow) {
-      nodes.resumePrompts.innerHTML = '';
-      return;
-    }
-    nodes.resumePrompts.innerHTML = `<span>Continue</span>${prompts.map((prompt) => `
-      <button type="button" class="cockpit-resume-prompt" data-resume-prompt="${escapeHtml(prompt)}"
-        title="Continue this topic">${escapeHtml(truncate(prompt, 54))}</button>
-    `).join('')}`;
-  }
-
-  function draftResumePrompt(prompt) {
-    const topic = String(prompt || '').trim();
-    if (!topic || nodes.message.value.trim() || promptBusy()) return;
-    nodes.message.value = `Continue from our last discussion: ${topic}`;
-    resizeComposer({ immediate: true });
-    updateComposerState();
-    nodes.message.focus();
+    if (!nodes.resumePrompts) return;
+    nodes.resumePrompts.hidden = true;
+    nodes.resumePrompts.innerHTML = '';
   }
 
   function composerGuidance({ phase, hasText, busy, runtimeUnavailable }) {
@@ -3519,6 +3529,7 @@
     }
     state.bootstrapped = true;
     const bootstrapConversation = restoreActiveConversation();
+    restoreComposerDraft(bootstrapConversation);
     renderAll();
     if (bootstrapConversation?.kind === 'direct' && bootstrapConversation.direct_agent_slug) {
       void loadStationHistory(bootstrapConversation.direct_agent_slug);
@@ -3833,6 +3844,7 @@
 
   function selectGroup(group) {
     if (!state.groups.some((item) => item.id === group)) return;
+    saveComposerDraft();
     state.group = group;
     state.domain = '';
     state.view = 'general';
@@ -3841,6 +3853,7 @@
     state.selectedAgent = '';
     state.selectedRecipients = [];
     clearActiveConversation();
+    restoreComposerDraft(null);
     state.activity = null;
     state.workstream = null;
     closeEventStream();
@@ -3850,12 +3863,14 @@
   }
 
   function selectDomain(domain) {
+    saveComposerDraft();
     state.domain = state.domain === domain ? '' : domain;
     state.view = 'general';
     state.selectedConversationId = '';
     state.selectedJobId = '';
     state.selectedAgent = '';
     clearActiveConversation();
+    restoreComposerDraft(null);
     state.activity = null;
     state.workstream = null;
     closeEventStream();
@@ -3930,6 +3945,7 @@
   function selectConversation(conversationId) {
     const conversation = state.conversations.find((item) => item.conversation_id === conversationId);
     if (!conversation) return;
+    saveComposerDraft();
     const group = state.groups.find((item) => slugify(item.slug) === slugify(conversation.principal_slug));
     if (group) state.group = group.id;
     state.domain = slugify(conversation.domain_slug);
@@ -3942,6 +3958,7 @@
     state.workstream = null;
     saveActiveConversation(conversation);
     closeEventStream();
+    restoreComposerDraft(conversation);
     renderAll();
     if (conversation.kind === 'direct' && conversation.direct_agent_slug) {
       loadStationHistory(conversation.direct_agent_slug);
@@ -4122,6 +4139,7 @@
       startedAt: Date.now(),
     });
     nodes.message.value = '';
+    saveComposerDraft(conversation, '');
     resizeComposer({ immediate: true });
     renderFeed();
     playInteractionTone('send', { signal: true, force: true });
@@ -4222,6 +4240,7 @@
         }
       }
       nodes.message.value = text;
+      saveComposerDraft(conversation, text);
       resizeComposer({ immediate: true });
       setPromptPhase('failed', {
         jobId: created?.job_id || '',
@@ -4338,11 +4357,13 @@
       if (viewButton?.dataset.cockpitView === 'attention') {
         setAttentionView(false);
       } else if (viewButton?.dataset.cockpitView === 'general') {
+        saveComposerDraft();
         state.view = 'general';
         state.selectedConversationId = '';
         state.selectedJobId = '';
         state.selectedAgent = '';
         clearActiveConversation();
+        restoreComposerDraft(null);
         state.activity = null;
         state.workstream = null;
         closeEventStream();
@@ -4369,8 +4390,6 @@
       const signIn = event.target.closest('[data-sign-in], [data-auth-action="sign-in"]');
       if (signIn) beginSignIn();
       else if (event.target.closest('[data-open-attention]')) setAttentionView(true);
-      const resumePrompt = event.target.closest('[data-resume-prompt]');
-      if (resumePrompt) draftResumePrompt(resumePrompt.dataset.resumePrompt);
     });
     nodes.workspaceButton.addEventListener('click', (event) => {
       event.stopPropagation();
@@ -4418,6 +4437,7 @@
     nodes.soundTest?.addEventListener('click', () => playCompletionBell(state.selectedAgent || 'norman'));
     nodes.composer.addEventListener('submit', submitMessage);
     nodes.message.addEventListener('input', () => {
+      saveComposerDraft();
       resizeComposer();
       updateComposerState();
       playInteractionTone('type');

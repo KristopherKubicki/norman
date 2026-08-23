@@ -45,8 +45,8 @@ def test_root_renders_norman_bridge_when_auth_disabled(
     assert response.text.count('class="cockpit-icon"') >= 12
     assert 'id="norman-favicon"' in response.text
     assert "/static/favicon.svg?v=20260822a" in response.text
-    assert "/static/css/bridge.css?v=20260822o" in response.text
-    assert "/static/js/bridge.js?v=20260822o" in response.text
+    assert "/static/css/bridge.css?v=20260823a" in response.text
+    assert "/static/js/bridge.js?v=20260823a" in response.text
     assert "site-banner" not in response.text
     assert 'id="global-status-bar"' not in response.text
 
@@ -95,6 +95,10 @@ def test_bridge_client_derives_boundaries_from_estate_registry() -> None:
     assert "function composerGuidance" in source
     assert "Restoring ${name}'s thread" in source
     assert "function normalizeBridgeResponse(text)" in source
+    assert "const COMPOSER_DRAFTS_KEY" in source
+    assert "function saveComposerDraft(" in source
+    assert "function restoreComposerDraft(" in source
+    assert "Continue this topic" not in source
     assert "Prior Bridge status" not in source
     assert "function startBootActivity()" in source
     assert "bridge-boot-activity" in source
@@ -150,9 +154,9 @@ def test_bridge_client_derives_boundaries_from_estate_registry() -> None:
     assert 'class="cockpit-event-stack"' in source
     assert "function promptPhaseForStatus" in source
     assert "function promptPhaseForEvent" in source
-    assert "function resumeTopicPrompts()" in source
-    assert "function draftResumePrompt(prompt)" in source
-    assert 'data-resume-prompt="${escapeHtml(prompt)}"' in source
+    assert "function resumeTopicPrompts()" not in source
+    assert "function draftResumePrompt(prompt)" not in source
+    assert 'data-resume-prompt="${escapeHtml(prompt)}"' not in source
     assert "function iconHtml" in source
     assert "TEXTURE_MOTION_PROFILES" in source
     assert "function textureMotionSignature" in source
