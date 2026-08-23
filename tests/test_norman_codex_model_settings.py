@@ -5196,6 +5196,72 @@ def test_prompt_worker_backs_off_and_retries_rate_limit(monkeypatch, tmp_path) -
     assert events
 
 
+def test_prompt_worker_does_not_retry_rate_limit_after_tool_activity(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_RATE_LIMIT_MAX_ATTEMPTS="3",
+        NORMAN_CODEX_RATE_LIMIT_BASE_SECONDS="1",
+        NORMAN_CODEX_RATE_LIMIT_MAX_BACKOFF_SECONDS="1",
+    )
+    module.ensure_state_dir()
+    calls = []
+
+    def fake_execute_runtime(
+        prompt,
+        speed,
+        detail,
+        attachments,
+        runtime,
+        model,
+        timeout_seconds=None,
+        service_tier="",
+        job_budget="",
+    ):
+        calls.append(prompt)
+        module.update_status_meta(
+            live_turn={
+                "file_interaction_count": 1,
+                "last_file": "/tmp/already-touched.txt",
+            }
+        )
+        return (
+            "",
+            "429 Too Many Requests",
+            "thread-rate",
+            module.default_usage_entry(),
+        )
+
+    monkeypatch.setattr(module, "_execute_prompt_runtime", fake_execute_runtime)
+
+    accepted, _snapshot = module.start_web_prompt(
+        "retry this",
+        "balanced",
+        3,
+        "10m",
+        service_tier="default",
+        route_lock=True,
+    )
+
+    assert accepted is True
+    worker = module.ACTIVE_PROMPT_THREAD
+    assert worker is not None
+    worker.join(timeout=2)
+    assert not worker.is_alive()
+    assert calls == ["retry this"]
+
+    final_snapshot = module.current_snapshot()
+    assert final_snapshot["state"] == "rate_limited"
+    assert "stopped instead of replaying work" in final_snapshot["last_response"]
+    events = module.load_audit_events(
+        limit=20, event_type="chat.rate-limit-no-retry"
+    )
+    assert len(events) == 1
+    assert events[0]["payload"]["live_turn"]["last_file"] == "/tmp/already-touched.txt"
+
+
 def test_promised_work_classifier_catches_future_tense_action(
     monkeypatch, tmp_path
 ) -> None:

@@ -40352,6 +40352,33 @@ def _prompt_worker(
                     break
                 if not is_rate_limit_error(error_text):
                     break
+                retry_meta = load_status_meta()
+                if not empty_reply_retry_allowed(retry_meta):
+                    error_text = (
+                        "Provider rate limit hit after tool or file activity. "
+                        "I stopped instead of replaying work that may already have run."
+                    )
+                    append_audit_event(
+                        event_type="chat.rate-limit-no-retry",
+                        summary="Provider rate limit hit after side effects; retry skipped.",
+                        detail=(
+                            "Retry skipped because the failed turn observed tool or "
+                            "file activity, so repeating the prompt could duplicate "
+                            "side effects."
+                        ),
+                        severity="warn",
+                        actor_type="system",
+                        thread_id=thread_id,
+                        payload={
+                            "previous_prompt_preview": summarize_text(prompt, 240),
+                            "live_turn": retry_meta.get("live_turn"),
+                            "runtime": normalized_runtime,
+                            "model": normalized_model,
+                            "service_tier": normalized_service_tier,
+                            "job_budget": normalized_budget,
+                        },
+                    )
+                    break
                 rate_limit_attempt += 1
                 if rate_limit_attempt >= WEB_PROMPT_RATE_LIMIT_MAX_ATTEMPTS:
                     error_text = rate_limit_exhausted_message(
