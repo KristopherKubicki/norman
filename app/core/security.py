@@ -4,6 +4,7 @@ import jwt
 from jwt import PyJWTError
 
 from passlib.context import CryptContext
+from passlib.exc import UnknownHashError
 from datetime import datetime, timedelta, timezone
 from app.core.config import settings
 
@@ -11,7 +12,14 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
+    if not isinstance(plain_password, str) or not isinstance(hashed_password, str):
+        return False
+    try:
+        return pwd_context.verify(plain_password, hashed_password)
+    except (UnknownHashError, ValueError, TypeError):
+        # A legacy or corrupt credential must behave as an invalid login, never
+        # turn the public authentication endpoint into a server error.
+        return False
 
 
 def get_password_hash(password):
