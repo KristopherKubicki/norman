@@ -46,6 +46,17 @@ def test_login_allows_access_to_home(test_app: TestClient, db: Session) -> None:
     assert 'id="norman-bridge"' in resp2.text
 
 
+def test_login_rejects_malformed_email(test_app: TestClient) -> None:
+    response = test_app.post(
+        "/login",
+        data={"username": "not-an-email", "password": "pass123"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Incorrect email or password"}
+
+
 def test_login_uses_bridge_language(test_app: TestClient) -> None:
     response = test_app.get("/login.html")
     assert response.status_code == 200

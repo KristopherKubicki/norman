@@ -9,6 +9,7 @@ from starlette.responses import RedirectResponse
 
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
+from pydantic import ValidationError
 
 from app.schemas import Token
 from app.schemas.user import UserAuthenticate, UserCreate
@@ -1697,7 +1698,13 @@ async def login_post(
     return_to: str = Form("/", alias="next"),
     db: Session = Depends(get_async_db),
 ):
-    user_auth = UserAuthenticate(email=form_data.username, password=form_data.password)
+    try:
+        user_auth = UserAuthenticate(
+            email=form_data.username,
+            password=form_data.password,
+        )
+    except ValidationError:
+        raise HTTPException(status_code=400, detail="Incorrect email or password")
     user = authenticate_user(db, user_auth)
     if not user:
         raise HTTPException(status_code=400, detail="Incorrect email or password")
