@@ -46595,7 +46595,18 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/status":
-            self.json_response(status_snapshot())
+            snapshot = status_snapshot()
+            requested_history_limit = _coerce_int(
+                (params.get("history_limit") or [""])[0]
+            )
+            if requested_history_limit:
+                snapshot["history"] = list(snapshot.get("history") or [])[
+                    -min(
+                        max(1, requested_history_limit),
+                        STATUS_TRANSPORT_HISTORY_LIMIT,
+                    ) :
+                ]
+            self.json_response(snapshot)
             return
 
         if parsed.path == "/api/children":

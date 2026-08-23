@@ -187,7 +187,12 @@ def _console_request_token(query_items: dict[str, str], access_token: str = "") 
     return str(query_items.get("token") or "").strip()
 
 
-def console_status_url(web_url: str, *, access_token: str = "") -> str:
+def console_status_url(
+    web_url: str,
+    *,
+    access_token: str = "",
+    history_limit: int = 0,
+) -> str:
     normalized = str(web_url or "").strip()
     if not normalized:
         return ""
@@ -202,6 +207,8 @@ def console_status_url(web_url: str, *, access_token: str = "") -> str:
     token = _console_request_token(query_items, access_token)
     if token:
         status_query["token"] = token
+    if history_limit:
+        status_query["history_limit"] = str(max(1, min(int(history_limit), 250)))
     return urlunsplit(
         (
             parts.scheme,
@@ -368,7 +375,12 @@ def fetch_console_history(
         "thread_id": "",
         "items": [],
     }
-    status_url = console_status_url(web_url, access_token=access_token)
+    safe_limit = max(1, min(int(limit or 100), 250))
+    status_url = console_status_url(
+        web_url,
+        access_token=access_token,
+        history_limit=safe_limit,
+    )
     if not status_url:
         return result
     request = Request(
@@ -396,7 +408,7 @@ def fetch_console_history(
     raw_history = payload.get("history")
     items: list[dict[str, Any]] = []
     if isinstance(raw_history, list):
-        for raw in raw_history[-max(1, min(int(limit or 100), 250)) :]:
+        for raw in raw_history[-safe_limit:]:
             if not isinstance(raw, dict):
                 continue
             prompt = str(raw.get("prompt") or raw.get("objective") or "").strip()

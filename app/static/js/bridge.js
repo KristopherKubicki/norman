@@ -3041,7 +3041,8 @@
     renderFeed();
     try {
       state.stationHistory[slug] = await fetchJson(
-        `${API}/bridge/conversations/agents/${encodeURIComponent(slug)}/history?limit=100`,
+        `${API}/bridge/conversations/agents/${encodeURIComponent(slug)}/history?limit=40`,
+        { timeoutMs: 6500 },
       );
     } catch (error) {
       state.stationHistoryErrors[slug] = error.message || 'Station history is unavailable';
@@ -3058,8 +3059,8 @@
       await new Promise((resolve) => window.setTimeout(resolve, 2000));
       try {
         const history = await fetchJson(
-          `${API}/bridge/conversations/agents/${encodeURIComponent(slug)}/history?limit=100`,
-          { timeoutMs: 10000 },
+          `${API}/bridge/conversations/agents/${encodeURIComponent(slug)}/history?limit=40`,
+          { timeoutMs: 6500 },
         );
         state.stationHistory[slug] = history;
         const completed = (history.items || []).find((turn, index) => {
@@ -3503,6 +3504,7 @@
   async function loadBootstrap({ quiet = false } = {}) {
     if (state.loading) return;
     const showBootInterstitial = !quiet || !state.bootstrapped;
+    let bootHandoffTimer = 0;
     state.loading = true;
     state.boot.completed = 0;
     state.boot.total = 0;
@@ -3514,6 +3516,19 @@
         completed: 0,
         total: 8,
       });
+      // The shell and active direct session are already usable after first
+      // paint. Do not keep them behind unrelated dashboard telemetry.
+      bootHandoffTimer = window.setTimeout(() => {
+        if (state.loading) {
+          updateBootInterstitial({
+            phase: 'Bridge ready',
+            detail: 'Continuing background sync',
+            completed: state.boot.completed,
+            total: state.boot.total || 7,
+            complete: true,
+          });
+        }
+      }, 1400);
     }
     const localConversations = loadLocalConversations();
     if (!state.conversations.length && localConversations.length) {
@@ -3535,6 +3550,10 @@
       void loadStationHistory(bootstrapConversation.direct_agent_slug);
     }
 
+    const textureCatalogRequest = fetchJson(
+      '/static/textures/tui_microtexture_reference.json',
+      { timeoutMs: 3000 },
+    );
     const pendingRequests = [
       fetchJson(`${API}/estate/overview`, { timeoutMs: 12000 }),
       fetchJson(`${API}/console-runtime/jobs?limit=200`, { timeoutMs: 8000 }),
@@ -3542,7 +3561,6 @@
       fetchJson('/api/console-ui/heartbeats', { timeoutMs: 6000 }),
       fetchJson(`${API}/console-runtime/worker/status`, { timeoutMs: 6000 }),
       fetchJson(`${API}/console-runtime/route-summary?limit=1000`, { timeoutMs: 8000 }),
-      fetchJson('/static/textures/tui_microtexture_reference.json', { timeoutMs: 25000 }),
       fetchJson(`${API}/bridge/conversations`, { timeoutMs: 8000 }),
     ];
 
@@ -3553,7 +3571,7 @@
         bootUpdateForRequest(state.boot.completed, state.boot.total);
       }
     })));
-    const [estate, jobs, approvals, heartbeats, worker, routeSummary, textureCatalog, conversations] = requests;
+    const [estate, jobs, approvals, heartbeats, worker, routeSummary, conversations] = requests;
     if (heartbeats.status === 'fulfilled') state.heartbeats = heartbeats.value.items || [];
     if (estate.status === 'fulfilled') {
       state.groups = normalizeGroups(estate.value);
@@ -3594,12 +3612,6 @@
     state.authRequired = state.worker._authRequired === true;
     root.dataset.authenticated = state.authRequired ? 'false' : 'true';
     if (routeSummary.status === 'fulfilled') state.routeSummary = routeSummary.value || {};
-    if (textureCatalog.status === 'fulfilled') {
-      state.textureCatalog = Array.isArray(textureCatalog.value)
-        ? textureCatalog.value
-        : textureCatalog.value.items || textureCatalog.value.agents || [];
-      if (!state.authRequired) state.agents = mergeCatalogAgents(state.agents);
-    }
     if (state.authRequired) {
       state.groups = [FALLBACK_GROUP];
       state.group = FALLBACK_GROUP.id;
@@ -3628,6 +3640,7 @@
     }
     const restoredConversation = restoreActiveConversation();
     state.loading = false;
+    if (bootHandoffTimer) window.clearTimeout(bootHandoffTimer);
     if (showBootInterstitial) {
       updateBootInterstitial({
         phase: 'Bridge ready',
@@ -3639,6 +3652,13 @@
     }
     reconcilePromptState();
     renderAll();
+    void textureCatalogRequest.then((textureCatalog) => {
+      state.textureCatalog = Array.isArray(textureCatalog)
+        ? textureCatalog
+        : textureCatalog.items || textureCatalog.agents || [];
+      if (!state.authRequired) state.agents = mergeCatalogAgents(state.agents);
+      renderAll();
+    }).catch(() => {});
     const conversation = restoredConversation || selectedConversation();
     if (conversation?.kind === 'direct' && conversation.direct_agent_slug) {
       void loadStationHistory(conversation.direct_agent_slug);
