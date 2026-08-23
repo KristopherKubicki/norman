@@ -816,6 +816,18 @@ CONTEXT_PREFLIGHT_ATTACHMENT_INLINE_CHARS = max(
         os.environ.get("NORMAN_CODEX_CONTEXT_PREFLIGHT_ATTACHMENT_INLINE_CHARS", "4000")
     ),
 )
+OPERATOR_PROMPT_INLINE_CHARS = max(
+    0,
+    int(os.environ.get("NORMAN_CODEX_OPERATOR_PROMPT_INLINE_CHARS", "6000")),
+)
+OPERATOR_PROMPT_HEAD_CHARS = max(
+    0,
+    int(os.environ.get("NORMAN_CODEX_OPERATOR_PROMPT_HEAD_CHARS", "4000")),
+)
+OPERATOR_PROMPT_TAIL_CHARS = max(
+    0,
+    int(os.environ.get("NORMAN_CODEX_OPERATOR_PROMPT_TAIL_CHARS", "1600")),
+)
 CONTEXT_PREFLIGHT_ATTACHMENT_HEAD_CHARS = max(
     200,
     int(os.environ.get("NORMAN_CODEX_CONTEXT_PREFLIGHT_ATTACHMENT_HEAD_CHARS", "1600")),
@@ -2992,6 +3004,7 @@ CONSOLE_RUNTIME_TOKEN_BREAKER_PATH = STATE_DIR / "console_runtime_token_breaker.
 DRAFT_ATTACHMENTS_PATH = STATE_DIR / "draft_attachments.json"
 RUNTIME_SETTINGS_PATH = STATE_DIR / "runtime_settings.json"
 ATTACHMENTS_DIR = STATE_DIR / "attachments"
+OPERATOR_PROMPTS_DIR = STATE_DIR / "operator-prompts"
 MEDIA_SOURCE_CATALOG: dict[str, tuple[dict[str, Any], ...]] = {
     "artmonster": (
         {
@@ -13305,6 +13318,70 @@ def attachment_text_prompt_body(body: str) -> tuple[str, dict[str, Any]]:
     }
 
 
+def operator_prompt_context(prompt: str) -> tuple[str, dict[str, Any]]:
+    """Keep large operator requests authoritative without carrying all text to cloud."""
+
+    text = str(prompt or "").strip()
+    full_tokens = _estimated_text_tokens(text)
+    if len(text) <= OPERATOR_PROMPT_INLINE_CHARS:
+        return text, {
+            "mode": "inline",
+            "chars": len(text),
+            "full_tokens": full_tokens,
+            "rendered_tokens": full_tokens,
+            "saved_tokens": 0,
+            "path": "",
+        }
+
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:20]
+    source_path = OPERATOR_PROMPTS_DIR / f"request-{digest}.txt"
+    try:
+        OPERATOR_PROMPTS_DIR.mkdir(parents=True, exist_ok=True)
+        if not source_path.exists() or source_path.read_text(encoding="utf-8") != text:
+            source_path.write_text(text, encoding="utf-8")
+    except OSError:
+        # Preserve the request inline if the local source cannot be stored.
+        return text, {
+            "mode": "inline-storage-fallback",
+            "chars": len(text),
+            "full_tokens": full_tokens,
+            "rendered_tokens": full_tokens,
+            "saved_tokens": 0,
+            "path": "",
+        }
+
+    head = text[:OPERATOR_PROMPT_HEAD_CHARS].rstrip()
+    tail = (
+        text[-OPERATOR_PROMPT_TAIL_CHARS:].lstrip()
+        if OPERATOR_PROMPT_TAIL_CHARS
+        else ""
+    )
+    omitted = max(0, len(text) - len(head) - len(tail))
+    lines = [
+        "Operator request (authoritative source):",
+        f"- Full request path: {source_path}",
+        (
+            f"- Cloud preview contains {len(head) + len(tail):,} of {len(text):,} "
+            f"characters; {omitted:,} middle characters are omitted."
+        ),
+        "- Read the source file before relying on omitted details. Do not infer or invent them.",
+        "[operator request preview]",
+        head,
+    ]
+    if tail:
+        lines.extend(["[operator request preview tail]", tail])
+    rendered = "\n".join(line for line in lines if line)
+    rendered_tokens = _estimated_text_tokens(rendered)
+    return rendered, {
+        "mode": "path_backed_preview",
+        "chars": len(text),
+        "full_tokens": full_tokens,
+        "rendered_tokens": rendered_tokens,
+        "saved_tokens": max(0, full_tokens - rendered_tokens),
+        "path": str(source_path),
+    }
+
+
 def context_preflight_memory_rerank(value: Any) -> dict[str, Any]:
     source = value if isinstance(value, dict) else {}
     return {
@@ -13431,8 +13508,14 @@ def local_planner_preflight_prompt(payload: dict[str, Any]) -> str:
             (
                 "Use these keys: route, cloud_needed, safe_local_answer_possible, "
                 "next_local_steps, context_to_fetch, memory_ref_ids, confidence, "
-                "recall_status, "
+                "recall_status, task_brief, task_constraints, "
                 "cloud_escalation_reason, risk."
+            ),
+            (
+                "task_brief must be a factual, compact 1-4 sentence restatement "
+                "of the requested outcome and the next evidence/action. "
+                "task_constraints must be a short JSON array of explicit limits "
+                "or approvals from the request. Do not invent requirements."
             ),
             (
                 "When the supplied memory refs are useful, return memory_ref_ids as "
@@ -13546,6 +13629,19 @@ def local_planner_advice_summary(text: str) -> str:
             continue
         parts.append(f"{label}={local_planner_value_summary(value)}")
     return summarize_text("; ".join(parts) or clean, 700)
+
+
+def local_planner_task_brief(value: Any) -> tuple[str, list[str]]:
+    parsed = value if isinstance(value, dict) else parse_local_planner_json(str(value))
+    if not isinstance(parsed, dict):
+        return "", []
+    brief = summarize_text(str(parsed.get("task_brief") or ""), 700)
+    constraints = [
+        summarize_text(str(item or ""), 180)
+        for item in parsed.get("task_constraints") or []
+        if str(item or "").strip()
+    ][:6]
+    return brief, constraints
 
 
 LOCAL_ROUTE_INTENT_CLASSIFIER_SAFE_ACTIONS = {"status"}
@@ -16332,6 +16428,20 @@ def context_preflight_prompt_context(
             f"({offline.get('status', 'not-used')})."
         )
     if planner.get("used"):
+        planner_brief, planner_constraints = local_planner_task_brief(
+            planner.get("parsed") or planner
+        )
+        if planner_brief:
+            lines.append(
+                "- Local task brief (advisory; the operator request and source file "
+                f"remain authoritative): {planner_brief}"
+            )
+        if planner_constraints:
+            lines.append(
+                "- Explicit constraints captured locally: "
+                + "; ".join(planner_constraints)
+                + "."
+            )
         lines.append(
             "- Norllama planner preflight: "
             + summarize_text(str(planner.get("summary") or ""), 700)
@@ -33240,7 +33350,8 @@ def build_prompt_with_attachments(
     preflight_context: str | None = None,
     inherited_context: dict[str, Any] | None = None,
 ) -> str:
-    combined = prompt.strip()
+    operator_context, _operator_meta = operator_prompt_context(prompt)
+    combined = operator_context
     attachment_savings: list[dict[str, Any]] = []
     attachment_context = attachment_prompt_context(
         attachments, savings_out=attachment_savings

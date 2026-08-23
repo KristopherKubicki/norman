@@ -5623,6 +5623,54 @@ def test_context_preflight_uses_inherited_thread_pressure_for_cloud_gate(
     assert '"thread_tokens": 1216915' in planner_prompt
 
 
+def test_operator_prompt_context_offloads_large_request_to_authoritative_source(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "OPERATOR_PROMPTS_DIR", tmp_path / "operator-prompts")
+    monkeypatch.setattr(module, "OPERATOR_PROMPT_INLINE_CHARS", 40)
+    monkeypatch.setattr(module, "OPERATOR_PROMPT_HEAD_CHARS", 24)
+    monkeypatch.setattr(module, "OPERATOR_PROMPT_TAIL_CHARS", 12)
+
+    original = "begin-" + ("middle-" * 1_200) + "end"
+    rendered, metadata = module.operator_prompt_context(original)
+
+    assert metadata["mode"] == "path_backed_preview"
+    assert metadata["saved_tokens"] > 0
+    assert metadata["path"]
+    assert Path(metadata["path"]).read_text(encoding="utf-8") == original
+    assert "Operator request (authoritative source):" in rendered
+    assert "Read the source file before relying on omitted details." in rendered
+    assert "begin-" in rendered
+    assert "end" in rendered
+    assert original not in rendered
+
+
+def test_local_planner_task_brief_is_bounded_and_preserves_constraints(
+    monkeypatch, tmp_path
+):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    brief, constraints = module.local_planner_task_brief(
+        {
+            "task_brief": "Inspect the camera event and return the newest matching image.",
+            "task_constraints": ["Do not change device settings.", "Use local evidence."],
+        }
+    )
+
+    assert brief == "Inspect the camera event and return the newest matching image."
+    assert constraints == ["Do not change device settings.", "Use local evidence."]
+    planner_prompt = module.local_planner_preflight_prompt(
+        {
+            "prompt_preview": "Show the newest door image.",
+            "runtime": "codex",
+            "model": "openai.gpt-5.6-terra",
+        }
+    )
+    assert "task_brief" in planner_prompt
+    assert "task_constraints" in planner_prompt
+
+
 def test_agent_template_mixed_unpriced_direct_and_bedrock_history_prefers_usd_display(
     monkeypatch, tmp_path
 ):
