@@ -124,6 +124,40 @@ def test_bridge_direct_message_loads_managed_station_history(test_app, db, monke
     }
 
 
+def test_bridge_eyebat_alias_uses_glimpser_station(test_app, monkeypatch):
+    captured = {}
+
+    def fake_estate_history_url(_db, agent_slug):
+        captured["estate_slug"] = agent_slug
+        return "http://glimpser.internal:8788"
+
+    def fake_history(web_url, *, access_token="", limit=100, timeout=4.0):
+        captured.update(web_url=web_url, access_token=access_token, limit=limit)
+        return {"reachable": True, "agent_name": "Glimpser", "items": []}
+
+    monkeypatch.setattr(
+        "app.api.api_v1.routers.bridge_conversations._estate_history_url",
+        fake_estate_history_url,
+    )
+    monkeypatch.setattr(
+        "app.api.api_v1.routers.bridge_conversations.fetch_console_history",
+        fake_history,
+    )
+
+    response = test_app.get(
+        "/api/v1/bridge/conversations/agents/eyebat/history?limit=40"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["agent_slug"] == "eyebat"
+    assert captured == {
+        "estate_slug": "glimpser",
+        "web_url": "http://glimpser.internal:8788",
+        "access_token": "",
+        "limit": 40,
+    }
+
+
 def test_bridge_history_omits_legacy_diagnostics(test_app, db, monkeypatch):
     user_id = test_app.get("/api/v1/users/me").json()["id"]
     db.add(

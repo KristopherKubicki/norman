@@ -25,9 +25,19 @@ from app.services.console_status import fetch_console_history
 
 router = APIRouter(prefix="/bridge/conversations", tags=["bridge_conversations"])
 
+_STATION_SLUG_ALIASES = {
+    "eyebat": "glimpser",
+    "glimpse": "glimpser",
+}
+
 
 def _slug(value: Any) -> str:
     return re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
+
+
+def _station_slug(value: Any) -> str:
+    slug = _slug(value)
+    return _STATION_SLUG_ALIASES.get(slug, slug)
 
 
 def _is_legacy_bridge_diagnostic(item: dict[str, Any]) -> bool:
@@ -152,11 +162,12 @@ def _estate_history_url(db: Session, agent_slug: str) -> str:
 def _station_target(
     db: Session, current_user: User, agent_slug: str
 ) -> tuple[str, str]:
-    connector = _history_connector(db, current_user, agent_slug)
+    target = _station_slug(agent_slug)
+    connector = _history_connector(db, current_user, target)
     config = dict(connector.config or {}) if connector else {}
     return (
         str(config.get("collector_url") or config.get("web_url") or "").strip()
-        or _estate_history_url(db, agent_slug),
+        or _estate_history_url(db, target),
         str(config.get("web_token") or "").strip(),
     )
 
@@ -374,12 +385,13 @@ async def get_bridge_agent_history(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_console_runtime_user),
 ):
-    connector = _history_connector(db, current_user, agent_slug)
+    target = _station_slug(agent_slug)
+    connector = _history_connector(db, current_user, target)
     config = dict(connector.config or {}) if connector else {}
     web_url = (
         str(config.get("collector_url") or config.get("web_url") or "").strip()
-        or _estate_history_url(db, agent_slug)
-        or f"{str(request.base_url).rstrip('/')}/bot/{_slug(agent_slug)}/"
+        or _estate_history_url(db, target)
+        or f"{str(request.base_url).rstrip('/')}/bot/{target}/"
     )
     snapshot = await asyncio.to_thread(
         fetch_console_history,
@@ -410,7 +422,9 @@ async def get_bridge_agent_media(
 ):
     slug = _slug(agent_slug)
     web_url, access_token = _station_target(db, current_user, slug)
-    web_url = web_url or f"{str(request.base_url).rstrip('/')}/bot/{slug}/"
+    web_url = web_url or (
+        f"{str(request.base_url).rstrip('/')}/bot/{_station_slug(slug)}/"
+    )
     snapshot = await asyncio.to_thread(
         fetch_console_history,
         web_url,
@@ -473,7 +487,9 @@ async def send_bridge_agent_message(
                 detail="Conversation does not target this station",
             )
     web_url, access_token = _station_target(db, current_user, slug)
-    web_url = web_url or f"{str(request.base_url).rstrip('/')}/bot/{slug}/"
+    web_url = web_url or (
+        f"{str(request.base_url).rstrip('/')}/bot/{_station_slug(slug)}/"
+    )
     if not web_url:
         raise HTTPException(status_code=503, detail="Station endpoint is unavailable")
     submission_id = payload.submission_id or f"bridge-{uuid4().hex}"
