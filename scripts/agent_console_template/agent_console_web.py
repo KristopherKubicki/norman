@@ -13408,6 +13408,7 @@ def local_planner_preflight_prompt(payload: dict[str, Any]) -> str:
         "runtime": payload.get("runtime"),
         "model": payload.get("model"),
         "prompt_estimated_tokens": payload.get("prompt_estimated_tokens"),
+        "inherited_context": payload.get("inherited_context") or {},
         "prompt_preview": summarize_text(
             str(payload.get("prompt_preview") or ""),
             LOCAL_PLANNER_PREFLIGHT_PROMPT_CHARS,
@@ -13438,6 +13439,11 @@ def local_planner_preflight_prompt(payload: dict[str, Any]) -> str:
                 "an ordered JSON array of only their supplied turn ids. Return an "
                 "empty array when none are relevant. Set recall_status to complete, "
                 "partial, or not_needed. Confidence must be a number from 0 to 1."
+            ),
+            (
+                "Treat inherited_context as the actual cloud-session pressure, not "
+                "just the typed prompt size. When it is high, prefer a compact local "
+                "handoff before recommending cloud execution."
             ),
             json.dumps(compact_payload, sort_keys=True, ensure_ascii=True),
         ]
@@ -15619,12 +15625,19 @@ def cloud_context_gate_accounting(
     specialist: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     estimated_tokens = _coerce_int(payload.get("prompt_estimated_tokens"))
+    inherited_context = (
+        payload.get("inherited_context")
+        if isinstance(payload.get("inherited_context"), dict)
+        else {}
+    )
+    inherited_tokens = _coerce_int(inherited_context.get("thread_tokens"))
+    effective_context_tokens = max(estimated_tokens, inherited_tokens)
     normalized_runtime = normalize_runtime(payload.get("runtime"))
     threshold = CLOUD_CONTEXT_GATE_TOKENS
     active = bool(
         threshold > 0
         and normalized_runtime != "localllm"
-        and estimated_tokens >= threshold
+        and effective_context_tokens >= threshold
     )
     reasons: list[str] = []
     local_preflight_used = bool(planner.get("used"))
@@ -15640,8 +15653,15 @@ def cloud_context_gate_accounting(
     )
     if active:
         reasons.append(
-            f"estimated prompt tokens {estimated_tokens:,} >= gate {threshold:,}"
+            f"effective context tokens {effective_context_tokens:,} >= gate {threshold:,}"
         )
+        if inherited_tokens > estimated_tokens:
+            reasons.append(
+                f"inherited thread ceiling {inherited_tokens:,} tokens dominates "
+                f"typed prompt estimate {estimated_tokens:,}"
+            )
+        if inherited_context.get("context_pack_applied"):
+            reasons.append("inherited thread was compacted before cloud handoff")
         if local_preflight_used:
             reasons.append("Norllama planner preflight ran")
         if local_specialist_used:
@@ -15663,6 +15683,8 @@ def cloud_context_gate_accounting(
         ),
         "threshold_tokens": threshold,
         "prompt_estimated_tokens": estimated_tokens,
+        "inherited_context_tokens": inherited_tokens,
+        "effective_context_tokens": effective_context_tokens,
         "reasons": reasons,
     }
 
@@ -15723,6 +15745,13 @@ def context_preflight_accounting_payload(
         "preflight_prompt_estimated_tokens": _coerce_int(
             payload.get("prompt_estimated_tokens")
         ),
+        "inherited_context": dict(
+            payload.get("inherited_context")
+            if isinstance(payload.get("inherited_context"), dict)
+            else {}
+        ),
+        "inherited_context_tokens": _coerce_int(gate.get("inherited_context_tokens")),
+        "effective_context_tokens": _coerce_int(gate.get("effective_context_tokens")),
         "attachment_saved_tokens": avoided_floor,
         "memory_ref_count": len(payload.get("memory_refs") or []),
         "memory_rerank_used": bool(rerank_payload.get("used")),
@@ -15825,6 +15854,15 @@ def usage_fields_from_context_preflight_accounting(
         "preflight_accounting_schema": str(accounting.get("schema") or "").strip(),
         "preflight_prompt_estimated_tokens": _coerce_int(
             accounting.get("preflight_prompt_estimated_tokens")
+        ),
+        "inherited_context": accounting.get("inherited_context")
+        if isinstance(accounting.get("inherited_context"), dict)
+        else {},
+        "inherited_context_tokens": _coerce_int(
+            accounting.get("inherited_context_tokens")
+        ),
+        "effective_context_tokens": _coerce_int(
+            accounting.get("effective_context_tokens")
         ),
         "attachment_saved_tokens": _coerce_int(
             accounting.get("attachment_saved_tokens")
@@ -16070,6 +16108,7 @@ def context_preflight_prompt_context(
     attachment_savings: list[dict[str, Any]] | None = None,
     runtime: str = "",
     model: str = "",
+    inherited_context: dict[str, Any] | None = None,
 ) -> str:
     if not CONTEXT_PREFLIGHT_ENABLED:
         return ""
@@ -16085,6 +16124,7 @@ def context_preflight_prompt_context(
     ]
     estimated_prompt_tokens = _estimated_text_tokens(prompt)
     saved_tokens = sum(_coerce_int(item.get("saved_tokens")) for item in savings_rows)
+    inherited = dict(inherited_context or {})
     preflight_payload = {
         "schema": "norman.tui.context-preflight-request.v1",
         "agent": AGENT_NAME,
@@ -16098,6 +16138,7 @@ def context_preflight_prompt_context(
         "memory_candidate_count": len(lexical_memory_candidates),
         "attachment_savings": savings_rows,
         "attachment_count": len(attachments or []),
+        "inherited_context": inherited,
     }
     should_run_offline = bool(CONTEXT_PREFLIGHT_OFFLINE_COMMAND) and (
         estimated_prompt_tokens >= 800
@@ -16206,6 +16247,17 @@ def context_preflight_prompt_context(
         "Context preflight:",
         "- Local planner is active. Preserve the operator's request; use compact references before reloading large prior context.",
     ]
+    inherited_tokens = _coerce_int(inherited.get("thread_tokens"))
+    if inherited_tokens:
+        pack_status = (
+            "was compacted before this handoff"
+            if inherited.get("context_pack_applied")
+            else "still needs compact handling"
+        )
+        lines.append(
+            "- Inherited cloud context: "
+            f"{_compact_token_label(inherited_tokens)} tokens; {pack_status}."
+        )
     if savings_rows:
         cost_range = _context_pack_cost_range(saved_tokens, model=normalized_model)
         cost_label = str(cost_range.get("label") or "").strip()
@@ -33186,6 +33238,7 @@ def build_prompt_with_attachments(
     service_tier: Any = "",
     optimization_mode: Any = "",
     preflight_context: str | None = None,
+    inherited_context: dict[str, Any] | None = None,
 ) -> str:
     combined = prompt.strip()
     attachment_savings: list[dict[str, Any]] = []
@@ -33217,6 +33270,7 @@ def build_prompt_with_attachments(
             attachment_savings=attachment_savings,
             runtime=runtime or configured_runtime(),
             model=model or configured_chat_model(),
+            inherited_context=inherited_context,
         )
     if resolved_preflight_context:
         combined = f"{combined}\n{resolved_preflight_context}".strip()
@@ -34147,6 +34201,36 @@ def bedrock_context_pack_prompt_context(plan: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def bedrock_context_pack_preflight_context(plan: dict[str, Any]) -> dict[str, Any]:
+    """Return bounded inherited-session facts for local planner routing."""
+    if not isinstance(plan, dict):
+        return {}
+    fields = (
+        "session_id",
+        "thread_scope",
+        "thread_tokens",
+        "thread_input_tokens",
+        "thread_cached_input_tokens",
+        "thread_uncached_input_tokens",
+        "thread_output_tokens",
+        "hard_cap_tokens",
+        "hard_cap_exceeded",
+        "uncached_input_pressure",
+        "costly_thread",
+        "low_yield_thread",
+        "current_tokens",
+        "packed_tokens",
+        "saved_tokens",
+        "saved_pct",
+        "reason",
+    )
+    context = {
+        key: plan.get(key) for key in fields if plan.get(key) not in (None, "")
+    }
+    context["context_pack_applied"] = bool(plan.get("should_pack"))
+    return context
+
+
 def _execute_codex_prompt(
     prompt: str,
     speed: str,
@@ -34273,6 +34357,9 @@ def _execute_codex_prompt(
         if normalized_optimization_mode != "raw"
         else {"should_pack": False, "mode": "raw"}
     )
+    inherited_preflight_context = bedrock_context_pack_preflight_context(
+        context_pack_plan
+    )
     read_only_self_improvement = is_subscription_capacity_self_improvement_prompt(
         prompt
     )
@@ -34387,6 +34474,7 @@ def _execute_codex_prompt(
         normalized_service_tier,
         normalized_optimization_mode,
         preflight_context=preflight_context,
+        inherited_context=inherited_preflight_context,
     )
     preflight_usage_fields = usage_fields_from_context_preflight_accounting(
         add_context_pack_to_preflight_accounting(

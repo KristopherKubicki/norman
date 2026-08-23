@@ -5586,6 +5586,43 @@ def test_agent_template_stale_personal_bedrock_usage_reprices_as_usd(
     assert estimate["usd"] > 0
 
 
+def test_context_preflight_uses_inherited_thread_pressure_for_cloud_gate(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NORMAN_CODEX_CLOUD_CONTEXT_GATE_TOKENS", "80000")
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+
+    inherited_context = {
+        "thread_tokens": 1_216_915,
+        "thread_uncached_input_tokens": 120_626,
+        "hard_cap_exceeded": True,
+        "context_pack_applied": True,
+        "saved_tokens": 1_100_000,
+        "reason": "hard-cloud-context-cap",
+    }
+    payload = {
+        "runtime": "codex",
+        "prompt_estimated_tokens": 30,
+        "inherited_context": inherited_context,
+        "memory_refs": [],
+    }
+    gate = module.cloud_context_gate_accounting(
+        payload,
+        saved_tokens=0,
+        offline={"used": False},
+        planner={"used": True},
+    )
+    planner_prompt = module.local_planner_preflight_prompt(payload)
+
+    assert gate["active"] is True
+    assert gate["status"] == "preflighted"
+    assert gate["effective_context_tokens"] == 1_216_915
+    assert gate["inherited_context_tokens"] == 1_216_915
+    assert "inherited thread ceiling 1,216,915 tokens" in "\n".join(gate["reasons"])
+    assert "hard-cloud-context-cap" in planner_prompt
+    assert '"thread_tokens": 1216915' in planner_prompt
+
+
 def test_agent_template_mixed_unpriced_direct_and_bedrock_history_prefers_usd_display(
     monkeypatch, tmp_path
 ):
