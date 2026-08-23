@@ -5062,10 +5062,9 @@ def test_norman_frontdoor_caddy_serves_shortcuts_locally() -> None:
     assert (
         "@bridge_live_assets path /static/css/bridge.css /static/js/bridge.js\n"
         "    handle @bridge_live_assets {\n"
-        "        uri strip_prefix /static\n"
-        "        root * /var/www/norman-static\n"
-        '        header Cache-Control "no-cache, must-revalidate"\n'
-        "        file_server\n"
+        "        reverse_proxy 127.0.0.1:8000 {\n"
+        '            header_down Cache-Control "no-store, max-age=0"\n'
+        "        }\n"
         "    }"
     ) in rendered
     assert (

@@ -78,10 +78,9 @@ def render_frontdoor_snippet() -> str:
 
     @bridge_live_assets path /static/css/bridge.css /static/js/bridge.js
     handle @bridge_live_assets {
-        uri strip_prefix /static
-        root * /var/www/norman-static
-        header Cache-Control "no-cache, must-revalidate"
-        file_server
+        reverse_proxy 127.0.0.1:8000 {
+            header_down Cache-Control "no-store, max-age=0"
+        }
     }
 
     handle_path /static/* {
