@@ -621,6 +621,32 @@
     return state.conversations;
   }
 
+  function discardNonConversationalDirectConversations() {
+    const unsupported = state.nonConversationalStationSlugs;
+    if (!(unsupported instanceof Set) || !unsupported.size) return;
+    const removed = state.conversations.filter((conversation) => (
+      conversation.kind === 'direct'
+      && unsupported.has(slugify(conversation.direct_agent_slug))
+    ));
+    if (!removed.length) return;
+    const removedIds = new Set(removed.map((conversation) => conversation.conversation_id));
+    state.conversations = state.conversations.filter(
+      (conversation) => !removedIds.has(conversation.conversation_id),
+    );
+    if (removedIds.has(state.selectedConversationId)) {
+      state.selectedConversationId = '';
+      state.selectedAgent = '';
+      state.selectedRecipients = [];
+      state.view = 'general';
+      clearActiveConversation();
+    }
+    removed.forEach((conversation) => {
+      delete state.composerDrafts[conversationIdentity(conversation)];
+    });
+    saveComposerDrafts();
+    saveLocalConversations();
+  }
+
   function makeLocalConversation({
     kind,
     title,
@@ -3703,6 +3729,7 @@
         ...localConversations,
       ]);
     }
+    discardNonConversationalDirectConversations();
     const restoredConversation = restoreActiveConversation();
     state.loading = false;
     if (bootHandoffTimer) window.clearTimeout(bootHandoffTimer);
