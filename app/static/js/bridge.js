@@ -149,6 +149,7 @@
     selectedRecipients: requestedAgent ? [requestedAgent] : [],
     conversations: [],
     stationHistory: {},
+    stationHistoryLoaded: {},
     stationHistoryLoading: '',
     stationHistoryErrors: {},
     jobActivities: {},
@@ -2992,6 +2993,7 @@
       ? (state.stationHistory[stationSlug]?.items || [])
       : [];
     const historyLoading = stationSlug && state.stationHistoryLoading === stationSlug;
+    const historyLoaded = stationSlug && state.stationHistoryLoaded[stationSlug];
     const historyError = stationSlug ? state.stationHistoryErrors[stationSlug] : '';
     const localPrompt = (
       ['submitting', 'queued', 'running'].includes(state.prompt.phase)
@@ -3009,10 +3011,14 @@
       if (stationSlug) {
         const historyHeading = historyError
           ? 'Station history unavailable'
-          : 'Loading station history';
+          : historyLoading || !historyLoaded
+            ? 'Loading station history'
+            : 'No station history yet';
         const historyDetail = historyError
           ? `This direct message could not be loaded right now. Reconnect, then select ${escapeHtml(displaySlug(stationSlug))} again.`
-          : `Connecting this direct message to ${escapeHtml(displaySlug(stationSlug))}'s canonical thread.`;
+          : historyLoading || !historyLoaded
+            ? `Connecting this direct message to ${escapeHtml(displaySlug(stationSlug))}'s canonical thread.`
+            : `${escapeHtml(displaySlug(stationSlug))} is ready for a new direct message.`;
         nodes.feed.innerHTML = `<div class="cockpit-feed__empty cockpit-history-state">
           <span class="cockpit-history-state__icon">${iconHtml('archive')}</span>
           <h2>${historyHeading}</h2>
@@ -3097,6 +3103,7 @@
         `${API}/bridge/conversations/agents/${encodeURIComponent(slug)}/history?limit=40`,
         { timeoutMs: 6500 },
       );
+      state.stationHistoryLoaded[slug] = true;
     } catch (error) {
       state.stationHistoryErrors[slug] = error.message || 'Station history is unavailable';
     } finally {
