@@ -16,6 +16,8 @@
   --texture-reactive-level: 0;
   --texture-focus-x: 58%;
   --texture-focus-y: 46%;
+  --composer-ripple-x: 50%;
+  --composer-reactive-level: 0;
   --cockpit-bg: #151716;
   --cockpit-panel: #1d201e;
   --cockpit-panel-2: #242824;
@@ -5070,25 +5072,29 @@
 
 .cockpit-composer::before {
   background:
-    linear-gradient(
-      105deg,
-      transparent 0%,
-      transparent 10%,
-      color-mix(in srgb, var(--agent-accent-2) 8%, transparent) 16%,
-      color-mix(in srgb, white 4%, transparent) 19%,
-      transparent 23%,
-      transparent 34%,
-      color-mix(in srgb, var(--agent-accent) 7%, transparent) 39%,
-      transparent 45%,
-      transparent 57%,
-      color-mix(in srgb, var(--agent-accent-3) 6%, transparent) 63%,
-      transparent 69%,
-      transparent 100%
+    repeating-linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--agent-accent-2) 36%, transparent) 0 1px,
+      transparent 1px 8px
     );
-  background-size: 240% 100%;
-  background-position: var(--texture-focus-x) center;
-  opacity: calc(0.08 + var(--texture-reactive-level) * 0.9);
-  mix-blend-mode: screen;
+  background-position: var(--composer-ripple-x) center;
+  background-size: 8px 100%;
+  opacity: calc(0.018 + var(--composer-reactive-level) * 0.34);
+  -webkit-mask-image: linear-gradient(
+    90deg,
+    transparent calc(var(--composer-ripple-x) - 15%),
+    #000 calc(var(--composer-ripple-x) - 5%),
+    #000 calc(var(--composer-ripple-x) + 5%),
+    transparent calc(var(--composer-ripple-x) + 15%)
+  );
+  mask-image: linear-gradient(
+    90deg,
+    transparent calc(var(--composer-ripple-x) - 15%),
+    #000 calc(var(--composer-ripple-x) - 5%),
+    #000 calc(var(--composer-ripple-x) + 5%),
+    transparent calc(var(--composer-ripple-x) + 15%)
+  );
+  transition: opacity 120ms ease-out;
 }
 
 .cockpit-composer::after {
@@ -5098,6 +5104,22 @@
     inset 0 1px 0 color-mix(in srgb, white calc(3% + var(--texture-reactive-level) * 7%), transparent),
     inset 0 -1px 0 rgb(0 0 0 / 12%);
   opacity: calc(0.42 + var(--texture-reactive-level) * 0.58);
+  transition:
+    border-color 120ms ease-out,
+    box-shadow 120ms ease-out,
+    opacity 120ms ease-out;
+}
+
+.cockpit[data-composer-reactive="true"] .cockpit-composer::after {
+  border-color: color-mix(
+    in srgb,
+    var(--agent-accent-2) calc(12% + var(--composer-reactive-level) * 36%),
+    transparent
+  );
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 7%, transparent),
+    inset 0 -1px 0 rgb(0 0 0 / 12%),
+    0 0 0 1px color-mix(in srgb, var(--agent-accent) calc(var(--composer-reactive-level) * 12%), transparent);
 }
 
 .cockpit-composer > * {

@@ -224,6 +224,7 @@
       pointerAt: 0,
       keySequence: 0,
       reactiveTimer: 0,
+      composerTimer: 0,
       visualLevel: 0,
       lastVisualSync: 0,
     },
@@ -1988,6 +1989,24 @@
     } else {
       state.texture.lines = lines;
     }
+  }
+
+  function pulseComposerTexture(position = 0.5, intensity = 0.18) {
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches) return;
+    root.style.setProperty(
+      '--composer-ripple-x',
+      `${(textureClamp(position, 0.12, 0.88) * 100).toFixed(2)}%`,
+    );
+    root.style.setProperty(
+      '--composer-reactive-level',
+      textureClamp(intensity, 0.06, 0.32).toFixed(3),
+    );
+    root.dataset.composerReactive = 'true';
+    window.clearTimeout(state.texture.composerTimer);
+    state.texture.composerTimer = window.setTimeout(() => {
+      delete root.dataset.composerReactive;
+      root.style.setProperty('--composer-reactive-level', '0');
+    }, 180);
   }
 
   function drawTextureMotif(context, width, height, motion, colors, profile) {
@@ -4427,6 +4446,13 @@
       const targetRect = editable?.getBoundingClientRect?.();
       const sequence = state.texture.keySequence += 1;
       const spread = ((sequence * 0.618033988749895) % 1) - 0.5;
+      if (editable) {
+        pulseComposerTexture(
+          0.5 + spread * 0.42,
+          event.repeat ? 0.1 : 0.18,
+        );
+        return;
+      }
       const x = targetRect
         ? textureClamp((targetRect.left + targetRect.width * (0.5 + spread * 0.56) - rect.left) / rect.width, 0.05, 0.95)
         : 0.34 + ((sequence * 0.381966011250105) % 0.32);

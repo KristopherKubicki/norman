@@ -45,8 +45,8 @@ def test_root_renders_norman_bridge_when_auth_disabled(
     assert response.text.count('class="cockpit-icon"') >= 12
     assert 'id="norman-favicon"' in response.text
     assert "/static/favicon.svg?v=20260822a" in response.text
-    assert "/static/css/bridge.css?v=20260823f" in response.text
-    assert "/static/js/bridge.js?v=20260824b" in response.text
+    assert "/static/css/bridge.css?v=20260824a" in response.text
+    assert "/static/js/bridge.js?v=20260824c" in response.text
     assert "site-banner" not in response.text
     assert 'id="global-status-bar"' not in response.text
 
@@ -138,6 +138,9 @@ def test_bridge_client_derives_boundaries_from_estate_registry() -> None:
     assert "Station history unavailable" in source
     assert "No station history yet" in source
     assert "stationHistoryLoaded" in source
+    assert "function pulseComposerTexture(" in source
+    assert "root.dataset.composerReactive" in source
+    assert '[data-composer-reactive="true"]' in styles
     assert "This direct message could not be loaded right now." in source
     assert "class BridgeRequestError" in source
     assert "Log in to sync and run this conversation." in source
