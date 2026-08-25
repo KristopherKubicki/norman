@@ -533,6 +533,17 @@ BEDROCK_CONTEXT_PACK_LOW_YIELD_MAX_OUTPUT_RATIO = max(
         )
     ),
 )
+GREETING_NEW_TASK_COMPACTION_ENABLED = os.environ.get(
+    "NORMAN_CODEX_GREETING_NEW_TASK_COMPACTION_ENABLED", "1"
+).strip().lower() not in {"0", "false", "no", "off"}
+GREETING_NEW_TASK_COMPACTION_MIN_THREAD_TOKENS = max(
+    0,
+    int(
+        os.environ.get(
+            "NORMAN_CODEX_GREETING_NEW_TASK_COMPACTION_MIN_THREAD_TOKENS", "40000"
+        )
+    ),
+)
 CONTEXT_PREFLIGHT_ENABLED = os.environ.get(
     "NORMAN_CODEX_CONTEXT_PREFLIGHT_ENABLED", "1"
 ).strip().lower() not in {"0", "false", "no", "off"}
@@ -16902,6 +16913,34 @@ def prompt_core_request(prompt: str) -> str:
     return text
 
 
+GREETING_NEW_TASK_RE = re.compile(
+    r"^(?:hey|hi|hello|yo|howdy|good\s+(?:morning|afternoon|evening))"
+    r"(?:[\s,!.:-]+)(?P<request>.+)$",
+    re.IGNORECASE | re.DOTALL,
+)
+EXPLICIT_NEW_TASK_RE = re.compile(
+    r"^(?:new\s+topic|separate\s+question|switching\s+gears|unrelated)"
+    r"(?:[\s,!.:-]+)(?P<request>.+)$",
+    re.IGNORECASE | re.DOTALL,
+)
+GREETING_NEW_TASK_CONTINUITY_RE = re.compile(
+    r"\b(?:again|continue|continuing|previous|earlier|above|prior|"
+    r"follow[- ]?up|same|still|as\s+we\s+discussed|back\s+to|that|this)\b",
+    re.IGNORECASE,
+)
+
+
+def prompt_is_greeting_new_task_hint(prompt: Any) -> bool:
+    request_text = prompt_core_request(prompt)
+    match = GREETING_NEW_TASK_RE.match(request_text)
+    if not match:
+        match = EXPLICIT_NEW_TASK_RE.match(request_text)
+    if not match:
+        return False
+    request = match.group("request").strip()
+    return len(request) >= 16 and not GREETING_NEW_TASK_CONTINUITY_RE.search(request)
+
+
 def prompt_without_request_preface(prompt: str) -> str:
     text = prompt_core_request(prompt)
     text = re.sub(
@@ -25969,7 +26008,7 @@ def bedrock_context_pack_plan(
         requested_model = normalized_model
     profile_v2 = codex_profile_v2_for_service_tier(normalized_service_tier)
     clean_session_id = str(session_id or "").strip()
-    if not BEDROCK_CONTEXT_PACK_ENABLED or not profile_v2 or not clean_session_id:
+    if not BEDROCK_CONTEXT_PACK_ENABLED or not clean_session_id:
         return {"should_pack": False, "reason": "not-applicable"}
 
     history = load_history(limit=MAX_HISTORY_ITEMS)
@@ -26971,6 +27010,22 @@ def _execute_codex_prompt(
         if normalized_optimization_mode != "raw"
         else {"should_pack": False, "mode": "raw"}
     )
+    greeting_new_task_hint = (
+        GREETING_NEW_TASK_COMPACTION_ENABLED
+        and normalized_optimization_mode != "raw"
+        and bool(session_id)
+        and prompt_is_greeting_new_task_hint(prompt)
+        and not context_pack_plan.get("should_pack")
+        and int(context_pack_plan.get("thread_tokens") or 0)
+        >= GREETING_NEW_TASK_COMPACTION_MIN_THREAD_TOKENS
+    )
+    if greeting_new_task_hint:
+        context_pack_plan = {
+            **context_pack_plan,
+            "should_pack": True,
+            "reason": "greeting-new-task",
+            "greeting_new_task_hint": True,
+        }
     read_only_self_improvement = is_subscription_capacity_self_improvement_prompt(
         prompt
     )
