@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
 import json
 import logging
 import re
+import subprocess
 import threading
 import time
 import uuid
@@ -100,6 +104,14 @@ SUPPORTED_RESPONSES_INCLUDE_VALUES = frozenset({"reasoning.encrypted_content"})
 DEFAULT_FACADE_TOKENS = 16384
 MAX_FACADE_TOKENS = 32768
 MAX_RESPONSE_STATE = 200
+MAX_RESPONSES_INLINE_IMAGE_BYTES = 20 * 1024 * 1024
+RESPONSES_IMAGE_MEDIA_TYPES = {
+    "image/gif": "gif",
+    "image/jpeg": "jpg",
+    "image/jpg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+}
 CLOUD_FALLBACK_SCHEMA = "norman.cloud-fallback.v1"
 CLOUD_FALLBACK_MARKER_SCHEMA = "norman.facade-cloud-fallback.v1"
 CLOUD_FALLBACK_PROVIDER = "aws-bedrock"
@@ -1656,6 +1668,121 @@ def _responses_store_requested(payload: Mapping[str, Any]) -> bool:
     return store
 
 
+def _inline_response_image(part: Mapping[str, Any]) -> tuple[bytes, str, str]:
+    image_url = part.get("image_url")
+    if not isinstance(image_url, str) or not image_url:
+        raise FacadeError(
+            "Responses image input requires an inline data URL",
+            status_code=501,
+            error_type="unsupported_parameter",
+            code="unsupported_input_image_reference",
+            param="input",
+        )
+    header, separator, encoded = image_url.partition(",")
+    if (
+        not separator
+        or not header.lower().startswith("data:")
+        or ";base64" not in header.lower()
+    ):
+        raise FacadeError(
+            "Responses image input currently requires a base64 data URL",
+            status_code=501,
+            error_type="unsupported_parameter",
+            code="unsupported_input_image_reference",
+            param="input",
+        )
+    media_type = header[5:].split(";", 1)[0].strip().lower()
+    extension = RESPONSES_IMAGE_MEDIA_TYPES.get(media_type)
+    if not extension:
+        raise FacadeError(
+            f"Unsupported Responses image media type: {media_type or '<blank>'}",
+            status_code=400,
+            code="unsupported_input_image_media_type",
+            param="input",
+        )
+    max_encoded_size = ((MAX_RESPONSES_INLINE_IMAGE_BYTES + 2) // 3) * 4
+    if len(encoded) > max_encoded_size:
+        raise FacadeError(
+            "Responses image input exceeds Norman's 20 MiB inline image limit",
+            status_code=413,
+            code="input_image_too_large",
+            param="input",
+        )
+    try:
+        content = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise FacadeError(
+            "Responses image input contains invalid base64 data",
+            status_code=400,
+            code="invalid_input_image",
+            param="input",
+        ) from exc
+    if not content:
+        raise FacadeError(
+            "Responses image input is empty",
+            status_code=400,
+            code="invalid_input_image",
+            param="input",
+        )
+    if len(content) > MAX_RESPONSES_INLINE_IMAGE_BYTES:
+        raise FacadeError(
+            "Responses image input exceeds Norman's 20 MiB inline image limit",
+            status_code=413,
+            code="input_image_too_large",
+            param="input",
+        )
+    digest = hashlib.sha256(content).hexdigest()
+    return content, f"responses-input-{digest[:12]}.{extension}", media_type
+
+
+def _response_image_text(part: Mapping[str, Any]) -> str:
+    content, filename, media_type = _inline_response_image(part)
+    text = ""
+    specialist_error: Exception | None = None
+    try:
+        result = norllama_gateway.ocr_document(
+            content=content,
+            filename=filename,
+            media_type=media_type,
+            base_url=str(getattr(settings, "llm_offline_base_url", "") or ""),
+            api_key=str(getattr(settings, "llm_offline_api_key", "") or ""),
+        )
+    except (requests.RequestException, RuntimeError, TimeoutError) as exc:
+        specialist_error = exc
+    else:
+        text = _clean(result.get("text"))
+    if not text:
+        try:
+            completed = subprocess.run(
+                ["tesseract", "stdin", "stdout"],
+                input=content,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=30,
+            )
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired) as exc:
+            if specialist_error is None:
+                specialist_error = exc
+        else:
+            if completed.returncode == 0:
+                specialist_error = None
+                text = completed.stdout.decode("utf-8", errors="replace").strip()
+            elif specialist_error is None:
+                specialist_error = RuntimeError("Tesseract image extraction failed")
+    if not text and specialist_error is not None:
+        raise FacadeError(
+            "Norman could not extract the inline image through its local vision lane",
+            status_code=503,
+            error_type="server_error",
+            code="input_image_processing_unavailable",
+            param="input",
+        ) from specialist_error
+    if not text:
+        text = "[No text was detected in this image.]"
+    return f"[Attached image, locally extracted]\n{text}"
+
+
 def _text_part_text(part: Mapping[str, Any]) -> str:
     part_type = _clean(part.get("type"))
     if part_type in {"input_text", "text"}:
@@ -1664,6 +1791,8 @@ def _text_part_text(part: Mapping[str, Any]) -> str:
     if part_type in {"output_text"}:
         text = part.get("text")
         return text if isinstance(text, str) else _clean(text)
+    if part_type == "input_image":
+        return _response_image_text(part)
     raise FacadeError(
         f"Unsupported Responses input content item type: {part_type or '<blank>'}",
         status_code=501,

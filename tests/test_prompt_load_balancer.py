@@ -3903,6 +3903,150 @@ def test_openai_compat_responses_routes_once_and_preserves_instructions(
     ]
 
 
+def test_openai_compat_responses_extracts_inline_images_locally(monkeypatch):
+    import app.services.prompt_provider_facade as facade
+
+    decisions = []
+    invocations = []
+    ocr_calls = []
+
+    def fake_decision(**kwargs):
+        decisions.append(kwargs)
+        return _local_route_envelope(selected_model="qwen3.6:27b")
+
+    def fake_ocr(**kwargs):
+        ocr_calls.append(kwargs)
+        return {"text": "Gmail match portal error for Andrew"}
+
+    def fake_chat(**kwargs):
+        invocations.append(kwargs)
+        return _mock_local_chat(kwargs["messages"], kwargs["model"])
+
+    monkeypatch.setattr(facade, "provider_adapter_decision", fake_decision)
+    monkeypatch.setattr(facade.norllama_gateway, "ocr_document", fake_ocr)
+    monkeypatch.setattr(facade.norllama_gateway, "invoke_text_chat", fake_chat)
+
+    response = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "What failed?"},
+                        {
+                            "type": "input_image",
+                            "image_url": "data:image/png;base64,aW1hZ2U=",
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert response["object"] == "response"
+    assert len(ocr_calls) == 1
+    assert ocr_calls[0]["content"] == b"image"
+    assert ocr_calls[0]["media_type"] == "image/png"
+    assert ocr_calls[0]["filename"].endswith(".png")
+    expected_content = (
+        "What failed?\n[Attached image, locally extracted]\n"
+        "Gmail match portal error for Andrew"
+    )
+    assert invocations[0]["messages"] == [{"role": "user", "content": expected_content}]
+    assert decisions[0]["payload"]["input"] == invocations[0]["messages"]
+
+
+def test_openai_compat_responses_uses_tesseract_when_vision_lane_is_blocked(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    invocations = []
+    tesseract_calls = []
+
+    monkeypatch.setattr(
+        facade,
+        "provider_adapter_decision",
+        lambda **kwargs: _local_route_envelope(selected_model="qwen3.6:27b"),
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "ocr_document",
+        lambda **kwargs: (_ for _ in ()).throw(
+            requests.HTTPError("policy_expired")
+        ),
+    )
+
+    def fake_tesseract(command, **kwargs):
+        tesseract_calls.append((command, kwargs))
+        return facade.subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=b"Fallback screenshot text",
+            stderr=b"",
+        )
+
+    def fake_chat(**kwargs):
+        invocations.append(kwargs)
+        return _mock_local_chat(kwargs["messages"], kwargs["model"])
+
+    monkeypatch.setattr(facade.subprocess, "run", fake_tesseract)
+    monkeypatch.setattr(facade.norllama_gateway, "invoke_text_chat", fake_chat)
+
+    execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_image",
+                            "image_url": "data:image/png;base64,aW1hZ2U=",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert tesseract_calls[0][0] == ["tesseract", "stdin", "stdout"]
+    assert tesseract_calls[0][1]["input"] == b"image"
+    assert tesseract_calls[0][1]["timeout"] == 30
+    assert invocations[0]["messages"] == [
+        {
+            "role": "user",
+            "content": (
+                "[Attached image, locally extracted]\nFallback screenshot text"
+            ),
+        }
+    ]
+
+
+def test_openai_compat_responses_rejects_remote_image_fetches():
+    with pytest.raises(FacadeError) as error:
+        execute_openai_responses_facade(
+            {
+                "model": "norman-code",
+                "input": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_image",
+                                "image_url": "https://example.com/private.png",
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+
+    assert error.value.status_code == 501
+    assert error.value.code == "unsupported_input_image_reference"
+
+
 def test_openai_compat_responses_accepts_benign_codex_context(monkeypatch):
     import app.services.prompt_provider_facade as facade
 
