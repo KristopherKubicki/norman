@@ -664,7 +664,7 @@ def _mock_local_chat(messages, model, **kwargs):
 def _mock_bedrock_result(
     text: str = "cloud ok",
     *,
-    model: str = "qwen.qwen3-coder-480b-a35b-v1:0",
+    model: str = "openai.gpt-5.6-terra",
     metadata: dict | None = None,
 ) -> ModelResult:
     return ModelResult(
@@ -2203,14 +2203,14 @@ def test_openai_compat_responses_stream_falls_back_after_queued_capacity_expiry(
         for payload in payloads
         if payload["type"] == "response.output_text.delta"
     ] == ["cloud ready"]
-    assert completed["model"] == "qwen.qwen3-coder-480b-a35b-v1:0"
+    assert completed["model"] == "openai.gpt-5.6-terra"
     assert completed["norman"]["cloud_fallback"]["state"] == "completed"
     assert completed["norman"]["cloud_fallback"]["local_failure_code"] == (
         "local_capacity_exhausted"
     )
     assert len(bedrock_calls) == 1
     fallback_request = bedrock_calls[0]
-    assert fallback_request.model == "qwen.qwen3-coder-480b-a35b-v1:0"
+    assert fallback_request.model == "openai.gpt-5.6-terra"
     assert fallback_request.metadata["execution_mode"] == (
         "prompt_intermediary_openai_facade_cloud_fallback"
     )
@@ -2896,7 +2896,7 @@ def test_openai_compat_responses_retries_retryable_norman_code_failure_in_bedroc
     assert response.status_code == 200
     payload = response.json()
     assert payload["output_text"] == "cloud result"
-    assert payload["model"] == "qwen.qwen3-coder-480b-a35b-v1:0"
+    assert payload["model"] == "openai.gpt-5.6-terra"
     assert payload["norman"]["local_execution"] is False
     assert payload["norman"]["cloud_forwarding"] is True
     assert payload["norman"]["cloud_fallback"] == {
@@ -2905,7 +2905,7 @@ def test_openai_compat_responses_retries_retryable_norman_code_failure_in_bedroc
         "fallback_attempted": True,
         "local_failure_code": "local_capacity_unavailable",
         "fallback_provider": "aws-bedrock",
-        "fallback_model": "qwen.qwen3-coder-480b-a35b-v1:0",
+        "fallback_model": "openai.gpt-5.6-terra",
         "request_id": "fallback-response-test",
     }
     assert "must-not-leak" not in response.text
