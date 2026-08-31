@@ -4,6 +4,7 @@ import ipaddress
 import json
 import time
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Iterator, Mapping
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
@@ -1713,14 +1714,24 @@ def build_mesh_overview(
     except Exception as exc:
         frontdoor.update({"status": "error", "error": _clean(exc)[:240]})
 
-    probed_workers = [
-        probe_mesh_worker(
+    def probe_worker(worker: dict[str, Any]) -> dict[str, Any]:
+        return probe_mesh_worker(
             worker,
             api_key=key,
             timeout_seconds=timeout,
         )
-        for worker in normalized_workers
-    ]
+
+    if len(normalized_workers) > 1:
+        # A single offline fallback worker can consume several endpoint
+        # timeouts. Probe independent workers concurrently so a healthy mesh
+        # remains observable within the gateway verifier's request budget.
+        with ThreadPoolExecutor(
+            max_workers=min(4, len(normalized_workers)),
+            thread_name_prefix="norllama-mesh-probe",
+        ) as executor:
+            probed_workers = list(executor.map(probe_worker, normalized_workers))
+    else:
+        probed_workers = [probe_worker(worker) for worker in normalized_workers]
     healthy_workers = [item for item in probed_workers if item.get("reachable")]
     degraded = bool(probed_workers) and len(healthy_workers) < len(probed_workers)
     if healthy_workers:

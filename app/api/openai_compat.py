@@ -37,7 +37,12 @@ from app.services.proxy_observability import (
 router = APIRouter(tags=["openai_compat"])
 logger = logging.getLogger(__name__)
 MAX_PROXY_EVENT_CAPACITY_WINDOW = 200
-CAPACITY_MESH_PROBE_TIMEOUT_SECONDS = 3.0
+# A healthy forced refresh probes the front door and every registered worker.
+# The estate includes an intentionally offline fallback node, whose bounded
+# endpoint discovery can consume about eight seconds before the two resident
+# Spark workers are checked. Keep this below the route verifier's 20-second
+# request timeout while allowing the full healthy mesh snapshot to complete.
+CAPACITY_MESH_PROBE_TIMEOUT_SECONDS = 15.0
 GATEWAY_ROUTE_HEADER = "x-norman-gateway-route"
 GATEWAY_ROUTE_IDS = frozenset(
     {
