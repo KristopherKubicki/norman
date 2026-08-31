@@ -5451,6 +5451,53 @@ def test_openai_compat_responses_supplements_tui_mcp_tools_with_shell_contract(
     ] == ["openaiDeveloperDocs.search", "shell_command", "apply_patch"]
 
 
+def test_openai_compat_responses_converts_tui_shell_call_with_mcp_tools(monkeypatch):
+    import app.services.prompt_provider_facade as facade
+
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: _mock_local_chat(kwargs["messages"], kwargs["model"])
+        | {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"tool_call":{"name":"shell_command",'
+                            '"arguments":{"command":"git rev-parse HEAD"}}}'
+                        )
+                    }
+                }
+            ]
+        },
+    )
+
+    response = facade.execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "Inspect the working tree.",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "openaiDeveloperDocs.search",
+                    "parameters": {"type": "object"},
+                }
+            ],
+        },
+        trusted_context={"gateway_route": "cloudagent", "source_tui": "cloudagent"},
+    )
+
+    assert response["output_text"] == ""
+    assert response["output"][0]["type"] == "function_call"
+    assert response["output"][0]["name"] == "shell_command"
+    assert response["output"][0]["arguments"] == (
+        '{"command":"git rev-parse HEAD"}'
+    )
+
+
 def test_openai_compat_responses_replays_typed_message_after_tool_output(monkeypatch):
     import app.services.prompt_provider_facade as facade
 

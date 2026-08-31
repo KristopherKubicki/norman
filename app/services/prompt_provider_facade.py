@@ -2055,6 +2055,7 @@ def _response_tool_calls(
     *,
     provider_payload: Mapping[str, Any],
     normalized_output: NormalizedResponsesOutput | None = None,
+    allow_implicit_tools: bool = False,
 ) -> tuple[str, list[dict[str, Any]]]:
     tools = _tools(provider_payload)
     if normalized_output is not None and normalized_output.raw_text == text:
@@ -2070,7 +2071,9 @@ def _response_tool_calls(
             # Some Codex TUI request forms keep their executable tool registry
             # client-side and omit a top-level Responses tools list. The TUI still
             # validates the returned call before it can execute anything.
-            allow_implicit_tools="tools" not in provider_payload,
+            allow_implicit_tools=(
+                allow_implicit_tools or "tools" not in provider_payload
+            ),
             raw_calls=raw_calls,
         ),
     )
@@ -2088,6 +2091,7 @@ def _repeats_successful_tool_call(
         text,
         provider_payload=prepared.provider_payload,
         normalized_output=normalized_output,
+        allow_implicit_tools=prepared.implicit_tools,
     )
     return any(
         _function_call_signature(tool_call)
@@ -3750,6 +3754,7 @@ class PreparedResponsesExecution:
     client_metadata_ignored: bool
     store_requested: bool
     bridge_mode: str
+    implicit_tools: bool
 
 
 def _prepare_responses_execution(
@@ -3826,6 +3831,7 @@ def _prepare_responses_execution(
         client_metadata_ignored=client_metadata_ignored,
         store_requested=store_requested,
         bridge_mode=bridge_mode,
+        implicit_tools=implicit_tools,
     )
 
 
@@ -3849,6 +3855,7 @@ def _responses_response_from_chat(
         text,
         provider_payload=provider_payload,
         normalized_output=normalized_output,
+        allow_implicit_tools=prepared.implicit_tools,
     )
     visible_text = preamble if tool_calls else text
     output_items = _response_output_items(
