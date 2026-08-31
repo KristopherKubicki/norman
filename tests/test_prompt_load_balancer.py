@@ -5413,7 +5413,42 @@ def test_openai_compat_responses_does_not_inject_codex_tools_for_ordinary_calls(
     assert facade._implicit_codex_tui_tools_required(
         {"model": "norman-code", "input": "hello", "tools": []},
         {"source_tui": "cloudagent"},
-    ) is False
+    ) is True
+
+
+def test_openai_compat_responses_supplements_tui_mcp_tools_with_shell_contract(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+    prepared = facade._prepare_responses_execution(
+        {
+            "model": "norman-code",
+            "input": "Inspect the working tree.",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "openaiDeveloperDocs.search",
+                    "description": "Search documentation.",
+                    "parameters": {"type": "object"},
+                }
+            ],
+        },
+        trusted_context={"gateway_route": "cloudagent", "source_tui": "cloudagent"},
+    )
+
+    contract = next(
+        message
+        for message in prepared.messages
+        if facade._is_tool_contract_message(message)
+    )
+    assert [
+        tool["name"]
+        for tool in contract[facade.TOOL_CONTRACT_CONTEXT_MARKER]["tools"]
+    ] == ["openaiDeveloperDocs.search", "shell_command", "apply_patch"]
 
 
 def test_openai_compat_responses_replays_typed_message_after_tool_output(monkeypatch):

@@ -1294,8 +1294,13 @@ def _tool_contract_definition(
                 or {},
             }
         )
-    if not compact and implicit_tools:
-        compact.extend(dict(tool) for tool in CODEX_IMPLICIT_TUI_TOOLS)
+    if implicit_tools:
+        declared_names = {_clean(tool.get("name")) for tool in compact}
+        compact.extend(
+            dict(tool)
+            for tool in CODEX_IMPLICIT_TUI_TOOLS
+            if _clean(tool.get("name")) not in declared_names
+        )
     return compact
 
 
@@ -1410,9 +1415,7 @@ def _implicit_codex_tui_tools_required(
     """Supply Codex's built-in tools when its Responses request omits them."""
 
     context = _mapping(trusted_context)
-    return "tools" not in payload and bool(
-        _clean(context.get("source_tui") or context.get("gateway_route"))
-    )
+    return bool(_clean(context.get("source_tui") or context.get("gateway_route")))
 
 
 def _structured_output_message(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
