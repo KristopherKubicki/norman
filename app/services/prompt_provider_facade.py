@@ -2235,6 +2235,7 @@ def _tool_continuation_exhausted_error(
         error_type="server_error",
         code=code,
         norman={
+            "retryable": code == "tool_protocol_repair_exhausted",
             "responses_compatibility": {
                 "tool_chain": _tool_chain_telemetry(
                     context=prepared.tool_chain_context,
@@ -4373,7 +4374,11 @@ class FacadeResponsesStream:
                 invocation=self.invocation,
                 result=self.stream.result("".join(buffered_text_parts)),
             )
-            resolved = self._resolve_tool_continuation_response(chat_response)
+            try:
+                resolved = self._resolve_tool_continuation_response(chat_response)
+            except FacadeError as local_error:
+                yield from self._cloud_fallback_events(local_error)
+                return
             text = _choice_text(resolved)
             if text:
                 yield {"type": "text", "text": text}
