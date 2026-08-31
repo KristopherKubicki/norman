@@ -4162,6 +4162,107 @@ def test_openai_compat_responses_can_return_explicit_tool_call(monkeypatch):
     )
 
 
+def test_openai_compat_responses_recovers_mixed_standalone_tool_envelopes(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    model_text = "\n".join(
+        [
+            "I’m checking the queue health now.",
+            json.dumps(
+                {
+                    "tool_call": {
+                        "name": "exec_command",
+                        "arguments": {"cmd": "pwd"},
+                    }
+                }
+            ),
+            json.dumps(
+                {
+                    "tool_call": {
+                        "name": "mcp__ops_openbrand.session_start",
+                        "arguments": {
+                            "user_email": "kris@openbrand.com",
+                            "client_name": "Codex",
+                        },
+                    }
+                }
+            ),
+            "The authenticated session will provide the queue status.",
+        ]
+    )
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: _mock_local_chat(kwargs["messages"], kwargs["model"])
+        | {"choices": [{"message": {"content": model_text}}]},
+    )
+
+    response = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "How are the queues?",
+            "tools": [
+                {
+                    "type": "namespace",
+                    "name": "mcp__ops_openbrand",
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": "session_start",
+                            "description": "Start an Ops Portal session.",
+                            "parameters": {"type": "object"},
+                        }
+                    ],
+                }
+            ],
+        },
+        trusted_context={"source_tui": "codex-work"},
+    )
+
+    assert "tool_call" not in response["output_text"]
+    assert response["output_text"] == (
+        "I’m checking the queue health now.\n\n\n"
+        "The authenticated session will provide the queue status."
+    )
+    function_calls = [
+        item["name"] for item in response["output"] if item["type"] == "function_call"
+    ]
+    assert function_calls == [
+        "exec_command",
+        "mcp__ops_openbrand.session_start",
+    ]
+
+
+def test_responses_stream_normalizer_contains_mixed_tool_envelopes():
+    import app.services.prompt_provider_facade as facade
+
+    normalizer = facade.ResponsesStreamNormalizer()
+    assert normalizer.feed("I’m checking now.\n") == ["I’m checking now.\n"]
+    assert normalizer.feed(
+        '{"tool_call":{"name":"exec_command","arguments":{"cmd":"pwd"}}}'
+    ) == []
+    assert normalizer.feed("\n") == []
+    assert normalizer.feed(
+        '{"tool_call":{"name":"mcp__ops_openbrand.session_start",'
+        '"arguments":{"user_email":"kris@openbrand.com"}}}'
+    ) == []
+    assert normalizer.feed("\nSession started.") == []
+
+    normalized = normalizer.finalize()
+
+    assert normalized.visible_text == "I’m checking now.\n\n\nSession started."
+    assert [call["name"] for call in normalized.raw_tool_calls] == [
+        "exec_command",
+        "mcp__ops_openbrand.session_start",
+    ]
+    assert "tool_call" not in normalized.visible_text
+
+
 def test_openai_compat_responses_can_return_native_function_call(monkeypatch):
     import app.services.prompt_provider_facade as facade
 

@@ -1103,11 +1103,14 @@ def _tool_chain_context(
 def _trailing_json_tool_call_envelope(
     text: str,
 ) -> tuple[str, list[dict[str, Any]]]:
-    """Split an optional prose preamble from a final JSON tool envelope.
+    """Split assistant prose from one or more JSON tool envelopes.
 
     Some local models announce an action before emitting the tool JSON. The
-    envelope is only meaningful when it is a complete, standalone final object
-    so ordinary JSON answers remain assistant text.
+    preferred contract is one complete, standalone final object. A small class
+    of local-model failures instead emits several standalone envelopes, or adds
+    prose after an otherwise valid envelope. Recover those calls without
+    exposing their wire representation as assistant text. Ordinary JSON objects
+    remain text because only recognized tool-envelope payloads are removed.
     """
 
     if not text:
@@ -1141,7 +1144,43 @@ def _trailing_json_tool_call_envelope(
             preamble = text[:start]
             return (preamble if preamble.strip() else ""), calls
         start = text.rfind("{", 0, start)
-    return text, []
+    return _standalone_json_tool_call_envelopes(text)
+
+
+def _standalone_json_tool_call_envelopes(
+    text: str,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Remove complete standalone tool envelopes from otherwise visible text."""
+
+    decoder = json.JSONDecoder()
+    visible_parts: list[str] = []
+    calls: list[dict[str, Any]] = []
+    cursor = 0
+    search_from = 0
+    while search_from < len(text):
+        start = text.find("{", search_from)
+        if start < 0:
+            break
+        if start and not text[start - 1].isspace():
+            search_from = start + 1
+            continue
+        try:
+            payload, length = decoder.raw_decode(text[start:])
+        except (TypeError, ValueError):
+            search_from = start + 1
+            continue
+        envelope_calls = _tool_calls_from_envelope_payload(payload)
+        if not envelope_calls:
+            search_from = start + max(1, length)
+            continue
+        visible_parts.append(text[cursor:start])
+        calls.extend(envelope_calls)
+        cursor = start + length
+        search_from = cursor
+    if not calls:
+        return text, []
+    visible_parts.append(text[cursor:])
+    return "".join(visible_parts), calls
 
 
 def _trailing_fenced_json_tool_call_envelope(text: str) -> tuple[str, str] | None:
@@ -1319,6 +1358,9 @@ def _tool_contract_message(
             "When calling tools, return only one JSON object using either "
             '{"tool_call":{"name":"tool_name","arguments":{}}} or '
             '{"tool_calls":[{"name":"tool_name","arguments":{}}]}. '
+            "Never put prose before, between, or after tool JSON. If user "
+            "confirmation is required, ask for it without emitting any tool "
+            "JSON. Put multiple calls in the one tool_calls array. "
             "Use only a tool name declared below. After a tool result, "
             "continue with another tool only when the result establishes "
             "that additional work is needed; otherwise return the final "
@@ -1331,6 +1373,9 @@ def _tool_contract_message(
             "function is needed, emit exactly one JSON object using either "
             '{"tool_call":{"name":"tool_name","arguments":{}}} or '
             '{"tool_calls":[{"name":"tool_name","arguments":{}}]}. '
+            "Never put prose before, between, or after tool JSON. If user "
+            "confirmation is required, ask for it without emitting any tool "
+            "JSON. Put multiple calls in the one tool_calls array. "
             "Use only a declared tool name. Do not reply with an intention to "
             "inspect, run, check, or edit something when the next useful step "
             "is a tool call; emit that call now. Available tools: "
