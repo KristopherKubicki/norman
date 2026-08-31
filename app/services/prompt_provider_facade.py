@@ -2154,24 +2154,86 @@ _TOOL_CONTINUATION_REPAIR_MESSAGE = (
     "function call that is still necessary."
 )
 
+_TOOL_INTENTION_ONLY_PATTERN = re.compile(
+    r"(?is)^\s*(?:i(?:['’]ll|\s+will|['’]m|\s+am)|let\s+me)\b"
+    r".{0,320}\b(?:call|check|execute|inspect|query|read|run|start|use)\b"
+)
+_TOOL_REQUEST_PATTERN = re.compile(
+    r"(?is)\b(?:call|check|execute|inspect|query|read|run|search|start|use)\b"
+    r"|\bhow\s+(?:is|are)\b"
+)
+_TOOL_PROTOCOL_REPAIR_MESSAGE = (
+    "Your prior response only announced a tool action and did not call the tool. "
+    "If a tool is needed, emit exactly one JSON tool_call or tool_calls object now, "
+    "with no prose before or after it. Otherwise return the substantive final answer "
+    "without describing an action you have not performed."
+)
+
 
 def _tool_continuation_repair_messages(
     messages: list[dict[str, Any]],
+    *,
+    repair_message: str = _TOOL_CONTINUATION_REPAIR_MESSAGE,
 ) -> list[dict[str, Any]]:
     return [
         *messages,
-        {"role": "system", "content": _TOOL_CONTINUATION_REPAIR_MESSAGE},
+        {"role": "system", "content": repair_message},
     ]
+
+
+def _tool_intention_without_call(
+    text: str,
+    *,
+    prepared: PreparedResponsesExecution,
+) -> bool:
+    """Recognize a narrow no-op promise on a turn where tools are available."""
+
+    if not _tool_contract_definition(
+        prepared.provider_payload,
+        implicit_tools=prepared.implicit_tools,
+    ):
+        return False
+    _, tool_calls = _response_tool_calls(
+        text,
+        provider_payload=prepared.provider_payload,
+        allow_implicit_tools=prepared.implicit_tools,
+    )
+    return not tool_calls and bool(_TOOL_INTENTION_ONLY_PATTERN.search(text or ""))
+
+
+def _tool_use_requested(prepared: PreparedResponsesExecution) -> bool:
+    """Return whether the current user turn explicitly implies tool-backed work."""
+
+    available_tools = _tool_contract_definition(
+        prepared.provider_payload,
+        implicit_tools=prepared.implicit_tools,
+    )
+    if not available_tools:
+        return False
+    latest_user_text = ""
+    for message in reversed(prepared.messages):
+        if _clean(message.get("role")) != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            latest_user_text = content
+            break
+    lowered = latest_user_text.lower()
+    if any(_clean(tool.get("name")).lower() in lowered for tool in available_tools):
+        return True
+    return bool(_TOOL_REQUEST_PATTERN.search(latest_user_text))
 
 
 def _tool_continuation_exhausted_error(
     prepared: PreparedResponsesExecution,
+    *,
+    code: str = "tool_continuation_exhausted",
 ) -> FacadeError:
     return FacadeError(
-        "Tool continuation remained invalid after the bounded Norman repair.",
+        "Tool response remained invalid after the bounded Norman repair.",
         status_code=502,
         error_type="server_error",
-        code="tool_continuation_exhausted",
+        code=code,
         norman={
             "responses_compatibility": {
                 "tool_chain": _tool_chain_telemetry(
@@ -3707,22 +3769,40 @@ def _resolve_tool_continuation_response(
         _choice_text(resolved),
         prepared=prepared,
     )
-    if not repeats_successful_call:
+    intention_without_call = _tool_intention_without_call(
+        _choice_text(resolved),
+        prepared=prepared,
+    )
+    if not repeats_successful_call and not intention_without_call:
         return resolved, "normal", 0
-    if prepared.bridge_mode != GOVERNED_BRIDGE_MODE:
+    if repeats_successful_call and prepared.bridge_mode != GOVERNED_BRIDGE_MODE:
         return resolved, "passthrough", 0
+
+    repair_message = (
+        _TOOL_PROTOCOL_REPAIR_MESSAGE
+        if intention_without_call
+        else _TOOL_CONTINUATION_REPAIR_MESSAGE
+    )
 
     repaired = _execute_authorized_chat(
         provider_payload=prepared.route_payload,
         route_envelope=prepared.route_envelope,
-        messages=_tool_continuation_repair_messages(prepared.messages),
-        request_id=f"{request_id}-tool-continuation-repair",
+        messages=_tool_continuation_repair_messages(
+            prepared.messages,
+            repair_message=repair_message,
+        ),
+        request_id=f"{request_id}-tool-protocol-repair",
     )
     if _repeats_successful_tool_call(
         _choice_text(repaired),
         prepared=prepared,
     ):
         raise _tool_continuation_exhausted_error(prepared)
+    if _tool_intention_without_call(_choice_text(repaired), prepared=prepared):
+        raise _tool_continuation_exhausted_error(
+            prepared,
+            code="tool_protocol_repair_exhausted",
+        )
     return repaired, "repaired", 1
 
 
@@ -4019,7 +4099,7 @@ class FacadeResponsesStream:
         self._buffer_tool_continuation = (
             prepared.bridge_mode == GOVERNED_BRIDGE_MODE
             and bool(prepared.tool_chain_context.successful_call_signatures)
-        )
+        ) or _tool_use_requested(prepared)
 
     @property
     def model(self) -> str:

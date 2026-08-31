@@ -1983,8 +1983,8 @@ def test_openai_compat_responses_stream_preserves_action_prose_as_text(
         [
             json.dumps(
                 {
-                    "model": "qwen3-coder:30b",
-                    "response": "Let me check Jira and our data.",
+                        "model": "qwen3-coder:30b",
+                        "response": "A Jira health review would be the next step.",
                 }
             ),
             json.dumps(
@@ -2012,7 +2012,7 @@ def test_openai_compat_responses_stream_preserves_action_prose_as_text(
         headers=_proxy_headers(monkeypatch),
         json={
             "model": "norman-code",
-            "input": "Run checks on Jira and our data.",
+            "input": "Describe the next step for Jira and our data.",
             "stream": True,
             "tools": [
                 {
@@ -2042,8 +2042,8 @@ def test_openai_compat_responses_stream_preserves_action_prose_as_text(
     )
 
     assert len(invocations) == 1
-    assert "".join(deltas) == "Let me check Jira and our data."
-    assert completed["output_text"] == "Let me check Jira and our data."
+    assert "".join(deltas) == "A Jira health review would be the next step."
+    assert completed["output_text"] == "A Jira health review would be the next step."
     assert completed["output"][0]["type"] == "message"
     assert completed["norman"]["responses_compatibility"]["tool_calls_returned"] == 0
     assert response.closed is True
@@ -4261,6 +4261,100 @@ def test_responses_stream_normalizer_contains_mixed_tool_envelopes():
         "mcp__ops_openbrand.session_start",
     ]
     assert "tool_call" not in normalized.visible_text
+
+
+def test_openai_compat_responses_stream_repairs_tool_intention_without_call(
+    test_app,
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    upstream = _MockNativeStreamResponse(
+        [
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "response": "I'll run `pwd` once to get the directory.",
+                }
+            ),
+            json.dumps(
+                {
+                    "model": "qwen3-coder:30b",
+                    "done": True,
+                    "prompt_eval_count": 4,
+                    "eval_count": 2,
+                }
+            ),
+        ]
+    )
+    repair_invocations = []
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat_stream",
+        lambda **kwargs: norllama_gateway.NorllamaTextStream(
+            upstream,
+            model=kwargs["model"],
+        ),
+    )
+
+    def repair_chat(**kwargs):
+        repair_invocations.append(kwargs)
+        return _mock_local_chat(kwargs["messages"], kwargs["model"]) | {
+            "choices": [
+                {
+                    "message": {
+                        "content": (
+                            '{"tool_call":{"name":"exec_command",'
+                            '"arguments":{"cmd":"pwd"}}}'
+                        )
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(facade.norllama_gateway, "invoke_text_chat", repair_chat)
+
+    result = test_app.post(
+        "/v1/responses",
+        headers=_proxy_headers(monkeypatch),
+        json={
+            "model": "norman-code",
+            "input": "Use exec_command to run pwd exactly once.",
+            "stream": True,
+        },
+    )
+
+    assert result.status_code == 200
+    payloads = [
+        json.loads(data)
+        for event, data in _response_sse_events(result.text)
+        if event and data != "[DONE]"
+    ]
+    assert not any(
+        payload["type"] == "response.output_text.delta" for payload in payloads
+    )
+    function_call = next(
+        payload["item"]
+        for payload in payloads
+        if payload["type"] == "response.output_item.done"
+        and payload["item"]["type"] == "function_call"
+    )
+    completed = next(
+        payload["response"]
+        for payload in payloads
+        if payload["type"] == "response.completed"
+    )
+    assert function_call["name"] == "exec_command"
+    assert function_call["arguments"] == '{"cmd":"pwd"}'
+    assert completed["output_text"] == ""
+    assert completed["norman"]["responses_compatibility"]["tool_chain"][
+        "watchdog"
+    ] == {"state": "repaired", "attempts": 1}
+    assert len(repair_invocations) == 1
+    assert repair_invocations[0]["messages"][-1] == {
+        "role": "system",
+        "content": facade._TOOL_PROTOCOL_REPAIR_MESSAGE,
+    }
 
 
 def test_openai_compat_responses_can_return_native_function_call(monkeypatch):
