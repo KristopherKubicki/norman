@@ -5399,7 +5399,7 @@ def test_openai_compat_responses_adds_codex_tool_contract_when_omitted(
     )
     tools = contract[facade.TOOL_CONTRACT_CONTEXT_MARKER]["tools"]
 
-    assert [tool["name"] for tool in tools] == ["shell_command", "apply_patch"]
+    assert [tool["name"] for tool in tools] == ["exec_command", "apply_patch"]
     assert "emit that call now" in contract["content"]
 
 
@@ -5448,7 +5448,7 @@ def test_openai_compat_responses_supplements_tui_mcp_tools_with_shell_contract(
     assert [
         tool["name"]
         for tool in contract[facade.TOOL_CONTRACT_CONTEXT_MARKER]["tools"]
-    ] == ["openaiDeveloperDocs.search", "shell_command", "apply_patch"]
+    ] == ["openaiDeveloperDocs.search", "exec_command", "apply_patch"]
 
 
 def test_openai_compat_responses_converts_tui_shell_call_with_mcp_tools(monkeypatch):
@@ -5466,8 +5466,8 @@ def test_openai_compat_responses_converts_tui_shell_call_with_mcp_tools(monkeypa
                 {
                     "message": {
                         "content": (
-                            '{"tool_call":{"name":"shell_command",'
-                            '"arguments":{"command":"git rev-parse HEAD"}}}'
+                            '{"tool_call":{"name":"exec_command",'
+                            '"arguments":{"cmd":"git rev-parse HEAD"}}}'
                         )
                     }
                 }
@@ -5492,9 +5492,9 @@ def test_openai_compat_responses_converts_tui_shell_call_with_mcp_tools(monkeypa
 
     assert response["output_text"] == ""
     assert response["output"][0]["type"] == "function_call"
-    assert response["output"][0]["name"] == "shell_command"
+    assert response["output"][0]["name"] == "exec_command"
     assert response["output"][0]["arguments"] == (
-        '{"command":"git rev-parse HEAD"}'
+        '{"cmd":"git rev-parse HEAD"}'
     )
 
 

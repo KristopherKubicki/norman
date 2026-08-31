@@ -136,7 +136,7 @@ TOOL_OUTPUT_FAILURE_MARKERS = (
 )
 CODEX_IMPLICIT_TUI_TOOLS = (
     {
-        "name": "shell_command",
+        "name": "exec_command",
         "type": "function",
         "description": (
             "Run a shell command in the current workspace and return its output. "
@@ -146,10 +146,11 @@ CODEX_IMPLICIT_TUI_TOOLS = (
         "parameters": {
             "type": "object",
             "properties": {
-                "command": {"type": "string"},
-                "timeout_ms": {"type": "integer", "minimum": 1},
+                "cmd": {"type": "string"},
+                "yield_time_ms": {"type": "integer", "minimum": 1},
+                "max_output_tokens": {"type": "integer", "minimum": 1},
             },
-            "required": ["command"],
+            "required": ["cmd"],
             "additionalProperties": False,
         },
     },
@@ -2020,6 +2021,8 @@ def _extract_tool_calls(
     raw_calls: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     names = _tool_names(tools)
+    if allow_implicit_tools:
+        names.update(_clean(tool.get("name")) for tool in CODEX_IMPLICIT_TUI_TOOLS)
     if not text or (not names and not allow_implicit_tools):
         return []
     if raw_calls is None:
@@ -2032,7 +2035,7 @@ def _extract_tool_calls(
         if not name:
             continue
         arguments = raw.get("arguments", {})
-        if name not in names and not allow_implicit_tools:
+        if name not in names:
             continue
         call_id = _clean(raw.get("call_id")) or f"call_{uuid.uuid4().hex}"
         calls.append(
