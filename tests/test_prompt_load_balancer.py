@@ -4980,6 +4980,67 @@ def test_openai_compat_responses_repairs_repeated_declared_tool_call(
     }
 
 
+def test_openai_compat_responses_repairs_live_queue_clarification_without_call(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    invocations = []
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+
+    def fake_chat(**kwargs):
+        invocations.append(kwargs)
+        content = (
+            "I do not have a live queue result yet; please confirm the environment."
+            if len(invocations) == 1
+            else json.dumps(
+                {
+                    "tool_call": {
+                        "name": "session_start",
+                        "arguments": {
+                            "user_email": "kris@openbrand.com",
+                            "client_name": "Codex",
+                        },
+                    }
+                }
+            )
+        )
+        return _mock_local_chat(kwargs["messages"], kwargs["model"]) | {
+            "choices": [{"message": {"content": content}}]
+        }
+
+    monkeypatch.setattr(facade.norllama_gateway, "invoke_text_chat", fake_chat)
+    response = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "How are the queues? how is it going?",
+            "tools": [
+                {
+                    "type": "namespace",
+                    "name": "mcp__ops_openbrand",
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": "session_start",
+                            "parameters": {"type": "object"},
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert len(invocations) == 2
+    assert response["output_text"] == ""
+    assert response["output"][0]["name"] == "session_start"
+    assert response["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] == {
+        "state": "repaired",
+        "attempts": 1,
+    }
+
+
 def test_openai_compat_responses_remaps_reused_call_id_after_protocol_repair(
     monkeypatch,
 ):

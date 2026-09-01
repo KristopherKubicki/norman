@@ -2213,7 +2213,24 @@ _TOOL_CONTINUATION_REPAIR_MESSAGE = (
 
 _TOOL_REQUEST_PATTERN = re.compile(
     r"(?is)\b(?:call|check|execute|inspect|query|read|run|search|start|use)\b"
-    r"|\bhow\s+(?:is|are)\b"
+)
+_LIVE_OPERATIONAL_STATUS_PATTERN = re.compile(
+    r"(?is)(?:\bhow\s+(?:is|are)\b|\b(?:current|live)\b).{0,48}"
+    r"\b(?:backlogs?|deployments?|health|incidents?|production|queues?|services?|"
+    r"systems?|workers?)\b"
+    r"|\b(?:backlogs?|deployments?|incidents?|queues?|workers?)\b.{0,48}"
+    r"\b(?:going|health|status)\b"
+)
+_OPERATIONAL_BOOTSTRAP_TOOLS = frozenset(
+    {
+        "exec_command",
+        "list_capabilities",
+        "read_file",
+        "route_question",
+        "session_start",
+        "shell",
+        "tool_search",
+    }
 )
 _TOOL_PROTOCOL_REPAIR_MESSAGE = (
     "Your prior response announced unfinished work and cannot be a final answer. "
@@ -2239,9 +2256,12 @@ def _tool_intention_without_call(
     text: str,
     *,
     prepared: PreparedResponsesExecution,
+    enforce_live_request: bool = True,
 ) -> bool:
     """Recognize unfinished promised work when the model could call a tool."""
 
+    if not response_has_substantive_content(text):
+        return False
     if not _tool_contract_definition(
         prepared.provider_payload,
         implicit_tools=prepared.implicit_tools,
@@ -2252,7 +2272,49 @@ def _tool_intention_without_call(
         provider_payload=prepared.provider_payload,
         allow_implicit_tools=prepared.implicit_tools,
     )
-    return not tool_calls and response_promises_unfinished_work(text)
+    if tool_calls:
+        return False
+    if response_promises_unfinished_work(text):
+        return True
+    if (
+        not enforce_live_request
+        or not _live_operational_status_requested(prepared)
+        or not _domain_tool_contract_available(prepared)
+    ):
+        return False
+    return not any(
+        name not in _OPERATIONAL_BOOTSTRAP_TOOLS
+        for name, _ in prepared.tool_chain_context.successful_call_signatures
+    )
+
+
+def _latest_user_text(prepared: PreparedResponsesExecution) -> str:
+    for message in reversed(prepared.messages):
+        if _clean(message.get("role")) != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+    return ""
+
+
+def _live_operational_status_requested(prepared: PreparedResponsesExecution) -> bool:
+    """Recognize a request that needs current operational evidence."""
+
+    return bool(_LIVE_OPERATIONAL_STATUS_PATTERN.search(_latest_user_text(prepared)))
+
+
+def _domain_tool_contract_available(prepared: PreparedResponsesExecution) -> bool:
+    """Return whether the caller supplied a non-local operational tool surface."""
+
+    implicit_names = {_clean(tool.get("name")) for tool in CODEX_IMPLICIT_TUI_TOOLS}
+    for tool in _tools(prepared.provider_payload):
+        if _clean(tool.get("type")) == "namespace":
+            return True
+        name = _tool_name(tool)
+        if name and name not in implicit_names:
+            return True
+    return False
 
 
 def _tool_use_requested(prepared: PreparedResponsesExecution) -> bool:
@@ -2264,18 +2326,14 @@ def _tool_use_requested(prepared: PreparedResponsesExecution) -> bool:
     )
     if not available_tools:
         return False
-    latest_user_text = ""
-    for message in reversed(prepared.messages):
-        if _clean(message.get("role")) != "user":
-            continue
-        content = message.get("content")
-        if isinstance(content, str):
-            latest_user_text = content
-            break
+    latest_user_text = _latest_user_text(prepared)
     lowered = latest_user_text.lower()
     if any(_clean(tool.get("name")).lower() in lowered for tool in available_tools):
         return True
-    return bool(_TOOL_REQUEST_PATTERN.search(latest_user_text))
+    return bool(
+        _TOOL_REQUEST_PATTERN.search(latest_user_text)
+        or _LIVE_OPERATIONAL_STATUS_PATTERN.search(latest_user_text)
+    )
 
 
 def _tool_continuation_exhausted_error(
@@ -3882,7 +3940,11 @@ def _validate_authoritative_fallback_response(
     text = _choice_text(chat_response)
     if _repeats_successful_tool_call(text, prepared=prepared):
         raise _tool_continuation_exhausted_error(prepared)
-    if _tool_intention_without_call(text, prepared=prepared):
+    if _tool_intention_without_call(
+        text,
+        prepared=prepared,
+        enforce_live_request=False,
+    ):
         raise _tool_continuation_exhausted_error(
             prepared,
             code="tool_protocol_repair_exhausted",
