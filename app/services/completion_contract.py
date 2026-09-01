@@ -6,7 +6,7 @@ import re
 _ACTION = (
     r"audit|build|call|check|collect|complete|connect|continue|create|deploy|dig|"
     r"do|execute|finish|fix|identify|inspect|install|investigate|look|make|open|"
-    r"patch|pull|query|read|repair|report|research|resume|review|run|sample|scan|"
+    r"patch|pull|query|read|repair|report|research|resume|retry|review|run|sample|scan|"
     r"search|start|summarize|test|tighten|trace|try|update|use|verify|write"
 )
 

@@ -15,6 +15,7 @@ def test_detects_observed_direct_cli_short_stops() -> None:
         "Next, I will query the live queue and report back.",
         "We should inspect the worker health before answering.",
         "I'm still checking the live console state.",
+        "Let me retry with the correct bound email.",
     ]
 
     assert all(response_promises_unfinished_work(item) for item in responses)

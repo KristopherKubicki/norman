@@ -4300,10 +4300,7 @@ def test_openai_compat_responses_recovers_mixed_standalone_tool_envelopes(
     )
 
     assert "tool_call" not in response["output_text"]
-    assert response["output_text"] == (
-        "I’m checking the queue health now.\n\n\n\n"
-        "The authenticated session will provide the queue status."
-    )
+    assert response["output_text"] == ""
     function_calls = [
         item["name"] for item in response["output"] if item["type"] == "function_call"
     ]

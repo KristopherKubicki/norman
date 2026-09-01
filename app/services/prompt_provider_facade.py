@@ -4287,7 +4287,17 @@ def _responses_response_from_chat(
         allow_implicit_tools=prepared.implicit_tools,
         reserved_call_ids=set(prepared.function_call_items),
     )
-    visible_text = preamble if tool_calls else text
+    # Codex treats a message returned beside an MCP call as the terminal
+    # assistant item after executing that call. Suppress local narration on
+    # tool-bearing TUI responses so the result always comes back for another
+    # reasoning turn.
+    visible_text = (
+        ""
+        if tool_calls and prepared.implicit_tools
+        else preamble
+        if tool_calls
+        else text
+    )
     output_items = _response_output_items(
         text=visible_text,
         tool_calls=tool_calls,
