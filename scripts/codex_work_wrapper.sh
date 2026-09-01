@@ -13,11 +13,17 @@ readonly CODEX_WORK_PYTEST_XDIST_AUTO_WORKERS="${CODEX_WORK_PYTEST_XDIST_AUTO_WO
 readonly CODEX_WORK_PINNED_BIN="$HOME/.local/lib/codex-work-0.147.0/node_modules/.bin/codex"
 readonly OPS_OPENBRAND_MCP_LAUNCHER="$HOME/code/control_plane/scripts/with_ops_openbrand_mcp.sh"
 
-disable_apps=0
-if [[ "${1-}" == "--work-no-apps" ]]; then
-  disable_apps=1
-  shift
-fi
+disable_apps=1
+case "${1-}" in
+  --work-apps)
+    disable_apps=0
+    shift
+    ;;
+  --work-no-apps)
+    disable_apps=1
+    shift
+    ;;
+esac
 
 case "${1-}" in
   --print-route|--routes|--verify)
@@ -36,6 +42,8 @@ if [[ "${CODEX_ROUTER_RESOLVED:-}" != "1" ]]; then
   reentry_args=("$@")
   if [[ "$disable_apps" -eq 1 ]]; then
     reentry_args=(--work-no-apps "${reentry_args[@]}")
+  else
+    reentry_args=(--work-apps "${reentry_args[@]}")
   fi
   exec env CODEX_REAL_BIN="$CODEX_WORK_PINNED_BIN" python3 "$ROUTER_SCRIPT" \
     --launcher work \
@@ -196,6 +204,8 @@ if [[ "${CODEX_WORK_OPS_BINDING_LOADED:-}" != "1" ]]; then
   binding_args=("$@")
   if [[ "$disable_apps" -eq 1 ]]; then
     binding_args=(--work-no-apps "${binding_args[@]}")
+  else
+    binding_args=(--work-apps "${binding_args[@]}")
   fi
   exec env -u OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY \
     "$OPS_OPENBRAND_MCP_LAUNCHER" env \
