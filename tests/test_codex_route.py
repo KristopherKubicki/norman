@@ -397,6 +397,38 @@ def test_generated_profile_uses_brokered_auth_without_storing_a_token(
     assert not (profile_path.parent / "config.toml").exists()
 
 
+def test_generic_work_fallback_refreshes_tiered_model_contract(route_module, tmp_path):
+    profile = tmp_path / "work.config.toml"
+    profile.write_text(
+        "\n".join(
+            (
+                'model_provider = "norman"',
+                'model = "norman-code"',
+                'model_catalog_json = "/tmp/stale-catalog.json"',
+                "",
+                "[model_providers.norman]",
+                'base_url = "https://norman.home.arpa/v1"',
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    catalog_path = route_module.write_work_fallback_model_contract(tmp_path)
+
+    contents = profile.read_text(encoding="utf-8")
+    assert f'model = "{route_module.LUNA_ROUTER_MODEL}"' in contents
+    assert f'model_catalog_json = "{catalog_path}"' in contents
+    assert profile.stat().st_mode & 0o777 == 0o600
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    assert [model["slug"] for model in catalog["models"]] == [
+        route_module.QWEN_LOCAL_ROUTER_MODEL,
+        route_module.LUNA_ROUTER_MODEL,
+        route_module.TERRA_ROUTER_MODEL,
+        route_module.SOL_ROUTER_MODEL,
+    ]
+
+
 def test_work_profile_registers_ops_mcp_without_forcing_workflow(
     route_module, monkeypatch, tmp_path
 ):

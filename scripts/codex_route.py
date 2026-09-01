@@ -888,6 +888,47 @@ def refresh_model_catalog_cache(route: Route) -> bool:
     return True
 
 
+def write_work_fallback_model_contract(home: Path | None = None) -> Path:
+    """Refresh the generic codex-work selector without replacing its profile."""
+
+    work_home = (
+        home
+        or Path(os.getenv("CODEX_WORK_HOME", str(HOME / ".codex-work"))).expanduser()
+    )
+    work_home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    catalog_path = work_home / "router-model-catalog.json"
+    _write_private_text(
+        catalog_path,
+        json.dumps(routed_model_catalog(), indent=2, sort_keys=True) + "\n",
+    )
+    profile_path = work_home / "work.config.toml"
+    if not profile_path.is_file():
+        return catalog_path
+    contents = profile_path.read_text(encoding="utf-8")
+    if not re.search(r'(?m)^model_provider\s*=\s*"norman"\s*$', contents):
+        return catalog_path
+    contents, model_count = re.subn(
+        r'(?m)^model\s*=\s*"[^"]*"\s*$',
+        f'model = "{DEFAULT_ROUTER_MODEL}"',
+        contents,
+        count=1,
+    )
+    if model_count != 1:
+        raise RuntimeError("Managed codex-work profile is missing its model field.")
+    catalog_line = f"model_catalog_json = {json.dumps(str(catalog_path))}"
+    contents, catalog_count = re.subn(
+        r"(?m)^model_catalog_json\s*=.*$", catalog_line, contents, count=1
+    )
+    if catalog_count == 0:
+        contents = contents.replace(
+            f'model = "{DEFAULT_ROUTER_MODEL}"',
+            f'model = "{DEFAULT_ROUTER_MODEL}"\n{catalog_line}',
+            1,
+        )
+    _write_private_text(profile_path, contents)
+    return catalog_path
+
+
 def write_routed_tui_secret_policy(home: Path) -> Path:
     """Install managed secret rules without discarding route-local instructions."""
     path = home / "AGENTS.md"
@@ -1665,6 +1706,7 @@ def exec_work_fallback(reenter: str, arguments: list[str]) -> None:
     reentry_path = Path(reenter).expanduser().resolve()
     if not reentry_path.is_file() or not os.access(reentry_path, os.X_OK):
         raise RuntimeError(f"Work fallback launcher is not executable: {reentry_path}")
+    write_work_fallback_model_contract()
     environment = os.environ.copy()
     environment["CODEX_ROUTER_RESOLVED"] = "1"
     environment["CODEX_REAL_BIN"] = str(resolve_real_codex())
