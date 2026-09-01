@@ -1361,7 +1361,7 @@ def test_openai_compat_responses_stream_keeps_native_function_call_out_of_text(
     native_call_id = "call_native_ops_health"
     native_item_id = "fc_native_ops_health"
     native_arguments = "{}"
-    native_name = "mcp__ops_openbrand.system_health"
+    native_name = "mcp__ops_openbrand__system_health"
     response = _MockNativeStreamResponse(
         [
             json.dumps(
@@ -4296,7 +4296,7 @@ def test_openai_compat_responses_recovers_mixed_standalone_tool_envelopes(
     ]
     assert function_calls == [
         "exec_command",
-        "mcp__ops_openbrand.session_start",
+        "mcp__ops_openbrand__session_start",
     ]
 
 
@@ -4548,7 +4548,7 @@ def test_openai_compat_responses_can_return_declared_mcp_namespace_function_call
     native_call_id = "call_ops_health"
     native_item_id = "fc_ops_health"
     native_arguments = "{}"
-    native_name = "mcp__ops_openbrand.system_health"
+    native_name = "mcp__ops_openbrand__system_health"
     monkeypatch.setattr(
         facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
     )
@@ -4653,13 +4653,13 @@ def test_openai_compat_responses_flattens_namespace_tool_contract():
     tools = contract[0][facade.TOOL_CONTRACT_CONTEXT_MARKER]["tools"]
     assert tools == [
         {
-            "name": "mcp__ops_openbrand.system_health",
+            "name": "mcp__ops_openbrand__system_health",
             "type": "function",
             "description": "Read the current system health.",
             "parameters": {"type": "object"},
         },
         {
-            "name": "mcp__ops_openbrand.data_status_get",
+            "name": "mcp__ops_openbrand__data_status_get",
             "type": "function",
             "description": "Check source freshness.",
             "parameters": {

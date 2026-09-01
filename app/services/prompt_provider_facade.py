@@ -1020,9 +1020,36 @@ def _namespace_member_name(namespace: str, member: Mapping[str, Any]) -> str:
     member_name = _tool_name(member)
     if not member_name:
         return ""
-    if member_name.startswith(f"{namespace}."):
+    canonical_prefix = f"{namespace}__"
+    if member_name.startswith(canonical_prefix):
         return member_name
-    return f"{namespace}.{member_name}"
+    dotted_prefix = f"{namespace}."
+    if member_name.startswith(dotted_prefix):
+        member_name = member_name.removeprefix(dotted_prefix)
+    return f"{canonical_prefix}{member_name}"
+
+
+def _canonical_tool_call_name(
+    name: str,
+    *,
+    tools: list[dict[str, Any]],
+    declared_names: set[str],
+) -> str:
+    """Normalize legacy dotted namespace calls to Codex's MCP separator."""
+
+    if name in declared_names:
+        return name
+    for tool in tools:
+        if _clean(tool.get("type")) != "namespace":
+            continue
+        namespace = _clean(tool.get("name"))
+        dotted_prefix = f"{namespace}."
+        if not namespace or not name.startswith(dotted_prefix):
+            continue
+        candidate = f"{namespace}__{name.removeprefix(dotted_prefix)}"
+        if candidate in declared_names:
+            return candidate
+    return name
 
 
 def _tool_names(tools: list[dict[str, Any]]) -> set[str]:
@@ -2088,7 +2115,11 @@ def _extract_tool_calls(
     for raw in raw_calls:
         if not isinstance(raw, Mapping):
             continue
-        name = _clean(raw.get("name"))
+        name = _canonical_tool_call_name(
+            _clean(raw.get("name")),
+            tools=tools,
+            declared_names=names,
+        )
         if not name:
             continue
         arguments = raw.get("arguments", {})
