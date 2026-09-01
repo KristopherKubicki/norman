@@ -2239,6 +2239,13 @@ _TOOL_PROTOCOL_REPAIR_MESSAGE = (
     "with the requested outcome or an explicit human-input blocker. Do not describe "
     "an action you have not performed."
 )
+_LIVE_OPERATIONAL_TOOL_REPAIR_MESSAGE = (
+    "The user explicitly requested current operational status, and the prior response "
+    "did not provide tool-backed evidence. Emit exactly one available domain tool call "
+    "now, with no prose before or after it. Honor any environment and bound identity "
+    "already supplied in the conversation; do not ask the user to repeat them. Do not "
+    "call shell, exec_command, read_file, or tool_search merely to inspect more setup."
+)
 
 
 def _tool_continuation_repair_messages(
@@ -3902,11 +3909,12 @@ def _resolve_tool_continuation_response(
     if repeats_successful_call and prepared.bridge_mode != GOVERNED_BRIDGE_MODE:
         return resolved, "passthrough", 0
 
-    repair_message = (
-        _TOOL_PROTOCOL_REPAIR_MESSAGE
-        if intention_without_call
-        else _TOOL_CONTINUATION_REPAIR_MESSAGE
-    )
+    if intention_without_call and _live_operational_status_requested(prepared):
+        repair_message = _LIVE_OPERATIONAL_TOOL_REPAIR_MESSAGE
+    elif intention_without_call:
+        repair_message = _TOOL_PROTOCOL_REPAIR_MESSAGE
+    else:
+        repair_message = _TOOL_CONTINUATION_REPAIR_MESSAGE
 
     repaired = _execute_authorized_chat(
         provider_payload=prepared.route_payload,

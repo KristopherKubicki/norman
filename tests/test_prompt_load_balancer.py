@@ -5039,6 +5039,10 @@ def test_openai_compat_responses_repairs_live_queue_clarification_without_call(
         "state": "repaired",
         "attempts": 1,
     }
+    assert invocations[-1]["messages"][-1] == {
+        "role": "system",
+        "content": facade._LIVE_OPERATIONAL_TOOL_REPAIR_MESSAGE,
+    }
 
 
 def test_openai_compat_responses_remaps_reused_call_id_after_protocol_repair(
