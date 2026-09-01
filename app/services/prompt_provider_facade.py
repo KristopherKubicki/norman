@@ -20,6 +20,7 @@ from app.core.config import settings
 from app.core.estate_registry import worker_id_from_endpoint
 from app.services.console_runtime.adapters.bedrock import BedrockModelAdapter
 from app.services.console_runtime.types import ModelBudget, ModelRequest, ModelResult
+from app.services.completion_contract import response_promises_unfinished_work
 from app.services.norllama import capacity as norllama_capacity
 from app.services.norllama import gateway as norllama_gateway
 from app.services.norllama.route_policy import (
@@ -2154,19 +2155,16 @@ _TOOL_CONTINUATION_REPAIR_MESSAGE = (
     "function call that is still necessary."
 )
 
-_TOOL_INTENTION_ONLY_PATTERN = re.compile(
-    r"(?is)^\s*(?:i(?:['’]ll|\s+will|['’]m|\s+am)|let\s+me)\b"
-    r".{0,320}\b(?:call|check|execute|inspect|query|read|run|start|use)\b"
-)
 _TOOL_REQUEST_PATTERN = re.compile(
     r"(?is)\b(?:call|check|execute|inspect|query|read|run|search|start|use)\b"
     r"|\bhow\s+(?:is|are)\b"
 )
 _TOOL_PROTOCOL_REPAIR_MESSAGE = (
-    "Your prior response only announced a tool action and did not call the tool. "
+    "Your prior response announced unfinished work and cannot be a final answer. "
     "If a tool is needed, emit exactly one JSON tool_call or tool_calls object now, "
     "with no prose before or after it. Otherwise return the substantive final answer "
-    "without describing an action you have not performed."
+    "with the requested outcome or an explicit human-input blocker. Do not describe "
+    "an action you have not performed."
 )
 
 
@@ -2186,7 +2184,7 @@ def _tool_intention_without_call(
     *,
     prepared: PreparedResponsesExecution,
 ) -> bool:
-    """Recognize a narrow no-op promise on a turn where tools are available."""
+    """Recognize unfinished promised work when the model could call a tool."""
 
     if not _tool_contract_definition(
         prepared.provider_payload,
@@ -2198,7 +2196,7 @@ def _tool_intention_without_call(
         provider_payload=prepared.provider_payload,
         allow_implicit_tools=prepared.implicit_tools,
     )
-    return not tool_calls and bool(_TOOL_INTENTION_ONLY_PATTERN.search(text or ""))
+    return not tool_calls and response_promises_unfinished_work(text)
 
 
 def _tool_use_requested(prepared: PreparedResponsesExecution) -> bool:
@@ -2244,7 +2242,7 @@ def _tool_continuation_exhausted_error(
                     watchdog_state="exhausted",
                     watchdog_attempts=1,
                 )
-            }
+            },
         },
     )
 
@@ -2600,6 +2598,10 @@ def _facade_route_receipt(
     route_receipt["production_route_eligible"] = False
     route_receipt["request_production_route_eligible"] = False
     route_receipt["completion_requested"] = True
+    unfinished_work = response_promises_unfinished_work(text)
+    if unfinished_work:
+        route_receipt["output_shape"] = "progress_only"
+        route_receipt["verifier_result"] = "incomplete"
     route_receipt["receipt_audit"] = audit_route_receipt(route_receipt)
     route_receipt["completion_gate"] = {
         "gate_passed": receipt_completion_gate_passes(
@@ -2608,6 +2610,7 @@ def _facade_route_receipt(
             require_verifier=True,
         ),
         "require_verifier": True,
+        "unfinished_work_detected": unfinished_work,
     }
     receipt["route_receipt"] = route_receipt
     return receipt
@@ -3807,6 +3810,24 @@ def _resolve_tool_continuation_response(
     return repaired, "repaired", 1
 
 
+def _validate_authoritative_fallback_response(
+    *,
+    prepared: PreparedResponsesExecution,
+    chat_response: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Reject incomplete fallback output instead of handing it back to local repair."""
+
+    text = _choice_text(chat_response)
+    if _repeats_successful_tool_call(text, prepared=prepared):
+        raise _tool_continuation_exhausted_error(prepared)
+    if _tool_intention_without_call(text, prepared=prepared):
+        raise _tool_continuation_exhausted_error(
+            prepared,
+            code="tool_protocol_repair_exhausted",
+        )
+    return dict(chat_response)
+
+
 def _open_authorized_chat_stream(
     *,
     provider_payload: Mapping[str, Any],
@@ -4288,8 +4309,9 @@ class FacadeResponsesStream:
                 ),
             },
         )
-        chat_response = self._resolve_tool_continuation_response(
-            self._cloud_chat_response
+        chat_response = _validate_authoritative_fallback_response(
+            prepared=self.prepared,
+            chat_response=self._cloud_chat_response,
         )
         text = _choice_text(chat_response)
         if text:
@@ -4450,6 +4472,51 @@ class FacadeResponsesStream:
             self.stream.close()
 
 
+def _resolve_responses_with_fallback(
+    *,
+    prepared: PreparedResponsesExecution,
+    chat_response: Mapping[str, Any],
+    request_id: str,
+) -> tuple[dict[str, Any], str, int]:
+    """Resolve a non-stream response and keep cloud fallback final-authoritative."""
+
+    try:
+        return _resolve_tool_continuation_response(
+            prepared=prepared,
+            chat_response=chat_response,
+            request_id=request_id,
+        )
+    except FacadeError as local_error:
+        plan = _cloud_fallback_plan(
+            provider_payload=prepared.route_payload,
+            route_envelope=prepared.route_envelope,
+            local_error=local_error,
+        )
+        if plan is None:
+            raise
+        invocation = _prepare_authorized_chat_invocation(
+            provider_payload=prepared.route_payload,
+            route_envelope=prepared.route_envelope,
+            request_id=request_id,
+        )
+        fallback = _execute_cloud_fallback(
+            plan=plan,
+            provider_payload=prepared.route_payload,
+            route_envelope=prepared.route_envelope,
+            messages=prepared.messages,
+            invocation=invocation,
+            local_error=local_error,
+        )
+        return (
+            _validate_authoritative_fallback_response(
+                prepared=prepared,
+                chat_response=fallback,
+            ),
+            "cloud_fallback",
+            1,
+        )
+
+
 def execute_openai_responses_facade(
     payload: Mapping[str, Any],
     *,
@@ -4473,7 +4540,7 @@ def execute_openai_responses_facade(
         chat_response,
         watchdog_state,
         watchdog_attempts,
-    ) = _resolve_tool_continuation_response(
+    ) = _resolve_responses_with_fallback(
         prepared=prepared,
         chat_response=chat_response,
         request_id=facade_request_id,

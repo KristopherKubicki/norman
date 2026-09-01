@@ -43,6 +43,13 @@ except Exception:
     SHARED_TUI_ROUTE_INTENT = None
 
 try:
+    from app.services.completion_contract import (
+        response_promises_unfinished_work as shared_response_promises_unfinished_work,
+    )
+except Exception:
+    shared_response_promises_unfinished_work = None
+
+try:
     from app.services.tui_waterfall import (
         BEDROCK_EMERGENCY_TIERS,
         build_tui_waterfall,
@@ -11431,8 +11438,9 @@ def context_preflight_prompt_context(
 
 
 PROMISED_FOLLOWUP_RE = re.compile(
-    r"\b(?:i(?:['\u2019]ll| will)|i(?:['\u2019]m| am) going to)\s+"
-    r"(?:(?:now|next|then|still)\s+)?"
+    r"\b(?:i(?:['\u2019]ll| will)|i(?:['\u2019]m| am) going to|"
+    r"(?:i|we) (?:need|have|must) to|(?:i|we) should|let me)\s+"
+    r"(?:(?:first|now|next|then|still)\s+)?"
     r"(?:run|check|dig|look|verify|test|inspect|patch|fix|deploy|research|trace|"
     r"investigate|write|create|update|make|pull|query|audit|review|try|finish|"
     r"collect|execute|identify|install|continue|start|resume|complete|sample|do|"
@@ -11474,6 +11482,8 @@ def response_needs_next_action_plan(response: str) -> bool:
 
 
 def response_promises_unfinished_work(response: str) -> bool:
+    if shared_response_promises_unfinished_work is not None:
+        return shared_response_promises_unfinished_work(response)
     clean = " ".join((response or "").split())
     if not clean:
         return False
