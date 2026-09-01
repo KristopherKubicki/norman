@@ -55,10 +55,24 @@ LOCAL_BIN = HOME / ".local" / "bin"
 LOCAL_CODEX_WRAPPER = LOCAL_BIN / "codex"
 LOCAL_CODEX_WORK_WRAPPER = LOCAL_BIN / "codex-work"
 ROUTER_PROFILE_PREFIX = "router-"
-DEFAULT_ROUTER_MODEL = "norman-code"
+QWEN_LOCAL_ROUTER_MODEL = "norman-code-qwen-local"
+LUNA_ROUTER_MODEL = "norman-code-luna"
+TERRA_ROUTER_MODEL = "norman-code-terra"
+SOL_ROUTER_MODEL = "norman-code-sol"
+DEFAULT_ROUTER_MODEL = LUNA_ROUTER_MODEL
 GOVERNED_ROUTER_MODEL = "norman-code-governed"
-ROUTER_MODELS = frozenset({DEFAULT_ROUTER_MODEL, GOVERNED_ROUTER_MODEL})
-MODEL_CATALOG_CONTRACT_VERSION = "2026-08-transparent-bridge-v3"
+LEGACY_ROUTER_MODEL = "norman-code"
+ROUTER_MODELS = frozenset(
+    {
+        QWEN_LOCAL_ROUTER_MODEL,
+        LUNA_ROUTER_MODEL,
+        TERRA_ROUTER_MODEL,
+        SOL_ROUTER_MODEL,
+        LEGACY_ROUTER_MODEL,
+        GOVERNED_ROUTER_MODEL,
+    }
+)
+MODEL_CATALOG_CONTRACT_VERSION = "2026-08-tiered-code-router-v1"
 REQUIRED_CODEX_MODEL_CAPABILITIES = {
     "shell_type": "shell_command",
     "apply_patch_tool_type": "freeform",
@@ -454,9 +468,8 @@ def route_arguments_error(route: Route, arguments: Sequence[str]) -> str:
 
     if any(model not in ROUTER_MODELS for model in explicit_models(arguments)):
         return (
-            f"{route.key} only supports the {DEFAULT_ROUTER_MODEL!r} or "
-            f"{GOVERNED_ROUTER_MODEL!r} TUI models; the gateway selects its "
-            "approved fallback so coding tools remain available."
+            f"{route.key} only supports Norman's Qwen Local, Luna, Terra, or "
+            "Sol coding models; choose one from the TUI model selector."
         )
 
     routed_keys = {
@@ -756,26 +769,39 @@ def _routed_model_catalog_entry(
 
 
 def routed_model_catalog() -> dict[str, object]:
-    """Return the transparent default and an explicit governed bridge mode."""
+    """Return the explicit local and cloud coding tiers shown by Codex."""
     return {
         "models": [
             _routed_model_catalog_entry(
-                slug=DEFAULT_ROUTER_MODEL,
-                display_name="Norman Code",
-                description=(
-                    "Transparent local text-adapter coding route with approved "
-                    "local-first cloud fallback."
-                ),
+                slug=QWEN_LOCAL_ROUTER_MODEL,
+                display_name="Norman Code — Qwen Local",
+                description=("Local Qwen coding lane with no cloud model invocation."),
                 priority=1,
             ),
             _routed_model_catalog_entry(
-                slug=GOVERNED_ROUTER_MODEL,
-                display_name="Norman Code (Governed)",
+                slug=LUNA_ROUTER_MODEL,
+                display_name="Norman Code — Luna",
                 description=(
-                    "Norman coding route with explicit governed tool-bridge "
-                    "behavior."
+                    "Economical cloud coding lane with Qwen preflight and checking."
                 ),
                 priority=2,
+            ),
+            _routed_model_catalog_entry(
+                slug=TERRA_ROUTER_MODEL,
+                display_name="Norman Code — Terra",
+                description=(
+                    "Balanced intelligence lane with Qwen preflight and checking."
+                ),
+                priority=3,
+            ),
+            _routed_model_catalog_entry(
+                slug=SOL_ROUTER_MODEL,
+                display_name="Norman Code — Sol",
+                description=(
+                    "Explicit flagship lane with Qwen preflight and checking; "
+                    "never selected as an automatic fallback."
+                ),
+                priority=4,
             ),
         ]
     }
@@ -1141,7 +1167,7 @@ def gateway_get_json(
 def verify_norman_capacity(route: Route, *, token: str) -> tuple[bool, str]:
     """Report Norman coding capacity and whether approved cloud fallback exists."""
 
-    query = urllib.parse.urlencode({"model": DEFAULT_ROUTER_MODEL})
+    query = urllib.parse.urlencode({"model": QWEN_LOCAL_ROUTER_MODEL})
     status, payload, detail = gateway_get_json(
         route.endpoint,
         f"norman/capacity?{query}",

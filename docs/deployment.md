@@ -269,6 +269,22 @@ NVM Codex binary in `.bashrc` and any existing
 `.bash_profile`. Mapped checkouts fail closed if the wrong launcher or a
 provider-changing override is supplied.
 
+The managed model selector exposes four coding routes:
+
+| Selector model | Role | Cloud behavior |
+| --- | --- | --- |
+| `norman-code-qwen-local` | Zero-cloud local coding | Never invokes a cloud model. |
+| `norman-code-luna` | Economical default | Explicit Luna request with bounded local Qwen preflight and checking. |
+| `norman-code-terra` | Balanced escalation | Explicit Terra request with bounded local Qwen preflight and checking. |
+| `norman-code-sol` | Flagship exception | Explicit-only Sol request, never an automatic fallback, capped at 16,384 output tokens, with local Qwen preflight and checking. |
+
+The legacy `norman-code` and `norman-code-governed` aliases remain accepted for
+existing sessions but are omitted from the selector. A fresh profile defaults
+to Luna. Changing models is an operator decision: Qwen recommendations are
+advisory and do not silently escalate Luna or Terra to Sol. Guardrail receipts
+record both local checks and report `unavailable` when Qwen cannot run; the
+selected cloud request remains usable so a Spark outage does not strand work.
+
 Every mapped TUI needs a matching logical Norman Keys alias:
 
 ```text
@@ -474,12 +490,13 @@ failing repeatedly.
 
 ### Norman Codex Capacity Contract
 
-`norman-code` is local-first. Before an interactive session starts, the
+The launch preflight always checks the Qwen coding lane. Before an interactive
+session starts, the
 launcher obtains one brokered gateway token and checks:
 
 1. `/v1/models` accepts that token.
-2. `/v1/norman/capacity?model=norman-code` reports a reachable Spark that
-   advertises the coding model.
+2. `/v1/norman/capacity?model=norman-code-qwen-local` reports a reachable Spark
+   that advertises the coding model.
 
 The capacity endpoint performs a fresh mesh probe and checks the bounded
 recent local facade-outcome window; it does not send a prompt, load a model,
@@ -524,7 +541,7 @@ worker counts plus whether the coding lane is redundant, limited to one worker,
 or unavailable. It intentionally treats the Mac mini fallback node as
 ineligible for `norman-code`.
 
-For `norman-code` only, the `/v1/responses` facade makes one server-owned
+For the legacy `norman-code` alias only, the `/v1/responses` facade makes one server-owned
 Bedrock retry when a retryable local failure occurs before the local model has
 emitted text. The fallback is buffered, so the response stream first reports
 that the retry has started and then emits the cloud result. It never switches

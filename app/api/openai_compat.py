@@ -384,29 +384,42 @@ def _codex_model_catalog() -> list[dict[str, Any]]:
     return [
         {
             **common,
-            "slug": "norman-code",
-            "display_name": "Norman Code",
-            "description": "Norman transparent local-first coding route.",
+            "slug": "norman-code-qwen-local",
+            "display_name": "Norman Code — Qwen Local",
+            "description": "Local Qwen coding lane with no cloud invocation.",
             "priority": 1,
-            # Codex uses these capabilities to provision its local coding tools.
             "apply_patch_tool_type": "freeform",
             "supports_parallel_tool_calls": True,
         },
         {
             **common,
-            "slug": "norman-code-governed",
-            "display_name": "Norman Code (Governed)",
-            "description": "Norman coding route with explicit governed tool behavior.",
+            "slug": "norman-code-luna",
+            "display_name": "Norman Code — Luna",
+            "description": "Economical cloud lane with Qwen preflight and checking.",
             "priority": 2,
             "apply_patch_tool_type": "freeform",
             "supports_parallel_tool_calls": True,
         },
         {
             **common,
-            "slug": "norman-local",
-            "display_name": "Norman Local",
-            "description": "Norman local text route.",
+            "slug": "norman-code-terra",
+            "display_name": "Norman Code — Terra",
+            "description": "Balanced cloud lane with Qwen preflight and checking.",
             "priority": 3,
+            "apply_patch_tool_type": "freeform",
+            "supports_parallel_tool_calls": True,
+        },
+        {
+            **common,
+            "slug": "norman-code-sol",
+            "display_name": "Norman Code — Sol",
+            "description": (
+                "Explicit flagship lane with Qwen preflight and checking; "
+                "never an automatic fallback."
+            ),
+            "priority": 4,
+            "apply_patch_tool_type": "freeform",
+            "supports_parallel_tool_calls": True,
         },
     ]
 
@@ -427,30 +440,19 @@ async def openai_compat_models(request: Request):
         "object": "list",
         "data": [
             {
-                "id": "norman-code",
+                "id": model["slug"],
                 "object": "model",
                 "created": 0,
                 "owned_by": "norman",
-            },
-            {
-                "id": "norman-code-governed",
-                "object": "model",
-                "created": 0,
-                "owned_by": "norman",
-            },
-            {
-                "id": "norman-local",
-                "object": "model",
-                "created": 0,
-                "owned_by": "norman",
-            },
+            }
+            for model in codex_models
         ],
         "models": codex_models,
         "norman": {
             "schema": "norman.openai-compatible-models.v1",
             "base_url": "/v1",
             "local_first": True,
-            "cloud_forwarding": False,
+            "cloud_forwarding": True,
             "capabilities": capabilities,
             "gateway": _gateway_context(gateway_route),
         },

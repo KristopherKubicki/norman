@@ -112,6 +112,12 @@ ROUTE_POLICY_FALLBACKS = {
     "fallback_reason_required": True,
 }
 
+NORMAN_CODE_CLOUD_ALIASES = {
+    "economy": "norman-code-luna",
+    "authority": "norman-code-terra",
+    "frontier": "norman-code-sol",
+}
+
 
 def _explicit_cloud_models() -> dict[str, dict[str, str]]:
     selections: dict[str, dict[str, str]] = {}
@@ -126,6 +132,13 @@ def _explicit_cloud_models() -> dict[str, dict[str, str]]:
                 "lane": "coder",
                 "role": role,
             }
+        norman_alias = NORMAN_CODE_CLOUD_ALIASES[role]
+        selections[norman_alias] = {
+            "provider": provider,
+            "model": model,
+            "lane": "coder",
+            "role": role,
+        }
     return selections
 
 

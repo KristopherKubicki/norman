@@ -225,15 +225,15 @@ def test_mapped_checkout_rejects_profile_or_provider_overrides(
     (
         (
             ["--model", "gpt-5.6-terra"],
-            "only supports the 'norman-code' or 'norman-code-governed' TUI models",
+            "only supports Norman's Qwen Local, Luna, Terra, or Sol coding models",
         ),
         (
             ["--model=gpt-5.6-terra"],
-            "only supports the 'norman-code' or 'norman-code-governed' TUI models",
+            "only supports Norman's Qwen Local, Luna, Terra, or Sol coding models",
         ),
         (
             ["-mgpt-5.6-terra"],
-            "only supports the 'norman-code' or 'norman-code-governed' TUI models",
+            "only supports Norman's Qwen Local, Luna, Terra, or Sol coding models",
         ),
         (["--config", 'model="gpt-5.6-terra"'], "does not allow --config"),
         (
@@ -252,7 +252,17 @@ def test_mapped_checkout_rejects_model_or_catalog_overrides(
     assert expected in message
 
 
-@pytest.mark.parametrize("model_name", ("norman-code", "norman-code-governed"))
+@pytest.mark.parametrize(
+    "model_name",
+    (
+        "norman-code-qwen-local",
+        "norman-code-luna",
+        "norman-code-terra",
+        "norman-code-sol",
+        "norman-code",
+        "norman-code-governed",
+    ),
+)
 def test_mapped_checkout_allows_the_managed_models(route_module, model_name):
     route = route_by_key(route_module, "norman")
 
@@ -372,8 +382,10 @@ def test_generated_profile_uses_brokered_auth_without_storing_a_token(
     catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
     assert catalog_path.stat().st_mode & 0o777 == 0o600
     assert [model["slug"] for model in catalog["models"]] == [
-        "norman-code",
-        "norman-code-governed",
+        "norman-code-qwen-local",
+        "norman-code-luna",
+        "norman-code-terra",
+        "norman-code-sol",
     ]
     assert catalog["models"][0]["apply_patch_tool_type"] == "freeform"
     assert catalog["models"][0]["supports_parallel_tool_calls"] is True
@@ -607,7 +619,7 @@ def test_generated_profile_restores_managed_model_and_refreshes_stale_catalog_ca
     route_module.write_gateway_profile(route)
 
     contents = profile.read_text(encoding="utf-8")
-    assert 'model = "norman-code"' in contents
+    assert f'model = "{route_module.DEFAULT_ROUTER_MODEL}"' in contents
     assert "gpt-5.6-terra" not in contents
     assert not cache.exists()
     backups = list(home.glob("models_cache.json.stale-*"))
@@ -727,7 +739,7 @@ def test_mapped_route_verify_checks_models_then_local_capacity_once(
         (route.endpoint, "models", "short-lived-token"),
         (
             route.endpoint,
-            "norman/capacity?model=norman-code",
+            f"norman/capacity?model={route_module.QWEN_LOCAL_ROUTER_MODEL}",
             "short-lived-token",
         ),
     ]
@@ -762,7 +774,7 @@ def test_norman_route_verify_checks_models_then_local_capacity_once(
         (route.endpoint, "models", "short-lived-token"),
         (
             route.endpoint,
-            "norman/capacity?model=norman-code",
+            f"norman/capacity?model={route_module.QWEN_LOCAL_ROUTER_MODEL}",
             "short-lived-token",
         ),
     ]
@@ -784,7 +796,7 @@ def test_route_verify_rejects_model_catalog_without_coding_tools(
                 "object": "list",
                 "models": [
                     {
-                        "slug": "norman-code",
+                        "slug": route_module.DEFAULT_ROUTER_MODEL,
                         "shell_type": "shell_command",
                         "apply_patch_tool_type": None,
                         "supports_parallel_tool_calls": False,
@@ -798,7 +810,8 @@ def test_route_verify_rejects_model_catalog_without_coding_tools(
     assert route_module.verify_route(route) == (
         False,
         "gateway model catalog is incompatible with local coding tools: "
-        "'norman-code' advertises apply_patch_tool_type=None, expected "
+        f"'{route_module.DEFAULT_ROUTER_MODEL}' advertises "
+        "apply_patch_tool_type=None, expected "
         "'freeform'; deploy the catalog fix and start a new chat",
     )
 

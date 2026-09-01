@@ -1013,6 +1013,147 @@ def test_openai_compat_responses_routes_local_first(test_app, monkeypatch):
     assert payload["norman"]["local_execution"] is True
 
 
+@pytest.mark.parametrize(
+    ("alias", "model"),
+    [
+        ("norman-code-luna", "openai.gpt-5.6-luna"),
+        ("norman-code-terra", "openai.gpt-5.6-terra"),
+        ("norman-code-sol", "openai.gpt-5.6-sol"),
+    ],
+)
+def test_openai_compat_responses_routes_named_cloud_tiers_with_qwen_guardrails(
+    test_app, monkeypatch, alias, model
+):
+    from app.services import prompt_provider_facade
+
+    headers = _proxy_headers(monkeypatch)
+    qwen_calls = []
+
+    def qwen_guardrail(**kwargs):
+        qwen_calls.append(kwargs)
+        phase = kwargs["correlation_headers"]["X-Norman-Phase"]
+        content = (
+            '{"risk":"low","complexity":"moderate",'
+            '"recommended_tier":"luna","reason_codes":["bounded"]}'
+            if phase == "qwen-preflight"
+            else '{"verdict":"pass","reason_codes":["complete"]}'
+        )
+        return _mock_local_chat(kwargs["messages"], kwargs["model"]) | {
+            "choices": [{"message": {"content": content}}]
+        }
+
+    monkeypatch.setattr(
+        prompt_provider_facade.norllama_gateway,
+        "invoke_text_chat",
+        qwen_guardrail,
+    )
+    bedrock_calls = _install_bedrock_stub(
+        monkeypatch,
+        result=_mock_bedrock_result(model=model),
+    )
+
+    response = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={"model": alias, "input": "Inspect the queue and report status."},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["model"] == model
+    assert payload["output_text"] == "cloud ok"
+    assert payload["norman"]["cloud_forwarding"] is True
+    assert payload["norman"]["qwen_preflight"]["state"] == "completed"
+    assert payload["norman"]["qwen_checker"]["verdict"] == "pass"
+    assert [call["correlation_headers"]["X-Norman-Phase"] for call in qwen_calls] == [
+        "qwen-preflight",
+        "qwen-checker",
+    ]
+    assert len(bedrock_calls) == 1
+    assert bedrock_calls[0].model == model
+
+
+def test_openai_compat_sol_is_explicit_and_output_bounded(test_app, monkeypatch):
+    from app.services import prompt_provider_facade
+
+    headers = _proxy_headers(monkeypatch)
+    monkeypatch.setattr(
+        prompt_provider_facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: _mock_local_chat(kwargs["messages"], kwargs["model"])
+        | {"choices": [{"message": {"content": '{"verdict":"pass"}'}}]},
+    )
+    bedrock_calls = _install_bedrock_stub(
+        monkeypatch,
+        result=_mock_bedrock_result(model="openai.gpt-5.6-sol"),
+    )
+
+    response = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={
+            "model": "norman-code-sol",
+            "input": "Solve the hard problem.",
+            "max_output_tokens": 32768,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert (
+        bedrock_calls[0].budget.max_output_tokens
+        == prompt_provider_facade.SOL_MAX_OUTPUT_TOKENS
+    )
+    assert payload["norman"]["output_token_budget"] == {
+        "requested": 32768,
+        "effective": prompt_provider_facade.SOL_MAX_OUTPUT_TOKENS,
+        "maximum": prompt_provider_facade.SOL_MAX_OUTPUT_TOKENS,
+    }
+
+
+def test_openai_compat_cloud_tier_preserves_codex_tool_calls(test_app, monkeypatch):
+    from app.services import prompt_provider_facade
+
+    headers = _proxy_headers(monkeypatch)
+    monkeypatch.setattr(
+        prompt_provider_facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: _mock_local_chat(kwargs["messages"], kwargs["model"])
+        | {"choices": [{"message": {"content": '{"verdict":"pass"}'}}]},
+    )
+    _install_bedrock_stub(
+        monkeypatch,
+        result=_mock_bedrock_result(
+            '{"tool_call":{"name":"shell","arguments":{"cmd":"pwd"}}}',
+            model="openai.gpt-5.6-terra",
+        ),
+    )
+
+    response = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={
+            "model": "norman-code-terra",
+            "input": "Inspect the repository.",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "shell",
+                    "description": "Run a shell command.",
+                    "parameters": {"type": "object"},
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["output_text"] == ""
+    assert payload["output"][0]["type"] == "function_call"
+    assert payload["output"][0]["name"] == "shell"
+    assert payload["output"][0]["arguments"] == '{"cmd":"pwd"}'
+
+
 @pytest.mark.parametrize("model", ["gpt-5.6-terra", "openai.gpt-5.6-terra"])
 def test_openai_compat_responses_rejects_explicit_cloud_model_for_tui(
     test_app, monkeypatch, model
@@ -3699,9 +3840,10 @@ def test_openai_compat_models_requires_proxy_token_when_configured(
     payload = allowed.json()
     assert payload["object"] == "list"
     assert {item["id"] for item in payload["data"]} >= {
-        "norman-code",
-        "norman-code-governed",
-        "norman-local",
+        "norman-code-qwen-local",
+        "norman-code-luna",
+        "norman-code-terra",
+        "norman-code-sol",
     }
     assert payload["norman"]["base_url"] == "/v1"
     assert payload["norman"]["gateway"]["gateway_route"] == "norman"
@@ -3715,20 +3857,21 @@ def test_openai_compat_models_advertises_codex_catalog(test_app, monkeypatch):
     assert response.status_code == 200
     models = response.json()["models"]
     assert [model["slug"] for model in models] == [
-        "norman-code",
-        "norman-code-governed",
-        "norman-local",
+        "norman-code-qwen-local",
+        "norman-code-luna",
+        "norman-code-terra",
+        "norman-code-sol",
     ]
     models_by_slug = {model["slug"]: model for model in models}
-    assert models_by_slug["norman-code"]["apply_patch_tool_type"] == "freeform"
-    assert models_by_slug["norman-code"]["supports_parallel_tool_calls"] is True
-    assert models_by_slug["norman-code"]["default_reasoning_level"] == "high"
-    assert models_by_slug["norman-code-governed"]["apply_patch_tool_type"] == "freeform"
-    assert (
-        models_by_slug["norman-code-governed"]["supports_parallel_tool_calls"] is True
-    )
-    assert models_by_slug["norman-local"]["apply_patch_tool_type"] is None
-    assert models_by_slug["norman-local"]["supports_parallel_tool_calls"] is False
+    for slug in (
+        "norman-code-qwen-local",
+        "norman-code-luna",
+        "norman-code-terra",
+        "norman-code-sol",
+    ):
+        assert models_by_slug[slug]["apply_patch_tool_type"] == "freeform"
+        assert models_by_slug[slug]["supports_parallel_tool_calls"] is True
+        assert models_by_slug[slug]["default_reasoning_level"] == "high"
     for model in models:
         assert model["display_name"]
         assert model["supported_in_api"] is True

@@ -46,17 +46,18 @@ Current hardware roles:
 
 ## Norman-Code Capacity
 
-`norman-code` is a heavy coding route. It is available only when `spark-150`
+`norman-code-qwen-local` (and the legacy `norman-code` route) is a heavy local
+coding lane. It is available only when `spark-150`
 or `spark-151` is reachable and advertises
 `qwen3-coder:30b-a3b-q4_K_M`. The Mac mini remains useful for tiny local work
 and as the logical front door, but it is deliberately ineligible for
-`norman-code`; a healthy Mac mini must not make the coding route appear ready.
+the Qwen coding lane; a healthy Mac mini must not make that lane appear ready.
 
 Use `codex --verify` from the Norman checkout to perform the authenticated,
 non-invoking models and capacity checks. The capacity endpoint is also
-available at `/v1/norman/capacity?model=norman-code` through the normal
-authenticated Norman gateway. It probes mesh metadata only and does not warm
-the coding model.
+available at `/v1/norman/capacity?model=norman-code-qwen-local` through the
+normal authenticated Norman gateway. It probes mesh metadata only and does not
+warm the coding model.
 
 | Capacity reason | Meaning | Operator action |
 | --- | --- | --- |
