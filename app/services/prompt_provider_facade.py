@@ -815,17 +815,24 @@ def _legacy_replayed_function_call(message: Mapping[str, Any]) -> tuple[str, str
 
 
 def _tool_output_metadata(item: Mapping[str, Any]) -> tuple[str, str]:
-    """Return a valid tool result without altering its output bytes."""
+    """Return tool output as text for the local chat compatibility lane."""
 
     output = item.get("output")
-    if not isinstance(output, str):
+    if isinstance(output, str):
+        normalized_output = output
+    elif isinstance(output, (Mapping, list)):
+        # Codex uses structured content for some MCP denials and rich results.
+        # Preserve the complete value deterministically instead of rejecting a
+        # valid continuation solely because the local lane is text-only.
+        normalized_output = _json_dumps(output)
+    else:
         raise FacadeError(
-            "Responses function_call_output output must be a string",
+            "Responses function_call_output output must be text or structured content",
             status_code=400,
             code="invalid_function_call_output",
             param="input",
         )
-    return _clean(item.get("call_id")), output
+    return _clean(item.get("call_id")), normalized_output
 
 
 def _tool_outputs_from_state(state: Mapping[str, Any]) -> set[tuple[str, str]]:

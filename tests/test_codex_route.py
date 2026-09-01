@@ -407,6 +407,7 @@ def test_work_profile_registers_ops_mcp_without_forcing_workflow(
         "bearer_token_env_var": "OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY",
         "startup_timeout_sec": 20,
         "tool_timeout_sec": 60,
+        "default_tools_approval_mode": "approve",
     }
 
 
@@ -576,6 +577,7 @@ def test_work_route_profile_installs_managed_ops_mcp_in_its_own_codex_home(
         "bearer_token_env_var": "OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY",
         "startup_timeout_sec": 20,
         "tool_timeout_sec": 60,
+        "default_tools_approval_mode": "approve",
     }
     assert contents.count("[mcp_servers.ops_openbrand]") == 1
     assert "BEGIN NORMAN OPS OPENBRAND MCP" in contents

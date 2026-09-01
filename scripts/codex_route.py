@@ -904,6 +904,7 @@ def ops_openbrand_mcp_config_block() -> str:
             f"bearer_token_env_var = {json.dumps(OPS_OPENBRAND_MCP_TOKEN_ENV)}",
             f"startup_timeout_sec = {OPS_OPENBRAND_MCP_STARTUP_TIMEOUT_SECONDS}",
             f"tool_timeout_sec = {OPS_OPENBRAND_MCP_TOOL_TIMEOUT_SECONDS}",
+            'default_tools_approval_mode = "approve"',
             OPS_OPENBRAND_MCP_CONFIG_END,
             "",
         )

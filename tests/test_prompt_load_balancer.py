@@ -4632,6 +4632,28 @@ def test_openai_compat_responses_can_return_declared_mcp_namespace_function_call
     ]
 
 
+def test_responses_tool_output_normalizes_structured_mcp_content():
+    import app.services.prompt_provider_facade as facade
+
+    call_id, output = facade._tool_output_metadata(
+        {
+            "type": "function_call_output",
+            "call_id": "call_ops_denied",
+            "output": [
+                {
+                    "type": "input_text",
+                    "text": "MCP tool call requires approval",
+                }
+            ],
+        }
+    )
+
+    assert call_id == "call_ops_denied"
+    assert json.loads(output) == [
+        {"type": "input_text", "text": "MCP tool call requires approval"}
+    ]
+
+
 def test_openai_compat_responses_flattens_namespace_tool_contract():
     import app.services.prompt_provider_facade as facade
 
