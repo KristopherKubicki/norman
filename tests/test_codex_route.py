@@ -392,8 +392,10 @@ def test_generated_profile_uses_brokered_auth_without_storing_a_token(
     assert catalog["models"][0]["default_reasoning_level"] == "high"
     assert catalog["models"][0]["base_instructions"] == ""
     assert catalog["models"][0]["input_modalities"] == ["text"]
-    assert catalog["models"][0]["include_skills_usage_instructions"] is True
-    assert catalog["models"][0]["include_plugin_usage_instructions"] is True
+    assert catalog["models"][0]["include_skills_usage_instructions"] is False
+    assert catalog["models"][0]["include_plugin_usage_instructions"] is False
+    assert catalog["models"][2]["include_skills_usage_instructions"] is True
+    assert catalog["models"][2]["include_plugin_usage_instructions"] is True
     assert not (profile_path.parent / "config.toml").exists()
 
 

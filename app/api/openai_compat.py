@@ -390,6 +390,8 @@ def _codex_model_catalog() -> list[dict[str, Any]]:
             "priority": 1,
             "apply_patch_tool_type": "freeform",
             "supports_parallel_tool_calls": True,
+            "include_skills_usage_instructions": False,
+            "include_plugin_usage_instructions": False,
         },
         {
             **common,
@@ -399,6 +401,8 @@ def _codex_model_catalog() -> list[dict[str, Any]]:
             "priority": 2,
             "apply_patch_tool_type": "freeform",
             "supports_parallel_tool_calls": True,
+            "include_skills_usage_instructions": False,
+            "include_plugin_usage_instructions": False,
         },
         {
             **common,
@@ -408,6 +412,8 @@ def _codex_model_catalog() -> list[dict[str, Any]]:
             "priority": 3,
             "apply_patch_tool_type": "freeform",
             "supports_parallel_tool_calls": True,
+            "include_skills_usage_instructions": True,
+            "include_plugin_usage_instructions": True,
         },
         {
             **common,
@@ -420,6 +426,8 @@ def _codex_model_catalog() -> list[dict[str, Any]]:
             "priority": 4,
             "apply_patch_tool_type": "freeform",
             "supports_parallel_tool_calls": True,
+            "include_skills_usage_instructions": True,
+            "include_plugin_usage_instructions": True,
         },
     ]
 

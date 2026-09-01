@@ -717,6 +717,8 @@ def _routed_model_catalog_entry(
     display_name: str,
     description: str,
     priority: int,
+    include_skills: bool = True,
+    include_plugins: bool = True,
 ) -> dict[str, object]:
     return {
         "slug": slug,
@@ -746,8 +748,8 @@ def _routed_model_catalog_entry(
             "auto_review": None,
             "permissions": None,
         },
-        "include_skills_usage_instructions": True,
-        "include_plugin_usage_instructions": True,
+        "include_skills_usage_instructions": include_skills,
+        "include_plugin_usage_instructions": include_plugins,
         "include_apps_usage_instructions": True,
         "default_reasoning_summary": "auto",
         "support_verbosity": False,
@@ -777,6 +779,8 @@ def routed_model_catalog() -> dict[str, object]:
                 display_name="Norman Code — Qwen Local",
                 description=("Local Qwen coding lane with no cloud model invocation."),
                 priority=1,
+                include_skills=False,
+                include_plugins=False,
             ),
             _routed_model_catalog_entry(
                 slug=LUNA_ROUTER_MODEL,
@@ -785,6 +789,8 @@ def routed_model_catalog() -> dict[str, object]:
                     "Economical cloud coding lane with Qwen preflight and checking."
                 ),
                 priority=2,
+                include_skills=False,
+                include_plugins=False,
             ),
             _routed_model_catalog_entry(
                 slug=TERRA_ROUTER_MODEL,

@@ -278,6 +278,11 @@ The managed model selector exposes four coding routes:
 | `norman-code-terra` | Balanced escalation | Explicit Terra request with bounded local Qwen preflight and checking. |
 | `norman-code-sol` | Flagship exception | Explicit-only Sol request, never an automatic fallback, capped at 16,384 output tokens, with local Qwen preflight and checking. |
 
+Qwen Local and Luna omit the automatic skill/plugin instruction bundle while
+retaining Codex shell, filesystem, and patch tools. Terra and Sol include the
+full bundle for tasks that actually need domain workflows or connected apps.
+This keeps routine turns lean without weakening explicit escalation.
+
 The legacy `norman-code` and `norman-code-governed` aliases remain accepted for
 existing sessions but are omitted from the selector. A fresh profile defaults
 to Luna. Changing models is an operator decision: Qwen recommendations are

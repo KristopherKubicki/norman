@@ -3872,6 +3872,12 @@ def test_openai_compat_models_advertises_codex_catalog(test_app, monkeypatch):
         assert models_by_slug[slug]["apply_patch_tool_type"] == "freeform"
         assert models_by_slug[slug]["supports_parallel_tool_calls"] is True
         assert models_by_slug[slug]["default_reasoning_level"] == "high"
+    for slug in ("norman-code-qwen-local", "norman-code-luna"):
+        assert models_by_slug[slug]["include_skills_usage_instructions"] is False
+        assert models_by_slug[slug]["include_plugin_usage_instructions"] is False
+    for slug in ("norman-code-terra", "norman-code-sol"):
+        assert models_by_slug[slug]["include_skills_usage_instructions"] is True
+        assert models_by_slug[slug]["include_plugin_usage_instructions"] is True
     for model in models:
         assert model["display_name"]
         assert model["supported_in_api"] is True
