@@ -6253,6 +6253,96 @@ def test_openai_compat_responses_replays_typed_message_after_tool_output(monkeyp
     assert third_messages[-2]["type"] == "function_call_output"
 
 
+def test_openai_compat_responses_synthesizes_after_live_status_evidence_budget(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    invocations = []
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+
+    def fake_chat(**kwargs):
+        invocations.append(kwargs)
+        content = (
+            json.dumps(
+                {
+                    "tool_call": {
+                        "name": "data_status_get",
+                        "arguments": {"source": "queues"},
+                    }
+                }
+            )
+            if len(invocations) == 1
+            else "Queues are healthy; three bounded checks completed with no warnings."
+        )
+        return _mock_local_chat(kwargs["messages"], kwargs["model"]) | {
+            "choices": [{"message": {"content": content}}]
+        }
+
+    monkeypatch.setattr(facade.norllama_gateway, "invoke_text_chat", fake_chat)
+    calls = [
+        ("call_session", "session_start"),
+        ("call_health", "system_health"),
+        ("call_timing", "operations_timing_get"),
+        ("call_airflow", "airflow_dag_status"),
+    ]
+    input_items = [
+        {
+            "type": "message",
+            "role": "user",
+            "content": "How are the queues? how is it going?",
+        }
+    ]
+    for call_id, name in calls:
+        input_items.extend(
+            [
+                {
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "name": name,
+                    "arguments": "{}",
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": '{"status":"ok"}',
+                },
+            ]
+        )
+
+    response = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": input_items,
+            "tools": [
+                {
+                    "type": "namespace",
+                    "name": "mcp__ops_openbrand",
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": name,
+                            "parameters": {"type": "object"},
+                        }
+                        for _, name in [*calls, ("call_data", "data_status_get")]
+                    ],
+                }
+            ],
+        },
+        trusted_context={"source_tui": "codex-work"},
+    )
+
+    assert len(invocations) == 2
+    assert response["output_text"].startswith("Queues are healthy")
+    assert [item["type"] for item in response["output"]] == ["message"]
+    assert invocations[-1]["messages"][-1] == {
+        "role": "system",
+        "content": facade._LIVE_OPERATIONAL_FINAL_SYNTHESIS_MESSAGE,
+    }
+
+
 def test_openai_compat_proxy_observability_records_success_without_prompt_leak(
     test_app,
     monkeypatch,

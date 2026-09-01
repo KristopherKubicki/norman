@@ -2304,6 +2304,13 @@ _NAMESPACE_DISCOVERY_REPAIR_MESSAGE = (
     "exactly one tool_search call now for the relevant domain tool, with no prose "
     "before or after it. Do not call a namespace member until tool_search returns it."
 )
+_LIVE_OPERATIONAL_FINAL_SYNTHESIS_MESSAGE = (
+    "The bounded live-status evidence budget is complete. Do not call any more "
+    "tools. Return a concise substantive final answer now using the successful "
+    "tool results already present. State the current status, important counts or "
+    "warnings, and any material limitation."
+)
+_MAX_LIVE_OPERATIONAL_DOMAIN_READS = 3
 
 
 def _tool_continuation_repair_messages(
@@ -2380,6 +2387,19 @@ def _domain_tool_contract_available(prepared: PreparedResponsesExecution) -> boo
         if name and name not in implicit_names:
             return True
     return False
+
+
+def _live_operational_evidence_budget_reached(
+    prepared: PreparedResponsesExecution,
+) -> bool:
+    if not _live_operational_status_requested(prepared):
+        return False
+    domain_reads = sum(
+        1
+        for name, _ in prepared.tool_chain_context.successful_call_signatures
+        if name not in _OPERATIONAL_BOOTSTRAP_TOOLS
+    )
+    return domain_reads >= _MAX_LIVE_OPERATIONAL_DOMAIN_READS
 
 
 def _namespace_discovery_required(prepared: PreparedResponsesExecution) -> bool:
@@ -4021,6 +4041,37 @@ def _resolve_tool_continuation_response(
     """Apply one bounded repair when a completed tool call is repeated."""
 
     resolved = dict(chat_response)
+    _, proposed_calls = _response_tool_calls(
+        _choice_text(resolved),
+        provider_payload=prepared.provider_payload,
+        allow_implicit_tools=prepared.implicit_tools,
+    )
+    evidence_budget_reached = _live_operational_evidence_budget_reached(prepared)
+    if evidence_budget_reached and proposed_calls:
+        repaired = _execute_authorized_chat(
+            provider_payload=prepared.route_payload,
+            route_envelope=prepared.route_envelope,
+            messages=_tool_continuation_repair_messages(
+                prepared.messages,
+                repair_message=_LIVE_OPERATIONAL_FINAL_SYNTHESIS_MESSAGE,
+            ),
+            request_id=f"{request_id}-live-status-final-synthesis",
+        )
+        _, repaired_calls = _response_tool_calls(
+            _choice_text(repaired),
+            provider_payload=prepared.provider_payload,
+            allow_implicit_tools=prepared.implicit_tools,
+        )
+        if (
+            repaired_calls
+            or response_promises_unfinished_work(_choice_text(repaired))
+            or not response_has_substantive_content(_choice_text(repaired))
+        ):
+            raise _tool_continuation_exhausted_error(
+                prepared,
+                code="live_status_synthesis_exhausted",
+            )
+        return repaired, "repaired", 1
     premature_member = _premature_namespace_member_call(
         _choice_text(resolved),
         prepared=prepared,
@@ -4054,7 +4105,9 @@ def _resolve_tool_continuation_response(
     if repeats_successful_call and prepared.bridge_mode != GOVERNED_BRIDGE_MODE:
         return resolved, "passthrough", 0
 
-    if intention_without_call and _namespace_discovery_required(prepared):
+    if intention_without_call and evidence_budget_reached:
+        repair_message = _LIVE_OPERATIONAL_FINAL_SYNTHESIS_MESSAGE
+    elif intention_without_call and _namespace_discovery_required(prepared):
         repair_message = _NAMESPACE_DISCOVERY_REPAIR_MESSAGE
     elif intention_without_call and _live_operational_status_requested(prepared):
         repair_message = _LIVE_OPERATIONAL_TOOL_REPAIR_MESSAGE
