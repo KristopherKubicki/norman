@@ -5108,6 +5108,61 @@ def test_openai_compat_responses_discovers_deferred_namespace_before_member(
     }
 
 
+def test_openai_compat_responses_discovers_direct_deferred_tool_before_call(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: _mock_local_chat(kwargs["messages"], kwargs["model"])
+        | {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "tool_call": {
+                                    "name": "ops_portal_health",
+                                    "arguments": {},
+                                }
+                            }
+                        )
+                    }
+                }
+            ]
+        },
+    )
+    response = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "How are the queues?",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "tool_search",
+                    "parameters": {"type": "object"},
+                },
+                {
+                    "type": "function",
+                    "name": "ops_portal_health",
+                    "defer_loading": True,
+                    "parameters": {"type": "object"},
+                },
+            ],
+        }
+    )
+
+    assert response["output"][0]["name"] == "tool_search"
+    assert json.loads(response["output"][0]["arguments"]) == {
+        "query": "ops_portal_health"
+    }
+
+
 def test_openai_compat_responses_remaps_reused_call_id_after_protocol_repair(
     monkeypatch,
 ):

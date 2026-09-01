@@ -2335,15 +2335,17 @@ def _namespace_discovery_required(prepared: PreparedResponsesExecution) -> bool:
         available_names.update(
             _clean(tool.get("name")) for tool in CODEX_IMPLICIT_TUI_TOOLS
         )
-    has_namespace = any(
+    has_deferred_tool = any(
         _clean(tool.get("type")) == "namespace"
+        or bool(tool.get("defer_loading"))
+        or bool(_mapping(tool.get("function")).get("defer_loading"))
         for tool in _tools(prepared.provider_payload)
     )
     discovered = any(
         name == "tool_search"
         for name, _ in prepared.tool_chain_context.successful_call_signatures
     )
-    return has_namespace and "tool_search" in available_names and not discovered
+    return has_deferred_tool and "tool_search" in available_names and not discovered
 
 
 def _premature_namespace_member_call(
@@ -2356,6 +2358,12 @@ def _premature_namespace_member_call(
     member_names: set[str] = set()
     for tool in _tools(prepared.provider_payload):
         if _clean(tool.get("type")) != "namespace":
+            if bool(tool.get("defer_loading")) or bool(
+                _mapping(tool.get("function")).get("defer_loading")
+            ):
+                name = _tool_name(tool)
+                if name:
+                    member_names.add(name)
             continue
         namespace = _clean(tool.get("name"))
         members = tool.get("tools")
