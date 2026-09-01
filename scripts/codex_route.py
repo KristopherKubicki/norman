@@ -892,7 +892,10 @@ def write_routed_tui_secret_policy(home: Path) -> Path:
 
 
 def is_ops_openbrand_work_route(route: Route) -> bool:
-    return route.group == "work" and route.launcher == "work"
+    # `codex-work` is itself the work-identity boundary. Repository aliases are
+    # optional, so an unregistered checkout (for example d.ace) must retain the
+    # same subject-bound read-only Ops connector as named work routes.
+    return route.launcher == "work"
 
 
 def ops_openbrand_mcp_config_block() -> str:
