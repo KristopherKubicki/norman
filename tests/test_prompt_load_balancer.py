@@ -5045,6 +5045,69 @@ def test_openai_compat_responses_repairs_live_queue_clarification_without_call(
     }
 
 
+def test_openai_compat_responses_discovers_deferred_namespace_before_member(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: _mock_local_chat(kwargs["messages"], kwargs["model"])
+        | {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "tool_call": {
+                                    "name": "session_start",
+                                    "arguments": {"user_email": "kris@openbrand.com"},
+                                }
+                            }
+                        )
+                    }
+                }
+            ]
+        },
+    )
+    response = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "How are the queues?",
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "tool_search",
+                    "parameters": {"type": "object"},
+                },
+                {
+                    "type": "namespace",
+                    "name": "mcp__ops_openbrand",
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": "session_start",
+                            "parameters": {"type": "object"},
+                        }
+                    ],
+                },
+            ],
+        }
+    )
+
+    assert response["output_text"] == ""
+    assert response["output"][0]["name"] == "tool_search"
+    assert json.loads(response["output"][0]["arguments"]) == {"query": "session_start"}
+    assert response["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] == {
+        "state": "repaired",
+        "attempts": 1,
+    }
+
+
 def test_openai_compat_responses_remaps_reused_call_id_after_protocol_repair(
     monkeypatch,
 ):

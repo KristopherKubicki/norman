@@ -2244,7 +2244,12 @@ _LIVE_OPERATIONAL_TOOL_REPAIR_MESSAGE = (
     "did not provide tool-backed evidence. Emit exactly one available domain tool call "
     "now, with no prose before or after it. Honor any environment and bound identity "
     "already supplied in the conversation; do not ask the user to repeat them. Do not "
-    "call shell, exec_command, read_file, or tool_search merely to inspect more setup."
+    "call shell, exec_command, or read_file merely to inspect more setup."
+)
+_NAMESPACE_DISCOVERY_REPAIR_MESSAGE = (
+    "The requested remote namespace is deferred and is not executable yet. Emit "
+    "exactly one tool_search call now for the relevant domain tool, with no prose "
+    "before or after it. Do not call a namespace member until tool_search returns it."
 )
 
 
@@ -2322,6 +2327,74 @@ def _domain_tool_contract_available(prepared: PreparedResponsesExecution) -> boo
         if name and name not in implicit_names:
             return True
     return False
+
+
+def _namespace_discovery_required(prepared: PreparedResponsesExecution) -> bool:
+    available_names = _tool_names(_tools(prepared.provider_payload))
+    if prepared.implicit_tools:
+        available_names.update(
+            _clean(tool.get("name")) for tool in CODEX_IMPLICIT_TUI_TOOLS
+        )
+    has_namespace = any(
+        _clean(tool.get("type")) == "namespace"
+        for tool in _tools(prepared.provider_payload)
+    )
+    discovered = any(
+        name == "tool_search"
+        for name, _ in prepared.tool_chain_context.successful_call_signatures
+    )
+    return has_namespace and "tool_search" in available_names and not discovered
+
+
+def _premature_namespace_member_call(
+    text: str,
+    *,
+    prepared: PreparedResponsesExecution,
+) -> str:
+    if not _namespace_discovery_required(prepared):
+        return ""
+    member_names: set[str] = set()
+    for tool in _tools(prepared.provider_payload):
+        if _clean(tool.get("type")) != "namespace":
+            continue
+        namespace = _clean(tool.get("name"))
+        members = tool.get("tools")
+        if not namespace or not isinstance(members, list):
+            continue
+        for member in members:
+            if isinstance(member, Mapping):
+                name = _namespace_member_name(namespace, member)
+                if name:
+                    member_names.add(name)
+    _, calls = _response_tool_calls(
+        text,
+        provider_payload=prepared.provider_payload,
+        allow_implicit_tools=prepared.implicit_tools,
+    )
+    return next(
+        (
+            _clean(call.get("name"))
+            for call in calls
+            if call.get("name") in member_names
+        ),
+        "",
+    )
+
+
+def _chat_response_with_text(
+    response: Mapping[str, Any],
+    text: str,
+) -> dict[str, Any]:
+    rewritten = dict(response)
+    choices = [dict(choice) for choice in response.get("choices", [])]
+    if not choices:
+        choices = [{"message": {"content": text}}]
+    else:
+        message = _mapping(choices[0].get("message"))
+        message["content"] = text
+        choices[0]["message"] = message
+    rewritten["choices"] = choices
+    return rewritten
 
 
 def _tool_use_requested(prepared: PreparedResponsesExecution) -> bool:
@@ -3896,6 +3969,26 @@ def _resolve_tool_continuation_response(
     """Apply one bounded repair when a completed tool call is repeated."""
 
     resolved = dict(chat_response)
+    premature_member = _premature_namespace_member_call(
+        _choice_text(resolved),
+        prepared=prepared,
+    )
+    if premature_member:
+        return (
+            _chat_response_with_text(
+                resolved,
+                _json_dumps(
+                    {
+                        "tool_call": {
+                            "name": "tool_search",
+                            "arguments": {"query": premature_member},
+                        }
+                    }
+                ),
+            ),
+            "repaired",
+            1,
+        )
     repeats_successful_call = _repeats_successful_tool_call(
         _choice_text(resolved),
         prepared=prepared,
@@ -3909,7 +4002,9 @@ def _resolve_tool_continuation_response(
     if repeats_successful_call and prepared.bridge_mode != GOVERNED_BRIDGE_MODE:
         return resolved, "passthrough", 0
 
-    if intention_without_call and _live_operational_status_requested(prepared):
+    if intention_without_call and _namespace_discovery_required(prepared):
+        repair_message = _NAMESPACE_DISCOVERY_REPAIR_MESSAGE
+    elif intention_without_call and _live_operational_status_requested(prepared):
         repair_message = _LIVE_OPERATIONAL_TOOL_REPAIR_MESSAGE
     elif intention_without_call:
         repair_message = _TOOL_PROTOCOL_REPAIR_MESSAGE
