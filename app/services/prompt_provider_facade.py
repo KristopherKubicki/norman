@@ -2065,6 +2065,7 @@ def _extract_tool_calls(
     tools: list[dict[str, Any]],
     allow_implicit_tools: bool = False,
     raw_calls: list[dict[str, Any]] | None = None,
+    reserved_call_ids: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     names = _tool_names(tools)
     if allow_implicit_tools:
@@ -2074,6 +2075,7 @@ def _extract_tool_calls(
     if raw_calls is None:
         raw_calls = _json_tool_call_envelope(text)
     calls: list[dict[str, Any]] = []
+    used_call_ids = set(reserved_call_ids or ())
     for raw in raw_calls:
         if not isinstance(raw, Mapping):
             continue
@@ -2083,10 +2085,16 @@ def _extract_tool_calls(
         arguments = raw.get("arguments", {})
         if name not in names:
             continue
-        call_id = _clean(raw.get("call_id")) or f"call_{uuid.uuid4().hex}"
+        proposed_call_id = _clean(raw.get("call_id"))
+        call_id = proposed_call_id
+        while not call_id or call_id in used_call_ids:
+            call_id = f"call_{uuid.uuid4().hex}"
+        used_call_ids.add(call_id)
+        call_id_was_remapped = bool(proposed_call_id and proposed_call_id != call_id)
         calls.append(
             {
-                "id": _clean(raw.get("id")) or f"fc_{uuid.uuid4().hex}",
+                "id": ("" if call_id_was_remapped else _clean(raw.get("id")))
+                or f"fc_{uuid.uuid4().hex}",
                 "type": "function_call",
                 "status": "completed",
                 "call_id": call_id,
@@ -2105,6 +2113,7 @@ def _response_tool_calls(
     provider_payload: Mapping[str, Any],
     normalized_output: NormalizedResponsesOutput | None = None,
     allow_implicit_tools: bool = False,
+    reserved_call_ids: set[str] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     tools = _tools(provider_payload)
     if normalized_output is not None and normalized_output.raw_text == text:
@@ -2124,6 +2133,7 @@ def _response_tool_calls(
                 allow_implicit_tools or "tools" not in provider_payload
             ),
             raw_calls=raw_calls,
+            reserved_call_ids=reserved_call_ids,
         ),
     )
 
@@ -4006,6 +4016,7 @@ def _responses_response_from_chat(
         provider_payload=provider_payload,
         normalized_output=normalized_output,
         allow_implicit_tools=prepared.implicit_tools,
+        reserved_call_ids=set(prepared.function_call_items),
     )
     visible_text = preamble if tool_calls else text
     output_items = _response_output_items(

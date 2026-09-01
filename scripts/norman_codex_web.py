@@ -12485,9 +12485,7 @@ def finalize_history_entries(
     entries: list[dict[str, Any]], *, limit: int = MAX_HISTORY_ITEMS
 ) -> list[dict[str, Any]]:
     entries = [
-        entry
-        for entry in entries
-        if not history_entry_is_transcript_artifact(entry)
+        entry for entry in entries if not history_entry_is_transcript_artifact(entry)
     ]
     if limit and len(entries) > limit:
         entries = entries[-limit:]
@@ -12658,10 +12656,9 @@ def append_history_entry(
     usage: dict[str, Any] | None = None,
     turn_envelope: dict[str, Any] | None = None,
 ) -> None:
-    if (
-        str(model or "").strip().lower() == "deterministic-status"
-        or prompt_is_auto_continuation(prompt)
-    ):
+    if str(
+        model or ""
+    ).strip().lower() == "deterministic-status" or prompt_is_auto_continuation(prompt):
         return
     entries = load_history(limit=0)
     clean_error_text = strip_codex_empty_last_message_warning(error_text)

@@ -1983,8 +1983,8 @@ def test_openai_compat_responses_stream_preserves_action_prose_as_text(
         [
             json.dumps(
                 {
-                        "model": "qwen3-coder:30b",
-                        "response": "A Jira health review would be the next step.",
+                    "model": "qwen3-coder:30b",
+                    "response": "A Jira health review would be the next step.",
                 }
             ),
             json.dumps(
@@ -3973,9 +3973,7 @@ def test_openai_compat_responses_uses_tesseract_when_vision_lane_is_blocked(
     monkeypatch.setattr(
         facade.norllama_gateway,
         "ocr_document",
-        lambda **kwargs: (_ for _ in ()).throw(
-            requests.HTTPError("policy_expired")
-        ),
+        lambda **kwargs: (_ for _ in ()).throw(requests.HTTPError("policy_expired")),
     )
 
     def fake_tesseract(command, **kwargs):
@@ -4243,14 +4241,20 @@ def test_responses_stream_normalizer_contains_mixed_tool_envelopes():
 
     normalizer = facade.ResponsesStreamNormalizer()
     assert normalizer.feed("I’m checking now.\n") == ["I’m checking now.\n"]
-    assert normalizer.feed(
-        '{"tool_call":{"name":"exec_command","arguments":{"cmd":"pwd"}}}'
-    ) == []
+    assert (
+        normalizer.feed(
+            '{"tool_call":{"name":"exec_command","arguments":{"cmd":"pwd"}}}'
+        )
+        == []
+    )
     assert normalizer.feed("\n") == []
-    assert normalizer.feed(
-        '{"tool_call":{"name":"mcp__ops_openbrand.session_start",'
-        '"arguments":{"user_email":"kris@openbrand.com"}}}'
-    ) == []
+    assert (
+        normalizer.feed(
+            '{"tool_call":{"name":"mcp__ops_openbrand.session_start",'
+            '"arguments":{"user_email":"kris@openbrand.com"}}}'
+        )
+        == []
+    )
     assert normalizer.feed("\nSession started.") == []
 
     normalized = normalizer.finalize()
@@ -4347,9 +4351,10 @@ def test_openai_compat_responses_stream_repairs_tool_intention_without_call(
     assert function_call["name"] == "exec_command"
     assert function_call["arguments"] == '{"cmd":"pwd"}'
     assert completed["output_text"] == ""
-    assert completed["norman"]["responses_compatibility"]["tool_chain"][
-        "watchdog"
-    ] == {"state": "repaired", "attempts": 1}
+    assert completed["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] == {
+        "state": "repaired",
+        "attempts": 1,
+    }
     assert len(repair_invocations) == 1
     assert repair_invocations[0]["messages"][-1] == {
         "role": "system",
@@ -4849,6 +4854,109 @@ def test_openai_compat_responses_repairs_repeated_declared_tool_call(
         "role": "system",
         "content": facade._TOOL_CONTINUATION_REPAIR_MESSAGE,
     }
+
+
+def test_openai_compat_responses_remaps_reused_call_id_after_protocol_repair(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    facade.reset_facade_response_state()
+    invocations = []
+    reused_call_id = "call_reused_by_repair"
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+
+    def fake_chat(**kwargs):
+        invocations.append(kwargs)
+        if len(invocations) == 1:
+            content = json.dumps(
+                {
+                    "tool_call": {
+                        "call_id": reused_call_id,
+                        "id": "fc_reused_by_repair",
+                        "name": "shell",
+                        "arguments": {"cmd": "cat SKILL.md"},
+                    }
+                }
+            )
+        elif len(invocations) == 2:
+            content = "I need to read the portal contract before connecting."
+        elif len(invocations) == 3:
+            content = json.dumps(
+                {
+                    "tool_call": {
+                        "call_id": reused_call_id,
+                        "id": "fc_reused_by_repair",
+                        "name": "shell",
+                        "arguments": {"cmd": "cat portal-contract.md"},
+                    }
+                }
+            )
+        else:
+            content = "Queue health is normal."
+        return _mock_local_chat(kwargs["messages"], kwargs["model"]) | {
+            "choices": [{"message": {"content": content}}]
+        }
+
+    monkeypatch.setattr(facade.norllama_gateway, "invoke_text_chat", fake_chat)
+    tools = [
+        {
+            "type": "function",
+            "name": "shell",
+            "description": "Run a shell command.",
+            "parameters": {"type": "object"},
+        }
+    ]
+
+    first = execute_openai_responses_facade(
+        {"model": "norman-code", "input": "Check the queues.", "tools": tools}
+    )
+    first_call = first["output"][0]
+    assert first_call["call_id"] == reused_call_id
+
+    second = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "previous_response_id": first["id"],
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": first_call["call_id"],
+                    "output": "skill contents",
+                }
+            ],
+            "tools": tools,
+        }
+    )
+    second_call = second["output"][0]
+
+    assert second_call["call_id"] != reused_call_id
+    assert second_call["id"] != "fc_reused_by_repair"
+    assert json.loads(second_call["arguments"]) == {"cmd": "cat portal-contract.md"}
+    assert second["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] == {
+        "state": "repaired",
+        "attempts": 1,
+    }
+
+    third = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "previous_response_id": second["id"],
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": second_call["call_id"],
+                    "output": "portal contract contents",
+                }
+            ],
+            "tools": tools,
+        }
+    )
+
+    assert third["output_text"] == "Queue health is normal."
+    assert len(invocations) == 4
 
 
 def test_openai_compat_responses_rejects_repeated_tool_call_after_repair(
@@ -5601,14 +5709,20 @@ def test_openai_compat_responses_adds_codex_tool_contract_when_omitted(
 def test_openai_compat_responses_does_not_inject_codex_tools_for_ordinary_calls():
     import app.services.prompt_provider_facade as facade
 
-    assert facade._implicit_codex_tui_tools_required(
-        {"model": "norman-code", "input": "hello"},
-        {},
-    ) is False
-    assert facade._implicit_codex_tui_tools_required(
-        {"model": "norman-code", "input": "hello", "tools": []},
-        {"source_tui": "cloudagent"},
-    ) is True
+    assert (
+        facade._implicit_codex_tui_tools_required(
+            {"model": "norman-code", "input": "hello"},
+            {},
+        )
+        is False
+    )
+    assert (
+        facade._implicit_codex_tui_tools_required(
+            {"model": "norman-code", "input": "hello", "tools": []},
+            {"source_tui": "cloudagent"},
+        )
+        is True
+    )
 
 
 def test_openai_compat_responses_supplements_tui_mcp_tools_with_shell_contract(
@@ -5641,8 +5755,7 @@ def test_openai_compat_responses_supplements_tui_mcp_tools_with_shell_contract(
         if facade._is_tool_contract_message(message)
     )
     assert [
-        tool["name"]
-        for tool in contract[facade.TOOL_CONTRACT_CONTEXT_MARKER]["tools"]
+        tool["name"] for tool in contract[facade.TOOL_CONTRACT_CONTEXT_MARKER]["tools"]
     ] == ["openaiDeveloperDocs.search", "exec_command", "apply_patch"]
 
 
@@ -5688,9 +5801,7 @@ def test_openai_compat_responses_converts_tui_shell_call_with_mcp_tools(monkeypa
     assert response["output_text"] == ""
     assert response["output"][0]["type"] == "function_call"
     assert response["output"][0]["name"] == "exec_command"
-    assert response["output"][0]["arguments"] == (
-        '{"cmd":"git rev-parse HEAD"}'
-    )
+    assert response["output"][0]["arguments"] == ('{"cmd":"git rev-parse HEAD"}')
 
 
 def test_openai_compat_responses_replays_typed_message_after_tool_output(monkeypatch):

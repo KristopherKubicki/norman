@@ -122,7 +122,9 @@ def test_artmonster_latest_image_source_attaches_public_feed_image(monkeypatch) 
             _Response(b"image-bytes", "image/jpeg"),
         ]
     )
-    monkeypatch.setattr(module.urllib_request, "urlopen", lambda *_args, **_kwargs: next(responses))
+    monkeypatch.setattr(
+        module.urllib_request, "urlopen", lambda *_args, **_kwargs: next(responses)
+    )
     monkeypatch.setattr(
         module,
         "create_draft_attachment",
@@ -192,7 +194,7 @@ def test_session_media_request_restages_recent_images(monkeypatch, tmp_path) -> 
                         "url": "https://example.test/prior-art.jpg",
                     }
                 ]
-            }
+            },
         ],
     )
     monkeypatch.setattr(
@@ -208,9 +210,12 @@ def test_session_media_request_restages_recent_images(monkeypatch, tmp_path) -> 
     assert len(staged) == 1
     assert created[0]["raw_bytes"] == b"prior-image"
     assert created[0]["source"] == "session-history"
-    assert module.build_attachment_origin_label(
-        {**staged[0], "kind": "image", "source": "session-history"}
-    ) == "image from this session"
+    assert (
+        module.build_attachment_origin_label(
+            {**staged[0], "kind": "image", "source": "session-history"}
+        )
+        == "image from this session"
+    )
 
 
 def _norman_codex_launch_source() -> str:

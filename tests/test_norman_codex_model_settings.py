@@ -5255,9 +5255,7 @@ def test_prompt_worker_does_not_retry_rate_limit_after_tool_activity(
     final_snapshot = module.current_snapshot()
     assert final_snapshot["state"] == "rate_limited"
     assert "stopped instead of replaying work" in final_snapshot["last_response"]
-    events = module.load_audit_events(
-        limit=20, event_type="chat.rate-limit-no-retry"
-    )
+    events = module.load_audit_events(limit=20, event_type="chat.rate-limit-no-retry")
     assert len(events) == 1
     assert events[0]["payload"]["live_turn"]["last_file"] == "/tmp/already-touched.txt"
 

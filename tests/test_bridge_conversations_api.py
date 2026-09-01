@@ -211,9 +211,7 @@ def test_bridge_aliases_use_shared_canonical_station_names(test_app, monkeypatch
     )
 
     for slug in ("eyebat", "keystone", "netops"):
-        response = test_app.get(
-            f"/api/v1/bridge/conversations/agents/{slug}/history"
-        )
+        response = test_app.get(f"/api/v1/bridge/conversations/agents/{slug}/history")
         assert response.status_code == 200
 
     assert captured == [

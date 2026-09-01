@@ -132,7 +132,10 @@ def test_bridge_client_derives_boundaries_from_estate_registry() -> None:
     assert "const showBootInterstitial = !quiet || !state.bootstrapped;" in source
     assert "prior turns restored" not in source
     assert "function isLegacyBridgeDiagnostic(value)" in source
-    assert "selected route:\\s*codex\\/gpt-5\\.4|\\[auto-continuation:/is.test(text.trim())" in source
+    assert (
+        "selected route:\\s*codex\\/gpt-5\\.4|\\[auto-continuation:/is.test(text.trim())"
+        in source
+    )
     assert ".filter((turn) => !isLegacyBridgeDiagnostic(turn))" in source
     assert "if (stationSlug)" in source
     assert "Station history unavailable" in source

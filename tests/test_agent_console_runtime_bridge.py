@@ -947,9 +947,7 @@ def test_history_hides_legacy_diagnostics_and_internal_continuations(
         limit=10,
     )
 
-    assert [entry["response"] for entry in entries] == [
-        "The image is attached below."
-    ]
+    assert [entry["response"] for entry in entries] == ["The image is attached below."]
 
 
 def test_console_runtime_bridge_posts_audit_events(monkeypatch, tmp_path):
@@ -5654,7 +5652,10 @@ def test_local_planner_task_brief_is_bounded_and_preserves_constraints(
     brief, constraints = module.local_planner_task_brief(
         {
             "task_brief": "Inspect the camera event and return the newest matching image.",
-            "task_constraints": ["Do not change device settings.", "Use local evidence."],
+            "task_constraints": [
+                "Do not change device settings.",
+                "Use local evidence.",
+            ],
         }
     )
 

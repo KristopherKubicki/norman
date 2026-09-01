@@ -17692,9 +17692,7 @@ def stage_session_media_attachments(
                     create_draft_attachment(
                         raw_bytes=raw_bytes,
                         name=str(attachment.get("name") or path.name),
-                        content_type=str(
-                            attachment.get("content_type") or "image/*"
-                        ),
+                        content_type=str(attachment.get("content_type") or "image/*"),
                         source="session-history",
                         kind="image",
                         url=str(attachment.get("url") or ""),
@@ -17736,7 +17734,10 @@ def extract_source_image_url(page: str, source: dict[str, Any]) -> str:
             parsed.scheme in {"http", "https"}
             and parsed.netloc.lower() in allowed_hosts
             and re.search(r"\.(?:avif|gif|jpe?g|png|webp)(?:$|[?#])", parsed.path, re.I)
-            and (not path_markers or any(marker in parsed.path for marker in path_markers))
+            and (
+                not path_markers
+                or any(marker in parsed.path for marker in path_markers)
+            )
         ):
             return candidate
     return ""
@@ -17772,11 +17773,16 @@ def fetch_latest_source_attachment(prompt: Any) -> dict[str, Any] | None:
                 headers={"User-Agent": "Norman-Artmonster/1.0"},
             )
             with urllib_request.urlopen(image_request, timeout=18) as response:
-                content_type = str(response.headers.get("Content-Type") or "").split(
-                    ";", 1
-                )[0].strip()
+                content_type = (
+                    str(response.headers.get("Content-Type") or "")
+                    .split(";", 1)[0]
+                    .strip()
+                )
                 raw_bytes = response.read(MAX_ATTACHMENT_BYTES + 1)
-            if not content_type.startswith("image/") or len(raw_bytes) > MAX_ATTACHMENT_BYTES:
+            if (
+                not content_type.startswith("image/")
+                or len(raw_bytes) > MAX_ATTACHMENT_BYTES
+            ):
                 continue
             label = slugify_filename(str(source.get("label") or "latest-image"))
             suffix = mimetypes.guess_extension(content_type) or ".img"
@@ -17861,9 +17867,7 @@ def finalize_history_entries(
     entries: list[dict[str, Any]], *, limit: int = MAX_HISTORY_ITEMS
 ) -> list[dict[str, Any]]:
     entries = [
-        entry
-        for entry in entries
-        if not history_entry_is_transcript_artifact(entry)
+        entry for entry in entries if not history_entry_is_transcript_artifact(entry)
     ]
     if limit and len(entries) > limit:
         entries = entries[-limit:]
@@ -18034,10 +18038,9 @@ def append_history_entry(
     usage: dict[str, Any] | None = None,
     turn_envelope: dict[str, Any] | None = None,
 ) -> None:
-    if (
-        str(model or "").strip().lower() == "deterministic-status"
-        or prompt_is_auto_continuation(prompt)
-    ):
+    if str(
+        model or ""
+    ).strip().lower() == "deterministic-status" or prompt_is_auto_continuation(prompt):
         return
     entries = load_history(limit=0)
     clean_error_text = strip_codex_empty_last_message_warning(error_text)
@@ -34345,9 +34348,7 @@ def bedrock_context_pack_preflight_context(plan: dict[str, Any]) -> dict[str, An
         "saved_pct",
         "reason",
     )
-    context = {
-        key: plan.get(key) for key in fields if plan.get(key) not in (None, "")
-    }
+    context = {key: plan.get(key) for key in fields if plan.get(key) not in (None, "")}
     context["context_pack_applied"] = bool(plan.get("should_pack"))
     return context
 
