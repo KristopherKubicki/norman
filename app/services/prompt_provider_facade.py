@@ -20,7 +20,11 @@ from app.core.config import settings
 from app.core.estate_registry import worker_id_from_endpoint
 from app.services.console_runtime.adapters.bedrock import BedrockModelAdapter
 from app.services.console_runtime.types import ModelBudget, ModelRequest, ModelResult
-from app.services.completion_contract import response_promises_unfinished_work
+from app.services.completion_contract import (
+    response_has_substantive_content,
+    response_promises_unfinished_work,
+    sanitize_assistant_text,
+)
 from app.services.norllama import capacity as norllama_capacity
 from app.services.norllama import gateway as norllama_gateway
 from app.services.norllama.route_policy import (
@@ -1361,7 +1365,9 @@ def _tool_contract_message(
             '{"tool_calls":[{"name":"tool_name","arguments":{}}]}. '
             "Never put prose before, between, or after tool JSON. If user "
             "confirmation is required, ask for it without emitting any tool "
-            "JSON. Put multiple calls in the one tool_calls array. "
+            "JSON. Never duplicate an identical call. Put multiple calls in "
+            "one tool_calls array only when every call is independently "
+            "necessary; do not add exploratory workspace commands. "
             "Use only a tool name declared below. After a tool result, "
             "continue with another tool only when the result establishes "
             "that additional work is needed; otherwise return the final "
@@ -1376,7 +1382,9 @@ def _tool_contract_message(
             '{"tool_calls":[{"name":"tool_name","arguments":{}}]}. '
             "Never put prose before, between, or after tool JSON. If user "
             "confirmation is required, ask for it without emitting any tool "
-            "JSON. Put multiple calls in the one tool_calls array. "
+            "JSON. Never duplicate an identical call. Put multiple calls in "
+            "one tool_calls array only when every call is independently "
+            "necessary; do not add exploratory workspace commands. "
             "Use only a declared tool name. Do not reply with an intention to "
             "inspect, run, check, or edit something when the next useful step "
             "is a tool call; emit that call now. Available tools: "
@@ -2076,6 +2084,7 @@ def _extract_tool_calls(
         raw_calls = _json_tool_call_envelope(text)
     calls: list[dict[str, Any]] = []
     used_call_ids = set(reserved_call_ids or ())
+    seen_signatures: set[tuple[str, str]] = set()
     for raw in raw_calls:
         if not isinstance(raw, Mapping):
             continue
@@ -2085,6 +2094,10 @@ def _extract_tool_calls(
         arguments = raw.get("arguments", {})
         if name not in names:
             continue
+        signature = (name, _canonical_function_call_arguments(arguments))
+        if signature in seen_signatures:
+            continue
+        seen_signatures.add(signature)
         proposed_call_id = _clean(raw.get("call_id"))
         call_id = proposed_call_id
         while not call_id or call_id in used_call_ids:
@@ -3189,9 +3202,10 @@ def _execute_cloud_fallback(
             local_error=local_error,
             code="cloud_fallback_not_authorized",
         )
-    if not result.text:
+    result_text = sanitize_assistant_text(result.text)
+    if not response_has_substantive_content(result_text):
         _log_cloud_fallback_failure(
-            category="empty_response",
+            category="non_substantive_response",
             plan=plan,
             invocation=invocation,
         )
@@ -3215,7 +3229,7 @@ def _execute_cloud_fallback(
         "choices": [
             {
                 "index": 0,
-                "message": {"role": "assistant", "content": result.text},
+                "message": {"role": "assistant", "content": result_text},
                 "finish_reason": "stop",
             }
         ],
@@ -3428,7 +3442,8 @@ def _execute_explicit_cloud_selection(
             invocation=invocation,
             code="explicit_cloud_selection_not_authorized",
         )
-    if not result.text:
+    result_text = sanitize_assistant_text(result.text)
+    if not response_has_substantive_content(result_text):
         raise _explicit_cloud_selection_error(
             plan=plan,
             invocation=invocation,
@@ -3448,7 +3463,7 @@ def _execute_explicit_cloud_selection(
         "choices": [
             {
                 "index": 0,
-                "message": {"role": "assistant", "content": result.text},
+                "message": {"role": "assistant", "content": result_text},
                 "finish_reason": "stop",
             }
         ],
@@ -3605,13 +3620,17 @@ def _complete_authorized_chat(
     invocation_id = invocation.invocation_id
     trusted_context = invocation.trusted_context
     reasoning_advisory = invocation.reasoning_advisory
-    text = _choice_text(result)
-    if not text:
+    raw_text = _choice_text(result)
+    text = sanitize_assistant_text(raw_text)
+    if not response_has_substantive_content(text):
+        failure_code = (
+            "empty_local_response" if not raw_text else "non_substantive_local_response"
+        )
         raise FacadeError(
-            "Local model returned empty content",
+            "Local model returned no substantive user-visible content",
             status_code=502,
             error_type="server_error",
-            code="empty_local_response",
+            code=failure_code,
             norman=_local_failure_context(
                 request_id=invocation_id,
                 requested_model=_requested_model(provider_payload),

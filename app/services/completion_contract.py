@@ -41,6 +41,11 @@ UNFINISHED_WORK_BLOCKER_RE = re.compile(
     r"please (?:approve|confirm|provide)|requires? (?:approval|authorization))\b"
 )
 
+REASONING_CONTROL_BLOCK_RE = re.compile(
+    r"(?is)<(?:think|thinking)>.*?</(?:think|thinking)>"
+)
+REASONING_CONTROL_TAG_RE = re.compile(r"(?is)</?(?:think|thinking)>")
+
 
 def response_promises_unfinished_work(response: str) -> bool:
     """Return whether a final response announces work it has not performed."""
@@ -49,3 +54,19 @@ def response_promises_unfinished_work(response: str) -> bool:
     if not clean or UNFINISHED_WORK_BLOCKER_RE.search(clean):
         return False
     return bool(PROMISED_WORK_RE.search(clean) or IN_PROGRESS_WORK_RE.search(clean))
+
+
+def sanitize_assistant_text(response: str) -> str:
+    """Remove model-private reasoning markup from user-visible assistant text."""
+
+    text = str(response or "")
+    text = REASONING_CONTROL_BLOCK_RE.sub("", text)
+    text = REASONING_CONTROL_TAG_RE.sub("", text)
+    return text if text.strip() else ""
+
+
+def response_has_substantive_content(response: str) -> bool:
+    """Return whether a response contains user-visible semantic content."""
+
+    clean = sanitize_assistant_text(response)
+    return bool(clean and re.search(r"[\w\d]", clean, flags=re.UNICODE))

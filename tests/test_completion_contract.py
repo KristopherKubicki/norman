@@ -1,4 +1,8 @@
-from app.services.completion_contract import response_promises_unfinished_work
+from app.services.completion_contract import (
+    response_has_substantive_content,
+    response_promises_unfinished_work,
+    sanitize_assistant_text,
+)
 
 
 def test_detects_observed_direct_cli_short_stops() -> None:
@@ -26,3 +30,17 @@ def test_allows_results_and_real_blockers() -> None:
     ]
 
     assert not any(response_promises_unfinished_work(item) for item in responses)
+
+
+def test_strips_reasoning_control_markup() -> None:
+    assert sanitize_assistant_text("</thinking>") == ""
+    assert sanitize_assistant_text("<think>private</think>Queue is healthy.") == (
+        "Queue is healthy."
+    )
+    assert sanitize_assistant_text("<thinking>private</thinking>\nDone") == "\nDone"
+
+
+def test_requires_semantic_visible_content() -> None:
+    assert not response_has_substantive_content("</thinking>")
+    assert not response_has_substantive_content("<think>private</think> ...")
+    assert response_has_substantive_content("<think>private</think> Queue is healthy.")

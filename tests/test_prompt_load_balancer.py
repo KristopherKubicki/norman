@@ -2855,6 +2855,70 @@ def test_openai_compat_responses_reports_empty_local_response(test_app, monkeypa
     assert error["norman"]["retryable"] is True
 
 
+def test_openai_compat_responses_rejects_reasoning_control_only_response(
+    test_app, monkeypatch
+):
+    from app.services.prompt_provider_facade import norllama_gateway
+
+    headers = _proxy_headers(monkeypatch, route="gold-book")
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat",
+        lambda **_kwargs: {
+            "model": "qwen3-coder:30b-a3b-q4_K_M",
+            "choices": [{"message": {"content": "</thinking>"}}],
+            "usage": {},
+            "headers": {},
+        },
+    )
+
+    response = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={"model": "norman-fast", "input": "status?"},
+    )
+
+    assert response.status_code == 502
+    error = response.json()["error"]
+    assert error["code"] == "non_substantive_local_response"
+    assert "</thinking>" not in response.text
+
+
+def test_openai_compat_responses_falls_back_after_reasoning_control_only_response(
+    test_app, monkeypatch
+):
+    from app.services.prompt_provider_facade import norllama_gateway
+
+    headers = _proxy_headers(monkeypatch, route="gold-book")
+    monkeypatch.setattr(
+        norllama_gateway,
+        "invoke_text_chat",
+        lambda **_kwargs: {
+            "model": "qwen3-coder:30b-a3b-q4_K_M",
+            "choices": [{"message": {"content": "</thinking>"}}],
+            "usage": {},
+            "headers": {},
+        },
+    )
+    bedrock_calls = _install_bedrock_stub(
+        monkeypatch,
+        result=_mock_bedrock_result("Queue health is normal."),
+    )
+
+    response = test_app.post(
+        "/v1/responses",
+        headers=headers,
+        json={"model": "norman-code", "input": "How are the queues?"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["output_text"] == "Queue health is normal."
+    assert response.json()["norman"]["local_failure_code"] == (
+        "non_substantive_local_response"
+    )
+    assert len(bedrock_calls) == 1
+
+
 def test_openai_compat_responses_retries_retryable_norman_code_failure_in_bedrock(
     test_app, monkeypatch
 ):
@@ -4360,6 +4424,55 @@ def test_openai_compat_responses_stream_repairs_tool_intention_without_call(
         "role": "system",
         "content": facade._TOOL_PROTOCOL_REPAIR_MESSAGE,
     }
+
+
+def test_openai_compat_responses_deduplicates_identical_parallel_tool_calls(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    model_text = json.dumps(
+        {
+            "tool_calls": [
+                {
+                    "name": "exec_command",
+                    "arguments": {"cmd": "cat SKILL.md"},
+                },
+                {
+                    "name": "exec_command",
+                    "arguments": {"cmd": "cat SKILL.md"},
+                },
+                {
+                    "name": "exec_command",
+                    "arguments": {"cmd": "pwd"},
+                },
+            ]
+        }
+    )
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: _mock_local_chat(kwargs["messages"], kwargs["model"])
+        | {"choices": [{"message": {"content": model_text}}]},
+    )
+
+    response = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "Check the queues.",
+        },
+        trusted_context={"source_tui": "codex-work"},
+    )
+
+    calls = [item for item in response["output"] if item["type"] == "function_call"]
+    assert [json.loads(call["arguments"]) for call in calls] == [
+        {"cmd": "cat SKILL.md"},
+        {"cmd": "pwd"},
+    ]
+    assert len({call["call_id"] for call in calls}) == 2
 
 
 def test_openai_compat_responses_can_return_native_function_call(monkeypatch):
