@@ -1022,11 +1022,11 @@ def _namespace_member_name(namespace: str, member: Mapping[str, Any]) -> str:
         return ""
     canonical_prefix = f"{namespace}__"
     if member_name.startswith(canonical_prefix):
-        return member_name
+        return member_name.removeprefix(canonical_prefix)
     dotted_prefix = f"{namespace}."
     if member_name.startswith(dotted_prefix):
-        member_name = member_name.removeprefix(dotted_prefix)
-    return f"{canonical_prefix}{member_name}"
+        return member_name.removeprefix(dotted_prefix)
+    return member_name
 
 
 def _canonical_tool_call_name(
@@ -1035,7 +1035,7 @@ def _canonical_tool_call_name(
     tools: list[dict[str, Any]],
     declared_names: set[str],
 ) -> str:
-    """Normalize legacy dotted namespace calls to Codex's MCP separator."""
+    """Normalize qualified namespace calls to Codex's executable member name."""
 
     if name in declared_names:
         return name
@@ -1043,12 +1043,14 @@ def _canonical_tool_call_name(
         if _clean(tool.get("type")) != "namespace":
             continue
         namespace = _clean(tool.get("name"))
-        dotted_prefix = f"{namespace}."
-        if not namespace or not name.startswith(dotted_prefix):
+        if not namespace:
             continue
-        candidate = f"{namespace}__{name.removeprefix(dotted_prefix)}"
-        if candidate in declared_names:
-            return candidate
+        for prefix in (f"{namespace}.", f"{namespace}__"):
+            if not name.startswith(prefix):
+                continue
+            candidate = name.removeprefix(prefix)
+            if candidate in declared_names:
+                return candidate
     return name
 
 
