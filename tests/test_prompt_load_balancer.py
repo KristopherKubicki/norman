@@ -4278,7 +4278,7 @@ def test_openai_compat_responses_recovers_mixed_standalone_tool_envelopes(
     response = execute_openai_responses_facade(
         {
             "model": "norman-code",
-            "input": "How are the queues?",
+            "input": "Start the authenticated Ops Portal session.",
             "tools": [
                 {
                     "type": "namespace",

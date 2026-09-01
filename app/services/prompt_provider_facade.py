@@ -141,6 +141,20 @@ TOOL_OUTPUT_FAILURE_MARKERS = (
 )
 CODEX_IMPLICIT_TUI_TOOLS = (
     {
+        "name": "tool_search",
+        "type": "function",
+        "description": (
+            "Discover and activate a deferred remote tool before calling it. "
+            "Pass the exact capability or tool name needed for the task."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "exec_command",
         "type": "function",
         "description": (
@@ -1373,7 +1387,8 @@ def _tool_contract_definition(
         compact.extend(
             dict(tool)
             for tool in CODEX_IMPLICIT_TUI_TOOLS
-            if _clean(tool.get("name")) not in declared_names
+            if _clean(tool.get("name")) != "tool_search"
+            and _clean(tool.get("name")) not in declared_names
         )
     return compact
 
@@ -2330,6 +2345,8 @@ def _domain_tool_contract_available(prepared: PreparedResponsesExecution) -> boo
 
 
 def _namespace_discovery_required(prepared: PreparedResponsesExecution) -> bool:
+    if not _live_operational_status_requested(prepared):
+        return False
     available_names = _tool_names(_tools(prepared.provider_payload))
     if prepared.implicit_tools:
         available_names.update(
