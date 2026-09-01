@@ -895,6 +895,8 @@ def _response_sse(stream: Any):
                 "name": output_item.get("name"),
                 "arguments": "",
             }
+            if output_item.get("namespace"):
+                in_progress_item["namespace"] = output_item["namespace"]
             yield emit(
                 "response.output_item.added",
                 {

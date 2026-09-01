@@ -141,20 +141,6 @@ TOOL_OUTPUT_FAILURE_MARKERS = (
 )
 CODEX_IMPLICIT_TUI_TOOLS = (
     {
-        "name": "tool_search",
-        "type": "function",
-        "description": (
-            "Discover and activate a deferred remote tool before calling it. "
-            "Pass the exact capability or tool name needed for the task."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {"query": {"type": "string"}},
-            "required": ["query"],
-            "additionalProperties": False,
-        },
-    },
-    {
         "name": "exec_command",
         "type": "function",
         "description": (
@@ -738,6 +724,9 @@ def _function_call_item(
         value = item.get(field)
         if isinstance(value, str) and value:
             function_call[field] = value
+    namespace = _clean(item.get("namespace"))
+    if namespace:
+        function_call["namespace"] = namespace
     return function_call
 
 
@@ -1066,6 +1055,37 @@ def _canonical_tool_call_name(
             if candidate in declared_names:
                 return candidate
     return name
+
+
+def _tool_call_namespace(
+    raw: Mapping[str, Any],
+    *,
+    name: str,
+    tools: list[dict[str, Any]],
+) -> str:
+    """Resolve the namespace metadata Codex needs to dispatch an MCP member."""
+
+    requested_namespace = _clean(raw.get("namespace"))
+    matches: list[str] = []
+    raw_name = _clean(raw.get("name"))
+    for tool in tools:
+        if _clean(tool.get("type")) != "namespace":
+            continue
+        namespace = _clean(tool.get("name"))
+        members = tool.get("tools")
+        if not namespace or not isinstance(members, list):
+            continue
+        if requested_namespace and requested_namespace != namespace:
+            continue
+        qualified = raw_name in {f"{namespace}.{name}", f"{namespace}__{name}"}
+        declared = any(
+            isinstance(member, Mapping)
+            and _namespace_member_name(namespace, member) == name
+            for member in members
+        )
+        if qualified or declared:
+            matches.append(namespace)
+    return matches[0] if len(set(matches)) == 1 else ""
 
 
 def _tool_names(tools: list[dict[str, Any]]) -> set[str]:
@@ -2163,6 +2183,17 @@ def _extract_tool_calls(
                 "arguments": arguments
                 if isinstance(arguments, str)
                 else _json_dumps(arguments),
+                **(
+                    {"namespace": namespace}
+                    if (
+                        namespace := _tool_call_namespace(
+                            raw,
+                            name=name,
+                            tools=tools,
+                        )
+                    )
+                    else {}
+                ),
             }
         )
     return calls
@@ -2348,10 +2379,6 @@ def _namespace_discovery_required(prepared: PreparedResponsesExecution) -> bool:
     if not _live_operational_status_requested(prepared):
         return False
     available_names = _tool_names(_tools(prepared.provider_payload))
-    if prepared.implicit_tools:
-        available_names.update(
-            _clean(tool.get("name")) for tool in CODEX_IMPLICIT_TUI_TOOLS
-        )
     has_deferred_tool = _domain_tool_contract_available(prepared)
     discovered = any(
         name == "tool_search"

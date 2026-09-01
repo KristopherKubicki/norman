@@ -1465,6 +1465,7 @@ def test_openai_compat_responses_stream_keeps_native_function_call_out_of_text(
         "call_id": native_call_id,
         "name": native_name,
         "arguments": "",
+        "namespace": "mcp__ops_openbrand",
     }
     assert [event["delta"] for event in function_argument_deltas] == [native_arguments]
     assert function_argument_done["arguments"] == native_arguments
@@ -1477,6 +1478,7 @@ def test_openai_compat_responses_stream_keeps_native_function_call_out_of_text(
             "call_id": native_call_id,
             "name": native_name,
             "arguments": native_arguments,
+            "namespace": "mcp__ops_openbrand",
         }
     ]
     assert response.closed is True
@@ -4309,6 +4311,12 @@ def test_openai_compat_responses_recovers_mixed_standalone_tool_envelopes(
         "exec_command",
         "session_start",
     ]
+    session_call = next(
+        item
+        for item in response["output"]
+        if item["type"] == "function_call" and item["name"] == "session_start"
+    )
+    assert session_call["namespace"] == "mcp__ops_openbrand"
 
 
 def test_responses_stream_normalizer_contains_mixed_tool_envelopes():
@@ -4619,6 +4627,7 @@ def test_openai_compat_responses_can_return_declared_mcp_namespace_function_call
             "call_id": native_call_id,
             "name": native_name,
             "arguments": native_arguments,
+            "namespace": "mcp__ops_openbrand",
         }
     ]
 
@@ -5035,6 +5044,7 @@ def test_openai_compat_responses_repairs_live_queue_clarification_without_call(
     assert len(invocations) == 2
     assert response["output_text"] == ""
     assert response["output"][0]["name"] == "session_start"
+    assert response["output"][0]["namespace"] == "mcp__ops_openbrand"
     assert response["norman"]["responses_compatibility"]["tool_chain"]["watchdog"] == {
         "state": "repaired",
         "attempts": 1,
