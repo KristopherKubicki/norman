@@ -78,7 +78,7 @@ def test_run_canary_exercises_the_three_turn_synthetic_tool_chain():
             _tool_response("resp-search", "tool_search", "call-search"),
             _tool_response(
                 "resp-synthetic",
-                "mcp__norman_canary.status_lookup",
+                "mcp__norman_canary__status_lookup",
                 "call-synthetic",
             ),
             {
@@ -126,7 +126,7 @@ def test_run_canary_exercises_the_three_turn_synthetic_tool_chain():
         "final_answer",
     ]
     assert receipt["turns"][0]["tool_names"] == ["tool_search"]
-    assert receipt["turns"][1]["tool_names"] == ["mcp__norman_canary.status_lookup"]
+    assert receipt["turns"][1]["tool_names"] == ["mcp__norman_canary__status_lookup"]
     assert receipt["turns"][2]["function_call_count"] == 0
     assert requests[0][1]["tools"][0]["name"] == "tool_search"
     assert requests[1][1]["tools"][0] == {
@@ -168,7 +168,7 @@ def test_run_canary_streaming_exercises_native_sse_tool_calls():
             _stream_response(
                 _tool_response(
                     "resp-synthetic",
-                    "mcp__norman_canary.status_lookup",
+                    "mcp__norman_canary__status_lookup",
                     "call-synthetic",
                 )
             ),

@@ -26,7 +26,7 @@ DEFAULT_OUTPUT_JSON = Path(
 DEFAULT_PRESSURE_GUARD = Path(__file__).with_name("tui_host_pressure_guard.py")
 DEFAULT_PRESSURE_TARGET = "work-special"
 DEFAULT_TIMEOUT_SECONDS = 45.0
-KNOWN_TOOL_NAMES = frozenset({"tool_search", "mcp__norman_canary.status_lookup"})
+KNOWN_TOOL_NAMES = frozenset({"tool_search", "mcp__norman_canary__status_lookup"})
 SAFE_TOOL_CHAIN_SCHEMA = "norman.responses-tool-chain.v1"
 SAFE_TOOL_CHAIN_TURN_TYPES = frozenset({"after_tool_result", "initial_or_text"})
 SAFE_TOOL_CHAIN_OUTCOMES = frozenset(
@@ -624,8 +624,8 @@ def _synthetic_status_namespace() -> dict[str, Any]:
 def _canary_prompt() -> str:
     return (
         "Run the Norman tool-chain health check. First call tool_search to discover "
-        "mcp__norman_canary.status_lookup. After its synthetic result is supplied, "
-        "call mcp__norman_canary.status_lookup. Do not call any real MCP or "
+        "mcp__norman_canary__status_lookup. After its synthetic result is supplied, "
+        "call mcp__norman_canary__status_lookup. Do not call any real MCP or "
         "external tool."
     )
 
@@ -717,7 +717,7 @@ def run_canary(
                         "type": "function_call_output",
                         "call_id": tool_search_call_id,
                         "output": (
-                            '{"tools":[{"name":"mcp__norman_canary.status_lookup",'
+                            '{"tools":[{"name":"mcp__norman_canary__status_lookup",'
                             '"description":"Synthetic canary status lookup"}]}'
                         ),
                     }
@@ -727,7 +727,7 @@ def run_canary(
         )
         synthetic_call_id = _require_exact_function_call(
             tool_call,
-            name="mcp__norman_canary.status_lookup",
+            name="mcp__norman_canary__status_lookup",
             streaming=streaming,
         )
         final = execute_turn(
