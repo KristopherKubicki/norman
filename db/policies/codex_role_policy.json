@@ -1,26 +1,26 @@
 {
   "schema": "norman.codex-role-policy.v1",
   "version": "2026.07.15.role-v1",
-  "policy_id": "2026.07.15.role-v1:b9061d1eb816",
-  "policy_hash": "b9061d1eb81627f3c0d907ce3c91e9aeb28215e7a642bba989016f4c734f3635",
+  "policy_id": "2026.07.15.role-v1:f02d6c56c742",
+  "policy_hash": "f02d6c56c742e53581f5bddaa3c543ed6981e2eed0cc97b2c49b628f5c51f6f5",
   "issued_at": "2026-07-22T00:00:00Z",
-  "default_policy": "local-first, GPT-5.6 Terra Bedrock baseline and personal final authority, GPT-5.5 work final-authority only",
+  "default_policy": "local-first, GPT-5.6 Sol medium Bedrock baseline and personal final authority, GPT-5.5 work final-authority only",
   "roles": {
     "work_standard": {
       "provider": "aws-bedrock",
       "profile_v2": "traqline-bedrock",
       "aws_profile": "ob-openbrand-admin",
       "aws_region": "us-east-2",
-      "model": "openai.gpt-5.6-terra",
+      "model": "openai.gpt-5.6-sol",
       "service_tier": "default",
-      "allowed_use": "normal work-special cloud fallback after local-first routing; Bedrock GPT-5.6 Terra is the fleet baseline",
+      "allowed_use": "normal work-special cloud fallback after local-first routing; Bedrock GPT-5.6 Sol medium is the fleet baseline",
       "production_default": true
     },
     "work_direct": {
       "provider": "openai",
-      "model": "gpt-5.6-terra",
+      "model": "gpt-5.6-sol",
       "service_tier": "default",
-      "allowed_use": "direct GPT-5.6 Terra compatibility route when Bedrock is unavailable",
+      "allowed_use": "direct GPT-5.6 Sol medium compatibility route when Bedrock is unavailable",
       "production_default": true
     },
     "work_final_authority": {
@@ -37,16 +37,16 @@
       "profile_v2": "personal-bedrock",
       "aws_profile_env": "NORMAN_SYNC_NON_WORK_BEDROCK_AWS_PROFILE",
       "aws_region_env": "NORMAN_SYNC_NON_WORK_BEDROCK_AWS_REGION",
-      "model": "openai.gpt-5.6-terra",
+      "model": "openai.gpt-5.6-sol",
       "service_tier": "default",
-      "allowed_use": "personal/non-work cloud fallback after local-first routing; Bedrock GPT-5.6 Terra is the validated personal baseline",
+      "allowed_use": "personal/non-work cloud fallback after local-first routing; Bedrock GPT-5.6 Sol medium is the personal baseline",
       "production_default": true
     },
     "personal_direct": {
       "provider": "openai",
-      "model": "gpt-5.6-terra",
+      "model": "gpt-5.6-sol",
       "service_tier": "default",
-      "allowed_use": "direct GPT-5.6 Terra compatibility route when personal Bedrock is unavailable or disabled",
+      "allowed_use": "direct GPT-5.6 Sol medium compatibility route when personal Bedrock is unavailable or disabled",
       "production_default": true
     },
     "personal_final_authority": {
@@ -54,9 +54,9 @@
       "profile_v2": "personal-bedrock",
       "aws_profile_env": "NORMAN_SYNC_NON_WORK_BEDROCK_AWS_PROFILE",
       "aws_region_env": "NORMAN_SYNC_NON_WORK_BEDROCK_AWS_REGION",
-      "model": "openai.gpt-5.6-terra",
+      "model": "openai.gpt-5.6-sol",
       "service_tier": "priority",
-      "allowed_use": "personal high-regret final authority; GPT-5.6 Terra is the personal baseline",
+      "allowed_use": "personal high-regret final authority; GPT-5.6 Sol medium is the personal baseline",
       "production_default": false
     }
   },
@@ -83,7 +83,7 @@
     ]
   },
   "rules": {
-    "cloud_default": "gpt-5.6-terra",
+    "cloud_default": "gpt-5.6-sol",
     "gpt_5_5_scope": "final_authority_only",
     "cloud_is_last_resort_after_local": true,
     "promotion_source": "live_receipts_and_policy_gates",

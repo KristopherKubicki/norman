@@ -1718,6 +1718,7 @@ def _origin_model_updates(
         "NORMAN_CODEX_ROLE_POLICY_ID": CODEX_ROLE_POLICY_IDENTITY["policy_id"],
         "NORMAN_CODEX_ROLE_POLICY_HASH": CODEX_ROLE_POLICY_IDENTITY["policy_hash"],
         "NORMAN_CODEX_ROLE_POLICY_VERSION": CODEX_ROLE_POLICY_IDENTITY["version"],
+        "NORMAN_CODEX_REASONING_EFFORT": "medium",
     }
     if use_work and work_enabled:
         direct_tiers = os.environ.get("NORMAN_SYNC_WORK_DIRECT_TIERS_ENABLED", "1")

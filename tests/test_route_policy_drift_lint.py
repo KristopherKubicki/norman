@@ -31,7 +31,7 @@ def test_route_policy_drift_lint_flags_old_five_five_default(tmp_path, monkeypat
 
     assert report["status"] == "fail"
     assert report["codex_role_policy"]["policy_id"]
-    assert report["cloud_default_model"] == "openai.gpt-5.6-terra"
+    assert report["cloud_default_model"] == "openai.gpt-5.6-sol"
     assert report["final_authority_model"] == "openai.gpt-5.5"
     assert report["error_count"] == 1
     assert report["issues"][0]["rule_id"] == "five_five_desired_default"

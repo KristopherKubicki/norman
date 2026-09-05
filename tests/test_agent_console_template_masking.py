@@ -96,6 +96,17 @@ def _agent_console_launch_source() -> str:
     ).read_text(encoding="utf-8")
 
 
+def test_local_planner_uses_deployed_resident_model_environment(monkeypatch) -> None:
+    monkeypatch.setenv("NORMAN_LOCAL_LLM_MODEL", "qwen3.8:27b")
+    monkeypatch.setenv("NORMAN_LOCAL_PLANNER_AUTOMATIC_MODEL", "qwen3.8:27b")
+
+    module = _load_agent_console_web()
+
+    assert module.DEFAULT_LOCAL_LLM_MODEL == "qwen3.8:27b"
+    assert module.LOCAL_PLANNER_AUTOMATIC_MODEL == "qwen3.8:27b"
+    assert module.local_planner_preferred_models() == ["qwen3.8:27b"]
+
+
 def test_artmonster_latest_image_source_attaches_public_feed_image(monkeypatch) -> None:
     module = _load_agent_console_web()
     module.AGENT_NAME = "Artmonster"

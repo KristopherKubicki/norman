@@ -894,13 +894,14 @@ def test_origin_sync_exports_bbs_env_file_without_raw_token(monkeypatch) -> None
         "openai.gpt-5.6-luna,openai.gpt-5.6-terra,openai.gpt-5.6-sol,"
         "openai.gpt-5.5,gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol,gpt-5.5"
     )
-    assert module.WORK_STANDARD_MODEL == "openai.gpt-5.6-terra"
+    assert module.WORK_STANDARD_MODEL == "openai.gpt-5.6-sol"
     assert module.WORK_STANDARD_AWS_REGION == "us-east-2"
-    assert module.WORK_DIRECT_MODEL == "gpt-5.6-terra"
+    assert module.WORK_DIRECT_MODEL == "gpt-5.6-sol"
     assert module.WORK_FINAL_AUTHORITY_MODEL == "openai.gpt-5.5"
+    assert '"NORMAN_CODEX_REASONING_EFFORT":"medium"' in script
     assert '"NORMAN_CODEX_TAILSCALE_REQUIRED":"0"' in script
     assert '"NORMAN_CODEX_DIRECT_TIERS_ENABLED":"1"' in script
-    assert "ob-traqline-admin" in script
+    assert "ob-openbrand-admin" in script
     assert "SWITCHBOARD_URL" in script
     assert "SWITCHBOARD_ACTOR" in script
     assert "SWITCHBOARD_ENV_FILE" in script
@@ -1037,7 +1038,7 @@ def test_work_runtime_default_model_reset_migrates_old_default(
     script = captured["script"]
     assert "runtime_settings.json" in script
     assert 'env.get("NORMAN_CODEX_WEB_STATE_DIR")' in script
-    assert "desired_model = 'gpt-5.6-terra'" in script
+    assert "desired_model = 'gpt-5.6-sol'" in script
     assert "force_codex_runtime = True" in script
     assert 'payload["runtime"] = "codex"' in script
     assert (
@@ -1150,9 +1151,9 @@ def test_work_runtime_settings_migrate_idle_claude_state(monkeypatch, tmp_path) 
     runtime = json.loads((state_dir / "runtime_settings.json").read_text())
     status = json.loads(status_path.read_text())
     assert runtime["runtime"] == "codex"
-    assert runtime["model"] == "gpt-5.6-terra"
+    assert runtime["model"] == "gpt-5.6-sol"
     assert status["selected_runtime"] == "codex"
-    assert status["selected_model"] == "gpt-5.6-terra"
+    assert status["selected_model"] == "gpt-5.6-sol"
     assert status["thread_id"] == ""
     assert status["thread_scope"] == ""
 
@@ -1574,11 +1575,11 @@ def test_work_bedrock_defaults_can_be_disabled_and_cleaned(monkeypatch) -> None:
     assert "NORMAN_CODEX_BEDROCK_FAILOVER_AWS_REGION" in script
     assert "NORMAN_CODEX_DIRECT_TIERS_ENABLED" in script
     assert "traqline-bedrock" not in script
-    assert '"NORMAN_CODEX_MODEL":"gpt-5.6-terra"' in script
-    assert '"NORMAN_CODEX_MODEL_FLOOR":"gpt-5.6-terra"' in script
-    assert '"NORMAN_CODEX_DIRECT_MODEL":"gpt-5.6-terra"' in script
-    assert '"NORMAN_CODEX_FLEX_MODEL":"gpt-5.6-terra"' in script
-    assert '"NORMAN_CODEX_PRIORITY_MODEL":"gpt-5.6-terra"' in script
+    assert '"NORMAN_CODEX_MODEL":"gpt-5.6-sol"' in script
+    assert '"NORMAN_CODEX_MODEL_FLOOR":"gpt-5.6-sol"' in script
+    assert '"NORMAN_CODEX_DIRECT_MODEL":"gpt-5.6-sol"' in script
+    assert '"NORMAN_CODEX_FLEX_MODEL":"gpt-5.6-sol"' in script
+    assert '"NORMAN_CODEX_PRIORITY_MODEL":"gpt-5.6-sol"' in script
     assert (
         '"NORMAN_CODEX_SWITCHABLE_MODELS":"'
         "openai.gpt-5.5,openai.gpt-5.6-luna,openai.gpt-5.6-terra,"
@@ -1683,7 +1684,7 @@ def test_work_special_host_receives_work_bedrock_defaults_by_host(
     assert '"NORMAN_CODEX_BILLING_OWNER":"openbrand"' in script
     assert '"NORMAN_CODEX_SERVICE_TIER":"default"' in script
     assert '"NORMAN_CODEX_STANDARD_PROFILE_V2":"traqline-bedrock"' in script
-    assert '"NORMAN_CODEX_STANDARD_AWS_PROFILE":"ob-traqline-admin"' in script
+    assert '"NORMAN_CODEX_STANDARD_AWS_PROFILE":"ob-openbrand-admin"' in script
     assert '"NORMAN_CODEX_STANDARD_AWS_REGION":"us-east-2"' in script
 
 
@@ -1716,8 +1717,8 @@ def test_work_named_tui_on_norman_stays_personal_without_test_override(
     assert '"NORMAN_CODEX_BILLING_SCOPE":"norman"' in script
     assert '"NORMAN_CODEX_BILLING_OWNER":"kristopher"' in script
     assert '"NORMAN_CODEX_SERVICE_TIER":"default"' in script
-    assert '"NORMAN_CODEX_MODEL":"openai.gpt-5.6-terra"' in script
-    assert '"NORMAN_CODEX_DIRECT_MODEL":"openai.gpt-5.6-terra"' in script
+    assert '"NORMAN_CODEX_MODEL":"openai.gpt-5.6-sol"' in script
+    assert '"NORMAN_CODEX_DIRECT_MODEL":"openai.gpt-5.6-sol"' in script
     assert "NORMAN_CODEX_STANDARD_PROFILE_V2" not in script
     assert "traqline-bedrock" not in script
     assert "ob-traqline-admin" not in script
@@ -1752,7 +1753,7 @@ def test_norman_can_opt_into_work_config_for_local_testing(
     assert '"NORMAN_CODEX_BILLING_OWNER":"openbrand"' in script
     assert '"NORMAN_CODEX_SERVICE_TIER":"default"' in script
     assert '"NORMAN_CODEX_STANDARD_PROFILE_V2":"traqline-bedrock"' in script
-    assert '"NORMAN_CODEX_STANDARD_AWS_PROFILE":"ob-traqline-admin"' in script
+    assert '"NORMAN_CODEX_STANDARD_AWS_PROFILE":"ob-openbrand-admin"' in script
 
 
 def test_personal_tui_does_not_receive_work_bedrock_defaults(monkeypatch) -> None:
@@ -1779,8 +1780,8 @@ def test_personal_tui_does_not_receive_work_bedrock_defaults(monkeypatch) -> Non
     script = captured["script"]
     assert '"NORMAN_CODEX_SERVICE_TIER":"default"' in script
     assert "remove_keys = json.loads('[]')" in script
-    assert '"NORMAN_CODEX_MODEL":"openai.gpt-5.6-terra"' in script
-    assert '"NORMAN_CODEX_DIRECT_MODEL":"openai.gpt-5.6-terra"' in script
+    assert '"NORMAN_CODEX_MODEL":"openai.gpt-5.6-sol"' in script
+    assert '"NORMAN_CODEX_DIRECT_MODEL":"openai.gpt-5.6-sol"' in script
     assert "NORMAN_CODEX_STANDARD_PROFILE_V2" not in script
     assert "traqline-bedrock" not in script
     assert "NORMAN_CODEX_DIRECT_TIERS_ENABLED" not in script
@@ -1821,8 +1822,8 @@ def test_origin_sync_deduplicates_personal_model_settings(
     assert module.sync_instance_origin_settings(toy_box, housebot) is True
 
     lines = env_path.read_text(encoding="utf-8").splitlines()
-    assert lines.count("NORMAN_CODEX_MODEL=openai.gpt-5.6-terra") == 1
-    assert lines.count("NORMAN_CODEX_STANDARD_MODEL=openai.gpt-5.6-terra") == 1
+    assert lines.count("NORMAN_CODEX_MODEL=openai.gpt-5.6-sol") == 1
+    assert lines.count("NORMAN_CODEX_STANDARD_MODEL=openai.gpt-5.6-sol") == 1
 
 
 def test_non_work_bedrock_defaults_can_be_disabled_and_cleaned(
@@ -1854,11 +1855,11 @@ def test_non_work_bedrock_defaults_can_be_disabled_and_cleaned(
     assert "NORMAN_CODEX_STANDARD_PROFILE_V2" in script
     assert "NORMAN_CODEX_STANDARD_PROFILE_V2" in script
     assert "traqline-bedrock" not in script
-    assert '"NORMAN_CODEX_MODEL":"gpt-5.6-terra"' in script
-    assert '"NORMAN_CODEX_MODEL_FLOOR":"gpt-5.6-terra"' in script
-    assert '"NORMAN_CODEX_DIRECT_MODEL":"gpt-5.6-terra"' in script
-    assert '"NORMAN_CODEX_FLEX_MODEL":"gpt-5.6-terra"' in script
-    assert '"NORMAN_CODEX_PRIORITY_MODEL":"gpt-5.6-terra"' in script
+    assert '"NORMAN_CODEX_MODEL":"gpt-5.6-sol"' in script
+    assert '"NORMAN_CODEX_MODEL_FLOOR":"gpt-5.6-sol"' in script
+    assert '"NORMAN_CODEX_DIRECT_MODEL":"gpt-5.6-sol"' in script
+    assert '"NORMAN_CODEX_FLEX_MODEL":"gpt-5.6-sol"' in script
+    assert '"NORMAN_CODEX_PRIORITY_MODEL":"gpt-5.6-sol"' in script
     assert (
         '"NORMAN_CODEX_SWITCHABLE_MODELS":"'
         "openai.gpt-5.5,openai.gpt-5.6-luna,openai.gpt-5.6-terra,"
@@ -1943,12 +1944,13 @@ def test_personal_tui_uses_non_work_bedrock_only_with_explicit_source(
     assert module.sync_instance_origin_settings(toy_box, housebot) is True
 
     script = captured["script"]
-    assert module.PERSONAL_FINAL_AUTHORITY_MODEL == "openai.gpt-5.6-terra"
+    assert module.PERSONAL_FINAL_AUTHORITY_MODEL == "openai.gpt-5.6-sol"
     assert '"NORMAN_CODEX_SERVICE_TIER":"default"' in script
     assert '"NORMAN_CODEX_STANDARD_PROFILE_V2":"personal-bedrock"' in script
     assert '"NORMAN_CODEX_STANDARD_AWS_PROFILE":"personal-bedrock"' in script
     assert '"NORMAN_CODEX_STANDARD_AWS_REGION":"us-west-2"' in script
-    assert '"NORMAN_CODEX_PRIORITY_MODEL":"openai.gpt-5.6-terra"' in script
+    assert '"NORMAN_CODEX_PRIORITY_MODEL":"openai.gpt-5.6-sol"' in script
+    assert '"NORMAN_CODEX_REASONING_EFFORT":"medium"' in script
     assert "ob-traqline-admin" not in script
 
 
@@ -2044,11 +2046,11 @@ def test_netops_preserves_bedrock_when_profile_source_is_unavailable(
 
     script = captured["script"]
     assert '"NORMAN_CODEX_SERVICE_TIER":"default"' in script
-    assert '"NORMAN_CODEX_MODEL":"openai.gpt-5.6-terra"' in script
-    assert '"NORMAN_CODEX_MODEL_FLOOR":"openai.gpt-5.6-terra"' in script
-    assert '"NORMAN_CODEX_DIRECT_MODEL":"openai.gpt-5.6-terra"' in script
-    assert '"NORMAN_CODEX_FLEX_MODEL":"openai.gpt-5.6-terra"' in script
-    assert '"NORMAN_CODEX_PRIORITY_MODEL":"openai.gpt-5.6-terra"' in script
+    assert '"NORMAN_CODEX_MODEL":"openai.gpt-5.6-sol"' in script
+    assert '"NORMAN_CODEX_MODEL_FLOOR":"openai.gpt-5.6-sol"' in script
+    assert '"NORMAN_CODEX_DIRECT_MODEL":"openai.gpt-5.6-sol"' in script
+    assert '"NORMAN_CODEX_FLEX_MODEL":"openai.gpt-5.6-sol"' in script
+    assert '"NORMAN_CODEX_PRIORITY_MODEL":"openai.gpt-5.6-sol"' in script
     assert (
         '"NORMAN_CODEX_SWITCHABLE_MODELS":"'
         "openai.gpt-5.5,openai.gpt-5.6-luna,openai.gpt-5.6-terra,"
