@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if command -v codex >/dev/null 2>&1; then
-    exec codex "$@"
+# Prefer Norman's checkout-aware router even when systemd's minimal PATH also
+# exposes a raw global Codex binary. This keeps SMS on the governed Norman
+# gateway, including its approved local-first/cloud-fallback policy.
+routed_codex=${NORMAN_ROUTED_CODEX_BIN:-"${HOME}/.local/bin/codex"}
+if [[ -x "${routed_codex}" ]]; then
+    exec "${routed_codex}" "$@"
 fi
 
 nvm_dir=${NVM_DIR:-"${HOME}/.nvm"}

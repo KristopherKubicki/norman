@@ -86,12 +86,37 @@ def test_collect_fails_when_gateway_endpoint_or_service_is_down(monkeypatch) -> 
     }
 
 
+def test_catalog_timeout_warns_without_hiding_ready_worker(monkeypatch) -> None:
+    module = _load_module()
+    target = module.DEFAULT_TARGETS[0]
+    payload = _healthy_payload()
+    payload["endpoints"]["/v1/models"] = {
+        "status": 0,
+        "error": "TimeoutError: timed out",
+    }
+    monkeypatch.setattr(module, "probe_target", lambda _target: payload)
+
+    report = module.collect((target,))
+
+    assert report["status"] == "degraded"
+    assert report["summary"] == {"active": 1, "expected": 1, "fail": 0, "warn": 1}
+    assert report["issues"] == [
+        {
+            "severity": "warn",
+            "host": target.name,
+            "instance": target.gateway_unit,
+            "check": "endpoint:/v1/models",
+            "detail": "TimeoutError: timed out",
+        }
+    ]
+
+
 def test_probe_timeout_is_reported_without_crashing_collection(monkeypatch) -> None:
     module = _load_module()
     target = module.DEFAULT_TARGETS[1]
 
     def timeout(*_args, **_kwargs):
-        raise subprocess.TimeoutExpired(["ssh"], 20)
+        raise subprocess.TimeoutExpired(["ssh"], module.SSH_PROBE_TIMEOUT_SECONDS)
 
     monkeypatch.setattr(module.subprocess, "run", timeout)
 
@@ -100,7 +125,7 @@ def test_probe_timeout_is_reported_without_crashing_collection(monkeypatch) -> N
     assert report["status"] == "failed"
     assert report["summary"] == {"active": 0, "expected": 1, "fail": 1, "warn": 0}
     assert report["issues"][0]["check"] == "ssh"
-    assert report["issues"][0]["detail"] == "SSH probe timed out after 20 seconds"
+    assert report["issues"][0]["detail"] == "SSH probe timed out after 35 seconds"
 
 
 def test_macos_probe_uses_http_without_opening_ssh(monkeypatch) -> None:

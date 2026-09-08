@@ -152,6 +152,7 @@ INSTANCE_PUBLIC_HOST_OVERRIDES: dict[str, str] = {
     "market-sizing": "market.kris.openbrand.com",
     "mls": "mls.kris.openbrand.com",
     "networking": "networking.home.arpa",
+    "norman": "norman.home.arpa",
     "panelbot": "panelbot.kris.openbrand.com",
     "parkergale": "pefb.home.arpa",
     "phone-ops": "phone.home.arpa",
@@ -475,6 +476,12 @@ WORK_BEDROCK_DEFAULT_INSTANCES: tuple[str, ...] = (
     "scout",
     "tmi-dashboards",
 )
+CANONICAL_BBS_URL = (
+    os.environ.get("NORMAN_SYNC_BBS_URL", "http://switchboard.home.arpa:8765").strip()
+    or "http://switchboard.home.arpa:8765"
+)
+BBS_LAN_FALLBACK_URL = f"http://{_fleet_host_address('norman')}:8765"
+BBS_ACTOR_ALIASES: dict[str, str] = {"phone-ops": "phoneops"}
 CODEX_ROLE_POLICY = load_codex_role_policy()
 CODEX_ROLE_POLICY_IDENTITY = codex_role_policy_identity(policy=CODEX_ROLE_POLICY)
 WORK_SWITCHABLE_MODELS = codex_switchable_models("work", policy=CODEX_ROLE_POLICY)
@@ -617,12 +624,7 @@ def _local_llm_inventory() -> (
                 raw_name = str(model or "").strip()
                 if not raw_name:
                     continue
-                name = (
-                    "qwen3-coder:30b-a3b-q4_K_M"
-                    if raw_name.lower() == "qwen/qwen3-coder-30b-a3b"
-                    or raw_name.lower() == "qwen3-coder:30b-a3b-q4_k_m"
-                    else ""
-                )
+                name = "qwen3.8:27b" if raw_name.lower() == "qwen3.8:27b" else ""
                 if not name:
                     continue
                 model_endpoints.setdefault(name, [])
@@ -630,12 +632,12 @@ def _local_llm_inventory() -> (
                     model_endpoints[name].append(endpoint)
 
     model_endpoints = (
-        {"qwen3-coder:30b-a3b-q4_K_M": model_endpoints["qwen3-coder:30b-a3b-q4_K_M"]}
-        if "qwen3-coder:30b-a3b-q4_K_M" in model_endpoints
+        {"qwen3.8:27b": model_endpoints["qwen3.8:27b"]}
+        if "qwen3.8:27b" in model_endpoints
         else {}
     )
     models = tuple(model_endpoints)
-    default = "qwen3-coder:30b-a3b-q4_K_M" if models else ""
+    default = "qwen3.8:27b" if models else ""
     return models, tuple(endpoints), model_endpoints, default
 
 
@@ -1738,6 +1740,8 @@ def _origin_model_updates(
             "NORMAN_CODEX_STANDARD_PROFILE_V2": WORK_STANDARD_PROFILE_V2,
             "NORMAN_CODEX_STANDARD_AWS_PROFILE": WORK_STANDARD_AWS_PROFILE,
             "NORMAN_CODEX_STANDARD_AWS_REGION": WORK_STANDARD_AWS_REGION,
+            "NORMAN_CODEX_BEDROCK_AWS_PROFILE": WORK_STANDARD_AWS_PROFILE,
+            "AWS_PROFILE": WORK_STANDARD_AWS_PROFILE,
             "NORMAN_CODEX_STANDARD_MODEL": WORK_STANDARD_MODEL,
             "NORMAN_CODEX_MODEL": WORK_DIRECT_MODEL,
             "NORMAN_CODEX_MODEL_FLOOR": WORK_STANDARD_MODEL,
@@ -1873,6 +1877,10 @@ def sync_instance_origin_settings(
         "HOUSEBOT_CODEX_CANONICAL_VIA_PROXY": (
             "1" if instance_uses_frontdoor_proxy(instance) else "0"
         ),
+        "NORMAN_CODEX_CANONICAL_HOST": canonical_host,
+        "NORMAN_CODEX_CANONICAL_VIA_PROXY": (
+            "1" if instance_uses_frontdoor_proxy(instance) else "0"
+        ),
         "HOUSEBOT_CODEX_LOCAL_HOST_ALIASES": ",".join(aliases),
         "HOUSEBOT_CODEX_TRUSTED_CLIENTS": ",".join(TRUSTED_CONSOLE_CLIENTS),
         "HOUSEBOT_CODEX_TRUSTED_PROXIES": ",".join(TRUSTED_CONSOLE_PROXIES),
@@ -1881,19 +1889,26 @@ def sync_instance_origin_settings(
         "HOUSEBOT_CODEX_ENV_FILE": instance.env_file,
     }
     model_updates, remove_keys = _origin_model_updates(host, instance)
-    bbs_url = os.environ.get("NORMAN_SYNC_BBS_URL", "").strip()
+    # The BBS address is fleet-owned configuration. Never distribute an empty
+    # endpoint merely because the invoking shell omitted an optional variable.
+    bbs_url = CANONICAL_BBS_URL
+    bbs_actor = BBS_ACTOR_ALIASES.get(instance.name, instance.name)
     switchboard_env = f"/etc/{instance.name}/switchboard-bbs.env"
     updates.update(model_updates)
     updates.update(
         {
             "NORMAN_CODEX_BBS_URL": bbs_url,
-            "NORMAN_CODEX_BBS_ACTOR": instance.name,
+            "NORMAN_CODEX_BBS_FALLBACK_URL": BBS_LAN_FALLBACK_URL,
+            "NORMAN_CODEX_BBS_ACTOR": bbs_actor,
             "NORMAN_CODEX_BBS_ENV_FILE": switchboard_env,
             "SWITCHBOARD_URL": bbs_url,
-            "SWITCHBOARD_ACTOR": instance.name,
+            "SWITCHBOARD_ACTOR": bbs_actor,
             "SWITCHBOARD_ENV_FILE": switchboard_env,
             "NORMAN_CODEX_SOUL_ENABLED": "1",
             "NORMAN_CODEX_SOUL_ACTOR": instance.name,
+            "NORMAN_CODEX_AUTO_CONTINUE_PROMISES": "1",
+            "NORMAN_CODEX_AUTO_CONTINUE_MAX_STEPS": "3",
+            "NORMAN_CODEX_DEADLINE_CHECKPOINT_AUTO_CONTINUE": "1",
             "NORMAN_CODEX_SOUL_IDENTITY_ROOT": REMOTE_SOUL_IDENTITY_ROOT,
             "NORMAN_CODEX_SOUL_LOADER": f"/opt/{instance.name}/compose_soul_context.py",
             "NORMAN_CODEX_CONTEXT_PREFLIGHT_OFFLINE_COMMAND": (
@@ -2951,6 +2966,7 @@ def sync_instance_model_setting(
         return False
     updates = {
         "NORMAN_CODEX_MODEL": clean_model,
+        "NORMAN_CODEX_REASONING_EFFORT": "medium",
         # Preserve this retired setting for any external wrapper that still uses it.
         "HOUSEBOT_CODEX_MODEL": clean_model,
     }
@@ -3982,7 +3998,7 @@ def main() -> int:
         if sync_norman_fleet_doctor_template(host, source_sha256):
             changed_static_paths.add(NORMAN_FLEET_DOCTOR_TEMPLATE_PATH)
             print(
-                "  - fleet-doctor template -> " f"{NORMAN_FLEET_DOCTOR_TEMPLATE_PATH}",
+                f"  - fleet-doctor template -> {NORMAN_FLEET_DOCTOR_TEMPLATE_PATH}",
                 flush=True,
             )
 

@@ -7,5 +7,9 @@ After=network-online.target switchboard-bbs.service
 Type=oneshot
 WorkingDirectory=/home/kristopher/code/norman
 ExecStart=/usr/bin/python3 /home/kristopher/code/norman/scripts/bbs_doctor.py --repair-launcher
+# Exit 1 means the doctor found unhealthy actors/policy drift and wrote its
+# evidence. Keep that actionable state in the report without turning a
+# recurring diagnostic timer into a permanently failed systemd unit.
+SuccessExitStatus=1
 TimeoutStartSec=60
 Nice=5

@@ -9,8 +9,11 @@ readonly CODEX_MANAGED_SECRET_GUARD="${NORMAN_CODEX_MANAGED_SECRET_GUARD:-/usr/l
 readonly CODEX_WORK_HOME="${CODEX_WORK_HOME:-$HOME/.codex-work}"
 readonly CODEX_WORK_AWS_PROFILE="${CODEX_WORK_AWS_PROFILE:-ob-openbrand-admin}"
 readonly CODEX_WORK_AWS_REGION="${CODEX_WORK_AWS_REGION:-us-east-2}"
+readonly CODEX_WORK_PROVIDER="${CODEX_WORK_PROVIDER:-norman}"
 readonly CODEX_WORK_PYTEST_XDIST_AUTO_WORKERS="${CODEX_WORK_PYTEST_XDIST_AUTO_WORKERS:-4}"
-readonly CODEX_WORK_PINNED_BIN="$HOME/.local/lib/codex-work-0.147.0/node_modules/.bin/codex"
+readonly CODEX_WORK_PINNED_VERSION="0.151.0"
+readonly CODEX_WORK_PINNED_BIN="$HOME/.local/lib/codex-work-${CODEX_WORK_PINNED_VERSION}/node_modules/.bin/codex"
+readonly CODEX_WORK_GATEWAY_MODEL="norman-code-sol"
 readonly OPS_OPENBRAND_MCP_LAUNCHER="$HOME/code/control_plane/scripts/with_ops_openbrand_mcp.sh"
 
 disable_apps=1
@@ -35,7 +38,7 @@ esac
 
 if [[ "${CODEX_ROUTER_RESOLVED:-}" != "1" ]]; then
   if [[ ! -x "$CODEX_WORK_PINNED_BIN" ]]; then
-    echo "codex-work: pinned Codex 0.147.0 is unavailable at $CODEX_WORK_PINNED_BIN." >&2
+    echo "codex-work: pinned Codex ${CODEX_WORK_PINNED_VERSION} is unavailable at $CODEX_WORK_PINNED_BIN." >&2
     echo "Reinstall the managed work CLI before starting a routed session." >&2
     exit 1
   fi
@@ -54,6 +57,10 @@ unset CODEX_ROUTER_RESOLVED
 
 export CODEX_HOME="$CODEX_WORK_HOME"
 
+if [[ "${CODEX_WORK_PROVIDER,,}" =~ ^(norman|gateway)$ ]]; then
+  python3 "$ROUTER_SCRIPT" --launcher work --ensure-work-profile >/dev/null
+fi
+
 if [[ ! "$CODEX_WORK_PYTEST_XDIST_AUTO_WORKERS" =~ ^[1-9][0-9]*$ ]]; then
   echo "codex-work: CODEX_WORK_PYTEST_XDIST_AUTO_WORKERS must be a positive integer." >&2
   exit 2
@@ -65,7 +72,7 @@ export PYTEST_XDIST_AUTO_NUM_WORKERS="$CODEX_WORK_PYTEST_XDIST_AUTO_WORKERS"
 
 run_codex() {
   if [[ ! -x "$CODEX_WORK_PINNED_BIN" ]]; then
-    echo "codex-work: pinned Codex 0.147.0 is unavailable at $CODEX_WORK_PINNED_BIN." >&2
+    echo "codex-work: pinned Codex ${CODEX_WORK_PINNED_VERSION} is unavailable at $CODEX_WORK_PINNED_BIN." >&2
     echo "Reinstall the managed work CLI before starting a routed session." >&2
     exit 1
   fi
@@ -199,6 +206,26 @@ is_help_request() {
   return 1
 }
 
+has_model_override() {
+  local expect_model=0
+  local argument=""
+
+  for argument in "$@"; do
+    if [[ "$expect_model" -eq 1 ]]; then
+      return 0
+    fi
+    case "$argument" in
+      -m|--model)
+        expect_model=1
+        ;;
+      --model=*|-m?*)
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
 # The loader exports the subject-bound Ops Portal binding only to this process.
 if [[ "${CODEX_WORK_OPS_BINDING_LOADED:-}" != "1" ]]; then
   binding_args=("$@")
@@ -284,6 +311,28 @@ if ! is_help_request "$@"; then
   esac
 fi
 
+case "${CODEX_WORK_PROVIDER,,}" in
+  norman|gateway)
+    needs_bedrock_preflight=0
+    ;;
+  bedrock|direct)
+    ;;
+  *)
+    echo "codex-work: CODEX_WORK_PROVIDER must be norman or bedrock." >&2
+    exit 2
+    ;;
+esac
+
+gateway_model_args=()
+if [[ "${CODEX_WORK_PROVIDER,,}" =~ ^(norman|gateway)$ ]] \
+  && [[ "$uses_work_profile" -eq 1 ]] \
+  && ! has_model_override "$@"; then
+  # The Norman TUI contract exposes shell/filesystem tools only through the
+  # logical norman-code model. Always set it at launch so a persisted /model
+  # choice cannot strand a new generic work session on a cloud-only alias.
+  gateway_model_args=(-m "$CODEX_WORK_GATEWAY_MODEL")
+fi
+
 if [[ "$needs_bedrock_preflight" -eq 1 ]]; then
   if ! command -v aws >/dev/null 2>&1; then
     echo "codex-work: AWS CLI is required for the Bedrock credential preflight." >&2
@@ -304,7 +353,7 @@ EOF
 fi
 
 if [[ -n "$profile_name" ]]; then
-  run_guarded_codex "$@"
+  run_guarded_codex "${gateway_model_args[@]}" "$@"
 fi
 
 case "${1-}" in
@@ -313,11 +362,11 @@ case "${1-}" in
     ;;
   debug)
     if [[ "${2-}" == "prompt-input" ]]; then
-      run_guarded_codex --profile work "$@"
+      run_guarded_codex --profile work "${gateway_model_args[@]}" "$@"
     fi
     run_codex "$@"
     ;;
   *)
-    run_guarded_codex --profile work "$@"
+    run_guarded_codex --profile work "${gateway_model_args[@]}" "$@"
     ;;
 esac

@@ -543,6 +543,17 @@ def post_alert(
         raise RuntimeError(f"alert post failed: status={status} {response}")
 
 
+def post_heartbeat(*, base_url: str, token: str, actor: str) -> None:
+    status, response = _request(
+        "POST",
+        _join_url(base_url, f"/api/v1/actors/{urllib.parse.quote(actor)}/heartbeat"),
+        token=token,
+        payload={"actor": actor, "source": "norllama_fleet_health"},
+    )
+    if status not in {200, 201} or response.get("ok") is not True:
+        raise RuntimeError(f"heartbeat post failed: status={status} {response}")
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Post deduped TUI fleet health alerts."
@@ -592,8 +603,9 @@ def main(argv: list[str] | None = None) -> int:
     decision = evaluate_alerts(
         health, state, warn_threshold=max(1, int(args.warn_threshold or 1))
     )
-    if decision["new_alerts"] and not args.dry_run:
-        actor = _clean(args.actor)
+    token = ""
+    actor = _clean(args.actor)
+    if not args.dry_run:
         token_secret = _clean(args.token_secret) or f"bbs.{actor}.post-token"
         token, errors = resolve_brokered_token(token_secret)
         if not token:
@@ -604,6 +616,12 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 1
+        post_heartbeat(
+            base_url=str(args.url).rstrip("/"),
+            token=token,
+            actor=actor,
+        )
+    if decision["new_alerts"] and not args.dry_run:
         post_alert(
             base_url=str(args.url).rstrip("/"),
             token=token,

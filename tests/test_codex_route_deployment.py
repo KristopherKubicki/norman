@@ -24,7 +24,7 @@ def _install_fake_pinned_work_codex(home: Path, source: Path) -> Path:
         home
         / ".local"
         / "lib"
-        / "codex-work-0.147.0"
+        / "codex-work-0.151.0"
         / "node_modules"
         / ".bin"
         / "codex"
@@ -277,6 +277,8 @@ import os
 import sys
 
 arguments = sys.argv[1:]
+if "--ensure-work-profile" in arguments:
+    raise SystemExit(0)
 separator = arguments.index("--")
 target = arguments[arguments.index("--reenter") + 1]
 os.execve(
@@ -362,8 +364,12 @@ raise SystemExit(3 if "oversized-session" in sys.argv else 0)
     )
     assert allowed.returncode == 0, allowed.stderr
     assert output.read_text(encoding="utf-8").splitlines() == [
+        "--disable",
+        "apps",
         "--profile",
         "work",
+        "-m",
+        "norman-code-sol",
         "resume",
         "small-session",
     ]
@@ -401,6 +407,8 @@ raise SystemExit(3 if "oversized-session" in sys.argv else 0)
         "apps",
         "--profile",
         "work",
+        "-m",
+        "norman-code-sol",
         "resume",
         "small-session",
     ]
@@ -415,6 +423,8 @@ raise SystemExit(3 if "oversized-session" in sys.argv else 0)
     )
     assert mcp.returncode == 0, mcp.stderr
     assert output.read_text(encoding="utf-8").splitlines() == [
+        "--disable",
+        "apps",
         "mcp",
         "list",
         "--json",
@@ -437,6 +447,8 @@ import os
 import sys
 
 arguments = sys.argv[1:]
+if "--ensure-work-profile" in arguments:
+    raise SystemExit(0)
 separator = arguments.index("--")
 target = arguments[arguments.index("--reenter") + 1]
 os.execve(
@@ -487,8 +499,12 @@ os.execve(
 
     assert result.returncode == 0, result.stderr
     assert output.read_text(encoding="utf-8").splitlines() == [
+        "--disable",
+        "apps",
         "--profile",
         "work",
+        "-m",
+        "norman-code-sol",
         "resume",
         "--help",
     ]

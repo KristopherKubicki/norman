@@ -159,16 +159,22 @@ def test_sidecar_executes_codex_command_and_extracts_new_thread(tmp_path) -> Non
         "body": "SMS reply",
         "bbs_thread_id": "codex-thread-1",
     }
-    assert calls[0][:8] == [
+    assert calls[0][:13] == [
         "codex",
         "exec",
         "--json",
-        "--dangerously-bypass-approvals-and-sandbox",
         "-m",
         "gpt-5.4",
+        "--sandbox",
+        "read-only",
+        "-c",
+        'approval_policy="never"',
+        "-c",
+        'model_reasoning_effort="medium"',
         "-c",
         'service_tier="default"',
     ]
+    assert "--dangerously-bypass-approvals-and-sandbox" not in calls[0]
     assert (
         settings.state_dir / "outputs" / "turn-1.txt"
     ).stat().st_mode & 0o777 == 0o600
@@ -237,10 +243,120 @@ def test_regular_sms_prompt_requires_an_immediate_final_response() -> None:
 
     assert "Act on the operator's request now" in prompt
     assert "Do not give a plan, promise a later follow-up" in prompt
+    assert "This is a read-only channel" in prompt
+    assert "requires the home network or VPN" in prompt
+    assert "Aim for 320 characters or fewer" in prompt
+    assert "Do not use headings, bullet lists, greetings" in prompt
     assert (
         "completed results, a concrete blocker, or one necessary clarifying question"
         in prompt
     )
+
+
+def test_sms_reply_replaces_deferred_promise_with_read_only_blocker() -> None:
+    module = _load_bbs_module()
+
+    assert (
+        module._sms_safe_reply("Yes. I'll have House Bot send the snapshot shortly.")
+        == module.UNFINISHED_WORK_BLOCKER
+    )
+
+    assert (
+        module._sms_safe_reply(
+            "I'll look into this. Let me first understand what Rocinante refers to."
+        )
+        == module.UNFINISHED_WORK_BLOCKER
+    )
+
+
+def test_sidecar_auto_continues_progress_acknowledgment_once(tmp_path, capsys) -> None:
+    module = _load_bbs_module()
+    settings = _settings(module, tmp_path)
+    calls: list[list[str]] = []
+
+    def runner(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(command)
+        output = Path(command[command.index("-o") + 1])
+        if len(calls) == 1:
+            output.write_text(
+                "I'll look into this. Let me first understand what Rocinante refers to.",
+                encoding="utf-8",
+            )
+            stdout = '{"type":"thread.started","thread_id":"codex-thread-1"}\n'
+        else:
+            output.write_text(
+                "Rocinante is the Tesla. Its location source is unavailable.",
+                encoding="utf-8",
+            )
+            stdout = ""
+        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+    result = module.CodexSmsExecutor(settings, runner=runner)(
+        _turn("turn-rocinante", 1, "Where is Rocinante?"), ""
+    )
+
+    assert result == {
+        "success": True,
+        "body": "Rocinante is the Tesla. Its location source is unavailable.",
+        "bbs_thread_id": "codex-thread-1",
+    }
+    assert len(calls) == 2
+    assert "resume" in calls[1]
+    assert calls[1][calls[1].index("resume") + 1] == "codex-thread-1"
+    assert "previous reply was only a progress acknowledgment" in calls[1][-1]
+    assert json.loads(capsys.readouterr().out) == {
+        "event": "sms_codex_auto_continue",
+        "reason": "unfinished_work_promise",
+        "turn_id": "turn-rocinante",
+    }
+
+
+def test_sidecar_never_sends_a_second_progress_acknowledgment(tmp_path) -> None:
+    module = _load_bbs_module()
+    settings = _settings(module, tmp_path)
+    calls = 0
+
+    def runner(command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        nonlocal calls
+        calls += 1
+        output = Path(command[command.index("-o") + 1])
+        output.write_text("I'm checking the cameras now.", encoding="utf-8")
+        stdout = (
+            '{"type":"thread.started","thread_id":"codex-thread-1"}\n'
+            if calls == 1
+            else ""
+        )
+        return subprocess.CompletedProcess(command, 0, stdout, "")
+
+    result = module.CodexSmsExecutor(settings, runner=runner)(
+        _turn("turn-still-pending", 1, "Check the cameras."), ""
+    )
+
+    assert calls == 2
+    assert result["body"] == module.UNFINISHED_WORK_BLOCKER
+
+
+def test_sms_reply_marks_private_link_as_network_restricted() -> None:
+    module = _load_bbs_module()
+
+    reply = module._sms_safe_reply(
+        "Snapshot: https://glimpser.home.arpa/stream.png?camera=FrontDoor"
+    )
+
+    assert reply.endswith("This link requires your home network or VPN.")
+
+
+def test_sms_reply_truncates_cleanly_at_sentence_boundary() -> None:
+    module = _load_bbs_module()
+
+    reply = module._sms_safe_reply(
+        "The first result is complete. The second sentence contains extra detail "
+        "that should not create a burst of text messages.",
+        max_chars=45,
+    )
+
+    assert reply == "The first result is complete.…"
+    assert len(reply) <= 45
 
 
 def test_normal_bbs_files_do_not_expose_the_isolated_sms_route() -> None:
@@ -267,6 +383,11 @@ def test_sms_bbs_systemd_unit_uses_the_nvm_aware_codex_launcher() -> None:
     )
     assert "nvm.sh" in launcher
     assert "nvm use --silent default" in launcher
+    assert "NORMAN_CODEX_SMS_MODEL=norman-code-governed" in unit
+    assert (
+        "CODEX_REAL_BIN=/home/kristopher/.nvm/versions/node/v20.19.6/bin/codex" in unit
+    )
+    assert "${HOME}/.local/bin/codex" in launcher
 
 
 def test_sidecar_stops_after_sigterm_without_deadlocking(tmp_path) -> None:

@@ -23,7 +23,393 @@ def _configure_state(module) -> tempfile.TemporaryDirectory[str]:
     module.STATE_DIR = state_dir
     module.USAGE_PATH = state_dir / "usage.jsonl"
     module.KPI_PATH = state_dir / "kpis.json"
+    module.KPI_DGX_RANKING_PATH = state_dir / "kpi_dgx_ranking.json"
+    module.KPI_APP_HEALTH_PATH = state_dir / "kpi_app_health.json"
+    module.KPI_INFRA_HEALTH_PATH = state_dir / "kpi_infra_health.json"
     return tmp
+
+
+def test_web_app_health_is_pinned_for_every_console(monkeypatch) -> None:
+    module = _load_norman_codex_web()
+    tmp = _configure_state(module)
+    try:
+        monkeypatch.setattr(module, "AGENT_SLUG", "scout")
+        module.write_json(
+            module.KPI_APP_HEALTH_PATH,
+            {
+                "checked_at": module.now_ts(),
+                "components": [
+                    {
+                        "id": "engine",
+                        "label": "engine",
+                        "required": True,
+                        "ok": True,
+                        "latency_ms": 4,
+                    },
+                    {
+                        "id": "route",
+                        "label": "route",
+                        "required": True,
+                        "ok": True,
+                        "latency_ms": 18,
+                    },
+                ],
+            },
+        )
+        candidates = module.build_local_kpi_candidates(
+            {"services": [], "bbs": {"counts": {}}}, {}, observed_at=module.now_ts()
+        )
+        top, _ = module.top_kpi_meters(candidates)
+
+        assert top[0]["id"] == "app-health"
+        assert top[0]["value"] == "2/2 up"
+        assert top[0]["tone"] == "ok"
+        assert top[0]["source"] == "local app probes"
+        assert (
+            next(item for item in candidates if item["id"] == "app-latency")["value"]
+            == "18ms"
+        )
+    finally:
+        tmp.cleanup()
+
+
+def test_web_app_health_alerts_when_required_attachment_is_down(monkeypatch) -> None:
+    module = _load_norman_codex_web()
+    tmp = _configure_state(module)
+    try:
+        monkeypatch.setattr(module, "AGENT_SLUG", "panelbot")
+        module.write_json(
+            module.KPI_APP_HEALTH_PATH,
+            {
+                "checked_at": module.now_ts(),
+                "components": [
+                    {
+                        "id": "engine",
+                        "label": "engine",
+                        "required": True,
+                        "ok": True,
+                        "latency_ms": 3,
+                    },
+                    {
+                        "id": "attached-1",
+                        "label": "dashboard",
+                        "required": True,
+                        "ok": False,
+                        "latency_ms": 2001,
+                    },
+                ],
+            },
+        )
+        meter = module.app_health_kpi_meters()[0]
+
+        assert meter["value"] == "1/2 up"
+        assert meter["tone"] == "alert"
+        assert meter["detail"] == "Unavailable: dashboard"
+    finally:
+        tmp.cleanup()
+
+
+def test_web_app_health_handles_absent_stale_and_optional_components(
+    monkeypatch,
+) -> None:
+    module = _load_norman_codex_web()
+    tmp = _configure_state(module)
+    try:
+        monkeypatch.setattr(module, "AGENT_SLUG", "studio")
+        assert module.app_health_kpi_meters() == []
+
+        checked_at = module.now_ts() - (module.KPI_DGX_REFRESH_SECONDS * 3)
+        module.write_json(
+            module.KPI_APP_HEALTH_PATH,
+            {
+                "checked_at": checked_at,
+                "components": [
+                    {
+                        "id": "engine",
+                        "label": "engine",
+                        "required": True,
+                        "ok": True,
+                        "latency_ms": 7,
+                    },
+                    {
+                        "id": "attached-1",
+                        "label": "preview",
+                        "required": False,
+                        "ok": False,
+                        "latency_ms": 12,
+                    },
+                ],
+            },
+        )
+        meter = module.app_health_kpi_meters()[0]
+
+        assert meter["tone"] == "warn"
+        assert meter["updated_at"] == checked_at
+        assert meter["stale_after_seconds"] < module.now_ts() - checked_at
+        assert meter["detail"] == "Unavailable: preview"
+    finally:
+        tmp.cleanup()
+
+
+def test_app_health_cache_does_not_persist_probe_urls_or_tokens(monkeypatch) -> None:
+    module = _load_norman_codex_web()
+    tmp = _configure_state(module)
+    try:
+        monkeypatch.setattr(
+            module,
+            "configured_kpi_app_probes",
+            lambda: [
+                {
+                    "id": "engine",
+                    "label": "engine",
+                    "url": "http://127.0.0.1/health?token=very-secret",
+                    "required": True,
+                }
+            ],
+        )
+        monkeypatch.setattr(
+            module,
+            "_probe_kpi_app_component",
+            lambda target: {
+                "id": target["id"],
+                "label": target["label"],
+                "required": True,
+                "ok": True,
+                "status": "ok",
+                "http_status": 200,
+                "latency_ms": 1,
+            },
+        )
+        module.refresh_kpi_app_health()
+        serialized = module.KPI_APP_HEALTH_PATH.read_text(encoding="utf-8")
+
+        assert "very-secret" not in serialized
+        assert '"url"' not in serialized
+    finally:
+        tmp.cleanup()
+
+
+def test_app_probe_retries_one_transport_failure(monkeypatch) -> None:
+    module = _load_norman_codex_web()
+    outcomes = iter(
+        [
+            (False, "unreachable", 0),
+            (True, "ok", 200),
+        ]
+    )
+    monkeypatch.setattr(
+        module, "_request_kpi_app_component", lambda _target: next(outcomes)
+    )
+
+    component = module._probe_kpi_app_component(
+        {"id": "engine", "label": "engine", "required": True}
+    )
+
+    assert component["ok"] is True
+    assert component["status"] == "ok"
+    assert component["http_status"] == 200
+
+
+def test_degraded_app_health_rechecks_faster_than_healthy_health(monkeypatch) -> None:
+    module = _load_norman_codex_web()
+    tmp = _configure_state(module)
+    started: list[bool] = []
+
+    class FakeThread:
+        def __init__(self, **_kwargs):
+            pass
+
+        def start(self) -> None:
+            started.append(True)
+
+    try:
+        monkeypatch.setattr(module.threading, "Thread", FakeThread)
+        checked_at = module.now_ts() - 31
+        module.write_json(
+            module.KPI_APP_HEALTH_PATH,
+            {
+                "checked_at": checked_at,
+                "components": [{"required": True, "ok": False}],
+            },
+        )
+
+        assert module.maybe_schedule_kpi_app_health() is True
+        assert started == [True]
+
+        module.KPI_APP_REFRESH_ACTIVE = False
+        module.write_json(
+            module.KPI_APP_HEALTH_PATH,
+            {
+                "checked_at": checked_at,
+                "components": [{"required": True, "ok": True}],
+            },
+        )
+        assert module.maybe_schedule_kpi_app_health() is False
+    finally:
+        module.KPI_APP_REFRESH_ACTIVE = False
+        tmp.cleanup()
+
+
+def test_norman_pins_local_compute_and_network_health(monkeypatch) -> None:
+    module = _load_norman_codex_web()
+    tmp = _configure_state(module)
+    try:
+        monkeypatch.setattr(module, "AGENT_SLUG", "norman")
+        module.write_json(
+            module.KPI_INFRA_HEALTH_PATH,
+            {
+                "checked_at": module.now_ts(),
+                "nodes": [
+                    {"id": "spark-150", "role": "DGX", "ok": True},
+                    {"id": "spark-151", "role": "DGX", "ok": True},
+                    {"id": "mac-mini", "role": "fallback", "ok": True},
+                    {"id": "norllama-frontdoor", "role": "network", "ok": True},
+                ],
+            },
+        )
+        candidates = module.build_local_kpi_candidates(
+            {"services": [], "bbs": {"counts": {}}}, {}, observed_at=module.now_ts()
+        )
+        top, _ = module.top_kpi_meters(candidates)
+
+        assert [item["id"] for item in top[:3]] == [
+            "infra-dgx",
+            "infra-mac",
+            "infra-network",
+        ]
+        assert [item["value"] for item in top[:3]] == ["2/2 up", "Up", "Good"]
+        assert all(item["source"].startswith("local") for item in top[:3])
+    finally:
+        tmp.cleanup()
+
+
+def test_norman_infra_health_does_not_report_unknown_as_healthy(monkeypatch) -> None:
+    module = _load_norman_codex_web()
+    tmp = _configure_state(module)
+    try:
+        monkeypatch.setattr(module, "AGENT_SLUG", "norman")
+        module.write_json(
+            module.KPI_INFRA_HEALTH_PATH,
+            {
+                "checked_at": module.now_ts(),
+                "nodes": [
+                    {"id": "spark-150", "role": "DGX", "ok": True},
+                    {"id": "spark-151", "role": "DGX", "ok": False},
+                    {"id": "mac-mini", "role": "fallback", "ok": False},
+                    {"id": "norllama-frontdoor", "role": "network", "ok": True},
+                ],
+            },
+        )
+        meters = {item["id"]: item for item in module.norman_infra_kpi_meters()}
+
+        assert meters["infra-dgx"]["value"] == "1/2 up"
+        assert meters["infra-dgx"]["tone"] == "alert"
+        assert meters["infra-mac"]["value"] == "Down"
+        assert meters["infra-network"]["value"] == "Issue"
+        assert "spark-151" in meters["infra-network"]["detail"]
+    finally:
+        tmp.cleanup()
+
+
+def test_top_kpis_use_domain_meter_and_local_dgx_ranking(monkeypatch) -> None:
+    module = _load_norman_codex_web()
+    tmp = _configure_state(module)
+    try:
+        monkeypatch.setattr(module, "AGENT_SLUG", "scout")
+        ranked_at = module.now_ts()
+        module.write_json(
+            module.KPI_DGX_RANKING_PATH,
+            {
+                "ranked_at": ranked_at,
+                "status": "ranked",
+                "model": "qwen3.8:27b",
+                "selected_ids": ["pp_blocked", "queue", "health", "local-share"],
+                "cloud_fallback": False,
+            },
+        )
+        snapshot = module.build_kpi_snapshot(
+            {
+                "pending": False,
+                "pane": "› ready",
+                "usage": {"totals": {}, "route_utilization": {"last_24h": {}}},
+                "services": [{"name": "scout.service", "state": "active"}],
+                "auth": {"required": False},
+                "resource_meter": {
+                    "kpi_meters": [
+                        {
+                            "id": "pp_blocked",
+                            "label": "PP Blocked",
+                            "value": 3,
+                            "tone": "danger",
+                            "source": "local scout artifact",
+                        }
+                    ]
+                },
+                "bbs": {"counts": {}},
+            },
+            previous={},
+        )
+
+        assert snapshot["profile"] == "research"
+        assert [item["id"] for item in snapshot["top_meters"]] == [
+            "pp_blocked",
+            "queue",
+            "health",
+            "local-share",
+        ]
+        assert snapshot["processor"] == {
+            "mode": "local-dgx",
+            "status": "ranked",
+            "model": "qwen3.8:27b",
+            "ranked_at": ranked_at,
+            "cloud_fallback": False,
+        }
+    finally:
+        tmp.cleanup()
+
+
+def test_kpi_ranker_uses_resident_generator_without_cloud_fallback(monkeypatch) -> None:
+    module = _load_norman_codex_web()
+    tmp = _configure_state(module)
+    calls: list[dict[str, object]] = []
+    try:
+        monkeypatch.setattr(module, "WORKING_RECAP_LOCAL_MODEL", "qwen3.8:27b")
+        monkeypatch.setattr(
+            module, "WORKING_RECAP_LOCAL_ENDPOINTS", ("http://spark.local",)
+        )
+
+        def local_generate(endpoint, model, prompt, **kwargs):
+            calls.append(
+                {"endpoint": endpoint, "model": model, "prompt": prompt, **kwargs}
+            )
+            return {
+                "message": {"content": '["queue","health","local-share","success"]'}
+            }
+
+        monkeypatch.setattr(module, "working_recap_local_generate", local_generate)
+        module._kpi_dgx_ranking_worker(
+            [
+                {"id": "queue", "label": "Queue", "value": 1, "tone": "warn"},
+                {"id": "health", "label": "Health", "value": "Good", "tone": "ok"},
+                {
+                    "id": "local-share",
+                    "label": "DGX/local",
+                    "value": "80%",
+                    "tone": "ok",
+                },
+                {"id": "success", "label": "Success", "value": "100%", "tone": "ok"},
+            ],
+            "operations",
+        )
+
+        ranking = module.load_kpi_dgx_ranking()
+        assert calls[0]["endpoint"] == "http://spark.local"
+        assert calls[0]["source"] == "tui-kpi-ranker"
+        assert ranking["status"] == "ranked"
+        assert ranking["model"] == "qwen3.8:27b"
+        assert ranking["cloud_fallback"] is False
+    finally:
+        tmp.cleanup()
 
 
 def test_norman_submit_hands_off_the_composer_before_acknowledgement() -> None:

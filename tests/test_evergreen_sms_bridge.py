@@ -243,6 +243,7 @@ def test_bridge_callback_auth_correlation_and_outbox_retry(tmp_path) -> None:
     )
     server = module.start_callback_server(bridge)
     url = f"http://127.0.0.1:{server.server_address[1]}/callbacks/sms"
+    health_url = f"http://127.0.0.1:{server.server_address[1]}/health"
 
     def post(payload: dict[str, Any], token: str = "") -> tuple[int, dict[str, Any]]:
         headers = {"Content-Type": "application/json"}
@@ -261,6 +262,19 @@ def test_bridge_callback_auth_correlation_and_outbox_retry(tmp_path) -> None:
             return exc.code, json.loads(exc.read().decode("utf-8"))
 
     try:
+        with request.urlopen(health_url, timeout=2) as response:
+            assert response.status == 200
+            health = json.loads(response.read().decode("utf-8"))
+            assert health["ok"] is True
+            assert health["ready"] is False
+            assert health["dependencies"]["sqs_poll"]["ready"] is False
+        bridge.record_poll_success()
+        bridge.runtime_health["last_bbs_success_at"] = int(module.time.time())
+        with request.urlopen(
+            health_url.replace("/health", "/ready"), timeout=2
+        ) as response:
+            assert response.status == 200
+            assert json.loads(response.read().decode("utf-8"))["ready"] is True
         assert post(_callback()) == (403, {"ok": False, "error": "forbidden"})
         status, payload = post(_callback(sequence=2), "callback-token")
         assert status == 400
@@ -284,6 +298,31 @@ def test_bridge_callback_auth_correlation_and_outbox_retry(tmp_path) -> None:
     assert persisted["outbox_status"] == "sent"
     assert persisted["attempts"] == 2
     assert len(sqs.sent) == 1
+
+
+def test_bridge_poll_failures_degrade_readiness_without_losing_liveness(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_bridge_module()
+    bridge = module.SmsBridge(
+        _settings(module, tmp_path),
+        sqs_client=BridgeSqs(),
+        turns_table=TurnsTable(_turn()),
+    )
+    monkeypatch.setenv("SMS_POLL_RETRY_BASE_SECONDS", "2")
+    monkeypatch.setenv("SMS_POLL_RETRY_MAX_SECONDS", "8")
+    monkeypatch.setattr(module.random, "randint", lambda _start, _end: 0)
+
+    bridge.record_poll_success()
+    bridge.runtime_health["last_bbs_success_at"] = int(module.time.time())
+    assert bridge.health_snapshot()["ready"] is True
+    assert bridge.record_poll_error(OSError("dns unavailable")) == 2
+    snapshot = bridge.health_snapshot()
+
+    assert snapshot["ok"] is True
+    assert snapshot["ready"] is False
+    assert snapshot["dependencies"]["sqs_poll"]["consecutive_errors"] == 1
+    assert "dns unavailable" in snapshot["dependencies"]["sqs_poll"]["last_error"]
 
 
 def test_bridge_does_not_send_callback_token_to_bbs() -> None:

@@ -1,0 +1,12 @@
+[Unit]
+Description=Classify stale Norman BBS work for operator review
+Wants=switchboard-bbs.service
+After=network-online.target switchboard-bbs.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/kristopher/code/norman
+EnvironmentFile=/etc/norman/switchboard-bbs.env
+ExecStart=/usr/bin/python3 /home/kristopher/code/norman/scripts/bbs_janitor.py --stale-days 7
+TimeoutStartSec=60
+Nice=5

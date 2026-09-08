@@ -14,6 +14,7 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import random
 import re
 import socket
 import tempfile
@@ -31,6 +32,8 @@ from urllib.parse import urlparse
 
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 CALLBACK_PATH = "/callbacks/sms"
+HEALTH_PATH = "/health"
+READINESS_PATH = "/ready"
 
 
 class SmsBridgeError(RuntimeError):
@@ -329,10 +332,131 @@ class SmsBridge:
         self.sqs_client = sqs_client
         self.turns_table = turns_table
         self.lock = threading.RLock()
+        self.runtime_health: dict[str, Any] = {
+            "started_at": int(time.time()),
+            "last_poll_success_at": 0,
+            "last_poll_error_at": 0,
+            "last_poll_error": "",
+            "consecutive_poll_errors": 0,
+            "last_bbs_accept_at": 0,
+            "last_bbs_success_at": 0,
+            "last_bbs_error_at": 0,
+            "last_bbs_error": "",
+            "last_completion_enqueue_at": 0,
+        }
         self.turns_dir = settings.state_dir / "turns"
         self.completions_dir = settings.state_dir / "completions"
         self.turns_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.completions_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+    def record_poll_success(self) -> None:
+        """Record a successful dependency poll for readiness reporting."""
+        with self.lock:
+            self.runtime_health.update(
+                {
+                    "last_poll_success_at": int(time.time()),
+                    "last_poll_error": "",
+                    "consecutive_poll_errors": 0,
+                }
+            )
+
+    def record_poll_error(self, exc: Exception) -> int:
+        """Record a polling failure and return a bounded jittered retry delay."""
+        with self.lock:
+            failures = int(self.runtime_health["consecutive_poll_errors"]) + 1
+            self.runtime_health.update(
+                {
+                    "last_poll_error_at": int(time.time()),
+                    "last_poll_error": f"{type(exc).__name__}: {exc}",
+                    "consecutive_poll_errors": failures,
+                }
+            )
+        base = max(1, env_int("SMS_POLL_RETRY_BASE_SECONDS", 2))
+        ceiling = max(base, env_int("SMS_POLL_RETRY_MAX_SECONDS", 60))
+        exponential = min(ceiling, base * (2 ** min(failures - 1, 8)))
+        return min(ceiling, exponential + random.randint(0, max(1, base)))
+
+    def probe_bbs(self) -> bool:
+        """Refresh BBS readiness without submitting or mutating a turn."""
+        now = int(time.time())
+        health_url = f"{self.settings.bbs_url}/health"
+        try:
+            with request.urlopen(
+                health_url, timeout=self.settings.request_timeout_seconds
+            ) as response:
+                if not 200 <= int(response.status) < 300:
+                    raise SmsBridgeError(f"BBS health returned {response.status}")
+                payload = json.loads(response.read().decode("utf-8") or "{}")
+                if isinstance(payload, dict) and payload.get("ok") is False:
+                    raise SmsBridgeError("BBS health reported not ready")
+        except Exception as exc:
+            with self.lock:
+                self.runtime_health.update(
+                    {
+                        "last_bbs_error_at": now,
+                        "last_bbs_error": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+            return False
+        with self.lock:
+            self.runtime_health.update(
+                {
+                    "last_bbs_success_at": now,
+                    "last_bbs_error": "",
+                }
+            )
+        return True
+
+    def health_snapshot(self) -> dict[str, Any]:
+        """Return liveness plus dependency-aware readiness evidence."""
+        now = int(time.time())
+        with self.lock:
+            runtime = dict(self.runtime_health)
+            pending_outbox = sum(
+                1
+                for path in self.completions_dir.glob("*.json")
+                if (read_json(path) or {}).get("outbox_status") != "sent"
+            )
+        last_success = int(runtime.get("last_poll_success_at") or 0)
+        last_error = int(runtime.get("last_poll_error_at") or 0)
+        last_bbs_success = int(runtime.get("last_bbs_success_at") or 0)
+        last_bbs_error = int(runtime.get("last_bbs_error_at") or 0)
+        freshness = max(60, self.settings.poll_wait_seconds * 3 + 15)
+        sqs_ready = bool(
+            last_success
+            and last_success >= last_error
+            and int(runtime.get("consecutive_poll_errors") or 0) == 0
+            and now - last_success <= freshness
+        )
+        bbs_ready = bool(
+            last_bbs_success
+            and last_bbs_success >= last_bbs_error
+            and now - last_bbs_success <= max(120, freshness)
+        )
+        return {
+            "ok": True,
+            "ready": sqs_ready and bbs_ready,
+            "service": "evergreen-sms-bridge",
+            "dependencies": {
+                "sqs_poll": {
+                    "ready": sqs_ready,
+                    "last_success_at": last_success,
+                    "last_error_at": last_error,
+                    "last_error": str(runtime.get("last_poll_error") or ""),
+                    "consecutive_errors": int(
+                        runtime.get("consecutive_poll_errors") or 0
+                    ),
+                },
+                "bbs": {
+                    "ready": bbs_ready,
+                    "last_success_at": last_bbs_success,
+                    "last_error_at": last_bbs_error,
+                    "last_error": str(runtime.get("last_bbs_error") or ""),
+                    "last_accept_at": int(runtime.get("last_bbs_accept_at") or 0),
+                },
+                "completion_outbox": {"pending": pending_outbox},
+            },
+        }
 
     def _turn_path(self, turn_id: str) -> Path:
         return self.turns_dir / f"{safe_id(turn_id, 'turn_id')}.json"
@@ -432,6 +556,7 @@ class SmsBridge:
                 }
             )
             atomic_write_json(path, durable)
+            self.runtime_health["last_bbs_accept_at"] = int(time.time())
             return durable
 
     def consume_inbound_sqs_message(
@@ -584,6 +709,7 @@ class SmsBridge:
                     }
                 )
                 atomic_write_json(path, durable)
+                self.runtime_health["last_completion_enqueue_at"] = int(time.time())
             sent += 1
         return sent
 
@@ -601,6 +727,19 @@ class SmsCallbackHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
         self.wfile.write(encoded)
+
+    def do_GET(self) -> None:
+        path = self.path.split("?", 1)[0]
+        if path not in {HEALTH_PATH, READINESS_PATH}:
+            self._json_response(HTTPStatus.NOT_FOUND, {"ok": False})
+            return
+        payload = self.bridge.health_snapshot()
+        status = (
+            HTTPStatus.OK
+            if path == HEALTH_PATH or payload["ready"]
+            else HTTPStatus.SERVICE_UNAVAILABLE
+        )
+        self._json_response(status, payload)
 
     def do_POST(self) -> None:
         if self.path.split("?", 1)[0] != CALLBACK_PATH:
@@ -689,13 +828,34 @@ def main() -> int:
     )
     try:
         while True:
-            response = bridge.sqs_client.receive_message(
-                QueueUrl=settings.inbound_queue_url,
-                AttributeNames=["All"],
-                MaxNumberOfMessages=settings.max_messages,
-                VisibilityTimeout=settings.visibility_timeout_seconds,
-                WaitTimeSeconds=settings.poll_wait_seconds,
-            )
+            try:
+                bbs_last_success = int(
+                    bridge.runtime_health.get("last_bbs_success_at") or 0
+                )
+                if int(time.time()) - bbs_last_success >= 60:
+                    bridge.probe_bbs()
+                response = bridge.sqs_client.receive_message(
+                    QueueUrl=settings.inbound_queue_url,
+                    AttributeNames=["All"],
+                    MaxNumberOfMessages=settings.max_messages,
+                    VisibilityTimeout=settings.visibility_timeout_seconds,
+                    WaitTimeSeconds=settings.poll_wait_seconds,
+                )
+                bridge.record_poll_success()
+            except Exception as exc:
+                delay = bridge.record_poll_error(exc)
+                log_event(
+                    {
+                        "event": "bridge_poll_error",
+                        "error": type(exc).__name__,
+                        "detail": str(exc),
+                        "retry_seconds": delay,
+                    }
+                )
+                if settings.run_once:
+                    return 1
+                stop.wait(delay)
+                continue
             messages = response.get("Messages") or []
             for sqs_message in messages:
                 message_id = str(sqs_message.get("MessageId") or "")

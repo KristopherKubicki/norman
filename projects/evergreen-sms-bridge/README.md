@@ -43,6 +43,14 @@ The matching system units are
 normal BBS on port 8788. Its `norman-sms-codex` launcher loads the configured
 NVM default when Codex is not on systemd's default `PATH`.
 
+The production SMS BBS pins `norman-code-governed` in the systemd unit and
+executes each turn through Norman's isolated routed profile with approvals
+disabled and the read-only sandbox. This preserves Norman's approved
+local-first/cloud-fallback policy without loading the operator's general Codex
+profile. SMS requests can inspect and report but cannot edit files or perform
+side effects. Replies aim for 320 characters and are capped at 480 characters
+to avoid noisy multi-message responses.
+
 ## Legacy Modes
 
 - `spool`
@@ -101,6 +109,7 @@ Validate the loopback BBS and then follow both service logs:
 
 ```bash
 curl --fail http://127.0.0.1:8798/health
+curl --fail http://127.0.0.1:8797/health
 sudo systemctl status norman-sms-bbs.service evergreen-sms-bridge.service --no-pager
 sudo journalctl -fu norman-sms-bbs.service -u evergreen-sms-bridge.service
 ```

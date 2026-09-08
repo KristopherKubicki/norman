@@ -245,13 +245,14 @@ DEFAULT_RERANK_MODEL = os.getenv("NORLLAMA_DEFAULT_RERANK_MODEL", BGE_RERANKER_M
 QWEN3GUARD_MODEL = os.getenv(
     "NORLLAMA_DEFAULT_SAFETY_MODEL", "Qwen/Qwen3Guard-Stream-0.6B"
 )
-QWEN3_CODER_MODEL = "qwen3-coder:30b-a3b-q4_K_M"
-# Retain the legacy names while downstream callers migrate to the unified
-# Coder runtime.
+QWEN38_MODEL = "qwen3.8:27b"
+# Compatibility symbols remain internal only; every general-purpose Qwen lane
+# resolves to the single approved production model.
+QWEN3_CODER_MODEL = QWEN38_MODEL
 QWEN36_ROUTER_MODEL = QWEN3_CODER_MODEL
 QWEN36_CODE_MODEL = QWEN3_CODER_MODEL
-QWEN35_JUDGE_MODEL = "qwen3.5:122b-a10b-q4_K_M"
-QWEN3_VL_MODEL = "qwen3-vl:30b-a3b-instruct-q4_K_M"
+QWEN35_JUDGE_MODEL = QWEN38_MODEL
+QWEN3_VL_MODEL = QWEN38_MODEL
 PREFERRED_UI_CHAT_MODEL = os.getenv("NORLLAMA_UI_DEFAULT_MODEL", QWEN36_ROUTER_MODEL)
 USER_AGENT = "norllama-gateway/0.1"
 GATEWAY_VERSION = os.getenv("NORLLAMA_GATEWAY_VERSION", "0.1.20260710-route-proof")
@@ -383,7 +384,7 @@ LIVE_CAPABILITY_CONTRACT_OVERRIDES: dict[str, dict[str, object]] = {
             },
         ],
         "notes_append": [
-            "Live override: Qwen3-Coder 30B is the default interactive router/planner/filter lane.",
+            "Live override: Qwen 3.8 27B is the default interactive router/planner/filter lane.",
             "Gemma lanes remain visible as lab or fallback comparisons, not production defaults.",
         ],
     },
@@ -403,7 +404,7 @@ LIVE_CAPABILITY_CONTRACT_OVERRIDES: dict[str, dict[str, object]] = {
             },
         ],
         "notes_append": [
-            "Qwen-VL is installed and routable for local visual reasoning, but dedicated GUI grounding is still a specialist gap.",
+            "Legacy Qwen-VL is retired; cloud vision remains required for visual reasoning.",
         ],
     },
     "doc_parse": {
@@ -517,7 +518,7 @@ LIVE_CAPABILITY_CONTRACT_OVERRIDES: dict[str, dict[str, object]] = {
             },
         ],
         "notes_append": [
-            "Qwen3-Coder 30B is the production local coding/risk lane; deterministic experts should still run for real patches.",
+            "Qwen 3.8 27B is the production local coding/risk lane; deterministic experts should still run for real patches.",
         ],
     },
 }
@@ -1360,6 +1361,16 @@ def is_manual_only_model(model_id: str) -> bool:
         .replace(":", "-")
     )
     return "qwen3.5-122b" in normalized
+
+
+def is_retired_qwen_reasoning_model(model_id: str) -> bool:
+    """Reject pre-3.8 Qwen reasoning models while preserving tool-only lanes."""
+    normalized = str(model_id or "").strip().lower().replace("_", "-")
+    if not normalized or "qwen" not in normalized:
+        return False
+    if any(token in normalized for token in ("guard", "embed", "rerank")):
+        return False
+    return "qwen3.8" not in normalized
 
 
 def ollama_chat_payload_to_openai(
@@ -3251,6 +3262,8 @@ class App:
         rows: list[dict[str, object]] = []
         for row in self.combined_models().get("data") or []:
             model_row = dict(row)
+            if is_retired_qwen_reasoning_model(str(model_row.get("id") or "")):
+                continue
             provider = str(model_row.get("provider") or "")
             model_row["provider"] = self.public_provider(provider)
             model_row["manual_only"] = is_manual_only_model(
@@ -3739,6 +3752,11 @@ class App:
                 continue
             for model_row in model_rows:
                 model = str(model_row.get("model") or "").strip()
+                # Historical benchmark packets may outlive the model artifacts
+                # they measured. Retired reasoning models must not reappear in
+                # the live warm-policy document, even as blocked candidates.
+                if is_retired_qwen_reasoning_model(model):
+                    continue
                 catalog_row = catalog.get(model.lower()) or {}
                 available = bool(catalog_row)
                 # Loaded-model residency is intentionally observability-only.
@@ -4954,7 +4972,7 @@ class App:
 
         fleet_rows = "".join(
             "<tr>"
-            f"<td><strong>{html.escape(str(row.get('label') or ''))}</strong><div class=\"subcell\">{html.escape(str(row.get('base_url') or ''))}</div></td>"
+            f'<td><strong>{html.escape(str(row.get("label") or ""))}</strong><div class="subcell">{html.escape(str(row.get("base_url") or ""))}</div></td>'
             f"<td>{html.escape(lane_state(row, 'ollama'))}</td>"
             f"<td>{html.escape(lane_state(row, 'media'))}</td>"
             f"<td>{html.escape(lane_state(row, 'transcribe'))}</td>"
@@ -5029,10 +5047,10 @@ class App:
         route_cards = (
             f"""
     <div class="grid">
-      <div class="card"><div class="k">Ollama Route</div><div class="v mono">{html.escape(str(routes.get('ollama') or ''))}</div></div>
-      <div class="card"><div class="k">DS4 Route</div><div class="v mono">{html.escape(str(routes.get('ds4') or ''))}</div></div>
-      <div class="card"><div class="k">Media Route</div><div class="v mono">{html.escape(str(routes.get('media') or ''))}</div></div>
-      <div class="card"><div class="k">Transcribe Route</div><div class="v mono">{html.escape(str(routes.get('transcribe') or ''))}</div></div>
+      <div class="card"><div class="k">Ollama Route</div><div class="v mono">{html.escape(str(routes.get("ollama") or ""))}</div></div>
+      <div class="card"><div class="k">DS4 Route</div><div class="v mono">{html.escape(str(routes.get("ds4") or ""))}</div></div>
+      <div class="card"><div class="k">Media Route</div><div class="v mono">{html.escape(str(routes.get("media") or ""))}</div></div>
+      <div class="card"><div class="k">Transcribe Route</div><div class="v mono">{html.escape(str(routes.get("transcribe") or ""))}</div></div>
     </div>
 """
             if self.expose_upstream_details
@@ -5135,12 +5153,12 @@ class App:
         <h1>Norllama</h1>
         <div class="sub">{html.escape(hero_sub)}</div>
         <div class="chips">
-          <span class="chip">status: {html.escape(str(overview.get('status') or 'unknown'))}</span>
-          <span class="chip">async: {html.escape(str(contract.get('async_mode') or 'unknown'))}</span>
-          <span class="chip">priority: {html.escape(str(contract.get('priority_mode') or 'unknown'))}</span>
-          <span class="chip">structured logs: {html.escape(str(contract.get('structured_logging') or False).lower())}</span>
-          <span class="chip">request ids: {html.escape(str(contract.get('request_ids') or False).lower())}</span>
-          <span class="chip">head paths: {html.escape(str(contract.get('head_support_count') or 0))}</span>
+          <span class="chip">status: {html.escape(str(overview.get("status") or "unknown"))}</span>
+          <span class="chip">async: {html.escape(str(contract.get("async_mode") or "unknown"))}</span>
+          <span class="chip">priority: {html.escape(str(contract.get("priority_mode") or "unknown"))}</span>
+          <span class="chip">structured logs: {html.escape(str(contract.get("structured_logging") or False).lower())}</span>
+          <span class="chip">request ids: {html.escape(str(contract.get("request_ids") or False).lower())}</span>
+          <span class="chip">head paths: {html.escape(str(contract.get("head_support_count") or 0))}</span>
         </div>
       </div>
       <div class="card">
@@ -5157,12 +5175,12 @@ class App:
       </div>
     </div>
     <div class="grid">
-      <div class="card"><div class="k">Visible Models</div><div class="v">{html.escape(str(summary.get('visible_model_count') or 0))}</div></div>
-      <div class="card"><div class="k">Unified Chat Models</div><div class="v">{html.escape(str(summary.get('chat_models') or 0))}</div></div>
-      <div class="card"><div class="k">Specialized Models</div><div class="v">{html.escape(str(summary.get('specialized_models') or 0))}</div></div>
-      <div class="card"><div class="k">Hidden Catalog Rows</div><div class="v">{html.escape(str(summary.get('hidden_model_count') or 0))}</div></div>
-      <div class="card"><div class="k">Recent Requests</div><div class="v">{html.escape(str(recent.get('count') or 0))}</div></div>
-      <div class="card"><div class="k">Rendered At</div><div class="v mono">{html.escape(str(overview.get('time') or ''))}</div></div>
+      <div class="card"><div class="k">Visible Models</div><div class="v">{html.escape(str(summary.get("visible_model_count") or 0))}</div></div>
+      <div class="card"><div class="k">Unified Chat Models</div><div class="v">{html.escape(str(summary.get("chat_models") or 0))}</div></div>
+      <div class="card"><div class="k">Specialized Models</div><div class="v">{html.escape(str(summary.get("specialized_models") or 0))}</div></div>
+      <div class="card"><div class="k">Hidden Catalog Rows</div><div class="v">{html.escape(str(summary.get("hidden_model_count") or 0))}</div></div>
+      <div class="card"><div class="k">Recent Requests</div><div class="v">{html.escape(str(recent.get("count") or 0))}</div></div>
+      <div class="card"><div class="k">Rendered At</div><div class="v mono">{html.escape(str(overview.get("time") or ""))}</div></div>
     </div>
     {route_cards}
     {fleet_section}
@@ -5233,7 +5251,7 @@ class App:
           <tr><th>Model</th><th>Provider</th><th>Capabilities</th><th>Access</th><th>{html.escape(host_header)}</th><th>Recommended Path</th><th>Brief</th></tr>
         </thead>
         <tbody>
-          {''.join(model_rows)}
+          {"".join(model_rows)}
         </tbody>
       </table>
     </div>
@@ -6104,8 +6122,7 @@ class Handler(BaseHTTPRequestHandler):
             "message": (
                 "Best-effort background work was deferred for foreground capacity"
                 if background
-                else "Local coding capacity is busy; retry after "
-                f"{retry_after} seconds"
+                else f"Local coding capacity is busy; retry after {retry_after} seconds"
             ),
             "model": model,
             "norllama": capacity_meta,
@@ -7518,6 +7535,17 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         self._model_hint = model
+        if is_retired_qwen_reasoning_model(model):
+            self.send_json(
+                HTTPStatus.GONE,
+                {
+                    "ok": False,
+                    "error": "retired_model",
+                    "model": model,
+                    "replacement": QWEN38_MODEL,
+                },
+            )
+            return
         if is_manual_only_model(model):
             self.send_json(
                 HTTPStatus.FORBIDDEN,
@@ -8763,6 +8791,28 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def enforce_policy_for_request(self, path: str, body: bytes) -> bool:
+        payload: dict[str, object] = {}
+        if body and not path.startswith(
+            ("/transcribe", "/v1/audio", "/v1/ocr", "/ocr")
+        ):
+            try:
+                parsed = json.loads(body.decode("utf-8"))
+                if isinstance(parsed, dict):
+                    payload = parsed
+            except Exception:
+                pass
+        requested_model = str(payload.get("model") or "").strip()
+        if is_retired_qwen_reasoning_model(requested_model):
+            self.send_json(
+                HTTPStatus.GONE,
+                {
+                    "ok": False,
+                    "error": "retired_model",
+                    "model": requested_model,
+                    "replacement": QWEN38_MODEL,
+                },
+            )
+            return False
         authorization = self.policy_authorization_for_request(path, body)
         if authorization.get("allowed"):
             manual = authorization.get("manual_degraded_authorization")
@@ -8904,6 +8954,17 @@ class Handler(BaseHTTPRequestHandler):
                 self.headers.get("Content-Type", "").strip() or "application/json"
             )
             model = self.extract_ollama_model(body)
+            if is_retired_qwen_reasoning_model(model or ""):
+                self.send_json(
+                    HTTPStatus.GONE,
+                    {
+                        "ok": False,
+                        "error": "retired_model",
+                        "model": model,
+                        "replacement": QWEN38_MODEL,
+                    },
+                )
+                return
             bases, rows = self.app.ollama_candidate_bases(model)
             peer_bases, peer_rows = self.peer_candidate_bases(model)
             candidates = bases + peer_bases

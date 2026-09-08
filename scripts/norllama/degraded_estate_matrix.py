@@ -239,12 +239,11 @@ def scenario(
 def evaluate_all_nodes_healthy(snapshots: dict[str, dict[str, Any]]) -> dict[str, Any]:
     lifecycle = policy_lifecycle(snapshots)
     models = payload(snapshots, "models")
-    qwen27_workers = workers_for_model(models, "qwen3.6:27b")
-    qwen35_workers = workers_for_model(models, "qwen3.6:35b-a3b-q4_K_M")
+    qwen38_workers = workers_for_model(models, "qwen3.8:27b")
     heavy_on_133 = [
         model
         for model, workers in all_model_workers(models).items()
-        if ("qwen3.6" in model or "qwen3.5:122" in model) and "mac-mini-133" in workers
+        if model.startswith("qwen3.8:") and "mac-mini-133" in workers
     ]
     failures: list[str] = []
     if snapshots.get("readyz", {}).get("http_status") != 200:
@@ -253,10 +252,8 @@ def evaluate_all_nodes_healthy(snapshots: dict[str, dict[str, Any]]) -> dict[str
         lifecycle.get("state") not in {"valid", "expiring_soon"}
     ):
         failures.append("policy_lifecycle_not_valid")
-    if "spark-151" not in qwen27_workers:
-        failures.append("qwen36_27b_not_on_spark151")
-    if "spark-151" not in qwen35_workers:
-        failures.append("qwen36_35b_not_on_spark151")
+    if "spark-151" not in qwen38_workers:
+        failures.append("qwen38_27b_not_on_spark151")
     if heavy_on_133:
         failures.append("heavy_models_on_2_133")
     return scenario(
@@ -265,8 +262,7 @@ def evaluate_all_nodes_healthy(snapshots: dict[str, dict[str, Any]]) -> dict[str
         summary="Front door is ready and Qwen brain placement matches policy.",
         evidence={
             "policy_lifecycle": lifecycle,
-            "qwen3.6:27b_workers": qwen27_workers,
-            "qwen3.6:35b-a3b-q4_K_M_workers": qwen35_workers,
+            "qwen3.8:27b_workers": qwen38_workers,
             "heavy_models_on_2_133": heavy_on_133,
         },
         failures=failures,

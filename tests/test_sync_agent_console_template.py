@@ -77,6 +77,16 @@ def _named_host(module, name: str, group_host: str = "192.0.2.10"):
     )
 
 
+def test_norman_console_uses_frontdoor_proxy(monkeypatch) -> None:
+    module = _load_sync_script(monkeypatch)
+    instance = _instance(module, "norman", host_name="norman")
+
+    assert module.instance_uses_frontdoor_proxy(instance) is True
+    assert module.instance_console_urls(instance)["url"].startswith(
+        "https://norman.home.arpa/"
+    )
+
+
 def test_host_runs_local_honors_execution_host(monkeypatch) -> None:
     module = _load_sync_script(monkeypatch)
     host = _named_host(module, "norman")
@@ -156,7 +166,7 @@ def test_norman_codex_home_scope_uses_the_personal_route(monkeypatch, tmp_path) 
     module = _load_sync_script(monkeypatch)
     env_path = tmp_path / "codex-web.env"
     env_path.write_text(
-        "CODEX_HOME=/home/kristopher/.codex-work\n" "NORMAN_CODEX_MODEL=norman-code\n",
+        "CODEX_HOME=/home/kristopher/.codex-work\nNORMAN_CODEX_MODEL=norman-code\n",
         encoding="utf-8",
     )
     norman_host = _named_host(module, "norman")
@@ -176,7 +186,7 @@ def test_norman_codex_home_scope_uses_the_personal_route(monkeypatch, tmp_path) 
     assert scoped.codex_home == "/home/kristopher/.codex-norman"
     assert module.sync_instance_codex_home_scope(norman_host, scoped) is True
     assert env_path.read_text(encoding="utf-8") == (
-        "CODEX_HOME=/home/kristopher/.codex-norman\n" "NORMAN_CODEX_MODEL=norman-code\n"
+        "CODEX_HOME=/home/kristopher/.codex-norman\nNORMAN_CODEX_MODEL=norman-code\n"
     )
     assert module.sync_instance_codex_home_scope(norman_host, scoped) is False
 
@@ -580,7 +590,7 @@ def test_route_receipt_sync_exports_shadow_capture_env(monkeypatch) -> None:
     assert '"NORMAN_CODEX_ROUTE_RECEIPTS_ENABLED":"1"' in script
     assert '"NORMAN_CODEX_ROUTE_RECEIPT_OWNER_TUI":"market-sizing"' in script
     assert (
-        '"NORMAN_CODEX_ROUTE_RECEIPT_DIR":' '"/var/lib/norman/route_receipts"'
+        '"NORMAN_CODEX_ROUTE_RECEIPT_DIR":"/var/lib/norman/route_receipts"'
     ) in script
     assert "route_receipt_path.mkdir(parents=True, exist_ok=True)" in script
     assert "service_name = (" in script
@@ -896,9 +906,10 @@ def test_origin_sync_exports_bbs_env_file_without_raw_token(monkeypatch) -> None
     )
     assert module.WORK_STANDARD_MODEL == "openai.gpt-5.6-sol"
     assert module.WORK_STANDARD_AWS_REGION == "us-east-2"
+    assert '"AWS_PROFILE":"ob-openbrand-admin"' in script
+    assert '"NORMAN_CODEX_BEDROCK_AWS_PROFILE":"ob-openbrand-admin"' in script
     assert module.WORK_DIRECT_MODEL == "gpt-5.6-sol"
-    assert module.WORK_FINAL_AUTHORITY_MODEL == "openai.gpt-5.5"
-    assert '"NORMAN_CODEX_REASONING_EFFORT":"medium"' in script
+    assert module.WORK_FINAL_AUTHORITY_MODEL == "openai.gpt-5.6-sol"
     assert '"NORMAN_CODEX_TAILSCALE_REQUIRED":"0"' in script
     assert '"NORMAN_CODEX_DIRECT_TIERS_ENABLED":"1"' in script
     assert "ob-openbrand-admin" in script
@@ -907,6 +918,30 @@ def test_origin_sync_exports_bbs_env_file_without_raw_token(monkeypatch) -> None
     assert "SWITCHBOARD_ENV_FILE" in script
     assert "/etc/panelbot/switchboard-bbs.env" in script
     assert "SWITCHBOARD_TOKEN" not in script
+
+
+def test_origin_sync_never_blanks_canonical_bbs_url(monkeypatch) -> None:
+    monkeypatch.delenv("NORMAN_SYNC_BBS_URL", raising=False)
+    module = _load_sync_script(monkeypatch)
+    captured: dict[str, str] = {}
+    monkeypatch.setattr(
+        module,
+        "ssh_command",
+        lambda _host, script: ["ssh", script],
+    )
+    monkeypatch.setattr(
+        module,
+        "capture",
+        lambda command: captured.setdefault("script", command[1]) or "changed\n",
+    )
+
+    module.sync_instance_origin_settings(_host(module), _instance(module, "panelbot"))
+
+    assert module.CANONICAL_BBS_URL == "http://switchboard.home.arpa:8765"
+    assert (
+        '"NORMAN_CODEX_BBS_URL":"http://switchboard.home.arpa:8765"'
+        in captured["script"]
+    )
 
 
 def test_origin_sync_exports_discovered_local_llm_inventory(
@@ -923,6 +958,7 @@ def test_origin_sync_exports_discovered_local_llm_inventory(
                         "endpoint": "http://192.168.2.151:11434",
                         "ok": True,
                         "models": [
+                            "qwen3.8:27b",
                             "qwen3-coder-next:q4_K_M",
                             "gpt-oss:120b",
                             "qwen3.5:122b-a10b-q4_K_M",
@@ -979,15 +1015,15 @@ def test_origin_sync_exports_discovered_local_llm_inventory(
 
     monkeypatch.setattr(module, "capture", fake_capture)
 
-    assert module.LOCAL_LLM_DEFAULT_MODEL == "qwen3-coder:30b-a3b-q4_K_M"
-    assert module.LOCAL_LLM_MODELS == ("qwen3-coder:30b-a3b-q4_K_M",)
+    assert module.LOCAL_LLM_DEFAULT_MODEL == "qwen3.8:27b"
+    assert module.LOCAL_LLM_MODELS == ("qwen3.8:27b",)
     assert module.LOCAL_LLM_ENDPOINTS == (
         "http://192.168.2.151:11434",
         "http://192.168.2.152:11434",
         "http://spark-1.home.arpa:8000",
     )
-    assert module.LOCAL_LLM_MODEL_ENDPOINTS["qwen3-coder:30b-a3b-q4_K_M"] == [
-        "http://spark-1.home.arpa:8000",
+    assert module.LOCAL_LLM_MODEL_ENDPOINTS["qwen3.8:27b"] == [
+        "http://192.168.2.151:11434",
     ]
     assert "gpt-oss:120b" not in module.LOCAL_LLM_MODEL_ENDPOINTS
     assert "qwen3-coder-next:q4_K_M" not in module.LOCAL_LLM_MODEL_ENDPOINTS
@@ -1590,7 +1626,7 @@ def test_work_bedrock_defaults_can_be_disabled_and_cleaned(monkeypatch) -> None:
         "openai.gpt-5.5,openai.gpt-5.6-luna,openai.gpt-5.6-terra,"
         'openai.gpt-5.6-sol,gpt-5.5,gpt-5.6-luna,gpt-5.6-terra,gpt-5.6-sol"'
     ) in script
-    assert "ob-traqline-admin" not in script
+    assert "ob-openbrand-admin" not in script
 
 
 def test_work_bedrock_profile_sync_copies_host_local_profile(monkeypatch) -> None:
@@ -1721,7 +1757,7 @@ def test_work_named_tui_on_norman_stays_personal_without_test_override(
     assert '"NORMAN_CODEX_DIRECT_MODEL":"openai.gpt-5.6-sol"' in script
     assert "NORMAN_CODEX_STANDARD_PROFILE_V2" not in script
     assert "traqline-bedrock" not in script
-    assert "ob-traqline-admin" not in script
+    assert "ob-openbrand-admin" not in script
 
 
 def test_norman_can_opt_into_work_config_for_local_testing(
@@ -1785,7 +1821,7 @@ def test_personal_tui_does_not_receive_work_bedrock_defaults(monkeypatch) -> Non
     assert "NORMAN_CODEX_STANDARD_PROFILE_V2" not in script
     assert "traqline-bedrock" not in script
     assert "NORMAN_CODEX_DIRECT_TIERS_ENABLED" not in script
-    assert "ob-traqline-admin" not in script
+    assert "ob-openbrand-admin" not in script
 
 
 def test_origin_sync_deduplicates_personal_model_settings(
@@ -1912,7 +1948,7 @@ def test_non_work_bedrock_profile_sync_requires_explicit_source(
     assert '"profile_v2":"personal-bedrock"' in script
     assert '"aws_profile":"personal-bedrock"' in script
     assert '"aws_region":"us-west-2"' in script
-    assert "ob-traqline-admin" not in script
+    assert "ob-openbrand-admin" not in script
 
 
 def test_personal_tui_uses_non_work_bedrock_only_with_explicit_source(
@@ -1950,7 +1986,6 @@ def test_personal_tui_uses_non_work_bedrock_only_with_explicit_source(
     assert '"NORMAN_CODEX_STANDARD_AWS_PROFILE":"personal-bedrock"' in script
     assert '"NORMAN_CODEX_STANDARD_AWS_REGION":"us-west-2"' in script
     assert '"NORMAN_CODEX_PRIORITY_MODEL":"openai.gpt-5.6-sol"' in script
-    assert '"NORMAN_CODEX_REASONING_EFFORT":"medium"' in script
     assert "ob-traqline-admin" not in script
 
 
@@ -1990,14 +2025,14 @@ def test_personal_tui_uses_default_personal_bedrock_source_when_present(
     assert '"NORMAN_CODEX_STANDARD_PROFILE_V2":"personal-bedrock"' in origin_script
     assert '"NORMAN_CODEX_STANDARD_AWS_PROFILE":"kk-personal"' in origin_script
     assert '"NORMAN_CODEX_STANDARD_AWS_REGION":"us-east-2"' in origin_script
-    assert "ob-traqline-admin" not in origin_script
+    assert "ob-openbrand-admin" not in origin_script
     assert str(source) in profile_script
     assert '"source_text_present":true' in profile_script
     assert "# personal bedrock overlay" in profile_script
     assert '"profile_v2":"personal-bedrock"' in profile_script
     assert '"aws_profile":"kk-personal"' in profile_script
     assert '"aws_region":"us-east-2"' in profile_script
-    assert "ob-traqline-admin" not in profile_script
+    assert "ob-openbrand-admin" not in profile_script
 
 
 def test_personal_bedrock_source_falls_back_when_sync_runs_as_root(
@@ -2288,7 +2323,7 @@ def test_sync_host_managed_secret_policy_installs_and_verifies_guard(
 def test_web_sources_must_share_ui_version(monkeypatch, tmp_path: Path) -> None:
     module = _load_sync_script(monkeypatch)
 
-    assert module.validate_web_source_versions() == "2026.08.17.1"
+    assert module.validate_web_source_versions() == "2026.09.06.4"
 
     stale_switchboard = tmp_path / "norman_codex_web.py"
     stale_switchboard.write_text(
@@ -2302,7 +2337,7 @@ def test_web_sources_must_share_ui_version(monkeypatch, tmp_path: Path) -> None:
     except RuntimeError as exc:
         assert str(exc) == (
             "Web UI source versions must match: "
-            "norman-switchboard=v2026.07.16.06, web=v2026.08.17.1"
+            "norman-switchboard=v2026.07.16.06, web=v2026.09.06.4"
         )
     else:
         raise AssertionError("expected mismatched web sources to be rejected")

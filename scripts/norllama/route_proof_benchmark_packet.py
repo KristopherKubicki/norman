@@ -146,12 +146,10 @@ PlannerRouterCapabilityCase = CapabilityCase
 CHAT_PROBES: tuple[ProbeSpec, ...] = (
     ProbeSpec(
         lane_id="coder",
-        model="qwen3.6:27b",
-        profile="qwen36_27_local_route_proof",
-        prompt=(
-            "Norman route-proof benchmark. Reply exactly: " "NORMAN_QWEN36_27B_CODE_OK"
-        ),
-        expected="NORMAN_QWEN36_27B_CODE_OK",
+        model="qwen3.8:27b",
+        profile="qwen38_27_local_route_proof",
+        prompt="Norman route-proof benchmark. Reply exactly: NORMAN_QWEN38_27B_CODE_OK",
+        expected="NORMAN_QWEN38_27B_CODE_OK",
         use_for=(
             "default local coding, repo reasoning, patch drafting, tool-call "
             "risk classification, and command drafting"
@@ -162,13 +160,10 @@ CHAT_PROBES: tuple[ProbeSpec, ...] = (
     ),
     ProbeSpec(
         lane_id="planner",
-        model="qwen3.6:35b-a3b-q4_K_M",
-        profile="qwen36_35_router_local_route_proof",
-        prompt=(
-            "Norman route-proof benchmark. Reply exactly: "
-            "NORMAN_QWEN36_35B_ROUTER_OK"
-        ),
-        expected="NORMAN_QWEN36_35B_ROUTER_OK",
+        model="qwen3.8:27b",
+        profile="qwen38_27_router_local_route_proof",
+        prompt="Norman route-proof benchmark. Reply exactly: NORMAN_QWEN38_27B_ROUTER_OK",
+        expected="NORMAN_QWEN38_27B_ROUTER_OK",
         use_for=(
             "interactive local planning, routing, filtering, scout prep, "
             "evidence compression, and summaries"
@@ -179,19 +174,16 @@ CHAT_PROBES: tuple[ProbeSpec, ...] = (
     ),
     ProbeSpec(
         lane_id="judge",
-        model="qwen3.5:122b-a10b-q4_K_M",
-        profile="qwen35_122_heavy_judge_route_proof",
-        prompt=(
-            "Norman route-proof benchmark. Reply exactly: "
-            "NORMAN_QWEN35_122B_JUDGE_OK"
-        ),
-        expected="NORMAN_QWEN35_122B_JUDGE_OK",
+        model="qwen3.8:27b",
+        profile="qwen38_27_judge_route_proof",
+        prompt="Norman route-proof benchmark. Reply exactly: NORMAN_QWEN38_27B_JUDGE_OK",
+        expected="NORMAN_QWEN38_27B_JUDGE_OK",
         use_for=(
             "heavy local judge, verifier, regression review, and cloud "
             "escalation reduction"
         ),
-        guardrail="Judge lane only; avoid interactive default routing unless warm.",
-        timeout_seconds=240.0,
+        guardrail="Require deterministic verification and cloud escalation for high-risk decisions.",
+        timeout_seconds=120.0,
         capability_class="judge",
     ),
 )
@@ -4547,7 +4539,7 @@ def capability_suite_payload(
             "transport_backing_is_not_capability_backing": True,
             "production_capability_requires_executed_cases": True,
         },
-        "default_model_floor": "qwen3.6/qwen3.5-class for general reasoning",
+        "default_model_floor": "qwen3.8-class for general reasoning",
         "older_model_policy": (
             "Older models are allowed only as narrow specialists when they beat "
             "the Qwen path on lane-specific benchmarks."
@@ -4604,7 +4596,7 @@ def coder_capability_suite() -> dict[str, Any]:
         required_case_count=30,
         required_common_assertions=[
             "route_lock=false unless explicitly testing operator override",
-            "qwen3.6-class local code model is used before cloud escalation",
+            "qwen3.8-class local code model is used before cloud escalation",
             "patches are scoped to requested files and preserve unrelated dirty changes",
             "deterministic experts are invoked or explicitly receipted as unavailable",
             "tests are selected from blast radius and all executed checks are reported",

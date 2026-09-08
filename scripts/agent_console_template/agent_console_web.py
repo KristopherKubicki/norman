@@ -21,6 +21,7 @@ import shlex
 import shutil
 import signal
 import socket
+import ssl
 import sqlite3
 import subprocess
 import sys
@@ -676,7 +677,7 @@ AUTH_COOKIE_NAME = (
 AUTH_COOKIE_MAX_AGE = int(
     os.environ.get("NORMAN_CODEX_WEB_COOKIE_MAX_AGE", str(14 * 24 * 60 * 60))
 )
-DEFAULT_UI_VERSION = "2026.08.17.1"
+DEFAULT_UI_VERSION = "2026.09.06.4"
 UI_VERSION = (
     os.environ.get("NORMAN_CODEX_UI_VERSION", DEFAULT_UI_VERSION).strip()
     or DEFAULT_UI_VERSION
@@ -877,6 +878,25 @@ USAGE_SPARKLINE_ITEMS = max(
 )
 KPI_INTERVAL_SECONDS = int(os.environ.get("NORMAN_CODEX_KPI_INTERVAL_SECONDS", "30"))
 KPI_WEDGE_SECONDS = int(os.environ.get("NORMAN_CODEX_KPI_WEDGE_SECONDS", "240"))
+KPI_DGX_ENABLED = os.environ.get(
+    "NORMAN_CODEX_KPI_DGX_ENABLED", "1"
+).strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+KPI_DGX_REFRESH_SECONDS = max(
+    60, int(os.environ.get("NORMAN_CODEX_KPI_DGX_REFRESH_SECONDS", "300"))
+)
+KPI_DGX_TIMEOUT_SECONDS = max(
+    5, min(30, int(os.environ.get("NORMAN_CODEX_KPI_DGX_TIMEOUT_SECONDS", "12")))
+)
+KPI_APP_PROBE_TIMEOUT_SECONDS = max(
+    1,
+    min(5, int(os.environ.get("NORMAN_CODEX_KPI_APP_PROBE_TIMEOUT_SECONDS", "2"))),
+)
+KPI_APP_PROBES_JSON = os.environ.get("NORMAN_CODEX_KPI_APP_PROBES", "").strip()
 RUNNING_NO_OUTPUT_SECONDS = int(
     os.environ.get("NORMAN_CODEX_RUNNING_NO_OUTPUT_SECONDS", str(15 * 60))
 )
@@ -935,8 +955,11 @@ WEB_PROMPT_RATE_LIMIT_MAX_BACKOFF_SECONDS = max(
     float(os.environ.get("NORMAN_CODEX_RATE_LIMIT_MAX_BACKOFF_SECONDS", "900")),
 )
 WEB_PROMPT_AUTO_CONTINUE_PROMISES = os.environ.get(
-    "NORMAN_CODEX_AUTO_CONTINUE_PROMISES", "0"
+    "NORMAN_CODEX_AUTO_CONTINUE_PROMISES", "1"
 ).strip().lower() not in {"0", "false", "no", "off"}
+WEB_PROMPT_AUTO_CONTINUE_MAX_STEPS = max(
+    1, int(os.environ.get("NORMAN_CODEX_AUTO_CONTINUE_MAX_STEPS", "3"))
+)
 WEB_PROMPT_EMPTY_REPLY_MAX_RETRIES = max(
     0, int(os.environ.get("NORMAN_CODEX_EMPTY_REPLY_MAX_RETRIES", "1"))
 )
@@ -950,13 +973,14 @@ AUTO_CONTINUE_ZERO_TOKEN_PROVIDER_MARKER = (
 )
 AUTO_CONTINUE_DEADLINE_MARKER = "[auto-continuation: deadline-checkpoint]"
 AUTO_CONTINUE_NEXT_ACTION_MARKER = "[auto-continuation: next-action-plan]"
+AUTO_CONTINUE_STEP_RE = re.compile(r"\[auto-continuation-step:(\d+)\]", re.I)
 DEADLINE_CHECKPOINT_POLICY = (
     os.environ.get("NORMAN_CODEX_DEADLINE_CHECKPOINT_POLICY", "auto").strip().lower()
 )
 if DEADLINE_CHECKPOINT_POLICY not in {"auto", "off", "final", "target"}:
     DEADLINE_CHECKPOINT_POLICY = "auto"
 DEADLINE_CHECKPOINT_AUTO_CONTINUE = os.environ.get(
-    "NORMAN_CODEX_DEADLINE_CHECKPOINT_AUTO_CONTINUE", "0"
+    "NORMAN_CODEX_DEADLINE_CHECKPOINT_AUTO_CONTINUE", "1"
 ).strip().lower() not in {"0", "false", "no", "off"}
 
 
@@ -1056,7 +1080,8 @@ CODEX_ALLOW_BELOW_FLOOR_SWITCHABLE = os.environ.get(
     "NORMAN_CODEX_ALLOW_BELOW_FLOOR_SWITCHABLE", ""
 ).strip().lower() in {"1", "true", "yes", "on"}
 CODEX_SWITCHABLE_MODEL_DEFAULTS = (
-    "openai.gpt-5.6-terra,gpt-5.6-terra,openai.gpt-5.5,gpt-5.5"
+    "openai.gpt-5.6-sol,gpt-5.6-sol,openai.gpt-5.6-terra,gpt-5.6-terra,"
+    "openai.gpt-5.6-luna,gpt-5.6-luna"
 )
 if CODEX_ALLOW_BELOW_FLOOR_SWITCHABLE:
     CODEX_SWITCHABLE_MODEL_DEFAULTS += ",openai.gpt-5.4,gpt-5.4"
@@ -1138,8 +1163,8 @@ def _dedupe_models(values: Iterable[str]) -> list[str]:
     return models
 
 
-DEFAULT_QWEN_MINIMUM_VERSION = (3, 5)
-DEFAULT_LOCAL_LLM_QWEN_MINIMUM_VERSION = (3, 5)
+DEFAULT_QWEN_MINIMUM_VERSION = (3, 8)
+DEFAULT_LOCAL_LLM_QWEN_MINIMUM_VERSION = (3, 8)
 NON_TEXT_LOCAL_LLM_MODEL_NEEDLES = (
     "whisper",
     "embed",
@@ -1488,7 +1513,7 @@ def _local_llm_model_allowed_for_lane(lane: str, model: str) -> bool:
 
 
 MODEL = normalize_codex_model_name(
-    os.environ.get("NORMAN_CODEX_MODEL", "openai.gpt-5.6-terra"),
+    os.environ.get("NORMAN_CODEX_MODEL", "openai.gpt-5.6-sol"),
     fallback=CODEX_MODEL_FLOOR,
 )
 # Legacy source check: MODEL = os.environ.get("HOUSEBOT_CODEX_MODEL", "gpt-5.5")
@@ -1509,19 +1534,12 @@ AVAILABLE_MODELS = _dedupe_models(
     for item in os.environ.get("NORMAN_CODEX_AVAILABLE_MODELS", MODEL).split(",")
     if item.strip()
 ) + CODEX_SWITCHABLE_MODELS or [MODEL]
-DEFAULT_LOCAL_LLM_MODEL = (
-    os.environ.get("NORMAN_LOCAL_LLM_MODEL", "qwen3.8:27b").strip() or "qwen3.8:27b"
-)
+DEFAULT_LOCAL_LLM_MODEL = "qwen3.8:27b"
 DEFAULT_LOCAL_LLM_MODELS = (DEFAULT_LOCAL_LLM_MODEL,)
 DEFAULT_LOCAL_LLM_BENCHMARK_MODELS = (DEFAULT_LOCAL_LLM_MODEL,)
 DEFAULT_LOCAL_LLM_CANARY_MODELS: tuple[str, ...] = ()
 DEFAULT_LOCAL_LLM_FALLBACK_MODELS: tuple[str, ...] = ()
-LOCAL_PLANNER_AUTOMATIC_MODEL = (
-    os.environ.get(
-        "NORMAN_LOCAL_PLANNER_AUTOMATIC_MODEL", DEFAULT_LOCAL_LLM_MODEL
-    ).strip()
-    or DEFAULT_LOCAL_LLM_MODEL
-)
+LOCAL_PLANNER_AUTOMATIC_MODEL = DEFAULT_LOCAL_LLM_MODEL
 DEFAULT_LOCAL_LLM_LANE_MODELS = {
     "planner": (DEFAULT_LOCAL_LLM_MODEL,),
     "scout": (DEFAULT_LOCAL_LLM_MODEL,),
@@ -2159,11 +2177,11 @@ DEFAULT_KIMI_MODEL = (
     or "moonshotai.kimi-k2.5"
 )
 DEFAULT_QWEN_MODEL = (
-    os.environ.get("NORMAN_QWEN_MODEL", "qwen.qwen3.5-coder-planned").strip()
-    or "qwen.qwen3.5-coder-planned"
+    os.environ.get("NORMAN_QWEN_MODEL", DEFAULT_LOCAL_LLM_MODEL).strip()
+    or DEFAULT_LOCAL_LLM_MODEL
 )
 if _qwen_below_floor(DEFAULT_QWEN_MODEL):
-    DEFAULT_QWEN_MODEL = "qwen.qwen3.5-coder-planned"
+    DEFAULT_QWEN_MODEL = DEFAULT_LOCAL_LLM_MODEL
 DEFAULT_GPT_OSS_MODEL = (
     os.environ.get("NORMAN_GPT_OSS_MODEL", "openai.gpt-oss-20b-1:0").strip()
     or "openai.gpt-oss-20b-1:0"
@@ -2408,7 +2426,7 @@ DEFAULT_RUNTIME = (
 FORCE_DEFAULT_RUNTIME = os.environ.get(
     "NORMAN_CODEX_FORCE_DEFAULT_RUNTIME", "0"
 ).strip().lower() in {"1", "true", "yes", "on"}
-REASONING_EFFORT = os.environ.get("NORMAN_CODEX_REASONING_EFFORT", "xhigh")
+REASONING_EFFORT = os.environ.get("NORMAN_CODEX_REASONING_EFFORT", "medium")
 EMERGENCY_XFAST_ENABLED = any(
     os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
     for name in (
@@ -2997,6 +3015,8 @@ RESTART_HANDOFF_PATH = Path(
     )
 )
 KPI_PATH = STATE_DIR / "kpis.json"
+KPI_DGX_RANKING_PATH = STATE_DIR / "kpi_dgx_ranking.json"
+KPI_APP_HEALTH_PATH = STATE_DIR / "kpi_app_health.json"
 AUDIT_PATH = STATE_DIR / "audit.jsonl"
 AUDIT_LOCK = threading.RLock()
 DETERMINISTIC_ARCHIVE_QUEUE: queue.Queue[Callable[[], None]] = queue.Queue(
@@ -3606,6 +3626,10 @@ CONSOLE_RUNTIME_CAPABILITIES_LOCK = threading.Lock()
 CONSOLE_RUNTIME_LOCAL_FIRST_PROOF_LOCK = threading.Lock()
 WORKING_RECAP_LOCK = threading.Lock()
 KPI_LOCK = threading.RLock()
+KPI_DGX_LOCK = threading.Lock()
+KPI_DGX_RANKING_ACTIVE = False
+KPI_APP_LOCK = threading.Lock()
+KPI_APP_REFRESH_ACTIVE = False
 KPI_COLLECTOR_STARTED = False
 STATUS_SNAPSHOT_COLLECTOR_STARTED = False
 ACTIVE_PROMPT_THREAD: threading.Thread | None = None
@@ -7054,7 +7078,7 @@ def build_turn_control_envelope(
         "blocked_actions": blocked_actions,
         "budget": {
             "max_wall_seconds": job_budget_timeout_seconds(job_budget),
-            "max_model_calls": 1,
+            "max_model_calls": 4,
             "max_retries": max_retries,
             "max_decisions": max_decisions,
         },
@@ -7950,6 +7974,8 @@ def runtime_registry_payload() -> list[dict[str, Any]]:
     payload: list[dict[str, Any]] = []
     for key, entry in RUNTIME_REGISTRY.items():
         runtime = normalize_runtime(key)
+        if runtime == "codexspark":
+            continue
         if runtime == "localllm":
             payload.append(
                 {
@@ -8217,25 +8243,6 @@ def model_route_presets_payload() -> list[dict[str, Any]]:
         tools="not wired",
         confidence="watch",
         lane="aws-bedrock",
-    )
-    add_preset(
-        "codex-spark-preview",
-        "Spark Preview",
-        runtime="codexspark",
-        model=DEFAULT_CODEX_SPARK_MODEL,
-        service_tier="default",
-        provider="OpenAI/Cerebras",
-        can_execute=False,
-        status="Access check",
-        hint=(
-            "GPT-5.3-Codex-Spark is an OpenAI/Cerebras preview, not a "
-            "Bedrock model. Keep it selectable as a shadow lane until a "
-            "CLI/account smoke proves the exact model id."
-        ),
-        role="low-latency scout",
-        tools="not wired",
-        confidence="watch",
-        lane="openai-direct",
     )
     add_preset(
         "deepseek-bedrock",
@@ -9868,6 +9875,9 @@ BBS_SUMMARY_URL = (
     .strip()
     .rstrip("/")
 )
+BBS_SUMMARY_FALLBACK_URL = (
+    (os.environ.get("NORMAN_CODEX_BBS_FALLBACK_URL") or "").strip().rstrip("/")
+)
 BBS_SUMMARY_ACTOR = (
     os.environ.get("NORMAN_CODEX_BBS_ACTOR")
     or os.environ.get("NORMAN_CODEX_BBS_ACTOR")
@@ -10549,6 +10559,23 @@ def build_relay_targets(
     return targets
 
 
+def browser_relay_targets(targets: Iterable[dict[str, Any]]) -> list[dict[str, str]]:
+    """Return relay metadata that is safe to embed in the console page."""
+    public_targets: list[dict[str, str]] = []
+    for target in targets:
+        parsed = urlparse(str(target.get("url") or ""))
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        query.pop("token", None)
+        public_targets.append(
+            {
+                "label": str(target.get("label") or ""),
+                "url": parsed._replace(query=urlencode(query, doseq=True)).geturl(),
+                "host": str(target.get("host") or parsed.netloc),
+            }
+        )
+    return public_targets
+
+
 def build_handoff_message(source_prompt: str, source_response: str) -> str:
     prompt = source_prompt.strip() or "[no original prompt recorded]"
     response = source_response.strip() or "[no assistant response recorded]"
@@ -10754,6 +10781,78 @@ def session_admission_allows_auto_rollover(decision: Any) -> bool:
         if str(reason).strip()
     }
     return bool(reasons) and reasons <= AUTO_SESSION_ROLLOVER_CHECKPOINT_REASONS
+
+
+def session_admission_requires_idle_fresh_rotation(decision: Any) -> bool:
+    """Rotate an old idle provider thread instead of rejecting a new operator turn.
+
+    Web history is durable outside the provider thread, so an idle thread that has
+    exceeded the age budget can be retired without erasing the visible console
+    conversation. Recent over-budget threads still use the compact-handoff path so
+    related work keeps the context it may need.
+    """
+    if not isinstance(decision, dict) or bool(decision.get("allowed")):
+        return False
+    reason_code = str(decision.get("reason_code") or "").strip()
+    if reason_code == "reauthorization_required":
+        return True
+    if reason_code != "checkpoint_required":
+        return False
+    usage = decision.get("usage") if isinstance(decision.get("usage"), dict) else {}
+    return _coerce_int(usage.get("age_seconds")) >= max(
+        1, int(SESSION_BUDGET_POLICY.max_age_seconds)
+    )
+
+
+def rotate_idle_provider_thread_for_operator_prompt(
+    decision: Any,
+    *,
+    prompt: str,
+    source: str,
+    actor_ip: str = "",
+) -> dict[str, Any]:
+    """Clear a stale idle resume pointer while preserving web history and audit."""
+    if normalize_queue_source(source, {}, prompt) != "operator":
+        return {}
+    if not session_admission_requires_idle_fresh_rotation(decision):
+        return {}
+    if prompt_runtime_alive():
+        return {}
+    with STATUS_LOCK:
+        meta = load_status_meta()
+        if meta.get("pending") or normalize_queue(meta.get("queued_prompts")):
+            return {}
+        prior_thread_id = read_text(THREAD_ID_PATH).strip()
+        if not prior_thread_id:
+            return {}
+        write_text(THREAD_ID_PATH, "")
+        write_text(THREAD_SCOPE_PATH, "")
+    usage = decision.get("usage") if isinstance(decision.get("usage"), dict) else {}
+    rotation = {
+        "schema": "norman.tui.idle-thread-rotation.v1",
+        "reason": "stale_idle_provider_thread",
+        "prior_thread_id": prior_thread_id,
+        "age_seconds": _coerce_int(usage.get("age_seconds")),
+        "total_tokens": _coerce_int(usage.get("total_tokens")),
+        "rotated_at": now_ts(),
+    }
+    append_audit_event(
+        event_type="session.idle-thread-rotated",
+        summary="Rotated a stale idle provider thread before admitting new work.",
+        detail=(
+            "The visible web history was preserved; the next operator prompt will "
+            "start in a fresh provider thread."
+        ),
+        severity="info",
+        actor_type="system",
+        actor_ip=actor_ip,
+        thread_id=prior_thread_id,
+        payload={
+            "rotation": rotation,
+            "prompt_preview": summarize_text(prompt, 240),
+        },
+    )
+    return rotation
 
 
 def auto_session_rollover_checkpoint_prompt(
@@ -11848,6 +11947,10 @@ def upsert_human_intervention(value: dict[str, Any]) -> dict[str, Any]:
     if conn is None:
         return item
     try:
+        # Serialize the read/modify/write sequence. Without this lock, a status
+        # collector that selected an open row just before an operator closed it
+        # could write its stale copy back as open a moment later.
+        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             """
             SELECT payload_json
@@ -16623,9 +16726,19 @@ def prompt_is_auto_continuation(prompt: str) -> bool:
     )
 
 
+def auto_continuation_step(prompt: str) -> int:
+    match = AUTO_CONTINUE_STEP_RE.search(str(prompt or ""))
+    return max(0, _coerce_int(match.group(1))) if match else 0
+
+
+def next_auto_continuation_step_marker(prompt: str) -> str:
+    return f"[auto-continuation-step:{auto_continuation_step(prompt) + 1}]"
+
+
 def build_promised_work_continuation_prompt(prompt: str, response: str) -> str:
     return (
         f"{AUTO_CONTINUE_PROMISE_MARKER}\n"
+        f"{next_auto_continuation_step_marker(prompt)}\n"
         "You ended the previous turn by promising follow-up work, but the TUI "
         "saw the turn finish without that work being completed.\n\n"
         f"Previous operator prompt:\n{summarize_text(prompt, 900)}\n\n"
@@ -16647,6 +16760,7 @@ def build_next_action_planning_prompt(
         clean_status = "checkpoint"
     return (
         f"{AUTO_CONTINUE_NEXT_ACTION_MARKER}\n"
+        f"{next_auto_continuation_step_marker(prompt)}\n"
         f"The previous assistant reply ended with {clean_status.upper()} rather than DONE. "
         "Run one bounded next-action planning pass.\n\n"
         f"Previous operator prompt:\n{summarize_text(prompt, 900)}\n\n"
@@ -16911,6 +17025,7 @@ def build_deadline_checkpoint_continuation_prompt(
     warning = summarize_text(warning_message, 500)
     lines = [
         AUTO_CONTINUE_DEADLINE_MARKER,
+        next_auto_continuation_step_marker(prompt),
         "Deadline-checkpoint continuation:",
         "- The previous turn was paused at a supported tool boundary because the selected time target or final warning was reached.",
         "- Continue the same operator task from the current repo/runtime state; do not restart broad setup.",
@@ -20860,7 +20975,6 @@ def bbs_request_json(
     payload: dict[str, Any] | None = None,
     timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
-    url = f"{BBS_SUMMARY_URL.rstrip('/')}/{path.lstrip('/')}"
     data = None
     headers = {
         "Accept": "application/json",
@@ -20869,17 +20983,33 @@ def bbs_request_json(
     if payload is not None:
         data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         headers["Content-Type"] = "application/json"
-    req = urllib_request.Request(
-        url,
-        data=data,
-        headers=headers,
-        method=method.upper(),
-    )
     timeout = (
         BBS_SUMMARY_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
     )
-    with urllib_request.urlopen(req, timeout=timeout) as response:
-        raw = response.read().decode("utf-8", errors="replace")
+    bases = [BBS_SUMMARY_URL]
+    if BBS_SUMMARY_FALLBACK_URL and BBS_SUMMARY_FALLBACK_URL not in bases:
+        bases.append(BBS_SUMMARY_FALLBACK_URL)
+    last_error: Exception | None = None
+    raw = ""
+    for base in bases:
+        url = f"{base.rstrip('/')}/{path.lstrip('/')}"
+        req = urllib_request.Request(
+            url,
+            data=data,
+            headers=headers,
+            method=method.upper(),
+        )
+        try:
+            with urllib_request.urlopen(req, timeout=timeout) as response:
+                raw = response.read().decode("utf-8", errors="replace")
+            break
+        except urllib_error.HTTPError:
+            raise
+        except (urllib_error.URLError, OSError, TimeoutError) as exc:
+            last_error = exc
+    else:
+        if last_error is not None:
+            raise last_error
     payload = json.loads(raw or "{}")
     return payload if isinstance(payload, dict) else {}
 
@@ -21010,7 +21140,7 @@ def _bbs_thread_activity(
     if state == "waiting_pickup":
         base = f"Owner {owner_label} needs pickup ACK; no fork or done yet"
         if owner_heartbeat_age_seconds:
-            return f"{base}; owner heartbeat " f"{owner_heartbeat_age_seconds}s"
+            return f"{base}; owner heartbeat {owner_heartbeat_age_seconds}s"
         return base
     if state == "picked_up":
         pickup = _bbs_actor_label(picked_up_by or owner)
@@ -21597,8 +21727,7 @@ def summarize_bbs_payload(payload: dict[str, Any]) -> dict[str, Any]:
         )
     elif picked_up_count:
         summary = (
-            f"{picked_up_count} BBS handoff active"
-            f"{'s' if picked_up_count != 1 else ''}"
+            f"{picked_up_count} BBS handoff active{'s' if picked_up_count != 1 else ''}"
         )
     elif inbox_count:
         summary = f"{inbox_count} open BBS thread{'s' if inbox_count != 1 else ''}"
@@ -28162,6 +28291,571 @@ def bedrock_health_snapshot(
     }
 
 
+KPI_PROFILE_FOCUS = {
+    "operations": "service health, blocked work, queue pressure, and stale handoffs",
+    "research": "accepted research, blocked searches, queue age, and fresh results",
+    "media": "active media work, queue pressure, failures, and output freshness",
+    "delivery": "release readiness, validation failures, blocked work, and freshness",
+    "executive": "current health, material exceptions, freshness, and decision backlog",
+    "general": "current health, queue pressure, completion rate, and local processing",
+}
+KPI_PROFILE_INSTANCES = {
+    "operations": {
+        "cloudagent",
+        "control-plane",
+        "diamond-roc",
+        "infra",
+        "networking",
+        "norman",
+        "uplink",
+        "uscache",
+        "usbhome",
+    },
+    "research": {
+        "earlybird",
+        "eyebat",
+        "glimpser",
+        "market-sizing",
+        "scout",
+        "theseus",
+    },
+    "media": {"artmonster", "autocamera", "dj", "studio", "tv"},
+    "delivery": {
+        "castle",
+        "compere",
+        "gold-book",
+        "mls",
+        "panelbot",
+        "platinum-standard",
+        "publisher",
+        "tmi-dashboards",
+    },
+    "executive": {"housebot", "leadership-kpis", "parkergale", "phone-ops"},
+}
+
+
+def kpi_profile_name() -> str:
+    slug = str(AGENT_SLUG or SESSION or "").strip().lower()
+    for profile, instances in KPI_PROFILE_INSTANCES.items():
+        if slug in instances:
+            return profile
+    return "general"
+
+
+def _kpi_meter(
+    meter_id: str,
+    label: str,
+    value: Any,
+    *,
+    tone: str = "ok",
+    detail: str = "",
+    source: str = "local status",
+    updated_at: int = 0,
+) -> dict[str, Any]:
+    return {
+        "id": meter_id,
+        "label": label,
+        "value": value,
+        "tone": tone,
+        "detail": detail,
+        "source": source,
+        "updated_at": updated_at or now_ts(),
+        "stale_after_seconds": max(90, KPI_DGX_REFRESH_SECONDS * 2),
+    }
+
+
+def configured_kpi_app_probes() -> list[dict[str, Any]]:
+    """Return bounded, operator-configured probes plus this TUI's own app route."""
+
+    query = "?" + urlencode({"token": TOKEN}) if TOKEN else ""
+    probes: list[dict[str, Any]] = [
+        {
+            "id": "engine",
+            "label": "engine",
+            "url": f"http://127.0.0.1:{PORT}/health{query}",
+            "required": True,
+            "expect_health": True,
+            "allow_auth_denied": False,
+        }
+    ]
+    scheme, authority = canonical_origin_components()
+    if authority:
+        probes.append(
+            {
+                "id": "route",
+                "label": "route",
+                "url": f"{scheme}://{authority}/health",
+                "required": True,
+                "expect_health": False,
+                "allow_auth_denied": True,
+            }
+        )
+    try:
+        configured = json.loads(KPI_APP_PROBES_JSON) if KPI_APP_PROBES_JSON else []
+    except json.JSONDecodeError:
+        configured = []
+    if not isinstance(configured, list):
+        configured = []
+    for index, raw in enumerate(configured[:4]):
+        item = {"url": raw} if isinstance(raw, str) else raw
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        if not url.startswith(("http://", "https://")):
+            continue
+        label = re.sub(r"[^a-zA-Z0-9 ._-]+", "", str(item.get("label") or "app"))
+        probes.append(
+            {
+                "id": f"attached-{index + 1}",
+                "label": (label.strip() or "app")[:40],
+                "url": url,
+                "required": item.get("required") is not False,
+                "expect_health": item.get("expect_health") is not False,
+                "allow_auth_denied": bool(item.get("allow_auth_denied")),
+            }
+        )
+    return probes[:6]
+
+
+def _request_kpi_app_component(
+    target: dict[str, Any],
+) -> tuple[bool, str, int]:
+    url = str(target.get("url") or "")
+    try:
+        request = urllib_request.Request(
+            url,
+            headers={"Accept": "application/json", "User-Agent": "norman-kpi/1.0"},
+        )
+        kwargs: dict[str, Any] = {"timeout": KPI_APP_PROBE_TIMEOUT_SECONDS}
+        if url.startswith("https://"):
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            kwargs["context"] = context
+        with urllib_request.urlopen(request, **kwargs) as response:
+            http_status = int(response.getcode() or 0)
+            body = response.read(65536).decode("utf-8", "replace")
+        ok = 200 <= http_status < 400
+        status = f"http-{http_status}"
+        if ok and target.get("expect_health"):
+            try:
+                payload = json.loads(body or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            health_status = str(payload.get("status") or "").strip().lower()
+            ok = health_status in {"ok", "healthy", "ready"}
+            status = health_status or "invalid-health"
+        return ok, status, http_status
+    except urllib_error.HTTPError as exc:
+        http_status = int(exc.code or 0)
+        ok = bool(target.get("allow_auth_denied")) and http_status in {401, 403}
+        status = "reachable-auth" if ok else f"http-{http_status}"
+        return ok, status, http_status
+    except Exception:
+        return False, "unreachable", 0
+
+
+def _probe_kpi_app_component(target: dict[str, Any]) -> dict[str, Any]:
+    started = time.monotonic()
+    ok = False
+    status = "unreachable"
+    http_status = 0
+    for _attempt in range(2):
+        ok, status, http_status = _request_kpi_app_component(target)
+        if status != "unreachable":
+            break
+    return {
+        "id": str(target.get("id") or "app"),
+        "label": str(target.get("label") or "app"),
+        "required": target.get("required") is not False,
+        "ok": ok,
+        "status": status,
+        "http_status": http_status,
+        "latency_ms": max(0, int((time.monotonic() - started) * 1000)),
+    }
+
+
+def refresh_kpi_app_health() -> dict[str, Any]:
+    """Refresh this TUI's web-app checks without invoking a model provider."""
+
+    result = {
+        "schema": "norman.tui.app-health.v1",
+        "checked_at": now_ts(),
+        "components": [
+            _probe_kpi_app_component(target) for target in configured_kpi_app_probes()
+        ],
+        "read_only": True,
+        "cloud_fallback": False,
+    }
+    write_json(KPI_APP_HEALTH_PATH, result)
+    return result
+
+
+def _kpi_app_health_worker() -> None:
+    global KPI_APP_REFRESH_ACTIVE
+    try:
+        refresh_kpi_app_health()
+    finally:
+        with KPI_APP_LOCK:
+            KPI_APP_REFRESH_ACTIVE = False
+
+
+def maybe_schedule_kpi_app_health() -> bool:
+    global KPI_APP_REFRESH_ACTIVE
+    health = read_json(KPI_APP_HEALTH_PATH, {})
+    checked_at = (
+        _coerce_int(health.get("checked_at")) if isinstance(health, dict) else 0
+    )
+    components = health.get("components", []) if isinstance(health, dict) else []
+    healthy = bool(components) and all(
+        not isinstance(item, dict)
+        or not bool(item.get("required", True))
+        or bool(item.get("ok"))
+        for item in components
+    )
+    refresh_seconds = (
+        KPI_DGX_REFRESH_SECONDS if healthy else max(15, min(60, KPI_INTERVAL_SECONDS))
+    )
+    if now_ts() - checked_at < refresh_seconds:
+        return False
+    with KPI_APP_LOCK:
+        if KPI_APP_REFRESH_ACTIVE:
+            return False
+        KPI_APP_REFRESH_ACTIVE = True
+    threading.Thread(
+        target=_kpi_app_health_worker,
+        daemon=True,
+        name="tui-kpi-app-health",
+    ).start()
+    return True
+
+
+def app_health_kpi_meters() -> list[dict[str, Any]]:
+    health = read_json(KPI_APP_HEALTH_PATH, {})
+    if not isinstance(health, dict):
+        return []
+    checked_at = _coerce_int(health.get("checked_at"))
+    components = [
+        item for item in health.get("components") or [] if isinstance(item, dict)
+    ]
+    if checked_at <= 0 or not components:
+        return []
+    required = [item for item in components if item.get("required") is not False]
+    failed_required = [item for item in required if not item.get("ok")]
+    failed_optional = [
+        item
+        for item in components
+        if item.get("required") is False and not item.get("ok")
+    ]
+    up = sum(bool(item.get("ok")) for item in components)
+    max_latency = max(_coerce_int(item.get("latency_ms")) for item in components)
+    failed_labels = [str(item.get("label") or "component") for item in failed_required]
+    tone = "alert" if failed_required else "warn" if failed_optional else "ok"
+    detail = (
+        "Web app engine and front-door route are reachable."
+        if not failed_required and not failed_optional
+        else "Unavailable: "
+        + ", ".join(
+            failed_labels
+            + [str(item.get("label") or "component") for item in failed_optional]
+        )
+    )
+    stale_after = max(90, KPI_DGX_REFRESH_SECONDS * 2)
+    return [
+        {
+            **_kpi_meter(
+                "app-health",
+                "Web app",
+                f"{up}/{len(components)} up",
+                tone=tone,
+                detail=detail,
+                source="local app probes",
+                updated_at=checked_at,
+            ),
+            "stale_after_seconds": stale_after,
+        },
+        {
+            **_kpi_meter(
+                "app-latency",
+                "App latency",
+                f"{max_latency}ms",
+                tone="warn" if max_latency >= 1000 else "ok",
+                detail="Slowest response among the app engine, route, and configured attachments.",
+                source="local app probes",
+                updated_at=checked_at,
+            ),
+            "stale_after_seconds": stale_after,
+        },
+    ]
+
+
+def build_local_kpi_candidates(
+    snapshot: dict[str, Any], metrics: dict[str, Any], *, observed_at: int
+) -> list[dict[str, Any]]:
+    """Build bounded, read-only KPI facts before the DGX ranking pass."""
+
+    resource = (
+        snapshot.get("resource_meter")
+        if isinstance(snapshot.get("resource_meter"), dict)
+        else {}
+    )
+    candidates = app_health_kpi_meters()
+    candidates.extend(normalize_kpi_meters(resource.get("kpi_meters"), limit=4))
+    services = [
+        item for item in snapshot.get("services") or [] if isinstance(item, dict)
+    ]
+    required = [item for item in services if item.get("required") is not False]
+    unhealthy = [
+        item
+        for item in required
+        if str(item.get("state") or "").strip().lower() != "active"
+    ]
+    queue_depth = max(0, _coerce_int(metrics.get("queue_depth")))
+    turns = max(0, _coerce_int(metrics.get("turns")))
+    successes = max(0, _coerce_int(metrics.get("successful_turns")))
+    success_rate = round((successes / turns) * 100) if turns else 100
+    local_rate = max(
+        0.0, min(100.0, _coerce_float(metrics.get("route_local_turn_rate_24h")))
+    )
+    avoided = max(0, _coerce_int(metrics.get("route_cloud_tokens_avoided_24h")))
+    bbs = snapshot.get("bbs") if isinstance(snapshot.get("bbs"), dict) else {}
+    bbs_counts = bbs.get("counts") if isinstance(bbs.get("counts"), dict) else {}
+    bbs_attention = sum(
+        max(0, _coerce_int(bbs_counts.get(key)))
+        for key in ("actionable_urgent", "actionable_high", "needs_ack")
+    )
+    generic = [
+        _kpi_meter(
+            "health",
+            "Health",
+            "Watch" if unhealthy else "Good",
+            tone="warn" if unhealthy else "ok",
+            detail=(
+                f"{len(unhealthy)} of {len(required)} required services need attention."
+                if unhealthy
+                else f"{len(required)} required services are active."
+            ),
+            updated_at=observed_at,
+        ),
+        _kpi_meter(
+            "queue",
+            "Queue",
+            queue_depth,
+            tone="warn" if queue_depth else "ok",
+            detail="Operator prompts waiting in this TUI.",
+            updated_at=observed_at,
+        ),
+        _kpi_meter(
+            "success",
+            "Success",
+            f"{success_rate}%",
+            tone="warn" if turns and success_rate < 90 else "ok",
+            detail=f"{successes} successful turns out of {turns} recorded turns.",
+            updated_at=observed_at,
+        ),
+        _kpi_meter(
+            "turn-time",
+            "Turn time",
+            format_duration_label(max(0, _coerce_int(metrics.get("avg_turn_seconds")))),
+            tone="warn" if _coerce_int(metrics.get("avg_turn_seconds")) > 900 else "ok",
+            detail="Average completed turn duration from the local usage ledger.",
+            updated_at=observed_at,
+        ),
+        _kpi_meter(
+            "local-share",
+            "DGX/local",
+            f"{round(local_rate)}%",
+            tone="ok" if local_rate >= 60 else "warn" if turns else "ok",
+            detail="Share of recent turns handled by local or local-assisted routes.",
+            updated_at=observed_at,
+        ),
+        _kpi_meter(
+            "tokens-avoided",
+            "Tokens saved",
+            avoided,
+            detail="Estimated cloud tokens avoided during the last 24 hours.",
+            updated_at=observed_at,
+        ),
+        _kpi_meter(
+            "bbs-attention",
+            "BBS",
+            bbs_attention,
+            tone="warn" if bbs_attention else "ok",
+            detail="Urgent, high-priority, or acknowledgement-needed BBS items visible here.",
+            updated_at=observed_at,
+        ),
+    ]
+    seen = {str(item.get("id") or "") for item in candidates}
+    candidates.extend(item for item in generic if item["id"] not in seen)
+    return candidates[:10]
+
+
+def load_kpi_dgx_ranking() -> dict[str, Any]:
+    payload = read_json(KPI_DGX_RANKING_PATH, {})
+    return payload if isinstance(payload, dict) else {}
+
+
+def _kpi_ranking_ids(response_text: Any, allowed: set[str]) -> list[str]:
+    text = re.sub(r"(?is)<think>.*?</think>", "", str(response_text or "")).strip()
+    match = re.search(r"\[[\s\S]*?\]", text)
+    if not match:
+        return []
+    try:
+        values = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return []
+    selected: list[str] = []
+    for value in values if isinstance(values, list) else []:
+        meter_id = str(value or "").strip()
+        if meter_id in allowed and meter_id not in selected:
+            selected.append(meter_id)
+    return selected[:4]
+
+
+def top_kpi_meters(
+    candidates: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    ranking = load_kpi_dgx_ranking()
+    allowed = {str(item.get("id") or "") for item in candidates}
+    selected_ids = [
+        str(value)
+        for value in ranking.get("selected_ids") or []
+        if str(value) in allowed
+    ]
+    by_id = {str(item.get("id") or ""): item for item in candidates}
+    ordered = [by_id["app-health"]] if "app-health" in by_id else []
+    ordered.extend(
+        by_id[meter_id]
+        for meter_id in selected_ids
+        if meter_id in by_id and by_id[meter_id] not in ordered
+    )
+    ordered.extend(item for item in candidates if item not in ordered)
+    processor = {
+        "mode": "local-dgx",
+        "status": str(ranking.get("status") or "warming"),
+        "model": str(ranking.get("model") or LOCAL_PLANNER_AUTOMATIC_MODEL),
+        "ranked_at": _coerce_int(ranking.get("ranked_at")),
+        "cloud_fallback": False,
+    }
+    return ordered[:4], processor
+
+
+def _kpi_dgx_ranking_worker(candidates: list[dict[str, Any]], profile: str) -> None:
+    global KPI_DGX_RANKING_ACTIVE
+    ranked_at = now_ts()
+    result = {
+        "schema": "norman.tui.kpi-dgx-ranking.v1",
+        "ranked_at": ranked_at,
+        "status": "unavailable",
+        "model": LOCAL_PLANNER_AUTOMATIC_MODEL,
+        "selected_ids": [],
+        "cloud_fallback": False,
+    }
+    try:
+        refresh_kpi_app_health()
+        fresh_app = app_health_kpi_meters()
+        fresh_ids = {str(item.get("id") or "") for item in fresh_app}
+        candidates = fresh_app + [
+            item for item in candidates if str(item.get("id") or "") not in fresh_ids
+        ]
+        automatic_models = globals().get("local_automatic_text_models")
+        model = (
+            (automatic_models() or [""])[0] if callable(automatic_models) else ""
+        ) or str(globals().get("WORKING_RECAP_LOCAL_MODEL") or "")
+        endpoint_resolver = globals().get("local_llm_candidate_endpoints")
+        endpoints = (
+            endpoint_resolver(model, foreground=False)
+            if model and callable(endpoint_resolver)
+            else list(globals().get("WORKING_RECAP_LOCAL_ENDPOINTS") or [])
+        )
+        prompt = json.dumps(
+            {
+                "task": "Select the four most useful KPI ids for an operator's compact TUI bar. Return only a JSON array of ids, most important first.",
+                "console": AGENT_SLUG,
+                "profile": profile,
+                "focus": KPI_PROFILE_FOCUS.get(profile, KPI_PROFILE_FOCUS["general"]),
+                "candidates": [
+                    {
+                        key: item.get(key)
+                        for key in ("id", "label", "value", "tone", "detail")
+                    }
+                    for item in candidates
+                ],
+                "constraints": {"count": 4, "read_only": True, "cloud_fallback": False},
+            },
+            separators=(",", ":"),
+        )
+        allowed = {str(item.get("id") or "") for item in candidates}
+        for endpoint in endpoints:
+            try:
+                local_generate = globals().get("local_llm_generate_once")
+                if callable(local_generate):
+                    payload, _, _ = local_generate(
+                        endpoint,
+                        model,
+                        prompt,
+                        timeout_seconds=KPI_DGX_TIMEOUT_SECONDS,
+                        max_output_tokens=96,
+                        num_ctx=4096,
+                        work_class="background",
+                        work_source="tui-kpi-ranker",
+                    )
+                else:
+                    recap_generate = globals().get("working_recap_local_generate")
+                    if not callable(recap_generate):
+                        continue
+                    payload = recap_generate(
+                        endpoint,
+                        model,
+                        prompt,
+                        timeout_seconds=KPI_DGX_TIMEOUT_SECONDS,
+                        max_output_tokens=96,
+                        source="tui-kpi-ranker",
+                    )
+            except Exception:
+                continue
+            response_reader = globals().get("local_llm_response_text")
+            if not callable(response_reader):
+                response_reader = globals().get("working_recap_local_response_text")
+            response_text = (
+                response_reader(payload) if callable(response_reader) else ""
+            )
+            selected_ids = _kpi_ranking_ids(response_text, allowed)
+            if selected_ids:
+                result.update(status="ranked", model=model, selected_ids=selected_ids)
+                break
+        write_json(KPI_DGX_RANKING_PATH, result)
+    finally:
+        with KPI_DGX_LOCK:
+            KPI_DGX_RANKING_ACTIVE = False
+
+
+def maybe_schedule_kpi_dgx_ranking(snapshot: dict[str, Any]) -> bool:
+    global KPI_DGX_RANKING_ACTIVE
+    if not KPI_DGX_ENABLED:
+        return False
+    kpis = snapshot.get("kpis") if isinstance(snapshot.get("kpis"), dict) else {}
+    candidates = [
+        item for item in kpis.get("ranking_candidates") or [] if isinstance(item, dict)
+    ]
+    if not candidates:
+        return False
+    previous = load_kpi_dgx_ranking()
+    if now_ts() - _coerce_int(previous.get("ranked_at")) < KPI_DGX_REFRESH_SECONDS:
+        return False
+    with KPI_DGX_LOCK:
+        if KPI_DGX_RANKING_ACTIVE:
+            return False
+        KPI_DGX_RANKING_ACTIVE = True
+    threading.Thread(
+        target=_kpi_dgx_ranking_worker,
+        args=(candidates, kpi_profile_name()),
+        daemon=True,
+        name="tui-kpi-dgx-ranker",
+    ).start()
+    return True
+
+
 def default_kpi_snapshot() -> dict[str, Any]:
     return {
         "schema": "norman.tui.kpis.v1",
@@ -28180,6 +28874,15 @@ def default_kpi_snapshot() -> dict[str, Any]:
         "last_pane_hash": "",
         "state_entered_at": 0,
         "signals": [],
+        "profile": kpi_profile_name(),
+        "top_meters": [],
+        "ranking_candidates": [],
+        "processor": {
+            "mode": "local-dgx",
+            "status": "warming",
+            "model": LOCAL_PLANNER_AUTOMATIC_MODEL,
+            "cloud_fallback": False,
+        },
         "sentinel": {
             "schema": "norman.tui.sentinel.v1",
             "mode": SENTINEL_MODE,
@@ -28765,8 +29468,26 @@ def build_sentinel_state(
         or _coerce_int(snapshot.get("active_child_pid")) > 0
     )
     oldest_queue_age = _sentinel_oldest_queue_age(snapshot, observed_at)
-    human_ask_count = _coerce_int(snapshot.get("human_intervention_ask_now_count"))
-    human_count = _coerce_int(snapshot.get("human_intervention_count"))
+    human_items = snapshot.get("human_interventions")
+    if isinstance(human_items, list):
+        # Sentinel alerts report underlying problems; they must not become an
+        # input to Sentinel itself. Counting them here creates a self-sustaining
+        # waiting_operator loop after the original problem has recovered.
+        underlying_human_items = [
+            item
+            for item in human_items
+            if isinstance(item, dict)
+            and not str(item.get("kind") or "").startswith("sentinel_")
+        ]
+        human_count = len(underlying_human_items)
+        human_ask_count = sum(
+            1
+            for item in underlying_human_items
+            if str(item.get("severity") or "") == "ask_now"
+        )
+    else:
+        human_ask_count = _coerce_int(snapshot.get("human_intervention_ask_now_count"))
+        human_count = _coerce_int(snapshot.get("human_intervention_count"))
     urgent_bbs = (
         _sentinel_bbs_count(snapshot, "urgent")
         + _sentinel_bbs_count(snapshot, "high")
@@ -28999,24 +29720,44 @@ def maybe_raise_sentinel_intervention(
 ) -> dict[str, Any] | None:
     if SENTINEL_MODE == "off" or not isinstance(sentinel, dict):
         return None
-    if str(sentinel.get("severity") or "") != "ask_now":
-        return None
     reason_codes = [
         str(item)
         for item in sentinel.get("reason_codes", [])
         if str(item or "").strip()
     ]
-    if "open_intervention" in reason_codes:
-        return None
     state = str(sentinel.get("state") or "sentinel_attention").strip()
-    fingerprint = ":".join(
-        [
-            "sentinel",
-            str(AGENT_NAME or SESSION),
-            state,
-            ",".join(sorted(reason_codes)),
-        ]
+    should_raise = (
+        str(sentinel.get("severity") or "") == "ask_now"
+        and "open_intervention" not in reason_codes
     )
+    fingerprint = (
+        ":".join(
+            [
+                "sentinel",
+                str(AGENT_NAME or SESSION),
+                state,
+                ",".join(sorted(reason_codes)),
+            ]
+        )
+        if should_raise
+        else ""
+    )
+    changed: dict[str, Any] | None = None
+    for item in load_human_interventions():
+        if not str(item.get("kind") or "").startswith("sentinel_"):
+            continue
+        if fingerprint and str(item.get("fingerprint") or "") == fingerprint:
+            continue
+        try:
+            changed = update_human_intervention_status(
+                str(item.get("id") or item.get("fingerprint") or ""),
+                "not_actionable",
+                note="Sentinel condition cleared or changed.",
+            )
+        except (RuntimeError, ValueError):
+            continue
+    if not should_raise:
+        return changed
     return upsert_human_intervention(
         {
             "kind": f"sentinel_{state}",
@@ -29196,6 +29937,12 @@ def build_kpi_snapshot(
         "signals": signals,
         "metrics": metrics,
     }
+    candidates = build_local_kpi_candidates(snapshot, metrics, observed_at=now)
+    top_meters, processor = top_kpi_meters(candidates)
+    payload["profile"] = kpi_profile_name()
+    payload["top_meters"] = top_meters
+    payload["ranking_candidates"] = candidates
+    payload["processor"] = processor
     payload["sentinel"] = build_sentinel_state(snapshot, payload)
     return payload
 
@@ -31175,8 +31922,7 @@ def execute_deterministic_command(argv: list[str]) -> tuple[str, bool]:
             False,
         )
     return (
-        f"Command `{command}` completed with exit code 0.\n"
-        f"{output or '(no output)'}",
+        f"Command `{command}` completed with exit code 0.\n{output or '(no output)'}",
         True,
     )
 
@@ -40565,6 +41311,7 @@ def _prompt_worker(
                 source="prompt_worker",
                 updated_at=finished_at,
             )
+            current_continuation_step = auto_continuation_step(prompt)
             continuation_incomplete = (
                 bool(response)
                 and not cancelled
@@ -40574,6 +41321,7 @@ def _prompt_worker(
                 and not rate_limited
                 and prompt_is_auto_continuation(prompt)
                 and response_promises_unfinished_work(response)
+                and current_continuation_step >= WEB_PROMPT_AUTO_CONTINUE_MAX_STEPS
             )
             final_response_status = response_final_status(response)
             next_action_planning_needed = (
@@ -40623,7 +41371,10 @@ def _prompt_worker(
                 and not deadline_checkpoint_interrupted
                 and not timed_out
                 and not rate_limited
-                and not prompt_is_auto_continuation(prompt)
+                and (
+                    not prompt_is_auto_continuation(prompt)
+                    or current_continuation_step < WEB_PROMPT_AUTO_CONTINUE_MAX_STEPS
+                )
                 and response_promises_unfinished_work(response)
             )
             prompt_success = (
@@ -42077,8 +42828,7 @@ def cost_route_decision_for_prompt(
                 "local intent classifier promoted safe prompt to Norllama "
                 f"{local_lane} lane"
                 if classifier_promoted
-                else "safe self-contained prompt routed to Norllama "
-                f"{local_lane} lane"
+                else f"safe self-contained prompt routed to Norllama {local_lane} lane"
             ),
             "charge_basis": "local_token_estimate",
             "local_endpoint": str(health.get("endpoint") or ""),
@@ -42510,6 +43260,21 @@ def start_web_prompt(
         reauthorization_reason=normalized_reauthorization_reason,
         checkpoint_intent=checkpoint_intent,
     )
+    fresh_thread_rotation = rotate_idle_provider_thread_for_operator_prompt(
+        session_admission,
+        prompt=clean,
+        source=normalized_source,
+        actor_ip=actor_ip,
+    )
+    if fresh_thread_rotation:
+        session_admission = session_budget_admission(
+            model=normalized_model,
+            reasoning_effort=effective_reasoning_effort,
+            escalation_reason=normalized_escalation_reason,
+            reauthorization_reason=normalized_reauthorization_reason,
+            checkpoint_intent=checkpoint_intent,
+        )
+        session_admission["fresh_thread_rotation"] = fresh_thread_rotation
     append_session_admission_audit(
         session_admission,
         prompt=clean,
@@ -43982,14 +44747,29 @@ def status_snapshot() -> dict[str, Any]:
     return snapshot
 
 
+def initial_status_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Return a lean first-paint snapshot; SSE supplies the full live state."""
+    initial = dict(snapshot)
+    initial["history"] = list(snapshot.get("history") or [])[-2:]
+    usage = dict(snapshot.get("usage") or {})
+    usage.pop("recent", None)
+    initial["usage"] = usage
+    initial["pane"] = summarize_text(str(snapshot.get("pane") or ""), 1200)
+    initial["logs"] = summarize_text(str(snapshot.get("logs") or ""), 800)
+    initial["initial_snapshot_compact"] = True
+    return initial
+
+
 def status_snapshot_collector_loop() -> None:
     while True:
+        maybe_schedule_kpi_app_health()
         refreshed = refresh_status_snapshot_cache(blocking=True)
         if refreshed:
             with STATUS_SNAPSHOT_CACHE_LOCK:
                 snapshot = STATUS_SNAPSHOT_CACHE.get("data")
             if isinstance(snapshot, dict):
                 emit_kaizen_tui_snapshot(snapshot)
+                maybe_schedule_kpi_dgx_ranking(snapshot)
                 maybe_schedule_codex_account_capacity_probe(
                     pane=snapshot.get("pane"),
                     auth_mode=snapshot.get("codex_auth_mode"),
@@ -46004,8 +46784,7 @@ def _render_outcome_sigil(label: str) -> str:
 def _highlight_initial_outcome_sigils_in_text(text: str) -> str:
     return INITIAL_OUTCOME_SIGIL_RE.sub(
         lambda match: (
-            f"{match.group(1)}{match.group(2)}"
-            f"{_render_outcome_sigil(match.group(3))}"
+            f"{match.group(1)}{match.group(2)}{_render_outcome_sigil(match.group(3))}"
         ),
         str(text or ""),
     )
@@ -46566,7 +47345,7 @@ class Handler(BaseHTTPRequestHandler):
 </head>
 <body>
   <main class="{tone}">
-    <div class="badge">{'Sign-in complete' if ok else 'Sign-in blocked'}</div>
+    <div class="badge">{"Sign-in complete" if ok else "Sign-in blocked"}</div>
     <h1>{html.escape(title)}</h1>
     <p>{html.escape(detail)}</p>
     {helper_block}
@@ -48254,7 +49033,7 @@ class Handler(BaseHTTPRequestHandler):
         entry_items = "".join(
             (
                 f'<li><a href="{html.escape(build_file_href(token=local_token, path=str(entry.resolve()), profile=profile, route=route_mode, prefix=path_prefix))}">'
-                f'{html.escape(entry.name)}{"/" if entry.is_dir() else ""}</a></li>'
+                f"{html.escape(entry.name)}{'/' if entry.is_dir() else ''}</a></li>"
             )
             for entry in entries
         )
@@ -48788,12 +49567,14 @@ class Handler(BaseHTTPRequestHandler):
             client_ip=request_client_ip,
         )
         relay_targets_json = script_json(
-            build_relay_targets(
-                token=token_value_raw,
-                profile=active_profile,
-                request_host=request_host,
-                route_mode=route_preference,
-                client_ip=request_client_ip,
+            browser_relay_targets(
+                build_relay_targets(
+                    token=token_value_raw,
+                    profile=active_profile,
+                    request_host=request_host,
+                    route_mode=route_preference,
+                    client_ip=request_client_ip,
+                )
             )
         )
         theme_toggle_target = profile_for_mode(active_profile, opposite_mode)
@@ -48853,7 +49634,7 @@ class Handler(BaseHTTPRequestHandler):
                     prefix=path_prefix,
                 ),
                 active=slug == active_profile,
-                tooltip=f'Use {str(data["label"])} palette',
+                tooltip=f"Use {str(data['label'])} palette",
             )
             for slug, data in profiles_for_mode(active_mode)
         )
@@ -48916,7 +49697,7 @@ class Handler(BaseHTTPRequestHandler):
             meta = " · ".join(part for part in (provider, model) if part)
             detail = " · ".join(part for part in (role, tools, confidence) if part)
             return (
-                f'<button {" ".join(attrs)}>'
+                f"<button {' '.join(attrs)}>"
                 f'<span class="runtime-route-main">{html.escape(label)}</span>'
                 f'<span class="runtime-route-model">{html.escape(meta)}</span>'
                 f'<span class="runtime-route-detail">{html.escape(detail)}</span>'
@@ -48970,7 +49751,7 @@ class Handler(BaseHTTPRequestHandler):
             if model_count > 1 and model:
                 model = f"{model_count} models · {model}"
             return (
-                f'<button {" ".join(attrs)}>'
+                f"<button {' '.join(attrs)}>"
                 f'<span class="runtime-route-main">{html.escape(label)}</span>'
                 f'<span class="runtime-route-model">{html.escape(model)}</span>'
                 f'<span class="runtime-route-status">{html.escape(status)}</span>'
@@ -49090,7 +49871,7 @@ class Handler(BaseHTTPRequestHandler):
                 f'<div class="console-nav-panel{" active" if group["slug"] == active_console_group else ""}{" solo" if len(group["links"]) <= 1 else ""}" data-group="{html.escape(str(group["slug"]))}" role="tabpanel"{" hidden" if group["slug"] != active_console_group else ""}>'
                 + "".join(
                     f'<a class="quick-link" data-group="{html.escape(str(group["slug"]))}" data-tone="{html.escape(str(item["tone_group"]))}" data-icon="{html.escape(str(item["icon"]))}" data-label="{html.escape(str(item["label"]))}" href="{html.escape(str(item["url"]))}"{console_link_anchor_attrs(str(item["url"]))}>'
-                    f'{_render_name_cartouche(str(item["label"]), kind="bot", tone="bot", group=str(item["tone_group"]))}</a>'
+                    f"{_render_name_cartouche(str(item['label']), kind='bot', tone='bot', group=str(item['tone_group']))}</a>"
                     for item in group["links"]
                 )
                 + "</div>"
@@ -49111,7 +49892,7 @@ class Handler(BaseHTTPRequestHandler):
         )
         topbar_context_links_html = "".join(
             f'<a class="ghost utility-button button-link" data-icon="{html.escape(str(item["icon"]))}" data-label="{html.escape(str(item["label"]))}" href="{html.escape(str(item["url"]))}"{console_link_anchor_attrs(str(item["url"]))} aria-label="{html.escape(str(item.get("note") or item["label"]))}" title="{html.escape(str(item.get("note") or item["label"]))}" data-tooltip="{html.escape(str(item.get("note") or item["label"]))}">'
-            f'{_render_name_cartouche(str(item["label"]), kind="bot", tone="bot", group=str(item["tone_group"]))}</a>'
+            f"{_render_name_cartouche(str(item['label']), kind='bot', tone='bot', group=str(item['tone_group']))}</a>"
             for group in console_groups
             if str(group.get("slug") or "") in {"norman", "pipeline"}
             for item in group["links"]
@@ -49168,7 +49949,7 @@ class Handler(BaseHTTPRequestHandler):
             )
         settings_browse_links_html = "".join(
             f'<a class="quick-link" data-icon="{html.escape(str(item["icon"]))}" data-label="{html.escape(str(item["label"]))}" href="{html.escape(str(item["url"]))}"{console_link_anchor_attrs(str(item["url"]))}>'
-            f'{_render_name_cartouche(str(item["label"]), kind="name", tone=str(item["tone_group"]), group=str(item["tone_group"]))}</a>'
+            f"{_render_name_cartouche(str(item['label']), kind='name', tone=str(item['tone_group']), group=str(item['tone_group']))}</a>"
             for item in browse_targets
         )
         console_focus_sources = [
@@ -49197,8 +49978,8 @@ class Handler(BaseHTTPRequestHandler):
                 (
                     f'<section class="focus-lane surface" data-lane="{html.escape(str(lane["slug"]))}">'
                     f'<header class="focus-lane-head"><span class="focus-lane-eyebrow">{html.escape(str(lane["eyebrow"]))}</span>'
-                    f'<h2>{html.escape(str(lane["label"]))}</h2>'
-                    f'<p>{html.escape(str(lane["description"]))}</p></header>'
+                    f"<h2>{html.escape(str(lane['label']))}</h2>"
+                    f"<p>{html.escape(str(lane['description']))}</p></header>"
                     '<div class="focus-lane-grid">'
                     + "".join(
                         f'<a class="focus-card" data-group="{html.escape(str(item["group_slug"]))}" data-tone="{html.escape(str(item["tone_group"]))}" data-lane="{html.escape(str(item["lane"]))}" href="{html.escape(str(item["url"]))}"{console_link_anchor_attrs(str(item["url"]))}>'
@@ -49232,7 +50013,7 @@ class Handler(BaseHTTPRequestHandler):
             else ""
         )
         initial_snapshot_data = status_snapshot()
-        initial_snapshot = script_json(initial_snapshot_data)
+        initial_snapshot = script_json(initial_status_snapshot(initial_snapshot_data))
         initial_tone, initial_run_label = _snapshot_tone_label(initial_snapshot_data)
         initial_status_message = _initial_status_text(initial_snapshot_data)
         initial_chat_activity_text, initial_chat_activity_hidden = (
@@ -49261,7 +50042,7 @@ class Handler(BaseHTTPRequestHandler):
             route=route_preference,
             prefix=path_prefix,
         )
-        token_value = script_json(TOKEN)
+        token_value = script_json(local_token_value)
         active_profile_name_json = script_json(active_profile)
         active_profile_label_json = script_json(active_profile_label)
         default_response_speed_json = script_json(DEFAULT_RESPONSE_SPEED)
@@ -63035,21 +63816,504 @@ class Handler(BaseHTTPRequestHandler):
         padding-inline: 9px;
       }}
     }}
+    /*
+     * Responsive surface contract. This is intentionally the final visual
+     * layer so menus, sheets, forms, and dialogs share one interaction model.
+     */
+    :is(
+      .status-action-panel,
+      .topbar-menu,
+      .operator-action-palette,
+      .composer-upload-menu,
+      .composer-toolbar-panels,
+      .switcher-panel,
+      .settings-panel,
+      .notices-panel,
+      .system-panel,
+      .usage-limit-reset-dialog
+    ) {{
+      border-color: color-mix(in srgb, var(--border-strong) 54%, var(--agent-accent)) !important;
+      background:
+        linear-gradient(180deg, color-mix(in srgb, var(--surface) 98%, white 1%), color-mix(in srgb, var(--surface-2) 94%, black 2%)) !important;
+      box-shadow:
+        0 24px 64px rgba(7, 11, 18, 0.22),
+        0 4px 14px rgba(7, 11, 18, 0.10),
+        inset 0 1px 0 color-mix(in srgb, white 7%, transparent) !important;
+      backdrop-filter: blur(20px) saturate(118%);
+    }}
+    :is(
+      .status-action-panel,
+      .topbar-menu,
+      .operator-action-palette,
+      .composer-upload-menu,
+      .composer-toolbar-panels,
+      .switcher-panel,
+      .settings-panel,
+      .notices-panel,
+      .system-panel,
+      .usage-limit-reset-dialog,
+      .system-card,
+      .connector-access,
+      .bbs-summary-card
+    ) {{
+      border-radius: 14px !important;
+    }}
+    :is(.settings-head, .notices-head, .switcher-head, .system-panel-head) {{
+      align-items: center;
+      min-width: 0;
+    }}
+    :is(.settings-head, .notices-head, .switcher-head, .system-panel-head) h2 {{
+      letter-spacing: -0.018em;
+    }}
+    :is(
+      .settings-panel,
+      .notices-panel,
+      .switcher-panel,
+      .system-panel,
+      .composer-toolbar-panels,
+      .operator-action-palette
+    ) :is(input, select, textarea) {{
+      box-sizing: border-box;
+      max-width: 100%;
+      border: 1px solid color-mix(in srgb, var(--border-strong) 76%, var(--agent-accent));
+      border-radius: 8px !important;
+      background: color-mix(in srgb, var(--surface) 90%, var(--surface-2));
+      color: var(--text);
+      transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
+    }}
+    :is(
+      .settings-panel,
+      .notices-panel,
+      .switcher-panel,
+      .system-panel,
+      .composer-toolbar-panels,
+      .operator-action-palette
+    ) :is(input, select, textarea):focus-visible {{
+      border-color: color-mix(in srgb, var(--agent-accent) 82%, var(--border-strong));
+      outline: none;
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--agent-accent) 20%, transparent);
+      background: var(--surface);
+    }}
+    :is(.topbar-menu-links, .status-action-controls, .composer-upload-menu) :is(button, .button-link),
+    .operator-action-palette button {{
+      min-height: 38px;
+      border-radius: 8px !important;
+    }}
+    :is(.topbar-menu-links, .composer-upload-menu) :is(button, .button-link) {{
+      justify-content: flex-start;
+      text-align: left;
+    }}
+    .system-card {{
+      border-color: color-mix(in srgb, var(--border) 46%, transparent);
+      background:
+        linear-gradient(180deg, color-mix(in srgb, var(--surface) 48%, transparent), transparent 70%),
+        color-mix(in srgb, var(--surface-2) 54%, transparent);
+      box-shadow: inset 0 1px 0 color-mix(in srgb, white 4%, transparent);
+    }}
+    .connector-access-app {{
+      min-height: 34px;
+      border-radius: 8px !important;
+    }}
+    .usage-limit-reset-card {{
+      line-height: 1.48;
+    }}
+    .usage-limit-reset-card h2 {{
+      font-size: clamp(1.1rem, 2vw, 1.32rem);
+      letter-spacing: -0.025em;
+    }}
+    .usage-limit-reset-actions button {{
+      min-height: 40px;
+      border-radius: 8px !important;
+    }}
+    /* Second-pass hierarchy and density cleanup. */
+    .message.empty {{
+      align-self: center;
+      width: min(560px, calc(100% - 24px));
+      max-width: 560px;
+      margin-top: clamp(18px, 8vh, 72px);
+      padding: 16px 18px;
+      border-style: solid;
+      border-color: color-mix(in srgb, var(--agent-accent) 16%, var(--border));
+      border-radius: 12px;
+      background:
+        linear-gradient(180deg, color-mix(in srgb, var(--surface) 36%, transparent), transparent),
+        color-mix(in srgb, var(--surface-2) 42%, transparent);
+      color: color-mix(in srgb, var(--muted) 86%, var(--text));
+      line-height: 1.45;
+      box-shadow: inset 0 1px 0 color-mix(in srgb, white 3%, transparent);
+    }}
+    .settings-body,
+    .notifications-list,
+    .switcher-list,
+    .system-panel-body,
+    .operator-action-palette-list {{
+      scrollbar-width: thin;
+      scrollbar-color: color-mix(in srgb, var(--agent-accent) 28%, var(--border)) transparent;
+    }}
+    :is(
+      .settings-body,
+      .notifications-list,
+      .switcher-list,
+      .system-panel-body,
+      .operator-action-palette-list
+    )::-webkit-scrollbar {{
+      width: 7px;
+      height: 7px;
+    }}
+    :is(
+      .settings-body,
+      .notifications-list,
+      .switcher-list,
+      .system-panel-body,
+      .operator-action-palette-list
+    )::-webkit-scrollbar-thumb {{
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--agent-accent) 28%, var(--border));
+    }}
+    .settings-card {{
+      border-color: color-mix(in srgb, var(--border-strong) 44%, transparent);
+      background:
+        linear-gradient(180deg, color-mix(in srgb, var(--surface) 30%, transparent), transparent 72%),
+        color-mix(in srgb, var(--surface-2) 46%, transparent);
+    }}
+    .settings-label {{
+      color: color-mix(in srgb, var(--text) 76%, var(--muted));
+      font-weight: 720;
+      letter-spacing: 0.055em;
+    }}
+    .settings-note {{
+      color: color-mix(in srgb, var(--muted) 88%, var(--text));
+    }}
+    .setting-pill.active {{
+      border-color: color-mix(in srgb, var(--agent-accent) 58%, var(--border-strong));
+      background: color-mix(in srgb, var(--agent-accent) 14%, var(--surface-3));
+      box-shadow:
+        inset 0 1px 0 color-mix(in srgb, white 4%, transparent),
+        0 0 0 1px color-mix(in srgb, var(--agent-accent) 10%, transparent);
+    }}
+    .topbar-menu-shortcuts {{
+      border-top: 1px solid color-mix(in srgb, var(--border) 58%, transparent);
+      padding-top: 10px;
+    }}
+    @media (min-width: 641px) {{
+      .status-action-panel {{
+        width: min(32rem, calc(100vw - 32px));
+      }}
+      .topbar-menu {{
+        width: min(350px, calc(100vw - 24px));
+      }}
+      .switcher-panel {{
+        width: min(450px, calc(100vw - 24px));
+        max-height: calc(100dvh - 94px);
+        overflow: hidden;
+      }}
+      .settings-panel {{
+        width: min(590px, calc(100vw - 24px));
+      }}
+      .system-panel {{
+        width: min(720px, 54vw);
+      }}
+      .switcher-list {{
+        max-height: min(56dvh, 590px);
+        overflow-y: auto;
+      }}
+    }}
+    @media (max-width: 640px) {{
+      :root {{
+        --mobile-sheet-gutter: 8px;
+      }}
+      .topbar {{
+        padding-left: max(4px, env(safe-area-inset-left));
+        padding-right: max(4px, env(safe-area-inset-right));
+      }}
+      .chat-summary-bar {{
+        overflow-x: auto;
+        overscroll-behavior-inline: contain;
+        scrollbar-width: none;
+        scroll-snap-type: x proximity;
+      }}
+      .chat-summary-bar::-webkit-scrollbar {{
+        display: none;
+      }}
+      .chat-summary-bar > * {{
+        flex: 0 0 auto;
+        scroll-snap-align: start;
+      }}
+      :is(.system-panel, .settings-panel, .notices-panel, .switcher-panel) {{
+        top: auto !important;
+        right: var(--mobile-sheet-gutter) !important;
+        bottom: 0 !important;
+        left: var(--mobile-sheet-gutter) !important;
+        width: auto !important;
+        max-height: calc(100dvh - max(16px, env(safe-area-inset-top))) !important;
+        border-bottom: 0 !important;
+        border-radius: 18px 18px 0 0 !important;
+        transform: translateY(14px);
+      }}
+      body:is(.system-open, .settings-open, .notices-open, .switcher-open)
+      :is(.system-panel, .settings-panel, .notices-panel, .switcher-panel) {{
+        transform: translateY(0);
+      }}
+      :is(.system-panel-body, .settings-body, .notifications-list, .switcher-list) {{
+        padding-bottom: calc(18px + env(safe-area-inset-bottom));
+        scroll-padding-bottom: calc(18px + env(safe-area-inset-bottom));
+      }}
+      :is(.settings-head, .notices-head, .switcher-head, .system-panel-head) {{
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        padding-top: 10px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid color-mix(in srgb, var(--border) 48%, transparent);
+        background: color-mix(in srgb, var(--surface) 94%, transparent);
+        backdrop-filter: blur(14px);
+      }}
+      .settings-card {{
+        gap: 9px;
+        padding: 12px;
+      }}
+      .settings-row {{
+        grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+      }}
+      .message.empty {{
+        width: min(520px, calc(100% - 20px));
+        margin-top: clamp(14px, 6vh, 44px);
+        padding: 14px 16px;
+        font-style: normal;
+      }}
+      .topbar-menu {{
+        top: calc(48px + env(safe-area-inset-top));
+        right: max(6px, env(safe-area-inset-right));
+        bottom: auto !important;
+        left: max(6px, env(safe-area-inset-left));
+        width: auto;
+        height: auto !important;
+        max-height: calc(100dvh - 60px - env(safe-area-inset-top));
+        overflow-y: auto;
+        border-radius: 14px !important;
+      }}
+      .topbar-menu-links {{
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }}
+      .topbar-menu-meta {{
+        position: sticky;
+        top: -10px;
+        z-index: 1;
+        margin: -2px -2px 0;
+        padding: 4px 2px 8px;
+        background: color-mix(in srgb, var(--surface) 90%, transparent);
+        backdrop-filter: blur(12px);
+      }}
+      .status-action-panel {{
+        position: fixed;
+        top: calc(48px + env(safe-area-inset-top));
+        right: max(6px, env(safe-area-inset-right));
+        left: max(6px, env(safe-area-inset-left));
+        width: auto;
+        max-height: calc(100dvh - 60px - env(safe-area-inset-top));
+        overflow-y: auto;
+      }}
+      .status-action-controls {{
+        grid-template-columns: minmax(0, 1fr);
+      }}
+      .status-action-controls .utility-button {{
+        width: 100%;
+        min-height: 44px;
+      }}
+      .operator-action-palette {{
+        right: 4px;
+        left: 4px;
+        width: auto;
+        max-height: min(62dvh, 470px);
+      }}
+      .operator-action-palette button,
+      .composer-upload-item {{
+        min-height: 44px;
+      }}
+      .composer-toolbar-panels {{
+        right: 0;
+        left: 0;
+        width: auto;
+        max-height: min(70dvh, 580px);
+        padding: 10px;
+      }}
+      :is(
+        .settings-panel,
+        .notices-panel,
+        .switcher-panel,
+        .system-panel,
+        .composer-toolbar-panels,
+        .operator-action-palette
+      ) :is(input, select, textarea) {{
+        min-height: 44px;
+        font-size: 16px;
+      }}
+      .system-card {{
+        padding: 12px 10px;
+        border-radius: 12px !important;
+      }}
+      .connector-access-apps {{
+        grid-template-columns: minmax(0, 1fr);
+      }}
+      .usage-limit-reset-dialog {{
+        width: calc(100vw - 16px);
+        max-width: none;
+        margin: auto 8px 0;
+        border-bottom: 0;
+        border-radius: 18px 18px 0 0 !important;
+      }}
+      .usage-limit-reset-card {{
+        gap: 12px;
+        padding: 20px 16px calc(16px + env(safe-area-inset-bottom));
+      }}
+      .usage-limit-reset-actions {{
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+      }}
+      .usage-limit-reset-actions button {{
+        width: 100%;
+        min-height: 46px;
+      }}
+      #usage-limit-reset-approve {{ order: 1; }}
+      #usage-limit-reset-fallback {{ order: 2; }}
+      #usage-limit-reset-cancel {{ order: 3; }}
+    }}
+    @media (hover: none), (pointer: coarse) {{
+      :is(
+        .topbar-menu,
+        .status-action-panel,
+        .switcher-panel,
+        .settings-panel,
+        .notices-panel,
+        .system-panel,
+        .operator-action-palette,
+        .composer-toolbar-panels
+      ) :is(button, .button-link, [role="button"]) {{
+        min-height: 44px;
+      }}
+    }}
+    @media (prefers-reduced-motion: reduce) {{
+      :is(
+        .status-action-panel,
+        .topbar-menu,
+        .operator-action-palette,
+        .composer-upload-menu,
+        .composer-toolbar-panels,
+        .switcher-panel,
+        .settings-panel,
+        .notices-panel,
+        .system-panel,
+        .usage-limit-reset-dialog
+      ) {{
+        scroll-behavior: auto;
+        transition-duration: 0.01ms !important;
+      }}
+    }}
+    /* Keep transient controls quick to paint and quick to reach on touchscreens. */
+    :is(button, .button-link, [role="button"]) {{
+      touch-action: manipulation;
+    }}
+    :is(
+      .settings-panel, .switcher-panel, .notices-panel, .system-panel,
+      .topbar-menu, .status-action-panel, .operator-action-palette,
+      .composer-upload-menu, .composer-toolbar-panels
+    ) {{
+      transition-duration: 100ms;
+    }}
+    @media (max-width: 640px), (pointer: coarse) {{
+      :is(
+        .settings-panel, .switcher-panel, .notices-panel, .system-panel,
+        .topbar-menu, .status-action-panel, .operator-action-palette,
+        .composer-upload-menu, .composer-toolbar-panels,
+        .settings-backdrop, .switcher-backdrop, .notices-backdrop, .system-backdrop
+      ) {{
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+      }}
+    }}
+    /* Matte surface finish: static, low-contrast detail at the panel edge. */
+    :root {{
+      --finish-grain: 0.022;
+      --finish-sheen: 0.045;
+      --finish-fiber: 0.012;
+    }}
+    :is(
+      .settings-panel, .switcher-panel, .notices-panel, .system-panel,
+      .topbar-menu, .status-action-panel, .operator-action-palette,
+      .composer-upload-menu, .composer-toolbar-panels, .usage-limit-reset-dialog
+    ) {{
+      background-color: var(--surface);
+      background-image:
+        radial-gradient(ellipse at 12% 0%, color-mix(in srgb, var(--agent-accent) 5%, transparent), transparent 62%),
+        linear-gradient(165deg, rgb(255 255 255 / var(--finish-sheen)), transparent 38%),
+        repeating-linear-gradient(115deg, rgb(255 255 255 / var(--finish-fiber)) 0 1px, transparent 1px 7px),
+        radial-gradient(circle, rgb(255 255 255 / var(--finish-grain)) 0.5px, transparent 0.8px);
+      background-size: 100% 100%, 100% 100%, 100% 100%, 5px 7px;
+      background-repeat: no-repeat, no-repeat, no-repeat, repeat;
+      background-position: 0 0, 0 0, 0 0, 1px 2px;
+      background-blend-mode: normal;
+      box-shadow:
+        inset 0 1px 0 rgb(255 255 255 / 0.07),
+        inset 0 -1px 0 rgb(0 0 0 / 0.12),
+        0 12px 36px rgb(0 0 0 / 0.22);
+    }}
+    :is(.settings-card, .system-card, .local-cli-session) {{
+      background-image: linear-gradient(165deg, rgb(255 255 255 / 0.025), transparent 48%);
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.035);
+    }}
+    @media (max-width: 640px), (pointer: coarse) {{
+      :root {{
+        --finish-grain: 0.012;
+        --finish-sheen: 0.03;
+        --finish-fiber: 0;
+      }}
+      body .microtexture-thread-field {{
+        opacity: calc(var(--microtexture-thread-opacity) * 0.6);
+      }}
+    }}
+    @media (prefers-reduced-motion: reduce) {{
+      body .microtexture-thread-field {{
+        display: none;
+      }}
+    }}
+    @media (prefers-contrast: more), (forced-colors: active) {{
+      :is(
+        .settings-panel, .switcher-panel, .notices-panel, .system-panel,
+        .topbar-menu, .status-action-panel, .operator-action-palette,
+        .composer-upload-menu, .composer-toolbar-panels, .usage-limit-reset-dialog,
+        .settings-card, .system-card, .local-cli-session
+      ) {{
+        background-image: none;
+        box-shadow: none;
+      }}
+    }}
   </style>
 </head>
-<body data-agent-slug="{html.escape(AGENT_SLUG)}" data-agent-group="{html.escape(agent_brand_group)}" data-agent-variant="{html.escape(AGENT_STYLE_VARIANT)}" data-microtexture-state="idle">
+<body data-agent-slug="{html.escape(AGENT_SLUG)}" data-agent-group="{
+            html.escape(agent_brand_group)
+        }" data-agent-variant="{
+            html.escape(AGENT_STYLE_VARIANT)
+        }" data-microtexture-state="idle">
   <canvas id="microtexture-thread-field" class="microtexture-thread-field" aria-hidden="true"></canvas>
   <div class="app-shell">
     <header id="topbar" class="topbar surface">
         <div class="brand">
         <div class="brand-line">
-          <h1 id="agent-title" class="brand-title" aria-label="{html.escape(AGENT_NAME)}">{agent_brand_cartouche_html}</h1>
-          <span id="run-state" class="pill {html.escape(initial_tone)}">{html.escape(initial_run_label)}</span>
+          <h1 id="agent-title" class="brand-title" aria-label="{
+            html.escape(AGENT_NAME)
+        }">{agent_brand_cartouche_html}</h1>
+          <span id="run-state" class="pill {html.escape(initial_tone)}">{
+            html.escape(initial_run_label)
+        }</span>
           <span id="bedrock-health-badge" class="bedrock-health-badge idle" title="Bedrock health has not been checked yet." hidden>Bedrock</span>
-          <span class="topbar-version" title="Console UI version">v{html.escape(UI_VERSION)}</span>
+          <span class="topbar-version" title="Console UI version">v{
+            html.escape(UI_VERSION)
+        }</span>
           <button id="status-action-button" type="button" class="ghost status-action-button" data-icon="?" data-tone="idle" aria-expanded="false" aria-label="Status and actions" title="Status and actions" data-tooltip="Status and actions" data-tooltip-side="bottom">Status</button>
         </div>
-        <p id="status-message" class="status-copy">{html.escape(initial_status_message)}</p>
+        <p id="status-message" class="status-copy">{
+            html.escape(initial_status_message)
+        }</p>
         <div id="status-action-panel" class="status-action-panel surface" aria-hidden="true" hidden>
           <div class="status-action-head">
             <strong id="status-action-title" class="status-action-title">Status</strong>
@@ -63065,33 +64329,61 @@ class Handler(BaseHTTPRequestHandler):
         </div>
       </div>
       <div class="topbar-actions">
-        <a id="prime-home-button" class="ghost utility-button button-link prime-home-button" data-icon="{html.escape(icon_for_label('Prime', '⌂'))}" href="{html.escape(norman_prime_href)}" aria-label="Back to Norman Prime" title="Back to Norman Prime" data-tooltip="Back to Norman Prime" data-tooltip-side="left">
+        <a id="prime-home-button" class="ghost utility-button button-link prime-home-button" data-icon="{
+            html.escape(icon_for_label("Prime", "⌂"))
+        }" href="{
+            html.escape(norman_prime_href)
+        }" aria-label="Back to Norman Prime" title="Back to Norman Prime" data-tooltip="Back to Norman Prime" data-tooltip-side="left">
           <span class="prime-home-label">Prime</span>
         </a>
-        <a id="directory-home-button" class="ghost utility-button button-link directory-home-button" data-icon="{html.escape(icon_for_label('Directory', '≡'))}" href="{html.escape(norman_directory_href)}" aria-label="Open Norman Directory" title="Open Norman Directory" data-tooltip="Open Norman Directory" data-tooltip-side="left">
+        <a id="directory-home-button" class="ghost utility-button button-link directory-home-button" data-icon="{
+            html.escape(icon_for_label("Directory", "≡"))
+        }" href="{
+            html.escape(norman_directory_href)
+        }" aria-label="Open Norman Directory" title="Open Norman Directory" data-tooltip="Open Norman Directory" data-tooltip-side="left">
           <span class="directory-home-label">Dir</span>
         </a>
-        <button id="switcher-toggle-button" type="button" class="ghost utility-button switcher-toggle-button" data-icon="{html.escape(icon_for_label("Switch", "⇆"))}" aria-label="Switch agents (Ctrl/Cmd+K)" title="Switch agents (Ctrl/Cmd+K)" data-tooltip="Switch agents (Ctrl/Cmd+K)" data-tooltip-side="left">
+        <button id="switcher-toggle-button" type="button" class="ghost utility-button switcher-toggle-button" data-icon="{
+            html.escape(icon_for_label("Switch", "⇆"))
+        }" aria-label="Switch agents (Ctrl/Cmd+K)" title="Switch agents (Ctrl/Cmd+K)" data-tooltip="Switch agents (Ctrl/Cmd+K)" data-tooltip-side="left">
           <span class="switcher-toggle-label">Switch</span>
         </button>
-        <button id="topbar-menu-button" type="button" class="ghost utility-button topbar-menu-button" data-icon="{html.escape(icon_for_label("Settings", "⚙"))}" aria-expanded="false" aria-label="Console controls" title="Console controls" data-tooltip="Console controls" data-tooltip-side="left">
+        <button id="topbar-menu-button" type="button" class="ghost utility-button topbar-menu-button" data-icon="{
+            html.escape(icon_for_label("Settings", "⚙"))
+        }" aria-expanded="false" aria-label="Console controls" title="Console controls" data-tooltip="Console controls" data-tooltip-side="left">
           <span class="topbar-menu-button-label">Menu</span>
           <span id="topbar-menu-count" class="topbar-menu-count" hidden>0</span>
         </button>
       </div>
     </header>
     <nav id="low-ui-rail" class="low-ui-rail" aria-label="Low UI navigation">
-      <button id="low-ui-mode-button" type="button" class="ghost low-ui-action low-ui-mode-toggle" data-icon="{html.escape(icon_for_label("Remote", "▣"))}" data-low-ui-action="mode" data-voice-label="Remote" aria-pressed="false" title="Toggle remote-friendly controls" data-tooltip="Toggle remote-friendly controls">Remote</button>
-      <button type="button" class="ghost low-ui-action" data-icon="{html.escape(icon_for_label("Prompt", "/"))}" data-low-ui-action="prompt" data-voice-label="Prompt" title="Focus prompt">Prompt</button>
-      <button type="button" class="ghost low-ui-action" data-icon="{html.escape(icon_for_label("Send", "→"))}" data-low-ui-action="send" data-voice-label="Send" title="Queue prompt">Send</button>
-      <button type="button" class="ghost low-ui-action" data-icon="{html.escape(icon_for_label("Latest"))}" data-low-ui-action="latest" data-voice-label="Latest" title="Jump to latest">Latest</button>
-      <button type="button" class="ghost low-ui-action" data-icon="{html.escape(icon_for_label("Status", "?"))}" data-low-ui-action="status" data-voice-label="Status" title="Open status">Status</button>
-      <button type="button" class="ghost low-ui-action" data-icon="{html.escape(icon_for_label("Switch", "⇆"))}" data-low-ui-action="switch" data-voice-label="Switch" title="Switch agents">Switch</button>
-      <button type="button" class="ghost low-ui-action" data-icon="{html.escape(icon_for_label("Menu", "⚙"))}" data-low-ui-action="menu" data-voice-label="Menu" title="Open menu">Menu</button>
+      <button id="low-ui-mode-button" type="button" class="ghost low-ui-action low-ui-mode-toggle" data-icon="{
+            html.escape(icon_for_label("Remote", "▣"))
+        }" data-low-ui-action="mode" data-voice-label="Remote" aria-pressed="false" title="Toggle remote-friendly controls" data-tooltip="Toggle remote-friendly controls">Remote</button>
+      <button type="button" class="ghost low-ui-action" data-icon="{
+            html.escape(icon_for_label("Prompt", "/"))
+        }" data-low-ui-action="prompt" data-voice-label="Prompt" title="Focus prompt">Prompt</button>
+      <button type="button" class="ghost low-ui-action" data-icon="{
+            html.escape(icon_for_label("Send", "→"))
+        }" data-low-ui-action="send" data-voice-label="Send" title="Queue prompt">Send</button>
+      <button type="button" class="ghost low-ui-action" data-icon="{
+            html.escape(icon_for_label("Latest"))
+        }" data-low-ui-action="latest" data-voice-label="Latest" title="Jump to latest">Latest</button>
+      <button type="button" class="ghost low-ui-action" data-icon="{
+            html.escape(icon_for_label("Status", "?"))
+        }" data-low-ui-action="status" data-voice-label="Status" title="Open status">Status</button>
+      <button type="button" class="ghost low-ui-action" data-icon="{
+            html.escape(icon_for_label("Switch", "⇆"))
+        }" data-low-ui-action="switch" data-voice-label="Switch" title="Switch agents">Switch</button>
+      <button type="button" class="ghost low-ui-action" data-icon="{
+            html.escape(icon_for_label("Menu", "⚙"))
+        }" data-low-ui-action="menu" data-voice-label="Menu" title="Open menu">Menu</button>
     </nav>
     <section id="norman-command-rail" class="norman-command-rail" aria-label="Norman estate command status">
       <div class="norman-command-title">
-        <span class="norman-command-mark" aria-hidden="true">{html.escape(entity_mark_for_label("Norman", "N"))}</span>
+        <span class="norman-command-mark" aria-hidden="true">{
+            html.escape(entity_mark_for_label("Norman", "N"))
+        }</span>
         <span class="norman-command-kicker">Estate command</span>
         <strong class="norman-command-name">Norman</strong>
       </div>
@@ -63125,26 +64417,73 @@ class Handler(BaseHTTPRequestHandler):
     </section>
     <div id="topbar-menu" class="topbar-menu surface" aria-hidden="true">
           <div class="topbar-menu-meta">
-            <span class="version-chip" title="Console UI version">UI v{html.escape(UI_VERSION)}</span>
+            <span class="version-chip" title="Console UI version">UI v{
+            html.escape(UI_VERSION)
+        }</span>
             <span id="transport-state-menu" class="topbar-menu-status">Connecting live updates…</span>
           </div>
           <div class="topbar-menu-links">
-            <a class="ghost utility-button button-link" data-icon="{html.escape(icon_for_label('Prime', '⌂'))}" href="{html.escape(norman_prime_href)}" aria-label="Back to Norman Prime" title="Back to Norman Prime" data-tooltip="Back to Norman Prime">Prime</a>
-            <a class="ghost utility-button button-link" data-icon="{html.escape(icon_for_label('Directory', '≡'))}" href="{html.escape(norman_directory_href)}" aria-label="Open Norman Directory" title="Open Norman Directory" data-tooltip="Open Norman Directory">Directory</a>
-            <button id="context-save-menu-button" type="button" class="ghost utility-button context-save-button" data-icon="{html.escape(icon_for_label('Save', '↓'))}" aria-label="Create a concise handoff, then continue in a fresh thread" title="Create a concise handoff, then continue in a fresh thread" data-tooltip="Create a concise handoff, then continue in a fresh thread" hidden>Create handoff</button>
-            <a id="theme-toggle-button" class="ghost utility-button button-link" data-icon="{html.escape(icon_for_label(theme_toggle_label, "◐"))}" href="{html.escape(build_console_href(token=local_token_value, profile=theme_toggle_target, route=route_preference, prefix=path_prefix))}" aria-label="Switch to {html.escape(theme_toggle_label)} mode" title="Switch to {html.escape(theme_toggle_label)} mode" data-tooltip="Switch to {html.escape(theme_toggle_label)} mode">{html.escape(theme_toggle_label)}</a>
-            <button id="auth-browser-button" type="button" class="ghost utility-button" data-icon="{html.escape(icon_for_label('Sign In', '↗'))}" aria-label="Sign in through browser" title="Sign in through browser" data-tooltip="Sign in through browser" hidden>Sign in</button>
-            <button id="auth-device-button" type="button" class="ghost utility-button" data-icon="{html.escape(icon_for_label('Device Code', '#'))}" aria-label="Use device code sign-in" title="Use device code sign-in" data-tooltip="Use device code sign-in" hidden>Device code</button>
-            <a id="auth-helper-link" class="ghost utility-button button-link" data-icon="{html.escape(icon_for_label('Auth Helper', '⌁'))}" href="{html.escape(prefixed_path('/auth/browser/callback', path_prefix))}" aria-label="Open auth helper callback" title="Open auth helper callback" data-tooltip="Open auth helper callback" hidden>Auth Helper</a>
+            <a class="ghost utility-button button-link" data-icon="{
+            html.escape(icon_for_label("Prime", "⌂"))
+        }" href="{
+            html.escape(norman_prime_href)
+        }" aria-label="Back to Norman Prime" title="Back to Norman Prime" data-tooltip="Back to Norman Prime">Prime</a>
+            <a class="ghost utility-button button-link" data-icon="{
+            html.escape(icon_for_label("Directory", "≡"))
+        }" href="{
+            html.escape(norman_directory_href)
+        }" aria-label="Open Norman Directory" title="Open Norman Directory" data-tooltip="Open Norman Directory">Directory</a>
+            <button id="context-save-menu-button" type="button" class="ghost utility-button context-save-button" data-icon="{
+            html.escape(icon_for_label("Save", "↓"))
+        }" aria-label="Create a concise handoff, then continue in a fresh thread" title="Create a concise handoff, then continue in a fresh thread" data-tooltip="Create a concise handoff, then continue in a fresh thread" hidden>Create handoff</button>
+            <a id="theme-toggle-button" class="ghost utility-button button-link" data-icon="{
+            html.escape(icon_for_label(theme_toggle_label, "◐"))
+        }" href="{
+            html.escape(
+                build_console_href(
+                    token=local_token_value,
+                    profile=theme_toggle_target,
+                    route=route_preference,
+                    prefix=path_prefix,
+                )
+            )
+        }" aria-label="Switch to {
+            html.escape(theme_toggle_label)
+        } mode" title="Switch to {
+            html.escape(theme_toggle_label)
+        } mode" data-tooltip="Switch to {html.escape(theme_toggle_label)} mode">{
+            html.escape(theme_toggle_label)
+        }</a>
+            <button id="auth-browser-button" type="button" class="ghost utility-button" data-icon="{
+            html.escape(icon_for_label("Sign In", "↗"))
+        }" aria-label="Sign in through browser" title="Sign in through browser" data-tooltip="Sign in through browser" hidden>Sign in</button>
+            <button id="auth-device-button" type="button" class="ghost utility-button" data-icon="{
+            html.escape(icon_for_label("Device Code", "#"))
+        }" aria-label="Use device code sign-in" title="Use device code sign-in" data-tooltip="Use device code sign-in" hidden>Device code</button>
+            <a id="auth-helper-link" class="ghost utility-button button-link" data-icon="{
+            html.escape(icon_for_label("Auth Helper", "⌁"))
+        }" href="{
+            html.escape(prefixed_path("/auth/browser/callback", path_prefix))
+        }" aria-label="Open auth helper callback" title="Open auth helper callback" data-tooltip="Open auth helper callback" hidden>Auth Helper</a>
             <button id="notice-toggle-button" type="button" class="ghost utility-button notice-toggle" aria-label="Recent notifications" title="Recent notifications" data-tooltip="Recent notifications">
               <span class="notice-toggle-label"><span>✺</span><span>Alerts</span></span>
               <span id="notice-count" class="notice-count" hidden>0</span>
             </button>
-            <button id="refresh-button" type="button" class="ghost utility-button" data-icon="{html.escape(icon_for_label("Refresh"))}" aria-label="Refresh live status" title="Refresh live status" data-tooltip="Refresh live status">Refresh</button>
-            <button id="settings-toggle-button" type="button" class="ghost utility-button" data-icon="{html.escape(icon_for_label("View"))}" aria-label="Open view controls" title="Open view controls" data-tooltip="Open view controls">View</button>
-            <button id="system-toggle-button" type="button" class="ghost utility-button system-toggle" data-icon="{html.escape(icon_for_label("System"))}" aria-label="Open system panel" title="Open system panel" data-tooltip="Open system panel">System</button>
+            <button id="refresh-button" type="button" class="ghost utility-button" data-icon="{
+            html.escape(icon_for_label("Refresh"))
+        }" aria-label="Refresh live status" title="Refresh live status" data-tooltip="Refresh live status">Refresh</button>
+            <button id="settings-toggle-button" type="button" class="ghost utility-button" data-icon="{
+            html.escape(icon_for_label("View"))
+        }" aria-label="Open view controls" title="Open view controls" data-tooltip="Open view controls">View</button>
+            <button id="system-toggle-button" type="button" class="ghost utility-button system-toggle" data-icon="{
+            html.escape(icon_for_label("System"))
+        }" aria-label="Open system panel" title="Open system panel" data-tooltip="Open system panel">System</button>
           </div>
-          {f'<div class="topbar-menu-links topbar-menu-links--context">{topbar_context_links_html}</div>' if topbar_context_links_html else ''}
+          {
+            f'<div class="topbar-menu-links topbar-menu-links--context">{topbar_context_links_html}</div>'
+            if topbar_context_links_html
+            else ""
+        }
           <div class="topbar-menu-shortcuts" aria-label="Quick shortcuts">
             <span class="shortcut-chip"><kbd>/</kbd><span>Prompt</span></span>
             <span class="shortcut-chip"><kbd>Mod+K</kbd><span>Switch</span></span>
@@ -63157,40 +64496,78 @@ class Handler(BaseHTTPRequestHandler):
           </div>
     </div>
     <div id="topbar-menu-backdrop" class="topbar-menu-backdrop"></div>
-    <div id="console-switcher-seed" hidden aria-hidden="true" inert>{console_nav_html}</div>
+    <div id="console-switcher-seed" hidden aria-hidden="true" inert>{
+            console_nav_html
+        }</div>
 
     <div id="workspace" class="workspace">
       <main id="chat-shell" class="chat-shell surface">
         <div id="chat-main" class="chat-main" tabindex="0">
-          <div class="chat-summary-bar"{' hidden' if initial_chat_summary_hidden else ''}>
-            <span id="chat-session-chip" class="meta-chip strong" data-icon="◈">{html.escape(initial_chat_session_text)}</span>
-            <span id="chat-activity-chip" class="meta-chip" data-icon="◔"{' hidden' if initial_chat_activity_hidden else ''}>{html.escape(initial_chat_activity_text)}</span>
-            <span id="context-meter-chip" class="meta-chip subtle context-meter-chip" data-icon="◌" data-load-tone="{html.escape(str(initial_context_meter['tone']))}" style="--context-load: {int(initial_context_meter['fill_pct'])}%;" title="{html.escape(str(initial_context_meter['title']))}"{' hidden' if initial_context_meter['hidden'] else ''}>
-              <span id="context-meter-status">{html.escape(str(initial_context_meter["label"]))}</span>
-              <span id="context-meter-value">{html.escape(str(initial_context_meter["value"]))}</span>
+          <div class="chat-summary-bar"{
+            " hidden" if initial_chat_summary_hidden else ""
+        }>
+            <span id="chat-session-chip" class="meta-chip strong" data-icon="◈">{
+            html.escape(initial_chat_session_text)
+        }</span>
+            <span id="chat-activity-chip" class="meta-chip" data-icon="◔"{
+            " hidden" if initial_chat_activity_hidden else ""
+        }>{html.escape(initial_chat_activity_text)}</span>
+            <span id="context-meter-chip" class="meta-chip subtle context-meter-chip" data-icon="◌" data-load-tone="{
+            html.escape(str(initial_context_meter["tone"]))
+        }" style="--context-load: {int(initial_context_meter["fill_pct"])}%;" title="{
+            html.escape(str(initial_context_meter["title"]))
+        }"{" hidden" if initial_context_meter["hidden"] else ""}>
+              <span id="context-meter-status">{
+            html.escape(str(initial_context_meter["label"]))
+        }</span>
+              <span id="context-meter-value">{
+            html.escape(str(initial_context_meter["value"]))
+        }</span>
               <span class="context-meter-track" aria-hidden="true"><span class="context-meter-fill"></span></span>
             </span>
-            <span id="usage-meter-chip" class="meta-chip subtle usage-meter-chip" data-icon="¤" data-load-tone="{html.escape(str(initial_usage_meter['tone']))}" style="--usage-load: {int(initial_usage_meter['fill_pct'])}%;" title="{html.escape(str(initial_usage_meter['title']))}"{' hidden' if initial_usage_meter['hidden'] else ''}>
-              <span id="usage-meter-plan">{html.escape(str(initial_usage_meter["plan_label"]))}</span>
-              <span id="usage-meter-metered">{html.escape(str(initial_usage_meter["metered_label"]))}</span>
-              <span id="usage-meter-track" class="usage-meter-track" aria-hidden="true"{' hidden' if not initial_usage_meter['has_fill'] else ''}><span class="usage-meter-fill"></span></span>
+            <span id="usage-meter-chip" class="meta-chip subtle usage-meter-chip" data-icon="¤" data-load-tone="{
+            html.escape(str(initial_usage_meter["tone"]))
+        }" style="--usage-load: {int(initial_usage_meter["fill_pct"])}%;" title="{
+            html.escape(str(initial_usage_meter["title"]))
+        }"{" hidden" if initial_usage_meter["hidden"] else ""}>
+              <span id="usage-meter-plan">{
+            html.escape(str(initial_usage_meter["plan_label"]))
+        }</span>
+              <span id="usage-meter-metered">{
+            html.escape(str(initial_usage_meter["metered_label"]))
+        }</span>
+              <span id="usage-meter-track" class="usage-meter-track" aria-hidden="true"{
+            " hidden" if not initial_usage_meter["has_fill"] else ""
+        }><span class="usage-meter-fill"></span></span>
             </span>
             <button id="context-save-button" type="button" class="ghost context-save-button" title="Create a concise handoff, then continue in a fresh thread" hidden>Create handoff</button>
-            <span id="route-chip" class="meta-chip subtle" data-icon="{html.escape(icon_for_label(active_route_mode, "⇄"))}">{html.escape("LAN route" if active_route_mode == "lan" else "Host route")}</span>
-            <span id="history-summary" class="meta-chip subtle">{html.escape(initial_history_summary)}</span>
-            <span id="last-updated-head" class="meta-chip subtle">{html.escape(initial_last_updated)}</span>
+            <span id="route-chip" class="meta-chip subtle" data-icon="{
+            html.escape(icon_for_label(active_route_mode, "⇄"))
+        }">{
+            html.escape("LAN route" if active_route_mode == "lan" else "Host route")
+        }</span>
+            <span id="history-summary" class="meta-chip subtle">{
+            html.escape(initial_history_summary)
+        }</span>
+            <span id="last-updated-head" class="meta-chip subtle">{
+            html.escape(initial_last_updated)
+        }</span>
           </div>
           <div id="kpi-strip" class="kpi-strip" hidden></div>
           <div id="notice-rail" class="notice-rail" hidden></div>
           <div id="history-toolbar" class="history-toolbar">
             <span id="history-window-note" class="history-note"></span>
-            <button id="history-toggle-button" type="button" class="ghost history-toggle" data-icon="{html.escape(icon_for_label("History"))}" aria-label="Show older turns" title="Show older turns" data-tooltip="Show older turns">Timeline</button>
+            <button id="history-toggle-button" type="button" class="ghost history-toggle" data-icon="{
+            html.escape(icon_for_label("History"))
+        }" aria-label="Show older turns" title="Show older turns" data-tooltip="Show older turns">Timeline</button>
           </div>
           <div id="conversation" class="conversation">
             {initial_conversation_html}
           </div>
         </div>
-        <button id="jump-latest-button" type="button" class="ghost jump-latest" data-icon="{html.escape(icon_for_label("Latest"))}" aria-label="Jump to latest (End)" title="Jump to latest (End)" data-tooltip="Jump to latest (End)" data-tooltip-side="left">Latest</button>
+        <button id="jump-latest-button" type="button" class="ghost jump-latest" data-icon="{
+            html.escape(icon_for_label("Latest"))
+        }" aria-label="Jump to latest (End)" title="Jump to latest (End)" data-tooltip="Jump to latest (End)" data-tooltip-side="left">Latest</button>
         <div class="composer-wrap">
           <div id="activity-strip" class="activity-strip">
             <div id="activity-icon" class="activity-icon"></div>
@@ -63261,93 +64638,135 @@ class Handler(BaseHTTPRequestHandler):
               </div>
             </div>
           </div>
-          <form id="ask-form" class="composer" method="post" action="{html.escape(prefixed_path('/ask', path_prefix))}">
+          <form id="ask-form" class="composer" method="post" action="{
+            html.escape(prefixed_path("/ask", path_prefix))
+        }">
             <input type="hidden" name="token" value="{html.escape(TOKEN)}">
             <input type="hidden" name="profile" value="{html.escape(active_profile)}">
-            <input id="prompt-speed-input" type="hidden" name="speed" value="{html.escape(DEFAULT_RESPONSE_SPEED)}">
-            <input id="prompt-detail-input" type="hidden" name="detail" value="{DEFAULT_RESPONSE_DETAIL}">
-            <input id="prompt-service-tier-input" type="hidden" name="service_tier" value="{html.escape(active_service_tier)}">
-            <input id="prompt-job-budget-input" type="hidden" name="job_budget" value="{html.escape(DEFAULT_JOB_BUDGET)}">
-            <input id="prompt-optimization-mode-input" type="hidden" name="optimization_mode" value="{html.escape(DEFAULT_OPTIMIZATION_MODE)}">
-            <input id="prompt-interlace-mode-input" type="hidden" name="interlace_mode" value="{html.escape(QUEUE_INTERLACE_MODE)}">
-            <input id="prompt-runtime-input" type="hidden" name="runtime" value="{html.escape(configured_runtime())}">
-            <input id="prompt-model-input" type="hidden" name="model" value="{html.escape(configured_runtime_model())}">
+            <input id="prompt-speed-input" type="hidden" name="speed" value="{
+            html.escape(DEFAULT_RESPONSE_SPEED)
+        }">
+            <input id="prompt-detail-input" type="hidden" name="detail" value="{
+            DEFAULT_RESPONSE_DETAIL
+        }">
+            <input id="prompt-service-tier-input" type="hidden" name="service_tier" value="{
+            html.escape(active_service_tier)
+        }">
+            <input id="prompt-job-budget-input" type="hidden" name="job_budget" value="{
+            html.escape(DEFAULT_JOB_BUDGET)
+        }">
+            <input id="prompt-optimization-mode-input" type="hidden" name="optimization_mode" value="{
+            html.escape(DEFAULT_OPTIMIZATION_MODE)
+        }">
+            <input id="prompt-interlace-mode-input" type="hidden" name="interlace_mode" value="{
+            html.escape(QUEUE_INTERLACE_MODE)
+        }">
+            <input id="prompt-runtime-input" type="hidden" name="runtime" value="{
+            html.escape(configured_runtime())
+        }">
+            <input id="prompt-model-input" type="hidden" name="model" value="{
+            html.escape(configured_runtime_model())
+        }">
             <input id="prompt-file-input" class="composer-file-input" type="file" multiple>
             <div class="composer-toolbar">
               <div id="composer-toolbar-panels" class="composer-toolbar-panels" hidden>
                 <div class="response-bar" aria-label="Response tuning">
                   <div class="response-bar-head">
-                    <span class="response-bar-title" data-icon="{html.escape(icon_for_label("Window"))}">Target the run</span>
+                    <span class="response-bar-title" data-icon="{
+            html.escape(icon_for_label("Window"))
+        }">Target the run</span>
                     <span class="response-bar-copy">Set time, effort, detail, and spend guardrails</span>
                   </div>
                   <div class="response-grid">
                     <label class="response-rail response-rail-primary response-rail-time" for="job-budget-range">
                       <span class="response-rail-meta">
                         <span>
-                          <span class="response-rail-name" data-icon="{html.escape(icon_for_label("Window"))}">Work window</span>
+                          <span class="response-rail-name" data-icon="{
+            html.escape(icon_for_label("Window"))
+        }">Work window</span>
                           <span class="response-helper">Target runtime</span>
                         </span>
                         <strong id="job-budget-label" class="response-rail-value">Normal</strong>
                       </span>
                       <span class="response-track">
                         <span class="response-edge">1m</span>
-                        <input id="job-budget-range" class="response-range" type="range" min="1" max="{len(JOB_BUDGET_PRESETS)}" step="1" value="{list(JOB_BUDGET_PRESETS).index(DEFAULT_JOB_BUDGET) + 1}">
+                        <input id="job-budget-range" class="response-range" type="range" min="1" max="{
+            len(JOB_BUDGET_PRESETS)
+        }" step="1" value="{list(JOB_BUDGET_PRESETS).index(DEFAULT_JOB_BUDGET) + 1}">
                         <span class="response-edge">8h</span>
                       </span>
                     </label>
                     <label class="response-rail" for="response-speed-range">
                       <span class="response-rail-meta">
                         <span>
-                          <span class="response-rail-name" data-icon="{html.escape(icon_for_label("Reasoning"))}">Reasoning</span>
+                          <span class="response-rail-name" data-icon="{
+            html.escape(icon_for_label("Reasoning"))
+        }">Reasoning</span>
                           <span class="response-helper">Model effort</span>
                         </span>
                         <strong id="response-speed-label" class="response-rail-value">Std</strong>
                       </span>
                       <span class="response-track">
                         <span class="response-edge">Std</span>
-                        <input id="response-speed-range" class="response-range" type="range" min="2" max="3" step="1" value="{2 if DEFAULT_RESPONSE_SPEED in {'fast', 'balanced'} else 3}">
+                        <input id="response-speed-range" class="response-range" type="range" min="2" max="3" step="1" value="{
+            2 if DEFAULT_RESPONSE_SPEED in {"fast", "balanced"} else 3
+        }">
                         <span class="response-edge">Deep</span>
                       </span>
                     </label>
                     <label class="response-rail" for="response-detail-range">
                       <span class="response-rail-meta">
                         <span>
-                          <span class="response-rail-name" data-icon="{html.escape(icon_for_label("Reply"))}">Reply</span>
+                          <span class="response-rail-name" data-icon="{
+            html.escape(icon_for_label("Reply"))
+        }">Reply</span>
                           <span class="response-helper">Answer shape</span>
                         </span>
                         <strong id="response-detail-label" class="response-rail-value">Balanced</strong>
                       </span>
                       <span class="response-track">
                         <span class="response-edge">Brief</span>
-                        <input id="response-detail-range" class="response-range" type="range" min="1" max="5" step="1" value="{DEFAULT_RESPONSE_DETAIL}">
+                        <input id="response-detail-range" class="response-range" type="range" min="1" max="5" step="1" value="{
+            DEFAULT_RESPONSE_DETAIL
+        }">
                         <span class="response-edge">Full</span>
                       </span>
                     </label>
                     <label class="response-rail" for="optimization-mode-range">
                       <span class="response-rail-meta">
                         <span>
-                          <span class="response-rail-name" data-icon="{html.escape(icon_for_label("Optimize", "◌"))}">Optimize</span>
+                          <span class="response-rail-name" data-icon="{
+            html.escape(icon_for_label("Optimize", "◌"))
+        }">Optimize</span>
                           <span class="response-helper">Cost guard</span>
                         </span>
                         <strong id="optimization-mode-label" class="response-rail-value">Auto</strong>
                       </span>
                       <span class="response-track">
                         <span class="response-edge">Auto</span>
-                        <input id="optimization-mode-range" class="response-range" type="range" min="1" max="{len(OPTIMIZATION_MODE_OPTIONS)}" step="1" value="{list(OPTIMIZATION_MODE_OPTIONS).index(DEFAULT_OPTIMIZATION_MODE) + 1}">
+                        <input id="optimization-mode-range" class="response-range" type="range" min="1" max="{
+            len(OPTIMIZATION_MODE_OPTIONS)
+        }" step="1" value="{
+            list(OPTIMIZATION_MODE_OPTIONS).index(DEFAULT_OPTIMIZATION_MODE) + 1
+        }">
                         <span class="response-edge">Raw</span>
                       </span>
                     </label>
                     <label class="response-rail response-rail-emergency response-rail-spend" for="service-tier-range">
                       <span class="response-rail-meta">
                         <span>
-                          <span class="response-rail-name" data-icon="{html.escape(icon_for_label("Spend", "$"))}">Spend path</span>
+                          <span class="response-rail-name" data-icon="{
+            html.escape(icon_for_label("Spend", "$"))
+        }">Spend path</span>
                           <span class="response-helper">Emergency lane</span>
                         </span>
                         <strong id="service-tier-label" class="response-rail-value">Profile</strong>
                       </span>
                       <span class="response-track">
                         <span class="response-edge">Profile</span>
-                        <input id="service-tier-range" class="response-range" type="range" min="1" max="{len(SERVICE_TIER_OPTIONS)}" step="1" value="{list(SERVICE_TIER_OPTIONS).index(active_service_tier) + 1}">
+                        <input id="service-tier-range" class="response-range" type="range" min="1" max="{
+            len(SERVICE_TIER_OPTIONS)
+        }" step="1" value="{list(SERVICE_TIER_OPTIONS).index(active_service_tier) + 1}">
                         <span class="response-edge">Prio</span>
                       </span>
                       <span class="response-rail-warning">Only change when blocked</span>
@@ -63398,7 +64817,9 @@ class Handler(BaseHTTPRequestHandler):
                   <span class="visually-hidden">Tune prompt</span>
                 </button>
               </div>
-              <textarea id="prompt-input" name="message" rows="1" autocomplete="off" autocapitalize="sentences" spellcheck="true" enterkeyhint="send" aria-label="Prompt" placeholder="{html.escape(PROMPT_PLACEHOLDER)}"></textarea>
+              <textarea id="prompt-input" name="message" rows="1" autocomplete="off" autocapitalize="sentences" spellcheck="true" enterkeyhint="send" aria-label="Prompt" placeholder="{
+            html.escape(PROMPT_PLACEHOLDER)
+        }"></textarea>
               <span id="response-summary" class="response-summary visually-hidden">Think Std · Reply Balanced</span>
               <div class="composer-send-cluster" aria-label="Prompt submit controls">
                 <button id="ask-button" type="submit" class="primary composer-send composer-send-queue" data-icon="→" title="Queue prompt. Press Enter to queue and Shift+Enter for a new line." data-tooltip="Queue prompt. Enter queues; Shift+Enter inserts a new line." aria-label="Queue prompt"><span id="ask-button-label" class="composer-send-label">Queue</span></button>
@@ -63420,7 +64841,11 @@ class Handler(BaseHTTPRequestHandler):
             <p class="hint">Jump between Norman sessions, pinned bots, and recent stops.</p>
           </div>
           <div class="switcher-head-actions">
-            <a class="ghost utility-button button-link prime-home-button" data-icon="{html.escape(icon_for_label('Prime', '⌂'))}" href="{html.escape(norman_prime_href)}" title="Back to Norman Prime">Prime</a>
+            <a class="ghost utility-button button-link prime-home-button" data-icon="{
+            html.escape(icon_for_label("Prime", "⌂"))
+        }" href="{
+            html.escape(norman_prime_href)
+        }" title="Back to Norman Prime">Prime</a>
             <button id="switcher-close-button" type="button" class="ghost utility-button">Close</button>
           </div>
         </div>
@@ -63443,29 +64868,51 @@ class Handler(BaseHTTPRequestHandler):
           <button id="settings-close-button" type="button" class="ghost utility-button">Close</button>
         </div>
         <div id="settings-body" class="settings-body">
-        <section class="settings-card model-route-card" data-chat-runtime="{html.escape(active_runtime)}" data-chat-model="{html.escape(active_model)}" data-runtime-registry="registered">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Model"))}">Model Route</span>
+        <section class="settings-card model-route-card" data-chat-runtime="{
+            html.escape(active_runtime)
+        }" data-chat-model="{
+            html.escape(active_model)
+        }" data-runtime-registry="registered">
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Model"))
+        }">Model Route</span>
           {settings_model_route_matrix_header_html}
-          <div class="settings-row model-route-preset-row">{settings_model_route_presets_html}</div>
-          <div class="settings-row runtime-route-row">{settings_runtime_routes_html}</div>
+          <div class="settings-row model-route-preset-row">{
+            settings_model_route_presets_html
+        }</div>
+          <div class="settings-row runtime-route-row">{
+            settings_runtime_routes_html
+        }</div>
           <div class="settings-row model-floor-row">{settings_model_buttons_html}</div>
-          <div class="settings-note">Presets pick runtime, model, and provider lane together. GPT-5.5 is the Codex floor for normal routes; older compatibility lanes require an explicit emergency override. Claude is executable only where Bedrock Converse is enabled and currently uses brokered tools. Kimi, Qwen, and DeepSeek are benchmark routes until a live adapter/tool policy is wired. {"Model update available" if chat_model_update_available() else "Model current"}</div>
+          <div class="settings-note">Presets pick runtime, model, and provider lane together. GPT-5.5 is the Codex floor for normal routes; older compatibility lanes require an explicit emergency override. Claude is executable only where Bedrock Converse is enabled and currently uses brokered tools. Kimi, Qwen, and DeepSeek are benchmark routes until a live adapter/tool policy is wired. {
+            "Model update available"
+            if chat_model_update_available()
+            else "Model current"
+        }</div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Mode"))}">Mode</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Mode"))
+        }">Mode</span>
           <div class="settings-row">{settings_mode_links_html}</div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Palette"))}">Palette</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Palette"))
+        }">Palette</span>
           <div class="settings-row">{settings_profile_links_html}</div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Route"))}">Route</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Route"))
+        }">Route</span>
           <div class="settings-row">{settings_route_links_html}</div>
           <div class="settings-note">Auto follows how you opened the console. Use LAN or Host to force one path across the fleet.</div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Material"))}">Material</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Material"))
+        }">Material</span>
           <div id="style-variant-row" class="settings-row">
             <button type="button" class="ghost setting-pill" data-setting="styleVariant" data-value="auto">Auto</button>
             <button type="button" class="ghost setting-pill" data-setting="styleVariant" data-value="anchor">Anchor</button>
@@ -63478,7 +64925,9 @@ class Handler(BaseHTTPRequestHandler):
           <div class="settings-note">Auto follows the bot default. Override it if you want a different material treatment without changing the bot itself.</div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Finish"))}">Finish</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Finish"))
+        }">Finish</span>
           <div id="finish-row" class="settings-row">
             <button type="button" class="ghost setting-pill" data-setting="finish" data-value="flat">Flat</button>
             <button type="button" class="ghost setting-pill" data-setting="finish" data-value="engraved">Engraved</button>
@@ -63487,7 +64936,9 @@ class Handler(BaseHTTPRequestHandler):
           </div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Bell"))}">Bell</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Bell"))
+        }">Bell</span>
           <div id="completion-bell-row" class="settings-row">
             <button type="button" class="ghost setting-pill" data-setting="completionBell" data-value="auto">Auto</button>
             <button type="button" class="ghost setting-pill" data-setting="completionBell" data-value="work">Work</button>
@@ -63503,7 +64954,9 @@ class Handler(BaseHTTPRequestHandler):
           <div class="settings-note">Auto follows this console’s lane. Bells are deep gong tones with per-agent variation. Silent mutes all console audio; hidden or unfocused pages stay silent.</div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Feedback"))}">Feedback</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Feedback"))
+        }">Feedback</span>
           <div id="feedback-sound-row" class="settings-row">
             <button type="button" class="ghost setting-pill" data-setting="feedbackSounds" data-value="signals">Signals</button>
             <button type="button" class="ghost setting-pill" data-setting="feedbackSounds" data-value="full">Full</button>
@@ -63515,7 +64968,9 @@ class Handler(BaseHTTPRequestHandler):
           <div class="settings-note">Signals keeps prompt, queue, confirmation, blocked, and error cues. Full also adds light tactile control sounds. Off keeps visual feedback and completion bells only.</div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Phone History"))}">Phone History</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Phone History"))
+        }">Phone History</span>
           <div id="mobile-turns-row" class="settings-row">
             <button type="button" class="ghost setting-pill" data-setting="mobileTurns" data-value="1">1 turn</button>
             <button type="button" class="ghost setting-pill" data-setting="mobileTurns" data-value="2">2 turns</button>
@@ -63523,7 +64978,9 @@ class Handler(BaseHTTPRequestHandler):
           </div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Desktop History"))}">Desktop History</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Desktop History"))
+        }">Desktop History</span>
           <div id="desktop-turns-row" class="settings-row">
             <button type="button" class="ghost setting-pill" data-setting="desktopTurns" data-value="1">1 turn</button>
             <button type="button" class="ghost setting-pill" data-setting="desktopTurns" data-value="2">2 turns</button>
@@ -63532,21 +64989,27 @@ class Handler(BaseHTTPRequestHandler):
           </div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Screen"))}">Screen</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Screen"))
+        }">Screen</span>
           <div id="view-mode-row" class="settings-row">
             <button type="button" class="ghost setting-pill" data-setting="viewMode" data-value="console">Console</button>
             <button type="button" class="ghost setting-pill" data-setting="viewMode" data-value="stage">Presenter</button>
           </div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("Density"))}">Density</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("Density"))
+        }">Density</span>
           <div id="density-row" class="settings-row">
             <button type="button" class="ghost setting-pill" data-setting="density" data-value="compact">Compact</button>
             <button type="button" class="ghost setting-pill" data-setting="density" data-value="comfortable">Comfortable</button>
           </div>
         </section>
         <section class="settings-card">
-          <span class="settings-label" data-icon="{html.escape(icon_for_label("View"))}">Text Size</span>
+          <span class="settings-label" data-icon="{
+            html.escape(icon_for_label("View"))
+        }">Text Size</span>
           <div id="text-zoom-row" class="settings-row">
             <button type="button" class="ghost setting-pill" data-setting="textZoom" data-value="auto">Auto fit</button>
             <button type="button" class="ghost setting-pill" data-setting="textZoom" data-value="normal">Normal</button>
@@ -63556,11 +65019,15 @@ class Handler(BaseHTTPRequestHandler):
           </div>
           <div class="settings-note">Auto fit grows reading and composer text only when the screen has enough room.</div>
         </section>
-        {f'''<section class="settings-card">
+        {
+            f'''<section class="settings-card">
           <span class="settings-label" data-icon="{html.escape(icon_for_label("Browse"))}">Browse</span>
           <div class="settings-row">{settings_browse_links_html}</div>
           <div class="settings-note">Open the agent workspace and bridge state in a separate viewer tab.</div>
-        </section>''' if settings_browse_links_html else ''}
+        </section>'''
+            if settings_browse_links_html
+            else ""
+        }
         </div>
       </aside>
       <aside id="notices-panel" class="notices-panel surface" aria-hidden="true">
@@ -63593,7 +65060,9 @@ class Handler(BaseHTTPRequestHandler):
               <span id="thread-id-head" class="mono subtle">loading</span>
             </div>
             <div id="services" class="services"></div>
-            <div id="system-summary" class="system-note">{html.escape(summarize_services(initial_snapshot_data.get("services") or []))}</div>
+            <div id="system-summary" class="system-note">{
+            html.escape(summarize_services(initial_snapshot_data.get("services") or []))
+        }</div>
             <div id="system-runtime-metrics" class="system-runtime-metrics"></div>
             <section id="connector-access" class="connector-access" aria-label="Connector access">
               <div class="connector-access-head">
@@ -63620,7 +65089,13 @@ class Handler(BaseHTTPRequestHandler):
               <div id="bbs-summary-activity" class="bbs-summary-activity">Waiting for BBS activity</div>
               <div id="bbs-thread-list" class="bbs-thread-list"></div>
             </div>
-            <div class="system-note">ui <strong>v{html.escape(UI_VERSION)}</strong> · tmux <strong>{html.escape(SESSION)}</strong> · web chat <strong>{html.escape(MODEL)}</strong> · tuning <strong>Think Std/medium ↔ Deep/xhigh</strong> · full access · <a href="{html.escape(prefixed_path('/healthz', path_prefix))}{token_suffix}">healthz</a></div>
+            <div class="system-note">ui <strong>v{
+            html.escape(UI_VERSION)
+        }</strong> · tmux <strong>{html.escape(SESSION)}</strong> · web chat <strong>{
+            html.escape(MODEL)
+        }</strong> · tuning <strong>Think Std/medium ↔ Deep/xhigh</strong> · full access · <a href="{
+            html.escape(prefixed_path("/healthz", path_prefix))
+        }{token_suffix}">healthz</a></div>
           </section>
 
           <section class="system-card child-agents-card" aria-label="Child agents">
@@ -63720,7 +65195,11 @@ class Handler(BaseHTTPRequestHandler):
                     <h3>Last Prompt</h3>
                     <button id="copy-prompt-button" type="button" class="ghost copy-button" data-icon="⎘">Copy</button>
                   </div>
-                  <div id="last-prompt" class="raw-view mono">{_mask_sensitive_multiline_html(initial_snapshot_data.get("last_prompt") or "[no prompt yet]")}</div>
+                  <div id="last-prompt" class="raw-view mono">{
+            _mask_sensitive_multiline_html(
+                initial_snapshot_data.get("last_prompt") or "[no prompt yet]"
+            )
+        }</div>
                   <div id="last-prompt-links" class="message-links raw-links" hidden></div>
                 </div>
                 <div>
@@ -63740,23 +65219,35 @@ class Handler(BaseHTTPRequestHandler):
                     <div id="response-live-steps" class="response-live-steps" aria-label="Live response progress"></div>
                     <div id="response-live-meta" class="response-live-meta"></div>
                   </div>
-                  <div id="last-response" class="raw-view">{_mask_sensitive_multiline_html(initial_snapshot_data.get("last_response") or "[no response yet]")}</div>
+                  <div id="last-response" class="raw-view">{
+            _mask_sensitive_multiline_html(
+                initial_snapshot_data.get("last_response") or "[no response yet]"
+            )
+        }</div>
                   <div id="last-response-links" class="message-links raw-links" hidden></div>
                 </div>
               </div>
             </details>
             <details id="error-details">
               <summary>Error / Warning</summary>
-              <pre id="last-error">{_mask_sensitive_pre_html(initial_snapshot_data.get("last_error") or "[none]")}</pre>
+              <pre id="last-error">{
+            _mask_sensitive_pre_html(
+                initial_snapshot_data.get("last_error") or "[none]"
+            )
+        }</pre>
             </details>
           </section>
 
           <section class="system-card">
             <details>
               <summary>Operator tools</summary>
-              <form id="tmux-form" method="post" action="{html.escape(prefixed_path('/send', path_prefix))}">
+              <form id="tmux-form" method="post" action="{
+            html.escape(prefixed_path("/send", path_prefix))
+        }">
                 <input type="hidden" name="token" value="{html.escape(TOKEN)}">
-                <input type="hidden" name="profile" value="{html.escape(active_profile)}">
+                <input type="hidden" name="profile" value="{
+            html.escape(active_profile)
+        }">
                 <textarea id="tmux-input" name="message" placeholder="Paste raw text directly into the live interactive tmux session."></textarea>
                 <div class="composer-actions">
                   <span class="hint">Use this only for direct tmux control.</span>
@@ -63774,11 +65265,19 @@ class Handler(BaseHTTPRequestHandler):
               </div>
               <details>
                 <summary>Live tmux pane</summary>
-                <pre id="pane-output">{_mask_sensitive_pre_html(initial_snapshot_data.get("pane") or "[pane unavailable]")}</pre>
+                <pre id="pane-output">{
+            _mask_sensitive_pre_html(
+                initial_snapshot_data.get("pane") or "[pane unavailable]"
+            )
+        }</pre>
               </details>
               <details>
                 <summary>{html.escape(AGENT_NAME)} journal</summary>
-                <pre id="journal-output">{_mask_sensitive_pre_html(initial_snapshot_data.get("logs") or "[no journal output]")}</pre>
+                <pre id="journal-output">{
+            _mask_sensitive_pre_html(
+                initial_snapshot_data.get("logs") or "[no journal output]"
+            )
+        }</pre>
               </details>
             </details>
           </section>
@@ -63798,7 +65297,9 @@ class Handler(BaseHTTPRequestHandler):
     const AGENT_SLUG = {json.dumps(AGENT_SLUG)};
     const AGENT_MARK = {json.dumps(entity_mark_for_label(AGENT_NAME, "•"))};
     const AGENT_STYLE_VARIANT = {json.dumps(AGENT_STYLE_VARIANT)};
-    const AGENT_GROUP = {json.dumps(semantic_agent_group(AGENT_SLUG, AGENT_GROUP) or "agents")};
+    const AGENT_GROUP = {
+            json.dumps(semantic_agent_group(AGENT_SLUG, AGENT_GROUP) or "agents")
+        };
     const AGENT_BRAND_CARTOUCHE_HTML = {script_json(agent_brand_cartouche_html)};
     const INLINE_ENTITY_DEFS = {script_json(build_inline_entity_defs())};
     const WORKDIR = {json.dumps(WORKDIR)};
@@ -63811,21 +65312,53 @@ class Handler(BaseHTTPRequestHandler):
     const REQUEST_BASE_PATH = {json.dumps(path_prefix)};
     const NORMAN_PRIME_HREF = {json.dumps(norman_prime_href)};
     const NORMAN_DIRECTORY_HREF = {json.dumps(norman_directory_href)};
-    const NORMAN_PRIME_HEARTBEAT_URL = {json.dumps(f"{norman_prime_href}api/console-ui/ping")};
+    const NORMAN_PRIME_HEARTBEAT_URL = {
+            json.dumps(f"{norman_prime_href}api/console-ui/ping")
+        };
     const TAB_TITLE_LABEL = {json.dumps(CONSOLE_TAB_TITLE)};
-    const FAVICON_AGENT_PALETTE = {script_json({
-        "bg": rgb_css(favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get("bg", (48, 56, 70))),
-        "surface": rgb_css(favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get("surface", (63, 71, 85))),
-        "border": rgb_css(favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get("border", (85, 97, 116))),
-        "accent": rgb_css(favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get("accent", (156, 182, 239))),
-        "accent2": rgb_css(favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get("accent_2", (136, 208, 222))),
-        "text": rgb_css(favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get("text", (248, 250, 252))),
-    })};
+    const FAVICON_AGENT_PALETTE = {
+            script_json(
+                {
+                    "bg": rgb_css(
+                        favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get(
+                            "bg", (48, 56, 70)
+                        )
+                    ),
+                    "surface": rgb_css(
+                        favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get(
+                            "surface", (63, 71, 85)
+                        )
+                    ),
+                    "border": rgb_css(
+                        favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get(
+                            "border", (85, 97, 116)
+                        )
+                    ),
+                    "accent": rgb_css(
+                        favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get(
+                            "accent", (156, 182, 239)
+                        )
+                    ),
+                    "accent2": rgb_css(
+                        favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get(
+                            "accent_2", (136, 208, 222)
+                        )
+                    ),
+                    "text": rgb_css(
+                        favicon_palette(AGENT_SLUG or AGENT_NAME.lower()).get(
+                            "text", (248, 250, 252)
+                        )
+                    ),
+                }
+            )
+        };
     const RELAY_TARGETS = {relay_targets_json};
     const CHAT_MODEL = {json.dumps(MODEL)};
     const CODEX_MODEL_FLOOR = {json.dumps(CODEX_MODEL_FLOOR)};
     const MODEL_ENDPOINT = "/api/model";
-    const CHAT_REASONING = {json.dumps(response_reasoning_effort(DEFAULT_RESPONSE_SPEED))};
+    const CHAT_REASONING = {
+            json.dumps(response_reasoning_effort(DEFAULT_RESPONSE_SPEED))
+        };
     const EMERGENCY_XFAST_ENABLED = {emergency_xfast_enabled_json};
     const DEFAULT_RUNTIME = {default_runtime_json};
     const DEFAULT_MODEL = {default_model_json};
@@ -63881,6 +65414,7 @@ class Handler(BaseHTTPRequestHandler):
     const PROMPT_DRAFT_MAX_AGE_MS = 1000 * 60 * 60 * 24 * 7;
     const PROMPT_SUBMISSION_STORAGE_KEY = `${{AGENT_LABEL.toLowerCase().replace(/[^a-z0-9]+/g, "-")}}-console-submission-v1:${{window.location.hostname}}${{window.location.pathname}}`;
     const PROMPT_SUBMISSION_MAX_AGE_MS = 1000 * 60 * 60 * 12;
+    const PROMPT_SUBMISSION_RECONCILE_GRACE_MS = 1000 * 30;
     const SWITCHER_STORAGE_KEY = "agent-console-switcher-v1";
     const SWITCHER_STATE_PARAM = "fleet";
     const SWITCHER_RECENTS_LIMIT = 8;
@@ -64117,7 +65651,11 @@ class Handler(BaseHTTPRequestHandler):
       viewMode: "console",
       textZoom: "auto",
       styleVariant: "auto",
-      finish: {json.dumps(DEFAULT_UI_FINISH if DEFAULT_UI_FINISH in FINISH_OPTIONS else "flat")},
+      finish: {
+            json.dumps(
+                DEFAULT_UI_FINISH if DEFAULT_UI_FINISH in FINISH_OPTIONS else "flat"
+            )
+        },
       completionBell: "auto",
       feedbackSounds: "signals",
       responseSpeed: DEFAULT_RESPONSE_SPEED,
@@ -66003,14 +67541,24 @@ class Handler(BaseHTTPRequestHandler):
 
     let controlTooltipHydrationFrame = 0;
     let controlTooltipObserver = null;
+    const controlTooltipHydrationRoots = new Set();
 
-    function scheduleControlTooltipHydration() {{
+    function scheduleControlTooltipHydration(root = document.body) {{
+      if (root instanceof Element) {{
+        controlTooltipHydrationRoots.add(root);
+      }}
       if (controlTooltipHydrationFrame) {{
         return;
       }}
       controlTooltipHydrationFrame = window.requestAnimationFrame(() => {{
         controlTooltipHydrationFrame = 0;
-        hydrateControlTooltips(document.body);
+        const roots = Array.from(controlTooltipHydrationRoots).filter((node) => node.isConnected);
+        controlTooltipHydrationRoots.clear();
+        for (const node of roots) {{
+          if (!roots.some((other) => other !== node && other.contains(node))) {{
+            hydrateControlTooltips(node);
+          }}
+        }}
       }});
     }}
 
@@ -66023,22 +67571,21 @@ class Handler(BaseHTTPRequestHandler):
         return;
       }}
       controlTooltipObserver = new MutationObserver((mutations) => {{
-        if (
-          mutations.some((mutation) =>
-            Array.from(mutation.addedNodes).some(
-              (node) =>
-                node instanceof Element
-                && (
-                  node.matches(CONTROL_TOOLTIP_SELECTOR)
-                  || node.querySelector?.(CONTROL_TOOLTIP_SELECTOR)
-                )
-            )
-          )
-        ) {{
-          scheduleControlTooltipHydration();
+        for (const mutation of mutations) {{
+          for (const node of mutation.addedNodes) {{
+            if (node instanceof Element) {{
+              scheduleControlTooltipHydration(node);
+            }} else if (node.nodeType === Node.TEXT_NODE) {{
+              const control = node.parentElement?.closest(CONTROL_TOOLTIP_SELECTOR);
+              if (control) {{
+                scheduleControlTooltipHydration(control);
+              }}
+            }}
+          }}
         }}
       }});
       controlTooltipObserver.observe(document.body, {{ childList: true, subtree: true }});
+      scheduleControlTooltipHydration();
     }}
 
     function defaultCompletionBell() {{
@@ -67731,6 +69278,22 @@ class Handler(BaseHTTPRequestHandler):
         }}
         return true;
       }}
+      const receiptState = String(receipt.state || "").trim().toLowerCase();
+      const reconcileAgeMs = Math.max(0, Date.now() - Number(receipt.submittedAt || 0));
+      if (
+        receiptState === "reconciling"
+        && receipt.submittedAt > 0
+        && reconcileAgeMs >= PROMPT_SUBMISSION_RECONCILE_GRACE_MS
+        && !snapshot.pending
+      ) {{
+        clearPromptSubmission();
+        restoreRejectedPrompt(value);
+        setOperatorReceipt(
+          "The server did not record that prompt. It has been restored for review and resend.",
+          "warning"
+        );
+        return false;
+      }}
       return true;
     }}
 
@@ -68190,7 +69753,11 @@ class Handler(BaseHTTPRequestHandler):
         viewMode: "console",
         textZoom: "auto",
         styleVariant: "auto",
-        finish: {json.dumps(DEFAULT_UI_FINISH if DEFAULT_UI_FINISH in FINISH_OPTIONS else "flat")},
+        finish: {
+            json.dumps(
+                DEFAULT_UI_FINISH if DEFAULT_UI_FINISH in FINISH_OPTIONS else "flat"
+            )
+        },
         completionBell: "auto",
         feedbackSounds: "signals",
         responseSpeed: DEFAULT_RESPONSE_SPEED,
@@ -68210,7 +69777,9 @@ class Handler(BaseHTTPRequestHandler):
       const viewMode = payload.viewMode === "stage" ? "stage" : "console";
       const textZoom = normalizeTextZoom(payload.textZoom || base.textZoom);
       const styleVariant = normalizeStyleVariant(payload.styleVariant);
-      const finish = {json.dumps(list(FINISH_OPTIONS))}.includes(String(payload.finish || "").toLowerCase())
+      const finish = {
+            json.dumps(list(FINISH_OPTIONS))
+        }.includes(String(payload.finish || "").toLowerCase())
         ? String(payload.finish).toLowerCase()
         : base.finish;
       const feedbackSounds = normalizeFeedbackSounds(payload.feedbackSounds);
@@ -73679,7 +75248,9 @@ class Handler(BaseHTTPRequestHandler):
         : plannedLocalRoute
         ? "Planned local · no cloud bill"
         : plannedSubscriptionRoute
-          ? `Planned ${PLAN_CREDIT_LABEL} · ~${{formatCompactMetric(creditEstimate.credits)}} cr`
+          ? `Planned ${
+            PLAN_CREDIT_LABEL
+        } · ~${{formatCompactMetric(creditEstimate.credits)}} cr`
           : hasUsd
             ? `Planned cloud · ~${{nextCostLabel}}`
             : "Planned token target";
@@ -73718,7 +75289,9 @@ class Handler(BaseHTTPRequestHandler):
         plannedLocalRoute
           ? "Planned local/Norllama route has no metered cloud-provider charge. Local hardware and electricity are not included."
           : plannedSubscriptionRoute
-            ? `Planned personal ${PLAN_CREDIT_LABEL} estimate. It is not a credit-card charge or a known balance deduction.`
+            ? `Planned personal ${
+            PLAN_CREDIT_LABEL
+        } estimate. It is not a credit-card charge or a known balance deduction.`
             : hasUsd
               ? `Planned cloud rate-card estimate ~${{nextCostLabel}}.`
               : "No provider price card is available for this planned route.",
@@ -75357,7 +76930,7 @@ class Handler(BaseHTTPRequestHandler):
       if (!canvas) {{
         return false;
       }}
-      const dpr = Math.max(1, Math.min(2, Number(window.devicePixelRatio || 1)));
+      const dpr = Math.max(1, Math.min(window.innerWidth <= 640 ? 1 : 1.5, Number(window.devicePixelRatio || 1)));
       const width = Math.max(320, Math.ceil(window.innerWidth || document.documentElement.clientWidth || 0));
       const height = Math.max(320, Math.ceil(window.innerHeight || document.documentElement.clientHeight || 0));
       const size = state.microtextureThreadSize || {{}};
@@ -75497,6 +77070,15 @@ class Handler(BaseHTTPRequestHandler):
     }}
 
     function drawMicrotextureThreadField(timestampMs = 0) {{
+      if (document.visibilityState === "hidden") {{
+        state.microtextureThreadFrame = 0;
+        return;
+      }}
+      const frameInterval = window.innerWidth <= 640 ? 50 : 1000 / 30;
+      if (timestampMs > 0 && timestampMs - Number(state.microtextureThreadLastTs || 0) < frameInterval) {{
+        state.microtextureThreadFrame = window.requestAnimationFrame(drawMicrotextureThreadField);
+        return;
+      }}
       const canvas = el.microtextureThreadCanvas;
       if (!canvas || !canvas.getContext) {{
         return;
@@ -76158,6 +77740,40 @@ class Handler(BaseHTTPRequestHandler):
         }})
         .filter(Boolean)
         .slice(0, 4);
+    }}
+
+    function normalizeTopKpiMeters(snapshot) {{
+      const kpis = snapshot?.kpis && typeof snapshot.kpis === "object" ? snapshot.kpis : {{}};
+      const rawMeters = Array.isArray(kpis.top_meters) ? kpis.top_meters : [];
+      if (!rawMeters.length) return [];
+      const processor = kpis.processor && typeof kpis.processor === "object" ? kpis.processor : {{}};
+      const processorStatus = String(processor.status || "warming").trim().toLowerCase();
+      const processorMeta = processorStatus === "ranked" ? "DGX ranked" : "local fallback";
+      return rawMeters.map((item, index) => {{
+        if (!item || typeof item !== "object" || !String(item.label || "").trim()) return null;
+        const source = String(item.source || "local status").trim();
+        const detail = String(item.detail || "").trim();
+        const updatedAt = parseKpiTimestampSeconds(item.updated_at);
+        const staleAfter = Math.max(0, Number(item.stale_after_seconds || 0));
+        const stale = updatedAt > 0 && staleAfter > 0 && (Date.now() / 1000) - updatedAt > staleAfter;
+        let tone = normalizeKpiTone(item.tone);
+        if (stale && (tone === "ok" || tone === "active")) tone = "warn";
+        return {{
+          id: String(item.id || `top-kpi-${{index}}`),
+          label: String(item.label || "KPI").trim(),
+          value: item.value === null || item.value === undefined || item.value === "" ? "n/a" : String(item.value),
+          meta: stale ? `${{processorMeta}} · stale` : processorMeta,
+          tone,
+          title: [
+            detail,
+            `Source · ${{source}}`,
+            `Processor · local DGX / ${{String(processor.model || "resident Qwen").trim()}}`,
+            "Cloud fallback · disabled",
+            stale ? "Source data is stale." : "",
+          ].filter(Boolean).join(" · "),
+          action: "system",
+        }};
+      }}).filter(Boolean).slice(0, 4);
     }}
 
     function normalizeBbsTone(value) {{
@@ -77005,7 +78621,8 @@ class Handler(BaseHTTPRequestHandler):
         action: issue ? "system" : "notices",
       }});
 
-      const adapterCapsules = normalizeResourceKpiMeters(snapshot);
+      const topKpis = normalizeTopKpiMeters(snapshot);
+      const adapterCapsules = topKpis.length ? topKpis : normalizeResourceKpiMeters(snapshot);
       if (adapterCapsules.length) {{
         const adapterIds = new Set(adapterCapsules.map((item) => String(item.id || "")));
         const fallbackCapsules = capsules.filter((item) => !adapterIds.has(String(item.id || "")));
@@ -83032,7 +84649,6 @@ class Handler(BaseHTTPRequestHandler):
       renderSystemRuntimeMetrics(snapshot);
       renderConnectorAccess(snapshot);
 
-      hydrateControlTooltips();
       observeControlTooltips();
       scheduleComposerReserve();
       setBusyButtons(false);
@@ -83273,7 +84889,10 @@ class Handler(BaseHTTPRequestHandler):
         throw new Error("authentication required");
       }}
       if (!res.ok) {{
-        throw new Error(data.error || `request failed (${{res.status}})`);
+        const error = new Error(data.error || `request failed (${{res.status}})`);
+        error.httpStatus = res.status;
+        error.responseData = data;
+        throw error;
       }}
       return data;
     }}
@@ -85566,6 +87185,23 @@ class Handler(BaseHTTPRequestHandler):
           render(state.snapshot);
         }}
       }} catch (err) {{
+        const knownRejection = Number(err?.httpStatus || 0) >= 400
+          && Number(err?.httpStatus || 0) < 500
+          && err?.responseData
+          && typeof err.responseData === "object";
+        if (knownRejection) {{
+          clearPromptSubmission();
+          restoreRejectedPrompt(draftValue);
+          const rejectionSnapshot = err.responseData.snapshot;
+          const rejectedText = err.responseData.error || err.message || "Prompt was rejected.";
+          setOperatorReceipt(rejectedText, "warning");
+          playFeedbackTone("blocked");
+          pulseComposerShell("soft");
+          render(rejectionSnapshot && typeof rejectionSnapshot === "object"
+            ? rejectionSnapshot
+            : state.snapshot);
+          return;
+        }}
         persistPromptSubmission(message, {{
           state: "reconciling",
           submissionId,
@@ -87095,17 +88731,28 @@ class Handler(BaseHTTPRequestHandler):
     el.interruptLatestButton.addEventListener("click", () => fireAction("/api/queue/interrupt-latest", "Upgrading latest queued prompt to interruption…"));
     el.interruptButton.addEventListener("click", () => fireAction("/api/interrupt", "Interrupting tmux session…"));
     el.restartButton.addEventListener("click", () => fireAction("/api/restart", "Restarting the interactive session…"));
+    let composerInputFrame = 0;
+    let composerInputDetailsTimer = 0;
     el.promptInput.addEventListener("input", () => {{
       playInteractionTone("type");
       clearInterruptSubmitConfirm();
-      autoresize(el.promptInput);
-      updateComposerToolbar(state.snapshot);
-      renderOperatorFocus(state.snapshot);
-      renderSuggestions(state.snapshot);
-      renderPromptSafetyRail();
-      renderPromptCostEstimate(state.snapshot);
       persistPromptDraft(el.promptInput.value);
-      scheduleComposerReserve();
+      if (!composerInputFrame) {{
+        composerInputFrame = window.requestAnimationFrame(() => {{
+          composerInputFrame = 0;
+          autoresize(el.promptInput);
+          updateComposerToolbar(state.snapshot);
+          renderPromptSafetyRail();
+          scheduleComposerReserve();
+        }});
+      }}
+      window.clearTimeout(composerInputDetailsTimer);
+      composerInputDetailsTimer = window.setTimeout(() => {{
+        composerInputDetailsTimer = 0;
+        renderOperatorFocus(state.snapshot);
+        renderSuggestions(state.snapshot);
+        renderPromptCostEstimate(state.snapshot);
+      }}, 120);
     }});
     el.tmuxInput.addEventListener("keydown", (event) => {{
       maybeKillInputLine(event);
@@ -87630,7 +89277,7 @@ class Handler(BaseHTTPRequestHandler):
   <div class="box">
     <h1>{html.escape(CONSOLE_TITLE)}</h1>
     <p>This console is token-protected. Open it with the `?token=` query value, or paste the token below.</p>
-    <form method="get" action="{html.escape(prefixed_path('/', path_prefix))}">
+    <form method="get" action="{html.escape(prefixed_path("/", path_prefix))}">
       {profile_field}
       {route_field}
       <label for="token">Token</label>

@@ -15,12 +15,14 @@ Environment=BBS_URL=http://127.0.0.1:8798
 Environment=SMS_CALLBACK_BIND=127.0.0.1
 Environment=SMS_CALLBACK_PORT=8797
 Environment=SMS_BRIDGE_STATE_DIR=/var/lib/evergreen-sms-bridge
+Environment=SMS_POLL_RETRY_BASE_SECONDS=2
+Environment=SMS_POLL_RETRY_MAX_SECONDS=60
 LoadCredentialEncrypted=sms-callback-token:/etc/norman/credentials/sms-callback-token.cred
 StateDirectory=evergreen-sms-bridge
 StateDirectoryMode=0700
 ExecStart=/home/kristopher/code/norman/projects/evergreen-sms-bridge/.venv/bin/python /home/kristopher/code/norman/projects/evergreen-sms-bridge/sms_bridge.py
 Restart=always
-RestartSec=5
+RestartSec=15
 NoNewPrivileges=true
 PrivateTmp=true
 

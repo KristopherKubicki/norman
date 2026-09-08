@@ -535,6 +535,73 @@ def analyze_host(
                 )
             )
 
+        lifecycle = (
+            row.get("session_lifecycle")
+            if isinstance(row.get("session_lifecycle"), dict)
+            else {}
+        )
+        if lifecycle and not _is_truthy(lifecycle.get("fix_present")):
+            issues.append(
+                DoctorIssue(
+                    "fail",
+                    host_name,
+                    name,
+                    "session-lifecycle",
+                    "deployed web bridge is missing idle-thread rotation/reconciliation",
+                )
+            )
+        lifecycle_thread = str(lifecycle.get("thread_id") or "").strip()
+        if lifecycle_thread and not _status_has_active_prompt(status):
+            age_seconds = _coerce_nonnegative_int(lifecycle.get("age_seconds"))
+            max_age_seconds = _coerce_nonnegative_int(lifecycle.get("max_age_seconds"))
+            total_tokens = _coerce_nonnegative_int(lifecycle.get("total_tokens"))
+            checkpoint_tokens = _coerce_nonnegative_int(
+                lifecycle.get("checkpoint_tokens")
+            )
+            reauthorization_tokens = _coerce_nonnegative_int(
+                lifecycle.get("reauthorization_tokens")
+            )
+            if max_age_seconds and age_seconds >= max_age_seconds:
+                issues.append(
+                    DoctorIssue(
+                        "fail",
+                        host_name,
+                        name,
+                        "session-lifecycle",
+                        f"idle provider thread is stale: age={age_seconds}s limit={max_age_seconds}s",
+                    )
+                )
+            if reauthorization_tokens and total_tokens >= reauthorization_tokens:
+                issues.append(
+                    DoctorIssue(
+                        "fail",
+                        host_name,
+                        name,
+                        "session-lifecycle",
+                        f"idle provider thread requires reauthorization: tokens={total_tokens} limit={reauthorization_tokens}",
+                    )
+                )
+            elif checkpoint_tokens and total_tokens >= checkpoint_tokens:
+                issues.append(
+                    DoctorIssue(
+                        "warn",
+                        host_name,
+                        name,
+                        "session-lifecycle",
+                        f"idle provider thread reached checkpoint pressure: tokens={total_tokens} limit={checkpoint_tokens}",
+                    )
+                )
+            if _is_truthy(lifecycle.get("unresolved_reauthorization_denial")):
+                issues.append(
+                    DoctorIssue(
+                        "fail",
+                        host_name,
+                        name,
+                        "session-lifecycle",
+                        "current idle provider thread has an unresolved reauthorization denial",
+                    )
+                )
+
         auth = status.get("auth") if isinstance(status, dict) else {}
         auth_required = isinstance(auth, dict) and _is_truthy(auth.get("required"))
         if auth_required:
@@ -691,8 +758,10 @@ import json
 import os
 import pwd
 import re
+import sqlite3
 import subprocess
 import sys
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -901,6 +970,76 @@ def runtime_model(env):
     return ""
 
 
+def session_lifecycle(env, launch_path):
+    state_dir = env_get(env, "NORMAN_CODEX_WEB_STATE_DIR").strip()
+    result = {{
+        "thread_id": "",
+        "age_seconds": 0,
+        "total_tokens": 0,
+        "unresolved_reauthorization_denial": False,
+        "max_age_seconds": 86400,
+        "checkpoint_tokens": 160000,
+        "reauthorization_tokens": 200000,
+        "fix_present": False,
+    }}
+    for key, config_key, default in (
+        ("max_age_seconds", "NORMAN_CODEX_SESSION_MAX_AGE_SECONDS", 86400),
+        ("checkpoint_tokens", "NORMAN_CODEX_SESSION_CHECKPOINT_TOKENS", 160000),
+        (
+            "reauthorization_tokens",
+            "NORMAN_CODEX_SESSION_REAUTHORIZATION_TOKENS",
+            200000,
+        ),
+    ):
+        try:
+            result[key] = max(0, int(env_get(env, config_key, str(default))))
+        except (TypeError, ValueError):
+            result[key] = default
+    web_path = ""
+    if launch_path.endswith("_launch.sh"):
+        web_path = launch_path[:-len("_launch.sh")] + "_web.py"
+    if web_path:
+        try:
+            source = Path(web_path).read_text(errors="replace")
+        except Exception:
+            source = ""
+        result["fix_present"] = (
+            "stale_idle_provider_thread" in source
+            and "PROMPT_SUBMISSION_RECONCILE_GRACE_MS" in source
+        )
+    if not state_dir:
+        return result
+    thread_path = Path(state_dir) / "thread_id.txt"
+    try:
+        thread_id = thread_path.read_text(errors="replace").strip()
+    except Exception:
+        return result
+    result["thread_id"] = thread_id[:160]
+    if not thread_id:
+        return result
+    try:
+        result["age_seconds"] = max(0, int(time.time() - thread_path.stat().st_mtime))
+    except OSError:
+        pass
+    database = Path(state_dir) / "tui_state.sqlite3"
+    try:
+        connection = sqlite3.connect(f"file:{{database}}?mode=ro", uri=True, timeout=2)
+        row = connection.execute(
+            "SELECT COALESCE(SUM(total_tokens), 0), "
+            "MAX(CASE WHEN session_admission_reason_code = "
+            "'reauthorization_required' THEN 1 ELSE 0 END) "
+            "FROM usage_events WHERE thread_id = ?",
+            (thread_id,),
+        ).fetchone()
+        connection.close()
+        if row:
+            result["total_tokens"] = max(0, int(row[0] or 0))
+            result["unresolved_reauthorization_denial"] = bool(row[1])
+    except Exception:
+        pass
+    return result
+
+
 def stale_refs(paths):
     refs = []
     for raw_path in paths:
@@ -980,6 +1119,7 @@ for pattern in patterns:
         launch_path = (
             env_get(env, "NORMAN_CODEX_LAUNCHER", default_launchers.get(name, ""))
         ).strip()
+        lifecycle = session_lifecycle(env, launch_path)
         rows.append(
             {{
                 "name": name,
@@ -1003,6 +1143,7 @@ for pattern in patterns:
                 "local_llm_execution_enabled": (
                     env_get(env, "NORMAN_LOCAL_LLM_EXECUTION_ENABLED").strip()
                 ),
+                "session_lifecycle": lifecycle,
                 "stale_refs": stale_refs([
                     env_path,
                     os.path.join("/etc/systemd/system", codex_unit),

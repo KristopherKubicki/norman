@@ -40,7 +40,9 @@ Observed current behavior on live Norman:
 - Web prompts are executed through `scripts/norman_codex_web.py`.
 - The Codex path launches `codex exec --json` as a subprocess.
 - The web worker tracks one prompt, one process, one timeout, one response.
-- The turn control envelope currently sets `max_model_calls` to `1`.
+- The turn control envelope defaults `max_model_calls` to `4`, providing a
+  bounded continuation budget for tool-using turns while preserving an
+  explicit per-turn ceiling.
 - Long budgets such as 60m, 90m, deep, high-impact, and overnight exist, but
   they still mostly enlarge one turn rather than create a durable job loop.
 - Auto-continuation exists for selected cases, but it is a recovery behavior,
@@ -609,7 +611,7 @@ Goal:
 Work:
 
 - Change the turn envelope budget so long work does not always mean
-  `max_model_calls: 1`.
+  `max_model_calls: 4`.
 - Add a long-work acceptance gate:
   - final reply cannot be only a promise.
   - final reply must include evidence, test output, artifact refs, or an

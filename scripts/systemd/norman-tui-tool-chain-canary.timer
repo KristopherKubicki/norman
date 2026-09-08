@@ -4,6 +4,7 @@ Description=Periodically run the synthetic Norman Responses tool-chain canary
 [Timer]
 OnBootSec=12min
 OnUnitActiveSec=1h
+OnCalendar=hourly
 AccuracySec=5min
 Persistent=true
 

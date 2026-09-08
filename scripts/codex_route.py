@@ -59,7 +59,7 @@ QWEN_LOCAL_ROUTER_MODEL = "norman-code-qwen-local"
 LUNA_ROUTER_MODEL = "norman-code-luna"
 TERRA_ROUTER_MODEL = "norman-code-terra"
 SOL_ROUTER_MODEL = "norman-code-sol"
-DEFAULT_ROUTER_MODEL = LUNA_ROUTER_MODEL
+DEFAULT_ROUTER_MODEL = SOL_ROUTER_MODEL
 GOVERNED_ROUTER_MODEL = "norman-code-governed"
 LEGACY_ROUTER_MODEL = "norman-code"
 ROUTER_MODELS = frozenset(
@@ -1095,6 +1095,62 @@ def write_gateway_profile(route: Route) -> Path:
     return path
 
 
+def write_generic_work_model_contract() -> Path:
+    """Repair the mutable generic work profile to the Norman tool contract."""
+    home = Path(os.environ.get("CODEX_WORK_HOME", HOME / ".codex-work")).expanduser()
+    home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    catalog_path = home / "router-model-catalog.json"
+    _write_private_text(
+        catalog_path,
+        json.dumps(routed_model_catalog(), indent=2, sort_keys=True) + "\n",
+    )
+
+    profile = home / "work.config.toml"
+    try:
+        existing = profile.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        existing = ""
+    except OSError as exc:
+        raise RuntimeError(
+            f"Unable to read generic work profile at {profile}."
+        ) from exc
+
+    first_table = re.search(r"(?m)^\s*\[", existing)
+    split_at = first_table.start() if first_table else len(existing)
+    prefix = existing[:split_at]
+    suffix = existing[split_at:]
+    managed_values = {
+        "model_provider": "norman",
+        "model": DEFAULT_ROUTER_MODEL,
+        "model_catalog_json": str(catalog_path),
+    }
+    for key, value in managed_values.items():
+        line = f"{key} = {json.dumps(value)}"
+        pattern = re.compile(rf"(?m)^\s*{re.escape(key)}\s*=.*$")
+        if pattern.search(prefix):
+            prefix = pattern.sub(line, prefix, count=1)
+        else:
+            prefix = f"{prefix.rstrip()}\n{line}\n"
+
+    contents = f"{prefix.rstrip()}\n\n{suffix.lstrip()}" if suffix else prefix
+    try:
+        parsed = tomllib.loads(contents)
+    except tomllib.TOMLDecodeError as exc:
+        raise RuntimeError(
+            f"Unable to repair generic work profile at {profile}: invalid TOML ({exc})."
+        ) from exc
+    provider = parsed.get("model_providers", {}).get("norman", {})
+    if (
+        not isinstance(provider, dict)
+        or not str(provider.get("base_url") or "").strip()
+    ):
+        raise RuntimeError(
+            f"Generic work profile at {profile} has no Norman model provider."
+        )
+    _write_private_text(profile, contents)
+    return profile
+
+
 def resolve_real_codex() -> Path:
     configured = os.getenv("CODEX_REAL_BIN", "").strip()
     if configured:
@@ -1728,6 +1784,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--print-route", action="store_true")
     parser.add_argument("--routes", action="store_true")
     parser.add_argument("--verify", action="store_true")
+    parser.add_argument("--ensure-work-profile", action="store_true")
     parser.add_argument("codex_args", nargs=argparse.REMAINDER)
     parsed = parser.parse_args(argv)
     if parsed.codex_args[:1] == ["--"]:
@@ -1737,6 +1794,9 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parsed = parse_args(argv or sys.argv[1:])
+    if parsed.ensure_work_profile:
+        print(write_generic_work_model_contract())
+        return 0
     if parsed.routes:
         print(
             json.dumps(

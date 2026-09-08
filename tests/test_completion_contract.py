@@ -28,6 +28,7 @@ def test_allows_results_and_real_blockers() -> None:
         "If you want, I'll also inspect the dead-letter queue.",
         "I need your approval to deploy the change. Please approve it first.",
         "I can't proceed because the Ops token is missing. Please provide it.",
+        "Should I run the destructive repair?",
     ]
 
     assert not any(response_promises_unfinished_work(item) for item in responses)

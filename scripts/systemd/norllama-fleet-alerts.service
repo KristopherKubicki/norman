@@ -12,4 +12,7 @@ UMask=0077
 StateDirectory=norman
 WorkingDirectory=/home/kristopher/code/norman
 EnvironmentFile=/etc/norman/tui-fleet-alerts.env
-ExecStart=/usr/bin/python3 /home/kristopher/code/norman/scripts/tui_fleet_alerts.py --health-json /home/kristopher/.local/state/norman/norllama-fleet-health.json --state /var/lib/norman/norllama-fleet-alerts-state.json --thread-id th_norllama_fleet_health "--title=Norllama fleet health" --warn-threshold 1 --report-path /home/kristopher/.local/state/norman/norllama-fleet-health.json
+# Use Norman's LAN listener for the internal heartbeat/alert hop. The public
+# canonical hostname may resolve to the intentionally port-restricted tailnet.
+Environment=SWITCHBOARD_URL=http://192.168.2.241:8765
+ExecStart=/usr/bin/python3 /home/kristopher/code/norman/scripts/tui_fleet_alerts.py --url http://192.168.2.241:8765 --health-json /home/kristopher/.local/state/norman/norllama-fleet-health.json --state /var/lib/norman/norllama-fleet-alerts-state.json --thread-id th_norllama_fleet_health "--title=Norllama fleet health" --warn-threshold 1 --report-path /home/kristopher/.local/state/norman/norllama-fleet-health.json

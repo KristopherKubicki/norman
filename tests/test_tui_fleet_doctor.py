@@ -70,6 +70,41 @@ def test_doctor_accepts_clean_active_inventory(monkeypatch) -> None:
     assert report.issues == []
 
 
+def test_doctor_detects_session_lifecycle_drift_and_stale_idle_threads(
+    monkeypatch,
+) -> None:
+    module = _load_doctor(monkeypatch)
+    lifecycle = {
+        "thread_id": "thread-stale",
+        "age_seconds": 90_000,
+        "total_tokens": 210_000,
+        "unresolved_reauthorization_denial": True,
+        "max_age_seconds": 86_400,
+        "checkpoint_tokens": 160_000,
+        "reauthorization_tokens": 200_000,
+        "fix_present": False,
+    }
+
+    report = module.analyze_host(
+        host_name="toy-box",
+        expected_names={"studio"},
+        active_rows=[_row("studio", session_lifecycle=lifecycle)],
+        archived_names=set(),
+        min_timeout_seconds=3600,
+        ui_version="2026.06.01.7",
+    )
+
+    details = [
+        issue.detail for issue in report.issues if issue.check == "session-lifecycle"
+    ]
+    assert report.ok is False
+    assert len(details) == 4
+    assert any("missing idle-thread rotation" in detail for detail in details)
+    assert any("thread is stale" in detail for detail in details)
+    assert any("requires reauthorization" in detail for detail in details)
+    assert any("unresolved reauthorization denial" in detail for detail in details)
+
+
 def test_workflow_controls_are_private_staged_and_do_not_degrade_fleet_health(
     monkeypatch,
 ) -> None:

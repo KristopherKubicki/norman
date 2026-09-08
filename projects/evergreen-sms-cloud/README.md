@@ -5,9 +5,16 @@ This is the deployable AWS half of the Evergreen SMS reply path:
 `Twilio -> inbound Lambda -> inbound SQS -> local bridge -> BBS callback ->
 completion SQS -> outbound Lambda -> Twilio`.
 
-The inbound handler returns `<Response/>` only. It never emits a visible
-"routed" acknowledgement. A final reply is sent only after the BBS posts the
-matching `conversation_id` and `turn_id` completion.
+For each newly accepted turn, the inbound handler immediately returns a short
+Twilio acknowledgement containing the turn reference. A final reply is sent
+only after the BBS posts the matching `conversation_id` and `turn_id`
+completion. Burst fragments and duplicate webhook deliveries do not create
+additional acknowledgements.
+
+Inbound senders are denied by default. `SMS_ALLOWED_FROM_NUMBERS` must contain
+the comma-separated E.164 sender numbers allowed to reach DynamoDB, SQS, and
+Norman. Rejected senders receive an empty successful TwiML response and are not
+persisted or queued.
 
 ## Conversation Rules
 
@@ -29,7 +36,8 @@ resources without sending an SMS:
 ```bash
 cd projects/evergreen-sms-cloud
 ./deploy_existing.sh
-./deploy_existing.sh --apply --profile personal-bedrock --region us-east-2
+SMS_ALLOWED_FROM_NUMBERS=+15551234567 ./deploy_existing.sh --apply \
+  --profile personal-bedrock --region us-east-2
 ```
 
 It keeps the Twilio auth token in the existing

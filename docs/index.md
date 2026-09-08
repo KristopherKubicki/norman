@@ -27,6 +27,8 @@ orientation.
 - [Architecture](architecture.md) - current system shape, ownership, work flow,
   operating modes, and observability.
 - [Deployment](deployment.md) - production units, gateways, host-pressure
+- [Perplexity Computer on DGX Spark](perplexity-spark.md) - local harness,
+  redundancy, and Mantle fallback acceptance
   safeguards, and rollback.
 - [Provider And Routing Resilience](llm_runtime_fallback.md) - local-first
   route order, egress classes, failure handling, and receipts.

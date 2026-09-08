@@ -87,6 +87,17 @@ def _agent_console_web_source() -> str:
     ).read_text(encoding="utf-8")
 
 
+def test_agent_console_uses_shared_unfinished_work_contract() -> None:
+    module = _load_agent_console_web()
+
+    assert module.response_promises_unfinished_work(
+        "I need to connect to the Ops Portal MCP. Let me first check the launcher."
+    )
+    assert not module.response_promises_unfinished_work(
+        "I need your approval to deploy the repair. Please approve it first."
+    )
+
+
 def _agent_console_launch_source() -> str:
     return (
         Path(__file__).resolve().parents[1]
@@ -3031,6 +3042,17 @@ def test_template_uses_operational_density_polish_across_viewports() -> None:
     assert "body:not(.low-ui-mode) #ask-button .composer-send-label {{" in source
 
 
+def test_template_uses_shared_responsive_surface_contract() -> None:
+    source = _agent_console_web_source()
+
+    assert "Responsive surface contract" in source
+    assert "--mobile-sheet-gutter: 8px;" in source
+    assert "border-radius: 18px 18px 0 0 !important;" in source
+    assert "font-size: 16px;" in source
+    assert "padding-bottom: calc(18px + env(safe-area-inset-bottom));" in source
+    assert "@media (hover: none), (pointer: coarse)" in source
+
+
 def test_template_uses_single_motion_source_for_live_worker_state() -> None:
     source = _agent_console_web_source()
 
@@ -3125,8 +3147,6 @@ def test_template_animates_microtextures_with_worker_state() -> None:
     assert "const gradient = context.createLinearGradient(" in source
     assert 'thread.axis === "h" && glintStrength > 0.01' in source
     assert "radial-gradient(circle at var(--microtexture-pulse-x)" not in source
-    assert "radial-gradient(ellipse at 12%" not in source
-    assert "radial-gradient(ellipse at 74%" not in source
     assert 'body[data-microtexture-state="flow"]::before {{' in source
     assert "--microtexture-drift-duration: 4.8s;" in source
     assert "--microtexture-drift-x: 230px;" in source
@@ -3198,10 +3218,10 @@ def test_template_adds_dense_menu_tooltips_and_icon_choices() -> None:
     assert 'control.dataset.tooltipFromControl = "true";' in source
     assert "function observeControlTooltips() {" in source
     assert "observeControlTooltips();" in source
-    assert "node.matches(CONTROL_TOOLTIP_SELECTOR)" in source
+    assert "scope.matches(CONTROL_TOOLTIP_SELECTOR)" in source
     assert '[role="button"]:focus-visible,' in source
     assert '[data-notice-action]:not([aria-disabled="true"]) {' in source
-    assert "hydrateControlTooltips();" in source
+    assert "scheduleControlTooltipHydration();" in source
     assert ".topbar-menu::before {" in source
     assert ".topbar-menu-links--context {" in source
     assert ".composer-upload-item[data-icon]::before," in source
@@ -3589,6 +3609,13 @@ def test_template_exposes_status_capsule_strip() -> None:
     assert 'id: "background"' in source
     assert "function buildStatusCapsules(snapshot) {" in source
     assert "function renderStatusCapsules(snapshot) {" in source
+    assert "function normalizeTopKpiMeters(snapshot) {" in source
+    assert (
+        'const processorMeta = processorStatus === "ranked" ? "DGX ranked" : "local fallback";'
+        in source
+    )
+    assert '"cloud_fallback": False' in source
+    assert 'work_source="tui-kpi-ranker"' in source
     assert "function renderSystemRuntimeMetrics(snapshot) {" in source
     assert 'button.dataset.kpiAction = String(item.action || "system");' in source
     assert 'const action = String(capsule.dataset.kpiAction || "system");' in source
@@ -3730,6 +3757,16 @@ def test_tui_submission_receipts_reconcile_and_surface_worker_progress() -> None
     assert "function activeSubmissionLabel(snapshot = state.snapshot) {{" in source
     assert "submission_id: submissionId," in source
     assert 'state: "reconciling",' in source
+    assert "const PROMPT_SUBMISSION_RECONCILE_GRACE_MS = 1000 * 30;" in source
+    assert "reconcileAgeMs >= PROMPT_SUBMISSION_RECONCILE_GRACE_MS" in source
+    assert "The server did not record that prompt. It has been restored" in source
+    assert "error.httpStatus = res.status;" in source
+    assert "error.responseData = data;" in source
+    assert "const knownRejection = Number(err?.httpStatus || 0) >= 400" in source
+    assert (
+        "clearPromptSubmission();\n          restoreRejectedPrompt(draftValue);"
+        in source
+    )
     assert (
         "Submit outcome unknown. Checking whether the console accepted it; do not resend yet."
         in source
@@ -6887,3 +6924,85 @@ def test_codex_account_capacity_probe_never_sends_usage_command(
         )
         is False
     )
+
+
+def test_sentinel_alert_does_not_keep_itself_waiting_for_operator() -> None:
+    module = _load_agent_console_web()
+    snapshot = {
+        "human_intervention_count": 1,
+        "human_intervention_ask_now_count": 1,
+        "human_interventions": [
+            {
+                "kind": "sentinel_wedged",
+                "severity": "ask_now",
+                "status": "open",
+            }
+        ],
+        "auth": {"required": False},
+        "pending": False,
+        "queue_depth": 0,
+        "bbs": {},
+    }
+    kpis = {
+        "state": "idle",
+        "diagnosis": "The TUI is idle and ready.",
+        "signals": [],
+    }
+
+    sentinel = module.build_sentinel_state(snapshot, kpis)
+
+    assert sentinel["state"] == "healthy_idle"
+    assert sentinel["severity"] == "quiet_log"
+    assert sentinel["evidence"]["human_intervention_count"] == 0
+
+
+def test_sentinel_reconciliation_closes_alert_after_condition_clears(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_agent_console_web()
+    closed: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        module,
+        "load_human_interventions",
+        lambda: [
+            {
+                "id": "hi_stale",
+                "fingerprint": "sentinel:Infra:wedged:kpi_wedged",
+                "kind": "sentinel_wedged",
+                "severity": "ask_now",
+                "status": "open",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        module,
+        "update_human_intervention_status",
+        lambda item_id, action, *, note="", actor_ip="": closed.append(
+            (item_id, action, note)
+        )
+        or {"id": item_id, "status": "canceled"},
+    )
+    monkeypatch.setattr(
+        module,
+        "upsert_human_intervention",
+        lambda _item: pytest.fail("a healthy sentinel must not raise an alert"),
+    )
+
+    changed = module.maybe_raise_sentinel_intervention(
+        {
+            "state": "healthy_idle",
+            "severity": "quiet_log",
+            "reason_codes": [],
+        }
+    )
+
+    assert changed == {"id": "hi_stale", "status": "canceled"}
+    assert closed == [
+        ("hi_stale", "not_actionable", "Sentinel condition cleared or changed.")
+    ]
+
+
+def test_human_intervention_upsert_serializes_status_updates() -> None:
+    source = _agent_console_web_source()
+
+    assert 'conn.execute("BEGIN IMMEDIATE")' in source

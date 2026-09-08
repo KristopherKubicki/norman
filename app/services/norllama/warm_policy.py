@@ -37,8 +37,8 @@ from app.services.norllama.lane_policy import lane_policy_for_model
 
 DEFAULT_WARM_RECOMMENDATIONS: list[dict[str, Any]] = [
     {
-        "model": "qwen3-coder:30b-a3b-q4_K_M",
-        "profile": "qwen3_coder_30b_local",
+        "model": "qwen3.8:27b",
+        "profile": "qwen3_8_27b_local",
         "priority": "p0",
         "source": "fallback",
         "use_for": "default local agent, planning, coding, filtering, summarization, and verification",

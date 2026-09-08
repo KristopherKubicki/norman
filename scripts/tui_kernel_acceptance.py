@@ -454,7 +454,7 @@ class AcceptanceScenario:
     expected_template: str
     description: str = ""
     runtime: str = "localllm"
-    model: str = "qwen3-coder:30b-a3b-q4_K_M"
+    model: str = "qwen3.8:27b"
     route_lock: bool = True
     speed: str = "fast"
     detail: int = 1

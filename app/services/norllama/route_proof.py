@@ -89,11 +89,8 @@ CLOUD_USAGE_BUCKETS = {
 GOOD_VERIFIER_RESULTS = {"pass", "passed", "complete", "verified", "ok"}
 BAD_VERIFIER_RESULTS = {"fail", "failed", "needs_more_work", "rejected", "error"}
 QWEN_PRODUCTION_PREFIXES = (
-    "qwen3-coder",
-    "qwen3.6",
-    "qwen3.5",
-    "nvidia/qwen3.6",
-    "nvidia/qwen3.5",
+    "qwen3.8",
+    "nvidia/qwen3.8",
 )
 UPLINK_BENCHMARK_SOURCES = {"uplink_benchmark", "uplink_lane_benchmark"}
 QWEN_PRODUCTION_MIN_BENCHMARK_SCORE = 0.75

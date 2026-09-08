@@ -117,7 +117,7 @@ LOW_MODEL_TRIAL_PROFILES = (
     LowModelTrialProfile(
         id="small_local_text_8b_20b",
         label="Small local text 8B-20B",
-        model="qwen3:8b or gpt-oss:20b",
+        model="gpt-oss:20b",
         provider="ollama/vllm",
         capacity_rank=2,
         family="small_local_worker",
@@ -145,7 +145,7 @@ LOW_MODEL_TRIAL_PROFILES = (
     LowModelTrialProfile(
         id="local_coder_30b",
         label="Local coder 30B class",
-        model="qwen3-coder:30b or coder-next",
+        model="qwen3.8:27b",
         provider="ollama/vllm",
         capacity_rank=3,
         family="coder",
@@ -159,7 +159,7 @@ LOW_MODEL_TRIAL_PROFILES = (
     LowModelTrialProfile(
         id="bedrock_low_cost_coder_scout",
         label="Bedrock low-cost coder/scout",
-        model="qwen3-coder-30b, kimi-k2.5, ministral-14b",
+        model="kimi-k2.5 or ministral-14b",
         provider="aws-bedrock",
         capacity_rank=3,
         family="bedrock_scout",
@@ -173,7 +173,7 @@ LOW_MODEL_TRIAL_PROFILES = (
     LowModelTrialProfile(
         id="frontier_local_shadow_120b",
         label="Frontier-size local shadow",
-        model="qwen3.5:122b or gpt-oss:120b",
+        model="gpt-oss:120b",
         provider="local/vllm",
         capacity_rank=4,
         family="frontier_local_shadow",

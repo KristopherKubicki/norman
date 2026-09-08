@@ -45,6 +45,38 @@ def test_gateway_accept_backlog_handles_monitoring_bursts():
     assert module.ThreadingHTTPServer.request_queue_size == 128
 
 
+@pytest.mark.parametrize(
+    "model",
+    [
+        "qwen3:8b",
+        "qwen3-coder:30b-a3b-q4_K_M",
+        "qwen3.5:27b-q4_K_M",
+        "qwen3.5:122b-a10b-q4_K_M",
+        "qwen3.6:27b",
+        "qwen3-vl:30b-a3b-instruct-q4_K_M",
+    ],
+)
+def test_gateway_retires_pre_qwen38_reasoning_models(model):
+    module = load_gateway_module()
+
+    assert module.is_retired_qwen_reasoning_model(model) is True
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "qwen3.8:27b",
+        "Qwen/Qwen3Guard-Stream-0.6B",
+        "Qwen/Qwen3-Embedding-8B",
+        "BAAI/bge-reranker-v2-m3",
+    ],
+)
+def test_gateway_preserves_modern_reasoning_and_tool_models(model):
+    module = load_gateway_module()
+
+    assert module.is_retired_qwen_reasoning_model(model) is False
+
+
 def test_gateway_includes_the_policy_resident_backend(monkeypatch):
     module = load_gateway_module()
     monkeypatch.setenv("NORLLAMA_OLLAMA_BASES", "http://127.0.0.1:11434")

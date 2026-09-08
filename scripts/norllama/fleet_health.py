@@ -80,6 +80,7 @@ ENDPOINTS = ("/healthz", "/readyz", "/asr-readyz", "/v1/models")
 WARNING_EXPIRY_SECONDS = 72 * 60 * 60
 WARNING_LINUX_MEM_AVAILABLE_KIB = 6 * 1024 * 1024
 FAIL_LINUX_MEM_AVAILABLE_KIB = 2 * 1024 * 1024
+SSH_PROBE_TIMEOUT_SECONDS = 35
 
 
 def utc_now() -> str:
@@ -249,13 +250,13 @@ def probe_target(target: FleetTarget) -> dict[str, Any]:
             text=True,
             capture_output=True,
             check=False,
-            timeout=20,
+            timeout=SSH_PROBE_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
         return {
             "name": target.name,
             "platform": target.platform,
-            "error": "SSH probe timed out after 20 seconds",
+            "error": (f"SSH probe timed out after {SSH_PROBE_TIMEOUT_SECONDS} seconds"),
         }
     if result.returncode:
         return {
@@ -368,7 +369,19 @@ def evaluate_target(
                 if isinstance(state, dict)
                 else "missing probe"
             )
-            _issue(issues, "fail", target, f"endpoint:{endpoint_name}", str(detail))
+            # The model inventory can be comparatively expensive while a
+            # worker is loading or refreshing its dynamic catalog.  Readiness
+            # remains the serving authority; a catalog timeout should be
+            # visible without falsely declaring an otherwise ready worker
+            # dead.
+            severity = "warn" if endpoint_name == "/v1/models" else "fail"
+            _issue(
+                issues,
+                severity,
+                target,
+                f"endpoint:{endpoint_name}",
+                str(detail),
+            )
     ready = (
         endpoints.get("/readyz") if isinstance(endpoints.get("/readyz"), dict) else {}
     )

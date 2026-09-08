@@ -332,11 +332,22 @@ deploy_worker_bundle() {
 
 restart_mac_gateway() {
   ssh "$mac_target" \
-    "sh -s -- '$mac_service' '$mac_curl_bin'" <<'REMOTE'
+    "sh -s -- '$mac_service' '$mac_curl_bin' '$mac_path'" <<'REMOTE'
 set -eu
 service="$1"
 curl_bin="$2"
-launchctl kickstart -k "gui/$(id -u)/${service}"
+gateway_path="$3"
+if ! launchctl kickstart -k "gui/$(id -u)/${service}"; then
+  # Some estate Macs install the gateway as a system LaunchDaemon. The
+  # unprivileged deploy user cannot kickstart that domain, but it can stop its
+  # own worker and let KeepAlive relaunch the newly published bundle.
+  gateway_pid="$(pgrep -f "$gateway_path" | head -n 1 || true)"
+  if [ -z "$gateway_pid" ]; then
+    echo "Unable to restart ${service}: no user-owned gateway process found" >&2
+    exit 1
+  fi
+  kill "$gateway_pid"
+fi
 attempt=1
 while [ "$attempt" -le 15 ]; do
   if "$curl_bin" -fsS --max-time 5 http://127.0.0.1:18151/healthz >/dev/null \

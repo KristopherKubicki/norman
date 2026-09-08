@@ -312,3 +312,5 @@ def test_systemd_reconciler_uses_encrypted_credential_and_tls_guard_waits() -> N
     assert "norman/keys-service-token" in wrapper
     assert "NORMAN_KEYS_TOKEN" in wrapper
     assert "NORMAN_CONFIG_SECRET_CMD" in wrapper
+    assert "norman_networking_secret_broker.sh" in wrapper
+    assert "unset NORMAN_KEYS_URL NORMAN_KEYS_API_BASE NORMAN_KEYS_TOKEN" in wrapper

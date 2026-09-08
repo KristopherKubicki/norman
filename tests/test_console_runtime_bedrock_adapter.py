@@ -708,30 +708,54 @@ def test_bedrock_adapter_routes_authorized_explicit_gpt_selection_through_mantle
     assert mantle_key not in serialized
 
 
-def test_bedrock_adapter_routes_authorized_cloud_fallback_through_native_bedrock():
-    client = _FakeBedrockClient(
-        {
-            "stopReason": "end_turn",
-            "output": {
-                "message": {
-                    "content": [{"text": "Fallback completed."}],
-                }
-            },
-            "usage": {
-                "inputTokens": 4,
-                "outputTokens": 2,
-                "totalTokens": 6,
-            },
-        }
-    )
+def test_bedrock_adapter_routes_authorized_cloud_fallback_through_mantle(monkeypatch):
+    monkeypatch.setenv("NORMAN_KEYS_URL", "http://keys.norman.test")
+    monkeypatch.delenv("NORMAN_SECRET_CMD", raising=False)
 
-    result = BedrockModelAdapter(client_factory=lambda **_kwargs: client).invoke(
-        _cloud_fallback_request()
-    )
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
 
-    assert len(client.calls) == 1
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode()
+
+    def fake_urlopen(request, timeout):
+        if request.full_url == "http://keys.norman.test/v1/secrets/get":
+            return Response({"value": "test-mantle-api-key"})
+        return Response(
+            {
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {"type": "output_text", "text": "Fallback completed."}
+                        ],
+                    }
+                ],
+                "usage": {
+                    "input_tokens": 4,
+                    "output_tokens": 2,
+                    "total_tokens": 6,
+                },
+            }
+        )
+
+    monkeypatch.setattr(bedrock_module.urllib_request, "urlopen", fake_urlopen)
+    client_factory_calls = []
+    result = BedrockModelAdapter(
+        client_factory=lambda **kwargs: client_factory_calls.append(kwargs)
+    ).invoke(_cloud_fallback_request())
+
+    assert client_factory_calls == []
     assert result.text == "Fallback completed."
-    assert result.metadata["bedrock_transport"] == "aws_bedrock_converse"
+    assert result.metadata["bedrock_transport"] == "bedrock_mantle_responses"
     assert result.metadata["policy_authorization"]["cloud_fallback_authorized"] is True
     assert (
         result.metadata["policy_authorization"]["explicit_cloud_selection_authorized"]

@@ -75,6 +75,175 @@ def _load_norman_codex_web(monkeypatch, tmp_path, **overrides):
     return module
 
 
+def test_browser_relay_targets_strip_credentials(monkeypatch, tmp_path) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+
+    targets = module.browser_relay_targets(
+        [
+            {
+                "label": "Housebot",
+                "url": "https://housebot.home.arpa/?token=relay-secret&profile=default",
+                "api_url": "https://housebot.home.arpa/api/ask",
+                "token": "relay-secret",
+                "host": "housebot.home.arpa",
+            }
+        ]
+    )
+
+    assert targets == [
+        {
+            "label": "Housebot",
+            "url": "https://housebot.home.arpa/?profile=default",
+            "host": "housebot.home.arpa",
+        }
+    ]
+    assert "secret" not in json.dumps(targets)
+    assert "api_url" not in targets[0]
+
+
+def test_local_cli_discovery_observes_loose_and_managed_sessions(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    proc_root = tmp_path / "proc"
+    loose_dir = proc_root / "4242"
+    managed_dir = proc_root / "4343"
+    loose_dir.mkdir(parents=True)
+    managed_dir.mkdir(parents=True)
+    loose_workspace = tmp_path / "loose-project"
+    managed_workspace = tmp_path / "managed-project"
+    loose_workspace.mkdir()
+    managed_workspace.mkdir()
+    (loose_dir / "cwd").symlink_to(loose_workspace)
+    (managed_dir / "cwd").symlink_to(managed_workspace)
+    (loose_dir / "environ").write_bytes(
+        b"SECRET=hidden\0CODEX_THREAD_ID=thread-loose\0"
+    )
+    (managed_dir / "environ").write_bytes(
+        b"NORMAN_CODEX_AGENT_NAME=Theseus\0TMUX=/tmp/tmux/theseus,1,0\0TMUX_PANE=%2\0"
+    )
+
+    ps_output = "\n".join(
+        [
+            "1000 4242 4000 125 pts/3 codex",
+            "1000 4343 4001 3605 pts/7 codex",
+            "1000 4444 4002 12 pts/8 python",
+            "1001 4545 4003 9 pts/9 codex",
+        ]
+    )
+    monkeypatch.setattr(
+        module.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=ps_output,
+            stderr="",
+        ),
+    )
+
+    payload = module.discover_local_cli_sessions(proc_root=proc_root, uid=1000)
+
+    assert payload["count"] == 2
+    assert payload["loose_count"] == 1
+    assert payload["managed_count"] == 1
+    loose, managed = payload["items"]
+    assert loose["key"] == "4242"
+    assert loose["workspace"] == "loose-project"
+    assert loose["thread_id"] == "thread-loose"
+    assert loose["observer_state"] == "observed"
+    assert "SECRET" not in json.dumps(payload)
+    assert managed["agent_name"] == "Theseus"
+    assert managed["observer_state"] == "managed"
+    assert managed["tmux_socket"] == "theseus"
+
+
+def test_norman_local_cli_discovery_reads_hal_over_ssh(monkeypatch, tmp_path) -> None:
+    module = _load_norman_codex_web(
+        monkeypatch,
+        tmp_path,
+        NORMAN_CODEX_AGENT_NAME="Norman",
+        NORMAN_CODEX_HOSTNAME="norman",
+    )
+    calls = []
+    remote_rows = [
+        {
+            "pid": 5151,
+            "ppid": 5000,
+            "age_seconds": 42,
+            "tty": "pts/11",
+            "cwd": "/home/kristopher/code/norman",
+            "environment": {},
+        }
+    ]
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(returncode=0, stdout=json.dumps(remote_rows), stderr="")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    payload = module.discover_local_cli_sessions()
+
+    assert module.LOCAL_CLI_DISCOVERY_ENABLED is True
+    assert payload["available"] is True
+    assert payload["host"] == "hal"
+    assert payload["count"] == 1
+    assert payload["items"][0]["pid"] == 5151
+    assert calls[0][0][-2:] == ["hal", "python3 -"]
+    assert calls[0][1]["input"] == module.REMOTE_LOCAL_CLI_DISCOVERY_SCRIPT
+
+
+def test_cli_snapshot_serves_cached_data_during_single_background_scan(
+    monkeypatch, tmp_path
+):
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "LOCAL_CLI_DISCOVERY_ENABLED", True)
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    calls = []
+    cached = {"enabled": True, "count": 7, "items": []}
+    module.LOCAL_CLI_DISCOVERY_CACHE.update(observed_at=0, payload=cached)
+
+    def discover():
+        calls.append(True)
+        started.set()
+        assert release.wait(3)
+        return {"enabled": True, "count": 8, "items": []}
+
+    original_refresh = module._refresh_local_cli_sessions_cache
+
+    def refresh():
+        try:
+            original_refresh()
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(module, "discover_local_cli_sessions", discover)
+    monkeypatch.setattr(module, "_refresh_local_cli_sessions_cache", refresh)
+    try:
+        first = module.local_cli_sessions_snapshot()
+        assert started.wait(1)
+        second = module.local_cli_sessions_snapshot(force=True)
+        assert first["count"] == second["count"] == 7
+        assert first["refreshing"] is True
+        assert calls == [True]
+    finally:
+        release.set()
+        assert finished.wait(2)
+    assert module.local_cli_sessions_snapshot()["count"] == 8
+    assert module.LOCAL_CLI_DISCOVERY_REFRESHING is False
+
+
+def test_norman_switcher_renders_local_cli_observer() -> None:
+    source = WEB_SCRIPT_PATH.read_text(encoding="utf-8")
+
+    assert 'parsed.path == "/api/local-cli-sessions"' in source
+    assert "function renderLocalCliObserverHtml(payload)" in source
+    assert 'class="local-cli-observer"' in source
+    assert "Direct PTYs stay operator-controlled." in source
+
+
 def _route_proof(
     module,
     *,
@@ -303,6 +472,8 @@ def test_switchboard_rendered_console_javascript_passes_node_syntax_check(
 
     module.Handler.render_index(handler, {"token": ["open-sesame"]})
     rendered = handler.wfile.getvalue().decode("utf-8")
+    assert 'id="usage-reset-button"' in rendered
+    assert 'id="usage-limit-reset-dialog"' in rendered
     script_text = "\n\n".join(re.findall(r"<script>(.*?)</script>", rendered, re.S))
     script_path = pathlib.Path(tempfile.mkdtemp()) / "norman_console.js"
     script_path.write_text(script_text, encoding="utf-8")
@@ -1453,6 +1624,40 @@ def test_session_checkpoint_handoff_resets_thread_and_bypasses_reauth(
         thread_id=thread_id,
         finished_at=120,
     )
+    assert module.read_text(module.THREAD_ID_PATH) == ""
+    assert module.read_text(module.THREAD_SCOPE_PATH) == ""
+
+
+def test_stale_idle_provider_thread_rotates_in_norman_switchboard(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    module.SESSION_BUDGET_POLICY = module.SessionBudgetPolicy(
+        enabled=True,
+        checkpoint_tokens=100,
+        reauthorization_tokens=200,
+        max_age_seconds=24 * 60 * 60,
+        max_tool_calls=100,
+        require_named_escalation=False,
+    )
+    module.ensure_state_dir()
+    module.write_text(module.THREAD_ID_PATH, "stale-norman-thread")
+    module.write_text(module.THREAD_SCOPE_PATH, "profile-v2:work")
+    module.update_status_meta(pending=False, state="ok", queued_prompts=[])
+    monkeypatch.setattr(module, "prompt_runtime_alive", lambda: False)
+
+    rotation = module.rotate_idle_provider_thread_for_operator_prompt(
+        {
+            "allowed": False,
+            "reason_code": "reauthorization_required",
+            "usage": {"age_seconds": 11_132, "total_tokens": 1_643_951},
+        },
+        prompt="start an unrelated task",
+        source="operator",
+    )
+
+    assert rotation["reason"] == "stale_idle_provider_thread"
+    assert rotation["prior_thread_id"] == "stale-norman-thread"
     assert module.read_text(module.THREAD_ID_PATH) == ""
     assert module.read_text(module.THREAD_SCOPE_PATH) == ""
 
@@ -2820,6 +3025,72 @@ def test_norman_status_capacity_parser_records_credit_metadata(
     assert parsed["windows"][0]["reset_seconds"] > 6 * 24 * 60 * 60
     assert parsed["credits_available"] == 6907
     assert parsed["usage_limit_resets_available"] == 4
+
+
+def test_usage_limit_reset_approval_is_one_time(monkeypatch, tmp_path) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    audit_events: list[dict] = []
+    monkeypatch.setattr(
+        module, "append_audit_event", lambda **value: audit_events.append(value)
+    )
+    offer = module.create_rate_limit_reset_approval(
+        {
+            "usage_limit_resets_available": 3,
+            "reset_hint": "in 2 days",
+        },
+        actor_ip="127.0.0.1",
+    )
+
+    assert offer["available_count"] == 3
+    assert offer["token"]
+    assert (
+        module.authorize_rate_limit_reset_fallback(offer["token"], actor_ip="127.0.0.1")
+        is True
+    )
+    assert (
+        module.authorize_rate_limit_reset_fallback(offer["token"], actor_ip="127.0.0.1")
+        is False
+    )
+    assert [item["event_type"] for item in audit_events] == [
+        "chat.usage-limit-reset-offered",
+        "chat.usage-limit-reset-declined",
+    ]
+
+
+def test_operator_approved_usage_limit_reset_uses_app_server(
+    monkeypatch, tmp_path
+) -> None:
+    module = _load_norman_codex_web(monkeypatch, tmp_path)
+    monkeypatch.setattr(module, "append_audit_event", lambda **_value: None)
+    monkeypatch.setattr(module, "stored_codex_auth_mode", lambda: "chatgpt")
+    calls: list[tuple[str, dict, bool]] = []
+
+    def exchange(method, params, *, followup_read=False):
+        calls.append((method, params, followup_read))
+        return (
+            {"outcome": "reset"},
+            {
+                "rateLimits": {
+                    "primary": {"usedPercent": 0, "resetsAt": int(time.time()) + 3600},
+                    "secondary": None,
+                },
+                "rateLimitResetCredits": {"availableCount": 2},
+            },
+        )
+
+    monkeypatch.setattr(module, "_codex_app_server_exchange", exchange)
+    offer = module.create_rate_limit_reset_approval(
+        {"usage_limit_resets_available": 3, "reset_hint": "tomorrow"}
+    )
+    ok, detail, capacity = module.consume_rate_limit_reset_approval(offer["token"])
+
+    assert ok is True
+    assert "Retrying" in detail
+    assert calls[0][0] == "account/rateLimitResetCredit/consume"
+    assert calls[0][2] is True
+    assert uuid.UUID(calls[0][1]["idempotencyKey"])
+    assert capacity["state"] == "available"
+    assert capacity["usage_limit_resets_available"] == 2
 
 
 def test_bedrock_standard_can_disable_direct_openai_tiers(
@@ -4309,10 +4580,7 @@ def test_api_ask_completes_explicit_deterministic_status_without_model_call(
     assert payload["snapshot"]["state"] == "ok"
     assert "instant local status check" in payload["snapshot"]["last_response"]
     module.DETERMINISTIC_ARCHIVE_QUEUE.join()
-    history = module.load_history(limit=1)
-    assert history[-1]["runtime"] == "localllm"
-    assert history[-1]["model"] == "deterministic-status"
-    assert history[-1]["usage"]["total_tokens"] == 0
+    assert module.load_history(limit=1) == []
     receipts = [
         json.loads(line)
         for line in module.ROUTE_RECEIPT_PATH.read_text(encoding="utf-8").splitlines()
@@ -6436,14 +6704,11 @@ def test_runtime_registry_includes_codex_and_local_llm(monkeypatch, tmp_path) ->
     assert registry["kimi"]["provider"] == "moonshot"
     assert registry["kimi"]["default_model"] == "moonshotai.kimi-k2.5"
     assert registry["qwen"]["tools"] == "not-wired"
-    assert registry["qwen"]["default_model"] == "qwen.qwen3-coder-480b-a35b-v1:0"
+    assert registry["qwen"]["default_model"] == "qwen3.8:27b"
     assert registry["gptoss"]["provider"] == "openai/aws-bedrock"
     assert registry["gptoss"]["default_model"] == "openai.gpt-oss-20b-1:0"
     assert registry["gptoss"]["can_execute"] is False
-    assert registry["codexspark"]["provider"] == "openai/cerebras"
-    assert registry["codexspark"]["default_model"] == "gpt-5.3-codex-spark"
-    assert registry["codexspark"]["execution"] == "access-check"
-    assert registry["codexspark"]["can_execute"] is False
+    assert "codexspark" not in registry
     assert registry["deepseek"]["provider"] == "deepseek"
     assert registry["deepseek"]["execution"] == "benchmark-only"
     assert registry["deepseek"]["default_model"] == "deepseek.v3.2"
@@ -6653,7 +6918,7 @@ def test_model_route_presets_include_codex_and_claude_bedrock(
     assert presets["kimi-bedrock"]["model"] == "moonshotai.kimi-k2.5"
     assert presets["kimi-bedrock"]["status"] == "Benchmark"
     assert presets["qwen-coder-bedrock"]["runtime"] == "qwen"
-    assert presets["qwen-coder-bedrock"]["model"] == "qwen.qwen3-coder-480b-a35b-v1:0"
+    assert presets["qwen-coder-bedrock"]["model"] == "qwen3.8:27b"
     assert presets["qwen-coder-bedrock"]["can_execute"] is False
     assert presets["gpt-oss-20b-bedrock"]["runtime"] == "gptoss"
     assert presets["gpt-oss-20b-bedrock"]["model"] == "openai.gpt-oss-20b-1:0"
@@ -6663,11 +6928,7 @@ def test_model_route_presets_include_codex_and_claude_bedrock(
     assert presets["gpt-oss-120b-bedrock"]["model"] == "openai.gpt-oss-120b-1:0"
     assert presets["gpt-oss-120b-bedrock"]["status"] == "Benchmark"
     assert presets["gpt-oss-120b-bedrock"]["can_execute"] is False
-    assert presets["codex-spark-preview"]["runtime"] == "codexspark"
-    assert presets["codex-spark-preview"]["model"] == "gpt-5.3-codex-spark"
-    assert presets["codex-spark-preview"]["provider"] == "OpenAI/Cerebras"
-    assert presets["codex-spark-preview"]["status"] == "Access check"
-    assert presets["codex-spark-preview"]["can_execute"] is False
+    assert "codex-spark-preview" not in presets
     assert presets["deepseek-bedrock"]["runtime"] == "deepseek"
     assert presets["deepseek-bedrock"]["model"] == "deepseek.v3.2"
     assert presets["deepseek-bedrock"]["status"] == "Benchmark"
@@ -7084,7 +7345,7 @@ def test_console_source_mentions_manual_model_controls() -> None:
 def test_launch_script_reads_runtime_model_override() -> None:
     source = LAUNCH_SCRIPT_PATH.read_text(encoding="utf-8")
 
-    assert "NORMAN_CODEX_MODEL:-openai.gpt-5.6-terra" in source
+    assert "NORMAN_CODEX_MODEL:-openai.gpt-5.6-sol" in source
     assert "runtime_settings.json" in source
     assert 'MODEL="$RUNTIME_MODEL"' in source
 
@@ -7126,6 +7387,9 @@ def test_console_source_uses_scrollable_mobile_settings_sheet() -> None:
     assert 'id="settings-body"' in source
     assert ".settings-body" in source
     assert "max-height: min(calc(100dvh - 92px), 760px);" in source
+    assert "Responsive surface contract" in source
+    assert "--mobile-sheet-gutter: 8px;" in source
+    assert "padding-bottom: calc(18px + env(safe-area-inset-bottom));" in source
 
 
 def test_console_source_anchors_topbar_menu_from_viewport() -> None:
@@ -7177,11 +7441,11 @@ def test_console_source_polishes_tooltips_and_edge_to_edge_layout() -> None:
     assert "const CONTROL_TOOLTIP_SELECTOR = [" in source
     assert "\"[role='tab']\"," in source
     assert '"[data-notice-action]",' in source
-    assert "node.matches(CONTROL_TOOLTIP_SELECTOR)" in source
+    assert "scope.matches(CONTROL_TOOLTIP_SELECTOR)" in source
     assert '[role="button"]:focus-visible,' in source
     assert '[data-notice-action]:not([aria-disabled="true"]) {' in source
     assert "hydrateControlTooltips(el.switcherPanel);" in source
-    assert "hydrateControlTooltips();" in source
+    assert "scheduleControlTooltipHydration();" in source
     assert "observeControlTooltips();" in source
     assert 'aria-label="Attach recent logs"' in source
     assert 'data-tooltip="Close view settings"' in source

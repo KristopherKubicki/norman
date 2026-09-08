@@ -84,6 +84,7 @@ AWS=(aws --profile "${AWS_PROFILE_NAME}" --region "${AWS_REGION_NAME}")
 ACCOUNT_ID=$("${AWS[@]}" sts get-caller-identity --query Account --output text)
 LAMBDA_TRUST='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"lambda.amazonaws.com"},"Action":"sts:AssumeRole"}]}'
 WEBHOOK_URL=${TWILIO_WEBHOOK_URL:-"https://${API_ID}.execute-api.${AWS_REGION_NAME}.amazonaws.com/twilio/inbound"}
+ALLOWED_FROM_NUMBERS=${SMS_ALLOWED_FROM_NUMBERS:-}
 
 queue_url() {
   local queue_name=$1
@@ -242,6 +243,19 @@ SECRET_ARN=$(
 if [[ -z "${SECRET_ARN}" || "${SECRET_ARN}" == None ]]; then
   SECRET_ARN=${TWILIO_AUTH_TOKEN_SECRET_ARN:-}
 fi
+
+if [[ -z "${ALLOWED_FROM_NUMBERS}" ]]; then
+  ALLOWED_FROM_NUMBERS=$(
+    "${AWS[@]}" lambda get-function-configuration \
+      --function-name "${INBOUND_FUNCTION}" \
+      --query 'Environment.Variables.SMS_ALLOWED_FROM_NUMBERS' \
+      --output text
+  )
+fi
+if [[ -z "${ALLOWED_FROM_NUMBERS}" || "${ALLOWED_FROM_NUMBERS}" == None ]]; then
+  echo "SMS_ALLOWED_FROM_NUMBERS must be supplied as a comma-separated E.164 allowlist" >&2
+  exit 1
+fi
 if [[ -z "${SECRET_ARN}" || "${SECRET_ARN}" == None ]]; then
   echo "TWILIO_AUTH_TOKEN_SECRET_ARN must be set on ${INBOUND_FUNCTION} or in the environment" >&2
   exit 1
@@ -296,12 +310,15 @@ INBOUND_ENV=$(function_environment "${INBOUND_FUNCTION}" | jq -c \
   --arg queue "${INBOUND_QUEUE_URL}" \
   --arg secret "${SECRET_ARN}" \
   --arg webhook "${WEBHOOK_URL}" \
+  --arg allowed_from "${ALLOWED_FROM_NUMBERS}" \
   '(. // {})
    | del(.TWILIO_AUTH_TOKEN)
    | .SMS_CONVERSATIONS_TABLE = $table
    | .INBOUND_QUEUE_URL = $queue
    | .TWILIO_AUTH_TOKEN_SECRET_ARN = $secret
    | .TWILIO_WEBHOOK_URL = $webhook
+   | .SMS_ALLOWED_FROM_NUMBERS = $allowed_from
+   | .SMS_ACCEPTANCE_ACK_ENABLED = "1"
    | .TWILIO_VALIDATE_SIGNATURE = "1"
    | .SMS_BURST_SECONDS = (.SMS_BURST_SECONDS // "8")
    | .SMS_CONVERSATION_IDLE_SECONDS = (.SMS_CONVERSATION_IDLE_SECONDS // "86400")')

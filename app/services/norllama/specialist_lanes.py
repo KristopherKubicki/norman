@@ -224,8 +224,7 @@ def _lane(
         "purpose": purpose,
         "model_floor": model_floor,
         "default_model_policy": (
-            "Coder-class remains the floor for general reasoning, "
-            "coding, and VLM work."
+            "Coder-class remains the floor for general reasoning, coding, and VLM work."
         ),
         "older_baseline_defaults_allowed": False,
         "older_baseline_exception": (
@@ -249,7 +248,7 @@ SPECIALIST_LANES: tuple[dict[str, Any], ...] = (
         purpose="Audit route receipts for missing proof, stale fields, and accounting drift.",
         phase="receipt_audit",
         result_field="receipt_findings",
-        model_floor="qwen3-coder:30b-a3b-q4_K_M",
+        model_floor="qwen3.8:27b",
         state="production",
         deterministic_experts=["xgrammar"],
     ),
@@ -258,7 +257,7 @@ SPECIALIST_LANES: tuple[dict[str, Any], ...] = (
         purpose="Classify shell, browser, and file tool calls before execution.",
         phase="tool_risk",
         result_field="risk_classification",
-        model_floor="qwen3-coder:30b-a3b-q4_K_M",
+        model_floor="qwen3.8:27b",
         deterministic_experts=["semgrep", "gitleaks", "trufflehog"],
     ),
     _lane(
@@ -266,7 +265,7 @@ SPECIALIST_LANES: tuple[dict[str, Any], ...] = (
         purpose="Estimate task difficulty and choose local, judge, or cloud escalation budget.",
         phase="difficulty",
         result_field="difficulty",
-        model_floor="qwen3-coder:30b-a3b-q4_K_M",
+        model_floor="qwen3.8:27b",
         state="production",
     ),
     _lane(
@@ -274,7 +273,7 @@ SPECIALIST_LANES: tuple[dict[str, Any], ...] = (
         purpose="Predict whether the proposed route or action is likely to require repair.",
         phase="regret",
         result_field="regret",
-        model_floor="qwen3-coder:30b-a3b-q4_K_M",
+        model_floor="qwen3.8:27b",
         state="production",
         deterministic_experts=["pytest", "mypy", "ruff"],
     ),
@@ -283,21 +282,21 @@ SPECIALIST_LANES: tuple[dict[str, Any], ...] = (
         purpose="Compress browser traces into cited evidence before planner or judge calls.",
         phase="browser_trace",
         result_field="compressed_trace",
-        model_floor="qwen3-coder:30b-a3b-q4_K_M",
+        model_floor="qwen3.8:27b",
     ),
     _lane(
         "screenshot_state_classifier",
         purpose="Classify screenshot/UI state and decide whether GUI grounding is needed.",
         phase="screenshot_state",
         result_field="screen_state",
-        model_floor="qwen3-coder:30b-a3b-q4_K_M",
+        model_floor="qwen3.8:27b",
     ),
     _lane(
         "non_answer_detector",
         purpose="Reject empty, progress-only, or plan-only outputs when execution was requested.",
         phase="non_answer",
         result_field="answer_shape",
-        model_floor="qwen3-coder:30b-a3b-q4_K_M",
+        model_floor="qwen3.8:27b",
         state="production",
     ),
     _lane(
@@ -305,7 +304,7 @@ SPECIALIST_LANES: tuple[dict[str, Any], ...] = (
         purpose="Measure changed files, affected dependencies, and security/package risk.",
         phase="patch_blast_radius",
         result_field="blast_radius",
-        model_floor="qwen3-coder:30b-a3b-q4_K_M",
+        model_floor="qwen3.8:27b",
         deterministic_experts=[
             "codeql",
             "semgrep",
@@ -322,7 +321,7 @@ SPECIALIST_LANES: tuple[dict[str, Any], ...] = (
         purpose="Decide whether a memory write is useful, grounded, and non-sensitive.",
         phase="memory_write",
         result_field="memory_gate",
-        model_floor="qwen3-coder:30b-a3b-q4_K_M",
+        model_floor="qwen3.8:27b",
         deterministic_experts=["gitleaks", "trufflehog"],
     ),
     _lane(
@@ -330,7 +329,7 @@ SPECIALIST_LANES: tuple[dict[str, Any], ...] = (
         purpose="Check local model outputs against retrieved evidence before final or cloud escalation.",
         phase="hallucination_firewall",
         result_field="grounding_check",
-        model_floor="qwen3-coder:30b-a3b-q4_K_M",
+        model_floor="qwen3.8:27b",
         deterministic_experts=["xgrammar"],
     ),
 )
@@ -436,7 +435,7 @@ def specialist_lane_registry() -> dict[str, Any]:
         "route_receipt_fields": list(SPECIALIST_ROUTE_RECEIPT_FIELDS),
         "usage_buckets": list(USAGE_BUCKETS),
         "policy": {
-            "qwen_floor": "Qwen3.6/Qwen3.5-class for reasoning, coding, and VLM",
+            "qwen_floor": "Qwen3.8-class for reasoning and coding",
             "older_baseline_defaults_allowed": False,
             "older_baseline_exception": (
                 "Only narrow specialists may use older models, and only after "

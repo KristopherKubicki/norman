@@ -4,6 +4,7 @@ Description=Periodically verify brokered Codex CLI routes
 [Timer]
 OnBootSec=5min
 OnUnitActiveSec=30min
+OnCalendar=*:0/30
 AccuracySec=1min
 Persistent=true
 

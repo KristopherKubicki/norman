@@ -42,7 +42,7 @@ DEFAULT_ACTOR_ENV_ACTOR = (
 ).strip()
 DEFAULT_POLICY_THREAD_ID = "th_bbs_escalation_contract_20260525"
 EXPECTED_ADMIN_ACTORS = {"norman", "subprime"}
-EXPECTED_ACTOR_COUNT = 31
+EXPECTED_ACTOR_COUNT = 32
 PROMOTED_TUI_ACTORS: dict[str, dict[str, str]] = {
     "artmonster": {
         "lane": "family",

@@ -5,7 +5,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import json
 import os
+from xml.sax.saxutils import escape
 from urllib.parse import parse_qs
 from typing import Any
 
@@ -69,7 +71,47 @@ def _twiml_response(status: int = 200, body: str = "<Response/>") -> dict[str, A
     }
 
 
+def _acceptance_twiml(turn_id: str) -> str:
+    """Return a small, correlation-safe acknowledgement for a new SMS turn."""
+    clean_turn_id = str(turn_id or "").strip()
+    reference = clean_turn_id[-8:] if clean_turn_id else "pending"
+    message = f"Accepted · Norman is working · turn {reference}"
+    return f"<Response><Message>{escape(message)}</Message></Response>"
+
+
+def _json_response(status: int, payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "statusCode": status,
+        "headers": {"content-type": "application/json; charset=utf-8"},
+        "body": json.dumps(payload, separators=(",", ":")),
+    }
+
+
+def _request_method(event: dict[str, Any]) -> str:
+    request_context = event.get("requestContext") or {}
+    http_context = request_context.get("http") or {}
+    return str(http_context.get("method") or event.get("httpMethod") or "").upper()
+
+
+def _allowed_senders() -> frozenset[str]:
+    configured = os.environ.get("SMS_ALLOWED_FROM_NUMBERS", "")
+    return frozenset(
+        number.strip() for number in configured.split(",") if number.strip()
+    )
+
+
 def lambda_handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
+    raw_path = str(event.get("rawPath") or event.get("path") or "")
+    if _request_method(event) == "GET" and raw_path == "/health":
+        return _json_response(
+            200,
+            {
+                "ok": True,
+                "service": "evergreen-sms-inbound",
+                "sender_allowlist_configured": bool(_allowed_senders()),
+            },
+        )
+
     params = _body_params(event)
     headers = {
         str(key).lower(): str(value)
@@ -95,6 +137,21 @@ def lambda_handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
     account_sid = params.get("AccountSid", "").strip()
     if not all((message_sid, from_number, to_number, account_sid)):
         return _twiml_response(400, "<Response/>")
+    if from_number not in _allowed_senders():
+        # Silently accept the Twilio delivery so unauthorized senders are not
+        # given an oracle and Twilio does not retry it. Nothing is persisted or
+        # queued before this fail-closed authorization check.
+        print(
+            json.dumps(
+                {
+                    "event": "sms_sender_rejected",
+                    "sender_suffix": from_number[-4:],
+                },
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
+        return _twiml_response()
 
     timestamp = _env_int("SMS_RECEIVED_AT_OVERRIDE", 0) or None
     incoming = IncomingSms(
@@ -122,6 +179,12 @@ def lambda_handler(event: dict[str, Any], _context: Any) -> dict[str, Any]:
         )
         store.mark_inbound_dispatched(dispatch)
 
-    # No visible routed acknowledgement. The eventual BBS completion supplies
-    # the only SMS reply.
+    if (
+        os.environ.get("SMS_ACCEPTANCE_ACK_ENABLED", "1").strip().lower()
+        not in {"0", "false", "no", "off"}
+        and not accepted.get("duplicate")
+        and accepted.get("should_dispatch")
+    ):
+        dispatch = accepted.get("dispatch") or {}
+        return _twiml_response(body=_acceptance_twiml(dispatch.get("turn_id", "")))
     return _twiml_response()

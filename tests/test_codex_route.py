@@ -419,7 +419,7 @@ def test_generic_work_fallback_refreshes_tiered_model_contract(route_module, tmp
     catalog_path = route_module.write_work_fallback_model_contract(tmp_path)
 
     contents = profile.read_text(encoding="utf-8")
-    assert f'model = "{route_module.LUNA_ROUTER_MODEL}"' in contents
+    assert f'model = "{route_module.SOL_ROUTER_MODEL}"' in contents
     assert f'model_catalog_json = "{catalog_path}"' in contents
     assert profile.stat().st_mode & 0o777 == 0o600
     catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
@@ -668,6 +668,50 @@ def test_generated_profile_restores_managed_model_and_refreshes_stale_catalog_ca
     route_module.write_gateway_profile(route)
 
     assert list(home.glob("models_cache.json.stale-*")) == backups
+
+
+def test_generic_work_profile_restores_norman_tool_model(
+    route_module, monkeypatch, tmp_path
+):
+    home = tmp_path / "codex-work"
+    home.mkdir()
+    profile = home / "work.config.toml"
+    profile.write_text(
+        "\n".join(
+            (
+                'model_provider = "norman"',
+                'model = "gpt-5.6-sol"',
+                'personality = "pragmatic"',
+                "",
+                "[model_providers.norman]",
+                'base_url = "https://norman.home.arpa/v1"',
+                'wire_api = "responses"',
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEX_WORK_HOME", str(home))
+
+    result = route_module.write_generic_work_model_contract()
+
+    parsed = route_module.tomllib.loads(profile.read_text(encoding="utf-8"))
+    assert result == profile
+    assert parsed["model_provider"] == "norman"
+    assert parsed["model"] == "norman-code-sol"
+    assert parsed["personality"] == "pragmatic"
+    assert parsed["model_catalog_json"] == str(home / "router-model-catalog.json")
+    assert [
+        model["slug"]
+        for model in route_module.json.loads(
+            (home / "router-model-catalog.json").read_text(encoding="utf-8")
+        )["models"]
+    ] == [
+        "norman-code-qwen-local",
+        "norman-code-luna",
+        "norman-code-terra",
+        "norman-code-sol",
+    ]
 
 
 def test_generated_policy_preserves_route_local_instructions(route_module, tmp_path):

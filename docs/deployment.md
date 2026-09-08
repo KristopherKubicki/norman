@@ -285,7 +285,7 @@ This keeps routine turns lean without weakening explicit escalation.
 
 The legacy `norman-code` and `norman-code-governed` aliases remain accepted for
 existing sessions but are omitted from the selector. A fresh profile defaults
-to Luna. Changing models is an operator decision: Qwen recommendations are
+to Sol at medium effort. Changing models is an operator decision: Qwen recommendations are
 advisory and do not silently escalate Luna or Terra to Sol. Guardrail receipts
 record both local checks and report `unavailable` when Qwen cannot run; the
 selected cloud request remains usable so a Spark outage does not strand work.

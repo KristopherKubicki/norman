@@ -9,6 +9,9 @@ Parameters:
   TwilioWebhookUrl:
     Type: String
     Description: Exact public Twilio webhook URL used for signature validation.
+  AllowedFromNumbers:
+    Type: String
+    Description: Comma-separated E.164 sender numbers allowed to reach Norman.
   BurstSeconds:
     Type: Number
     Default: 8
@@ -94,6 +97,8 @@ Resources:
           INBOUND_QUEUE_URL: !Ref InboundQueue
           TWILIO_WEBHOOK_URL: !Ref TwilioWebhookUrl
           TWILIO_VALIDATE_SIGNATURE: "1"
+          SMS_ALLOWED_FROM_NUMBERS: !Ref AllowedFromNumbers
+          SMS_ACCEPTANCE_ACK_ENABLED: "1"
           SMS_BURST_SECONDS: !Ref BurstSeconds
           SMS_CONVERSATION_IDLE_SECONDS: !Ref ConversationIdleSeconds
       Policies:

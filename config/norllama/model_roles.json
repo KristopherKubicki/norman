@@ -6,13 +6,7 @@
       "tier_label": "qwen",
       "model": "qwen3.8:27b",
       "provider": "norllama",
-      "aliases": [
-        "qwen3-coder:30b",
-        "qwen3-coder:30b-a3b-q4_K_M",
-        "qwen3.6:27b",
-        "qwen3.5:27b",
-        "qwen3.5:27b-q4_K_M"
-      ],
+      "aliases": [],
       "endpoints": [
         "http://192.168.2.151:11435",
         "http://192.168.2.150:11435"
@@ -137,16 +131,6 @@
       "capabilities": {
         "named_escalation_required": true,
         "local": false
-      }
-    },
-    "qwen3.5:122b-a10b-q4_K_M": {
-      "provider": "norllama",
-      "status": "historical_manual_only",
-      "capabilities": {
-        "manual_only": true,
-        "allowed_lanes": ["judge", "verifier"],
-        "native_non_thinking_bridge": true,
-        "local": true
       }
     },
     "deepseek-v4-flash-dspark": {
