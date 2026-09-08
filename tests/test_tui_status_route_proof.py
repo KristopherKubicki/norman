@@ -11,9 +11,7 @@ def _probe(
     model: str | None = None,
 ) -> dict:
     runtime = runtime or ("localllm" if deterministic else "codex")
-    model = model or (
-        "deterministic-status" if deterministic else "openai.gpt-5.6-terra"
-    )
+    model = model or ("deterministic-status" if deterministic else "openai.gpt-5.6-sol")
     before = {
         "local_llm_health": {"ok": local_healthy},
         "codexspark": {
@@ -170,7 +168,7 @@ def test_ready_local_planner_status_requires_norllama_preflight() -> None:
     assert row["passed"] is True
     assert row["outcome"] == "norllama_preflight_cloud_authority"
     assert row["preflight"]["model"] == "qwen3.6:35b-a3b-q4_K_M"
-    assert row["final_authority"] == "codex/openai.gpt-5.6-terra"
+    assert row["final_authority"] == "codex/openai.gpt-5.6-sol"
 
 
 def test_recorded_preflight_is_authoritative_when_health_metadata_is_omitted() -> None:
@@ -244,11 +242,11 @@ def test_proof_rejects_named_codexspark_as_live_final_runtime() -> None:
     )
 
 
-def test_proof_rejects_non_terra_cloud_authority() -> None:
+def test_proof_rejects_non_sol_cloud_authority() -> None:
     row = proof.validate_proof(_probe(model="openai.gpt-5.5"))
 
     assert row["passed"] is False
-    assert "cloud final authority did not use GPT-5.6 Terra" in row["failures"]
+    assert "cloud final authority did not use GPT-5.6 Sol" in row["failures"]
 
 
 def test_summary_tracks_preflight_and_named_preview_contract() -> None:

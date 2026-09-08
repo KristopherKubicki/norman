@@ -25,7 +25,7 @@ except ModuleNotFoundError:
 DEFAULT_OUTPUT_JSON = Path("/tmp/norman_tui_status_route_proof.json")
 DEFAULT_OUTPUT_MD = Path("/tmp/norman_tui_status_route_proof.md")
 STATUS_PROMPT_TEMPLATE = "Status update. No tools or changes. {nonce}"
-TERRA_MODEL_MARKER = "gpt-5.6-terra"
+SOL_MODEL_MARKER = "gpt-5.6-sol"
 
 REMOTE_COLD_RECOVERY_DRILL = r"""
 import importlib.util
@@ -392,8 +392,8 @@ def _model_label(runtime: Any, model: Any) -> str:
     return f"{runtime_text}/{model_text}"
 
 
-def is_terra_model(model: Any) -> bool:
-    return TERRA_MODEL_MARKER in _text(model).lower()
+def is_sol_model(model: Any) -> bool:
+    return SOL_MODEL_MARKER in _text(model).lower()
 
 
 def proof_prompt(nonce: str) -> str:
@@ -662,8 +662,8 @@ def validate_proof(probe: dict[str, Any]) -> dict[str, Any]:
         )
         requires_local_preflight = False
     else:
-        if not is_terra_model(final_model):
-            failures.append("cloud final authority did not use GPT-5.6 Terra")
+        if not is_sol_model(final_model):
+            failures.append("cloud final authority did not use GPT-5.6 Sol")
         requires_local_preflight = planner_ready or preflight_used
         if requires_local_preflight:
             if not (preflight_used and preflight_ok and preflight_tokens > 0):
