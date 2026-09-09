@@ -4978,6 +4978,42 @@ def test_responses_accepts_native_tool_search_output_continuation():
     assert "mcp__scout_agent" in messages[-1]["content"]
 
 
+def test_responses_uses_native_tool_search_output_as_current_tool_contract():
+    import app.services.prompt_provider_facade as facade
+
+    payload = {
+        "tools": [{"type": "tool_search", "execution": "client"}],
+        "input": [
+            {
+                "type": "tool_search_output",
+                "call_id": "call-native-search",
+                "execution": "client",
+                "tools": [
+                    {
+                        "type": "namespace",
+                        "name": "mcp__scout_openbrand",
+                        "tools": [
+                            {
+                                "type": "function",
+                                "name": "scout_status",
+                                "parameters": {"type": "object"},
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+    _, calls = facade._response_tool_calls(
+        '{"tool_call":{"name":"mcp__scout_openbrand__scout_status",'
+        '"arguments":{}}}\nStatus unavailable.',
+        provider_payload=payload,
+    )
+    assert calls[0]["name"] == "scout_status"
+    assert calls[0]["namespace"] == "mcp__scout_openbrand"
+
+
 def test_openai_compat_responses_keeps_undeclared_mcp_namespace_call_as_text(
     monkeypatch,
 ):

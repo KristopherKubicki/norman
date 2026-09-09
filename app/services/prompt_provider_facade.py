@@ -1035,7 +1035,20 @@ def _norman_options(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 def _tools(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
     value = payload.get("tools")
-    return [dict(item) for item in value] if isinstance(value, list) else []
+    tools = [dict(item) for item in value] if isinstance(value, list) else []
+    raw_input = payload.get("input", payload.get("prompt"))
+    if isinstance(raw_input, list):
+        for item in raw_input:
+            if not isinstance(item, Mapping):
+                continue
+            if _clean(item.get("type")) != "tool_search_output":
+                continue
+            discovered = item.get("tools")
+            if isinstance(discovered, list):
+                tools.extend(
+                    dict(tool) for tool in discovered if isinstance(tool, Mapping)
+                )
+    return tools
 
 
 def _tool_name(tool: Mapping[str, Any]) -> str:
