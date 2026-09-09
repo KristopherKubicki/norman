@@ -4496,6 +4496,30 @@ def test_responses_stream_normalizer_contains_mixed_tool_envelopes():
     assert "tool_call" not in normalized.visible_text
 
 
+def test_responses_stream_normalizer_contains_whole_mixed_tool_fragment():
+    import app.services.prompt_provider_facade as facade
+
+    normalizer = facade.ResponsesStreamNormalizer()
+    fragment = "\n".join(
+        (
+            '{"query":"OpenBrand queue health"}',
+            '{"tool_call":{"name":"exec_command","arguments":{"cmd":"pwd"}}}',
+            '{"tool_call":{"name":"exec_command","arguments":{"cmd":"ls"}}}',
+            "READY",
+        )
+    )
+
+    assert normalizer.feed(fragment) == []
+    normalized = normalizer.finalize()
+
+    assert normalized.visible_text == '{"query":"OpenBrand queue health"}\n\n\nREADY'
+    assert [call["name"] for call in normalized.raw_tool_calls] == [
+        "exec_command",
+        "exec_command",
+    ]
+    assert "tool_call" not in normalized.visible_text
+
+
 def test_openai_compat_responses_stream_repairs_tool_intention_without_call(
     test_app,
     monkeypatch,
@@ -5835,7 +5859,7 @@ def test_explicit_zero_argument_tool_is_not_forced_after_success(monkeypatch):
                     "type": "function_call_output",
                     "call_id": call["call_id"],
                     "output": (
-                        'Wall time: 0.0470 seconds\nOutput:\n'
+                        "Wall time: 0.0470 seconds\nOutput:\n"
                         '{"health":"degraded","detail":"permission denied"}'
                     ),
                 }

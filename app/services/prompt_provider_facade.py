@@ -2687,6 +2687,14 @@ class ResponsesStreamNormalizer:
     def _drain_pending(self) -> list[str]:
         deltas: list[str] = []
         while self._pending:
+            # Bedrock can deliver the entire assistant message in one fragment.
+            # If that fragment mixes an advisory JSON object, one or more tool
+            # envelopes, and trailing prose, emitting the first non-tool object
+            # would also leak every later envelope as text. Hold the fragment
+            # until finalize() can split all recognized calls consistently.
+            _, buffered_calls = _trailing_json_tool_call_envelope(self._pending)
+            if buffered_calls:
+                break
             candidate_start = self._candidate_start(self._pending)
             if candidate_start < 0:
                 if not self._emitted_parts and not self._pending.strip():
