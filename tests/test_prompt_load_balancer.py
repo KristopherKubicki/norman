@@ -5789,6 +5789,66 @@ def test_openai_compat_responses_transparent_mode_repairs_repeated_tool_call(
     }
 
 
+def test_explicit_zero_argument_tool_is_not_forced_after_success(monkeypatch):
+    import app.services.prompt_provider_facade as facade
+
+    facade.reset_facade_response_state()
+    invocations = []
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+
+    def fake_chat(**kwargs):
+        invocations.append(kwargs)
+        content = (
+            '{"tool_call":{"name":"scout_status","arguments":{}}}'
+            if len(invocations) == 1
+            else "Scout health is degraded."
+        )
+        return _mock_local_chat(kwargs["messages"], kwargs["model"]) | {
+            "choices": [{"message": {"content": content}}]
+        }
+
+    monkeypatch.setattr(facade.norllama_gateway, "invoke_text_chat", fake_chat)
+    tools = [
+        {
+            "type": "function",
+            "name": "scout_status",
+            "description": "Read Scout health.",
+            "parameters": {"type": "object"},
+        }
+    ]
+    first = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "Call scout_status exactly once.",
+            "tools": tools,
+        }
+    )
+    call = first["output"][0]
+    second = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "previous_response_id": first["id"],
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": call["call_id"],
+                    "output": (
+                        "Wall time: 0.0470 seconds\nOutput:\n"
+                        '{"health":"degraded","detail":"permission denied"}'
+                    ),
+                }
+            ],
+            "tools": tools,
+        }
+    )
+
+    assert len(invocations) == 2
+    assert second["output_text"] == "Scout health is degraded."
+    assert [item["type"] for item in second["output"]] == ["message"]
+
+
 def test_openai_compat_responses_keeps_saved_call_metadata_server_side(
     monkeypatch,
 ):

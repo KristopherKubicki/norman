@@ -2579,6 +2579,8 @@ def _deterministic_explicit_tool_call(
         name = _clean(tool.get("name"))
         if not name or name == "tool_search" or name.lower() not in lowered:
             continue
+        if name in successful_names:
+            continue
         parameters = _mapping(tool.get("parameters"))
         required = parameters.get("required")
         if isinstance(required, list) and required:
