@@ -2511,6 +2511,41 @@ def _tool_use_requested(prepared: PreparedResponsesExecution) -> bool:
     )
 
 
+def _deterministic_explicit_tool_call(
+    prepared: PreparedResponsesExecution,
+) -> tuple[str, dict[str, Any]] | None:
+    """Return a safe unambiguous call explicitly named by the user.
+
+    This keeps a text-only provider from short-stopping when Codex has already
+    supplied the exact discovery tool or a zero-argument discovered MCP tool.
+    Calls with required arguments remain model-owned.
+    """
+
+    latest = _latest_user_text(prepared)
+    lowered = latest.lower()
+    tools = _tool_contract_definition(
+        prepared.provider_payload,
+        implicit_tools=prepared.implicit_tools,
+    )
+    successful_names = {
+        name for name, _ in prepared.tool_chain_context.successful_call_signatures
+    }
+    if "tool_search" in lowered and "tool_search" not in successful_names:
+        if any(_clean(tool.get("name")) == "tool_search" for tool in tools):
+            return "tool_search", {"query": latest[:256]}
+
+    for tool in tools:
+        name = _clean(tool.get("name"))
+        if not name or name == "tool_search" or name.lower() not in lowered:
+            continue
+        parameters = _mapping(tool.get("parameters"))
+        required = parameters.get("required")
+        if isinstance(required, list) and required:
+            continue
+        return name, {}
+    return None
+
+
 def _tool_continuation_exhausted_error(
     prepared: PreparedResponsesExecution,
     *,
@@ -4234,6 +4269,17 @@ def _resolve_tool_continuation_response(
                 code="live_status_synthesis_exhausted",
             )
         return repaired, "repaired", 1
+    deterministic_call = _deterministic_explicit_tool_call(prepared)
+    if not proposed_calls and deterministic_call is not None:
+        name, arguments = deterministic_call
+        return (
+            _chat_response_with_text(
+                resolved,
+                _json_dumps({"tool_call": {"name": name, "arguments": arguments}}),
+            ),
+            "repaired",
+            1,
+        )
     premature_member = _premature_namespace_member_call(
         _choice_text(resolved),
         prepared=prepared,

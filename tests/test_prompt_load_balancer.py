@@ -4889,6 +4889,47 @@ def test_openai_compat_responses_normalizes_codex_special_tool_search_contract()
     ]
 
 
+def test_responses_forces_explicit_special_tool_search_when_model_short_stops(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: _mock_local_chat(kwargs["messages"], kwargs["model"])
+        | {"choices": [{"message": {"content": "The tool is unavailable."}}]},
+    )
+
+    response = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "Use tool_search to find scout_status.",
+            "tools": [
+                {
+                    "type": "tool_search",
+                    "execution": "client",
+                    "description": "Search deferred MCP tool metadata.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                        "required": ["query"],
+                    },
+                }
+            ],
+        }
+    )
+
+    assert response["output_text"] == ""
+    assert response["output"][0]["name"] == "tool_search"
+    assert json.loads(response["output"][0]["arguments"])["query"].startswith(
+        "Use tool_search"
+    )
+
+
 def test_openai_compat_responses_keeps_undeclared_mcp_namespace_call_as_text(
     monkeypatch,
 ):
