@@ -45,6 +45,26 @@ def test_gateway_accept_backlog_handles_monitoring_bursts():
     assert module.ThreadingHTTPServer.request_queue_size == 128
 
 
+def test_gateway_closes_responses_to_release_connection_threads(monkeypatch):
+    module = load_gateway_module()
+    handler = object.__new__(module.Handler)
+    headers = []
+    ended = []
+    handler.close_connection = False
+    handler.send_header = lambda key, value: headers.append((key, value))
+    monkeypatch.setattr(
+        module.BaseHTTPRequestHandler,
+        "end_headers",
+        lambda self: ended.append(True),
+    )
+
+    handler.end_headers()
+
+    assert ("Connection", "close") in headers
+    assert handler.close_connection is True
+    assert ended == [True]
+
+
 @pytest.mark.parametrize(
     "model",
     [
