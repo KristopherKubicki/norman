@@ -45,6 +45,26 @@ def test_gateway_accept_backlog_handles_monitoring_bursts():
     assert module.ThreadingHTTPServer.request_queue_size == 128
 
 
+def test_gateway_closes_responses_to_release_connection_threads(monkeypatch):
+    module = load_gateway_module()
+    handler = object.__new__(module.Handler)
+    headers = []
+    ended = []
+    handler.close_connection = False
+    handler.send_header = lambda key, value: headers.append((key, value))
+    monkeypatch.setattr(
+        module.BaseHTTPRequestHandler,
+        "end_headers",
+        lambda self: ended.append(True),
+    )
+
+    handler.end_headers()
+
+    assert ("Connection", "close") in headers
+    assert handler.close_connection is True
+    assert ended == [True]
+
+
 @pytest.mark.parametrize(
     "model",
     [
@@ -823,17 +843,17 @@ def test_gateway_activity_defaults_missing_execution_mode_to_unknown(monkeypatch
     assert execution["items"][0]["activity_class"] == "execution"
 
 
-def test_gateway_marks_all_heavy_judge_aliases_as_manual_only():
+def test_gateway_marks_retired_heavy_judge_aliases_as_manual_only():
     module = load_gateway_module()
 
     for model in (
-        module.QWEN35_JUDGE_MODEL,
         "qwen3.5-122b-a10b-q4_K_M",
         "Qwen3.5/122B-A10B-Q4_K_M",
         "NVIDIA/Qwen3.5-122B-A10B-Q4_K_M",
     ):
         assert module.is_manual_only_model(model) is True
 
+    assert module.is_manual_only_model(module.QWEN35_JUDGE_MODEL) is False
     assert module.is_manual_only_model(module.QWEN3_CODER_MODEL) is False
 
 
@@ -867,7 +887,7 @@ def test_gateway_disables_policy_selected_thinking_for_generate_payloads(monkeyp
     assert explicit_payload["think"] is True
 
 
-def test_gateway_rejects_manual_only_prefetch_before_starting_a_job():
+def test_gateway_rejects_retired_prefetch_before_starting_a_job():
     module = load_gateway_module()
     handler = object.__new__(module.Handler)
     responses = []
@@ -879,15 +899,12 @@ def test_gateway_rejects_manual_only_prefetch_before_starting_a_job():
 
     assert responses == [
         (
-            module.HTTPStatus.FORBIDDEN,
+            module.HTTPStatus.GONE,
             {
                 "ok": False,
-                "error": "manual_only_model",
+                "error": "retired_model",
                 "model": "Qwen3.5/122B-A10B-Q4_K_M",
-                "detail": (
-                    "This model is available only for explicit manual review; "
-                    "automatic prefetch and warming are disabled."
-                ),
+                "replacement": module.QWEN38_MODEL,
             },
         )
     ]

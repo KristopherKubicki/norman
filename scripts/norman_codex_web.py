@@ -1179,7 +1179,13 @@ WORKING_RECAP_LOCAL_ENDPOINTS = tuple(
 LOCAL_LLM_DISABLED_MODEL_PATTERNS = tuple(
     item.strip().lower()
     for item in os.environ.get(
-        "NORMAN_LOCAL_LLM_DISABLED_MODELS", "llama3.2,llama3.2:*"
+        "NORMAN_LOCAL_LLM_DISABLED_MODELS",
+        (
+            "llama3.2,llama3.2:*,qwen3,qwen3:*,qwen3.5,qwen3.5:*,"
+            "qwen3.6,qwen3.6:*,qwen3-coder,qwen3-coder:*,"
+            "qwen3-coder-next,qwen3-coder-next:*,gemma4,gemma4:*,"
+            "devstral-small-2,devstral-small-2:*"
+        ),
     ).split(",")
     if item.strip()
 )

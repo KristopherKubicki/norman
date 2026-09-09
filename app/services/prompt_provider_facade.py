@@ -710,7 +710,10 @@ def _function_call_arguments(item: Mapping[str, Any]) -> str:
 
 
 def _function_call_metadata(item: Mapping[str, Any]) -> tuple[str, str]:
-    return _clean(item.get("call_id")), _clean(item.get("name"))
+    name = _clean(item.get("name"))
+    if not name and _clean(item.get("type")) == "tool_search_call":
+        name = "tool_search"
+    return _clean(item.get("call_id")), name
 
 
 def _function_call_item(
@@ -775,7 +778,7 @@ def _function_call_output_context_message(
 def _function_calls_from_items(items: list[dict[str, Any]]) -> dict[str, str]:
     calls: dict[str, str] = {}
     for item in items:
-        if _clean(item.get("type")) != "function_call":
+        if _clean(item.get("type")) not in {"function_call", "tool_search_call"}:
             continue
         call_id, name = _function_call_metadata(item)
         if call_id and name:
@@ -788,7 +791,7 @@ def _function_call_items_from_items(
 ) -> dict[str, dict[str, Any]]:
     calls: dict[str, dict[str, Any]] = {}
     for item in items:
-        if _clean(item.get("type")) != "function_call":
+        if _clean(item.get("type")) not in {"function_call", "tool_search_call"}:
             continue
         function_call = _function_call_item(item)
         if function_call:
@@ -831,7 +834,10 @@ def _legacy_replayed_function_call(message: Mapping[str, Any]) -> tuple[str, str
 def _tool_output_metadata(item: Mapping[str, Any]) -> tuple[str, str]:
     """Return tool output as text for the local chat compatibility lane."""
 
-    output = item.get("output")
+    if _clean(item.get("type")) == "tool_search_output":
+        output = {"tools": item.get("tools", [])}
+    else:
+        output = item.get("output")
     if isinstance(output, str):
         normalized_output = output
     elif isinstance(output, (Mapping, list)):
@@ -1029,12 +1035,33 @@ def _norman_options(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 def _tools(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
     value = payload.get("tools")
-    return [dict(item) for item in value] if isinstance(value, list) else []
+    tools = [dict(item) for item in value] if isinstance(value, list) else []
+    raw_input = payload.get("input", payload.get("prompt"))
+    if isinstance(raw_input, list):
+        for item in raw_input:
+            if not isinstance(item, Mapping):
+                continue
+            if _clean(item.get("type")) != "tool_search_output":
+                continue
+            discovered = item.get("tools")
+            if isinstance(discovered, list):
+                tools.extend(
+                    dict(tool) for tool in discovered if isinstance(tool, Mapping)
+                )
+    return tools
 
 
 def _tool_name(tool: Mapping[str, Any]) -> str:
     function = _mapping(tool.get("function"))
-    return _clean(function.get("name") or tool.get("name"))
+    name = _clean(function.get("name") or tool.get("name"))
+    if name:
+        return name
+    # Codex 0.151+ advertises deferred MCP discovery as a special tool shape
+    # without a name field: {"type": "tool_search", ...}. Normalize it to
+    # the executable function name used by Responses function_call items.
+    if _clean(tool.get("type")) == "tool_search":
+        return "tool_search"
+    return ""
 
 
 def _namespace_member_name(namespace: str, member: Mapping[str, Any]) -> str:
@@ -1158,11 +1185,11 @@ def _tool_chain_context(
             if not isinstance(item, Mapping):
                 continue
             item_type = _clean(item.get("type"))
-            if item_type == "function_call":
+            if item_type in {"function_call", "tool_search_call"}:
                 function_call = _function_call_item(item)
                 if function_call:
                     calls[function_call["call_id"]] = function_call
-            elif item_type == "function_call_output":
+            elif item_type in {"function_call_output", "tool_search_output"}:
                 tool_output = _tool_output_metadata(item)
                 supplied_results.add(tool_output)
     matched_result_names = [
@@ -1310,11 +1337,20 @@ def _tool_output_is_successful(output: str) -> bool:
     normalized = _lower(output)
     if not normalized:
         return False
+    structured_output = output
+    codex_output_match = re.match(
+        r"\AWall time:\s*[^\r\n]+\r?\nOutput:\r?\n",
+        output,
+    )
+    if codex_output_match is not None:
+        structured_output = output[codex_output_match.end() :]
     try:
-        parsed = json.loads(output)
+        parsed = json.loads(structured_output)
     except (TypeError, ValueError):
         parsed = None
     if isinstance(parsed, Mapping):
+        if parsed.get("isError") is True or parsed.get("is_error") is True:
+            return False
         error = parsed.get("error")
         if error not in (None, "", {}, []):
             return False
@@ -1322,6 +1358,16 @@ def _tool_output_is_successful(output: str) -> bool:
             value = parsed.get(field)
             if isinstance(value, int) and value >= 400:
                 return False
+        # A successfully returned structured tool report can legitimately
+        # describe degraded dependencies or permission errors in its domain
+        # data. Do not confuse those contents with a failed tool execution.
+        return True
+    if isinstance(parsed, list):
+        return not any(
+            isinstance(item, Mapping)
+            and (item.get("isError") is True or item.get("is_error") is True)
+            for item in parsed
+        )
     return not any(marker in normalized for marker in TOOL_OUTPUT_FAILURE_MARKERS)
 
 
@@ -1411,10 +1457,11 @@ def _tool_contract_definition(
         if not name:
             continue
         function = _mapping(tool.get("function"))
+        tool_type = _clean(tool.get("type")) or "function"
         compact.append(
             {
                 "name": name,
-                "type": _clean(tool.get("type")) or "function",
+                "type": "function" if tool_type == "tool_search" else tool_type,
                 "description": _clean(
                     function.get("description") or tool.get("description")
                 ),
@@ -1953,7 +2000,7 @@ def _response_input_function_call_items(
         return {}
     function_calls: dict[str, dict[str, Any]] = {}
     for item in _messages(raw_input):
-        if _clean(item.get("type")) != "function_call":
+        if _clean(item.get("type")) not in {"function_call", "tool_search_call"}:
             continue
         function_call = _function_call_item(item, strict=True)
         previous = function_calls.get(function_call["call_id"])
@@ -1976,7 +2023,7 @@ def _response_input_tool_outputs(
         return set()
     outputs: set[tuple[str, str]] = set()
     for item in _messages(raw_input):
-        if _clean(item.get("type")) == "function_call_output":
+        if _clean(item.get("type")) in {"function_call_output", "tool_search_output"}:
             outputs.add(_tool_output_metadata(item))
     return outputs
 
@@ -2023,7 +2070,10 @@ def _validate_response_tool_continuation(
             )
         seen_outputs[call_id] = output
     for item in _messages(raw_input):
-        if _clean(item.get("type")) != "function_call_output":
+        if _clean(item.get("type")) not in {
+            "function_call_output",
+            "tool_search_output",
+        }:
             continue
         call_id, output = _tool_output_metadata(item)
         if not call_id or call_id not in function_call_items:
@@ -2074,7 +2124,7 @@ def response_input_to_messages(
                     param="input",
                 )
             item_type = _clean(item.get("type"))
-            if item_type == "function_call":
+            if item_type in {"function_call", "tool_search_call"}:
                 function_call = _function_call_item(item, strict=True)
                 existing = function_call_items.get(function_call["call_id"])
                 if existing:
@@ -2095,7 +2145,7 @@ def response_input_to_messages(
                 function_call_items[function_call["call_id"]] = function_call
                 messages.append(_function_call_context_message(function_call))
                 continue
-            if item_type == "function_call_output":
+            if item_type in {"function_call_output", "tool_search_output"}:
                 call_id, output = _tool_output_metadata(item)
                 if not call_id or call_id not in function_call_items:
                     raise FacadeError(
@@ -2502,6 +2552,43 @@ def _tool_use_requested(prepared: PreparedResponsesExecution) -> bool:
     )
 
 
+def _deterministic_explicit_tool_call(
+    prepared: PreparedResponsesExecution,
+) -> tuple[str, dict[str, Any]] | None:
+    """Return a safe unambiguous call explicitly named by the user.
+
+    This keeps a text-only provider from short-stopping when Codex has already
+    supplied the exact discovery tool or a zero-argument discovered MCP tool.
+    Calls with required arguments remain model-owned.
+    """
+
+    latest = _latest_user_text(prepared)
+    lowered = latest.lower()
+    tools = _tool_contract_definition(
+        prepared.provider_payload,
+        implicit_tools=prepared.implicit_tools,
+    )
+    successful_names = {
+        name for name, _ in prepared.tool_chain_context.successful_call_signatures
+    }
+    if "tool_search" in lowered and "tool_search" not in successful_names:
+        if any(_clean(tool.get("name")) == "tool_search" for tool in tools):
+            return "tool_search", {"query": latest[:256]}
+
+    for tool in tools:
+        name = _clean(tool.get("name"))
+        if not name or name == "tool_search" or name.lower() not in lowered:
+            continue
+        if name in successful_names:
+            continue
+        parameters = _mapping(tool.get("parameters"))
+        required = parameters.get("required")
+        if isinstance(required, list) and required:
+            continue
+        return name, {}
+    return None
+
+
 def _tool_continuation_exhausted_error(
     prepared: PreparedResponsesExecution,
     *,
@@ -2722,6 +2809,7 @@ def _response_output_items(
     text: str,
     tool_calls: list[dict[str, Any]],
     output_item_id: str = "",
+    native_tool_search: bool = False,
 ) -> list[dict[str, Any]]:
     message_item = {
         "id": output_item_id or f"msg-norman-{uuid.uuid4().hex}",
@@ -2737,7 +2825,38 @@ def _response_output_items(
         ],
     }
     if tool_calls:
-        return ([message_item] if text else []) + [dict(item) for item in tool_calls]
+        output_tool_calls: list[dict[str, Any]] = []
+        for item in tool_calls:
+            output_item = dict(item)
+            if native_tool_search and _clean(output_item.get("name")) == "tool_search":
+                arguments = output_item.get("arguments", "{}")
+                if isinstance(arguments, str):
+                    try:
+                        arguments = json.loads(arguments)
+                    except (TypeError, ValueError) as exc:
+                        raise FacadeError(
+                            "Responses tool_search_call arguments must be an object",
+                            status_code=502,
+                            error_type="server_error",
+                            code="invalid_tool_search_call_arguments",
+                        ) from exc
+                if not isinstance(arguments, Mapping):
+                    raise FacadeError(
+                        "Responses tool_search_call arguments must be an object",
+                        status_code=502,
+                        error_type="server_error",
+                        code="invalid_tool_search_call_arguments",
+                    )
+                output_item = {
+                    "id": output_item.get("id") or f"tsc-norman-{uuid.uuid4().hex}",
+                    "type": "tool_search_call",
+                    "status": "completed",
+                    "call_id": output_item.get("call_id"),
+                    "execution": "client",
+                    "arguments": dict(arguments),
+                }
+            output_tool_calls.append(output_item)
+        return ([message_item] if text else []) + output_tool_calls
     return [message_item]
 
 
@@ -4225,6 +4344,17 @@ def _resolve_tool_continuation_response(
                 code="live_status_synthesis_exhausted",
             )
         return repaired, "repaired", 1
+    deterministic_call = _deterministic_explicit_tool_call(prepared)
+    if not proposed_calls and deterministic_call is not None:
+        name, arguments = deterministic_call
+        return (
+            _chat_response_with_text(
+                resolved,
+                _json_dumps({"tool_call": {"name": name, "arguments": arguments}}),
+            ),
+            "repaired",
+            1,
+        )
     premature_member = _premature_namespace_member_call(
         _choice_text(resolved),
         prepared=prepared,
@@ -4255,9 +4385,6 @@ def _resolve_tool_continuation_response(
     )
     if not repeats_successful_call and not intention_without_call:
         return resolved, "normal", 0
-    if repeats_successful_call and prepared.bridge_mode != GOVERNED_BRIDGE_MODE:
-        return resolved, "passthrough", 0
-
     if intention_without_call and evidence_budget_reached:
         repair_message = _LIVE_OPERATIONAL_FINAL_SYNTHESIS_MESSAGE
     elif intention_without_call and _namespace_discovery_required(prepared):
@@ -4508,6 +4635,9 @@ def _responses_response_from_chat(
         text=visible_text,
         tool_calls=tool_calls,
         output_item_id=output_item_id,
+        native_tool_search=any(
+            _clean(tool.get("type")) == "tool_search" for tool in tools
+        ),
     )
     output_text = visible_text
     tool_chain = _tool_chain_telemetry(
@@ -4580,7 +4710,7 @@ def _responses_response_from_chat(
             response_function_call_items=[
                 item
                 for item in output_items
-                if _clean(item.get("type")) == "function_call"
+                if _clean(item.get("type")) in {"function_call", "tool_search_call"}
             ],
             tool_outputs=prepared.tool_outputs,
             ephemeral=not prepared.store_requested,
@@ -4614,9 +4744,8 @@ class FacadeResponsesStream:
         self._cloud_fallback_attempted = False
         self._watchdog_state = "normal"
         self._watchdog_attempts = 0
-        self._buffer_tool_continuation = (
-            prepared.bridge_mode == GOVERNED_BRIDGE_MODE
-            and bool(prepared.tool_chain_context.successful_call_signatures)
+        self._buffer_tool_continuation = bool(
+            prepared.tool_chain_context.successful_call_signatures
         ) or _tool_use_requested(prepared)
 
     @property

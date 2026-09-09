@@ -5481,6 +5481,13 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "Norllama/0.1"
 
+    def end_headers(self) -> None:
+        """Close each response so idle HTTP/1.1 clients cannot pin a thread."""
+
+        self.send_header("Connection", "close")
+        self.close_connection = True
+        super().end_headers()
+
     @property
     def app(self) -> App:
         return self.server.app  # type: ignore[attr-defined]

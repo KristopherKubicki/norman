@@ -43,6 +43,11 @@ OPS_OPENBRAND_MCP_URL = "https://ops.openbrand.com/mcp"
 OPS_OPENBRAND_MCP_TOKEN_ENV = "OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY"
 OPS_OPENBRAND_MCP_STARTUP_TIMEOUT_SECONDS = 20
 OPS_OPENBRAND_MCP_TOOL_TIMEOUT_SECONDS = 60
+SCOUT_OPENBRAND_MCP_CONFIG_BEGIN = "# BEGIN NORMAN SCOUT OPENBRAND MCP"
+SCOUT_OPENBRAND_MCP_CONFIG_END = "# END NORMAN SCOUT OPENBRAND MCP"
+SCOUT_OPENBRAND_MCP_COMMAND = (
+    HOME / "code" / "control_plane" / "scripts" / "run_scout_agent_mcp.sh"
+)
 WORK_SKILLS_SOURCE_ROOT = HOME / ".codex-work" / "skills"
 PERSONAL_SKILLS_SOURCE_ROOT = HOME / ".codex-personal" / "skills"
 ROUTE_SKILL_SCOPE_BY_GROUP = {
@@ -72,7 +77,7 @@ ROUTER_MODELS = frozenset(
         GOVERNED_ROUTER_MODEL,
     }
 )
-MODEL_CATALOG_CONTRACT_VERSION = "2026-08-tiered-code-router-v1"
+MODEL_CATALOG_CONTRACT_VERSION = "2026-09-tiered-code-router-v2"
 REQUIRED_CODEX_MODEL_CAPABILITIES = {
     "shell_type": "shell_command",
     "apply_patch_tool_type": "freeform",
@@ -718,7 +723,7 @@ def _routed_model_catalog_entry(
     display_name: str,
     description: str,
     priority: int,
-    include_skills: bool = True,
+    include_skills: bool = False,
     include_plugins: bool = True,
 ) -> dict[str, object]:
     return {
@@ -766,7 +771,10 @@ def _routed_model_catalog_entry(
         # The Responses facade currently normalizes text content only. Do not
         # advertise image input until it can safely forward image data.
         "input_modalities": ["text"],
-        "supports_search_tool": False,
+        # Codex uses the search-capable contract for deferred MCP namespace
+        # discovery. Without it, MCP namespaces can be advertised while the
+        # corresponding tool_search dispatcher is omitted from the turn.
+        "supports_search_tool": True,
         "use_responses_lite": False,
     }
 
@@ -940,9 +948,7 @@ def write_work_fallback_model_contract(home: Path | None = None) -> Path:
         body = auth_table.group("body")
         timeout_line = "timeout_ms = 15000"
         if re.search(r"(?m)^timeout_ms\s*=.*$", body):
-            body = re.sub(
-                r"(?m)^timeout_ms\s*=.*$", timeout_line, body, count=1
-            )
+            body = re.sub(r"(?m)^timeout_ms\s*=.*$", timeout_line, body, count=1)
         else:
             body = f"{body.rstrip()}\n{timeout_line}\n"
         contents = (
@@ -1005,6 +1011,33 @@ def ops_openbrand_mcp_config_block() -> str:
     )
 
 
+def scout_openbrand_mcp_config_block() -> str:
+    return "\n".join(
+        (
+            SCOUT_OPENBRAND_MCP_CONFIG_BEGIN,
+            "[mcp_servers.scout_openbrand]",
+            f"command = {json.dumps(str(SCOUT_OPENBRAND_MCP_COMMAND))}",
+            "startup_timeout_sec = 30",
+            "tool_timeout_sec = 300",
+            'default_tools_approval_mode = "approve"',
+            (
+                'enabled_tools = ["scout_status", "scout_run_instruction", '
+                '"scout_get_request"]'
+            ),
+            (
+                'env = { SCOUT_CDP_URL = "http://127.0.0.1:9222", '
+                'SCOUT_CDP_ALLOW_BUSY_PAGE = "1", '
+                'SCOUT_WEB_BASE_URL = "https://www.perplexity.ai", '
+                "SCOUT_WEB_AUTH_PROBE_URL = "
+                '"https://www.perplexity.ai/api/auth/session", '
+                'SCOUT_WEB_COOKIE_FILE = "", SCOUT_WEB_ALLOW_MUTATIONS = "1" }'
+            ),
+            SCOUT_OPENBRAND_MCP_CONFIG_END,
+            "",
+        )
+    )
+
+
 def _table_end(contents: str, start: int) -> int:
     next_table = re.search(
         r"(?m)^[ \t]*\[(?!\[)[^\]\n]+\][^\n]*(?:\n|$)", contents[start:]
@@ -1032,6 +1065,33 @@ def _existing_ops_openbrand_mcp_span(contents: str) -> tuple[int, int] | None:
     header = re.search(
         r"(?m)^[ \t]*\[\s*mcp_servers\.(?:ops_openbrand|"
         r'"ops_openbrand"|\'ops_openbrand\')\s*\][^\n]*(?:\n|$)',
+        contents,
+    )
+    if header is None:
+        return None
+    return header.start(), _table_end(contents, header.end())
+
+
+def _existing_scout_openbrand_mcp_span(contents: str) -> tuple[int, int] | None:
+    managed_start = contents.find(SCOUT_OPENBRAND_MCP_CONFIG_BEGIN)
+    if managed_start >= 0:
+        managed_end = contents.find(
+            SCOUT_OPENBRAND_MCP_CONFIG_END,
+            managed_start + len(SCOUT_OPENBRAND_MCP_CONFIG_BEGIN),
+        )
+        if managed_end < 0:
+            raise RuntimeError(
+                "The managed Scout MCP configuration block is incomplete in "
+                "the route Codex config."
+            )
+        managed_end += len(SCOUT_OPENBRAND_MCP_CONFIG_END)
+        while managed_end < len(contents) and contents[managed_end] in "\r\n":
+            managed_end += 1
+        return managed_start, managed_end
+
+    header = re.search(
+        r"(?m)^[ \t]*\[\s*mcp_servers\.(?:scout_openbrand|"
+        r'"scout_openbrand"|\'scout_openbrand\')\s*\][^\n]*(?:\n|$)',
         contents,
     )
     if header is None:
@@ -1073,6 +1133,40 @@ def write_ops_openbrand_mcp_config(route: Route) -> Path | None:
     return path
 
 
+def write_scout_openbrand_mcp_config(route: Route) -> Path | None:
+    """Ensure work routes expose the narrow Scout/Perplexity MCP surface."""
+    if not is_ops_openbrand_work_route(route):
+        return None
+
+    path = route_config_path(route)
+    try:
+        existing = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        existing = ""
+    except OSError as exc:
+        raise RuntimeError(f"Unable to read route Codex config at {path}.") from exc
+
+    block = scout_openbrand_mcp_config_block()
+    existing_span = _existing_scout_openbrand_mcp_span(existing)
+    if existing_span is not None:
+        start, end = existing_span
+        contents = f"{existing[:start]}{block}{existing[end:]}"
+    elif existing.strip():
+        contents = f"{existing.rstrip()}\n\n{block}"
+    else:
+        contents = block
+
+    try:
+        tomllib.loads(contents)
+    except tomllib.TOMLDecodeError as exc:
+        raise RuntimeError(
+            f"Unable to safely install the Scout MCP configuration in {path}: "
+            f"invalid TOML ({exc})."
+        ) from exc
+    _write_private_text(path, contents)
+    return path
+
+
 def write_gateway_profile(route: Route) -> Path:
     """Create/refresh a profile without ever storing a bearer token."""
     if not GATEWAY_TOKEN_HELPER.is_file() or not os.access(
@@ -1086,6 +1180,7 @@ def write_gateway_profile(route: Route) -> Path:
     write_routed_tui_secret_policy(home)
     sync_scoped_skills(route)
     write_ops_openbrand_mcp_config(route)
+    write_scout_openbrand_mcp_config(route)
     catalog_path = write_routed_model_catalog(route)
     path = profile_path(route)
     contents = "\n".join(
@@ -1151,6 +1246,18 @@ def write_generic_work_model_contract() -> Path:
             prefix = f"{prefix.rstrip()}\n{line}\n"
 
     contents = f"{prefix.rstrip()}\n\n{suffix.lstrip()}" if suffix else prefix
+    for span_finder, block in (
+        (_existing_ops_openbrand_mcp_span, ops_openbrand_mcp_config_block()),
+        (_existing_scout_openbrand_mcp_span, scout_openbrand_mcp_config_block()),
+    ):
+        existing_span = span_finder(contents)
+        if existing_span is not None:
+            start, end = existing_span
+            contents = f"{contents[:start]}{block}{contents[end:]}"
+        elif contents.strip():
+            contents = f"{contents.rstrip()}\n\n{block}"
+        else:
+            contents = block
     try:
         parsed = tomllib.loads(contents)
     except tomllib.TOMLDecodeError as exc:

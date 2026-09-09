@@ -47,7 +47,13 @@ def test_broker_client_uses_an_explicit_non_root_account():
     client = BROKER_CLIENT_PATH.read_text(encoding="utf-8")
 
     assert "NORMAN_CODEX_GATEWAY_BROKER_USER:-kristopher" in client
+    assert (
+        "NORMAN_CODEX_GATEWAY_BROKER_IDENTITY_FILE:-$HOME/.ssh/id_ed25519_netops_codex"
+        in client
+    )
     assert '-l "$BROKER_USER"' in client
+    assert "-o IdentitiesOnly=yes" in client
+    assert '-i "$BROKER_IDENTITY_FILE"' in client
     assert "is_local_broker_host()" in client
     assert 'exec sudo --non-interactive "$BROKER_COMMAND" "$1" "$2"' in client
 

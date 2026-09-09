@@ -4859,6 +4859,194 @@ def test_openai_compat_responses_flattens_namespace_tool_contract():
     assert "mcp__ops_openbrand" not in {tool["name"] for tool in tools}
 
 
+def test_openai_compat_responses_normalizes_codex_special_tool_search_contract():
+    import app.services.prompt_provider_facade as facade
+
+    payload = {
+        "tools": [
+            {
+                "type": "tool_search",
+                "execution": "client",
+                "description": "Search deferred MCP tool metadata.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            }
+        ]
+    }
+
+    assert facade._tool_names(facade._tools(payload)) == {"tool_search"}
+    assert facade._tool_contract_definition(payload) == [
+        {
+            "name": "tool_search",
+            "type": "function",
+            "description": "Search deferred MCP tool metadata.",
+            "parameters": payload["tools"][0]["parameters"],
+        }
+    ]
+
+
+def test_responses_forces_explicit_special_tool_search_when_model_short_stops(
+    monkeypatch,
+):
+    import app.services.prompt_provider_facade as facade
+
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+    monkeypatch.setattr(
+        facade.norllama_gateway,
+        "invoke_text_chat",
+        lambda **kwargs: _mock_local_chat(kwargs["messages"], kwargs["model"])
+        | {"choices": [{"message": {"content": "The tool is unavailable."}}]},
+    )
+
+    response = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "Use tool_search to find scout_status.",
+            "tools": [
+                {
+                    "type": "tool_search",
+                    "execution": "client",
+                    "description": "Search deferred MCP tool metadata.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                        "required": ["query"],
+                    },
+                }
+            ],
+        }
+    )
+
+    assert response["output_text"] == ""
+    assert response["output"][0] == {
+        "id": response["output"][0]["id"],
+        "type": "tool_search_call",
+        "status": "completed",
+        "call_id": response["output"][0]["call_id"],
+        "execution": "client",
+        "arguments": {
+            "query": "Use tool_search to find scout_status.",
+        },
+    }
+
+
+def test_responses_accepts_native_tool_search_output_continuation():
+    import app.services.prompt_provider_facade as facade
+
+    call_id = "call-native-search"
+    call = {
+        "type": "tool_search_call",
+        "id": "tsc-native-search",
+        "call_id": call_id,
+        "status": "completed",
+        "execution": "client",
+        "arguments": {"query": "scout_status"},
+    }
+    output = {
+        "type": "tool_search_output",
+        "id": "tso-native-search",
+        "call_id": call_id,
+        "status": "completed",
+        "execution": "client",
+        "tools": [
+            {
+                "type": "namespace",
+                "name": "mcp__scout_agent",
+                "tools": [{"type": "function", "name": "scout_status"}],
+            }
+        ],
+    }
+
+    calls = facade._response_input_function_call_items({"input": [call, output]})
+    assert calls[call_id]["name"] == "tool_search"
+    assert json.loads(calls[call_id]["arguments"]) == {"query": "scout_status"}
+    assert facade._response_input_tool_outputs({"input": [call, output]}) == {
+        (
+            call_id,
+            '{"tools":[{"name":"mcp__scout_agent","tools":'
+            '[{"name":"scout_status","type":"function"}],"type":"namespace"}]}',
+        )
+    }
+    messages = facade.response_input_to_messages({"input": [call, output]})
+    assert [message["role"] for message in messages] == ["assistant", "tool"]
+    assert "mcp__scout_agent" in messages[-1]["content"]
+
+
+def test_responses_uses_native_tool_search_output_as_current_tool_contract():
+    import app.services.prompt_provider_facade as facade
+
+    payload = {
+        "tools": [{"type": "tool_search", "execution": "client"}],
+        "input": [
+            {
+                "type": "tool_search_output",
+                "call_id": "call-native-search",
+                "execution": "client",
+                "tools": [
+                    {
+                        "type": "namespace",
+                        "name": "mcp__scout_openbrand",
+                        "tools": [
+                            {
+                                "type": "function",
+                                "name": "scout_status",
+                                "parameters": {"type": "object"},
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+    _, calls = facade._response_tool_calls(
+        '{"tool_call":{"name":"mcp__scout_openbrand__scout_status",'
+        '"arguments":{}}}\nStatus unavailable.',
+        provider_payload=payload,
+    )
+    assert calls[0]["name"] == "scout_status"
+    assert calls[0]["namespace"] == "mcp__scout_openbrand"
+
+
+def test_structured_tool_report_with_degraded_domain_data_is_execution_success():
+    import app.services.prompt_provider_facade as facade
+
+    assert facade._tool_output_is_successful(
+        json.dumps(
+            {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": '{"health":"degraded","detail":"permission denied"}',
+                    }
+                ],
+                "isError": False,
+            }
+        )
+    )
+    assert not facade._tool_output_is_successful(
+        json.dumps({"content": [], "isError": True})
+    )
+
+
+def test_codex_wrapped_structured_tool_report_is_execution_success():
+    import app.services.prompt_provider_facade as facade
+
+    report = json.dumps(
+        {"health": "degraded", "detail": "permission denied by dependency"}
+    )
+
+    assert facade._tool_output_is_successful(
+        f"Wall time: 0.0470 seconds\nOutput:\n{report}"
+    )
+
+
 def test_openai_compat_responses_keeps_undeclared_mcp_namespace_call_as_text(
     monkeypatch,
 ):
@@ -5521,7 +5709,7 @@ def test_openai_compat_responses_rejects_repeated_tool_call_after_repair(
     }
 
 
-def test_openai_compat_responses_transparent_mode_preserves_repeated_tool_call(
+def test_openai_compat_responses_transparent_mode_repairs_repeated_tool_call(
     monkeypatch,
 ):
     import app.services.prompt_provider_facade as facade
@@ -5536,6 +5724,10 @@ def test_openai_compat_responses_transparent_mode_preserves_repeated_tool_call(
 
     def fake_chat(**kwargs):
         invocations.append(kwargs)
+        if len(invocations) == 3:
+            return _mock_local_chat(kwargs["messages"], kwargs["model"]) | {
+                "choices": [{"message": {"content": "Jira checks are complete."}}]
+            }
         return _mock_local_chat(kwargs["messages"], kwargs["model"]) | {
             "choices": [
                 {
@@ -5586,15 +5778,75 @@ def test_openai_compat_responses_transparent_mode_preserves_repeated_tool_call(
         }
     )
 
-    assert len(invocations) == 2
-    assert [item["type"] for item in second["output"]] == ["function_call"]
-    assert second["output"][0]["name"] == tool_name
+    assert len(invocations) == 3
+    assert second["output_text"] == "Jira checks are complete."
+    assert [item["type"] for item in second["output"]] == ["message"]
     compatibility = second["norman"]["responses_compatibility"]
     assert compatibility["tool_bridge_mode"] == "transparent"
     assert compatibility["tool_chain"]["watchdog"] == {
-        "state": "passthrough",
-        "attempts": 0,
+        "state": "repaired",
+        "attempts": 1,
     }
+
+
+def test_explicit_zero_argument_tool_is_not_forced_after_success(monkeypatch):
+    import app.services.prompt_provider_facade as facade
+
+    facade.reset_facade_response_state()
+    invocations = []
+    monkeypatch.setattr(
+        facade, "provider_adapter_decision", lambda **kwargs: _local_route_envelope()
+    )
+
+    def fake_chat(**kwargs):
+        invocations.append(kwargs)
+        content = (
+            '{"tool_call":{"name":"scout_status","arguments":{}}}'
+            if len(invocations) == 1
+            else "Scout health is degraded."
+        )
+        return _mock_local_chat(kwargs["messages"], kwargs["model"]) | {
+            "choices": [{"message": {"content": content}}]
+        }
+
+    monkeypatch.setattr(facade.norllama_gateway, "invoke_text_chat", fake_chat)
+    tools = [
+        {
+            "type": "function",
+            "name": "scout_status",
+            "description": "Read Scout health.",
+            "parameters": {"type": "object"},
+        }
+    ]
+    first = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "input": "Call scout_status exactly once.",
+            "tools": tools,
+        }
+    )
+    call = first["output"][0]
+    second = execute_openai_responses_facade(
+        {
+            "model": "norman-code",
+            "previous_response_id": first["id"],
+            "input": [
+                {
+                    "type": "function_call_output",
+                    "call_id": call["call_id"],
+                    "output": (
+                        'Wall time: 0.0470 seconds\nOutput:\n'
+                        '{"health":"degraded","detail":"permission denied"}'
+                    ),
+                }
+            ],
+            "tools": tools,
+        }
+    )
+
+    assert len(invocations) == 2
+    assert second["output_text"] == "Scout health is degraded."
+    assert [item["type"] for item in second["output"]] == ["message"]
 
 
 def test_openai_compat_responses_keeps_saved_call_metadata_server_side(

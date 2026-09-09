@@ -392,9 +392,10 @@ def test_generated_profile_uses_brokered_auth_without_storing_a_token(
     assert catalog["models"][0]["default_reasoning_level"] == "high"
     assert catalog["models"][0]["base_instructions"] == ""
     assert catalog["models"][0]["input_modalities"] == ["text"]
+    assert catalog["models"][0]["supports_search_tool"] is True
     assert catalog["models"][0]["include_skills_usage_instructions"] is False
     assert catalog["models"][0]["include_plugin_usage_instructions"] is False
-    assert catalog["models"][2]["include_skills_usage_instructions"] is True
+    assert catalog["models"][2]["include_skills_usage_instructions"] is False
     assert catalog["models"][2]["include_plugin_usage_instructions"] is True
     assert not (profile_path.parent / "config.toml").exists()
 
@@ -461,6 +462,14 @@ def test_work_profile_registers_ops_mcp_without_forcing_workflow(
         "tool_timeout_sec": 60,
         "default_tools_approval_mode": "approve",
     }
+    assert config["mcp_servers"]["scout_openbrand"]["command"] == str(
+        route_module.SCOUT_OPENBRAND_MCP_COMMAND
+    )
+    assert config["mcp_servers"]["scout_openbrand"]["enabled_tools"] == [
+        "scout_status",
+        "scout_run_instruction",
+        "scout_get_request",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -707,6 +716,18 @@ def test_generic_work_profile_restores_norman_tool_model(
     assert parsed["model"] == "norman-code-sol"
     assert parsed["personality"] == "pragmatic"
     assert parsed["model_catalog_json"] == str(home / "router-model-catalog.json")
+    assert parsed["mcp_servers"]["ops_openbrand"]["url"] == (
+        "https://ops.openbrand.com/mcp"
+    )
+    assert parsed["mcp_servers"]["scout_openbrand"]["enabled_tools"] == [
+        "scout_status",
+        "scout_run_instruction",
+        "scout_get_request",
+    ]
+    assert (
+        parsed["mcp_servers"]["scout_openbrand"]["env"]["SCOUT_CDP_ALLOW_BUSY_PAGE"]
+        == "1"
+    )
     assert [
         model["slug"]
         for model in route_module.json.loads(

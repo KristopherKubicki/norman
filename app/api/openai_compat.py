@@ -640,8 +640,7 @@ async def openai_compat_chat_completions(
 
 def _response_sse_event(event_type: str, payload: dict[str, Any]) -> str:
     return (
-        f"event: {event_type}\n"
-        f"data: {json.dumps(payload, separators=(',', ':'))}\n\n"
+        f"event: {event_type}\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
     )
 
 
@@ -873,7 +872,7 @@ def _response_sse(stream: Any):
         function_call_items = [
             (output_index, item)
             for output_index, item in enumerate(output_items)
-            if item.get("type") == "function_call"
+            if item.get("type") in {"function_call", "tool_search_call"}
         ]
 
         response_text = response.get("output_text")
@@ -895,6 +894,26 @@ def _response_sse(stream: Any):
                 yield event
 
         for output_index, output_item in function_call_items:
+            if output_item.get("type") == "tool_search_call":
+                yield emit(
+                    "response.output_item.added",
+                    {
+                        "type": "response.output_item.added",
+                        "response_id": stream.response_id,
+                        "output_index": output_index,
+                        "item": {**output_item, "status": "in_progress"},
+                    },
+                )
+                yield emit(
+                    "response.output_item.done",
+                    {
+                        "type": "response.output_item.done",
+                        "response_id": stream.response_id,
+                        "output_index": output_index,
+                        "item": output_item,
+                    },
+                )
+                continue
             arguments = output_item.get("arguments")
             arguments = arguments if isinstance(arguments, str) else ""
             in_progress_item = {

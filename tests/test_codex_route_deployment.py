@@ -512,14 +512,16 @@ os.execve(
     ]
 
 
-def test_work_wrapper_defaults_generic_sessions_to_770_bedrock_sol() -> None:
+def test_work_wrapper_defaults_generic_sessions_to_norman_with_770_bedrock_fallback() -> (
+    None
+):
     script = WORK_WRAPPER_PATH.read_text(encoding="utf-8")
 
-    assert 'CODEX_WORK_AWS_PROFILE:-ob-everest-qa-admin' in script
-    assert 'CODEX_WORK_PROVIDER:-bedrock' in script
+    assert "CODEX_WORK_AWS_PROFILE:-ob-everest-qa-admin" in script
+    assert "CODEX_WORK_PROVIDER:-norman" in script
     assert 'CODEX_WORK_BEDROCK_MODEL="openai.gpt-5.6-sol"' in script
-    assert "model_reasoning_effort=\"medium\"" in script
-    assert 'model_provider=\"amazon-bedrock\"' in script
+    assert 'model_reasoning_effort="medium"' in script
+    assert 'model_provider="amazon-bedrock"' in script
 
 
 @pytest.mark.parametrize(

@@ -1,0 +1,13 @@
+[Unit]
+Description=Scout Perplexity CDP tunnel to Spark 151
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ssh -N -T -o BatchMode=yes -o ConnectTimeout=10 -o ExitOnForwardFailure=yes -o IdentitiesOnly=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -i %h/.ssh/id_ed25519_netops_codex -L 127.0.0.1:9222:127.0.0.1:9222 kristopher@192.168.2.151
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

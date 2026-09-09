@@ -1031,7 +1031,10 @@ def test_origin_sync_exports_discovered_local_llm_inventory(
     assert module.sync_instance_origin_settings(_host(module), panelbot) is True
 
     script = captured["script"]
-    assert '"NORMAN_LOCAL_LLM_DISABLED_MODELS":"llama3.2,llama3.2:*"' in script
+    assert '"NORMAN_LOCAL_LLM_DISABLED_MODELS":"llama3.2,llama3.2:*' in script
+    assert "qwen3.6:*" in script
+    assert "qwen3-coder:*" in script
+    assert "gemma4:*" in script
     assert '"NORMAN_LOCAL_LLM_MODEL":"qwen3.8:27b"' in script
     assert '"NORMAN_LOCAL_LLM_MODELS":"' in script
     assert (

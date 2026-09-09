@@ -1,6 +1,6 @@
 {
   "schema": "norman.norllama.model-roles.v1",
-  "version": "2026.08.16",
+  "version": "2026.09.08",
   "roles": {
     "resident": {
       "tier_label": "qwen",
@@ -8,7 +8,6 @@
       "provider": "norllama",
       "aliases": [],
       "endpoints": [
-        "http://192.168.2.151:11435",
         "http://192.168.2.150:11435"
       ],
       "client_endpoints": [
