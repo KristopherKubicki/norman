@@ -37,6 +37,8 @@ def test_networking_host_caddy_matches_live_routes() -> None:
         "(private_clients) {\n"
         "\t@private_clients remote_ip 127.0.0.1/8 ::1 192.168.2.0/24"
     ) in rendered
+    assert "100.112.62.71/32" in rendered
+    assert "fd7a:115c:a1e0::bd33:3e47/128" in rendered
     assert (
         "http://networking.home.arpa, http://networking.home.lollie.org, "
         "http://networking.knox.lollie.org, http://networking-host.home.arpa {\n"
