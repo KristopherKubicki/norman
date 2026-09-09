@@ -1342,6 +1342,8 @@ def _tool_output_is_successful(output: str) -> bool:
     except (TypeError, ValueError):
         parsed = None
     if isinstance(parsed, Mapping):
+        if parsed.get("isError") is True or parsed.get("is_error") is True:
+            return False
         error = parsed.get("error")
         if error not in (None, "", {}, []):
             return False
@@ -1349,6 +1351,16 @@ def _tool_output_is_successful(output: str) -> bool:
             value = parsed.get(field)
             if isinstance(value, int) and value >= 400:
                 return False
+        # A successfully returned structured tool report can legitimately
+        # describe degraded dependencies or permission errors in its domain
+        # data. Do not confuse those contents with a failed tool execution.
+        return True
+    if isinstance(parsed, list):
+        return not any(
+            isinstance(item, Mapping)
+            and (item.get("isError") is True or item.get("is_error") is True)
+            for item in parsed
+        )
     return not any(marker in normalized for marker in TOOL_OUTPUT_FAILURE_MARKERS)
 
 
