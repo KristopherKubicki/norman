@@ -411,6 +411,10 @@ def test_generic_work_fallback_refreshes_tiered_model_contract(route_module, tmp
                 "[model_providers.norman]",
                 'base_url = "https://norman.home.arpa/v1"',
                 "",
+                "[model_providers.norman.auth]",
+                'command = "/tmp/token-helper"',
+                "timeout_ms = 5000",
+                "",
             )
         ),
         encoding="utf-8",
@@ -421,6 +425,8 @@ def test_generic_work_fallback_refreshes_tiered_model_contract(route_module, tmp
     contents = profile.read_text(encoding="utf-8")
     assert f'model = "{route_module.SOL_ROUTER_MODEL}"' in contents
     assert f'model_catalog_json = "{catalog_path}"' in contents
+    assert "timeout_ms = 15000" in contents
+    assert "timeout_ms = 5000" not in contents
     assert profile.stat().st_mode & 0o777 == 0o600
     catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
     assert [model["slug"] for model in catalog["models"]] == [

@@ -932,6 +932,23 @@ def write_work_fallback_model_contract(home: Path | None = None) -> Path:
             f'model = "{DEFAULT_ROUTER_MODEL}"\n{catalog_line}',
             1,
         )
+    auth_table = re.search(
+        r"(?ms)^\[model_providers\.norman\.auth\]\s*\n(?P<body>.*?)(?=^\[|\Z)",
+        contents,
+    )
+    if auth_table is not None:
+        body = auth_table.group("body")
+        timeout_line = "timeout_ms = 15000"
+        if re.search(r"(?m)^timeout_ms\s*=.*$", body):
+            body = re.sub(
+                r"(?m)^timeout_ms\s*=.*$", timeout_line, body, count=1
+            )
+        else:
+            body = f"{body.rstrip()}\n{timeout_line}\n"
+        contents = (
+            f"{contents[: auth_table.start('body')]}{body}"
+            f"{contents[auth_table.end('body') :]}"
+        )
     _write_private_text(profile_path, contents)
     return catalog_path
 
