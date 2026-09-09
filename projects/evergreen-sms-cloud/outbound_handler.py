@@ -32,7 +32,10 @@ def _delivery_id(payload: dict[str, Any]) -> str:
 
 def _twilio_send(payload: dict[str, Any]) -> str:
     account_sid = str(
-        payload.get("account_sid") or os.environ.get("TWILIO_ACCOUNT_SID") or ""
+        payload.get("account_sid")
+        or os.environ.get("TWILIO_ACCOUNT_SID")
+        or os.environ.get("TWILIO_DEFAULT_ACCOUNT_SID")
+        or ""
     )
     auth_token = twilio_auth_token()
     from_number = str(payload.get("from") or "")

@@ -292,6 +292,44 @@ def test_outbound_handler_loads_secret_before_twilio_request(monkeypatch) -> Non
     assert captured["authorization"] == "Basic QUMtMTpzZWNyZXQtdG9rZW4="
 
 
+def test_outbound_handler_uses_deployed_default_account(monkeypatch) -> None:
+    module = _load_cloud_module(
+        "outbound_handler.py", "evergreen_sms_outbound_default_account_for_tests"
+    )
+    captured: dict[str, Any] = {}
+
+    class Response:
+        def __enter__(self) -> "Response":
+            return self
+
+        def __exit__(self, *_args: Any) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b'{"sid":"SM-notification"}'
+
+    def fake_urlopen(req: Any, *, timeout: int) -> Response:
+        captured["authorization"] = req.get_header("Authorization")
+        return Response()
+
+    monkeypatch.setenv("TWILIO_DEFAULT_ACCOUNT_SID", "AC-default")
+    monkeypatch.delenv("TWILIO_ACCOUNT_SID", raising=False)
+    monkeypatch.setattr(module, "twilio_auth_token", lambda: "secret-token")
+    monkeypatch.setattr(module.request, "urlopen", fake_urlopen)
+
+    assert (
+        module._twilio_send(
+            {
+                "from": "+15550000002",
+                "to": "+15550000001",
+                "body": "Done.",
+            }
+        )
+        == "SM-notification"
+    )
+    assert captured["authorization"] == "Basic QUMtZGVmYXVsdDpzZWNyZXQtdG9rZW4="
+
+
 def test_outbound_long_job_notification_gets_stable_delivery_id() -> None:
     module = _load_cloud_module(
         "outbound_handler.py", "evergreen_sms_outbound_notice_for_tests"
