@@ -1086,7 +1086,7 @@ def write_gateway_profile(route: Route) -> Path:
             f"[model_providers.{route.provider}.auth]",
             f"command = {json.dumps(str(GATEWAY_TOKEN_HELPER))}",
             f'args = ["--secret", {json.dumps(route.resolved_token_secret)}]',
-            "timeout_ms = 5000",
+            "timeout_ms = 15000",
             "refresh_interval_ms = 300000",
             "",
         )

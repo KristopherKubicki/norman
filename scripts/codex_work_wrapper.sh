@@ -7,13 +7,14 @@ readonly CODEX_SECRET_GUARD_SCRIPT="${CODEX_SECRET_GUARD_SCRIPT:-$HOME/.local/li
 readonly CODEX_MANAGED_REQUIREMENTS="${NORMAN_CODEX_REQUIREMENTS_PATH:-/etc/codex/requirements.toml}"
 readonly CODEX_MANAGED_SECRET_GUARD="${NORMAN_CODEX_MANAGED_SECRET_GUARD:-/usr/local/lib/norman-codex-route/norman_codex_secret_guard.py}"
 readonly CODEX_WORK_HOME="${CODEX_WORK_HOME:-$HOME/.codex-work}"
-readonly CODEX_WORK_AWS_PROFILE="${CODEX_WORK_AWS_PROFILE:-ob-openbrand-admin}"
+readonly CODEX_WORK_AWS_PROFILE="${CODEX_WORK_AWS_PROFILE:-ob-everest-qa-admin}"
 readonly CODEX_WORK_AWS_REGION="${CODEX_WORK_AWS_REGION:-us-east-2}"
-readonly CODEX_WORK_PROVIDER="${CODEX_WORK_PROVIDER:-norman}"
+readonly CODEX_WORK_PROVIDER="${CODEX_WORK_PROVIDER:-bedrock}"
 readonly CODEX_WORK_PYTEST_XDIST_AUTO_WORKERS="${CODEX_WORK_PYTEST_XDIST_AUTO_WORKERS:-4}"
 readonly CODEX_WORK_PINNED_VERSION="0.151.0"
 readonly CODEX_WORK_PINNED_BIN="$HOME/.local/lib/codex-work-${CODEX_WORK_PINNED_VERSION}/node_modules/.bin/codex"
 readonly CODEX_WORK_GATEWAY_MODEL="norman-code-sol"
+readonly CODEX_WORK_BEDROCK_MODEL="openai.gpt-5.6-sol"
 readonly OPS_OPENBRAND_MCP_LAUNCHER="$HOME/code/control_plane/scripts/with_ops_openbrand_mcp.sh"
 
 disable_apps=1
@@ -333,6 +334,24 @@ if [[ "${CODEX_WORK_PROVIDER,,}" =~ ^(norman|gateway)$ ]] \
   gateway_model_args=(-m "$CODEX_WORK_GATEWAY_MODEL")
 fi
 
+bedrock_session_args=()
+if [[ "${CODEX_WORK_PROVIDER,,}" =~ ^(bedrock|direct)$ ]] \
+  && [[ "$uses_work_profile" -eq 1 ]]; then
+  # Generic work sessions are the explicit 770-account Bedrock fallback. Keep
+  # this launch contract independent of stale mutable values in config.toml.
+  bedrock_session_args=(
+    -c 'model_provider="amazon-bedrock"'
+    -c "model_providers.amazon-bedrock.aws.profile=\"$CODEX_WORK_AWS_PROFILE\""
+    -c "model_providers.amazon-bedrock.aws.region=\"$CODEX_WORK_AWS_REGION\""
+  )
+  if ! has_model_override "$@"; then
+    bedrock_session_args+=(
+      -m "$CODEX_WORK_BEDROCK_MODEL"
+      -c 'model_reasoning_effort="medium"'
+    )
+  fi
+fi
+
 if [[ "$needs_bedrock_preflight" -eq 1 ]]; then
   if ! command -v aws >/dev/null 2>&1; then
     echo "codex-work: AWS CLI is required for the Bedrock credential preflight." >&2
@@ -353,7 +372,7 @@ EOF
 fi
 
 if [[ -n "$profile_name" ]]; then
-  run_guarded_codex "${gateway_model_args[@]}" "$@"
+  run_guarded_codex "${gateway_model_args[@]}" "${bedrock_session_args[@]}" "$@"
 fi
 
 case "${1-}" in
@@ -362,11 +381,17 @@ case "${1-}" in
     ;;
   debug)
     if [[ "${2-}" == "prompt-input" ]]; then
-      run_guarded_codex --profile work "${gateway_model_args[@]}" "$@"
+      if [[ "${CODEX_WORK_PROVIDER,,}" =~ ^(norman|gateway)$ ]]; then
+        run_guarded_codex --profile work "${gateway_model_args[@]}" "$@"
+      fi
+      run_guarded_codex "${bedrock_session_args[@]}" "$@"
     fi
     run_codex "$@"
     ;;
   *)
-    run_guarded_codex --profile work "${gateway_model_args[@]}" "$@"
+    if [[ "${CODEX_WORK_PROVIDER,,}" =~ ^(norman|gateway)$ ]]; then
+      run_guarded_codex --profile work "${gateway_model_args[@]}" "$@"
+    fi
+    run_guarded_codex "${bedrock_session_args[@]}" "$@"
     ;;
 esac

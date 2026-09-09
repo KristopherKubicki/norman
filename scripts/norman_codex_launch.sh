@@ -504,7 +504,7 @@ path.write_text(
             "[model_providers.norman.auth]",
             f"command = {json.dumps(token_helper)}",
             f"args = [{json.dumps('--secret')}, {json.dumps(token_secret)}]",
-            "timeout_ms = 5000",
+            "timeout_ms = 15000",
             "refresh_interval_ms = 300000",
             "",
         ]

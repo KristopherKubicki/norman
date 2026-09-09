@@ -477,7 +477,7 @@ def test_launcher_keeps_direct_bedrock_as_the_default(tmp_path) -> None:
 
     assert "--profile" not in arguments
     assert "norman-gateway" not in arguments
-    assert arguments[arguments.index("-m") + 1] == "openai.gpt-5.6-terra"
+    assert arguments[arguments.index("-m") + 1] == "openai.gpt-5.6-sol"
     assert (tmp_path / "codex-home" / "norman-gateway.config.toml").exists() is False
 
 
@@ -511,7 +511,7 @@ def test_launcher_configures_opt_in_norman_gateway(tmp_path) -> None:
     assert "stream_idle_timeout_ms = 1200000" in profile
     assert f'command = "{TOKEN_HELPER}"' in profile
     assert 'args = ["--secret", "norman/gateway-token"]' in profile
-    assert "timeout_ms = 5000" in profile
+    assert "timeout_ms = 15000" in profile
     assert "refresh_interval_ms = 300000" in profile
     assert "env_key" not in profile
     assert "experimental_bearer_token" not in profile
