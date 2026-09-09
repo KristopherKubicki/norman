@@ -5697,7 +5697,7 @@ def test_openai_compat_responses_rejects_repeated_tool_call_after_repair(
     }
 
 
-def test_openai_compat_responses_transparent_mode_preserves_repeated_tool_call(
+def test_openai_compat_responses_transparent_mode_repairs_repeated_tool_call(
     monkeypatch,
 ):
     import app.services.prompt_provider_facade as facade
@@ -5712,6 +5712,10 @@ def test_openai_compat_responses_transparent_mode_preserves_repeated_tool_call(
 
     def fake_chat(**kwargs):
         invocations.append(kwargs)
+        if len(invocations) == 3:
+            return _mock_local_chat(kwargs["messages"], kwargs["model"]) | {
+                "choices": [{"message": {"content": "Jira checks are complete."}}]
+            }
         return _mock_local_chat(kwargs["messages"], kwargs["model"]) | {
             "choices": [
                 {
@@ -5762,14 +5766,14 @@ def test_openai_compat_responses_transparent_mode_preserves_repeated_tool_call(
         }
     )
 
-    assert len(invocations) == 2
-    assert [item["type"] for item in second["output"]] == ["function_call"]
-    assert second["output"][0]["name"] == tool_name
+    assert len(invocations) == 3
+    assert second["output_text"] == "Jira checks are complete."
+    assert [item["type"] for item in second["output"]] == ["message"]
     compatibility = second["norman"]["responses_compatibility"]
     assert compatibility["tool_bridge_mode"] == "transparent"
     assert compatibility["tool_chain"]["watchdog"] == {
-        "state": "passthrough",
-        "attempts": 0,
+        "state": "repaired",
+        "attempts": 1,
     }
 
 

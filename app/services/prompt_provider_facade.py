@@ -4376,9 +4376,6 @@ def _resolve_tool_continuation_response(
     )
     if not repeats_successful_call and not intention_without_call:
         return resolved, "normal", 0
-    if repeats_successful_call and prepared.bridge_mode != GOVERNED_BRIDGE_MODE:
-        return resolved, "passthrough", 0
-
     if intention_without_call and evidence_budget_reached:
         repair_message = _LIVE_OPERATIONAL_FINAL_SYNTHESIS_MESSAGE
     elif intention_without_call and _namespace_discovery_required(prepared):
@@ -4738,9 +4735,8 @@ class FacadeResponsesStream:
         self._cloud_fallback_attempted = False
         self._watchdog_state = "normal"
         self._watchdog_attempts = 0
-        self._buffer_tool_continuation = (
-            prepared.bridge_mode == GOVERNED_BRIDGE_MODE
-            and bool(prepared.tool_chain_context.successful_call_signatures)
+        self._buffer_tool_continuation = bool(
+            prepared.tool_chain_context.successful_call_signatures
         ) or _tool_use_requested(prepared)
 
     @property
