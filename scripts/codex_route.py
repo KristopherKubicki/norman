@@ -1901,6 +1901,12 @@ def exec_work_route(route: Route, arguments: list[str]) -> None:
         )
         os.execve(str(OPS_OPENBRAND_MCP_LAUNCHER), command, work_environment())
 
+    disable_apps = "--work-apps" not in arguments
+    arguments = [
+        argument
+        for argument in arguments
+        if argument not in {"--work-apps", "--work-no-apps"}
+    ]
     verify_managed_tui_secret_policy()
     write_gateway_profile(route)
     environment = route_environment(route)
@@ -1908,6 +1914,8 @@ def exec_work_route(route: Route, arguments: list[str]) -> None:
     environment["CODEX_REAL_BIN"] = str(resolve_real_codex())
     environment["NORMAN_TUI_NO_DIRECT_VAULT"] = "1"
     command = [environment["CODEX_REAL_BIN"]]
+    if disable_apps:
+        command.extend(("--disable", "apps"))
     if not has_explicit_profile(arguments) and starts_session(arguments):
         command.extend(("--profile", route.profile))
     if not has_explicit_model(arguments) and starts_session(arguments):

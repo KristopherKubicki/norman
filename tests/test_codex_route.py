@@ -1152,6 +1152,39 @@ def test_unbound_work_route_reenters_before_preflight(route_module, monkeypatch)
     assert preflight_calls == []
 
 
+@pytest.mark.parametrize(
+    ("marker", "expected_prefix"),
+    [
+        ("--work-no-apps", ["/bin/true", "--disable", "apps"]),
+        ("--work-apps", ["/bin/true"]),
+    ],
+)
+def test_bound_work_route_consumes_wrapper_app_marker(
+    route_module, monkeypatch, marker, expected_prefix
+):
+    route = route_by_key(route_module, "control-plane")
+    executed = []
+
+    monkeypatch.setenv("CODEX_WORK_OPS_BINDING_LOADED", "1")
+    monkeypatch.setattr(route_module, "verify_managed_tui_secret_policy", lambda: None)
+    monkeypatch.setattr(route_module, "write_gateway_profile", lambda _route: None)
+    monkeypatch.setattr(route_module, "route_environment", lambda _route: {})
+    monkeypatch.setattr(route_module, "resolve_real_codex", lambda: Path("/bin/true"))
+    monkeypatch.setattr(
+        route_module.os,
+        "execve",
+        lambda command, arguments, environment: executed.append(
+            (command, arguments, environment)
+        ),
+    )
+
+    route_module.exec_work_route(route, [marker, "exec", "hello"])
+
+    assert executed[0][1][: len(expected_prefix)] == expected_prefix
+    assert marker not in executed[0][1]
+    assert executed[0][1][-2:] == ["exec", "hello"]
+
+
 def test_mapped_work_mcp_command_uses_the_resolved_route(route_module, monkeypatch):
     route = route_by_key(route_module, "control-plane")
     executed = []
