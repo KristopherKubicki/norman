@@ -438,6 +438,38 @@ def test_generic_work_fallback_refreshes_tiered_model_contract(route_module, tmp
     ]
 
 
+def test_work_skill_policy_defers_domain_catalog_but_keeps_router(
+    route_module, monkeypatch, tmp_path
+):
+    skill_root = tmp_path / "skills"
+    router_source = tmp_path / "source" / "openbrand-ops-router"
+    router_source.mkdir(parents=True)
+    (router_source / "SKILL.md").write_text(
+        "---\nname: openbrand-ops-router\ndescription: Route work.\n---\n",
+        encoding="utf-8",
+    )
+    domain = skill_root / "gapi-domain-ops"
+    domain.mkdir(parents=True)
+    (domain / "SKILL.md").write_text(
+        "---\nname: gapi-domain-ops\ndescription: Handle GAPI.\n---\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(route_module, "WORK_SKILLS_SOURCE_ROOT", skill_root)
+    monkeypatch.setattr(route_module, "WORK_SKILL_ROUTER_SOURCE", router_source)
+
+    once = route_module.install_work_skill_policy('model = "norman-code-sol"\n')
+    twice = route_module.install_work_skill_policy(once)
+
+    parsed = route_module.tomllib.loads(twice)
+    states = {item["name"]: item["enabled"] for item in parsed["skills"]["config"]}
+    assert states == {
+        "gapi-domain-ops": False,
+        "openbrand-ops-router": True,
+    }
+    assert twice.count(route_module.WORK_SKILL_POLICY_BEGIN) == 1
+    assert (skill_root / "openbrand-ops-router").resolve() == router_source.resolve()
+
+
 def test_work_profile_registers_ops_mcp_without_forcing_workflow(
     route_module, monkeypatch, tmp_path
 ):

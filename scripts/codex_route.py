@@ -48,6 +48,12 @@ SCOUT_OPENBRAND_MCP_CONFIG_END = "# END NORMAN SCOUT OPENBRAND MCP"
 SCOUT_OPENBRAND_MCP_COMMAND = (
     HOME / "code" / "control_plane" / "scripts" / "run_scout_agent_mcp.sh"
 )
+WORK_SKILL_ROUTER_NAME = "openbrand-ops-router"
+WORK_SKILL_ROUTER_SOURCE = (
+    HOME / "code" / "control_plane" / "skills" / WORK_SKILL_ROUTER_NAME
+)
+WORK_SKILL_POLICY_BEGIN = "# BEGIN NORMAN DEFERRED WORK SKILLS"
+WORK_SKILL_POLICY_END = "# END NORMAN DEFERRED WORK SKILLS"
 WORK_SKILLS_SOURCE_ROOT = HOME / ".codex-work" / "skills"
 PERSONAL_SKILLS_SOURCE_ROOT = HOME / ".codex-personal" / "skills"
 ROUTE_SKILL_SCOPE_BY_GROUP = {
@@ -709,6 +715,58 @@ def sync_scoped_skills(route: Route) -> None:
             )
 
 
+def ensure_work_skill_router() -> bool:
+    """Expose the compact dispatcher without copying the domain skill library."""
+
+    source = WORK_SKILL_ROUTER_SOURCE
+    destination = WORK_SKILLS_SOURCE_ROOT / WORK_SKILL_ROUTER_NAME
+    if not (source / "SKILL.md").is_file():
+        return False
+    WORK_SKILLS_SOURCE_ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if destination.is_symlink() and _same_skill_target(destination, source):
+        return True
+    if destination.exists() or destination.is_symlink():
+        return (destination / "SKILL.md").is_file()
+    destination.symlink_to(source, target_is_directory=True)
+    return True
+
+
+def work_skill_policy_block() -> str:
+    """Keep domain skills readable but defer their prompt-catalog disclosure."""
+
+    if not ensure_work_skill_router():
+        return ""
+    names = sorted(_skill_source_entries(WORK_SKILLS_SOURCE_ROOT))
+    lines = [WORK_SKILL_POLICY_BEGIN]
+    for name in names:
+        lines.extend(
+            (
+                "[[skills.config]]",
+                f"name = {json.dumps(name)}",
+                f"enabled = {'true' if name == WORK_SKILL_ROUTER_NAME else 'false'}",
+                "",
+            )
+        )
+    lines.append(WORK_SKILL_POLICY_END)
+    return "\n".join(lines) + "\n"
+
+
+def install_work_skill_policy(contents: str) -> str:
+    block = work_skill_policy_block()
+    if not block:
+        return contents
+    start = contents.find(WORK_SKILL_POLICY_BEGIN)
+    end = contents.find(WORK_SKILL_POLICY_END, max(0, start))
+    if start >= 0 and end >= 0:
+        end += len(WORK_SKILL_POLICY_END)
+        while end < len(contents) and contents[end] in "\r\n":
+            end += 1
+        return f"{contents[:start]}{block}{contents[end:]}"
+    if contents.strip():
+        return f"{contents.rstrip()}\n\n{block}"
+    return block
+
+
 def models_cache_path(route: Route) -> Path:
     return route_home(route) / "models_cache.json"
 
@@ -1177,6 +1235,8 @@ def write_gateway_profile(route: Route) -> Path:
         )
     home = route_home(route)
     home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if route_skill_scope(route) == "work":
+        ensure_work_skill_router()
     write_routed_tui_secret_policy(home)
     sync_scoped_skills(route)
     write_ops_openbrand_mcp_config(route)
@@ -1203,6 +1263,8 @@ def write_gateway_profile(route: Route) -> Path:
             "",
         )
     )
+    if route_skill_scope(route) == "work":
+        contents = install_work_skill_policy(contents)
     _write_private_text(path, contents)
     refresh_model_catalog_cache(route)
     return path
@@ -1219,6 +1281,7 @@ def write_generic_work_model_contract() -> Path:
     )
 
     profile = home / "work.config.toml"
+    ensure_work_skill_router()
     try:
         existing = profile.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -1258,6 +1321,7 @@ def write_generic_work_model_contract() -> Path:
             contents = f"{contents.rstrip()}\n\n{block}"
         else:
             contents = block
+    contents = install_work_skill_policy(contents)
     try:
         parsed = tomllib.loads(contents)
     except tomllib.TOMLDecodeError as exc:
