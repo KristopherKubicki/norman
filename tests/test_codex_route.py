@@ -943,6 +943,28 @@ def test_gateway_json_probe_uses_bounded_gateway_timeout(route_module, monkeypat
     assert route_module.GATEWAY_REQUEST_TIMEOUT_SECONDS == 20
 
 
+def test_gateway_token_helper_allows_bounded_credential_cold_start(
+    route_module, monkeypatch, tmp_path
+):
+    route = route_by_key(route_module, "autocamera")
+    observed = {}
+    helper = tmp_path / "gateway-token-helper"
+    helper.write_text("#!/bin/sh\n", encoding="utf-8")
+    helper.chmod(0o700)
+
+    monkeypatch.setattr(route_module, "GATEWAY_TOKEN_HELPER", helper)
+
+    def fake_run(command, **kwargs):
+        observed.update(command=command, kwargs=kwargs)
+        return type("Result", (), {"returncode": 0, "stdout": "token\n"})()
+
+    monkeypatch.setattr(route_module.subprocess, "run", fake_run)
+
+    assert route_module.brokered_gateway_token(route) == ("token", "")
+    assert observed["kwargs"]["timeout"] == 25
+    assert route_module.GATEWAY_TOKEN_HELPER_TIMEOUT_SECONDS == 25
+
+
 def test_unavailable_local_capacity_reports_approved_bedrock_fallback(
     route_module, monkeypatch
 ):

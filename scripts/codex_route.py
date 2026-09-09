@@ -104,6 +104,7 @@ ACCOUNT_CAPACITY_FRESH_SECONDS = max(
     int(os.environ.get("NORMAN_CODEX_ACCOUNT_CAPACITY_FRESH_SECONDS", "1800")),
 )
 GATEWAY_REQUEST_TIMEOUT_SECONDS = 20
+GATEWAY_TOKEN_HELPER_TIMEOUT_SECONDS = 25
 PLAN_LEDGER_KIND = "chatgpt_codex_credit_estimate"
 METERED_LEDGER_KINDS = frozenset(
     {"api_rate_card_estimate", "provider_invoice_estimate"}
@@ -1223,7 +1224,7 @@ def brokered_gateway_token(route: Route) -> tuple[str, str]:
             check=False,
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=GATEWAY_TOKEN_HELPER_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return "", f"broker lookup failed: {exc}"

@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 from urllib import parse
 
+import pytest
+
 
 CLOUD_DIR = Path(__file__).resolve().parents[1] / "projects" / "evergreen-sms-cloud"
 
@@ -288,3 +290,34 @@ def test_outbound_handler_loads_secret_before_twilio_request(monkeypatch) -> Non
     assert provider_sid == "SM-outbound"
     assert captured["timeout"] == 15
     assert captured["authorization"] == "Basic QUMtMTpzZWNyZXQtdG9rZW4="
+
+
+def test_outbound_long_job_notification_gets_stable_delivery_id() -> None:
+    module = _load_cloud_module(
+        "outbound_handler.py", "evergreen_sms_outbound_notice_for_tests"
+    )
+    payload = {
+        "source": "norman-long-job-notifier",
+        "created_at": 1788400000,
+        "from": "+15550000002",
+        "to": "+15550000001",
+        "body": "Panelbot finished. Open the TUI for details.",
+    }
+
+    first = module._delivery_id(payload)
+    second = module._delivery_id(dict(reversed(tuple(payload.items()))))
+
+    assert first == second
+    assert first.startswith("notice-")
+    assert len(first) == len("notice-") + 64
+
+
+def test_outbound_unknown_payload_still_requires_turn_id() -> None:
+    module = _load_cloud_module(
+        "outbound_handler.py", "evergreen_sms_outbound_unknown_for_tests"
+    )
+
+    with pytest.raises(ValueError, match="missing turn_id"):
+        module._delivery_id(
+            {"source": "unknown", "from": "from", "to": "to", "body": "body"}
+        )
