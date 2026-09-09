@@ -1337,8 +1337,15 @@ def _tool_output_is_successful(output: str) -> bool:
     normalized = _lower(output)
     if not normalized:
         return False
+    structured_output = output
+    codex_output_match = re.match(
+        r"\AWall time:\s*[^\r\n]+\r?\nOutput:\r?\n",
+        output,
+    )
+    if codex_output_match is not None:
+        structured_output = output[codex_output_match.end() :]
     try:
-        parsed = json.loads(output)
+        parsed = json.loads(structured_output)
     except (TypeError, ValueError):
         parsed = None
     if isinstance(parsed, Mapping):

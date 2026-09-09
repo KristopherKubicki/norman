@@ -5035,6 +5035,18 @@ def test_structured_tool_report_with_degraded_domain_data_is_execution_success()
     )
 
 
+def test_codex_wrapped_structured_tool_report_is_execution_success():
+    import app.services.prompt_provider_facade as facade
+
+    report = json.dumps(
+        {"health": "degraded", "detail": "permission denied by dependency"}
+    )
+
+    assert facade._tool_output_is_successful(
+        f"Wall time: 0.0470 seconds\nOutput:\n{report}"
+    )
+
+
 def test_openai_compat_responses_keeps_undeclared_mcp_namespace_call_as_text(
     monkeypatch,
 ):
