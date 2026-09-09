@@ -487,6 +487,7 @@ def test_work_profile_registers_ops_mcp_without_forcing_workflow(
     )
 
     assert "developer_instructions" not in profile
+    assert profile["features"]["multi_agent"] is False
     assert config["mcp_servers"]["ops_openbrand"] == {
         "url": "https://ops.openbrand.com/mcp",
         "bearer_token_env_var": "OPS_OPENBRAND_MCP_CONTROL_PLANE_KEY",

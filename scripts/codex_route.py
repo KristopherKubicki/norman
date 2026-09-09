@@ -1264,6 +1264,7 @@ def write_gateway_profile(route: Route) -> Path:
         )
     )
     if route_skill_scope(route) == "work":
+        contents = f"{contents.rstrip()}\n\n[features]\nmulti_agent = false\n"
         contents = install_work_skill_policy(contents)
     _write_private_text(path, contents)
     refresh_model_catalog_cache(route)
