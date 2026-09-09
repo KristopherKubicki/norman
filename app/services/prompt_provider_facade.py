@@ -710,7 +710,10 @@ def _function_call_arguments(item: Mapping[str, Any]) -> str:
 
 
 def _function_call_metadata(item: Mapping[str, Any]) -> tuple[str, str]:
-    return _clean(item.get("call_id")), _clean(item.get("name"))
+    name = _clean(item.get("name"))
+    if not name and _clean(item.get("type")) == "tool_search_call":
+        name = "tool_search"
+    return _clean(item.get("call_id")), name
 
 
 def _function_call_item(
@@ -775,7 +778,7 @@ def _function_call_output_context_message(
 def _function_calls_from_items(items: list[dict[str, Any]]) -> dict[str, str]:
     calls: dict[str, str] = {}
     for item in items:
-        if _clean(item.get("type")) != "function_call":
+        if _clean(item.get("type")) not in {"function_call", "tool_search_call"}:
             continue
         call_id, name = _function_call_metadata(item)
         if call_id and name:
@@ -788,7 +791,7 @@ def _function_call_items_from_items(
 ) -> dict[str, dict[str, Any]]:
     calls: dict[str, dict[str, Any]] = {}
     for item in items:
-        if _clean(item.get("type")) != "function_call":
+        if _clean(item.get("type")) not in {"function_call", "tool_search_call"}:
             continue
         function_call = _function_call_item(item)
         if function_call:
@@ -831,7 +834,10 @@ def _legacy_replayed_function_call(message: Mapping[str, Any]) -> tuple[str, str
 def _tool_output_metadata(item: Mapping[str, Any]) -> tuple[str, str]:
     """Return tool output as text for the local chat compatibility lane."""
 
-    output = item.get("output")
+    if _clean(item.get("type")) == "tool_search_output":
+        output = {"tools": item.get("tools", [])}
+    else:
+        output = item.get("output")
     if isinstance(output, str):
         normalized_output = output
     elif isinstance(output, (Mapping, list)):
@@ -1166,11 +1172,11 @@ def _tool_chain_context(
             if not isinstance(item, Mapping):
                 continue
             item_type = _clean(item.get("type"))
-            if item_type == "function_call":
+            if item_type in {"function_call", "tool_search_call"}:
                 function_call = _function_call_item(item)
                 if function_call:
                     calls[function_call["call_id"]] = function_call
-            elif item_type == "function_call_output":
+            elif item_type in {"function_call_output", "tool_search_output"}:
                 tool_output = _tool_output_metadata(item)
                 supplied_results.add(tool_output)
     matched_result_names = [
@@ -1962,7 +1968,7 @@ def _response_input_function_call_items(
         return {}
     function_calls: dict[str, dict[str, Any]] = {}
     for item in _messages(raw_input):
-        if _clean(item.get("type")) != "function_call":
+        if _clean(item.get("type")) not in {"function_call", "tool_search_call"}:
             continue
         function_call = _function_call_item(item, strict=True)
         previous = function_calls.get(function_call["call_id"])
@@ -1985,7 +1991,7 @@ def _response_input_tool_outputs(
         return set()
     outputs: set[tuple[str, str]] = set()
     for item in _messages(raw_input):
-        if _clean(item.get("type")) == "function_call_output":
+        if _clean(item.get("type")) in {"function_call_output", "tool_search_output"}:
             outputs.add(_tool_output_metadata(item))
     return outputs
 
@@ -2032,7 +2038,10 @@ def _validate_response_tool_continuation(
             )
         seen_outputs[call_id] = output
     for item in _messages(raw_input):
-        if _clean(item.get("type")) != "function_call_output":
+        if _clean(item.get("type")) not in {
+            "function_call_output",
+            "tool_search_output",
+        }:
             continue
         call_id, output = _tool_output_metadata(item)
         if not call_id or call_id not in function_call_items:
@@ -2083,7 +2092,7 @@ def response_input_to_messages(
                     param="input",
                 )
             item_type = _clean(item.get("type"))
-            if item_type == "function_call":
+            if item_type in {"function_call", "tool_search_call"}:
                 function_call = _function_call_item(item, strict=True)
                 existing = function_call_items.get(function_call["call_id"])
                 if existing:
@@ -2104,7 +2113,7 @@ def response_input_to_messages(
                 function_call_items[function_call["call_id"]] = function_call
                 messages.append(_function_call_context_message(function_call))
                 continue
-            if item_type == "function_call_output":
+            if item_type in {"function_call_output", "tool_search_output"}:
                 call_id, output = _tool_output_metadata(item)
                 if not call_id or call_id not in function_call_items:
                     raise FacadeError(
@@ -2766,6 +2775,7 @@ def _response_output_items(
     text: str,
     tool_calls: list[dict[str, Any]],
     output_item_id: str = "",
+    native_tool_search: bool = False,
 ) -> list[dict[str, Any]]:
     message_item = {
         "id": output_item_id or f"msg-norman-{uuid.uuid4().hex}",
@@ -2781,7 +2791,38 @@ def _response_output_items(
         ],
     }
     if tool_calls:
-        return ([message_item] if text else []) + [dict(item) for item in tool_calls]
+        output_tool_calls: list[dict[str, Any]] = []
+        for item in tool_calls:
+            output_item = dict(item)
+            if native_tool_search and _clean(output_item.get("name")) == "tool_search":
+                arguments = output_item.get("arguments", "{}")
+                if isinstance(arguments, str):
+                    try:
+                        arguments = json.loads(arguments)
+                    except (TypeError, ValueError) as exc:
+                        raise FacadeError(
+                            "Responses tool_search_call arguments must be an object",
+                            status_code=502,
+                            error_type="server_error",
+                            code="invalid_tool_search_call_arguments",
+                        ) from exc
+                if not isinstance(arguments, Mapping):
+                    raise FacadeError(
+                        "Responses tool_search_call arguments must be an object",
+                        status_code=502,
+                        error_type="server_error",
+                        code="invalid_tool_search_call_arguments",
+                    )
+                output_item = {
+                    "id": output_item.get("id") or f"tsc-norman-{uuid.uuid4().hex}",
+                    "type": "tool_search_call",
+                    "status": "completed",
+                    "call_id": output_item.get("call_id"),
+                    "execution": "client",
+                    "arguments": dict(arguments),
+                }
+            output_tool_calls.append(output_item)
+        return ([message_item] if text else []) + output_tool_calls
     return [message_item]
 
 
@@ -4563,6 +4604,9 @@ def _responses_response_from_chat(
         text=visible_text,
         tool_calls=tool_calls,
         output_item_id=output_item_id,
+        native_tool_search=any(
+            _clean(tool.get("type")) == "tool_search" for tool in tools
+        ),
     )
     output_text = visible_text
     tool_chain = _tool_chain_telemetry(
@@ -4635,7 +4679,7 @@ def _responses_response_from_chat(
             response_function_call_items=[
                 item
                 for item in output_items
-                if _clean(item.get("type")) == "function_call"
+                if _clean(item.get("type")) in {"function_call", "tool_search_call"}
             ],
             tool_outputs=prepared.tool_outputs,
             ephemeral=not prepared.store_requested,

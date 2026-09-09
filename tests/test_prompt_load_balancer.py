@@ -4924,10 +4924,58 @@ def test_responses_forces_explicit_special_tool_search_when_model_short_stops(
     )
 
     assert response["output_text"] == ""
-    assert response["output"][0]["name"] == "tool_search"
-    assert json.loads(response["output"][0]["arguments"])["query"].startswith(
-        "Use tool_search"
-    )
+    assert response["output"][0] == {
+        "id": response["output"][0]["id"],
+        "type": "tool_search_call",
+        "status": "completed",
+        "call_id": response["output"][0]["call_id"],
+        "execution": "client",
+        "arguments": {
+            "query": "Use tool_search to find scout_status.",
+        },
+    }
+
+
+def test_responses_accepts_native_tool_search_output_continuation():
+    import app.services.prompt_provider_facade as facade
+
+    call_id = "call-native-search"
+    call = {
+        "type": "tool_search_call",
+        "id": "tsc-native-search",
+        "call_id": call_id,
+        "status": "completed",
+        "execution": "client",
+        "arguments": {"query": "scout_status"},
+    }
+    output = {
+        "type": "tool_search_output",
+        "id": "tso-native-search",
+        "call_id": call_id,
+        "status": "completed",
+        "execution": "client",
+        "tools": [
+            {
+                "type": "namespace",
+                "name": "mcp__scout_agent",
+                "tools": [{"type": "function", "name": "scout_status"}],
+            }
+        ],
+    }
+
+    calls = facade._response_input_function_call_items({"input": [call, output]})
+    assert calls[call_id]["name"] == "tool_search"
+    assert json.loads(calls[call_id]["arguments"]) == {"query": "scout_status"}
+    assert facade._response_input_tool_outputs({"input": [call, output]}) == {
+        (
+            call_id,
+            '{"tools":[{"name":"mcp__scout_agent","tools":'
+            '[{"name":"scout_status","type":"function"}],"type":"namespace"}]}',
+        )
+    }
+    messages = facade.response_input_to_messages({"input": [call, output]})
+    assert [message["role"] for message in messages] == ["assistant", "tool"]
+    assert "mcp__scout_agent" in messages[-1]["content"]
 
 
 def test_openai_compat_responses_keeps_undeclared_mcp_namespace_call_as_text(
