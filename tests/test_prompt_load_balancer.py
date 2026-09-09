@@ -4859,6 +4859,36 @@ def test_openai_compat_responses_flattens_namespace_tool_contract():
     assert "mcp__ops_openbrand" not in {tool["name"] for tool in tools}
 
 
+def test_openai_compat_responses_normalizes_codex_special_tool_search_contract():
+    import app.services.prompt_provider_facade as facade
+
+    payload = {
+        "tools": [
+            {
+                "type": "tool_search",
+                "execution": "client",
+                "description": "Search deferred MCP tool metadata.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            }
+        ]
+    }
+
+    assert facade._tool_names(facade._tools(payload)) == {"tool_search"}
+    assert facade._tool_contract_definition(payload) == [
+        {
+            "name": "tool_search",
+            "type": "function",
+            "description": "Search deferred MCP tool metadata.",
+            "parameters": payload["tools"][0]["parameters"],
+        }
+    ]
+
+
 def test_openai_compat_responses_keeps_undeclared_mcp_namespace_call_as_text(
     monkeypatch,
 ):

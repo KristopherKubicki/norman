@@ -1034,7 +1034,15 @@ def _tools(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 def _tool_name(tool: Mapping[str, Any]) -> str:
     function = _mapping(tool.get("function"))
-    return _clean(function.get("name") or tool.get("name"))
+    name = _clean(function.get("name") or tool.get("name"))
+    if name:
+        return name
+    # Codex 0.151+ advertises deferred MCP discovery as a special tool shape
+    # without a name field: {"type": "tool_search", ...}. Normalize it to
+    # the executable function name used by Responses function_call items.
+    if _clean(tool.get("type")) == "tool_search":
+        return "tool_search"
+    return ""
 
 
 def _namespace_member_name(namespace: str, member: Mapping[str, Any]) -> str:
@@ -1411,10 +1419,11 @@ def _tool_contract_definition(
         if not name:
             continue
         function = _mapping(tool.get("function"))
+        tool_type = _clean(tool.get("type")) or "function"
         compact.append(
             {
                 "name": name,
-                "type": _clean(tool.get("type")) or "function",
+                "type": "function" if tool_type == "tool_search" else tool_type,
                 "description": _clean(
                     function.get("description") or tool.get("description")
                 ),
