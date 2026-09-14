@@ -7287,3 +7287,36 @@ def test_interactive_kernel_transport_failures_fall_back_to_codex(
     assert all(
         event["event_type"] != "chat.kernel-owned-turn-blocked" for event in events
     )
+
+
+def test_runtime_timeout_preserves_last_received_activity(monkeypatch, tmp_path):
+    module = _load_agent_console_web(monkeypatch, tmp_path)
+    event = {"sequence": 7, "message": "Completed check"}
+    module.CONSOLE_RUNTIME_SNAPSHOT_CACHE.update(
+        {
+            "at": 0,
+            "data": {
+                "connected": True,
+                "events": [event],
+                "latest_event": event,
+                "next_after": 7,
+            },
+        }
+    )
+    monkeypatch.setattr(module, "console_runtime_bridge_enabled", lambda: True)
+    monkeypatch.setattr(module, "_console_runtime_startup_deferred", lambda now: False)
+    monkeypatch.setattr(module, "ensure_console_runtime_job", lambda: "test-job")
+    monkeypatch.setattr(module, "_read_console_runtime_workstream_id", lambda: "")
+    monkeypatch.setattr(module, "active_console_runtime_turn_job_id", lambda: "")
+    monkeypatch.setattr(module, "_record_console_runtime_error", lambda exc: None)
+
+    def timeout(*args, **kwargs):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(module, "_console_runtime_json_request", timeout)
+    snapshot = module.console_runtime_activity_snapshot()
+    assert snapshot["connected"] is False
+    assert snapshot["stale"] is True
+    assert snapshot["error"] == "timed out"
+    assert snapshot["events"] == [event]
+    assert snapshot["latest_event"] == event

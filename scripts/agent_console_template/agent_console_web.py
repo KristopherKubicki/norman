@@ -19858,6 +19858,15 @@ def console_runtime_activity_snapshot() -> dict[str, Any]:
                 "error": str(exc),
                 "last_error_at": CONSOLE_RUNTIME_LAST_ERROR_AT,
             }
+            if (
+                isinstance(cached, dict)
+                and not isinstance(exc, urllib_error.HTTPError)
+                and cached.get("events")
+            ):
+                # A transient timeout must not erase already received activity.
+                for field in ("events", "latest_event", "next_after", "route_summary"):
+                    snapshot[field] = cached.get(field)
+                snapshot["stale"] = True
             CONSOLE_RUNTIME_SNAPSHOT_CACHE.update({"at": now, "data": snapshot})
             return dict(snapshot)
 
@@ -44679,6 +44688,17 @@ def request_status_snapshot_refresh() -> None:
     ).start()
 
 
+def requested_status_snapshot(params: dict[str, list[str]]) -> dict[str, Any]:
+    """Read durable turns for explicit history requests, bypassing telemetry limits."""
+    snapshot = status_snapshot()
+    if "history_limit" in params:
+        limit = max(
+            1, min(250, _coerce_int((params.get("history_limit") or [40])[0]) or 40)
+        )
+        snapshot["history"] = load_history(limit=limit)
+    return snapshot
+
+
 def status_snapshot() -> dict[str, Any]:
     """Return an immediately usable, bounded snapshot for browser transport."""
     with STATUS_SNAPSHOT_CACHE_LOCK:
@@ -47652,18 +47672,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/status":
-            snapshot = status_snapshot()
-            requested_history_limit = _coerce_int(
-                (params.get("history_limit") or [""])[0]
-            )
-            if requested_history_limit:
-                snapshot["history"] = list(snapshot.get("history") or [])[
-                    -min(
-                        max(1, requested_history_limit),
-                        STATUS_TRANSPORT_HISTORY_LIMIT,
-                    ) :
-                ]
-            self.json_response(snapshot)
+            self.json_response(requested_status_snapshot(params))
             return
 
         if parsed.path == "/api/children":
@@ -48659,6 +48668,8 @@ class Handler(BaseHTTPRequestHandler):
                 error_text = str(
                     snapshot.get("session_admission_error")
                     or snapshot.get("pressure_guard_error")
+                    or snapshot.get("waterfall_error")
+                    or snapshot.get("route_proof_error")
                     or "a web prompt is already running"
                 )
                 self.json_response(
@@ -83602,10 +83613,11 @@ class Handler(BaseHTTPRequestHandler):
         if (!connected && runtime.error) {{
           return {{
             mode: "queue",
-            stripTitle: "Runtime feed unavailable",
+            stripTitle: /timed out|timeout|connection refused|startup jitter/i.test(String(runtime.error || ""))
+              ? "Runtime feed reconnecting" : "Runtime feed unavailable",
             stripDetail: String(runtime.error || "Norman runtime events are not connected."),
             peekTitle: "Runtime",
-            simLine: "The local TUI is still working, but Norman did not accept the runtime feed.",
+            simLine: "The local TUI is still working. Its activity feed will retry automatically.",
             simMeta: [runtime.job_id ? `job ${{runtime.job_id}}` : ""].filter(Boolean),
             steps: [
               {{

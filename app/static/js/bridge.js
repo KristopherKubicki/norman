@@ -160,7 +160,7 @@
     worker: {},
     routeSummary: {},
     textureCatalog: [],
-    nonConversationalStationSlugs: new Set(['dohio', 'maps']),
+    nonConversationalStationSlugs: new Set(['dohio', 'maps', 'switchboard', 'subprime']),
     activity: null,
     workstream: null,
     eventSource: null,
@@ -2490,11 +2490,16 @@
       }
     }
     context.restore();
-    if (!window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches && document.visibilityState !== 'hidden') {
+    if (shouldAnimateTexture()) {
       state.texture.frame = window.requestAnimationFrame(drawTextureField);
     } else {
       state.texture.frame = 0;
     }
+  }
+
+  function shouldAnimateTexture() {
+    return !window.matchMedia?.('(max-width: 767.98px), (prefers-reduced-motion: reduce)')?.matches
+      && document.visibilityState !== 'hidden';
   }
 
   function startTextureField() {
@@ -4635,12 +4640,11 @@
   function syncVisualViewport() {
     window.cancelAnimationFrame(viewportSyncFrame);
     viewportSyncFrame = window.requestAnimationFrame(() => {
+      const keepAtEnd = nodes.feed.scrollHeight - nodes.feed.scrollTop - nodes.feed.clientHeight < 80;
       const viewport = window.visualViewport;
       const height = Math.max(320, Math.round(viewport?.height || window.innerHeight));
       document.documentElement.style.setProperty('--bridge-visual-height', `${height}px`);
-      if (document.activeElement === nodes.message) {
-        nodes.feed.scrollTop = nodes.feed.scrollHeight;
-      }
+      if (keepAtEnd) nodes.feed.scrollTop = nodes.feed.scrollHeight;
     });
   }
 

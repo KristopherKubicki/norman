@@ -8358,3 +8358,131 @@
     padding-inline: 8px;
   }
 }
+
+/* Phone conversations: reserve space for messages and keep touch targets usable. */
+@media (max-width: 767.98px) {
+  .page-bridge .cockpit-conversation__head {
+    min-height: 52px;
+    margin: 0;
+    padding: max(4px, env(safe-area-inset-top)) 8px 4px;
+    border-radius: 0;
+  }
+
+  .page-bridge .cockpit-command-rail {
+    display: none;
+  }
+
+  .page-bridge .cockpit-conversation__identity {
+    min-width: 0;
+    padding-right: 0;
+  }
+
+  .page-bridge .cockpit-feed {
+    padding: 12px 10px 16px;
+    --thread-item-gap: 6px;
+    --thread-turn-gap: 12px;
+  }
+
+  .page-bridge .cockpit-message__telemetry {
+    gap: 3px;
+  }
+
+  .page-bridge .cockpit-message-chip[data-chip="usage"],
+  .page-bridge .cockpit-message-chip[data-chip="spend"],
+  .page-bridge .cockpit-compose-shortcut {
+    display: none;
+  }
+
+  .page-bridge .cockpit-composer-wrap {
+    padding: 6px max(8px, env(safe-area-inset-right))
+      max(6px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+  }
+
+  .page-bridge .cockpit-composer {
+    min-height: 52px;
+    padding: 3px;
+    grid-template-columns: 44px minmax(0, 1fr) 44px;
+  }
+
+  .page-bridge .cockpit-composer textarea {
+    padding: 11px 5px;
+    font-size: 16px;
+  }
+
+  .page-bridge .cockpit-icon-button,
+  .page-bridge .cockpit-menu-button,
+  .page-bridge .cockpit-compose-action,
+  .page-bridge .cockpit-send {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .page-bridge .cockpit .cockpit-nav,
+  .page-bridge .cockpit[data-group-count] .cockpit-nav {
+    width: min(380px, 100vw);
+  }
+
+  .page-bridge .cockpit-nav__head {
+    min-height: 54px;
+    padding: max(5px, env(safe-area-inset-top)) 8px 5px;
+  }
+
+  .page-bridge .cockpit-search {
+    margin: 6px 10px;
+  }
+
+  .page-bridge .cockpit-section--fixed {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    padding-block: 4px;
+  }
+
+  .page-bridge .cockpit-section--fixed .cockpit-nav-item {
+    min-height: 44px;
+    padding: 6px 10px;
+  }
+
+  .page-bridge .cockpit-section--fixed .cockpit-nav-item small {
+    display: none;
+  }
+
+  .page-bridge .cockpit-section--rooms {
+    padding-block: 4px;
+  }
+
+  .page-bridge .cockpit-section__head {
+    min-height: 32px;
+    margin-bottom: 2px;
+  }
+
+  .page-bridge .bridge-directory-group__head {
+    padding-block: 6px;
+    min-height: 26px;
+  }
+
+  .page-bridge .bridge-conversation-item {
+    min-height: 52px;
+    padding: 6px 10px;
+  }
+
+  .page-bridge .cockpit-thread-field {
+    display: none;
+  }
+
+  .page-bridge .bridge-simple-cartouche,
+  .page-bridge .bridge-simple-cartouche::before,
+  .page-bridge .bridge-simple-cartouche::after {
+    animation: none;
+  }
+}
+
+@media (max-width: 767.98px) {
+  .page-bridge .cockpit-section--rooms .bridge-empty-action {
+    min-height: 44px;
+    padding-block: 6px;
+  }
+
+  .page-bridge .cockpit-section--rooms .bridge-empty-action small {
+    display: none;
+  }
+}

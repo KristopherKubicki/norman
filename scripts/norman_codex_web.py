@@ -33433,6 +33433,17 @@ def request_status_snapshot_refresh() -> None:
     ).start()
 
 
+def requested_status_snapshot(params: dict[str, list[str]]) -> dict[str, Any]:
+    """Read durable turns for explicit history requests, bypassing telemetry limits."""
+    snapshot = status_snapshot()
+    if "history_limit" in params:
+        limit = max(
+            1, min(250, _coerce_int((params.get("history_limit") or [40])[0]) or 40)
+        )
+        snapshot["history"] = load_history(limit=limit)
+    return snapshot
+
+
 def status_snapshot() -> dict[str, Any]:
     """Return an immediately usable, bounded snapshot for browser transport."""
     with STATUS_SNAPSHOT_CACHE_LOCK:
@@ -37014,7 +37025,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/api/status":
-            self.json_response(status_snapshot())
+            self.json_response(requested_status_snapshot(params))
             return
 
         if parsed.path == "/api/local-cli-sessions":
@@ -38052,6 +38063,8 @@ class Handler(BaseHTTPRequestHandler):
                     snapshot.get("usage_limit_reset_approval_error")
                     or snapshot.get("session_admission_error")
                     or snapshot.get("pressure_guard_error")
+                    or snapshot.get("waterfall_error")
+                    or snapshot.get("route_proof_error")
                     or "a web prompt is already running"
                 )
                 self.json_response(

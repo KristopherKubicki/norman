@@ -5,7 +5,7 @@ function loadDirectory() {
   document.body.innerHTML = '<div id="norman-bridge"></div>';
   const source = fs.readFileSync(path.join(__dirname, '../app/static/js/bridge.js'), 'utf8');
   const boot = source.lastIndexOf('\n  loadPreferences();');
-  window.eval(`${source.slice(0, boot)}\nwindow.bridgeTest = { state, normalizeAgents, filteredAgents, directoryGroup };\n})();`);
+  window.eval(`${source.slice(0, boot)}\nwindow.bridgeTest = { state, normalizeAgents, filteredAgents, directoryGroup, shouldAnimateTexture };\n})();`);
   const api = window.bridgeTest;
   api.state.groups = [{ id: 'personal', slug: 'personal' }];
   api.state.group = 'personal';
@@ -39,4 +39,15 @@ test('Norman stays in the first directory group when a different lane is selecte
   ];
   expect(api.filteredAgents().map(a => a.slug)).toEqual(['norman', 'uplink']);
   expect(api.directoryGroup(api.state.agents[0])).toEqual({ key: 'norman', label: 'Coordinator', rank: 0 });
+});
+
+
+test('phone and reduced-motion views do not run a continuous texture animation', () => {
+  const api = loadDirectory();
+  const original = window.matchMedia;
+  window.matchMedia = () => ({ matches: true });
+  expect(api.shouldAnimateTexture()).toBe(false);
+  window.matchMedia = () => ({ matches: false });
+  expect(api.shouldAnimateTexture()).toBe(true);
+  window.matchMedia = original;
 });

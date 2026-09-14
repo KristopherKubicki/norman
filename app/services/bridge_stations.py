@@ -24,7 +24,9 @@ STATION_SLUG_ALIASES = {
 # These identities are estate/service surfaces, not prompt-capable station
 # consoles. Keep them out of Bridge direct messages until they implement the
 # common station history and prompt contract.
-NON_CONVERSATIONAL_STATION_SLUGS = frozenset({"dohio", "maps"})
+NON_CONVERSATIONAL_STATION_SLUGS = frozenset(
+    {"dohio", "maps", "switchboard", "subprime"}
+)
 
 
 def bridge_station_slug(value: Any) -> str:
