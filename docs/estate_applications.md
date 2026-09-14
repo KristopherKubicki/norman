@@ -40,3 +40,11 @@ Run the estate API, registry, sync, and applications tests plus the JavaScript a
 Check stale data, failed app with live operator, missing expected signals, discovery conflicts, and retirement.
 Use the existing isolated `norman-release@<sha>` canary before switching the production release.
 The previous release remains the rollback path; this change requires no database migration.
+
+## Production Static Files
+
+The Norman host's Caddy configuration serves most `/static/` requests from `/var/www/norman-static`.
+For this release, install `app/static/js/estate_applications.js` and
+`app/static/css/estate_applications.css` into the corresponding `js/` and `css/` directories there.
+Verify their public checksums against the candidate release; localhost asset checks alone are insufficient.
+The files are additive, so the prior release can be restored without deleting assets.
