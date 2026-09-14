@@ -912,12 +912,14 @@
     const merged = new Map();
     for (const principal of estate?.principals || []) {
       const principalId = slugify(principal.slug || principal.display_name);
-      const services = principal.services || [];
+      const services = (principal.services || []).filter((item) => item.is_active !== false);
       for (const bot of principal.bots || []) {
         const service = services.find((item) => (
-          slugify(item.bot_name) === slugify(bot.display_name)
-          || slugify(item.slug) === slugify(bot.slug)
+          slugify(item.slug) === slugify(bot.slug)
+          || (slugify(bot.slug) === 'norman' && slugify(item.bot_name) === slugify(bot.display_name))
         ));
+        // Estate roles are not separate chat stations merely because they own services.
+        if (bot.is_active === false || (!service && slugify(bot.slug) !== 'norman')) continue;
         const agent = {
           ...bot,
           principal_id: principalId,
@@ -928,11 +930,12 @@
         merged.set(slugify(agent.slug || agent.display_name), agent);
       }
       for (const service of services.filter((item) => item.console_url || item.console_url_tailnet)) {
-        const key = slugify(service.bot_name || service.slug || service.display_name);
+        const key = slugify(service.slug || service.display_name);
+        if (key === 'norman-service' && merged.has('norman')) continue;
         if (merged.has(key)) continue;
         merged.set(key, {
           slug: service.slug,
-          display_name: service.bot_name || service.display_name,
+          display_name: service.display_name || displaySlug(service.slug),
           class_name: service.kind || 'service',
           domain_name: service.domain_name || '',
           domain_slug: slugify(service.domain_name),
@@ -1068,7 +1071,7 @@
     return state.agents.filter((agent) => {
       if (state.nonConversationalStationSlugs.has(slugify(agent.slug))) return false;
       if (agent.principal_id !== state.group) return false;
-      if (state.domain && agent.domain_slug && agent.domain_slug !== state.domain) return false;
+      if (slugify(agent.slug) !== 'norman' && state.domain && agent.domain_slug && agent.domain_slug !== state.domain) return false;
       if (!state.search) return true;
       return `${agent.display_name} ${agent.class_name} ${agent.domain_name}`
         .toLowerCase()
@@ -1305,6 +1308,7 @@
   }
 
   function directoryGroup(agent) {
+    if (slugify(agent.slug) === 'norman') return { key: 'norman', label: 'Coordinator', rank: 0 };
     const identity = identityContract(agent.slug);
     const configuredBoundary = state.groups.length > 1 || currentGroup().id !== FALLBACK_GROUP.id;
     const raw = configuredBoundary

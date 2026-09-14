@@ -446,3 +446,67 @@ def test_bridge_station_media_is_validated_against_history_and_proxied(
 
 
 from app.models import Connector
+
+
+def test_estate_station_uses_current_frontdoor_for_history_and_messages(
+    test_app, db, monkeypatch
+):
+    from app.models import EstateDomain, EstatePrincipal, EstateService
+
+    principal = EstatePrincipal(
+        slug="bridge-routing-test", display_name="Test", kind="person"
+    )
+    db.add(principal)
+    db.flush()
+    domain = EstateDomain(
+        principal_id=principal.id,
+        slug="bridge-routing-test",
+        display_name="Test",
+        kind="ops",
+    )
+    db.add(domain)
+    db.flush()
+    db.add(
+        EstateService(
+            principal_id=principal.id,
+            domain_id=domain.id,
+            slug="bridge-uplink-test",
+            display_name="Uplink",
+            kind="console",
+            console_url="http://192.168.2.242:8792/",
+            console_url_tailnet="http://retired-tailnet.invalid:8792/",
+            is_active=True,
+        )
+    )
+    db.commit()
+    urls = []
+
+    def history(url, **kwargs):
+        urls.append(url)
+        return {
+            "reachable": True,
+            "items": [{"prompt": "Existing conversation", "response": "Preserved"}],
+        }
+
+    def submit(url, **kwargs):
+        urls.append(url)
+        return {"accepted": True}
+
+    monkeypatch.setattr(
+        "app.api.api_v1.routers.bridge_conversations.fetch_console_history", history
+    )
+    monkeypatch.setattr(
+        "app.api.api_v1.routers.bridge_conversations._submit_station_prompt", submit
+    )
+    history_response = test_app.get(
+        "/api/v1/bridge/conversations/agents/bridge-uplink-test/history"
+    )
+    sent = test_app.post(
+        "/api/v1/bridge/conversations/agents/bridge-uplink-test/messages",
+        json={"message": "Continue"},
+    )
+    assert history_response.status_code == 200
+    assert history_response.json()["items"][0]["response"] == "Preserved"
+    assert sent.status_code == 202
+    assert sent.json()["accepted"] is True
+    assert urls == ["https://norman.home.arpa/bot/bridge-uplink-test/"] * 2

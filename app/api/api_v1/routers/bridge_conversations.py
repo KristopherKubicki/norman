@@ -146,13 +146,9 @@ def _estate_history_url(db: Session, agent_slug: str) -> str:
         None,
     )
     if service is not None:
-        return str(
-            service.console_url_tailnet
-            or service.console_url
-            or service.web_url_tailnet
-            or service.web_url
-            or ""
-        ).strip()
+        # Estate console URLs may still point at retired per-host tailnets.
+        # The shared frontdoor owns the current station-to-host mapping.
+        return bridge_station_url(target)
     bots = db.query(EstateBot).filter(EstateBot.is_active.is_(True)).all()
     bot = next((item for item in bots if _slug(item.slug) == target), None)
     if bot is None and target.endswith("-bot"):
@@ -165,13 +161,7 @@ def _estate_history_url(db: Session, agent_slug: str) -> str:
     service = next((item for item in services if item.bot_id == bot.id), None)
     if service is None:
         return ""
-    return str(
-        service.console_url_tailnet
-        or service.console_url
-        or service.web_url_tailnet
-        or service.web_url
-        or ""
-    ).strip()
+    return bridge_station_url(bot.slug)
 
 
 def _station_target(
