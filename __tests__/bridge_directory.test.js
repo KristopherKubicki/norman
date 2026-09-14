@@ -5,7 +5,7 @@ function loadDirectory() {
   document.body.innerHTML = '<div id="norman-bridge"></div>';
   const source = fs.readFileSync(path.join(__dirname, '../app/static/js/bridge.js'), 'utf8');
   const boot = source.lastIndexOf('\n  loadPreferences();');
-  window.eval(`${source.slice(0, boot)}\nwindow.bridgeTest = { state, normalizeAgents, filteredAgents, directoryGroup, shouldAnimateTexture };\n})();`);
+  window.eval(`${source.slice(0, boot)}\nwindow.bridgeTest = { state, normalizeAgents, filteredAgents, directoryGroup, shouldAnimateTexture, mergeCatalogAgents, provisionalAgents };\n})();`);
   const api = window.bridgeTest;
   api.state.groups = [{ id: 'personal', slug: 'personal' }];
   api.state.group = 'personal';
@@ -50,4 +50,13 @@ test('phone and reduced-motion views do not run a continuous texture animation',
   window.matchMedia = () => ({ matches: false });
   expect(api.shouldAnimateTexture()).toBe(true);
   window.matchMedia = original;
+});
+
+
+test('artwork and provisional identities never create phantom conversations', () => {
+  const api = loadDirectory();
+  api.state.textureCatalog = [{ slug: 'null-agent' }, { slug: 'retired-console' }];
+  const discovered = [{ slug: 'uplink', principal_id: 'personal' }];
+  expect(api.mergeCatalogAgents(discovered).map(a => a.slug)).toEqual(['norman', 'uplink']);
+  expect(api.provisionalAgents().map(a => a.slug)).toEqual(['norman']);
 });

@@ -977,24 +977,7 @@
       (agents || []).map((agent) => [slugify(agent.slug || agent.display_name), agent]),
     );
     const group = state.groups[0] || FALLBACK_GROUP;
-    for (const identity of state.textureCatalog || []) {
-      const slug = slugify(identity.slug);
-      if (!slug || merged.has(slug)) continue;
-      const identityGroup = state.groups.find(
-        (candidate) => slugify(candidate.slug) === slugify(identity.group),
-      ) || group;
-      merged.set(slug, {
-        slug,
-        display_name: displaySlug(identity.slug),
-        class_name: 'tui station',
-        domain_name: displaySlug(identity.group || ''),
-        domain_slug: '',
-        principal_id: identityGroup.id,
-        principal_slug: identityGroup.slug,
-        console_url: '',
-        directory_source: 'identity-catalog',
-      });
-    }
+    // Artwork identities are not evidence of a running conversation service.
     if (!merged.has('norman')) {
       merged.set('norman', {
         ...FALLBACK_NORMAN,
@@ -1011,21 +994,11 @@
 
   function provisionalAgents() {
     const group = state.groups[0] || FALLBACK_GROUP;
-    return Object.keys(IDENTITY_GLYPHS).map((slug) => ({
-      slug,
-      display_name: displaySlug(slug),
-      class_name: slug === 'norman' ? 'coordinator' : 'tui station',
-      domain_name: '',
-      domain_slug: '',
+    return [{
+      ...FALLBACK_NORMAN,
       principal_id: group.id,
       principal_slug: group.slug,
-      console_url: slug === 'norman' ? '/bot/norman/' : '',
-      directory_source: 'embedded-identity',
-    })).sort((a, b) => {
-      if (a.slug === 'norman') return -1;
-      if (b.slug === 'norman') return 1;
-      return a.display_name.localeCompare(b.display_name);
-    });
+    }];
   }
 
   function jobGroup(job) {
@@ -3652,9 +3625,7 @@
     }
     if (!quiet) renderRuntime();
 
-    // First paint never depends on the network. The embedded identity map is
-    // sufficient to make DMs usable while registry and contact-sheet details
-    // reconcile in the background.
+    // Keep Norman available while the actual console directory loads.
     if (!state.authRequired && state.agents.length <= 1) {
       state.agents = provisionalAgents();
     }
