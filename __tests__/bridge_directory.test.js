@@ -18,7 +18,9 @@ test('directory shows distinct consoles under their own names and excludes organ
     { slug: 'norman', display_name: 'Norman' },
     { slug: 'communications', display_name: 'Communications' },
     { slug: 'archivist', display_name: 'Archivist' },
+    { slug: 'finance-reader', display_name: 'Finance Reader' },
   ], services: [
+    { slug: 'finance-reader', bot_name: 'Finance Reader', display_name: 'Finance Reader', web_url: '/finance/' },
     { slug: 'norman-service', bot_name: 'Norman', display_name: 'Norman Service', console_url: '/bot/norman/' },
     { slug: 'uplink', bot_name: 'Communications', display_name: 'Uplink', console_url: '/bot/uplink/' },
     { slug: 'phone-ops', bot_name: 'Communications', display_name: 'Phone Ops', console_url: '/bot/phone-ops/' },

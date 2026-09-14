@@ -914,7 +914,7 @@
       const principalId = slugify(principal.slug || principal.display_name);
       const services = (principal.services || []).filter((item) => item.is_active !== false);
       for (const bot of principal.bots || []) {
-        const service = services.find((item) => (
+        const service = services.filter((item) => item.console_url || item.console_url_tailnet).find((item) => (
           slugify(item.slug) === slugify(bot.slug)
           || (slugify(bot.slug) === 'norman' && slugify(item.bot_name) === slugify(bot.display_name))
         ));
