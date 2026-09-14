@@ -5,7 +5,7 @@ function loadDirectory() {
   document.body.innerHTML = '<div id="norman-bridge"></div>';
   const source = fs.readFileSync(path.join(__dirname, '../app/static/js/bridge.js'), 'utf8');
   const boot = source.lastIndexOf('\n  loadPreferences();');
-  window.eval(`${source.slice(0, boot)}\nwindow.bridgeTest = { state, normalizeAgents, filteredAgents, directoryGroup, shouldAnimateTexture, mergeCatalogAgents, provisionalAgents };\n})();`);
+  window.eval(`${source.slice(0, boot)}\nwindow.bridgeTest = { state, normalizeAgents, filteredAgents, directoryGroup, shouldAnimateTexture, mergeCatalogAgents, provisionalAgents, fetchEstateDirectory };\n})();`);
   const api = window.bridgeTest;
   api.state.groups = [{ id: 'personal', slug: 'personal' }];
   api.state.group = 'personal';
@@ -59,4 +59,20 @@ test('artwork and provisional identities never create phantom conversations', ()
   const discovered = [{ slug: 'uplink', principal_id: 'personal' }];
   expect(api.mergeCatalogAgents(discovered).map(a => a.slug)).toEqual(['norman', 'uplink']);
   expect(api.provisionalAgents().map(a => a.slug)).toEqual(['norman']);
+});
+
+
+test('directory recovers from a transient first-load failure without retrying denied access', async () => {
+  const api = loadDirectory();
+  const original = window.fetch;
+  const estate = { principals: [{ slug: 'personal' }] };
+  window.fetch = jest.fn()
+    .mockRejectedValueOnce(new Error('timed out'))
+    .mockResolvedValueOnce({ ok: true, json: async () => estate });
+  await expect(api.fetchEstateDirectory()).resolves.toEqual(estate);
+  expect(window.fetch).toHaveBeenCalledTimes(2);
+  window.fetch = jest.fn().mockResolvedValue({ ok: false, status: 403, text: async () => '' });
+  await expect(api.fetchEstateDirectory()).rejects.toMatchObject({ status: 403 });
+  expect(window.fetch).toHaveBeenCalledTimes(1);
+  window.fetch = original;
 });

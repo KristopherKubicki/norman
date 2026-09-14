@@ -480,6 +480,17 @@
     return response.json();
   }
 
+  async function fetchEstateDirectory() {
+    try {
+      return await fetchJson(`${API}/estate/overview`, { timeoutMs: 12000 });
+    } catch (error) {
+      if ([401, 403].includes(Number(error.status))) throw error;
+      // Cold starts and a changing phone connection must not strand the
+      // directory on the provisional Norman-only view until the next poll.
+      return fetchJson(`${API}/estate/overview`, { timeoutMs: 30000 });
+    }
+  }
+
   function postJson(url, payload, options = {}) {
     return fetchJson(url, {
       ...options,
@@ -3642,7 +3653,7 @@
       { timeoutMs: 3000 },
     );
     const pendingRequests = [
-      fetchJson(`${API}/estate/overview`, { timeoutMs: 12000 }),
+      fetchEstateDirectory(),
       fetchJson(`${API}/console-runtime/jobs?limit=200`, { timeoutMs: 8000 }),
       fetchJson(`${API}/approvals/?status=pending&limit=100`, { timeoutMs: 8000 }),
       fetchJson('/api/console-ui/heartbeats', { timeoutMs: 6000 }),
