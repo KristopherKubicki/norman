@@ -24,6 +24,18 @@ from app.services.bridge_stations import NON_CONVERSATIONAL_STATION_SLUGS
 router = APIRouter(tags=["estate"])
 
 
+@router.get("/estate/applications")
+async def estate_applications(_: User = Depends(get_current_user)):
+    """Expose owned applications with independently refreshed DOHIO evidence."""
+    from app.services.estate_applications import (
+        build_overview,
+        dohio_snapshot,
+        load_catalog,
+    )
+
+    return build_overview(load_catalog(), await dohio_snapshot())
+
+
 def _serialize_model(obj, *, fields: tuple[str, ...]) -> dict:
     return {field: getattr(obj, field) for field in fields}
 

@@ -4287,7 +4287,7 @@ def test_base_nav_splits_chat_and_dashboard_routes() -> None:
     assert "norman-shell-menu__sheet" in template
     assert "Control Plane" in template
     assert ">Subprime lane</a>" in template
-    assert ">Directory</a>" in template
+    assert ">Applications &amp; Systems</a>" in template
     assert ">Settings</a>" in template
     assert ">Connectors</a>" in template
     assert ">Sources</a>" in template

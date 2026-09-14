@@ -1,0 +1,231 @@
+"""Join Norman-owned application intent with read-only DOHIO observations."""
+
+from __future__ import annotations
+
+import asyncio
+import copy
+import json
+import os
+import ssl
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlsplit
+
+import httpx
+
+CATALOG_PATH = Path(__file__).resolve().parents[2] / "db/estate/applications.json"
+DOHIO_URL = os.environ.get("NORMAN_DOHIO_URL", "https://dohio.home.arpa").rstrip("/")
+CACHE_SECONDS = 60
+STALE_SECONDS = 600
+_cache: dict[str, Any] = {}
+_lock = asyncio.Lock()
+
+
+def load_catalog() -> dict:
+    """Load durable ownership; discovery never writes this file."""
+    return json.loads(CATALOG_PATH.read_text())
+
+
+def safe_url(value: Any) -> str | None:
+    """Allow web destinations without credentials, plus local Norman paths."""
+    if not isinstance(value, str):
+        return None
+    parts = urlsplit(value)
+    if parts.username or parts.password or value.startswith("//"):
+        return None
+    if parts.scheme in ("https", "http") and parts.netloc:
+        return value
+    if not parts.scheme and value.startswith("/"):
+        return value
+    return None
+
+
+def age_seconds(value: str | None, now: datetime) -> float | None:
+    """Return age for an aware timestamp; absent or malformed times are unknown."""
+    try:
+        stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            return None
+        age = (now - stamp).total_seconds()
+        return age if age >= -60 else None
+    except (ValueError, TypeError):
+        return None
+
+
+def observation(row: dict, timestamp: str | None, now: datetime) -> dict:
+    """Keep endpoint reachability distinct from end-to-end application health."""
+    stamp = row.get("checked_at") or row.get("seen_at") or timestamp
+    age = age_seconds(stamp, now)
+    level = row.get("level", "unknown")
+    state = row.get("state") or row.get("status") or "unknown"
+    if age is None:
+        health = "unknown"
+    elif age > STALE_SECONDS:
+        health = "stale"
+    elif row.get("monitored") is False:
+        health = "unknown"
+    elif level == "bad" or state in ("offline", "failed", "degraded"):
+        health = "degraded"
+    elif level == "ok" or state in ("online", "live"):
+        health = "reachable"
+    else:
+        health = "unknown"
+    return {
+        "id": row.get("id"),
+        "name": row.get("name"),
+        "health": health,
+        "state": state,
+        "observed_at": stamp,
+        "detail": row.get("detail") or row.get("reason"),
+        "url": safe_url(row.get("url")),
+    }
+
+
+async def dohio_snapshot() -> dict:
+    """Bound concurrent refreshes; retain last observations on upstream failure."""
+    async with _lock:
+        if time.monotonic() - _cache.get("attempt", float("-inf")) < CACHE_SECONDS:
+            return copy.deepcopy(_cache)
+        _cache["attempt"] = time.monotonic()
+        try:
+            async with httpx.AsyncClient(
+                timeout=8, follow_redirects=False, verify=ssl.create_default_context()
+            ) as client:
+                responses = await asyncio.gather(
+                    *[
+                        client.get(f"{DOHIO_URL}/api/{path}")
+                        for path in ("status", "registry")
+                    ]
+                )
+            for response in responses:
+                response.raise_for_status()
+            status, registry = (response.json() for response in responses)
+            if not isinstance(status.get("surface_health", {}).get("surfaces"), list):
+                raise ValueError("Invalid DOHIO status shape")
+            if not isinstance(registry.get("files"), dict):
+                raise ValueError("Invalid DOHIO registry shape")
+            _cache.update(
+                status=status,
+                registry=registry,
+                error=None,
+                fetched_at=datetime.now(timezone.utc).isoformat(),
+            )
+        except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+            _cache["error"] = (
+                "DOHIO refresh unavailable; retained observations may be stale."
+            )
+        return copy.deepcopy(_cache)
+
+
+def app_observations(app: dict, status: dict, now: datetime) -> list[dict]:
+    """Bind only explicitly assigned application signals."""
+    observations = []
+    for field, section, collection in [
+        ("dohio_service_ids", "estate_services", "services"),
+        ("dohio_surface_ids", "surface_health", "surfaces"),
+    ]:
+        source = status.get(section, {})
+        rows = {row["id"]: row for row in source.get(collection, [])}
+        for key in app.get(field, []):
+            if key in rows:
+                observations.append(
+                    observation(rows[key], source.get("generated_at"), now)
+                )
+            else:
+                observations.append(
+                    observation({"id": key, "state": "missing"}, None, now)
+                )
+    return observations
+
+
+def enrich_application(app: dict, actor: dict, status: dict, now: datetime) -> None:
+    """Attach observations without changing the declared owner or lifecycle."""
+    app["account"] = app.get("account") or actor.get("preferred_operator_account")
+    app["account_basis"] = actor.get("account_policy_basis", app.get("ownership_basis"))
+    app["fallback"] = actor.get("allowed_operator_fallback")
+    app["console_url"] = safe_url(actor.get("console_url"))
+    heartbeats = status.get("bot_heartbeats", {}).get("bots", {})
+    ids = [actor.get("id"), *actor.get("aliases", [])]
+    heartbeat = next((heartbeats[k] for k in ids if k in heartbeats), {})
+    app["operator_observation"] = observation(heartbeat, None, now)
+    observations = app_observations(app, status, now)
+    app["observations"] = observations
+    app["web_url"] = safe_url(app.get("web_url")) or next(
+        (o["url"] for o in observations if o["url"]), None
+    )
+    healths = [o["health"] for o in observations]
+    if app.get("lifecycle") in ("retired", "archived", "planned"):
+        app["health"] = app["lifecycle"]
+    else:
+        app["health"] = next(
+            (h for h in ("degraded", "stale", "unknown") if h in healths),
+            "reachable" if healths else "unknown",
+        )
+    app["needs_attention"] = app["health"] not in (
+        "retired",
+        "archived",
+        "planned",
+    ) and (app["health"] != "reachable" or not app.get("primary_tui"))
+    app["kpi_coverage"] = {"bound": 0, "total": len(app.get("kpi_contracts", []))}
+
+
+def unmatched_discoveries(apps: list[dict], snapshot: dict) -> list[dict]:
+    """Return unmatched records for review, never auto-promote them into apps."""
+    mapped_services = {key for a in apps for key in a.get("dohio_service_ids", [])}
+    mapped_surfaces = {key for a in apps for key in a.get("dohio_surface_ids", [])}
+    for row in (
+        snapshot.get("status", {}).get("estate_services", {}).get("services", [])
+    ):
+        if row.get("id") in mapped_services:
+            mapped_surfaces.update(row.get("surfaces", []))
+    files = snapshot.get("registry", {}).get("files", {})
+    discoveries = []
+    for filename, section, mapped in [
+        ("services.json", "services", mapped_services),
+        ("surfaces.json", "surfaces", mapped_surfaces),
+    ]:
+        for row in files.get(filename, {}).get(section, []):
+            if row.get("id") not in mapped:
+                discoveries.append(
+                    {
+                        "id": row.get("id"),
+                        "kind": section,
+                        "name": row.get("name"),
+                        "inventory_status": row.get("status"),
+                        "url": safe_url(row.get("url")),
+                        "status": "needs-review",
+                        "suggested_operators": row.get("bots", []),
+                    }
+                )
+    return discoveries
+
+
+def build_overview(catalog: dict, snapshot: dict, now: datetime | None = None) -> dict:
+    """Reconcile explicit IDs, preserving owner policy and retired history."""
+    now = now or datetime.now(timezone.utc)
+    result = copy.deepcopy(catalog)
+    actors = {a["id"]: a for a in result["actors"]}
+    for app in result["applications"]:
+        enrich_application(
+            app, actors.get(app.get("primary_tui"), {}), snapshot.get("status", {}), now
+        )
+    result["discoveries"] = unmatched_discoveries(result["applications"], snapshot)
+    alerts = snapshot.get("status", {}).get("alerts", {})
+    result["alerts"] = [
+        {key: row.get(key) for key in ("id", "severity", "status", "title", "detail")}
+        for row in alerts.get("items", [])
+    ]
+    result["source"] = {
+        "name": "DOHIO",
+        "fetched_at": snapshot.get("fetched_at"),
+        "error": snapshot.get("error"),
+        "refresh_seconds": CACHE_SECONDS,
+    }
+    result["summary"] = {
+        "applications": len(result["applications"]),
+        "attention": sum(a["needs_attention"] for a in result["applications"]),
+        "discoveries": len(result["discoveries"]),
+    }
+    return result
