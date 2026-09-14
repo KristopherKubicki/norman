@@ -76,7 +76,7 @@ def observation(row: dict, timestamp: str | None, now: datetime) -> dict:
         health = "stale"
     elif row.get("monitored") is False:
         health = "unknown"
-    elif state == "scaled-to-zero":
+    elif state in ("scaled-to-zero", "idle"):
         health = "idle"
     elif level in ("bad", "fail", "critical") or state in (
         "offline",
@@ -229,7 +229,10 @@ def classify_coverage(app: dict) -> None:
         if runtime_only:
             app["health"] = "runtime-only"
             app["needs_attention"] = True
-        next_action = "Add output or workflow evidence where only process/reachability checks exist."
+        next_action = review.get(
+            "next_action",
+            "Add output or workflow evidence where only process/reachability checks exist.",
+        )
     elif app.get("monitoring_mode") == "on-demand":
         reason = "on-demand"
         app["health"] = "on-demand"

@@ -699,10 +699,10 @@
       "instances": [],
       "historical_findings": [],
       "coverage_review": {
-        "category": "check-failed",
-        "next_action": "Repair the app hostname TLS route on the Glimpser host; retain Eyebat as the separate operator endpoint.",
-        "evidence": "glimpser.home.arpa TLS handshake fails from Norman; eyebat.home.arpa TLS verifies.",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "category": "observed",
+        "next_action": "Add per-feed capture freshness and failure counts; keep media-only Tailscale Funnel separate from the private app hostname.",
+        "evidence": "Repaired two DOHIO private DNS overrides to the verified LAN TLS listener 192.168.2.145 and installed the estate public CA on DOHIO. Norman HTTPS returns 200; Glimpser system service is active.",
+        "reviewed_at": "2026-09-14T22:44:18.391386+00:00"
       }
     },
     {
@@ -772,9 +772,9 @@
       ],
       "coverage_review": {
         "category": "check-failed",
-        "next_action": "Repair failed helpers individually: Beach upstream connection refused; sentinel setSummary returns HTTP 500. Confirm pfSense/power helper errors and refresh Beach inventory.",
-        "evidence": "Four helpers recently failed. Site report: Halsted OK; Argyle, Beach, Knox warnings.",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "next_action": "Diagnose Hubitat HTTP 500 on summary/bucket metadata commands and verify the pfSense endpoint before changing its target.",
+        "evidence": "Repaired NetOps ingress for Housebot 192.168.2.146 to Eufy port 8084 only; passive sync now succeeds. pfSense target 192.168.2.1 refuses connections; power accounting HTTP 500 reproduced. Sentinel failures remain intermittent.",
+        "reviewed_at": "2026-09-14T22:44:18.391386+00:00"
       }
     },
     {
@@ -837,10 +837,10 @@
       "instances": [],
       "historical_findings": [],
       "coverage_review": {
-        "category": "deployment-unverified",
-        "next_action": "Locate the actual Autocamera runtime, then bind latest valid frame and recording-output checks.",
-        "evidence": "Hal reports autocamera.service is not loaded; the current runtime location is unverified.",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "category": "runtime-only",
+        "next_action": "Bind fresh-frame and recording-output checks to the running webcam pipeline.",
+        "evidence": "Verified active autocamera-webcam.service on Hal, running the Autocamera webcam pipeline on port 9007. The generic autocamera.service name was incorrect.",
+        "reviewed_at": "2026-09-14T22:45:52.271181+00:00"
       }
     },
     {
@@ -1748,10 +1748,10 @@
       ],
       "historical_findings": [],
       "coverage_review": {
-        "category": "alias-drift",
-        "next_action": "Confirm which Headscale plane head.ziminiar.com serves before correcting A/B probe names and DNS records.",
-        "evidence": "Both mesh-lab and mesh-b-lab names return public NXDOMAIN; head.ziminiar.com now resolves to 3.151.144.86.",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "category": "observed",
+        "next_action": "Monitor each verified plane separately; add client reauthentication and backup/restore evidence beyond endpoint reachability.",
+        "evidence": "Verified EC2 identities and deployed server_url: A-plane head.valgrind.com at 3.133.70.173; B-plane head.ziminiar.com at 3.151.144.86. Both TLS /health checks succeed. DOHIO bindings corrected from retired mesh aliases.",
+        "reviewed_at": "2026-09-14T22:44:18.391386+00:00"
       }
     },
     {
@@ -6247,10 +6247,10 @@
         }
       ],
       "coverage_review": {
-        "category": "runtime-inactive",
-        "next_action": "Confirm the intended runner and schedule; inspect why work-special earlybird.service is disabled before starting ingestion.",
-        "evidence": "work-special earlybird.service is disabled/inactive; no current alternate runtime verified.",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "category": "runtime-only",
+        "next_action": "Monitor remote transcription backend availability and connect a structured completed-cycle report.",
+        "evidence": "Verified active user manager unit user:earlybird.service on work-special. The old system unit is disabled. Recent archive/Avoma cycles reported zero errors; remote Whisper was unavailable and media downloads were skipped.",
+        "reviewed_at": "2026-09-14T22:44:18.391386+00:00"
       }
     },
     {
@@ -6312,9 +6312,9 @@
       "web_url": "https://superworker.kris.openbrand.com/",
       "coverage_review": {
         "category": "stale-evidence",
-        "next_action": "Confirm the intended recurring Scout worker schedule and restore it; verify a new completed cycle before claiming recovery.",
-        "evidence": "MCP health responds; latest worker summary finished July 7; no recurring worker timer observed on work-special.",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "next_action": "Keep the documented NetOps pause until the intended schedule is decided; do not start a duplicate or unapproved worker.",
+        "evidence": "User crontab explicitly paused the five-minute worker and monitor on May 26. The interface is active; last worker summary is July 7. A pause is not proof of healthy research output.",
+        "reviewed_at": "2026-09-14T22:44:18.391386+00:00"
       }
     },
     {

@@ -35,3 +35,43 @@ def test_atomic_snapshot_replaces_prior_data(tmp_path, monkeypatch):
     collector.main()
     assert json.loads(output.read_text())["observations"] == [{"application": "app"}]
     assert not list(tmp_path.glob(".application-observations-*"))
+
+
+def test_user_service_uses_user_manager(monkeypatch, capsys):
+    import sys
+
+    calls = []
+
+    def show(command, **kwargs):
+        calls.append(command)
+        return "LoadState=loaded\nActiveState=active\nSubState=running\nResult=success\nType=simple\n"
+
+    monkeypatch.setattr(subprocess, "check_output", show)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["collector", json.dumps({"earlybird": ["user:earlybird.service"]})],
+    )
+    exec(collector.REMOTE, {})
+    rows = json.loads(capsys.readouterr().out)
+    assert calls[0][:4] == ["systemctl", "--user", "show", "earlybird.service"]
+    assert rows[0]["state"] == "process-running"
+    assert rows[0]["id"] == "user:earlybird.service"
+
+
+def test_successful_oneshot_is_idle_not_failed(monkeypatch, capsys):
+    import sys
+
+    monkeypatch.setattr(
+        subprocess,
+        "check_output",
+        lambda *args,
+        **kwargs: "LoadState=loaded\nActiveState=inactive\nSubState=dead\nResult=success\nType=oneshot\n",
+    )
+    monkeypatch.setattr(
+        sys, "argv", ["collector", json.dumps({"test": ["sync.service"]})]
+    )
+    exec(collector.REMOTE, {})
+    row = json.loads(capsys.readouterr().out)[0]
+    assert row["state"] == "idle"
+    assert row["level"] == "ok"

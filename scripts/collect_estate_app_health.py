@@ -16,7 +16,7 @@ TARGETS = Path("/var/lib/norman/state/estate-observation-targets.json")
 HOST_UNITS = {
     "work-special": {
         "scout": ["scout-agent-mcp-http.service", "scout-superworker-web.service"],
-        "earlybird": ["earlybird.service"],
+        "earlybird": ["user:earlybird.service"],
     },
     "toy-box": {
         "housebot": [
@@ -28,20 +28,23 @@ HOST_UNITS = {
         ],
         "phone-ops": ["phoneops-ssh-alert-collector.service"],
     },
-    "hal": {"autocamera": ["autocamera.service"]},
+    "hal": {"autocamera": ["autocamera-webcam.service"]},
 }
 
 REMOTE = r"""
-import datetime,json,pathlib,subprocess,sys
+import datetime,json,os,pathlib,subprocess,sys
 spec=json.loads(sys.argv[1]); now=datetime.datetime.now(datetime.timezone.utc).isoformat(); rows=[]
 for app,units in spec.items():
  for unit in units:
-  raw=subprocess.check_output(['systemctl','show',unit,'-p','LoadState','-p','ActiveState','-p','SubState','-p','Result','-p','Type'],text=True)
+  scope=['--user'] if unit.startswith('user:') else []
+  actual=unit.removeprefix('user:')
+  env={**os.environ,'XDG_RUNTIME_DIR':'/run/user/'+str(os.getuid())}
+  raw=subprocess.check_output(['systemctl',*scope,'show',actual,'-p','LoadState','-p','ActiveState','-p','SubState','-p','Result','-p','Type'],text=True,env=env)
   d=dict(line.split('=',1) for line in raw.splitlines() if '=' in line)
   if d.get('LoadState')!='loaded':state='missing';level='unknown'
   elif d.get('Result') not in (None,'','success') or d.get('ActiveState')=='failed':state='failed';level='bad'
   elif d.get('ActiveState')=='active':state='process-running';level='ok'
-  elif d.get('Type')=='oneshot':state='idle';level='unknown'
+  elif d.get('Type')=='oneshot':state='idle';level='ok'
   else:state='inactive';level='bad'
   rows.append({'application':app,'id':unit,'name':unit,'checked_at':now,'state':state,'level':level,
                'detail':'systemd '+d.get('ActiveState','unknown')+'/'+d.get('SubState','unknown')+'; result '+d.get('Result','unknown'),
