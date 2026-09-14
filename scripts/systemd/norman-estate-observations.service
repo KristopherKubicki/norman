@@ -1,0 +1,13 @@
+[Unit]
+Description=Read-only application evidence for Norman Systems
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=kristopher
+Group=kristopher
+ExecStart=/usr/bin/python3 /usr/local/libexec/norman-estate-observe
+TimeoutStartSec=150
+NoNewPrivileges=true
+PrivateTmp=true

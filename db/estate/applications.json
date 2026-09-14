@@ -11,7 +11,8 @@
       "aliases": [],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": null
+      "console_url": null,
+      "dohio_operator_surface_ids": []
     },
     {
       "id": "autocamera",
@@ -22,7 +23,10 @@
       "aliases": [],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/auto/"
+      "console_url": "/bot/auto/",
+      "dohio_operator_surface_ids": [
+        "autocamera"
+      ]
     },
     {
       "id": "theseus",
@@ -33,7 +37,10 @@
       "aliases": [],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/theseus/"
+      "console_url": "/bot/theseus/",
+      "dohio_operator_surface_ids": [
+        "theseus"
+      ]
     },
     {
       "id": "norman",
@@ -44,7 +51,10 @@
       "aliases": [],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/norman/"
+      "console_url": "/bot/norman/",
+      "dohio_operator_surface_ids": [
+        "norman-codex"
+      ]
     },
     {
       "id": "uplink",
@@ -55,7 +65,10 @@
       "aliases": [],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/uplink/"
+      "console_url": "/bot/uplink/",
+      "dohio_operator_surface_ids": [
+        "uplink"
+      ]
     },
     {
       "id": "netops",
@@ -68,7 +81,10 @@
       ],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/networking/"
+      "console_url": "/bot/networking/",
+      "dohio_operator_surface_ids": [
+        "networking-tui"
+      ]
     },
     {
       "id": "cloudagent",
@@ -79,7 +95,10 @@
       "aliases": [],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/cloudagent/"
+      "console_url": "/bot/cloudagent/",
+      "dohio_operator_surface_ids": [
+        "cloudagent"
+      ]
     },
     {
       "id": "housebot",
@@ -90,7 +109,10 @@
       "aliases": [],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/house/"
+      "console_url": "/bot/house/",
+      "dohio_operator_surface_ids": [
+        "housebot"
+      ]
     },
     {
       "id": "eyebat",
@@ -103,7 +125,10 @@
       ],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/glimpser/"
+      "console_url": "/bot/glimpser/",
+      "dohio_operator_surface_ids": [
+        "eyebat"
+      ]
     },
     {
       "id": "keystone",
@@ -116,7 +141,10 @@
       ],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/keystone/"
+      "console_url": "/bot/keystone/",
+      "dohio_operator_surface_ids": [
+        "keystone"
+      ]
     },
     {
       "id": "control-plane",
@@ -127,7 +155,10 @@
       "aliases": [],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/cp/"
+      "console_url": "/bot/cp/",
+      "dohio_operator_surface_ids": [
+        "control-plane"
+      ]
     },
     {
       "id": "market-sizing",
@@ -138,7 +169,10 @@
       "aliases": [],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/market/"
+      "console_url": "/bot/market/",
+      "dohio_operator_surface_ids": [
+        "market-sizing"
+      ]
     },
     {
       "id": "tmi-dashboards",
@@ -149,7 +183,10 @@
       "aliases": [],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/tmi/"
+      "console_url": "/bot/tmi/",
+      "dohio_operator_surface_ids": [
+        "tmi-dashboards"
+      ]
     },
     {
       "id": "earlybird",
@@ -160,7 +197,8 @@
       "aliases": [],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/earlybird/"
+      "console_url": "/bot/earlybird/",
+      "dohio_operator_surface_ids": []
     },
     {
       "id": "gold-book",
@@ -171,7 +209,8 @@
       "aliases": [],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/goldbook/"
+      "console_url": "/bot/goldbook/",
+      "dohio_operator_surface_ids": []
     },
     {
       "id": "leadership-kpis",
@@ -182,7 +221,8 @@
       "aliases": [],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/leadership/"
+      "console_url": "/bot/leadership/",
+      "dohio_operator_surface_ids": []
     },
     {
       "id": "panelbot",
@@ -193,7 +233,10 @@
       "aliases": [],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/panelbot/"
+      "console_url": "/bot/panelbot/",
+      "dohio_operator_surface_ids": [
+        "panelbot"
+      ]
     },
     {
       "id": "artmonster",
@@ -204,7 +247,10 @@
       "aliases": [],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/artmonster/"
+      "console_url": "/bot/artmonster/",
+      "dohio_operator_surface_ids": [
+        "artmonster"
+      ]
     },
     {
       "id": "infra",
@@ -215,7 +261,8 @@
       "aliases": [],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/infra/"
+      "console_url": "/bot/infra/",
+      "dohio_operator_surface_ids": []
     },
     {
       "id": "ranger",
@@ -228,7 +275,10 @@
       ],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/scoutbot/"
+      "console_url": "/bot/scoutbot/",
+      "dohio_operator_surface_ids": [
+        "ranger"
+      ]
     },
     {
       "id": "platinum-standard",
@@ -239,7 +289,8 @@
       "aliases": [],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/platinum/"
+      "console_url": "/bot/platinum/",
+      "dohio_operator_surface_ids": []
     },
     {
       "id": "publisher",
@@ -250,7 +301,8 @@
       "aliases": [],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/publisher/"
+      "console_url": "/bot/publisher/",
+      "dohio_operator_surface_ids": []
     },
     {
       "id": "mls",
@@ -261,7 +313,10 @@
       "aliases": [],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/mls/"
+      "console_url": "/bot/mls/",
+      "dohio_operator_surface_ids": [
+        "mls"
+      ]
     },
     {
       "id": "castle",
@@ -272,7 +327,10 @@
       "aliases": [],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/castle/"
+      "console_url": "/bot/castle/",
+      "dohio_operator_surface_ids": [
+        "castle"
+      ]
     },
     {
       "id": "dj",
@@ -283,7 +341,10 @@
       "aliases": [],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/dj/"
+      "console_url": "/bot/dj/",
+      "dohio_operator_surface_ids": [
+        "dj"
+      ]
     },
     {
       "id": "tv",
@@ -294,7 +355,10 @@
       "aliases": [],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/tv/"
+      "console_url": "/bot/tv/",
+      "dohio_operator_surface_ids": [
+        "tv"
+      ]
     },
     {
       "id": "studio",
@@ -305,7 +369,10 @@
       "aliases": [],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/camera-studio/"
+      "console_url": "/bot/camera-studio/",
+      "dohio_operator_surface_ids": [
+        "studio"
+      ]
     },
     {
       "id": "phone-ops",
@@ -316,7 +383,10 @@
       "aliases": [],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/phone/"
+      "console_url": "/bot/phone/",
+      "dohio_operator_surface_ids": [
+        "phoneops"
+      ]
     },
     {
       "id": "pefb",
@@ -331,7 +401,10 @@
       ],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/pefb/"
+      "console_url": "/bot/pefb/",
+      "dohio_operator_surface_ids": [
+        "pefb"
+      ]
     },
     {
       "id": "usbhome",
@@ -342,7 +415,10 @@
       "aliases": [],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/usbhome/"
+      "console_url": "/bot/usbhome/",
+      "dohio_operator_surface_ids": [
+        "usbhome"
+      ]
     },
     {
       "id": "uscache",
@@ -353,7 +429,10 @@
       "aliases": [],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/uscache/"
+      "console_url": "/bot/uscache/",
+      "dohio_operator_surface_ids": [
+        "uscache"
+      ]
     },
     {
       "id": "diamond-roc",
@@ -364,7 +443,8 @@
       "aliases": [],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": "/bot/diamond-roc/"
+      "console_url": "/bot/diamond-roc/",
+      "dohio_operator_surface_ids": []
     },
     {
       "id": "emerald-canopy",
@@ -375,7 +455,8 @@
       "aliases": [],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": null
+      "console_url": null,
+      "dohio_operator_surface_ids": []
     },
     {
       "id": "tahoma",
@@ -386,7 +467,8 @@
       "aliases": [],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": null
+      "console_url": null,
+      "dohio_operator_surface_ids": []
     },
     {
       "id": "yhix",
@@ -397,7 +479,8 @@
       "aliases": [],
       "interactive_model_policy": "Astra",
       "reasoning_policy": "medium",
-      "console_url": null
+      "console_url": null,
+      "dohio_operator_surface_ids": []
     }
   ],
   "applications": [
@@ -482,7 +565,13 @@
           "state": null
         }
       ],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "binding-missing",
+        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
+        "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "phobos",
@@ -543,7 +632,13 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "Phobos primary LAN runtime; local development; Pluto backup; Quaoar edge; Deimos cloud coordination",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "glimpser",
@@ -602,7 +697,13 @@
         "glimpser"
       ],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "check-failed",
+        "next_action": "Repair the app hostname TLS route on the Glimpser host; retain Eyebat as the separate operator endpoint.",
+        "evidence": "glimpser.home.arpa TLS handshake fails from Norman; eyebat.home.arpa TLS verifies.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "housebot",
@@ -668,7 +769,13 @@
           "finding": "Four toy-box helper units failed: beach-eufy-health-sync, overnight-light-sentinel, pfsense-sync, power-accounting-sync. Daemon and TUI active. Last-result snapshots, not root-cause diagnoses.",
           "observed_at": "2026-09-14T19:51:10.228658+00:00"
         }
-      ]
+      ],
+      "coverage_review": {
+        "category": "check-failed",
+        "next_action": "Repair failed helpers individually: Beach upstream connection refused; sentinel setSummary returns HTTP 500. Confirm pfSense/power helper errors and refresh Beach inventory.",
+        "evidence": "Four helpers recently failed. Site report: Halsted OK; Argyle, Beach, Knox warnings.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "autocamera",
@@ -728,7 +835,13 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Locate the actual Autocamera runtime, then bind latest valid frame and recording-output checks.",
+        "evidence": "Hal reports autocamera.service is not loaded; the current runtime location is unverified.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "theseus",
@@ -785,7 +898,13 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "Hal physical rig; twin simulation and live hardware modes",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "studio",
@@ -847,7 +966,13 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "toy-box /opt/studio; scaffold documented; serving runtime unverified",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "dj",
@@ -906,7 +1031,13 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "toy-box /opt/dj static app; local browser session state",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "tv",
@@ -965,7 +1096,13 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "toy-box /opt/tv scaffold; app serving runtime unverified",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "castle",
@@ -1022,7 +1159,14 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "monitoring_mode": "on-demand",
+      "coverage_review": {
+        "category": "on-demand",
+        "next_action": "Check evidence and run results when this project is used; no always-on service is established.",
+        "evidence": "Documented workspace, local prototype, or manually invoked project workflow; continuous runtime not assumed.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "uscache",
@@ -1079,7 +1223,13 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "toy-box tools and website draft; public serving unverified",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "usbhome",
@@ -1136,7 +1286,13 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "ESP32-S3 bench prototype; broker/provisioning/trigger tools; toy-box operator",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "phone-ops",
@@ -1193,7 +1349,13 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "toy-box collectors and device-side clients",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "diamond-roc",
@@ -1250,7 +1412,13 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "toy-box /opt/diamond-roc; product scope conflicts across documents",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "norman",
@@ -1315,7 +1483,13 @@
           "finding": "Publisher is discouraged as an active TUI in Norman identity docs, but its operator services are active on work-special and Control Plane docs assign it front-of-house ownership. Proposed Control Plane ownership needs reconciliation.",
           "observed_at": "2026-09-14T19:51:10.228658+00:00"
         }
-      ]
+      ],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "Norman LAN services; Hal source; Spark/Mac local model dependencies",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "dohio",
@@ -1378,7 +1552,13 @@
         "dohio"
       ],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "Personal AWS cloud-gw-ohio production; LAN network services",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "network-fabric",
@@ -1442,7 +1622,13 @@
       ],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "check-failed",
+        "next_action": "Restore or correct the Hal/Toy Box/Argyle observer paths; verify them from DOHIO before changing topology health.",
+        "evidence": "DOHIO reports failed host/relay probes; preserve source failure rather than TUI status.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "headnet",
@@ -1560,7 +1746,13 @@
           "state": null
         }
       ],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "alias-drift",
+        "next_action": "Confirm which Headscale plane head.ziminiar.com serves before correcting A/B probe names and DNS records.",
+        "evidence": "Both mesh-lab and mesh-b-lab names return public NXDOMAIN; head.ziminiar.com now resolves to 3.151.144.86.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "cloud-bridges",
@@ -1643,7 +1835,13 @@
           "state": "running"
         }
       ],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "binding-missing",
+        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
+        "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "mothbox-personal",
@@ -1704,7 +1902,13 @@
         "mothbox"
       ],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "Mac mini LAN backend; Norman HTTPS frontdoor",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "storage",
@@ -1763,7 +1967,13 @@
       ],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "LAN NAS nodes and archive destinations",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "pki",
@@ -1826,7 +2036,13 @@
         "estate-ca"
       ],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "LAN CA plus cloud HTTPS consumers",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "yhix-site",
@@ -1886,7 +2102,13 @@
         "yhix-public"
       ],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "Public website; lower environment unverified",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "keystone",
@@ -1943,7 +2165,14 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "monitoring_mode": "on-demand",
+      "coverage_review": {
+        "category": "on-demand",
+        "next_action": "Check evidence and run results when this project is used; no always-on service is established.",
+        "evidence": "Documented workspace, local prototype, or manually invoked project workflow; continuous runtime not assumed.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "control-plane",
@@ -2000,7 +2229,13 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "Local/work-special scripts and orchestration; cloud downstream systems",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "openbrand-app",
@@ -2117,7 +2352,13 @@
           "state": null
         }
       ],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "binding-missing",
+        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
+        "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "openbrand-cms",
@@ -2201,7 +2442,13 @@
           "state": null
         }
       ],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "binding-missing",
+        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
+        "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "gapi",
@@ -2460,7 +2707,13 @@
           "state": "stopped"
         }
       ],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "binding-missing",
+        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
+        "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "webgoat",
@@ -3522,7 +3775,13 @@
           "state": null
         }
       ],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "binding-missing",
+        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
+        "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "armitage",
@@ -4748,7 +5007,13 @@
           "state": null
         }
       ],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "binding-missing",
+        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
+        "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "ksa",
@@ -4940,7 +5205,13 @@
           "state": "running"
         }
       ],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "binding-missing",
+        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
+        "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "panelbot",
@@ -5200,7 +5471,13 @@
           "state": "running"
         }
       ],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "binding-missing",
+        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
+        "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "panelbot-audio",
@@ -5833,7 +6110,13 @@
           "state": null
         }
       ],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "binding-missing",
+        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
+        "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "mothbox-work",
@@ -5893,7 +6176,13 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "DeepAd CloudFront mothbox.openbrand.com; backend and lower environment need mapping",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "earlybird",
@@ -5956,7 +6245,13 @@
           "finding": "work-special Earlybird operator active; earlybird.service disabled/inactive with Result=success. No eb.py on Hal. Other hosts/process managers not exhaustively checked; no restart performed.",
           "observed_at": "2026-09-14T19:51:10.228658+00:00"
         }
-      ]
+      ],
+      "coverage_review": {
+        "category": "runtime-inactive",
+        "next_action": "Confirm the intended runner and schedule; inspect why work-special earlybird.service is disabled before starting ingestion.",
+        "evidence": "work-special earlybird.service is disabled/inactive; no current alternate runtime verified.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "scout",
@@ -6014,7 +6309,13 @@
       "dohio_surface_ids": [],
       "instances": [],
       "historical_findings": [],
-      "web_url": "https://superworker.kris.openbrand.com/"
+      "web_url": "https://superworker.kris.openbrand.com/",
+      "coverage_review": {
+        "category": "stale-evidence",
+        "next_action": "Confirm the intended recurring Scout worker schedule and restore it; verify a new completed cycle before claiming recovery.",
+        "evidence": "MCP health responds; latest worker summary finished July 7; no recurring worker timer observed on work-special.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "market-sizing",
@@ -6075,7 +6376,13 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "Local/work-special orchestration; downstream release and dashboard destinations",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "platinum",
@@ -6134,7 +6441,13 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "work-special operator; release/mirror paths require verification; Hal referenced repo absent",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "nestimater",
@@ -6217,7 +6530,13 @@
           "state": null
         }
       ],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "binding-missing",
+        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
+        "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "tmi",
@@ -6278,7 +6597,13 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "binding-missing",
+        "next_action": "Bind the canonical publication manifests and QuickSight refresh results per production dashboard family.",
+        "evidence": "966 QuickSight summaries inventoried; ownership and refresh source binding remain incomplete.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "qc-publishers",
@@ -6339,7 +6664,13 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "Cloud report publishers and QuickSight; local builders; staging isolation per publisher unresolved",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "gold-book",
@@ -6411,7 +6742,13 @@
           "state": "running"
         }
       ],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "binding-missing",
+        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
+        "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "leadership-kpis",
@@ -6472,7 +6809,13 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "binding-missing",
+        "next_action": "Bind KPI Core/Plane publication timestamps and acceptance results without recomputing the canonical metrics.",
+        "evidence": "Existing producer contracts are documented in Control Plane.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "airflow",
@@ -6596,7 +6939,13 @@
           "state": "running"
         }
       ],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "binding-missing",
+        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
+        "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "ops-portal",
@@ -6723,7 +7072,13 @@
         }
       ],
       "historical_findings": [],
-      "web_url": "https://ops.openbrand.com/"
+      "web_url": "https://ops.openbrand.com/",
+      "coverage_review": {
+        "category": "binding-missing",
+        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
+        "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "customer-mcp",
@@ -6805,7 +7160,13 @@
           "state": null
         }
       ],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "binding-missing",
+        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
+        "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "neuralmatch",
@@ -6888,7 +7249,13 @@
         }
       ],
       "historical_findings": [],
-      "web_url": "https://match.openbrand.com/"
+      "web_url": "https://match.openbrand.com/",
+      "coverage_review": {
+        "category": "binding-missing",
+        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
+        "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "tco",
@@ -7234,7 +7601,13 @@
           "state": "running"
         }
       ],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "binding-missing",
+        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
+        "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "sqlpipe",
@@ -7303,7 +7676,13 @@
           "state": null
         }
       ],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "binding-missing",
+        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
+        "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "survey-apps",
@@ -7441,7 +7820,13 @@
           "state": "running"
         }
       ],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "binding-missing",
+        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
+        "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "work-infra",
@@ -7499,7 +7884,13 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "OpenBrand and DeepAd cloud production/development; account-specific profiles",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "mls",
@@ -7556,7 +7947,13 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "work-special operator active; listing application runtime unverified",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "pefb",
@@ -7613,7 +8010,14 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "monitoring_mode": "on-demand",
+      "coverage_review": {
+        "category": "on-demand",
+        "next_action": "Check evidence and run results when this project is used; no always-on service is established.",
+        "evidence": "Documented workspace, local prototype, or manually invoked project workflow; continuous runtime not assumed.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "emerald-canopy",
@@ -7670,7 +8074,14 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "monitoring_mode": "on-demand",
+      "coverage_review": {
+        "category": "on-demand",
+        "next_action": "Check evidence and run results when this project is used; no always-on service is established.",
+        "evidence": "Documented workspace, local prototype, or manually invoked project workflow; continuous runtime not assumed.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "tahoma",
@@ -7727,7 +8138,13 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "Local Flask source; database/S3 integrations documented; production and staging unverified",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "system-health",
@@ -7788,7 +8205,13 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "Documented AWS prod/staging API Gateway, Lambda and Aurora; local dashboard; live health unverified",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "survey-studio",
@@ -7847,7 +8270,13 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "Local :5027; documented Ohio AWS alpha and S3 output; production readiness unverified",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "valgrind",
@@ -7906,7 +8335,13 @@
       ],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "Registry planned Valgrind deployment; legacy DeepAd work egress is a separate boundary",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "yhix-bedrock",
@@ -7966,7 +8401,13 @@
       ],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "Registry lists planned AWS 703671901350 service; account not audited this turn",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "switchboard",
@@ -8030,7 +8471,13 @@
           "finding": "Publisher is discouraged as an active TUI in Norman identity docs, but its operator services are active on work-special and Control Plane docs assign it front-of-house ownership. Proposed Control Plane ownership needs reconciliation.",
           "observed_at": "2026-09-14T19:51:10.228658+00:00"
         }
-      ]
+      ],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "Norman LAN application and HTTPS frontdoor",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "plrbot",
@@ -8090,7 +8537,14 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "monitoring_mode": "on-demand",
+      "coverage_review": {
+        "category": "on-demand",
+        "next_action": "Check evidence and run results when this project is used; no always-on service is established.",
+        "evidence": "Documented workspace, local prototype, or manually invoked project workflow; continuous runtime not assumed.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "link-index",
@@ -8147,7 +8601,13 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "Source/documented deployment only; fresh app health and environment mapping pending",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "switchyard",
@@ -8206,7 +8666,13 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "Source/documented deployment only; fresh app health and environment mapping pending",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "plasma",
@@ -8265,7 +8731,13 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "Source/documented deployment only; fresh app health and environment mapping pending",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "mls-reader",
@@ -8324,7 +8796,14 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "monitoring_mode": "on-demand",
+      "coverage_review": {
+        "category": "on-demand",
+        "next_action": "Check evidence and run results when this project is used; no always-on service is established.",
+        "evidence": "Documented workspace, local prototype, or manually invoked project workflow; continuous runtime not assumed.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "yhix-keys",
@@ -8384,7 +8863,13 @@
       "dohio_surface_ids": [],
       "instances": [],
       "historical_findings": [],
-      "web_url": "https://keys.yhix.com/.well-known/appspecific/com.tesla.3p.public-key.pem"
+      "web_url": "https://keys.yhix.com/.well-known/appspecific/com.tesla.3p.public-key.pem",
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "Source/documented deployment only; fresh app health and environment mapping pending",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "null-agent",
@@ -8443,7 +8928,14 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "monitoring_mode": "on-demand",
+      "coverage_review": {
+        "category": "on-demand",
+        "next_action": "Check evidence and run results when this project is used; no always-on service is established.",
+        "evidence": "Documented workspace, local prototype, or manually invoked project workflow; continuous runtime not assumed.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "ip-diagnostics",
@@ -8502,7 +8994,13 @@
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "instances": [],
-      "historical_findings": []
+      "historical_findings": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "Source/documented deployment only; fresh app health and environment mapping pending",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "norllama",
@@ -8566,7 +9064,13 @@
           "finding": "Publisher is discouraged as an active TUI in Norman identity docs, but its operator services are active on work-special and Control Plane docs assign it front-of-house ownership. Proposed Control Plane ownership needs reconciliation.",
           "observed_at": "2026-09-14T19:51:10.228658+00:00"
         }
-      ]
+      ],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "Source/documented deployment only; fresh app health and environment mapping pending",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "costcrawler",
@@ -8582,7 +9086,13 @@
       "dohio_surface_ids": [],
       "environment_summary": "Hospital rate-card collection and comparison Flask application",
       "notes": "Responsible TUI needs assignment",
-      "supporting_tuis": []
+      "supporting_tuis": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "Hospital rate-card collection and comparison Flask application",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "wafermancer",
@@ -8598,7 +9108,14 @@
       "dohio_surface_ids": [],
       "environment_summary": "Audiovisual album release project; not a deployed service",
       "notes": "Responsible TUI needs assignment",
-      "supporting_tuis": []
+      "supporting_tuis": [],
+      "monitoring_mode": "on-demand",
+      "coverage_review": {
+        "category": "on-demand",
+        "next_action": "Check evidence and run results when this project is used; no always-on service is established.",
+        "evidence": "Documented workspace, local prototype, or manually invoked project workflow; continuous runtime not assumed.",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "pretty-bird",
@@ -8620,7 +9137,13 @@
       ],
       "environment_summary": "Retired work dashboard; user explicitly wants it to remain retired",
       "notes": "do not reactivate without explicit user request",
-      "supporting_tuis": []
+      "supporting_tuis": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "Retired work dashboard; user explicitly wants it to remain retired",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     },
     {
       "id": "ja3proxy",
@@ -8636,7 +9159,13 @@
       "dohio_surface_ids": [],
       "environment_summary": "Third-party proxy checkout; estate deployment and accountable owner unresolved",
       "notes": "Responsible TUI needs assignment",
-      "supporting_tuis": []
+      "supporting_tuis": [],
+      "coverage_review": {
+        "category": "deployment-unverified",
+        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
+        "evidence": "Third-party proxy checkout; estate deployment and accountable owner unresolved",
+        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+      }
     }
   ]
 }

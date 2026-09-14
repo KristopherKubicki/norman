@@ -37,6 +37,8 @@
       </div>
     </div>
     <p id="applications-count" class="small"></p>
+    <label for="applications-reason">Coverage / next-action category</label>
+    <select id="applications-reason" class="form-select mb-3"><option value="">All categories</option></select>
     <details id="applications-alerts" class="mb-3"></details>
     <div id="estate-applications">Loading applications…</div>
     <details id="applications-discoveries" class="mt-3"></details>
@@ -79,5 +81,5 @@
 
 {% block extra_js %}
 <script src="/static/js/systems.js?v=20260427a" defer></script>
-<script src="/static/js/estate_applications.js?v=20260914a" defer></script>
+<script src="/static/js/estate_applications.js?v=20260914b" defer></script>
 {% endblock %}

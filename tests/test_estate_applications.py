@@ -162,3 +162,87 @@ def test_authenticated_application_endpoint(test_app, monkeypatch):
         next(a for a in body["applications"] if a["id"] == "pretty-bird")["health"]
         == "retired"
     )
+
+
+def test_dohio_fail_and_warning_vocabulary_is_not_unknown():
+    assert estate.observation({"level": "fail"}, STAMP, NOW)["health"] == "degraded"
+    assert estate.observation({"level": "warn"}, STAMP, NOW)["health"] == "attention"
+    assert (
+        estate.observation({"state": "scaled-to-zero"}, STAMP, NOW)["health"] == "idle"
+    )
+
+
+def test_stale_output_overrules_live_process_and_metrics_retain_source_time():
+    catalog, snapshot = fixture()
+    catalog["applications"][0]["dohio_surface_ids"] = []
+    snapshot["app_observations"] = {
+        "observations": [
+            {
+                "application": "scout",
+                "id": "worker",
+                "level": "ok",
+                "checked_at": STAMP,
+                "evidence_kind": "process",
+            },
+            {
+                "application": "scout",
+                "id": "output",
+                "level": "ok",
+                "checked_at": "2026-07-07T12:00:00Z",
+                "metrics": [
+                    {
+                        "id": "tasks",
+                        "value": 19,
+                        "source_timestamp": "2026-07-07T12:00:00Z",
+                    }
+                ],
+            },
+        ]
+    }
+    app = estate.build_overview(catalog, snapshot, NOW)["applications"][0]
+    assert app["health"] == "stale"
+    assert app["triage"]["category"] == "stale-evidence"
+    assert app["measured_metrics"][0]["status"] == "stale"
+
+
+def test_runtime_capacity_is_not_end_to_end_health():
+    catalog, snapshot = fixture()
+    catalog["applications"][0]["dohio_surface_ids"] = []
+    snapshot["app_observations"] = {
+        "observations": [
+            {
+                "application": "scout",
+                "id": "worker",
+                "level": "ok",
+                "checked_at": STAMP,
+                "evidence_kind": "runtime",
+            }
+        ]
+    }
+    app = estate.build_overview(catalog, snapshot, NOW)["applications"][0]
+    assert app["health"] == "runtime-only"
+    assert app["needs_attention"]
+
+
+def test_on_demand_and_retired_have_no_always_on_expectation():
+    catalog, snapshot = fixture()
+    catalog["applications"][0].update(dohio_surface_ids=[], monitoring_mode="on-demand")
+    app = estate.build_overview(catalog, snapshot, NOW)["applications"][0]
+    assert app["health"] == "on-demand"
+    assert not app["needs_attention"]
+
+
+def test_known_console_is_reconciled_without_becoming_an_app_signal():
+    catalog, snapshot = fixture()
+    catalog["actors"][0]["dohio_operator_surface_ids"] = ["ranger"]
+    snapshot["registry"]["files"]["surfaces.json"] = {"surfaces": [{"id": "ranger"}]}
+    result = estate.build_overview(catalog, snapshot, NOW)
+    assert not any(d["id"] == "ranger" for d in result["discoveries"])
+    assert all(o["id"] != "ranger" for o in result["applications"][0]["observations"])
+
+
+def test_every_catalog_entry_has_an_actionable_review():
+    for app in estate.load_catalog()["applications"]:
+        assert app["coverage_review"]["category"]
+        assert app["coverage_review"]["next_action"]
+        assert app["coverage_review"]["reviewed_at"]

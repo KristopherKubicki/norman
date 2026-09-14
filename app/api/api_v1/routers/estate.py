@@ -31,9 +31,12 @@ async def estate_applications(_: User = Depends(get_current_user)):
         build_overview,
         dohio_snapshot,
         load_catalog,
+        load_app_observations,
     )
 
-    return build_overview(load_catalog(), await dohio_snapshot())
+    snapshot = await dohio_snapshot()
+    snapshot["app_observations"] = load_app_observations()
+    return build_overview(load_catalog(), snapshot)
 
 
 def _serialize_model(obj, *, fields: tuple[str, ...]) -> dict:

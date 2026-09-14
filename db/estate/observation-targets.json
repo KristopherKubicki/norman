@@ -1,0 +1,360 @@
+[
+  {
+    "profile": "ob-openbrand-admin",
+    "cluster": "gapi-production-ecs-cluster",
+    "account": "770311548538",
+    "services": {
+      "gapi-production-sidekiq-download-worker-98a73de3": {
+        "application": "gapi",
+        "environment": "production"
+      },
+      "gapi-production-resque-worker-98a73de3": {
+        "application": "gapi",
+        "environment": "production"
+      },
+      "gapi-production-sidekiq-worker-98a73de3": {
+        "application": "gapi",
+        "environment": "production"
+      },
+      "gapi-production-sidekiq-high-worker-98a73de3": {
+        "application": "gapi",
+        "environment": "production"
+      },
+      "gapi-production-import-chunks-worker-98a73de3": {
+        "application": "gapi",
+        "environment": "production"
+      },
+      "gapi-production-app-98a73de3": {
+        "application": "gapi",
+        "environment": "production"
+      },
+      "gapi-production-sidekiq-low-worker-98a73de3": {
+        "application": "gapi",
+        "environment": "production"
+      }
+    }
+  },
+  {
+    "profile": "ob-openbrand-admin",
+    "cluster": "portal-prod",
+    "account": "770311548538",
+    "services": {
+      "portal-prod-backend": {
+        "application": "neuralmatch",
+        "environment": "production"
+      }
+    }
+  },
+  {
+    "profile": "ob-openbrand-admin",
+    "cluster": "openbrand-cms-cluster",
+    "account": "770311548538",
+    "services": {
+      "openbrand-cms-staging-td-service-z5kvquiw": {
+        "application": "openbrand-cms",
+        "environment": "staging"
+      },
+      "openbrand-cms-prod-td-service-7wfz0aye": {
+        "application": "openbrand-cms",
+        "environment": "production"
+      }
+    }
+  },
+  {
+    "profile": "ob-openbrand-admin",
+    "cluster": "sqlpipe-cluster",
+    "account": "770311548538",
+    "services": {
+      "sqlpipe": {
+        "application": "sqlpipe",
+        "environment": "unknown"
+      }
+    }
+  },
+  {
+    "profile": "ob-openbrand-admin",
+    "cluster": "c66-qa-cluster",
+    "account": "770311548538",
+    "services": {
+      "tco-management-qa-resque-worker": {
+        "application": "tco",
+        "environment": "qa"
+      },
+      "tco-management-qa-web": {
+        "application": "tco",
+        "environment": "qa"
+      },
+      "tco-tool-qa-web": {
+        "application": "tco",
+        "environment": "qa"
+      },
+      "tco-management-qa-worker-flatters": {
+        "application": "tco",
+        "environment": "qa"
+      },
+      "tco-ws-qa-web": {
+        "application": "tco",
+        "environment": "qa"
+      }
+    }
+  },
+  {
+    "profile": "ob-openbrand-admin",
+    "cluster": "webgoat-staging",
+    "account": "770311548538",
+    "services": {
+      "webgoat-staging-service-0b3bj2kx": {
+        "application": "webgoat",
+        "environment": "staging"
+      }
+    }
+  },
+  {
+    "profile": "ob-openbrand-admin",
+    "cluster": "openbrand-app-cluster",
+    "account": "770311548538",
+    "services": {
+      "openbrand-customer-mcp-staging": {
+        "application": "customer-mcp",
+        "environment": "staging"
+      },
+      "openbrand-app-staging-td-service-1goku48z": {
+        "application": "openbrand-app",
+        "environment": "staging"
+      },
+      "openbrand-customer-mcp-production": {
+        "application": "customer-mcp",
+        "environment": "production"
+      },
+      "openbrand-app-prod-td-service-0zzj19rz": {
+        "application": "openbrand-app",
+        "environment": "production"
+      }
+    }
+  },
+  {
+    "profile": "ob-openbrand-admin",
+    "cluster": "nestimater-cluster",
+    "account": "770311548538",
+    "services": {
+      "market-share-qa-dashboard-service-j8h3l2j9": {
+        "application": "nestimater",
+        "environment": "qa-name; environment-conflict"
+      }
+    }
+  },
+  {
+    "profile": "ob-openbrand-admin",
+    "cluster": "ops-portal-staging",
+    "account": "770311548538",
+    "services": {
+      "ops-portal-staging": {
+        "application": "ops-portal",
+        "environment": "staging"
+      }
+    }
+  },
+  {
+    "profile": "ob-openbrand-admin",
+    "cluster": "portal-staging",
+    "account": "770311548538",
+    "services": {
+      "portal-staging-backend": {
+        "application": "neuralmatch",
+        "environment": "staging"
+      }
+    }
+  },
+  {
+    "profile": "ob-openbrand-admin",
+    "cluster": "tco-prod-cluster",
+    "account": "770311548538",
+    "services": {
+      "tco-prod-management-import-parsers": {
+        "application": "tco",
+        "environment": "production"
+      },
+      "tco-prod-management-mailings": {
+        "application": "tco",
+        "environment": "production"
+      },
+      "tco-prod-management-pusher-notifier": {
+        "application": "tco",
+        "environment": "production"
+      },
+      "tco-prod-ws-web": {
+        "application": "tco",
+        "environment": "production"
+      },
+      "tco-prod-management-import-validators": {
+        "application": "tco",
+        "environment": "production"
+      },
+      "tco-prod-tool-web": {
+        "application": "tco",
+        "environment": "production"
+      },
+      "tco-prod-management-flatters": {
+        "application": "tco",
+        "environment": "production"
+      },
+      "tco-prod-management-web": {
+        "application": "tco",
+        "environment": "production"
+      }
+    }
+  },
+  {
+    "profile": "ob-openbrand-admin",
+    "cluster": "webgoat-test-harness",
+    "account": "770311548538",
+    "services": {
+      "webgoat-test-harness-api": {
+        "application": "webgoat",
+        "environment": "test-harness"
+      },
+      "webgoat-test-harness-worker": {
+        "application": "webgoat",
+        "environment": "test-harness"
+      }
+    }
+  },
+  {
+    "profile": "ob-openbrand-admin",
+    "cluster": "ops-portal-production",
+    "account": "770311548538",
+    "services": {
+      "ops-portal-production": {
+        "application": "ops-portal",
+        "environment": "production"
+      }
+    }
+  },
+  {
+    "profile": "ob-openbrand-admin",
+    "cluster": "nestimater-staging-cluster",
+    "account": "770311548538",
+    "services": {
+      "market-share-staging-dashboard-service-u326ww0a": {
+        "application": "nestimater",
+        "environment": "staging"
+      }
+    }
+  },
+  {
+    "profile": "ob-openbrand-admin",
+    "cluster": "gapi-qa-ecs-cluster",
+    "account": "770311548538",
+    "services": {
+      "gapi-qa-sidekiq-worker-a867e3c5": {
+        "application": "gapi",
+        "environment": "qa"
+      },
+      "gapi-qa-sidekiq-high-worker-a867e3c5": {
+        "application": "gapi",
+        "environment": "qa"
+      },
+      "gapi-qa-sidekiq-download-worker-a867e3c5": {
+        "application": "gapi",
+        "environment": "qa"
+      },
+      "gapi-qa-sidekiq-low-worker-a867e3c5": {
+        "application": "gapi",
+        "environment": "qa"
+      },
+      "gapi-qa-resque-worker-a867e3c5": {
+        "application": "gapi",
+        "environment": "qa"
+      },
+      "gapi-qa-app-a867e3c5": {
+        "application": "gapi",
+        "environment": "qa"
+      },
+      "gapi-qa-import-chunks-worker-a867e3c5": {
+        "application": "gapi",
+        "environment": "qa"
+      }
+    }
+  },
+  {
+    "profile": "ob-openbrand-admin",
+    "cluster": "mcp-internal-production",
+    "account": "770311548538",
+    "services": {
+      "mcp-auth-proxy": {
+        "application": "ops-portal",
+        "environment": "production"
+      },
+      "mcp-deepad": {
+        "application": "ops-portal",
+        "environment": "production"
+      },
+      "mcp-portal": {
+        "application": "ops-portal",
+        "environment": "production"
+      },
+      "mcp-openbrand": {
+        "application": "ops-portal",
+        "environment": "production"
+      }
+    }
+  },
+  {
+    "profile": "ob-deepad-admin",
+    "cluster": "staging2-deep-ad",
+    "account": "693847887458",
+    "services": {
+      "staging2-deep-ad": {
+        "application": "panelbot",
+        "environment": "staging"
+      },
+      "staging-scanner2-deep-ad": {
+        "application": "panelbot",
+        "environment": "staging"
+      }
+    }
+  },
+  {
+    "profile": "ob-deepad-admin",
+    "cluster": "main-v2-deep-ad",
+    "account": "693847887458",
+    "services": {
+      "instore2-deep-ad": {
+        "application": "panelbot",
+        "environment": "production"
+      },
+      "archiver2-terminalizer-deep-ad": {
+        "application": "panelbot",
+        "environment": "production"
+      },
+      "channel2-deep-ad": {
+        "application": "panelbot",
+        "environment": "production"
+      },
+      "version2-deep-ad": {
+        "application": "panelbot",
+        "environment": "production"
+      },
+      "status2-deep-ad": {
+        "application": "panelbot",
+        "environment": "production"
+      },
+      "app2-deep-ad": {
+        "application": "panelbot",
+        "environment": "production"
+      },
+      "scanner2-deep-ad": {
+        "application": "panelbot",
+        "environment": "production"
+      },
+      "thumbnail2-deep-ad": {
+        "application": "panelbot",
+        "environment": "production"
+      },
+      "archiver2-deep-ad": {
+        "application": "panelbot",
+        "environment": "production"
+      }
+    }
+  }
+]

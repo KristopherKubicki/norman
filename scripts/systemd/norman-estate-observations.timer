@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh Norman application evidence every five minutes
+
+[Timer]
+OnBootSec=90
+OnUnitActiveSec=5min
+RandomizedDelaySec=15
+
+[Install]
+WantedBy=timers.target

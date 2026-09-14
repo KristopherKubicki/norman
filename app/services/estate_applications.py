@@ -19,6 +19,7 @@ CATALOG_PATH = Path(__file__).resolve().parents[2] / "db/estate/applications.jso
 DOHIO_URL = os.environ.get("NORMAN_DOHIO_URL", "https://dohio.home.arpa").rstrip("/")
 CACHE_SECONDS = 60
 STALE_SECONDS = 600
+OBSERVATIONS_PATH = Path("/var/lib/norman/state/application-observations.json")
 _cache: dict[str, Any] = {}
 _lock = asyncio.Lock()
 
@@ -26,6 +27,15 @@ _lock = asyncio.Lock()
 def load_catalog() -> dict:
     """Load durable ownership; discovery never writes this file."""
     return json.loads(CATALOG_PATH.read_text())
+
+
+def load_app_observations() -> dict:
+    """Read the separate scheduled metadata collector without running SSH in requests."""
+    try:
+        data = json.loads(OBSERVATIONS_PATH.read_text())
+        return data if isinstance(data.get("observations"), list) else {}
+    except (OSError, ValueError, AttributeError):
+        return {}
 
 
 def safe_url(value: Any) -> str | None:
@@ -62,12 +72,21 @@ def observation(row: dict, timestamp: str | None, now: datetime) -> dict:
     state = row.get("state") or row.get("status") or "unknown"
     if age is None:
         health = "unknown"
-    elif age > STALE_SECONDS:
+    elif age > row.get("max_age_seconds", STALE_SECONDS):
         health = "stale"
     elif row.get("monitored") is False:
         health = "unknown"
-    elif level == "bad" or state in ("offline", "failed", "degraded"):
+    elif state == "scaled-to-zero":
+        health = "idle"
+    elif level in ("bad", "fail", "critical") or state in (
+        "offline",
+        "failed",
+        "degraded",
+        "inactive",
+    ):
         health = "degraded"
+    elif level == "warn" or state == "attention":
+        health = "attention"
     elif level == "ok" or state in ("online", "live"):
         health = "reachable"
     else:
@@ -80,6 +99,9 @@ def observation(row: dict, timestamp: str | None, now: datetime) -> dict:
         "observed_at": stamp,
         "detail": row.get("detail") or row.get("reason"),
         "url": safe_url(row.get("url")),
+        "evidence_kind": row.get("evidence_kind", "reachability"),
+        "metrics": row.get("metrics", []),
+        "environment": row.get("environment"),
     }
 
 
@@ -137,6 +159,9 @@ def app_observations(app: dict, status: dict, now: datetime) -> list[dict]:
                 observations.append(
                     observation({"id": key, "state": "missing"}, None, now)
                 )
+    for row in status.get("application_observations", []):
+        if row.get("application") == app["id"]:
+            observations.append(observation(row, None, now))
     return observations
 
 
@@ -160,7 +185,7 @@ def enrich_application(app: dict, actor: dict, status: dict, now: datetime) -> N
         app["health"] = app["lifecycle"]
     else:
         app["health"] = next(
-            (h for h in ("degraded", "stale", "unknown") if h in healths),
+            (h for h in ("degraded", "stale", "attention", "unknown") if h in healths),
             "reachable" if healths else "unknown",
         )
     app["needs_attention"] = app["health"] not in (
@@ -171,10 +196,79 @@ def enrich_application(app: dict, actor: dict, status: dict, now: datetime) -> N
     app["kpi_coverage"] = {"bound": 0, "total": len(app.get("kpi_contracts", []))}
 
 
-def unmatched_discoveries(apps: list[dict], snapshot: dict) -> list[dict]:
+def classify_coverage(app: dict) -> None:
+    """Explain unavailable evidence, separating monitoring gaps from known failures."""
+    health = app["health"]
+    review = app.get("coverage_review", {})
+    reason = review.get("category", "no-check")
+    next_action = review.get(
+        "next_action", "Bind an application-specific check and confirm its cadence."
+    )
+    if health in ("retired", "archived", "planned"):
+        reason = health
+        next_action = "No active-runtime health obligation."
+    elif not app.get("primary_tui"):
+        reason = "owner-unassigned"
+        next_action = (
+            "Assign a responsible TUI; keep the confirmed account classification."
+        )
+    elif health == "degraded":
+        reason = "check-failed"
+    elif health == "stale":
+        reason = "stale-evidence"
+    elif health == "attention":
+        reason = "partial-coverage"
+    elif any(o["state"] == "observer-unavailable" for o in app["observations"]):
+        reason = "observer-unavailable"
+        next_action = "Restore collector SSH/SSO access or resource visibility; do not treat this as an app outage."
+    elif health == "reachable":
+        runtime_only = all(
+            o["evidence_kind"] in ("runtime", "process") for o in app["observations"]
+        )
+        reason = "runtime-only" if runtime_only else "observed"
+        if runtime_only:
+            app["health"] = "runtime-only"
+            app["needs_attention"] = True
+        next_action = "Add output or workflow evidence where only process/reachability checks exist."
+    elif app.get("monitoring_mode") == "on-demand":
+        reason = "on-demand"
+        app["health"] = "on-demand"
+        app["needs_attention"] = False
+    app["triage"] = {
+        "category": reason,
+        "owner": app.get("primary_tui") or "unassigned",
+        "next_action": next_action,
+        "evidence": review.get("evidence"),
+        "reviewed_at": review.get("reviewed_at"),
+    }
+    app["measured_metrics"] = collected_metrics(app)
+
+
+def collected_metrics(app: dict) -> list[dict]:
+    """Keep measured values attached to source freshness and environment."""
+    return [
+        {
+            **metric,
+            "status": "observed"
+            if row["health"] in ("reachable", "degraded", "attention", "idle")
+            else row["health"],
+            "source": row["id"],
+            "environment": row.get("environment"),
+        }
+        for row in app["observations"]
+        for metric in row.get("metrics", [])
+    ]
+
+
+def unmatched_discoveries(
+    apps: list[dict], snapshot: dict, actors: list[dict] = ()
+) -> list[dict]:
     """Return unmatched records for review, never auto-promote them into apps."""
     mapped_services = {key for a in apps for key in a.get("dohio_service_ids", [])}
     mapped_surfaces = {key for a in apps for key in a.get("dohio_surface_ids", [])}
+    mapped_surfaces.update(
+        key for a in actors for key in a.get("dohio_operator_surface_ids", [])
+    )
     for row in (
         snapshot.get("status", {}).get("estate_services", {}).get("services", [])
     ):
@@ -207,11 +301,16 @@ def build_overview(catalog: dict, snapshot: dict, now: datetime | None = None) -
     now = now or datetime.now(timezone.utc)
     result = copy.deepcopy(catalog)
     actors = {a["id"]: a for a in result["actors"]}
+    status = copy.deepcopy(snapshot.get("status", {}))
+    status["application_observations"] = snapshot.get("app_observations", {}).get(
+        "observations", []
+    )
     for app in result["applications"]:
-        enrich_application(
-            app, actors.get(app.get("primary_tui"), {}), snapshot.get("status", {}), now
-        )
-    result["discoveries"] = unmatched_discoveries(result["applications"], snapshot)
+        enrich_application(app, actors.get(app.get("primary_tui"), {}), status, now)
+        classify_coverage(app)
+    result["discoveries"] = unmatched_discoveries(
+        result["applications"], snapshot, result["actors"]
+    )
     alerts = snapshot.get("status", {}).get("alerts", {})
     result["alerts"] = [
         {key: row.get(key) for key in ("id", "severity", "status", "title", "detail")}
@@ -222,6 +321,9 @@ def build_overview(catalog: dict, snapshot: dict, now: datetime | None = None) -
         "fetched_at": snapshot.get("fetched_at"),
         "error": snapshot.get("error"),
         "refresh_seconds": CACHE_SECONDS,
+        "application_collector_at": snapshot.get("app_observations", {}).get(
+            "generated_at"
+        ),
     }
     result["summary"] = {
         "applications": len(result["applications"]),
