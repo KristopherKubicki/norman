@@ -773,7 +773,7 @@
       "coverage_review": {
         "category": "check-failed",
         "next_action": "Verify the next scheduled sentinel summary update and restore the pfSense management endpoint at 192.168.2.1.",
-        "evidence": "September 15: fixed legacy form transport to match Hubitat 2.5 JSON commands; all five power-accounting virtual summaries updated and systemd sync succeeded. Eufy sync remains repaired. pfSense refuses connections from both Housebot and NetOps. Sentinel awaits its next automatic run.",
+        "evidence": "September 15: fixed legacy form transport to match Hubitat 2.5 JSON commands; all five power-accounting virtual summaries updated and systemd sync succeeded. Eufy sync remains repaired. pfSense refuses Housebot connections; NetOps reaches TCP 443 but its curl rejects the self-signed certificate. Investigate the source-specific management restriction. Sentinel awaits its next automatic run.",
         "reviewed_at": "2026-09-15T10:55:16.945659+00:00"
       }
     },

@@ -14,8 +14,10 @@ Rollback: `web_session.py.before-json-commands-20260915` beside the deployed fil
 No physical-device command or additional automation was introduced.
 The overnight sentinel will use the fix on its existing schedule; its next run remains unverified.
 
-The pfSense management target `192.168.2.1` still refuses HTTPS from both Housebot and NetOps.
-Both authoritative internal names still resolve there. No guessed address or credential redirect was used.
+The pfSense management target `192.168.2.1` refuses connections from Housebot. NetOps reaches TCP 443,
+but its curl fails validation of the self-signed certificate. This narrows the issue to source-specific access;
+inspect the management policy before adding access. Both internal names still resolve to the expected address.
+No guessed address or credential redirect was used.
 
 ## Earlybird
 
