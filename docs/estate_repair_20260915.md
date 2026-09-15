@@ -40,8 +40,9 @@ Rollback: `eb.py.before-remote-wav-20260915` beside the deployed file.
 
 The public ASR route was pinned to `192.168.2.151:18151`, while general health could pass via other hosts.
 The primary gateway's health timed out and its listener had a full accept queue despite an active service.
-Broken-pipe logs do not establish the cause. The supplied password failed both sudo and root login;
-clarification about the trailing punctuation is pending. No root restart was performed.
+Broken-pipe logs do not establish the cause. The initial credential attempts failed; subsequent user clarification enabled sudo access.
+Restarted `norllama-gateway.service` at 11:35 UTC. Its accept queue cleared and `/asr-readyz` passed.
+Used the loaded unit configuration; an existing on-disk unit-change warning remains for separate reconciliation.
 
 The underlying transcription core remained healthy. The secondary gateway `192.168.2.150:18151`
 passed `/asr-readyz` and a one-second synthetic WAV upload (HTTP 200, `no_speech_detected`).
@@ -60,7 +61,9 @@ then called the deployed `eb.run_whisper_remote`: conversion and public ASR retu
 "This is a routine transcription health check." The original remained intact; temporary test media was removed.
 Restarted Earlybird at its next sleep interval to clear the previous backend cooldown.
 Its running state recorded `whisper_remote_health.ready=true`, probe `asr-upload`, at 11:28 UTC.
-Normal recording throughput remains unverified; the stuck primary gateway still needs recovery.
+Normal recording throughput remains unverified. After primary recovery, synthetic speech returned
+the exact sentence both directly from `192.168.2.151:18151` and through the public ASR endpoint.
+Both gateway workers are now available; retain failover and monitor for recurrence of the original stall.
 
 Validation: 14 Caddy route tests and 19 estate/API/collector tests passed; format and lint passed.
 Norman canary and production health passed, and the estate API continued requiring authentication (401).

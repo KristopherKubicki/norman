@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-09-15T11:29:20.706847+00:00",
+  "updated_at": "2026-09-15T11:36:28.550466+00:00",
   "actors": [
     {
       "id": "default",
@@ -6248,9 +6248,9 @@
       ],
       "coverage_review": {
         "category": "runtime-only",
-        "next_action": "Monitor normal recording throughput and recover the stuck primary Spark gateway; the secondary ASR route and synthetic speech workflow are verified.",
-        "evidence": "September 15: deployed MP4-to-PCM-WAV normalization and installed missing ffmpeg on work-special. Added secondary Spark 192.168.2.150 with /asr-readyz health checks. Earlybird converted a synthetic speech MP4 and returned the exact spoken sentence via the public ASR endpoint. Restarted between cycles to clear old cooldown; running service recorded ASR ready at 11:28 UTC. Primary 192.168.2.151 remains stuck pending administrative access. Real-recording throughput is not yet verified.",
-        "reviewed_at": "2026-09-15T11:29:20.706847+00:00"
+        "next_action": "Monitor normal recording throughput and primary gateway stability; retain the verified secondary ASR failover.",
+        "evidence": "September 15: deployed MP4-to-PCM-WAV normalization and installed missing ffmpeg on work-special. Added secondary Spark 192.168.2.150 with /asr-readyz health checks. Earlybird converted a synthetic speech MP4 and returned the exact spoken sentence via the public ASR endpoint. Restarted between cycles to clear old cooldown; running service recorded ASR ready at 11:28 UTC. Primary 192.168.2.151 restarted using sudo at 11:35 UTC; listener queue cleared and ASR readiness passed. Synthetic speech returned the exact sentence both directly from primary and through the public route. Real-recording throughput is not yet verified.",
+        "reviewed_at": "2026-09-15T11:36:28.550466+00:00"
       }
     },
     {
