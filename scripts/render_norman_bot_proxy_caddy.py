@@ -196,7 +196,10 @@ LOCAL_RESIDENT_LLM_UPSTREAMS = (
     _worker_upstream("spark-150", "resident_scheduler_port"),
 )
 LOCAL_RESIDENT_LLM_PATH = "/resident"
-LOCAL_ASR_UPSTREAMS = (_worker_upstream("spark-151", "gateway_port"),)
+LOCAL_ASR_UPSTREAMS = (
+    _worker_upstream("spark-151", "gateway_port"),
+    _worker_upstream("spark-150", "gateway_port"),
+)
 LOCAL_ASR_MAX_REQUEST_BODY = "512MB"
 LOCAL_ASR_HEALTH_URI = "/asr-readyz"
 LOCAL_LLM_CANONICAL_HOSTS = ("llm.knox.lollie.org",)

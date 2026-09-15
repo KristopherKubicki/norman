@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-09-14T19:51:10.228658+00:00",
+  "updated_at": "2026-09-15T11:24:31.016607+00:00",
   "actors": [
     {
       "id": "default",
@@ -771,10 +771,10 @@
         }
       ],
       "coverage_review": {
-        "category": "check-failed",
-        "next_action": "Verify the next scheduled sentinel summary update and restore the pfSense management endpoint at 192.168.2.1.",
-        "evidence": "September 15: fixed legacy form transport to match Hubitat 2.5 JSON commands; all five power-accounting virtual summaries updated and systemd sync succeeded. Eufy sync remains repaired. pfSense refuses Housebot connections; NetOps reaches TCP 443 but its curl rejects the self-signed certificate. Investigate the source-specific management restriction. Sentinel awaits its next automatic run.",
-        "reviewed_at": "2026-09-15T10:55:16.945659+00:00"
+        "category": "partial-coverage",
+        "next_action": "Track the next scheduled helper runs and resolve remaining site-report warnings; helper transport and firewall failures are repaired.",
+        "evidence": "September 15: power-accounting and sentinel summaries now use Hubitat JSON commands. Both systemd jobs succeeded. Added a persistent pfSense rule allowing only Housebot 192.168.2.146 to management HTTPS 192.168.2.1:443; pfsense-sync succeeded. Existing management restrictions remain. Eufy sync is also repaired. Successful helper runs do not clear unrelated site-report warnings.",
+        "reviewed_at": "2026-09-15T11:24:31.016607+00:00"
       }
     },
     {
@@ -6248,9 +6248,9 @@
       ],
       "coverage_review": {
         "category": "runtime-only",
-        "next_action": "Recover the root-owned norllama-gateway.service on Spark 192.168.2.151, then verify synthetic WAV and real recording transcription.",
-        "evidence": "September 15: deployed tested MP4-to-PCM-WAV normalization and restarted the active user service. Gateway front door health passes, but ASR-only upstream 192.168.2.151:18151 times out; synthetic audio returned 503. Recovery requires privileged Spark service access; transcription is not yet verified.",
-        "reviewed_at": "2026-09-15T10:55:16.945659+00:00"
+        "next_action": "Verify the next ingestion cycle after backend cooldown; recover the stuck primary Spark gateway and confirm real-recording transcription.",
+        "evidence": "September 15: deployed tested MP4-to-PCM-WAV normalization. Added secondary Spark 192.168.2.150 to the ASR pool with /asr-readyz health checks. Synthetic WAV submitted from work-special through the public ASR endpoint returned HTTP 200/no_speech_detected. Primary 192.168.2.151 still has a full accept queue; supplied password was rejected. Earlybird user service is running, but its previous cooldown still deferred the latest cycle.",
+        "reviewed_at": "2026-09-15T11:24:31.016607+00:00"
       }
     },
     {

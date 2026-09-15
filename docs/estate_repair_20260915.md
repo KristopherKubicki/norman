@@ -12,12 +12,19 @@ Three focused tests passed. A metadata-only trial updated all five power-account
 the installed `housebot-power-accounting-sync.service` then exited successfully.
 Rollback: `web_session.py.before-json-commands-20260915` beside the deployed file.
 No physical-device command or additional automation was introduced.
-The overnight sentinel will use the fix on its existing schedule; its next run remains unverified.
+The sentinel had a second legacy form encoder in `scripts/sync_overnight_light_sentinel_dashboard.py`.
+Patched that helper to the same JSON contract and checked blank arguments and HTTP-error propagation.
+Its systemd service, including dashboard metadata sync and the read-only verifier, now exits successfully.
+Rollback: `sync_overnight_light_sentinel_dashboard.py.before-json-20260915` beside the deployed script.
 
-The pfSense management target `192.168.2.1` refuses connections from Housebot. NetOps reaches TCP 443,
-but its curl fails validation of the self-signed certificate. This narrows the issue to source-specific access;
-inspect the management policy before adding access. Both internal names still resolve to the expected address.
-No guessed address or credential redirect was used.
+pfSense's LAN rules allowed named administrator hosts and rejected other LAN management access.
+Using the existing root SSH trust through Hal, inserted one persistent rule before that rejection:
+`192.168.2.146` (Housebot) to `192.168.2.1`, TCP 443 only, description
+`HOUSEBOT: allow pfSense HTTPS telemetry`, tracker `1789471024`.
+Used pfSense native `write_config` and `filter_configure`; retained all other management restrictions.
+Both the read-only telemetry command and `housebot-pfsense-sync.service` then succeeded.
+Before-image: `/cf/conf/config.xml.before-housebot-https-20260915` on pfSense.
+Helper recovery does not clear unrelated warnings in Housebot's site report.
 
 ## Earlybird
 
@@ -31,11 +38,21 @@ Installed the change in `/home/kristopher/code/earlybird/eb.py` on work-special 
 while it was between cycles. The service is active/running.
 Rollback: `eb.py.before-remote-wav-20260915` beside the deployed file.
 
-The separate backend outage remains: Norman's ASR route uses only `192.168.2.151:18151`,
-while general gateway health can pass through other hosts. A synthetic one-second WAV returned 503.
-Spark's root-owned `norllama-gateway.service` reported running, but health requests timed out
-and its TCP listener showed a full accept queue. Logs contained broken-pipe errors; these do not establish
-why the gateway stopped accepting promptly. The current SSH account lacks passwordless sudo on Spark,
-so the root service was not restarted. Recover that gateway and validate ASR before claiming transcription recovery.
+The public ASR route was pinned to `192.168.2.151:18151`, while general health could pass via other hosts.
+The primary gateway's health timed out and its listener had a full accept queue despite an active service.
+Broken-pipe logs do not establish the cause. The supplied password failed both sudo and root login;
+clarification about the trailing punctuation is pending. No root restart was performed.
+
+The underlying transcription core remained healthy. The secondary gateway `192.168.2.150:18151`
+passed `/asr-readyz` and a one-second synthetic WAV upload (HTTP 200, `no_speech_detected`).
+Added that worker to the ASR pool, using ASR-specific readiness and the existing 512 MB upload contract.
+Changed only the ASR block in the live Caddy include, validated configuration, and reloaded Caddy successfully.
+The source generator and route regression test now preserve the same two-worker ASR pool.
+Caddy before-image: `/etc/caddy/includes/norman-bot-hosts.caddy.before-asr-failover-20260915` on Norman.
+
+A synthetic WAV sent from work-special through `https://llm.home.arpa/v1/audio/transcriptions`
+returned HTTP 200 and `no_speech_detected`. This verifies the public ASR path and silent-audio handling,
+not real-recording transcription. Earlybird remains running; its previous backend cooldown still deferred
+its latest cycle. Check the next ingestion cycle and recover the primary gateway when access is available.
 
 Scout remains paused. Business KPI bindings and the remaining unknown app checks are unchanged.
