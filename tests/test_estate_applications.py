@@ -246,3 +246,39 @@ def test_every_catalog_entry_has_an_actionable_review():
         assert app["coverage_review"]["category"]
         assert app["coverage_review"]["next_action"]
         assert app["coverage_review"]["reviewed_at"]
+
+
+def test_kpi_binding_uses_exact_source_and_metric_freshness():
+    catalog, snapshot = fixture()
+    catalog["applications"][0]["kpi_contracts"] = [
+        {"id": "output", "binding": {"observation_id": "output", "metric_id": "count"}}
+    ]
+    snapshot["app_observations"] = {
+        "observations": [
+            dict(
+                application="scout",
+                id="output",
+                checked_at=STAMP,
+                level="ok",
+                metrics=[
+                    dict(id="count", value=3, source_timestamp="2026-09-13T20:00:00Z")
+                ],
+            )
+        ]
+    }
+    app = estate.build_overview(catalog, snapshot, NOW)["applications"][0]
+    assert app["kpi_coverage"] == {"bound": 1, "fresh": 0, "total": 1}
+    assert app["kpi_contracts"][0]["measurement"]["status"] == "stale"
+    snapshot["app_observations"]["observations"][0]["metrics"][0][
+        "source_timestamp"
+    ] = STAMP
+    app = estate.build_overview(catalog, snapshot, NOW)["applications"][0]
+    assert app["kpi_coverage"]["fresh"] == 1
+
+
+def test_intentionally_paused_worker_stays_distinct_from_failed_runtime():
+    catalog, snapshot = fixture()
+    catalog["applications"][0]["monitoring_mode"] = "paused"
+    app = estate.build_overview(catalog, snapshot, NOW)["applications"][0]
+    assert app["health"] == "paused" and not app["needs_attention"]
+    assert app["observations"][0]["health"] == "degraded"

@@ -100,6 +100,7 @@ def observation(row: dict, timestamp: str | None, now: datetime) -> dict:
         "detail": row.get("detail") or row.get("reason"),
         "url": safe_url(row.get("url")),
         "evidence_kind": row.get("evidence_kind", "reachability"),
+        "max_age_seconds": row.get("max_age_seconds", STALE_SECONDS),
         "metrics": row.get("metrics", []),
         "environment": row.get("environment"),
     }
@@ -196,7 +197,7 @@ def enrich_application(app: dict, actor: dict, status: dict, now: datetime) -> N
     app["kpi_coverage"] = {"bound": 0, "total": len(app.get("kpi_contracts", []))}
 
 
-def classify_coverage(app: dict) -> None:
+def classify_coverage(app: dict, now: datetime | None = None) -> None:
     """Explain unavailable evidence, separating monitoring gaps from known failures."""
     health = app["health"]
     review = app.get("coverage_review", {})
@@ -204,7 +205,12 @@ def classify_coverage(app: dict) -> None:
     next_action = review.get(
         "next_action", "Bind an application-specific check and confirm its cadence."
     )
-    if health in ("retired", "archived", "planned"):
+    if app.get("monitoring_mode") == "paused":
+        app["health"] = "paused"
+        app["needs_attention"] = False
+        reason = "paused"
+        next_action = "Intentionally paused; resume only on operator instruction."
+    elif health in ("retired", "archived", "planned"):
         reason = health
         next_action = "No active-runtime health obligation."
     elif not app.get("primary_tui"):
@@ -237,6 +243,14 @@ def classify_coverage(app: dict) -> None:
         reason = "on-demand"
         app["health"] = "on-demand"
         app["needs_attention"] = False
+    record_coverage(app, reason, next_action, now)
+
+
+def record_coverage(
+    app: dict, reason: str, next_action: str, now: datetime | None
+) -> None:
+    """Attach the owner action and measured KPI evidence after classification."""
+    review = app.get("coverage_review", {})
     app["triage"] = {
         "category": reason,
         "owner": app.get("primary_tui") or "unassigned",
@@ -244,23 +258,59 @@ def classify_coverage(app: dict) -> None:
         "evidence": review.get("evidence"),
         "reviewed_at": review.get("reviewed_at"),
     }
-    app["measured_metrics"] = collected_metrics(app)
+    app["measured_metrics"] = collected_metrics(app, now or datetime.now(timezone.utc))
+    bind_kpis(app)
 
 
-def collected_metrics(app: dict) -> list[dict]:
+def collected_metrics(app: dict, now: datetime) -> list[dict]:
     """Keep measured values attached to source freshness and environment."""
     return [
         {
             **metric,
-            "status": "observed"
-            if row["health"] in ("reachable", "degraded", "attention", "idle")
-            else row["health"],
+            "status": metric_status(metric, row, now),
             "source": row["id"],
             "environment": row.get("environment"),
         }
         for row in app["observations"]
         for metric in row.get("metrics", [])
     ]
+
+
+def metric_status(metric: dict, row: dict, now: datetime) -> str:
+    """Use each metric's timestamp, even when the surrounding report is fresh."""
+    age = age_seconds(metric.get("source_timestamp"), now)
+    if age is None or metric.get("value") is None:
+        return "unknown"
+    if age > row.get("max_age_seconds", STALE_SECONDS):
+        return "stale"
+    return (
+        "observed"
+        if row["health"] in ("reachable", "degraded", "attention", "idle")
+        else row["health"]
+    )
+
+
+def bind_kpis(app: dict) -> None:
+    """Resolve explicit KPI bindings; a configured source is not a fresh value."""
+    measured = {(m["source"], m["id"]): m for m in app["measured_metrics"]}
+    bound = 0
+    fresh = 0
+    for contract in app.get("kpi_contracts", []):
+        binding = contract.get("binding", {})
+        key = (binding.get("observation_id"), binding.get("metric_id"))
+        configured = all(key)
+        bound += bool(configured)
+        value = measured.get(key, {})
+        status = value.get("status", "unknown")
+        if value.get("value") is None:
+            status = "unknown"
+        contract["measurement"] = {**value, "status": status}
+        fresh += status == "observed"
+    app["kpi_coverage"] = {
+        "bound": bound,
+        "fresh": fresh,
+        "total": len(app.get("kpi_contracts", [])),
+    }
 
 
 def unmatched_discoveries(
@@ -310,7 +360,7 @@ def build_overview(catalog: dict, snapshot: dict, now: datetime | None = None) -
     )
     for app in result["applications"]:
         enrich_application(app, actors.get(app.get("primary_tui"), {}), status, now)
-        classify_coverage(app)
+        classify_coverage(app, now)
     result["discoveries"] = unmatched_discoveries(
         result["applications"], snapshot, result["actors"]
     )

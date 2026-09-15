@@ -21,6 +21,7 @@ HOST_UNITS = {
     "toy-box": {
         "housebot": [
             "housebot.service",
+            "housebot-hubitat-site-health.service",
             "housebot-beach-eufy-health-sync.service",
             "housebot-overnight-light-sentinel.service",
             "housebot-pfsense-sync.service",
@@ -85,6 +86,30 @@ def collect(t):
  try:
   names=list(t['services']);rows=[]
   for offset in range(0,len(names),10):
+   if t.get('kind')=='asg':
+    cmd=['/usr/local/bin/aws','--profile',t['profile'],'--region',t.get('region','us-east-2'),'--no-cli-pager','autoscaling','describe-auto-scaling-groups','--auto-scaling-group-names',*names[offset:offset+10],'--query','AutoScalingGroups[].{name:AutoScalingGroupName,arn:AutoScalingGroupARN,desired:DesiredCapacity,instances:Instances[].{state:LifecycleState,health:HealthStatus}}']
+    for group in json.loads(subprocess.check_output(cmd,text=True,stderr=subprocess.DEVNULL,timeout=12)):
+     if group['arn'].split(':')[4]!=t['account']:raise ValueError('account mismatch')
+     name=group['name'];healthy=sum(i['state']=='InService' and i['health']=='Healthy' for i in group['instances']);desired=group['desired']
+     rows.append({**t['services'][name],'id':t['profile']+':'+name,'name':name,'checked_at':now,
+                  'state':'scaled-to-zero' if not desired else 'capacity-met' if healthy>=desired else 'capacity-shortfall',
+                  'level':'unknown' if not desired else 'ok' if healthy>=desired else 'bad','evidence_kind':'runtime',
+                  'detail':str(healthy)+'/'+str(desired)+' healthy ASG instances; not an application output check',
+                  'metrics':[{'id':'asg_healthy_instances','value':healthy,'unit':'instances','source_timestamp':now},
+                             {'id':'asg_desired_instances','value':desired,'unit':'instances','source_timestamp':now}]})
+    continue
+   if t.get('kind')=='ec2':
+    cmd=['/usr/local/bin/aws','--profile',t['profile'],'--region',t.get('region','us-east-2'),'--no-cli-pager','ec2','describe-instances','--filters','Name=instance-id,Values='+','.join(names[offset:offset+10]),'--query','Reservations[].{account:OwnerId,instances:Instances[].{id:InstanceId,state:State.Name}}']
+    reservations=json.loads(subprocess.check_output(cmd,text=True,stderr=subprocess.DEVNULL,timeout=12))
+    for reservation in reservations:
+     if reservation['account']!=t['account']:raise ValueError('account mismatch')
+     for instance in reservation['instances']:
+      name=instance['id'];target=t['services'][name];running=instance['state']=='running'
+      rows.append({**target,'id':t['account']+':'+name,'name':name,'checked_at':now,'level':'ok' if running else 'unknown',
+                   'state':'instance-running' if running else instance['state'],'evidence_kind':'runtime',
+                   'detail':'EC2 '+instance['state']+'; does not establish application health',
+                   'metrics':[{'id':'ec2_running','value':int(running),'unit':'boolean','source_timestamp':now}]})
+    continue
    cmd=['/usr/local/bin/aws','--profile',t['profile'],'--region','us-east-2','--no-cli-pager','ecs','describe-services','--cluster',t['cluster'],'--services',*names[offset:offset+10],'--query','{services:services[].{name:serviceName,arn:serviceArn,desired:desiredCount,running:runningCount,status:status},failures:failures}']
    d=json.loads(subprocess.check_output(cmd,text=True,stderr=subprocess.DEVNULL,timeout=12))
    for s in d['services']:
@@ -168,14 +193,189 @@ def collect_host(host: str, apps: dict) -> list[dict]:
         ]
 
 
+WORKFLOW_TARGETS = {
+    "work-special": "earlybird",
+    "work-special-producers": "producers",
+    "toy-box": "housebot",
+    "192.168.2.151": "gateway",
+    "192.168.2.150": "gateway",
+}
+
+
+def collect_workflow(pair: tuple[str, str]) -> list[dict]:
+    """Run a versioned metadata-only probe without installing code on app hosts."""
+    host, mode = pair
+    if mode == "producers":
+        host = "work-special"
+    app = (
+        "norllama"
+        if mode == "gateway"
+        else "leadership-kpis"
+        if mode == "producers"
+        else mode
+    )
+    source = Path(__file__).with_name("estate_workflow_probes.py").read_text()
+    try:
+        result = subprocess.run(
+            [
+                "ssh",
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=5",
+                *(
+                    ["-i", str(Path.home() / ".ssh/estate_gateway_probe_ed25519")]
+                    if mode == "gateway"
+                    else []
+                ),
+                host,
+                "python3 - " + mode,
+            ],
+            input=source,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=True,
+        )
+        rows = json.loads(result.stdout)
+        return [
+            {
+                **r,
+                "id": r["id"] + ("-" + host if mode == "gateway" else ""),
+                "name": r.get("name", app) + " on " + host,
+                "host": host,
+            }
+            for r in rows
+        ]
+    except (subprocess.SubprocessError, ValueError):
+        return [
+            {
+                "application": app,
+                "id": host + "-workflow",
+                "state": "observer-unavailable",
+                "level": "unknown",
+                "detail": "Workflow metadata probe unavailable",
+                "host": host,
+            }
+        ]
+
+
+def routing_observation(rows: list[dict]) -> list[dict]:
+    """Infer whether first-worker routing needs failover from both readiness probes."""
+    workers = {r["host"]: r for r in rows if r.get("id", "").startswith("gateway-asr-")}
+    if len(workers) != 2:
+        return []
+    primary = workers["192.168.2.151"]["state"] == "ready"
+    secondary = workers["192.168.2.150"]["state"] == "ready"
+    stamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    return [
+        {
+            "application": "norllama",
+            "id": "asr-routing",
+            "name": "ASR failover requirement",
+            "checked_at": stamp,
+            "state": "primary-ready"
+            if primary
+            else "failover-required"
+            if secondary
+            else "unavailable",
+            "level": "ok"
+            if primary and secondary
+            else "warn"
+            if primary or secondary
+            else "bad",
+            "evidence_kind": "workflow",
+            "detail": "Inferred from worker readiness and Caddy first-worker policy; request counts show actual worker use separately.",
+            "metrics": [
+                {
+                    "id": "failover_required",
+                    "value": int(not primary and secondary),
+                    "unit": "boolean",
+                    "source_timestamp": stamp,
+                }
+            ],
+        }
+    ]
+
+
+def collect_endpoints() -> list[dict]:
+    """Probe confirmed application endpoints, not their operator consoles."""
+    import urllib.request
+    import time
+
+    rows = []
+    for app, url, kind in [
+        ("norman", "https://norman.home.arpa/health", "health"),
+        (
+            "yhix-keys",
+            "https://keys.yhix.com/.well-known/appspecific/com.tesla.3p.public-key.pem",
+            "public-key",
+        ),
+    ]:
+        stamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        started = time.monotonic()
+        failure = "unexpected response"
+        try:
+            with urllib.request.urlopen(url, timeout=5) as response:
+                body = response.read(32768)
+                ok = response.status == 200 and (
+                    json.loads(body).get("status") == "ok"
+                    if kind == "health"
+                    else body.strip().startswith(b"-----BEGIN PUBLIC KEY-----")
+                )
+        except (OSError, ValueError) as exc:
+            ok = False
+            failure = type(getattr(exc, "reason", exc)).__name__
+        rows.append(
+            {
+                "application": app,
+                "id": app + "-endpoint",
+                "name": "Application endpoint",
+                "url": url,
+                "checked_at": stamp,
+                "state": "endpoint-ready" if ok else "endpoint-failed",
+                "level": "ok" if ok else "bad",
+                "evidence_kind": "reachability",
+                "detail": (
+                    "Expected application response verified"
+                    if ok
+                    else "Endpoint check failed: " + failure
+                )
+                + (
+                    "; public-key retrieval does not establish vehicle authorization"
+                    if kind == "public-key"
+                    else ""
+                ),
+                "metrics": [
+                    {
+                        "id": "endpoint_ok",
+                        "value": int(ok),
+                        "unit": "boolean",
+                        "source_timestamp": stamp,
+                    },
+                    {
+                        "id": "probe_latency_ms",
+                        "value": round((time.monotonic() - started) * 1000, 1),
+                        "unit": "ms",
+                        "source_timestamp": stamp,
+                    },
+                ],
+            }
+        )
+    return rows
+
+
 def main() -> None:
     """Atomically publish one metadata snapshot with bounded concurrency."""
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
         groups = list(pool.map(lambda pair: collect_host(*pair), HOST_UNITS.items()))
+        groups += list(pool.map(collect_workflow, WORKFLOW_TARGETS.items()))
     payload = {
         "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "observations": [row for group in groups for row in group] + collect_aws(),
     }
+    payload["observations"] += routing_observation(payload["observations"])
+    payload["observations"] += collect_endpoints()
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     fd, temp = tempfile.mkstemp(prefix=".application-observations-", dir=OUTPUT.parent)
     try:

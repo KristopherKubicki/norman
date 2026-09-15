@@ -5369,8 +5369,8 @@ def test_bot_proxy_caddy_exposes_local_llm_frontdoor() -> None:
         "            fail_duration 20s\n"
         "            max_fails 1\n"
         "            health_uri /asr-readyz\n"
-        "            health_interval 3s\n"
-        "            health_timeout 2s\n"
+        "            health_interval 15s\n"
+        "            health_timeout 8s\n"
         "        }\n"
         "    }\n"
         "    handle {\n"
@@ -5402,7 +5402,8 @@ def test_bot_proxy_caddy_uses_asr_readiness_for_a_multi_worker_pool() -> None:
     assert "request_body {" in rendered
     assert "max_size 512MB" in rendered
     assert "health_uri /asr-readyz" in rendered
-    assert "health_interval 3s" in rendered
+    assert "health_interval 15s" in rendered
+    assert "health_timeout 8s" in rendered
 
 
 def test_bot_proxy_caddy_exposes_subprime_lane_aliases() -> None:

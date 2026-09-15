@@ -359,6 +359,7 @@ def _reverse_proxy_lines(
     lb_try_duration: str = DEFAULT_LB_TRY_DURATION,
     health_interval: str = DEFAULT_HEALTH_INTERVAL,
     health_uri: str = "/healthz",
+    health_timeout: str = "2s",
 ) -> list[str]:
     if isinstance(upstreams, str):
         return [f"{prefix}reverse_proxy {upstreams}"]
@@ -375,7 +376,7 @@ def _reverse_proxy_lines(
         f"{prefix}    max_fails 1",
         f"{prefix}    health_uri {health_uri}",
         f"{prefix}    health_interval {health_interval}",
-        f"{prefix}    health_timeout 2s",
+        f"{prefix}    health_timeout {health_timeout}",
         f"{prefix}}}",
     ]
 
@@ -397,7 +398,7 @@ def _asr_proxy_lines(
     prefix: str = "    ",
     max_request_body: str = LOCAL_ASR_MAX_REQUEST_BODY,
     lb_try_duration: str = LOCAL_LLM_LB_TRY_DURATION,
-    health_interval: str = LOCAL_LLM_HEALTH_INTERVAL,
+    health_interval: str = "15s",
     health_uri: str = LOCAL_ASR_HEALTH_URI,
 ) -> list[str]:
     return [
@@ -412,6 +413,7 @@ def _asr_proxy_lines(
             lb_try_duration=lb_try_duration,
             health_interval=health_interval,
             health_uri=health_uri,
+            health_timeout="8s",
         ),
         f"{prefix}}}",
     ]
@@ -478,7 +480,6 @@ def _host_block(
                     prefix="        ",
                     max_request_body=asr_max_request_body,
                     lb_try_duration=lb_try_duration,
-                    health_interval=health_interval,
                     health_uri=asr_health_uri,
                 )
             )
@@ -508,7 +509,6 @@ def _host_block(
                     asr_upstreams,
                     max_request_body=asr_max_request_body,
                     lb_try_duration=lb_try_duration,
-                    health_interval=health_interval,
                     health_uri=asr_health_uri,
                 )
             )

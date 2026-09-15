@@ -8,6 +8,6 @@ Type=oneshot
 User=kristopher
 Group=kristopher
 ExecStart=/usr/bin/python3 /usr/local/libexec/norman-estate-observe
-TimeoutStartSec=150
+TimeoutStartSec=240
 NoNewPrivileges=true
 PrivateTmp=true

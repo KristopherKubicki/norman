@@ -31,7 +31,8 @@ It does not create duplicate bot or service database rows.
 
 Deployment instances retain their inventory date. The observation collector separately reads current ECS task counts.
 Historic incident notes require rechecking. Local execution does not establish isolation from production data.
-KPI contracts are visible but unbound: connect existing canonical producers before setting measured values or targets.
+KPI contracts bind explicit observation and metric IDs where sources are verified; unbound contracts stay unknown.
+Configured bindings and fresh measurements are counted separately. Metric timestamps control freshness.
 OpenBrand KPI calculations must remain with their existing producers.
 
 ## Validation And Rollout
@@ -56,8 +57,10 @@ Install `scripts/collect_estate_app_health.py` as `/usr/local/libexec/norman-est
 as `/var/lib/norman/state/estate-observation-targets.json`, readable by the `kristopher` service user.
 Enable the timer to collect every five minutes. The collector atomically writes
 `/var/lib/norman/state/application-observations.json`; no credentials are copied or services restarted.
-Existing SSH identities read selected unit properties and two allowlisted output summaries.
-Existing AWS profiles on Hal read the explicitly mapped ECS services in bounded batches.
+Install `scripts/estate_workflow_probes.py` beside the collector. Existing SSH identities read selected unit
+properties, allowlisted workflow summaries and gateway metadata. No raw business content is emitted.
+Existing AWS profiles on Hal read explicitly mapped ECS services, EC2 instances and autoscaling groups
+in bounded batches. See `estate_workflows_20260915.md` for source contracts and known limitations.
 
 Process and ECS capacity observations show runtime coverage, not end-to-end application success.
 Scout and Housebot output reports retain their original timestamps; stale metrics are historical.

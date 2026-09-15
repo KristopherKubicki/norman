@@ -35,3 +35,16 @@ test('failed fetch shows unavailable without claiming health', async () => {
   await flush();
   expect(document.getElementById('applications-source').textContent).toContain('Unable to refresh');
 });
+
+test('KPI values become unknown when a refresh fails', async () => {
+  global.fetch = jest.fn().mockResolvedValueOnce({ok:true, json:async () => ({
+    source:{}, discoveries:[], applications:[{id:'worker',name:'Worker',lifecycle:'managed',health:'reachable',
+      kpi_contracts:[{id:'completion',definition:'Completed work',binding:{observation_id:'runs'},measurement:{status:'observed',value:42,unit:'items'}}]}]
+  })}).mockRejectedValue(new Error('offline'));
+  eval(source);
+  await flush();
+  expect(document.getElementById('estate-applications').textContent).toContain('completion: 42 items');
+  document.dispatchEvent(new Event('visibilitychange'));
+  await flush();
+  expect(document.getElementById('estate-applications').textContent).toContain('completion: unknown');
+});

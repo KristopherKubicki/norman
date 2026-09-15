@@ -356,5 +356,309 @@
         "environment": "production"
       }
     }
+  },
+  {
+    "profile": "kk-personal",
+    "account": "970651210182",
+    "region": "us-east-2",
+    "kind": "asg",
+    "services": {
+      "artbot-personal-asg": {
+        "application": "artdrop",
+        "environment": "unknown"
+      },
+      "vpn-express-mux-spot": {
+        "application": "headnet",
+        "environment": "unknown"
+      }
+    }
+  },
+  {
+    "profile": "kk-personal",
+    "account": "970651210182",
+    "region": "us-east-2",
+    "kind": "ec2",
+    "services": {
+      "i-03af3f5de14d08255": {
+        "application": "cloud-bridges",
+        "environment": "unknown"
+      },
+      "i-07a8f7ec48df56769": {
+        "application": "cloud-bridges",
+        "environment": "production"
+      }
+    }
+  },
+  {
+    "profile": "ob-deepad-admin",
+    "account": "693847887458",
+    "region": "us-east-2",
+    "kind": "asg",
+    "services": {
+      "openbrand-app-staging": {
+        "application": "openbrand-app",
+        "environment": "unknown"
+      },
+      "armitage-dev": {
+        "application": "armitage",
+        "environment": "unknown"
+      },
+      "armitage-mvp": {
+        "application": "armitage",
+        "environment": "unknown"
+      },
+      "crawler-prod": {
+        "application": "armitage",
+        "environment": "unknown"
+      },
+      "audio-podchaser12-prod": {
+        "application": "panelbot-audio",
+        "environment": "unknown"
+      },
+      "audio-prod": {
+        "application": "panelbot-audio",
+        "environment": "unknown"
+      },
+      "scanner-podchaser12-bake-20260729": {
+        "application": "panelbot-audio",
+        "environment": "unknown"
+      },
+      "scanner-podchaser12-prod": {
+        "application": "panelbot-audio",
+        "environment": "unknown"
+      },
+      "thumbnail-podchaser12-prod": {
+        "application": "panelbot-audio",
+        "environment": "unknown"
+      }
+    }
+  },
+  {
+    "profile": "ob-openbrand-admin",
+    "account": "770311548538",
+    "region": "us-east-2",
+    "kind": "ec2",
+    "services": {
+      "i-08d28865078411203": {
+        "application": "gapi",
+        "environment": "qa"
+      },
+      "i-0395011b7c471f89e": {
+        "application": "gapi",
+        "environment": "qa"
+      },
+      "i-01af21c4c36441beb": {
+        "application": "gapi",
+        "environment": "qa"
+      },
+      "i-032670d5283defc9f": {
+        "application": "gapi",
+        "environment": "qa"
+      },
+      "i-0738b2e5e205d5711": {
+        "application": "ksa",
+        "environment": "qa"
+      },
+      "i-029295e004da36f41": {
+        "application": "ksa",
+        "environment": "production"
+      },
+      "i-0f24641fea6fe5f77": {
+        "application": "ksa",
+        "environment": "production"
+      },
+      "i-05f51bf4e44eb4d00": {
+        "application": "ksa",
+        "environment": "production"
+      },
+      "i-0332a12c5ab8cae39": {
+        "application": "ksa",
+        "environment": "production"
+      },
+      "i-04b7f41f652942cb8": {
+        "application": "ksa",
+        "environment": "production"
+      },
+      "i-0151af3c12c252c58": {
+        "application": "ksa",
+        "environment": "production"
+      },
+      "i-0ec0183cdf4aec220": {
+        "application": "ksa",
+        "environment": "production"
+      },
+      "i-0a614a3c6aec109a7": {
+        "application": "ksa",
+        "environment": "production"
+      },
+      "i-0b4abf1243003943a": {
+        "application": "ksa",
+        "environment": "production"
+      },
+      "i-003a457b063f87d22": {
+        "application": "ksa",
+        "environment": "production"
+      },
+      "i-03a10355ce552f2ee": {
+        "application": "ksa",
+        "environment": "production"
+      },
+      "i-01f84beada55cdb15": {
+        "application": "gold-book",
+        "environment": "production"
+      },
+      "i-013fc5a0bf1eb5ed9": {
+        "application": "airflow",
+        "environment": "staging"
+      },
+      "i-053ff5163c94690ca": {
+        "application": "airflow",
+        "environment": "production"
+      },
+      "i-09075e9fa6a131eae": {
+        "application": "tco",
+        "environment": "qa"
+      },
+      "i-030f6e16d66be1f4a": {
+        "application": "tco",
+        "environment": "production"
+      },
+      "i-09ef0c291c33af2ca": {
+        "application": "tco",
+        "environment": "qa"
+      },
+      "i-0714e044cc4cfb611": {
+        "application": "tco",
+        "environment": "production"
+      },
+      "i-09858ba8a10c355a9": {
+        "application": "tco",
+        "environment": "qa"
+      },
+      "i-0368ba9d4f5a2de51": {
+        "application": "tco",
+        "environment": "qa"
+      },
+      "i-0bb57a6dd6fbd6145": {
+        "application": "tco",
+        "environment": "production"
+      },
+      "i-0f0d5b62d0bbdac00": {
+        "application": "tco",
+        "environment": "production"
+      },
+      "i-0c3224a790a3203ea": {
+        "application": "tco",
+        "environment": "qa"
+      },
+      "i-03bd4691c3ecf2b00": {
+        "application": "tco",
+        "environment": "qa"
+      },
+      "i-09cb8e21c3dbdfaf5": {
+        "application": "tco",
+        "environment": "qa"
+      },
+      "i-03e6c4da26c7009e2": {
+        "application": "tco",
+        "environment": "qa"
+      },
+      "i-0897030dfa5fafeab": {
+        "application": "tco",
+        "environment": "qa"
+      },
+      "i-04921eab56d9f1324": {
+        "application": "survey-apps",
+        "environment": "staging"
+      },
+      "i-0f8106acd38dbb461": {
+        "application": "survey-apps",
+        "environment": "staging"
+      },
+      "i-018743c0f214075fa": {
+        "application": "survey-apps",
+        "environment": "staging"
+      },
+      "i-0530880dfe92fc89e": {
+        "application": "survey-apps",
+        "environment": "production"
+      },
+      "i-0810637281f32d6ac": {
+        "application": "survey-apps",
+        "environment": "production"
+      },
+      "i-0dc117e2db71fec90": {
+        "application": "survey-apps",
+        "environment": "production"
+      },
+      "i-0c6cf7240c7fb1540": {
+        "application": "survey-apps",
+        "environment": "development"
+      }
+    }
+  },
+  {
+    "profile": "ob-openbrand-admin",
+    "account": "770311548538",
+    "region": "us-east-2",
+    "kind": "asg",
+    "services": {
+      "Infra-ECS-Cluster-webgoat-staging-worker-f552eaac-ECSAutoScalingGroup-MUkEyBKNq2G9": {
+        "application": "webgoat",
+        "environment": "unknown"
+      },
+      "scrapegoat-vpc-production": {
+        "application": "webgoat",
+        "environment": "unknown"
+      },
+      "scrapegoat-vpc-production-p1": {
+        "application": "webgoat",
+        "environment": "unknown"
+      },
+      "scrapegoat-vpc-production-p2": {
+        "application": "webgoat",
+        "environment": "unknown"
+      },
+      "scrapegoat-vpc-staging": {
+        "application": "webgoat",
+        "environment": "unknown"
+      },
+      "scrapegoat-vpc-staging-p1": {
+        "application": "webgoat",
+        "environment": "unknown"
+      },
+      "scrapegoat-vpc-staging-webserver": {
+        "application": "webgoat",
+        "environment": "unknown"
+      }
+    }
+  },
+  {
+    "profile": "ob-deepad-admin",
+    "account": "693847887458",
+    "region": "us-east-2",
+    "kind": "ec2",
+    "services": {
+      "i-0490b49f722b8bacb": {
+        "application": "panelbot",
+        "environment": "development"
+      },
+      "i-0a86c0e3fe685f0cb": {
+        "application": "panelbot",
+        "environment": "staging"
+      },
+      "i-0ae0acbe10efd9357": {
+        "application": "panelbot",
+        "environment": "development"
+      },
+      "i-04b85dee02b3a2a48": {
+        "application": "panelbot",
+        "environment": "development"
+      },
+      "i-074fbe2cdb26c61c2": {
+        "application": "panelbot",
+        "environment": "production"
+      }
+    }
   }
 ]

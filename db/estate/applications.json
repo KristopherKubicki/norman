@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "updated_at": "2026-09-15T11:36:28.550466+00:00",
+  "updated_at": "2026-09-15T13:18:22.609331+00:00",
   "actors": [
     {
       "id": "default",
@@ -530,6 +530,16 @@
           "value": null,
           "status": "unwired",
           "missing_data": "unknown, never healthy or zero"
+        },
+        {
+          "id": "runtime_group_capacity",
+          "definition": "Healthy in-service instances for artbot-personal-asg; compare with desired capacity. Not business-output health.",
+          "source_kind": "scheduled application observation",
+          "binding": {
+            "observation_id": "kk-personal:artbot-personal-asg",
+            "metric_id": "asg_healthy_instances"
+          },
+          "target": null
         }
       ],
       "application_inference_billing": "unverified; separate from operator account",
@@ -568,9 +578,9 @@
       "historical_findings": [],
       "coverage_review": {
         "category": "binding-missing",
-        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
+        "next_action": "Check application output; track autoscaling groups rather than yesterday's replaceable instance IDs.",
         "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "reviewed_at": "2026-09-15T13:05:59.518816+00:00"
       }
     },
     {
@@ -723,34 +733,26 @@
       "kpi_family": "automation",
       "kpi_contracts": [
         {
-          "id": "cycle_success",
-          "definition": "successful scheduled cycles / expected scheduled cycles",
-          "source_kind": "cycle ledger and schedule",
-          "window": "per environment; cadence to bind",
-          "target": null,
-          "value": null,
-          "status": "unwired",
-          "missing_data": "unknown, never healthy or zero"
+          "id": "sites_reporting_ok",
+          "definition": "Sites whose latest site report passes all checks.",
+          "source_kind": "scheduled application observation",
+          "unit": "sites",
+          "binding": {
+            "observation_id": "housebot-output",
+            "metric_id": "sites_reporting_ok"
+          },
+          "target": null
         },
         {
-          "id": "stale_inputs",
-          "definition": "count of required inputs exceeding their freshness contract",
-          "source_kind": "input timestamps",
-          "window": "per environment; cadence to bind",
-          "target": null,
-          "value": null,
-          "status": "unwired",
-          "missing_data": "unknown, never healthy or zero"
-        },
-        {
-          "id": "unresolved_incidents",
-          "definition": "open incidents by severity and age",
-          "source_kind": "incident ledger",
-          "window": "per environment; cadence to bind",
-          "target": null,
-          "value": null,
-          "status": "unwired",
-          "missing_data": "unknown, never healthy or zero"
+          "id": "sites_with_warnings",
+          "definition": "Sites with warnings in the latest report; not a deduplicated incident count.",
+          "source_kind": "scheduled application observation",
+          "unit": "sites",
+          "binding": {
+            "observation_id": "housebot-output",
+            "metric_id": "sites_with_warnings"
+          },
+          "target": null
         }
       ],
       "application_inference_billing": "unverified; separate from operator account",
@@ -772,9 +774,9 @@
       ],
       "coverage_review": {
         "category": "partial-coverage",
-        "next_action": "Track the next scheduled helper runs and resolve remaining site-report warnings; helper transport and firewall failures are repaired.",
-        "evidence": "September 15: power-accounting and sentinel summaries now use Hubitat JSON commands. Both systemd jobs succeeded. Added a persistent pfSense rule allowing only Housebot 192.168.2.146 to management HTTPS 192.168.2.1:443; pfsense-sync succeeded. Existing management restrictions remain. Eufy sync is also repaired. Successful helper runs do not clear unrelated site-report warnings.",
-        "reviewed_at": "2026-09-15T11:24:31.016607+00:00"
+        "next_action": "Diagnose Beach runtime/log endpoints and intermittent remote telemetry; inspect Knox sensor 92 and Kitchen Ubuntu 986. Gateway 772 now mirrors authenticated WAN status.",
+        "evidence": "Beach session, devices and apps work; optional runtime/log requests time out. Checker now retains live inventory and reports missing telemetry separately. Gateway driver 1070/device 772 consumes the existing authenticated pfSense sync with 15-minute expiry. Physical-device warnings remain visible.",
+        "reviewed_at": "2026-09-15T13:18:22.609331+00:00"
       }
     },
     {
@@ -902,8 +904,8 @@
       "coverage_review": {
         "category": "deployment-unverified",
         "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
-        "evidence": "Hal physical rig; twin simulation and live hardware modes",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "evidence": "Hal physical rig; twin simulation and live hardware modes September 15: source checkout confirmed on Hal; source presence and console uptime do not prove application deployment. App runtime/output source still requires verification.",
+        "reviewed_at": "2026-09-15T13:25:18.012391+00:00"
       }
     },
     {
@@ -1290,8 +1292,8 @@
       "coverage_review": {
         "category": "deployment-unverified",
         "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
-        "evidence": "ESP32-S3 bench prototype; broker/provisioning/trigger tools; toy-box operator",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "evidence": "ESP32-S3 bench prototype; broker/provisioning/trigger tools; toy-box operator September 15: source checkout confirmed on Hal; source presence and console uptime do not prove application deployment. App runtime/output source still requires verification.",
+        "reviewed_at": "2026-09-15T13:25:18.012391+00:00"
       }
     },
     {
@@ -1466,6 +1468,16 @@
           "value": null,
           "status": "unwired",
           "missing_data": "unknown, never healthy or zero"
+        },
+        {
+          "id": "endpoint_ready",
+          "definition": "Confirmed application endpoint responds with the expected health JSON or public-key envelope; not end-to-end workflow health.",
+          "source_kind": "application endpoint probe",
+          "binding": {
+            "observation_id": "norman-endpoint",
+            "metric_id": "endpoint_ok"
+          },
+          "target": null
         }
       ],
       "application_inference_billing": "unverified; separate from operator account",
@@ -1485,10 +1497,10 @@
         }
       ],
       "coverage_review": {
-        "category": "deployment-unverified",
-        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
-        "evidence": "Norman LAN services; Hal source; Spark/Mac local model dependencies",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "category": "observed",
+        "next_action": "Monitor endpoint readiness; bind application workflow outcomes separately.",
+        "evidence": "Explicit application health/public-key URL is now checked with TLS verification every five minutes; the responsible TUI endpoint is separate.",
+        "reviewed_at": "2026-09-15T13:25:18.012391+00:00"
       }
     },
     {
@@ -1676,6 +1688,16 @@
           "value": null,
           "status": "unwired",
           "missing_data": "unknown, never healthy or zero"
+        },
+        {
+          "id": "runtime_group_capacity",
+          "definition": "Healthy in-service instances for vpn-express-mux-spot; compare with desired capacity. Not business-output health.",
+          "source_kind": "scheduled application observation",
+          "binding": {
+            "observation_id": "kk-personal:vpn-express-mux-spot",
+            "metric_id": "asg_healthy_instances"
+          },
+          "target": null
         }
       ],
       "application_inference_billing": "unverified; separate from operator account",
@@ -1749,9 +1771,9 @@
       "historical_findings": [],
       "coverage_review": {
         "category": "observed",
-        "next_action": "Monitor each verified plane separately; add client reauthentication and backup/restore evidence beyond endpoint reachability.",
+        "next_action": "Check application output; track autoscaling groups rather than yesterday's replaceable instance IDs.",
         "evidence": "Verified EC2 identities and deployed server_url: A-plane head.valgrind.com at 3.133.70.173; B-plane head.ziminiar.com at 3.151.144.86. Both TLS /health checks succeed. DOHIO bindings corrected from retired mesh aliases.",
-        "reviewed_at": "2026-09-14T22:44:18.391386+00:00"
+        "reviewed_at": "2026-09-15T13:05:59.518816+00:00"
       }
     },
     {
@@ -1801,6 +1823,17 @@
           "value": null,
           "status": "unwired",
           "missing_data": "unknown, never healthy or zero"
+        },
+        {
+          "id": "runtime_instance_running",
+          "definition": "Compute state for deimos (unknown); not application output health.",
+          "source_kind": "scheduled application observation",
+          "unit": "boolean",
+          "binding": {
+            "observation_id": "970651210182:i-03af3f5de14d08255",
+            "metric_id": "ec2_running"
+          },
+          "target": null
         }
       ],
       "application_inference_billing": "unverified; separate from operator account",
@@ -1838,9 +1871,9 @@
       "historical_findings": [],
       "coverage_review": {
         "category": "binding-missing",
-        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
+        "next_action": "Confirm application output on the explicitly mapped EC2 instance; runtime state is now collected every five minutes.",
         "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "reviewed_at": "2026-09-15T13:05:59.518816+00:00"
       }
     },
     {
@@ -2218,6 +2251,16 @@
           "value": null,
           "status": "unwired",
           "missing_data": "unknown, never healthy or zero"
+        },
+        {
+          "id": "producer_healthy",
+          "definition": "Canonical producer health receipt; does not recalculate its business metrics.",
+          "source_kind": "canonical publication receipt",
+          "binding": {
+            "observation_id": "controller_snapshot",
+            "metric_id": "producer_ok"
+          },
+          "target": null
         }
       ],
       "application_inference_billing": "unverified; separate from operator account",
@@ -2232,9 +2275,9 @@
       "historical_findings": [],
       "coverage_review": {
         "category": "deployment-unverified",
-        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
-        "evidence": "Local/work-special scripts and orchestration; cloud downstream systems",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "next_action": "Review canonical producer failures and publication timestamps; preserve original business metric calculations.",
+        "evidence": "Bound dated receipts from Control Plane audit producers. KPI Core and KPI sync health currently report failures; Gold Book has a published receipt. Values retain producer timestamps.",
+        "reviewed_at": "2026-09-15T13:14:50.211090+00:00"
       }
     },
     {
@@ -2284,6 +2327,16 @@
           "value": null,
           "status": "unwired",
           "missing_data": "unknown, never healthy or zero"
+        },
+        {
+          "id": "runtime_group_capacity",
+          "definition": "Healthy in-service instances for openbrand-app-staging; compare with desired capacity. Not business-output health.",
+          "source_kind": "scheduled application observation",
+          "binding": {
+            "observation_id": "ob-deepad-admin:openbrand-app-staging",
+            "metric_id": "asg_healthy_instances"
+          },
+          "target": null
         }
       ],
       "application_inference_billing": "unverified; separate from operator account",
@@ -2355,9 +2408,9 @@
       "historical_findings": [],
       "coverage_review": {
         "category": "binding-missing",
-        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
+        "next_action": "Check application output; track autoscaling groups rather than yesterday's replaceable instance IDs.",
         "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "reviewed_at": "2026-09-15T13:05:59.518816+00:00"
       }
     },
     {
@@ -2761,6 +2814,16 @@
           "value": null,
           "status": "unwired",
           "missing_data": "unknown, never healthy or zero"
+        },
+        {
+          "id": "runtime_group_capacity",
+          "definition": "Healthy in-service instances for Infra-ECS-Cluster-webgoat-staging-worker-f552eaac-ECSAutoScalingGroup-MUkEyBKNq2G9; compare with desired capacity. Not business-output health.",
+          "source_kind": "scheduled application observation",
+          "binding": {
+            "observation_id": "ob-openbrand-admin:Infra-ECS-Cluster-webgoat-staging-worker-f552eaac-ECSAutoScalingGroup-MUkEyBKNq2G9",
+            "metric_id": "asg_healthy_instances"
+          },
+          "target": null
         }
       ],
       "application_inference_billing": "unverified; separate from operator account",
@@ -3778,9 +3841,9 @@
       "historical_findings": [],
       "coverage_review": {
         "category": "binding-missing",
-        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
+        "next_action": "Check application output; track autoscaling groups rather than yesterday's replaceable instance IDs.",
         "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "reviewed_at": "2026-09-15T13:05:59.518816+00:00"
       }
     },
     {
@@ -3829,6 +3892,16 @@
           "value": null,
           "status": "unwired",
           "missing_data": "unknown, never healthy or zero"
+        },
+        {
+          "id": "runtime_group_capacity",
+          "definition": "Healthy in-service instances for armitage-dev; compare with desired capacity. Not business-output health.",
+          "source_kind": "scheduled application observation",
+          "binding": {
+            "observation_id": "ob-deepad-admin:armitage-dev",
+            "metric_id": "asg_healthy_instances"
+          },
+          "target": null
         }
       ],
       "application_inference_billing": "unverified; separate from operator account",
@@ -5010,9 +5083,9 @@
       "historical_findings": [],
       "coverage_review": {
         "category": "binding-missing",
-        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
+        "next_action": "Check application output; track autoscaling groups rather than yesterday's replaceable instance IDs.",
         "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "reviewed_at": "2026-09-15T13:05:59.518816+00:00"
       }
     },
     {
@@ -5061,6 +5134,17 @@
           "value": null,
           "status": "unwired",
           "missing_data": "unknown, never healthy or zero"
+        },
+        {
+          "id": "runtime_instance_running",
+          "definition": "Compute state for ksa-golem-production-instance (production); not application output health.",
+          "source_kind": "scheduled application observation",
+          "unit": "boolean",
+          "binding": {
+            "observation_id": "770311548538:i-029295e004da36f41",
+            "metric_id": "ec2_running"
+          },
+          "target": null
         }
       ],
       "application_inference_billing": "unverified; separate from operator account",
@@ -5208,9 +5292,9 @@
       "historical_findings": [],
       "coverage_review": {
         "category": "binding-missing",
-        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
+        "next_action": "Confirm application output on the explicitly mapped EC2 instance; runtime state is now collected every five minutes.",
         "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "reviewed_at": "2026-09-15T13:05:59.518816+00:00"
       }
     },
     {
@@ -5260,6 +5344,17 @@
           "value": null,
           "status": "unwired",
           "missing_data": "unknown, never healthy or zero"
+        },
+        {
+          "id": "runtime_instance_running",
+          "definition": "Compute state for panelbot-dace-staging-development-instance (development); not application output health.",
+          "source_kind": "scheduled application observation",
+          "unit": "boolean",
+          "binding": {
+            "observation_id": "693847887458:i-0490b49f722b8bacb",
+            "metric_id": "ec2_running"
+          },
+          "target": null
         }
       ],
       "application_inference_billing": "unverified; separate from operator account",
@@ -5474,9 +5569,9 @@
       "historical_findings": [],
       "coverage_review": {
         "category": "binding-missing",
-        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
+        "next_action": "Confirm application output on the explicitly mapped EC2 instance; runtime state is now collected every five minutes.",
         "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "reviewed_at": "2026-09-15T13:05:59.518816+00:00"
       }
     },
     {
@@ -5526,6 +5621,16 @@
           "value": null,
           "status": "unwired",
           "missing_data": "unknown, never healthy or zero"
+        },
+        {
+          "id": "runtime_group_capacity",
+          "definition": "Healthy in-service instances for audio-podchaser12-prod; compare with desired capacity. Not business-output health.",
+          "source_kind": "scheduled application observation",
+          "binding": {
+            "observation_id": "ob-deepad-admin:audio-podchaser12-prod",
+            "metric_id": "asg_healthy_instances"
+          },
+          "target": null
         }
       ],
       "application_inference_billing": "unverified; separate from operator account",
@@ -6113,9 +6218,9 @@
       "historical_findings": [],
       "coverage_review": {
         "category": "binding-missing",
-        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
+        "next_action": "Check application output; track autoscaling groups rather than yesterday's replaceable instance IDs.",
         "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "reviewed_at": "2026-09-15T13:05:59.518816+00:00"
       }
     },
     {
@@ -6201,33 +6306,36 @@
       "kpi_contracts": [
         {
           "id": "completion_rate",
-          "definition": "successful eligible jobs / terminal eligible jobs",
-          "source_kind": "job outcome ledger",
-          "window": "per environment; cadence to bind",
-          "target": null,
-          "value": null,
-          "status": "unwired",
-          "missing_data": "unknown, never healthy or zero"
+          "definition": "Completed recordings / completed plus failed transcription attempts in retained 24h run history. No attempts is unknown.",
+          "source_kind": "scheduled application observation",
+          "unit": "ratio",
+          "binding": {
+            "observation_id": "earlybird-throughput",
+            "metric_id": "completion_rate"
+          },
+          "target": null
         },
         {
-          "id": "oldest_pending_age",
-          "definition": "now minus oldest pending job creation time",
-          "source_kind": "queue timestamps",
-          "window": "per environment; cadence to bind",
-          "target": null,
-          "value": null,
-          "status": "unwired",
-          "missing_data": "unknown, never healthy or zero"
+          "id": "oldest_retry_age",
+          "definition": "Age since the oldest last failure among known retry records; not total eligible Drive backlog.",
+          "source_kind": "scheduled application observation",
+          "unit": "seconds",
+          "binding": {
+            "observation_id": "earlybird-throughput",
+            "metric_id": "oldest_retry_age"
+          },
+          "target": null
         },
         {
-          "id": "output_freshness",
-          "definition": "now minus last valid output timestamp",
-          "source_kind": "output manifest",
-          "window": "per environment; cadence to bind",
-          "target": null,
-          "value": null,
-          "status": "unwired",
-          "missing_data": "unknown, never healthy or zero"
+          "id": "last_success_age",
+          "definition": "Age of last successful recording in retained run history; absent history is unknown.",
+          "source_kind": "scheduled application observation",
+          "unit": "seconds",
+          "binding": {
+            "observation_id": "earlybird-throughput",
+            "metric_id": "last_success_age"
+          },
+          "target": null
         }
       ],
       "application_inference_billing": "unverified; separate from operator account",
@@ -6247,10 +6355,10 @@
         }
       ],
       "coverage_review": {
-        "category": "runtime-only",
-        "next_action": "Monitor normal recording throughput and primary gateway stability; retain the verified secondary ASR failover.",
-        "evidence": "September 15: deployed MP4-to-PCM-WAV normalization and installed missing ffmpeg on work-special. Added secondary Spark 192.168.2.150 with /asr-readyz health checks. Earlybird converted a synthetic speech MP4 and returned the exact spoken sentence via the public ASR endpoint. Restarted between cycles to clear old cooldown; running service recorded ASR ready at 11:28 UTC. Primary 192.168.2.151 restarted using sudo at 11:35 UTC; listener queue cleared and ASR readiness passed. Synthetic speech returned the exact sentence both directly from primary and through the public route. Real-recording throughput is not yet verified.",
-        "reviewed_at": "2026-09-15T11:36:28.550466+00:00"
+        "category": "check-failed",
+        "next_action": "Monitor normal recording completions, retry age and source freshness after one-minute chunking.",
+        "evidence": "Normal production run completed at 2026-09-15T13:26:57Z with 1 transcription and 0 Whisper errors. Bounded one-minute PCM chunks resolve large-upload rejection and reduce per-request duration. Recovery preflight bypasses old cooldown; real media honors cooldown. Completion, failures, known retries and last-success age are continuously measured.",
+        "reviewed_at": "2026-09-15T13:18:22.609331+00:00"
       }
     },
     {
@@ -6315,7 +6423,8 @@
         "next_action": "Keep the documented NetOps pause until the intended schedule is decided; do not start a duplicate or unapproved worker.",
         "evidence": "User crontab explicitly paused the five-minute worker and monitor on May 26. The interface is active; last worker summary is July 7. A pause is not proof of healthy research output.",
         "reviewed_at": "2026-09-14T22:44:18.391386+00:00"
-      }
+      },
+      "monitoring_mode": "paused"
     },
     {
       "id": "market-sizing",
@@ -6380,8 +6489,8 @@
       "coverage_review": {
         "category": "deployment-unverified",
         "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
-        "evidence": "Local/work-special orchestration; downstream release and dashboard destinations",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "evidence": "Local/work-special orchestration; downstream release and dashboard destinations September 15: source checkout confirmed on Hal; source presence and console uptime do not prove application deployment. App runtime/output source still requires verification.",
+        "reviewed_at": "2026-09-15T13:25:18.012391+00:00"
       }
     },
     {
@@ -6601,8 +6710,8 @@
       "coverage_review": {
         "category": "binding-missing",
         "next_action": "Bind the canonical publication manifests and QuickSight refresh results per production dashboard family.",
-        "evidence": "966 QuickSight summaries inventoried; ownership and refresh source binding remain incomplete.",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "evidence": "966 QuickSight summaries inventoried; ownership and refresh source binding remain incomplete. September 15: source checkout confirmed on Hal; source presence and console uptime do not prove application deployment. App runtime/output source still requires verification.",
+        "reviewed_at": "2026-09-15T13:25:18.012391+00:00"
       }
     },
     {
@@ -6668,8 +6777,8 @@
       "coverage_review": {
         "category": "deployment-unverified",
         "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
-        "evidence": "Cloud report publishers and QuickSight; local builders; staging isolation per publisher unresolved",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "evidence": "Cloud report publishers and QuickSight; local builders; staging isolation per publisher unresolved September 15: source checkout confirmed on Hal; source presence and console uptime do not prove application deployment. App runtime/output source still requires verification.",
+        "reviewed_at": "2026-09-15T13:25:18.012391+00:00"
       }
     },
     {
@@ -6718,6 +6827,27 @@
           "value": null,
           "status": "unwired",
           "missing_data": "unknown, never healthy or zero"
+        },
+        {
+          "id": "runtime_instance_running",
+          "definition": "Compute state for goldbook-production-crawligator-instance (production); not application output health.",
+          "source_kind": "scheduled application observation",
+          "unit": "boolean",
+          "binding": {
+            "observation_id": "770311548538:i-01f84beada55cdb15",
+            "metric_id": "ec2_running"
+          },
+          "target": null
+        },
+        {
+          "id": "producer_healthy",
+          "definition": "Canonical producer health receipt; does not recalculate its business metrics.",
+          "source_kind": "canonical publication receipt",
+          "binding": {
+            "observation_id": "dq_goldbook_health",
+            "metric_id": "producer_ok"
+          },
+          "target": null
         }
       ],
       "application_inference_billing": "unverified; separate from operator account",
@@ -6745,9 +6875,9 @@
       "historical_findings": [],
       "coverage_review": {
         "category": "binding-missing",
-        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
-        "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "next_action": "Review canonical producer failures and publication timestamps; preserve original business metric calculations.",
+        "evidence": "Bound dated receipts from Control Plane audit producers. KPI Core and KPI sync health currently report failures; Gold Book has a published receipt. Values retain producer timestamps.",
+        "reviewed_at": "2026-09-15T13:14:50.211090+00:00"
       }
     },
     {
@@ -6797,6 +6927,16 @@
           "value": null,
           "status": "unwired",
           "missing_data": "unknown, never healthy or zero"
+        },
+        {
+          "id": "producer_healthy",
+          "definition": "Canonical producer health receipt; does not recalculate its business metrics.",
+          "source_kind": "canonical publication receipt",
+          "binding": {
+            "observation_id": "kpi_sync_health",
+            "metric_id": "producer_ok"
+          },
+          "target": null
         }
       ],
       "application_inference_billing": "unverified; separate from operator account",
@@ -6812,9 +6952,9 @@
       "historical_findings": [],
       "coverage_review": {
         "category": "binding-missing",
-        "next_action": "Bind KPI Core/Plane publication timestamps and acceptance results without recomputing the canonical metrics.",
-        "evidence": "Existing producer contracts are documented in Control Plane.",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "next_action": "Review canonical producer failures and publication timestamps; preserve original business metric calculations.",
+        "evidence": "Bound dated receipts from Control Plane audit producers. KPI Core and KPI sync health currently report failures; Gold Book has a published receipt. Values retain producer timestamps.",
+        "reviewed_at": "2026-09-15T13:14:50.211090+00:00"
       }
     },
     {
@@ -6863,6 +7003,17 @@
           "value": null,
           "status": "unwired",
           "missing_data": "unknown, never healthy or zero"
+        },
+        {
+          "id": "runtime_instance_running",
+          "definition": "Compute state for airflow-production-mindshare-pipeline-ops (production); not application output health.",
+          "source_kind": "scheduled application observation",
+          "unit": "boolean",
+          "binding": {
+            "observation_id": "770311548538:i-053ff5163c94690ca",
+            "metric_id": "ec2_running"
+          },
+          "target": null
         }
       ],
       "application_inference_billing": "unverified; separate from operator account",
@@ -6942,9 +7093,9 @@
       "historical_findings": [],
       "coverage_review": {
         "category": "binding-missing",
-        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
+        "next_action": "Confirm application output on the explicitly mapped EC2 instance; runtime state is now collected every five minutes.",
         "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "reviewed_at": "2026-09-15T13:05:59.518816+00:00"
       }
     },
     {
@@ -7303,6 +7454,17 @@
           "value": null,
           "status": "unwired",
           "missing_data": "unknown, never healthy or zero"
+        },
+        {
+          "id": "runtime_instance_running",
+          "definition": "Compute state for c66-qa-bastion (qa); not application output health.",
+          "source_kind": "scheduled application observation",
+          "unit": "boolean",
+          "binding": {
+            "observation_id": "770311548538:i-0897030dfa5fafeab",
+            "metric_id": "ec2_running"
+          },
+          "target": null
         }
       ],
       "application_inference_billing": "unverified; separate from operator account",
@@ -7604,9 +7766,9 @@
       "historical_findings": [],
       "coverage_review": {
         "category": "binding-missing",
-        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
+        "next_action": "Confirm application output on the explicitly mapped EC2 instance; runtime state is now collected every five minutes.",
         "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "reviewed_at": "2026-09-15T13:05:59.518816+00:00"
       }
     },
     {
@@ -7731,6 +7893,17 @@
           "value": null,
           "status": "unwired",
           "missing_data": "unknown, never healthy or zero"
+        },
+        {
+          "id": "runtime_instance_running",
+          "definition": "Compute state for tq-durableiq-staging (staging); not application output health.",
+          "source_kind": "scheduled application observation",
+          "unit": "boolean",
+          "binding": {
+            "observation_id": "770311548538:i-04921eab56d9f1324",
+            "metric_id": "ec2_running"
+          },
+          "target": null
         }
       ],
       "application_inference_billing": "unverified; separate from operator account",
@@ -7823,9 +7996,9 @@
       "historical_findings": [],
       "coverage_review": {
         "category": "binding-missing",
-        "next_action": "Bind current service health and output evidence for each recorded environment, starting with production.",
+        "next_action": "Confirm application output on the explicitly mapped EC2 instance; runtime state is now collected every five minutes.",
         "evidence": "Dated AWS resource inventory exists; it is not a live health source.",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "reviewed_at": "2026-09-15T13:05:59.518816+00:00"
       }
     },
     {
@@ -7888,8 +8061,8 @@
       "coverage_review": {
         "category": "deployment-unverified",
         "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
-        "evidence": "OpenBrand and DeepAd cloud production/development; account-specific profiles",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "evidence": "OpenBrand and DeepAd cloud production/development; account-specific profiles September 15: source checkout confirmed on Hal; source presence and console uptime do not prove application deployment. App runtime/output source still requires verification.",
+        "reviewed_at": "2026-09-15T13:25:18.012391+00:00"
       }
     },
     {
@@ -8142,8 +8315,8 @@
       "coverage_review": {
         "category": "deployment-unverified",
         "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
-        "evidence": "Local Flask source; database/S3 integrations documented; production and staging unverified",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "evidence": "Local Flask source; database/S3 integrations documented; production and staging unverified September 15: source checkout confirmed on Hal; source presence and console uptime do not prove application deployment. App runtime/output source still requires verification.",
+        "reviewed_at": "2026-09-15T13:25:18.012391+00:00"
       }
     },
     {
@@ -8209,8 +8382,8 @@
       "coverage_review": {
         "category": "deployment-unverified",
         "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
-        "evidence": "Documented AWS prod/staging API Gateway, Lambda and Aurora; local dashboard; live health unverified",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "evidence": "Documented AWS prod/staging API Gateway, Lambda and Aurora; local dashboard; live health unverified September 15: source checkout confirmed on Hal; source presence and console uptime do not prove application deployment. App runtime/output source still requires verification.",
+        "reviewed_at": "2026-09-15T13:25:18.012391+00:00"
       }
     },
     {
@@ -8274,8 +8447,8 @@
       "coverage_review": {
         "category": "deployment-unverified",
         "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
-        "evidence": "Local :5027; documented Ohio AWS alpha and S3 output; production readiness unverified",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "evidence": "Local :5027; documented Ohio AWS alpha and S3 output; production readiness unverified September 15: source checkout confirmed on Hal; source presence and console uptime do not prove application deployment. App runtime/output source still requires verification.",
+        "reviewed_at": "2026-09-15T13:25:18.012391+00:00"
       }
     },
     {
@@ -8605,8 +8778,8 @@
       "coverage_review": {
         "category": "deployment-unverified",
         "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
-        "evidence": "Source/documented deployment only; fresh app health and environment mapping pending",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "evidence": "Source/documented deployment only; fresh app health and environment mapping pending September 15: source checkout confirmed on Hal; source presence and console uptime do not prove application deployment. App runtime/output source still requires verification.",
+        "reviewed_at": "2026-09-15T13:25:18.012391+00:00"
       }
     },
     {
@@ -8670,8 +8843,8 @@
       "coverage_review": {
         "category": "deployment-unverified",
         "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
-        "evidence": "Source/documented deployment only; fresh app health and environment mapping pending",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "evidence": "Source/documented deployment only; fresh app health and environment mapping pending September 15: source checkout confirmed on Hal; source presence and console uptime do not prove application deployment. App runtime/output source still requires verification.",
+        "reviewed_at": "2026-09-15T13:25:18.012391+00:00"
       }
     },
     {
@@ -8735,8 +8908,8 @@
       "coverage_review": {
         "category": "deployment-unverified",
         "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
-        "evidence": "Source/documented deployment only; fresh app health and environment mapping pending",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "evidence": "Source/documented deployment only; fresh app health and environment mapping pending September 15: source checkout confirmed on Hal; source presence and console uptime do not prove application deployment. App runtime/output source still requires verification.",
+        "reviewed_at": "2026-09-15T13:25:18.012391+00:00"
       }
     },
     {
@@ -8851,6 +9024,16 @@
           "value": null,
           "status": "unwired",
           "missing_data": "unknown, never healthy or zero"
+        },
+        {
+          "id": "endpoint_ready",
+          "definition": "Confirmed application endpoint responds with the expected health JSON or public-key envelope; not end-to-end workflow health.",
+          "source_kind": "application endpoint probe",
+          "binding": {
+            "observation_id": "yhix-keys-endpoint",
+            "metric_id": "endpoint_ok"
+          },
+          "target": null
         }
       ],
       "application_inference_billing": "unverified; separate from operator account",
@@ -8865,10 +9048,10 @@
       "historical_findings": [],
       "web_url": "https://keys.yhix.com/.well-known/appspecific/com.tesla.3p.public-key.pem",
       "coverage_review": {
-        "category": "deployment-unverified",
-        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
-        "evidence": "Source/documented deployment only; fresh app health and environment mapping pending",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "category": "check-failed",
+        "next_action": "YHIX: verify the intended public-key DNS/deployment; keys.yhix.com currently does not resolve from the collector.",
+        "evidence": "Public key checkout exists on Hal. A TLS-verified retrieval attempt fails before connecting because the expected hostname does not resolve. No DNS or key publication change was made.",
+        "reviewed_at": "2026-09-15T13:25:18.012391+00:00"
       }
     },
     {
@@ -8998,8 +9181,8 @@
       "coverage_review": {
         "category": "deployment-unverified",
         "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
-        "evidence": "Source/documented deployment only; fresh app health and environment mapping pending",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "evidence": "Source/documented deployment only; fresh app health and environment mapping pending September 15: source checkout confirmed on Hal; source presence and console uptime do not prove application deployment. App runtime/output source still requires verification.",
+        "reviewed_at": "2026-09-15T13:25:18.012391+00:00"
       }
     },
     {
@@ -9020,34 +9203,47 @@
       "kpi_family": "web",
       "kpi_contracts": [
         {
-          "id": "request_success",
-          "definition": "successful eligible requests / eligible requests",
-          "source_kind": "request/access metrics",
-          "window": "per environment; cadence to bind",
-          "target": null,
-          "value": null,
-          "status": "unwired",
-          "missing_data": "unknown, never healthy or zero"
+          "id": "primary_asr_ready",
+          "definition": "Primary Spark reports ASR backend readiness.",
+          "source_kind": "scheduled application observation",
+          "unit": "boolean",
+          "binding": {
+            "observation_id": "gateway-asr-192.168.2.151",
+            "metric_id": "asr_ready"
+          },
+          "target": null
         },
         {
-          "id": "latency_p95",
-          "definition": "95th percentile duration for the same route and window",
-          "source_kind": "request timing metrics",
-          "window": "per environment; cadence to bind",
-          "target": null,
-          "value": null,
-          "status": "unwired",
-          "missing_data": "unknown, never healthy or zero"
+          "id": "primary_socket_backlog",
+          "definition": "Pending accepted-connection queue on primary Spark; compare with backlog limit.",
+          "source_kind": "scheduled application observation",
+          "unit": "connections",
+          "binding": {
+            "observation_id": "gateway-asr-192.168.2.151",
+            "metric_id": "socket_backlog"
+          },
+          "target": null
         },
         {
-          "id": "release_parity",
-          "definition": "deployed immutable artifact equals accepted release artifact",
-          "source_kind": "deployment receipts",
-          "window": "per environment; cadence to bind",
-          "target": null,
-          "value": null,
-          "status": "unwired",
-          "missing_data": "unknown, never healthy or zero"
+          "id": "secondary_asr_requests",
+          "definition": "ASR requests observed on secondary in bounded 15-minute log sample; includes direct calls, not necessarily failover.",
+          "source_kind": "scheduled application observation",
+          "unit": "requests",
+          "binding": {
+            "observation_id": "gateway-asr-192.168.2.150",
+            "metric_id": "asr_requests_sample"
+          },
+          "target": null
+        },
+        {
+          "id": "failover_required",
+          "definition": "Primary unavailable while secondary is ready; inferred from readiness and first-worker routing policy.",
+          "source_kind": "worker readiness probes",
+          "binding": {
+            "observation_id": "asr-routing",
+            "metric_id": "failover_required"
+          },
+          "target": null
         }
       ],
       "application_inference_billing": "unverified; separate from operator account",
@@ -9066,56 +9262,85 @@
         }
       ],
       "coverage_review": {
-        "category": "deployment-unverified",
-        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
-        "evidence": "Source/documented deployment only; fresh app health and environment mapping pending",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "category": "observed",
+        "next_action": "Watch worker readiness, socket backlog and secondary usage. Investigate recurrence before enabling automatic restart.",
+        "evidence": "Both Spark workers have ASR readiness, admission counters, listener backlog and bounded ASR request-log probes. Primary stall cleared by restart. A subsequent large-upload broken pipe was traced to core input-length rejection; this does not establish the cause of the earlier listener stall.",
+        "reviewed_at": "2026-09-15T13:05:59.518816+00:00"
       }
     },
     {
       "id": "costcrawler",
       "name": "Costcrawler",
-      "primary_tui": null,
+      "primary_tui": "norman",
       "account": "personal",
-      "ownership_basis": "user-confirmed project classification",
-      "lifecycle": "needs-owner",
-      "responsibilities": [],
-      "kpi_contracts": [],
+      "ownership_basis": "Interim Norman stewardship pending dedicated TUI confirmation; personal classification user-confirmed",
+      "lifecycle": "managed",
+      "responsibilities": [
+        "Confirm the deployment and execution cadence.",
+        "Maintain a reproducible run and current output evidence.",
+        "Report failed runs and the next recovery action in Norman."
+      ],
+      "kpi_contracts": [
+        {
+          "id": "rate_card_freshness",
+          "definition": "Age of the latest accepted rate-card crawl output.",
+          "source_kind": "CostCrawler crawl report",
+          "target": null
+        },
+        {
+          "id": "crawl_completion_rate",
+          "definition": "Successful crawl jobs divided by attempted jobs in a declared window.",
+          "source_kind": "CostCrawler run ledger",
+          "target": null
+        }
+      ],
       "instances": [],
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "environment_summary": "Hospital rate-card collection and comparison Flask application",
-      "notes": "Responsible TUI needs assignment",
+      "notes": "Norman is interim steward; a dedicated TUI can replace it after confirmation.",
       "supporting_tuis": [],
       "coverage_review": {
         "category": "deployment-unverified",
         "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
-        "evidence": "Hospital rate-card collection and comparison Flask application",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "evidence": "Hospital rate-card collection and comparison Flask application September 15: source checkout confirmed on Hal; source presence and console uptime do not prove application deployment. App runtime/output source still requires verification.",
+        "reviewed_at": "2026-09-15T13:25:18.012391+00:00"
       }
     },
     {
       "id": "wafermancer",
       "name": "Wafermancer",
-      "primary_tui": null,
+      "primary_tui": "norman",
       "account": "personal",
-      "ownership_basis": "user-confirmed project classification",
-      "lifecycle": "needs-owner",
-      "responsibilities": [],
-      "kpi_contracts": [],
+      "ownership_basis": "Interim Norman stewardship pending dedicated TUI confirmation; personal classification user-confirmed",
+      "lifecycle": "managed",
+      "responsibilities": [
+        "Confirm the deployment and execution cadence.",
+        "Maintain a reproducible run and current output evidence.",
+        "Report failed runs and the next recovery action in Norman."
+      ],
+      "kpi_contracts": [
+        {
+          "id": "release_manifest_integrity",
+          "definition": "Declared release assets whose checksums match the published manifest; checked on release review.",
+          "source_kind": "On-demand release manifest verification",
+          "target": null
+        }
+      ],
       "instances": [],
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "environment_summary": "Audiovisual album release project; not a deployed service",
-      "notes": "Responsible TUI needs assignment",
+      "notes": "Norman is interim steward; a dedicated TUI can replace it after confirmation.",
       "supporting_tuis": [],
       "monitoring_mode": "on-demand",
       "coverage_review": {
         "category": "on-demand",
-        "next_action": "Check evidence and run results when this project is used; no always-on service is established.",
-        "evidence": "Documented workspace, local prototype, or manually invoked project workflow; continuous runtime not assumed.",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
-      }
+        "next_action": "Norman: verify the release manifest and assets when publishing or reviewing this personal album.",
+        "evidence": "Hal checkout is the Illumina audiovisual album release, with README, track list, rights and checksum manifest. On-demand release project; not an always-on service.",
+        "reviewed_at": "2026-09-15T13:25:18.012391+00:00"
+      },
+      "source_workspace": "hal:/home/kristopher/code/wafermancer"
     },
     {
       "id": "pretty-bird",
@@ -9148,23 +9373,34 @@
     {
       "id": "ja3proxy",
       "name": "Ja3Proxy",
-      "primary_tui": null,
-      "account": null,
-      "ownership_basis": "unassigned",
-      "lifecycle": "needs-owner",
-      "responsibilities": [],
-      "kpi_contracts": [],
+      "primary_tui": "netops",
+      "account": "unassigned",
+      "ownership_basis": "NetOps assigned deployment/account discovery responsibility; operating account not yet established",
+      "lifecycle": "managed",
+      "responsibilities": [
+        "Identify whether the proxy checkout is deployed and who consumes it.",
+        "Confirm the operating account before treating it as an active service.",
+        "Bind a proxy request check only after the runtime is verified."
+      ],
+      "kpi_contracts": [
+        {
+          "id": "proxy_request_success",
+          "definition": "Successful requests through the verified deployed proxy; deployment must be established first.",
+          "source_kind": "Proxy request receipt",
+          "target": null
+        }
+      ],
       "instances": [],
       "dohio_service_ids": [],
       "dohio_surface_ids": [],
       "environment_summary": "Third-party proxy checkout; estate deployment and accountable owner unresolved",
-      "notes": "Responsible TUI needs assignment",
+      "notes": "NetOps owns reconciliation; no account classification or running service is inferred.",
       "supporting_tuis": [],
       "coverage_review": {
         "category": "deployment-unverified",
-        "next_action": "Confirm the actual app runtime or on-demand workflow, then bind the existing status/output source.",
-        "evidence": "Third-party proxy checkout; estate deployment and accountable owner unresolved",
-        "reviewed_at": "2026-09-14T21:16:52.303526+00:00"
+        "next_action": "NetOps: establish whether this third-party proxy is deployed, then confirm account and request-check endpoint.",
+        "evidence": "Third-party proxy checkout; estate deployment and accountable owner unresolved September 15: source checkout confirmed on Hal; source presence and console uptime do not prove application deployment. App runtime/output source still requires verification.",
+        "reviewed_at": "2026-09-15T13:25:18.012391+00:00"
       }
     }
   ]
