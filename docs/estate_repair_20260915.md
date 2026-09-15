@@ -40,7 +40,8 @@ Rollback: `eb.py.before-remote-wav-20260915` beside the deployed file.
 
 The public ASR route was pinned to `192.168.2.151:18151`, while general health could pass via other hosts.
 The primary gateway's health timed out and its listener had a full accept queue despite an active service.
-Broken-pipe logs do not establish the cause. The initial credential attempts failed; subsequent user clarification enabled sudo access.
+Broken-pipe logs do not establish the cause. The initial credential attempts failed;
+subsequent user clarification enabled sudo access.
 Restarted `norllama-gateway.service` at 11:35 UTC. Its accept queue cleared and `/asr-readyz` passed.
 Used the loaded unit configuration; an existing on-disk unit-change warning remains for separate reconciliation.
 
