@@ -774,9 +774,9 @@
       ],
       "coverage_review": {
         "category": "partial-coverage",
-        "next_action": "Diagnose Beach runtime/log endpoints and intermittent remote telemetry; inspect Knox sensor 92 and Kitchen Ubuntu 986. Gateway 772 now mirrors authenticated WAN status.",
-        "evidence": "Beach session, devices and apps work; optional runtime/log requests time out. Checker now retains live inventory and reports missing telemetry separately. Gateway driver 1070/device 772 consumes the existing authenticated pfSense sync with 15-minute expiry. Physical-device warnings remain visible.",
-        "reviewed_at": "2026-09-15T13:18:22.609331+00:00"
+        "next_action": "Check power/network at Kitchen kiosk 192.168.2.95 (MAC 50:af:73:24:6a:b0). Investigate Beach runtime-statistics endpoint locally; keep observing hallway off-command verification.",
+        "evidence": "Fixed multiprocessing queue drain order: large telemetry results no longer deadlock before join. Halsted live telemetry recovered. Beach LAN inventory and past logs work, but /logs/json times out locally and Remote Admin is intermittent. Kitchen last reported September 14 20:40 UTC; LAN ARP/ping/SSH fail and one Wake-on-LAN attempt did not restore it. Sensor 92 currently reports off with recent activity; app 856 retains an earlier retry failure.",
+        "reviewed_at": "2026-09-15T13:48:04.797481+00:00"
       }
     },
     {
@@ -2275,9 +2275,9 @@
       "historical_findings": [],
       "coverage_review": {
         "category": "deployment-unverified",
-        "next_action": "Review canonical producer failures and publication timestamps; preserve original business metric calculations.",
-        "evidence": "Bound dated receipts from Control Plane audit producers. KPI Core and KPI sync health currently report failures; Gold Book has a published receipt. Values retain producer timestamps.",
-        "reviewed_at": "2026-09-15T13:14:50.211090+00:00"
+        "next_action": "Monitor the regenerated controller receipt and resolve remaining source-specific failures under its responsible TUI.",
+        "evidence": "Legacy Gold Book fallback files are now loaded only when canonical metric rows are absent. Failed canonical rows remain failed and cannot be replaced by old evidence. Any needed legacy fallback receives the reporting-week freshness bounds. Live producer refresh and regression checks were run; original business calculations remain unchanged. The regenerated September 7-week controller receipt at 2026-09-15T13:48:41Z has zero source errors; missing business inputs remain blocked.",
+        "reviewed_at": "2026-09-15T13:48:04.797481+00:00"
       }
     },
     {
@@ -6952,9 +6952,9 @@
       "historical_findings": [],
       "coverage_review": {
         "category": "binding-missing",
-        "next_action": "Review canonical producer failures and publication timestamps; preserve original business metric calculations.",
-        "evidence": "Bound dated receipts from Control Plane audit producers. KPI Core and KPI sync health currently report failures; Gold Book has a published receipt. Values retain producer timestamps.",
-        "reviewed_at": "2026-09-15T13:14:50.211090+00:00"
+        "next_action": "Obtain the September 7 missing-price producer exports for GAPI/ecom and the manual BPO count; obtain dated category-refresh evidence for Gold Book. Keep missing values unknown. Investigate the 36 dropped pricing-ingestion rows separately.",
+        "evidence": "Latest full core receipt has 52 of 56 metrics successful. Three missing-price source-sheet cells lack values. Gold Book stale-category count has no current dated source; the release contract explicitly rejects using publication dates as category freshness. Sync also flags incomplete usage coverage and unallocated workload costs; those require source coverage, not a service restart.",
+        "reviewed_at": "2026-09-15T13:48:04.797481+00:00"
       }
     },
     {
@@ -9049,9 +9049,9 @@
       "web_url": "https://keys.yhix.com/.well-known/appspecific/com.tesla.3p.public-key.pem",
       "coverage_review": {
         "category": "check-failed",
-        "next_action": "YHIX: verify the intended public-key DNS/deployment; keys.yhix.com currently does not resolve from the collector.",
-        "evidence": "Public key checkout exists on Hal. A TLS-verified retrieval attempt fails before connecting because the expected hostname does not resolve. No DNS or key publication change was made.",
-        "reviewed_at": "2026-09-15T13:25:18.012391+00:00"
+        "next_action": "Publish CNAME keys.yhix.com -> kristopherkubicki.github.io in the authoritative DNS account, then verify HTTPS certificate issuance and the public-key URL. DNS account access is required.",
+        "evidence": "GitHub Pages build 27d6cbf includes .nojekyll. The previously missing public-key path now returns HTTP 200 from the Pages origin and matches the repository public key. The custom hostname still has no DNS record; it is not healthy yet.",
+        "reviewed_at": "2026-09-15T13:48:04.797481+00:00"
       }
     },
     {
