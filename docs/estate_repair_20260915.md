@@ -52,7 +52,18 @@ Caddy before-image: `/etc/caddy/includes/norman-bot-hosts.caddy.before-asr-failo
 
 A synthetic WAV sent from work-special through `https://llm.home.arpa/v1/audio/transcriptions`
 returned HTTP 200 and `no_speech_detected`. This verifies the public ASR path and silent-audio handling,
-not real-recording transcription. Earlybird remains running; its previous backend cooldown still deferred
-its latest cycle. Check the next ingestion cycle and recover the primary gateway when access is available.
+not real-recording transcription. Earlybird's own isolated ASR preflight also passed.
+
+The full MP4 test found that work-special lacked `ffmpeg`. Installed the distribution package and dependencies
+with `apt-get install --no-install-recommends ffmpeg` (5.1.9). Created a temporary synthetic speech MP4,
+then called the deployed `eb.run_whisper_remote`: conversion and public ASR returned the exact sentence
+"This is a routine transcription health check." The original remained intact; temporary test media was removed.
+Restarted Earlybird at its next sleep interval to clear the previous backend cooldown.
+Its running state recorded `whisper_remote_health.ready=true`, probe `asr-upload`, at 11:28 UTC.
+Normal recording throughput remains unverified; the stuck primary gateway still needs recovery.
+
+Validation: 14 Caddy route tests and 19 estate/API/collector tests passed; format and lint passed.
+Norman canary and production health passed, and the estate API continued requiring authentication (401).
+The collector reports successful results for all four previously failed Housebot helper units.
 
 Scout remains paused. Business KPI bindings and the remaining unknown app checks are unchanged.
