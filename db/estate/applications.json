@@ -772,9 +772,9 @@
       ],
       "coverage_review": {
         "category": "check-failed",
-        "next_action": "Diagnose Hubitat HTTP 500 on summary/bucket metadata commands and verify the pfSense endpoint before changing its target.",
-        "evidence": "Repaired NetOps ingress for Housebot 192.168.2.146 to Eufy port 8084 only; passive sync now succeeds. pfSense target 192.168.2.1 refuses connections; power accounting HTTP 500 reproduced. Sentinel failures remain intermittent.",
-        "reviewed_at": "2026-09-14T22:44:18.391386+00:00"
+        "next_action": "Verify the next scheduled sentinel summary update and restore the pfSense management endpoint at 192.168.2.1.",
+        "evidence": "September 15: fixed legacy form transport to match Hubitat 2.5 JSON commands; all five power-accounting virtual summaries updated and systemd sync succeeded. Eufy sync remains repaired. pfSense refuses connections from both Housebot and NetOps. Sentinel awaits its next automatic run.",
+        "reviewed_at": "2026-09-15T10:55:16.945659+00:00"
       }
     },
     {
@@ -6248,9 +6248,9 @@
       ],
       "coverage_review": {
         "category": "runtime-only",
-        "next_action": "Monitor remote transcription backend availability and connect a structured completed-cycle report.",
-        "evidence": "Verified active user manager unit user:earlybird.service on work-special. The old system unit is disabled. Recent archive/Avoma cycles reported zero errors; remote Whisper was unavailable and media downloads were skipped.",
-        "reviewed_at": "2026-09-14T22:44:18.391386+00:00"
+        "next_action": "Recover the root-owned norllama-gateway.service on Spark 192.168.2.151, then verify synthetic WAV and real recording transcription.",
+        "evidence": "September 15: deployed tested MP4-to-PCM-WAV normalization and restarted the active user service. Gateway front door health passes, but ASR-only upstream 192.168.2.151:18151 times out; synthetic audio returned 503. Recovery requires privileged Spark service access; transcription is not yet verified.",
+        "reviewed_at": "2026-09-15T10:55:16.945659+00:00"
       }
     },
     {
